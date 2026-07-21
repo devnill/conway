@@ -129,6 +129,13 @@ pub enum ConfigIssueKind {
     DuplicateEntry,
     /// A role's resolved headroom is implausibly large.
     HeadroomExceedsBudget,
+    /// A role's headroom resolves to different values from the
+    /// separately-passed `HeadroomPolicy` sidecar and from
+    /// `RoutingConfig::headroom_for` -- the two sources of truth disagree, so
+    /// `validate`'s `HeadroomExceedsBudget` check (which only sees the
+    /// config-derived value) cannot be trusted to cover what the router
+    /// actually resolves at request time.
+    HeadroomSourcesDisagree,
 }
 
 /// Semantic validation of a loaded `RoutingConfig`. Returns every problem
