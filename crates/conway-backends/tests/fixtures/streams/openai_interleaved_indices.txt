@@ -1,0 +1,4 @@
+{"index":0,"id":"call_a","function":{"name":"read","arguments":"{\"path\":\"a"}}
+{"index":1,"id":"call_b","function":{"name":"write","arguments":"{\"path\":\"b"}}
+{"index":0,"function":{"arguments":".txt\"}"}}
+{"index":1,"function":{"arguments":".txt\",\"content\":\"hi\"}"}}

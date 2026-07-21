@@ -18,12 +18,14 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 chrono = { workspace = true }
 regex = { workspace = true }
+jsonschema = { workspace = true }
 url = { workspace = true }
 rand = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
 humantime-serde = { workspace = true }
+toml = { workspace = true }
 reqwest = { workspace = true, optional = true }
 eventsource-stream = { workspace = true, optional = true }
 
@@ -33,3 +35,4 @@ wiremock = { workspace = true }
 futures = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
+schemars = { workspace = true }

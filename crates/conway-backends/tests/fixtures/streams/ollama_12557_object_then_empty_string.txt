@@ -1,0 +1,2 @@
+{"id":"call_1","function":{"name":"read","arguments":{"path":"a.txt"}}}
+{"id":"call_1","function":{"name":"read","arguments":""}}
