@@ -1,0 +1,4 @@
+role: planner  (est_tokens=34000, headroom_tokens=16000)
+  [0] anthropic/claude-sonnet-4-6  SKIPPED  health: transport breaker open until 2026-07-20T10:00:30Z
+  [1] ollama-cloud/glm-5.2         SKIPPED  capability: context: needs 34000 input + 16000 headroom = 50000, model max_context_tokens is 40000
+  [2] local/qwen3-coder-80b        SELECTED fallback(position=2)
