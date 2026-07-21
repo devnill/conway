@@ -1,0 +1,25 @@
+id: F-062-1
+type: finding
+cycle: 1
+work_item: WI-062
+verdict: pass
+severity_counts:
+  critical: 0
+  significant: 2
+  minor: 0
+content: |-
+  ## Verdict: Pass (with rework)
+  All machine criteria held (57 tests at review, 59 after rework); reviewer verified atomic-write same-directory rename, UTF-8 occurrence handling, binary sniff windowing, and cancellation-before-filesystem ordering.
+
+  ## Significant Findings
+  S1: Atomic-write temp filename derived from the target alone — concurrent writers to one path shared an inode (truncate+create, no O_EXCL), allowing interleaved/corrupted survivors under exactly the multi-subagent contention this system will produce. RESOLVED: pid + per-process-counter suffix gives each writer a distinct temp inode (last rename wins whole-file); 20-round concurrent-writers interleave regression test added, plus lingering-tmp assertion.
+  S2: read.rs collapsed ALL IO errors into model-recoverable Ok(is_error), contradicting the crate's documented discipline and its sibling edit.rs (permission-denied misreported as model-recoverable). RESOLVED: NotFound stays model-recoverable; all other kinds route to Err(ToolError::Io); unix permission-denied regression test added.
+
+  ## Unmet Acceptance Criteria
+  None.
+
+  ## Notes
+  Worker subagent built; independent review caught both gaps neither the spec'd tests nor the worker's self-check exercised. Judgment calls endorsed (permission classes, atomic_write shared helper). Commit 1b86b50. Tools 59 tests.
+cycle_modified: 0
+content_hash: 8f9da3fa08d1914070bb31eca06007889743a3f58964d71678a28d57572359d2
+token_count: 377

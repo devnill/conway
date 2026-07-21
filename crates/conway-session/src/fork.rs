@@ -1,28 +1,101 @@
 //! O(1) fork-by-reference (architecture §5.1, §8).
 //!
-//! This file is a skeleton only. WI-048 implements `fork_impl`: a single
-//! header write that references the parent by `(parent, at_seq, mode)` and
-//! copies nothing. `JsonlSessionStore::fork` (WI-047) delegates to this
-//! function verbatim.
+//! `fork_impl` writes exactly one header line for the child and copies zero
+//! parent records. `JsonlSessionStore::fork` (WI-047) delegates here
+//! verbatim.
+//!
+//! ## Cost contract
+//!
+//! The only parent I/O `fork_impl` performs is a `store.head(parent)` call:
+//! `NotFound` if the parent file does not exist, else the parent's current
+//! head via its per-session handle. When that handle is already warm (the
+//! runtime's actual usage — a fork always follows the parent agent having
+//! already appended through the same live `JsonlSessionStore`), this is a
+//! mutex lock and an `Arc` clone, not a file read. A *cold* parent handle
+//! still requires `get_or_open_handle` to scan the file to recover its
+//! records and head — that cost belongs to handle acquisition (amortized
+//! store behavior every method pays once per session), not to `fork`
+//! itself. `JsonlSessionStore::lines_scanned` instruments exactly this
+//! distinction: it only advances on a cold-open scan, so a test that
+//! pre-warms the parent handle and then calls `fork` can assert the counter
+//! is unchanged.
+//!
+//! ## Error naming
+//!
+//! The work-item spec names the range-violation error `InvalidRange{ at,
+//! head }`. `conway-core::error::StoreError` has no such variant; the
+//! existing `SeqOutOfRange{ requested, head }` covers the identical case
+//! (a requested seq beyond the head) and is used here instead — no new
+//! `StoreError` variant is introduced for this item.
+//!
+//! ## Immutability semantics
+//!
+//! A fork is a snapshot, not a live view: records at `seq < at` are frozen
+//! from the child's perspective forever, and parent appends at `seq >= at`
+//! (including everything appended after the fork) are never visible to the
+//! child. `fork_impl` enforces this simply by never reading or copying any
+//! parent record — the child's own file starts, and stays, empty of them.
 
 use conway_core::error::StoreError;
 use conway_core::ids::{LogSeq, SessionId};
-use conway_core::log::SessionMeta;
+use conway_core::log::{ForkOrigin, SessionMeta, SubagentMode};
+use conway_core::ports::SessionStore;
 
 use crate::store::JsonlSessionStore;
 
 /// Creates `child` as a fork of `parent` at `at`, writing exactly one
-/// header line. Implemented by WI-048.
+/// header line and copying zero parent records.
 ///
-/// `#[allow(dead_code)]`: nothing calls this yet — `JsonlSessionStore::fork`
-/// (WI-047) is itself a not-yet-written trait method that will delegate
-/// here. Remove the attribute when that call site lands.
-#[allow(dead_code)]
+/// Procedure:
+/// 1. `store.head(parent)` — `NotFound` if `parent` doesn't exist; O(1) in
+///    parent size when the parent handle is already warm (see the
+///    module-level cost contract).
+/// 2. `at > head` → `StoreError::SeqOutOfRange{ requested: at, head }`, no
+///    file created.
+/// 3. Normalize `meta.origin` to `Some(ForkOrigin{ parent, at_seq: at,
+///    mode })`: `mode` is the caller-supplied origin's mode when
+///    `meta.origin` was `Some(..)`, else it defaults to
+///    `SubagentMode::Fork` (this function backs the `fork`, not `spawn`,
+///    path — a caller that omits an origin altogether is asking for a
+///    plain fork). Any `parent`/`at_seq` the caller supplied in
+///    `meta.origin` is discarded in favor of this call's own arguments.
+/// 4. Delegate to `store.create`, the same header-writing path `create`
+///    uses directly — one line, unconditional fsync regardless of
+///    `FsyncPolicy` (satisfying "child header fsynced before fork returns
+///    under all three policies"), zero records.
+///
+/// `SessionIndex::record_header` (WI-050) is deliberately not called here:
+/// today `SessionIndex` is an unconstructed stub whose `record_header` is
+/// `todo!()` (WI-046), and `JsonlSessionStore` holds no `SessionIndex`
+/// instance for `fork_impl` to call it on. WI-050 wires the call in
+/// alongside adding that field/instance — no other edit to this file
+/// should be needed then.
 pub(crate) async fn fork_impl(
-    _store: &JsonlSessionStore,
-    _parent: &SessionId,
-    _at: LogSeq,
-    _meta: SessionMeta,
+    store: &JsonlSessionStore,
+    parent: &SessionId,
+    at: LogSeq,
+    mut meta: SessionMeta,
 ) -> Result<SessionId, StoreError> {
-    todo!("WI-048: fork_impl")
+    let head = store.head(parent).await?;
+    if at.0 > head.0 {
+        return Err(StoreError::SeqOutOfRange {
+            requested: at,
+            head,
+        });
+    }
+
+    let mode = meta
+        .origin
+        .as_ref()
+        .map(|o| o.mode)
+        .unwrap_or(SubagentMode::Fork);
+    meta.origin = Some(ForkOrigin {
+        parent: *parent,
+        at_seq: at,
+        mode,
+    });
+
+    let child = meta.id;
+    store.create(meta).await?;
+    Ok(child)
 }
