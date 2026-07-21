@@ -1,0 +1,57 @@
+id: WI-031
+type: work_item
+title: conway-routing crate scaffold, config types, and failure classification
+complexity: medium
+scope:
+  - path: crates/conway-routing/Cargo.toml
+    op: create
+  - path: crates/conway-routing/src/lib.rs
+    op: create
+  - path: crates/conway-routing/src/config.rs
+    op: create
+  - path: crates/conway-routing/src/failure.rs
+    op: create
+  - path: crates/conway-routing/src/capability.rs
+    op: create
+  - path: crates/conway-routing/src/breaker.rs
+    op: create
+  - path: crates/conway-routing/src/router.rs
+    op: create
+  - path: crates/conway-routing/src/prober.rs
+    op: create
+  - path: crates/conway-routing/src/explain.rs
+    op: create
+depends:
+  - WI-008
+blocks: []
+criteria:
+  - "`cargo check -p conway-routing` succeeds with the workspace member added [machine]"
+  - "`Cargo.toml` dependencies are exactly: `conway-core` (path), `serde` (derive), `serde_json`, `thiserror`, `humantime-serde`, `chrono`, `tokio` (features `rt`, `time`, `macros`, `sync`), `async-trait`, `futures`. Dev-dependencies: `toml`, `tokio` (feature `test-util`), `conway-core` with feature `fakes` [machine]"
+  - "`Cargo.toml` contains no dependency whose name matches `candle|ort|tokenizers|tch|onnx|fastembed|linfa|smartcore` (GP-07: no learned components link into this crate) [machine]"
+  - "`src/lib.rs` declares the module set and re-exports `DeclarativeRouter`, `BreakerRegistry`, `HealthProber`, `ProberHandle`, `CapabilityIndex`, `RoutingExplain`, `ExplainReport` [machine]"
+  - "`HealthConfig` deserializes from the TOML fragment in the implementation notes; omitting every field yields `HealthConfig::default()` [machine]"
+  - "`HealthConfig::default()` equals `{ transport_failures_to_open: 3, probe_failures_to_open: 2, open_duration: 30s, half_open_successes_to_close: 1, probe_interval: 15s, probe_timeout: 2s, probe_enabled: true }` [machine]"
+  - "`config::validate(&RoutingConfig)` returns `Err` for: empty chain; unparseable `backend/model` entry; duplicate `ModelRef` within one chain — each covered by a named unit test [machine]"
+  - "`failure::classify(&BackendError) -> FailureClass` maps `Transport|ServerError|RateLimit` to `FailoverRetryable`; `ContextOverflow|BadRequest` to `RequestIncompatible`; `Auth|Cancelled|ToolParse` to `Fatal` [machine]"
+  - "`failure::observation_for(&BackendError)` returns `None` for `RequestIncompatible`/`Fatal` classes and `Some(_)` for every `FailoverRetryable` variant; exhaustive unit test [machine]"
+  - "`FailureClass::advances_chain()` returns true for `FailoverRetryable` and `RequestIncompatible`, false for `Fatal` [machine]"
+  - "`HeadroomPolicy` deserializes from `[routing] default_headroom_tokens = 4096` plus `[roles.planner] headroom_tokens = 16384` [machine]"
+  - "`HeadroomPolicy::default()` equals `{ default_headroom_tokens: 4096, per_role: {} }`; `config::DEFAULT_HEADROOM_TOKENS == 4096` is public [machine]"
+  - "`HeadroomPolicy::resolve(&RoleAlias) -> u32` returns per-role value when present, else the global default; three unit tests (hit, miss, empty policy) [machine]"
+  - "`HeadroomPolicy::resolve` is total — never errors or panics for any RoleAlias [machine]"
+  - "`config::validate` returns `Err(HeadroomExceedsBudget)` when a role's resolved headroom is >= 1_000_000, with the exact message from the amendment [machine]"
+  - "`HeadroomPolicy` contains no method taking prompt text or content-derived token counts (GP-07: headroom is declarative, never computed) [machine]"
+  - "`cargo test -p conway-routing` passes [machine]"
+domain: null
+phase: null
+work_item_type: feature
+notes: |-
+  Objective: Establish the crate, its configuration schema, and the error taxonomy that resolves tension T-2 (`ContextOverflow`/`BadRequest` advance the fallback chain but produce NO health observation).
+
+  Full binding implementation notes: docs/plan/wi-conway-routing.md section WI-031. HEADROOM AMENDMENT applies — see docs/plan/wi-conway-routing-amendment.md section WI-031; amended text supersedes the original where they differ.
+resolution: null
+status: pending
+cycle_created: 0
+cycle_modified: null
+content_hash: efc685dea1ec6dc615de15f38c2b126b9968bc24e09cd637cf6a00b759ca2f83
+token_count: 1026

@@ -1,0 +1,13 @@
+id: P-5
+type: domain_policy
+domain: backends-routing
+title: Anthropic is API-key only
+rule: sk-ant-oat* (subscription OAuth) tokens are rejected at config-parse time with an error naming the ToS prohibition and technical block; no code path may implement or document subscription reuse.
+derived_from: GP-09 (Legitimate Provider Access Only), C-02
+established: planning phase
+status: active
+amended_by: null
+cycle_created: 0
+cycle_modified: 0
+content_hash: 3208fc50b307308e38f9c7d595d59ca45e7918975dffb913ccdef2ac2a2a5337
+token_count: 110

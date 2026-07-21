@@ -1,0 +1,10 @@
+id: GP-04
+type: guiding_principle
+name: Thin Testable Slices, CLI First
+status: active
+description: "Plan and build in thin, testable chunks. The very first goal is a working CLI plus library API so every subsequent slice can be exercised by hand during development. A slice that cannot be demonstrated through the CLI or a library test is not done. Prefer shipping a narrow vertical (e.g., one backend, one tool, one fork) over a broad horizontal layer that nothing exercises. This also governs ambiguous scope decisions: choose the smaller slice that keeps the system demonstrable."
+amendment_history: []
+cycle_created: 0
+cycle_modified: null
+content_hash: 9423c0c308ae41115ba5daa7c48bfadad74dbc66e4b36286021b14b6eb3bb999
+token_count: 161

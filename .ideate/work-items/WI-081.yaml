@@ -1,0 +1,43 @@
+id: WI-081
+type: work_item
+title: AgentLoop — single-agent turn state machine, headroom-aware RouteRequest
+complexity: high
+scope:
+  - path: crates/conway-runtime/src/agent_loop.rs
+    op: modify
+  - path: crates/conway-runtime/tests/agent_loop_e2e.rs
+    op: create
+depends:
+  - WI-008
+  - WI-047
+  - WI-077
+  - WI-078
+  - WI-079
+  - WI-080
+blocks: []
+criteria:
+  - "`AgentLoop::run(self) -> AgentResult` is infallible in return type — every failure path produces a non-Completed AgentResult [machine]"
+  - "E2E vs ScriptedBackend: text-only script yields one turn with TurnStarted, TextDelta, TurnFinished, AgentFinished, Completed [machine]"
+  - "E2E: [tool_call read, then text] yields two turns; tool result appended with Provenance::ToolResult and present in turn 2's context [machine]"
+  - "Persist-before-act: assistant append completes before any tool invoke; UserTurn append before first backend call (FakeStore call order) [machine]"
+  - "Budget: max_steps, deadline, and max_tokens each produce BudgetExceeded [machine]"
+  - Denied tool call appends an error ToolResult and the loop continues (feedback, not abort) [machine]
+  - "NoCandidate from the attempt engine yields Failed plus one Event::Error{fatal: true} [machine]"
+  - "Within-turn event order: TurnStarted < ModelDecision < TextDelta* < TurnFinished < ToolCallProposed* [machine]"
+  - CancellationToken mid-tool-batch yields Cancelled within 100ms [machine]
+  - "Headroom propagation: loop resolves headroom = policy.resolve(role) and builds RouteRequest with est_tokens from the ContextReport and required.min_context = est_tokens + headroom; per-role override reflected, else global default (captured on fake Router) [machine]"
+  - "Consistency: RouteRequest.required.min_context == AttemptRequest.est_tokens + AttemptRequest.headroom in a single driven turn — router filter and engine gate can never disagree [machine]"
+  - ContextTooLarge from the engine terminates the loop with Failed naming input tokens, headroom, and largest window; one fatal Error event; no retry, no truncation, no additional turn [machine]
+domain: null
+phase: null
+work_item_type: feature
+notes: |-
+  Objective: Implement the per-agent turn loop exactly as specified, wiring ContextBuilder, Router, AttemptEngine, PermissionBroker, ToolRunner, and SessionStore, with budgets and terminal-result construction. No subagent code exists in this item (Slice 1 discipline).
+
+  Full binding implementation notes: docs/plan/wi-conway-runtime.md section WI-081. HEADROOM AMENDMENT applies — see docs/plan/wi-conway-runtime-amendment.md section WI-081; amended text supersedes the original where they differ.
+resolution: null
+status: pending
+cycle_created: 0
+cycle_modified: null
+content_hash: 7cb7b22e3a50d4815b96f558c6b8a8110d9ce195acc3877bfa25fbf67ecd71b5
+token_count: 680

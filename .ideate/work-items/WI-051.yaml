@@ -1,0 +1,34 @@
+id: WI-051
+type: work_item
+title: ContextReport persistence and retrieval
+complexity: low
+scope:
+  - path: crates/conway-session/src/provenance.rs
+    op: modify
+  - path: crates/conway-session/tests/provenance_tests.rs
+    op: create
+depends:
+  - WI-047
+blocks: []
+criteria:
+  - ContextReport and ContextSegmentEntry are public, fully serde-derived [machine]
+  - "`append_context_report` appends exactly one line with kind `context_report` and returns its seq [machine]"
+  - Round-trip across 5 distinct Provenance variants [machine]
+  - "`load_context_report(sid, turn)` returns the highest-seq report for the turn; absent turn returns Ok(None) [machine]"
+  - "`load_all_context_reports` returns ascending seq order [machine]"
+  - "Restart test: reports byte-identically recoverable after store reopen — provenance survives restart [machine]"
+  - Reports interleave in read(Full) as ordinary records with no store special-casing [machine]
+  - Zero-segment report round-trips without error [machine]
+domain: null
+phase: null
+work_item_type: feature
+notes: |-
+  Objective: Persist the per-turn provenance report alongside the turn it describes, so Runtime::context_report can answer for historical turns after a restart (GP-10).
+
+  Full binding implementation notes: docs/plan/wi-conway-session.md section WI-051.
+resolution: null
+status: pending
+cycle_created: 0
+cycle_modified: null
+content_hash: 6dc946542e0db72411624e9ab169be37ba14a531145d70b590d86045ba10a37a
+token_count: 346

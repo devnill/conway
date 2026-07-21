@@ -1,0 +1,12 @@
+id: D-9
+type: domain_decision
+domain: plugins-tools
+title: In-process plugins with subprocess-representable types
+decision: MVP plugins are in-process Arc<dyn Plugin>, but all tool-facing types (ToolCall, ToolOutput, specs) are fully JSON-serializable so a subprocess or WASM plugin host remains retrofittable; ToolCtx::subagents (Arc<dyn SubagentHost>) is the known non-serializable exception needing an RPC form later.
+rationale: Rust has no stable ABI; shaping the types now is cheap, retrofitting later is expensive (architecture T-8). MCP-as-a-plugin is the stated path for external tool servers.
+source: architecture T-8
+status: settled
+cycle_created: 0
+cycle_modified: 0
+content_hash: f9a8c031924bce9fe0cf77408ae1e1bf5aa9af1edcc73f1ee1c80648f76bbd1e
+token_count: 169

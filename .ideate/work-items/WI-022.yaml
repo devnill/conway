@@ -1,0 +1,43 @@
+id: WI-022
+type: work_item
+title: Remaining OpenAI-compat dialects — VllmHermes, LmStudio, LlamaCppServer
+complexity: medium
+scope:
+  - path: crates/conway-backends/src/tool_calls/hermes.rs
+    op: create
+  - path: crates/conway-backends/src/tool_calls/mod.rs
+    op: modify
+  - path: crates/conway-backends/src/openai_compat/dialect.rs
+    op: modify
+  - path: crates/conway-backends/src/openai_compat/wire.rs
+    op: modify
+  - path: crates/conway-backends/tests/dialect_conformance.rs
+    op: create
+depends:
+  - WI-018
+  - WI-019
+  - WI-020
+blocks: []
+criteria:
+  - Each new dialect returns a distinct DialectDefaults matching the WI-017 table [machine]
+  - "Regression (vllm#31871): raw-text `<tool_call>` block in delta.content produces one validated ToolCall, not emitted as TextDelta [machine]"
+  - VllmHermes with well-formed delta.tool_calls uses the standard OpenAI path (output identical to OpenAi dialect on same fixture) [machine]
+  - Unterminated `<tool_call>` at stream end yields ToolParse [machine]
+  - "Regression (codex#7517, LmStudio): repeated full id+name+arguments chunks produce ONE call [machine]"
+  - LlamaCppServer generate with tools emits tool_choice auto and omits parallel_tool_calls/stream_options [machine]
+  - LmStudio request body omits stream_options and parallel_tool_calls [machine]
+  - All three dialects complete text-only generate and stream against an OpenAI-shaped stub (6 tests) [machine]
+  - Clippy clean; no todo!/unimplemented! remains in openai_compat/ or tool_calls/ [machine]
+domain: null
+phase: null
+work_item_type: feature
+notes: |-
+  Objective: 'One adapter, five dialects' — completes the matrix without a second adapter. Sequenced last per architecture §9 (Slice 1 needs only Ollama).
+
+  Full binding implementation notes: docs/plan/wi-conway-backends.md section WI-022.
+resolution: null
+status: pending
+cycle_created: 0
+cycle_modified: null
+content_hash: fea2973493fc23bf013013aa448a3cadf49eda820f5ffdda359db73aad11b930
+token_count: 474

@@ -1,0 +1,28 @@
+id: PH-003
+type: phase
+title: Runtime Spine + Slice 1 CLI
+phase_type: implementation
+project: PR-001
+description: "The hand-testable milestone (C-05): single-agent runtime (EventBus, ContextBuilder, PermissionBroker, ToolRunner, attempt engine, AgentLoop, Runtime facade), the conway facade (config, gates, agent defs, builder, SessionHandle), and conway -p streaming one-shot against local Ollama with the full exit-code contract. Zero subagent code."
+work_items:
+  - WI-076
+  - WI-077
+  - WI-078
+  - WI-079
+  - WI-080
+  - WI-081
+  - WI-082
+  - WI-096
+  - WI-097
+  - WI-098
+  - WI-099
+  - WI-100
+  - WI-101
+  - WI-111
+  - WI-112
+  - WI-113
+status: pending
+cycle_created: 0
+cycle_modified: null
+content_hash: 8a74d0423c16d154ff6841d9ccb1f84acc7c574091a34d7396584f8732fd562f
+token_count: 173

@@ -1,0 +1,41 @@
+id: WI-062
+type: work_item
+title: FsPlugin core file tools — read, write, edit
+complexity: high
+scope:
+  - path: crates/conway-tools/src/fs/read.rs
+    op: create
+  - path: crates/conway-tools/src/fs/write.rs
+    op: create
+  - path: crates/conway-tools/src/fs/edit.rs
+    op: create
+  - path: crates/conway-tools/tests/fs_core.rs
+    op: create
+depends:
+  - WI-061
+blocks: []
+criteria:
+  - ReadTool/WriteTool/EditTool implement Tool with names read/write/edit [machine]
+  - "Categories: Read for read; Edit for write and edit [machine]"
+  - Schemas match the documented shapes (required arrays and property names asserted) [machine]
+  - "read: cat -n-style output with width-6 line numbers + TAB; offset/limit honored with original numbering [machine]"
+  - "read: nonexistent path is is_error with the path in text; NUL in first 8192 bytes yields `binary file; not read` [machine]"
+  - "read declares TruncationPolicy::Head{max_bytes: 65536} [machine]"
+  - "write: creates parent dirs; replaces content; reports `wrote N bytes to <abs path>` [machine]"
+  - "write: atomic — no lingering .conway.tmp sibling after success [machine]"
+  - "edit: unique old_string replaced with all other bytes unchanged (full byte compare) [machine]"
+  - "edit: zero occurrences, multiple without replace_all, and identical old/new all produce the documented is_error texts; replace_all replaces all with count reported [machine]"
+  - "Cancellation: pre-cancelled ctx returns Err(Cancelled) without touching the filesystem [machine]"
+domain: null
+phase: null
+work_item_type: feature
+notes: |-
+  Objective: Implement the three mutating/reading file tools of FsPlugin with fully determined schemas, output formats, and error semantics.
+
+  Full binding implementation notes: docs/plan/wi-conway-tools.md section WI-062.
+resolution: null
+status: pending
+cycle_created: 0
+cycle_modified: null
+content_hash: 100e55c7c5742de6017a76cb51063d8eba35fd0b6798853d347833f0d4e2d87f
+token_count: 467

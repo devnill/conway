@@ -1,0 +1,12 @@
+id: D-8
+type: domain_decision
+domain: api-surface
+title: ACP deferred; event stream kept shim-compatible
+decision: No ACP implementation in MVP. The event stream is flat, seq-ordered, and agent-tagged, and ToolCategory aligns with ACP's categories, so a future ACP server adapter (filter root agent, map events) remains a thin layer.
+rationale: acpserver.org is unverifiable; the real ACP has no shipped subagents/forking/routing concepts (session/fork is an unmerged draft RFD) — conway's core is entirely behind ACP's boundary; editor reach can be added later without contorting the core.
+source: research-acp
+status: settled
+cycle_created: 0
+cycle_modified: 0
+content_hash: 624a3d15ee7eecc853de2a266db8c870f40695448b6ee3ac82e95339fb7fefab
+token_count: 165

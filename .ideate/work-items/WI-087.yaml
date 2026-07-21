@@ -1,0 +1,37 @@
+id: WI-087
+type: work_item
+title: ContextReport persistence and provenance inspection API
+complexity: medium
+scope:
+  - path: crates/conway-runtime/src/context/report.rs
+    op: modify
+  - path: crates/conway-runtime/src/runtime.rs
+    op: modify
+  - path: crates/conway-runtime/tests/context_report_persistence.rs
+    op: create
+depends:
+  - WI-051
+  - WI-086
+blocks: []
+criteria:
+  - Every turn persists its ContextReport via SessionStore::append after the turn's assistant record [machine]
+  - context_report returns live report for running agents, last persisted for finished [machine]
+  - "Restart: a fresh Runtime over the same store returns a byte-equal report for a completed agent [machine]"
+  - "`context_report_at(agent, turn)` returns historical reports; out-of-range returns a typed error naming the valid range [machine]"
+  - Fork-and-steer scenario covers AgentDef, ToolRegistry, Inherited, ForkDirective, ParentSteer, ToolResult provenance variants with entry count == segment count [machine]
+  - Reports carry estimator `heuristic-chars4` and per-entry tokens_est summing to the total [machine]
+  - Truncated tool results appear with their TruncationRecord visible [machine]
+  - Unknown agent returns AgentNotFound; known-but-never-run returns an empty report [machine]
+domain: null
+phase: null
+work_item_type: feature
+notes: |-
+  Objective: Make GP-10 answerable for historical turns and across process restarts by persisting ContextReport alongside each turn and reading it back.
+
+  Full binding implementation notes: docs/plan/wi-conway-runtime.md section WI-087.
+resolution: null
+status: pending
+cycle_created: 0
+cycle_modified: null
+content_hash: e392365a02a50807f0e0a9bcac818223fd0b44c69d3e9b931f5bc905da769d8c
+token_count: 413

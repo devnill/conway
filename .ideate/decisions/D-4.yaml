@@ -1,0 +1,12 @@
+id: D-4
+type: domain_decision
+domain: backends-routing
+title: Capability-flagged native adapters, not an OpenAI-compatible LCD
+decision: "Two MVP adapters: Anthropic native and one OpenAiCompat adapter with five dialects (OpenAi, Ollama, VllmHermes, LmStudio, LlamaCppServer); capabilities declared per (backend, model); cache modes modeled as ExplicitBreakpoints | ImplicitPrefix | SlotKv | None with the SlotKv seam reserved for a post-MVP llama.cpp slot adapter."
+rationale: Research showed an LCD interface silently drops the one feature (addressable cache reuse) the fork design depends on, and tool-call fidelity varies by model+template+quantization, not backend alone.
+source: research-local-backends; architecture
+status: settled
+cycle_created: 0
+cycle_modified: 0
+content_hash: b99836df3e0527585557e5cbbb9602dfbec18282130003a72b3ac0bdf496c2f6
+token_count: 193

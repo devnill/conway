@@ -1,0 +1,13 @@
+id: Q-4
+type: domain_question
+domain: plugins-tools
+title: Plugin distribution beyond in-process (T-8)
+question: When third-party plugin demand materializes, is the answer WASM components, subprocess JSON-RPC, or simply MCP-as-a-plugin — and what does SubagentHost look like over that boundary?
+source: architecture T-8
+impact: In-process-only plugins require recompiling the embedding application, capping the OSS ecosystem story; the SubagentHost port is not serializable as-is.
+status: open
+reexamination_trigger: First external plugin request, or when the MCP-client plugin is built.
+cycle_created: 0
+cycle_modified: 0
+content_hash: 8d44d073303780e337333c7ef1e7931103f6554bf7da3ce9f07e24b1630233c6
+token_count: 155

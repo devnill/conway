@@ -1,0 +1,28 @@
+id: research-prior-art
+type: research
+topic: "Prior art: subagent context models, session forking, and hierarchical inheritance in coding agent harnesses"
+date: 2026-07-20
+cycle_created: 0
+summary: "No surveyed system (Claude Code/Agent SDK, pi, OpenCode, Codex CLI, Aider, Goose, OpenHands, LangGraph, Letta) implements hierarchical context inheritance with graduated task-specificity as a first-class primitive. Universal pattern: clean-slate subagent + prompt-string handoff + summary-only return. Forking exists (Claude Agent SDK fork_session copy-on-branch, Claude Code experimental CLAUDE_CODE_FORK_SUBAGENT full-transcript fork, Cline git checkpoints, Moatless shadow FileContext, LangGraph checkpointer subgraphs) but only as branching/rollback of a single agent's own history — never parent-defined slices with increasing specificity plus live bidirectional links. That combination is conway's gap."
+key_findings:
+  - "Claude Agent SDK: fork_session copies full transcript to fork point (DAG of sessions); subagents get prompt-string only, return summary only; model-locked to Claude"
+  - Claude Code experimental fork mode inherits FULL parent transcript + shared prompt cache — full inheritance, not graduated
+  - OpenHands/Goose practice 'minimum necessary context' delegation — matches lean-child goal but is manual, no automatic base+specificity composition
+  - LangGraph offers typed schema-mapped state inheritance between parent graph and subgraphs — inspiration for a typed context contract, but requires static graph structure
+  - Real-time steering/streaming of children is unsolved industry-wide (multiple open Claude Code issues); pi's subagent story is entirely third-party extensions
+  - "MAST taxonomy (arXiv:2503.13657): multi-agent systems fail at 41-87% rates; top failure classes include losing conversation history, repeating steps, inter-agent misalignment — must be explicitly addressed"
+  - Over-inheriting context is empirically as harmful as under-inheriting (context rot past ~100k tokens)
+  - "File-conflict mitigation prior art: per-agent git worktrees (Codex CLI, pi-subagents) and shadow in-memory FileContext (Moatless) — reuse, don't reinvent"
+  - "Recommended synthesis: use copy-on-branch fork mechanics + minimum-necessary-context discipline + typed context contracts as components of the missing primitive (tree-structured hierarchy with live bidirectional links)"
+full_report: Full text preserved in session scratchpad and integrated into architecture inputs.
+sources:
+  - https://code.claude.com/docs/en/agent-sdk/subagents
+  - https://deepwiki.com/anthropics/claude-agent-sdk-python/6.1-session-management-and-forking
+  - https://arxiv.org/abs/2604.03515
+  - https://huggingface.co/papers/2604.14228
+  - https://arxiv.org/abs/2503.13657
+  - https://docs.langchain.com/oss/python/langgraph/use-subgraphs
+  - https://www.letta.com/blog/agent-memory/
+cycle_modified: null
+content_hash: 906d65e69aff69315f5bbad59b3ae12dabea6eca04590cbe90e774741a06ef55
+token_count: 729

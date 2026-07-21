@@ -1,0 +1,9 @@
+id: C-05
+type: constraint
+category: process
+status: active
+description: "Thin-slice delivery order: the CLI app and library API are built first so all subsequent work is testable by hand during development. Work items must be sequenced so a runnable CLI exists from the earliest possible point."
+cycle_created: 0
+cycle_modified: null
+content_hash: 51437608dc96ee425928264f25f64c95a01e466662c7128d2830f104428f9a85
+token_count: 83

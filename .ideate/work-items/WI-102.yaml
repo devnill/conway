@@ -1,0 +1,42 @@
+id: WI-102
+type: work_item
+title: SessionHandle subagent surface (fork, spawn, steer, await, cancel)
+complexity: medium
+scope:
+  - path: crates/conway/src/session_handle.rs
+    op: modify
+  - path: crates/conway/src/subagent_spec.rs
+    op: create
+  - path: crates/conway/src/lib.rs
+    op: modify
+  - path: crates/conway/tests/session_handle_subagent.rs
+    op: create
+depends:
+  - WI-008
+  - WI-084
+  - WI-085
+  - WI-101
+blocks: []
+criteria:
+  - fork/spawn/steer/await_agent/cancel exist, all async [machine]
+  - ForkSpec/SpawnSpec convert via From into SubagentSpec with correct modes and field mappings [machine]
+  - SpawnSpec.agent_def is non-Option — spawning without one is a compile error (trybuild) [machine]
+  - ForkSpec.agent_def is Option; cache_hint defaults true; SpawnSpec has no cache_hint field [machine]
+  - All five methods delegate to SubagentHost with unmodified arguments (fake-host identity test) [machine]
+  - await_agent returns Ok for BudgetExceeded and Cancelled children; unknown id errors naming it [machine]
+  - fork/spawn reject a from-agent outside this session with `agent does not belong to session` [machine]
+  - Budget mandatory on both specs (type is Budget, not Option); Default supplies the session's configured budget [machine]
+  - "No fork/spawn logic here: grep test excludes SessionStore/TranscriptResolver/ContextBuilder/AgentTree references [machine]"
+domain: null
+phase: null
+work_item_type: feature
+notes: |-
+  Objective: Expose the fork/spawn primitives at the library level before any tool exposes them (API-first decision). Pure delegation to SubagentHost.
+
+  Full binding implementation notes: docs/plan/wi-conway-facade.md section WI-102.
+resolution: null
+status: pending
+cycle_created: 0
+cycle_modified: null
+content_hash: 600e724034294f1cb93cf1b6a0b3d861aa6de6d90786339b15aea3881f6f5fa2
+token_count: 440

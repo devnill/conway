@@ -1,0 +1,37 @@
+id: WI-099
+type: work_item
+title: Agent definition loader (markdown + YAML frontmatter)
+complexity: medium
+scope:
+  - path: crates/conway/src/agents.rs
+    op: create
+  - path: crates/conway/tests/agent_defs.rs
+    op: create
+  - path: crates/conway/tests/fixtures/agents/
+    op: create
+depends:
+  - WI-008
+  - WI-096
+  - WI-097
+blocks: []
+criteria:
+  - load_agent_defs reads every *.md non-recursively; missing dir is Ok(empty) [machine]
+  - Well-formed fixture parses all fields; system_prompt is the body verbatim minus frontmatter with one leading newline trimmed [machine]
+  - Missing/unterminated/invalid-YAML frontmatter each produce the documented AgentDef error messages with path [machine]
+  - Missing name, name/stem mismatch, duplicates, and unknown keys each produce their documented errors [machine]
+  - result_contract validated as JSON Schema draft 2020-12; invalid schema errors with `invalid result_contract` [machine]
+  - Empty body errors with `empty system prompt` [machine]
+  - Fixture directory contains the nine documented fixtures [machine]
+domain: null
+phase: null
+work_item_type: feature
+notes: |-
+  Objective: Load agent definitions from .conway/agents/*.md into conway_core::AgentDef values, failing loudly and specifically on every malformation.
+
+  Full binding implementation notes: docs/plan/wi-conway-facade.md section WI-099.
+resolution: null
+status: pending
+cycle_created: 0
+cycle_modified: null
+content_hash: 9ebc2b1ee4a5bcfacbb43f8742ae945572ee8a691e8feccd5b6e2d0c43b554dc
+token_count: 358

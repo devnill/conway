@@ -1,0 +1,42 @@
+id: WI-113
+type: work_item
+title: One-shot integration test suite (exit codes, stdout purity, streaming, SIGINT)
+complexity: high
+scope:
+  - path: crates/conway-cli/tests/common/mod.rs
+    op: create
+  - path: crates/conway-cli/tests/common/mock_backend.rs
+    op: create
+  - path: crates/conway-cli/tests/oneshot.rs
+    op: create
+  - path: crates/conway-cli/tests/fixtures/conway.toml.tmpl
+    op: create
+depends:
+  - WI-112
+blocks: []
+criteria:
+  - MockBackend serves scripted SSE /v1/chat/completions plus /v1/models on an ephemeral port [machine]
+  - run_conway templates a config into a TempDir and runs the real binary via assert_cmd [machine]
+  - text mode streams only assistant text (`hello world\n`) [machine]
+  - "stdout purity: no `conway:` diagnostics, no ESC bytes even with -v -v [machine]"
+  - "jsonl: line-by-line parseable, strictly increasing seq, no ESC [machine]"
+  - "jsonl streams incrementally: a line is readable before the mock releases its final chunk (barrier test) [machine]"
+  - "json: exactly one object with a status field [machine]"
+  - Exit codes 0/1/2(bad flag)/2(bad config)/4(no backend)/5(budget) each asserted exactly [machine]
+  - "Exit 3: deny-mode with tool-only script terminates code 3 with a denied PermissionResolved envelope in jsonl [machine]"
+  - Unlisted tool gets DenyWithFeedback naming it; run does not hang [machine]
+  - SIGINT graceful = exit 130 within 10s retaining emitted stdout; double SIGINT aborts within 2s (unix-gated) [machine]
+  - cargo test -p conway-cli passes with loopback-only network [machine]
+domain: null
+phase: null
+work_item_type: feature
+notes: |-
+  Objective: Lock the CLI's externally observable contract — exit codes, stream shape, stdout purity, signal behavior — as executable tests against the real binary. These tests are the acceptance evidence for the Slice 1 milestone.
+
+  Full binding implementation notes: docs/plan/wi-conway-cli.md section WI-113.
+resolution: null
+status: pending
+cycle_created: 0
+cycle_modified: null
+content_hash: d89b6aceecab8efcebb4e186d12269ebcb2398d9b50e5d1dee9bbf648efff692
+token_count: 502

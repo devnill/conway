@@ -1,0 +1,11 @@
+id: J-001-002
+type: journal_entry
+phase: plan
+date: 2026-07-20
+cycle_created: 1
+title: domain-bootstrap
+content: Bootstrapped four domains (agent-hierarchy, backends-routing,
+  plugins-tools, api-surface) with 9 seed policies projected from the guiding
+  principles, 10 settled planning decisions with citations, and 5 open questions
+  (Anthropic cache TTL verification, cache affinity vs routing, urgent steering,
+  plugin distribution, cross-billing cost normalization).

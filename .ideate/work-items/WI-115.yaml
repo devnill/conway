@@ -1,0 +1,34 @@
+id: WI-115
+type: work_item
+title: TUI slash commands
+complexity: medium
+scope:
+  - path: crates/conway-cli/src/tui/commands.rs
+    op: create
+  - path: crates/conway-cli/src/tui/app.rs
+    op: modify
+depends:
+  - WI-101
+  - WI-114
+blocks: []
+criteria:
+  - commands::parse unit-tested for every command with one malformed case each naming the expected form [machine]
+  - /steer preserves internal whitespace; /fork and /spawn split agent-def and prompt correctly; /spawn without prompt is a ParseError [machine]
+  - Unknown /nope yields ParseError appended as a Notice — never sent to the model [machine]
+  - Each command maps to exactly one facade call (headless fake-handle test); /why reads cached state with no facade call [machine]
+  - /context renders one line per segment (id, provenance label, token estimate); empty context renders an explicit line [machine]
+  - /why before any ModelDecision renders `no routing decision yet` [machine]
+  - Rendered /tree, /context, /why each answer their question without scrolling at 80x24 [human]
+domain: null
+phase: null
+work_item_type: feature
+notes: |-
+  Objective: Implement the interactive command surface. Commands are the interactive-mode equivalent of the facade's introspection API; none may reach past SessionHandle/Conway.
+
+  Full binding implementation notes: docs/plan/wi-conway-cli.md section WI-115.
+resolution: null
+status: pending
+cycle_created: 0
+cycle_modified: null
+content_hash: 99d7d03fa6e9db18733697ed783a31bc1be0d585b2c5d6dbb3b77e22efdefb67
+token_count: 357

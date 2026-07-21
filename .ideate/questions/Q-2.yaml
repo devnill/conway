@@ -1,0 +1,13 @@
+id: Q-2
+type: domain_question
+domain: backends-routing
+title: Cache affinity vs role-based routing (T-4)
+question: Should the router ever gain a cache-affinity input (prefer the fork parent's backend+model for children), trading GP-07 predictability for prefix-cache reuse?
+source: architecture T-4
+impact: Forks routed to a different model than their parent always pay full prefix cost — possibly the single largest cost lever in the design; but affinity makes routing state-dependent.
+status: open
+reexamination_trigger: "After MVP: measure fork cache-hit rates and cross-model fork frequency in real IDE usage before deciding."
+cycle_created: 0
+cycle_modified: 0
+content_hash: 79a6d1f837ee9cd53514f269253bf5e079401e61a12be51589ffa567f376e9c2
+token_count: 166

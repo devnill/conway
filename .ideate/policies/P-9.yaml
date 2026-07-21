@@ -1,0 +1,13 @@
+id: P-9
+type: domain_policy
+domain: agent-hierarchy
+title: Reject oversized contexts; never truncate or escalate
+rule: A request is admissible on a candidate model only if est_tokens + resolved headroom <= max_context_tokens; when no candidate fits, the request (or fork) fails with a typed error naming input tokens, headroom, and the largest window. No truncation, no silent escalation — compaction is explicitly deferred.
+derived_from: GP-01, GP-02; T-1 resolution + headroom requirement (user decisions, 2026-07-20)
+established: planning phase
+status: active
+amended_by: null
+cycle_created: 0
+cycle_modified: 0
+content_hash: d95232d29bf416c52e1832f5347e704c7a6ca4e80e7ebd3abb9216dafffd8632
+token_count: 153

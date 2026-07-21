@@ -1,0 +1,42 @@
+id: WI-079
+type: work_item
+title: PluginRegistry and ToolRunner — schema validation, bounded concurrency, truncation
+complexity: high
+scope:
+  - path: crates/conway-runtime/src/tools/mod.rs
+    op: modify
+  - path: crates/conway-runtime/src/tools/registry.rs
+    op: modify
+  - path: crates/conway-runtime/src/tools/runner.rs
+    op: modify
+  - path: crates/conway-runtime/tests/tool_runner.rs
+    op: create
+depends:
+  - WI-008
+  - WI-076
+  - WI-078
+blocks: []
+criteria:
+  - "`PluginRegistry::from_plugins` errors on duplicate tool names, naming both plugin ids [machine]"
+  - "`specs(selector)` returns lexicographically ordered specs for stable ToolRegistry provenance hashes [machine]"
+  - "`ToolRunner::run_batch` returns outcomes in input call_id order regardless of completion order [machine]"
+  - Schema-invalid arguments yield is_error naming the failing JSON pointer; invoke never called [machine]
+  - max_parallel_tools=2 with 5 runnable tools shows peak in-flight exactly 2 [machine]
+  - "Batch cancellation: all in-flight tools return Cancelled and run_batch returns within 100ms [machine]"
+  - A panicking tool yields is_error naming the tool; run_batch returns normally [machine]
+  - HeadTail truncation applied over limit with {policy, orig_bytes} recorded [machine]
+  - "Per-call event order: ToolCallProposed, Permission*, ToolCallStarted, ToolProgress*, ToolCallFinished [machine]"
+  - Denied calls emit no ToolCallStarted and produce is_error with the denial text [machine]
+domain: null
+phase: null
+work_item_type: feature
+notes: |-
+  Objective: Own tool dispatch: name resolution, argument validation, permission gating, bounded concurrent execution, cancellation, truncation enforcement, and per-call event emission.
+
+  Full binding implementation notes: docs/plan/wi-conway-runtime.md section WI-079.
+resolution: null
+status: pending
+cycle_created: 0
+cycle_modified: null
+content_hash: 411186741061c131d6e0c8ff1e4df9826ab15151bf33037105a5a0be41f7cfc0
+token_count: 473

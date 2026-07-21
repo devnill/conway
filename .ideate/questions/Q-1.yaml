@@ -1,0 +1,13 @@
+id: Q-1
+type: domain_question
+domain: backends-routing
+title: Anthropic cache TTL default
+question: Did Anthropic's default prompt-cache TTL actually drop from 1h to 5min (community-reported ~Mar 2026, unconfirmed against primary docs), and what are the current write-cost multipliers?
+source: research-local-backends (community-sourced claim)
+impact: Long-lived parent contexts whose children fork over many minutes may miss cache entirely under a 5-minute TTL, changing fork economics and the default CacheTtl config choice.
+status: open
+reexamination_trigger: Before implementing WI-021 (AnthropicBackend cache mapping) — verify against platform.claude.com prompt-caching docs.
+cycle_created: 0
+cycle_modified: 0
+content_hash: 70027bc04e4c01956dd0997d31a31fb4262e8e0049109512c79f074fe4edc334
+token_count: 179

@@ -1,0 +1,56 @@
+id: WI-097
+type: work_item
+title: Config schema, discovery, precedence merge, headroom, and OAuth-token rejection
+complexity: high
+scope:
+  - path: crates/conway/src/config/mod.rs
+    op: create
+  - path: crates/conway/src/config/schema.rs
+    op: create
+  - path: crates/conway/src/config/discovery.rs
+    op: create
+  - path: crates/conway/src/config/merge.rs
+    op: create
+  - path: crates/conway/src/config/model_metadata.rs
+    op: create
+  - path: crates/conway/tests/config_precedence.rs
+    op: create
+  - path: crates/conway/tests/config_oauth_rejection.rs
+    op: create
+  - path: crates/conway/tests/config_headroom.rs
+    op: create
+  - path: crates/conway/tests/fixtures/config/
+    op: create
+depends:
+  - WI-008
+  - WI-096
+blocks: []
+criteria:
+  - ConwayConfig round-trips the full TOML schema [machine]
+  - "config::load performs no network I/O (structural grep assertion: no reqwest/hyper/TcpStream in config/) [machine]"
+  - Precedence CLI > env > project > XDG > default proven per-key for default_role, base_url, max_steps, permissions.mode [machine]
+  - CONWAY_* env mapping works; unknown CONWAY_* vars ignored [machine]
+  - discover() walks parents to the nearest .conway/conway.toml; XDG honored [machine]
+  - "OAuth rejection: api_key beginning sk-ant-oat errors with all four documented substrings, regardless of backend kind and source (file/env/CLI) [machine]"
+  - Unknown role alias in default_role errors naming defined aliases [machine]
+  - deny_unknown_fields everywhere; typo'd key named in the error [machine]
+  - model_metadata missing file is Ok(empty); refresh is feature-gated and never called from load [machine]
+  - "[routing] default_headroom_tokens deserializes with default 16000 when absent; [roles.<alias>] headroom_tokens is Option<u32> [machine]"
+  - ConwayConfig::headroom_for returns per-role override else global default; absent alias returns global; full precedence chain applies independently per level [machine]
+  - Per-role headroom in a lower-precedence source beats a higher source's global default; env per-role override works [machine]
+  - "Validation: zero headroom (global or per-role) is a Config error naming the field/role and `must be greater than 0` [machine]"
+  - Headroom >= smallest reachable model context yields Ok with a deterministic ordered warning (no clamping); no warning when metadata absent [machine]
+  - Fixture set includes headroom_zero.toml, headroom_role_override.toml, headroom_exceeds_context.toml with a 32768-token models.json [machine]
+domain: null
+phase: null
+work_item_type: feature
+notes: |-
+  Objective: Implement configuration as a pure, network-free, deterministic function of five ordered sources, with fail-loud validation, the headroom config surface, and mandatory rejection of Anthropic subscription OAuth tokens.
+
+  Full binding implementation notes: docs/plan/wi-conway-facade.md section WI-097. HEADROOM AMENDMENT applies — see docs/plan/wi-conway-facade-amendment.md section WI-097; amended text supersedes the original where they differ.
+resolution: null
+status: pending
+cycle_created: 0
+cycle_modified: null
+content_hash: 1db8e2527ebbc192be2fc479a687aa7cc72270a141be7dd398fada187c2c701f
+token_count: 778

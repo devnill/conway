@@ -1,0 +1,51 @@
+id: WI-111
+type: work_item
+title: CLI skeleton, clap command surface, and exit-code contract
+complexity: medium
+scope:
+  - path: crates/conway-cli/Cargo.toml
+    op: create
+  - path: crates/conway-cli/src/main.rs
+    op: create
+  - path: crates/conway-cli/src/cli.rs
+    op: create
+  - path: crates/conway-cli/src/exit.rs
+    op: create
+  - path: crates/conway-cli/src/diag.rs
+    op: create
+  - path: crates/conway-cli/src/oneshot.rs
+    op: create
+  - path: crates/conway-cli/src/tui/mod.rs
+    op: create
+  - path: crates/conway-cli/src/commands/mod.rs
+    op: create
+  - path: crates/conway-cli/src/commands/sessions.rs
+    op: create
+  - path: crates/conway-cli/src/commands/routes.rs
+    op: create
+  - path: crates/conway-cli/tests/cli_surface.rs
+    op: create
+depends:
+  - WI-101
+blocks: []
+criteria:
+  - "Cargo.toml declares bin `conway` and exactly one workspace dependency: `conway`; a manifest-parsing test asserts no other workspace crate appears [machine]"
+  - "`conway --help` exits 0 listing sessions and routes; subcommand helps list their verbs [machine]"
+  - Unknown flag exits 2 with empty stdout; `sessions show` without id exits 2, stderr non-empty [machine]
+  - exit.rs exports ExitCode {Completed=0, AgentFailed=1, Usage=2, PermissionDenied=3, NoHealthyBackend=4, BudgetExceeded=5, Interrupted=130} with from_result/from_error [machine]
+  - Unit tests cover every exit-code mapping row [machine]
+  - Stub handlers write `not implemented` to stderr only [machine]
+  - cargo clippy -p conway-cli -D warnings passes [machine]
+domain: null
+phase: null
+work_item_type: feature
+notes: |-
+  Objective: Establish the binary, the complete clap command/flag surface for the whole module (declared once here so no later item edits cli.rs), the exit-code contract, and the stdout/stderr discipline.
+
+  Full binding implementation notes: docs/plan/wi-conway-cli.md section WI-111.
+resolution: null
+status: pending
+cycle_created: 0
+cycle_modified: null
+content_hash: 83a51acc691b91dac9e3a4012c13a7fdf879d68c3736f2a5d6f62694766bfed0
+token_count: 491

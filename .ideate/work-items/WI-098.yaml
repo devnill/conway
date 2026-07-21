@@ -1,0 +1,40 @@
+id: WI-098
+type: work_item
+title: Built-in permission gates and preset plugin/backend registration
+complexity: low
+scope:
+  - path: crates/conway/src/gates.rs
+    op: create
+  - path: crates/conway/src/presets.rs
+    op: create
+  - path: crates/conway/tests/gates.rs
+    op: create
+depends:
+  - WI-008
+  - WI-067
+  - WI-096
+  - WI-097
+blocks: []
+criteria:
+  - AllowListGate::new(allowed, denied) implements PermissionGate [machine]
+  - Allowed-and-not-denied returns AllowOnce; absent returns DenyWithFeedback containing `not in the allow list` [machine]
+  - Deny wins when a tool is in both lists [machine]
+  - Glob form tool(arg_pattern) matches on arguments[command]; bare names match any arguments [machine]
+  - DenyAllGate always returns the documented constant Deny reason [machine]
+  - PromptingGate delegates to its handler unchanged [machine]
+  - gates::from_config maps allowlist/deny/prompt modes; prompt without a handler is a Config error [machine]
+  - presets::builtin_plugins() feature-gated and identical to conway_tools::builtin_plugins() [machine]
+  - default_permissions_for_one_shot returns allowlist mode with empty allowed_tools [machine]
+domain: null
+phase: null
+work_item_type: feature
+notes: |-
+  Objective: Ship the three built-in PermissionGate implementations plus preset registration helpers, so the CLI and embedders never reimplement permission plumbing.
+
+  Full binding implementation notes: docs/plan/wi-conway-facade.md section WI-098.
+resolution: null
+status: pending
+cycle_created: 0
+cycle_modified: null
+content_hash: 3a3a9ef7901c85bb0487be563dd40cbb46d6ab9b05fb1a82f5bfa107c9218a5b
+token_count: 385

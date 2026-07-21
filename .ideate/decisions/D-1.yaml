@@ -1,0 +1,12 @@
+id: D-1
+type: domain_decision
+domain: agent-hierarchy
+title: Fork and spawn are the only subagent primitives
+decision: Forked subagents inherit the forker's entire context plus a directive; spawned subagents are clean-slate; parallel patterns compose (a fork creates N spawns and aggregates).
+rationale: Granular context control comes from hierarchy structure (lean parents), not selective-inheritance machinery; matches caching economics (literal prefixes) and avoids a combinatorial API.
+source: interview-plan-001#IQ-plan-001-008
+status: settled
+cycle_created: 0
+cycle_modified: 0
+content_hash: 22757c29ee2e44773dab675799a35d0fc839e690cc36c109568c2c5ea9bf00d5
+token_count: 146

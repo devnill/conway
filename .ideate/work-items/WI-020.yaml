@@ -1,0 +1,38 @@
+id: WI-020
+type: work_item
+title: CapabilityProbe and Backend::probe for OpenAiCompatBackend
+complexity: medium
+scope:
+  - path: crates/conway-backends/src/probe.rs
+    op: create
+  - path: crates/conway-backends/src/openai_compat/probe_impl.rs
+    op: create
+  - path: crates/conway-backends/tests/capability_probe.rs
+    op: create
+depends:
+  - WI-008
+  - WI-017
+  - WI-019
+blocks: []
+criteria:
+  - "`CapabilityProbe::discover()` returns a map keyed by discovered ModelIds [machine]"
+  - llama.cpp `/props` n_ctx populates max_context_tokens when metadata lacks it; explicit metadata wins [machine]
+  - "Ollama fallback: `/v1/models` 404 with `/api/tags` success still yields models (Ollama dialect only) [machine]"
+  - Total discovery failure yields Ok with metadata-derived capabilities plus a degraded flag/warning — never an Err [machine]
+  - "`probe()` on 200 returns Ok(ProbeReport) with latency and healthy=true [machine]"
+  - "`probe()` on connection-refused returns `Err(Transport)` after exactly 1 request (no retry budget) [machine]"
+  - "`probe()` on 401 returns `Err(Auth)` [machine]"
+  - "`discover` never fabricates capabilities for unobserved, unconfigured models [machine]"
+domain: null
+phase: null
+work_item_type: feature
+notes: |-
+  Objective: Make the capabilities-per-(backend, model) boundary rule operational at startup without making discovery a hard dependency.
+
+  Full binding implementation notes: docs/plan/wi-conway-backends.md section WI-020.
+resolution: null
+status: pending
+cycle_created: 0
+cycle_modified: null
+content_hash: e80e51b9a58f93886628d2115554cb69b9049ecd8501f49cb6752c44c3f5244f
+token_count: 386

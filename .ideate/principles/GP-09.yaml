@@ -1,0 +1,10 @@
+id: GP-09
+type: guiding_principle
+name: Legitimate Provider Access Only
+status: active
+description: "Conway only implements provider access paths that are sanctioned by the provider: metered API keys everywhere, OpenAI's official 'Sign in with ChatGPT' program, Ollama Cloud API keys, GitHub Copilot's official SDK OAuth. It never implements ToS-violating paths — specifically, Claude Pro/Max subscription OAuth reuse, which Anthropic contractually prohibits and technically blocks (enforced against OpenCode, Feb 2026). Documentation states plainly why unsupported paths are unsupported, so users are not tempted to bolt them on."
+amendment_history: []
+cycle_created: 0
+cycle_modified: null
+content_hash: 5e4399a89f8f15de20ffaeb9002dc424144039c6e3606e6f2f5aa5b80b72712c
+token_count: 173

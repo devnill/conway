@@ -1,0 +1,12 @@
+id: D-7
+type: domain_decision
+domain: api-surface
+title: Rust 8-crate hexagonal workspace; JSONL sessions over SQLite
+decision: Cargo workspace with conway-core holding all ports (no I/O), implementations in dedicated feature-gated crates, one facade crate as the only stable API, and an append-only one-file-per-session JSONL store with O(1) fork-by-reference.
+rationale: In-process Tauri embedding without TUI/backend bloat; plugin authors depend on a slow-moving contract crate; jq/grep debuggability, lock-free sibling writes, and O(1) fork outweigh SQL query power (SessionStore trait is the seam if that changes).
+source: architecture; interview-plan-001#IQ-plan-001-006
+status: settled
+cycle_created: 0
+cycle_modified: 0
+content_hash: 75453250267e52152660fa568fc709e8e156701da4b04d420dd7cf1d9e47d0c3
+token_count: 182

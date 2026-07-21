@@ -1,0 +1,39 @@
+id: WI-017
+type: work_item
+title: ModelMetadata loader and per-(backend, model) capability construction
+complexity: medium
+scope:
+  - path: crates/conway-backends/src/model_metadata.rs
+    op: create
+  - path: crates/conway-backends/src/capabilities.rs
+    op: create
+  - path: crates/conway-backends/tests/model_metadata.rs
+    op: create
+  - path: crates/conway-backends/tests/fixtures/models.toml
+    op: create
+depends:
+  - WI-008
+  - WI-016
+blocks: []
+criteria:
+  - "`ModelMetadataStore::load(&Path)` on the fixture returns every entry; field-by-field equality asserted for at least two entries [machine]"
+  - Load on a nonexistent path returns `Ok(empty())`, not an error [machine]
+  - Load on a syntactically invalid file returns `Err(ConfigError::Metadata)` [machine]
+  - Lookup order is exact model_id, then normalized (lowercased, `:`/`/` collapsed to `-`, `-latest` stripped), then None; asserted with `Qwen3-Coder:30b` matching `qwen3-coder-30b` [machine]
+  - "`build_capabilities` with no metadata and no overrides returns `reliability_tier: Unknown`, `tool_calling: NonStreamingOnly`, dialect-default `max_context_tokens` and `CacheMode` [machine]"
+  - "`stream_tools` default is true for Verified, false for Community/Unknown; explicit override wins for all tiers [machine]"
+  - "`build_capabilities` is a pure function; no io imports in capabilities.rs [machine]"
+  - No `reqwest`/`std::fs`/`tokio::fs` reference in capabilities.rs [machine]
+domain: null
+phase: null
+work_item_type: feature
+notes: |-
+  Objective: The single place where 'capabilities are per (backend, model), never per backend' (module boundary rule) is realized.
+
+  Full binding implementation notes: docs/plan/wi-conway-backends.md section WI-017.
+resolution: null
+status: pending
+cycle_created: 0
+cycle_modified: null
+content_hash: 0f6f3271829ceced511de12fc925458f495faa4d51454c22705268e06ea1eece
+token_count: 451

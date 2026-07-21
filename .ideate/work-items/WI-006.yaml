@@ -1,0 +1,32 @@
+id: WI-006
+type: work_item
+title: Define the Event and Envelope stream types
+complexity: low
+scope:
+  - path: crates/conway-core/src/event.rs
+    op: create
+depends:
+  - WI-003
+  - WI-004
+  - WI-005
+blocks: []
+criteria:
+  - "`event.rs` exports `Event` and `Envelope` [machine]"
+  - "`Event` contains every variant listed in architecture §6.5 plus `Lagged { skipped: u64 }`, `SteerDropped`, and `SteerQueued { queued_since }`; a unit test constructs one value of each variant [machine]"
+  - '`Event` is `#[non_exhaustive]` with `#[serde(tag = "event", rename_all = "snake_case")]`; `Envelope` serializes to a single-line flat JSON object with keys `seq`, `ts`, `session`, `agent` and the flattened event; a test asserts no `\n` in output [machine]'
+  - "`Event::is_fatal` returns true only for `Error { fatal: true }` [machine]"
+  - "`Event::agent_lifecycle_kind` maps `AgentSpawned -> Start`, `AgentFinished -> End`, else `None` [machine]"
+  - "`cargo test -p conway-core` passes [machine]"
+domain: null
+phase: null
+work_item_type: feature
+notes: |-
+  Objective: Define the flat, agent-tagged event enum that is the IDE's render surface and the CLI's jsonl output format, plus the `Envelope` that adds sequencing and identity, with the three §8 delivery guarantees restated in doc comments at the definition site.
+
+  Full binding implementation notes: docs/plan/wi-conway-core.md section WI-006.
+resolution: null
+status: pending
+cycle_created: 0
+cycle_modified: null
+content_hash: 95b4df9017e0c2fc43d33f2b9202eb13b51bc5e970268b15bdb7686471557b4f
+token_count: 366

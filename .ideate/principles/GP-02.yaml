@@ -1,0 +1,10 @@
+id: GP-02
+type: guiding_principle
+name: Fork and Spawn Are Distinct Primitives
+status: active
+description: "Forked subagents inherit the entire context of the forker plus an additional prompt (a literal, cache-friendly prefix). Non-forked (spawned) subagents are clean-slate. These are two separate concepts — never blur them into one parameterized 'partial inheritance' operation. Composite patterns (tournaments, adversarial prompting, parallel exploration) are built by composing the two: a fork creates multiple spawned children with different prompts and aggregates results to the parent. The goal is granular control over context. If a design question arises about 'inheriting some of the context', the answer is to restructure the hierarchy (GP-01), not to add a third primitive."
+amendment_history: []
+cycle_created: 0
+cycle_modified: null
+content_hash: e900c0f3d4a1c22c7a4569b2b744930fd8a71e37f27bbdd29b3141da66292911
+token_count: 212

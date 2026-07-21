@@ -1,0 +1,37 @@
+id: WI-117
+type: work_item
+title: Session continuity flags — --session, --resume, --fork-from
+complexity: medium
+scope:
+  - path: crates/conway-cli/src/oneshot.rs
+    op: modify
+  - path: crates/conway-cli/src/session_ref.rs
+    op: create
+  - path: crates/conway-cli/tests/continuity.rs
+    op: create
+depends:
+  - WI-103
+  - WI-112
+  - WI-113
+blocks: []
+criteria:
+  - parse_fork_ref handles <sid>, <sid>@<seq>, and all documented malformed cases with messages naming `<session-id>[@<seq>]` [machine]
+  - Supplying more than one continuity flag is a usage error (exit 2) naming the conflict [machine]
+  - "resume_continues_transcript: second run's request body contains the first turn's text (transcript resolved and resent), exit 0 [machine]"
+  - resume of unknown session exits 2 with empty stdout [machine]
+  - fork_from creates a child visible in sessions tree with the requested origin seq; without @seq uses parent head; beyond head exits 2 naming the head [machine]
+  - --session <new-id> creates that id; reusing an existing id without --resume exits 2 [machine]
+  - All continuity tests assert stdout purity under text format [machine]
+domain: null
+phase: null
+work_item_type: feature
+notes: |-
+  Objective: Wire the three session-continuity flags into one-shot mode, so -p can continue or branch prior work.
+
+  Full binding implementation notes: docs/plan/wi-conway-cli.md section WI-117.
+resolution: null
+status: pending
+cycle_created: 0
+cycle_modified: null
+content_hash: 0562616c16f4b69060b8f413ec9535f0c41233db544ea5179eae2f4f72816c0c
+token_count: 367

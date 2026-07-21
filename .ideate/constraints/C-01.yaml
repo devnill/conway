@@ -1,0 +1,9 @@
+id: C-01
+type: constraint
+category: technology
+status: active
+description: Rust core. The conway library and CLI are implemented in Rust so the library embeds in-process in the user's Tauri IDE backend and ships as a single-binary CLI. Other-language SDKs (TypeScript) are thin clients added later, never an alternative implementation of core logic.
+cycle_created: 0
+cycle_modified: null
+content_hash: 28d39830882f29927b467b434762ed0f760f6908d55a6a5b7e10c1b605ee54ff
+token_count: 97
