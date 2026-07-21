@@ -31,8 +31,8 @@ notes: |-
 
   Full binding implementation notes: docs/plan/wi-conway-backends.md section WI-020.
 resolution: null
-status: pending
+status: done
 cycle_created: 0
-cycle_modified: null
-content_hash: e80e51b9a58f93886628d2115554cb69b9049ecd8501f49cb6752c44c3f5244f
-token_count: 386
+cycle_modified: 0
+content_hash: 0afebbefb90c27970ebe821863f2d8424ab613c9c616306ae84f6ec4990811e6
+token_count: 409

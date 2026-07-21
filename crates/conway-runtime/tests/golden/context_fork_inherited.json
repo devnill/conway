@@ -1,0 +1,92 @@
+[
+  {
+    "ordinal": 0,
+    "role": "system",
+    "provenance": {
+      "type": "agent_def",
+      "name": "reviewer"
+    },
+    "cache_hint": null,
+    "content_sha": "5d1b0640d004834598d2ca2eb445a758cdf483a6ec97aa124e80e6434a1b4252"
+  },
+  {
+    "ordinal": 1,
+    "role": "system",
+    "provenance": {
+      "type": "skill",
+      "name": "diff-review"
+    },
+    "cache_hint": null,
+    "content_sha": "b23bc2905c24950f2887d1b136602df4c177026c091745cba81abeadb2e47f24"
+  },
+  {
+    "ordinal": 2,
+    "role": "system",
+    "provenance": {
+      "type": "tool_registry",
+      "hash": "aef805c4ad5e4f247ab498963d13a4bc49052c1b90605935dc9afe1ddf012a9f"
+    },
+    "cache_hint": {
+      "breakpoint": true,
+      "ttl": "five_minutes",
+      "prefix_key": "f16590f49eec9366d6bbf842c6af6aa06e32771962a0dfcd713bd6432e7a4d83"
+    },
+    "content_sha": "11da36316c1837208aa839236f2a6da65fd7ac392d32ee5200e9ebabd7960aba"
+  },
+  {
+    "ordinal": 3,
+    "role": "user",
+    "provenance": {
+      "type": "inherited",
+      "from": "01ARZ3NDEKTSV4RRFFQ69G5FBV",
+      "seq_range": {
+        "start": 0,
+        "end": 1
+      }
+    },
+    "cache_hint": null,
+    "content_sha": "78ca06c12ef27e33928badeaa9e3ca54490bdcfa74ac84645d0cd85e47bc98ad"
+  },
+  {
+    "ordinal": 4,
+    "role": "assistant",
+    "provenance": {
+      "type": "inherited",
+      "from": "01ARZ3NDEKTSV4RRFFQ69G5FBV",
+      "seq_range": {
+        "start": 1,
+        "end": 2
+      }
+    },
+    "cache_hint": null,
+    "content_sha": "1383d8077102cd84e6cdd00a7d1220df20907f892689a2f026930ca844acff2e"
+  },
+  {
+    "ordinal": 5,
+    "role": "tool_result",
+    "provenance": {
+      "type": "inherited",
+      "from": "01ARZ3NDEKTSV4RRFFQ69G5FBV",
+      "seq_range": {
+        "start": 2,
+        "end": 3
+      }
+    },
+    "cache_hint": {
+      "breakpoint": true,
+      "ttl": "five_minutes",
+      "prefix_key": "f16590f49eec9366d6bbf842c6af6aa06e32771962a0dfcd713bd6432e7a4d83"
+    },
+    "content_sha": "efddf6ab6e26f6b7b20d98017453a63fd3a2d6c202b0d55a90f30ecd9307c746"
+  },
+  {
+    "ordinal": 6,
+    "role": "user",
+    "provenance": {
+      "type": "fork_directive",
+      "by": "01ARZ3NDEKTSV4RRFFQ69G5FAW"
+    },
+    "cache_hint": null,
+    "content_sha": "5cd371f028651f5b1ed02201d43df17ea5e0c5f0c650e954f825c629352bc173"
+  }
+]

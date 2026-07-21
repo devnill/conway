@@ -1,0 +1,41 @@
+[
+  {
+    "ordinal": 0,
+    "role": "system",
+    "provenance": {
+      "type": "agent_def",
+      "name": "triage"
+    },
+    "cache_hint": null,
+    "content_sha": "c0d8df7ea15e4603d713738c847ecbb915f3c601757e33390fb14be3fa71963b"
+  },
+  {
+    "ordinal": 1,
+    "role": "system",
+    "provenance": {
+      "type": "skill",
+      "name": "ci-triage"
+    },
+    "cache_hint": null,
+    "content_sha": "891168439df3f68a94fe6bf6528d2adb60020f539c2f4c9561e780b3b7684404"
+  },
+  {
+    "ordinal": 2,
+    "role": "system",
+    "provenance": {
+      "type": "tool_registry",
+      "hash": "e365c5d1422e46747f9863724792e4146f35f1c58a02cf53a81c793b86b12c46"
+    },
+    "cache_hint": null,
+    "content_sha": "56bfcdc5fc716c4e6634212929cdda0f9772cd06e265173b176b0e5aac3a7b61"
+  },
+  {
+    "ordinal": 3,
+    "role": "user",
+    "provenance": {
+      "type": "user_prompt"
+    },
+    "cache_hint": null,
+    "content_sha": "734ebb24ae32ad4a7f857f323cb7d6b992486fc6295fec7f4850536caf873833"
+  }
+]
