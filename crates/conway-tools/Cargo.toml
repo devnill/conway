@@ -52,3 +52,8 @@ required-features = ["test-fakes"]
 name = "fs_search"
 path = "tests/fs_search.rs"
 required-features = ["test-fakes"]
+
+[[test]]
+name = "shell_bash"
+path = "tests/shell_bash.rs"
+required-features = ["test-fakes"]

@@ -61,20 +61,29 @@
 //! second definition is introduced here — see this work item's completion
 //! report for the resolved ambiguity.
 //!
-//! # WI-022 handoff
+//! # WI-022: the `VllmHermes` inline-text fallback
 //!
-//! This item (WI-018) implements and tests only the `OpenAi` and `Ollama`
-//! dialect arms. The `VllmHermes`, `LmStudio`, and `LlamaCppServer` arms in
-//! [`ToolCallAccumulator::parse`] below are wired to a reasonable existing
-//! parser (matching the WI-022 module notes: `LmStudio`/`LlamaCppServer`
-//! use the `ollama.rs` tolerant parser; `VllmHermes` uses `openai.rs` for
-//! its structured path) so the type compiles for all five `Dialect`
-//! variants, but none of the three are exercised by this item's tests.
-//! WI-022 additionally owns the Hermes inline-text (`<tool_call>…`)
-//! fallback path (`hermes.rs`, not present here) and is expected to revisit
-//! the `VllmHermes` arm to add that fallback when the dialect's
-//! `delta.tool_calls` is empty.
+//! `VllmHermes` structured deltas (a well-formed `delta.tool_calls` entry)
+//! go through the same `push_delta`/`openai::parse_delta` path as `OpenAi`
+//! — no text scanning involved. But some vLLM/Hermes servers (vllm#31871)
+//! instead emit a tool call as raw text inside `delta.content`:
+//! `<tool_call>{"name":...,"arguments":{...}}</tool_call>`, with no
+//! `tool_calls` field on the delta at all. [`ToolCallAccumulator::push_content_delta`]
+//! is the entry point for that path: it routes `delta.content` text
+//! through [`hermes::HermesTextScanner`] while `dialect` is `VllmHermes`
+//! and no structured `delta.tool_calls` entry has arrived yet
+//! (`structured_seen`) — the "OpenAI-path passthrough when structured
+//! tool_calls appear" rule. Every other dialect (and `VllmHermes` once a
+//! structured call has appeared) is a pure passthrough: the text is
+//! returned unchanged for the caller to emit as a `TextDelta`.
+//!
+//! [`ToolCallAccumulator::stop_override`] exposes whether the Hermes
+//! scanner parsed at least one inline block, so a caller can force
+//! `StopReason::ToolUse` even when the provider reports `finish_reason:
+//! "stop"` alongside the inline tool-call text (vllm#31871 is explicit that
+//! these servers commonly do exactly that).
 
+mod hermes;
 mod ollama;
 mod openai;
 mod validate;
@@ -87,6 +96,7 @@ use conway_core::ids::ToolName;
 use serde_json::Value;
 
 use crate::config::Dialect;
+use hermes::HermesTextScanner;
 use validate::SchemaValidator;
 
 /// The dialect-independent parse of one raw provider tool-call delta
@@ -146,6 +156,13 @@ pub struct ToolCallAccumulator {
     /// slot" when a delta carries neither `index` nor a previously-seen
     /// `id`.
     last_key: Option<u32>,
+    /// The Hermes inline-text scanner (WI-022), `Some` only for
+    /// `Dialect::VllmHermes`.
+    hermes: Option<HermesTextScanner>,
+    /// Whether a structured `delta.tool_calls` entry has been seen for
+    /// `Dialect::VllmHermes` — once true, `push_content_delta` stops
+    /// routing through `hermes` (the "OpenAI-path passthrough" rule).
+    structured_seen: bool,
 }
 
 impl ToolCallAccumulator {
@@ -158,6 +175,7 @@ impl ToolCallAccumulator {
             .iter()
             .map(|spec| (spec.name.clone(), spec.clone()))
             .collect();
+        let hermes = matches!(dialect, Dialect::VllmHermes).then(HermesTextScanner::new);
         Self {
             dialect,
             specs,
@@ -166,14 +184,67 @@ impl ToolCallAccumulator {
             id_to_key: HashMap::new(),
             next_index: 0,
             last_key: None,
+            hermes,
+            structured_seen: false,
         }
     }
 
     /// Feeds one raw provider delta object (the element of
-    /// `choices[0].delta.tool_calls`).
+    /// `choices[0].delta.tool_calls`). For `Dialect::VllmHermes`, this also
+    /// marks `structured_seen`, disabling the Hermes inline-text fallback
+    /// for the remainder of the stream (the "OpenAI-path passthrough when
+    /// structured tool_calls appear" rule).
     pub fn push_delta(&mut self, raw: &str) -> Result<(), BackendError> {
         let parts = self.parse(raw)?;
+        if matches!(self.dialect, Dialect::VllmHermes) {
+            self.structured_seen = true;
+        }
         self.apply(parts)
+    }
+
+    /// Feeds one `delta.content` text fragment (WI-022). While `dialect`
+    /// is `Dialect::VllmHermes` and no structured `delta.tool_calls` entry
+    /// has arrived yet, this routes `text` through the Hermes inline
+    /// `<tool_call>...</tool_call>` scanner: plain text is returned for the
+    /// caller to emit as a `TextDelta` (`None`/empty when everything fed
+    /// was suppressed), and any completed `<tool_call>` block is fed to
+    /// [`Self::push_complete`] with a synthesized `call_{n}` id. Every
+    /// other dialect (and `VllmHermes` once a structured call has
+    /// appeared) is a pure passthrough.
+    pub fn push_content_delta(&mut self, text: &str) -> Result<Option<String>, BackendError> {
+        if self.structured_seen {
+            return Ok(Some(text.to_string()));
+        }
+        let Some(scanner) = self.hermes.as_mut() else {
+            return Ok(Some(text.to_string()));
+        };
+        let result = scanner.feed(text)?;
+        for (id, name, arguments) in result.calls {
+            self.push_complete(Some(id), name, arguments)?;
+        }
+        Ok(if result.text.is_empty() {
+            None
+        } else {
+            Some(result.text)
+        })
+    }
+
+    /// Whether the Hermes inline-text fallback (`VllmHermes` only) has
+    /// parsed at least one `<tool_call>` block. When `Some`, the caller
+    /// should treat the stream's stop reason as `StopReason::ToolUse`
+    /// regardless of the provider-reported `finish_reason` (vllm#31871: a
+    /// server emitting tool calls as inline text commonly still reports
+    /// `finish_reason:"stop"`). Callable before `finish` consumes `self`.
+    pub fn stop_override(&self) -> Option<StopReason> {
+        if self
+            .hermes
+            .as_ref()
+            .is_some_and(HermesTextScanner::saw_any_call)
+        {
+            Some(StopReason::ToolUse)
+        } else {
+            None
+        }
     }
 
     /// Feeds a fully-formed non-streaming tool call (shared path with
@@ -211,6 +282,17 @@ impl ToolCallAccumulator {
     /// independent of `stop`.
     pub fn finish(self, stop: StopReason) -> Result<Vec<ToolCall>, BackendError> {
         let _ = stop;
+        if let Some(scanner) = self.hermes {
+            if !self.structured_seen {
+                // Flushes any residual held-back text and errors on an
+                // unterminated `<tool_call>` block (vllm#31871: a
+                // truncated inline tool call must not be silently
+                // dropped). The flushed text itself has no consumer at
+                // `finish` time — any prior `TextDelta` already carried
+                // whatever was safe to emit as it arrived.
+                scanner.finish()?;
+            }
+        }
         let validator = self.validator?;
         let specs = self.specs;
         let mut calls = Vec::with_capacity(self.slots.len());

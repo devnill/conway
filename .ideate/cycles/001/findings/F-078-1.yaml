@@ -1,0 +1,25 @@
+id: F-078-1
+type: finding
+cycle: 1
+work_item: WI-078
+verdict: pass
+severity_counts:
+  critical: 0
+  significant: 0
+  minor: 2
+content: |-
+  ## Verdict: Pass (with rework)
+  All ten criteria verified; reviewer confirmed per-args cache scoping (a Session grant for tool X/args A does NOT allow X/B), correct subtree membership semantics over the root-to-requester path, lock discipline (RwLock never across the gate await), and the fail-closed non_exhaustive wildcards.
+
+  ## Minor Findings
+  M1: Broker-local type shadowed core's ToolCall name with a different shape. RESOLVED: renamed AuthorizedCall (WI-079's ToolRunner constructs it from core's ToolCall + resolved ToolSpec).
+  M2: Concurrent decide() races could accumulate duplicate grants. RESOLVED: dedup-on-insert.
+
+  ## Unmet Acceptance Criteria
+  None.
+
+  ## Notes
+  Worker subagent built; independent review. Commit 55ccc47. Runtime 28 tests. WI-079 (ToolRunner) unblocked next in the runtime chain.
+cycle_modified: 0
+content_hash: dcda35ea90d04a970986215527d4d377ad44111a237111833de3d49b4394749d
+token_count: 244

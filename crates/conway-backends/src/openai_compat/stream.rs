@@ -122,12 +122,23 @@ async fn drive(
         if let Some(delta) = choice.get("delta") {
             if let Some(text) = delta.get("content").and_then(Value::as_str) {
                 if !text.is_empty() {
-                    text_buffer.push_str(text);
-                    if tx
-                        .send(Ok(StreamChunk::TextDelta(text.to_string())))
-                        .is_err()
-                    {
-                        return;
+                    // Route through the accumulator: for VllmHermes it holds
+                    // back inline `<tool_call>` text (vllm#31871) and yields
+                    // only genuinely-emittable prose; every other dialect
+                    // (and Hermes post-structured_seen) is a passthrough
+                    // (WI-022 rework, cycle 1).
+                    match accumulator.push_content_delta(text) {
+                        Ok(Some(emit)) if !emit.is_empty() => {
+                            text_buffer.push_str(&emit);
+                            if tx.send(Ok(StreamChunk::TextDelta(emit))).is_err() {
+                                return;
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(err) => {
+                            let _ = tx.send(Err(err));
+                            return;
+                        }
                     }
                 }
             }
@@ -173,7 +184,12 @@ async fn drive(
         }
     }
 
-    let stop = stop.unwrap_or(StopReason::EndTurn);
+    // The Hermes fallback overrides the stop reason when an inline tool
+    // call was parsed (stop_override is &self; finish consumes self, so
+    // read the override first).
+    let stop = accumulator
+        .stop_override()
+        .unwrap_or(stop.unwrap_or(StopReason::EndTurn));
     match accumulator.finish(stop) {
         Ok(tool_calls) => {
             let mut content = Vec::new();
