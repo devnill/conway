@@ -115,6 +115,16 @@ pub fn decode_header(line: &str) -> Result<SessionMeta, CodecError> {
 /// be spliced in, producing a header line with a spurious `"seq"` key, so
 /// callers must not do this.
 pub fn encode_record(rec: &LogRecord, seq: LogSeq) -> String {
+    debug_assert!(
+        !matches!(rec, LogRecord::Header(_)),
+        "encode_record called with Header; use encode_header"
+    );
+    debug_assert_eq!(
+        rec.seq(),
+        Some(seq),
+        "encode_record: seq param disagrees with the record's own seq — the \
+         caller (store append path) has a seq-discipline bug"
+    );
     let mut value = serde_json::to_value(rec).expect("LogRecord always serializes to JSON");
     match value.as_object_mut() {
         Some(obj) => {
@@ -258,7 +268,7 @@ mod tests {
     #[test]
     fn encode_record_emits_exactly_one_trailing_newline_and_seq_kind_keys() {
         let rec = LogRecord::UserTurn {
-            seq: LogSeq(0),
+            seq: LogSeq(7),
             ts: ts(),
             text: "hi".into(),
             prov: conway_core::provenance::Provenance::UserPrompt,
@@ -271,18 +281,21 @@ mod tests {
         assert_eq!(value["kind"], "user_turn");
     }
 
+    /// A seq mismatch is a caller bug: loudly caught in debug builds
+    /// (incremental review S1, cycle 1). Release builds keep the
+    /// parameter-authoritative overwrite so a production log line is
+    /// internally consistent even past a caller bug.
     #[test]
-    fn encode_record_seq_param_is_authoritative_over_records_own_seq() {
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "seq-discipline bug")]
+    fn encode_record_seq_mismatch_panics_in_debug() {
         let rec = LogRecord::UserTurn {
             seq: LogSeq(0),
             ts: ts(),
             text: "hi".into(),
             prov: conway_core::provenance::Provenance::UserPrompt,
         };
-        // Deliberately mismatched: rec's internal seq is 0, we ask for 9.
-        let (seq, back) = decode_record(&encode_record(&rec, LogSeq(9))).unwrap();
-        assert_eq!(seq, LogSeq(9));
-        assert_eq!(back.seq(), Some(LogSeq(9)));
+        let _ = encode_record(&rec, LogSeq(9));
     }
 
     #[test]
