@@ -1,0 +1,44 @@
+[package]
+name = "conway-tools"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Built-in conway-core Plugin/Tool implementations: fs, shell, subagent, report"
+
+[features]
+default = []
+# Exposes `testing` (FakeSubagentHost, RecordingEventSink, test_ctx) to
+# external crates/integration tests. The module is *also* compiled under
+# `cfg(test)` regardless of this feature, so this crate's own unit tests
+# (`cargo test -p conway-tools`, no extra flags) always have it available.
+# Normal (`cargo build`) builds never include it either way.
+test-fakes = []
+
+[dependencies]
+conway-core = { path = "../conway-core" }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+thiserror = { workspace = true }
+regex = { workspace = true }
+ignore = { workspace = true }
+globset = { workspace = true }
+# `SubagentHost::tree() -> AgentTreeSnapshot` (conway-core) carries a
+# `chrono::DateTime<Utc>`; not listed in the WI-061 dependency notes but
+# mechanically required to implement the trait's return type.
+chrono = { workspace = true }
+tokio = { workspace = true, features = ["fs", "process", "io-util", "macros", "rt", "time", "sync"] }
+
+[target.'cfg(unix)'.dependencies]
+nix = { workspace = true, features = ["signal", "process"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }
+
+[[test]]
+name = "common_helpers"
+path = "tests/common_helpers.rs"
+required-features = ["test-fakes"]

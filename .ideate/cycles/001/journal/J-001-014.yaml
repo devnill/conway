@@ -1,0 +1,18 @@
+id: J-001-014
+type: journal_entry
+phase: autopilot
+date: 2026-07-20
+cycle_created: 1
+title: work-item-complete
+content: "Cycle 1 — Work items WI-016 (backends scaffold) and WI-031 (routing
+  scaffold): complete with rework. WI-016: 2 significant fixed (core
+  ModelOverrides.parallel_tool_calls added; overflow number extraction replacing
+  the always-zero sentinel) + 1 minor disclosure recorded. WI-031: 3 significant
+  fixed (T-2 consistency pin against core's boolean projections with the
+  intentional BadRequest divergence documented; DEFAULT_HEADROOM_TOKENS aliased
+  to core's single value; core HealthConfig extended with
+  half_open_successes_to_close/probe_enabled + serde defaults —
+  probe_failures_to_open stays 3 per core/WI-004 authority). Both reviews were
+  independent and caught real cross-crate drift the workers had partially
+  disclosed. Commit c8ba7ac. Workspace green: core 82, backends 39, routing 22,
+  session 14 tests."

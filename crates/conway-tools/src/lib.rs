@@ -1,0 +1,39 @@
+//! conway-tools: the built-in `Plugin`/`Tool` implementations for
+//! conway-core's plugin ports (architecture "Module: conway-tools").
+//!
+//! This crate provides no privileged capability: every built-in plugin is a
+//! plain `Arc<dyn Plugin>` built from the exact same `Plugin`/`Tool` traits
+//! available to third parties, and every runtime interaction goes through
+//! `ToolCtx` ports (`events`, `subagents`, `cancel`, `config`). This crate
+//! MUST NOT depend on `conway-runtime`, `conway-session`, `conway-routing`,
+//! or `conway-backends` (architecture boundary rule).
+//!
+//! Four built-in plugins, one per submodule:
+//! - [`fs`] — `read`, `write`, `edit`, `glob`, `grep` (`FsPlugin`)
+//! - [`shell`] — `bash` (`ShellPlugin`)
+//! - [`subagent`] — `conway_subagent`, `conway_steer`, `conway_await`,
+//!   `conway_cancel` (`SubagentPlugin`)
+//! - [`report`] — `report` (`ReportPlugin`)
+//!
+//! [`common`] holds the shared helper layer every tool builds on.
+//! [`builtin_plugins`] is the single registration entry point the facade
+//! consumes.
+
+pub mod common;
+pub mod fs;
+pub mod report;
+pub mod shell;
+pub mod subagent;
+
+mod registry;
+
+/// In-crate test doubles (`FakeSubagentHost`, `RecordingEventSink`,
+/// `test_ctx`) that let every tool in this crate be unit-tested with zero
+/// runtime. Always available to this crate's own `#[cfg(test)]` unit tests;
+/// available to external/integration tests (`tests/*.rs`, downstream
+/// crates) only when the `testing` feature is enabled, so ordinary
+/// (non-test) builds never carry this code.
+#[cfg(any(test, feature = "test-fakes"))]
+pub mod testing;
+
+pub use registry::builtin_plugins;

@@ -1,0 +1,18 @@
+id: J-001-013
+type: journal_entry
+phase: execute
+date: 2026-07-20
+cycle_created: 1
+title: work-item-complete
+content: |-
+  WI-061 (conway-tools crate scaffold, shared tool helpers, test harness) implemented.
+
+  Created `crates/conway-tools/`: Cargo.toml (conway-core path dep + async-trait/serde/serde_json/schemars/thiserror/regex/ignore/globset/chrono/tokio; nix under `cfg(unix)`; dev-dep tempfile; new `testing` feature), src/lib.rs (module decls + `pub use registry::builtin_plugins;`), src/common.rs (`resolve_path`, `parse_args`, `text_output`, `error_text`, `check_cancel` with unit tests), src/registry.rs (`builtin_plugins()` returns empty vec, populated in WI-067), src/testing.rs (local `FakeSubagentHost`, `RecordingEventSink`, `TestHandles`, `test_ctx` — gated `cfg(any(test, feature = "testing"))`), stub `src/{fs,shell,subagent,report}/mod.rs`, tests/common_helpers.rs (gated `required-features = ["testing"]`).
+
+  Design choice: implemented crate-local lightweight fakes rather than delegating to conway-core's `fakes` feature, because the spec's `FakeSubagentHost` needs to record `steer`/`cancel` calls and error on `await_result` for an unknown id — conway-core's fake does neither. Documented in testing.rs module doc.
+
+  Added `tempfile`, `ignore`, `globset`, `nix` to root `[workspace.dependencies]` (per WI-061 implementation notes); also added `chrono` as a direct conway-tools dependency (not listed in the notes but mechanically required by `SubagentHost::tree() -> AgentTreeSnapshot`).
+
+  All validation green: `cargo build -p conway-tools`, `cargo test -p conway-tools` (16 unit tests) and `--features testing` (16 + 5 integration tests), `cargo clippy -p conway-tools --all-features --all-targets -- -D warnings` clean, `cargo fmt -p conway-tools -- --check` clean, `cargo tree -p conway-tools` shows no conway-runtime/-session/-routing/-backends, `cargo test -p conway-core` passes (82 tests).
+
+  Noted transient conflict during execution: a concurrent worker was mid-edit on crates/conway-core/src/routing.rs (adding `ModelOverrides::parallel_tool_calls`), which briefly broke `cargo test -p conway-core`. Not touched by this WI; resolved itself once that worker finished.
