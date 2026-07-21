@@ -6,10 +6,10 @@
 //! Implementations of the port traits live in dedicated crates; the only
 //! implementations permitted here are test fakes behind `feature = "fakes"`.
 
+pub mod content;
 pub mod error;
 pub mod ids;
-// pub mod content;      // WI-002
-// pub mod log;          // WI-002
+pub mod log;
 // pub mod provenance;   // WI-003
 // pub mod segment;      // WI-003
 // pub mod capabilities; // WI-004
@@ -22,5 +22,5 @@ pub mod ids;
 // pub mod fakes;        // WI-008
 
 pub mod prelude {
-    pub use crate::{error::*, ids::*};
+    pub use crate::{content::*, error::*, ids::*, log::*};
 }

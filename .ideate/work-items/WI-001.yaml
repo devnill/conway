@@ -38,8 +38,8 @@ notes: |-
 
   Full binding implementation notes: docs/plan/wi-conway-core.md section WI-001. HEADROOM AMENDMENT applies — see docs/plan/wi-conway-core-amendment.md section WI-001; amended text supersedes the original where they differ.
 resolution: null
-status: pending
+status: done
 cycle_created: 0
-cycle_modified: null
-content_hash: 99f9dd9776658dde41d5b4c643170fa9e44c9f1ef70ea0d6f6165afa2f4e2469
-token_count: 773
+cycle_modified: 0
+content_hash: 098375916e3bc227a757e33feb8811f2228e687aa493fcceae7cf56ec790e379
+token_count: 795
