@@ -14,16 +14,16 @@ pub mod error;
 pub mod event;
 pub mod ids;
 pub mod log;
+pub mod ports;
 pub mod provenance;
 pub mod routing;
 pub mod segment;
-// pub mod ports;        // WI-007
 // #[cfg(feature = "fakes")]
 // pub mod fakes;        // WI-008
 
 pub mod prelude {
     pub use crate::{
         agent::*, capabilities::*, config::*, content::*, error::*, event::*, ids::*, log::*,
-        provenance::*, routing::*, segment::*,
+        ports::*, provenance::*, routing::*, segment::*,
     };
 }
