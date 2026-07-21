@@ -1,16 +1,19 @@
-//! `Runtime`: the facade over one agent tree (WI-082/WI-083, architecture
-//! §4, §7).
+//! `Runtime`: the facade over one agent tree (WI-082/WI-083/WI-084,
+//! architecture §4, §7).
 //!
 //! Owns dependency injection (`RuntimeDeps`), root-agent task lifecycle, and
 //! the public surface (`start_root`, `prompt`, `cancel`, `subscribe`,
-//! `context_report`, `tree`). No subagent code exists in this item —
-//! forking and spawning are WI-084. `tree()` and `cancel()` are now backed
-//! by the real [`crate::tree::AgentTree`] (WI-083): every root agent
-//! started here is `attach`ed to it, and its task is wrapped by
+//! `context_report`, `tree`). `tree()` and `cancel()` are backed by the real
+//! [`crate::tree::AgentTree`] (WI-083): every agent (root, forked, or
+//! spawned) is `attach`ed to it, and its task is wrapped by
 //! [`crate::supervisor::supervise`] so a panic or a blown deadline still
 //! resolves to a terminal result instead of leaving the tree's bookkeeping
-//! stuck on `Running` forever. See `tree.rs`'s and `supervisor.rs`'s module
-//! docs for the guarantees this buys and the one race it does not close.
+//! stuck on `Running` forever. `impl SubagentHost for Runtime` (WI-084,
+//! `subagent.rs`) is this crate's fork/spawn entry point; see that module's
+//! doc for the fork/spawn procedure and the self-referential-`Arc`
+//! construction this file's `new()` sets up for it. See `tree.rs`'s and
+//! `supervisor.rs`'s module docs for the guarantees this buys and the one
+//! race it does not close.
 //!
 //! ## Reconciliations against the WI-082 spec's illustrative types
 //!
@@ -22,18 +25,32 @@
 //!   brief.
 //! - **`RuntimeDeps` has no `subagents` field:** `LoopDeps::subagents`
 //!   (WI-081, committed) requires an `Arc<dyn SubagentHost>` for every agent
-//!   task, and `impl SubagentHost for Runtime` is WI-084's job — it does not
-//!   exist yet. Rather than accept this as an injected dependency (WI-082
+//!   task. Rather than accept this as an injected dependency (WI-082
 //!   cycle-1 review, F-082 S1: an embedder-supplied fake is not a real
 //!   dependency, and `conway_core::fakes::FakeSubagentHost` is gated behind
 //!   `feature = "fakes"`, reserved for test-shaped consumers, so wiring it
 //!   into a non-test `Runtime::new` would be a layering violation either
-//!   way), `Runtime::new` builds a private, crate-internal [`NoSubagentHost`]
-//!   and wires it into `LoopDeps::subagents` itself. Every method returns a
-//!   `RuntimeError` naming the gap. WI-084 replaces this stub with a
-//!   self-referential `Arc<dyn SubagentHost>` built from the same
-//!   `Arc<Runtime>` (`impl SubagentHost for Runtime`) — a detail for that
-//!   item, not this one.
+//!   way), `Runtime::new` now builds the real `subagent::WeakRuntimeHost`
+//!   (WI-084) from its own `Weak<Runtime>`, replacing the `NoSubagentHost`
+//!   stub this item originally shipped (every method of which returned a
+//!   `RuntimeError` naming the gap). See `Runtime::new`'s own doc for why a
+//!   `Weak`-backed delegator, not a literal `Arc<Runtime>`, is what
+//!   `LoopDeps::subagents` holds.
+//! - **WI-084 file-scope note:** the work item's own scope section lists
+//!   only `subagent.rs`, `agent_loop.rs`, and its test file — not this file.
+//!   In practice `impl SubagentHost for Runtime` cannot be wired up without
+//!   touching `Runtime::new` (replacing `NoSubagentHost`, adding the
+//!   `TranscriptResolver` instance fork resolution needs) and without a
+//!   handful of narrow `pub(crate)` accessors (`loop_deps`, `agent_defs`,
+//!   `tree_ref`, `resolver`, `agent_session`, `launch_agent`) letting
+//!   `subagent.rs` reach state that was, by design, made private to this
+//!   module by WI-082/083. This is disclosed here as a reconciliation
+//!   rather than silently expanding scope: every added accessor is
+//!   `pub(crate)` (one `#[doc(hidden)] pub` test seam excepted, mirroring
+//!   `conway-session`'s own `peek_prefix` precedent), no existing public
+//!   method's signature or behavior changes, and `start_root` is left
+//!   untouched rather than refactored onto the new `launch_agent` helper,
+//!   to keep this file's diff as small as the underlying necessity allows.
 //! - **Skill body resolution:** `conway_core::config::AgentDef::skills` is a
 //!   `Vec<String>` of *names*; there is no `SkillDef` registry among this
 //!   item's eight injected fields (only `agent_defs: HashMap<String,
@@ -94,14 +111,11 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
-use async_trait::async_trait;
 use chrono::Utc;
-use conway_core::agent::{
-    AgentDefRef, AgentResult, AgentTreeSnapshot, Budget, SubagentSpec, ToolSelector,
-};
+use conway_core::agent::{AgentDefRef, AgentResult, AgentTreeSnapshot, Budget, ToolSelector};
 use conway_core::capabilities::CacheMode;
 use conway_core::config::{AgentDef, DEFAULT_MAX_PARALLEL_TOOLS};
-use conway_core::error::{RuntimeError, ToolError};
+use conway_core::error::RuntimeError;
 use conway_core::ids::{AgentId, BackendId, LogSeq, RoleAlias, SessionId};
 use conway_core::log::{LogRecord, SessionMeta, SessionStatus};
 use conway_core::ports::{
@@ -188,7 +202,22 @@ pub struct Runtime {
     loop_deps: Arc<LoopDeps>,
     agents: RwLock<HashMap<AgentId, AgentHandle>>,
     tree: Arc<AgentTree>,
+    /// Ancestry resolution for WI-084's fork path (`subagent.rs`) --
+    /// `conway_session::TranscriptResolver`, one instance per runtime so
+    /// sibling forks share memoized prefixes (see that type's own module
+    /// doc). Not part of `RuntimeDeps`: it needs no injected configuration
+    /// beyond a cache capacity, and adding a field to `RuntimeDeps` would
+    /// be a breaking change to WI-082's already-committed, criterion-pinned
+    /// surface for a value this crate can construct unconditionally itself.
+    resolver: Arc<conway_session::TranscriptResolver>,
 }
+
+/// Entry count for `Runtime`'s `TranscriptResolver` cache. No criterion
+/// pins this value; `conway-session`'s own test suite exercises capacities
+/// from 2 to 64 without treating the number itself as load-bearing, so this
+/// picks a generous-but-bounded default rather than inventing a config
+/// surface WI-084 has no mandate to add.
+const TRANSCRIPT_CACHE_CAPACITY: usize = 512;
 
 impl Runtime {
     /// Builds a runtime from injected ports. Panics if `deps.plugins`
@@ -197,6 +226,22 @@ impl Runtime {
     /// `PluginRegistry::from_plugins`'s own construction-time-error
     /// contract; `Runtime::new`'s binding signature is infallible, so this
     /// is the only place the check can surface).
+    ///
+    /// ## WI-084 reconciliation: self-referential `subagents`
+    ///
+    /// `LoopDeps::subagents` must be a working `Arc<dyn SubagentHost>`
+    /// backed by this very `Runtime` (`impl SubagentHost for Runtime`,
+    /// `subagent.rs`) -- every agent task's `ToolCtx` needs to be able to
+    /// fork/spawn through it. A literal `Arc<Runtime>` stored inside
+    /// `Arc<LoopDeps>` (which `Runtime` itself also owns, and which every
+    /// agent task also holds a clone of) would be a strong reference cycle:
+    /// `Runtime` would never drop, even once every external handle and
+    /// every agent task is gone. `Arc::new_cyclic` breaks the cycle: the
+    /// constructor closure receives a `Weak<Runtime>` *before* the `Arc`
+    /// exists, which `subagent::WeakRuntimeHost` (a small, crate-private
+    /// delegator -- see its own doc) wraps and upgrades on every call. This
+    /// is the "self-referential `Arc<Runtime>` or equivalent" the work item
+    /// anticipates; `WeakRuntimeHost` is the "or equivalent".
     pub fn new(deps: RuntimeDeps) -> Arc<Runtime> {
         let RuntimeDeps {
             store,
@@ -224,30 +269,126 @@ impl Runtime {
         let builder = Arc::new(ContextBuilder::new());
         let plugin_config = Arc::new(PluginConfig::default());
         let tree = Arc::new(AgentTree::new(event_bus.clone()));
+        let resolver = Arc::new(conway_session::TranscriptResolver::new(
+            TRANSCRIPT_CACHE_CAPACITY,
+        ));
 
-        let loop_deps = Arc::new(LoopDeps {
-            store: store.clone(),
-            router,
-            attempt,
-            registry: registry.clone(),
-            tool_runner,
-            subagents: Arc::new(NoSubagentHost) as Arc<dyn SubagentHost>,
-            plugin_config,
-            bus: event_bus.clone(),
-            builder,
-            headroom,
+        Arc::new_cyclic(|weak: &std::sync::Weak<Runtime>| {
+            let loop_deps = Arc::new(LoopDeps {
+                store: store.clone(),
+                router,
+                attempt,
+                registry: registry.clone(),
+                tool_runner,
+                subagents: Arc::new(crate::subagent::WeakRuntimeHost::new(weak.clone()))
+                    as Arc<dyn SubagentHost>,
+                plugin_config,
+                bus: event_bus.clone(),
+                builder,
+                headroom,
+            });
+
+            Runtime {
+                store,
+                bus: event_bus,
+                agent_defs,
+                registry,
+                broker,
+                loop_deps,
+                agents: RwLock::new(HashMap::new()),
+                tree,
+                resolver,
+            }
+        })
+    }
+
+    /// Everything `subagent.rs`'s `impl SubagentHost for Runtime` (WI-084)
+    /// needs that isn't reachable through `loop_deps()`'s already-`pub`
+    /// fields. Kept as narrow, crate-private accessors rather than widening
+    /// any field's visibility, so `Runtime`'s actual public surface (the
+    /// thing the WI-084 criterion "no additional public methods" on the
+    /// trait impl is protecting) is unaffected.
+    pub(crate) fn loop_deps(&self) -> &Arc<LoopDeps> {
+        &self.loop_deps
+    }
+
+    pub(crate) fn agent_defs(&self) -> &HashMap<String, AgentDef> {
+        &self.agent_defs
+    }
+
+    pub(crate) fn tree_ref(&self) -> &Arc<AgentTree> {
+        &self.tree
+    }
+
+    pub(crate) fn resolver(&self) -> &Arc<conway_session::TranscriptResolver> {
+        &self.resolver
+    }
+
+    /// Test-only accessor (mirrors `conway_session::TranscriptResolver::
+    /// peek_prefix`'s own `#[doc(hidden)] pub` test seam): lets integration
+    /// tests assert `Arc::ptr_eq` sibling-fork sharing directly against the
+    /// runtime's own resolver instance, the same guarantee `conway-session`'s
+    /// test suite already proves at the resolver level in isolation.
+    #[doc(hidden)]
+    pub fn resolver_for_test(&self) -> &Arc<conway_session::TranscriptResolver> {
+        self.resolver()
+    }
+
+    /// The session id of a live-or-finished agent tracked by this runtime.
+    /// `AgentNotFound` for an unknown id -- the same lookup `prompt` already
+    /// inlines, factored out so `subagent.rs`'s `start` (WI-084) can resolve
+    /// a fork/spawn `parent`'s session without duplicating it.
+    pub(crate) fn agent_session(&self, agent: AgentId) -> Result<SessionId, RuntimeError> {
+        let agents = self.agents.read().expect("agents lock poisoned");
+        Ok(agents
+            .get(&agent)
+            .ok_or(RuntimeError::AgentNotFound { agent })?
+            .session)
+    }
+
+    /// Attaches `node` to the tree, spawns `agent_loop`'s task under the
+    /// supervisor, and registers its handle. The shared tail of both
+    /// `start_root` (root agents, unchanged, still inlines its own copy of
+    /// this sequence) and WI-084's fork/spawn path (`subagent.rs`), which
+    /// has no other way to reach `agents`/`tree`/`bus` to do this itself
+    /// without those fields losing their private visibility.
+    pub(crate) fn launch_agent(
+        &self,
+        node: AgentNode,
+        agent_loop: AgentLoop,
+        last_report: Arc<Mutex<Option<ContextReport>>>,
+    ) -> Result<(), RuntimeError> {
+        let agent_id = node.id;
+        let session_id = node.session;
+        let cancel = node.cancel.clone();
+        let deadline = agent_loop.spec.budget.deadline;
+
+        self.tree.attach(node)?;
+
+        let (inbox_tx, _inbox_rx) = mpsc::channel(64);
+        let task: JoinHandle<AgentResult> = tokio::spawn(async move { agent_loop.run().await });
+        let join = supervisor::supervise(SuperviseArgs {
+            tree: self.tree.clone(),
+            bus: self.bus.clone(),
+            agent: agent_id,
+            session: session_id,
+            cancel,
+            deadline,
+            grace: supervisor::DEFAULT_GRACE,
+            task,
         });
 
-        Arc::new(Runtime {
-            store,
-            bus: event_bus,
-            agent_defs,
-            registry,
-            broker,
-            loop_deps,
-            agents: RwLock::new(HashMap::new()),
-            tree,
-        })
+        let handle = AgentHandle {
+            session: session_id,
+            inbox: inbox_tx,
+            last_report,
+            join: Arc::new(Mutex::new(Some(join))),
+        };
+        self.agents
+            .write()
+            .expect("agents lock poisoned")
+            .insert(agent_id, handle);
+        Ok(())
     }
 
     /// Creates a session, appends its head record, spawns one tokio task
@@ -336,6 +477,9 @@ impl Runtime {
             deps: self.loop_deps.clone(),
             spec: agent_spec,
             cancel: cancel.clone(),
+            // A root agent's context never inherits anything (WI-084: only
+            // a fork child gets `Some`).
+            inherited: None,
         };
 
         // A root is started, not spawned (`kind: None`) — see `tree.rs`'s
@@ -445,49 +589,6 @@ impl Runtime {
     /// arrive once WI-084 attaches them.
     pub fn tree(&self) -> AgentTreeSnapshot {
         self.tree.snapshot()
-    }
-}
-
-/// Placeholder `SubagentHost`, wired into every agent task's `LoopDeps`
-/// until `impl SubagentHost for Runtime` lands in WI-084 (a self-referential
-/// `Arc<dyn SubagentHost>` built from the same `Arc<Runtime>` this stub
-/// currently substitutes for — see the module doc's reconciliation note,
-/// F-082 S1). Every method reports the closest committed `RuntimeError`
-/// naming the gap, rather than a fake success, so a tool or caller that
-/// reaches for subagent functionality today gets a clear, typed error.
-struct NoSubagentHost;
-
-fn subagents_unavailable() -> RuntimeError {
-    RuntimeError::Tool(ToolError::Internal {
-        detail: "subagents are unavailable until WI-084 implements `impl SubagentHost for Runtime`"
-            .to_string(),
-    })
-}
-
-#[async_trait]
-impl SubagentHost for NoSubagentHost {
-    async fn start(&self, _parent: AgentId, _spec: SubagentSpec) -> Result<AgentId, RuntimeError> {
-        Err(subagents_unavailable())
-    }
-
-    async fn steer(&self, _target: AgentId, _text: String) -> Result<(), RuntimeError> {
-        Err(subagents_unavailable())
-    }
-
-    async fn await_result(&self, _target: AgentId) -> Result<AgentResult, RuntimeError> {
-        Err(subagents_unavailable())
-    }
-
-    async fn cancel(&self, _target: AgentId, _reason: String) -> Result<(), RuntimeError> {
-        Err(subagents_unavailable())
-    }
-
-    fn tree(&self) -> AgentTreeSnapshot {
-        AgentTreeSnapshot {
-            root: AgentId::default(),
-            nodes: Vec::new(),
-            at: Utc::now(),
-        }
     }
 }
 

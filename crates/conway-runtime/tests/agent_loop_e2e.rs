@@ -568,6 +568,9 @@ fn build_loop_inner(
         deps,
         spec,
         cancel: cancel.clone(),
+        // WI-084: no test in this file exercises fork inheritance --
+        // that's `tests/subagent_fork_spawn.rs`'s job.
+        inherited: None,
     };
 
     Harness {
