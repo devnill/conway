@@ -1,0 +1,28 @@
+id: F-047-1
+type: finding
+cycle: 1
+work_item: WI-047
+verdict: pass
+severity_counts:
+  critical: 0
+  significant: 2
+  minor: 1
+content: |-
+  ## Verdict: Pass (with rework)
+  All bracketed criteria met and test-covered (34 tests at review, 35 after rework); reviewer independently verified crash recovery, fsync instrumentation (real sync_data calls), TOCTOU-free seq assignment under the per-session lock, and the worker's self-caught flush-ordering fix.
+
+  ## Significant Findings
+  S1: No background flusher for FsyncPolicy::Interval — an idle session's tail write could sit un-fsynced indefinitely, violating the interval durability bound the notes promise. RESOLVED: per-store flusher task (Weak-referenced handle map, aborted on drop) syncs dirty handles older than the interval; dirty flags wired through append/sync paths; idle-durability regression test added.
+  S2: Cold-open held the handle-map write lock across full-file read + repair, contradicting the no-cross-session-lock rule and its own doc comment. RESOLVED: open/read/repair now runs lock-free with a brief first-wins insert (losing racer's read-only handle dropped before any write; set_len repair idempotent across racers — documented).
+
+  ## Minor Findings
+  M1: agent_result always-fsync detection matched the enum variant rather than routing on kind. RESOLVED: kind_str() == "agent_result" per the store's interpret-nothing-beyond-kind rule.
+
+  ## Unmet Acceptance Criteria
+  None.
+
+  ## Notes
+  Worker subagent built; independent review. Commits 7f17f1c + 627b4c4 (clippy collapse). Session crate 35 tests.
+cycle_modified: 0
+content_hash: 76e0c885026aa168d4a78e7efc4528e66e5fd6151103708211ba27295165fdf1
+token_count: 400

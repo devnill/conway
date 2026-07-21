@@ -31,6 +31,7 @@ regex = "1"
 jsonschema = { version = "0.48", default-features = false }
 tracing = "0.1"
 tokio-util = "0.7"
+tokio-stream = "0.1"
 wiremock = "0.6"
 tempfile = "3"
 ignore = "0.4"
