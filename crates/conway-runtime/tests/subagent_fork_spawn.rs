@@ -822,6 +822,160 @@ async fn await_result_unknown_agent_errors_finished_agent_returns_immediately() 
 }
 
 // ---------------------------------------------------------------------
+// await_result: the real blocking path (cycle-2 review F-085 S2). This is
+// the mechanism that supersedes the removed, never-populated
+// `mailbox::PendingSubagents` map -- see mailbox.rs's module doc.
+// ---------------------------------------------------------------------
+
+struct SlowTool;
+
+fn slow_tool_spec() -> conway_core::content::ToolSpec {
+    conway_core::content::ToolSpec {
+        name: conway_core::ids::ToolName::new("slow"),
+        description: "sleeps before returning".into(),
+        schema: serde_json::from_value(serde_json::json!({"type": "object"})).unwrap(),
+        category: conway_core::content::ToolCategory::Read,
+        permission: conway_core::content::PermissionClass::Safe,
+    }
+}
+
+#[async_trait]
+impl conway_core::ports::Tool for SlowTool {
+    fn spec(&self) -> conway_core::content::ToolSpec {
+        slow_tool_spec()
+    }
+
+    async fn invoke(
+        &self,
+        _call: conway_core::content::ToolCall,
+        _ctx: conway_core::ports::ToolCtx,
+    ) -> Result<conway_core::ports::ToolOutput, ToolError> {
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        Ok(conway_core::ports::ToolOutput {
+            blocks: vec![ContentBlock::Text {
+                text: "done".into(),
+            }],
+            is_error: false,
+            truncation: conway_core::content::TruncationPolicy::None,
+            artifacts: vec![],
+        })
+    }
+}
+
+struct SlowPlugin;
+
+impl conway_core::ports::Plugin for SlowPlugin {
+    fn manifest(&self) -> conway_core::ports::PluginManifest {
+        conway_core::ports::PluginManifest {
+            id: "slow".to_string(),
+            version: "0.0.0".to_string(),
+            tools: vec![slow_tool_spec().name],
+            required_host_caps: vec![],
+        }
+    }
+
+    fn tools(&self) -> Vec<Arc<dyn conway_core::ports::Tool>> {
+        vec![Arc::new(SlowTool)]
+    }
+}
+
+/// Criterion (cycle-2 review F-085 S2): `SubagentHost::await_result`
+/// genuinely BLOCKS until the child actually publishes its terminal
+/// result -- not merely "returns immediately for an already-finished
+/// child", which `await_result_unknown_agent_errors_finished_agent_returns_immediately`
+/// above already covers. Two concurrent awaiters both call `await_result`
+/// before the child's 150ms tool call has any chance to complete; neither
+/// may resolve early, and once the child does finish, both must observe
+/// the identical terminal result -- exactly the "resolves ... exactly
+/// once" guarantee the removed `mailbox::PendingSubagents` machinery used
+/// to claim, now proven against the real mechanism
+/// (`AgentTree::await_result`'s `watch` channel, WI-083).
+#[tokio::test]
+async fn await_result_blocks_until_the_child_actually_finishes_then_resolves_every_awaiter_once() {
+    let fake = Arc::new(FakeStore::new());
+    let store: Arc<dyn SessionStore> = Arc::new(CountingStore::new(fake));
+
+    let backend = Arc::new(
+        ScriptedBackend::new(vec![
+            ScriptedTurn::Respond(text_response("ok")), // root's single turn
+            ScriptedTurn::Respond(conway_core::ports::GenerateResponse {
+                content: vec![],
+                tool_calls: vec![conway_core::content::ToolCall {
+                    call_id: "c1".into(),
+                    name: conway_core::ids::ToolName::new("slow"),
+                    arguments: serde_json::json!({}),
+                }],
+                stop: StopReason::ToolUse,
+                usage: Usage {
+                    input_tokens: 10,
+                    output_tokens: 5,
+                    ..Default::default()
+                },
+            }),
+            ScriptedTurn::Respond(text_response("child done")), // child's follow-up turn
+        ])
+        .with_id(BackendId::new("b")),
+    );
+    let model = ModelRef {
+        backend: backend.id(),
+        model: ModelId::new("m"),
+    };
+    let router: Arc<dyn Router> = Arc::new(FakeRouter::single(model));
+    let mut backends: HashMap<BackendId, Arc<dyn Backend>> = HashMap::new();
+    backends.insert(backend.id(), backend);
+
+    let runtime = Runtime::new(RuntimeDeps {
+        store,
+        router,
+        health: Arc::new(FakeHealth::new()),
+        backends,
+        plugins: vec![Arc::new(SlowPlugin)],
+        gate: Arc::new(FakeGate::new(PermissionDecision::AllowOnce)),
+        agent_defs: HashMap::new(),
+        event_bus: EventBus::with_default_capacity(),
+        headroom: Arc::new(HeadroomPolicy::default()),
+    });
+
+    let root = start_and_finish_root(&runtime, "hi").await;
+    let child = SubagentHost::start(&*runtime, root, fork_spec("go slow"))
+        .await
+        .unwrap();
+
+    // Two concurrent awaiters, both issued right after `start` returns --
+    // well before the child's 150ms tool call has any chance to finish.
+    let r1 = tokio::spawn({
+        let runtime = runtime.clone();
+        async move { SubagentHost::await_result(&*runtime, child).await.unwrap() }
+    });
+    let r2 = tokio::spawn({
+        let runtime = runtime.clone();
+        async move { SubagentHost::await_result(&*runtime, child).await.unwrap() }
+    });
+
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(
+        !r1.is_finished(),
+        "await_result resolved before the child's terminal result could possibly exist"
+    );
+    assert!(
+        !r2.is_finished(),
+        "await_result resolved before the child's terminal result could possibly exist"
+    );
+
+    let (result1, result2) = tokio::time::timeout(Duration::from_secs(2), async {
+        (r1.await.unwrap(), r2.await.unwrap())
+    })
+    .await
+    .expect("both awaiters must resolve once the child actually finishes");
+
+    assert_eq!(result1.status, ResultStatus::Completed);
+    assert_eq!(
+        result1, result2,
+        "both concurrent awaiters must observe the identical terminal result"
+    );
+}
+
+// ---------------------------------------------------------------------
 // ToolCtx::subagents IS the Runtime: a tool that forks through it produces
 // a child visible in this same runtime's tree.
 // ---------------------------------------------------------------------

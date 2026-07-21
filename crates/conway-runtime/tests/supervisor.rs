@@ -19,6 +19,7 @@ use conway_core::ids::{AgentId, RoleAlias, SessionId};
 use conway_runtime::events::EventBus;
 use conway_runtime::supervisor::{self, SuperviseArgs};
 use conway_runtime::tree::{AgentNode, AgentTree};
+use futures::future::FutureExt;
 use futures::StreamExt;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -559,4 +560,129 @@ async fn agent_spawned_precedes_and_exactly_one_agent_finished_follows() {
     .expect("agent never finished");
 
     assert_agent_lifecycle_invariants(&collected, agent);
+}
+
+// ---------------------------------------------------------------------
+// The double-AgentFinished race (cycle-2 review F-085 S1): a task racing to
+// publish its own result concurrently with the supervisor's own
+// grace-timeout synthesis.
+// ---------------------------------------------------------------------
+
+/// Cycle-2 review finding S1: before this fix, `supervise`'s
+/// `Outcome::Synthesized` branch emitted `Event::AgentFinished`
+/// unconditionally, without checking whether it had actually won
+/// `AgentTree::publish_result`'s CAS. `task.abort()` (used on the
+/// grace-timeout path) is only a cooperative *request*: a task doing
+/// non-yielding work when `abort()` lands keeps running until its next real
+/// `.await` point, so it can still reach its own terminal machinery and win
+/// the CAS after the supervisor has already given up on joining it and
+/// moved on to its own synthesis.
+///
+/// The EXACT interleaving that produces this race -- the task's blocking
+/// window ending at the same instant the supervisor's synthesis calls
+/// `publish_result` -- is not something this test can force
+/// deterministically: there is no hook that lets a test observe or control
+/// the precise moment `task.abort()`'s request lands relative to the
+/// supervisor's own `publish_result` call, since both run on tokio's own
+/// scheduler. Instead, this drives the realistic shape (a task that blocks
+/// synchronously -- via `std::thread::sleep`, which `abort()` genuinely
+/// cannot interrupt -- past `grace`, then races to publish its own result
+/// exactly like `AgentLoop::finish` does) across a spread of blocking
+/// durations straddling the grace boundary, so that across trials the race
+/// is actually landed on both sides at least sometimes. What it asserts is
+/// the invariant that must hold on EVERY trial regardless of which side
+/// happens to win: at most one `Event::AgentFinished` is ever observable
+/// for the agent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_task_completion_and_grace_synthesis_never_double_emit_agent_finished() {
+    let grace = Duration::from_millis(20);
+
+    for trial in 0..10u64 {
+        let bus = EventBus::new(64);
+        let tree = Arc::new(AgentTree::new(bus.clone()));
+        let agent = AgentId::new();
+        let session = SessionId::new();
+        let cancel = CancellationToken::new();
+
+        tree.attach(mk_node(
+            agent,
+            None,
+            session,
+            Budget::default(),
+            cancel.clone(),
+            None,
+        ))
+        .unwrap();
+
+        let mut stream = bus.subscribe();
+
+        // Spans 5..=41ms against a 20ms grace: the low trials should
+        // usually have the task win (it finishes before the supervisor
+        // even times out), the high trials should usually have the
+        // supervisor win (it synthesizes well before the task is done),
+        // and the middle trials straddle the actual race window.
+        let block_ms = 5 + trial * 4;
+
+        let tree_for_task = tree.clone();
+        let bus_for_task = bus.clone();
+        let task: JoinHandle<AgentResult> = tokio::spawn(async move {
+            // Non-yielding (blocking) work: `task.abort()` cannot take
+            // effect until this call returns and the task reaches its next
+            // real `.await` point -- exactly why `supervise`'s `abort()` is
+            // only ever a request, not a guarantee.
+            std::thread::sleep(Duration::from_millis(block_ms));
+            let result = AgentResult::new(agent, session, ResultStatus::Completed, "raced");
+            // Mirrors `AgentLoop::finish`: publish first, emit only if this
+            // call is the one that actually won.
+            if tree_for_task
+                .publish_result(agent, result.clone())
+                .unwrap_or(true)
+            {
+                bus_for_task.emit(
+                    session,
+                    agent,
+                    Event::AgentFinished {
+                        result: result.clone(),
+                    },
+                );
+            }
+            result
+        });
+
+        supervisor::supervise(SuperviseArgs {
+            tree: tree.clone(),
+            bus: bus.clone(),
+            agent,
+            session,
+            cancel: cancel.clone(),
+            deadline: None,
+            grace,
+            task,
+        });
+        // Trips the supervisor's cancel-arm almost immediately, so its
+        // grace window starts well before most trials' blocking work ends.
+        tokio::time::sleep(Duration::from_millis(1)).await;
+        cancel.cancel();
+
+        // `await_result` always resolves -- the supervisor's core
+        // guarantee -- regardless of which side wins. A little extra slack
+        // afterward lets the losing side's (harmless, no-op) publish
+        // attempt actually run before this trial counts events.
+        tokio::time::timeout(Duration::from_secs(2), tree.await_result(agent))
+            .await
+            .expect("await_result did not resolve")
+            .expect("await_result errored");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let mut finished_count = 0;
+        while let Some(Some(envelope)) = stream.next().now_or_never() {
+            if envelope.agent == agent && matches!(envelope.event, Event::AgentFinished { .. }) {
+                finished_count += 1;
+            }
+        }
+        assert_eq!(
+            finished_count, 1,
+            "trial {trial} (block_ms={block_ms}): expected exactly one AgentFinished, got {finished_count}"
+        );
+    }
 }

@@ -2,9 +2,28 @@
 //!
 //! Wires `ContextBuilder` -> `Router` -> `AttemptEngine` -> `ToolRunner` ->
 //! `SessionStore` into one turn, with budgets and terminal-result
-//! construction. `drain_inbox` is still a no-op hook (WI-085 implements
-//! mailboxes); `LoopDeps::subagents` is now the real `Runtime` (WI-084,
+//! construction. `LoopDeps::subagents` is the real `Runtime` (WI-084,
 //! `subagent.rs`), not a stub -- `ToolBatchCtx` gets a working host.
+//!
+//! ## WI-085: mailboxes and steering
+//!
+//! `drain_inbox` (previously a documented no-op hook) now really drains
+//! this agent's inbox at every turn boundary and classifies what it finds
+//! (`crate::mailbox::classify`) -- see that function's doc and
+//! `drain_inbox`'s own doc for the turn-boundary and "no injection outside
+//! drain_inbox" guarantees this buys. `AgentLoop` gained three fields:
+//! `inbox` (this agent's own `MailboxReceiver`), `parent_mailbox` (used to
+//! deliver this agent's terminal `Result` upward on `finish`), and
+//! `pending_cancel` (turn-local bookkeeping a drained soft `Cancel`
+//! resolves into). A drained `Result` is classified but drives no
+//! drain-time action -- cycle-2 review (F-085 S2) removed the never-
+//! populated `pending_subagent` map this used to resolve; see
+//! `drain_inbox`'s own doc and `mailbox.rs`'s module doc for why
+//! `AgentTree::await_result` (WI-083) is the real, and only, resolution
+//! path. `LoopDeps` gained `tree`, used both to close the carried
+//! F-083-1/F-084-1 double-`AgentFinished` race in `finish` (this file's
+//! half of a two-sided fix -- see `supervisor.rs`'s module doc for the
+//! other half) -- see `finish`'s own doc.
 //!
 //! ## WI-084: `inherited` context
 //!
@@ -70,7 +89,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use chrono::Utc;
-use conway_core::agent::{AgentResult, Budget, ResultStatus, ToolSelector};
+use conway_core::agent::{AgentMessage, AgentResult, Budget, ResultStatus, ToolSelector};
 use conway_core::capabilities::{CacheMode, RequiredCaps, ToolCallSupport};
 use conway_core::content::{ContentBlock, ToolResult, Usage};
 use conway_core::error::{ConwayError, RuntimeError, StoreError};
@@ -89,7 +108,9 @@ use crate::context::{
     ContextBuilder, ContextInput, HeadSegment, InheritedPrefix, SkillFragment, SystemPromptSpec,
 };
 use crate::events::EventBus;
+use crate::mailbox::{self, MailboxReceiver, MailboxSender};
 use crate::tools::{PluginRegistry, ToolBatchCtx, ToolRunner};
+use crate::tree::AgentTree;
 
 /// The per-agent turn loop's static configuration: everything about *this*
 /// agent that does not change turn to turn.
@@ -136,6 +157,13 @@ pub struct LoopDeps {
     pub bus: Arc<EventBus>,
     pub builder: Arc<ContextBuilder>,
     pub headroom: Arc<HeadroomPolicy>,
+    /// The agent tree this agent belongs to. WI-085 carried follow-up
+    /// (F-083-1/F-084-1): lets `finish` consult the tree's set-once
+    /// publication before emitting `Event::AgentFinished`, closing the
+    /// benign double-emit race against the supervisor's own grace-timeout
+    /// synthesis -- see `finish`'s own doc and `supervisor.rs`'s module doc
+    /// ("the narrow race this module does not close").
+    pub tree: Arc<AgentTree>,
 }
 
 /// One agent's turn state machine (architecture §7). `run` drives turns
@@ -166,6 +194,26 @@ pub struct AgentLoop {
     /// single shared `Arc` (sibling-fork memoization lives in
     /// `conway-session`, not here).
     pub inherited: Option<InheritedPrefix>,
+    /// This agent's own inbox (WI-085). Drained exactly once per turn
+    /// boundary by [`Self::drain_inbox`] -- never read anywhere else, which
+    /// is what makes the turn-boundary landing guarantee hold by
+    /// construction.
+    pub inbox: MailboxReceiver,
+    /// The parent's mailbox sender, used to deliver this agent's terminal
+    /// `AgentMessage::Result` upward on `finish` (architecture §3.2: "child
+    /// terminates -> AgentResult -> parent mailbox"). `None` for a root
+    /// agent (nothing to deliver to).
+    pub parent_mailbox: Option<MailboxSender>,
+    /// Set by a drained `AgentMessage::Cancel { hard: false, .. }`;
+    /// consumed (and cleared) by the top-of-turn cancel check in
+    /// [`Self::run_inner`], which is what gives a soft cancel its
+    /// turn-boundary semantics. A hard cancel never touches this field --
+    /// it trips `cancel` directly at enqueue time instead (see
+    /// `mailbox.rs`'s module doc). Every constructor should set this to
+    /// `None`; `pub` only because this struct has no constructor function
+    /// and is always built via a field literal (matching every other field
+    /// here).
+    pub pending_cancel: Option<String>,
 }
 
 /// Per-turn accumulator: turns executed and usage accrued so far. `Copy` so
@@ -192,11 +240,92 @@ macro_rules! try_rt {
 }
 
 impl AgentLoop {
-    /// Drains queued parent messages at a turn boundary. A no-op in this
-    /// item (WI-085 implements mailboxes); the call site exists now so
-    /// steering lands at a turn boundary by construction once it does.
-    fn drain_inbox(&mut self) -> Vec<LogRecord> {
-        Vec::new()
+    /// Drains every message queued on this agent's inbox and classifies
+    /// each one (`mailbox::classify`, architecture §6.2). A `Steer` is
+    /// persisted as `LogRecord::ParentSteer` *before* this call returns
+    /// (persist-before-act) and before the next `SessionStore::read` this
+    /// turn -- that ordering, plus this being the only site that ever
+    /// calls `self.inbox.drain()`, is what makes "no code path injects into
+    /// a context outside `drain_inbox`" hold structurally: a steer becomes
+    /// visible by first becoming a stored record, read back exactly like
+    /// any other own record (`split_head` below), never by this function
+    /// handing a segment to anyone directly.
+    ///
+    /// A soft cancel only sets `self.pending_cancel`, consumed by the
+    /// caller immediately after this returns. A hard cancel was already
+    /// handled at enqueue time (`MailboxSender::send`) and is a no-op here.
+    /// `Progress` is emitted as `Event::AgentProgress` and never persisted.
+    /// `Result` is classified but drives no action here -- the real
+    /// resolution path for a `conway_subagent` waiter is
+    /// `AgentTree::await_result` (WI-083), not this mailbox; see
+    /// `mailbox.rs`'s module doc (cycle-2 review F-085 S2).
+    ///
+    /// ## A mid-batch persist failure does not lose the rest of the batch
+    ///
+    /// `self.inbox.drain()` atomically empties the queue into one `Vec`
+    /// before this loop starts, so every message it processes has already
+    /// left the mailbox and cannot be recovered from there. Before cycle-2
+    /// review finding M2, a `SessionStore::append` failure on message *k*
+    /// early-returned via `?`, silently dropping every already-dequeued
+    /// message after it (soft cancels, progress reports, everything) with
+    /// no record and no signal. This function now keeps classifying and
+    /// applying every remaining message's *non-persist* effect (a soft
+    /// cancel still lands, a progress note is still emitted) even after a
+    /// persist failure; it stops attempting further `append` calls against
+    /// a store that has already failed once this drain (to avoid hammering
+    /// it), and surfaces the first error at the end via a `tracing::error`
+    /// naming exactly how many queued records could not be persisted,
+    /// before returning it -- the agent is terminating either way (this
+    /// error propagates through `run_inner`'s `try_rt!` into
+    /// `finish_error`), so the caller's own error path is unaffected.
+    async fn drain_inbox(&mut self) -> Result<(), RuntimeError> {
+        let mut persist_err: Option<RuntimeError> = None;
+        let mut lost_records = 0usize;
+
+        for msg in self.inbox.drain() {
+            match mailbox::classify(msg) {
+                mailbox::DrainEffect::Persist(record) => {
+                    if persist_err.is_some() {
+                        lost_records += 1;
+                        continue;
+                    }
+                    if let Err(err) = self.deps.store.append(&self.session, record).await {
+                        persist_err = Some(err.into());
+                        lost_records += 1;
+                    }
+                }
+                mailbox::DrainEffect::SoftCancel { reason } => {
+                    self.pending_cancel = Some(reason);
+                }
+                mailbox::DrainEffect::HardCancelAcknowledged => {}
+                mailbox::DrainEffect::Progress { note } => {
+                    self.deps
+                        .bus
+                        .emit(self.session, self.agent_id, Event::AgentProgress { note });
+                }
+                mailbox::DrainEffect::Result { from, .. } => {
+                    tracing::trace!(
+                        agent = %self.agent_id,
+                        from = %from,
+                        "drained AgentMessage::Result: AgentTree::await_result (WI-083) is \
+                         the authoritative resolution path, no drain-time action taken"
+                    );
+                }
+                mailbox::DrainEffect::Unknown => {}
+            }
+        }
+
+        if let Some(err) = persist_err {
+            tracing::error!(
+                agent = %self.agent_id,
+                error = %err,
+                lost_records,
+                "drain_inbox: SessionStore::append failed; {lost_records} already-dequeued \
+                 record(s) could not be persisted -- the agent is terminating"
+            );
+            return Err(err);
+        }
+        Ok(())
     }
 
     /// Runs turns until a terminal result is produced. Infallible in return
@@ -215,8 +344,18 @@ impl AgentLoop {
         let mut seen_segments = HashSet::new();
 
         loop {
-            let _ = self.drain_inbox();
+            try_rt!(state, self.drain_inbox().await);
 
+            if let Some(reason) = self.pending_cancel.take() {
+                return Ok(self
+                    .finish(
+                        ResultStatus::Cancelled { reason },
+                        "",
+                        state.usage,
+                        state.turn,
+                    )
+                    .await);
+            }
             if let Some(result) = self.check_budget(state).await {
                 return Ok(result);
             }
@@ -537,7 +676,44 @@ impl AgentLoop {
 
     /// Builds the terminal `AgentResult`, persists it (best-effort — a
     /// store failure here is logged, never propagated, since `finish` must
-    /// always produce a value), and emits `AgentFinished`.
+    /// always produce a value), publishes it to the tree, and -- only if
+    /// that publication was the first one for this agent -- emits
+    /// `AgentFinished` and delivers it to the parent's mailbox.
+    ///
+    /// ## Carried follow-up (F-083-1/F-084-1): the tree-publish gate
+    ///
+    /// `AgentTree::publish_result` is set-once (`tree.rs`, WI-083): its
+    /// first caller for a given agent gets `Ok(true)`, every later caller
+    /// gets `Ok(false)`. Calling it *here*, before emitting, means this is
+    /// the one place a normal completion and the supervisor's own
+    /// grace-timeout synthesis (`supervisor.rs`) race for real: whichever
+    /// publishes first is the one that emits `Event::AgentFinished` and
+    /// delivers the result upward; the loser's local `result` value is
+    /// still returned (so `run()`'s caller — ultimately the supervisor's
+    /// own `Outcome::from_join` — still sees a real, non-synthesized
+    /// result), but produces no second event and no second parent
+    /// delivery.
+    ///
+    /// This is only ONE side of the race's closure — not, as an earlier
+    /// revision of this doc claimed, the whole of it. `supervisor.rs`'s
+    /// `Outcome::Synthesized` branch (a caught panic, or a task still
+    /// unresponsive after `grace` and `abort()`'d) must gate ITS emission
+    /// on winning the very same `publish_result` CAS too: `task.abort()` is
+    /// cooperative, so an aborted task can keep running past the abort
+    /// request and reach this very `finish` method after the supervisor has
+    /// already given up on joining it, legitimately winning the CAS in that
+    /// gap. Before cycle-2 review finding S1, `supervisor.rs` emitted
+    /// unconditionally on that path regardless of whether it had actually
+    /// won, so the race was only half-closed even with this gate in place.
+    /// See `supervisor.rs`'s own module doc for that side's fix; together
+    /// the two gates make at most one `Event::AgentFinished` observable per
+    /// agent, from whichever side wins.
+    ///
+    /// `publish_result`'s only error is `AgentNotFound` (this agent was
+    /// never `attach`ed to the tree at all — true of some unit tests that
+    /// construct an `AgentLoop` directly without a `Runtime`); that case
+    /// defaults to "first" so those tests keep observing `AgentFinished`
+    /// exactly as before this item.
     async fn finish(
         &self,
         status: ResultStatus,
@@ -573,13 +749,27 @@ impl AgentLoop {
             }
         }
 
-        self.deps.bus.emit(
-            self.session,
-            self.agent_id,
-            Event::AgentFinished {
-                result: result.clone(),
-            },
-        );
+        let is_first = self
+            .deps
+            .tree
+            .publish_result(self.agent_id, result.clone())
+            .unwrap_or(true);
+
+        if is_first {
+            self.deps.bus.emit(
+                self.session,
+                self.agent_id,
+                Event::AgentFinished {
+                    result: result.clone(),
+                },
+            );
+            if let Some(parent_mailbox) = &self.parent_mailbox {
+                parent_mailbox.send(AgentMessage::Result {
+                    from: self.agent_id,
+                    result: result.clone(),
+                });
+            }
+        }
         result
     }
 }
