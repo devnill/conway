@@ -5,15 +5,15 @@
 //! the header's `id`/`agent_id` fields serialize as `session`/`agent`
 //! (architecture §5.1), and a `ToolResult` is flattened into its record.
 //!
-//! Variants and fields deferred by design: `AgentResultRecord` lands in
-//! WI-005. `route_reason` stays `serde_json::Value` permanently — the log
-//! stores the reason as data; typed access is via `Event::ModelDecision`.
+//! `route_reason` stays `serde_json::Value` permanently — the log stores
+//! the reason as data; typed access is via `Event::ModelDecision`.
 
 use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::agent::AgentResult;
 use crate::content::{ContentBlock, StopReason, ToolCall, ToolResult, Usage};
 use crate::ids::{AgentId, LogSeq, ModelRef, RoleAlias, SessionId};
 use crate::provenance::{ContextReport, Provenance};
@@ -134,7 +134,12 @@ pub enum LogRecord {
         reason: String,
         prov: Provenance,
     },
-    // AgentResultRecord — WI-005
+    #[serde(rename = "agent_result")]
+    AgentResultRecord {
+        seq: LogSeq,
+        ts: DateTime<Utc>,
+        result: AgentResult,
+    },
     #[serde(rename = "context_report")]
     ContextReportRecord {
         seq: LogSeq,
@@ -155,6 +160,7 @@ impl LogRecord {
             | LogRecord::ForkDirective { seq, .. }
             | LogRecord::ParentSteer { seq, .. }
             | LogRecord::SystemNote { seq, .. }
+            | LogRecord::AgentResultRecord { seq, .. }
             | LogRecord::ContextReportRecord { seq, .. } => Some(*seq),
         }
     }
@@ -170,6 +176,7 @@ impl LogRecord {
             LogRecord::ForkDirective { .. } => "fork_directive",
             LogRecord::ParentSteer { .. } => "parent_steer",
             LogRecord::SystemNote { .. } => "system_note",
+            LogRecord::AgentResultRecord { .. } => "agent_result",
             LogRecord::ContextReportRecord { .. } => "context_report",
         }
     }
@@ -275,8 +282,21 @@ mod tests {
                 "system_note",
             ),
             (
-                LogRecord::ContextReportRecord {
+                LogRecord::AgentResultRecord {
                     seq: LogSeq(6),
+                    ts: ts(),
+                    result: crate::agent::AgentResult::new(
+                        AgentId::new(),
+                        SessionId::new(),
+                        crate::agent::ResultStatus::Completed,
+                        "done",
+                    ),
+                },
+                "agent_result",
+            ),
+            (
+                LogRecord::ContextReportRecord {
+                    seq: LogSeq(7),
                     ts: ts(),
                     report: ContextReport {
                         agent_id: AgentId::new(),
