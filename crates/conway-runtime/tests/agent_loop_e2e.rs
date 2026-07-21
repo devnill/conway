@@ -453,6 +453,70 @@ fn build_loop(
     headroom_override: Option<u32>,
     role: &str,
 ) -> Harness {
+    build_loop_inner(
+        session,
+        agent,
+        store,
+        router,
+        backend,
+        tools,
+        gate,
+        budget,
+        headroom,
+        headroom_override,
+        role,
+        None,
+    )
+}
+
+/// Like [`build_loop`], but wires `report_slot` into the `AgentSpec` so a
+/// test can observe the live slot `Runtime::context_report` (WI-082) reads
+/// from without going through `Runtime` itself.
+#[allow(clippy::too_many_arguments)]
+fn build_loop_with_report_slot(
+    session: SessionId,
+    agent: AgentId,
+    store: Arc<dyn SessionStore>,
+    router: Arc<dyn Router>,
+    backend: Arc<dyn Backend>,
+    tools: Vec<Arc<dyn Tool>>,
+    gate: Arc<dyn PermissionGate>,
+    budget: Budget,
+    headroom: HeadroomPolicy,
+    role: &str,
+    report_slot: Arc<Mutex<Option<conway_core::provenance::ContextReport>>>,
+) -> Harness {
+    build_loop_inner(
+        session,
+        agent,
+        store,
+        router,
+        backend,
+        tools,
+        gate,
+        budget,
+        headroom,
+        None,
+        role,
+        Some(report_slot),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_loop_inner(
+    session: SessionId,
+    agent: AgentId,
+    store: Arc<dyn SessionStore>,
+    router: Arc<dyn Router>,
+    backend: Arc<dyn Backend>,
+    tools: Vec<Arc<dyn Tool>>,
+    gate: Arc<dyn PermissionGate>,
+    budget: Budget,
+    headroom: HeadroomPolicy,
+    headroom_override: Option<u32>,
+    role: &str,
+    report_slot: Option<Arc<Mutex<Option<conway_core::provenance::ContextReport>>>>,
+) -> Harness {
     let bus = EventBus::new(1024);
     let health: Arc<dyn HealthRegistry> = Arc::new(FakeHealth::new());
     let mut backends: HashMap<BackendId, Arc<dyn Backend>> = HashMap::new();
@@ -491,6 +555,7 @@ fn build_loop(
         cache_ttl: CacheTtl::FiveMinutes,
         headroom_override,
         max_parallel_tools: 4,
+        report_slot,
     };
 
     let cancel = CancellationToken::new();
@@ -1154,4 +1219,62 @@ async fn headroom_override_wins_over_the_policy_default() {
 
     assert_eq!(router.requests()[0].required.headroom_tokens, 777);
     assert_eq!(backend.calls()[0].params.max_tokens, Some(777));
+}
+
+/// FINDING C1 (WI-082 cycle-1 review): the loop pushes the turn's just-built
+/// `ContextReport` into `AgentSpec.report_slot` every turn, before the
+/// backend call -- proving a caller reading the slot sees a live report that
+/// both exists mid-run and grows across turns, independent of the event bus.
+#[tokio::test]
+async fn report_slot_is_populated_and_updates_across_turns() {
+    let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
+    let (session, agent) = seed_prompt(&*store, "planner", "hello").await;
+    let backend = Arc::new(TrackingBackend::new(
+        "b",
+        vec![
+            tool_call_response("tc_1", "read", serde_json::json!({"path": "a.txt"})),
+            text_response("done"),
+        ],
+    ));
+    let router = Arc::new(CapturingRouter::ok(vec![make_route("b", "m")]));
+    let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
+    let tool: Arc<dyn Tool> = Arc::new(RecordingTool {
+        name: ToolName::new("read"),
+        output: "file contents".to_string(),
+        order: None,
+    });
+    let report_slot = Arc::new(Mutex::new(None));
+
+    let harness = build_loop_with_report_slot(
+        session,
+        agent,
+        store,
+        router,
+        backend,
+        vec![tool],
+        gate,
+        Budget::default(),
+        HeadroomPolicy::default(),
+        "planner",
+        report_slot.clone(),
+    );
+
+    // Before the loop runs, the slot is empty -- it is populated only once a
+    // turn's context has actually been assembled.
+    assert!(report_slot.lock().unwrap().is_none());
+
+    let result = harness.agent_loop.run().await;
+    assert_eq!(result.status, ResultStatus::Completed);
+
+    let final_report = report_slot
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("report slot populated by the time the loop finishes");
+    assert_eq!(final_report.agent_id, agent);
+    // Turn 1's context includes the tool's result (persisted after turn 0),
+    // so it has strictly more segments than turn 0's did -- proof the slot
+    // was overwritten with a *new* report, not left stuck on the first one.
+    assert!(final_report.turn >= 1);
+    assert!(!final_report.segments.is_empty());
 }

@@ -7,6 +7,14 @@
 //! (WI-084 supplies it via an injected transcript source), and
 //! `LoopDeps::subagents` exists only because `ToolBatchCtx` requires one.
 //!
+//! `AgentSpec::report_slot` (WI-082 cycle-1 review, F-082 C1) is this item's
+//! one additive hook for a live caller: after each successful
+//! `ContextBuilder::build`, and before that turn's backend call, the loop
+//! pushes a clone of the just-built `ContextReport` into the slot if the
+//! caller supplied one. This is the only channel through which a turn's
+//! report reaches outside the loop — no event-bus reconstruction is
+//! involved.
+//!
 //! ## Reconciliations against the WI-081 amendment's illustrative types
 //!
 //! The amendment's prose assumes a runtime-local `HeadroomPolicy` (in a
@@ -48,7 +56,7 @@
 
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use chrono::Utc;
@@ -60,6 +68,7 @@ use conway_core::event::Event;
 use conway_core::ids::{AgentId, ModelId, ModelRef, RoleAlias, SeqRange, SessionId};
 use conway_core::log::LogRecord;
 use conway_core::ports::{PluginConfig, Router, SessionStore, SubagentHost};
+use conway_core::provenance::ContextReport;
 use conway_core::routing::RouteRequest;
 use conway_core::segment::CacheTtl;
 use conway_routing::config::HeadroomPolicy;
@@ -88,6 +97,13 @@ pub struct AgentSpec {
     /// Resolution order: `headroom_override` -> `HeadroomPolicy::resolve`.
     pub headroom_override: Option<u32>,
     pub max_parallel_tools: usize,
+    /// The live slot `Runtime::context_report` (WI-082) reads from. Pushed
+    /// into by this loop after every successful `ContextBuilder::build`,
+    /// before the turn's backend call — so a caller reading the slot always
+    /// sees the most recently *assembled* context, independent of whether
+    /// that turn's attempt has completed yet. `None` in contexts with no
+    /// caller listening (e.g. some tests construct an `AgentLoop` directly).
+    pub report_slot: Option<Arc<Mutex<Option<ContextReport>>>>,
 }
 
 /// Everything an [`AgentLoop`] needs beyond its own identity and spec:
@@ -218,6 +234,10 @@ impl AgentLoop {
                 cache_ttl: self.spec.cache_ttl,
             };
             let (segments, report) = try_rt!(state, self.deps.builder.build(&input));
+
+            if let Some(slot) = &self.spec.report_slot {
+                *slot.lock().expect("report slot poisoned") = Some(report.clone());
+            }
 
             for entry in &report.segments {
                 if seen_segments.insert(entry.segment) {
