@@ -559,6 +559,9 @@ fn build_loop_inner(
         headroom_override,
         max_parallel_tools: 4,
         report_slot,
+        // WI-086: not exercised by this file -- `tests/result_contract.rs`
+        // owns result-contract coverage.
+        result_contract: None,
     };
 
     let cancel = CancellationToken::new();

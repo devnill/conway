@@ -82,6 +82,39 @@
 //! assistant record is appended, before any tool call is dispatched. A
 //! "turn" is one model generation; tool execution feeds the *next* turn's
 //! context, not the current one's completion event.
+//!
+//! ## WI-086: `AgentResult` construction and repeated-step detection
+//!
+//! `finish` no longer builds its `AgentResult` from a raw `summary` string
+//! alone: it resolves a [`crate::result::ResultBuilder`] (report-tool
+//! precedence over trailing text, non-empty-summary/status-naming
+//! fallback) for `summary`/`facts`/`artifacts`/`structured` on every
+//! terminal path. The tool-outcome loop also runs every dispatched call
+//! through a [`crate::step_digest::StepDigest`], emitting `Event::RepeatedStep`
+//! plus an injected `SystemNote` the instant a `(tool, canonical-args)`
+//! digest is seen a 3rd time. Both are locals inside [`Self::run_inner`],
+//! not new fields on `AgentLoop`/[`AgentSpec`] -- see `result.rs`'s module
+//! doc for why (both structs are constructed via field literals in files
+//! outside this item's original scope: `runtime.rs`, `subagent.rs`, and
+//! existing tests).
+//!
+//! `AgentSpec` gained one field this item, `result_contract:
+//! Option<schemars::schema::RootSchema>`, carried through from
+//! `SubagentSpec::result_contract` by `subagent.rs`'s `SubagentHost::start`
+//! (`None` for a root agent -- `runtime.rs`'s `start_root` has no
+//! `SubagentSpec` to source one from). Adding it forced one-line, inert
+//! `result_contract: None,` additions to `runtime.rs` and the two existing
+//! test harnesses (`tests/agent_loop_e2e.rs`, `tests/steering.rs`) that
+//! construct `AgentSpec` by field literal -- a file-scope extension the
+//! coordinator explicitly authorized (this item's Self-Check) after the
+//! initial implementation flagged the conflict rather than silently
+//! expanding scope. The natural-completion branch of [`Self::run_inner`]
+//! enforces the contract when present: `Ok` proceeds to `Completed`;
+//! the first failure appends a `SystemNote { reason:
+//! "result_contract_violation" }` and gives the agent one more turn
+//! (`contract_retried` flips `true`, a local exactly like `result_builder`/
+//! `step_digest`); a second failure is terminal,
+//! `ResultStatus::Rejected { missing }`.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -97,7 +130,7 @@ use conway_core::event::Event;
 use conway_core::ids::{AgentId, ModelId, ModelRef, RoleAlias, SeqRange, SessionId};
 use conway_core::log::LogRecord;
 use conway_core::ports::{PluginConfig, Router, SessionStore, SubagentHost};
-use conway_core::provenance::ContextReport;
+use conway_core::provenance::{ContextReport, Provenance};
 use conway_core::routing::RouteRequest;
 use conway_core::segment::CacheTtl;
 use conway_routing::config::HeadroomPolicy;
@@ -109,6 +142,8 @@ use crate::context::{
 };
 use crate::events::EventBus;
 use crate::mailbox::{self, MailboxReceiver, MailboxSender};
+use crate::result::{validate_result_contract, ContractOutcome, ResultBuilder};
+use crate::step_digest::{StepDigest, DEFAULT_RING_CAPACITY};
 use crate::tools::{PluginRegistry, ToolBatchCtx, ToolRunner};
 use crate::tree::AgentTree;
 
@@ -137,6 +172,14 @@ pub struct AgentSpec {
     /// that turn's attempt has completed yet. `None` in contexts with no
     /// caller listening (e.g. some tests construct an `AgentLoop` directly).
     pub report_slot: Option<Arc<Mutex<Option<ContextReport>>>>,
+    /// WI-086: the schema a `structured` result must satisfy, carried
+    /// through from `SubagentSpec::result_contract` (`subagent.rs`'s
+    /// `SubagentHost::start`) for a fork/spawn child; `None` for a root
+    /// agent (`runtime.rs`'s `start_root` has no `SubagentSpec` to source
+    /// one from) and for any `AgentSpec` a test constructs directly without
+    /// opting in. Enforced once per natural-completion attempt in
+    /// `Self::run_inner` -- see this file's module doc.
+    pub result_contract: Option<schemars::schema::RootSchema>,
 }
 
 /// Everything an [`AgentLoop`] needs beyond its own identity and spec:
@@ -342,6 +385,16 @@ impl AgentLoop {
     async fn run_inner(&mut self) -> Result<AgentResult, (RuntimeError, LoopState)> {
         let mut state = LoopState::default();
         let mut seen_segments = HashSet::new();
+        // WI-086: both are turn-loop-local, not `AgentLoop` fields -- see
+        // `result.rs`'s module doc for why (both structs are constructed
+        // via field literals in files outside this item's scope).
+        let mut result_builder = ResultBuilder::new();
+        let mut step_digest = StepDigest::new(DEFAULT_RING_CAPACITY);
+        // WI-086 result-contract retry: `true` once this run has already
+        // spent its one corrective turn (`self.spec.result_contract`'s
+        // "retried exactly once" rule) -- a second failure after this is
+        // `true` is terminal (`Rejected`), never another retry.
+        let mut contract_retried = false;
 
         loop {
             try_rt!(state, self.drain_inbox().await);
@@ -353,14 +406,15 @@ impl AgentLoop {
                         "",
                         state.usage,
                         state.turn,
+                        &result_builder,
                     )
                     .await);
             }
-            if let Some(result) = self.check_budget(state).await {
+            if let Some(result) = self.check_budget(state, &result_builder).await {
                 return Ok(result);
             }
             if self.cancel.is_cancelled() {
-                return Ok(self.finish_cancelled(state).await);
+                return Ok(self.finish_cancelled(state, &result_builder).await);
             }
 
             self.deps.bus.emit(
@@ -465,6 +519,7 @@ impl AgentLoop {
                                 "",
                                 state.usage,
                                 state.turn,
+                                &result_builder,
                             ).await);
                         }
                         res = attempt_fut => res,
@@ -509,12 +564,65 @@ impl AgentLoop {
 
             if outcome.response.tool_calls.is_empty() {
                 let summary = full_text(&outcome.response.content);
+
+                if let Some(contract) = &self.spec.result_contract {
+                    let parts = result_builder.resolve(&summary, &ResultStatus::Completed);
+                    match validate_result_contract(
+                        parts.structured.as_ref(),
+                        contract,
+                        contract_retried,
+                    ) {
+                        ContractOutcome::Ok => {}
+                        ContractOutcome::Retry { errors } => {
+                            let note_seq =
+                                try_rt!(state, self.deps.store.head(&self.session).await);
+                            let note_text = format!(
+                                "the structured result failed its result_contract: {}",
+                                errors.join("; ")
+                            );
+                            try_rt!(
+                                state,
+                                self.deps
+                                    .store
+                                    .append(
+                                        &self.session,
+                                        LogRecord::SystemNote {
+                                            seq: note_seq,
+                                            ts: Utc::now(),
+                                            text: note_text,
+                                            reason: "result_contract_violation".to_string(),
+                                            prov: Provenance::SystemNote {
+                                                reason: "result_contract_violation".to_string(),
+                                            },
+                                        },
+                                    )
+                                    .await
+                            );
+                            contract_retried = true;
+                            state.turn += 1;
+                            continue;
+                        }
+                        ContractOutcome::Rejected { missing } => {
+                            return Ok(self
+                                .finish(
+                                    ResultStatus::Rejected { missing },
+                                    summary,
+                                    state.usage,
+                                    state.turn + 1,
+                                    &result_builder,
+                                )
+                                .await);
+                        }
+                    }
+                }
+
                 return Ok(self
                     .finish(
                         ResultStatus::Completed,
                         summary,
                         state.usage,
                         state.turn + 1,
+                        &result_builder,
                     )
                     .await);
             }
@@ -541,14 +649,17 @@ impl AgentLoop {
                 // their results never reach the session log (cycle-1 review
                 // M1; follow-up if audit/replay completeness requires
                 // partial-batch persistence).
-                return Ok(self.finish_cancelled(state).await);
+                return Ok(self.finish_cancelled(state, &result_builder).await);
             }
 
-            for tool_outcome in outcomes {
+            let calls = outcome.response.tool_calls.clone();
+            for (index, tool_outcome) in outcomes.into_iter().enumerate() {
+                result_builder.observe_tool_outcome(&tool_outcome.tool, &tool_outcome);
+
                 let seq = try_rt!(state, self.deps.store.head(&self.session).await);
                 let result = ToolResult {
                     call_id: tool_outcome.call_id,
-                    tool: tool_outcome.tool,
+                    tool: tool_outcome.tool.clone(),
                     blocks: tool_outcome.blocks,
                     is_error: tool_outcome.is_error,
                     truncated: tool_outcome.truncation,
@@ -567,6 +678,46 @@ impl AgentLoop {
                         )
                         .await
                 );
+
+                // WI-086 MAST mitigation: repeated-step detection. `calls`
+                // preserves input order (`ToolRunner::run_batch`'s own
+                // contract), so `calls[index]` is this outcome's original
+                // call and carries the arguments the digest is keyed on.
+                if let Some(repeated) =
+                    step_digest.observe(&tool_outcome.tool, &calls[index].arguments, seq)
+                {
+                    self.deps.bus.emit(
+                        self.session,
+                        self.agent_id,
+                        Event::RepeatedStep {
+                            tool: repeated.tool.clone(),
+                            prior_seq: repeated.prior_seq,
+                        },
+                    );
+                    let note_seq = try_rt!(state, self.deps.store.head(&self.session).await);
+                    let note_text = format!(
+                        "tool `{}` was called with identical arguments 3 times; see the result at seq {}",
+                        repeated.tool, repeated.prior_seq
+                    );
+                    try_rt!(
+                        state,
+                        self.deps
+                            .store
+                            .append(
+                                &self.session,
+                                LogRecord::SystemNote {
+                                    seq: note_seq,
+                                    ts: Utc::now(),
+                                    text: note_text,
+                                    reason: "repeated_step".to_string(),
+                                    prov: Provenance::SystemNote {
+                                        reason: "repeated_step".to_string(),
+                                    },
+                                },
+                            )
+                            .await
+                    );
+                }
             }
 
             state.turn += 1;
@@ -578,7 +729,7 @@ impl AgentLoop {
     /// `max_tool_calls` is not enforced by this item (no criterion requires
     /// it — WI-081's binding budget tests are `max_steps`, `deadline`, and
     /// `max_tokens`).
-    async fn check_budget(&self, state: LoopState) -> Option<AgentResult> {
+    async fn check_budget(&self, state: LoopState, builder: &ResultBuilder) -> Option<AgentResult> {
         let budget = &self.spec.budget;
         if state.turn >= budget.max_steps {
             return Some(
@@ -589,6 +740,7 @@ impl AgentLoop {
                     "",
                     state.usage,
                     state.turn,
+                    builder,
                 )
                 .await,
             );
@@ -603,6 +755,7 @@ impl AgentLoop {
                         "",
                         state.usage,
                         state.turn,
+                        builder,
                     )
                     .await,
                 );
@@ -619,6 +772,7 @@ impl AgentLoop {
                         "",
                         state.usage,
                         state.turn,
+                        builder,
                     )
                     .await,
                 );
@@ -627,7 +781,7 @@ impl AgentLoop {
         None
     }
 
-    async fn finish_cancelled(&self, state: LoopState) -> AgentResult {
+    async fn finish_cancelled(&self, state: LoopState, builder: &ResultBuilder) -> AgentResult {
         self.finish(
             ResultStatus::Cancelled {
                 reason: "cancelled".to_string(),
@@ -635,6 +789,7 @@ impl AgentLoop {
             "",
             state.usage,
             state.turn,
+            builder,
         )
         .await
     }
@@ -644,7 +799,18 @@ impl AgentLoop {
     /// error event: this is a graceful stop, not a failure); everything
     /// else maps to `ResultStatus::Failed` with exactly one
     /// `Event::Error { fatal: true }`.
+    ///
+    /// Only called from [`Self::run`]'s catch of [`Self::run_inner`]'s `Err`
+    /// path, after the turn loop's own `ResultBuilder` has already gone out
+    /// of scope with it -- this constructs a fresh, empty one instead. That
+    /// loses any artifacts/report accumulated in earlier turns of a run
+    /// that then hit a late I/O error, which is an accepted trade-off: no
+    /// criterion here requires facts/artifacts fidelity on a `Failed`
+    /// result, only a non-empty summary (which `ResultBuilder::resolve`'s
+    /// status-naming fallback still provides from a fresh builder) and
+    /// correct `usage`/`steps_taken`/`transcript_ref`.
     async fn finish_error(&self, state: LoopState, err: RuntimeError) -> AgentResult {
+        let builder = ResultBuilder::new();
         if let RuntimeError::Cancelled { reason, .. } = err {
             return self
                 .finish(
@@ -652,6 +818,7 @@ impl AgentLoop {
                     "",
                     state.usage,
                     state.turn,
+                    &builder,
                 )
                 .await;
         }
@@ -670,6 +837,7 @@ impl AgentLoop {
             "",
             state.usage,
             state.turn,
+            &builder,
         )
         .await
     }
@@ -717,11 +885,20 @@ impl AgentLoop {
     async fn finish(
         &self,
         status: ResultStatus,
-        summary: impl Into<String>,
+        trailing_text: impl Into<String>,
         usage: Usage,
         steps_taken: u32,
+        builder: &ResultBuilder,
     ) -> AgentResult {
-        let mut result = AgentResult::new(self.agent_id, self.session, status, summary);
+        // WI-086: precedence between an explicit `report` tool call and
+        // trailing assistant text -- and the non-empty-summary /
+        // status-naming-fallback guarantee -- are both resolved here, in
+        // one place, for every terminal path.
+        let parts = builder.resolve(&trailing_text.into(), &status);
+        let mut result = AgentResult::new(self.agent_id, self.session, status, parts.summary);
+        result.facts = parts.facts;
+        result.artifacts = parts.artifacts;
+        result.structured = parts.structured;
         result.usage = usage;
         result.steps_taken = steps_taken;
 
