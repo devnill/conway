@@ -16,6 +16,8 @@ conway-core = { path = "../conway-core" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+async-trait = { workspace = true }
+futures-core = { workspace = true }
 chrono = { workspace = true }
 regex = { workspace = true }
 jsonschema = { workspace = true }
