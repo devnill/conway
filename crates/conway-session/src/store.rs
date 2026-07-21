@@ -151,12 +151,11 @@ async fn flush_idle_handles(
         drop(map);
         for handle in snapshot {
             let mut sf = handle.lock().await;
-            if sf.dirty && sf.last_fsync.elapsed() >= interval {
-                if sf.file.sync_data().await.is_ok() {
-                    fsync_count.fetch_add(1, Ordering::Relaxed);
-                    sf.last_fsync = Instant::now();
-                    sf.dirty = false;
-                }
+            if sf.dirty && sf.last_fsync.elapsed() >= interval && sf.file.sync_data().await.is_ok()
+            {
+                fsync_count.fetch_add(1, Ordering::Relaxed);
+                sf.last_fsync = Instant::now();
+                sf.dirty = false;
             }
         }
     }
