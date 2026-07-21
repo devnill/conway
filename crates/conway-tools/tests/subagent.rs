@@ -1,0 +1,601 @@
+//! Integration coverage for `SubagentPlugin`'s four tools (WI-066 criteria).
+//!
+//! Requires the `test-fakes` feature (for `conway_tools::testing::test_ctx`
+//! and `FakeSubagentHost`). Declared with `required-features =
+//! ["test-fakes"]` in Cargo.toml, so a plain `cargo test -p conway-tools`
+//! skips (not fails) this file.
+
+#![cfg(feature = "test-fakes")]
+
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+
+use async_trait::async_trait;
+use conway_core::agent::{AgentDefRef, AgentResult, AgentTreeSnapshot, ResultStatus, SubagentSpec};
+use conway_core::content::{ContentBlock, ToolCall, ToolCategory};
+use conway_core::error::{RuntimeError, ToolError};
+use conway_core::ids::{AgentId, SessionId, ToolName};
+use conway_core::log::SubagentMode;
+use conway_core::ports::{
+    CancellationToken, EventSinkHandle, Plugin, PluginConfig, SubagentHost, Tool, ToolCtx,
+    ToolOutput,
+};
+use conway_tools::subagent::{AwaitTool, CancelTool, SteerTool, SubagentPlugin, SubagentTool};
+use conway_tools::testing::{test_ctx, FakeSubagentHost, RecordingEventSink};
+
+fn call(name: &str, arguments: serde_json::Value) -> ToolCall {
+    ToolCall {
+        call_id: "tc_1".into(),
+        name: ToolName::new(name),
+        arguments,
+    }
+}
+
+fn text_of(out: &ToolOutput) -> &str {
+    match &out.blocks[0] {
+        ContentBlock::Text { text } => text.as_str(),
+        other => panic!("expected a text block, got {other:?}"),
+    }
+}
+
+fn scripted_result(agent_id: AgentId, status: ResultStatus) -> AgentResult {
+    AgentResult::new(agent_id, SessionId::new(), status, "done")
+}
+
+/// Builds a fresh `FakeSubagentHost` with a result pre-scripted for the
+/// `AgentId` it will itself hand out from `start` (its own
+/// `next_agent_id()`, read *before* wrapping in `Arc` — `with_result`
+/// consumes `self` by value).
+fn fake_with_result(status: ResultStatus) -> (Arc<FakeSubagentHost>, AgentId) {
+    let host = FakeSubagentHost::new();
+    let id = host.next_agent_id();
+    (
+        Arc::new(host.with_result(id, scripted_result(id, status))),
+        id,
+    )
+}
+
+/// This crate holds zero delegation logic (architecture boundary,
+/// WI-066 criteria): the tool layer is a pure wrapper over
+/// `ToolCtx::subagents`. Read from outside `tools.rs` so this assertion's
+/// own literal strings aren't part of the scanned content.
+#[test]
+fn tools_module_has_no_fork_spawn_or_runtime_logic_and_stays_under_400_lines() {
+    let src = include_str!("../src/subagent/tools.rs");
+    for needle in [
+        "SessionStore",
+        "TranscriptResolver",
+        "ContextBuilder",
+        "conway_runtime",
+        "fork(",
+    ] {
+        assert!(
+            !src.contains(needle),
+            "tools.rs unexpectedly contains {needle:?}"
+        );
+    }
+    assert!(
+        src.lines().count() < 400,
+        "tools.rs has grown past 400 lines"
+    );
+}
+
+#[test]
+fn plugin_has_four_tools_all_delegate_category() {
+    let plugin = SubagentPlugin::new();
+    assert_eq!(plugin.manifest().id, "conway.subagent");
+
+    let mut names: Vec<String> = plugin
+        .tools()
+        .iter()
+        .map(|t| t.spec().name.as_str().to_string())
+        .collect();
+    names.sort();
+    assert_eq!(
+        names,
+        vec![
+            "conway_await",
+            "conway_cancel",
+            "conway_steer",
+            "conway_subagent"
+        ]
+    );
+    for tool in plugin.tools() {
+        assert_eq!(tool.spec().category, ToolCategory::Delegate);
+    }
+}
+
+#[test]
+fn subagent_schema_requires_mode_and_prompt_only() {
+    let json = serde_json::to_value(SubagentTool::new().spec().schema).unwrap();
+    let required: Vec<&str> = json["required"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(required, vec!["mode", "prompt"]);
+    assert_eq!(json["additionalProperties"], false);
+}
+
+#[tokio::test]
+async fn fork_records_start_with_fork_mode_prompt_and_cache_hint_true() {
+    let (ctx, _handles) = test_ctx(PathBuf::from("/tmp/x"));
+    let (fake, scripted_id) = fake_with_result(ResultStatus::Completed);
+    let ctx = ToolCtx {
+        subagents: fake.clone() as Arc<dyn SubagentHost>,
+        ..ctx
+    };
+
+    let out = SubagentTool::new()
+        .invoke(
+            call(
+                "conway_subagent",
+                serde_json::json!({"mode": "fork", "prompt": "p"}),
+            ),
+            ctx,
+        )
+        .await
+        .unwrap();
+    assert!(!out.is_error);
+
+    let started = fake.started();
+    assert_eq!(started.len(), 1);
+    assert_eq!(started[0].0, scripted_id);
+    assert!(matches!(started[0].1.mode, SubagentMode::Fork));
+    assert_eq!(started[0].1.prompt, "p");
+    assert!(started[0].1.cache_hint);
+}
+
+#[tokio::test]
+async fn spawn_with_agent_def_records_spawn_mode_and_cache_hint_false() {
+    let (ctx, _handles) = test_ctx(PathBuf::from("/tmp/x"));
+    let (fake, _scripted_id) = fake_with_result(ResultStatus::Completed);
+    let ctx = ToolCtx {
+        subagents: fake.clone() as Arc<dyn SubagentHost>,
+        ..ctx
+    };
+
+    SubagentTool::new()
+        .invoke(
+            call(
+                "conway_subagent",
+                serde_json::json!({"mode": "spawn", "prompt": "p", "agent_def": "reviewer"}),
+            ),
+            ctx,
+        )
+        .await
+        .unwrap();
+
+    let started = fake.started();
+    assert!(matches!(started[0].1.mode, SubagentMode::Spawn));
+    assert!(!started[0].1.cache_hint);
+    assert_eq!(
+        started[0].1.agent_def,
+        Some(AgentDefRef("reviewer".to_string()))
+    );
+}
+
+#[tokio::test]
+async fn spawn_without_agent_def_is_model_recoverable_error_with_zero_starts() {
+    let (ctx, handles) = test_ctx(PathBuf::from("/tmp/x"));
+    let out = SubagentTool::new()
+        .invoke(
+            call(
+                "conway_subagent",
+                serde_json::json!({"mode": "spawn", "prompt": "p"}),
+            ),
+            ctx,
+        )
+        .await
+        .unwrap();
+    assert!(out.is_error);
+    assert!(text_of(&out).contains(r#"agent_def is required for mode "spawn""#));
+    assert!(handles.subagents.started().is_empty());
+}
+
+#[tokio::test]
+async fn invalid_mode_is_invalid_arguments_with_zero_starts() {
+    let (ctx, handles) = test_ctx(PathBuf::from("/tmp/x"));
+    let err = SubagentTool::new()
+        .invoke(
+            call(
+                "conway_subagent",
+                serde_json::json!({"mode": "bogus", "prompt": "p"}),
+            ),
+            ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, ToolError::InvalidArguments { .. }));
+    assert!(handles.subagents.started().is_empty());
+}
+
+#[tokio::test]
+async fn await_omitted_defaults_true_and_returns_scripted_result_json() {
+    let (ctx, _handles) = test_ctx(PathBuf::from("/tmp/x"));
+    let (fake, scripted_id) = fake_with_result(ResultStatus::Completed);
+    let ctx = ToolCtx {
+        subagents: fake as Arc<dyn SubagentHost>,
+        ..ctx
+    };
+
+    let out = SubagentTool::new()
+        .invoke(
+            call(
+                "conway_subagent",
+                serde_json::json!({"mode": "fork", "prompt": "p"}),
+            ),
+            ctx,
+        )
+        .await
+        .unwrap();
+    assert!(!out.is_error);
+    let parsed: AgentResult = serde_json::from_str(text_of(&out)).unwrap();
+    assert_eq!(parsed.agent_id, scripted_id);
+}
+
+#[tokio::test]
+async fn await_false_returns_agent_id_immediately_without_calling_await_result() {
+    let (ctx, handles) = test_ctx(PathBuf::from("/tmp/x"));
+    let scripted_id = handles.subagents.next_agent_id();
+    // Deliberately no scripted result: if `await_result` were called anyway,
+    // `FakeSubagentHost` would error (`AgentNotFound`) and `invoke` would
+    // return `Err`, not the `Ok(is_error: false)` asserted below.
+    let out = SubagentTool::new()
+        .invoke(
+            call(
+                "conway_subagent",
+                serde_json::json!({"mode": "fork", "prompt": "p", "await": false}),
+            ),
+            ctx,
+        )
+        .await
+        .unwrap();
+    assert!(!out.is_error);
+    let parsed: serde_json::Value = serde_json::from_str(text_of(&out)).unwrap();
+    assert_eq!(parsed["agent_id"], serde_json::json!(scripted_id));
+}
+
+#[tokio::test]
+async fn result_status_maps_to_is_error_per_variant() {
+    let cases = vec![
+        (ResultStatus::Completed, false),
+        (
+            ResultStatus::Failed {
+                error: "boom".into(),
+            },
+            true,
+        ),
+        (ResultStatus::Cancelled { reason: "r".into() }, true),
+        (
+            ResultStatus::BudgetExceeded {
+                limit: "max_steps=40".into(),
+            },
+            true,
+        ),
+        (
+            ResultStatus::Rejected {
+                missing: vec!["tool_calling".into()],
+            },
+            true,
+        ),
+    ];
+    for (status, expected_is_error) in cases {
+        let (ctx, _handles) = test_ctx(PathBuf::from("/tmp/x"));
+        let (fake, _scripted_id) = fake_with_result(status.clone());
+        let ctx = ToolCtx {
+            subagents: fake as Arc<dyn SubagentHost>,
+            ..ctx
+        };
+        let out = SubagentTool::new()
+            .invoke(
+                call(
+                    "conway_subagent",
+                    serde_json::json!({"mode": "fork", "prompt": "p"}),
+                ),
+                ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(out.is_error, expected_is_error, "status {status:?}");
+    }
+}
+
+#[tokio::test]
+async fn budget_defaults_to_40_steps_and_ten_minute_deadline_unless_configured() {
+    let (ctx, _handles) = test_ctx(PathBuf::from("/tmp/x"));
+    let (fake, _scripted_id) = fake_with_result(ResultStatus::Completed);
+    let ctx = ToolCtx {
+        subagents: fake.clone() as Arc<dyn SubagentHost>,
+        ..ctx
+    };
+    let before = chrono::Utc::now();
+    SubagentTool::new()
+        .invoke(
+            call(
+                "conway_subagent",
+                serde_json::json!({"mode": "fork", "prompt": "p"}),
+            ),
+            ctx,
+        )
+        .await
+        .unwrap();
+    let budget = &fake.started()[0].1.budget;
+    assert_eq!(budget.max_steps, 40);
+    assert!(budget.max_tokens.is_none());
+    let deadline = budget.deadline.expect("default deadline is set");
+    assert!(deadline >= before + chrono::Duration::seconds(599));
+    assert!(deadline <= before + chrono::Duration::seconds(602));
+}
+
+#[tokio::test]
+async fn config_key_overrides_default_max_steps() {
+    let (ctx, _handles) = test_ctx(PathBuf::from("/tmp/x"));
+    let (fake, _scripted_id) = fake_with_result(ResultStatus::Completed);
+    let mut values = serde_json::Map::new();
+    values.insert("subagent.max_steps".into(), serde_json::json!(7));
+    let ctx = ToolCtx {
+        subagents: fake.clone() as Arc<dyn SubagentHost>,
+        config: Arc::new(PluginConfig { values }),
+        ..ctx
+    };
+    SubagentTool::new()
+        .invoke(
+            call(
+                "conway_subagent",
+                serde_json::json!({"mode": "fork", "prompt": "p"}),
+            ),
+            ctx,
+        )
+        .await
+        .unwrap();
+    assert_eq!(fake.started()[0].1.budget.max_steps, 7);
+}
+
+#[tokio::test]
+async fn steer_calls_host_with_exact_agent_id_and_text() {
+    let (ctx, handles) = test_ctx(PathBuf::from("/tmp/x"));
+    let target = AgentId::new();
+    let out = SteerTool::new()
+        .invoke(
+            call(
+                "conway_steer",
+                serde_json::json!({"agent_id": target.to_string(), "text": "keep going"}),
+            ),
+            ctx,
+        )
+        .await
+        .unwrap();
+    assert!(!out.is_error);
+    assert_eq!(
+        handles.subagents.steers(),
+        vec![(target, "keep going".to_string())]
+    );
+}
+
+#[tokio::test]
+async fn cancel_uses_supplied_reason_or_default() {
+    let (ctx, handles) = test_ctx(PathBuf::from("/tmp/x"));
+    let target = AgentId::new();
+    CancelTool::new()
+        .invoke(
+            call(
+                "conway_cancel",
+                serde_json::json!({"agent_id": target.to_string()}),
+            ),
+            ctx,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        handles.subagents.cancels(),
+        vec![(target, "cancelled by parent agent".to_string())]
+    );
+
+    let (ctx, handles) = test_ctx(PathBuf::from("/tmp/x"));
+    let target = AgentId::new();
+    CancelTool::new()
+        .invoke(
+            call(
+                "conway_cancel",
+                serde_json::json!({"agent_id": target.to_string(), "reason": "no longer needed"}),
+            ),
+            ctx,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        handles.subagents.cancels(),
+        vec![(target, "no longer needed".to_string())]
+    );
+}
+
+#[tokio::test]
+async fn await_tool_calls_await_result_and_applies_same_is_error_mapping() {
+    let (ctx, _handles) = test_ctx(PathBuf::from("/tmp/x"));
+    let target = AgentId::new();
+    let fake = Arc::new(FakeSubagentHost::new().with_result(
+        target,
+        scripted_result(
+            target,
+            ResultStatus::Failed {
+                error: "boom".into(),
+            },
+        ),
+    ));
+    let ctx = ToolCtx {
+        subagents: fake as Arc<dyn SubagentHost>,
+        ..ctx
+    };
+    let out = AwaitTool::new()
+        .invoke(
+            call(
+                "conway_await",
+                serde_json::json!({"agent_id": target.to_string()}),
+            ),
+            ctx,
+        )
+        .await
+        .unwrap();
+    assert!(out.is_error);
+    let parsed: AgentResult = serde_json::from_str(text_of(&out)).unwrap();
+    assert_eq!(parsed.agent_id, target);
+}
+
+#[tokio::test]
+async fn malformed_agent_id_is_invalid_arguments() {
+    let (ctx, _handles) = test_ctx(PathBuf::from("/tmp/x"));
+    let err = AwaitTool::new()
+        .invoke(
+            call(
+                "conway_await",
+                serde_json::json!({"agent_id": "not-a-ulid"}),
+            ),
+            ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, ToolError::InvalidArguments { .. }));
+}
+
+#[tokio::test]
+async fn host_runtime_error_surfaces_as_err_not_is_error() {
+    let (ctx, _handles) = test_ctx(PathBuf::from("/tmp/x"));
+    // No scripted result for this unknown id: `FakeSubagentHost::await_result`
+    // returns `Err(RuntimeError::AgentNotFound)`.
+    let unknown = AgentId::new();
+    let err = AwaitTool::new()
+        .invoke(
+            call(
+                "conway_await",
+                serde_json::json!({"agent_id": unknown.to_string()}),
+            ),
+            ctx,
+        )
+        .await
+        .unwrap_err();
+    match err {
+        ToolError::Internal { detail } => {
+            assert!(detail.contains("not found"), "detail was {detail:?}");
+        }
+        other => panic!("expected Internal (conway-core has no Host variant), got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn pre_cancelled_ctx_short_circuits_every_tool() {
+    let cases = [
+        (
+            "conway_subagent",
+            serde_json::json!({"mode": "fork", "prompt": "p"}),
+        ),
+        (
+            "conway_steer",
+            serde_json::json!({"agent_id": AgentId::new().to_string(), "text": "x"}),
+        ),
+        (
+            "conway_await",
+            serde_json::json!({"agent_id": AgentId::new().to_string()}),
+        ),
+        (
+            "conway_cancel",
+            serde_json::json!({"agent_id": AgentId::new().to_string()}),
+        ),
+    ];
+    for (name, arguments) in cases {
+        let (ctx, handles) = test_ctx(PathBuf::from("/tmp/x"));
+        handles.cancel.cancel();
+        let result = match name {
+            "conway_subagent" => SubagentTool::new().invoke(call(name, arguments), ctx).await,
+            "conway_steer" => SteerTool::new().invoke(call(name, arguments), ctx).await,
+            "conway_await" => AwaitTool::new().invoke(call(name, arguments), ctx).await,
+            "conway_cancel" => CancelTool::new().invoke(call(name, arguments), ctx).await,
+            _ => unreachable!(),
+        };
+        assert!(
+            matches!(result, Err(ToolError::Cancelled)),
+            "{name} did not honor pre-cancellation"
+        );
+    }
+}
+
+/// A `SubagentHost` wrapper whose `await_result` genuinely suspends (via a
+/// `Notify`) until released, so cancellation-while-awaiting can be tested
+/// against a real suspension point — `FakeSubagentHost`'s own `await_result`
+/// always resolves on its first poll. Every other method delegates straight
+/// through, so the `start`/`cancel` calls this test asserts on are still
+/// recorded by the real `FakeSubagentHost`.
+#[derive(Debug)]
+struct BlockingAwaitHost {
+    inner: Arc<FakeSubagentHost>,
+    gate: Arc<tokio::sync::Notify>,
+}
+
+#[async_trait]
+impl SubagentHost for BlockingAwaitHost {
+    async fn start(&self, parent: AgentId, spec: SubagentSpec) -> Result<AgentId, RuntimeError> {
+        self.inner.start(parent, spec).await
+    }
+    async fn steer(&self, target: AgentId, text: String) -> Result<(), RuntimeError> {
+        self.inner.steer(target, text).await
+    }
+    async fn await_result(&self, target: AgentId) -> Result<AgentResult, RuntimeError> {
+        self.gate.notified().await;
+        self.inner.await_result(target).await
+    }
+    async fn cancel(&self, target: AgentId, reason: String) -> Result<(), RuntimeError> {
+        self.inner.cancel(target, reason).await
+    }
+    fn tree(&self) -> AgentTreeSnapshot {
+        self.inner.tree()
+    }
+}
+
+#[tokio::test]
+async fn cancel_during_blocked_await_cancels_child_and_returns_cancelled() {
+    let inner = Arc::new(FakeSubagentHost::new());
+    let scripted_id = inner.next_agent_id();
+    let host: Arc<dyn SubagentHost> = Arc::new(BlockingAwaitHost {
+        inner: inner.clone(),
+        gate: Arc::new(tokio::sync::Notify::new()),
+    });
+    let cancel = CancellationToken::new();
+    let ctx = ToolCtx {
+        agent_id: AgentId::new(),
+        session_id: SessionId::new(),
+        cwd: PathBuf::from("/tmp/x"),
+        cancel: cancel.clone(),
+        events: Arc::new(RecordingEventSink::new()) as EventSinkHandle,
+        subagents: host,
+        config: Arc::new(PluginConfig::default()),
+    };
+
+    let tool = SubagentTool::new();
+    let invoke_fut = tool.invoke(
+        call(
+            "conway_subagent",
+            serde_json::json!({"mode": "fork", "prompt": "p"}),
+        ),
+        ctx,
+    );
+    tokio::pin!(invoke_fut);
+
+    let still_pending = tokio::time::timeout(Duration::from_millis(100), &mut invoke_fut).await;
+    assert!(
+        still_pending.is_err(),
+        "invoke resolved before cancellation"
+    );
+
+    cancel.cancel();
+
+    let result = tokio::time::timeout(Duration::from_secs(2), invoke_fut)
+        .await
+        .expect("invoke did not observe cancellation in time");
+    assert!(matches!(result, Err(ToolError::Cancelled)));
+    assert_eq!(
+        inner.cancels(),
+        vec![(scripted_id, "parent tool cancelled".to_string())]
+    );
+}

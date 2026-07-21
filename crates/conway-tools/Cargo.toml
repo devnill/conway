@@ -62,3 +62,8 @@ required-features = ["test-fakes"]
 name = "report"
 path = "tests/report.rs"
 required-features = ["test-fakes"]
+
+[[test]]
+name = "subagent"
+path = "tests/subagent.rs"
+required-features = ["test-fakes"]
