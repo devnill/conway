@@ -1,0 +1,21 @@
+id: conway-cli
+type: module_spec
+module: conway-cli
+cycle_created: 0
+scope: "The conway binary: interactive REPL/TUI mode and one-shot streaming mode (-p). A thin presentation layer over SessionHandle. NOT responsible for: anything not purely presentational - a capability the CLI needs is added to the conway facade first."
+provides:
+  - "conway (interactive): ratatui REPL with agent-tree pane, streamed text, permission prompts, /steer <agent> <text>, /tree, /context <agent>, /why (last routing decision), /fork, /spawn, /resume <sid>"
+  - "conway -p (one-shot): prompt from argv or stdin; --output-format text|json|jsonl; --allowed-tools, --deny-tools, --permission-mode {allowlist,deny}; --role-override, --model; --session, --resume, --fork-from <sid>@<seq>"
+  - conway sessions list|show|tree|export
+  - "conway routes explain <role>: resolved chain, capability filters, current breaker state"
+requires: conway facade ONLY. MUST NOT depend on conway-runtime, conway-backends, conway-session, or conway-routing directly.
+boundary_rules:
+  - -p MUST NOT prompt interactively; permissions from AllowListGate built from flags; unlisted tool call yields DenyWithFeedback visible in structured output
+  - -p MUST stream to stdout as tokens arrive under text and jsonl formats; buffering the whole response is a bug (explicit claude -p replacement requirement)
+  - "Stable exit codes (C-04): 0 completed, 1 agent failed, 2 usage/config error, 3 terminated by permission denial, 4 no healthy backend after exhausting fallback chain, 5 budget exceeded, 130 SIGINT"
+  - stdout carries ONLY program output; diagnostics to stderr; jsonl output is one Envelope per line, valid JSON, no ANSI
+  - "SIGINT: first = graceful cancel (soft, drains to terminal AgentResult, exit 130); second = immediate abort"
+internal_notes: Both modes construct the identical SessionHandle and consume the identical EventStream; they differ only in the renderer. Interactive uses ratatui; the one-shot renderer is ~200 lines. A behavioral difference between modes is by definition a renderer bug.
+cycle_modified: null
+content_hash: 0f4e51632f02ace30512c40844635dfa0dbc9b09cdbf779ac09c06fab060185a
+token_count: 523

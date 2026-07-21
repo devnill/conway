@@ -1,0 +1,43 @@
+id: WI-112
+type: work_item
+title: -p one-shot mode — streaming renderers, allow-list gate, SIGINT
+complexity: high
+scope:
+  - path: crates/conway-cli/src/oneshot.rs
+    op: modify
+  - path: crates/conway-cli/src/render/mod.rs
+    op: create
+  - path: crates/conway-cli/src/render/text.rs
+    op: create
+  - path: crates/conway-cli/src/render/json.rs
+    op: create
+  - path: crates/conway-cli/src/render/jsonl.rs
+    op: create
+  - path: crates/conway-cli/src/signal.rs
+    op: create
+depends:
+  - WI-101
+  - WI-111
+blocks: []
+criteria:
+  - Renderer trait (on_event/finish) and make(format, out) factory exist [machine]
+  - TextRenderer writes exactly `hello\n` for the two-delta fixture and flushes after every TextDelta (flush count == delta count) [machine]
+  - JsonlRenderer writes one parseable line per Envelope with seq/ts/session/agent/event keys and no ESC bytes [machine]
+  - JsonRenderer emits nothing until finish, then exactly one AgentResult object [machine]
+  - build_gate maps allowlist/deny-tools/deny-mode flags to the documented gate behaviors [machine]
+  - oneshot never constructs a PromptingGate (source assertion) [machine]
+  - "signal.rs SigintWatch: second delivery invokes the abort callback [machine]"
+  - cargo clippy -p conway-cli -D warnings passes [machine]
+domain: null
+phase: null
+work_item_type: feature
+notes: |-
+  Objective: Implement the one-shot execution path — the Slice 1 milestone. Read the prompt, build the session, consume the EventStream, render incrementally, map termination to an exit code. Streaming to stdout as tokens arrive is the contract; buffering is a bug.
+
+  Full binding implementation notes: docs/plan/wi-conway-cli.md section WI-112.
+resolution: null
+status: pending
+cycle_created: 0
+cycle_modified: null
+content_hash: 329a8fe8a3722048b7c4f95a96448781c01f9ad14c29c52248ad6af055d110fc
+token_count: 441

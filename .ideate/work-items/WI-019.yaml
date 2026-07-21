@@ -1,0 +1,47 @@
+id: WI-019
+type: work_item
+title: OpenAiCompatBackend — wire mapping, generate, stream (OpenAi + Ollama dialects)
+complexity: high
+scope:
+  - path: crates/conway-backends/src/openai_compat/mod.rs
+    op: create
+  - path: crates/conway-backends/src/openai_compat/wire.rs
+    op: create
+  - path: crates/conway-backends/src/openai_compat/stream.rs
+    op: create
+  - path: crates/conway-backends/src/openai_compat/dialect.rs
+    op: create
+  - path: crates/conway-backends/tests/openai_compat_generate.rs
+    op: create
+  - path: crates/conway-backends/tests/openai_compat_stream.rs
+    op: create
+depends:
+  - WI-008
+  - WI-016
+  - WI-017
+  - WI-018
+blocks: []
+criteria:
+  - "`OpenAiCompatBackend::new(config)` exists; `impl Backend` compiles under `--features openai-compat --no-default-features` [machine]"
+  - Segment-to-message mapping matches the golden JSON for a 4-segment fixture [machine]
+  - "Cache-hint invariant: request body with hints is byte-identical to body without hints [machine]"
+  - "Wiremock: text-only generate yields correct GenerateResponse with usage mapped from prompt/completion tokens [machine]"
+  - "Wiremock: `finish_reason: tool_calls` yields exactly one validated ToolCall and `stop: ToolUse` [machine]"
+  - "Wiremock: stream emits ordered TextDeltas terminated by exactly one Done whose content equals the concatenation [machine]"
+  - "Wiremock: streamed tool-call deltas emit ToolCallDelta chunks and a validated Done [machine]"
+  - "Wiremock: truncated streamed tool-call JSON yields `Err(ToolParse)`; adapter performs NO retry (mock receives exactly 1 request) [machine]"
+  - "Wiremock: 500 yields ServerError after exactly 3 requests; 401 yields Auth after exactly 1 [machine]"
+  - "`capabilities(&model)` returns build_capabilities output for present and absent metadata cases [machine]"
+domain: null
+phase: null
+work_item_type: feature
+notes: |-
+  Objective: One adapter, dialect-selected behavior. Ollama is the first supported dialect because it is free, local, and Slice 1 depends on it.
+
+  Full binding implementation notes: docs/plan/wi-conway-backends.md section WI-019.
+resolution: null
+status: pending
+cycle_created: 0
+cycle_modified: null
+content_hash: f58dd9a7ba4934cb0f711e42beed48079243ae02db6ec673ad7bd7a057cfe5dd
+token_count: 546

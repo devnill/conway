@@ -1,0 +1,13 @@
+id: P-7
+type: domain_policy
+domain: plugins-tools
+title: Isolation belongs to tools
+rule: Worktrees, sandboxing, and file-conflict avoidance happen via tool calls made by agents (e.g., bash + git worktree); the harness's responsibility ends at the permission gate.
+derived_from: GP-08 (Isolation Belongs to Tools, Not the Harness)
+established: planning phase
+status: active
+amended_by: null
+cycle_created: 0
+cycle_modified: 0
+content_hash: 76884c25a09cab9654a8c4faa9043da8dc65ba8474b9fe3eac3de1d9ba3552d5
+token_count: 106

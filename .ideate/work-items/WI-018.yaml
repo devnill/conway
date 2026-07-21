@@ -1,0 +1,45 @@
+id: WI-018
+type: work_item
+title: ToolCallAccumulator — streaming tool-call delta accumulation and validation
+complexity: high
+scope:
+  - path: crates/conway-backends/src/tool_calls/mod.rs
+    op: create
+  - path: crates/conway-backends/src/tool_calls/openai.rs
+    op: create
+  - path: crates/conway-backends/src/tool_calls/ollama.rs
+    op: create
+  - path: crates/conway-backends/src/tool_calls/validate.rs
+    op: create
+  - path: crates/conway-backends/tests/tool_call_accumulator.rs
+    op: create
+  - path: crates/conway-backends/tests/fixtures/streams/
+    op: create
+depends:
+  - WI-008
+  - WI-016
+blocks: []
+criteria:
+  - "`ToolCallAccumulator::new(Dialect, &[ToolSpec])` exists and is public [machine]"
+  - OpenAI-shaped fragmented argument deltas accumulate to exactly one validated ToolCall [machine]
+  - Two interleaved indices produce two ToolCalls in ascending index order with separated argument buffers [machine]
+  - "Regression (codex#7517): deltas repeating id+name every chunk produce ONE tool call, not N [machine]"
+  - "Regression (ollama#12557): complete-object arguments chunk followed by empty-string chunk produces one valid call; object-typed arguments accepted for Ollama dialect [machine]"
+  - "`finish(ToolUse)` with unterminated JSON returns `Err(ToolParse)` naming the tool and bounded buffer excerpt [machine]"
+  - Arguments failing the ToolSpec JSON Schema return `Err(ToolParse)` naming the failing schema path [machine]
+  - A call naming an unknown tool returns `Err(ToolParse)` containing `unknown tool` [machine]
+  - "`finish(EndTurn)` with zero calls returns `Ok(vec![])` [machine]"
+  - "Empty-string or `{}` arguments for a no-required-props schema yield `arguments: {}` [machine]"
+domain: null
+phase: null
+work_item_type: feature
+notes: |-
+  Objective: Isolate the single most bug-prone surface in the module (streamed tool-call parsing) so it is unit-testable without a server.
+
+  Full binding implementation notes: docs/plan/wi-conway-backends.md section WI-018.
+resolution: null
+status: pending
+cycle_created: 0
+cycle_modified: null
+content_hash: c37da8861daa98dea4656aabc9db33bfe0a508e4610e1a2766eea105003ebf69
+token_count: 519

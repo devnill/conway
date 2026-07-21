@@ -1,0 +1,38 @@
+id: PH-002
+type: phase
+title: Infrastructure Crates
+phase_type: implementation
+project: PR-001
+description: "Four parallel tracks against core fakes: conway-backends (OpenAI-compat Ollama dialect first, Anthropic with cache breakpoints, remaining dialects), conway-routing (declarative router with headroom gate, dual circuit breakers, prober, explain), conway-session (JSONL store, O(1) fork, transcript resolver, index), conway-tools (fs/shell/report/subagent plugins)."
+work_items:
+  - WI-016
+  - WI-017
+  - WI-018
+  - WI-019
+  - WI-020
+  - WI-021
+  - WI-022
+  - WI-031
+  - WI-032
+  - WI-033
+  - WI-034
+  - WI-035
+  - WI-036
+  - WI-046
+  - WI-047
+  - WI-048
+  - WI-049
+  - WI-050
+  - WI-051
+  - WI-061
+  - WI-062
+  - WI-063
+  - WI-064
+  - WI-065
+  - WI-066
+  - WI-067
+status: pending
+cycle_created: 0
+cycle_modified: null
+content_hash: c004756644ae89b2c19215348fb8ead0d1b9bfd2bd4041b3ade97773e5544a65
+token_count: 206

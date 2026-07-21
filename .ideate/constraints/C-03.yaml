@@ -1,0 +1,9 @@
+id: C-03
+type: constraint
+category: design
+status: active
+description: "Three consumption modes are mandatory: Rust library API, interactive CLI, and stdin-style streaming one-shot mode. Every user-facing capability must be reachable from the library API; the two CLI modes are layers over it. No capability may exist in only one mode."
+cycle_created: 0
+cycle_modified: null
+content_hash: bac5f32ed6ea33c92bea3412003c6b22616674203b2330c34ff8662a378c1b92
+token_count: 93

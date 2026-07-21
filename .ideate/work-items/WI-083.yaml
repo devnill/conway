@@ -1,0 +1,39 @@
+id: WI-083
+type: work_item
+title: AgentTree and supervisor — budgets, panic containment, guaranteed terminal results
+complexity: high
+scope:
+  - path: crates/conway-runtime/src/tree.rs
+    op: modify
+  - path: crates/conway-runtime/src/supervisor.rs
+    op: modify
+  - path: crates/conway-runtime/src/runtime.rs
+    op: modify
+  - path: crates/conway-runtime/tests/supervisor.rs
+    op: create
+depends:
+  - WI-082
+blocks: []
+criteria:
+  - "`AgentTree::attach` and `snapshot` exist; snapshot includes id, parent, session, status, budget, steps [machine]"
+  - "`AgentTree::path(agent)` returns the root-to-agent chain used for PermissionRequest::agent_path [machine]"
+  - Unknown parent returns AgentNotFound; duplicate id errors [machine]
+  - "Panic containment: a panicking child loop still resolves an awaiting parent with Failed within 1s; parent unaffected [machine]"
+  - Deadline elapsing while blocked in a tool call resolves BudgetExceeded via supervisor synthesis [machine]
+  - Hard cancel resolves await_result with Cancelled [machine]
+  - AgentSpawned precedes all events for that agent; exactly one AgentFinished per spawn (stream invariant checker) [machine]
+  - Exactly one AgentResult per agent — set-once watch channel wins any race [machine]
+  - Cancelling a parent cancels the entire subtree; every descendant produces a terminal result [machine]
+domain: null
+phase: null
+work_item_type: feature
+notes: |-
+  Objective: Own the agent tree and the supervision guarantee that await_result always terminates — the MAST 'failure to recognize termination' mitigation and the hardest correctness property in the module.
+
+  Full binding implementation notes: docs/plan/wi-conway-runtime.md section WI-083.
+resolution: null
+status: pending
+cycle_created: 0
+cycle_modified: null
+content_hash: 97de6ddcb1cf042fd6dcd6a825c431dc31ff81fb58c4c1deaf5143bbf9e45a83
+token_count: 446

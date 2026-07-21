@@ -1,0 +1,36 @@
+id: WI-078
+type: work_item
+title: PermissionBroker — decision cache over the consumer's PermissionGate
+complexity: medium
+scope:
+  - path: crates/conway-runtime/src/permission.rs
+    op: modify
+  - path: crates/conway-runtime/tests/permission_broker.rs
+    op: create
+depends:
+  - WI-008
+  - WI-076
+blocks: []
+criteria:
+  - "`PermissionBroker::new(gate, bus)` and `async decide(&PermissionCtx, &ToolCall) -> PermissionOutcome {Allow | Deny{rendered_error}}` exist [machine]"
+  - "AllowAlways{Session} caches: identical second call hits the gate zero times [machine]"
+  - AllowAlways{Agent} caches per-agent only; sibling agents re-consult the gate [machine]
+  - AllowAlways{AgentSubtree} honored for descendants (agent_path prefix match), not others [machine]
+  - AllowOnce is never cached [machine]
+  - Deny carries the reason and is not cached [machine]
+  - DenyWithFeedback marked for model-visible tool error, not abort [machine]
+  - Exactly one PermissionRequested precedes exactly one PermissionResolved per decision, in seq order [machine]
+  - Dropped/cancelled gate future yields Deny{cancelled} and still emits PermissionResolved [machine]
+domain: null
+phase: null
+work_item_type: feature
+notes: |-
+  Objective: Layer a per-session decision cache above the embedder's PermissionGate and normalize gate outcomes into allow/deny with complete event emission.
+
+  Full binding implementation notes: docs/plan/wi-conway-runtime.md section WI-078.
+resolution: null
+status: pending
+cycle_created: 0
+cycle_modified: null
+content_hash: c643a4efc22f96a137ee1e1987fe0db48ab72e58125c37205a29998c5a3052a6
+token_count: 380

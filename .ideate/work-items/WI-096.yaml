@@ -1,0 +1,45 @@
+id: WI-096
+type: work_item
+title: conway crate skeleton, feature flags, error type, and public re-export surface
+complexity: medium
+scope:
+  - path: crates/conway/Cargo.toml
+    op: create
+  - path: crates/conway/src/lib.rs
+    op: create
+  - path: crates/conway/src/error.rs
+    op: create
+  - path: crates/conway/tests/public_api_surface.rs
+    op: create
+  - path: .github/workflows/feature-matrix.yml
+    op: create
+depends:
+  - WI-008
+  - WI-016
+  - WI-031
+  - WI-046
+  - WI-061
+  - WI-076
+blocks: []
+criteria:
+  - "Features: default = [anthropic, openai-compat, builtin-tools, jsonl-store], each mapping to exactly one optional dependency [machine]"
+  - Feature-matrix cargo check passes for no-default, each single feature, all-features, and default [machine]
+  - lib.rs re-exports the documented conway-core type and trait list [machine]
+  - public_api_surface.rs names every re-exported item in a use statement (compile-breaks on removal) [machine]
+  - At most one `pub use conway_runtime::` line (runtime internals not re-exported) [machine]
+  - "ConwayError is #[non_exhaustive] thiserror with the documented variants including UnsupportedFeature [machine]"
+  - "`pub type Result<T>` exported from crate root [machine]"
+  - cargo clippy --all-features -D warnings exits 0 [machine]
+domain: null
+phase: null
+work_item_type: feature
+notes: |-
+  Objective: Establish the conway crate as the single stable public API surface: dependency wiring, feature flags, the crate-level error type, and the curated re-export list.
+
+  Full binding implementation notes: docs/plan/wi-conway-facade.md section WI-096.
+resolution: null
+status: pending
+cycle_created: 0
+cycle_modified: null
+content_hash: 43af3c5e26190d2577ae5a5baf6375b6e7c40011fdeb31e4dd8999dae2d82174
+token_count: 420

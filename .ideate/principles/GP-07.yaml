@@ -1,0 +1,10 @@
+id: GP-07
+type: guiding_principle
+name: Predictable, Declarative Routing
+status: active
+description: "Routing is declarative: per-role model aliases with explicit fallback chains, plus a health/failover layer beneath. A user or embedding application can always answer 'which model served this request and why'. No learned classifiers or opaque auto-selection in the core; if classifier-based routing is ever added, it is an opt-in alias resolvable like any other, layered on top. Availability handling (circuit breaking for crash-prone local servers) is kept separate from routing policy."
+amendment_history: []
+cycle_created: 0
+cycle_modified: null
+content_hash: c4adb1fda52bfe4f928e907e75ebdc62853b0dd7965f1a80df73100d85216076
+token_count: 162

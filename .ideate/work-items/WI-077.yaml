@@ -1,0 +1,49 @@
+id: WI-077
+type: work_item
+title: ContextBuilder — fixed segment order, provenance, cache hints, PrefixKey
+complexity: high
+scope:
+  - path: crates/conway-runtime/src/context/mod.rs
+    op: modify
+  - path: crates/conway-runtime/src/context/builder.rs
+    op: modify
+  - path: crates/conway-runtime/src/context/prefix.rs
+    op: modify
+  - path: crates/conway-runtime/tests/context_golden.rs
+    op: create
+  - path: crates/conway-runtime/tests/golden/context_root_simple.json
+    op: create
+  - path: crates/conway-runtime/tests/golden/context_fork_inherited.json
+    op: create
+  - path: crates/conway-runtime/tests/golden/context_spawn_clean.json
+    op: create
+  - path: crates/conway-runtime/tests/golden/context_with_steer_and_toolresults.json
+    op: create
+depends:
+  - WI-008
+  - WI-076
+blocks: []
+criteria:
+  - "`ContextBuilder::build(&ContextInput) -> Result<(Vec<PromptSegment>, ContextReport), RuntimeError>` is pure — no I/O, no async [machine]"
+  - "Golden context_root_simple: order SystemPrompt, SkillFragments*, ToolSchemas, Prompt, volatile*; byte-equals golden file [machine]"
+  - "Golden context_fork_inherited: order includes InheritedPrefix* then ForkDirective; inherited segments carry Provenance::Inherited covering exactly 0..at_seq [machine]"
+  - "Golden context_spawn_clean: no Inherited segment; prompt carries UserPrompt provenance [machine]"
+  - PromptSegment cannot be constructed without provenance (compile-fail/trybuild evidence) [machine]
+  - "Cache-hint placement: ExplicitBreakpoints{4} yields breakpoints on last ToolSchemas (A) and last InheritedPrefix (B); no inherited prefix yields only A [machine]"
+  - "Breakpoint trim: max_breakpoints 1 keeps only B (priority B > A) [machine]"
+  - "Cache neutrality: hints change nothing in (id, role, content, provenance) tuples [machine]"
+  - PrefixKey = blake3(model_id || canonical bytes of segments[0..=B]); same for same-point siblings, different per model [machine]
+  - ContextReport entry count == segment count; estimator is `heuristic-chars4` [machine]
+domain: null
+phase: null
+work_item_type: feature
+notes: |-
+  Objective: Implement the single component that assembles an agent's request context in the fixed §5.3 order with complete provenance and non-correctness-bearing cache hints. Highest-risk component in the module (GP-01/02/06/10 converge here); golden-file tested from first commit.
+
+  Full binding implementation notes: docs/plan/wi-conway-runtime.md section WI-077.
+resolution: null
+status: pending
+cycle_created: 0
+cycle_modified: null
+content_hash: b6c5cccd2227c1687bf0076a6eef18d743c72faf1f8f0cdb17dfcd02b0d382e1
+token_count: 635

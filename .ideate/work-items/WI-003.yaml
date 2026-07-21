@@ -1,0 +1,35 @@
+id: WI-003
+type: work_item
+title: Define Provenance, PromptSegment, cache hints, and ContextReport
+complexity: medium
+scope:
+  - path: crates/conway-core/src/provenance.rs
+    op: create
+  - path: crates/conway-core/src/segment.rs
+    op: create
+  - path: crates/conway-core/src/log.rs
+    op: modify
+depends:
+  - WI-002
+blocks: []
+criteria:
+  - "`provenance.rs` exports `Provenance` with exactly the nine variants named in the module spec, and `ContextReport` [machine]"
+  - "`segment.rs` exports `PromptSegment`, `CacheHint`, `CacheTtl`, `SegmentKind` [machine]"
+  - "`PromptSegment` has no `Default` impl and its `provenance` field is non-`Option`, so a segment cannot be constructed without provenance; a compile-fail test documents this [machine]"
+  - "`Provenance` serializes internally-tagged with field `type` and snake_case tags `user_prompt|agent_def|skill|tool_registry|inherited|fork_directive|parent_steer|tool_result|system_note`; a unit test asserts each tag [machine]"
+  - A unit test deserializes the inherited and tool_result example provenance JSON objects into the correct variants [machine]
+  - "`log.rs` gains a `prov: Provenance` field on `UserTurn`, `ForkDirective`, `ParentSteer`, `SystemNote`, and a `ContextReportRecord` variant with tag `context_report`; existing §5.1 example lines still deserialize [machine]"
+  - "`cargo test -p conway-core` passes [machine]"
+domain: null
+phase: null
+work_item_type: feature
+notes: |-
+  Objective: Implement GP-10's typed provenance enum, the `PromptSegment` type that carries it, and the cache-hint types that make caching an economics-only concern. This is the crate's most semantically load-bearing item: `ContextBuilder` in `conway-runtime` and the IDE's provenance tree both render directly off these types.
+
+  Full binding implementation notes: docs/plan/wi-conway-core.md section WI-003.
+resolution: null
+status: pending
+cycle_created: 0
+cycle_modified: null
+content_hash: 405cdfecfc0c31c6b453ca61d44bf9b39a3534594987dd5d80ee54119996494e
+token_count: 482

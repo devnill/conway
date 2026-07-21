@@ -1,0 +1,23 @@
+id: conway-tools
+type: module_spec
+module: conway-tools
+cycle_created: 0
+scope: "The built-in plugins, each implementing the same Plugin/Tool traits available to third parties: fs (read/write/edit/glob/grep), shell (bash), subagent (fork/spawn/steer/await/cancel), report (structured result emission). NOT responsible for: permission decisions (declares PermissionClass, broker decides), sandboxing/isolation (GP-08 - agents isolate via bash + git worktree), MCP (future plugin)."
+provides:
+  - "FsPlugin: read, write, edit, glob, grep tools; categories Read/Edit"
+  - "ShellPlugin: bash tool; category Execute; streaming output via ToolCtx::events; TruncationPolicy::HeadTail default; kills its process group on cancel"
+  - "SubagentPlugin: conway_subagent{mode, prompt, agent_def?, role?, budget?, await?}, conway_steer{agent_id, text}, conway_await{agent_id}, conway_cancel{agent_id}; category Delegate; pure wrapper (~60 lines) over ToolCtx::subagents: Arc<dyn SubagentHost>"
+  - "ReportPlugin: report{summary, facts, artifacts, structured} - agent explicitly finalizes its AgentResult rather than the runtime inferring from trailing text"
+  - builtin_plugins() -> Vec<Arc<dyn Plugin>>
+requires: "conway-core: Plugin, Tool, ToolCtx, ToolOutput, SubagentHost, ToolSpec."
+boundary_rules:
+  - MUST NOT depend on conway-runtime; all runtime interaction via ToolCtx ports - this makes GP-03 real
+  - Built-ins get NO privileged API; a capability a built-in needs is added to ToolCtx and thereby available to every third-party plugin
+  - Every tool honors ToolCtx::cancel cooperatively
+  - Every tool declares TruncationPolicy; runtime enforces and records truncation in the log (truncation is a context-affecting, provenance-visible event)
+  - Tools MUST NOT write to the session log directly
+  - "SubagentPlugin MUST NOT contain fork/spawn logic (decision: API-first)"
+internal_notes: "conway_subagent is blocking-by-default (returns child AgentResult as tool result) with await:false returning agent_id immediately for fan-out. Tournament/adversarial composites: one fork issues N spawn calls with await:false and differing prompts, N conway_await calls, aggregates into its own report. No new primitive."
+cycle_modified: null
+content_hash: f9a9a331b252389c14946ee338388ccd510441c9af112a75017d03aa601196b3
+token_count: 557

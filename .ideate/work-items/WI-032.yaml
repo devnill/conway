@@ -1,0 +1,39 @@
+id: WI-032
+type: work_item
+title: CapabilityIndex and RequiredCaps satisfaction check
+complexity: medium
+scope:
+  - path: crates/conway-routing/src/capability.rs
+    op: modify
+depends:
+  - WI-008
+  - WI-031
+blocks: []
+criteria:
+  - "`CapabilityIndex::builder().insert(...).build()` produces an index; `get(&ModelRef)` returns inserted value or None [machine]"
+  - "`CapabilityIndex::from_backends` calls `Backend::capabilities(model)` once per (backend, model) pair and omits refs whose backend is absent; verified with a counting fake [machine]"
+  - "`get` is O(1) backed by a HashMap; no linear scan [machine]"
+  - "Signature is `capability::satisfies(caps, required, est_tokens: u32, headroom_tokens: u32) -> Result<(), Vec<String>>`, returning every unmet requirement in fixed order [machine]"
+  - Missing-reason strings match the exact golden strings in the implementation notes; one unit test per string [machine]
+  - "Gate: candidate passes iff `est_tokens.saturating_add(headroom_tokens) <= max_context_tokens`; boundary tests at ==max and ==max+1 [machine]"
+  - "Headroom is load-bearing: candidate with max=40000, est=34000, headroom=16000 rejected; same candidate with headroom=0 accepted — named test `headroom_rejects_candidate_that_fits_raw_input` [machine]"
+  - "Context missing-reason string is exactly `context: needs 34000 input + 16000 headroom = 50000, model max_context_tokens is 40000` [machine]"
+  - "Saturating arithmetic: u32::MAX inputs produce rejection, not panic [machine]"
+  - "Missing-reason order: tool_calling, structured_output, parallel_tool_calls, reasoning, reliability_tier, min_context, context (headroom last); full ordered vector asserted [machine]"
+  - "`min_context` and the headroom gate are independent checks that can both appear in one Err [machine]"
+  - "`satisfies` is pure and synchronous — no self, clock, or registry [machine]"
+  - "`CapabilityIndex` is Send + Sync + Clone (static assertion) [machine]"
+  - "`cargo test -p conway-routing` passes [machine]"
+domain: null
+phase: null
+work_item_type: feature
+notes: |-
+  Objective: Provide the (backend, model)-to-Capabilities lookup built at startup and the pure, total predicate the router uses for capability filtering, including the reasoning-headroom context gate.
+
+  Full binding implementation notes: docs/plan/wi-conway-routing.md section WI-032. HEADROOM AMENDMENT applies — see docs/plan/wi-conway-routing-amendment.md section WI-032; amended text supersedes the original where they differ.
+resolution: null
+status: pending
+cycle_created: 0
+cycle_modified: null
+content_hash: acd20245b7575d73a9e74ea527f68ddd1cb4ef01909fefb6dc9dea1249401c56
+token_count: 643

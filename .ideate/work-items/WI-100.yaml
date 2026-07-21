@@ -1,0 +1,49 @@
+id: WI-100
+type: work_item
+title: ConwayBuilder assembly and Conway::new_session
+complexity: high
+scope:
+  - path: crates/conway/src/builder.rs
+    op: create
+  - path: crates/conway/src/conway.rs
+    op: create
+  - path: crates/conway/src/lib.rs
+    op: modify
+  - path: crates/conway/tests/builder.rs
+    op: create
+depends:
+  - WI-019
+  - WI-021
+  - WI-034
+  - WI-047
+  - WI-067
+  - WI-082
+  - WI-096
+  - WI-097
+  - WI-098
+  - WI-099
+blocks: []
+criteria:
+  - ConwayBuilder exposes exactly the documented method set (from_config, discover, from_parts, with_backend/plugin/permission_gate/session_store/router, with_cli_overrides, build) [machine]
+  - Config naming a feature-disabled backend returns UnsupportedFeature [machine]
+  - "No backends configured or injected: Build error `no backends`; likewise `no session store` [machine]"
+  - "Injection precedence: same-id injected backend replaces config-derived; injected gate overrides config permissions mode [machine]"
+  - builtin-tools feature governs default plugin registry; duplicate plugin id is a loud build error [machine]
+  - build() performs no network I/O; probe_on_startup defaults false with CapabilityIndex from metadata only [machine]
+  - new_session creates the session, starts a root agent, and returns a handle with matching id/root [machine]
+  - SessionSpec::default() falls back per-field to config values [machine]
+  - explain_routing delegates to RoutingExplain with the configured chain [machine]
+  - "End-to-end fakes test: from_parts + injected fakes builds and creates a session with zero network and no writes outside a temp dir [machine]"
+domain: null
+phase: null
+work_item_type: feature
+notes: |-
+  Objective: Turn a validated ConwayConfig plus optional injected ports into a live Runtime, and expose session creation. Wiring layer only — no agent logic.
+
+  Full binding implementation notes: docs/plan/wi-conway-facade.md section WI-100.
+resolution: null
+status: pending
+cycle_created: 0
+cycle_modified: null
+content_hash: 0ce17bdbc135095f43b1f8570d537f3de72c57e51ae9bb49e825351b0afad470
+token_count: 498

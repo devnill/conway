@@ -1,0 +1,52 @@
+id: WI-021
+type: work_item
+title: AnthropicBackend — Messages API adapter with explicit cache-breakpoint mapping
+complexity: high
+scope:
+  - path: crates/conway-backends/src/anthropic/mod.rs
+    op: create
+  - path: crates/conway-backends/src/anthropic/wire.rs
+    op: create
+  - path: crates/conway-backends/src/anthropic/stream.rs
+    op: create
+  - path: crates/conway-backends/src/anthropic/cache.rs
+    op: create
+  - path: crates/conway-backends/tests/anthropic_generate.rs
+    op: create
+  - path: crates/conway-backends/tests/anthropic_stream.rs
+    op: create
+  - path: crates/conway-backends/tests/anthropic_cache_mapping.rs
+    op: create
+depends:
+  - WI-008
+  - WI-016
+  - WI-017
+  - WI-018
+blocks: []
+criteria:
+  - "`AnthropicBackend::new(config)` exists; `impl Backend` compiles under `--features anthropic --no-default-features` [machine]"
+  - 4-segment fixture maps to golden request body (top-level system array, alternating messages, tool_result nested in user message) [machine]
+  - Consecutive ToolResult segments merge into ONE user message with multiple tool_result blocks [machine]
+  - 6 breakpointed segments produce exactly 4 cache_control markers on the LAST 4 in segment order [machine]
+  - "Byte-identity invariant: body with hints stripped equals body with hints present minus every cache_control key [machine]"
+  - "OneHour emits `{type: ephemeral, ttl: 1h}`; FiveMinutes emits ephemeral with no ttl key [machine]"
+  - "Wiremock: text generate yields EndTurn with usage from input/output/cache_read/cache_creation token fields [machine]"
+  - "Wiremock: tool_use block yields exactly one validated ToolCall and stop ToolUse [machine]"
+  - "Wiremock: canonical SSE sequence emits ordered TextDeltas and exactly one Done [machine]"
+  - "Wiremock: invalid input_json_delta fragments yield final `Err(ToolParse)` with exactly 1 upstream request [machine]"
+  - "Wiremock: 429 retry-after maps to RateLimit; 529 to ServerError; 400 prompt-too-long to ContextOverflow [machine]"
+  - thinking_delta events emit ThinkingDelta and produce ContentBlock::Thinking in Done.content [machine]
+  - "`capabilities(claude-sonnet-4-6)` returns ExplicitBreakpoints{max_breakpoints:4} and Streaming{validated:true} [machine]"
+domain: null
+phase: null
+work_item_type: feature
+notes: |-
+  Objective: The Group 2 / Track F deliverable — Anthropic native adapter with explicit cache-breakpoint mapping. API key only; no OAuth path exists anywhere in this file set (C-02, GP-09).
+
+  Full binding implementation notes: docs/plan/wi-conway-backends.md section WI-021.
+resolution: null
+status: pending
+cycle_created: 0
+cycle_modified: null
+content_hash: 1d0e60bade56187fe3f8022a16a70286f18046997b848037f6fa214b95e2277e
+token_count: 660

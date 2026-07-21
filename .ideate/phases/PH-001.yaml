@@ -1,0 +1,20 @@
+id: PH-001
+type: phase
+title: Core Foundation
+phase_type: implementation
+project: PR-001
+description: "conway-core: the cargo workspace, all domain types, port traits, error taxonomy (including headroom-aware T-1 rejection errors), and test fakes — the contract crate everything else compiles against."
+work_items:
+  - WI-001
+  - WI-002
+  - WI-003
+  - WI-004
+  - WI-005
+  - WI-006
+  - WI-007
+  - WI-008
+status: pending
+cycle_created: 0
+cycle_modified: null
+content_hash: f7b0e88e630785be3e436b815565c8946b185b14add762aadc055956ad8e3c47
+token_count: 114

@@ -1,0 +1,27 @@
+id: conway-runtime
+type: module_spec
+module: conway-runtime
+cycle_created: 0
+scope: "The engine: agent loop, agent tree + supervisor, mailboxes, context assembly, provenance tracking, plugin registry, permission brokering, tool execution, backend attempt/fallback sequencing, event bus, budgets, SubagentHost implementation. NOT responsible for: config discovery/parsing (facade), CLI/TUI, wire formats, routing policy, storage format."
+provides:
+  - Runtime::new(RuntimeDeps{store, router, health, backends, plugins, gate, agent_defs, event_bus}) - all ports, all injectable, all fakeable
+  - Runtime::start_root(RootSpec) -> AgentId; ::prompt/steer/cancel; ::tree() -> AgentTreeSnapshot
+  - impl SubagentHost for Runtime (start/steer/await_result/cancel/tree)
+  - "Runtime::context_report(agent) -> ContextReport (GP-10 inspection: every segment, provenance, token estimate)"
+  - Runtime::subscribe() -> EventStream (broadcast, lossy-with-notice via Lagged{skipped})
+  - "ContextBuilder (crate-internal, golden-file tested): fixed segment order SystemPrompt, SkillFragments, ToolSchemas (breakpoint A), InheritedPrefix (breakpoint B), ForkDirective|Prompt, volatile turns; returns (Vec<PromptSegment>, ContextReport), report persisted with the turn"
+  - "PermissionBroker: per-session decision cache above the consumer PermissionGate"
+requires: conway-core (all ports/types), conway-routing (DeclarativeRouter, BreakerRegistry), conway-session (TranscriptResolver), conway-backends and conway-tools only as injected Arc<dyn Backend>/Arc<dyn Plugin> - the runtime never names concrete implementations.
+boundary_rules:
+  - One AgentLoop per agent, one tokio task per agent; no shared mutable agent state; cross-agent interaction only via mailbox or AgentTree (metadata + handles under RwLock)
+  - "Persist-before-act: LogRecord durable before its effect is externally observable"
+  - Steer messages land ONLY at turn boundaries; no code path may inject into a context mid-generation
+  - Every backend attempt emits Event::ModelDecision BEFORE the request, including fallback retries (attempt increments) - GP-07 unconditional
+  - Every context segment carries Provenance (enforced by type)
+  - ContextBuilder emits the fixed segment order; ordering is load-bearing for implicit-prefix cache cost, never for correctness
+  - Every child agent has a Budget; supervisor synthesizes terminal AgentResult on budget exhaustion, cancellation, or panic - a parent's pending subagent tool call always resolves
+  - Runtime MUST NOT construct concrete backends/stores/plugins; everything arrives via RuntimeDeps
+internal_notes: "Loop: drain mailbox -> budget check -> ContextBuilder.build -> router.resolve -> attempt_with_fallback (records health; RequestIncompatible advances chain without health record per T-2) -> append assistant record -> if no tool calls finish(Completed) -> permission filter -> ToolRunner bounded JoinSet -> append results -> StepDigest.observe (repeated-step: blake3(tool+normalized args), 3rd identical -> RepeatedStep event + system note citing prior seq) -> loop. Tool-call strategy per Capabilities: validated streaming -> stream with one non-streaming retry on ToolParse; else generate directly; no tools -> always stream. Fork overflow policy per T-1 resolution."
+cycle_modified: null
+content_hash: 46a9566780c2e333edf4d4dd7b3114b557a1d759d9f6915723792aaedd23341c
+token_count: 826

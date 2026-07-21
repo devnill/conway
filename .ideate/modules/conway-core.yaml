@@ -1,0 +1,27 @@
+id: conway-core
+type: module_spec
+module: conway-core
+cycle_created: 0
+scope: "The domain model and every port trait. Owns all types that cross a module boundary: messages, content blocks, tool specs, events, provenance, IDs, errors, and configuration types (not loading). NOT responsible for: any I/O, any HTTP client, config file discovery/parsing, any concrete implementation of its traits (except cfg(feature=fakes) test doubles)."
+provides:
+  - Message, ContentBlock, Role, ToolCall, ToolResult, LogRecord, LogSeq, SeqRange
+  - SessionId, AgentId, SegmentId, ModelId, BackendId, EndpointId, RoleAlias (IDs are ULIDs; LogSeq is u64 monotonic per session)
+  - "Provenance enum: UserPrompt | AgentDef{name} | Skill{name} | ToolRegistry{hash} | Inherited{from: SessionId, seq_range} | ForkDirective{by} | ParentSteer{from, parent_seq} | ToolResult{call_id, tool} | SystemNote{reason}"
+  - PromptSegment{id, role, content, provenance (required, non-Default), cache_hint}, CacheHint{breakpoint, ttl, prefix_key}, PrefixKey, TruncationPolicy
+  - "Port traits: Backend, Plugin, Tool, PermissionGate, SessionStore, Router, HealthRegistry, SubagentHost, EventSink"
+  - "Capabilities{tool_calling: ToolCallSupport, cache: CacheMode, parallel_tool_calls, structured_output, max_context_tokens, reasoning, reliability_tier}, ToolCallSupport{None|NonStreamingOnly|Streaming{validated}}, CacheMode{ExplicitBreakpoints{max_breakpoints, ttls}|ImplicitPrefix{min_prefix_tokens}|SlotKv|None}, ReliabilityTier{Verified|Community|Unknown}, RequiredCaps"
+  - Event enum + Envelope{seq, ts, session, agent, event}, AgentResult{status, summary, facts, artifacts, structured, transcript_ref, usage, steps_taken}, ResultStatus, Fact, Artifact, Usage, Budget{max_steps, deadline, max_tokens}
+  - "SubagentSpec{mode: Fork|Spawn, prompt, agent_def, role, tools, budget, cache_hint, result_contract}, SubagentMode"
+  - AgentDef, SkillDef, RoutingConfig, BackendConfig, ToolSelector (serde types)
+  - "ConwayError + per-port error enums: BackendError{Transport, RateLimit{retry_after}, Auth, BadRequest, ServerError, ContextOverflow, ToolParse, Cancelled}, ToolError, StoreError, RoutingError, RuntimeError"
+  - "cfg(feature=fakes): FakeBackend, ScriptedBackend, FakeStore, FakeGate"
+requires: "Nothing from the workspace. External only: serde, serde_json, thiserror, async-trait, futures-core, chrono, blake3, schemars."
+boundary_rules:
+  - MUST NOT depend on any other workspace crate (CI check on cargo tree)
+  - MUST NOT depend on reqwest, tokio::net, tokio::fs, or process-spawning crates
+  - Every public type is Serialize + Deserialize (JSONL persistence and --output-format jsonl)
+  - "#[non_exhaustive] on enums where forward-compat matters; strictest semver discipline in the workspace (plugin-author-facing crate)"
+internal_notes: Provenance is deliberately an enum, not a string map - the IDE renders a typed provenance tree and adding a variant is a deliberate act. Constructing a PromptSegment without provenance is impossible by type.
+cycle_modified: null
+content_hash: d1e56ff09b8cb3b916ae0287eb4ad6af54ef880ba49cccd87be2fc83e32bd340
+token_count: 761

@@ -1,0 +1,37 @@
+id: WI-085
+type: work_item
+title: Mailboxes and steering — bounded inbox, turn-boundary drain, overflow policy
+complexity: medium
+scope:
+  - path: crates/conway-runtime/src/mailbox.rs
+    op: modify
+  - path: crates/conway-runtime/src/agent_loop.rs
+    op: modify
+  - path: crates/conway-runtime/tests/steering.rs
+    op: create
+depends:
+  - WI-084
+blocks: []
+criteria:
+  - "`Mailbox::new(capacity)` with runtime capacity 64 [machine]"
+  - "Turn-boundary guarantee: a steer sent mid-tool-call is absent from the in-flight turn's context and is the first user-role segment of the next turn [machine]"
+  - Drained steers append LogRecord::parent_steer with Provenance::ParentSteer{from, parent_seq} [machine]
+  - No code path injects into a context outside drain_inbox (structural/API-shape assertion) [machine]
+  - "Overflow: 70 steers into 64 slots never block the sender; 6 oldest dropped with exactly 6 SteerDropped events [machine]"
+  - "Cancel{hard: false} takes effect at the next boundary; hard: true trips the token immediately and still yields AgentResult{Cancelled} [machine]"
+  - Progress never enters the parent's context; emitted as AgentProgress events [machine]
+  - SteerQueued emitted at enqueue time with queue timestamp [machine]
+  - Result messages resolve the parent's pending conway_subagent tool call exactly once [machine]
+domain: null
+phase: null
+work_item_type: feature
+notes: |-
+  Objective: Implement parent-child messaging with the guarantee that steering lands only at turn boundaries, and an overflow policy that can never deadlock a parent behind a stuck child.
+
+  Full binding implementation notes: docs/plan/wi-conway-runtime.md section WI-085.
+resolution: null
+status: pending
+cycle_created: 0
+cycle_modified: null
+content_hash: 8f33441d4e107f59eb5efaaed7ba8aad81545693e37f608bc46422b766c135c5
+token_count: 437

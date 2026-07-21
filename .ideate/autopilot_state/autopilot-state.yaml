@@ -1,0 +1,22 @@
+id: autopilot-state
+type: autopilot_state
+cycles_completed: 0
+convergence_achieved: false
+started_at: 2026-07-20T20:35:00-07:00
+last_phase: null
+last_cycle: null
+deferred: false
+deferred_reason: null
+last_full_review_cycle: 0
+last_cycle_findings:
+  critical: 0
+  significant: 0
+  minor: 0
+total_items_executed: 0
+full_review_interval: 3
+phases_completed: 0
+current_project: PR-001
+workspace_label: null
+cycle_modified: 0
+content_hash: 7cba395862074e28ea2a54c22fbdb73617ed88aa74ce4f28be03457f15fafd7c
+token_count: 105

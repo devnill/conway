@@ -1,0 +1,10 @@
+id: GP-06
+type: guiding_principle
+name: Capability-Aware Backends, Cache as Best-Effort Economics
+status: active
+description: "Backend adapters expose a capability-flagged superset interface, not an OpenAI-compatible lowest common denominator. Tool-calling reliability, caching mechanism, and streaming behavior are per-backend (and per-model) capabilities the router can inspect. Prompt/prefix-cache reuse — Anthropic cache_control breakpoints, llama.cpp slots, implicit prefix caching on vLLM/OpenAI — is central to the fork model's economics and must be a first-class optional hint at the fork boundary, but it is never correctness-bearing: conway must produce identical results with caching unavailable, evicted, or disabled."
+amendment_history: []
+cycle_created: 0
+cycle_modified: null
+content_hash: d1d2771b84195a5a87fc31917f477310aa9732a806758254cd848f07faadb46b
+token_count: 197

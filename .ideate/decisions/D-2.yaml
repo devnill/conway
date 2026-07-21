@@ -1,0 +1,13 @@
+id: D-2
+type: domain_decision
+domain: agent-hierarchy
+title: Turn-boundary message steering, not mid-generation interruption
+decision: Parent-child communication is message-based (Steer/Cancel/Progress/Result) over bounded mailboxes; steers land only at turn boundaries; hard-cancel is the escape hatch.
+rationale: Claude Code-style semantics the user asked for; real-time steering is unsolved industry-wide (open Claude Code issues); SteerQueued events make the latency visible instead of hidden.
+assumes: Turn-boundary latency is acceptable when surfaced to the IDE.
+source: interview-plan-001#IQ-plan-001-010; research-prior-art
+status: settled
+cycle_created: 0
+cycle_modified: 0
+content_hash: 1b63f9c2a5b364a50ed62180404c50172738f8905ad7678c2e52288661910fa1
+token_count: 170

@@ -1,0 +1,28 @@
+id: research-routing
+type: research
+topic: Provider routing policy and subscription-auth landscape for conway's routing layer
+date: 2026-07-20
+cycle_created: 0
+summary: "Routing prior art splits into declarative/static routing (fallback chains, per-role model aliases: LiteLLM Router, aider main/weak/editor, Claude Code subagent model tiers) and dynamic classifier-based routing (OpenRouter Auto/NotDiamond, RouteLLM, vLLM Semantic Router). Recommendation: declarative role-alias routing as conway's default (matches the agent-tree design — roles already differ by level), optional classifier-based 'auto' alias later, and an always-on health/failover layer beneath both (Olla-style dual circuit breakers for local backends). Subscription auth diverged sharply in Feb 2026: Anthropic prohibits AND technically blocks third-party use of Claude Pro/Max OAuth tokens (legal action vs OpenCode, sk-ant-oat token rejection) — Anthropic integration must be metered API keys only. Legitimate subscription paths: OpenAI 'Sign in with ChatGPT' (official third-party program), Ollama Cloud (standard API key, GPU-time billing), GitHub Copilot (official copilot-sdk OAuth). models.dev is the de facto community model-metadata registry (context windows, pricing, capabilities) — use with local override/fallback."
+key_findings:
+  - Declarative routing (role aliases + fallback chains) is predictable and matches prior art users know; dynamic classifiers add latency/dependency and should be opt-in only
+  - "Health/failover is a separate concern from routing policy: Olla's split transport-error vs health-probe circuit breakers is the concrete pattern for local backends (crash/OOM-prone)"
+  - Claude Pro/Max subscription reuse is contractually prohibited and technically enforced since ~Feb 2026 — do not build this path; API keys only for Anthropic
+  - OpenAI 'Sign in with ChatGPT' is sanctioned for third-party apps (Free/Plus/Pro; not Enterprise/Team); some frontier models (GPT-5.5 at launch) are subscription-only — live tension
+  - "Ollama Cloud: OLLAMA_API_KEY, same HTTP surface as local runtime, drop-in; billed by GPU-time not tokens — cost normalization across billing models is unsolved"
+  - "GitHub Copilot: official copilot-sdk OAuth App flow for third-party use"
+  - models.dev (sst/models.dev, api.json) is the closest thing to a model-metadata standard; voluntary project — needs local override
+  - "Per-agent model assignment prior art: strong model for planning/orchestration, cheap for mechanical leaves (Claude Code subagent frontmatter model+effort is the direct pattern)"
+  - Cost-based routing must normalize token-metered vs GPU-time billing — not solved by any existing router
+sources:
+  - https://docs.litellm.ai/docs/routing
+  - https://openrouter.ai/docs/guides/routing/provider-selection
+  - https://vllm-sr.ai/
+  - https://www.theregister.com/2026/02/20/anthropic_clarifies_ban_third_party_claude_access/
+  - https://help.openai.com/en/articles/11369540-using-codex-with-your-chatgpt-plan
+  - https://models.dev/
+  - https://thushan.github.io/olla/concepts/health-checking/
+  - https://aider.chat/docs/config/adv-model-settings.html
+cycle_modified: null
+content_hash: d694587295dcc5e49bc5fd6013d894f496d898fe3dce551bd5dcd94c1527241a
+token_count: 794

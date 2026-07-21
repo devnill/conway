@@ -1,0 +1,36 @@
+id: WI-050
+type: work_item
+title: SessionIndex — derived list/children acceleration with rebuild-by-scan
+complexity: medium
+scope:
+  - path: crates/conway-session/src/index.rs
+    op: modify
+  - path: crates/conway-session/tests/index_tests.rs
+    op: create
+depends:
+  - WI-048
+blocks: []
+criteria:
+  - "`load_or_rebuild(root)` with no index.jsonl scans headers and lists every session [machine]"
+  - "Rebuild equivalence over 50 sessions: post-delete rebuild equals pre-delete results as sets [machine]"
+  - Corrupted/stale/duplicate index resolves to full rebuild with a WARN containing `index rebuild`, no error [machine]
+  - "`children(sid)` returns exactly the sessions whose origin.parent == sid in ascending created order [machine]"
+  - "`list(filter)` honors parent/status/label/limit with AND semantics, limit applied after filter+order [machine]"
+  - "Ordering: descending created, ties by ascending id [machine]"
+  - "`create` and `fork` update the in-memory index without a rebuild [machine]"
+  - index.jsonl is append-only (byte-prefix invariant over 100 creations) [machine]
+  - Index I/O failure never fails create/fork — read-only index file still allows create with a WARN [machine]
+  - 3-level fork tree reconstructable purely from children() calls [machine]
+domain: null
+phase: null
+work_item_type: feature
+notes: |-
+  Objective: Provide the derived, rebuildable index that accelerates list, children, and tree reconstruction, without ever becoming a source of truth.
+
+  Full binding implementation notes: docs/plan/wi-conway-session.md section WI-050.
+resolution: null
+status: pending
+cycle_created: 0
+cycle_modified: null
+content_hash: b506d492f85ee5939b8f44108743bacb493992fe29fbc135c325d1d43ba36173
+token_count: 411

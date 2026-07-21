@@ -1,0 +1,16 @@
+id: domain-index
+type: domain_index
+current_cycle: 0
+domains:
+  - name: agent-hierarchy
+    description: Fork/spawn semantics, context assembly and provenance, parent-child messaging, budgets/supervision, and the MAST failure-mode mitigations.
+  - name: backends-routing
+    description: Backend adapters and capabilities, prompt-cache exploitation, declarative routing with headroom gating, health/failover, and provider auth legitimacy.
+  - name: plugins-tools
+    description: The plugin API, built-in tools, permission gating, and the isolation-belongs-to-tools boundary.
+  - name: api-surface
+    description: The library facade, CLI modes, event stream, session persistence surface, and the three-equal-consumption-modes contract.
+cross_cutting_concerns: Context-window economics (headroom, caching, lean hierarchy) span agent-hierarchy and backends-routing; the event stream spans api-surface and agent-hierarchy.
+cycle_modified: null
+content_hash: 38ae937c388af4c4a6155893b198640598ac1f39fe450b3c01d9a7b40f7e9d3e
+token_count: 235
