@@ -33,10 +33,18 @@ ulid = { workspace = true }
 # required: `conway_core::event::Envelope::ts` is a `chrono::DateTime<Utc>`,
 # and `EventBus::emit` constructs one directly.
 chrono = { workspace = true }
+# Not in the WI-076 binding dependency list by name, but mechanically
+# required by WI-086: `StepDigest`'s bounded ring is an LRU cache (the
+# spec's own illustrative type). Already a pinned workspace dependency used
+# by `conway-session` for the same purpose; reused directly rather than
+# hand-rolling a second bounded-eviction cache.
+lru = { workspace = true }
+# Promoted from dev-dependencies (WI-086): `SubagentSpec::result_contract`
+# (conway-core) is a `schemars::schema::RootSchema`, and
+# `result::validate_result_contract` names that type directly to validate a
+# `structured` result against it -- no longer test-only.
+schemars = { workspace = true }
 
 [dev-dependencies]
 conway-core = { path = "../conway-core", features = ["fakes"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util"] }
-# Test-only: WI-077's golden-file fixtures construct `ToolSpec` values,
-# whose `schema` field is a `schemars::schema::RootSchema`.
-schemars = { workspace = true }

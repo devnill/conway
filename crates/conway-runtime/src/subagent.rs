@@ -272,6 +272,12 @@ impl SubagentHost for Runtime {
             headroom_override: None,
             max_parallel_tools: DEFAULT_MAX_PARALLEL_TOOLS,
             report_slot: Some(last_report.clone()),
+            // WI-086: carried straight through from the spec the caller
+            // supplied -- unlike `cache_hint`, `result_contract` already has
+            // a real consumer (`AgentLoop::run_inner`'s natural-completion
+            // branch), so this is a plain value handoff, not a design
+            // decision this item needs to make.
+            result_contract: spec.result_contract.clone(),
         };
 
         // WI-085: this child's own mailbox, plus the already-attached

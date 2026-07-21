@@ -484,6 +484,9 @@ impl Runtime {
             headroom_override: None,
             max_parallel_tools: DEFAULT_MAX_PARALLEL_TOOLS,
             report_slot: Some(last_report.clone()),
+            // A root agent has no `SubagentSpec` to source a contract from
+            // (WI-086) -- only a fork/spawn child can declare one.
+            result_contract: None,
         };
 
         let cancel = CancellationToken::new();
