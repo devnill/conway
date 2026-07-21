@@ -83,6 +83,23 @@ pub struct SkillFragment {
 /// (architecture §5.1, §5.2).
 #[derive(Clone, Debug)]
 pub struct InheritedPrefix {
+    /// The IMMEDIATE ancestor this bundle was inherited from — "who handed
+    /// me this context" — NOT the original author of every record in
+    /// `records`. At fork depth >= 2, `records` is the WHOLE effective
+    /// transcript up to the fork point (GP-02: root's own records, then
+    /// every intermediate ancestor's own records in turn, through the
+    /// immediate parent's), per `conway_session::TranscriptResolver`'s
+    /// "inherited prefix always flows through in full" contract — but
+    /// every one of those records, however deep its true origin, is
+    /// stamped with this single `from` when `ContextBuilder` turns
+    /// `records` into `Provenance::Inherited` segments (see this crate's
+    /// `subagent.rs` module doc, "`InheritedPrefix::from` at fork depth >=
+    /// 2", for the full rationale). Recovering true per-record authorship
+    /// at arbitrary depth would require per-record session tracking that
+    /// does not exist upstream (in `conway_core::log::LogRecord` or in
+    /// `conway_session`'s resolver) — out of this item's scope; queued as a
+    /// refinement question rather than attempted here (coordinator ruling,
+    /// WI-084 rework).
     pub from: SessionId,
     pub seq_range: SeqRange,
     pub records: Arc<[LogRecord]>,

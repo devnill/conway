@@ -2,10 +2,20 @@
 //!
 //! Wires `ContextBuilder` -> `Router` -> `AttemptEngine` -> `ToolRunner` ->
 //! `SessionStore` into one turn, with budgets and terminal-result
-//! construction. No subagent code exists in this item — `drain_inbox` is a
-//! no-op hook (WI-085 implements it), inherited context is always `None`
-//! (WI-084 supplies it via an injected transcript source), and
-//! `LoopDeps::subagents` exists only because `ToolBatchCtx` requires one.
+//! construction. `drain_inbox` is still a no-op hook (WI-085 implements
+//! mailboxes); `LoopDeps::subagents` is now the real `Runtime` (WI-084,
+//! `subagent.rs`), not a stub -- `ToolBatchCtx` gets a working host.
+//!
+//! ## WI-084: `inherited` context
+//!
+//! `AgentLoop` gained one field this item: `inherited: Option<InheritedPrefix>`.
+//! For a root agent or a spawned child it is `None` and every turn's
+//! `ContextInput::inherited` stays `None`, exactly as before. For a fork
+//! child, `subagent.rs`'s `SubagentHost::start` resolves it exactly once
+//! (via `conway_session::TranscriptResolver`, at fork time, before any of
+//! the child's own records exist) and this loop simply clones it into
+//! every turn's `ContextInput` unchanged -- see the field's own doc for why
+//! no turn-boundary re-resolution is needed or correct.
 //!
 //! `AgentSpec::report_slot` (WI-082 cycle-1 review, F-082 C1) is this item's
 //! one additive hook for a live caller: after each successful
@@ -75,7 +85,9 @@ use conway_routing::config::HeadroomPolicy;
 use tokio_util::sync::CancellationToken;
 
 use crate::attempt::{AttemptEngine, AttemptRequest};
-use crate::context::{ContextBuilder, ContextInput, HeadSegment, SkillFragment, SystemPromptSpec};
+use crate::context::{
+    ContextBuilder, ContextInput, HeadSegment, InheritedPrefix, SkillFragment, SystemPromptSpec,
+};
 use crate::events::EventBus;
 use crate::tools::{PluginRegistry, ToolBatchCtx, ToolRunner};
 
@@ -141,6 +153,19 @@ pub struct AgentLoop {
     pub deps: Arc<LoopDeps>,
     pub spec: AgentSpec,
     pub cancel: CancellationToken,
+    /// `Some` for a fork child, resolved exactly once by `subagent.rs`'s
+    /// `SubagentHost::start` (WI-084) at fork time via
+    /// `conway_session::TranscriptResolver` and never recomputed afterward
+    /// -- the parent's prefix at the fork point is immutable by
+    /// construction (a later parent append only extends records the fork
+    /// already excluded), so there is no turn-boundary event that could
+    /// ever change this value. `None` for a root agent or a spawned child
+    /// (spawn's context never inherits anything -- architecture §5.2).
+    /// Cloned into every turn's `ContextInput::inherited` unchanged; see
+    /// this crate's `context::InheritedPrefix` for why `records` stays a
+    /// single shared `Arc` (sibling-fork memoization lives in
+    /// `conway-session`, not here).
+    pub inherited: Option<InheritedPrefix>,
 }
 
 /// Per-turn accumulator: turns executed and usage accrued so far. `Copy` so
@@ -228,7 +253,7 @@ impl AgentLoop {
                 system_prompt: self.spec.system_prompt.clone(),
                 skills: self.spec.skills.clone(),
                 tools: tool_specs.clone(),
-                inherited: None,
+                inherited: self.inherited.clone(),
                 head,
                 own,
                 cache_ttl: self.spec.cache_ttl,

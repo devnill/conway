@@ -193,6 +193,25 @@ impl AgentTree {
         chain
     }
 
+    /// A cancellation token that is a structural child of `parent`'s own
+    /// token (`parent.cancel.child_token()`), so cancelling `parent` (or any
+    /// ancestor) cancels the returned token too, without ever exposing
+    /// `parent`'s own token directly. Added for WI-084's fork/spawn path
+    /// (`subagent.rs`), which needs to derive a new child's token per
+    /// [`AgentNode::cancel`]'s contract but has no other way to reach an
+    /// already-attached node's token — every other method here either trips
+    /// a token (`cancel`) or reads publication state, never returns one.
+    pub(crate) fn child_cancel_token(
+        &self,
+        parent: AgentId,
+    ) -> Result<CancellationToken, RuntimeError> {
+        let nodes = self.nodes.read().expect("agent tree lock poisoned");
+        let entry = nodes
+            .get(&parent)
+            .ok_or(RuntimeError::AgentNotFound { agent: parent })?;
+        Ok(entry.node.cancel.child_token())
+    }
+
     /// Trips `agent`'s `CancellationToken`. Because every child's token is
     /// (by construction, see [`AgentNode::cancel`]) a `child_token()` of its
     /// parent's, this structurally cancels the entire subtree in one call.
