@@ -1,0 +1,257 @@
+//! `EditTool`: the `edit` tool — literal, byte-exact substring replacement.
+
+use async_trait::async_trait;
+use schemars::JsonSchema;
+use serde::Deserialize;
+
+use conway_core::content::{PermissionClass, ToolCall, ToolCategory, ToolSpec, TruncationPolicy};
+use conway_core::error::ToolError;
+use conway_core::ids::ToolName;
+use conway_core::ports::{Tool, ToolCtx, ToolOutput};
+
+use crate::common::{check_cancel, error_text, parse_args, resolve_path, text_output};
+use crate::fs::write::atomic_write;
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct EditArgs {
+    path: String,
+    old_string: String,
+    new_string: String,
+    #[serde(default)]
+    replace_all: bool,
+}
+
+/// Replaces `old_string` with `new_string` in a file. Matching is literal
+/// byte-exact substring matching — never regex, never whitespace-normalized.
+/// `old_string` must match exactly once unless `replace_all` is set.
+#[derive(Debug, Default)]
+pub struct EditTool;
+
+impl EditTool {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+#[async_trait]
+impl Tool for EditTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: ToolName::new("edit"),
+            description: "Replace an exact substring in a file".into(),
+            schema: schemars::schema_for!(EditArgs),
+            category: ToolCategory::Edit,
+            permission: PermissionClass::RequiresApproval,
+        }
+    }
+
+    async fn invoke(&self, call: ToolCall, ctx: ToolCtx) -> Result<ToolOutput, ToolError> {
+        check_cancel(&ctx)?;
+        let args: EditArgs = parse_args(&call)?;
+        let path = resolve_path(&ctx, &args.path)?;
+
+        if args.old_string == args.new_string {
+            return Ok(error_text(format!(
+                "old_string and new_string are identical in {}",
+                path.display()
+            )));
+        }
+
+        let bytes = match tokio::fs::read(&path).await {
+            Ok(bytes) => bytes,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(error_text(format!("file not found: {}", path.display())));
+            }
+            Err(err) => {
+                return Err(ToolError::Io {
+                    detail: format!("failed to read {}: {err}", path.display()),
+                });
+            }
+        };
+
+        let content = match String::from_utf8(bytes) {
+            Ok(content) => content,
+            Err(_) => {
+                return Ok(error_text(format!(
+                    "file is not valid UTF-8: {}",
+                    path.display()
+                )));
+            }
+        };
+
+        check_cancel(&ctx)?;
+
+        let count = content.matches(args.old_string.as_str()).count();
+        if count == 0 {
+            return Ok(error_text(format!(
+                "old_string not found in {}",
+                path.display()
+            )));
+        }
+        if count > 1 && !args.replace_all {
+            return Ok(error_text(format!(
+                "found {count} occurrences of old_string in {}; add surrounding context to make it unique, or set replace_all: true",
+                path.display()
+            )));
+        }
+
+        let (new_content, replacements) = if args.replace_all {
+            (content.replace(&args.old_string, &args.new_string), count)
+        } else {
+            (content.replacen(&args.old_string, &args.new_string, 1), 1)
+        };
+
+        atomic_write(&path, &new_content).await?;
+
+        Ok(text_output(
+            format!("edited {}: {replacements} replacement(s)", path.display()),
+            TruncationPolicy::None,
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testing::test_ctx;
+    use tempfile::TempDir;
+
+    fn call(arguments: serde_json::Value) -> ToolCall {
+        ToolCall {
+            call_id: "tc_1".into(),
+            name: ToolName::new("edit"),
+            arguments,
+        }
+    }
+
+    #[test]
+    fn spec_has_expected_name_category_permission() {
+        let spec = EditTool::new().spec();
+        assert_eq!(spec.name.as_str(), "edit");
+        assert_eq!(spec.category, ToolCategory::Edit);
+        assert_eq!(spec.permission, PermissionClass::RequiresApproval);
+    }
+
+    #[test]
+    fn schema_required_and_properties() {
+        let spec = EditTool::new().spec();
+        let json = serde_json::to_value(&spec.schema).unwrap();
+        let mut required: Vec<&str> = json["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        required.sort();
+        assert_eq!(required, vec!["new_string", "old_string", "path"]);
+        assert_eq!(json["additionalProperties"], false);
+    }
+
+    #[tokio::test]
+    async fn invoke_unique_occurrence_replaces_and_preserves_rest() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("f.txt"), "one two three").unwrap();
+        let (ctx, _h) = test_ctx(dir.path().to_path_buf());
+        let out = EditTool::new()
+            .invoke(
+                call(
+                    serde_json::json!({"path": "f.txt", "old_string": "two", "new_string": "TWO"}),
+                ),
+                ctx,
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("f.txt")).unwrap(),
+            "one TWO three"
+        );
+    }
+
+    #[tokio::test]
+    async fn invoke_zero_occurrences_is_recoverable_error() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("f.txt"), "one two three").unwrap();
+        let (ctx, _h) = test_ctx(dir.path().to_path_buf());
+        let out = EditTool::new()
+            .invoke(
+                call(serde_json::json!({"path": "f.txt", "old_string": "missing", "new_string": "x"})),
+                ctx,
+            )
+            .await
+            .unwrap();
+        assert!(out.is_error);
+    }
+
+    #[tokio::test]
+    async fn invoke_multiple_without_replace_all_is_error() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("f.txt"), "aa bb aa").unwrap();
+        let (ctx, _h) = test_ctx(dir.path().to_path_buf());
+        let out = EditTool::new()
+            .invoke(
+                call(serde_json::json!({"path": "f.txt", "old_string": "aa", "new_string": "x"})),
+                ctx,
+            )
+            .await
+            .unwrap();
+        assert!(out.is_error);
+    }
+
+    #[tokio::test]
+    async fn invoke_replace_all_replaces_all() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("f.txt"), "aa bb aa").unwrap();
+        let (ctx, _h) = test_ctx(dir.path().to_path_buf());
+        let out = EditTool::new()
+            .invoke(
+                call(serde_json::json!({"path": "f.txt", "old_string": "aa", "new_string": "x", "replace_all": true})),
+                ctx,
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("f.txt")).unwrap(),
+            "x bb x"
+        );
+    }
+
+    #[tokio::test]
+    async fn invoke_identical_strings_is_error() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("f.txt"), "same").unwrap();
+        let (ctx, _h) = test_ctx(dir.path().to_path_buf());
+        let out = EditTool::new()
+            .invoke(
+                call(serde_json::json!({"path": "f.txt", "old_string": "same", "new_string": "same"})),
+                ctx,
+            )
+            .await
+            .unwrap();
+        assert!(out.is_error);
+    }
+
+    #[tokio::test]
+    async fn invoke_pre_cancelled_returns_cancelled_without_touching_fs() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("f.txt"), "one two three").unwrap();
+        let (ctx, handles) = test_ctx(dir.path().to_path_buf());
+        handles.cancel.cancel();
+        let err = EditTool::new()
+            .invoke(
+                call(
+                    serde_json::json!({"path": "f.txt", "old_string": "two", "new_string": "TWO"}),
+                ),
+                ctx,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ToolError::Cancelled));
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("f.txt")).unwrap(),
+            "one two three"
+        );
+    }
+}
