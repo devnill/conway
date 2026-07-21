@@ -3,9 +3,9 @@
 //!
 //! WI-047 implements `open`/`open_with`, the `SessionStore` trait impl
 //! (`create`/`append`/`read`/`head`/`meta`), the fsync policy, and
-//! crash-tolerant reads. `fork` is a documented `Err` placeholder — WI-048
-//! replaces it with `crate::fork::fork_impl`. `children`/`list` are minimal
-//! correct header-scan implementations — WI-050 replaces the scan with an
+//! crash-tolerant reads. `fork` (WI-048) delegates to
+//! `crate::fork::fork_impl`. `children`/`list` are minimal correct
+//! header-scan implementations — WI-050 replaces the scan with an
 //! accelerated `SessionIndex` without needing to touch this file's public
 //! surface.
 //!
@@ -102,6 +102,14 @@ pub struct JsonlSessionStore {
     handles: Arc<AsyncRwLock<HashMap<SessionId, Arc<AsyncMutex<SessionFile>>>>>,
     fsync: FsyncPolicy,
     fsync_count: Arc<AtomicU64>,
+    /// Total lines read across every cold-open full-file scan performed by
+    /// [`get_or_open_handle`](Self::get_or_open_handle). A warm (already
+    /// cached) handle contributes nothing here — this is what lets WI-048's
+    /// fork tests assert `fork` performs zero parent reads when the parent
+    /// handle is pre-warmed. Test-only instrumentation via
+    /// [`lines_scanned`](Self::lines_scanned), not part of the public store
+    /// contract.
+    lines_scanned: Arc<AtomicU64>,
     /// Background flusher for `FsyncPolicy::Interval` (None otherwise);
     /// aborted on drop. Holds only a `Weak` to `handles`, so a dropped
     /// store also ends the task naturally.
@@ -327,6 +335,7 @@ impl JsonlSessionStore {
             handles,
             fsync: cfg.fsync,
             fsync_count,
+            lines_scanned: Arc::new(AtomicU64::new(0)),
             flusher,
         })
     }
@@ -371,6 +380,8 @@ impl JsonlSessionStore {
 
         let mut content = String::new();
         file.read_to_string(&mut content).await.map_err(io_err)?;
+        self.lines_scanned
+            .fetch_add(scan_lines(&content).len() as u64, Ordering::Relaxed);
 
         let recovered = recover(sid, &content)?;
         if let Some((new_len, dropped_bytes)) = recovered.truncate {
@@ -429,6 +440,16 @@ impl JsonlSessionStore {
     #[doc(hidden)]
     pub fn fsync_count(&self) -> u64 {
         self.fsync_count.load(Ordering::Relaxed)
+    }
+
+    /// Total lines read across every cold-open full-file scan so far (see
+    /// the field doc on [`JsonlSessionStore::lines_scanned`]). WI-048's O(1)
+    /// fork tests pre-warm the parent handle, snapshot this counter, call
+    /// `fork`, and assert it is unchanged. Test-only instrumentation, not
+    /// part of the public store contract.
+    #[doc(hidden)]
+    pub fn lines_scanned(&self) -> u64 {
+        self.lines_scanned.load(Ordering::Relaxed)
     }
 
     /// Whether `a` and `b` currently have distinct in-memory per-session
@@ -549,18 +570,16 @@ impl SessionStore for JsonlSessionStore {
         Ok(sf.head)
     }
 
-    /// Not implemented here: WI-048 owns fork semantics and replaces this
-    /// with a delegation to `crate::fork::fork_impl`. This placeholder
-    /// exists only so the trait is fully implemented in the interim.
+    /// Delegates verbatim to [`crate::fork::fork_impl`] (WI-048), which
+    /// implements fork-by-reference: a single header write that references
+    /// `parent` by `(parent, at_seq, mode)` and copies zero records.
     async fn fork(
         &self,
-        _parent: &SessionId,
-        _at: LogSeq,
-        _meta: SessionMeta,
+        parent: &SessionId,
+        at: LogSeq,
+        meta: SessionMeta,
     ) -> Result<SessionId, StoreError> {
-        Err(StoreError::Io {
-            detail: "fork-by-reference lands in WI-048".into(),
-        })
+        crate::fork::fork_impl(self, parent, at, meta).await
     }
 
     async fn meta(&self, sid: &SessionId) -> Result<SessionMeta, StoreError> {
