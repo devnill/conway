@@ -5,28 +5,31 @@
 //! a terminal `AgentResult`, published through
 //! [`AgentTree::publish_result`]'s set-once guarantee.
 //!
-//! ## The narrow race this module does not close
+//! ## The double-`AgentFinished` race, closed on both sides
 //!
-//! `AgentLoop::finish`/`finish_cancelled` (`agent_loop.rs`, WI-081,
-//! committed and out of this item's file scope) already emits exactly one
-//! `Event::AgentFinished` on every path the loop reaches under its own
-//! power -- including its own graceful cancellation handling, which
-//! ordinarily wins the race against this module's synthesis (see
-//! `grace_wait` below). This module therefore emits `Event::AgentFinished`
-//! itself *only* on its own synthesis paths (a caught panic, or a task still
-//! unresponsive after `grace`) -- never for a real result it received
-//! directly -- so the common case never double-fires the event.
-//!
-//! This does not make double-firing impossible: if a task is still running
-//! past `grace` (so this module synthesizes and emits), and that task later
-//! completes on its own and runs its own terminal machinery, a second
-//! `Event::AgentFinished` for the same agent can still reach the bus. The
-//! `AgentTree`'s set-once `publish_result` guarantees only one `AgentResult`
-//! is ever *observable*; it does not retroactively suppress a bus event
-//! already sent. Closing this fully would require `AgentLoop::finish` to
-//! consult the tree's resolved flag before emitting, which is a reasonable
-//! follow-up once WI-084/085 give real children a way to reach this path,
-//! not something addressable from this file alone.
+//! `AgentLoop::finish`/`finish_cancelled` (`agent_loop.rs`, WI-081/085)
+//! already gates its own `Event::AgentFinished` emission on winning
+//! `AgentTree::publish_result`'s set-once CAS (`tree.rs`, WI-083) before
+//! emitting -- see that method's own doc. Before cycle-2 review finding S1,
+//! this module's `Outcome::Synthesized` branch (a caught panic, or a task
+//! still unresponsive after `grace`) emitted `Event::AgentFinished`
+//! unconditionally, without ever checking whether it had actually won that
+//! same CAS -- so the race was only half-closed: `task.abort()` (used on
+//! the grace-timeout path, below) is cooperative, and an aborted task can
+//! keep running and reach its own `finish()` after this module has already
+//! given up on joining it and moved on to synthesizing its own result,
+//! legitimately winning `publish_result`'s CAS in that gap. This module now
+//! calls `tree.publish_result` first on every path -- on the `Real` branch
+//! it is a harmless idempotent no-op (the task's own `finish()` already
+//! published) -- and emits `Event::AgentFinished` on the `Synthesized`
+//! branch only if THIS call is the one that actually published. Because
+//! both sides now gate their emission on the identical set-once CAS, at
+//! most one `Event::AgentFinished` is ever observable for a given agent,
+//! regardless of which side wins. See `tests/supervisor.rs`'s
+//! `concurrent_task_completion_and_grace_synthesis_never_double_emit_agent_finished`
+//! for regression coverage, and that test's own doc for why the exact
+//! winning interleaving cannot be forced deterministically from outside
+//! tokio's scheduler.
 
 use std::future::pending;
 use std::sync::Arc;
@@ -127,25 +130,32 @@ pub fn supervise(args: SuperviseArgs) -> JoinHandle<()> {
             }
         };
 
-        let result = match outcome {
-            Outcome::Real(result) => result,
-            Outcome::Synthesized(result) => {
-                // The task never reached its own terminal machinery (it
-                // panicked, or is still running past `grace`): this is the
-                // only `Event::AgentFinished` this agent gets from this
-                // path. See the module doc for the narrow race this does
-                // not close.
-                bus.emit(
-                    session,
-                    agent,
-                    Event::AgentFinished {
-                        result: result.clone(),
-                    },
-                );
-                result
+        match outcome {
+            Outcome::Real(result) => {
+                // `AgentLoop::finish` (or `finish_cancelled`/`finish_error`)
+                // already published this result and gated its own emission
+                // on winning that publish -- see its doc. This call is
+                // idempotent bookkeeping: `Ok(false)` (already published) is
+                // the expected outcome for a real `AgentLoop`; a bare mock
+                // task in a test that never calls `publish_result` itself
+                // (e.g. `tests/supervisor.rs`'s panic/deadline/cancel tests)
+                // makes this the first -- and only -- publisher instead,
+                // which is also correct.
+                let _ = tree.publish_result(agent, result);
             }
-        };
-        let _ = tree.publish_result(agent, result);
+            Outcome::Synthesized(result) => {
+                // The task never reached its own terminal machinery through
+                // THIS path (it panicked, or is still running past `grace`
+                // and was `abort()`'d -- cooperative, so it may complete on
+                // its own and legitimately win the race below). Emit
+                // `Event::AgentFinished` only if this call is the one that
+                // actually published -- see the module doc.
+                let won = tree.publish_result(agent, result.clone()).unwrap_or(true);
+                if won {
+                    bus.emit(session, agent, Event::AgentFinished { result });
+                }
+            }
+        }
     })
 }
 

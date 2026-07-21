@@ -86,15 +86,11 @@
 //! budget or an absent `max_steps`. The property holds vacuously, by the
 //! type, rather than by a runtime check added here.
 //!
-//! ## `steer` is not implemented by this item
+//! ## `steer` (WI-085 supersedes this item's stub)
 //!
-//! Real mailbox delivery (`AgentHandle`'s inbox, turn-boundary drain) is
-//! WI-085's job; no criterion in this item exercises `steer`. Rather than
-//! invent undocumented behavior ahead of that item's design, `steer`
-//! returns a typed "not yet available" error, mirroring the same pattern
-//! this crate already uses elsewhere for a real gap (`runtime.rs`'s
-//! removed `NoSubagentHost` did the same for every method before this item
-//! gave four of the five a real implementation).
+//! Real mailbox delivery now backs `steer` -- see that method's own doc for
+//! the `from`/`at_parent_seq` derivation the committed `SubagentHost::steer`
+//! signature's missing caller-identity parameter forces.
 //!
 //! ## `CacheMode` is not wired from `SubagentSpec::cache_hint`
 //!
@@ -111,7 +107,9 @@ use std::sync::{Arc, Mutex, Weak};
 
 use async_trait::async_trait;
 use chrono::Utc;
-use conway_core::agent::{AgentResult, AgentTreeSnapshot, SubagentMode, SubagentSpec};
+use conway_core::agent::{
+    AgentMessage, AgentResult, AgentTreeSnapshot, SubagentMode, SubagentSpec,
+};
 use conway_core::capabilities::CacheMode;
 use conway_core::config::DEFAULT_MAX_PARALLEL_TOOLS;
 use conway_core::error::{ConwayError, RuntimeError, ToolError};
@@ -123,6 +121,7 @@ use conway_core::segment::CacheTtl;
 
 use crate::agent_loop::{AgentLoop, AgentSpec};
 use crate::context::{InheritedPrefix, SystemPromptSpec};
+use crate::mailbox::{self, Mailbox};
 use crate::runtime::Runtime;
 use crate::tree::AgentNode;
 
@@ -275,6 +274,19 @@ impl SubagentHost for Runtime {
             report_slot: Some(last_report.clone()),
         };
 
+        // WI-085: this child's own mailbox, plus the already-attached
+        // parent's mailbox sender, so `AgentLoop::finish` can deliver this
+        // child's terminal `Result` upward (architecture §3.2: "child
+        // terminates -> AgentResult -> parent mailbox").
+        let (mailbox_tx, mailbox_rx) = Mailbox::new(mailbox::RUNTIME_CAPACITY);
+        let mailbox_tx = mailbox_tx.with_events(
+            self.loop_deps().bus.clone(),
+            session_id,
+            agent_id,
+            cancel.clone(),
+        );
+        let parent_mailbox = self.agent_mailbox(parent)?;
+
         let agent_loop = AgentLoop {
             agent_id,
             session: session_id,
@@ -285,6 +297,9 @@ impl SubagentHost for Runtime {
             spec: agent_spec,
             cancel: cancel.clone(),
             inherited,
+            inbox: mailbox_rx,
+            parent_mailbox: Some(parent_mailbox),
+            pending_cancel: None,
         };
 
         let node = AgentNode {
@@ -299,14 +314,54 @@ impl SubagentHost for Runtime {
             inherited_upto,
         };
 
-        self.launch_agent(node, agent_loop, last_report)?;
+        self.launch_agent(node, agent_loop, last_report, mailbox_tx)?;
         Ok(agent_id)
     }
 
-    /// Not yet available — real mailbox delivery is WI-085's job. See the
-    /// module doc.
-    async fn steer(&self, _target: AgentId, _text: String) -> Result<(), RuntimeError> {
-        Err(steering_unavailable())
+    /// Delivers `text` into `target`'s mailbox as an `AgentMessage::Steer`,
+    /// landing at `target`'s next turn boundary (WI-085, architecture
+    /// §6.2). This trait method carries no caller identity (the committed
+    /// `SubagentHost::steer(&self, target, text)` signature has no `from`
+    /// parameter -- out of this crate's scope to add one), so `from` is
+    /// derived structurally as "`target`'s own parent, if it has one" --
+    /// correct for this method's conventional use (an embedder or the
+    /// `conway_subagent` tool steering a specific child on the parent's
+    /// behalf). A child steering ITS OWN parent (the other direction
+    /// bidirectionality requires) does not go through this method at all:
+    /// it already holds its own `agent_id` and its `parent_mailbox` sender
+    /// directly (`AgentLoop`), and can send correctly-attributed messages
+    /// without needing this trait's help -- see `tests/steering.rs` for
+    /// both directions exercised at the mailbox level, and this module's
+    /// own doc's "`steer` (WI-085 supersedes this item's stub)" section for
+    /// the prior gap this replaces.
+    async fn steer(&self, target: AgentId, text: String) -> Result<(), RuntimeError> {
+        let mailbox = self.agent_mailbox(target)?;
+        let parent = self.tree_ref().path(target).into_iter().rev().nth(1);
+        let (from, at_parent_seq) = match parent {
+            Some(parent) => (
+                parent,
+                self.loop_deps()
+                    .store
+                    .head(&self.agent_session(parent)?)
+                    .await?,
+            ),
+            // No parent to attribute this to (e.g. `target` is a root) --
+            // fall back to the target's own id/head as the least-wrong
+            // available marker.
+            None => (
+                target,
+                self.loop_deps()
+                    .store
+                    .head(&self.agent_session(target)?)
+                    .await?,
+            ),
+        };
+        mailbox.send(AgentMessage::Steer {
+            from,
+            text,
+            at_parent_seq,
+        });
+        Ok(())
     }
 
     /// Delegates to [`crate::tree::AgentTree::await_result`], which already
@@ -337,12 +392,6 @@ impl SubagentHost for Runtime {
 fn invalid_spec(err: ConwayError) -> RuntimeError {
     RuntimeError::Tool(ToolError::Internal {
         detail: format!("invalid SubagentSpec: {err}"),
-    })
-}
-
-fn steering_unavailable() -> RuntimeError {
-    RuntimeError::Tool(ToolError::Internal {
-        detail: "steering is unavailable until WI-085 implements mailbox delivery".to_string(),
     })
 }
 

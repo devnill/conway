@@ -125,7 +125,6 @@ use conway_core::ports::{
 use conway_core::provenance::{ContextReport, Provenance};
 use conway_core::segment::CacheTtl;
 use conway_routing::config::HeadroomPolicy;
-use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -133,6 +132,7 @@ use crate::agent_loop::{AgentLoop, AgentSpec, LoopDeps};
 use crate::attempt::AttemptEngine;
 use crate::context::{ContextBuilder, TOKEN_ESTIMATOR};
 use crate::events::{EventBus, EventStream};
+use crate::mailbox::{self, Mailbox, MailboxSender};
 use crate::permission::PermissionBroker;
 use crate::supervisor::{self, SuperviseArgs};
 use crate::tools::{PluginRegistry, ToolRunner};
@@ -176,11 +176,10 @@ pub struct RootSpec {
 /// across an `.await`.
 struct AgentHandle {
     session: SessionId,
-    /// Wired in WI-085; created here, unused (the receiver is dropped
-    /// immediately — nothing drains it yet, matching `AgentLoop::drain_inbox`
-    /// being a no-op until then).
-    #[allow(dead_code)]
-    inbox: mpsc::Sender<conway_core::agent::AgentMessage>,
+    /// This agent's mailbox sender (WI-085) — cloned out by
+    /// [`Runtime::agent_mailbox`] for `subagent.rs`'s `steer` and for a
+    /// fork/spawn child's `parent_mailbox`.
+    mailbox: MailboxSender,
     last_report: Arc<Mutex<Option<ContextReport>>>,
     #[allow(dead_code)]
     join: Arc<Mutex<Option<JoinHandle<()>>>>,
@@ -286,6 +285,7 @@ impl Runtime {
                 bus: event_bus.clone(),
                 builder,
                 headroom,
+                tree: tree.clone(),
             });
 
             Runtime {
@@ -346,17 +346,37 @@ impl Runtime {
             .session)
     }
 
+    /// A clone of `agent`'s mailbox sender (WI-085). Used by `subagent.rs`'s
+    /// `steer` (the target's sender) and `start` (the parent's sender, so a
+    /// fork/spawn child can deliver its terminal `Result` upward through
+    /// `AgentLoop::parent_mailbox`).
+    pub(crate) fn agent_mailbox(&self, agent: AgentId) -> Result<MailboxSender, RuntimeError> {
+        let agents = self.agents.read().expect("agents lock poisoned");
+        Ok(agents
+            .get(&agent)
+            .ok_or(RuntimeError::AgentNotFound { agent })?
+            .mailbox
+            .clone())
+    }
+
     /// Attaches `node` to the tree, spawns `agent_loop`'s task under the
     /// supervisor, and registers its handle. The shared tail of both
     /// `start_root` (root agents, unchanged, still inlines its own copy of
     /// this sequence) and WI-084's fork/spawn path (`subagent.rs`), which
     /// has no other way to reach `agents`/`tree`/`bus` to do this itself
     /// without those fields losing their private visibility.
+    ///
+    /// `mailbox` is the sender half of the mailbox `agent_loop.inbox`
+    /// already owns the receiver half of (WI-085) -- constructed by the
+    /// caller, since only the caller (`subagent.rs`'s `start`) knows
+    /// whether this child also needs a `parent_mailbox` wired from an
+    /// already-registered parent before this agent's own handle exists.
     pub(crate) fn launch_agent(
         &self,
         node: AgentNode,
         agent_loop: AgentLoop,
         last_report: Arc<Mutex<Option<ContextReport>>>,
+        mailbox: MailboxSender,
     ) -> Result<(), RuntimeError> {
         let agent_id = node.id;
         let session_id = node.session;
@@ -365,7 +385,6 @@ impl Runtime {
 
         self.tree.attach(node)?;
 
-        let (inbox_tx, _inbox_rx) = mpsc::channel(64);
         let task: JoinHandle<AgentResult> = tokio::spawn(async move { agent_loop.run().await });
         let join = supervisor::supervise(SuperviseArgs {
             tree: self.tree.clone(),
@@ -380,7 +399,7 @@ impl Runtime {
 
         let handle = AgentHandle {
             session: session_id,
-            inbox: inbox_tx,
+            mailbox,
             last_report,
             join: Arc::new(Mutex::new(Some(join))),
         };
@@ -468,6 +487,9 @@ impl Runtime {
         };
 
         let cancel = CancellationToken::new();
+        let (mailbox_tx, mailbox_rx) = Mailbox::new(mailbox::RUNTIME_CAPACITY);
+        let mailbox_tx =
+            mailbox_tx.with_events(self.bus.clone(), session_id, agent_id, cancel.clone());
         let agent_loop = AgentLoop {
             agent_id,
             session: session_id,
@@ -480,6 +502,11 @@ impl Runtime {
             // A root agent's context never inherits anything (WI-084: only
             // a fork child gets `Some`).
             inherited: None,
+            inbox: mailbox_rx,
+            // A root has no parent to deliver a terminal `Result` to
+            // (WI-085).
+            parent_mailbox: None,
+            pending_cancel: None,
         };
 
         // A root is started, not spawned (`kind: None`) — see `tree.rs`'s
@@ -497,8 +524,6 @@ impl Runtime {
             inherited_upto: None,
         })?;
 
-        let (inbox_tx, _inbox_rx) = mpsc::channel(64);
-
         let task: JoinHandle<AgentResult> = tokio::spawn(async move { agent_loop.run().await });
         let join = supervisor::supervise(SuperviseArgs {
             tree: self.tree.clone(),
@@ -513,7 +538,7 @@ impl Runtime {
 
         let handle = AgentHandle {
             session: session_id,
-            inbox: inbox_tx,
+            mailbox: mailbox_tx,
             last_report,
             join: Arc::new(Mutex::new(Some(join))),
         };

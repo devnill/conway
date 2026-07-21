@@ -44,6 +44,7 @@ use conway_runtime::context::ContextBuilder;
 use conway_runtime::events::EventBus;
 use conway_runtime::permission::PermissionBroker;
 use conway_runtime::tools::PluginRegistry;
+use conway_runtime::tree::{AgentNode, AgentTree};
 use futures::future::FutureExt;
 use futures::stream::{self, StreamExt};
 use tokio_util::sync::CancellationToken;
@@ -530,6 +531,7 @@ fn build_loop_inner(
         bus.clone(),
     ));
     let subagents: Arc<dyn SubagentHost> = Arc::new(FakeSubagentHost::new(agent));
+    let tree = Arc::new(AgentTree::new(bus.clone()));
 
     let deps = Arc::new(LoopDeps {
         store,
@@ -542,6 +544,7 @@ fn build_loop_inner(
         bus: bus.clone(),
         builder: Arc::new(ContextBuilder::new()),
         headroom: Arc::new(headroom),
+        tree: tree.clone(),
     });
 
     let spec = AgentSpec {
@@ -550,7 +553,7 @@ fn build_loop_inner(
         tools: None as Option<ToolSelector>,
         role: RoleAlias::new(role),
         pin: None,
-        budget,
+        budget: budget.clone(),
         cache_mode: CacheMode::None,
         cache_ttl: CacheTtl::FiveMinutes,
         headroom_override,
@@ -559,6 +562,20 @@ fn build_loop_inner(
     };
 
     let cancel = CancellationToken::new();
+    tree.attach(AgentNode {
+        id: agent,
+        parent: None,
+        session,
+        kind: None,
+        agent_def: None,
+        role: Some(RoleAlias::new(role)),
+        budget,
+        cancel: cancel.clone(),
+        inherited_upto: None,
+    })
+    .expect("fresh tree attach never fails");
+    let (_mailbox_tx, mailbox_rx) =
+        conway_runtime::mailbox::Mailbox::new(conway_runtime::mailbox::RUNTIME_CAPACITY);
     let agent_loop = AgentLoop {
         agent_id: agent,
         session,
@@ -571,6 +588,11 @@ fn build_loop_inner(
         // WI-084: no test in this file exercises fork inheritance --
         // that's `tests/subagent_fork_spawn.rs`'s job.
         inherited: None,
+        // WI-085: no test in this file exercises mailboxes/steering --
+        // that's `tests/steering.rs`'s job.
+        inbox: mailbox_rx,
+        parent_mailbox: None,
+        pending_cancel: None,
     };
 
     Harness {
