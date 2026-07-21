@@ -14,6 +14,16 @@
 //! wire behavior as `Ollama` (flattened multi-block user content, no
 //! `stream_options`) and their own WI-017 `dialect_defaults()` entry, and
 //! are exercised by WI-022.
+//!
+//! WI-022 adds two more predicates for the same reason: `wire.rs`
+//! consults `sends_parallel_tool_calls()` (only `OpenAi` — other servers
+//! 400 on the unknown `parallel_tool_calls` field) instead of matching on
+//! `Dialect::OpenAi` inline, and `uses_hermes_text_fallback()` (only
+//! `VllmHermes`) names the predicate a future streaming integration would
+//! consult to route `delta.content` through `tool_calls::hermes`
+//! (vllm#31871); this item wires and tests the fallback at the
+//! `ToolCallAccumulator` level (`push_content_delta`/`stop_override`) only,
+//! per the WI-022 scope (`src/openai_compat/stream.rs` is out of scope).
 
 use crate::capabilities::{dialect_defaults, DialectDefaults};
 use crate::config::Dialect;
@@ -44,6 +54,21 @@ impl Dialect {
     /// `[{"type":"text","text":...}]` array (`false`, `OpenAi` only).
     pub fn flatten_multiblock_user(self) -> bool {
         !matches!(self, Dialect::OpenAi)
+    }
+
+    /// Whether `dialect` sends `"parallel_tool_calls"` on a tools-bearing
+    /// request (Implementation Notes: "other servers 400 on the unknown
+    /// field") — `OpenAi` only.
+    pub fn sends_parallel_tool_calls(self) -> bool {
+        matches!(self, Dialect::OpenAi)
+    }
+
+    /// Whether `dialect` uses the Hermes inline
+    /// `<tool_call>...</tool_call>` text fallback (`tool_calls::hermes`)
+    /// for tool calls a server emits as raw text rather than structured
+    /// `delta.tool_calls` (vllm#31871) — `VllmHermes` only.
+    pub fn uses_hermes_text_fallback(self) -> bool {
+        matches!(self, Dialect::VllmHermes)
     }
 }
 
@@ -78,6 +103,32 @@ mod tests {
         assert!(!Dialect::OpenAi.flatten_multiblock_user());
         assert!(Dialect::Ollama.flatten_multiblock_user());
         assert!(Dialect::VllmHermes.flatten_multiblock_user());
+    }
+
+    #[test]
+    fn only_openai_sends_parallel_tool_calls() {
+        assert!(Dialect::OpenAi.sends_parallel_tool_calls());
+        for dialect in [
+            Dialect::Ollama,
+            Dialect::VllmHermes,
+            Dialect::LmStudio,
+            Dialect::LlamaCppServer,
+        ] {
+            assert!(!dialect.sends_parallel_tool_calls(), "{dialect:?}");
+        }
+    }
+
+    #[test]
+    fn only_vllm_hermes_uses_the_hermes_text_fallback() {
+        assert!(Dialect::VllmHermes.uses_hermes_text_fallback());
+        for dialect in [
+            Dialect::OpenAi,
+            Dialect::Ollama,
+            Dialect::LmStudio,
+            Dialect::LlamaCppServer,
+        ] {
+            assert!(!dialect.uses_hermes_text_fallback(), "{dialect:?}");
+        }
     }
 
     #[test]

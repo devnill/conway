@@ -52,7 +52,7 @@ pub(crate) fn build_request_body(
             .collect();
         body.insert("tools".into(), Value::Array(tools));
         body.insert("tool_choice".into(), json!("auto"));
-        if parallel_tool_calls && matches!(dialect, Dialect::OpenAi) {
+        if parallel_tool_calls && dialect.sends_parallel_tool_calls() {
             body.insert("parallel_tool_calls".into(), json!(true));
         }
     }
