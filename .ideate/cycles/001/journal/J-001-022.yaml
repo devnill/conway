@@ -1,0 +1,12 @@
+id: J-001-022
+type: journal_entry
+phase: autopilot
+date: 2026-07-20
+cycle_created: 1
+title: work-item-complete
+content: "Cycle 1 — Work item WI-019: OpenAI-compat adapter (OpenAi + Ollama
+  dialects). Status: complete with rework. Rework: 1 significant fixed
+  (stream-drop cancellation — drive loop now races tx.closed() at every await,
+  with a keep-alive drop regression test). Independent review; reviewer verified
+  single-request semantics, cache-hint neutrality, and accumulator reuse. Commit
+  2e550f3. Backends 84 tests."

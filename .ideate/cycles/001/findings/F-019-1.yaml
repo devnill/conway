@@ -1,0 +1,24 @@
+id: F-019-1
+type: finding
+cycle: 1
+work_item: WI-019
+verdict: pass
+severity_counts:
+  critical: 0
+  significant: 1
+  minor: 0
+content: |-
+  ## Verdict: Pass (with rework)
+  All ten machine criteria independently verified by the reviewer (tests re-run, clippy clean, feature-matrix builds). Reviewer confirmed: cache-hint neutrality true by construction AND regression-tested; no hidden retry on mid-body stream failures (send_with_retry returns on 2xx before body consumption; wiremock expect(1) proves single upstream request); ToolCallAccumulator genuinely reused in both paths; golden-JSON separator choices defensible and documented.
+
+  ## Significant Findings
+  S1: Dropping the returned BoxStream did not reliably terminate the spawned SSE drive task — content-free keep-alive chunks never touch tx, so a dropped consumer left the task and HTTP connection alive until the server closed; module doc overclaimed prompt termination. RESOLVED: every await in the drive loop now races tx.closed() via biased select! — drop proactively releases the task; doc corrected; keep-alive drop regression test added (50k content-free chunks, bounded shutdown asserted).
+
+  ## Unmet Acceptance Criteria
+  None.
+
+  ## Notes
+  Disclosed judgment calls endorsed (structural no-retry-mid-stream; probe() stubbed for WI-020; 120s local-server default timeout; async-trait/futures-core additions structurally required). Worker subagent built; independent review. Commit 2e550f3.
+cycle_modified: 0
+content_hash: fb23cbbb8e68b9cbf049c452222b456da494311a489af890f5f915d24a521d3a
+token_count: 370
