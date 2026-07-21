@@ -1,0 +1,12 @@
+id: J-001-010
+type: journal_entry
+phase: autopilot
+date: 2026-07-20
+cycle_created: 1
+title: work-item-complete
+content: "Cycle 1 — Work item WI-007: all nine port traits. Status: complete
+  with rework. Rework: 1 minor finding fixed (iterative CancellationToken
+  ancestor walk + compact Debug replacing the unbounded derived chain-walk).
+  Reviewer endorsed both disclosed deviations (StreamChunk external tagging
+  forced by serde; parent-chain token design). Commit c13d278. 82 tests
+  passing."
