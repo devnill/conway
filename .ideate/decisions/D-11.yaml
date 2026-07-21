@@ -1,0 +1,12 @@
+id: D-11
+type: domain_decision
+domain: agent-hierarchy
+title: ForkOrigin.at_seq is a local index; inherited prefixes flow through whole
+decision: "at_seq (and every resolver bound) indexes the parent session's OWN records — the same units as store.head and fork's range check. The parent's inherited prefix always passes through in full: prefix(sid, upto_local) = prefix(origin.parent, origin.at_seq) ++ own[0..upto_local]. A fork at the parent's local head therefore inherits the parent's entire effective transcript at any tree depth."
+rationale: "Cycle-1 incremental review (F-049-1, Critical) exposed a units conflation: fork validated at_seq against the local head while the resolver treated it as an effective-transcript index, structurally preventing a fork from capturing a non-root parent's tip (silent truncation of the parent's own records past depth 2). GP-02 (fork inherits the ENTIRE context) dictates local units: full-prefix passthrough is the only interpretation under which fork-at-head equals full inheritance by construction. Also keeps fork O(1) and its existing range check correct, and makes cache keys (sid, local_upto) immutable snapshots."
+source: F-049-1; GP-02; commit 3e28382
+status: settled
+cycle_created: 1
+cycle_modified: 0
+content_hash: 679b5f12339febef338623146eb14122fd837c676b43681617176339019517d3
+token_count: 314
