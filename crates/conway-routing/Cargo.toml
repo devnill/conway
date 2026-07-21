@@ -17,6 +17,9 @@ tokio = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
 
+[features]
+test-clock = []
+
 [dev-dependencies]
 toml = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
