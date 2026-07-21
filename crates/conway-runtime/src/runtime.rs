@@ -1,12 +1,16 @@
-//! `Runtime`: the facade over one agent tree (WI-082, architecture §4, §7).
+//! `Runtime`: the facade over one agent tree (WI-082/WI-083, architecture
+//! §4, §7).
 //!
 //! Owns dependency injection (`RuntimeDeps`), root-agent task lifecycle, and
 //! the public surface (`start_root`, `prompt`, `cancel`, `subscribe`,
-//! `context_report`, `tree`). No subagent code exists in this item — forking
-//! and spawning are WI-084; the agent tree/supervisor guarantees are WI-083.
-//! `tree()` here is deliberately a single-level stub over whatever root
-//! agents have been started, superseded by `AgentTree::snapshot()` in
-//! WI-083.
+//! `context_report`, `tree`). No subagent code exists in this item —
+//! forking and spawning are WI-084. `tree()` and `cancel()` are now backed
+//! by the real [`crate::tree::AgentTree`] (WI-083): every root agent
+//! started here is `attach`ed to it, and its task is wrapped by
+//! [`crate::supervisor::supervise`] so a panic or a blown deadline still
+//! resolves to a terminal result instead of leaving the tree's bookkeeping
+//! stuck on `Running` forever. See `tree.rs`'s and `supervisor.rs`'s module
+//! docs for the guarantees this buys and the one race it does not close.
 //!
 //! ## Reconciliations against the WI-082 spec's illustrative types
 //!
@@ -71,6 +75,20 @@
 //!   (erroring `AgentNotFound` for an unknown id) for consistency with
 //!   `prompt`'s and `context_report`'s error handling. A disclosed,
 //!   intentional deviation, not an oversight.
+//! - **WI-083: `AgentHandle` sheds its own result channel and cancel
+//!   token.** Before this item, `AgentHandle` held its own
+//!   `watch::Receiver<Option<AgentResult>>` (populated by a bare
+//!   `tokio::spawn` that sent into a paired `Sender` on completion) and its
+//!   own `CancellationToken`, and the WI-082 `tree()`/`cancel()` read and
+//!   wrote them directly. Both are now owned by `AgentTree` instead (a
+//!   `start_root` agent is `attach`ed to it exactly like a future WI-084
+//!   child would be, with `kind: None` since a root is started, not
+//!   spawned — see `tree.rs`'s module doc), so `AgentHandle` keeps only
+//!   what nothing else already tracks: the session id (for `prompt`) and
+//!   the live report slot (for `context_report`). Routing both channels
+//!   through one owner is also what makes `tree().nodes[].status` accurate
+//!   for a finished root agent, which the old per-`AgentHandle` channel,
+//!   never read by the WI-082 `tree()` stub, did not actually provide.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -79,8 +97,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use async_trait::async_trait;
 use chrono::Utc;
 use conway_core::agent::{
-    AgentDefRef, AgentNode, AgentResult, AgentStatus, AgentTreeSnapshot, Budget, ResultStatus,
-    SubagentSpec, ToolSelector,
+    AgentDefRef, AgentResult, AgentTreeSnapshot, Budget, SubagentSpec, ToolSelector,
 };
 use conway_core::capabilities::CacheMode;
 use conway_core::config::{AgentDef, DEFAULT_MAX_PARALLEL_TOOLS};
@@ -94,7 +111,7 @@ use conway_core::ports::{
 use conway_core::provenance::{ContextReport, Provenance};
 use conway_core::segment::CacheTtl;
 use conway_routing::config::HeadroomPolicy;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -103,7 +120,9 @@ use crate::attempt::AttemptEngine;
 use crate::context::{ContextBuilder, TOKEN_ESTIMATOR};
 use crate::events::{EventBus, EventStream};
 use crate::permission::PermissionBroker;
+use crate::supervisor::{self, SuperviseArgs};
 use crate::tools::{PluginRegistry, ToolRunner};
+use crate::tree::{AgentNode, AgentTree};
 
 /// Every port-shaped dependency the runtime needs, injected by the facade
 /// (or, in tests, built entirely from `conway-core`'s fakes). Nothing here
@@ -137,24 +156,20 @@ pub struct RootSpec {
 }
 
 /// Everything the runtime keeps about one live (or finished-but-not-yet-
-/// evicted) agent task. Looked up by reference, never cloned wholesale, so
-/// `agents`'s `RwLock` is never held across an `.await`.
+/// evicted) agent task that isn't already tracked by `Runtime::tree`
+/// (WI-083 — see the module doc's reconciliation note). Looked up by
+/// reference, never cloned wholesale, so `agents`'s `RwLock` is never held
+/// across an `.await`.
 struct AgentHandle {
     session: SessionId,
-    parent: Option<AgentId>,
-    cancel: CancellationToken,
     /// Wired in WI-085; created here, unused (the receiver is dropped
     /// immediately — nothing drains it yet, matching `AgentLoop::drain_inbox`
     /// being a no-op until then).
     #[allow(dead_code)]
     inbox: mpsc::Sender<conway_core::agent::AgentMessage>,
-    result: watch::Receiver<Option<AgentResult>>,
     last_report: Arc<Mutex<Option<ContextReport>>>,
     #[allow(dead_code)]
     join: Arc<Mutex<Option<JoinHandle<()>>>>,
-    agent_def: Option<String>,
-    role: Option<RoleAlias>,
-    budget: Budget,
 }
 
 /// The runtime facade: owns dependency injection and root-agent task
@@ -172,6 +187,7 @@ pub struct Runtime {
     broker: Arc<PermissionBroker>,
     loop_deps: Arc<LoopDeps>,
     agents: RwLock<HashMap<AgentId, AgentHandle>>,
+    tree: Arc<AgentTree>,
 }
 
 impl Runtime {
@@ -207,6 +223,7 @@ impl Runtime {
         let attempt = Arc::new(AttemptEngine::new(backends, health, event_bus.clone()));
         let builder = Arc::new(ContextBuilder::new());
         let plugin_config = Arc::new(PluginConfig::default());
+        let tree = Arc::new(AgentTree::new(event_bus.clone()));
 
         let loop_deps = Arc::new(LoopDeps {
             store: store.clone(),
@@ -229,6 +246,7 @@ impl Runtime {
             broker,
             loop_deps,
             agents: RwLock::new(HashMap::new()),
+            tree,
         })
     }
 
@@ -320,25 +338,40 @@ impl Runtime {
             cancel: cancel.clone(),
         };
 
-        let (result_tx, result_rx) = watch::channel(None);
+        // A root is started, not spawned (`kind: None`) — see `tree.rs`'s
+        // module doc on why that means `attach` will not emit
+        // `Event::AgentSpawned` for it.
+        self.tree.attach(AgentNode {
+            id: agent_id,
+            parent: None,
+            session: session_id,
+            kind: None,
+            agent_def: agent_def.map(|d| d.name.clone()),
+            role: Some(role),
+            budget: spec.budget.clone(),
+            cancel: cancel.clone(),
+            inherited_upto: None,
+        })?;
+
         let (inbox_tx, _inbox_rx) = mpsc::channel(64);
 
-        let join = tokio::spawn(async move {
-            let result = agent_loop.run().await;
-            let _ = result_tx.send(Some(result));
+        let task: JoinHandle<AgentResult> = tokio::spawn(async move { agent_loop.run().await });
+        let join = supervisor::supervise(SuperviseArgs {
+            tree: self.tree.clone(),
+            bus: self.bus.clone(),
+            agent: agent_id,
+            session: session_id,
+            cancel,
+            deadline: spec.budget.deadline,
+            grace: supervisor::DEFAULT_GRACE,
+            task,
         });
 
         let handle = AgentHandle {
             session: session_id,
-            parent: None,
-            cancel,
             inbox: inbox_tx,
-            result: result_rx,
             last_report,
             join: Arc::new(Mutex::new(Some(join))),
-            agent_def: agent_def.map(|d| d.name.clone()),
-            role: Some(role),
-            budget: spec.budget,
         };
 
         self.agents
@@ -378,17 +411,12 @@ impl Runtime {
         Ok(())
     }
 
-    /// Trips `agent`'s `CancellationToken`. See the module doc's
-    /// reconciliation note on why `reason` cannot yet reach the resulting
-    /// `AgentResult`.
+    /// Trips `agent`'s `CancellationToken` via `AgentTree::cancel` (WI-083).
+    /// See that method's doc, and this module's reconciliation note, on why
+    /// `reason` is recorded (via `tracing`) but cannot yet reach the
+    /// resulting `AgentResult`.
     pub fn cancel(&self, agent: AgentId, reason: String) -> Result<(), RuntimeError> {
-        let agents = self.agents.read().expect("agents lock poisoned");
-        let handle = agents
-            .get(&agent)
-            .ok_or(RuntimeError::AgentNotFound { agent })?;
-        tracing::info!(agent = %agent, reason = %reason, "Runtime::cancel");
-        handle.cancel.cancel();
-        Ok(())
+        self.tree.cancel(agent, reason)
     }
 
     /// Every envelope emitted after this call. Two concurrent subscribers
@@ -412,41 +440,11 @@ impl Runtime {
         Ok(report.clone().unwrap_or_else(|| empty_report(agent)))
     }
 
-    /// A single-level snapshot of every root agent started so far. Children
-    /// (and thus a real, multi-level tree) arrive in WI-083, which replaces
-    /// this stub with `AgentTree::snapshot()`. `AgentTreeSnapshot::root` is
-    /// arbitrary and nondeterministic when more than one root agent has been
-    /// started (this stub has no real notion of "the" root) until WI-083
-    /// supplies a real `AgentTree`.
+    /// A snapshot of the whole agent tree (WI-083: `AgentTree::snapshot()`).
+    /// Includes every attached agent — every root started so far; children
+    /// arrive once WI-084 attaches them.
     pub fn tree(&self) -> AgentTreeSnapshot {
-        let agents = self.agents.read().expect("agents lock poisoned");
-        let nodes: Vec<AgentNode> = agents
-            .iter()
-            .map(|(id, handle)| {
-                let finished = handle.result.borrow().clone();
-                let (status, steps_taken) = match &finished {
-                    None => (AgentStatus::Running, 0),
-                    Some(result) => (status_for(&result.status), result.steps_taken),
-                };
-                AgentNode {
-                    agent_id: *id,
-                    session: handle.session,
-                    parent: handle.parent,
-                    mode: None,
-                    agent_def: handle.agent_def.clone(),
-                    role: handle.role.clone(),
-                    status,
-                    steps_taken,
-                    budget: handle.budget.clone(),
-                }
-            })
-            .collect();
-        let root = nodes.first().map(|n| n.agent_id).unwrap_or_default();
-        AgentTreeSnapshot {
-            root,
-            nodes,
-            at: Utc::now(),
-        }
+        self.tree.snapshot()
     }
 }
 
@@ -500,19 +498,5 @@ fn empty_report(agent_id: AgentId) -> ContextReport {
         tokenizer: TOKEN_ESTIMATOR.to_string(),
         segments: Vec::new(),
         total_tokens_est: 0,
-    }
-}
-
-/// Maps a terminal `ResultStatus` to the tree's coarser `AgentStatus`.
-/// `ResultStatus` is `#[non_exhaustive]`; unrecognized future variants map
-/// to `Finished` rather than failing to compile or panicking.
-fn status_for(status: &ResultStatus) -> AgentStatus {
-    match status {
-        ResultStatus::Completed => AgentStatus::Finished,
-        ResultStatus::Failed { .. } => AgentStatus::Failed,
-        ResultStatus::Cancelled { .. } => AgentStatus::Cancelled,
-        ResultStatus::BudgetExceeded { .. } => AgentStatus::Finished,
-        ResultStatus::Rejected { .. } => AgentStatus::Finished,
-        _ => AgentStatus::Finished,
     }
 }
