@@ -31,8 +31,8 @@ notes: |-
 
   Full binding implementation notes: docs/plan/wi-conway-core.md section WI-005. Note: depends on WI-003 (added during reconciliation) because both modify log.rs and must be sequenced.
 resolution: null
-status: pending
+status: done
 cycle_created: 0
-cycle_modified: null
-content_hash: c8e2d6da29446d53c92ee0144d344291b7c3f75fdc5ddeddd2b2040ae76d3770
-token_count: 555
+cycle_modified: 0
+content_hash: bb83e9f788eca5083225f4911af4f96260e759cf594e0b951141596068bb70a7
+token_count: 578
