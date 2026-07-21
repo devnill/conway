@@ -1,0 +1,39 @@
+name: Feature matrix
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  feature-matrix:
+    name: cargo check -p conway (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: no-default-features
+            args: --no-default-features
+          - name: anthropic-only
+            args: --no-default-features --features anthropic
+          - name: openai-compat-only
+            args: --no-default-features --features openai-compat
+          - name: builtin-tools+jsonl-store
+            args: --no-default-features --features builtin-tools,jsonl-store
+          - name: all-features
+            args: --all-features
+          - name: default
+            args: ""
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.94.0"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo check -p conway
+        run: cargo check -p conway ${{ matrix.args }}
