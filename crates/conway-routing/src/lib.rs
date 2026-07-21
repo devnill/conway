@@ -28,3 +28,4 @@ mod router;
 pub use breaker::TestClock;
 pub use breaker::{BreakerRegistry, Clock, SystemClock};
 pub use capability::{satisfies, CapabilityIndex, CapabilityIndexBuilder};
+pub use router::DeclarativeRouter;
