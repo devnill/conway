@@ -12,14 +12,14 @@ pub mod config;
 pub mod content;
 pub mod error;
 pub mod event;
+#[cfg(feature = "fakes")]
+pub mod fakes;
 pub mod ids;
 pub mod log;
 pub mod ports;
 pub mod provenance;
 pub mod routing;
 pub mod segment;
-// #[cfg(feature = "fakes")]
-// pub mod fakes;        // WI-008
 
 pub mod prelude {
     pub use crate::{
