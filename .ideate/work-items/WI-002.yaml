@@ -28,8 +28,8 @@ notes: |-
 
   Full binding implementation notes: docs/plan/wi-conway-core.md section WI-002.
 resolution: null
-status: pending
+status: done
 cycle_created: 0
-cycle_modified: null
-content_hash: eade48598747e21e7b43b4ceaecf54672fda550b9c44a14197aefbfebc000a9f
-token_count: 465
+cycle_modified: 0
+content_hash: 306ecdf78e352b1c2961d5647bb2fe6d9bec0fccb5fb09b1ff49c24d339a9f7a
+token_count: 487
