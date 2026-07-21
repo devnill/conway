@@ -1,0 +1,24 @@
+id: F-048-1
+type: finding
+cycle: 1
+work_item: WI-048
+verdict: pass
+severity_counts:
+  critical: 0
+  significant: 0
+  minor: 1
+content: |-
+  ## Verdict: Pass (with rework)
+  All criteria verified; reviewer independently confirmed the four scrutiny points: head-check race benign (append-only head is monotonic, at <= snapshot holds forever), origin normalization matches the notes verbatim, create()'s unconditional header fsync honestly satisfies all three policies, and the proptest genuinely re-reads disk bytes.
+
+  ## Minor Findings
+  M1: Origin round-trip tests only exercised the warm in-memory meta path, never proving fork's written bytes decode from disk. RESOLVED: cold-reopen test added (store dropped, fresh store, meta() parses the header line from disk, ForkOrigin asserted field-by-field).
+
+  ## Unmet Acceptance Criteria
+  None.
+
+  ## Notes
+  Disclosed reconciliations endorsed: SeqOutOfRange for the spec's InvalidRange; SessionIndex::record_header non-call (still a stub — WI-050 handoff documented). Worker subagent built; independent review. Commit 58a7f61. Session 46 tests. Unblocks WI-049 (resolver), WI-050 (index), WI-051 (context reports).
+cycle_modified: 0
+content_hash: fb2a108d964c05ffda12fbfed98e626b53ca470804b433e47efd469d3e834b85
+token_count: 295
