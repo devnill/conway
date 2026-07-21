@@ -269,6 +269,21 @@ impl DeclarativeRouter {
             headroom_tokens,
         })
     }
+
+    /// The health registry this router reads for `HealthSkip` filtering,
+    /// exposed read-only so `RoutingExplain` (WI-036) can take its own
+    /// per-candidate breaker snapshot at explain time without duplicating
+    /// health state anywhere.
+    pub(crate) fn health(&self) -> &Arc<dyn HealthRegistry> {
+        &self.health
+    }
+
+    /// The capability index this router filters against, exposed read-only
+    /// so `RoutingExplain` (WI-036) can render each candidate's
+    /// `CapabilitySummary` without duplicating the lookup.
+    pub(crate) fn capability_index(&self) -> &CapabilityIndex {
+        &self.capability_index
+    }
 }
 
 impl Router for DeclarativeRouter {
