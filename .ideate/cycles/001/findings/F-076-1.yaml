@@ -1,0 +1,29 @@
+id: F-076-1
+type: finding
+cycle: 1
+work_item: WI-076
+verdict: pass_after_rework
+severity_counts:
+  critical: 1
+  significant: 0
+  minor: 1
+content: |-
+  ## Verdict: Fail -> Pass after rework
+  Scaffold, dependency boundaries (reverse-dependency queries verified), and literal criteria all passed — but the reviewer empirically caught a Critical delivery-order defect the literal criteria could not see.
+
+  ## Critical Findings
+  C1: EventBus::emit released the counter mutex before broadcast send, so racing same-session emitters delivered seq N+1 before N — reviewer measured ~27-30% order inversions across 16k events, directly violating architecture §8's monotonic-per-session delivery guarantee (the spec'd test sorted seqs before asserting, so it only proved value-set correctness). RESOLVED: seq assignment and send are now one atomic step under the mutex (send is sync/non-blocking, no await under lock); strict delivery-order regression test added (8 threads x 2000 events, received order asserted exactly sequential, no pre-sort).
+
+  ## Minor Findings
+  M1: DEFAULT_CAPACITY was exported but unwired. RESOLVED: with_default_capacity() constructor added, documented for WI-082's use.
+
+  ## Unmet Acceptance Criteria
+  None after rework.
+
+  ## Notes
+  Exemplary review — the empirical probe (unsorted delivery-order measurement) caught what the criterion-as-written missed; the spec'd sorted-assertion test weakness is noted for the WI-081/082 event-ordering criteria which assert bus seq order downstream. Worker subagent built; independent review. Commit 26502f7. Runtime 6 tests.
+
+  Dependency note for later items: tokio-stream added to workspace deps; chrono direct dep in runtime (Envelope::ts).
+cycle_modified: 0
+content_hash: 050ed27f0f3f1cb9ecd91d16f538fef3f03926c8446bd2de0a13a441f35f4462
+token_count: 431
