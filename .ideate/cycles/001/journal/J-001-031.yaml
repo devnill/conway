@@ -1,0 +1,15 @@
+id: J-001-031
+type: journal_entry
+phase: autopilot
+date: 2026-07-21
+cycle_created: 1
+title: work-item-complete
+content: "Cycle 1 — Work item WI-049: TranscriptResolver. Status: complete with
+  CRITICAL rework. The reviewer's independent re-derivation caught a
+  fork/resolve units conflation (local vs effective at_seq) that silently
+  truncated non-root parents' own records at depth >= 3 — the second, deeper
+  instance of the same class of bug the worker had itself caught and disclosed
+  at the top level. Resolved by domain decision D-11 (GP-02-dictated local units
+  with whole-prefix passthrough); resolver, docs, reference model, and tests
+  rewritten. Second Critical of the project, both caught by independent review.
+  Commit 3e28382. Session 49 tests. WI-084's brief will carry D-11."
