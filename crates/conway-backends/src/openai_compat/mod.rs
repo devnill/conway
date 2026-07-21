@@ -11,6 +11,7 @@
 //! by WI-020/WI-022.
 
 mod dialect;
+mod probe_impl;
 mod stream;
 mod wire;
 
@@ -142,10 +143,6 @@ impl Backend for OpenAiCompatBackend {
     }
 
     async fn probe(&self) -> Result<ProbeReport, BackendError> {
-        // Capability probing (`GET /models`, latency measurement) is
-        // WI-020's scope; this item only wires generate/stream.
-        Err(BackendError::BadRequest {
-            detail: "OpenAiCompatBackend::probe is not implemented until WI-020".into(),
-        })
+        self.run_probe().await
     }
 }

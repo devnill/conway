@@ -38,3 +38,11 @@ pub mod anthropic;
 
 #[cfg(feature = "openai-compat")]
 pub mod openai_compat;
+
+/// `CapabilityProbe` (WI-020) is built on `http::HttpClient`, which only
+/// exists under an adapter feature; today's sole consumer,
+/// `OpenAiCompatBackend::probe`, is `openai-compat`-gated, so this module
+/// shares that gate rather than the broader `any(anthropic, openai-compat)`
+/// gate `http` itself uses.
+#[cfg(feature = "openai-compat")]
+pub mod probe;

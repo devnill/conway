@@ -1,0 +1,9 @@
+id: J-001-028
+type: journal_entry
+phase: autopilot
+date: 2026-07-21
+cycle_created: 1
+title: work-item-complete
+content: "Cycle 1 — Work item WI-063: glob/grep + FsPlugin assembly. Status:
+  complete with rework (1 minor: order-asserting grep test). Commit 0a64378.
+  Tools 85 tests."
