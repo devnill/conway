@@ -1,0 +1,27 @@
+id: F-004-1
+type: finding
+cycle: 1
+work_item: WI-004
+verdict: pass
+severity_counts:
+  critical: 0
+  significant: 0
+  minor: 0
+content: |-
+  ## Verdict: Pass
+  WI-004 (revised) fully implemented per base spec + headroom amendment; 38/38 tests, clippy --all-features -D warnings and fmt clean; reviewer independently re-derived the saturating headroom gate arithmetic, verified error-message format strings verbatim against the amendment, mechanically confirmed RouteRequest content-freedom (GP-07), and validated headroom_for precedence.
+
+  ## Critical Findings
+  None.
+  ## Significant Findings
+  None.
+  ## Minor Findings
+  None.
+  ## Unmet Acceptance Criteria
+  None.
+
+  ## Notes
+  Reviewer endorsed both disclosed ambiguity resolutions: (1) round-trip test built on the crate's actual wire shapes since TOML shorthand parsing (backend/model strings, humantime durations) belongs to the facade (WI-097 must implement that translation); (2) min_context check placed adjacent to the headroom context check. CacheTtl temporarily lives in capabilities.rs — WI-003 must re-export, not redefine. Worker subagent built this item (spawning recovered); independent review. Commit 1feea3e.
+cycle_modified: 0
+content_hash: aa73341649000acf7ffa532e33450ea31d71625521e1c291d073348e6e3a4dd8
+token_count: 300
