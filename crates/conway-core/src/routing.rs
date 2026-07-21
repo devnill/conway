@@ -206,13 +206,22 @@ pub struct RoleConfig {
 
 /// Circuit-breaker tuning, shared by every endpoint's `Transport` and
 /// `Probe` breakers.
+///
+/// Every field has a serde default, so a config document omitting `[health]`
+/// keys (or the whole table) deserializes to [`HealthConfig::default`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct HealthConfig {
     pub transport_failures_to_open: u32,
     pub open_duration_secs: u64,
     pub probe_interval_secs: u64,
     pub probe_timeout_secs: u64,
     pub probe_failures_to_open: u32,
+    /// Consecutive successful observations required to close a half-open
+    /// breaker.
+    pub half_open_successes_to_close: u32,
+    /// Whether the periodic health prober runs at all.
+    pub probe_enabled: bool,
 }
 
 impl Default for HealthConfig {
@@ -223,6 +232,8 @@ impl Default for HealthConfig {
             probe_interval_secs: 15,
             probe_timeout_secs: 2,
             probe_failures_to_open: 3,
+            half_open_successes_to_close: 1,
+            probe_enabled: true,
         }
     }
 }
@@ -254,6 +265,10 @@ pub struct ModelOverrides {
     pub stream_tools: Option<bool>,
     pub max_context_tokens: Option<u32>,
     pub reliability_tier: Option<ReliabilityTier>,
+    /// Per-model override for the parallel-tool-calls capability
+    /// (overrides > metadata > dialect defaults, per conway-backends'
+    /// capability precedence).
+    pub parallel_tool_calls: Option<bool>,
     /// A floor, not an override: `conway-routing` applies
     /// `effective = max(request.headroom_tokens, min_headroom_tokens.unwrap_or(0))`.
     /// A model that reasons heavily can insist on more reserved space than a
@@ -433,6 +448,7 @@ mod tests {
             stream_tools: Some(true),
             max_context_tokens: Some(131_072),
             reliability_tier: Some(ReliabilityTier::Verified),
+            parallel_tool_calls: None,
             min_headroom_tokens: Some(16_384),
         };
         let json = serde_json::to_string(&mo).unwrap();
@@ -449,6 +465,7 @@ mod tests {
                 stream_tools: None,
                 max_context_tokens: None,
                 reliability_tier: None,
+                parallel_tool_calls: None,
                 min_headroom_tokens: None,
             },
         );

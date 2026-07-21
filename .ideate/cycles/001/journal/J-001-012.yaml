@@ -1,0 +1,12 @@
+id: J-001-012
+type: journal_entry
+phase: autopilot
+date: 2026-07-20
+cycle_created: 1
+title: agent-failure
+content: "Cycle 1: Agent spawns for WI-046 and WI-061 failed twice each (same
+  intermittent pane fork error as PHD-1-1); WI-016 and WI-031 workers spawned
+  successfully and are running. Deferred WI-046/WI-061 start until the two
+  in-flight workers complete, to avoid racing them on shared root Cargo.toml
+  edits — then retry spawn, falling back to inline execution per PHD-1-1.
+  Effective parallelism this batch: 2 of 4."

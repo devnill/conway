@@ -1,0 +1,12 @@
+id: J-001-011
+type: journal_entry
+phase: autopilot
+date: 2026-07-20
+cycle_created: 1
+title: work-item-complete
+content: "Cycle 1 — Work item WI-008: feature-gated test fakes. Status:
+  complete. No rework — zero findings. Commit 1c556aa. PH-001 (Core Foundation)
+  is complete: 8/8 items done, 82 unit + 10 conformance tests, conway-core fully
+  fmt/clippy-clean with no I/O dependencies. Opening PH-002's four parallel
+  crate tracks (backends, routing, session, tools) at the 4-worker concurrency
+  limit."
