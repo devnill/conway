@@ -1,0 +1,25 @@
+id: F-020-1
+type: finding
+cycle: 1
+work_item: WI-020
+verdict: pass
+severity_counts:
+  critical: 0
+  significant: 0
+  minor: 2
+content: |-
+  ## Verdict: Pass (with rework; one minor carried to refine)
+  All 9 criteria met; reviewer verified origin-join correctness by url-crate semantics, the exactly-one-send probe path (no retry middleware anywhere in the crate), documented partial-vs-total degraded semantics, and the downgrade precedence trace.
+
+  ## Minor Findings
+  M1: chat-template downgrade path untested. RESOLVED: test added — empty chat_template downgrades unpinned probed models to Unknown while an explicit override tier still wins.
+  M2 (CARRIED to refinement, bundled with the WI-016 shared-machinery follow-up): shared HttpClient uses reqwest's default follow-10-redirects policy, so a probe's single .send() could issue >1 physical request on a 3xx — in tension with single-observation probe semantics. Pre-existing crate-wide behavior, low likelihood on LAN endpoints; the refine-phase item covering send_with_retry/classify body-threading (F-021-1 S1) should also pin an explicit redirect policy.
+
+  ## Unmet Acceptance Criteria
+  None.
+
+  ## Notes
+  Worker subagent built; independent review. Commit 9204b70. Backends track: only WI-022 (remaining dialects) left.
+cycle_modified: 0
+content_hash: 6b0dc58af5a5acd7baf03ae8f125b617d0d66a9007eccc3198e77af00efc3451
+token_count: 325

@@ -1,0 +1,10 @@
+id: J-001-029
+type: journal_entry
+phase: autopilot
+date: 2026-07-21
+cycle_created: 1
+title: work-item-complete
+content: "Cycle 1 — Work item WI-020: CapabilityProbe + Backend::probe. Status:
+  complete with rework (1 minor test added: chat-template downgrade). 1 minor
+  carried to refinement (redirect policy on the shared HttpClient — bundled with
+  the F-021-1 shared-machinery follow-up). Commit 9204b70."

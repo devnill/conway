@@ -97,6 +97,13 @@ impl Provenance {
 pub struct ContextReport {
     pub agent_id: AgentId,
     pub turn: u32,
+    /// The tokenizer or estimation heuristic that produced every
+    /// `tokens_est` in this report — e.g. `"heuristic-chars4"` (the
+    /// runtime's chars/4 estimate) or a real tokenizer name like
+    /// `"cl100k_base"`. Despite the field name, this may be an
+    /// estimator, not a true tokenizer (T-9): counts are estimates
+    /// unless a per-entry `estimated` flag says otherwise. WI-087
+    /// asserts this field (there is no separate `estimator` field).
     pub tokenizer: String,
     pub segments: Vec<ContextReportEntry>,
     pub total_tokens_est: u32,

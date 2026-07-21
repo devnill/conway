@@ -22,6 +22,14 @@ jsonschema = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 # Not in the WI-076 binding dependency list by name, but mechanically
+# required by WI-077: `ContextBuilder` derives deterministic `SegmentId`s
+# (blake3 of position/provenance/content, reinterpreted as a `ulid::Ulid`)
+# so golden-file output and the cache-neutrality property are reproducible
+# across builds — see `context/builder.rs`. `conway_core::ids::SegmentId`'s
+# inner field is `pub ulid::Ulid`, so naming that type requires the crate
+# directly.
+ulid = { workspace = true }
+# Not in the WI-076 binding dependency list by name, but mechanically
 # required: `conway_core::event::Envelope::ts` is a `chrono::DateTime<Utc>`,
 # and `EventBus::emit` constructs one directly.
 chrono = { workspace = true }
@@ -29,3 +37,6 @@ chrono = { workspace = true }
 [dev-dependencies]
 conway-core = { path = "../conway-core", features = ["fakes"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util"] }
+# Test-only: WI-077's golden-file fixtures construct `ToolSpec` values,
+# whose `schema` field is a `schemars::schema::RootSchema`.
+schemars = { workspace = true }
