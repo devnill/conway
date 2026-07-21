@@ -415,7 +415,7 @@ mod tests {
     fn agent_result_new_truncates_summary_on_char_boundary() {
         // A 5000-char summary of 3-byte-in-UTF-8 characters: byte-offset
         // truncation at 2000 would either panic or split a character.
-        let summary: String = std::iter::repeat('あ').take(5000).collect();
+        let summary = "あ".repeat(5000);
         let result = AgentResult::new(
             AgentId::new(),
             SessionId::new(),
