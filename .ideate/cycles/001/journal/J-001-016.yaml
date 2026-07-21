@@ -1,0 +1,13 @@
+id: J-001-016
+type: journal_entry
+phase: autopilot
+date: 2026-07-20
+cycle_created: 1
+title: work-item-complete
+content: "Cycle 1 — Work item WI-046: conway-session skeleton + JSONL codec.
+  Status: complete with rework. Rework: 3 significant fixed (debug-assert
+  seq-discipline guard; tokio features pre-declared for WI-047; proptest
+  strategy broadened to the threatening input class with an explicit
+  interior-newline test); 1 minor accepted as deliberate deviation (alphabetical
+  module order per workspace rustfmt convention). Commit 51511ef. 15 tests
+  passing."

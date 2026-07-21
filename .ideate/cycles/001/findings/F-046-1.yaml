@@ -1,0 +1,29 @@
+id: F-046-1
+type: finding
+cycle: 1
+work_item: WI-046
+verdict: pass_after_rework
+severity_counts:
+  critical: 0
+  significant: 3
+  minor: 1
+content: |-
+  ## Verdict: Fail -> Pass after rework
+  Machine criteria met and crate clean, but three significant issues required rework.
+
+  ## Significant Findings
+  S1: encode_record's seq-overwrite unguarded (would paper over store append-path seq bugs) and no Header guard. RESOLVED: debug_assert_eq on seq agreement + debug_assert rejecting Header; release builds keep the parameter-authoritative overwrite so production lines stay internally consistent; tests updated to the new contract including a cfg(debug_assertions) should_panic test.
+  S2: tokio features (sync/time/rt) omitted, forcing WI-047 to re-edit the shared Cargo.toml the skeleton exists to stabilize. RESOLVED: features pre-declared.
+  S3: proptest text strategy excluded the exact input class (newlines/quotes/backslashes/unicode) threatening the no-interior-newline invariant. RESOLVED: strategy broadened + explicit interior-newline escape round-trip unit test.
+
+  ## Minor Findings
+  M1: lib.rs module/re-export ordering deviates from the spec's listed order. ACCEPTED AS-IS: alphabetical ordering is the workspace-wide rustfmt convention; the spec's ordering carries no semantic weight. Recorded as a deliberate deviation.
+
+  ## Unmet Acceptance Criteria
+  None after rework.
+
+  ## Notes
+  Worker's disclosed resolutions endorsed: seq parameter authoritative (now debug-guarded), meta types re-exported from core rather than redefined, core's ContextReport shape adopted for WI-051. Session crate now 15 tests. Commit 51511ef.
+cycle_modified: 0
+content_hash: 85ef8d01cfad003444f8b8a036739110a282957b705bb47f7a80f07fdf4cf437
+token_count: 415
