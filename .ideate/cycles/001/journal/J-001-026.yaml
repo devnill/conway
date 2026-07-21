@@ -1,0 +1,10 @@
+id: J-001-026
+type: journal_entry
+phase: autopilot
+date: 2026-07-21
+cycle_created: 1
+title: work-item-complete
+content: "Cycle 1 — Work item WI-048: O(1) fork-by-reference. Status: complete
+  with rework (1 minor: cold-reopen disk-decode test). Reviewer confirmed the
+  append-only monotonic-head argument makes the head-check race benign. Commit
+  58a7f61. Session 46 tests. Unblocks WI-049/050/051."
