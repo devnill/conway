@@ -4,16 +4,18 @@
 //! WI-047 implements `open`/`open_with`, the `SessionStore` trait impl
 //! (`create`/`append`/`read`/`head`/`meta`), the fsync policy, and
 //! crash-tolerant reads. `fork` (WI-048) delegates to
-//! `crate::fork::fork_impl`. `children`/`list` are minimal correct
-//! header-scan implementations — WI-050 replaces the scan with an
-//! accelerated `SessionIndex` without needing to touch this file's public
-//! surface.
+//! `crate::fork::fork_impl`, which in turn calls `create` — so `create` is
+//! the single place `children`/`list` updates need to be wired in for both
+//! paths. `children`/`list` (WI-050) delegate to `SessionIndex`, an
+//! in-memory, no-I/O read; `create` calls `SessionIndex::record_header`
+//! after the header write succeeds, and `open_with` builds the index via
+//! `SessionIndex::load_or_rebuild`.
 //!
 //! Layout: `root/<session_id>.jsonl`, one file per session, no
-//! subdirectories. `root/index.jsonl` is reserved for WI-050 and is skipped
-//! by every directory scan here (a session id never parses as the literal
-//! string `index`, so the skip is implicit in the id-parse step, not a
-//! special case).
+//! subdirectories. `root/index.jsonl` (WI-050) is skipped by every
+//! directory scan here (a session id never parses as the literal string
+//! `index`, so the skip is implicit in the id-parse step, not a special
+//! case).
 
 use std::collections::HashMap;
 use std::io::ErrorKind;
@@ -34,6 +36,7 @@ use conway_core::log::{LogRecord, SessionFilter, SessionMeta};
 use conway_core::ports::SessionStore;
 
 use crate::codec;
+use crate::index::SessionIndex;
 
 /// Durability policy for `append`. Header writes (`create`, and `fork` once
 /// WI-048 lands) always fsync immediately, independent of this policy — see
@@ -114,6 +117,11 @@ pub struct JsonlSessionStore {
     /// aborted on drop. Holds only a `Weak` to `handles`, so a dropped
     /// store also ends the task naturally.
     flusher: Option<tokio::task::JoinHandle<()>>,
+    /// The derived `children`/`list` accelerator (WI-050). Built once at
+    /// `open_with` time via rebuild-by-scan or an existing `index.jsonl`;
+    /// kept current by `record_header` calls from `create` (which `fork`
+    /// also goes through). Never a source of truth.
+    index: Arc<SessionIndex>,
 }
 
 impl Drop for JsonlSessionStore {
@@ -121,6 +129,10 @@ impl Drop for JsonlSessionStore {
         if let Some(task) = self.flusher.take() {
             task.abort();
         }
+        // Best-effort index durability on shutdown (spec: `flush(root)` on
+        // store drop); a lost tail is healed by rebuild-by-scan on next
+        // open, so failure here is deliberately ignored.
+        let _ = self.index.flush_sync(&self.root);
     }
 }
 
@@ -148,6 +160,8 @@ async fn flush_idle_handles(
     handles: std::sync::Weak<AsyncRwLock<HashMap<SessionId, Arc<AsyncMutex<SessionFile>>>>>,
     fsync_count: Arc<AtomicU64>,
     interval: Duration,
+    index: std::sync::Weak<SessionIndex>,
+    root: PathBuf,
 ) {
     let mut tick = tokio::time::interval(interval);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -165,6 +179,12 @@ async fn flush_idle_handles(
                 sf.last_fsync = Instant::now();
                 sf.dirty = false;
             }
+        }
+        // Index durability rides the same tick (spec: `flush(root)` from
+        // the interval flusher). Best-effort — the index is a cache, and a
+        // lost tail is healed by rebuild-by-scan on next open.
+        if let Some(idx) = index.upgrade() {
+            let _ = idx.flush(&root).await;
         }
     }
 }
@@ -319,6 +339,7 @@ impl JsonlSessionStore {
     /// As [`open`](Self::open), with an explicit [`StoreConfig`].
     pub async fn open_with(root: PathBuf, cfg: StoreConfig) -> Result<Self, StoreError> {
         tokio::fs::create_dir_all(&root).await.map_err(io_err)?;
+        let index = Arc::new(SessionIndex::load_or_rebuild(&root).await?);
         let handles: Arc<AsyncRwLock<HashMap<SessionId, Arc<AsyncMutex<SessionFile>>>>> =
             Arc::new(AsyncRwLock::new(HashMap::new()));
         let fsync_count = Arc::new(AtomicU64::new(0));
@@ -327,6 +348,8 @@ impl JsonlSessionStore {
                 Arc::downgrade(&handles),
                 Arc::clone(&fsync_count),
                 interval,
+                Arc::downgrade(&index),
+                root.clone(),
             ))),
             _ => None,
         };
@@ -337,6 +360,7 @@ impl JsonlSessionStore {
             fsync_count,
             lines_scanned: Arc::new(AtomicU64::new(0)),
             flusher,
+            index,
         })
     }
 
@@ -410,30 +434,6 @@ impl JsonlSessionStore {
         Ok(arc)
     }
 
-    async fn scan_all_headers(&self) -> Result<Vec<SessionMeta>, StoreError> {
-        let mut out = Vec::new();
-        let mut rd = tokio::fs::read_dir(&self.root).await.map_err(io_err)?;
-        while let Some(entry) = rd.next_entry().await.map_err(io_err)? {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-                continue;
-            }
-            let Some(sid) = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .and_then(|s| s.parse::<SessionId>().ok())
-            else {
-                // Not a session-id-shaped filename — includes `index.jsonl`
-                // (WI-050), which never parses as a ULID.
-                continue;
-            };
-            if let Ok(m) = self.meta(&sid).await {
-                out.push(m);
-            }
-        }
-        Ok(out)
-    }
-
     /// Total number of `sync_data()` calls issued by this store so far
     /// (header writes, `append`'s fsync-policy syncs). Test-only
     /// instrumentation, not part of the public store contract.
@@ -493,6 +493,13 @@ impl SessionStore for JsonlSessionStore {
         // always fsync, regardless of policy, which subsumes the flush.
         file.sync_data().await.map_err(io_err)?;
         self.fsync_count.fetch_add(1, Ordering::Relaxed);
+
+        // Single wiring point for the index (WI-050): `fork` delegates to
+        // `create` (see `crate::fork::fork_impl`), so recording here covers
+        // both paths without any edit to `fork.rs`. Best-effort — index
+        // I/O errors are logged and swallowed inside `record_header`,
+        // never surfaced as a `create`/`fork` failure.
+        self.index.record_header(&meta);
 
         let sf = SessionFile {
             file,
@@ -611,41 +618,15 @@ impl SessionStore for JsonlSessionStore {
         })
     }
 
-    /// Minimal correct implementation: scans every `root/*.jsonl` header.
-    /// WI-050 replaces this with an accelerated in-memory index.
+    /// Accelerated by `SessionIndex` (WI-050): in-memory lookup, no file
+    /// I/O on this path.
     async fn children(&self, sid: &SessionId) -> Result<Vec<SessionId>, StoreError> {
-        let mut headers = self.scan_all_headers().await?;
-        headers.sort_by(|a, b| a.created.cmp(&b.created).then(a.id.cmp(&b.id)));
-        Ok(headers
-            .into_iter()
-            .filter(|m| m.origin.as_ref().is_some_and(|o| o.parent == *sid))
-            .map(|m| m.id)
-            .collect())
+        Ok(self.index.children(sid))
     }
 
-    /// Minimal correct implementation: scans every `root/*.jsonl` header.
-    /// WI-050 replaces this with an accelerated in-memory index.
+    /// Accelerated by `SessionIndex` (WI-050): in-memory lookup, no file
+    /// I/O on this path.
     async fn list(&self, filter: SessionFilter) -> Result<Vec<SessionMeta>, StoreError> {
-        let mut metas = self.scan_all_headers().await?;
-        metas.retain(|m| {
-            filter
-                .agent_def
-                .as_ref()
-                .is_none_or(|v| m.agent_def.as_deref() == Some(v.as_str()))
-                && filter
-                    .label
-                    .as_ref()
-                    .is_none_or(|v| m.labels.iter().any(|l| l == v))
-                && filter.status.is_none_or(|s| m.status == s)
-                && filter
-                    .parent
-                    .as_ref()
-                    .is_none_or(|p| m.origin.as_ref().is_some_and(|o| o.parent == *p))
-        });
-        metas.sort_by(|a, b| b.created.cmp(&a.created).then(a.id.cmp(&b.id)));
-        if let Some(limit) = filter.limit {
-            metas.truncate(limit);
-        }
-        Ok(metas)
+        Ok(self.index.list(&filter))
     }
 }
