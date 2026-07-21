@@ -65,11 +65,9 @@ use crate::store::JsonlSessionStore;
 ///    under all three policies"), zero records.
 ///
 /// `SessionIndex::record_header` (WI-050) is deliberately not called here:
-/// today `SessionIndex` is an unconstructed stub whose `record_header` is
-/// `todo!()` (WI-046), and `JsonlSessionStore` holds no `SessionIndex`
-/// instance for `fork_impl` to call it on. WI-050 wires the call in
-/// alongside adding that field/instance — no other edit to this file
-/// should be needed then.
+/// the delegation to `store.create` in step 4 already records the child's
+/// header in the index (that call is `create`'s single wiring point), so
+/// fork children are indexed with no edit to this file.
 pub(crate) async fn fork_impl(
     store: &JsonlSessionStore,
     parent: &SessionId,

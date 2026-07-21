@@ -2,64 +2,469 @@
 //! `children`, and tree reconstruction — never a source of truth
 //! (architecture §7 "Module: conway-session").
 //!
-//! This file is a skeleton only. WI-050 implements rebuild-by-scan, the
-//! in-memory `by_id`/`children` maps, and the append-only `index.jsonl`
-//! projection. `JsonlSessionStore::children`/`::list` (WI-047) delegate to
-//! this type verbatim; `fork_impl` (WI-048) calls `record_header` as a
-//! no-op today so WI-050 needs no edit to `fork.rs`.
+//! ## On-disk form
+//!
+//! `root/index.jsonl`: one JSON object per line, a projection of the header
+//! (never records). The wire schema here adds `cwd` on top of the fields
+//! named in the WI-050 spec prose: `SessionMeta::cwd` is not optional, and
+//! without it a `list()`/`children()` result served from a *loaded* (not
+//! rebuilt) index would silently return the wrong `cwd` for every session —
+//! a real correctness gap the spec's illustrative schema didn't need to
+//! call out, since project prose enumerates it loosely ("a projection of
+//! the header") rather than as an exhaustive field list.
+//!
+//! ## In-memory form
+//!
+//! `IndexState { by_id, children }`, guarded by a `std::sync::RwLock` (not
+//! `tokio::sync::RwLock`): `record_header`/`children`/`list` are
+//! synchronous per the WI-046-fixed signatures below, so a blocking lock is
+//! both correct and simpler — no lock is ever held across an `.await`.
+//!
+//! ## Failure policy
+//!
+//! The index is a cache. `record_header`'s `index.jsonl` append is
+//! best-effort: any I/O error is logged at WARN and swallowed, never
+//! propagated into the caller's `create`/`fork` result (`store.rs` calls
+//! `record_header` unconditionally after the session file write has already
+//! succeeded). `load_or_rebuild` treats an absent, corrupt, or
+//! disk-inconsistent `index.jsonl` the same way: rebuild by scanning
+//! `root/*.jsonl` and recover, logging `"index rebuild"` at WARN whenever
+//! the rebuild was triggered by something other than a first-run absence.
 
-use std::path::Path;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::sync::RwLock;
+
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use conway_core::error::StoreError;
-use conway_core::ids::SessionId;
-use conway_core::log::{SessionFilter, SessionMeta};
+use conway_core::ids::{AgentId, LogSeq, RoleAlias, SessionId};
+use conway_core::log::{ForkOrigin, SessionFilter, SessionMeta, SessionStatus, SubagentMode};
+
+use crate::codec;
+
+fn io_err(e: std::io::Error) -> StoreError {
+    StoreError::Io {
+        detail: e.to_string(),
+    }
+}
+
+/// The on-disk projection of one `SessionMeta` — see the module-level "On-disk
+/// form" docs for why `cwd` is included beyond the spec's illustrative schema.
+#[derive(Debug, Serialize, Deserialize)]
+struct IndexLine {
+    session: SessionId,
+    agent: AgentId,
+    parent: Option<SessionId>,
+    at_seq: Option<LogSeq>,
+    mode: Option<SubagentMode>,
+    created: DateTime<Utc>,
+    agent_def: Option<String>,
+    role: Option<RoleAlias>,
+    cwd: PathBuf,
+    #[serde(default)]
+    labels: Vec<String>,
+    status: SessionStatus,
+}
+
+impl IndexLine {
+    fn from_meta(meta: &SessionMeta) -> Self {
+        let (parent, at_seq, mode) = match &meta.origin {
+            Some(o) => (Some(o.parent), Some(o.at_seq), Some(o.mode)),
+            None => (None, None, None),
+        };
+        Self {
+            session: meta.id,
+            agent: meta.agent_id,
+            parent,
+            at_seq,
+            mode,
+            created: meta.created,
+            agent_def: meta.agent_def.clone(),
+            role: meta.role.clone(),
+            cwd: meta.cwd.clone(),
+            labels: meta.labels.clone(),
+            status: meta.status,
+        }
+    }
+
+    fn into_meta(self) -> SessionMeta {
+        let origin = match (self.parent, self.at_seq, self.mode) {
+            (Some(parent), Some(at_seq), Some(mode)) => Some(ForkOrigin {
+                parent,
+                at_seq,
+                mode,
+            }),
+            _ => None,
+        };
+        SessionMeta {
+            id: self.session,
+            agent_id: self.agent,
+            origin,
+            agent_def: self.agent_def,
+            role: self.role,
+            created: self.created,
+            cwd: self.cwd,
+            labels: self.labels,
+            status: self.status,
+        }
+    }
+}
+
+/// In-memory state: every known header, plus a parent → children projection
+/// kept up to date incrementally by [`IndexState::upsert`].
+#[derive(Debug, Default)]
+struct IndexState {
+    by_id: HashMap<SessionId, SessionMeta>,
+    /// Unsorted membership lists; `children()` sorts by `created` (looked up
+    /// via `by_id`) at read time rather than maintaining sort order on
+    /// every insert, which would need an O(log n) insertion search per
+    /// `upsert` for a query pattern (`children`) that is comparatively rare
+    /// and small per session.
+    children: HashMap<SessionId, Vec<SessionId>>,
+}
+
+impl IndexState {
+    fn upsert(&mut self, meta: SessionMeta) {
+        // Re-recording an id (not expected in normal operation, but kept
+        // correct defensively) must not leave a stale entry under the old
+        // parent if the origin ever differs between calls.
+        if let Some(old) = self.by_id.remove(&meta.id) {
+            if let Some(origin) = &old.origin {
+                if let Some(list) = self.children.get_mut(&origin.parent) {
+                    list.retain(|c| *c != meta.id);
+                }
+            }
+        }
+        if let Some(origin) = &meta.origin {
+            let list = self.children.entry(origin.parent).or_default();
+            if !list.contains(&meta.id) {
+                list.push(meta.id);
+            }
+        }
+        self.by_id.insert(meta.id, meta);
+    }
+}
+
+/// Why `try_load` did not produce a usable index — distinguishes a fresh
+/// store (no prior `index.jsonl`, not a failure) from a genuinely corrupt or
+/// stale one (rebuild, and warn that it happened).
+enum LoadOutcome {
+    Missing,
+    Invalid(String),
+}
+
+/// Scans `root` for session files (`<ulid>.jsonl`, excluding `index.jsonl`
+/// and `index.jsonl.tmp` — neither has a `.jsonl`-final extension with a
+/// ULID stem, so no special-casing is needed beyond the parse check).
+async fn scan_session_files(root: &Path) -> Result<Vec<(SessionId, PathBuf)>, StoreError> {
+    let mut out = Vec::new();
+    let mut rd = tokio::fs::read_dir(root).await.map_err(io_err)?;
+    while let Some(entry) = rd.next_entry().await.map_err(io_err)? {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+            continue;
+        }
+        let Some(sid) = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .and_then(|s| s.parse::<SessionId>().ok())
+        else {
+            continue;
+        };
+        out.push((sid, path));
+    }
+    Ok(out)
+}
+
+/// Reads only line 0 of a session file and decodes it as a header —
+/// `None` on any I/O or decode failure (the caller drops and warns).
+async fn read_header(path: &Path) -> Option<SessionMeta> {
+    let file = tokio::fs::File::open(path).await.ok()?;
+    let mut reader = BufReader::new(file);
+    let mut line = String::new();
+    reader.read_line(&mut line).await.ok()?;
+    if line.trim().is_empty() {
+        return None;
+    }
+    codec::decode_header(&line).ok()
+}
+
+/// One logical line of `index.jsonl`'s raw content: `(text, had_trailing_newline)`.
+/// A final line lacking its trailing `\n` is a truncated write and must be
+/// treated as invalid, not silently accepted (`str::lines` alone can't tell
+/// the difference, since it yields a trailing partial segment identically
+/// to a complete one).
+fn raw_lines(content: &str) -> Vec<(&str, bool)> {
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    let len = content.len();
+    while start < len {
+        match content[start..].find('\n') {
+            Some(rel) => {
+                out.push((&content[start..start + rel], true));
+                start += rel + 1;
+            }
+            None => {
+                out.push((&content[start..], false));
+                start = len;
+            }
+        }
+    }
+    out
+}
 
 /// The derived, rebuildable session index. Implemented by WI-050.
 #[derive(Debug)]
-pub struct SessionIndex;
+pub struct SessionIndex {
+    state: RwLock<IndexState>,
+    root: PathBuf,
+}
 
 impl SessionIndex {
     /// Loads `root/index.jsonl`, or rebuilds it by scanning `root/*.jsonl`
     /// (excluding `index.jsonl`) if it is absent, corrupt, or inconsistent
-    /// with the session files on disk. Implemented by WI-050.
+    /// with the session files on disk.
     ///
-    /// `#[allow(dead_code)]`: not yet called by `JsonlSessionStore::open`
-    /// (WI-047 owns that call site). Remove the attribute when it lands.
-    #[allow(dead_code)]
-    pub(crate) async fn load_or_rebuild(_root: &Path) -> Result<Self, StoreError> {
-        todo!("WI-050: SessionIndex::load_or_rebuild")
+    /// Rebuild triggers (any one is sufficient): the file is absent; a line
+    /// fails to decode; a line's final byte lacks a trailing newline (a
+    /// truncated write); a duplicate `session` id appears; an entry names a
+    /// session file absent from `root`; or a session file present in `root`
+    /// has no entry. A rebuild triggered by anything other than plain
+    /// absence logs `tracing::warn!(..., "index rebuild")`.
+    pub(crate) async fn load_or_rebuild(root: &Path) -> Result<Self, StoreError> {
+        let state = match Self::try_load(root).await {
+            Ok(state) => {
+                return Ok(Self {
+                    state: RwLock::new(state),
+                    root: root.to_path_buf(),
+                });
+            }
+            Err(LoadOutcome::Missing) => Self::rebuild_scan(root).await?,
+            Err(LoadOutcome::Invalid(detail)) => {
+                tracing::warn!(root = %root.display(), detail = %detail, "index rebuild");
+                Self::rebuild_scan(root).await?
+            }
+        };
+
+        let index = Self {
+            state: RwLock::new(state),
+            root: root.to_path_buf(),
+        };
+        if let Err(e) = index.persist_full().await {
+            tracing::warn!(
+                error = %e,
+                "index rebuild: failed to persist rebuilt index.jsonl (will be rebuilt again next open)"
+            );
+        }
+        Ok(index)
+    }
+
+    /// Attempts to load an existing, internally consistent `index.jsonl`.
+    /// Any inconsistency is reported via `LoadOutcome`, never `panic!` or a
+    /// silently wrong index.
+    async fn try_load(root: &Path) -> Result<IndexState, LoadOutcome> {
+        let path = root.join("index.jsonl");
+        let content = match tokio::fs::read_to_string(&path).await {
+            Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(LoadOutcome::Missing),
+            Err(e) => return Err(LoadOutcome::Invalid(format!("index.jsonl unreadable: {e}"))),
+        };
+
+        let mut state = IndexState::default();
+        let mut seen: HashSet<SessionId> = HashSet::new();
+        let lines = raw_lines(&content);
+        for (idx, (text, had_newline)) in lines.iter().enumerate() {
+            let is_last = idx == lines.len() - 1;
+            if !had_newline {
+                debug_assert!(is_last, "only the final line can lack a trailing newline");
+                return Err(LoadOutcome::Invalid(format!(
+                    "index.jsonl line {idx} is truncated (no trailing newline)"
+                )));
+            }
+            let line: IndexLine = match serde_json::from_str(text) {
+                Ok(l) => l,
+                Err(e) => {
+                    return Err(LoadOutcome::Invalid(format!(
+                        "index.jsonl line {idx} failed to decode: {e}"
+                    )));
+                }
+            };
+            if !seen.insert(line.session) {
+                return Err(LoadOutcome::Invalid(format!(
+                    "index.jsonl has a duplicate entry for session {}",
+                    line.session
+                )));
+            }
+            state.upsert(line.into_meta());
+        }
+
+        let files = scan_session_files(root)
+            .await
+            .map_err(|e| LoadOutcome::Invalid(format!("directory scan failed: {e}")))?;
+        let disk_ids: HashSet<SessionId> = files.iter().map(|(sid, _)| *sid).collect();
+        let index_ids: HashSet<SessionId> = state.by_id.keys().copied().collect();
+        if disk_ids != index_ids {
+            return Err(LoadOutcome::Invalid(format!(
+                "index.jsonl disagrees with disk: {} indexed session(s), {} file(s) on disk",
+                index_ids.len(),
+                disk_ids.len()
+            )));
+        }
+
+        Ok(state)
+    }
+
+    /// Rebuild-by-scan: read line 0 of every session file on disk, dropping
+    /// (and warning about) any whose header can't be decoded.
+    async fn rebuild_scan(root: &Path) -> Result<IndexState, StoreError> {
+        let files = scan_session_files(root).await?;
+        let mut state = IndexState::default();
+        for (sid, path) in files {
+            match read_header(&path).await {
+                Some(meta) => state.upsert(meta),
+                None => tracing::warn!(
+                    session = %sid,
+                    path = %path.display(),
+                    "index rebuild: dropping session with an unreadable header"
+                ),
+            }
+        }
+        Ok(state)
+    }
+
+    /// Atomically rewrites `index.jsonl` from the current in-memory state:
+    /// write `index.jsonl.tmp`, fsync, rename over the real file. The
+    /// rename is the only non-append write this module ever performs, and
+    /// it targets only the derived file, never a session file.
+    async fn persist_full(&self) -> Result<(), StoreError> {
+        let metas: Vec<SessionMeta> = {
+            let state = self.state.read().unwrap();
+            state.by_id.values().cloned().collect()
+        };
+        let mut buf = String::new();
+        for meta in &metas {
+            let line = IndexLine::from_meta(meta);
+            buf.push_str(&serde_json::to_string(&line).expect("IndexLine always serializes"));
+            buf.push('\n');
+        }
+
+        let tmp_path = self.root.join("index.jsonl.tmp");
+        let final_path = self.root.join("index.jsonl");
+        let mut file = tokio::fs::File::create(&tmp_path).await.map_err(io_err)?;
+        file.write_all(buf.as_bytes()).await.map_err(io_err)?;
+        file.sync_data().await.map_err(io_err)?;
+        drop(file);
+        tokio::fs::rename(&tmp_path, &final_path)
+            .await
+            .map_err(io_err)?;
+        Ok(())
     }
 
     /// Records a newly written header in the in-memory index and appends
     /// one line to `index.jsonl` (best-effort — index I/O errors are
-    /// logged at WARN and never propagate). Implemented by WI-050.
+    /// logged at WARN and never propagate; see the module-level failure
+    /// policy).
     ///
-    /// `#[allow(dead_code)]`: called by `fork_impl` (WI-048) once that item
-    /// lands; unused until then.
-    #[allow(dead_code)]
-    pub(crate) fn record_header(&self, _meta: &SessionMeta) {
-        todo!("WI-050: SessionIndex::record_header")
+    /// Synchronous by the WI-046-fixed signature: `store.rs` calls this
+    /// inline from `create` (which `fork` also delegates to), not awaited.
+    /// The `index.jsonl` append below therefore uses blocking `std::fs`
+    /// rather than `tokio::fs` — acceptable because it is one small,
+    /// best-effort line write, never on `conway-session`'s durability
+    /// contract (`index.jsonl` is a cache, not the source of truth).
+    pub(crate) fn record_header(&self, meta: &SessionMeta) {
+        {
+            let mut state = self.state.write().unwrap();
+            state.upsert(meta.clone());
+        }
+        if let Err(e) = self.append_line_sync(meta) {
+            tracing::warn!(
+                session = %meta.id,
+                error = %e,
+                "index append failed; will be reconciled by rebuild-by-scan on next open"
+            );
+        }
     }
 
-    /// Fsyncs `index.jsonl`. Called on store drop and by the interval
-    /// flusher (WI-047). Implemented by WI-050.
-    #[allow(dead_code)]
-    pub(crate) async fn flush(&self, _root: &Path) -> Result<(), StoreError> {
-        todo!("WI-050: SessionIndex::flush")
+    fn append_line_sync(&self, meta: &SessionMeta) -> std::io::Result<()> {
+        use std::io::Write;
+        let line = IndexLine::from_meta(meta);
+        let mut json = serde_json::to_string(&line).expect("IndexLine always serializes to JSON");
+        json.push('\n');
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.root.join("index.jsonl"))?;
+        file.write_all(json.as_bytes())
+    }
+
+    /// Fsyncs `index.jsonl`. Called by the interval flusher's tick loop
+    /// (WI-047's wiring); a missing file is not an error (nothing has been
+    /// appended yet).
+    pub(crate) async fn flush(&self, root: &Path) -> Result<(), StoreError> {
+        let path = root.join("index.jsonl");
+        match tokio::fs::OpenOptions::new().write(true).open(&path).await {
+            Ok(file) => file.sync_data().await.map_err(io_err),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(io_err(e)),
+        }
+    }
+
+    /// Synchronous [`flush`](Self::flush) for `Drop`, which cannot await.
+    /// Same missing-file tolerance; best-effort at the call site (a lost
+    /// tail is healed by `load_or_rebuild` on next open).
+    pub(crate) fn flush_sync(&self, root: &Path) -> Result<(), StoreError> {
+        let path = root.join("index.jsonl");
+        match std::fs::OpenOptions::new().write(true).open(&path) {
+            Ok(file) => file.sync_data().map_err(io_err),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(io_err(e)),
+        }
     }
 
     /// Sessions whose header `origin.parent == sid`, ascending `created`
-    /// order. Implemented by WI-050.
-    #[allow(dead_code)]
-    pub(crate) fn children(&self, _sid: &SessionId) -> Vec<SessionId> {
-        todo!("WI-050: SessionIndex::children")
+    /// order (ties broken by ascending `id` for determinism). Reads only
+    /// in-memory state — no file I/O on the hot path.
+    pub(crate) fn children(&self, sid: &SessionId) -> Vec<SessionId> {
+        let state = self.state.read().unwrap();
+        let mut kids: Vec<SessionId> = state.children.get(sid).cloned().unwrap_or_default();
+        kids.sort_by(|a, b| {
+            let ca = state.by_id.get(a).map(|m| m.created);
+            let cb = state.by_id.get(b).map(|m| m.created);
+            ca.cmp(&cb).then_with(|| a.cmp(b))
+        });
+        kids
     }
 
-    /// Sessions matching `f`, AND-composed across `parent`/`status`/`label`,
-    /// `limit` applied after filtering and ordering, descending `created`
-    /// with ties broken by ascending `id`. Implemented by WI-050.
-    #[allow(dead_code)]
-    pub(crate) fn list(&self, _f: &SessionFilter) -> Vec<SessionMeta> {
-        todo!("WI-050: SessionIndex::list")
+    /// Sessions matching `f`, AND-composed across `agent_def`/`parent`/
+    /// `status`/`label`, ordered descending `created` with ties broken by
+    /// ascending `id`, `limit` applied after filtering and ordering. Reads
+    /// only in-memory state — no file I/O on the hot path.
+    pub(crate) fn list(&self, f: &SessionFilter) -> Vec<SessionMeta> {
+        let state = self.state.read().unwrap();
+        let mut metas: Vec<SessionMeta> = state
+            .by_id
+            .values()
+            .filter(|m| {
+                f.agent_def
+                    .as_ref()
+                    .is_none_or(|v| m.agent_def.as_deref() == Some(v.as_str()))
+                    && f.label
+                        .as_ref()
+                        .is_none_or(|v| m.labels.iter().any(|l| l == v))
+                    && f.status.is_none_or(|s| m.status == s)
+                    && f.parent
+                        .as_ref()
+                        .is_none_or(|p| m.origin.as_ref().is_some_and(|o| o.parent == *p))
+            })
+            .cloned()
+            .collect();
+        metas.sort_by(|a, b| b.created.cmp(&a.created).then_with(|| a.id.cmp(&b.id)));
+        if let Some(limit) = f.limit {
+            metas.truncate(limit);
+        }
+        metas
     }
 }
