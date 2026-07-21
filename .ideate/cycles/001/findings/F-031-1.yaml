@@ -1,0 +1,26 @@
+id: F-031-1
+type: finding
+cycle: 1
+work_item: WI-031
+verdict: pass_after_rework
+severity_counts:
+  critical: 0
+  significant: 3
+  minor: 0
+content: |-
+  ## Verdict: Fail -> Pass after rework
+  Implementation solid (21 tests, clippy clean, four disclosed divergences all reasonable) but three significant issues required rework.
+
+  ## Significant Findings
+  S1: Undisclosed duplicate T-2 classification (core's is_failover_worthy/is_health_signal vs routing's failure module), already disagreeing on BadRequest. RESOLVED: exhaustive consistency test pins observation_for(e).is_some() == e.is_health_signal() and class-vs-failover-worthy laws for every variant; authority docs scoped — chain policy consults conway-routing::failure, same-request retriability consults core's is_failover_worthy; the intentional BadRequest divergence documented (bad requests advance the chain but are never worth re-sending as-is).
+  S2: Two same-named DEFAULT_HEADROOM_TOKENS constants (4096 sidecar vs 8192 core) creating a 2x divergence on public construction paths. RESOLVED: routing's constant aliased to core's — all construction paths now resolve the omitted-key case identically; tests updated.
+  S3: HealthConfig criteria unmet due to core drift (missing half_open_successes_to_close/probe_enabled, no serde defaults). RESOLVED: sanctioned additive core extension — both fields added (defaults 1/true), #[serde(default)] on the struct so an omitted [health] table deserializes to Default; probe_failures_to_open default stays 3 (core/WI-004 authoritative; the routing doc's 2 is plan-doc drift — recorded decision).
+
+  ## Unmet Acceptance Criteria
+  None after rework.
+
+  ## Notes
+  Routing now 22 tests including the consistency pin. Commit c8ba7ac.
+cycle_modified: 0
+content_hash: f3e75c04029e86f77a6b5e2cd04e83bfc04833d3c989ff568cf03cdad00d1a96
+token_count: 439

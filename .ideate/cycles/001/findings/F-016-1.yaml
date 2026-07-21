@@ -1,0 +1,28 @@
+id: F-016-1
+type: finding
+cycle: 1
+work_item: WI-016
+verdict: pass_after_rework
+severity_counts:
+  critical: 0
+  significant: 2
+  minor: 1
+content: |-
+  ## Verdict: Fail -> Pass after rework
+  Machine criteria all passed (38 tests, four feature-matrix builds, clippy clean) but spot-checks surfaced two functional issues.
+
+  ## Significant Findings
+  S1: Re-exported ModelOverrides silently dropped parallel_tool_calls, breaking WI-017/019's override precedence. RESOLVED: conway_core::routing::ModelOverrides extended additively with parallel_tool_calls: Option<bool> — the shared type keeps single-source-of-truth AND the required capability override.
+  S2: ContextOverflow fields unconditionally zeroed with a doc claiming conditional extraction. RESOLVED: best-effort numeric extraction implemented (two largest u32s in the matched body as (required, max) — overflow implies required > max across provider phrasings), sentinel (0,0) only when fewer than two integers parse; doc corrected; unit tests over three provider shapes plus sentinel cases.
+
+  ## Minor Findings
+  M1: Undisclosed reqwest feature-name adaptation (rustls-tls -> rustls, version-forced in reqwest 0.13). No code change; recorded here as the disclosure.
+
+  ## Unmet Acceptance Criteria
+  None after rework.
+
+  ## Notes
+  Worker treated real conway-core as authoritative over drifted plan docs (endorsed direction; S1 shows the re-export path needed the core extension rather than field loss). Backends now 39 tests. Commit c8ba7ac.
+cycle_modified: 0
+content_hash: de1895edf57c2e1e52aa885cf5c300f2197a270fdefae09a5863269010c159af
+token_count: 381
