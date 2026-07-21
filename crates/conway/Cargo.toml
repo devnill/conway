@@ -1,0 +1,31 @@
+[package]
+name = "conway"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Embeddable facade over the conway agent harness: config, builder, session handle, and event stream"
+
+[features]
+default = ["anthropic", "openai-compat", "builtin-tools", "jsonl-store"]
+anthropic = ["dep:conway-backends", "conway-backends/anthropic"]
+openai-compat = ["dep:conway-backends", "conway-backends/openai-compat"]
+builtin-tools = ["dep:conway-tools"]
+jsonl-store = ["dep:conway-session"]
+
+[dependencies]
+conway-core = { path = "../conway-core" }
+conway-runtime = { path = "../conway-runtime" }
+conway-routing = { path = "../conway-routing" }
+conway-backends = { path = "../conway-backends", optional = true, default-features = false }
+conway-session = { path = "../conway-session", optional = true }
+conway-tools = { path = "../conway-tools", optional = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+directories = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+futures-core = { workspace = true }
