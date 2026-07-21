@@ -22,10 +22,6 @@ pub mod failure;
 mod prober;
 mod router;
 
-// The crate's re-export block (`DeclarativeRouter`, `BreakerRegistry`,
-// `HealthProber`, `ProberHandle`, `CapabilityIndex`, `RoutingExplain`,
-// `ExplainReport`) is authored incrementally by the work items that
-// implement each type (WI-032 .. WI-036), landing as a single `pub use`
-// block once `router.rs` (the last structural dependency, WI-034) exists.
-// Until then the placeholder modules above contain no public items to
-// re-export.
+// The crate's re-export block is authored incrementally by the work items
+// that implement each type (WI-032 .. WI-036); each lands its own line.
+pub use capability::{satisfies, CapabilityIndex, CapabilityIndexBuilder};
