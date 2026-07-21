@@ -117,7 +117,7 @@ use conway_core::capabilities::CacheMode;
 use conway_core::config::{AgentDef, DEFAULT_MAX_PARALLEL_TOOLS};
 use conway_core::error::RuntimeError;
 use conway_core::ids::{AgentId, BackendId, LogSeq, RoleAlias, SessionId};
-use conway_core::log::{LogRecord, SessionMeta, SessionStatus};
+use conway_core::log::{LogRecord, SessionFilter, SessionMeta, SessionStatus};
 use conway_core::ports::{
     Backend, HealthRegistry, PermissionGate, Plugin, PluginConfig, Router, SessionStore,
     SubagentHost,
@@ -610,6 +610,62 @@ impl Runtime {
             .ok_or(RuntimeError::AgentNotFound { agent })?;
         let report = handle.last_report.lock().expect("report lock poisoned");
         Ok(report.clone().unwrap_or_else(|| empty_report(agent)))
+    }
+
+    /// The persisted `ContextReport` for `agent`'s historical `turn`
+    /// (WI-087). Unlike [`Runtime::context_report`], this always reads the
+    /// durable store (`crate::context::report::persisted_at_turn`) rather
+    /// than the live `last_report` slot -- history only exists in the
+    /// store, since the slot only ever holds the most recent turn. This is
+    /// also what makes the method work across a process restart: it
+    /// resolves `agent`'s `SessionId` via [`Runtime::resolve_session`],
+    /// which falls back to a store scan when `agent` is unknown to this
+    /// `Runtime` instance's in-memory `agents` map (e.g. a fresh `Runtime`
+    /// over the same store). An out-of-range `turn` returns a typed error
+    /// naming the valid range (see `report::persisted_at_turn`'s doc for
+    /// the `RuntimeError::Tool(ToolError::Internal)` "closest fit" mapping
+    /// this uses, `RuntimeError` having no dedicated variant and
+    /// `conway-core/src/error.rs` being out of this item's scope).
+    pub async fn context_report_at(
+        &self,
+        agent: AgentId,
+        turn: u32,
+    ) -> Result<ContextReport, RuntimeError> {
+        let session = self.resolve_session(agent).await?;
+        crate::context::report::persisted_at_turn(self.store.as_ref(), agent, &session, turn).await
+    }
+
+    /// Resolves `agent`'s `SessionId`: first from this instance's
+    /// in-memory `agents` map (cheap, the common case), then -- only if
+    /// this `Runtime` has no record of `agent` at all -- via a linear scan
+    /// of every session the store knows about (`SessionStore::list`),
+    /// matching `SessionMeta::agent_id`. `RuntimeError::AgentNotFound` if
+    /// neither finds it.
+    ///
+    /// No indexed `AgentId -> SessionId` lookup exists anywhere in this
+    /// workspace today (`SessionFilter` carries no `agent_id` field, and
+    /// `conway-session`'s `SessionIndex`, WI-050, does not index on it
+    /// either) -- this scan is O(session count) and is an accepted MVP
+    /// cost for an inspection API, not a design decision. A dedicated
+    /// `conway-session` index is a refinement candidate for `MODULE:
+    /// conway-session` if this path ever becomes hot; it is never on the
+    /// agent-loop turn path, only on this restart/historical inspection
+    /// one.
+    async fn resolve_session(&self, agent: AgentId) -> Result<SessionId, RuntimeError> {
+        let live = {
+            let agents = self.agents.read().expect("agents lock poisoned");
+            agents.get(&agent).map(|handle| handle.session)
+        };
+        if let Some(session) = live {
+            return Ok(session);
+        }
+
+        let sessions = self.store.list(SessionFilter::default()).await?;
+        sessions
+            .into_iter()
+            .find(|meta| meta.agent_id == agent)
+            .map(|meta| meta.id)
+            .ok_or(RuntimeError::AgentNotFound { agent })
     }
 
     /// A snapshot of the whole agent tree (WI-083: `AgentTree::snapshot()`).
