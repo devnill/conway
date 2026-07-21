@@ -6,14 +6,14 @@
 //! Implementations of the port traits live in dedicated crates; the only
 //! implementations permitted here are test fakes behind `feature = "fakes"`.
 
+pub mod capabilities;
 pub mod content;
 pub mod error;
 pub mod ids;
 pub mod log;
+pub mod routing;
 // pub mod provenance;   // WI-003
 // pub mod segment;      // WI-003
-// pub mod capabilities; // WI-004
-// pub mod routing;      // WI-004
 // pub mod agent;        // WI-005
 // pub mod config;       // WI-005
 // pub mod event;        // WI-006
@@ -22,5 +22,5 @@ pub mod log;
 // pub mod fakes;        // WI-008
 
 pub mod prelude {
-    pub use crate::{content::*, error::*, ids::*, log::*};
+    pub use crate::{capabilities::*, content::*, error::*, ids::*, log::*, routing::*};
 }
