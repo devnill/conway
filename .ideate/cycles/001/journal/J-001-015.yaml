@@ -1,0 +1,13 @@
+id: J-001-015
+type: journal_entry
+phase: autopilot
+date: 2026-07-20
+cycle_created: 1
+title: work-item-complete
+content: "Cycle 1 — Work item WI-061: conway-tools scaffold, helpers, test
+  harness. Status: complete with rework. Rework: 1 minor fixed (feature renamed
+  testing → test-fakes per the WI-061 spec; the divergent name came from the
+  coordinator's own brief — noted). Reviewer verified the GP-08 reasoning on
+  resolve_path's no-containment design and the release-rlib exclusion of test
+  doubles. Section 7 waiver recorded in F-061-1. Commit e4cf610. 21 tests
+  passing."

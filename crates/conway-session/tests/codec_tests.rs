@@ -36,6 +36,28 @@ fn example_header_line() -> (String, SessionId, AgentId, SessionId) {
 }
 
 #[test]
+fn interior_newline_in_text_stays_escaped_single_line() {
+    let rec = LogRecord::UserTurn {
+        seq: LogSeq(1),
+        ts: ts(),
+        text: "line one\nline two".into(),
+        prov: Provenance::UserPrompt,
+    };
+    let line = encode_record(&rec, LogSeq(1));
+    assert_eq!(
+        line.matches('\n').count(),
+        1,
+        "newline in text must stay JSON-escaped"
+    );
+    let (seq, back) = decode_record(&line).unwrap();
+    assert_eq!(seq, LogSeq(1));
+    match back {
+        LogRecord::UserTurn { text, .. } => assert_eq!(text, "line one\nline two"),
+        other => panic!("wrong variant: {other:?}"),
+    }
+}
+
+#[test]
 fn header_round_trips_through_the_5_1_shaped_example_verbatim() {
     let (line, sid, agent, parent) = example_header_line();
     let meta = decode_header(&line).unwrap();
@@ -66,7 +88,7 @@ fn header_round_trips_through_the_5_1_shaped_example_verbatim() {
 #[test]
 fn encode_record_emits_exactly_one_line_with_seq_and_kind_top_level() {
     let rec = LogRecord::UserTurn {
-        seq: LogSeq(0),
+        seq: LogSeq(3),
         ts: ts(),
         text: "hi".into(),
         prov: Provenance::UserPrompt,
@@ -126,7 +148,11 @@ fn arb_seq() -> impl Strategy<Value = LogSeq> {
 }
 
 fn arb_text() -> impl Strategy<Value = String> {
-    "[a-zA-Z0-9 ]{0,40}"
+    // Deliberately includes newlines, quotes, backslashes, and multi-byte
+    // unicode: the "no interior newline" invariant depends on JSON string
+    // escaping, so the strategy must actually generate the threatening
+    // input class (incremental review S3, cycle 1).
+    proptest::string::string_regex("[a-zA-Z0-9 \n\"\\\\\u{e9}\u{3042}]{0,40}").expect("valid regex")
 }
 
 fn arb_user_turn() -> impl Strategy<Value = LogRecord> {
