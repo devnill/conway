@@ -1,0 +1,27 @@
+id: F-003-1
+type: finding
+cycle: 1
+work_item: WI-003
+verdict: pass_after_rework
+severity_counts:
+  critical: 0
+  significant: 1
+  minor: 1
+content: |-
+  ## Verdict: Fail -> Pass after rework
+  Reviewer confirmed the core implementation correct and well-tested (nine Provenance tags byte-exact, tier ordering correct, strip_cache_hints GP-06 invariant covered, ContextReport T-9 fields mandatory, CacheTtl correctly re-exported, SegmentKind mapping sound) but failed the item on one criterion.
+
+  ## Significant Findings
+  S1: Compile-fail criterion (PromptSegment: !Default) satisfied by neither prescribed method — only a doc comment and a positive-path constructor test existed, leaving no regression guard against a future derive(Default). RESOLVED: static_assertions::assert_not_impl_any!(PromptSegment: Default) added as a compile-time guard (static_assertions added as a workspace dev-dependency); doc comment updated. Tests 47/47, clippy and fmt clean after fix.
+
+  ## Minor Findings
+  M1: Reviewer flagged .ideate/ working-tree changes it could not verify as MCP-written (its session lacked ideate tools). COORDINATOR CONFIRMATION: those files are the artifact store's own persistence of this session's MCP writes (findings, journal entries, work-item status updates, autopilot state) — every write went through ideate_* tools; no direct .ideate/ edits occurred. Not a violation; no action.
+
+  ## Unmet Acceptance Criteria
+  None after rework.
+
+  ## Notes
+  Worker subagent built the item; independent review. Commit 36cdb8f.
+cycle_modified: 0
+content_hash: 6e080bed3867674e8dce5e5f64704c385efaa68b93245e7b6b68b47fa69a0ea1
+token_count: 388
