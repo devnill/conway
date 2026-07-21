@@ -32,8 +32,8 @@ notes: |-
 
   Full binding implementation notes: docs/plan/wi-conway-routing.md section WI-032. HEADROOM AMENDMENT applies — see docs/plan/wi-conway-routing-amendment.md section WI-032; amended text supersedes the original where they differ.
 resolution: null
-status: pending
+status: done
 cycle_created: 0
-cycle_modified: null
-content_hash: acd20245b7575d73a9e74ea527f68ddd1cb4ef01909fefb6dc9dea1249401c56
-token_count: 643
+cycle_modified: 0
+content_hash: 4ab6c5b71e336f2bc26951db848a3a660a7a606f123b46956cb5e125b9bfe45c
+token_count: 665

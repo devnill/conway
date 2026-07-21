@@ -1,0 +1,23 @@
+id: F-017-1
+type: finding
+cycle: 1
+work_item: WI-017
+verdict: pass
+severity_counts:
+  critical: 0
+  significant: 0
+  minor: 0
+content: |-
+  ## Verdict: Pass
+  All criteria satisfied (worker self-check + coordinator inline review). Spot-checks: normalize_model_id idempotent, strips -latest only as a suffix; build_capabilities precedence (overrides > metadata > dialect) applied uniformly to every field that HAS an override (tool_calling/structured_output have no override field by design — metadata > dialect is their full chain); parallel_tool_calls precedence exercises the new core override field. 81 backends tests, clippy clean.
+
+  ## Critical/Significant/Minor Findings
+  None.
+  ## Unmet Acceptance Criteria
+  None.
+
+  ## Notes
+  REVIEW INDEPENDENCE CAVEAT: incremental review performed inline by the coordinator (reviewer spawn blocked by persistent pane exhaustion — PHD-1-1). Author was the worker subagent, so author/reviewer separation held, but this was not a dedicated reviewer session. Flagged for priority re-examination in the cycle's comprehensive review. Commit 077a383.
+cycle_modified: 0
+content_hash: 9eac07e5c56e9932d5e1648224932cafd6211b6d90155b6c1dc971538ed64ccb
+token_count: 277

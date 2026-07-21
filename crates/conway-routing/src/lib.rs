@@ -24,4 +24,7 @@ mod router;
 
 // The crate's re-export block is authored incrementally by the work items
 // that implement each type (WI-032 .. WI-036); each lands its own line.
+#[cfg(any(test, feature = "test-clock"))]
+pub use breaker::TestClock;
+pub use breaker::{BreakerRegistry, Clock, SystemClock};
 pub use capability::{satisfies, CapabilityIndex, CapabilityIndexBuilder};
