@@ -72,7 +72,7 @@ Ambiguity noted: the module's Requires list does not include a ULID crate, but I
   - [ ] `content.rs` exports `Role`, `ContentBlock`, `Message`, `ToolCall`, `ToolResult`, `ToolSpec`, `ToolCategory`, `PermissionClass`, `TruncationPolicy`, `Artifact`, `Usage`, `StopReason`, `SamplingParams`. [machine]
   - [ ] `log.rs` exports `LogRecord` and `SessionMeta`, `ForkOrigin`, `SessionFilter`, `SessionStatus`. [machine]
   - [ ] Every exported type derives `Clone + Debug + Serialize + Deserialize`; every enum listed in Implementation Notes as forward-compatible carries `#[non_exhaustive]`. [machine]
-  - [ ] `LogRecord` serializes with an internal tag field named `kind` whose values are exactly `header|user_turn|assistant|tool_call|tool_result|fork_directive|parent_steer|system_note|agent_result|context_report`. A unit test asserts the tag string for each variant. [machine]
+  - [ ] `LogRecord` serializes with an internal tag field named `kind` whose values are exactly `header|user_turn|assistant|tool_call|tool_result|fork_directive|parent_steer|system_note` for the variants introduced by this item (`agent_result` is introduced by WI-005, `context_report` by WI-003, per the deferral rules in the Implementation Notes below; each of those items asserts its own tag). A unit test asserts the tag string for each variant defined here. [machine]
   - [ ] A unit test deserializes the five example JSONL lines from architecture §5.1 into `LogRecord`/`SessionMeta` values without error. [machine]
   - [ ] `ToolSpec` contains a `schema: schemars::schema::RootSchema` field and round-trips through `serde_json`. [machine]
   - [ ] `cargo test -p conway-core` passes and `cargo clippy -p conway-core -- -D warnings` is clean. [machine]
