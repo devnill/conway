@@ -1,0 +1,29 @@
+id: F-077-1
+type: finding
+cycle: 1
+work_item: WI-077
+verdict: pass
+severity_counts:
+  critical: 0
+  significant: 2
+  minor: 3
+content: |-
+  ## Verdict: Pass (with rework; two items carried forward)
+  ContextBuilder verified against §5.3 ordering, provenance completeness, breakpoint A/B placement + trim priority, cache-neutrality, and PrefixKey stability; reviewer endorsed both unilateral resolutions after deep scrutiny (blake3-derived SegmentId: deterministic, collision-safe, cross-platform via explicit endianness, gives the stable-across-turns ids WI-081 needs; the assistant-turn SystemNote placeholder has contained blast radius — role field correct, Volatile tier, no sentinel collisions with WI-086's reason strings).
+
+  ## Significant Findings
+  S1: estimator-vs-tokenizer field overload — core's ContextReport has no estimator field and WI-087's criteria assume one. RESOLVED BY DECISION (not code churn): core's tokenizer field documented as the estimator-naming field (may be a heuristic, not a true tokenizer; T-9 semantics preserved via per-entry estimated flags); WI-087's brief will assert `tokenizer`. No rename — avoids breaking WI-003's criteria while resolving the misleading-name concern the reviewer raised.
+  S2: derived SegmentId silently breaks the ULID sortable-by-creation contract implied by the shared macro docs. RESOLVED: doc notes at the derive site and consumption guidance (never order segments by id).
+
+  ## Minor Findings
+  M1/M2 (CARRIED to comprehensive review): no SlotKv cache-hint placement test; SkillFragments zero/multiple cases unexercised (all goldens use exactly one). Deliberately deferred as test-coverage additions, recorded here.
+  M3: GoldenSegment id-omitting projection confirmed spec-mandated, not a workaround — no action.
+
+  ## Unmet Acceptance Criteria
+  The literal `report.estimator` criterion is unsatisfiable against core's type; satisfied in spirit via tokenizer (see S1 decision).
+
+  ## Notes
+  Assistant-turn Provenance variant remains a refinement candidate (core's exactly-nine-variants contract). Worker subagent built; independent review. Commit 999a246. Runtime 18 tests.
+cycle_modified: 0
+content_hash: eec90c70bd6e12698c1412e4c05c36f118e3291433e5cb2a4bfcf2063819e419
+token_count: 540
