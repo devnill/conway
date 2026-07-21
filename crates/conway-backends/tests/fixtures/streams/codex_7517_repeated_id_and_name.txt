@@ -1,0 +1,3 @@
+{"id":"call_1","function":{"name":"read","arguments":"{\"pa"}}
+{"id":"call_1","function":{"name":"read","arguments":"th\":\"a"}}
+{"id":"call_1","function":{"name":"read","arguments":".txt\"}"}}

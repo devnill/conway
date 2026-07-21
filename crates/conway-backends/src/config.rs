@@ -89,6 +89,12 @@ pub enum ConfigError {
     SubscriptionTokenRejected,
     #[error("missing API key: api_key must not be empty or whitespace-only")]
     MissingApiKey,
+    /// WI-017: `ModelMetadataStore::load` failed to parse a metadata file at
+    /// `path` (syntactically invalid TOML, or a shape that does not match
+    /// `ModelMetadata`). A missing file is never this variant — `load`
+    /// treats "file does not exist" as `Ok(ModelMetadataStore::empty())`.
+    #[error("failed to load model metadata from {path}: {detail}")]
+    Metadata { path: String, detail: String },
 }
 
 /// Raw wire shape for [`AnthropicConfig`]. Exists solely so deserialization

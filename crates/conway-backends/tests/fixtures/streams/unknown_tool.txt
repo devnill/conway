@@ -1,0 +1,1 @@
+{"index":0,"id":"call_1","function":{"name":"delete_everything","arguments":"{}"}}

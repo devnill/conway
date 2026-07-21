@@ -1,0 +1,27 @@
+# Fixture for tests/model_metadata.rs — every field populated on at least
+# two entries so the loader test can assert field-by-field equality, plus
+# one entry that omits several optional fields to exercise serde defaults.
+
+[[model]]
+id = "qwen3-coder-30b"
+max_context_tokens = 32768
+tool_calling = "non_streaming"
+parallel_tool_calls = false
+structured_output = "json_schema"
+reasoning = false
+reliability_tier = "community"
+quantization = "Q4_K_M"
+
+[[model]]
+id = "claude-sonnet-4-6"
+max_context_tokens = 200000
+tool_calling = "streaming_validated"
+parallel_tool_calls = true
+structured_output = "json_schema"
+reasoning = true
+reliability_tier = "verified"
+
+[[model]]
+id = "glm-5.2"
+reliability_tier = "community"
+tool_calling = "non_streaming"
