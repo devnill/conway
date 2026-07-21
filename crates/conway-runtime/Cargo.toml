@@ -1,0 +1,31 @@
+[package]
+name = "conway-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Agent engine: event bus, agent loop/tree, context assembly, tool execution, and multi-agent supervision for the conway agent harness"
+
+[dependencies]
+conway-core = { path = "../conway-core" }
+conway-routing = { path = "../conway-routing" }
+conway-session = { path = "../conway-session" }
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "macros", "time"] }
+tokio-util = { workspace = true }
+tokio-stream = { workspace = true, features = ["sync"] }
+futures = { workspace = true }
+async-trait = { workspace = true }
+blake3 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+jsonschema = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+# Not in the WI-076 binding dependency list by name, but mechanically
+# required: `conway_core::event::Envelope::ts` is a `chrono::DateTime<Utc>`,
+# and `EventBus::emit` constructs one directly.
+chrono = { workspace = true }
+
+[dev-dependencies]
+conway-core = { path = "../conway-core", features = ["fakes"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util"] }

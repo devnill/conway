@@ -31,8 +31,8 @@ notes: |-
 
   Full binding implementation notes: docs/plan/wi-conway-session.md section WI-047.
 resolution: null
-status: pending
+status: done
 cycle_created: 0
-cycle_modified: null
-content_hash: 444b82a132e658971f3f29cb9fac02fd2f7a25b76c0a0069d67f78dfde255dc6
-token_count: 521
+cycle_modified: 0
+content_hash: d43c03b6104a4b5496fb671bc8b74490e596ae4fae04bd235b466b3439f44c61
+token_count: 544
