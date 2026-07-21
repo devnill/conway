@@ -551,6 +551,16 @@ impl AgentLoop {
                     .append(&self.session, assistant_record)
                     .await
             );
+            // WI-087: persist the SAME report already pushed to
+            // `report_slot` above -- one build, two surfaces (live slot,
+            // durable store) -- and only after the assistant record it
+            // describes is itself durable, so a report is never persisted
+            // for a turn that did not happen.
+            try_rt!(
+                state,
+                crate::context::report::persist(self.deps.store.as_ref(), &self.session, &report)
+                    .await
+            );
             state.usage += usage;
 
             self.deps.bus.emit(
