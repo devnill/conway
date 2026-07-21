@@ -31,8 +31,8 @@ notes: |-
 
   Full binding implementation notes: docs/plan/wi-conway-routing.md section WI-033.
 resolution: null
-status: pending
+status: done
 cycle_created: 0
-cycle_modified: null
-content_hash: f74c38b7ed0ca3b9b3333feeafe8f8a81ae6160a59f8ec250afc7651fef789f9
-token_count: 552
+cycle_modified: 0
+content_hash: 4d4a020be369ea9dc353628d48a12da7a8c367ce454e4d03b8e654e5863811e0
+token_count: 575

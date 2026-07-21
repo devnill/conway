@@ -16,10 +16,9 @@
 //! feature (`anthropic` or `openai-compat`) is enabled, since it is the only
 //! module in this crate that depends on `reqwest`.
 //!
-//! Adapter modules (`anthropic`, `openai_compat`, and friends) are added by
-//! later work items (WI-019 … WI-022); this crate intentionally declares
-//! only the modules earlier work items own, plus [`model_metadata`] and
-//! [`capabilities`] (WI-017) and [`tool_calls`] (WI-018).
+//! [`openai_compat`] (WI-019) is the first adapter; `anthropic` and the
+//! remaining `openai_compat` dialects are added by later work items
+//! (WI-020 … WI-022).
 //!
 //! [`tool_calls`] is feature-independent like `config`/`error`: it has no
 //! HTTP client of its own and is shared, unmodified, by both the
@@ -33,3 +32,6 @@ pub mod tool_calls;
 
 #[cfg(any(feature = "anthropic", feature = "openai-compat"))]
 pub(crate) mod http;
+
+#[cfg(feature = "openai-compat")]
+pub mod openai_compat;
