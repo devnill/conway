@@ -1,0 +1,11 @@
+id: J-001-003
+type: journal_entry
+phase: autopilot
+date: 2026-07-20
+cycle_created: 1
+title: agent-failure
+content: "Cycle 1: Agent tool failed twice spawning the WI-001 worker
+  (environment error: pane respawn fork failure, Device not configured).
+  Proxy-human agent unreachable for the same reason. Fallback decision PHD-1-1
+  recorded: execute inline, re-attempt spawning per item, treat inline reviews
+  as non-independent."
