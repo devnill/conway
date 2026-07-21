@@ -11,9 +11,9 @@ pub mod content;
 pub mod error;
 pub mod ids;
 pub mod log;
+pub mod provenance;
 pub mod routing;
-// pub mod provenance;   // WI-003
-// pub mod segment;      // WI-003
+pub mod segment;
 // pub mod agent;        // WI-005
 // pub mod config;       // WI-005
 // pub mod event;        // WI-006
@@ -22,5 +22,8 @@ pub mod routing;
 // pub mod fakes;        // WI-008
 
 pub mod prelude {
-    pub use crate::{capabilities::*, content::*, error::*, ids::*, log::*, routing::*};
+    pub use crate::{
+        capabilities::*, content::*, error::*, ids::*, log::*, provenance::*, routing::*,
+        segment::*,
+    };
 }

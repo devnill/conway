@@ -5,9 +5,8 @@
 //! the header's `id`/`agent_id` fields serialize as `session`/`agent`
 //! (architecture §5.1), and a `ToolResult` is flattened into its record.
 //!
-//! Variants and fields deferred by design: `prov` fields land in WI-003,
-//! `AgentResultRecord` lands in WI-005, `ContextReportRecord` lands in
-//! WI-003. `route_reason` stays `serde_json::Value` permanently — the log
+//! Variants and fields deferred by design: `AgentResultRecord` lands in
+//! WI-005. `route_reason` stays `serde_json::Value` permanently — the log
 //! stores the reason as data; typed access is via `Event::ModelDecision`.
 
 use std::path::PathBuf;
@@ -17,6 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::content::{ContentBlock, StopReason, ToolCall, ToolResult, Usage};
 use crate::ids::{AgentId, LogSeq, ModelRef, RoleAlias, SessionId};
+use crate::provenance::{ContextReport, Provenance};
 
 /// Fork vs spawn: the only two subagent modes (GP-02).
 ///
@@ -88,6 +88,7 @@ pub enum LogRecord {
         seq: LogSeq,
         ts: DateTime<Utc>,
         text: String,
+        prov: Provenance,
     },
     Assistant {
         seq: LogSeq,
@@ -116,6 +117,7 @@ pub enum LogRecord {
         ts: DateTime<Utc>,
         text: String,
         by: AgentId,
+        prov: Provenance,
     },
     ParentSteer {
         seq: LogSeq,
@@ -123,15 +125,22 @@ pub enum LogRecord {
         text: String,
         from: AgentId,
         parent_seq: LogSeq,
+        prov: Provenance,
     },
     SystemNote {
         seq: LogSeq,
         ts: DateTime<Utc>,
         text: String,
         reason: String,
+        prov: Provenance,
     },
     // AgentResultRecord — WI-005
-    // ContextReportRecord — WI-003
+    #[serde(rename = "context_report")]
+    ContextReportRecord {
+        seq: LogSeq,
+        ts: DateTime<Utc>,
+        report: ContextReport,
+    },
 }
 
 impl LogRecord {
@@ -145,7 +154,8 @@ impl LogRecord {
             | LogRecord::ToolResultRecord { seq, .. }
             | LogRecord::ForkDirective { seq, .. }
             | LogRecord::ParentSteer { seq, .. }
-            | LogRecord::SystemNote { seq, .. } => Some(*seq),
+            | LogRecord::SystemNote { seq, .. }
+            | LogRecord::ContextReportRecord { seq, .. } => Some(*seq),
         }
     }
 
@@ -160,6 +170,7 @@ impl LogRecord {
             LogRecord::ForkDirective { .. } => "fork_directive",
             LogRecord::ParentSteer { .. } => "parent_steer",
             LogRecord::SystemNote { .. } => "system_note",
+            LogRecord::ContextReportRecord { .. } => "context_report",
         }
     }
 }
@@ -195,6 +206,7 @@ mod tests {
                     seq: LogSeq(0),
                     ts: ts(),
                     text: "hi".into(),
+                    prov: Provenance::UserPrompt,
                 },
                 "user_turn",
             ),
@@ -232,6 +244,7 @@ mod tests {
                     ts: ts(),
                     text: "review the diff".into(),
                     by: AgentId::new(),
+                    prov: Provenance::ForkDirective { by: AgentId::new() },
                 },
                 "fork_directive",
             ),
@@ -242,6 +255,10 @@ mod tests {
                     text: "skip tests dir".into(),
                     from: AgentId::new(),
                     parent_seq: LogSeq(150),
+                    prov: Provenance::ParentSteer {
+                        from: AgentId::new(),
+                        parent_seq: LogSeq(150),
+                    },
                 },
                 "parent_steer",
             ),
@@ -251,8 +268,25 @@ mod tests {
                     ts: ts(),
                     text: "repeated step".into(),
                     reason: "repeated_step".into(),
+                    prov: Provenance::SystemNote {
+                        reason: "repeated_step".into(),
+                    },
                 },
                 "system_note",
+            ),
+            (
+                LogRecord::ContextReportRecord {
+                    seq: LogSeq(6),
+                    ts: ts(),
+                    report: ContextReport {
+                        agent_id: AgentId::new(),
+                        turn: 1,
+                        tokenizer: "cl100k_base".into(),
+                        segments: vec![],
+                        total_tokens_est: 0,
+                    },
+                },
+                "context_report",
             ),
         ];
         for (record, expected) in &records {
@@ -307,7 +341,7 @@ mod tests {
         assert_eq!(record.kind_str(), "header");
 
         let fork = format!(
-            r#"{{"kind":"fork_directive","seq":0,"ts":"2026-07-20T00:00:00Z","text":"Now review the diff for races","by":"{agent}"}}"#
+            r#"{{"kind":"fork_directive","seq":0,"ts":"2026-07-20T00:00:00Z","text":"Now review the diff for races","by":"{agent}","prov":{{"type":"fork_directive","by":"{agent}"}}}}"#
         );
         let record: LogRecord = serde_json::from_str(&fork).unwrap();
         assert_eq!(record.seq(), Some(LogSeq(0)));
@@ -321,10 +355,16 @@ mod tests {
         assert_eq!(record.kind_str(), "tool_result");
 
         let steer = format!(
-            r#"{{"kind":"parent_steer","seq":3,"ts":"2026-07-20T00:00:00Z","text":"skip the tests dir","from":"{agent}","parent_seq":150}}"#
+            r#"{{"kind":"parent_steer","seq":3,"ts":"2026-07-20T00:00:00Z","text":"skip the tests dir","from":"{agent}","parent_seq":150,"prov":{{"type":"parent_steer","from":"{agent}","parent_seq":150}}}}"#
         );
         let record: LogRecord = serde_json::from_str(&steer).unwrap();
         assert_eq!(record.kind_str(), "parent_steer");
+
+        let context_report = format!(
+            r#"{{"kind":"context_report","seq":4,"ts":"2026-07-20T00:00:00Z","report":{{"agent_id":"{agent}","turn":1,"tokenizer":"cl100k_base","segments":[],"total_tokens_est":0}}}}"#
+        );
+        let record: LogRecord = serde_json::from_str(&context_report).unwrap();
+        assert_eq!(record.kind_str(), "context_report");
     }
 
     #[test]
