@@ -1,0 +1,10 @@
+{
+  "models": {
+    "anthropic/claude-haiku-4-5": {
+      "max_context_tokens": 32768,
+      "tool_calling": "streaming",
+      "reasoning": false,
+      "reliability_tier": "verified"
+    }
+  }
+}

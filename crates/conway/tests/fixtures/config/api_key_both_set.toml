@@ -1,0 +1,9 @@
+default_role = "coder"
+
+[roles.coder]
+chain = ["anthropic/claude-sonnet-4-6"]
+
+[backends.anthropic]
+kind = "anthropic"
+api_key = "sk-ant-api-not-oauth-example"
+api_key_env = "ANTHROPIC_API_KEY"

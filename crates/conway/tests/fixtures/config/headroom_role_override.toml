@@ -1,0 +1,14 @@
+default_role = "planner"
+
+[roles.planner]
+chain = ["anthropic/claude-sonnet-4-6"]
+headroom_tokens = 40000
+
+[roles.fast]
+chain = ["anthropic/claude-haiku-4-5"]
+
+[backends.anthropic]
+kind = "anthropic"
+
+[routing]
+default_headroom_tokens = 8000
