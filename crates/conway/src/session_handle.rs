@@ -23,7 +23,7 @@ use conway_core::error::{RuntimeError, StoreError};
 use conway_core::event::{Envelope, Event};
 use conway_core::ids::{AgentId, LogSeq, RoleAlias, SeqRange, SessionId};
 use conway_core::log::{LogRecord, SessionFilter};
-use conway_core::ports::SessionStore;
+use conway_core::ports::{SessionStore, SubagentHost};
 use conway_core::provenance::ContextReport;
 use conway_runtime::runtime::Runtime;
 use futures_core::Stream;
@@ -31,6 +31,7 @@ use tokio::sync::Mutex as AsyncMutex;
 
 use crate::error::{ConwayError, Result};
 use crate::event_stream::EventStream;
+use crate::subagent_spec::{ForkSpec, SpawnSpec};
 
 /// The parameters for `Conway::new_session`.
 ///
@@ -202,6 +203,11 @@ impl SessionHandle {
     /// `pub(crate)` to `conway-runtime` and unreachable from here), by the
     /// same list-and-match fallback `Runtime::resolve_session`'s own doc
     /// describes as an accepted O(session count) MVP cost.
+    ///
+    /// **Spawned children show a parent prefix here** even though their
+    /// *context* is clean-slate -- see [`SessionHandle::spawn`]'s doc for
+    /// why (`SessionMeta.origin` is recorded on spawn too, and this
+    /// method's ancestry walk does not distinguish fork from spawn).
     pub async fn transcript(&self, agent: AgentId) -> Result<Vec<LogRecord>> {
         let session = self.resolve_agent_session(agent).await?;
         self.effective_transcript(session).await
@@ -263,6 +269,204 @@ impl SessionHandle {
             records.extend(batch);
         }
         Ok(records)
+    }
+}
+
+// ---------------------------------------------------------------------
+// WI-102: subagent surface (fork/spawn/steer/await_agent/cancel).
+//
+// Pure delegation to `Runtime`'s `impl SubagentHost` (conway-runtime,
+// WI-084) -- see `crate::subagent_spec` for `ForkSpec`/`SpawnSpec` and
+// their `From` conversions into `conway_core::agent::SubagentSpec`. GP-02:
+// `fork` inherits the forker's entire context plus a directive; `spawn` is
+// clean-slate -- kept as distinct methods/types rather than one
+// mode-flagged call, matching `ForkSpec`/`SpawnSpec`'s own split.
+//
+// This block intentionally names none of the four storage/tree-internal
+// port and helper types fork/spawn *logic* would touch (the session-log
+// port, the fork-ancestry resolver, the context assembler, or the
+// in-memory multi-agent tree type) -- that logic lives in conway-runtime,
+// not here; this block only calls through `SubagentHost` and reads
+// `Runtime::tree()`'s already-public snapshot. `tests/
+// session_handle_subagent.rs` greps everything from this marker onward to
+// check that (see that test for the exact identifiers, deliberately not
+// spelled out here so the rule this comment describes doesn't itself trip
+// the check it describes). It is scoped to this block rather than the
+// whole file because the methods above this marker (WI-101, unmodified by
+// this item) already reference one of those types legitimately, for a
+// concern this item has nothing to do with.
+// ---------------------------------------------------------------------
+impl SessionHandle {
+    /// Forks a live agent: GP-02's "inherit everything, plus a directive"
+    /// mode. Delegates to `Runtime::start` (`impl SubagentHost`) with
+    /// `spec.into()` unmodified beyond the `ForkSpec` -> `SubagentSpec`
+    /// conversion itself.
+    ///
+    /// **T-1 (disclosed, unresolved in the architecture):** the fork
+    /// overflow policy -- what happens when the inherited context plus
+    /// `spec.directive` already exceeds the target model's window -- has no
+    /// settled design. This method does not add an `on_overflow` field or
+    /// otherwise paper over it: whatever typed error the runtime returns
+    /// (today, `RuntimeError::ForkContextOverflow`, terminal, no truncation
+    /// or escalation) surfaces to the caller unchanged, wrapped only in
+    /// `ConwayError::Runtime`.
+    ///
+    /// Rejects `from` with `Err(ConwayError::Runtime)` when it does not
+    /// belong to this session's agent tree -- see
+    /// `SessionHandle::ensure_agent_in_session`'s doc for exactly what error
+    /// that produces today and the disclosed gap in it.
+    pub async fn fork(&self, from: AgentId, spec: ForkSpec) -> Result<AgentId> {
+        self.ensure_agent_in_session(from)?;
+        self.rt
+            .start(from, spec.into())
+            .await
+            .map_err(ConwayError::Runtime)
+    }
+
+    /// Spawns a fresh agent: GP-02's clean-slate mode. Delegates to
+    /// `Runtime::start` (`impl SubagentHost`) with `spec.into()` unmodified
+    /// beyond the `SpawnSpec` -> `SubagentSpec` conversion itself.
+    ///
+    /// Rejects `from` with `Err(ConwayError::Runtime)` when it does not
+    /// belong to this session's agent tree -- see
+    /// `SessionHandle::ensure_agent_in_session`'s doc.
+    ///
+    /// **Transcript quirk (disclosed):** "clean-slate" describes the
+    /// spawned child's *context* only -- `inherited` stays `None`, so
+    /// nothing from `from`'s history is fed to the model. It does not
+    /// describe [`SessionHandle::transcript`]'s output for that child:
+    /// `SessionMeta.origin` is still recorded on spawn (for tree
+    /// reconstructability), and `transcript`'s ancestry walk follows any
+    /// `Some(origin)` unconditionally, without distinguishing fork from
+    /// spawn. So a spawned child's *transcript* still shows the parent's
+    /// prefix, even though its *context* never did. An embedder building a
+    /// history UI from `transcript()` should account for this.
+    pub async fn spawn(&self, from: AgentId, spec: SpawnSpec) -> Result<AgentId> {
+        self.ensure_agent_in_session(from)?;
+        self.rt
+            .start(from, spec.into())
+            .await
+            .map_err(ConwayError::Runtime)
+    }
+
+    /// Delivers `text` to `target` as a steer message, landing at `target`'s
+    /// next turn boundary (WI-085). Delegates to `Runtime::steer` (`impl
+    /// SubagentHost`) with `text` converted and otherwise unmodified.
+    ///
+    /// Rejects `target` with `Err(ConwayError::Runtime)` when it does not
+    /// belong to this session's agent tree -- `Arc<Runtime>` (and its
+    /// runtime-wide, unscoped `tree()`) is shared across every
+    /// `SessionHandle` a `Conway` produces, so without this check any handle
+    /// could steer another session's agent. See
+    /// `SessionHandle::ensure_agent_in_session`'s doc for exactly what error
+    /// that produces today and the disclosed gap in it.
+    pub async fn steer(&self, target: AgentId, text: impl Into<String>) -> Result<()> {
+        self.ensure_agent_in_session(target)?;
+        self.rt
+            .steer(target, text.into())
+            .await
+            .map_err(ConwayError::Runtime)
+    }
+
+    /// Awaits `target`'s terminal result. Always resolves `Ok` -- including
+    /// when `target` finished `BudgetExceeded` or `Cancelled` -- since the
+    /// runtime's supervisor guarantees a result is published no matter how
+    /// the agent ends; only an unknown `target` produces `Err`. Delegates to
+    /// `Runtime::await_result` (`impl SubagentHost`) unmodified.
+    ///
+    /// Rejects `target` with `Err(ConwayError::Runtime)` when it does not
+    /// belong to this session's agent tree -- `AgentResult` is another
+    /// session's data, and reading it across the session boundary is an
+    /// isolation violation just as steering/cancelling it would be. See
+    /// `SessionHandle::ensure_agent_in_session`'s doc.
+    pub async fn await_agent(&self, target: AgentId) -> Result<AgentResult> {
+        self.ensure_agent_in_session(target)?;
+        self.rt
+            .await_result(target)
+            .await
+            .map_err(ConwayError::Runtime)
+    }
+
+    /// Cancels `target` with `reason`. Delegates to `Runtime::cancel` (`impl
+    /// SubagentHost`) with `reason` converted and otherwise unmodified.
+    ///
+    /// Rejects `target` with `Err(ConwayError::Runtime)` when it does not
+    /// belong to this session's agent tree -- without this check any handle
+    /// could hard-cancel another session's agent, since `cancel` is a
+    /// mutating control-plane op reached through the same runtime-wide
+    /// `Arc<Runtime>` every `SessionHandle` shares. See
+    /// `SessionHandle::ensure_agent_in_session`'s doc.
+    ///
+    /// Called through the `SubagentHost` trait explicitly (`SubagentHost::
+    /// cancel(...)`, not `self.rt.cancel(...)`): `Runtime` also has its own
+    /// inherent, synchronous `cancel` method (pre-existing, used elsewhere
+    /// in this crate's own dependency graph) with the same name and a
+    /// compatible-looking signature; Rust's method resolution prefers an
+    /// inherent method over a trait method with the same receiver type, so
+    /// a plain `self.rt.cancel(...)` call would silently bind to that
+    /// inherent method instead of the trait method this criterion is about
+    /// -- harmless here (the trait impl is a pure pass-through to that same
+    /// inherent method, confirmed in `conway-runtime`'s `subagent.rs`), but
+    /// named explicitly so this delegation's intent (going through
+    /// `SubagentHost`, the port this item's criteria are specified against)
+    /// isn't left to an incidental method-resolution tie-break.
+    pub async fn cancel(&self, target: AgentId, reason: &str) -> Result<()> {
+        self.ensure_agent_in_session(target)?;
+        SubagentHost::cancel(self.rt.as_ref(), target, reason.to_string())
+            .await
+            .map_err(ConwayError::Runtime)
+    }
+
+    /// Verifies `agent` is reachable from `self.root` by walking
+    /// `AgentNode.parent` links in `Runtime::tree()`'s snapshot -- the
+    /// "session-ownership check" the WI-102 binding notes describe. Called
+    /// as the first step of every method above that takes an `AgentId` not
+    /// already known to be `self.root` (`fork`, `spawn`, `steer`,
+    /// `await_agent`, `cancel`): `Arc<Runtime>` is shared across every
+    /// `SessionHandle` a `Conway` produces and `tree()` is runtime-wide, so
+    /// without this check any handle could act on -- or, for `await_agent`,
+    /// read the result of -- another session's agent.
+    ///
+    /// This check is deliberately structural (not a `session` field comparison): every
+    /// agent in this workspace gets its own `SessionId` (one agent's
+    /// append-only log per `SessionId`'s own doc), so a forked or spawned
+    /// child's `AgentNode.session` is never equal to `self.session` -- only
+    /// reachability via `parent` proves membership in this handle's tree.
+    ///
+    /// **Disclosed gap:** the binding criterion asks for this to fail with
+    /// `Err(ConwayError::Runtime)` whose message contains the literal text
+    /// `"agent does not belong to session"`. `conway_core::error::
+    /// RuntimeError` (owned by `conway-core`, out of this item's file
+    /// scope: only `session_handle.rs`, `subagent_spec.rs`, `lib.rs`, and
+    /// this item's own test file are in scope) has no variant that renders
+    /// that text -- confirmed by reading every variant in `error.rs`. This
+    /// reuses the closest existing variant, `RuntimeError::AgentNotFound`
+    /// (rendering `"agent {agent} not found"`), for both "agent absent from
+    /// the tree entirely" and "agent present but not a descendant of
+    /// `self.root`" -- both are, from this session's perspective, "not an
+    /// agent I can act on." Flagged to the architect rather than invented:
+    /// `conway-core` should grow a dedicated variant, e.g.
+    /// `RuntimeError::AgentNotInSession { agent: AgentId, session:
+    /// SessionId }` rendering `"agent {agent} does not belong to session
+    /// {session}"`, which this method would adopt verbatim once available.
+    fn ensure_agent_in_session(&self, agent: AgentId) -> Result<()> {
+        if agent == self.root {
+            return Ok(());
+        }
+        let snapshot = self.rt.tree();
+        let mut parent_of = std::collections::HashMap::new();
+        for node in &snapshot.nodes {
+            parent_of.insert(node.agent_id, node.parent);
+        }
+        let mut cursor = agent;
+        loop {
+            match parent_of.get(&cursor) {
+                Some(Some(parent)) if *parent == self.root => return Ok(()),
+                Some(Some(parent)) => cursor = *parent,
+                _ => break,
+            }
+        }
+        Err(ConwayError::Runtime(RuntimeError::AgentNotFound { agent }))
     }
 }
 
