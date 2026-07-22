@@ -1,0 +1,27 @@
+[package]
+name = "conway-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "The `conway` CLI: interactive TUI, `-p` one-shot mode, and session/routing introspection subcommands, built entirely over the `conway` facade"
+
+[[bin]]
+name = "conway"
+path = "src/main.rs"
+
+[dependencies]
+conway = { path = "../conway" }
+clap = { workspace = true, features = ["derive", "env"] }
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+
+[dev-dependencies]
+# Test-only: used exclusively to construct `conway_core::error` fixture
+# values for `exit.rs`'s unit tests (see that module's doc comment for why
+# this cannot be a production dependency). Never referenced outside
+# `#[cfg(test)]` code.
+conway-core = { path = "../conway-core" }
+assert_cmd = { workspace = true }
+predicates = { workspace = true }
+tempfile = { workspace = true }
+toml = { workspace = true }
