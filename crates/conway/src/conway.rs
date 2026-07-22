@@ -1,7 +1,6 @@
 //! `Conway`: the live, assembled facade over one `conway-runtime::Runtime`
 //! (WI-100). Constructed exclusively via `crate::builder::ConwayBuilder::build`.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use chrono::{Duration as ChronoDuration, Utc};
@@ -15,6 +14,7 @@ use conway_runtime::runtime::{RootSpec, Runtime};
 
 use crate::config::{ConfigWarning, ConwayConfig};
 use crate::error::Result;
+use crate::session_handle::{SessionHandle, SessionSpec};
 
 /// The live, assembled facade: one `Runtime`, its resolved config, and (when
 /// the builder compiled its own router rather than receiving an injected
@@ -25,9 +25,9 @@ use crate::error::Result;
 pub struct Conway {
     rt: Arc<Runtime>,
     config: Arc<ConwayConfig>,
-    // Retained for a future `Conway::sessions`/`resume` surface (WI-103);
-    // unused by this item's own criteria beyond keeping the store alive.
-    #[allow(dead_code)]
+    // Also cloned into every `SessionHandle` this `Conway` mints
+    // (`new_session`), which needs it for `SessionHandle::transcript`'s
+    // ancestry walk (WI-101).
     store: Arc<dyn SessionStore>,
     router_explain: Option<Arc<DeclarativeRouter>>,
     warnings: Arc<Vec<ConfigWarning>>,
@@ -106,11 +106,12 @@ impl Conway {
         };
         let root = self.rt.start_root(root_spec).await?;
 
-        Ok(SessionHandle {
-            rt: self.rt.clone(),
+        Ok(SessionHandle::new(
+            self.rt.clone(),
             session,
             root,
-        })
+            self.store.clone(),
+        ))
     }
 
     /// `config.limits` resolved into a `Budget`. `max_tool_calls` has no
@@ -164,53 +165,5 @@ impl Conway {
                 generated_at: Utc::now(),
             },
         }
-    }
-}
-
-/// The parameters for `Conway::new_session`.
-///
-/// Every field defaults to `None`/`vec![]` via `#[derive(Default)]`;
-/// `new_session` resolves each absent field from `self.config` at call time.
-/// `SessionSpec::default()` itself is necessarily config-agnostic
-/// (`Default::default()` takes no arguments) -- the WI-100 criterion
-/// describing its "defaulted" shape in terms of `config.default_role`/
-/// `config.cwd`/`config.limits` describes the *effective*, post-resolution
-/// session `new_session` produces, not the literal struct this type's
-/// `Default` impl returns.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct SessionSpec {
-    pub agent_def: Option<String>,
-    pub role: Option<RoleAlias>,
-    pub cwd: Option<PathBuf>,
-    pub budget: Option<Budget>,
-    pub labels: Vec<String>,
-}
-
-/// Minimal WI-100 stub of the session handle: `id()`/`root()` are the only
-/// members this item's own criteria require.
-///
-/// `crates/conway/src/session_handle.rs` does not exist yet in this
-/// workspace -- WI-101 creates it and owns the full public surface
-/// (`prompt`, `events`, `tree`, `context_report`, `transcript`) -- so this
-/// type is defined here, in `conway.rs`, until WI-101 lands. WI-101's own
-/// scope already includes modifying `lib.rs`, so it is best placed to
-/// relocate this struct into its own file when it creates one; disclosed
-/// here rather than left implicit.
-#[derive(Clone)]
-pub struct SessionHandle {
-    // Consumed by WI-101's prompt/events/tree/context_report/transcript.
-    #[allow(dead_code)]
-    rt: Arc<Runtime>,
-    session: SessionId,
-    root: AgentId,
-}
-
-impl SessionHandle {
-    pub fn id(&self) -> SessionId {
-        self.session
-    }
-
-    pub fn root(&self) -> AgentId {
-        self.root
     }
 }

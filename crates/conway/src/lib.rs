@@ -25,12 +25,16 @@ mod builder;
 pub mod config;
 mod conway;
 mod error;
+mod event_stream;
 pub mod gates;
 pub mod presets;
+mod session_handle;
 
 pub use builder::ConwayBuilder;
-pub use conway::{Conway, SessionHandle, SessionSpec};
+pub use conway::Conway;
 pub use error::{ConwayError, Result};
+pub use event_stream::EventStream;
+pub use session_handle::{SessionHandle, SessionSpec, TurnHandle};
 
 pub use conway_core::agent::{AgentResult, AgentTreeSnapshot, Budget, ResultStatus};
 pub use conway_core::config::AgentDef;
