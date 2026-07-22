@@ -135,8 +135,18 @@ fn sessions_show_missing_id_exits_usage() {
         .stderr(predicate::str::is_empty().not());
 }
 
+// **WI-116 reconciliation (disclosed):** this test originally asserted the
+// WI-111 stub's contract (empty stdout, a "not implemented" stderr note).
+// WI-116 replaces that stub with the real `sessions list` formatter, whose
+// own binding criterion is "prints only the header when there are no
+// sessions (never an error)" -- the opposite of "writes nothing to
+// stdout". Updated in place rather than left asserting since-removed
+// behavior; `tests/subcommands.rs::sessions_list_empty_store_prints_header_only`
+// covers the identical contract against a different fixture (no live
+// backend at all, vs. this file's `MINIMAL_CONFIG`), so this rename keeps
+// both perspectives without duplicating either fixture style.
 #[test]
-fn sessions_list_stub_writes_nothing_to_stdout() {
+fn sessions_list_on_empty_store_prints_header_only() {
     let (dir, config_path) = minimal_config_dir();
     bin()
         .current_dir(dir.path())
@@ -147,10 +157,7 @@ fn sessions_list_stub_writes_nothing_to_stdout() {
             "list",
         ])
         .assert()
-        .stdout(predicate::str::is_empty())
-        // Assert the stub genuinely ran (its stderr message), not that we
-        // short-circuited on a config/build error before dispatch -- the
-        // latter would make the empty-stdout assertion a false positive
-        // (cycle-1 review S1).
-        .stderr(predicate::str::contains("not implemented"));
+        .success()
+        .stdout("ID  CREATED  ROLE  STATUS  ORIGIN\n")
+        .stderr(predicate::str::is_empty());
 }
