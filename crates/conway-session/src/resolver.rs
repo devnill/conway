@@ -158,7 +158,24 @@ impl TranscriptResolver {
         self.resolve_prefix(store, sid, upto).await
     }
 
-    async fn resolve_prefix<S>(
+    /// Resolves `sid`'s effective transcript up to (not including) the
+    /// LOCAL bound `upto` — `sid`'s own records past `upto` are never read.
+    /// `resolve` is just this method called with `upto = store.head(sid)`.
+    ///
+    /// Exposed publicly (WI-119) for a caller that needs a session's
+    /// inherited-only prefix as it stood at a specific ancestor bound,
+    /// distinct from `resolve`'s "full effective transcript at the current
+    /// head" — e.g. resolving a fork child's `InheritedPrefix` when the
+    /// child already has run turns of its own (so `resolve(child)` would
+    /// fold the child's own records into the result, double-counting them
+    /// against an `AgentLoop` that also reads its own session's records
+    /// separately every turn). Calling `resolve_prefix(store, &origin.parent,
+    /// origin.at_seq)` for such a child returns exactly the parent's prefix,
+    /// with none of the child's own records mixed in — the same value
+    /// `subagent.rs`'s live fork path gets via `resolve(store, &child)` at
+    /// the one moment (immediately after `store.fork`, before the child's
+    /// own head record is appended) that shortcut is valid.
+    pub async fn resolve_prefix<S>(
         &self,
         store: &S,
         sid: &SessionId,

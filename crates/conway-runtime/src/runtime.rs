@@ -116,8 +116,10 @@ use conway_core::agent::{AgentDefRef, AgentResult, AgentTreeSnapshot, Budget, To
 use conway_core::capabilities::CacheMode;
 use conway_core::config::{AgentDef, DEFAULT_MAX_PARALLEL_TOOLS};
 use conway_core::error::RuntimeError;
-use conway_core::ids::{AgentId, BackendId, LogSeq, RoleAlias, SessionId};
-use conway_core::log::{LogRecord, SessionFilter, SessionMeta, SessionStatus};
+use conway_core::ids::{AgentId, BackendId, LogSeq, RoleAlias, SeqRange, SessionId};
+use conway_core::log::{
+    ForkOrigin, LogRecord, SessionFilter, SessionMeta, SessionStatus, SubagentMode,
+};
 use conway_core::ports::{
     Backend, HealthRegistry, PermissionGate, Plugin, PluginConfig, Router, SessionStore,
     SubagentHost,
@@ -130,7 +132,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::agent_loop::{AgentLoop, AgentSpec, LoopDeps};
 use crate::attempt::AttemptEngine;
-use crate::context::{ContextBuilder, TOKEN_ESTIMATOR};
+use crate::context::{ContextBuilder, InheritedPrefix, TOKEN_ESTIMATOR};
 use crate::events::{EventBus, EventStream};
 use crate::mailbox::{self, Mailbox, MailboxSender};
 use crate::permission::PermissionBroker;
@@ -642,6 +644,54 @@ impl Runtime {
         let meta = self.store.meta(&spec.session).await?;
         let agent_id = meta.agent_id;
 
+        // WI-119: a genuine root's own session records ARE its complete
+        // history (`inherited` stays `None`, matching WI-118's original,
+        // unaffected behavior below) -- but a fork child's own records are,
+        // by the zero-copy fork contract (`SessionStore::fork`, D-11), only
+        // its OWN post-fork turns; the inherited portion lives in the
+        // parent's session by reference and must be resolved here, exactly
+        // as `subagent.rs`'s live fork path resolves it for a
+        // freshly-forked child (see that module's doc). Detected via
+        // `SessionMeta::origin`, the same signal `subagent.rs` itself
+        // produces on fork (`mode: SubagentMode::Fork`) -- a spawned
+        // child's `origin` is `Some` too, but with `mode: SubagentMode::
+        // Spawn`, for which context assembly has never inherited anything
+        // (`subagent.rs`'s own spawn branch always builds `inherited:
+        // None`), so only the `Fork` arm resolves a prefix here.
+        //
+        // `resolver().resolve(store, &child)` -- what `subagent.rs` uses --
+        // is NOT reusable as-is: it returns the child's FULL effective
+        // transcript at its current head, which is only exactly "the
+        // parent's prefix" at the one moment `subagent.rs` calls it
+        // (immediately after `store.fork`, before the child owns any
+        // records of its own). A resumed fork child may already have run
+        // turns of its own (non-empty own records), and `AgentLoop` reads
+        // those own records separately every turn -- folding them into
+        // `inherited` too would double-count them. `TranscriptResolver::
+        // resolve_prefix` (made `pub` for this, `conway-session`, WI-119)
+        // is the shared primitive both paths already bottom out on; calling
+        // it directly against `(origin.parent, origin.at_seq)` resolves
+        // exactly the parent-only portion, at any depth, without a second,
+        // divergent copy of the D-11 ancestry walk in this crate.
+        let inherited = match meta.origin {
+            Some(ForkOrigin {
+                parent,
+                at_seq,
+                mode: SubagentMode::Fork,
+            }) => {
+                let records = self
+                    .resolver
+                    .resolve_prefix(self.store.as_ref(), &parent, at_seq)
+                    .await?;
+                Some(InheritedPrefix {
+                    from: parent,
+                    seq_range: SeqRange::new(LogSeq::ZERO, Some(at_seq)),
+                    records,
+                })
+            }
+            _ => None,
+        };
+
         let agent_def_ref = spec
             .agent_def
             .clone()
@@ -702,10 +752,12 @@ impl Runtime {
             deps: self.loop_deps.clone(),
             spec: agent_spec,
             cancel: cancel.clone(),
-            // A resumed root's context never inherits anything -- same as
-            // `start_root`; the resolver rebuilds its full effective
-            // transcript from the store instead.
-            inherited: None,
+            // A genuine resumed root still inherits nothing (`None`, same
+            // as `start_root`; the resolver rebuilds its full effective
+            // transcript from its own records instead) -- a resumed fork
+            // child gets its resolved parent prefix instead, computed just
+            // above.
+            inherited,
             inbox: mailbox_rx,
             // A root has no parent to deliver a terminal `Result` to.
             parent_mailbox: None,

@@ -140,6 +140,14 @@ pub enum RoutingError {
 pub enum RuntimeError {
     #[error("agent {agent} not found")]
     AgentNotFound { agent: AgentId },
+    /// The agent exists (somewhere in this runtime) but is not a descendant
+    /// of the session/handle the caller is acting through -- distinct from
+    /// [`RuntimeError::AgentNotFound`], which means the agent is unknown
+    /// entirely. Added for F-102-1: `conway::SessionHandle::
+    /// ensure_agent_in_session` (WI-102) previously had no dedicated variant
+    /// for this case and reused `AgentNotFound` for both.
+    #[error("agent {agent} does not belong to session {session}")]
+    AgentNotInSession { agent: AgentId, session: SessionId },
     #[error("agent {agent} exceeded its budget")]
     BudgetExceeded { agent: AgentId },
     #[error("agent {agent} cancelled: {reason}")]
@@ -285,6 +293,17 @@ mod tests {
                 "missing {needle:?} in {runtime:?}"
             );
         }
+    }
+
+    #[test]
+    fn agent_not_in_session_exists_and_roundtrips() {
+        let err = RuntimeError::AgentNotInSession {
+            agent: AgentId::new(),
+            session: SessionId::new(),
+        };
+        let json = serde_json::to_string(&err).unwrap();
+        let back: RuntimeError = serde_json::from_str(&json).unwrap();
+        assert_eq!(err, back);
     }
 
     #[test]
