@@ -51,3 +51,4 @@ pub use conway_core::ports::{
     Backend, HealthRegistry, PermissionGate, Plugin, Router, SessionStore, Tool,
 };
 pub use conway_core::provenance::{ContextReport, Provenance};
+pub use conway_core::routing::RoutingReason;

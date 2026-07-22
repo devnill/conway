@@ -8,6 +8,7 @@
 //! failure constructing the session).
 
 pub mod app;
+pub mod commands;
 pub mod gate;
 pub mod input;
 pub mod state;

@@ -464,6 +464,8 @@ dependencies = [
  "conway-core",
  "crossterm",
  "futures",
+ "httparse",
+ "nix",
  "predicates",
  "ratatui",
  "serde_json",

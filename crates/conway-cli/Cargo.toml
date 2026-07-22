@@ -31,3 +31,12 @@ assert_cmd = { workspace = true }
 predicates = { workspace = true }
 tempfile = { workspace = true }
 toml = { workspace = true }
+# WI-113: the hand-rolled `tests/common/mock_backend.rs` OpenAI-compatible
+# mock server (request parsing) and its SIGINT-delivery tests (unix-only).
+httparse = { workspace = true }
+nix = { workspace = true, features = ["signal"] }
+# WI-113: `tests/common/mock_backend.rs` needs a raw TCP listener/stream
+# (`net`) and async read/write helpers (`io-util`) to serve real chunked
+# HTTP responses -- the shipped binary itself never touches raw sockets
+# (reqwest/hyper-util own that at runtime), so these stay test-only.
+tokio = { workspace = true, features = ["net", "io-util"] }

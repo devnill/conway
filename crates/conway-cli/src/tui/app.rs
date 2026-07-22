@@ -19,6 +19,7 @@ use ratatui::Terminal;
 use crate::cli::Cli;
 use crate::exit::ExitCode;
 
+use super::commands::{self, Effect};
 use super::gate::GateReceiver;
 use super::input::{self, Action};
 use super::state::AppState;
@@ -34,6 +35,22 @@ const REDRAW_TICK: Duration = Duration::from_millis(16);
 pub struct App {
     handle: conway::SessionHandle,
     state: AppState,
+    // `/resume` (WI-115) needs `Conway::resume`, not just the current
+    // `SessionHandle` -- cheap to hold (every field is `Arc`-backed, per
+    // `Conway`'s own doc: "Cheap to `Clone`").
+    conway: Conway,
+}
+
+/// What `App::submit` learned the app loop must additionally do, beyond the
+/// `AppState` mutation `submit` already performed directly.
+enum SubmitOutcome {
+    Continue,
+    /// `/resume` replaced `self.handle` -- the loop's own `events` stream
+    /// (a local in `run`, not reachable from `submit`) must be
+    /// re-subscribed from the new handle.
+    Resubscribe,
+    /// `/quit` -- exit the app loop.
+    Quit,
 }
 
 impl App {
@@ -51,7 +68,11 @@ impl App {
         };
         let handle = conway.new_session(spec).await?;
         let state = AppState::new(handle.root());
-        Ok(Self { handle, state })
+        Ok(Self {
+            handle,
+            state,
+            conway: conway.clone(),
+        })
     }
 
     /// Drives the app loop until the user quits, cancels twice, or a fatal
@@ -80,6 +101,12 @@ impl App {
                 maybe_env = events.next() => {
                     match maybe_env {
                         Some(env) => {
+                            // WI-115's `/why` reads this back; `AppState::apply`
+                            // (state.rs, out of this item's file scope) does
+                            // not populate it -- see the field's own doc.
+                            if matches!(env.event, conway::Event::ModelDecision { .. }) {
+                                self.state.last_model_decision = Some(env.clone());
+                            }
                             self.state.apply(&env);
                             dirty = true;
                         }
@@ -109,7 +136,11 @@ impl App {
                             dirty = true;
                             match input::handle_key(&mut self.state, key) {
                                 Action::None => {}
-                                Action::Submit(text) => self.submit(text).await?,
+                                Action::Submit(text) => match self.submit(text).await? {
+                                    SubmitOutcome::Continue => {}
+                                    SubmitOutcome::Resubscribe => events = self.handle.events(),
+                                    SubmitOutcome::Quit => return Ok(ExitCode::Completed),
+                                },
                                 Action::PermissionDecision(decision) => {
                                     self.state.resolve_current_prompt(decision);
                                 }
@@ -135,24 +166,42 @@ impl App {
         }
     }
 
-    async fn submit(&mut self, text: String) -> conway::Result<()> {
-        if let Some(rest) = text.strip_prefix('/') {
-            // The dispatch hook (module notes): real parsing/execution is
-            // WI-115's `commands.rs`, not yet in this crate. Until then,
-            // every slash input surfaces as a visible, non-fatal notice
-            // rather than silently being sent to the model as a prompt
-            // (which the WI-115 criteria explicitly forbid for an unknown
-            // command).
-            self.state.transcript.push(super::state::Entry::Notice {
-                text: format!("slash commands are not implemented yet: /{rest}"),
-            });
-            return Ok(());
+    /// Routes `text` to `commands::parse` + `commands::execute` when it
+    /// starts with `/` (module notes: "the dispatch hook is defined here,
+    /// handlers land in WI-115"); otherwise sends it as a prompt. A
+    /// malformed or unknown slash command becomes a `Notice` -- it is never
+    /// sent to the model (module notes' binding requirement, carried from
+    /// WI-114's stub).
+    async fn submit(&mut self, text: String) -> conway::Result<SubmitOutcome> {
+        if text.starts_with('/') {
+            match commands::parse(&text) {
+                Ok(cmd) => {
+                    let host = commands::LiveHost {
+                        handle: &self.handle,
+                        conway: &self.conway,
+                    };
+                    match commands::execute(cmd, &mut self.state, &host).await {
+                        Effect::None => {}
+                        Effect::Quit => return Ok(SubmitOutcome::Quit),
+                        Effect::Resumed(handle) => {
+                            self.handle = handle;
+                            return Ok(SubmitOutcome::Resubscribe);
+                        }
+                    }
+                }
+                Err(e) => {
+                    self.state.transcript.push(super::state::Entry::Notice {
+                        text: e.to_string(),
+                    });
+                }
+            }
+            return Ok(SubmitOutcome::Continue);
         }
         self.state
             .transcript
             .push(super::state::Entry::User(text.clone()));
         self.handle.prompt(text).await?;
-        Ok(())
+        Ok(SubmitOutcome::Continue)
     }
 
     /// First `Ctrl-C`: cancel the running turn, arm the double-press

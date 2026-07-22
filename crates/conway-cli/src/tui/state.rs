@@ -113,18 +113,10 @@ impl std::fmt::Debug for Mode {
 pub struct AppState {
     pub transcript: Vec<Entry>,
     pub tree: AgentTreeView,
-    /// The last `Event::ModelDecision` envelope seen, for `/why` (WI-115).
-    /// `apply` does not populate this in WI-114 -- see this field's own doc.
-    ///
-    /// **Phasing (disclosed):** WI-115's own binding notes describe
-    /// `app.rs`'s WI-115 diff as "confined to: ... (b) adding the
-    /// `last_model_decision` update on `Event::ModelDecision`" -- i.e. that
-    /// wiring is explicitly WI-115's addition, not this item's. The field is
-    /// declared here (this item's own architecture notes list it as part of
-    /// `AppState`) so WI-115 has a stable place to write into without
-    /// touching this struct's definition, but `apply` below intentionally
-    /// leaves it untouched.
-    #[allow(dead_code)]
+    /// The last `Event::ModelDecision` envelope seen, for `/why`. Populated
+    /// by `app.rs`'s run loop on `Event::ModelDecision` (WI-115) and read by
+    /// `commands::render_why`; `apply` intentionally leaves it untouched so
+    /// it stays pure.
     pub last_model_decision: Option<Envelope>,
     pub input: String,
     /// Cursor position within `input`, as a *char* index (not byte offset)
