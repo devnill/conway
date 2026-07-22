@@ -20,8 +20,11 @@
 //! traits, plus the facade's own `ConwayBuilder`/`Conway`/`SessionHandle`
 //! wrappers added by later work items.
 
+pub mod agents;
 pub mod config;
 mod error;
+pub mod gates;
+pub mod presets;
 
 pub use error::{ConwayError, Result};
 
