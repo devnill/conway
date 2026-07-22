@@ -28,7 +28,17 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
 
 /// One simulated SSE delta in a scripted chat-completions response.
+///
+/// `#[allow(dead_code)]`: each `tests/*.rs` integration file compiles this
+/// module fresh as part of its own independent crate, so which variants
+/// count as "constructed" is evaluated per test binary -- a file that only
+/// ever needs `Text`/`Finish` (e.g. `continuity.rs`) makes `ToolCall`/
+/// `Delay`/`Hang` look unused *for that one binary*, even though other
+/// suites in this same directory (`oneshot.rs`) do construct them. Scoped
+/// here rather than to any one consuming file, since the variants
+/// themselves are genuinely live, shared harness surface.
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub enum Chunk {
     /// An assistant text delta: `delta.content = text`.
     Text(&'static str),

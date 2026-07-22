@@ -51,4 +51,17 @@ pub use conway_core::ports::{
     Backend, HealthRegistry, PermissionGate, Plugin, Router, SessionStore, Tool,
 };
 pub use conway_core::provenance::{ContextReport, Provenance};
-pub use conway_core::routing::RoutingReason;
+pub use conway_core::routing::{AttemptFailure, BreakerKind, BreakerState, RoutingReason};
+
+// WI-116 (CARRIED F-111-1): `routes explain` needs `Conway::explain_routing`'s
+// return type, and this is the one type in this crate's re-export list drawn
+// from `conway_routing` rather than `conway_core` -- `ExplainReport` is
+// defined in that crate (see `conway.rs`'s own `use conway_routing::{..,
+// ExplainReport, ..}`), not duplicated here. Its own public field types
+// (`ExplainEntry`, `EntryOutcome`, `CapabilitySummary`, `BreakerSnapshot`)
+// are re-exported alongside it so a consumer can name every type reachable
+// by field access without reaching past this facade into `conway_routing`
+// directly.
+pub use conway_routing::{
+    BreakerSnapshot, CapabilitySummary, EntryOutcome, ExplainEntry, ExplainReport,
+};

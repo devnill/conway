@@ -19,6 +19,12 @@ futures = { workspace = true }
 ratatui = { workspace = true }
 crossterm = { workspace = true }
 serde_json = { workspace = true }
+# WI-116: `commands::fmt`'s `ts`/`id_short` helpers and `commands::routes`'
+# breaker-state rendering need to name `chrono::DateTime<Utc>` -- `conway`
+# re-exports several `chrono`-typed fields (e.g. `SessionMeta::created`) but
+# using them by field access doesn't require naming the crate; formatting
+# them does.
+chrono = { workspace = true }
 
 [dev-dependencies]
 # Test-only: used exclusively to construct `conway_core::{error,agent,event}`
@@ -26,7 +32,6 @@ serde_json = { workspace = true }
 # `exit.rs`'s doc comment for why this cannot be a production dependency).
 # Never referenced outside `#[cfg(test)]` code.
 conway-core = { path = "../conway-core" }
-chrono = { workspace = true }
 assert_cmd = { workspace = true }
 predicates = { workspace = true }
 tempfile = { workspace = true }

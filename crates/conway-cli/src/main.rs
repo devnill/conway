@@ -11,6 +11,7 @@ mod diag;
 mod exit;
 mod oneshot;
 mod render;
+mod session_ref;
 mod signal;
 mod tui;
 
