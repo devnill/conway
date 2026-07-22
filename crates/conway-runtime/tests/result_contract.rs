@@ -309,6 +309,7 @@ fn build_loop_with_contract(
         inbox: mailbox_rx,
         parent_mailbox: None,
         pending_cancel: None,
+        resume_gate: Default::default(),
     }
 }
 

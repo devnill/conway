@@ -257,6 +257,49 @@ pub struct AgentLoop {
     /// and is always built via a field literal (matching every other field
     /// here).
     pub pending_cancel: Option<String>,
+    /// WI-118: gates this loop's very first iteration on the caller's next
+    /// prompt when `awaiting_first_prompt` is `true` (see [`ResumeGate`]'s
+    /// own doc). `Default::default()` for every non-resumed agent --
+    /// `start_root` and every fork/spawn child -- which is inert and
+    /// preserves this loop's pre-WI-118 behavior exactly.
+    pub resume_gate: ResumeGate,
+}
+
+/// WI-118 resume gate: makes a resumed root agent's very first loop
+/// iteration WAIT for the caller's next [`crate::runtime::Runtime::prompt`]
+/// instead of reading the (stale, already-completed) transcript it was
+/// persisted with and running a spurious turn against it. Without this gate,
+/// `resume_root`'s spawned task and the caller's subsequent `prompt` call
+/// race: if the loop's first iteration reaches the backend before `prompt`'s
+/// `UserTurn` append lands, that turn sees no new input, produces no tool
+/// calls, and `finish(Completed)`s -- silently terminating the task before
+/// the real prompt is ever read by anyone.
+///
+/// `start_root` (and every fork/spawn child built by `subagent.rs`) leaves
+/// this at its `Default` -- `awaiting_first_prompt: false` -- so
+/// [`AgentLoop::run_inner`]'s gate is skipped entirely on the very first
+/// check and every turn behaves exactly as it did before this item. Only
+/// `Runtime::resume_root` sets `awaiting_first_prompt: true`.
+///
+/// `notify` is a `tokio::sync::Notify`, chosen for its single-stored-permit
+/// semantics: a `notify_one()` that lands before the gated `notified().await`
+/// begins is not lost -- it is buffered, and the very next `.await` resolves
+/// immediately. This is what makes `Runtime::prompt` safe to call without
+/// coordinating with the resumed task's own scheduling (it may not have
+/// polled even once yet).
+#[derive(Clone)]
+pub struct ResumeGate {
+    pub awaiting_first_prompt: bool,
+    pub notify: Arc<tokio::sync::Notify>,
+}
+
+impl Default for ResumeGate {
+    fn default() -> Self {
+        Self {
+            awaiting_first_prompt: false,
+            notify: Arc::new(tokio::sync::Notify::new()),
+        }
+    }
 }
 
 /// Per-turn accumulator: turns executed and usage accrued so far. `Copy` so
@@ -415,6 +458,50 @@ impl AgentLoop {
             }
             if self.cancel.is_cancelled() {
                 return Ok(self.finish_cancelled(state, &result_builder).await);
+            }
+
+            // WI-118: a resumed root's very first iteration waits here for
+            // the caller's next prompt instead of reading the transcript it
+            // was persisted with -- see `ResumeGate`'s own doc for why. Once
+            // cleared, `continue` re-runs the loop from the top (fresh
+            // `drain_inbox`/budget/cancel checks) with the gate now open, so
+            // this branch is never entered again for the rest of this run.
+            if self.resume_gate.awaiting_first_prompt {
+                match self.spec.budget.deadline {
+                    Some(deadline) => {
+                        let remaining = (deadline - Utc::now()).to_std().unwrap_or(Duration::ZERO);
+                        tokio::select! {
+                            biased;
+                            () = self.cancel.cancelled() => {
+                                return Ok(self.finish_cancelled(state, &result_builder).await);
+                            }
+                            () = tokio::time::sleep(remaining) => {
+                                return Ok(self.finish(
+                                    ResultStatus::BudgetExceeded { limit: format!("deadline={deadline}") },
+                                    "",
+                                    state.usage,
+                                    state.turn,
+                                    &result_builder,
+                                ).await);
+                            }
+                            () = self.resume_gate.notify.notified() => {
+                                self.resume_gate.awaiting_first_prompt = false;
+                            }
+                        }
+                    }
+                    None => {
+                        tokio::select! {
+                            biased;
+                            () = self.cancel.cancelled() => {
+                                return Ok(self.finish_cancelled(state, &result_builder).await);
+                            }
+                            () = self.resume_gate.notify.notified() => {
+                                self.resume_gate.awaiting_first_prompt = false;
+                            }
+                        }
+                    }
+                }
+                continue;
             }
 
             self.deps.bus.emit(

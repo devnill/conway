@@ -320,6 +320,7 @@ fn build_loop(
         inbox: mailbox_rx,
         parent_mailbox,
         pending_cancel: None,
+        resume_gate: Default::default(),
     };
 
     Harness {
