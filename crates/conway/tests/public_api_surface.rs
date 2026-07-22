@@ -6,9 +6,10 @@
 
 use conway::{
     AgentDef, AgentId, AgentResult, AgentTreeSnapshot, Backend, Budget, ContextReport, ConwayError,
-    Envelope, Event, HealthRegistry, LogRecord, LogSeq, ModelRef, PermissionGate, Plugin,
-    Provenance, Result, ResultStatus, RoleAlias, Router, SessionFilter, SessionId, SessionMeta,
-    SessionStore, Tool,
+    Envelope, Event, HealthRegistry, LogRecord, LogSeq, ModelRef, PermissionDecision,
+    PermissionDecisionKind, PermissionGate, PermissionRequest, PermissionScope, Plugin, Provenance,
+    Result, ResultStatus, RoleAlias, Router, SessionFilter, SessionId, SessionMeta, SessionStore,
+    SubagentMode, Tool, ToolCategory, ToolName,
 };
 
 /// Every re-exported *type* must be nameable at this path. The function is
@@ -33,6 +34,13 @@ fn assert_types_nameable(
     _: Option<AgentTreeSnapshot>,
     _: Option<Provenance>,
     _: Option<ConwayError>,
+    _: Option<PermissionDecision>,
+    _: Option<PermissionDecisionKind>,
+    _: Option<PermissionRequest>,
+    _: Option<PermissionScope>,
+    _: Option<ToolCategory>,
+    _: Option<ToolName>,
+    _: Option<SubagentMode>,
 ) {
 }
 
