@@ -8,8 +8,8 @@ use conway::{
     AgentDef, AgentId, AgentResult, AgentTreeSnapshot, Backend, Budget, ContextReport, ConwayError,
     Envelope, Event, HealthRegistry, LogRecord, LogSeq, ModelRef, PermissionDecision,
     PermissionDecisionKind, PermissionGate, PermissionRequest, PermissionScope, Plugin, Provenance,
-    Result, ResultStatus, RoleAlias, Router, SessionFilter, SessionId, SessionMeta, SessionStore,
-    SubagentMode, Tool, ToolCategory, ToolName,
+    Result, ResultStatus, RoleAlias, Router, RoutingReason, SessionFilter, SessionId, SessionMeta,
+    SessionStore, SubagentMode, Tool, ToolCategory, ToolName,
 };
 
 /// Every re-exported *type* must be nameable at this path. The function is
@@ -41,6 +41,7 @@ fn assert_types_nameable(
     _: Option<ToolCategory>,
     _: Option<ToolName>,
     _: Option<SubagentMode>,
+    _: Option<RoutingReason>,
 ) {
 }
 
