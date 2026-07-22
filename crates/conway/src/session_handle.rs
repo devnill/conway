@@ -45,6 +45,12 @@ use crate::subagent_spec::{ForkSpec, SpawnSpec};
 /// `Default` impl returns.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SessionSpec {
+    /// Overrides the store-assigned session id (WI-119). `None` mints a
+    /// fresh [`SessionId`] as before; `Some` is passed straight through to
+    /// `RootSpec::session`, so `Runtime::start_root`'s own internal
+    /// `store.create` becomes the single, authoritative creation call under
+    /// exactly that id.
+    pub id: Option<SessionId>,
     pub agent_def: Option<String>,
     pub role: Option<RoleAlias>,
     pub cwd: Option<PathBuf>,
@@ -173,6 +179,17 @@ impl SessionHandle {
     /// the binding criterion's signature; there is nothing to await.
     pub async fn context_report(&self, agent: AgentId) -> Result<ContextReport> {
         Ok(self.rt.context_report(agent)?)
+    }
+
+    /// The persisted `ContextReport` for `agent`'s historical `turn`
+    /// (carried from the capstone review, F-114-1-adjacent): a thin
+    /// delegation to `Runtime::context_report_at`, which -- unlike
+    /// `context_report` above -- reads durably from the store rather than
+    /// the live `last_report` slot, so it works even across a process
+    /// restart (see that method's own doc for `resolve_session`'s
+    /// live-then-store-scan fallback).
+    pub async fn context_report_at(&self, agent: AgentId, turn: u32) -> Result<ContextReport> {
+        Ok(self.rt.context_report_at(agent, turn).await?)
     }
 
     /// The *effective* transcript for `agent`: its own records, prefixed by
@@ -314,7 +331,7 @@ impl SessionHandle {
     /// Rejects `from` with `Err(ConwayError::Runtime)` when it does not
     /// belong to this session's agent tree -- see
     /// `SessionHandle::ensure_agent_in_session`'s doc for exactly what error
-    /// that produces today and the disclosed gap in it.
+    /// that produces (`RuntimeError::AgentNotFound` vs. `AgentNotInSession`).
     pub async fn fork(&self, from: AgentId, spec: ForkSpec) -> Result<AgentId> {
         self.ensure_agent_in_session(from)?;
         self.rt
@@ -359,7 +376,7 @@ impl SessionHandle {
     /// `SessionHandle` a `Conway` produces, so without this check any handle
     /// could steer another session's agent. See
     /// `SessionHandle::ensure_agent_in_session`'s doc for exactly what error
-    /// that produces today and the disclosed gap in it.
+    /// that produces (`RuntimeError::AgentNotFound` vs. `AgentNotInSession`).
     pub async fn steer(&self, target: AgentId, text: impl Into<String>) -> Result<()> {
         self.ensure_agent_in_session(target)?;
         self.rt
@@ -433,30 +450,30 @@ impl SessionHandle {
     /// child's `AgentNode.session` is never equal to `self.session` -- only
     /// reachability via `parent` proves membership in this handle's tree.
     ///
-    /// **Disclosed gap:** the binding criterion asks for this to fail with
-    /// `Err(ConwayError::Runtime)` whose message contains the literal text
-    /// `"agent does not belong to session"`. `conway_core::error::
-    /// RuntimeError` (owned by `conway-core`, out of this item's file
-    /// scope: only `session_handle.rs`, `subagent_spec.rs`, `lib.rs`, and
-    /// this item's own test file are in scope) has no variant that renders
-    /// that text -- confirmed by reading every variant in `error.rs`. This
-    /// reuses the closest existing variant, `RuntimeError::AgentNotFound`
-    /// (rendering `"agent {agent} not found"`), for both "agent absent from
-    /// the tree entirely" and "agent present but not a descendant of
-    /// `self.root`" -- both are, from this session's perspective, "not an
-    /// agent I can act on." Flagged to the architect rather than invented:
-    /// `conway-core` should grow a dedicated variant, e.g.
-    /// `RuntimeError::AgentNotInSession { agent: AgentId, session:
-    /// SessionId }` rendering `"agent {agent} does not belong to session
-    /// {session}"`, which this method would adopt verbatim once available.
+    /// **F-102-1, resolved (WI-119):** `conway_core::error::RuntimeError`
+    /// now has a dedicated `AgentNotInSession { agent, session }` variant
+    /// (rendering `"agent {agent} does not belong to session {session}"`),
+    /// added specifically to close the gap this method's previous doc
+    /// disclosed. This method now distinguishes the two failure shapes:
+    /// `agent` absent from `Runtime::tree()` entirely -> `AgentNotFound`
+    /// (unknown to this runtime, full stop); `agent` present in the tree but
+    /// not a descendant of `self.root` -> `AgentNotInSession` (a real agent,
+    /// just not one this handle may act on).
     fn ensure_agent_in_session(&self, agent: AgentId) -> Result<()> {
         if agent == self.root {
             return Ok(());
         }
         let snapshot = self.rt.tree();
         let mut parent_of = std::collections::HashMap::new();
+        let mut present = false;
         for node in &snapshot.nodes {
+            if node.agent_id == agent {
+                present = true;
+            }
             parent_of.insert(node.agent_id, node.parent);
+        }
+        if !present {
+            return Err(ConwayError::Runtime(RuntimeError::AgentNotFound { agent }));
         }
         let mut cursor = agent;
         loop {
@@ -466,7 +483,10 @@ impl SessionHandle {
                 _ => break,
             }
         }
-        Err(ConwayError::Runtime(RuntimeError::AgentNotFound { agent }))
+        Err(ConwayError::Runtime(RuntimeError::AgentNotInSession {
+            agent,
+            session: self.session,
+        }))
     }
 }
 

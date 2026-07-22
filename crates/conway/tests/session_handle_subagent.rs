@@ -347,11 +347,12 @@ async fn fork_rejects_a_from_agent_that_belongs_to_a_different_session() {
         .expect_err("a foreign session's root must be rejected");
     match err {
         ConwayError::Runtime(inner) => {
-            // Disclosed gap (see `SessionHandle::ensure_agent_in_session`'s
-            // doc): `conway_core::error::RuntimeError` has no variant
-            // rendering the literal text "agent does not belong to
-            // session" and this item cannot add one (out of file scope).
-            // The closest available variant is asserted here instead.
+            // F-102-1, resolved (WI-119): `conway_core::error::RuntimeError`
+            // now has a dedicated `AgentNotInSession { agent, session }`
+            // variant (see `SessionHandle::ensure_agent_in_session`'s doc)
+            // rendering exactly "agent does not belong to session" -- this
+            // just asserts the message names the rejected agent id, without
+            // pinning the variant name itself.
             assert!(
                 inner.to_string().contains(&handle_b.root().to_string()),
                 "error must name the rejected agent id: {inner}"
