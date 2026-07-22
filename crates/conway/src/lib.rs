@@ -21,11 +21,15 @@
 //! wrappers added by later work items.
 
 pub mod agents;
+mod builder;
 pub mod config;
+mod conway;
 mod error;
 pub mod gates;
 pub mod presets;
 
+pub use builder::ConwayBuilder;
+pub use conway::{Conway, SessionHandle, SessionSpec};
 pub use error::{ConwayError, Result};
 
 pub use conway_core::agent::{AgentResult, AgentTreeSnapshot, Budget, ResultStatus};
