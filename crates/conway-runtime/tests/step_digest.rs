@@ -302,6 +302,7 @@ fn build_loop(
         inbox: mailbox_rx,
         parent_mailbox: None,
         pending_cancel: None,
+        resume_gate: Default::default(),
     };
 
     Harness { agent_loop, bus }

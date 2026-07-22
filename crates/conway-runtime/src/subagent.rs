@@ -306,6 +306,9 @@ impl SubagentHost for Runtime {
             inbox: mailbox_rx,
             parent_mailbox: Some(parent_mailbox),
             pending_cancel: None,
+            // WI-118: only `Runtime::resume_root` ever gates a loop's first
+            // iteration -- a fork/spawn child always starts ungated.
+            resume_gate: crate::agent_loop::ResumeGate::default(),
         };
 
         let node = AgentNode {

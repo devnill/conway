@@ -596,6 +596,7 @@ fn build_loop_inner(
         inbox: mailbox_rx,
         parent_mailbox: None,
         pending_cancel: None,
+        resume_gate: Default::default(),
     };
 
     Harness {

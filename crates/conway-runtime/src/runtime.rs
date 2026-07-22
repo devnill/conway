@@ -169,6 +169,28 @@ pub struct RootSpec {
     pub prompt: Option<String>,
 }
 
+/// The specification for re-registering a persisted session's agent as a
+/// live root agent (WI-118 — closes the F-117-1/F-103-1/Q-1 session-
+/// continuity gap). Mirrors [`RootSpec`] minus `prompt` (resuming never
+/// appends an initial `UserTurn` — the caller's continuation arrives via a
+/// later [`Runtime::prompt`] call) and minus the fields recoverable from the
+/// persisted [`SessionMeta`] once it is loaded (`agent_def`, `role`, `cwd`
+/// all fall back to the header's own values when left `None` here, exactly
+/// as `start_root` falls back to an `AgentDef`'s values). `tools` and
+/// `budget` are never persisted in `SessionMeta` — like `RootSpec`, both
+/// must be supplied fresh on every resume.
+pub struct ResumeSpec {
+    /// The session to resume. Must already exist in the store — `resume_root`
+    /// reads its `SessionMeta` via `store.meta` and does NOT `store.create`.
+    pub session: SessionId,
+    pub agent_def: Option<AgentDefRef>,
+    pub role: Option<RoleAlias>,
+    pub tools: Option<ToolSelector>,
+    pub budget: Budget,
+    /// Overrides the persisted `SessionMeta::cwd`; `None` reuses it.
+    pub cwd: Option<PathBuf>,
+}
+
 /// Everything the runtime keeps about one live (or finished-but-not-yet-
 /// evicted) agent task that isn't already tracked by `Runtime::tree`
 /// (WI-083 — see the module doc's reconciliation note). Looked up by
@@ -181,6 +203,13 @@ struct AgentHandle {
     /// fork/spawn child's `parent_mailbox`.
     mailbox: MailboxSender,
     last_report: Arc<Mutex<Option<ContextReport>>>,
+    /// WI-118: the same `Arc` as this agent's `AgentLoop::resume_gate.notify`
+    /// (cloned out of the `AgentLoop` before it moves into its spawned task
+    /// -- see [`Runtime::launch_agent`]). [`Runtime::prompt`] calls
+    /// `notify_one()` on it after every durable append so a gated
+    /// `resume_root` agent's idling first iteration wakes; a no-op for every
+    /// other agent, whose loop never awaits it.
+    prompt_notify: Arc<tokio::sync::Notify>,
     #[allow(dead_code)]
     join: Arc<Mutex<Option<JoinHandle<()>>>>,
 }
@@ -382,6 +411,13 @@ impl Runtime {
         let session_id = node.session;
         let cancel = node.cancel.clone();
         let deadline = agent_loop.spec.budget.deadline;
+        // WI-118: `agent_loop` already carries its own `resume_gate.notify`
+        // (a real `resume_root` gate, or an unused `Default` one for every
+        // other caller of this shared path -- currently only `subagent.rs`'s
+        // fork/spawn) -- clone the same `Arc` out before `agent_loop` moves
+        // into its spawned task below, so `Runtime::prompt` has something to
+        // notify.
+        let prompt_notify = agent_loop.resume_gate.notify.clone();
 
         self.tree.attach(node)?;
 
@@ -401,6 +437,7 @@ impl Runtime {
             session: session_id,
             mailbox,
             last_report,
+            prompt_notify,
             join: Arc::new(Mutex::new(Some(join))),
         };
         self.agents
@@ -510,7 +547,10 @@ impl Runtime {
             // (WI-085).
             parent_mailbox: None,
             pending_cancel: None,
+            // WI-118: `start_root` never gates -- only `resume_root` does.
+            resume_gate: Default::default(),
         };
+        let prompt_notify = agent_loop.resume_gate.notify.clone();
 
         // A root is started, not spawned (`kind: None`) — see `tree.rs`'s
         // module doc on why that means `attach` will not emit
@@ -543,6 +583,7 @@ impl Runtime {
             session: session_id,
             mailbox: mailbox_tx,
             last_report,
+            prompt_notify,
             join: Arc::new(Mutex::new(Some(join))),
         };
 
@@ -554,17 +595,168 @@ impl Runtime {
         Ok(agent_id)
     }
 
+    /// Re-registers an already-persisted session's agent as live (WI-118):
+    /// reads its existing `SessionMeta` via `store.meta` (erroring
+    /// `RuntimeError::Store(StoreError::NotFound { .. })` — already a typed
+    /// `RuntimeError` via `#[from]`, not a panic and not a `create` — for an
+    /// unknown or record-less session id) and registers it into
+    /// `Runtime.agents`/`AgentTree` through the same [`Runtime::launch_agent`]
+    /// path `start_root` uses, so `prompt`/`cancel`/`tree`/`context_report`
+    /// all work on the returned `AgentId` exactly as they do for a
+    /// `start_root` agent.
+    ///
+    /// Unlike `start_root`, this method does NOT `store.create` (the session
+    /// already exists) and does NOT append an initial `UserTurn` — the
+    /// caller's continuation prompt arrives via a subsequent
+    /// [`Runtime::prompt`] call. `AgentLoop` re-resolves the full effective
+    /// transcript from the store on every turn (`conway_session`'s
+    /// `TranscriptResolver`), so "continue from where it left off" falls out
+    /// of that existing mechanism once this agent is registered — this
+    /// method's job is registration, not transcript replay.
+    ///
+    /// The returned `AgentId` is `SessionMeta::agent_id` (the id the session
+    /// was originally created under), never a freshly minted one: a caller
+    /// that persisted the original agent id (e.g. `conway::conway::resume`)
+    /// can address this resumed agent with the same id it already has, and
+    /// `Runtime::agent_session`/`prompt`/`tree` all resolve against this same
+    /// id since it is exactly what gets inserted into `self.agents` and
+    /// attached to the tree below.
+    ///
+    /// ## Child re-registration (criterion 4 disclosure)
+    ///
+    /// This method attaches only the resumed root to `AgentTree` — it does
+    /// NOT walk `store.children` to re-attach past fork/spawn children as
+    /// live tree nodes. Those children's own agent tasks are long gone (this
+    /// is a process restart, not a live process with tasks to reconnect to);
+    /// attaching them as `AgentTree` nodes with no backing task would leave
+    /// them permanently `AgentStatus::Running` in `Runtime::tree()` (nothing
+    /// would ever call `AgentTree::publish_result` for them), which is a
+    /// worse misrepresentation than omitting them. Their history remains
+    /// fully readable via `store.children`/`store.read` directly and via
+    /// [`Runtime::context_report_at`] (which already resolves an agent id
+    /// via a store scan, not the live tree); only *live* re-registration —
+    /// i.e., resuming a child as a promptable agent in its own right — is
+    /// out of scope for this item. A caller that needs that can call
+    /// `resume_root` again with that child's own `SessionId`.
+    pub async fn resume_root(&self, spec: ResumeSpec) -> Result<AgentId, RuntimeError> {
+        let meta = self.store.meta(&spec.session).await?;
+        let agent_id = meta.agent_id;
+
+        let agent_def_ref = spec
+            .agent_def
+            .clone()
+            .or_else(|| meta.agent_def.clone().map(AgentDefRef));
+        let agent_def = agent_def_ref
+            .as_ref()
+            .and_then(|r| self.agent_defs.get(r.0.as_str()));
+
+        let role = spec
+            .role
+            .clone()
+            .or_else(|| meta.role.clone())
+            .or_else(|| agent_def.and_then(|d| d.role.clone()))
+            .unwrap_or_else(|| RoleAlias::new("default"));
+
+        let system_prompt = agent_def.map(|d| crate::context::SystemPromptSpec {
+            agent_def: d.name.clone(),
+            text: d.system_prompt.clone(),
+        });
+        // Skills are deliberately empty here -- see the module doc's
+        // reconciliation note (no SkillDef registry is injected).
+        let skills = Vec::new();
+        let tools = spec
+            .tools
+            .clone()
+            .or_else(|| agent_def.map(|d| d.tools.clone()));
+        let pin = agent_def.and_then(|d| d.model.clone());
+        let cwd = spec.cwd.clone().unwrap_or_else(|| meta.cwd.clone());
+
+        let last_report = Arc::new(Mutex::new(None));
+        let agent_spec = AgentSpec {
+            system_prompt,
+            skills,
+            tools,
+            role: role.clone(),
+            pin,
+            budget: spec.budget.clone(),
+            cache_mode: CacheMode::None,
+            cache_ttl: CacheTtl::FiveMinutes,
+            headroom_override: None,
+            max_parallel_tools: DEFAULT_MAX_PARALLEL_TOOLS,
+            report_slot: Some(last_report.clone()),
+            // A resumed root has no `SubagentSpec` to source a contract
+            // from either -- same as `start_root`.
+            result_contract: None,
+        };
+
+        let cancel = CancellationToken::new();
+        let (mailbox_tx, mailbox_rx) = Mailbox::new(mailbox::RUNTIME_CAPACITY);
+        let mailbox_tx =
+            mailbox_tx.with_events(self.bus.clone(), spec.session, agent_id, cancel.clone());
+        let agent_loop = AgentLoop {
+            agent_id,
+            session: spec.session,
+            parent: None,
+            agent_path: vec![agent_id],
+            cwd: cwd.clone(),
+            deps: self.loop_deps.clone(),
+            spec: agent_spec,
+            cancel: cancel.clone(),
+            // A resumed root's context never inherits anything -- same as
+            // `start_root`; the resolver rebuilds its full effective
+            // transcript from the store instead.
+            inherited: None,
+            inbox: mailbox_rx,
+            // A root has no parent to deliver a terminal `Result` to.
+            parent_mailbox: None,
+            pending_cancel: None,
+            // WI-118 (the F-118 D-3 fix): this loop's first iteration must
+            // wait for the caller's next `Runtime::prompt` rather than
+            // racing it against the persisted (already-completed)
+            // transcript -- see `ResumeGate`'s and `run_inner`'s own docs.
+            // `launch_agent` clones this same `notify` `Arc` into this
+            // agent's `AgentHandle` before `agent_loop` moves into its
+            // spawned task, which is what `Runtime::prompt` signals below.
+            resume_gate: crate::agent_loop::ResumeGate {
+                awaiting_first_prompt: true,
+                notify: Arc::new(tokio::sync::Notify::new()),
+            },
+        };
+
+        // A resumed root is re-started, not spawned (`kind: None`) -- see
+        // `tree.rs`'s module doc on why that means `attach` will not emit
+        // `Event::AgentSpawned` for it, matching `start_root`'s own root
+        // node.
+        let node = AgentNode {
+            id: agent_id,
+            parent: None,
+            session: spec.session,
+            kind: None,
+            agent_def: agent_def
+                .map(|d| d.name.clone())
+                .or_else(|| meta.agent_def.clone()),
+            role: Some(role),
+            budget: spec.budget.clone(),
+            cancel: cancel.clone(),
+            inherited_upto: None,
+        };
+
+        self.launch_agent(node, agent_loop, last_report, mailbox_tx)?;
+
+        Ok(agent_id)
+    }
+
     /// Appends a `LogRecord::UserTurn` to `agent`'s session before returning
     /// (persist-before-act). Delivering this to a live agent task (so an
     /// already-running conversation picks it up) is WI-085's mailbox wiring;
     /// this item only guarantees the durable append.
     pub async fn prompt(&self, agent: AgentId, text: String) -> Result<(), RuntimeError> {
-        let session = {
+        let (session, prompt_notify) = {
             let agents = self.agents.read().expect("agents lock poisoned");
-            agents
+            let handle = agents
                 .get(&agent)
-                .ok_or(RuntimeError::AgentNotFound { agent })?
-                .session
+                .ok_or(RuntimeError::AgentNotFound { agent })?;
+            (handle.session, handle.prompt_notify.clone())
         };
         // See `start_root`'s note: `append`'s `assign_seq` always overwrites
         // this placeholder with the store's own next value, so no
@@ -580,6 +772,13 @@ impl Runtime {
                 },
             )
             .await?;
+        // WI-118: wakes a `resume_root` agent's gated first iteration (see
+        // `ResumeGate`'s doc). `Notify::notify_one`'s single stored permit
+        // means this is safe even if that agent's task has not polled its
+        // `notified()` yet -- the permit is buffered and consumed by the
+        // very next `.await` on it. A no-op for every other agent (nothing
+        // ever awaits this `Notify`).
+        prompt_notify.notify_one();
         Ok(())
     }
 
