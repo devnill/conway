@@ -13,14 +13,20 @@ path = "src/main.rs"
 [dependencies]
 conway = { path = "../conway" }
 clap = { workspace = true, features = ["derive", "env"] }
-tokio = { workspace = true, features = ["rt-multi-thread"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }
+async-trait = { workspace = true }
+futures = { workspace = true }
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
-# Test-only: used exclusively to construct `conway_core::error` fixture
-# values for `exit.rs`'s unit tests (see that module's doc comment for why
-# this cannot be a production dependency). Never referenced outside
-# `#[cfg(test)]` code.
+# Test-only: used exclusively to construct `conway_core::{error,agent,event}`
+# fixture values for `exit.rs`/`oneshot.rs`/`render/*.rs`'s unit tests (see
+# `exit.rs`'s doc comment for why this cannot be a production dependency).
+# Never referenced outside `#[cfg(test)]` code.
 conway-core = { path = "../conway-core" }
+chrono = { workspace = true }
 assert_cmd = { workspace = true }
 predicates = { workspace = true }
 tempfile = { workspace = true }

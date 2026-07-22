@@ -38,11 +38,15 @@ pub use event_stream::EventStream;
 pub use session_handle::{SessionHandle, SessionSpec, TurnHandle};
 pub use subagent_spec::{ForkSpec, SpawnSpec};
 
-pub use conway_core::agent::{AgentResult, AgentTreeSnapshot, Budget, ResultStatus, ToolSelector};
+pub use conway_core::agent::{
+    AgentResult, AgentTreeSnapshot, Budget, PermissionDecision, PermissionDecisionKind,
+    PermissionRequest, PermissionScope, ResultStatus, ToolSelector,
+};
 pub use conway_core::config::AgentDef;
+pub use conway_core::content::ToolCategory;
 pub use conway_core::event::{Envelope, Event};
-pub use conway_core::ids::{AgentId, LogSeq, ModelRef, RoleAlias, SessionId};
-pub use conway_core::log::{LogRecord, SessionFilter, SessionMeta};
+pub use conway_core::ids::{AgentId, LogSeq, ModelRef, RoleAlias, SessionId, ToolName};
+pub use conway_core::log::{LogRecord, SessionFilter, SessionMeta, SubagentMode};
 pub use conway_core::ports::{
     Backend, HealthRegistry, PermissionGate, Plugin, Router, SessionStore, Tool,
 };
