@@ -29,14 +29,16 @@ mod event_stream;
 pub mod gates;
 pub mod presets;
 mod session_handle;
+mod subagent_spec;
 
 pub use builder::ConwayBuilder;
 pub use conway::Conway;
 pub use error::{ConwayError, Result};
 pub use event_stream::EventStream;
 pub use session_handle::{SessionHandle, SessionSpec, TurnHandle};
+pub use subagent_spec::{ForkSpec, SpawnSpec};
 
-pub use conway_core::agent::{AgentResult, AgentTreeSnapshot, Budget, ResultStatus};
+pub use conway_core::agent::{AgentResult, AgentTreeSnapshot, Budget, ResultStatus, ToolSelector};
 pub use conway_core::config::AgentDef;
 pub use conway_core::event::{Envelope, Event};
 pub use conway_core::ids::{AgentId, LogSeq, ModelRef, RoleAlias, SessionId};
