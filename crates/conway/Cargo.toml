@@ -12,6 +12,11 @@ anthropic = ["dep:conway-backends", "conway-backends/anthropic"]
 openai-compat = ["dep:conway-backends", "conway-backends/openai-compat"]
 builtin-tools = ["dep:conway-tools"]
 jsonl-store = ["dep:conway-session"]
+# Empty on purpose (WI-097 scope: config schema/discovery/merge only, no
+# HTTP client). Declared so `#[cfg(feature = "metadata-refresh")]` in
+# `config::model_metadata` does not trip `unexpected_cfgs` under `-D
+# warnings`; the actual client implementation is a later work item's scope.
+metadata-refresh = []
 
 [dependencies]
 conway-core = { path = "../conway-core" }

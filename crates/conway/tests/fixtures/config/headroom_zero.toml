@@ -1,0 +1,10 @@
+default_role = "coder"
+
+[roles.coder]
+chain = ["anthropic/claude-sonnet-4-6"]
+
+[backends.anthropic]
+kind = "anthropic"
+
+[routing]
+default_headroom_tokens = 0

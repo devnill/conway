@@ -1,0 +1,10 @@
+default_role = "coder"
+
+[roles.coder]
+chain = ["anthropic/claude-sonnet-4-6"]
+
+[backends.anthropic]
+kind = "anthropic"
+
+[health]
+transport_failures_to_opne = 5
