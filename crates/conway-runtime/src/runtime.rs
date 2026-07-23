@@ -505,22 +505,27 @@ impl Runtime {
         };
         self.store.create(meta).await?;
 
-        // `append`'s `assign_seq` always overwrites this with the store's
-        // own next value (the store, not the caller, is the seq authority --
-        // see `conway-session`'s `provenance.rs`), so there is no need to
-        // round-trip through `store.head` first for what is always the
-        // session's first record.
-        self.store
-            .append(
-                &session_id,
-                LogRecord::UserTurn {
-                    seq: LogSeq::ZERO,
-                    ts: Utc::now(),
-                    text: spec.prompt.clone().unwrap_or_default(),
-                    prov: Provenance::UserPrompt,
-                },
-            )
-            .await?;
+        // Seed an initial user turn ONLY when the caller supplied a prompt.
+        // A prompt-less root (the interactive TUI, and any `new_session`
+        // whose first prompt arrives later via `Runtime::prompt`) starts
+        // IDLE: no empty placeholder turn is written and the loop gates its
+        // first iteration (see `resume_gate` below), so the agent never runs
+        // a turn against an empty prompt and "explores" before the user has
+        // said anything. `append`'s `assign_seq` overwrites `seq` with the
+        // store's own next value regardless.
+        if let Some(text) = spec.prompt.clone() {
+            self.store
+                .append(
+                    &session_id,
+                    LogRecord::UserTurn {
+                        seq: LogSeq::ZERO,
+                        ts: Utc::now(),
+                        text,
+                        prov: Provenance::UserPrompt,
+                    },
+                )
+                .await?;
+        }
 
         let last_report = Arc::new(Mutex::new(None));
         let agent_spec = AgentSpec {
@@ -562,13 +567,18 @@ impl Runtime {
             // (WI-085).
             parent_mailbox: None,
             pending_cancel: None,
-            // WI-118: `start_root` never gates its FIRST iteration -- only
-            // `resume_root` does. A `keep_alive: true` root starts this at
-            // `Default` too (`awaiting_prompt: false`) and runs its first
-            // turn immediately, exactly like any other root -- the gate is
-            // only ever flipped `true` by `AgentLoop::run_inner` itself, at
-            // the END of a completed turn (see `ResumeGate`'s own doc).
-            resume_gate: Default::default(),
+            // A root started WITHOUT an initial prompt (the interactive TUI;
+            // any `new_session` whose first prompt arrives later via
+            // `Runtime::prompt`) gates its first iteration and idles until
+            // that prompt arrives -- otherwise it would immediately run a
+            // turn against the empty placeholder and "explore" before the
+            // user has typed anything. A root started WITH a prompt runs its
+            // first turn immediately, as before. For a `keep_alive` root,
+            // `run_inner` re-arms this same gate at each turn boundary.
+            resume_gate: crate::agent_loop::ResumeGate {
+                awaiting_prompt: spec.prompt.is_none(),
+                notify: Arc::new(tokio::sync::Notify::new()),
+            },
         };
         let prompt_notify = agent_loop.resume_gate.notify.clone();
 

@@ -140,10 +140,15 @@ async fn end_to_end_from_parts_with_fakes_succeeds_with_no_network_or_fs() {
         .await
         .expect("new_session should succeed");
 
+    // A prompt-less session starts IDLE: `new_session` creates the session
+    // but writes no initial turn record, and the agent does not run until the
+    // first `prompt`. (Previously an empty placeholder `UserTurn` was written
+    // and run immediately, making the agent "explore" before any prompt --
+    // that was a bug; see `Runtime::start_root`.)
     assert_eq!(
         store.total_record_count(),
-        1,
-        "exactly the session's header/first record"
+        0,
+        "a prompt-less session writes no initial turn record; it idles until the first prompt"
     );
     // `id()`/`root()` are populated (non-panicking access is the assertion;
     // ULIDs are always non-nil).

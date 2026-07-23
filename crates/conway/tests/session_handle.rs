@@ -375,10 +375,10 @@ async fn transcript_resolves_the_effective_ancestry_of_a_forked_fixture() {
     let conway = build_conway_with_echo_backend(store.clone());
     let handle = new_handle(&conway).await;
 
-    // `Conway::new_session` -> `Runtime::start_root` already appends one
-    // `UserTurn` (the empty `RootSpec.prompt`) before this test runs, so
-    // the fork boundary below is computed relative to the store's actual
-    // head rather than a hardcoded seq.
+    // `Conway::new_session` -> `Runtime::start_root` starts a prompt-less
+    // root IDLE, writing no initial `UserTurn` -- so the store's head is at
+    // seq 0 before this test appends anything, and the fork boundary below
+    // is computed relative to that actual head rather than a hardcoded seq.
     let start = store.head(&handle.id()).await.expect("head should succeed");
 
     // Grow the root/parent session past its own header.
@@ -398,11 +398,8 @@ async fn transcript_resolves_the_effective_ancestry_of_a_forked_fixture() {
     }
 
     // Fork a child session right after parent-0/parent-1 (inheriting
-    // everything up to and including those two -- which, since a fork's
-    // inherited prefix always reads from the parent's own seq 0, also
-    // includes `start_root`'s own leading empty-prompt record -- but not
-    // parent-2/parent-3), owned by a fresh agent id not otherwise known to
-    // the runtime.
+    // everything up to and including those two, but not parent-2/parent-3),
+    // owned by a fresh agent id not otherwise known to the runtime.
     let fork_at = LogSeq(start.0 + 2);
     let child_agent = AgentId::new();
     let child_session = SessionId::new();
@@ -449,9 +446,9 @@ async fn transcript_resolves_the_effective_ancestry_of_a_forked_fixture() {
         .collect();
     assert_eq!(
         texts,
-        vec!["", "parent-0", "parent-1", "child-own"],
-        "effective transcript must be the parent's inherited prefix (its own leading record, \
-         then parent-0/parent-1, up to the fork seq) followed by the child's own records"
+        vec!["parent-0", "parent-1", "child-own"],
+        "effective transcript must be the parent's inherited prefix (parent-0/parent-1, up to \
+         the fork seq) followed by the child's own records"
     );
 }
 
@@ -469,10 +466,11 @@ async fn transcript_resolves_a_grandchild_fork_three_generations_deep() {
     let conway = build_conway_with_echo_backend(store.clone());
     let handle = new_handle(&conway).await;
 
-    // `Conway::new_session` -> `Runtime::start_root` already appends one
-    // leading `UserTurn` (see the sibling forked-fixture test's comment),
-    // so the first fork boundary below is computed relative to the store's
-    // actual head rather than a hardcoded seq.
+    // `Conway::new_session` -> `Runtime::start_root` starts a prompt-less
+    // root IDLE, writing no initial `UserTurn` (see the sibling forked-
+    // fixture test's comment), so the store's head is at seq 0 before this
+    // test appends anything, and the first fork boundary below is computed
+    // relative to that actual head rather than a hardcoded seq.
     let start = store.head(&handle.id()).await.expect("head should succeed");
 
     // Root grows by two of its own records: r0, r1.
@@ -491,10 +489,9 @@ async fn transcript_resolves_a_grandchild_fork_three_generations_deep() {
             .expect("append should succeed");
     }
 
-    // Child forks off the ROOT after those two appends (inherits the
-    // leading record plus r0/r1 in full -- nothing of the root is excluded
-    // here, matching the sibling test's "local seq N == N appends so far"
-    // convention).
+    // Child forks off the ROOT after those two appends (inherits r0/r1 in
+    // full -- nothing of the root is excluded here, matching the sibling
+    // test's "local seq N == N appends so far" convention).
     let child_fork_at = LogSeq(start.0 + 2);
     let child_agent = AgentId::new();
     let child_session = SessionId::new();
@@ -586,8 +583,8 @@ async fn transcript_resolves_a_grandchild_fork_three_generations_deep() {
         .collect();
     assert_eq!(
         texts,
-        vec!["", "r0", "r1", "c0", "g0"],
+        vec!["r0", "r1", "c0", "g0"],
         "the grandchild's effective transcript must be the whole prefix (D-11): the root's \
-         leading record and r0/r1, then the child's own c0, then the grandchild's own g0"
+         r0/r1, then the child's own c0, then the grandchild's own g0"
     );
 }
