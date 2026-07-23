@@ -12,6 +12,26 @@
 //! must never gain an HTTP-client-crate or filesystem-module reference — a
 //! test in `tests/model_metadata.rs` greps this file's source to enforce
 //! that (see that test for the exact forbidden token list).
+//!
+//! WI-123 (unifying the two capability systems that previously diverged —
+//! see `conway_routing::capability::CapabilityIndex::from_backends`'s doc):
+//! [`build_capabilities`] is the *only* function that turns dialect
+//! defaults + metadata + overrides into a `Capabilities` value anywhere in
+//! the workspace. `Backend::capabilities()` (each adapter's own impl) calls
+//! it directly; the facade's router-side `CapabilityIndex` is built by
+//! asking backends for their `capabilities()` rather than recomputing this
+//! composition from `models.json` a second time. `overrides` (a
+//! `ModelOverrides`, `conway_core::routing`) is the only channel the
+//! facade's `models.json` has into this function — and it carries just
+//! `max_context_tokens`, `parallel_tool_calls`, and `reliability_tier`.
+//! `tool_calling` and `reasoning` have no `ModelOverrides` field, so a
+//! `models.json` entry's `tool_calling`/`reasoning` values currently reach
+//! neither `Backend::capabilities()` nor the router's `CapabilityIndex` —
+//! both read only dialect defaults / `ModelMetadataStore` metadata for
+//! those two fields. Giving `models.json` real control over them requires
+//! adding fields to `ModelOverrides` (owned by `conway-core`, out of
+//! WI-123's file scope) — flagged there as a scope-boundary follow-up, not
+//! solved here.
 
 use conway_core::capabilities::{
     CacheMode, CacheTtl, Capabilities, ReliabilityTier, StructuredOutput, ToolCallSupport,

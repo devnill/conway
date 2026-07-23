@@ -68,13 +68,25 @@
 //!   `DEFAULT_MAX_PARALLEL_TOOLS`) exposes a field this builder or
 //!   `Conway::new_session` could set it through. Flagged as a gap for
 //!   `MODULE:conway-runtime`, not solved here.
-//! - **Facade `ModelMetadataEntry` has no `parallel_tool_calls` or
-//!   `structured_output` field** (WI-097's committed schema), so
-//!   [`to_capabilities`] defaults both to the most conservative value
-//!   (`false` / `StructuredOutput::None`) for every file-derived capability
-//!   entry. A role requiring either will only ever be satisfiable via an
-//!   injected backend or the optional startup probe overlay, never via
-//!   `models.metadata_path` alone.
+//! - **The router's `CapabilityIndex` is built from `Backend::capabilities()`,
+//!   not from a second `models.json` → `Capabilities` conversion** (WI-123):
+//!   [`models_overrides_for`] projects `models.json`'s `max_context_tokens`
+//!   and `reliability_tier` into each backend's `ModelOverrides` table
+//!   *before* backends are constructed, and step 5 below then calls
+//!   `CapabilityIndex::from_backends` on those already-constructed backends
+//!   — so the router reads exactly what `Backend::capabilities()` (and
+//!   therefore `conway_runtime::attempt::AttemptEngine`'s T-1 gate) would
+//!   return for the same pair, never an independently-recomputed value. One
+//!   consequence: `parallel_tool_calls`/`structured_output` for a
+//!   file-derived model now resolve to the dialect's default rather than
+//!   always `false`/`None` (the prior `to_capabilities` conversion's
+//!   conservative fallback, since the facade's `ModelMetadataEntry` schema
+//!   has no field for either). `models.json`'s `tool_calling` and
+//!   `reasoning` fields, however, still reach neither the router nor
+//!   `Backend::capabilities()`: `ModelOverrides` (owned by `conway-core`)
+//!   has no field for them, and extending it is outside this item's file
+//!   scope — see `conway_backends::capabilities`'s module doc and this
+//!   item's scope-boundary note.
 //! - **Startup capability probing is implemented via
 //!   `conway_backends::probe::CapabilityProbe`**, which is `openai-compat`-
 //!   feature-gated and only meaningful for `kind = "openai-compat"` backend
@@ -90,9 +102,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use conway_core::capabilities::{
-    CacheMode, Capabilities, ReliabilityTier, StructuredOutput, ToolCallSupport,
-};
+use conway_core::capabilities::ReliabilityTier;
 use conway_core::ids::{BackendId, ModelRef};
 use conway_core::ports::{Backend, PermissionGate, Plugin, Router, SessionStore};
 use conway_core::routing::ModelOverrides;
@@ -102,7 +112,6 @@ use conway_runtime::events::EventBus;
 use conway_runtime::runtime::{Runtime, RuntimeDeps};
 
 use crate::agents;
-use crate::config::model_metadata::ModelMetadataEntry;
 use crate::config::schema::{BackendEntry, BackendKind, ConwayConfig};
 use crate::config::{self, CliOverrides, ConfigWarning, LoadOptions};
 use crate::conway::Conway;
@@ -263,26 +272,29 @@ impl ConwayBuilder {
             });
         }
 
-        // 5. CapabilityIndex from file-derived metadata, optionally
+        // 5. CapabilityIndex, read directly from each constructed backend's
+        //    own `Backend::capabilities()` (WI-123: the single accessor this
+        //    index and the runtime's T-1 gate both read — see
+        //    `CapabilityIndex::from_backends`'s doc) for every
+        //    `(backend, model)` pair `models.json` declares. Optionally
         //    overlaid with a startup probe.
-        let mut index_builder = CapabilityIndex::builder();
-        for (key, entry) in &metadata.models {
-            match key.parse::<ModelRef>() {
-                Ok(model_ref) => {
-                    index_builder = index_builder.insert(
-                        model_ref.backend,
-                        model_ref.model,
-                        to_capabilities(entry),
-                    );
-                }
+        let model_refs: Vec<ModelRef> = metadata
+            .models
+            .keys()
+            .filter_map(|key| match key.parse::<ModelRef>() {
+                Ok(model_ref) => Some(model_ref),
                 Err(_) => {
                     tracing::warn!(
                         key = %key,
                         "model metadata key is not a valid 'backend/model' reference; skipping"
                     );
+                    None
                 }
-            }
-        }
+            })
+            .collect();
+        let all_backends: Vec<Arc<dyn Backend>> = backend_map.values().cloned().collect();
+        let mut index_builder =
+            CapabilityIndex::from_backends(&all_backends, &model_refs).into_builder();
         if config.models.probe_on_startup {
             #[cfg(feature = "openai-compat")]
             {
@@ -451,13 +463,19 @@ fn construct_backend(
 }
 
 /// Per-model capability overrides for backend `id`, projected from the
-/// facade's loaded `models.json` metadata (keyed `"backend/model"`). The
-/// router's T-1 context-fit gate reads `Backend::capabilities`, whose window
-/// otherwise falls back to the dialect default — so without wiring the
-/// metadata into the backend's own override table here, a `max_context_tokens`
-/// set in `models.json` would silently never reach routing (the facade
-/// `CapabilityIndex` built from the same metadata is not consulted by that
-/// gate).
+/// facade's loaded `models.json` metadata (keyed `"backend/model"`). This is
+/// the *only* channel `models.json` has into `Backend::capabilities()`
+/// (called directly by the T-1 gate in `conway_runtime::attempt`, and
+/// indirectly by the router's `CapabilityIndex` — see step 5 of
+/// [`ConwayBuilder::build`]) — so without wiring the metadata into the
+/// backend's own override table here, a `max_context_tokens` or
+/// `reliability_tier` set in `models.json` would silently never reach
+/// routing.
+///
+/// Only `max_context_tokens` and `reliability_tier` are projected:
+/// `ModelOverrides` (`conway_core::routing`) has no field for
+/// `tool_calling`/`reasoning`, so those two `models.json` fields currently
+/// have no effect here — see this module's doc for the scope-boundary note.
 #[cfg(any(feature = "anthropic", feature = "openai-compat"))]
 fn models_overrides_for(
     id: &str,
@@ -476,7 +494,7 @@ fn models_overrides_for(
                 ModelOverrides {
                     stream_tools: None,
                     max_context_tokens: Some(m.max_context_tokens),
-                    reliability_tier: None,
+                    reliability_tier: Some(parse_reliability_tier(&m.reliability_tier)),
                     parallel_tool_calls: None,
                     min_headroom_tokens: None,
                 },
@@ -699,37 +717,11 @@ fn probe_openai_compat_backends(
     index_builder
 }
 
-/// Converts the facade's own local `ModelMetadataEntry` (WI-097's JSON
-/// schema) into `conway_core`'s `Capabilities`. See the module doc for the
-/// disclosed `parallel_tool_calls`/`structured_output` gap.
-fn to_capabilities(entry: &ModelMetadataEntry) -> Capabilities {
-    Capabilities {
-        tool_calling: parse_tool_calling(&entry.tool_calling),
-        cache: CacheMode::None,
-        parallel_tool_calls: false,
-        structured_output: StructuredOutput::None,
-        max_context_tokens: entry.max_context_tokens,
-        reasoning: entry.reasoning,
-        reliability_tier: parse_reliability_tier(&entry.reliability_tier),
-    }
-}
-
-fn parse_tool_calling(raw: &str) -> ToolCallSupport {
-    match raw.to_ascii_lowercase().as_str() {
-        "none" => ToolCallSupport::None,
-        "non_streaming" | "non_streaming_only" => ToolCallSupport::NonStreamingOnly,
-        "streaming" => ToolCallSupport::Streaming { validated: false },
-        "streaming_validated" => ToolCallSupport::Streaming { validated: true },
-        other => {
-            tracing::warn!(
-                value = %other,
-                "unknown model metadata tool_calling value; treating as no tool-call support"
-            );
-            ToolCallSupport::None
-        }
-    }
-}
-
+/// Parses the facade's `models.json` `reliability_tier` string (WI-097's
+/// JSON schema). Used both by [`models_overrides_for`] (the
+/// `Backend::capabilities()`/router-`CapabilityIndex` channel) — any value
+/// other than `"verified"`/`"community"` is `Unknown`, never a hard error:
+/// `models.json` is user-editable data, not a validated config surface.
 fn parse_reliability_tier(raw: &str) -> ReliabilityTier {
     match raw.to_ascii_lowercase().as_str() {
         "verified" => ReliabilityTier::Verified,
@@ -818,5 +810,80 @@ mod models_overrides_tests {
         let mut m = ModelMetadata::empty();
         m.models.insert("not-a-ref".to_string(), entry(100));
         assert!(models_overrides_for("ollama_cloud", &m).is_empty());
+    }
+
+    #[test]
+    fn reliability_tier_is_projected_alongside_max_context_tokens() {
+        let mut m = ModelMetadata::empty();
+        m.models.insert(
+            "ollama_cloud/glm-5.2".to_string(),
+            ModelMetadataEntry {
+                reliability_tier: "community".to_string(),
+                ..entry(1_000)
+            },
+        );
+        let ov = models_overrides_for("ollama_cloud", &m);
+        assert_eq!(
+            ov["glm-5.2"].reliability_tier,
+            Some(ReliabilityTier::Community)
+        );
+    }
+
+    /// WI-123's core proof: `models.json` has exactly one predictable
+    /// routing effect. The value `Backend::capabilities()` returns (what
+    /// `conway_runtime::attempt::AttemptEngine`'s T-1 gate reads directly)
+    /// and the value the router's `CapabilityIndex` resolves for the same
+    /// pair (built via `CapabilityIndex::from_backends`, step 5 of
+    /// `ConwayBuilder::build`) must be identical -- not two independently
+    /// recomputed values that can silently drift apart.
+    #[cfg(feature = "openai-compat")]
+    #[test]
+    fn models_json_drives_both_backend_capabilities_and_router_index_identically() {
+        use conway_backends::config::{Dialect, OpenAiCompatConfig};
+        use conway_backends::openai_compat::OpenAiCompatBackend;
+        use conway_core::ids::ModelId;
+
+        let mut m = ModelMetadata::empty();
+        m.models.insert(
+            "ollama_cloud/glm-5.2".to_string(),
+            ModelMetadataEntry {
+                max_context_tokens: 1_000_000,
+                tool_calling: "non_streaming".to_string(),
+                reasoning: false,
+                reliability_tier: "community".to_string(),
+            },
+        );
+
+        let cfg = OpenAiCompatConfig {
+            id: BackendId::new("ollama_cloud"),
+            base_url: url::Url::parse("http://localhost:11434").unwrap(),
+            api_key: None,
+            dialect: Dialect::Ollama,
+            timeout: None,
+            metadata_path: None,
+            models: models_overrides_for("ollama_cloud", &m),
+        };
+        let backend: Arc<dyn Backend> =
+            Arc::new(OpenAiCompatBackend::new(cfg).expect("valid config must construct"));
+        let model = ModelId::new("glm-5.2");
+
+        // What the runtime's T-1 gate reads directly (attempt.rs, WI-122;
+        // out of this item's file scope, but this is its accessor).
+        let direct = backend.capabilities(&model);
+        assert_eq!(
+            direct.max_context_tokens, 1_000_000,
+            "ollama's 32K dialect default must be overridden by models.json"
+        );
+        assert_eq!(direct.reliability_tier, ReliabilityTier::Community);
+
+        // What the router's CapabilityIndex resolves for the same pair.
+        let model_ref: ModelRef = "ollama_cloud/glm-5.2".parse().unwrap();
+        let index = CapabilityIndex::from_backends(&[backend], std::slice::from_ref(&model_ref));
+        let via_index = index.get(&model_ref).expect("model present in index");
+        assert_eq!(
+            *via_index, direct,
+            "router CapabilityIndex must agree exactly with Backend::capabilities() -- \
+             no divergent projection"
+        );
     }
 }
