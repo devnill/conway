@@ -546,6 +546,7 @@ fn build_loop_inner(
         builder: Arc::new(ContextBuilder::new()),
         headroom: Arc::new(headroom),
         tree: tree.clone(),
+        context_hook: std::sync::RwLock::new(None),
     });
 
     let spec = AgentSpec {
@@ -739,11 +740,13 @@ async fn tool_call_then_text_runs_two_turns_and_second_context_sees_the_result()
     // called a tool, and it re-calls the tool indefinitely (the orphaned
     // tool result loops forever).
     assert!(
-        second_turn_segments.iter().any(|s| s.content.iter().any(|b| matches!(
-            b,
-            ContentBlock::ToolUse { call_id, name, .. }
-                if call_id == "tc_1" && name.as_str() == "read"
-        ))),
+        second_turn_segments
+            .iter()
+            .any(|s| s.content.iter().any(|b| matches!(
+                b,
+                ContentBlock::ToolUse { call_id, name, .. }
+                    if call_id == "tc_1" && name.as_str() == "read"
+            ))),
         "second turn's context must carry the first turn's tool call as an assistant ToolUse block"
     );
 
