@@ -490,6 +490,10 @@ impl Runtime {
             cwd: spec.cwd.clone(),
             labels: Vec::new(),
             status: SessionStatus::Active,
+            // A root is never ephemeral -- only a facade-level fork-ask
+            // child is (`conway`'s `SessionHandle::ask`, which sets this
+            // itself before calling `store.fork`, never `start_root`).
+            ephemeral: false,
         };
         self.store.create(meta).await?;
 
@@ -911,7 +915,19 @@ impl Runtime {
             return Ok(session);
         }
 
-        let sessions = self.store.list(SessionFilter::default()).await?;
+        // `include_ephemeral: true` -- this is an identity lookup by agent,
+        // not a catalog browse, so an ephemeral agent must resolve here too
+        // post-restart (its only other route, `self.agents`, is gone once
+        // the live map no longer has it) -- mirrors
+        // `SessionHandle::resolve_agent_session`'s identical rationale
+        // (conway/src/session_handle.rs).
+        let sessions = self
+            .store
+            .list(SessionFilter {
+                include_ephemeral: true,
+                ..SessionFilter::default()
+            })
+            .await?;
         sessions
             .into_iter()
             .find(|meta| meta.agent_id == agent)

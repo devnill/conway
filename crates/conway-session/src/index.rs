@@ -67,6 +67,13 @@ struct IndexLine {
     #[serde(default)]
     labels: Vec<String>,
     status: SessionStatus,
+    /// Projects `SessionMeta::ephemeral` -- required here (not just on the
+    /// session file's own header) so that a `list`/`children` result served
+    /// from a *loaded* (not rebuilt) index still hides an ephemeral session
+    /// correctly, the same "silently wrong `cwd`" concern the module doc
+    /// already calls out for that field.
+    #[serde(default)]
+    ephemeral: bool,
 }
 
 impl IndexLine {
@@ -87,6 +94,7 @@ impl IndexLine {
             cwd: meta.cwd.clone(),
             labels: meta.labels.clone(),
             status: meta.status,
+            ephemeral: meta.ephemeral,
         }
     }
 
@@ -109,6 +117,7 @@ impl IndexLine {
             cwd: self.cwd,
             labels: self.labels,
             status: self.status,
+            ephemeral: self.ephemeral,
         }
     }
 }
@@ -427,9 +436,25 @@ impl SessionIndex {
     /// Sessions whose header `origin.parent == sid`, ascending `created`
     /// order (ties broken by ascending `id` for determinism). Reads only
     /// in-memory state — no file I/O on the hot path.
+    ///
+    /// Hides ephemeral children unconditionally: this method takes no
+    /// `SessionFilter`, so there is no `include_ephemeral` opt-in to thread
+    /// through it (extending the signature would ripple into every
+    /// `SessionStore::children` caller across the workspace for a query
+    /// surface `list` already covers). A caller that needs a parent's
+    /// ephemeral children too uses `list(SessionFilter{parent: Some(sid),
+    /// include_ephemeral: true, ..})` instead, which returns full
+    /// `SessionMeta`s (`.id` gives the same `SessionId`s this method would).
     pub(crate) fn children(&self, sid: &SessionId) -> Vec<SessionId> {
         let state = self.state.read().unwrap();
-        let mut kids: Vec<SessionId> = state.children.get(sid).cloned().unwrap_or_default();
+        let mut kids: Vec<SessionId> = state
+            .children
+            .get(sid)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|kid| !state.by_id.get(kid).is_some_and(|m| m.ephemeral))
+            .collect();
         kids.sort_by(|a, b| {
             let ca = state.by_id.get(a).map(|m| m.created);
             let cb = state.by_id.get(b).map(|m| m.created);
@@ -439,9 +464,10 @@ impl SessionIndex {
     }
 
     /// Sessions matching `f`, AND-composed across `agent_def`/`parent`/
-    /// `status`/`label`, ordered descending `created` with ties broken by
-    /// ascending `id`, `limit` applied after filtering and ordering. Reads
-    /// only in-memory state — no file I/O on the hot path.
+    /// `status`/`label`/`include_ephemeral`, ordered descending `created`
+    /// with ties broken by ascending `id`, `limit` applied after filtering
+    /// and ordering. Reads only in-memory state — no file I/O on the hot
+    /// path.
     pub(crate) fn list(&self, f: &SessionFilter) -> Vec<SessionMeta> {
         let state = self.state.read().unwrap();
         let mut metas: Vec<SessionMeta> = state
@@ -458,6 +484,7 @@ impl SessionIndex {
                     && f.parent
                         .as_ref()
                         .is_none_or(|p| m.origin.as_ref().is_some_and(|o| o.parent == *p))
+                    && (f.include_ephemeral || !m.ephemeral)
             })
             .cloned()
             .collect();

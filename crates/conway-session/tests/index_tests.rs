@@ -39,6 +39,7 @@ fn meta_full(id: SessionId, created: DateTime<Utc>, origin: Option<ForkOrigin>) 
         cwd: PathBuf::from("/tmp/project"),
         labels: vec![],
         status: SessionStatus::Active,
+        ephemeral: false,
     }
 }
 
@@ -197,6 +198,53 @@ async fn rebuild_equivalence_over_50_sessions() {
     assert_eq!(
         pre_children, post_children,
         "children() must match as sets after rebuild"
+    );
+}
+
+// ---------------------------------------------------------------------
+// `ephemeral` round-trips through a genuine restart (try_load, not rebuild)
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn ephemeral_flag_survives_a_genuine_restart_via_the_load_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    let sid = SessionId::new();
+    let mut meta = meta_for(sid);
+    meta.ephemeral = true;
+
+    {
+        let store = JsonlSessionStore::open(root.clone()).await.unwrap();
+        store.create(meta).await.unwrap();
+    }
+
+    // `index.jsonl` is present on disk and consistent with the one session
+    // file, so reopening here exercises `try_load` -- the genuine
+    // load-from-index-file path -- not `rebuild_scan`. The WARN capture
+    // below asserts exactly that, the same way the corruption tests below
+    // assert the opposite.
+    let (log, _guard) = install_capture();
+    let store = JsonlSessionStore::open(root.clone()).await.unwrap();
+    assert!(
+        !log.contains("index rebuild"),
+        "expected no rebuild (a clean index.jsonl must load via try_load), got: {:?}",
+        log.entries.lock().unwrap()
+    );
+
+    let metas = store
+        .list(SessionFilter {
+            include_ephemeral: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let got = metas
+        .iter()
+        .find(|m| m.id == sid)
+        .expect("ephemeral session must still be listed with include_ephemeral: true");
+    assert!(
+        got.ephemeral,
+        "ephemeral must survive a disk round-trip through index.jsonl"
     );
 }
 
@@ -384,6 +432,7 @@ async fn list_filter_composes_parent_status_label_and_limit_with_and_semantics()
         status: Some(SessionStatus::Active),
         parent: Some(parent),
         limit: None,
+        include_ephemeral: false,
     };
     let metas = store.list(filter.clone()).await.unwrap();
     let ordered: Vec<SessionId> = metas.iter().map(|m| m.id).collect();

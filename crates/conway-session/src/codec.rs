@@ -217,6 +217,7 @@ mod tests {
             cwd: PathBuf::from("/tmp/project"),
             labels: vec!["x".into()],
             status: SessionStatus::Active,
+            ephemeral: false,
         }
     }
 

@@ -619,7 +619,9 @@ impl SessionStore for JsonlSessionStore {
     }
 
     /// Accelerated by `SessionIndex` (WI-050): in-memory lookup, no file
-    /// I/O on this path.
+    /// I/O on this path. Hides ephemeral children -- see
+    /// `SessionIndex::children`'s doc for why this method has no
+    /// `include_ephemeral` opt-in.
     async fn children(&self, sid: &SessionId) -> Result<Vec<SessionId>, StoreError> {
         Ok(self.index.children(sid))
     }

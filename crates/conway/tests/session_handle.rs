@@ -416,6 +416,7 @@ async fn transcript_resolves_the_effective_ancestry_of_a_forked_fixture() {
         cwd: std::path::PathBuf::from("."),
         labels: vec![],
         status: SessionStatus::Active,
+        ephemeral: false,
     };
     store
         .fork(&handle.id(), fork_at, child_meta)
@@ -511,6 +512,7 @@ async fn transcript_resolves_a_grandchild_fork_three_generations_deep() {
                 cwd: std::path::PathBuf::from("."),
                 labels: vec![],
                 status: SessionStatus::Active,
+                ephemeral: false,
             },
         )
         .await
@@ -550,6 +552,7 @@ async fn transcript_resolves_a_grandchild_fork_three_generations_deep() {
                 cwd: std::path::PathBuf::from("."),
                 labels: vec![],
                 status: SessionStatus::Active,
+                ephemeral: false,
             },
         )
         .await

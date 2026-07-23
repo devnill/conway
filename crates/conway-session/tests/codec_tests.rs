@@ -75,6 +75,7 @@ fn header_round_trips_through_the_5_1_shaped_example_verbatim() {
         cwd: PathBuf::from("/tmp/p"),
         labels: vec![],
         status: SessionStatus::Active,
+        ephemeral: false,
     };
     assert_eq!(meta, expected);
 

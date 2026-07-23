@@ -199,7 +199,21 @@ async fn tree(conway: &Conway, id: &str) -> conway::Result<ExitCode> {
         Ok(sid) => sid,
         Err(code) => return Ok(code),
     };
-    let all = conway.sessions(SessionFilter::default()).await?;
+    // `include_ephemeral: true` -- the explicitly-named target must resolve
+    // by direct id even when it is itself ephemeral (matching `show`/
+    // `export`, which resolve via `Conway::resume` -> a direct `store.meta`
+    // lookup, not the default-filtered catalog); see
+    // `SessionHandle::resolve_agent_session`'s identical rationale
+    // (session_handle.rs): a direct id lookup is an identity check, not a
+    // catalog browse. Descendant traversal below still excludes ephemeral
+    // children via `children_of`'s own `!m.ephemeral` filter, so only this
+    // top-level target resolution is widened.
+    let all = conway
+        .sessions(SessionFilter {
+            include_ephemeral: true,
+            ..Default::default()
+        })
+        .await?;
     let Some(root_meta) = all.iter().find(|m| m.id == sid).cloned() else {
         diag::error(format!("unknown session {id}"));
         return Ok(ExitCode::Usage);
@@ -207,7 +221,7 @@ async fn tree(conway: &Conway, id: &str) -> conway::Result<ExitCode> {
 
     let children_of = |parent: SessionId| -> Vec<SessionMeta> {
         all.iter()
-            .filter(|m| m.origin.as_ref().map(|o| o.parent) == Some(parent))
+            .filter(|m| m.origin.as_ref().map(|o| o.parent) == Some(parent) && !m.ephemeral)
             .cloned()
             .collect()
     };

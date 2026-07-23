@@ -100,6 +100,7 @@ fn sample_session_meta(id: SessionId, origin: Option<ForkOrigin>) -> SessionMeta
         cwd: PathBuf::from("/tmp"),
         labels: vec![],
         status: SessionStatus::Active,
+        ephemeral: false,
     }
 }
 
