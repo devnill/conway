@@ -5,18 +5,17 @@
 //! `SessionHandle::prompt` on the same handle -- as `conway-cli`'s TUI issues
 //! for every chat message -- silently appends a `UserTurn` nobody ever reads.
 //!
-//! **Every `Runtime::start_root` session (i.e. every `new_session` in this
-//! file) runs one spontaneous turn immediately**, against its own initial
-//! `RootSpec.prompt: None -> ""` head record (`Runtime::start_root`'s own
-//! doc) -- independent of `keep_alive`. Every test below first `sleep`s past
-//! that turn (mirroring `resume.rs`'s own
-//! `resumed_handle_prompt_succeeds_and_continues_the_transcript`, which uses
-//! the identical settle-before-asserting idiom for the same reason: without
-//! it, this test's own `prompt()` subscription can race the spontaneous
-//! turn's in-flight backend call and observe the WRONG turn's events) and
-//! confirms exactly one backend call happened, so every subsequent call
-//! count in a test is unambiguously attributable to that test's own explicit
-//! `prompt()` calls.
+//! **A session started without an initial prompt (`spec.prompt: None`,
+//! which is what `Conway::new_session` always passes) starts IDLE**
+//! (`Runtime::start_root`'s own doc): no placeholder turn is ever written or
+//! run, and the agent loop gates until the first `prompt()` call arrives. So
+//! `new_session` followed only by a `sleep` observes ZERO backend calls, and
+//! a test's FIRST `prompt()` drives the FIRST turn -- not a second one. Some
+//! tests below still `sleep` (`SETTLE`) after `new_session`, not to wait out
+//! a turn (a prompt-less session never runs one) but to give the idle agent
+//! loop a moment to actually reach its idle-await gate before the test's own
+//! `prompt()` call races it (an adaptation of `resume.rs`'s own settle-
+//! before-asserting idiom to an idling, rather than a completing, task).
 //!
 //! `keep_alive_true_session_runs_a_genuine_second_turn_in_the_same_process`
 //! is the headline regression test: it would time out against pre-fix `main`
@@ -46,9 +45,11 @@ use conway_core::fakes::{FakeGate, FakeRouter, FakeStore, ScriptedBackend, Scrip
 use conway_core::ids::{BackendId, ModelId, ModelRef, RoleAlias};
 use conway_core::ports::{Backend, GenerateResponse, SessionStore};
 
-/// How long every test sleeps to let the spontaneous initial turn (see this
-/// file's module doc) run to completion -- and, for a `keep_alive` session,
-/// settle into its idle wait -- before doing anything else.
+/// How long a test sleeps after `new_session` to give an idle keep_alive
+/// session's agent loop a moment to actually reach its idle-await gate
+/// before the test's own `prompt()` call races it (see this file's module
+/// doc) -- not to wait out any turn, since a prompt-less session never runs
+/// one.
 const SETTLE: Duration = Duration::from_millis(100);
 
 fn fake_router() -> Arc<dyn conway_core::ports::Router> {
@@ -268,7 +269,6 @@ async fn keep_alive_true_session_runs_a_genuine_second_turn_in_the_same_process(
     let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
     let backend = Arc::new(
         ScriptedBackend::new(vec![
-            ScriptedTurn::Respond(text_response("spontaneous-ack")),
             ScriptedTurn::Respond(text_response("first-response")),
             ScriptedTurn::Respond(text_response("second-response")),
         ])
@@ -288,8 +288,8 @@ async fn keep_alive_true_session_runs_a_genuine_second_turn_in_the_same_process(
     tokio::time::sleep(SETTLE).await;
     assert_eq!(
         backend.calls().len(),
-        1,
-        "the spontaneous initial turn must have run exactly once by now"
+        0,
+        "a keep_alive session idles until the first prompt -- no spontaneous turn runs"
     );
 
     let turn1 = handle
@@ -303,7 +303,7 @@ async fn keep_alive_true_session_runs_a_genuine_second_turn_in_the_same_process(
     assert_eq!(text1, "first-response");
     assert_eq!(
         backend.calls().len(),
-        2,
+        1,
         "the first explicit prompt must have driven exactly one new backend call"
     );
 
@@ -321,8 +321,8 @@ async fn keep_alive_true_session_runs_a_genuine_second_turn_in_the_same_process(
     assert_eq!(text2, "second-response");
     assert_eq!(
         backend.calls().len(),
-        3,
-        "the second explicit prompt must ALSO have driven a new, third backend call -- proving a \
+        2,
+        "the second explicit prompt must ALSO have driven a new, second backend call -- proving a \
          real second turn ran, not just that the UserTurn record was appended: {:?}",
         backend.calls()
     );
@@ -556,7 +556,7 @@ async fn deadline_ends_an_idle_keep_alive_session() {
 /// call, then a final text response; 6 turns * 2 steps = 12 total steps,
 /// far exceeding `max_steps=3`). Pre-fix, `check_budget` gates on
 /// `state.turn` -- a monotonic, whole-session counter -- so this session
-/// dies partway through turn 2 (`1 [spontaneous] + 2 [turn 1] = 3 >=
+/// dies partway through turn 2 (`2 [turn 1] + 1 [turn 2] = 3 >=
 /// max_steps`), and `turn.text()` for turn 2 onward never observes the
 /// real per-turn response. Post-fix, `check_budget` gates a `keep_alive`
 /// agent on `state.turn_steps` (reset at every turn boundary), so every
@@ -567,7 +567,7 @@ async fn keep_alive_session_survives_many_turns_whose_total_steps_exceed_max_ste
     const TURNS: usize = 6;
 
     let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
-    let mut script = vec![ScriptedTurn::Respond(text_response("spontaneous-ack"))];
+    let mut script = Vec::new();
     for i in 1..=TURNS {
         script.push(ScriptedTurn::Respond(tool_call_response(
             &format!("tc_{i}"),
@@ -599,8 +599,8 @@ async fn keep_alive_session_survives_many_turns_whose_total_steps_exceed_max_ste
     tokio::time::sleep(SETTLE).await;
     assert_eq!(
         backend.calls().len(),
-        1,
-        "the spontaneous initial turn must have run exactly once by now"
+        0,
+        "a keep_alive session idles until the first prompt -- no spontaneous turn runs"
     );
 
     // Subscribed once, before the first prompt, so no turn's events can be
@@ -639,7 +639,7 @@ async fn keep_alive_session_survives_many_turns_whose_total_steps_exceed_max_ste
 
     assert_eq!(
         backend.calls().len(),
-        1 + TURNS * 2,
+        TURNS * 2,
         "every one of the {TURNS} turns must have driven its own 2 backend calls -- {} total \
          steps, far exceeding max_steps=3 -- proving the budget is scoped per user turn, not per \
          session",
@@ -655,7 +655,6 @@ async fn keep_alive_single_turn_runaway_tool_loop_still_hits_max_steps() {
     let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
     let backend = Arc::new(
         ScriptedBackend::new(vec![
-            ScriptedTurn::Respond(text_response("spontaneous-ack")),
             ScriptedTurn::Respond(tool_call_response("tc_1", "probe", serde_json::json!({}))),
             ScriptedTurn::Respond(tool_call_response("tc_2", "probe", serde_json::json!({}))),
             ScriptedTurn::Respond(tool_call_response("tc_3", "probe", serde_json::json!({}))),
@@ -702,9 +701,9 @@ async fn keep_alive_single_turn_runaway_tool_loop_still_hits_max_steps() {
     );
     assert_eq!(
         backend.calls().len(),
-        1 + 3,
-        "exactly 3 in-turn steps must have run (spontaneous turn + 3 tool-call steps) before \
-         the per-turn budget tripped, without ever reaching tc_4/tc_5"
+        3,
+        "exactly 3 in-turn steps must have run before the per-turn budget tripped, without ever \
+         reaching tc_4/tc_5"
     );
 }
 
@@ -726,7 +725,6 @@ async fn keep_alive_terminal_result_does_not_leak_a_stale_early_report() {
     let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
     let backend = Arc::new(
         ScriptedBackend::new(vec![
-            ScriptedTurn::Respond(text_response("spontaneous-ack")),
             // Turn 1: calls `report` with a distinctive summary, then a
             // trailing text response completes the turn naturally.
             ScriptedTurn::Respond(tool_call_response(

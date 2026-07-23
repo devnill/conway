@@ -30,9 +30,12 @@ use conway_core::capabilities::{
 use conway_core::content::{ContentBlock, StopReason, Usage};
 use conway_core::error::BackendError;
 use conway_core::fakes::{FakeBackend, FakeGate, FakeRouter, FakeStore};
-use conway_core::ids::{AgentId, BackendId, ModelId, RoleAlias};
+use conway_core::ids::{AgentId, BackendId, LogSeq, ModelId, RoleAlias};
 use conway_core::log::LogRecord;
-use conway_core::ports::{Backend, BoxStream, GenerateRequest, GenerateResponse, StreamChunk};
+use conway_core::ports::{
+    Backend, BoxStream, GenerateRequest, GenerateResponse, SessionStore, StreamChunk,
+};
+use conway_core::provenance::Provenance;
 
 // ---------------------------------------------------------------------
 // Fixtures (mirrors tests/session_handle.rs's own helpers)
@@ -209,8 +212,25 @@ impl Backend for DelayedEchoBackend {
 #[tokio::test]
 async fn fork_produces_a_child_with_mapped_fields_and_an_inherited_prefix() {
     let store = Arc::new(FakeStore::new());
-    let conway = build_conway_with_echo_backend(store);
+    let conway = build_conway_with_echo_backend(store.clone());
     let handle = new_handle(&conway).await;
+
+    // A prompt-less root starts idle with no record of its own -- append
+    // one directly to the store so this test can prove a forked child
+    // inherits a REAL parent prefix, not an artifact of the old
+    // spontaneous-turn behavior.
+    store
+        .append(
+            &handle.id(),
+            LogRecord::UserTurn {
+                seq: LogSeq::ZERO,
+                ts: chrono::Utc::now(),
+                text: "root-own".to_string(),
+                prov: Provenance::UserPrompt,
+            },
+        )
+        .await
+        .expect("append should succeed");
 
     let budget = Budget {
         max_steps: 5,
@@ -245,8 +265,8 @@ async fn fork_produces_a_child_with_mapped_fields_and_an_inherited_prefix() {
     assert!(
         transcript
             .iter()
-            .any(|r| matches!(r, LogRecord::UserTurn { text, .. } if text.is_empty())),
-        "a forked child must inherit the forker's own prefix (here, the root's leading empty prompt)"
+            .any(|r| matches!(r, LogRecord::UserTurn { text, .. } if text == "root-own")),
+        "a forked child must inherit the forker's own prefix (here, the root's own prior record)"
     );
     assert!(
         transcript
@@ -262,8 +282,25 @@ async fn fork_produces_a_child_with_mapped_fields_and_an_inherited_prefix() {
 #[tokio::test]
 async fn spawn_produces_a_child_with_mapped_fields_and_no_inherited_prefix() {
     let store = Arc::new(FakeStore::new());
-    let conway = build_conway_with_echo_backend(store);
+    let conway = build_conway_with_echo_backend(store.clone());
     let handle = new_handle(&conway).await;
+
+    // A prompt-less root starts idle with no record of its own -- append
+    // one directly to the store so the "disclosed reconciliation" assertion
+    // below proves `transcript()` still surfaces a REAL parent record for a
+    // spawned child, not an artifact of the old spontaneous-turn behavior.
+    store
+        .append(
+            &handle.id(),
+            LogRecord::UserTurn {
+                seq: LogSeq::ZERO,
+                ts: chrono::Utc::now(),
+                text: "root-own".to_string(),
+                prov: Provenance::UserPrompt,
+            },
+        )
+        .await
+        .expect("append should succeed");
 
     let budget = Budget {
         max_steps: 3,
@@ -320,11 +357,11 @@ async fn spawn_produces_a_child_with_mapped_fields_and_no_inherited_prefix() {
     assert!(
         transcript
             .iter()
-            .any(|r| matches!(r, LogRecord::UserTurn { text, .. } if text.is_empty())),
-        "transcript() is expected to still show the parent's leading record for a spawned \
-         child (see the comment above) -- if this ever stops holding, `SessionStore::fork`'s \
-         `origin` recording for `SubagentMode::Spawn` has changed and this test's own premise \
-         needs re-checking, not just this assertion"
+            .any(|r| matches!(r, LogRecord::UserTurn { text, .. } if text == "root-own")),
+        "transcript() is expected to still show the parent's own record for a spawned child \
+         (see the comment above) -- if this ever stops holding, `SessionStore::fork`'s `origin` \
+         recording for `SubagentMode::Spawn` has changed and this test's own premise needs \
+         re-checking, not just this assertion"
     );
 
     let _ = tokio::time::timeout(Duration::from_secs(5), handle.await_agent(child)).await;
