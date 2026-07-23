@@ -169,14 +169,13 @@ fn assistant_message(content: &[ContentBlock]) -> Value {
 
     let mut message = Map::new();
     message.insert("role".into(), json!("assistant"));
-    message.insert(
-        "content".into(),
-        if text.is_empty() {
-            Value::Null
-        } else {
-            json!(text)
-        },
-    );
+    // WI-122: send an empty STRING (never `null`) for a tool-call-only
+    // assistant turn. OpenAI accepts `content: null` when `tool_calls` is
+    // present, but Ollama Cloud / glm-5.2 rejects it with
+    // `bad request: invalid message content type: <nil>`, which fails every
+    // tool-continuation request. `""` is accepted by every dialect (OpenAI
+    // included), so it is the safe universal choice.
+    message.insert("content".into(), json!(text));
     if !tool_calls.is_empty() {
         message.insert("tool_calls".into(), Value::Array(tool_calls));
     }
@@ -400,8 +399,11 @@ mod tests {
             {"role": "system", "content": "You are a helpful assistant."},
             {"role": "user", "content": "What's the weather in Paris?"},
             {
+                // WI-122: a tool-call-only assistant turn serializes with an
+                // empty STRING, never `null` -- Ollama Cloud rejects a null
+                // content type on tool-continuation requests.
                 "role": "assistant",
-                "content": null,
+                "content": "",
                 "tool_calls": [{
                     "id": "call_1",
                     "type": "function",

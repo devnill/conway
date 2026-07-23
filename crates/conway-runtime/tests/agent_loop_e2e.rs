@@ -733,6 +733,19 @@ async fn tool_call_then_text_runs_two_turns_and_second_context_sees_the_result()
             ))),
         "second turn's context must contain the tool result's text"
     );
+    // WI-122 regression: the second turn's context must ALSO carry the first
+    // turn's tool CALL as an assistant `ToolUse` block. Without it the
+    // assistant message has no `tool_calls`, the model never sees that it
+    // called a tool, and it re-calls the tool indefinitely (the orphaned
+    // tool result loops forever).
+    assert!(
+        second_turn_segments.iter().any(|s| s.content.iter().any(|b| matches!(
+            b,
+            ContentBlock::ToolUse { call_id, name, .. }
+                if call_id == "tc_1" && name.as_str() == "read"
+        ))),
+        "second turn's context must carry the first turn's tool call as an assistant ToolUse block"
+    );
 
     // The store holds the appended tool_result record with correct provenance.
     let records = store
@@ -743,6 +756,20 @@ async fn tool_call_then_text_runs_two_turns_and_second_context_sees_the_result()
         r,
         LogRecord::ToolResultRecord { result, .. } if result.tool.as_str() == "read" && !result.is_error
     )));
+    // WI-122 regression: the persisted assistant record is the WHOLE turn --
+    // its tool calls folded in as trailing `ToolUse` blocks, not just text.
+    assert!(
+        records.iter().any(|r| matches!(
+            r,
+            LogRecord::Assistant { content, .. }
+                if content.iter().any(|b| matches!(
+                    b,
+                    ContentBlock::ToolUse { call_id, name, .. }
+                        if call_id == "tc_1" && name.as_str() == "read"
+                ))
+        )),
+        "the persisted assistant record must carry the tool call as a ToolUse block"
+    );
 }
 
 #[tokio::test]

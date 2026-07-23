@@ -667,10 +667,28 @@ impl AgentLoop {
 
             let usage = outcome.response.usage;
             let seq = try_rt!(state, self.deps.store.head(&self.session).await);
+            // WI-122: the assistant record must carry the whole turn -- its
+            // text AND the tool calls it made. `GenerateResponse` keeps
+            // `content` (text/thinking) and `tool_calls` in separate fields;
+            // fold the calls in as trailing `ToolUse` blocks so the persisted
+            // record is the complete assistant message. Without this the next
+            // turn's context rebuilds an assistant message with no
+            // `tool_calls`/`tool_use`: the model never sees that it called a
+            // tool, re-calls indefinitely, and the following `ToolResult` is
+            // an orphan. Both wire adapters already read `ToolUse` blocks out
+            // of the stored content (`assistant_message` / `assistant_content_blocks`).
+            let mut assistant_content = outcome.response.content.clone();
+            assistant_content.extend(outcome.response.tool_calls.iter().map(|call| {
+                ContentBlock::ToolUse {
+                    call_id: call.call_id.clone(),
+                    name: call.name.clone(),
+                    arguments: call.arguments.clone(),
+                }
+            }));
             let assistant_record = LogRecord::Assistant {
                 seq,
                 ts: Utc::now(),
-                content: outcome.response.content.clone(),
+                content: assistant_content,
                 model: ModelRef {
                     backend: outcome.route.backend.clone(),
                     model: outcome.route.model.clone(),
