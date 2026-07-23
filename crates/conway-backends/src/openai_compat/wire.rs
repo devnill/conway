@@ -74,6 +74,9 @@ pub(crate) fn build_request_body(
     if !req.params.stop.is_empty() {
         body.insert("stop".into(), json!(req.params.stop));
     }
+    if let Some(effort) = reasoning_effort(req, dialect) {
+        body.insert("reasoning_effort".into(), json!(effort));
+    }
 
     if stream {
         body.insert("stream".into(), json!(true));
@@ -83,6 +86,28 @@ pub(crate) fn build_request_body(
     }
 
     Value::Object(body)
+}
+
+/// Reads a caller-supplied reasoning effort level out of
+/// `params.extra["reasoning_effort"]` and serializes it verbatim as the
+/// OpenAI `reasoning_effort` chat-completion field (WI-129), e.g. `"low"` /
+/// `"medium"` / `"high"`.
+///
+/// `GenerateRequest` has no dedicated reasoning-effort field yet — that
+/// caller-facing knob and its plumbing into `params.extra` is a
+/// WI-126/WI-128 concern, outside this module's scope; `extra` is the only
+/// existing field that reaches this wire layer. Emitted only for
+/// `Dialect::OpenAi`, mirroring the `parallel_tool_calls` gating above:
+/// other OpenAI-compatible servers 400 on a field they don't recognize.
+fn reasoning_effort(req: &GenerateRequest, dialect: Dialect) -> Option<String> {
+    if !matches!(dialect, Dialect::OpenAi) {
+        return None;
+    }
+    req.params
+        .extra
+        .get("reasoning_effort")
+        .and_then(Value::as_str)
+        .map(str::to_string)
 }
 
 /// Maps every segment to zero or more chat messages, in order. Segment
@@ -219,6 +244,13 @@ pub(crate) struct Choice {
 pub(crate) struct ResponseMessage {
     #[serde(default)]
     pub(crate) content: Option<String>,
+    /// Reasoning-model dialects (DeepSeek-R1 style, served via vLLM/Ollama/
+    /// LM Studio) return the model's reasoning trace here — `stream.rs`
+    /// already surfaces the streamed equivalent as `ThinkingDelta`; this is
+    /// its non-streaming counterpart (WI-129). `reasoning` is accepted as
+    /// an alias for servers that use that key instead.
+    #[serde(default, alias = "reasoning")]
+    pub(crate) reasoning_content: Option<String>,
     #[serde(default)]
     pub(crate) tool_calls: Vec<ResponseToolCall>,
 }
@@ -305,6 +337,22 @@ pub(crate) fn to_generate_response(
     let stop = map_finish_reason(choice.finish_reason.as_deref());
 
     let mut content = Vec::new();
+    if let Some(reasoning) = choice
+        .message
+        .reasoning_content
+        .filter(|text| !text.is_empty())
+    {
+        // No signature: unlike Anthropic, these dialects have no
+        // cross-turn integrity token, and their contract is the opposite —
+        // reasoning content must NOT be resent (`assistant_message`
+        // already omits every `ContentBlock::Thinking`, so this is
+        // preserved in the response for observability without ever
+        // reaching the next request body).
+        content.push(ContentBlock::Thinking {
+            text: reasoning,
+            signature: None,
+        });
+    }
     if let Some(text) = choice.message.content.filter(|text| !text.is_empty()) {
         content.push(ContentBlock::Text { text });
     }
@@ -517,6 +565,94 @@ mod tests {
         let vllm_body = build_request_body(&req, Dialect::VllmHermes, false, true);
         assert_eq!(vllm_body["stream"], true);
         assert!(vllm_body.get("stream_options").is_none());
+    }
+
+    #[test]
+    fn reasoning_effort_is_emitted_only_for_openai_dialect_when_set() {
+        let mut req = GenerateRequest {
+            model: ModelId::new("m"),
+            segments: vec![],
+            tools: vec![],
+            params: SamplingParams::default(),
+            prefix_key: None,
+        };
+        let openai_body = build_request_body(&req, Dialect::OpenAi, false, false);
+        assert!(openai_body.get("reasoning_effort").is_none());
+
+        req.params
+            .extra
+            .insert("reasoning_effort".into(), json!("high"));
+        let openai_body = build_request_body(&req, Dialect::OpenAi, false, false);
+        assert_eq!(openai_body["reasoning_effort"], "high");
+
+        let ollama_body = build_request_body(&req, Dialect::Ollama, false, false);
+        assert!(ollama_body.get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn reasoning_content_is_parsed_into_a_thinking_block_without_a_signature() {
+        let response: ChatCompletionResponse = serde_json::from_value(json!({
+            "choices": [{
+                "message": {
+                    "content": "The answer is 4.",
+                    "reasoning_content": "2 + 2 = 4"
+                },
+                "finish_reason": "stop"
+            }]
+        }))
+        .unwrap();
+        let generated = to_generate_response(response, Dialect::OpenAi, &[]).unwrap();
+        assert_eq!(
+            generated.content,
+            vec![
+                ContentBlock::Thinking {
+                    text: "2 + 2 = 4".into(),
+                    signature: None,
+                },
+                ContentBlock::Text {
+                    text: "The answer is 4.".into(),
+                },
+            ]
+        );
+
+        // The dialect's contract is the opposite of Anthropic's: reasoning
+        // must not be resent, so it must not survive back into a request.
+        let messages = segments_to_messages(
+            &[PromptSegment::new(
+                Role::Assistant,
+                generated.content,
+                Provenance::SystemNote {
+                    reason: "turn".into(),
+                },
+            )],
+            Dialect::OpenAi,
+        );
+        assert_eq!(
+            messages,
+            vec![json!({"role": "assistant", "content": "The answer is 4."})]
+        );
+    }
+
+    #[test]
+    fn reasoning_content_alias_reasoning_is_accepted() {
+        let response: ChatCompletionResponse = serde_json::from_value(json!({
+            "choices": [{
+                "message": {
+                    "content": "ok",
+                    "reasoning": "thinking via alias key"
+                },
+                "finish_reason": "stop"
+            }]
+        }))
+        .unwrap();
+        let generated = to_generate_response(response, Dialect::OpenAi, &[]).unwrap();
+        assert_eq!(
+            generated.content[0],
+            ContentBlock::Thinking {
+                text: "thinking via alias key".into(),
+                signature: None,
+            }
+        );
     }
 
     #[test]

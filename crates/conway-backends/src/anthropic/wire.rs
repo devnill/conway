@@ -86,12 +86,35 @@ pub(crate) fn build_request_body(
     if !req.params.stop.is_empty() {
         body.insert("stop_sequences".into(), json!(req.params.stop));
     }
+    if let Some(budget_tokens) = reasoning_budget_tokens(req) {
+        body.insert(
+            "thinking".into(),
+            json!({ "type": "enabled", "budget_tokens": budget_tokens }),
+        );
+    }
 
     if stream {
         body.insert("stream".into(), json!(true));
     }
 
     (Value::Object(body), placements)
+}
+
+/// Reads a caller-supplied extended-thinking token budget out of
+/// `params.extra["reasoning_budget_tokens"]` and serializes it as
+/// Anthropic's `thinking: {type:"enabled", budget_tokens}` (WI-129).
+///
+/// `GenerateRequest` has no dedicated reasoning-effort/budget field yet —
+/// that caller-facing knob and its plumbing into `params.extra` is a
+/// WI-126/WI-128 concern (`SessionSpec`/runtime wiring), outside this
+/// module's scope. `extra` is the only existing field on the request that
+/// reaches this wire layer, so it is the wire contract this key targets.
+fn reasoning_budget_tokens(req: &GenerateRequest) -> Option<u32> {
+    req.params
+        .extra
+        .get("reasoning_budget_tokens")
+        .and_then(Value::as_u64)
+        .and_then(|tokens| u32::try_from(tokens).ok())
 }
 
 /// Maps every segment to zero-or-more `system`/`messages` entries, in
@@ -217,6 +240,16 @@ fn user_content_blocks(content: &[ContentBlock]) -> Vec<Value> {
 /// Thinking blocks (with a signature) first, then concatenated text, then
 /// one `tool_use` block per `ContentBlock::ToolUse`, in `content` order — a
 /// `Thinking` block without a signature is omitted (Implementation Notes).
+///
+/// `redacted_thinking` round-trip (WI-129): `ContentBlock` has no dedicated
+/// redacted-thinking variant (out of this module's file scope to add one),
+/// so `to_generate_response` below encodes a `redacted_thinking` response
+/// block as `Thinking { text: "", signature: Some(data) }` — empty text is
+/// not a shape Anthropic ever sends for a real (non-redacted) thinking
+/// block, so it is an unambiguous sentinel. Re-emitting it here as
+/// `{"type":"redacted_thinking","data":...}` (instead of `"thinking"`) is
+/// what makes the round trip lossless: sending a redacted block back
+/// tagged `"thinking"` would be rejected by the API.
 fn assistant_content_blocks(content: &[ContentBlock]) -> Vec<Value> {
     let mut blocks = Vec::new();
     for block in content {
@@ -225,7 +258,12 @@ fn assistant_content_blocks(content: &[ContentBlock]) -> Vec<Value> {
             signature: Some(signature),
         } = block
         {
-            blocks.push(json!({ "type": "thinking", "thinking": text, "signature": signature }));
+            if text.is_empty() {
+                blocks.push(json!({ "type": "redacted_thinking", "data": signature }));
+            } else {
+                blocks
+                    .push(json!({ "type": "thinking", "thinking": text, "signature": signature }));
+            }
         }
     }
     let text = concat_text(content);
@@ -291,6 +329,15 @@ pub(crate) enum ResponseBlock {
         thinking: String,
         #[serde(default)]
         signature: Option<String>,
+    },
+    /// Anthropic's contract for extended thinking under prompt redaction:
+    /// `data` is an opaque, encrypted payload with no plaintext reasoning
+    /// — it must be passed back verbatim on the next turn, never inspected
+    /// (WI-129). See `assistant_content_blocks` for the encoding used to
+    /// carry it through `ContentBlock::Thinking` without a dedicated
+    /// `ContentBlock` variant.
+    RedactedThinking {
+        data: String,
     },
     ToolUse {
         id: String,
@@ -368,6 +415,12 @@ pub(crate) fn to_generate_response(
                 content.push(ContentBlock::Thinking {
                     text: thinking,
                     signature,
+                });
+            }
+            ResponseBlock::RedactedThinking { data } => {
+                content.push(ContentBlock::Thinking {
+                    text: String::new(),
+                    signature: Some(data),
                 });
             }
             ResponseBlock::ToolUse { id, name, input } => {
@@ -576,6 +629,76 @@ mod tests {
         assert_eq!(map_stop_reason(Some("refusal")), StopReason::Refusal);
         assert_eq!(map_stop_reason(Some("unknown")), StopReason::EndTurn);
         assert_eq!(map_stop_reason(None), StopReason::EndTurn);
+    }
+
+    #[test]
+    fn thinking_block_with_signature_survives_round_trip_through_assistant_content_blocks() {
+        let content = vec![ContentBlock::Thinking {
+            text: "step one, then step two".into(),
+            signature: Some("sig-abc123".into()),
+        }];
+        let blocks = assistant_content_blocks(&content);
+        assert_eq!(
+            Value::Array(blocks),
+            json!([{"type": "thinking", "thinking": "step one, then step two", "signature": "sig-abc123"}])
+        );
+    }
+
+    #[test]
+    fn thinking_block_without_signature_is_omitted_not_sent_unsigned() {
+        let content = vec![ContentBlock::Thinking {
+            text: "unsigned reasoning".into(),
+            signature: None,
+        }];
+        assert!(assistant_content_blocks(&content).is_empty());
+    }
+
+    #[test]
+    fn redacted_thinking_response_block_round_trips_through_assistant_content_blocks() {
+        let response: MessagesResponse = serde_json::from_value(json!({
+            "content": [{"type": "redacted_thinking", "data": "opaque-ciphertext"}],
+            "stop_reason": "end_turn"
+        }))
+        .unwrap();
+        let generated = to_generate_response(response, &[]).unwrap();
+        assert_eq!(
+            generated.content,
+            vec![ContentBlock::Thinking {
+                text: String::new(),
+                signature: Some("opaque-ciphertext".into()),
+            }]
+        );
+
+        // Re-sending it on the next (tool) turn must tag it
+        // `redacted_thinking`, not `thinking` — the API rejects a redacted
+        // payload sent back under the wrong tag.
+        let blocks = assistant_content_blocks(&generated.content);
+        assert_eq!(
+            Value::Array(blocks),
+            json!([{"type": "redacted_thinking", "data": "opaque-ciphertext"}])
+        );
+    }
+
+    #[test]
+    fn reasoning_budget_tokens_serializes_into_thinking_param_when_set() {
+        let mut req = GenerateRequest {
+            model: ModelId::new("claude-sonnet-4-6"),
+            segments: vec![],
+            tools: vec![],
+            params: SamplingParams::default(),
+            prefix_key: None,
+        };
+        let (body, _) = build_request_body(&req, 8192, false);
+        assert!(body.get("thinking").is_none());
+
+        req.params
+            .extra
+            .insert("reasoning_budget_tokens".into(), json!(4096));
+        let (body, _) = build_request_body(&req, 8192, false);
+        assert_eq!(
+            body["thinking"],
+            json!({"type": "enabled", "budget_tokens": 4096})
+        );
     }
 
     #[test]
