@@ -9,8 +9,7 @@ library (the `conway` facade crate) and a CLI/TUI (`conway`).
 
 License: **AGPL-3.0-only** (see [Licensing](#licensing)).
 
-> Status: `0.1.0` is the first complete release; `0.2.0` work is in progress.
-> See [CHANGELOG.md](CHANGELOG.md).
+> Status: `0.2.0` is the current release. See [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
