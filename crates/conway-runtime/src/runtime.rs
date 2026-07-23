@@ -121,8 +121,8 @@ use conway_core::log::{
     ForkOrigin, LogRecord, SessionFilter, SessionMeta, SessionStatus, SubagentMode,
 };
 use conway_core::ports::{
-    Backend, HealthRegistry, PermissionGate, Plugin, PluginConfig, Router, SessionStore,
-    SubagentHost,
+    Backend, ContextHook, HealthRegistry, PermissionGate, Plugin, PluginConfig, Router,
+    SessionStore, SubagentHost,
 };
 use conway_core::provenance::{ContextReport, Provenance};
 use conway_core::segment::CacheTtl;
@@ -329,6 +329,11 @@ impl Runtime {
                 builder,
                 headroom,
                 tree: tree.clone(),
+                // WI-126: no `RuntimeDeps` field sources this (out of that
+                // item's file scope to add here) -- `set_context_hook`
+                // below fills it in post-construction. `None` here
+                // preserves every existing caller's behavior unchanged.
+                context_hook: RwLock::new(None),
             });
 
             Runtime {
@@ -365,6 +370,24 @@ impl Runtime {
 
     pub(crate) fn resolver(&self) -> &Arc<conway_session::TranscriptResolver> {
         &self.resolver
+    }
+
+    /// WI-126: registers (or clears, via `None`) the `ContextHook` every
+    /// agent task under this runtime consults before each LLM request and
+    /// on T-1 overflow (`AgentLoop::route_and_attempt`). A new, purely
+    /// additive public method rather than a `RuntimeDeps` field: `RuntimeDeps`
+    /// is out of this item's file scope, and is also constructed by field
+    /// literal in several existing tests that a new required field would
+    /// have broken. Intended to be called once, by the facade
+    /// (`conway::ConwayBuilder::build`), before any session is started;
+    /// safe to call at any time regardless, since every turn reads the
+    /// current value fresh (`AgentLoop::context_hook`).
+    pub fn set_context_hook(&self, hook: Option<Arc<dyn ContextHook>>) {
+        *self
+            .loop_deps
+            .context_hook
+            .write()
+            .expect("context_hook lock poisoned") = hook;
     }
 
     /// Test-only accessor (mirrors `conway_session::TranscriptResolver::

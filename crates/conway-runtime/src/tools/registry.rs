@@ -118,6 +118,23 @@ impl PluginRegistry {
     /// Every registered tool's spec, in lexicographic order by name, so the
     /// `ToolRegistry` provenance hash (`ContextBuilder`, WI-077) is stable
     /// across runs. `selector: None` behaves as `ToolSelector::All`.
+    ///
+    /// **This is registration-time filtering, not announcement or execution
+    /// filtering.** `ToolSelector` (`AgentSpec::tools`) fixes which tools
+    /// this AGENT may ever see, for its whole run; two further, distinct
+    /// filters apply downstream, per-turn, to this method's already-narrowed
+    /// result:
+    /// - **Announcement** (WI-126): `conway_core::ports::ContextHook::
+    ///   before_request` may further narrow the `tools` this method returns
+    ///   before it reaches the router/backend for a given turn -- hiding a
+    ///   tool from the model entirely, so it can never propose calling it.
+    ///   See `AgentLoop::run_inner`, the `announced_tools` local.
+    /// - **Execution**: `conway_core::ports::PermissionGate` (via
+    ///   `PermissionBroker`/`ToolRunner`) decides whether a call the model
+    ///   actually proposes is allowed to run, regardless of what was
+    ///   announced. A tool this method returns, and a hook did not filter
+    ///   out, can still be denied at call time -- announcement and
+    ///   execution are independent gates, and neither implies the other.
     pub fn specs(&self, selector: Option<&ToolSelector>) -> Vec<ToolSpec> {
         let mut names: Vec<&ToolName> = self
             .tools

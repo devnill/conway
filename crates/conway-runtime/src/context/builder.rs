@@ -274,26 +274,55 @@ impl ContextBuilder {
             &key,
         );
 
-        let entries: Vec<ContextReportEntry> = segments
-            .iter()
-            .map(|segment| ContextReportEntry {
-                segment: segment.id,
-                provenance: segment.provenance.clone(),
-                tokens_est: segment.tokens_est.unwrap_or(0),
-                estimated: true,
-            })
-            .collect();
-        let total_tokens_est = entries.iter().map(|entry| entry.tokens_est).sum();
-
-        let report = ContextReport {
-            agent_id: input.agent_id,
-            turn: input.turn,
-            tokenizer: TOKEN_ESTIMATOR.to_string(),
-            segments: entries,
-            total_tokens_est,
-        };
+        let report = build_report(input.agent_id, input.turn, &segments);
 
         Ok((segments, report))
+    }
+}
+
+/// Re-derives a `ContextReport` from a (possibly `ContextHook`-transformed)
+/// segment list: recomputes every segment's `tokens_est` and rebuilds the
+/// report entries in the given order. WI-126: a hook may add, edit, or drop
+/// segments after `ContextBuilder::build` -- content is the only thing that
+/// can have changed, so re-estimating every segment (not just ones with
+/// `tokens_est: None`) is the only correct way to keep `tokens_est`/
+/// `total_tokens_est` honest, including for a segment whose `content` a hook
+/// edited in place without clearing its stale estimate. Does NOT touch
+/// `segment.id` (`derive_segment_id` is a pure function of the ORIGINAL
+/// assembly's `(agent_id, ordinal, provenance, content)`; a hook-added
+/// segment simply keeps whatever id `PromptSegment::new` gave it -- this
+/// builder makes no determinism claim about a hook's own output) or cache
+/// hints (a hook that cares about cache-breakpoint placement is responsible
+/// for its own `cache_hint`).
+pub(crate) fn retotal(
+    agent_id: AgentId,
+    turn: u32,
+    segments: &mut [PromptSegment],
+) -> ContextReport {
+    for segment in segments.iter_mut() {
+        segment.tokens_est = Some(estimate_tokens(&segment.content));
+    }
+    build_report(agent_id, turn, segments)
+}
+
+fn build_report(agent_id: AgentId, turn: u32, segments: &[PromptSegment]) -> ContextReport {
+    let entries: Vec<ContextReportEntry> = segments
+        .iter()
+        .map(|segment| ContextReportEntry {
+            segment: segment.id,
+            provenance: segment.provenance.clone(),
+            tokens_est: segment.tokens_est.unwrap_or(0),
+            estimated: true,
+        })
+        .collect();
+    let total_tokens_est = entries.iter().map(|entry| entry.tokens_est).sum();
+
+    ContextReport {
+        agent_id,
+        turn,
+        tokenizer: TOKEN_ESTIMATOR.to_string(),
+        segments: entries,
+        total_tokens_est,
     }
 }
 
@@ -381,11 +410,64 @@ fn own_segment(record: &LogRecord) -> Option<(Role, Vec<ContentBlock>, Provenanc
     }
 }
 
-/// `ceil(utf8_len / 4)` over the segment's content, serialized to JSON.
-/// Explicitly approximate (T-9); never presented as an exact count.
+/// Fixed per-block overhead (in tokens) added to every content block's own
+/// char-count estimate, standing in for the wire-format framing (role/type
+/// tags) a real tokenizer spends a handful of tokens on that a pure
+/// character count would otherwise miss entirely. Deliberately small next to
+/// a typical JSON-serialized block's own structural overhead (field names,
+/// quoting, escaping) -- see the module doc's WI-126 note on why this
+/// estimator no longer serializes the whole block to JSON first.
+const PER_BLOCK_OVERHEAD_TOKENS: u32 = 4;
+
+/// Heuristic token estimate (T-9: explicitly approximate, never presented as
+/// an exact count) over a segment's actual text/content payload, NOT its
+/// JSON serialization. WI-126: the prior formula (`json.len() / 4` over
+/// `serde_json::to_string(content)`) counted every content block's field
+/// names, `{}`/`[]`/`,` punctuation, and string-escaping once per block --
+/// structural overhead a real tokenizer never spends tokens on -- which
+/// inflated the estimate most for payloads with many small blocks (exactly
+/// the "structurally-heavy" case this heuristic most needs to get right,
+/// since that is what an overflow/curation hook is judging). This version
+/// sums each block's own meaningful payload length (`ceil(chars / 4)`) plus
+/// a small fixed per-block overhead, still a heuristic (no tokenizer
+/// dependency), just one that scales with content rather than with JSON
+/// framing.
 fn estimate_tokens(content: &[ContentBlock]) -> u32 {
-    let json = serde_json::to_string(content).expect("content always serializes");
-    (json.len() as u32).div_ceil(4)
+    content.iter().map(estimate_block_tokens).sum()
+}
+
+fn estimate_block_tokens(block: &ContentBlock) -> u32 {
+    (block_payload_chars(block) as u32).div_ceil(4) + PER_BLOCK_OVERHEAD_TOKENS
+}
+
+/// The block's own meaningful character payload -- prose for `Text`/
+/// `Thinking`, name + compactly-serialized arguments for `ToolUse` (still
+/// JSON, but the tool's actual structured payload, not incidental
+/// content-block framing around it), recursively summed nested blocks for
+/// `ToolResultBlock`, and the encoded bytes for `Image`.
+fn block_payload_chars(block: &ContentBlock) -> usize {
+    match block {
+        ContentBlock::Text { text } => text.len(),
+        ContentBlock::Thinking { text, signature } => {
+            text.len() + signature.as_deref().map_or(0, str::len)
+        }
+        ContentBlock::ToolUse {
+            name, arguments, ..
+        } => {
+            name.as_str().len()
+                + serde_json::to_string(arguments)
+                    .map(|s| s.len())
+                    .unwrap_or(0)
+        }
+        ContentBlock::ToolResultBlock { blocks, .. } => {
+            blocks.iter().map(block_payload_chars).sum()
+        }
+        ContentBlock::Image { data_base64, .. } => data_base64.len(),
+        // `ContentBlock` is `#[non_exhaustive]`: an unrecognized future
+        // variant falls back to its full JSON length rather than silently
+        // costing 0 -- an overestimate is the safe direction here.
+        other => serde_json::to_string(other).map(|s| s.len()).unwrap_or(0),
+    }
 }
 
 /// `blake3(agent_id ‖ ordinal ‖ provenance_discriminant ‖ content_hash)`,
@@ -475,5 +557,119 @@ fn attach_cache_hints(
             ttl,
             prefix_key: key.clone(),
         });
+    }
+}
+
+#[cfg(test)]
+mod estimator_tests {
+    use super::*;
+    use conway_core::content::Role;
+    use conway_core::provenance::Provenance;
+
+    /// The formula this heuristic replaced (WI-126): the whole content
+    /// array's JSON serialization, divided by 4. Reproduced here (not
+    /// exported) purely so the "more accurate" claim has a concrete
+    /// baseline to compare against.
+    fn old_json_div4_estimate(content: &[ContentBlock]) -> u32 {
+        let json = serde_json::to_string(content).expect("content always serializes");
+        (json.len() as u32).div_ceil(4)
+    }
+
+    /// Criterion (d): for a structurally-heavy payload (many small blocks,
+    /// where JSON framing -- `{"type":"text","text":...}` repeated per
+    /// block -- dominates the actual prose), the new estimate must come out
+    /// lower than the old json-length/4 formula, since it no longer counts
+    /// that framing at all.
+    #[test]
+    fn new_estimate_is_lower_than_old_json_div4_for_many_small_blocks() {
+        let content: Vec<ContentBlock> = (0..50)
+            .map(|i| ContentBlock::Text {
+                text: format!("x{i}"),
+            })
+            .collect();
+
+        let old = old_json_div4_estimate(&content);
+        let new = estimate_tokens(&content);
+
+        assert!(
+            new < old,
+            "expected new estimate ({new}) < old json/4 estimate ({old}) for a \
+             structurally-heavy (many small blocks) payload"
+        );
+    }
+
+    #[test]
+    fn estimate_scales_with_actual_text_length_not_json_framing() {
+        let short = vec![ContentBlock::Text {
+            text: "hi".to_string(),
+        }];
+        let long = vec![ContentBlock::Text {
+            text: "a".repeat(400),
+        }];
+        assert!(estimate_tokens(&long) > estimate_tokens(&short));
+        // 400 chars / 4 = 100 tokens, plus the fixed per-block overhead --
+        // not inflated by any JSON quoting/escaping of the block itself.
+        assert_eq!(estimate_tokens(&long), 100 + PER_BLOCK_OVERHEAD_TOKENS);
+    }
+
+    #[test]
+    fn tool_use_counts_name_and_compact_arguments_not_raw_content_json() {
+        let block = ContentBlock::ToolUse {
+            call_id: "call_1".to_string(),
+            name: conway_core::ids::ToolName::new("read"),
+            arguments: serde_json::json!({"path": "/tmp/x"}),
+        };
+        // "read" (4) + compact-serialized {"path":"/tmp/x"} (18 chars).
+        let expected_chars = "read".len()
+            + serde_json::to_string(&serde_json::json!({"path": "/tmp/x"}))
+                .unwrap()
+                .len();
+        assert_eq!(
+            estimate_block_tokens(&block),
+            (expected_chars as u32).div_ceil(4) + PER_BLOCK_OVERHEAD_TOKENS
+        );
+    }
+
+    fn segment(text: &str) -> PromptSegment {
+        PromptSegment::new(
+            Role::User,
+            vec![ContentBlock::Text {
+                text: text.to_string(),
+            }],
+            Provenance::UserPrompt,
+        )
+    }
+
+    #[test]
+    fn retotal_recomputes_every_segment_even_with_a_stale_estimate() {
+        let agent_id = AgentId::new();
+        let mut segments = vec![segment("hello")];
+        // Simulate a hook editing content in place without clearing the
+        // estimate `build` had already set.
+        segments[0].tokens_est = Some(9_999);
+        segments[0].content = vec![ContentBlock::Text {
+            text: "a".repeat(40),
+        }];
+
+        let report = retotal(agent_id, 3, &mut segments);
+
+        let expected = estimate_tokens(&segments[0].content);
+        assert_eq!(segments[0].tokens_est, Some(expected));
+        assert_eq!(report.total_tokens_est, expected);
+        assert_eq!(report.turn, 3);
+        assert_eq!(report.agent_id, agent_id);
+    }
+
+    #[test]
+    fn retotal_reflects_a_hook_dropping_a_segment() {
+        let agent_id = AgentId::new();
+        let mut segments = vec![segment("keep"), segment("drop")];
+        segments.retain(|s| match &s.content[0] {
+            ContentBlock::Text { text } => text == "keep",
+            _ => true,
+        });
+
+        let report = retotal(agent_id, 0, &mut segments);
+        assert_eq!(report.segments.len(), 1);
     }
 }

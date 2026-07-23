@@ -258,6 +258,7 @@ fn build_loop(
         builder: Arc::new(ContextBuilder::new()),
         headroom: Arc::new(HeadroomPolicy::default()),
         tree: tree.clone(),
+        context_hook: std::sync::RwLock::new(None),
     });
 
     let spec = AgentSpec {

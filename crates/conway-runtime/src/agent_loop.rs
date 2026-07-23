@@ -118,25 +118,28 @@
 
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use chrono::Utc;
 use conway_core::agent::{AgentMessage, AgentResult, Budget, ResultStatus, ToolSelector};
 use conway_core::capabilities::{CacheMode, RequiredCaps, ToolCallSupport};
-use conway_core::content::{ContentBlock, ToolResult, Usage};
-use conway_core::error::{ConwayError, RuntimeError, StoreError};
+use conway_core::content::{ContentBlock, ToolResult, ToolSpec, Usage};
+use conway_core::error::{ConwayError, RoutingError, RuntimeError, StoreError};
 use conway_core::event::Event;
 use conway_core::ids::{AgentId, ModelId, ModelRef, RoleAlias, SeqRange, SessionId};
 use conway_core::log::LogRecord;
-use conway_core::ports::{PluginConfig, Router, SessionStore, SubagentHost};
+use conway_core::ports::{
+    ContextHook, ContextHookCtx, ContextPayload, OverflowInfo, PluginConfig, Router, SessionStore,
+    SubagentHost,
+};
 use conway_core::provenance::{ContextReport, Provenance};
 use conway_core::routing::RouteRequest;
-use conway_core::segment::CacheTtl;
+use conway_core::segment::{CacheTtl, PromptSegment};
 use conway_routing::config::HeadroomPolicy;
 use tokio_util::sync::CancellationToken;
 
-use crate::attempt::{AttemptEngine, AttemptRequest};
+use crate::attempt::{AttemptEngine, AttemptOutcome, AttemptRequest};
 use crate::context::{
     ContextBuilder, ContextInput, HeadSegment, InheritedPrefix, SkillFragment, SystemPromptSpec,
 };
@@ -219,6 +222,21 @@ pub struct LoopDeps {
     /// synthesis -- see `finish`'s own doc and `supervisor.rs`'s module doc
     /// ("the narrow race this module does not close").
     pub tree: Arc<AgentTree>,
+    /// WI-126: pluggable per-call context/tool curation. `RwLock` rather
+    /// than a plain `Option` because `RuntimeDeps` (`runtime.rs`, out of
+    /// this item's file scope) has no field to source one from at
+    /// `LoopDeps` construction time -- `Runtime::set_context_hook` (a new,
+    /// purely additive method) sets this post-construction, before any
+    /// agent starts running, and every turn reads it fresh via
+    /// [`AgentLoop::context_hook`]. `None` (the default every existing
+    /// construction site gets, unchanged) means this loop never invokes
+    /// anything named `ContextHook` at all -- not even a no-op call -- so
+    /// `run_inner`'s assembly, routing, and overflow handling stay
+    /// byte-identical to pre-WI-126 behavior. `Some` is invoked once per
+    /// turn (`ContextHook::before_request`) and, only on a T-1
+    /// `ContextTooLarge`, up to [`MAX_OVERFLOW_ATTEMPTS`] additional times
+    /// (`ContextHook::on_overflow`) -- see [`AgentLoop::route_and_attempt`].
+    pub context_hook: RwLock<Option<Arc<dyn ContextHook>>>,
 }
 
 /// One agent's turn state machine (architecture §7). `run` drives turns
@@ -357,6 +375,17 @@ struct LoopState {
     turn_steps: u32,
 }
 
+/// WI-126: bounds how many times [`AgentLoop::route_and_attempt`] will call
+/// a registered `ContextHook::on_overflow` for a single turn before giving
+/// up and surfacing the last `ContextTooLarge` regardless of what the hook
+/// returns. This is a re-assembly-loop bound, not a policy choice a hook can
+/// override -- a hook that keeps returning a still-too-large payload cannot
+/// hang the turn. Picked small (a hook has two chances to shrink the
+/// request enough to fit) since no criterion pins an exact value; `None`
+/// registered, or a hook whose `on_overflow` returns `None` on its very
+/// first call, both short-circuit long before this bound is ever reached.
+const MAX_OVERFLOW_ATTEMPTS: u8 = 2;
+
 /// Early-returns `Err((err.into(), $state))` from the enclosing
 /// `Result<AgentResult, (RuntimeError, LoopState)>`-returning fn on a
 /// fallible expression's `Err` arm, so every store/router/attempt failure
@@ -458,6 +487,154 @@ impl AgentLoop {
             return Err(err);
         }
         Ok(())
+    }
+
+    /// Routes and attempts the given (already `ContextHook::before_request`-
+    /// hooked) request materials, retrying through
+    /// `ContextHook::on_overflow` when the T-1 gate rejects the assembled
+    /// request as too large for the routed model's window
+    /// (`RoutingError::ContextTooLarge`) -- from either `Router::resolve`
+    /// (the port's own doc contract allows a `Router` impl to reject this
+    /// way, though the committed `DeclarativeRouter` never does, folding the
+    /// headroom gate into `NoCandidate` instead) or `AttemptEngine::execute`
+    /// (the actual T-1 backstop gate today).
+    ///
+    /// **No hook, or a hook whose `on_overflow` returns `None`, or
+    /// [`MAX_OVERFLOW_ATTEMPTS`] exhausted:** the last `ContextTooLarge`
+    /// propagates as `Err`, identical to what `run_inner` would have seen
+    /// with no `ContextHook` machinery in this method at all -- this is what
+    /// makes "no hook registered -> today's behavior exactly" hold for the
+    /// overflow path specifically, not just for `before_request`.
+    /// The currently-registered `ContextHook`, if any. Reads
+    /// `LoopDeps::context_hook` fresh on every call (see that field's own
+    /// doc for why it is a `RwLock` rather than a plain `Option`).
+    fn context_hook(&self) -> Option<Arc<dyn ContextHook>> {
+        self.deps
+            .context_hook
+            .read()
+            .expect("context_hook lock poisoned")
+            .clone()
+    }
+
+    async fn route_and_attempt(
+        &self,
+        turn: u32,
+        mut segments: Vec<PromptSegment>,
+        mut tools: Vec<ToolSpec>,
+        mut report: ContextReport,
+        headroom: u32,
+    ) -> Result<(AttemptOutcome, ContextReport), RuntimeError> {
+        let mut overflow_attempts: u8 = 0;
+
+        loop {
+            let est_tokens = report.total_tokens_est;
+            let has_tools = !tools.is_empty();
+            let mut required = RequiredCaps {
+                headroom_tokens: headroom,
+                ..RequiredCaps::default()
+            };
+            if has_tools {
+                required.tool_calling = Some(ToolCallSupport::NonStreamingOnly);
+            }
+            let route_req = RouteRequest {
+                role: self.spec.role.clone(),
+                pin: self.spec.pin.clone(),
+                required,
+                est_tokens,
+                agent_id: self.agent_id,
+            };
+
+            let routing_err: RoutingError = match self.deps.router.resolve(&route_req) {
+                Ok(routes) => {
+                    let prefix_key = routes
+                        .first()
+                        .map(|route| crate::context::prefix_key(&route.model, &segments));
+                    let attempt_req = AttemptRequest {
+                        agent_id: self.agent_id,
+                        session: self.session,
+                        role: self.spec.role.clone(),
+                        routes,
+                        segments: &segments,
+                        tools: &tools,
+                        prefix_key,
+                        est_tokens,
+                        headroom,
+                        max_tokens_override: None,
+                        cancel: self.cancel.clone(),
+                    };
+                    match self.deps.attempt.execute(attempt_req).await {
+                        Ok(outcome) => return Ok((outcome, report)),
+                        Err(RuntimeError::Routing(e)) => e,
+                        Err(other) => return Err(other),
+                    }
+                }
+                Err(e) => e,
+            };
+
+            let RoutingError::ContextTooLarge {
+                role,
+                model,
+                est_tokens: rejected_est_tokens,
+                headroom_tokens,
+                required_tokens,
+                max_context_tokens,
+                shortfall_tokens,
+            } = routing_err
+            else {
+                return Err(routing_err.into());
+            };
+
+            // Reconstructs the SAME rejection the router/attempt engine
+            // actually returned (`rejected_est_tokens`, not this loop's own
+            // `est_tokens` local -- the two can differ, e.g. a fake/custom
+            // `Router` in a test that returns a fixed `ContextTooLarge`
+            // regardless of the request's real estimate) when no hook can
+            // act on it.
+            let too_large = |role: RoleAlias, model: ModelRef| RoutingError::ContextTooLarge {
+                role,
+                model,
+                est_tokens: rejected_est_tokens,
+                headroom_tokens,
+                required_tokens,
+                max_context_tokens,
+                shortfall_tokens,
+            };
+
+            if overflow_attempts >= MAX_OVERFLOW_ATTEMPTS {
+                return Err(too_large(role, model).into());
+            }
+            let Some(hook) = self.context_hook() else {
+                return Err(too_large(role, model).into());
+            };
+            overflow_attempts += 1;
+
+            let hook_ctx = ContextHookCtx {
+                agent_id: self.agent_id,
+                session_id: self.session,
+                turn,
+                model: Some(model.clone()),
+                estimated_tokens: est_tokens,
+            };
+            let overflow = OverflowInfo {
+                max_context_tokens,
+                headroom_tokens,
+                required_tokens,
+                shortfall_tokens,
+            };
+            let payload = ContextPayload {
+                segments: segments.clone(),
+                tools: tools.clone(),
+            };
+
+            match hook.on_overflow(&hook_ctx, payload, overflow).await {
+                Some(transformed) => {
+                    segments = transformed.segments;
+                    tools = transformed.tools;
+                    report = crate::context::builder::retotal(self.agent_id, turn, &mut segments);
+                }
+                None => return Err(too_large(role, model).into()),
+            }
+        }
     }
 
     /// Runs turns until a terminal result is produced. Infallible in return
@@ -566,7 +743,6 @@ impl AgentLoop {
             let (head, own) = try_rt!(state, split_head(&all_records, self.session));
 
             let tool_specs = self.deps.registry.specs(self.spec.tools.as_ref());
-            let has_tools = !tool_specs.is_empty();
             let model_hint = self
                 .spec
                 .pin
@@ -587,7 +763,40 @@ impl AgentLoop {
                 own,
                 cache_ttl: self.spec.cache_ttl,
             };
-            let (segments, report) = try_rt!(state, self.deps.builder.build(&input));
+            let (mut segments, mut report) = try_rt!(state, self.deps.builder.build(&input));
+
+            // WI-126: give a registered `ContextHook` first look at the
+            // assembled request -- segment edits/drops (mask-like
+            // exclusion, system-prompt augmentation via the
+            // `AgentDef`-provenance segment) and tool-announcement
+            // narrowing (`announced_tools`, distinct from `PermissionGate`
+            // -- see `ContextPayload`'s own doc) all go through this one
+            // call. `segments`/`report`/`announced_tools` are re-derived
+            // from whatever the hook returns so every downstream consumer
+            // below (the live report slot, `Event::ContextSegmentAdded`,
+            // routing, the attempt request, the persisted
+            // `ContextReportRecord`) sees the SAME payload that is actually
+            // sent -- never the pre-hook one. No hook registered -> this
+            // block never runs -> the rest of this turn is byte-identical to
+            // pre-WI-126 behavior.
+            let mut announced_tools = tool_specs.clone();
+            if let Some(hook) = self.context_hook() {
+                let hook_ctx = ContextHookCtx {
+                    agent_id: self.agent_id,
+                    session_id: self.session,
+                    turn: state.turn,
+                    model: self.spec.pin.clone(),
+                    estimated_tokens: report.total_tokens_est,
+                };
+                let payload = ContextPayload {
+                    segments,
+                    tools: announced_tools,
+                };
+                let transformed = hook.before_request(&hook_ctx, payload).await;
+                segments = transformed.segments;
+                announced_tools = transformed.tools;
+                report = crate::context::builder::retotal(self.agent_id, state.turn, &mut segments);
+            }
 
             if let Some(slot) = &self.spec.report_slot {
                 *slot.lock().expect("report slot poisoned") = Some(report.clone());
@@ -607,44 +816,16 @@ impl AgentLoop {
                 }
             }
 
-            let est_tokens = report.total_tokens_est;
             let headroom = resolve_headroom(&self.spec, &self.deps.headroom);
 
-            let mut required = RequiredCaps {
-                headroom_tokens: headroom,
-                ..RequiredCaps::default()
-            };
-            if has_tools {
-                required.tool_calling = Some(ToolCallSupport::NonStreamingOnly);
-            }
-            let route_req = RouteRequest {
-                role: self.spec.role.clone(),
-                pin: self.spec.pin.clone(),
-                required,
-                est_tokens,
-                agent_id: self.agent_id,
-            };
-            let routes = try_rt!(state, self.deps.router.resolve(&route_req));
-            let prefix_key = routes
-                .first()
-                .map(|route| crate::context::prefix_key(&route.model, &segments));
-
-            let attempt_req = AttemptRequest {
-                agent_id: self.agent_id,
-                session: self.session,
-                role: self.spec.role.clone(),
-                routes,
-                segments: &segments,
-                tools: &tool_specs,
-                prefix_key,
-                est_tokens,
-                headroom,
-                max_tokens_override: None,
-                cancel: self.cancel.clone(),
-            };
-
-            let attempt_fut = self.deps.attempt.execute(attempt_req);
-            let attempt_result = match self.spec.budget.deadline {
+            // WI-126: `route_and_attempt` owns routing, the attempt call,
+            // AND the bounded `ContextHook::on_overflow` re-assembly retry
+            // (see that method's own doc) -- the only thing this call site
+            // still owns is racing it against the turn's deadline, exactly
+            // as the pre-WI-126 `attempt_fut` race did.
+            let route_attempt_fut =
+                self.route_and_attempt(state.turn, segments, announced_tools, report, headroom);
+            let route_attempt_result = match self.spec.budget.deadline {
                 Some(deadline) => {
                     let remaining = (deadline - Utc::now()).to_std().unwrap_or(Duration::ZERO);
                     tokio::select! {
@@ -658,12 +839,18 @@ impl AgentLoop {
                                 &result_builder,
                             ).await);
                         }
-                        res = attempt_fut => res,
+                        res = route_attempt_fut => res,
                     }
                 }
-                None => attempt_fut.await,
+                None => route_attempt_fut.await,
             };
-            let outcome = try_rt!(state, attempt_result);
+            let (outcome, report) = try_rt!(state, route_attempt_result);
+            // The report_slot/persisted report must reflect the FINAL
+            // assembly actually sent -- overflow retries (if any) rebuilt
+            // `report` after the initial slot update above.
+            if let Some(slot) = &self.spec.report_slot {
+                *slot.lock().expect("report slot poisoned") = Some(report.clone());
+            }
 
             let usage = outcome.response.usage;
             let seq = try_rt!(state, self.deps.store.head(&self.session).await);

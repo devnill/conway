@@ -104,7 +104,7 @@ use std::sync::Arc;
 
 use conway_core::capabilities::ReliabilityTier;
 use conway_core::ids::{BackendId, ModelRef};
-use conway_core::ports::{Backend, PermissionGate, Plugin, Router, SessionStore};
+use conway_core::ports::{Backend, ContextHook, PermissionGate, Plugin, Router, SessionStore};
 use conway_core::routing::ModelOverrides;
 use conway_routing::config::HeadroomPolicy;
 use conway_routing::{BreakerRegistry, CapabilityIndex, DeclarativeRouter};
@@ -143,6 +143,11 @@ pub struct ConwayBuilder {
     gate: Option<Arc<dyn PermissionGate>>,
     store: Option<Arc<dyn SessionStore>>,
     router: Option<Arc<dyn Router>>,
+    /// WI-126. `None` (the default) means `build()` never calls
+    /// `Runtime::set_context_hook` at all, leaving every agent's
+    /// `context_hook` at the `Runtime`-constructed default of `None` --
+    /// i.e. today's behavior, unchanged.
+    context_hook: Option<Arc<dyn ContextHook>>,
     warnings: Vec<ConfigWarning>,
 }
 
@@ -177,6 +182,7 @@ impl ConwayBuilder {
             gate: None,
             store: None,
             router: None,
+            context_hook: None,
             warnings: Vec::new(),
         }
     }
@@ -203,6 +209,18 @@ impl ConwayBuilder {
     /// Overrides `permissions.mode`-derived gate selection entirely.
     pub fn with_permission_gate(mut self, gate: Arc<dyn PermissionGate>) -> Self {
         self.gate = Some(gate);
+        self
+    }
+
+    /// Registers a [`ContextHook`] (WI-126): invoked before every LLM
+    /// request (mask/system-prompt/tool-announcement curation) and, on a
+    /// T-1 `ContextTooLarge`, for a bounded overflow-reassembly retry. No
+    /// call to this method (the default) means `build()` never touches
+    /// `Runtime::set_context_hook` at all -- every agent's assembly,
+    /// routing, and overflow handling stays exactly as it was before this
+    /// item, with a hard `ContextTooLarge` on overflow.
+    pub fn with_context_hook(mut self, hook: Arc<dyn ContextHook>) -> Self {
+        self.context_hook = Some(hook);
         self
     }
 
@@ -239,6 +257,7 @@ impl ConwayBuilder {
             gate,
             store,
             router,
+            context_hook,
             warnings,
         } = self;
 
@@ -391,6 +410,13 @@ impl ConwayBuilder {
             event_bus,
             headroom: Arc::new(headroom_policy),
         });
+        // WI-126: `RuntimeDeps` has no `context_hook` field (out of that
+        // item's file scope to add -- see `conway_runtime::runtime`'s
+        // module doc), so registration happens post-construction via this
+        // dedicated setter. `context_hook: None` (no `with_context_hook`
+        // call) sets the runtime's hook to `None`, identical to never
+        // calling this method at all.
+        rt.set_context_hook(context_hook);
 
         Ok(Conway::new(rt, config, store, router_explain, warnings))
     }

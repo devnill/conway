@@ -265,6 +265,7 @@ fn build_loop_with_contract(
         builder: Arc::new(ContextBuilder::new()),
         headroom: Arc::new(HeadroomPolicy::default()),
         tree: tree.clone(),
+        context_hook: std::sync::RwLock::new(None),
     });
 
     let spec = AgentSpec {
