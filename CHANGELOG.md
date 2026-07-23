@@ -5,6 +5,58 @@ All notable changes to **conway** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **License: relicensed from Apache-2.0 to AGPL-3.0-only.** conway is now
+  covered by the GNU Affero General Public License v3.0 — running a modified
+  conway as a network service requires making the modified source available to
+  its users. This is a deliberate choice for an agent harness and means conway
+  is not intended for use as a permissively-licensed library dependency inside
+  closed-source software. See [LICENSE](LICENSE).
+- **Unified the two model-capability systems** into a single source of truth:
+  the router's context-fit gate and `Backend::capabilities()` now resolve
+  through the same path, so a `models.json` value has one predictable routing
+  effect instead of silently diverging.
+- **Redesigned the TUI** to a single-column, copy-paste-friendly layout
+  (conversation stream, input box, status line) with a live `/`-command
+  palette and an on-demand agent-tree panel, replacing the always-on paned
+  layout that dragged UI chrome into the clipboard.
+
+### Added
+
+- **`ContextHook`** — a pluggable per-call context/tool-curation port: mask
+  records, edit the system prompt, filter the announced tool set, or react to
+  context overflow. No built-in curation policy and no automatic compaction;
+  with no hook registered, behavior is unchanged.
+- **Out-of-context record mask** — mark log records to exclude from LLM calls
+  while keeping them in the append-only log (reversible).
+- **Reasoning support at the wire layer** — extended-thinking budget /
+  reasoning-effort request params per dialect, Anthropic thinking-block
+  signature round-trip across tool loops, and `redacted_thinking` handling.
+- **TUI keyboard navigation** — arrow-select + autofill in the `/`-command
+  palette, and arrow-scroll + Esc-to-close in the agent panel.
+- **`/ask`** — an ephemeral forked question rendered as a dimmed aside; it
+  inherits the session's context but never pollutes the transcript.
+- **Failure observability** — backend and routing errors are surfaced to
+  stderr (including the reasons a candidate was rejected).
+- **OSS front door** — a README and a runnable offline example
+  (`cargo run -p conway --example minimal_session`).
+
+### Fixed
+
+- **Multi-turn tool use no longer loops.** Assistant records now persist the
+  tool calls they made, so a follow-up turn sees the tool result instead of
+  re-calling the tool indefinitely; tool-call-only assistant turns serialize an
+  empty string rather than `null` (which some OpenAI-compatible servers, e.g.
+  Ollama Cloud, reject).
+- **Dialect-aware health probe** — the probe now uses a liveness endpoint the
+  target dialect actually serves, and an unsupported liveness path is no longer
+  counted as a health failure that opens the circuit breaker.
+- **`--model`** is now wired to a facade pin (previously accepted by the CLI
+  parser but inert — a 0.1.0 known limitation).
+
 ## [0.1.0] — 2026-07-22
 
 First release. conway is a Rust agent harness for agentic coding, built around
