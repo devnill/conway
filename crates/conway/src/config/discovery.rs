@@ -20,9 +20,11 @@ pub fn discover(start: &Path) -> Option<PathBuf> {
     }
 }
 
-/// The XDG config path for `conway`: `$XDG_CONFIG_HOME/conway/conway.json`
+/// The user-scoped config path for `conway`: `$XDG_CONFIG_HOME/conway/conway.json`
 /// when `XDG_CONFIG_HOME` is set (and non-empty) in `env`, otherwise the
-/// platform default from `directories::ProjectDirs`.
+/// home-directory default `~/.conway/conway.json` — mirroring the
+/// project-scoped `.conway/conway.json` convention so a user's global config
+/// lives in `.conway/` under `$HOME` just as a project's does under its root.
 ///
 /// Takes an explicit `env` map (rather than reading `std::env` directly) so
 /// callers can inject it via `LoadOptions.env` and keep precedence tests
@@ -33,8 +35,7 @@ pub fn xdg_config_path(env: &HashMap<String, String>) -> Option<PathBuf> {
             return Some(Path::new(xdg).join("conway").join("conway.json"));
         }
     }
-    directories::ProjectDirs::from("", "", "conway")
-        .map(|dirs| dirs.config_dir().join("conway.json"))
+    directories::BaseDirs::new().map(|dirs| dirs.home_dir().join(".conway").join("conway.json"))
 }
 
 #[cfg(test)]
@@ -76,13 +77,13 @@ mod tests {
     }
 
     #[test]
-    fn xdg_config_path_falls_back_when_unset() {
+    fn xdg_config_path_falls_back_to_home_dot_conway_when_unset() {
         let env = HashMap::new();
-        // Platform default from `directories::ProjectDirs` — just assert it
+        // Home-directory default `~/.conway/conway.json` — just assert it
         // resolves to *something* ending in the expected suffix.
         let path = xdg_config_path(&env);
         if let Some(path) = path {
-            assert!(path.ends_with("conway/conway.json"));
+            assert!(path.ends_with(".conway/conway.json"));
         }
     }
 
