@@ -30,6 +30,7 @@ rand = "0.10"
 regex = "1"
 jsonschema = { version = "0.48", default-features = false }
 tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio-util = "0.7"
 tokio-stream = "0.1"
 wiremock = "0.6"
