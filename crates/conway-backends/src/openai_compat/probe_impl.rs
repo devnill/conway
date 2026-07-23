@@ -4,9 +4,26 @@
 //! Deliberately bypasses `HttpClient::send_with_retry` — a probe is one
 //! observation, never retried (architecture §4.5: `BreakerKind::Probe` is
 //! independent of `BreakerKind::Transport`, which owns the bounded
-//! transport-retry policy). `GET {base}/models`, falling back to
-//! `GET {base_origin}/api/tags` only for `Dialect::Ollama` when `/models`
-//! reports `404`, each request capped at [`PROBE_TIMEOUT`].
+//! transport-retry policy). `GET {base}/models`, falling back for
+//! `Dialect::Ollama` only (when `/models` reports `404`) to
+//! `GET {base_origin}/api/tags` and then, if that is also unsupported, to
+//! `GET {base_origin}/api/version` — each request capped at
+//! [`PROBE_TIMEOUT`].
+//!
+//! The three-tier Ollama fallback is ordered richest-to-plainest: `/models`
+//! and `/api/tags` both carry a model list, `/api/version` carries none but
+//! is the most universally-served Ollama liveness endpoint (WI-124) — real
+//! Ollama Cloud deployments have been observed 404-ing on both `/models`
+//! (no OpenAI-compat model listing) and `/api/tags` (a local-instance
+//! management endpoint), so a plain version check is the last resort that
+//! still proves the server answers HTTP requests at all. If every tier
+//! 404s, [`OpenAiCompatBackend::run_probe`] still returns
+//! `Err(BackendError::BadRequest{..})` (via [`classify`]) rather than
+//! inventing a synthetic success — it is `conway_routing::prober`'s job
+//! (WI-124) to recognize that a `BadRequest`-classified probe failure means
+//! "this liveness path isn't served here", not "the endpoint is down", and
+//! to withhold a health observation accordingly rather than tripping the
+//! probe breaker.
 
 use std::time::{Duration, Instant};
 
@@ -70,8 +87,9 @@ impl OpenAiCompatBackend {
 
     /// `GET {base}/models`, 2s timeout, no retries. A connection failure is
     /// `Err(BackendError::Transport{..})` after exactly this one request —
-    /// the `Dialect::Ollama` `/api/tags` fallback below only ever fires on a
-    /// classified `404` response, never on a transport failure.
+    /// the `Dialect::Ollama` `/api/tags`/`/api/version` fallbacks below only
+    /// ever fire on a classified `404` response, never on a transport
+    /// failure.
     pub(crate) async fn run_probe(&self) -> Result<ProbeReport, BackendError> {
         let url = join_base(&self.base, "/models");
         let started = Instant::now();
@@ -98,6 +116,9 @@ impl OpenAiCompatBackend {
 
         if matches!(self.dialect, Dialect::Ollama) && status.as_u16() == 404 {
             if let Some(report) = self.probe_ollama_tags().await {
+                return Ok(report);
+            }
+            if let Some(report) = self.probe_ollama_version().await {
                 return Ok(report);
             }
         }
@@ -127,5 +148,172 @@ impl OpenAiCompatBackend {
             detail: None,
             at: chrono::Utc::now(),
         })
+    }
+
+    /// `GET {base_origin}/api/version`, the last-resort Ollama liveness
+    /// fallback (WI-124): carries no model list, but is the plainest
+    /// endpoint every real Ollama server answers, for deployments (e.g.
+    /// Ollama Cloud) that 404 on both `/models` and `/api/tags`. Body
+    /// content is irrelevant — a successful status alone proves liveness.
+    async fn probe_ollama_version(&self) -> Option<ProbeReport> {
+        let url = join_origin(&self.base, "/api/version");
+        let started = Instant::now();
+        let response = self.probe_request(url).send().await.ok()?;
+        if !response.status().is_success() {
+            return None;
+        }
+        let latency_ms = elapsed_ms(started);
+        Some(ProbeReport {
+            ok: true,
+            latency_ms,
+            models: vec![],
+            detail: None,
+            at: chrono::Utc::now(),
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use conway_core::ids::BackendId;
+    use serde_json::json;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    use super::*;
+    use crate::config::OpenAiCompatConfig;
+
+    fn backend_config(base_url: &str, dialect: Dialect) -> OpenAiCompatConfig {
+        OpenAiCompatConfig {
+            id: BackendId::new("test"),
+            base_url: base_url.parse().unwrap(),
+            api_key: None,
+            dialect,
+            timeout: None,
+            metadata_path: None,
+            models: Default::default(),
+        }
+    }
+
+    /// Criterion 1: when both `/models` and `/api/tags` 404 (the observed
+    /// Ollama Cloud shape), the probe still lands on a real liveness path —
+    /// `/api/version` — instead of giving up.
+    #[tokio::test]
+    async fn ollama_probe_falls_back_to_api_version_when_models_and_tags_both_404() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/models"))
+            .respond_with(ResponseTemplate::new(404))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/tags"))
+            .respond_with(ResponseTemplate::new(404))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/version"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"version": "0.5.1"})))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let backend =
+            OpenAiCompatBackend::new(backend_config(&server.uri(), Dialect::Ollama)).unwrap();
+        let report = backend.run_probe().await.unwrap();
+
+        assert!(report.ok);
+        assert!(report.models.is_empty());
+    }
+
+    /// `/api/version` is a last resort: when `/api/tags` already answers
+    /// with a model list, `/api/version` must never be called.
+    #[tokio::test]
+    async fn ollama_probe_prefers_api_tags_over_api_version() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/models"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/tags"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "models": [{"name": "qwen3-coder:30b"}]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/version"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"version": "0.5.1"})))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let backend =
+            OpenAiCompatBackend::new(backend_config(&server.uri(), Dialect::Ollama)).unwrap();
+        let report = backend.run_probe().await.unwrap();
+
+        assert!(report.ok);
+        assert_eq!(report.models, vec![ModelId::new("qwen3-coder:30b")]);
+    }
+
+    /// Criterion 2 (classification half, exercised at the source): once
+    /// every Ollama liveness path — `/models`, `/api/tags`, `/api/version`
+    /// — is unsupported, `run_probe` reports the failure as
+    /// `BackendError::BadRequest` (via `classify`'s 404 row), never as a
+    /// transport-level failure. It is `conway_routing::prober`'s job to
+    /// read that classification and withhold a health observation rather
+    /// than trip the breaker.
+    #[tokio::test]
+    async fn ollama_probe_unsupported_everywhere_is_bad_request_not_transport() {
+        let server = MockServer::start().await;
+        for endpoint in ["/models", "/api/tags", "/api/version"] {
+            Mock::given(method("GET"))
+                .and(path(endpoint))
+                .respond_with(ResponseTemplate::new(404))
+                .mount(&server)
+                .await;
+        }
+
+        let backend =
+            OpenAiCompatBackend::new(backend_config(&server.uri(), Dialect::Ollama)).unwrap();
+        let err = backend
+            .run_probe()
+            .await
+            .expect_err("every liveness path 404s");
+
+        assert!(matches!(err, BackendError::BadRequest { .. }), "{err:?}");
+    }
+
+    /// A non-Ollama dialect never consults the Ollama-only fallback chain.
+    #[tokio::test]
+    async fn non_ollama_dialect_never_falls_back_to_ollama_paths() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/models"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/tags"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"models": []})))
+            .expect(0)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/version"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"version": "0.5.1"})))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let backend =
+            OpenAiCompatBackend::new(backend_config(&server.uri(), Dialect::OpenAi)).unwrap();
+        let err = backend.run_probe().await.expect_err("404 with no fallback");
+
+        assert!(matches!(err, BackendError::BadRequest { .. }), "{err:?}");
     }
 }
