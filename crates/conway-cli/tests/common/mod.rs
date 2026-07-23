@@ -95,6 +95,12 @@ pub fn write_fixture_with(base_url: &str, model: &str, max_steps: u32) -> Fixtur
 pub fn command(args: &[&str], fixture: &Fixture) -> Command {
     let mut cmd = Command::new(assert_cmd::cargo::cargo_bin("conway"));
     cmd.current_dir(fixture.dir.path())
+        // Test isolation: point the user-scoped config discovery
+        // (`$XDG_CONFIG_HOME/conway/settings.json`) at the fixture's own temp
+        // dir, which has no such file, so a real `~/.conway/settings.json` on
+        // the developer's machine can never merge into and corrupt the
+        // fixture config these tests build.
+        .env("XDG_CONFIG_HOME", fixture.dir.path())
         .arg("--config")
         .arg(&fixture.config_path)
         .args(args)
