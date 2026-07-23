@@ -194,6 +194,7 @@ fn root_spec(prompt: &str, agent_def: Option<AgentDefRef>) -> RootSpec {
         budget: Budget::default(),
         cwd: PathBuf::from("/tmp"),
         prompt: Some(prompt.to_string()),
+        keep_alive: false,
     }
 }
 

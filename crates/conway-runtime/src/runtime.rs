@@ -169,6 +169,12 @@ pub struct RootSpec {
     pub budget: Budget,
     pub cwd: PathBuf,
     pub prompt: Option<String>,
+    /// Opt-in multi-turn keep-alive (see `agent_loop::AgentSpec::keep_alive`'s
+    /// own doc for the bug this fixes and why it must stay opt-in). `false`
+    /// preserves this crate's pre-existing behavior exactly: the started
+    /// agent's task terminates after its first `Completed` turn, same as
+    /// every `RootSpec` caller before this field existed.
+    pub keep_alive: bool,
 }
 
 /// The specification for re-registering a persisted session's agent as a
@@ -205,12 +211,14 @@ struct AgentHandle {
     /// fork/spawn child's `parent_mailbox`.
     mailbox: MailboxSender,
     last_report: Arc<Mutex<Option<ContextReport>>>,
-    /// WI-118: the same `Arc` as this agent's `AgentLoop::resume_gate.notify`
-    /// (cloned out of the `AgentLoop` before it moves into its spawned task
-    /// -- see [`Runtime::launch_agent`]). [`Runtime::prompt`] calls
-    /// `notify_one()` on it after every durable append so a gated
-    /// `resume_root` agent's idling first iteration wakes; a no-op for every
-    /// other agent, whose loop never awaits it.
+    /// WI-118 (generalized by keep-alive): the same `Arc` as this agent's
+    /// `AgentLoop::resume_gate.notify` (cloned out of the `AgentLoop` before
+    /// it moves into its spawned task -- see [`Runtime::launch_agent`]).
+    /// [`Runtime::prompt`] calls `notify_one()` on it after every durable
+    /// append so a gated `resume_root` agent's idling first iteration
+    /// wakes, or a `keep_alive: true` agent's idling END-of-turn wait wakes
+    /// to run the newly-appended prompt as a genuine next turn; a no-op for
+    /// every other agent, whose loop never awaits it.
     prompt_notify: Arc<tokio::sync::Notify>,
     #[allow(dead_code)]
     join: Arc<Mutex<Option<JoinHandle<()>>>>,
@@ -530,6 +538,7 @@ impl Runtime {
             // A root agent has no `SubagentSpec` to source a contract from
             // (WI-086) -- only a fork/spawn child can declare one.
             result_contract: None,
+            keep_alive: spec.keep_alive,
         };
 
         let cancel = CancellationToken::new();
@@ -553,7 +562,12 @@ impl Runtime {
             // (WI-085).
             parent_mailbox: None,
             pending_cancel: None,
-            // WI-118: `start_root` never gates -- only `resume_root` does.
+            // WI-118: `start_root` never gates its FIRST iteration -- only
+            // `resume_root` does. A `keep_alive: true` root starts this at
+            // `Default` too (`awaiting_prompt: false`) and runs its first
+            // turn immediately, exactly like any other root -- the gate is
+            // only ever flipped `true` by `AgentLoop::run_inner` itself, at
+            // the END of a completed turn (see `ResumeGate`'s own doc).
             resume_gate: Default::default(),
         };
         let prompt_notify = agent_loop.resume_gate.notify.clone();
@@ -741,6 +755,12 @@ impl Runtime {
             // A resumed root has no `SubagentSpec` to source a contract
             // from either -- same as `start_root`.
             result_contract: None,
+            // Out of scope for this item: only a freshly `start_root`ed
+            // agent can opt into keep-alive today (`RootSpec::keep_alive`).
+            // `ResumeSpec` has no counterpart field, so a resumed root
+            // always terminates on its first `Completed` turn, same as
+            // before keep-alive existed.
+            keep_alive: false,
         };
 
         let cancel = CancellationToken::new();
@@ -774,7 +794,7 @@ impl Runtime {
             // agent's `AgentHandle` before `agent_loop` moves into its
             // spawned task, which is what `Runtime::prompt` signals below.
             resume_gate: crate::agent_loop::ResumeGate {
-                awaiting_first_prompt: true,
+                awaiting_prompt: true,
                 notify: Arc::new(tokio::sync::Notify::new()),
             },
         };
@@ -828,9 +848,11 @@ impl Runtime {
                 },
             )
             .await?;
-        // WI-118: wakes a `resume_root` agent's gated first iteration (see
-        // `ResumeGate`'s doc). `Notify::notify_one`'s single stored permit
-        // means this is safe even if that agent's task has not polled its
+        // WI-118, generalized by keep-alive: wakes a `resume_root` agent's
+        // gated first iteration, OR a `keep_alive: true` agent's gated
+        // end-of-turn idle wait -- both the same `ResumeGate` (see that
+        // type's doc). `Notify::notify_one`'s single stored permit means
+        // this is safe even if that agent's task has not polled its
         // `notified()` yet -- the permit is buffered and consumed by the
         // very next `.await` on it. A no-op for every other agent (nothing
         // ever awaits this `Notify`).

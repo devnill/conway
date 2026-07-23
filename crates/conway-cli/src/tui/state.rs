@@ -303,6 +303,21 @@ impl AppState {
             _ => NodeStatus::Finished,
         };
         self.set_tree_status(agent, status);
+
+        // A `keep_alive` root's task can end for any reason (budget/
+        // deadline/cancel) with no other visible signal -- the TUI simply
+        // stops getting replies otherwise, indistinguishable from a hang.
+        // Surface the terminal reason as a transcript `Notice` whenever the
+        // finishing agent is the ROOT specifically (a subagent/fork child
+        // finishing is unremarkable and already reflected by its own tree
+        // node status). `Completed` should never occur for a keep-alive
+        // root in practice, but is handled the same way rather than
+        // special-cased.
+        if self.tree.root == Some(agent) {
+            self.transcript.push(Entry::Notice {
+                text: format!("session ended: {}", terminal_reason(&result.status)),
+            });
+        }
     }
 
     fn set_tree_status(&mut self, agent: AgentId, status: NodeStatus) {
@@ -353,6 +368,21 @@ impl AppState {
                 }
             }
         }
+    }
+}
+
+/// A short, human-readable rendering of a terminal `ResultStatus`, for the
+/// root-session-ended `Notice` in [`AppState::apply_agent_finished`].
+/// `ResultStatus` is `#[non_exhaustive]`; the wildcard arm is forward
+/// compatibility, not a modeled case.
+fn terminal_reason(status: &ResultStatus) -> String {
+    match status {
+        ResultStatus::Completed => "completed".to_string(),
+        ResultStatus::Failed { error } => format!("failed: {error}"),
+        ResultStatus::Cancelled { reason } => format!("cancelled: {reason}"),
+        ResultStatus::BudgetExceeded { limit } => format!("budget exceeded ({limit})"),
+        ResultStatus::Rejected { missing } => format!("rejected: {}", missing.join(", ")),
+        _ => "unknown".to_string(),
     }
 }
 
@@ -526,5 +556,69 @@ mod tests {
             state.transcript.last(),
             Some(Entry::Notice { .. })
         ));
+    }
+
+    /// The critical companion fix: a keep-alive root session that ends for
+    /// ANY reason must leave a visible trace in the transcript, never just
+    /// stop responding with no explanation.
+    #[test]
+    fn root_agent_finished_pushes_a_visible_session_ended_notice() {
+        let session = SessionId::new();
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let before = state.transcript.len();
+
+        state.apply(&envelope(
+            session,
+            root,
+            Event::AgentFinished {
+                result: AgentResult::new(
+                    root,
+                    session,
+                    ResultStatus::BudgetExceeded {
+                        limit: "max_steps=3".to_string(),
+                    },
+                    "",
+                ),
+            },
+        ));
+
+        assert_eq!(state.transcript.len(), before + 1);
+        match state.transcript.last() {
+            Some(Entry::Notice { text }) => {
+                assert!(
+                    text.contains("session ended") && text.contains("budget exceeded"),
+                    "expected a session-ended budget-exceeded notice, got: {text}"
+                );
+            }
+            other => panic!("expected a Notice entry, got {other:?}"),
+        }
+    }
+
+    /// A non-root agent (subagent/fork child) finishing must NOT emit the
+    /// root-session-ended notice -- that would be misleading noise for
+    /// every ordinary spawned/forked child completion.
+    #[test]
+    fn non_root_agent_finished_does_not_push_a_session_ended_notice() {
+        let session = SessionId::new();
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let child = AgentId::new();
+        state.apply(&envelope(session, child, spawned(Some(root))));
+        let before = state.transcript.len();
+
+        state.apply(&envelope(
+            session,
+            child,
+            Event::AgentFinished {
+                result: AgentResult::new(child, session, ResultStatus::Completed, "child done"),
+            },
+        ));
+
+        assert_eq!(
+            state.transcript.len(),
+            before,
+            "a non-root AgentFinished must not push a session-ended notice"
+        );
     }
 }

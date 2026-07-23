@@ -289,6 +289,7 @@ fn build_loop(
         // WI-086: not exercised by this file -- `tests/result_contract.rs`
         // owns result-contract coverage.
         result_contract: None,
+        keep_alive: false,
     };
 
     let cancel = CancellationToken::new();

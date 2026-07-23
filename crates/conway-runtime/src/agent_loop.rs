@@ -180,6 +180,18 @@ pub struct AgentSpec {
     /// opting in. Enforced once per natural-completion attempt in
     /// `Self::run_inner` -- see this file's module doc.
     pub result_contract: Option<schemars::schema::RootSchema>,
+    /// Opt-in multi-turn keep-alive (fixes the confirmed bug where a live
+    /// session's task terminates after one prompt-to-completion turn, so a
+    /// SECOND `Runtime::prompt` on the same session silently never runs --
+    /// see this file's `run_inner` doc on the natural-completion branch for
+    /// the mechanism). `false` for every caller except `runtime.rs`'s
+    /// `start_root` (and only when `RootSpec::keep_alive` opts in): a
+    /// resumed root and every fork/spawn child must terminate on
+    /// `Completed` exactly as before, since a parent awaiting a spawned or
+    /// forked child's terminal `AgentResult` (`AgentTree::await_result`,
+    /// WI-083) depends on that child actually terminating -- making this
+    /// universal would hang such a parent forever.
+    pub keep_alive: bool,
 }
 
 /// Everything an [`AgentLoop`] needs beyond its own identity and spec:
@@ -257,46 +269,67 @@ pub struct AgentLoop {
     /// and is always built via a field literal (matching every other field
     /// here).
     pub pending_cancel: Option<String>,
-    /// WI-118: gates this loop's very first iteration on the caller's next
-    /// prompt when `awaiting_first_prompt` is `true` (see [`ResumeGate`]'s
-    /// own doc). `Default::default()` for every non-resumed agent --
-    /// `start_root` and every fork/spawn child -- which is inert and
-    /// preserves this loop's pre-WI-118 behavior exactly.
+    /// WI-118 (generalized by the keep-alive item): gates this loop's next
+    /// iteration on the caller's next prompt when `awaiting_prompt` is
+    /// `true` (see [`ResumeGate`]'s own doc). `Default::default()` for every
+    /// non-resumed, non-keep-alive agent -- `start_root` with `keep_alive:
+    /// false` and every fork/spawn child -- which is inert and preserves
+    /// this loop's pre-WI-118 behavior exactly.
     pub resume_gate: ResumeGate,
 }
 
-/// WI-118 resume gate: makes a resumed root agent's very first loop
-/// iteration WAIT for the caller's next [`crate::runtime::Runtime::prompt`]
-/// instead of reading the (stale, already-completed) transcript it was
-/// persisted with and running a spurious turn against it. Without this gate,
-/// `resume_root`'s spawned task and the caller's subsequent `prompt` call
-/// race: if the loop's first iteration reaches the backend before `prompt`'s
-/// `UserTurn` append lands, that turn sees no new input, produces no tool
-/// calls, and `finish(Completed)`s -- silently terminating the task before
-/// the real prompt is ever read by anyone.
+/// WI-118 resume gate, generalized by the keep-alive item to also gate the
+/// END of every turn for a `keep_alive` agent, not just a resumed root's
+/// very first iteration -- both are exactly the same wait ("idle until the
+/// caller's next prompt, unless cancelled/deadlined first"), so one
+/// mechanism serves both instead of a second, parallel one.
 ///
-/// `start_root` (and every fork/spawn child built by `subagent.rs`) leaves
-/// this at its `Default` -- `awaiting_first_prompt: false` -- so
-/// [`AgentLoop::run_inner`]'s gate is skipped entirely on the very first
-/// check and every turn behaves exactly as it did before this item. Only
-/// `Runtime::resume_root` sets `awaiting_first_prompt: true`.
+/// **WI-118's original purpose:** makes a resumed root agent's very first
+/// loop iteration WAIT for the caller's next
+/// [`crate::runtime::Runtime::prompt`] instead of reading the (stale,
+/// already-completed) transcript it was persisted with and running a
+/// spurious turn against it. Without this gate, `resume_root`'s spawned task
+/// and the caller's subsequent `prompt` call race: if the loop's first
+/// iteration reaches the backend before `prompt`'s `UserTurn` append lands,
+/// that turn sees no new input, produces no tool calls, and
+/// `finish(Completed)`s -- silently terminating the task before the real
+/// prompt is ever read by anyone.
+///
+/// **Keep-alive's reuse:** the same race, one turn boundary later, is
+/// exactly the bug a `keep_alive` session hits without this gate: its task
+/// would `finish(Completed)` and end after the first turn, so a SECOND
+/// `Runtime::prompt` on the same live session finds no task left to notify
+/// (see `Runtime::prompt`'s doc). [`AgentLoop::run_inner`]'s
+/// natural-completion branch sets `awaiting_prompt: true` and `continue`s
+/// instead of returning when `AgentSpec::keep_alive` is `true`, landing in
+/// the exact same top-of-loop wait `resume_root` already gates its first
+/// iteration with.
+///
+/// `start_root` with `keep_alive: false` (and every fork/spawn child built
+/// by `subagent.rs`) leaves this at its `Default` --
+/// `awaiting_prompt: false` -- so [`AgentLoop::run_inner`]'s gate is skipped
+/// entirely on the very first check and every turn behaves exactly as it did
+/// before WI-118. `Runtime::resume_root` sets `awaiting_prompt: true` up
+/// front; a `keep_alive` agent starts with it `false` (its first turn runs
+/// immediately, exactly like any other root) and the loop itself flips it
+/// `true` at the end of each completed turn.
 ///
 /// `notify` is a `tokio::sync::Notify`, chosen for its single-stored-permit
 /// semantics: a `notify_one()` that lands before the gated `notified().await`
 /// begins is not lost -- it is buffered, and the very next `.await` resolves
 /// immediately. This is what makes `Runtime::prompt` safe to call without
-/// coordinating with the resumed task's own scheduling (it may not have
-/// polled even once yet).
+/// coordinating with the resumed/idling task's own scheduling (it may not
+/// have polled even once yet).
 #[derive(Clone)]
 pub struct ResumeGate {
-    pub awaiting_first_prompt: bool,
+    pub awaiting_prompt: bool,
     pub notify: Arc<tokio::sync::Notify>,
 }
 
 impl Default for ResumeGate {
     fn default() -> Self {
         Self {
-            awaiting_first_prompt: false,
+            awaiting_prompt: false,
             notify: Arc::new(tokio::sync::Notify::new()),
         }
     }
@@ -309,6 +342,19 @@ impl Default for ResumeGate {
 struct LoopState {
     turn: u32,
     usage: Usage,
+    /// Steps taken since the last keep-alive user-turn boundary. Kept in
+    /// lockstep with `turn` everywhere `turn` advances mid-turn (a
+    /// result-contract retry, or a dispatched tool-call step), then reset to
+    /// `0` -- not incremented -- at the keep-alive natural-completion branch
+    /// in [`AgentLoop::run_inner`], since that reset marks the boundary
+    /// itself: the turn that just ended needs no further budget check, and
+    /// the next one hasn't taken a step yet. `check_budget` gates a
+    /// `keep_alive` agent's `max_steps` dimension on THIS field instead of
+    /// `turn`, so the budget bounds each user turn's tool-loop independently
+    /// rather than the whole session's lifetime -- see that method's doc.
+    /// Meaningless (never read) for a non-`keep_alive` agent: `check_budget`
+    /// gates that path on `turn` exactly as before this field existed.
+    turn_steps: u32,
 }
 
 /// Early-returns `Err((err.into(), $state))` from the enclosing
@@ -460,13 +506,16 @@ impl AgentLoop {
                 return Ok(self.finish_cancelled(state, &result_builder).await);
             }
 
-            // WI-118: a resumed root's very first iteration waits here for
-            // the caller's next prompt instead of reading the transcript it
-            // was persisted with -- see `ResumeGate`'s own doc for why. Once
-            // cleared, `continue` re-runs the loop from the top (fresh
-            // `drain_inbox`/budget/cancel checks) with the gate now open, so
-            // this branch is never entered again for the rest of this run.
-            if self.resume_gate.awaiting_first_prompt {
+            // WI-118, generalized for keep-alive: a resumed root's very
+            // first iteration, or a `keep_alive` agent's idle wait between
+            // turns, waits here for the caller's next prompt instead of
+            // proceeding into a spurious turn -- see `ResumeGate`'s own doc
+            // for why. Once cleared, `continue` re-runs the loop from the
+            // top (fresh `drain_inbox`/budget/cancel checks) with the gate
+            // now open, so this branch is not re-entered until (for
+            // `keep_alive`) the NEXT turn also completes with no pending
+            // work.
+            if self.resume_gate.awaiting_prompt {
                 match self.spec.budget.deadline {
                     Some(deadline) => {
                         let remaining = (deadline - Utc::now()).to_std().unwrap_or(Duration::ZERO);
@@ -485,7 +534,7 @@ impl AgentLoop {
                                 ).await);
                             }
                             () = self.resume_gate.notify.notified() => {
-                                self.resume_gate.awaiting_first_prompt = false;
+                                self.resume_gate.awaiting_prompt = false;
                             }
                         }
                     }
@@ -496,7 +545,7 @@ impl AgentLoop {
                                 return Ok(self.finish_cancelled(state, &result_builder).await);
                             }
                             () = self.resume_gate.notify.notified() => {
-                                self.resume_gate.awaiting_first_prompt = false;
+                                self.resume_gate.awaiting_prompt = false;
                             }
                         }
                     }
@@ -697,6 +746,7 @@ impl AgentLoop {
                             );
                             contract_retried = true;
                             state.turn += 1;
+                            state.turn_steps += 1;
                             continue;
                         }
                         ContractOutcome::Rejected { missing } => {
@@ -711,6 +761,48 @@ impl AgentLoop {
                                 .await);
                         }
                     }
+                }
+
+                // Keep-alive (opt-in, `AgentSpec::keep_alive`): a turn that
+                // completes with no pending work does NOT end this agent's
+                // task -- it idle-awaits the caller's next prompt instead,
+                // via the very same `ResumeGate` `resume_root` gates its
+                // first iteration with (see that type's own doc). No
+                // `finish` call here and no `Event::AgentFinished` -- a
+                // keep-alive session is consumed turn-by-turn over the
+                // event stream (`TurnStarted`/`TurnFinished`, already
+                // emitted above, unconditionally), not via one terminal
+                // `AgentResult`; `state.usage`/`state.turn` (bumped here,
+                // exactly like the non-keep-alive path's `state.turn + 1`)
+                // keep accruing across turns so budgets still span the
+                // whole session (`check_budget`, next loop iteration, at
+                // the top). The task ends ONLY via the top-of-loop
+                // cancel/budget checks or the gate's own
+                // cancel/deadline arms below -- never by falling out of
+                // this branch on its own after a normal turn.
+                if self.spec.keep_alive {
+                    state.turn += 1;
+                    // Keep-alive user-turn boundary: reset the per-turn step
+                    // budget counter and this turn's result accumulators.
+                    // `state.turn_steps = 0` (not `+= 1`) because the turn
+                    // that just naturally completed needs no further budget
+                    // check and the next one hasn't taken a step yet (see
+                    // that field's own doc). `result_builder`/
+                    // `contract_retried` are similarly turn-scoped for a
+                    // keep-alive agent: without this reset, a `report` call
+                    // (or a spent contract retry) from THIS turn would keep
+                    // shadowing every later turn's own outcome all the way
+                    // to whatever turn the session eventually really ends
+                    // on, producing a terminal `AgentResult` built from
+                    // stale, unrelated history. `seen_segments` and
+                    // `state.usage` are deliberately NOT reset here -- they
+                    // must persist across the whole keep-alive session (see
+                    // their own declarations above this loop).
+                    state.turn_steps = 0;
+                    result_builder = ResultBuilder::new();
+                    contract_retried = false;
+                    self.resume_gate.awaiting_prompt = true;
+                    continue;
                 }
 
                 return Ok(self
@@ -818,6 +910,7 @@ impl AgentLoop {
             }
 
             state.turn += 1;
+            state.turn_steps += 1;
         }
     }
 
@@ -826,9 +919,36 @@ impl AgentLoop {
     /// `max_tool_calls` is not enforced by this item (no criterion requires
     /// it — WI-081's binding budget tests are `max_steps`, `deadline`, and
     /// `max_tokens`).
+    ///
+    /// **`max_steps` for a `keep_alive` agent** gates on `state.turn_steps`
+    /// (steps since the last user-turn boundary) instead of `state.turn`
+    /// (steps since the agent's whole life began): a keep-alive session must
+    /// survive an unbounded number of user turns, each independently bounded
+    /// by `max_steps` as a runaway-tool-loop guard, not have the WHOLE
+    /// session's lifetime capped at `max_steps` total steps -- see
+    /// `LoopState::turn_steps`'s own doc. Every other budget dimension
+    /// (`deadline`, `max_tokens`) is intentionally left session-lifetime for
+    /// both keep-alive and non-keep-alive agents: `state.usage` already
+    /// accrues across every turn of a keep-alive session (never reset), and
+    /// `deadline` is a wall-clock cutoff independent of turn boundaries by
+    /// nature. A session-lifetime `max_tokens`/`deadline` can still end an
+    /// interactive keep-alive session outright (the TUI's default `Budget`
+    /// has no `max_tokens`/`deadline` set, so this does not fire in
+    /// practice) -- the companion TUI-notice fix
+    /// (`conway_cli::tui::state::AppState::apply_agent_finished`) is what
+    /// makes any such termination visible rather than silent; making those
+    /// two dimensions turn-scoped too is out of this item's scope.
+    ///
+    /// Non-`keep_alive` behavior is byte-for-byte unchanged: `state.turn`
+    /// gates `max_steps` exactly as before this field existed.
     async fn check_budget(&self, state: LoopState, builder: &ResultBuilder) -> Option<AgentResult> {
         let budget = &self.spec.budget;
-        if state.turn >= budget.max_steps {
+        let steps_this_turn = if self.spec.keep_alive {
+            state.turn_steps
+        } else {
+            state.turn
+        };
+        if steps_this_turn >= budget.max_steps {
             return Some(
                 self.finish(
                     ResultStatus::BudgetExceeded {
