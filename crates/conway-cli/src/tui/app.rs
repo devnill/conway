@@ -10,11 +10,12 @@
 
 use std::time::{Duration, Instant};
 
-use conway::{Conway, RoleAlias, SessionSpec};
+use conway::{Conway, RoleAlias, SessionHandle, SessionSpec};
 use futures::StreamExt;
 use ratatui::backend::Backend;
 use ratatui::crossterm::event::{Event as CEvent, EventStream as CrosstermEventStream};
 use ratatui::Terminal;
+use tokio::sync::mpsc;
 
 use crate::cli::Cli;
 use crate::exit::ExitCode;
@@ -24,6 +25,14 @@ use super::gate::GateReceiver;
 use super::input::{self, Action};
 use super::state::AppState;
 use super::view;
+
+/// The result of one spawned `/ask` task (see [`App::submit`]'s `/ask`
+/// branch and [`run_ask`]), matched back to its [`super::state::Entry::EphemeralAsk`]
+/// by `id`.
+struct AskResult {
+    id: u64,
+    reply: conway::Result<String>,
+}
 
 /// How long a lone `Ctrl-C` remains "armed" -- a second `Ctrl-C` within this
 /// window exits 130; after it, a `Ctrl-C` is treated as a fresh first press
@@ -39,6 +48,15 @@ pub struct App {
     // `SessionHandle` -- cheap to hold (every field is `Arc`-backed, per
     // `Conway`'s own doc: "Cheap to `Clone`").
     conway: Conway,
+    /// `/ask` (WI-127 criterion 5) spawns a `tokio::spawn`ed task per
+    /// question (fork-ask, then drain the child's turn to completion via
+    /// `TurnHandle::text` -- see [`run_ask`]) rather than folding it into
+    /// `self.handle.events()`: the forked child is a DIFFERENT session, so
+    /// its envelopes never arrive on that stream. `ask_tx` is cloned into
+    /// each spawned task; `ask_rx` is taken out of `self` once, in `run`,
+    /// and polled there as an extra `tokio::select!` arm.
+    ask_tx: mpsc::UnboundedSender<AskResult>,
+    ask_rx: Option<mpsc::UnboundedReceiver<AskResult>>,
 }
 
 /// What `App::submit` learned the app loop must additionally do, beyond the
@@ -75,10 +93,13 @@ impl App {
         };
         let handle = conway.new_session(spec).await?;
         let state = AppState::new(handle.root());
+        let (ask_tx, ask_rx) = mpsc::unbounded_channel();
         Ok(Self {
             handle,
             state,
             conway: conway.clone(),
+            ask_tx,
+            ask_rx: Some(ask_rx),
         })
     }
 
@@ -95,6 +116,15 @@ impl App {
         let mut ticker = tokio::time::interval(REDRAW_TICK);
         let mut dirty = true;
         let mut last_ctrl_c: Option<Instant> = None;
+        // Taken out of `self` once here (rather than borrowed from it inside
+        // the loop below) so this `select!`'s `ask_rx.recv()` arm and the
+        // other arms' `&mut self.state` borrows don't conflict -- the same
+        // reason `events`/`keys`/`ticker` are already locals, not fields
+        // borrowed in place.
+        let mut ask_rx = self
+            .ask_rx
+            .take()
+            .expect("ask_rx is set in App::new and taken exactly once, here");
 
         loop {
             tokio::select! {
@@ -103,6 +133,13 @@ impl App {
                         terminal.draw(|f| view::draw(&self.state, f))
                             .map_err(conway::ConwayError::Io)?;
                         dirty = false;
+                    }
+                }
+                maybe_ask = ask_rx.recv() => {
+                    if let Some(AskResult { id, reply }) = maybe_ask {
+                        let text = reply.unwrap_or_else(|e| format!("error: {e}"));
+                        self.state.resolve_ephemeral_ask(id, text);
+                        dirty = true;
                     }
                 }
                 maybe_env = events.next() => {
@@ -179,7 +216,50 @@ impl App {
     /// malformed or unknown slash command becomes a `Notice` -- it is never
     /// sent to the model (module notes' binding requirement, carried from
     /// WI-114's stub).
+    ///
+    /// `/ask` and `/agents` (WI-127 criteria 4 & 5) are intercepted HERE,
+    /// before `commands::parse` ever sees them: `commands.rs` is out of
+    /// this item's file scope, so its `SlashCommand`/`parse`/`execute` are
+    /// left untouched, and both new commands are handled entirely within
+    /// this in-scope method instead. Same invariant as every other slash
+    /// command: neither ever reaches `commands::parse` as an "unknown
+    /// command" error, and neither is ever sent to the model as a prompt.
     async fn submit(&mut self, text: String) -> conway::Result<SubmitOutcome> {
+        if text.trim() == "/agents" || text.starts_with("/agents ") {
+            if text.trim() == "/agents" {
+                self.state.toggle_agent_view();
+            } else {
+                self.state.transcript.push(super::state::Entry::Notice {
+                    text: "usage: /agents (no arguments)".to_string(),
+                });
+            }
+            return Ok(SubmitOutcome::Continue);
+        }
+        if text.trim() == "/ask" || text.starts_with("/ask ") {
+            let question = text
+                .strip_prefix("/ask")
+                .unwrap_or(&text)
+                .trim()
+                .to_string();
+            if question.is_empty() {
+                self.state.transcript.push(super::state::Entry::Notice {
+                    text: "usage: /ask <text>".to_string(),
+                });
+            } else {
+                let id = self.state.push_ephemeral_ask(question.clone());
+                let handle = self.handle.clone();
+                let tx = self.ask_tx.clone();
+                tokio::spawn(async move {
+                    let reply = run_ask(handle, question).await;
+                    // The receiver only goes away when `App::run`'s loop
+                    // has already exited -- nothing left to notify, so a
+                    // send failure here is silently dropped rather than
+                    // treated as an error.
+                    let _ = tx.send(AskResult { id, reply });
+                });
+            }
+            return Ok(SubmitOutcome::Continue);
+        }
         if text.starts_with('/') {
             match commands::parse(&text) {
                 Ok(cmd) => {
@@ -233,4 +313,15 @@ impl App {
         }
         Ok(None)
     }
+}
+
+/// Drives one `/ask` (WI-127 criterion 5) to completion: `SessionHandle::ask`
+/// forks an ephemeral child and returns a `TurnHandle` over it (exactly like
+/// `SessionHandle::prompt`, but scoped to that throwaway child); `text()`
+/// drains it to the finished reply. A free function (not an `App` method)
+/// since it owns none of `App`'s state -- it runs inside a `tokio::spawn`ed
+/// task that outlives any single `submit` call, so it cannot borrow `self`.
+async fn run_ask(handle: SessionHandle, question: String) -> conway::Result<String> {
+    let turn = handle.ask(question).await?;
+    turn.text().await
 }
