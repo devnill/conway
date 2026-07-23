@@ -210,6 +210,59 @@ impl Backend for DelayedEchoBackend {
 // ---------------------------------------------------------------------
 
 #[tokio::test]
+async fn fork_without_a_role_inherits_the_parents_role_not_the_literal_default() {
+    // WI-136 regression: with a normal config whose `default_role` is NOT the
+    // literal "default", a fork that specifies no role of its own must inherit
+    // the PARENT's role. Before the fix it fell back to a hardcoded
+    // `RoleAlias::new("default")`, which is not a configured alias here, so
+    // prompting the child failed routing with `unknown role alias: default`.
+    let mut roles = BTreeMap::new();
+    roles.insert(
+        "coder".to_string(),
+        RoleEntry {
+            chain: vec![],
+            headroom_tokens: None,
+        },
+    );
+    let config = ConwayConfig {
+        default_role: RoleAlias::new("coder"),
+        roles,
+        ..base_config()
+    };
+    let store = Arc::new(FakeStore::new());
+    let conway = ConwayBuilder::from_parts(config)
+        .with_backend(Arc::new(FakeBackend::echo(BackendId::new("fake"))))
+        .with_session_store(store.clone())
+        .with_permission_gate(Arc::new(FakeGate::new(PermissionDecision::AllowOnce)))
+        .with_router(fake_router())
+        .build()
+        .expect("build should succeed");
+    // The root's role defaults to config.default_role ("coder").
+    let handle = conway
+        .new_session(SessionSpec::default())
+        .await
+        .expect("new_session should succeed");
+
+    // Fork with NO role and NO agent def.
+    let child = handle
+        .fork(handle.root(), ForkSpec::new("keep going"))
+        .await
+        .expect("fork should succeed");
+
+    let tree = handle.tree();
+    let node = tree
+        .nodes
+        .iter()
+        .find(|n| n.agent_id == child)
+        .expect("child must be attached to the tree");
+    assert_eq!(
+        node.role,
+        Some(RoleAlias::new("coder")),
+        "a roleless fork must inherit the parent's role, not the literal \"default\""
+    );
+}
+
+#[tokio::test]
 async fn fork_produces_a_child_with_mapped_fields_and_an_inherited_prefix() {
     let store = Arc::new(FakeStore::new());
     let conway = build_conway_with_echo_backend(store.clone());

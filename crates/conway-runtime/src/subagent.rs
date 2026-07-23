@@ -167,6 +167,16 @@ impl SubagentHost for Runtime {
             .role
             .clone()
             .or_else(|| agent_def.and_then(|d| d.role.clone()))
+            // WI-136: inherit the PARENT's role before any hardcoded fallback.
+            // A fork inherits the parent's context, so it must route the same
+            // way; the literal `"default"` below is not a configured role
+            // alias in a normal config (config names its default via
+            // `default_role`, e.g. "coder"), so falling back to it made every
+            // roleless fork fail routing with `unknown role alias: default`.
+            // `parent_meta.role` carries the parent's effective role (the root
+            // got it from `config.default_role`; it propagates transitively),
+            // so this reaches the literal only if the parent itself has none.
+            .or_else(|| parent_meta.role.clone())
             .unwrap_or_else(|| RoleAlias::new("default"));
         let system_prompt = agent_def.map(|d| SystemPromptSpec {
             agent_def: d.name.clone(),
