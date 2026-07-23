@@ -28,6 +28,7 @@ use conway::{ConwayBuilder, SessionSpec};
 use conway_core::agent::PermissionDecision;
 use conway_core::fakes::{FakeBackend, FakeGate, FakeRouter, FakeStore};
 use conway_core::ids::{BackendId, ModelId, ModelRef, RoleAlias};
+use conway_core::ports::SessionStore;
 
 /// A minimal config: one role, no configured backends. The fake router
 /// below supplies the route directly, so no backend table is needed here --
@@ -63,29 +64,39 @@ async fn main() -> conway::Result<()> {
     // prompt text back), an allow-once permission gate, an in-memory session
     // store, and a single-route router. Every one of these is an injected
     // trait object -- in production they come from
-    // `ConwayBuilder::discover()` / `from_config()` instead.
+    // `ConwayBuilder::discover()` / `from_config()` instead. We keep the store
+    // handle so we can peek at the main session's log length below.
+    let store = Arc::new(FakeStore::new());
     let conway = ConwayBuilder::from_parts(minimal_config())
         .with_backend(Arc::new(FakeBackend::echo(BackendId::new("fake"))))
         .with_permission_gate(Arc::new(FakeGate::new(PermissionDecision::AllowOnce)))
-        .with_session_store(Arc::new(FakeStore::new()))
+        .with_session_store(store.clone())
         .with_router(Arc::new(FakeRouter::single(ModelRef {
             backend: BackendId::new("fake"),
             model: ModelId::new("echo-model"),
         })))
         .build()?;
 
-    // Open a live, multi-turn session.
+    // Open a session and run one real turn. Drain the turn fully (`result`,
+    // after `text`) so the append-only log has settled before we measure it.
     let session = conway.new_session(SessionSpec::default()).await?;
-
-    // A normal turn: prompt in, streamed reply out.
     let turn = session.prompt("Hello, conway!").await?;
     println!("prompt -> {}", turn.text().await?);
+    let _ = turn.result().await?;
 
-    // `ask` runs an EPHEMERAL forked turn: it inherits the session's context
-    // but its question and answer are discarded afterward, so a quick
-    // side-question never pollutes the main transcript.
+    // Show that `ask` is ephemeral -- don't just claim it. `ask` forks the
+    // session into a hidden child and drives one turn THERE, so the main
+    // session's append-only log is left untouched.
+    let head_before = store.head(&session.id()).await.expect("head read");
     let aside = session.ask("(ephemeral) just checking something").await?;
     println!("ask    -> {}", aside.text().await?);
+    let _ = aside.result().await?;
+    let head_after = store.head(&session.id()).await.expect("head read");
+
+    println!(
+        "main-session log head: {head_before:?} before the ask, {head_after:?} after \
+         -> the ephemeral ask left no trace in the main session"
+    );
 
     Ok(())
 }
