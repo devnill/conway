@@ -107,9 +107,11 @@ use std::time::Duration;
 
 use conway::gates::AllowListGate;
 use conway::{
-    AgentResult, Conway, ConwayError, Event, ForkSpec, RoleAlias, SessionHandle, SessionSpec,
+    AgentResult, Conway, ConwayError, Event, ForkSpec, ModelRef, RoleAlias, SessionHandle,
+    SessionSpec,
 };
 use futures::StreamExt;
+use std::str::FromStr;
 
 use crate::cli::{Cli, PermissionMode};
 use crate::exit::ExitCode;
@@ -216,9 +218,11 @@ async fn resolve_session(cli: &Cli, conway: &Conway) -> conway::Result<SessionHa
                 .role_override
                 .as_ref()
                 .map(|r| RoleAlias::new(r.clone()));
+            let model = parse_model_pin(cli)?;
             let spec = SessionSpec {
                 role,
                 cwd: cli.cwd.clone(),
+                model,
                 ..SessionSpec::default()
             };
             conway.new_session(spec).await
@@ -246,10 +250,12 @@ async fn resolve_session(cli: &Cli, conway: &Conway) -> conway::Result<SessionHa
                 .role_override
                 .as_ref()
                 .map(|r| RoleAlias::new(r.clone()));
+            let model = parse_model_pin(cli)?;
             let spec = SessionSpec {
                 id: Some(sid),
                 role,
                 cwd: cli.cwd.clone(),
+                model,
                 ..SessionSpec::default()
             };
             conway
@@ -362,6 +368,17 @@ fn usage_error(message: impl Into<String>) -> ConwayError {
         path: None,
         message: message.into(),
     }
+}
+
+/// Parses `--model <ref>` (WI-128) into a [`ModelRef`] pin, or `None` when
+/// the flag was not passed. A malformed ref is a usage error (`ExitCode::
+/// Usage`, 2), consistent with every other flag this module parses in
+/// [`resolve_session`].
+fn parse_model_pin(cli: &Cli) -> conway::Result<Option<ModelRef>> {
+    cli.model
+        .as_deref()
+        .map(|r| ModelRef::from_str(r).map_err(|e| usage_error(format!("--model {r}: {e}"))))
+        .transpose()
 }
 
 /// Builds the one-shot gate from `--permission-mode`/`--allowed-tools`/
