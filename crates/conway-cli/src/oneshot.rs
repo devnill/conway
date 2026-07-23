@@ -53,54 +53,61 @@
 //!    reading both. `cli.model` is accepted by the parser (WI-111) but is
 //!    inert here; flagged for the facade to grow a pin field, not papered
 //!    over with an invented mechanism.
-//! 4. **`--session`/`--resume`/`--fork-from` (WI-117).** All three are now
-//!    wired in [`resolve_session`], and all three run straight into the
-//!    *same* carried gap, from three different angles: `conway-runtime`
-//!    (WI-082) exposes exactly one way to register a *live* root agent --
-//!    `Runtime::start_root`, reached only through `Conway::new_session` --
-//!    and that path always mints its own fresh `SessionId` and always
-//!    `store.create`s a brand-new session. There is no `resume_root`/
-//!    `attach` counterpart (confirmed by grep; already flagged once by
-//!    WI-103's own `Conway::resume` doc, in its "`prompt()` after resume"
-//!    paragraph). Concretely:
-//!    - `--session <new-id>`: no facade method accepts a caller-chosen
-//!      `SessionId` at all -- `SessionSpec` (WI-101) has no `id` field, and
-//!      `Conway::new_session` hardcodes `SessionId::new()`. There is
-//!      nothing this module can create the caller's id *as*.
-//!    - `--resume <id>`: `Conway::resume` reattaches a read-only handle;
-//!      `SessionHandle::prompt` looks the root agent up in `Runtime`'s
-//!      in-memory `agents` map, which `resume` never populates, so it
-//!      always returns `RuntimeError::AgentNotFound` for a resumed handle
-//!      -- not conditionally, always.
-//!    - `--fork-from <ref>`: the plan doc's own pseudocode drives this
-//!      through a *live* fork (`SessionHandle::fork` on a resumed parent),
-//!      which hits the identical wall one layer earlier --
-//!      `SubagentHost::start` resolves the parent via
-//!      `Runtime::agent_session`, the same in-memory map `resume` never
-//!      populates, so a live fork off a resumed parent fails before it
-//!      even reaches `SessionStore::fork`. `Conway::fork_from` (store-only,
-//!      WI-103) sidesteps that -- it never needs a live parent -- and *is*
-//!      what [`resolve_session`] calls, so the child session is genuinely
-//!      created and independently observable via `Conway::sessions`. But
-//!      `Conway::fork_from` also never registers the *child* as live
-//!      either (same root cause), and it does not even persist
-//!      `ForkSpec::directive` anywhere (`conway`'s own doc on that method:
-//!      "only `agent_def` and `role` are consulted") -- so the `-p` prompt
-//!      text has nowhere to go.
+//! 4. **`--session`/`--resume`/`--fork-from` (WI-117, driven live by
+//!    WI-120).** WI-117 wired these three flags but could only validate
+//!    them: `conway-runtime` had exactly one way to register a *live* root
+//!    agent (`Runtime::start_root`, reached only through
+//!    `Conway::new_session`), which always minted its own fresh `SessionId`
+//!    and always `store.create`d a brand-new session -- there was no
+//!    `resume_root`/`attach` counterpart. WI-118 added
+//!    `Runtime::resume_root` (re-registers a persisted agent as live,
+//!    gated behind a `ResumeGate` so it idles until the first `prompt`
+//!    rather than racing a spurious turn) and WI-119 wired it through the
+//!    facade: `SessionSpec` gained a caller-chosen `id` field,
+//!    `Conway::resume` now returns a drivable handle, and
+//!    `Conway::fork_from`'s child is registered live too (genuinely
+//!    inheriting the parent's context via the shared `TranscriptResolver`
+//!    walk). [`resolve_session`] now drives all three flags for real:
+//!    - `--session <new-id>`: `conway.new_session(SessionSpec { id: Some(sid), .. })`
+//!      creates exactly that id (an existence probe via `conway.resume`
+//!      first turns a collision into a usage error naming `--resume`
+//!      instead, rather than surfacing `Conway::new_session`'s own
+//!      `StoreError::AlreadyExists` as a less actionable message).
+//!    - `--resume <id>`: `conway.resume(sid)` now returns a handle whose
+//!      `prompt` genuinely continues the persisted transcript -- this arm
+//!      returns it straight to [`run`], which subscribes and prompts
+//!      exactly as the flag-free path does.
+//!    - `--fork-from <ref>`: `conway.fork_from(parent, at, spec)` returns a
+//!      drivable child handle; [`run`]'s own subsequent `handle.prompt(text)`
+//!      is the child's first (and, per `ResumeGate`, only-until-prompted)
+//!      turn -- `spec.directive` is left empty (`ForkSpec::new(String::new())`)
+//!      since `fork_from`'s offline path never writes a `LogRecord::
+//!      ForkDirective`; the real turn is `run`'s own `handle.prompt`. When
+//!      `<ref>` names no `@seq`, the fork point is `conway.session_head
+//!      (parent)` (`Conway::session_head`, added for this fix) -- the
+//!      parent's own *local* record count, matching exactly what `Conway::
+//!      fork_from`'s bounds check compares `at` against, so "fork this
+//!      branch at its current head" is correct even when `parent` is itself
+//!      a fork child (a naive `SessionHandle::transcript().len()` would
+//!      overcount by the inherited-prefix size and fail with a confusing
+//!      `SeqOutOfRange`). `--role-override` is wired through `spec.role`
+//!      (honored by `fork_from`); `--cwd` has no `ForkSpec` field to carry
+//!      it, so combining it with `--fork-from` is a usage error rather than
+//!      a silent drop.
 //!
-//!    None of this is worked around here by reconstructing agent state in
-//!    the CLI -- out of this item's file scope, and precisely what WI-103's
-//!    own carried gap says not to do. [`resolve_session`]'s own doc
-//!    discloses each arm's exact, real behavior; this item's Self-Check
-//!    does too.
+//!    Every arm now returns a live [`SessionHandle`] straight from
+//!    [`resolve_session`], which is why the flag-free default arm and
+//!    these three no longer need to diverge in [`run`]'s own driving loop
+//!    -- the now-single-outcome-shape [`resolve_session`] dropped its
+//!    former `SessionOutcome::Done` branch entirely (nothing produces it
+//!    any more).
 
 use std::io::{IsTerminal, Read};
 use std::time::Duration;
 
 use conway::gates::AllowListGate;
 use conway::{
-    AgentResult, Conway, ConwayError, Event, ForkSpec, LogSeq, RoleAlias, SessionHandle,
-    SessionSpec,
+    AgentResult, Conway, ConwayError, Event, ForkSpec, RoleAlias, SessionHandle, SessionSpec,
 };
 use futures::StreamExt;
 
@@ -115,10 +122,7 @@ use crate::{diag, render, session_ref, signal};
 pub async fn run(cli: &Cli, conway: Conway) -> conway::Result<ExitCode> {
     let text = read_prompt(cli)?;
 
-    let handle = match resolve_session(cli, &conway, &text).await? {
-        SessionOutcome::Live(handle) => handle,
-        SessionOutcome::Done(code) => return Ok(code),
-    };
+    let handle = resolve_session(cli, &conway).await?;
 
     // Subscribe before prompting: an `events()` subscription taken out
     // after `prompt()` has already appended could miss the turn's own
@@ -187,26 +191,13 @@ pub async fn run(cli: &Cli, conway: Conway) -> conway::Result<ExitCode> {
     Ok(code)
 }
 
-/// What [`resolve_session`] produced.
-enum SessionOutcome {
-    /// A live session whose root agent this process can drive with
-    /// `.prompt(text)` -- the normal one-shot path (every plain `-p`
-    /// invocation, with none of the three continuity flags set).
-    Live(SessionHandle),
-    /// The requested operation is already complete (or has already failed
-    /// as a disclosed, non-retryable limitation) and there is no live turn
-    /// to run -- `run` returns this code directly, skipping the renderer
-    /// loop entirely.
-    Done(ExitCode),
-}
-
-/// Resolves `cli.session`/`cli.resume`/`cli.fork_from` (WI-117) -- at most
-/// one is ever `Some`, per `cli.rs`'s `conflicts_with_all` -- into either a
-/// live [`SessionHandle`] or a [`SessionOutcome::Done`]. See this module's
-/// doc comment, reconciliation #4, for the one carried gap that shapes
-/// every non-default arm below (`conway-runtime` has no way to register an
-/// already-persisted or store-only-created session's agent as live); each
-/// arm's own comment repeats only what is specific to that flag.
+/// Resolves `cli.session`/`cli.resume`/`cli.fork_from` (WI-117, driven live
+/// by WI-120) -- at most one is ever `Some`, per `cli.rs`'s
+/// `conflicts_with_all` -- into a live [`SessionHandle`] that [`run`] then
+/// subscribes to and prompts uniformly, regardless of which arm produced
+/// it. See this module's doc comment, reconciliation #4, for how each flag
+/// reaches a drivable handle; each arm's own comment below covers only what
+/// is specific to that flag.
 ///
 /// Every error this function returns is deliberately built with
 /// [`usage_error`] (`ExitCode::Usage`, 2) rather than left to propagate as
@@ -214,12 +205,11 @@ enum SessionOutcome {
 /// would classify as `ExitCode::AgentFailed`, 1, via `exit::classify_runtime_or_routing`'s
 /// default arm) -- matching this item's own binding notes: "every failure
 /// mode here is a usage error, not an agent failure ... the agent never
-/// starts, so no agent status exists to report." That statement is true
-/// of the newly-disclosed gaps below exactly as much as it is of the
-/// originally-listed ones (unknown session, malformed ref, seq beyond
-/// head, duplicate id, conflicting flags): in every arm that returns
-/// `Err`, no agent ever started.
-async fn resolve_session(cli: &Cli, conway: &Conway, text: &str) -> conway::Result<SessionOutcome> {
+/// starts, so no agent status exists to report." That holds for every arm
+/// below (unknown session, malformed ref, seq beyond head, duplicate id,
+/// conflicting flags): in every arm that returns `Err`, no agent ever
+/// started.
+async fn resolve_session(cli: &Cli, conway: &Conway) -> conway::Result<SessionHandle> {
     match (&cli.session, &cli.resume, &cli.fork_from) {
         (None, None, None) => {
             let role = cli
@@ -231,116 +221,111 @@ async fn resolve_session(cli: &Cli, conway: &Conway, text: &str) -> conway::Resu
                 cwd: cli.cwd.clone(),
                 ..SessionSpec::default()
             };
-            Ok(SessionOutcome::Live(conway.new_session(spec).await?))
+            conway.new_session(spec).await
         }
 
         // `--session <id>`: "use (creating if new) a specific session id."
-        // The "reusing an existing id without --resume exits 2" half of
-        // this item's criterion is fully implementable (a plain
-        // `Conway::resume` existence probe). The "creates that id" half is
-        // not: see this module's doc comment, reconciliation #4, first
-        // bullet. Disclosed here rather than silently creating a
-        // *different*, un-requested session id, which would be actively
-        // dangerous for a script that asked for this one by name.
+        // A `Conway::resume` existence probe runs first so a collision
+        // surfaces as an actionable "use --resume instead" usage error
+        // rather than `Conway::new_session`'s own generic
+        // `StoreError::AlreadyExists` -- a real race between this probe
+        // and the `new_session` call below (another process creating the
+        // same id in between) is not a concern this single-shot CLI
+        // invocation needs to close: `new_session` would then fail with
+        // that same typed store error, still surfaced as a usage error via
+        // the `map_err` below, just with a less specific message.
         (Some(id), None, None) => {
             let sid = session_ref::parse_sid(id).map_err(|e| usage_error(e.to_string()))?;
-            match conway.resume(sid).await {
-                Ok(_) => Err(usage_error(format!(
+            if conway.resume(sid).await.is_ok() {
+                return Err(usage_error(format!(
                     "--session {sid}: session already exists; pass --resume {sid} to continue \
                      it instead"
-                ))),
-                Err(_) => Err(usage_error(format!(
-                    "--session {sid}: cannot create a session under a caller-chosen id -- the \
-                     `conway` facade has no constructor for one (`SessionSpec` carries no `id` \
-                     field, and `Conway::new_session` always mints its own `SessionId`); this is \
-                     a disclosed facade gap, not a mistake in the id you passed -- see \
-                     `oneshot::resolve_session`'s doc comment"
-                ))),
+                )));
             }
+            let role = cli
+                .role_override
+                .as_ref()
+                .map(|r| RoleAlias::new(r.clone()));
+            let spec = SessionSpec {
+                id: Some(sid),
+                role,
+                cwd: cli.cwd.clone(),
+                ..SessionSpec::default()
+            };
+            conway
+                .new_session(spec)
+                .await
+                .map_err(|e| usage_error(format!("--session {sid}: {e}")))
         }
 
-        // `--resume <id>`: reattach and continue. The existence check
-        // (`resume_unknown_session` exits 2, before any stdout) is fully
-        // implementable and happens first. Driving a *new* turn against
-        // the reattached session is not -- see reconciliation #4's second
-        // bullet -- so this arm never calls `.prompt()` at all: the
-        // failure is 100% deterministic once `resume` itself has
-        // succeeded, so attempting it anyway would only produce a
-        // misleading `RuntimeError::AgentNotFound` (-> `ExitCode::AgentFailed`,
-        // masking "the agent never started" as "the agent failed").
+        // `--resume <id>`: reattach and hand the drivable handle straight
+        // back to `run`, which subscribes and prompts it exactly like the
+        // flag-free path above -- `Conway::resume` (WI-119) now returns a
+        // handle whose `prompt` genuinely continues the persisted
+        // transcript (`Runtime::resume_root`, WI-118), so there is nothing
+        // arm-specific left to do here beyond the existence check.
         (None, Some(id), None) => {
             let sid = session_ref::parse_sid(id).map_err(|e| usage_error(e.to_string()))?;
             conway
                 .resume(sid)
                 .await
-                .map_err(|e| usage_error(format!("--resume {sid}: {e}")))?;
-            Err(usage_error(format!(
-                "--resume {sid}: the session exists, but one-shot mode cannot drive a new turn \
-                 against a resumed session yet -- `conway-runtime` exposes no way to re-register \
-                 an existing session's agent as live (`Runtime::start_root` is the only \
-                 session-starting entry point, and it always creates a brand-new one); this is a \
-                 disclosed facade gap, not a usage mistake -- see `oneshot::resolve_session`'s \
-                 doc comment"
-            )))
+                .map_err(|e| usage_error(format!("--resume {sid}: {e}")))
         }
 
-        // `--fork-from <ref>`: branch a new session from `<sid>[@seq]`.
-        // Reconciliation #4's third bullet: this arm calls
-        // `Conway::fork_from` (store-only), which genuinely creates the
-        // child (visible via `Conway::sessions`), but cannot start a live
-        // turn on it or persist the `-p` text anywhere. Exits 0 (the fork
-        // itself succeeded) with a stderr diagnostic, never touching
-        // stdout -- satisfying this item's own "stdout purity" criterion
-        // trivially, since no assistant turn ever runs.
+        // `--fork-from <ref>`: branch a new session from `<sid>[@seq]` and
+        // hand the drivable child straight back to `run` -- `Conway::
+        // fork_from` (WI-119) now registers the child live too (genuinely
+        // inheriting the parent's context up to `at`), so `run`'s own
+        // subsequent `handle.prompt(text)` is the child's first turn.
+        //
+        // `--cwd` has no `ForkSpec` field to carry it through, and
+        // `Conway::fork_from` hardcodes the child's `ResumeSpec.cwd` to
+        // `None` (falling back to the parent's own `cwd`) -- plumbing it
+        // through would mean growing `ForkSpec`/`fork_from`'s signature,
+        // out of this item's minimal-blast-radius scope. Rather than
+        // silently drop a `--cwd` the user actually typed, combining it
+        // with `--fork-from` is a usage error naming both flags.
         (None, None, Some(r)) => {
+            if cli.cwd.is_some() {
+                return Err(usage_error(
+                    "--cwd is not supported with --fork-from: the forked child always inherits \
+                     the parent session's cwd",
+                ));
+            }
             let (parent, seq) =
                 session_ref::parse_fork_ref(r).map_err(|e| usage_error(e.to_string()))?;
             let at = match seq {
                 Some(seq) => seq,
                 None => {
-                    // No facade method returns a session's head directly;
-                    // `SessionHandle::transcript` is documented (WI-103) to
-                    // read only through `SessionStore`, unaffected by the
-                    // agent not being live, and -- for a session with no
-                    // fork ancestry of its own, true of every parent this
-                    // suite's tests construct -- its record count equals
-                    // that session's own head exactly (`resolve_prefix`'s
-                    // no-origin case reads precisely `[0, head)`). This
-                    // undercounts for a parent that is *itself* a fork
-                    // (its effective transcript also carries its own
-                    // ancestor prefix); flagged as a narrower, disclosed
-                    // limitation rather than reached around by adding a
-                    // `SessionStore::head`-shaped facade method (out of
-                    // this item's file scope).
-                    let parent_handle = conway
-                        .resume(parent)
+                    // "Fork this branch at its current head": the head must
+                    // be the parent's own LOCAL record count
+                    // (`SessionStore::head`, what `Conway::fork_from`'s own
+                    // bounds check compares `at` against), not
+                    // `SessionHandle::transcript().len()` -- that reads the
+                    // effective, ancestry-resolved transcript (inherited
+                    // prefix + the session's own records), which overcounts
+                    // the local head whenever `parent` is itself a fork
+                    // child, sending `at > head` into `fork_from` and
+                    // failing with a confusing `SeqOutOfRange` naming a seq
+                    // the user never typed. `Conway::session_head` (added
+                    // for this fix) reads `SessionStore::head` directly, so
+                    // this is correct for a fork-of-a-fork too.
+                    conway
+                        .session_head(parent)
                         .await
-                        .map_err(|e| usage_error(format!("--fork-from {parent}: {e}")))?;
-                    let root = parent_handle.root();
-                    // Keep this function's invariant that every failure here
-                    // is a usage error, not an agent failure (cycle-1 review
-                    // M2): a transcript read failure must not leak out as
-                    // ExitCode::AgentFailed.
-                    let records = parent_handle
-                        .transcript(root)
-                        .await
-                        .map_err(|e| usage_error(format!("--fork-from {parent}: {e}")))?;
-                    LogSeq(records.len() as u64)
+                        .map_err(|e| usage_error(format!("--fork-from {parent}: {e}")))?
                 }
             };
-            let child = conway
-                .fork_from(parent, at, ForkSpec::new(text.to_string()))
+            let role = cli
+                .role_override
+                .as_ref()
+                .map(|r| RoleAlias::new(r.clone()));
+            let mut spec = ForkSpec::new(String::new());
+            spec.role = role;
+            conway
+                .fork_from(parent, at, spec)
                 .await
-                .map_err(|e| usage_error(format!("--fork-from {parent}@{}: {e}", at.0)))?;
-            diag::warn(format!(
-                "--fork-from created session {} (forked from {parent}@{}) but could not start \
-                 its agent: conway-runtime has no way to register a store-only-created session \
-                 as a live agent, so the -p prompt was never delivered -- disclosed facade gap, \
-                 see oneshot::resolve_session's doc comment",
-                child.id(),
-                at.0
-            ));
-            Ok(SessionOutcome::Done(ExitCode::Completed))
+                .map_err(|e| usage_error(format!("--fork-from {parent}@{}: {e}", at.0)))
         }
 
         _ => Err(usage_error(
