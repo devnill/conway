@@ -111,4 +111,36 @@ mod tests {
         let buffer = terminal.backend().buffer();
         assert!(buffer.content().iter().any(|cell| cell.symbol() != " "));
     }
+
+    // WI-134 (finding M1): the arrow-selected agent row renders highlighted.
+    #[test]
+    fn draw_highlights_the_selected_agent_row() {
+        use crate::tui::state::TreeNode;
+        use ratatui::style::Modifier;
+
+        let root = AgentId::new();
+        let mut state = AppState::new(root); // starts with the root node
+        state.tree.nodes.push(TreeNode {
+            agent_id: AgentId::new(),
+            parent: Some(root),
+            agent_def: Some("child".to_string()),
+            status: NodeStatus::Running,
+        });
+        state.agent_selected = 1; // select the child row
+
+        let backend = TestBackend::new(40, 10);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|f| draw(f, f.area(), &state)).expect("draw");
+
+        let any_reversed = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .any(|c| c.modifier.contains(Modifier::REVERSED));
+        assert!(
+            any_reversed,
+            "the selected agent row must render highlighted (reversed)"
+        );
+    }
 }

@@ -205,4 +205,42 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].name, "/quit");
     }
+
+    // WI-134 (finding M1): render-layer coverage of the arrow selection.
+    #[test]
+    fn draw_overlay_renders_the_selected_row_reversed_and_nothing_otherwise() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        // Input box near the bottom so the overlay has room above it.
+        let input_area = Rect {
+            x: 0,
+            y: 7,
+            width: 40,
+            height: 3,
+        };
+        let any_reversed = |selected: Option<usize>| {
+            let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
+            terminal
+                .draw(|f| draw_overlay(f, input_area, "/a", selected))
+                .unwrap();
+            terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .any(|c| c.modifier.contains(Modifier::REVERSED))
+        };
+
+        // "/a" matches [/ask, /agents]; selecting a row highlights it...
+        assert!(
+            any_reversed(Some(1)),
+            "the selected palette row must render reversed"
+        );
+        // ...and with no selection, nothing is reversed.
+        assert!(
+            !any_reversed(None),
+            "no row should be reversed when nothing is selected"
+        );
+    }
 }
