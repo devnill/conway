@@ -116,7 +116,7 @@ use conway_core::agent::{AgentDefRef, AgentResult, AgentTreeSnapshot, Budget, To
 use conway_core::capabilities::CacheMode;
 use conway_core::config::{AgentDef, DEFAULT_MAX_PARALLEL_TOOLS};
 use conway_core::error::RuntimeError;
-use conway_core::ids::{AgentId, BackendId, LogSeq, RoleAlias, SeqRange, SessionId};
+use conway_core::ids::{AgentId, BackendId, LogSeq, ModelRef, RoleAlias, SeqRange, SessionId};
 use conway_core::log::{
     ForkOrigin, LogRecord, SessionFilter, SessionMeta, SessionStatus, SubagentMode,
 };
@@ -175,6 +175,10 @@ pub struct RootSpec {
     /// agent's task terminates after its first `Completed` turn, same as
     /// every `RootSpec` caller before this field existed.
     pub keep_alive: bool,
+    /// Pins the model for this session, overriding the role's chain (WI-128).
+    /// `start_root` prefers this over the `agent_def`-sourced pin when
+    /// present -- see that method's own doc for the precedence.
+    pub model: Option<ModelRef>,
 }
 
 /// The specification for re-registering a persisted session's agent as a
@@ -486,7 +490,12 @@ impl Runtime {
             .tools
             .clone()
             .or_else(|| agent_def.map(|d| d.tools.clone()));
-        let pin = agent_def.and_then(|d| d.model.clone());
+        // `spec.model` (a caller-supplied pin, e.g. `--model`) takes
+        // precedence over the `agent_def`'s own configured model (WI-128).
+        let pin = spec
+            .model
+            .clone()
+            .or_else(|| agent_def.and_then(|d| d.model.clone()));
 
         let meta = SessionMeta {
             id: session_id,

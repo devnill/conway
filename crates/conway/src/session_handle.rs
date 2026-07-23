@@ -21,7 +21,7 @@ use conway_core::agent::{AgentResult, AgentTreeSnapshot, Budget};
 use conway_core::content::{ContentBlock, ToolResult};
 use conway_core::error::{RuntimeError, StoreError};
 use conway_core::event::{Envelope, Event};
-use conway_core::ids::{AgentId, LogSeq, RoleAlias, SeqRange, SessionId};
+use conway_core::ids::{AgentId, LogSeq, ModelRef, RoleAlias, SeqRange, SessionId};
 use conway_core::log::{LogRecord, SessionFilter};
 use conway_core::ports::{SessionStore, SubagentHost};
 use conway_core::provenance::ContextReport;
@@ -53,6 +53,10 @@ pub struct SessionSpec {
     pub id: Option<SessionId>,
     pub agent_def: Option<String>,
     pub role: Option<RoleAlias>,
+    /// Pins the model for this session, overriding the role's chain (WI-128).
+    /// Passed straight through to `RootSpec::model`, which `start_root`
+    /// prefers over the `agent_def`-sourced pin (see that field's own doc).
+    pub model: Option<ModelRef>,
     pub cwd: Option<PathBuf>,
     pub budget: Option<Budget>,
     pub labels: Vec<String>,

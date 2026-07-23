@@ -373,6 +373,63 @@ async fn exit_2_bad_config() {
     assert!(!out.stderr.is_empty());
 }
 
+// ---------------------------------------------------------------------
+// `--model` pin (WI-128)
+// ---------------------------------------------------------------------
+
+/// `--model <ref>` pins the session's model, overriding the role's own
+/// chain. The fixture's `default` role is rewritten to chain a model
+/// nothing registers in `models.json` (`mock/unregistered-model`) -- with
+/// no pin, that leaves the router with `NoCandidate` (`CapabilityIndex` has
+/// no entry for it, `check_candidate` skips it), which `AgentLoop::
+/// finish_error` turns into `ResultStatus::Failed` (exit 1, same
+/// reconciliation `exit_4_no_backend` below locks in). Passing `--model
+/// mock/<real model>` must override that broken chain and route to the
+/// mock successfully instead (exit 0) -- proving the pin, not the chain,
+/// decided the outcome.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn model_flag_pins_and_overrides_role_chain() {
+    let mock =
+        MockBackend::start(Script(vec![vec![Chunk::Text("hi"), Chunk::Finish("stop")]])).await;
+    let fixture = write_fixture(&mock, 10);
+    let broken = std::fs::read_to_string(&fixture.config_path)
+        .unwrap()
+        .replace(&format!("mock/{}", mock.model), "mock/unregistered-model");
+    std::fs::write(&fixture.config_path, broken).unwrap();
+
+    let pin = format!("mock/{}", mock.model);
+    let out = run_conway(&["-p", "hi", "--model", &pin], &fixture);
+
+    assert!(
+        out.status.success(),
+        "--model should override the broken role chain and route successfully; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(out.stdout, b"hi\n");
+
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0]["model"], mock.model,
+        "the pinned model, not the role chain's, must be the one actually dialed"
+    );
+}
+
+/// A malformed `--model` value is a usage error (exit 2), consistent with
+/// every other flag `oneshot::resolve_session` parses -- the agent never
+/// starts, so no `/chat/completions` request is ever made.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn exit_2_bad_model_ref() {
+    let mock = MockBackend::start(Script(vec![])).await;
+    let fixture = write_fixture(&mock, 10);
+
+    let out = run_conway(&["-p", "hi", "--model", "not-a-valid-ref"], &fixture);
+
+    assert_eq!(out.status.code(), Some(2));
+    assert!(out.stdout.is_empty());
+    assert!(mock.requests().is_empty());
+}
+
 /// See this file's module doc: exit 4 (`NoHealthyBackend`) is not
 /// reachable from `-p` one-shot mode under the currently-committed
 /// `conway-runtime` -- every routing/backend failure that reaches
