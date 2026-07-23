@@ -147,6 +147,9 @@ fn sessions_list_on_empty_store_prints_header_only() {
     let (dir, config_path) = minimal_config_dir();
     bin()
         .current_dir(dir.path())
+        // Isolate user-scoped config discovery from a real ~/.conway (see
+        // `common::command`).
+        .env("XDG_CONFIG_HOME", dir.path())
         .args([
             "--config",
             config_path.to_str().unwrap(),

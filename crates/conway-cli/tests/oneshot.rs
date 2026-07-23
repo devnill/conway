@@ -356,6 +356,9 @@ async fn exit_2_bad_config() {
 
     let out = std::process::Command::new(assert_cmd::cargo::cargo_bin("conway"))
         .current_dir(dir.path())
+        // Isolate user-scoped config discovery from a real ~/.conway (see
+        // `common::command`).
+        .env("XDG_CONFIG_HOME", dir.path())
         .arg("--config")
         .arg(&config_path)
         .args(["-p", "hi"])
