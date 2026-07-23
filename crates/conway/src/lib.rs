@@ -26,6 +26,7 @@ pub mod config;
 mod conway;
 mod error;
 mod event_stream;
+mod fork_child;
 pub mod gates;
 pub mod presets;
 mod session_handle;

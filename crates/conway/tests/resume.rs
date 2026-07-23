@@ -375,6 +375,7 @@ async fn resume_succeeds_on_a_session_with_a_truncated_trailing_line() {
                 cwd: std::path::PathBuf::from("."),
                 labels: vec![],
                 status: conway_session::SessionStatus::Active,
+                ephemeral: false,
             })
             .await
             .expect("create should succeed");
@@ -576,6 +577,7 @@ fn session_meta_with_labels(labels: Vec<String>) -> conway_core::log::SessionMet
         cwd: std::path::PathBuf::from("."),
         labels,
         status: conway_core::log::SessionStatus::Active,
+        ephemeral: false,
     }
 }
 

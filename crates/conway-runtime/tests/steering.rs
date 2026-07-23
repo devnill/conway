@@ -173,6 +173,7 @@ async fn seed_prompt(store: &dyn SessionStore, agent: AgentId, session: SessionI
             cwd: PathBuf::from("/tmp"),
             labels: vec![],
             status: SessionStatus::Active,
+            ephemeral: false,
         })
         .await
         .unwrap();

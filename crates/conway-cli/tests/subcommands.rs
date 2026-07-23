@@ -79,6 +79,24 @@ fn write_forked_child(fixture: &Fixture, parent: &str, at_seq: u64) -> String {
     child
 }
 
+/// Same shape as [`write_forked_child`], plus an `"ephemeral":true` header
+/// field -- for exercising `sessions tree <id>`'s direct-id resolution over
+/// an ephemeral session (the same shape `/ask`'s fork-ask primitive
+/// produces via `crate::fork_child`, `conway`'s own crate under test here).
+fn write_ephemeral_child(fixture: &Fixture, parent: &str, at_seq: u64) -> String {
+    let child = conway::SessionId::new().to_string();
+    let agent = conway::AgentId::new().to_string();
+    let line = format!(
+        "{{\"kind\":\"header\",\"session\":\"{child}\",\"agent\":\"{agent}\",\
+         \"created\":\"2026-07-20T00:00:00Z\",\"origin\":{{\"parent\":\"{parent}\",\
+         \"at_seq\":{at_seq},\"mode\":\"fork\"}},\"agent_def\":null,\"role\":null,\
+         \"cwd\":\"/tmp\",\"status\":\"active\",\"ephemeral\":true}}\n"
+    );
+    std::fs::write(sessions_dir(fixture).join(format!("{child}.jsonl")), line)
+        .expect("write ephemeral child session file");
+    child
+}
+
 fn jsonl_lines(stdout: &[u8]) -> Vec<Value> {
     String::from_utf8(stdout.to_vec())
         .expect("stdout is valid utf8")
@@ -271,6 +289,57 @@ async fn sessions_tree_shows_two_forked_children_indented_under_parent() {
     assert!(
         lines.iter().any(|l| l.starts_with("└─ ")),
         "expected a final branch glyph: {lines:?}"
+    );
+}
+
+/// Regression test: `tree()` used to resolve its explicitly-named target
+/// via the default-filtered `Conway::sessions` catalog (which excludes
+/// ephemeral sessions), so `sessions tree <ephemeral-id>` reported "unknown
+/// session" for a session that genuinely exists -- inconsistent with
+/// `show`/`export`, which resolve via `Conway::resume` (a direct id lookup)
+/// and so already worked on an ephemeral id. Also confirms the paired
+/// distinction: an ephemeral session stays hidden as a *child* within a
+/// parent's rendered tree, even though it resolves fine as a direct target.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sessions_tree_resolves_ephemeral_target_by_direct_id() {
+    let mock =
+        MockBackend::start(Script(vec![vec![Chunk::Text("hi"), Chunk::Finish("stop")]])).await;
+    let fixture = fixture_with_mock(&mock);
+    let created = run_conway(&["-p", "hi"], &fixture);
+    assert!(created.status.success());
+    let parent = only_session_id(&fixture);
+
+    let ephemeral_child = write_ephemeral_child(&fixture, &parent, 1);
+
+    let out = run_conway(&["sessions", "tree", &ephemeral_child], &fixture);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8(out.stdout).expect("utf8 stdout");
+    assert!(
+        !text.to_lowercase().contains("unknown session"),
+        "direct ephemeral-id lookup must resolve: {text:?}"
+    );
+    assert!(
+        text.contains(&ephemeral_child[..8]),
+        "root line must show the resolved ephemeral session: {text:?}"
+    );
+
+    // The paired distinction: the ephemeral session must still be hidden
+    // as a *child* within the parent's own rendered tree -- asserted via
+    // line count (not an id-prefix substring check: `fmt::id_short`
+    // truncates to 8 chars, and ULIDs created moments apart in this same
+    // test share a leading timestamp prefix, so a substring check on the
+    // short id would be a false-negative-prone test).
+    let parent_out = run_conway(&["sessions", "tree", &parent], &fixture);
+    assert!(parent_out.status.success());
+    let parent_text = String::from_utf8(parent_out.stdout).expect("utf8 stdout");
+    assert_eq!(
+        parent_text.lines().count(),
+        1,
+        "parent's tree must show only its own root line, no ephemeral child: {parent_text:?}"
     );
 }
 

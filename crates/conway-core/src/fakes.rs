@@ -455,11 +455,18 @@ impl SessionStore for FakeStore {
             .ok_or(StoreError::NotFound { session: *sid })
     }
 
+    /// Hides ephemeral children unconditionally -- this method has no
+    /// `SessionFilter` parameter to carry an `include_ephemeral` opt-in
+    /// (matching `JsonlSessionStore::children`/`SessionIndex::children`; see
+    /// that method's doc for why). A caller that needs a parent's ephemeral
+    /// children too uses `list(SessionFilter{parent: Some(sid),
+    /// include_ephemeral: true, ..})` instead.
     async fn children(&self, sid: &SessionId) -> Result<Vec<SessionId>, StoreError> {
         let sessions = self.sessions.read().unwrap();
         Ok(sessions
             .values()
             .filter(|s| s.meta.origin.as_ref().map(|o| o.parent) == Some(*sid))
+            .filter(|s| !s.meta.ephemeral)
             .map(|s| s.meta.id)
             .collect())
     }
@@ -486,6 +493,7 @@ impl SessionStore for FakeStore {
                     .parent
                     .is_none_or(|p| s.meta.origin.as_ref().map(|o| o.parent) == Some(p))
             })
+            .filter(|s| filter.include_ephemeral || !s.meta.ephemeral)
             .map(|s| s.meta.clone())
             .collect();
         if let Some(limit) = filter.limit {

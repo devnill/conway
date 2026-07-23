@@ -415,6 +415,7 @@ async fn seed_prompt(store: &dyn SessionStore, role: &str, prompt: &str) -> (Ses
             cwd: PathBuf::from("/tmp"),
             labels: vec![],
             status: SessionStatus::Active,
+            ephemeral: false,
         })
         .await
         .unwrap();

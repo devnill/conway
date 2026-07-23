@@ -35,6 +35,7 @@ fn meta_for(id: SessionId) -> SessionMeta {
         cwd: PathBuf::from("/tmp/project"),
         labels: vec![],
         status: SessionStatus::Active,
+        ephemeral: false,
     }
 }
 

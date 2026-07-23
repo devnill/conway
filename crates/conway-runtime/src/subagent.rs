@@ -189,6 +189,12 @@ impl SubagentHost for Runtime {
             cwd: parent_meta.cwd.clone(),
             labels: Vec::new(),
             status: SessionStatus::Active,
+            // Agent-initiated fork/spawn (this trait impl) is never
+            // ephemeral -- only `conway`'s facade-level `SessionHandle::ask`
+            // sets this, by building its own child `SessionMeta` and calling
+            // `SessionStore::fork` directly rather than going through
+            // `SubagentHost::start`.
+            ephemeral: false,
         };
 
         let (session_id, inherited, inherited_upto) = match spec.mode {

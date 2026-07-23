@@ -66,6 +66,25 @@ pub struct SessionMeta {
     #[serde(default)]
     pub labels: Vec<String>,
     pub status: SessionStatus,
+    /// Marks a session as a disposable, catalog-hidden scratchpad (the
+    /// `/ask` fork-ask flow: fork the current agent, drive one throwaway
+    /// question, discard). Deliberately a field orthogonal to `status`
+    /// rather than a `SessionStatus` variant: `status` is lifecycle
+    /// (Active/Completed/Failed/Cancelled) and an ephemeral session still
+    /// moves through that same lifecycle normally (Active -> Completed) --
+    /// "ephemeral" answers a different question ("should this ever show up
+    /// in a catalog listing") that cuts across every lifecycle state, so
+    /// folding it into `status` would either duplicate every variant
+    /// (`ActiveEphemeral`, `CompletedEphemeral`, ...) or conflate two
+    /// independent axes into one enum.
+    ///
+    /// Set once, at fork time, in the child's own `SessionMeta` -- there is
+    /// no `SessionStore` method to flip it later (the store is append-only
+    /// and has no meta-update/delete method, by design). `#[serde(default)]`
+    /// so a header written before this field existed still decodes, as
+    /// `false` (visible, matching pre-existing behavior).
+    #[serde(default)]
+    pub ephemeral: bool,
 }
 
 /// Filter for session listing.
@@ -76,6 +95,12 @@ pub struct SessionFilter {
     pub status: Option<SessionStatus>,
     pub parent: Option<SessionId>,
     pub limit: Option<usize>,
+    /// Whether ephemeral sessions (`SessionMeta::ephemeral`) are included in
+    /// the result. Defaults to `false` (exclude) via `#[derive(Default)]` --
+    /// a catalog listing should not surface `/ask` scratchpads unless a
+    /// caller opts in explicitly.
+    #[serde(default)]
+    pub include_ephemeral: bool,
 }
 
 /// One line of the append-only session log.
@@ -205,6 +230,7 @@ mod tests {
             cwd: PathBuf::from("/tmp"),
             labels: vec![],
             status: SessionStatus::Active,
+            ephemeral: false,
         };
         let records: Vec<(LogRecord, &str)> = vec![
             (LogRecord::Header(meta.clone()), "header"),
@@ -334,6 +360,7 @@ mod tests {
             cwd: PathBuf::from("/tmp/project"),
             labels: vec!["x".into()],
             status: SessionStatus::Active,
+            ephemeral: false,
         };
         let record = LogRecord::Header(meta.clone());
         assert_eq!(record.seq(), None);
@@ -391,6 +418,54 @@ mod tests {
     fn session_filter_default_is_empty() {
         let f = SessionFilter::default();
         assert!(f.agent_def.is_none() && f.limit.is_none());
+        assert!(
+            !f.include_ephemeral,
+            "SessionFilter must default to excluding ephemeral sessions"
+        );
+    }
+
+    /// `SessionMeta::ephemeral` round-trips through the header line -- the
+    /// property the `/ask` fork-ask flow depends on for catalog hiding to
+    /// survive a store round-trip, not just an in-memory `Conway::sessions`
+    /// call.
+    #[test]
+    fn session_meta_ephemeral_round_trips() {
+        let meta = SessionMeta {
+            id: SessionId::new(),
+            agent_id: AgentId::new(),
+            origin: None,
+            agent_def: None,
+            role: None,
+            created: ts(),
+            cwd: PathBuf::from("/tmp/ask"),
+            labels: vec![],
+            status: SessionStatus::Active,
+            ephemeral: true,
+        };
+        let value = serde_json::to_value(LogRecord::Header(meta.clone())).unwrap();
+        assert_eq!(value["ephemeral"], true);
+        let back: LogRecord = serde_json::from_value(value).unwrap();
+        match back {
+            LogRecord::Header(decoded) => assert_eq!(decoded, meta),
+            other => panic!("expected Header, got {other:?}"),
+        }
+    }
+
+    /// A header line written before this field existed (no `ephemeral` key
+    /// at all) must still decode -- as `false`, matching pre-existing
+    /// (always-visible) behavior -- not fail.
+    #[test]
+    fn session_meta_ephemeral_defaults_false_when_absent_from_wire() {
+        let sid = SessionId::new();
+        let agent = AgentId::new();
+        let header = format!(
+            r#"{{"kind":"header","session":"{sid}","agent":"{agent}","created":"2026-07-20T00:00:00Z","origin":null,"agent_def":null,"role":null,"cwd":"/tmp/p","status":"active"}}"#
+        );
+        let record: LogRecord = serde_json::from_str(&header).unwrap();
+        match record {
+            LogRecord::Header(meta) => assert!(!meta.ephemeral),
+            other => panic!("expected Header, got {other:?}"),
+        }
     }
 
     /// Documents current behavior at the forward-compat boundary: an unknown

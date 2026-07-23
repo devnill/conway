@@ -8,7 +8,7 @@ use conway_core::agent::{AgentDefRef, Budget};
 use conway_core::capabilities::RequiredCaps;
 use conway_core::error::{RuntimeError, StoreError};
 use conway_core::ids::{AgentId, LogSeq, RoleAlias, SessionId};
-use conway_core::log::{SessionFilter, SessionMeta, SessionStatus};
+use conway_core::log::{SessionFilter, SessionMeta};
 use conway_core::ports::SessionStore;
 use conway_core::routing::RouteRequest;
 use conway_routing::{DeclarativeRouter, ExplainReport, RoutingExplain};
@@ -367,6 +367,15 @@ impl Conway {
     /// behavior depend on which `SessionStore` backs a given `Conway`, the
     /// bound is checked here too, against the same error shape, so the
     /// criterion holds under every `SessionStore` implementation.
+    ///
+    /// **Shared with `SessionHandle::ask` (disclosed refactor):** the
+    /// `store.fork` -> `rt.resume_root` sequence below used to live inline
+    /// here. It now delegates to `crate::fork_child::fork_child`, the same
+    /// helper the `/ask` fork-ask flow's `SessionHandle::ask` calls with
+    /// `ephemeral: true` -- this method always passes `ephemeral: false`, so
+    /// a session created through this method is never catalog-hidden. See
+    /// that module's doc for why the sequence is factored rather than
+    /// duplicated.
     pub async fn fork_from(
         &self,
         sid: SessionId,
@@ -382,46 +391,20 @@ impl Conway {
             }));
         }
 
-        let child_agent = AgentId::new();
-        let child_meta = SessionMeta {
-            id: SessionId::new(),
-            agent_id: child_agent,
-            // `SessionStore::fork` fills this in from `sid`/`at`/`mode`.
-            origin: None,
-            agent_def: spec.agent_def.or(parent_meta.agent_def),
-            role: spec.role.or(parent_meta.role),
-            created: Utc::now(),
-            cwd: parent_meta.cwd,
-            labels: Vec::new(),
-            status: SessionStatus::Active,
-        };
-        let child = self.store.fork(&sid, at, child_meta).await?;
-
-        let agent = self
-            .rt
-            .resume_root(ResumeSpec {
-                session: child,
-                agent_def: None,
-                role: None,
+        crate::fork_child::fork_child(
+            &self.rt,
+            &self.store,
+            sid,
+            parent_meta,
+            at,
+            crate::fork_child::ForkChildRequest {
+                agent_def: spec.agent_def,
+                role: spec.role,
                 tools: spec.tools,
                 budget: spec.budget,
-                cwd: None,
-            })
-            .await
-            .map_err(|err| match err {
-                RuntimeError::Store(inner) => ConwayError::Store(inner),
-                other => ConwayError::Runtime(other),
-            })?;
-        debug_assert_eq!(
-            agent, child_agent,
-            "resume_root must return SessionMeta::agent_id unchanged"
-        );
-
-        Ok(SessionHandle::new(
-            self.rt.clone(),
-            child,
-            agent,
-            self.store.clone(),
-        ))
+                ephemeral: false,
+            },
+        )
+        .await
     }
 }

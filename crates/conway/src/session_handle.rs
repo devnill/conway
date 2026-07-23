@@ -108,6 +108,65 @@ impl SessionHandle {
         ))
     }
 
+    /// The `/ask` fork-ask primitive: forks this session's agent at its
+    /// CURRENT head into a fresh, ephemeral child -- inheriting this
+    /// session's entire context and tool set, since a fork always does (see
+    /// `crate::fork_child`'s doc for the shared fork+resume sequence) -- then
+    /// drives the child's first turn with `text`, exactly as `prompt` would
+    /// for a normal turn.
+    ///
+    /// Returns a [`TurnHandle`] over the CHILD, in the same shape `prompt`
+    /// returns one over `self` -- so a caller (e.g. the `/ask` TUI command,
+    /// a separate slice) subscribes and renders it exactly like a normal
+    /// prompt turn, with no special-casing. `self`'s own transcript and live
+    /// agent are untouched: no record is appended to `self.session`, and
+    /// `self.root` never sees the question -- fork semantics already
+    /// guarantee this (a child is bounded at its fork seq; the parent only
+    /// ever reads its own ancestry, never a child's turns).
+    ///
+    /// The child is born with `SessionMeta::ephemeral: true` -- set once, at
+    /// fork time, in the child's own header; there is no way to flip it
+    /// later, `SessionStore` being append-only with no meta-update or delete
+    /// method. This is what keeps it out of `Conway::sessions`'s default
+    /// listing and `SessionStore::children` -- see those methods' own docs
+    /// for the default-exclude filtering this depends on. The child remains
+    /// reachable only through this call's own returned `TurnHandle`/child
+    /// `SessionId`, or via `SessionFilter{include_ephemeral: true, ..}`.
+    ///
+    /// **Tool inheritance:** the child's `SessionMeta.agent_def` defaults to
+    /// this session's own (`crate::fork_child::fork_child`'s fallback -- see
+    /// that function's doc), so `resume_root`'s tool resolution lands on the
+    /// same tool set this session's own agent runs with. Tool calls the
+    /// child makes during the ask are real and permanent -- only the
+    /// transcript is ephemeral; that is intended, not a gap (a throwaway
+    /// *question* does not imply throwaway tool side effects).
+    ///
+    /// **Disclosed simplification:** the child's `budget` is always
+    /// `Budget::default()` (`conway-core`'s baseline), not this session's own
+    /// configured budget -- `SessionHandle` has no reference to that
+    /// configuration to read it from, the same disclosed deviation
+    /// `ForkSpec::new`'s own doc already makes for `SessionHandle::fork`.
+    pub async fn ask(&self, text: impl Into<String>) -> Result<TurnHandle> {
+        let parent_meta = self.store.meta(&self.session).await?;
+        let at = self.store.head(&self.session).await?;
+        let child = crate::fork_child::fork_child(
+            &self.rt,
+            &self.store,
+            self.session,
+            parent_meta,
+            at,
+            crate::fork_child::ForkChildRequest {
+                agent_def: None,
+                role: None,
+                tools: None,
+                budget: Budget::default(),
+                ephemeral: true,
+            },
+        )
+        .await?;
+        child.prompt(text).await
+    }
+
     /// Every envelope emitted for this session (no agent filter beyond
     /// that -- see `events_from`'s doc on why session alone is already
     /// agent-scoped in this architecture).
@@ -234,7 +293,20 @@ impl SessionHandle {
         if agent == self.root {
             return Ok(self.session);
         }
-        let sessions = self.store.list(SessionFilter::default()).await?;
+        // `include_ephemeral: true` -- this is an identity lookup (does
+        // `agent` belong to some session this store knows about?), not a
+        // catalog browse; the default exclude-ephemeral filter exists to
+        // hide `/ask` scratchpads from *listings* (`Conway::sessions`,
+        // `sessions tree`), not to make them unresolvable by an agent id a
+        // caller already legitimately holds (e.g. from `SessionHandle::ask`'s
+        // own returned `TurnHandle`).
+        let sessions = self
+            .store
+            .list(SessionFilter {
+                include_ephemeral: true,
+                ..SessionFilter::default()
+            })
+            .await?;
         sessions
             .into_iter()
             .find(|meta| meta.agent_id == agent)

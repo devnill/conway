@@ -275,6 +275,7 @@ async fn resume_root_does_not_create_or_append_initial_turn() {
             cwd: PathBuf::from("/tmp"),
             labels: Vec::new(),
             status: conway_core::log::SessionStatus::Active,
+            ephemeral: false,
         })
         .await
         .unwrap_err();
