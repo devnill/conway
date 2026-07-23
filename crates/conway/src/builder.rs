@@ -95,6 +95,7 @@ use conway_core::capabilities::{
 };
 use conway_core::ids::{BackendId, ModelRef};
 use conway_core::ports::{Backend, PermissionGate, Plugin, Router, SessionStore};
+use conway_core::routing::ModelOverrides;
 use conway_routing::config::HeadroomPolicy;
 use conway_routing::{BreakerRegistry, CapabilityIndex, DeclarativeRouter};
 use conway_runtime::events::EventBus;
@@ -248,7 +249,7 @@ impl ConwayBuilder {
         //      over them, keyed by each backend's own `id()`.
         let mut backend_map: HashMap<BackendId, Arc<dyn Backend>> = HashMap::new();
         for (id, entry) in &config.backends {
-            let backend = construct_backend(id, entry)?;
+            let backend = construct_backend(id, entry, &metadata)?;
             backend_map.insert(backend.id(), backend);
         }
         for backend in backends {
@@ -438,15 +439,58 @@ fn resolve_api_key(id: &str, entry: &BackendEntry) -> Result<String> {
     Ok(String::new())
 }
 
-fn construct_backend(id: &str, entry: &BackendEntry) -> Result<Arc<dyn Backend>> {
+fn construct_backend(
+    id: &str,
+    entry: &BackendEntry,
+    metadata: &config::model_metadata::ModelMetadata,
+) -> Result<Arc<dyn Backend>> {
     match entry.kind {
-        BackendKind::Anthropic => build_anthropic(id, entry),
-        BackendKind::OpenaiCompat => build_openai_compat(id, entry),
+        BackendKind::Anthropic => build_anthropic(id, entry, metadata),
+        BackendKind::OpenaiCompat => build_openai_compat(id, entry, metadata),
     }
 }
 
+/// Per-model capability overrides for backend `id`, projected from the
+/// facade's loaded `models.json` metadata (keyed `"backend/model"`). The
+/// router's T-1 context-fit gate reads `Backend::capabilities`, whose window
+/// otherwise falls back to the dialect default — so without wiring the
+/// metadata into the backend's own override table here, a `max_context_tokens`
+/// set in `models.json` would silently never reach routing (the facade
+/// `CapabilityIndex` built from the same metadata is not consulted by that
+/// gate).
+#[cfg(any(feature = "anthropic", feature = "openai-compat"))]
+fn models_overrides_for(
+    id: &str,
+    metadata: &config::model_metadata::ModelMetadata,
+) -> BTreeMap<String, ModelOverrides> {
+    metadata
+        .models
+        .iter()
+        .filter_map(|(key, m)| {
+            let model_ref = key.parse::<ModelRef>().ok()?;
+            if model_ref.backend.as_str() != id {
+                return None;
+            }
+            Some((
+                model_ref.model.as_str().to_string(),
+                ModelOverrides {
+                    stream_tools: None,
+                    max_context_tokens: Some(m.max_context_tokens),
+                    reliability_tier: None,
+                    parallel_tool_calls: None,
+                    min_headroom_tokens: None,
+                },
+            ))
+        })
+        .collect()
+}
+
 #[cfg(feature = "anthropic")]
-fn build_anthropic(id: &str, entry: &BackendEntry) -> Result<Arc<dyn Backend>> {
+fn build_anthropic(
+    id: &str,
+    entry: &BackendEntry,
+    metadata: &config::model_metadata::ModelMetadata,
+) -> Result<Arc<dyn Backend>> {
     use conway_backends::anthropic::AnthropicBackend;
     use conway_backends::config::{AnthropicConfig, SecretString};
 
@@ -490,7 +534,7 @@ fn build_anthropic(id: &str, entry: &BackendEntry) -> Result<Arc<dyn Backend>> {
         // `conway_backends::config`'s own (private) default literal.
         anthropic_version: "2023-06-01".to_string(),
         timeout: None,
-        models: BTreeMap::new(),
+        models: models_overrides_for(id, metadata),
     };
     cfg.validate().map_err(|e| ConwayError::Config {
         path: None,
@@ -505,7 +549,11 @@ fn build_anthropic(id: &str, entry: &BackendEntry) -> Result<Arc<dyn Backend>> {
 }
 
 #[cfg(not(feature = "anthropic"))]
-fn build_anthropic(_id: &str, _entry: &BackendEntry) -> Result<Arc<dyn Backend>> {
+fn build_anthropic(
+    _id: &str,
+    _entry: &BackendEntry,
+    _metadata: &config::model_metadata::ModelMetadata,
+) -> Result<Arc<dyn Backend>> {
     Err(ConwayError::UnsupportedFeature {
         feature: "anthropic",
         message: "backend kind 'anthropic' requires the 'anthropic' cargo feature, which was not \
@@ -515,7 +563,11 @@ fn build_anthropic(_id: &str, _entry: &BackendEntry) -> Result<Arc<dyn Backend>>
 }
 
 #[cfg(feature = "openai-compat")]
-fn build_openai_compat(id: &str, entry: &BackendEntry) -> Result<Arc<dyn Backend>> {
+fn build_openai_compat(
+    id: &str,
+    entry: &BackendEntry,
+    metadata: &config::model_metadata::ModelMetadata,
+) -> Result<Arc<dyn Backend>> {
     use conway_backends::config::{OpenAiCompatConfig, SecretString};
     use conway_backends::openai_compat::OpenAiCompatBackend;
 
@@ -544,7 +596,7 @@ fn build_openai_compat(id: &str, entry: &BackendEntry) -> Result<Arc<dyn Backend
         dialect,
         timeout: None,
         metadata_path: None,
-        models: BTreeMap::new(),
+        models: models_overrides_for(id, metadata),
     };
 
     let backend = OpenAiCompatBackend::new(cfg).map_err(|e| ConwayError::Config {
@@ -555,7 +607,11 @@ fn build_openai_compat(id: &str, entry: &BackendEntry) -> Result<Arc<dyn Backend
 }
 
 #[cfg(not(feature = "openai-compat"))]
-fn build_openai_compat(_id: &str, _entry: &BackendEntry) -> Result<Arc<dyn Backend>> {
+fn build_openai_compat(
+    _id: &str,
+    _entry: &BackendEntry,
+    _metadata: &config::model_metadata::ModelMetadata,
+) -> Result<Arc<dyn Backend>> {
     Err(ConwayError::UnsupportedFeature {
         feature: "openai-compat",
         message: "backend kind 'openai-compat' requires the 'openai-compat' cargo feature, which \
@@ -723,4 +779,44 @@ where
             .join()
             .expect("ConwayBuilder::build's blocking-bridge thread panicked")
     })
+}
+
+#[cfg(all(test, any(feature = "anthropic", feature = "openai-compat")))]
+mod models_overrides_tests {
+    use super::*;
+    use crate::config::model_metadata::{ModelMetadata, ModelMetadataEntry};
+
+    fn entry(max_context_tokens: u32) -> ModelMetadataEntry {
+        ModelMetadataEntry {
+            max_context_tokens,
+            tool_calling: "streaming".to_string(),
+            reasoning: true,
+            reliability_tier: "verified".to_string(),
+        }
+    }
+
+    #[test]
+    fn projects_only_the_matching_backends_models_with_the_configured_window() {
+        let mut m = ModelMetadata::empty();
+        m.models
+            .insert("ollama_cloud/glm-5.2".to_string(), entry(1_000_000));
+        m.models
+            .insert("other_backend/foo".to_string(), entry(4_096));
+
+        let ov = models_overrides_for("ollama_cloud", &m);
+
+        // Only this backend's model is projected; the window from models.json
+        // is carried through as a per-model override (the value the router's
+        // T-1 context-fit check reads via Backend::capabilities).
+        assert_eq!(ov.len(), 1);
+        assert_eq!(ov["glm-5.2"].max_context_tokens, Some(1_000_000));
+        assert!(!ov.contains_key("foo"));
+    }
+
+    #[test]
+    fn skips_keys_that_are_not_valid_backend_slash_model_refs() {
+        let mut m = ModelMetadata::empty();
+        m.models.insert("not-a-ref".to_string(), entry(100));
+        assert!(models_overrides_for("ollama_cloud", &m).is_empty());
+    }
 }
