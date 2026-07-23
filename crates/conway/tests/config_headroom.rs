@@ -53,7 +53,7 @@ fn headroom_default_participates_in_the_full_five_source_precedence_chain() {
     let xdg_home = root.join("xdg-home");
     std::fs::create_dir_all(xdg_home.join("conway")).unwrap();
     std::fs::write(
-        xdg_home.join("conway").join("conway.json"),
+        xdg_home.join("conway").join("settings.json"),
         r#"{"default_role":"coder","roles":{"coder":{"chain":[]}},"routing":{"default_headroom_tokens":20000}}"#,
     )
     .unwrap();
@@ -61,7 +61,7 @@ fn headroom_default_participates_in_the_full_five_source_precedence_chain() {
     let project_dir = root.join("project");
     std::fs::create_dir_all(project_dir.join(".conway")).unwrap();
     std::fs::write(
-        project_dir.join(".conway").join("conway.json"),
+        project_dir.join(".conway").join("settings.json"),
         r#"{"default_role":"coder","roles":{"coder":{"chain":[]}},"routing":{"default_headroom_tokens":30000}}"#,
     )
     .unwrap();
@@ -137,7 +137,7 @@ fn per_role_headroom_from_a_lower_precedence_source_beats_a_higher_sources_globa
     let xdg_home = root.join("xdg-home");
     std::fs::create_dir_all(xdg_home.join("conway")).unwrap();
     std::fs::write(
-        xdg_home.join("conway").join("conway.json"),
+        xdg_home.join("conway").join("settings.json"),
         r#"{"default_role":"coder","roles":{"coder":{"chain":[]},"planner":{"chain":[],"headroom_tokens":40000}}}"#,
     )
     .unwrap();
@@ -145,7 +145,7 @@ fn per_role_headroom_from_a_lower_precedence_source_beats_a_higher_sources_globa
     let project_dir = root.join("project");
     std::fs::create_dir_all(project_dir.join(".conway")).unwrap();
     std::fs::write(
-        project_dir.join(".conway").join("conway.json"),
+        project_dir.join(".conway").join("settings.json"),
         r#"{"default_role":"coder","roles":{"coder":{"chain":[]}},"routing":{"default_headroom_tokens":8000}}"#,
     )
     .unwrap();
@@ -178,7 +178,7 @@ fn env_var_overrides_a_per_role_headroom() {
     let xdg_home = root.join("xdg-home");
     std::fs::create_dir_all(xdg_home.join("conway")).unwrap();
     std::fs::write(
-        xdg_home.join("conway").join("conway.json"),
+        xdg_home.join("conway").join("settings.json"),
         r#"{"default_role":"coder","roles":{"coder":{"chain":[]},"planner":{"chain":[],"headroom_tokens":40000}}}"#,
     )
     .unwrap();
@@ -246,7 +246,7 @@ fn zero_global_headroom_is_a_hard_error() {
 #[test]
 fn zero_per_role_headroom_is_a_hard_error_naming_the_role() {
     let dir = support::unique_temp_dir("headroom-zero-role");
-    let path = dir.join("conway.json");
+    let path = dir.join("settings.json");
     std::fs::write(
         &path,
         r#"{"default_role":"coder","roles":{"coder":{"chain":[],"headroom_tokens":0}}}"#,
@@ -313,7 +313,7 @@ fn headroom_exceeding_smallest_reachable_context_warns_without_clamping() {
 #[test]
 fn no_headroom_warning_when_model_metadata_is_absent() {
     let dir = support::unique_temp_dir("headroom-no-metadata");
-    let path = dir.join("conway.json");
+    let path = dir.join("settings.json");
     std::fs::write(
         &path,
         r#"{"default_role":"coder","roles":{"coder":{"chain":["anthropic/claude-haiku-4-5"],"headroom_tokens":200000}},"backends":{"anthropic":{"kind":"anthropic"}}}"#,
@@ -350,7 +350,7 @@ fn two_offending_roles_produce_deterministically_ordered_warnings() {
         "backends": { "anthropic": { "kind": "anthropic" } },
         "models": { "metadata_path": metadata_path.to_string_lossy() },
     });
-    let path = dir.join("conway.json");
+    let path = dir.join("settings.json");
     std::fs::write(&path, serde_json::to_vec(&config_value).unwrap()).unwrap();
 
     let run = || {

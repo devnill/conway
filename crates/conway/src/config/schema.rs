@@ -1,4 +1,4 @@
-//! The `ConwayConfig` schema: the facade-owned wire shape for `conway.json`.
+//! The `ConwayConfig` schema: the facade-owned wire shape for `settings.json`.
 //!
 //! Reconciliation note (disclosed in the WI-097 Self-Check): the binding
 //! implementation notes say `[roles]` and `[health]` "deserialize directly
@@ -41,7 +41,7 @@ use std::path::PathBuf;
 use conway_core::ids::RoleAlias;
 use serde::{Deserialize, Serialize};
 
-/// The complete, facade-owned `conway.json` schema.
+/// The complete, facade-owned `settings.json` schema.
 ///
 /// `default_role` has no sensible built-in default (the binding config always
 /// sets it explicitly), so it is the one field with no `#[serde(default)]`.
