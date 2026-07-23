@@ -16,9 +16,12 @@ use tokio::sync::watch;
 use tokio::task::{JoinError, JoinSet};
 use tokio::time::{Instant, MissedTickBehavior};
 
+use conway_core::error::BackendError;
 use conway_core::ids::{BackendId, EndpointId};
 use conway_core::ports::{Backend, HealthRegistry};
 use conway_core::routing::{HealthConfig, Observation};
+
+use crate::failure::{self, FailureClass};
 
 /// Handle to a spawned [`HealthProber`] task.
 ///
@@ -129,7 +132,9 @@ async fn run_loop(
 
 /// One round: every backend probed concurrently, each wrapped in a timeout
 /// and a panic guard so one bad backend never affects another or the loop
-/// itself. Outcome mapping is exhaustive and total (WI-035 notes table).
+/// itself. Outcome mapping is exhaustive and total (WI-035 notes table),
+/// except that a probe `Err` no longer always yields an observation — see
+/// [`probe_error_observation`] (WI-124).
 async fn probe_round(
     backends: &[Arc<dyn Backend>],
     health: &Arc<dyn HealthRegistry>,
@@ -146,17 +151,36 @@ async fn probe_round(
                 .catch_unwind()
                 .await;
             let observation = match outcome {
-                Ok(Ok(Ok(_report))) => Observation::Ok {
+                Ok(Ok(Ok(_report))) => Some(Observation::Ok {
                     latency_ms: started.elapsed().as_millis() as u32,
-                },
-                Ok(Ok(Err(_))) => Observation::ProbeFail,
-                Ok(Err(_elapsed)) => Observation::ProbeFail,
-                Err(_panic) => Observation::ProbeFail,
+                }),
+                Ok(Ok(Err(err))) => probe_error_observation(&err),
+                Ok(Err(_elapsed)) => Some(Observation::ProbeFail),
+                Err(_panic) => Some(Observation::ProbeFail),
             };
-            health.record(&endpoint, observation);
+            if let Some(observation) = observation {
+                health.record(&endpoint, observation);
+            }
         });
     }
     while set.join_next().await.is_some() {}
+}
+
+/// Maps a probe's `BackendError` to a health observation, reusing this
+/// crate's `failure::classify` table so probe and request-path health
+/// signals never diverge on what counts as an endpoint problem versus a
+/// request problem (WI-124). Only `FailureClass::FailoverRetryable`
+/// (`Transport`/`ServerError`/`RateLimit`) trips the Probe breaker via
+/// `Observation::ProbeFail`; `RequestIncompatible` (e.g. a `BadRequest` from
+/// a 404 on a liveness path this dialect doesn't serve) and `Fatal` errors
+/// yield no observation at all, leaving breaker state untouched — "this
+/// path isn't served here" must not be counted the same as "the server is
+/// down".
+fn probe_error_observation(err: &BackendError) -> Option<Observation> {
+    match failure::classify(err) {
+        FailureClass::FailoverRetryable => Some(Observation::ProbeFail),
+        FailureClass::RequestIncompatible | FailureClass::Fatal => None,
+    }
 }
 
 /// `EndpointId` per backend: mirrors `router::endpoint_of`'s `ModelRef.backend
@@ -201,6 +225,11 @@ mod tests {
     enum ProbeScript {
         Ok,
         Err,
+        /// A request-incompatible probe failure (e.g. `BadRequest` from a
+        /// 404 on a liveness path the dialect doesn't serve) — WI-124:
+        /// distinct from `Err`'s `Transport` failure, which is a genuine
+        /// endpoint-health signal.
+        UnsupportedPath,
         Hang,
         Panic,
     }
@@ -272,6 +301,9 @@ mod tests {
                 }),
                 ProbeScript::Err => Err(BackendError::Transport {
                     detail: "scripted probe failure".into(),
+                }),
+                ProbeScript::UnsupportedPath => Err(BackendError::BadRequest {
+                    detail: "scripted unsupported liveness path".into(),
                 }),
                 ProbeScript::Hang => {
                     tokio::time::sleep(self.hang_for).await;
@@ -378,6 +410,64 @@ mod tests {
         assert_eq!(
             health.observations(),
             vec![(EndpointId::new("b"), Observation::ProbeFail)]
+        );
+
+        handle.shutdown();
+        handle.join().await.expect("task exits cleanly");
+    }
+
+    /// WI-124 criterion 2: an unsupported liveness path (classified as
+    /// `BackendError::BadRequest`, e.g. a 404 on a path this dialect doesn't
+    /// serve) must not be counted as a health failure — no observation at
+    /// all is recorded, and in particular the Probe breaker does not open.
+    #[tokio::test(start_paused = true)]
+    async fn unsupported_liveness_path_records_no_observation() {
+        let backend = CountingProbeBackend::new("b", vec![ProbeScript::UnsupportedPath]);
+        let health = Arc::new(RecordingRegistry::default());
+        let handle = HealthProber::spawn(
+            vec![backend.clone() as _],
+            health.clone() as _,
+            config(15, 2),
+        );
+
+        tokio::time::advance(Duration::from_millis(1)).await;
+        tokio::task::yield_now().await;
+
+        assert_eq!(backend.call_count(), 1, "the probe still ran");
+        assert_eq!(
+            health.observations(),
+            vec![],
+            "an unsupported-path failure must not feed the breaker"
+        );
+
+        handle.shutdown();
+        handle.join().await.expect("task exits cleanly");
+    }
+
+    /// A round that yields no observation must not disturb later rounds:
+    /// the loop keeps ticking and a subsequent genuine failure still trips
+    /// the Probe breaker normally.
+    #[tokio::test(start_paused = true)]
+    async fn unsupported_liveness_path_does_not_block_later_probe_fail_observations() {
+        let backend =
+            CountingProbeBackend::new("b", vec![ProbeScript::UnsupportedPath, ProbeScript::Err]);
+        let health = Arc::new(RecordingRegistry::default());
+        let handle = HealthProber::spawn(
+            vec![backend.clone() as _],
+            health.clone() as _,
+            config(15, 2),
+        );
+
+        tokio::time::advance(Duration::from_millis(1)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(health.observations(), vec![]);
+
+        tokio::time::advance(Duration::from_secs(15)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(
+            health.observations(),
+            vec![(EndpointId::new("b"), Observation::ProbeFail)],
+            "a later genuine failure still records ProbeFail"
         );
 
         handle.shutdown();
