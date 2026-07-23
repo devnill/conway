@@ -351,8 +351,8 @@ async fn exit_2_bad_flag() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn exit_2_bad_config() {
     let dir = tempfile::tempdir().unwrap();
-    let config_path = dir.path().join("conway.toml");
-    std::fs::write(&config_path, "this is not valid toml {{{").unwrap();
+    let config_path = dir.path().join("conway.json");
+    std::fs::write(&config_path, "this is not valid json {{{").unwrap();
 
     let out = std::process::Command::new(assert_cmd::cargo::cargo_bin("conway"))
         .current_dir(dir.path())
@@ -672,13 +672,13 @@ fn wait_with_timeout(
 
 /// `cargo test -p conway-cli` must pass with no network access beyond
 /// loopback: every fixture in this file points `base_url` at
-/// `127.0.0.1:<ephemeral>` (see `fixtures/conway.toml.tmpl` and
+/// `127.0.0.1:<ephemeral>` (see `fixtures/conway.json.tmpl` and
 /// `MockBackend`) and no test in this suite dials any other host --
 /// structurally enforced by this file never constructing a `Fixture` any
 /// other way.
 #[test]
 fn fixtures_only_ever_point_at_loopback() {
-    let template = include_str!("fixtures/conway.toml.tmpl");
+    let template = include_str!("fixtures/conway.json.tmpl");
     assert!(template.contains("{{BASE_URL}}"));
     // `MockBackend::start*` binds `127.0.0.1:0` unconditionally -- grep the
     // harness source itself rather than re-deriving the guarantee.

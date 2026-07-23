@@ -1,6 +1,6 @@
 //! Shared test harness for the one-shot integration suite (WI-113): the
 //! [`mock_backend`] module plus [`run_conway`]/[`spawn_conway`], which
-//! template `fixtures/conway.toml.tmpl` into a fresh `TempDir` pointed at a
+//! template `fixtures/conway.json.tmpl` into a fresh `TempDir` pointed at a
 //! live [`mock_backend::MockHandle`] and drive the real compiled `conway`
 //! binary against it.
 
@@ -12,9 +12,26 @@ use std::process::{Command, Output, Stdio};
 
 use mock_backend::MockHandle;
 
-const TEMPLATE: &str = include_str!("../fixtures/conway.toml.tmpl");
+/// The template's `backends.mock.dialect` is `"openai"`, not `"ollama"`:
+/// `Dialect::OpenAi`'s default `tool_calling` is `Streaming{validated:true}`,
+/// so `AttemptEngine::strategy_for` always picks the streaming path -- both
+/// with and without tools in the request. Every root session in this suite
+/// has the full builtin toolset available (`has_tools == true`), and
+/// `Dialect::Ollama`'s `NonStreamingOnly` default would force the
+/// *non*-streaming `generate()` path (a single JSON object, not SSE) for
+/// every one of those requests -- a wire shape `MockBackend` does not
+/// speak. Using `openai` here keeps every request in this suite on the one
+/// wire format the mock implements.
+///
+/// `roles.coder` is likewise given a valid chain: `default_document()`
+/// bakes in a `roles.coder = { chain = [] }` at the lowest merge layer, and
+/// routing validation rejects an empty chain on ANY role, not just
+/// `default_role` -- see `cli_surface.rs::MINIMAL_CONFIG`'s identical note
+/// (F-111-1). Without it, `build()` fails with EmptyChain before dispatch
+/// ever reaches one-shot mode.
+const TEMPLATE: &str = include_str!("../fixtures/conway.json.tmpl");
 
-/// A fresh temp directory holding a rendered `conway.toml`, plus the path
+/// A fresh temp directory holding a rendered `conway.json`, plus the path
 /// to that file. Kept alive for as long as a test needs the config/session
 /// store to exist on disk.
 pub struct Fixture {
@@ -23,7 +40,7 @@ pub struct Fixture {
 }
 
 /// Renders [`TEMPLATE`] against `mock` and `max_steps`, writing the result
-/// into a fresh `TempDir`'s `conway.toml`.
+/// into a fresh `TempDir`'s `conway.json`.
 pub fn write_fixture(mock: &MockHandle, max_steps: u32) -> Fixture {
     write_fixture_with(&mock.base_url, &mock.model, max_steps)
 }
@@ -38,9 +55,9 @@ pub fn write_fixture_with(base_url: &str, model: &str, max_steps: u32) -> Fixtur
         .replace("{{BASE_URL}}", base_url)
         .replace("{{MODEL}}", model)
         .replace("{{MAX_STEPS}}", &max_steps.to_string());
-    let config_path = dir.path().join("conway.toml");
-    let mut f = std::fs::File::create(&config_path).expect("create conway.toml");
-    f.write_all(rendered.as_bytes()).expect("write conway.toml");
+    let config_path = dir.path().join("conway.json");
+    let mut f = std::fs::File::create(&config_path).expect("create conway.json");
+    f.write_all(rendered.as_bytes()).expect("write conway.json");
 
     // `ConwayBuilder::build`'s `CapabilityIndex` is populated *only* from
     // `config.models.metadata_path` (default `.conway/models.json`) -- it
@@ -50,7 +67,7 @@ pub fn write_fixture_with(base_url: &str, model: &str, max_steps: u32) -> Fixtur
     // (`CapabilitySkip`) before ever dialing a backend
     // (`conway-routing/src/router.rs`'s `check_candidate`). Every fixture
     // therefore declares its own mock model here, matching the `backend/model`
-    // chain string `fixtures/conway.toml.tmpl` renders.
+    // chain string `fixtures/conway.json.tmpl` renders.
     let models_dir = dir.path().join(".conway");
     std::fs::create_dir_all(&models_dir).expect("create .conway dir");
     let models_json = serde_json::json!({

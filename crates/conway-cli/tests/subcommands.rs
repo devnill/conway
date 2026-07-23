@@ -108,26 +108,28 @@ fn jsonl_lines(stdout: &[u8]) -> Vec<Value> {
         .collect()
 }
 
-/// The shared WI-113 template (`fixtures/conway.toml.tmpl`) declares no
-/// `[permissions]` section, so it defaults to `PermissionsConfig::default()`
+/// The shared WI-113 template (`fixtures/conway.json.tmpl`) declares no
+/// `permissions` section, so it defaults to `PermissionsConfig::default()`
 /// (`mode = "prompt"`). One-shot mode's dispatch always supplies its own
 /// gate override (`oneshot::build_gate`), so that default is invisible to
 /// `tests/oneshot.rs` -- but `sessions`/`routes` dispatch supplies no
 /// override (WI-116's own binding notes: these subcommands never touch a
 /// tool or a permission decision), so `ConwayBuilder::build` falls through
 /// to `gates::from_config(&config.permissions, None)`, which errors for
-/// `mode = "prompt"` with no handler supplied. Appending a `[permissions]`
-/// table to the rendered config (any mode other than `prompt` -- `"deny"`
-/// is the one every other fixture in this workspace already uses for
-/// exactly this reason, e.g. `cli_surface.rs::MINIMAL_CONFIG`) sidesteps it;
-/// harmless here since no subcommand under test ever proposes a tool call.
+/// `mode = "prompt"` with no handler supplied. Merging in a `permissions`
+/// object (any mode other than `prompt` -- `"deny"` is the one every other
+/// fixture in this workspace already uses for exactly this reason, e.g.
+/// `cli_surface.rs::MINIMAL_CONFIG`) sidesteps it; harmless here since no
+/// subcommand under test ever proposes a tool call.
 fn allow_build_without_prompt_handler(fixture: &Fixture) {
-    use std::io::Write as _;
-    let mut f = std::fs::OpenOptions::new()
-        .append(true)
-        .open(&fixture.config_path)
-        .expect("open fixture config for append");
-    writeln!(f, "\n[permissions]\nmode = \"deny\"\n").expect("append permissions section");
+    let text = std::fs::read_to_string(&fixture.config_path).expect("read fixture config");
+    let mut value: serde_json::Value = serde_json::from_str(&text).expect("parse fixture config");
+    value["permissions"] = serde_json::json!({ "mode": "deny" });
+    std::fs::write(
+        &fixture.config_path,
+        serde_json::to_vec(&value).expect("serialize fixture config"),
+    )
+    .expect("rewrite fixture config");
 }
 
 /// A fixture that never dials a backend -- routing decisions and an empty

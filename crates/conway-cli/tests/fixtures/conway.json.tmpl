@@ -1,0 +1,11 @@
+{
+  "default_role": "default",
+  "limits": { "max_steps": {{MAX_STEPS}} },
+  "backends": {
+    "mock": { "kind": "openai-compat", "base_url": "{{BASE_URL}}", "dialect": "openai" }
+  },
+  "roles": {
+    "default": { "chain": ["mock/{{MODEL}}"] },
+    "coder": { "chain": ["mock/{{MODEL}}"] }
+  }
+}

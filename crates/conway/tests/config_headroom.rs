@@ -21,19 +21,23 @@ use conway_core::ids::RoleAlias;
 #[test]
 fn empty_config_default_headroom_matches_the_cross_crate_constant_not_the_amendment_literal() {
     let cfg: ConwayConfig =
-        toml::from_str("default_role = \"coder\"\n\n[roles.coder]\nchain = []\n").unwrap();
+        serde_json::from_str(r#"{"default_role":"coder","roles":{"coder":{"chain":[]}}}"#).unwrap();
     assert_eq!(cfg.routing.default_headroom_tokens, DEFAULT_HEADROOM_TOKENS);
     assert_eq!(DEFAULT_HEADROOM_TOKENS, 8_192);
 }
 
 #[test]
 fn headroom_for_role_override_vs_global_default_vs_unknown_alias() {
-    let cfg: ConwayConfig = toml::from_str(
-        "default_role = \"coder\"\n\n\
-         [roles.coder]\nchain = []\n\n\
-         [roles.planner]\nchain = []\nheadroom_tokens = 40000\n\n\
-         [roles.fast]\nchain = []\n\n\
-         [routing]\ndefault_headroom_tokens = 16000\n",
+    let cfg: ConwayConfig = serde_json::from_str(
+        r#"{
+            "default_role": "coder",
+            "roles": {
+                "coder": { "chain": [] },
+                "planner": { "chain": [], "headroom_tokens": 40000 },
+                "fast": { "chain": [] }
+            },
+            "routing": { "default_headroom_tokens": 16000 }
+        }"#,
     )
     .unwrap();
 
@@ -49,16 +53,16 @@ fn headroom_default_participates_in_the_full_five_source_precedence_chain() {
     let xdg_home = root.join("xdg-home");
     std::fs::create_dir_all(xdg_home.join("conway")).unwrap();
     std::fs::write(
-        xdg_home.join("conway").join("conway.toml"),
-        "default_role = \"coder\"\n\n[roles.coder]\nchain = []\n\n[routing]\ndefault_headroom_tokens = 20000\n",
+        xdg_home.join("conway").join("conway.json"),
+        r#"{"default_role":"coder","roles":{"coder":{"chain":[]}},"routing":{"default_headroom_tokens":20000}}"#,
     )
     .unwrap();
 
     let project_dir = root.join("project");
     std::fs::create_dir_all(project_dir.join(".conway")).unwrap();
     std::fs::write(
-        project_dir.join(".conway").join("conway.toml"),
-        "default_role = \"coder\"\n\n[roles.coder]\nchain = []\n\n[routing]\ndefault_headroom_tokens = 30000\n",
+        project_dir.join(".conway").join("conway.json"),
+        r#"{"default_role":"coder","roles":{"coder":{"chain":[]}},"routing":{"default_headroom_tokens":30000}}"#,
     )
     .unwrap();
 
@@ -133,16 +137,16 @@ fn per_role_headroom_from_a_lower_precedence_source_beats_a_higher_sources_globa
     let xdg_home = root.join("xdg-home");
     std::fs::create_dir_all(xdg_home.join("conway")).unwrap();
     std::fs::write(
-        xdg_home.join("conway").join("conway.toml"),
-        "default_role = \"coder\"\n\n[roles.coder]\nchain = []\n\n[roles.planner]\nchain = []\nheadroom_tokens = 40000\n",
+        xdg_home.join("conway").join("conway.json"),
+        r#"{"default_role":"coder","roles":{"coder":{"chain":[]},"planner":{"chain":[],"headroom_tokens":40000}}}"#,
     )
     .unwrap();
 
     let project_dir = root.join("project");
     std::fs::create_dir_all(project_dir.join(".conway")).unwrap();
     std::fs::write(
-        project_dir.join(".conway").join("conway.toml"),
-        "default_role = \"coder\"\n\n[roles.coder]\nchain = []\n\n[routing]\ndefault_headroom_tokens = 8000\n",
+        project_dir.join(".conway").join("conway.json"),
+        r#"{"default_role":"coder","roles":{"coder":{"chain":[]}},"routing":{"default_headroom_tokens":8000}}"#,
     )
     .unwrap();
 
@@ -174,8 +178,8 @@ fn env_var_overrides_a_per_role_headroom() {
     let xdg_home = root.join("xdg-home");
     std::fs::create_dir_all(xdg_home.join("conway")).unwrap();
     std::fs::write(
-        xdg_home.join("conway").join("conway.toml"),
-        "default_role = \"coder\"\n\n[roles.coder]\nchain = []\n\n[roles.planner]\nchain = []\nheadroom_tokens = 40000\n",
+        xdg_home.join("conway").join("conway.json"),
+        r#"{"default_role":"coder","roles":{"coder":{"chain":[]},"planner":{"chain":[],"headroom_tokens":40000}}}"#,
     )
     .unwrap();
 
@@ -229,7 +233,7 @@ fn zero_global_headroom_is_a_hard_error() {
     let dir = support::unique_temp_dir("headroom-zero-global");
     let result = load(LoadOptions {
         cwd: dir,
-        explicit_path: Some(support::fixtures_dir().join("headroom_zero.toml")),
+        explicit_path: Some(support::fixtures_dir().join("headroom_zero.json")),
         env: HashMap::new(),
         cli_overrides: CliOverrides::default(),
         model_metadata_refresh: false,
@@ -242,10 +246,10 @@ fn zero_global_headroom_is_a_hard_error() {
 #[test]
 fn zero_per_role_headroom_is_a_hard_error_naming_the_role() {
     let dir = support::unique_temp_dir("headroom-zero-role");
-    let path = dir.join("conway.toml");
+    let path = dir.join("conway.json");
     std::fs::write(
         &path,
-        "default_role = \"coder\"\n\n[roles.coder]\nchain = []\nheadroom_tokens = 0\n",
+        r#"{"default_role":"coder","roles":{"coder":{"chain":[],"headroom_tokens":0}}}"#,
     )
     .unwrap();
 
@@ -266,7 +270,7 @@ fn headroom_role_override_fixture_resolves_as_documented() {
     let dir = support::unique_temp_dir("headroom-role-override-fixture");
     let outcome = load(LoadOptions {
         cwd: dir,
-        explicit_path: Some(support::fixtures_dir().join("headroom_role_override.toml")),
+        explicit_path: Some(support::fixtures_dir().join("headroom_role_override.json")),
         env: HashMap::new(),
         cli_overrides: CliOverrides::default(),
         model_metadata_refresh: false,
@@ -284,7 +288,7 @@ fn headroom_exceeding_smallest_reachable_context_warns_without_clamping() {
     let fixtures = support::fixtures_dir();
     let outcome = load(LoadOptions {
         cwd: fixtures.clone(),
-        explicit_path: Some(fixtures.join("headroom_exceeds_context.toml")),
+        explicit_path: Some(fixtures.join("headroom_exceeds_context.json")),
         env: HashMap::new(),
         cli_overrides: CliOverrides::default(),
         model_metadata_refresh: false,
@@ -309,12 +313,10 @@ fn headroom_exceeding_smallest_reachable_context_warns_without_clamping() {
 #[test]
 fn no_headroom_warning_when_model_metadata_is_absent() {
     let dir = support::unique_temp_dir("headroom-no-metadata");
-    let path = dir.join("conway.toml");
+    let path = dir.join("conway.json");
     std::fs::write(
         &path,
-        "default_role = \"coder\"\n\n\
-         [roles.coder]\nchain = [\"anthropic/claude-haiku-4-5\"]\nheadroom_tokens = 200000\n\n\
-         [backends.anthropic]\nkind = \"anthropic\"\n",
+        r#"{"default_role":"coder","roles":{"coder":{"chain":["anthropic/claude-haiku-4-5"],"headroom_tokens":200000}},"backends":{"anthropic":{"kind":"anthropic"}}}"#,
     )
     .unwrap();
 
@@ -339,16 +341,17 @@ fn two_offending_roles_produce_deterministically_ordered_warnings() {
     )
     .unwrap();
 
-    let toml_text = format!(
-        "default_role = \"alpha\"\n\n\
-         [roles.alpha]\nchain = [\"anthropic/claude-haiku-4-5\"]\nheadroom_tokens = 100000\n\n\
-         [roles.zeta]\nchain = [\"anthropic/claude-haiku-4-5\"]\nheadroom_tokens = 100000\n\n\
-         [backends.anthropic]\nkind = \"anthropic\"\n\n\
-         [models]\nmetadata_path = {:?}\n",
-        metadata_path.to_string_lossy()
-    );
-    let path = dir.join("conway.toml");
-    std::fs::write(&path, &toml_text).unwrap();
+    let config_value = serde_json::json!({
+        "default_role": "alpha",
+        "roles": {
+            "alpha": { "chain": ["anthropic/claude-haiku-4-5"], "headroom_tokens": 100000 },
+            "zeta": { "chain": ["anthropic/claude-haiku-4-5"], "headroom_tokens": 100000 },
+        },
+        "backends": { "anthropic": { "kind": "anthropic" } },
+        "models": { "metadata_path": metadata_path.to_string_lossy() },
+    });
+    let path = dir.join("conway.json");
+    std::fs::write(&path, serde_json::to_vec(&config_value).unwrap()).unwrap();
 
     let run = || {
         load(LoadOptions {

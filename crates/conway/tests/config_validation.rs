@@ -15,7 +15,7 @@ fn allowlist_mode_with_empty_allowed_tools_is_rejected() {
     let dir = support::unique_temp_dir("allowlist-empty");
     let result = load(LoadOptions {
         cwd: dir,
-        explicit_path: Some(support::fixtures_dir().join("allowlist_empty.toml")),
+        explicit_path: Some(support::fixtures_dir().join("allowlist_empty.json")),
         env: HashMap::new(),
         cli_overrides: CliOverrides::default(),
         model_metadata_refresh: false,
@@ -32,7 +32,7 @@ fn interval_fsync_with_zero_interval_ms_is_rejected() {
     let dir = support::unique_temp_dir("fsync-interval-zero");
     let result = load(LoadOptions {
         cwd: dir,
-        explicit_path: Some(support::fixtures_dir().join("fsync_interval_zero.toml")),
+        explicit_path: Some(support::fixtures_dir().join("fsync_interval_zero.json")),
         env: HashMap::new(),
         cli_overrides: CliOverrides::default(),
         model_metadata_refresh: false,
@@ -49,7 +49,7 @@ fn api_key_and_api_key_env_both_set_is_rejected() {
     let dir = support::unique_temp_dir("api-key-both-set");
     let result = load(LoadOptions {
         cwd: dir,
-        explicit_path: Some(support::fixtures_dir().join("api_key_both_set.toml")),
+        explicit_path: Some(support::fixtures_dir().join("api_key_both_set.json")),
         env: HashMap::new(),
         cli_overrides: CliOverrides::default(),
         model_metadata_refresh: false,

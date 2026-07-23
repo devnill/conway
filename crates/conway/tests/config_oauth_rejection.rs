@@ -29,8 +29,8 @@ fn assert_oauth_message(message: &str) {
 }
 
 fn minimal_valid_config() -> ConwayConfig {
-    toml::from_str(
-        "default_role = \"coder\"\n\n[roles.coder]\nchain = []\n\n[backends.anthropic]\nkind = \"anthropic\"\n",
+    serde_json::from_str(
+        r#"{"default_role":"coder","roles":{"coder":{"chain":[]}},"backends":{"anthropic":{"kind":"anthropic"}}}"#,
     )
     .unwrap()
 }
@@ -40,7 +40,7 @@ fn oauth_token_supplied_via_file_is_rejected() {
     let dir = support::unique_temp_dir("oauth-file");
     let result = load(LoadOptions {
         cwd: dir,
-        explicit_path: Some(support::fixtures_dir().join("oauth_token.toml")),
+        explicit_path: Some(support::fixtures_dir().join("oauth_token.json")),
         env: HashMap::new(),
         cli_overrides: CliOverrides::default(),
         model_metadata_refresh: false,

@@ -266,14 +266,14 @@ async fn build_constructs_default_jsonl_store_when_none_injected() {
 /// `AnthropicBackend::id()` always returns the fixed `BackendId::new("anthropic")`
 /// -- it has no `id` field to carry a configured name -- but the backend map
 /// `build()` assembles is keyed by that returned id, while
-/// `config::merge::validate` checks chain refs against the `[backends.<id>]`
-/// TOML key namespace. A mismatched key would otherwise pass all config
+/// `config::merge::validate` checks chain refs against the `backends.<id>`
+/// JSON key namespace. A mismatched key would otherwise pass all config
 /// validation and then panic every routed request in
 /// `AttemptEngine::backend_for`. `build_anthropic` must reject it instead, at
 /// `build()` time, as a `ConwayError::Config`.
 #[cfg(feature = "anthropic")]
 #[test]
-fn build_rejects_anthropic_backend_when_toml_key_does_not_match_hardcoded_id() {
+fn build_rejects_anthropic_backend_when_json_key_does_not_match_hardcoded_id() {
     let mut cfg = base_config();
     cfg.backends.insert(
         "claude".to_string(),
@@ -293,7 +293,7 @@ fn build_rejects_anthropic_backend_when_toml_key_does_not_match_hardcoded_id() {
         .build();
     let err = expect_build_err(
         result,
-        "a TOML key other than 'anthropic' for an anthropic backend must be rejected",
+        "a JSON key other than 'anthropic' for an anthropic backend must be rejected",
     );
 
     match err {
@@ -305,11 +305,11 @@ fn build_rejects_anthropic_backend_when_toml_key_does_not_match_hardcoded_id() {
     }
 }
 
-/// Control case for the above: a `[backends.anthropic]` entry (TOML key
+/// Control case for the above: a `backends.anthropic` entry (JSON key
 /// matches the hardcoded id) must still build successfully.
 #[cfg(feature = "anthropic")]
 #[test]
-fn build_succeeds_when_anthropic_toml_key_matches_hardcoded_id() {
+fn build_succeeds_when_anthropic_json_key_matches_hardcoded_id() {
     let mut cfg = base_config();
     cfg.backends.insert(
         "anthropic".to_string(),
@@ -327,7 +327,7 @@ fn build_succeeds_when_anthropic_toml_key_matches_hardcoded_id() {
         .with_permission_gate(gate)
         .with_router(fake_router())
         .build()
-        .expect("a matching 'anthropic' TOML key must build successfully");
+        .expect("a matching 'anthropic' JSON key must build successfully");
 }
 
 #[cfg(not(feature = "anthropic"))]

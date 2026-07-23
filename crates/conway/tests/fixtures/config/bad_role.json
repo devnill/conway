@@ -1,0 +1,9 @@
+{
+  "default_role": "ghost",
+  "roles": {
+    "coder": { "chain": ["anthropic/claude-sonnet-4-6"] }
+  },
+  "backends": {
+    "anthropic": { "kind": "anthropic" }
+  }
+}

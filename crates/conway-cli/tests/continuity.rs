@@ -64,12 +64,12 @@ use common::mock_backend::{Chunk, MockBackend, Script};
 /// than going through `main.rs`'s own construction path:
 /// - `CliOverrides::cwd` is set explicitly to `fixture.dir.path()` rather
 ///   than relying on `ConwayConfig`'s own `default_cwd()` (a serde default
-///   evaluated at TOML-parse time against *this test process's* cwd, which
+///   evaluated at JSON-parse time against *this test process's* cwd, which
 ///   is the crate root, not the fixture's temp dir) -- without this
 ///   override, the default `.conway/sessions` session-store path would
 ///   resolve relative to the wrong directory and this function would
 ///   silently open an empty store.
-/// - A gate is supplied explicitly: the fixture's `conway.toml` leaves
+/// - A gate is supplied explicitly: the fixture's `conway.json` leaves
 ///   `permissions.mode` at its config-level default (`"prompt"`, meant for
 ///   an interactive embedder), and `ConwayBuilder::build` refuses to
 ///   assemble a `Conway` for `"prompt"` mode without one (`main.rs`'s own
@@ -97,19 +97,21 @@ async fn open_conway(fixture: &Fixture) -> Conway {
 /// suite) supplies no gate override of its own -- `main.rs`'s dispatch only
 /// builds one for `tui`/`print` targets -- so it falls through to
 /// `gates::from_config`, which errors on this fixture template's default
-/// `permissions.mode = "prompt"` with no handler supplied. Appending a
-/// `[permissions]` table with any other mode (`"deny"`, matching
+/// `permissions.mode = "prompt"` with no handler supplied. Merging in a
+/// `permissions` object with any other mode (`"deny"`, matching
 /// `subcommands.rs`'s own `allow_build_without_prompt_handler` fixture for
 /// the identical reason) sidesteps it; harmless for the `-p` runs that
 /// share this same fixture file, since one-shot mode always supplies its
 /// own gate regardless of config (`oneshot::build_gate`).
 fn allow_sessions_subcommand(fixture: &Fixture) {
-    use std::io::Write as _;
-    let mut f = std::fs::OpenOptions::new()
-        .append(true)
-        .open(&fixture.config_path)
-        .expect("open fixture config for append");
-    writeln!(f, "\n[permissions]\nmode = \"deny\"\n").expect("append permissions section");
+    let text = std::fs::read_to_string(&fixture.config_path).expect("read fixture config");
+    let mut value: serde_json::Value = serde_json::from_str(&text).expect("parse fixture config");
+    value["permissions"] = serde_json::json!({ "mode": "deny" });
+    std::fs::write(
+        &fixture.config_path,
+        serde_json::to_vec(&value).expect("serialize fixture config"),
+    )
+    .expect("rewrite fixture config");
 }
 
 /// The one session a freshly-populated fixture has created so far.
