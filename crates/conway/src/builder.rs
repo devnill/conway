@@ -33,7 +33,7 @@
 //!   private `AnthropicConfigRaw`/serde `TryFrom` path**: every field on
 //!   both `conway_backends::config::{AnthropicConfig, OpenAiCompatConfig}`
 //!   is `pub`, so this module builds each directly via a struct literal
-//!   instead of round-tripping through a synthesized TOML/JSON document.
+//!   instead of round-tripping through a synthesized JSON document.
 //!   `AnthropicConfig::validate()` (which the private `TryFrom` path would
 //!   otherwise run) is called explicitly after construction — this is not
 //!   optional: `api_key_env` is resolved from the live process environment
@@ -43,21 +43,21 @@
 //!   gate.
 //! - **`OpenAiCompatConfig.dialect` is parsed by hand** ([`parse_dialect`]),
 //!   not via that type's own `serde(rename_all = "snake_case")`
-//!   `Deserialize` impl: the facade's documented TOML dialect values
+//!   `Deserialize` impl: the facade's documented dialect values
 //!   (`"vllm-hermes"`, `"lm-studio"`, `"llamacpp-server"`) are kebab-case,
 //!   but `Dialect`'s derived wire form is snake_case (`"vllm_hermes"`, ...),
 //!   so a real config file following the documented schema would fail to
 //!   deserialize `Dialect` directly.
 //! - **The backend map is keyed by each constructed backend's own
-//!   `Backend::id()`, not the `[backends.<id>]` TOML table key.**
+//!   `Backend::id()`, not the `backends.<id>` JSON key.**
 //!   `AnthropicBackend::id()` unconditionally returns a hardcoded
 //!   `BackendId::new("anthropic")` (it has no `id` field to carry a
 //!   configured name) — a `conway-backends`-level constraint, out of this
 //!   item's file scope to fix at the source. `OpenAiCompatBackend::id()`,
 //!   by contrast, faithfully returns the config-provided id (`config.id`,
-//!   itself set from the TOML key in [`build_openai_compat`]), so it needs
+//!   itself set from the JSON key in [`build_openai_compat`]), so it needs
 //!   no equivalent guard. Since `config::merge::validate` checks chain refs
-//!   against the TOML key namespace, a mismatched anthropic key would
+//!   against the JSON key namespace, a mismatched anthropic key would
 //!   otherwise pass all config validation and then panic every routed
 //!   request in `AttemptEngine::backend_for` (only key `"anthropic"` would
 //!   exist in the map); [`build_anthropic`] rejects a non-`"anthropic"` key
@@ -452,9 +452,9 @@ fn build_anthropic(id: &str, entry: &BackendEntry) -> Result<Arc<dyn Backend>> {
 
     // `AnthropicBackend::id()` unconditionally returns `BackendId::new("anthropic")`
     // (it has no `id` field to carry a configured name) -- the backend map in
-    // `build()` is keyed by that returned id, not by this TOML table key, but
+    // `build()` is keyed by that returned id, not by this JSON key, but
     // `config::merge::validate` checks chain refs (`<backend_id>/<model>`)
-    // against the TOML key namespace. A mismatch here would pass all config
+    // against the JSON key namespace. A mismatch here would pass all config
     // validation and then panic every routed request in
     // `AttemptEngine::backend_for` (only key "anthropic" would exist in the
     // map). Reject it here instead, at build() time, until
@@ -463,8 +463,8 @@ fn build_anthropic(id: &str, entry: &BackendEntry) -> Result<Arc<dyn Backend>> {
         return Err(ConwayError::Config {
             path: None,
             message: format!(
-                "backend '{id}': kind 'anthropic' requires the TOML table key to be \
-                 'anthropic' (i.e. '[backends.anthropic]'), not '{id}' -- \
+                "backend '{id}': kind 'anthropic' requires the JSON key to be \
+                 'anthropic' (i.e. \"backends\": {{\"anthropic\": {{...}}}}), not '{id}' -- \
                  `AnthropicBackend::id()` always returns the fixed id \"anthropic\" \
                  regardless of the configured key, so any other key would route/backend-lookup \
                  under \"anthropic\" and panic at request time"

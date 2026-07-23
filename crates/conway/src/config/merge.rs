@@ -82,7 +82,7 @@ pub fn load(options: LoadOptions) -> Result<LoadOutcome> {
     let mut merged = default_document();
 
     if let Some(path) = discovery::xdg_config_path(&options.env) {
-        if let Some(layer) = read_toml_layer(&path)? {
+        if let Some(layer) = read_json_layer(&path)? {
             merge_values(&mut merged, layer);
         }
     }
@@ -92,7 +92,7 @@ pub fn load(options: LoadOptions) -> Result<LoadOutcome> {
         .clone()
         .or_else(|| discovery::discover(&options.cwd));
     if let Some(path) = project_path {
-        if let Some(layer) = read_toml_layer(&path)? {
+        if let Some(layer) = read_json_layer(&path)? {
             merge_values(&mut merged, layer);
         }
     }
@@ -146,7 +146,7 @@ fn resolve_metadata_path(config: &ConwayConfig, cwd: &std::path::Path) -> PathBu
     }
 }
 
-/// The built-in, lowest-precedence layer. Matches the documented TOML
+/// The built-in, lowest-precedence layer. Matches the documented config
 /// defaults exactly (WI-097's Implementation Notes / the headroom
 /// amendment), except `routing.default_headroom_tokens`: see
 /// `schema::DEFAULT_HEADROOM_TOKENS`'s doc comment for why `8_192` (not the
@@ -222,19 +222,14 @@ fn merge_values(base: &mut Value, overlay: Value) {
     }
 }
 
-fn read_toml_layer(path: &std::path::Path) -> Result<Option<Value>> {
+fn read_json_layer(path: &std::path::Path) -> Result<Option<Value>> {
     match std::fs::read_to_string(path) {
         Ok(text) => {
-            let toml_value: toml::Value =
-                toml::from_str(&text).map_err(|e| ConwayError::Config {
-                    path: Some(path.to_path_buf()),
-                    message: format!("failed to parse TOML at {}: {e}", path.display()),
-                })?;
-            let json_value = serde_json::to_value(toml_value).map_err(|e| ConwayError::Config {
+            let value: Value = serde_json::from_str(&text).map_err(|e| ConwayError::Config {
                 path: Some(path.to_path_buf()),
-                message: format!("failed to convert TOML at {} to JSON: {e}", path.display()),
+                message: format!("failed to parse JSON at {}: {e}", path.display()),
             })?;
-            Ok(Some(json_value))
+            Ok(Some(value))
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(ConwayError::Config {

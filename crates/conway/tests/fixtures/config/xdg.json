@@ -1,0 +1,12 @@
+{
+  "default_role": "coder",
+  "roles": {
+    "coder": { "chain": ["anthropic/claude-sonnet-4-6"] }
+  },
+  "backends": {
+    "anthropic": { "kind": "anthropic", "base_url": "https://xdg.example.com" }
+  },
+  "limits": {
+    "max_steps": 11
+  }
+}

@@ -6,33 +6,30 @@ use std::io::Write;
 use assert_cmd::Command;
 use predicates::prelude::*;
 
-/// A minimal, valid `conway.toml`: one `deny`-mode permissions block (so
+/// A minimal, valid `conway.json`: one `deny`-mode permissions block (so
 /// `build()` never hits the undocumented "mode = prompt requires a handler"
 /// gap -- WI-111 wires no gate override, that's WI-112/114's job), one
 /// `openai-compat` backend (never actually dialed -- these tests only need
 /// `build()` to succeed, not a live connection), and one role so
 /// `default_role` resolves.
+///
+/// `default_document()` bakes in a `roles.coder = { chain = [] }` at the
+/// lowest merge layer, and routing validation rejects an empty chain on ANY
+/// role (not just `default_role`). `coder` therefore gets a valid chain
+/// here too, or `build()` fails with EmptyChain before dispatch ever
+/// reaches the stub (cycle-1 review S1).
 const MINIMAL_CONFIG: &str = r#"
-default_role = "default"
-
-[permissions]
-mode = "deny"
-
-[backends.local]
-kind = "openai-compat"
-base_url = "http://127.0.0.1:1"
-dialect = "ollama"
-
-[roles.default]
-chain = ["local/test-model"]
-
-# `default_document()` bakes in a `roles.coder = { chain = [] }` at the
-# lowest merge layer, and routing validation rejects an empty chain on ANY
-# role (not just `default_role`). Give `coder` a valid chain here too, or
-# `build()` fails with EmptyChain before dispatch ever reaches the stub
-# (cycle-1 review S1).
-[roles.coder]
-chain = ["local/test-model"]
+{
+  "default_role": "default",
+  "permissions": { "mode": "deny" },
+  "backends": {
+    "local": { "kind": "openai-compat", "base_url": "http://127.0.0.1:1", "dialect": "ollama" }
+  },
+  "roles": {
+    "default": { "chain": ["local/test-model"] },
+    "coder": { "chain": ["local/test-model"] }
+  }
+}
 "#;
 
 fn bin() -> Command {
@@ -44,10 +41,10 @@ fn bin() -> Command {
 /// backs `session.root`/`agents.dir`'s relative defaults).
 fn minimal_config_dir() -> (tempfile::TempDir, std::path::PathBuf) {
     let dir = tempfile::tempdir().expect("tempdir");
-    let path = dir.path().join("conway.toml");
-    let mut f = std::fs::File::create(&path).expect("create conway.toml");
+    let path = dir.path().join("conway.json");
+    let mut f = std::fs::File::create(&path).expect("create conway.json");
     f.write_all(MINIMAL_CONFIG.as_bytes())
-        .expect("write conway.toml");
+        .expect("write conway.json");
     (dir, path)
 }
 

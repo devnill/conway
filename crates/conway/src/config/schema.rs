@@ -1,4 +1,4 @@
-//! The `ConwayConfig` schema: the facade-owned wire shape for `conway.toml`.
+//! The `ConwayConfig` schema: the facade-owned wire shape for `conway.json`.
 //!
 //! Reconciliation note (disclosed in the WI-097 Self-Check): the binding
 //! implementation notes say `[roles]` and `[health]` "deserialize directly
@@ -8,15 +8,15 @@
 //!
 //! - `conway_core::routing::RoleConfig` has no `#[serde(default)]` on its
 //!   `required`/`params` fields, so deserializing the documented minimal
-//!   `[roles.coder]\nchain = [...]` TOML directly into it fails ("missing
-//!   field `required`").
+//!   `{"roles": {"coder": {"chain": [...]}}}` directly into it fails
+//!   ("missing field `required`").
 //! - `conway_core::ids::ModelRef` derives a plain struct `Deserialize`
 //!   (object wire shape `{backend, model}`), not a string-parsed one, so it
 //!   cannot deserialize the documented `chain = ["local/qwen3-coder-80b",
 //!   ...]` bare-string array.
 //!
 //! This module therefore defines its own [`RoleEntry`] (`chain: Vec<String>`,
-//! `headroom_tokens: Option<u32>`) matching the documented TOML exactly, and
+//! `headroom_tokens: Option<u32>`) matching the documented schema exactly, and
 //! [`ConwayConfig::routing`] converts it into the authoritative
 //! `conway_core::routing::RoutingConfig`/`RoleConfig` (parsing each chain
 //! string via `ModelRef::from_str`, and filling `required`/`params` with
@@ -41,11 +41,11 @@ use std::path::PathBuf;
 use conway_core::ids::RoleAlias;
 use serde::{Deserialize, Serialize};
 
-/// The complete, facade-owned `conway.toml` schema.
+/// The complete, facade-owned `conway.json` schema.
 ///
-/// `default_role` has no sensible built-in default (the binding TOML always
+/// `default_role` has no sensible built-in default (the binding config always
 /// sets it explicitly), so it is the one field with no `#[serde(default)]`.
-/// Every other field defaults per the documented TOML in
+/// Every other field defaults per the documented schema in
 /// `docs/plan/wi-conway-facade.md` (WI-097) /
 /// `wi-conway-facade-amendment.md`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -147,7 +147,7 @@ impl Default for SessionConfig {
 /// `session.fsync`. A plain lowercase string tag, distinct from
 /// `conway_core::config::FsyncPolicy`'s `{kind, millis}` tagged-enum wire
 /// shape — `fsync_interval_ms` is carried as a sibling field per the
-/// documented TOML, not folded into the enum.
+/// documented schema, not folded into the enum.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum FsyncMode {
@@ -253,7 +253,7 @@ pub enum BackendKind {
 }
 
 /// `[routing]` (headroom amendment). Just the global headroom default —
-/// `[roles]` and `[health]` are separate top-level TOML tables per the
+/// `[roles]` and `[health]` are separate top-level sections per the
 /// documented schema, not nested under `[routing]`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
@@ -356,7 +356,7 @@ impl Default for AgentsConfig {
     }
 }
 
-/// `[models]`. `probe_on_startup` is not shown in the WI-097 TOML snippet
+/// `[models]`. `probe_on_startup` is not shown in the WI-097 config snippet
 /// but is required by WI-100's criteria (`config.models.probe_on_startup`,
 /// default `false`); added here since WI-097 owns this file exclusively and
 /// WI-100 depends on it existing.

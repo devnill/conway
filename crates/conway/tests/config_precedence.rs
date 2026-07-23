@@ -10,69 +10,75 @@ use conway::config::schema::{ConwayConfig, PermissionMode};
 use conway::config::{load, CliOverrides, LoadOptions};
 use conway_core::ids::RoleAlias;
 
-const FULL_SCHEMA_TOML: &str = r#"
-default_role = "coder"
-cwd = "."
-
-[session]
-root = ".conway/sessions"
-fsync = "interval"
-fsync_interval_ms = 200
-
-[limits]
-max_steps = 40
-max_tokens = 0
-deadline_secs = 0
-max_parallel_tools = 4
-
-[permissions]
-mode = "prompt"
-allowed_tools = []
-denied_tools = []
-
-[backends.anthropic]
-kind = "anthropic"
-api_key = ""
-api_key_env = "ANTHROPIC_API_KEY"
-base_url = ""
-
-[backends.local]
-kind = "openai-compat"
-dialect = "ollama"
-base_url = "http://localhost:11434/v1"
-api_key_env = ""
-stream_tools = false
-
-[routing]
-default_headroom_tokens = 8192
-
-[roles.coder]
-chain = ["local/qwen3-coder-80b", "anthropic/claude-sonnet-4-6"]
-
-[roles.planner]
-chain = ["anthropic/claude-sonnet-4-6"]
-headroom_tokens = 40000
-
-[health]
-transport_failures_to_open = 3
-open_duration_secs = 30
-probe_interval_secs = 15
-probe_timeout_secs = 2
-probe_failures_to_open = 3
-
-[agents]
-dir = ".conway/agents"
-
-[models]
-metadata_path = ".conway/models.json"
-probe_on_startup = false
+const FULL_SCHEMA_JSON: &str = r#"
+{
+  "default_role": "coder",
+  "cwd": ".",
+  "session": {
+    "root": ".conway/sessions",
+    "fsync": "interval",
+    "fsync_interval_ms": 200
+  },
+  "limits": {
+    "max_steps": 40,
+    "max_tokens": 0,
+    "deadline_secs": 0,
+    "max_parallel_tools": 4
+  },
+  "permissions": {
+    "mode": "prompt",
+    "allowed_tools": [],
+    "denied_tools": []
+  },
+  "backends": {
+    "anthropic": {
+      "kind": "anthropic",
+      "api_key": "",
+      "api_key_env": "ANTHROPIC_API_KEY",
+      "base_url": ""
+    },
+    "local": {
+      "kind": "openai-compat",
+      "dialect": "ollama",
+      "base_url": "http://localhost:11434/v1",
+      "api_key_env": "",
+      "stream_tools": false
+    }
+  },
+  "routing": {
+    "default_headroom_tokens": 8192
+  },
+  "roles": {
+    "coder": {
+      "chain": ["local/qwen3-coder-80b", "anthropic/claude-sonnet-4-6"]
+    },
+    "planner": {
+      "chain": ["anthropic/claude-sonnet-4-6"],
+      "headroom_tokens": 40000
+    }
+  },
+  "health": {
+    "transport_failures_to_open": 3,
+    "open_duration_secs": 30,
+    "probe_interval_secs": 15,
+    "probe_timeout_secs": 2,
+    "probe_failures_to_open": 3
+  },
+  "agents": {
+    "dir": ".conway/agents"
+  },
+  "models": {
+    "metadata_path": ".conway/models.json",
+    "probe_on_startup": false
+  }
+}
 "#;
 
 #[test]
 fn conway_config_round_trips_the_full_documented_schema() {
-    let cfg: ConwayConfig = toml::from_str(FULL_SCHEMA_TOML).expect("full schema must parse");
-    let reserialized = toml::to_string(&cfg).expect("must serialize");
-    let cfg2: ConwayConfig = toml::from_str(&reserialized).expect("reserialized must parse");
+    let cfg: ConwayConfig = serde_json::from_str(FULL_SCHEMA_JSON).expect("full schema must parse");
+    let reserialized = serde_json::to_string(&cfg).expect("must serialize");
+    let cfg2: ConwayConfig = serde_json::from_str(&reserialized).expect("reserialized must parse");
     assert_eq!(cfg, cfg2);
     assert_eq!(cfg.roles["coder"].chain.len(), 2);
     assert_eq!(cfg.backends["local"].stream_tools, Some(false));
@@ -95,28 +101,22 @@ fn five_source_precedence_across_representative_keys() {
     let xdg_home = root.join("xdg-home");
     std::fs::create_dir_all(xdg_home.join("conway")).unwrap();
     std::fs::write(
-        xdg_home.join("conway").join("conway.toml"),
+        xdg_home.join("conway").join("conway.json"),
         r#"
-default_role = "role-x"
-
-[roles.role-x]
-chain = []
-[roles.role-p]
-chain = []
-[roles.role-e]
-chain = []
-[roles.role-c]
-chain = []
-
-[backends.anthropic]
-kind = "anthropic"
-base_url = "https://xdg.example.com"
-
-[limits]
-max_steps = 11
-
-[permissions]
-mode = "deny"
+{
+  "default_role": "role-x",
+  "roles": {
+    "role-x": { "chain": [] },
+    "role-p": { "chain": [] },
+    "role-e": { "chain": [] },
+    "role-c": { "chain": [] }
+  },
+  "backends": {
+    "anthropic": { "kind": "anthropic", "base_url": "https://xdg.example.com" }
+  },
+  "limits": { "max_steps": 11 },
+  "permissions": { "mode": "deny" }
+}
 "#,
     )
     .unwrap();
@@ -124,18 +124,16 @@ mode = "deny"
     let project_dir = root.join("project");
     std::fs::create_dir_all(project_dir.join(".conway")).unwrap();
     std::fs::write(
-        project_dir.join(".conway").join("conway.toml"),
+        project_dir.join(".conway").join("conway.json"),
         r#"
-default_role = "role-p"
-
-[backends.anthropic]
-base_url = "https://project.example.com"
-
-[limits]
-max_steps = 22
-
-[permissions]
-mode = "prompt"
+{
+  "default_role": "role-p",
+  "backends": {
+    "anthropic": { "base_url": "https://project.example.com" }
+  },
+  "limits": { "max_steps": 22 },
+  "permissions": { "mode": "prompt" }
+}
 "#,
     )
     .unwrap();
@@ -267,8 +265,8 @@ fn load_discovers_the_nearest_project_config_via_parent_walk() {
     let conf_dir = root.join("a").join(".conway");
     std::fs::create_dir_all(&conf_dir).unwrap();
     std::fs::write(
-        conf_dir.join("conway.toml"),
-        "default_role = \"coder\"\n\n[roles.coder]\nchain = []\n\n[limits]\nmax_steps = 5\n",
+        conf_dir.join("conway.json"),
+        r#"{"default_role":"coder","roles":{"coder":{"chain":[]}},"limits":{"max_steps":5}}"#,
     )
     .unwrap();
 
@@ -288,7 +286,7 @@ fn unknown_role_alias_in_default_role_names_the_alias_and_defined_roles() {
     let dir = support::unique_temp_dir("bad-role");
     let result = load(LoadOptions {
         cwd: dir,
-        explicit_path: Some(support::fixtures_dir().join("bad_role.toml")),
+        explicit_path: Some(support::fixtures_dir().join("bad_role.json")),
         env: HashMap::new(),
         cli_overrides: CliOverrides::default(),
         model_metadata_refresh: false,
@@ -309,7 +307,7 @@ fn typo_d_key_is_rejected_by_deny_unknown_fields() {
     let dir = support::unique_temp_dir("unknown-key");
     let result = load(LoadOptions {
         cwd: dir,
-        explicit_path: Some(support::fixtures_dir().join("unknown_key.toml")),
+        explicit_path: Some(support::fixtures_dir().join("unknown_key.json")),
         env: HashMap::new(),
         cli_overrides: CliOverrides::default(),
         model_metadata_refresh: false,
@@ -326,7 +324,7 @@ fn typo_d_health_key_is_rejected_by_deny_unknown_fields() {
     let dir = support::unique_temp_dir("unknown-health-key");
     let result = load(LoadOptions {
         cwd: dir,
-        explicit_path: Some(support::fixtures_dir().join("unknown_health_key.toml")),
+        explicit_path: Some(support::fixtures_dir().join("unknown_health_key.json")),
         env: HashMap::new(),
         cli_overrides: CliOverrides::default(),
         model_metadata_refresh: false,

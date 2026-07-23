@@ -5,12 +5,12 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// Walks from `start` up to the filesystem root looking for
-/// `<dir>/.conway/conway.toml`, returning the *nearest* match (i.e. `start`
+/// `<dir>/.conway/conway.json`, returning the *nearest* match (i.e. `start`
 /// itself is checked first).
 pub fn discover(start: &Path) -> Option<PathBuf> {
     let mut dir = start.to_path_buf();
     loop {
-        let candidate = dir.join(".conway").join("conway.toml");
+        let candidate = dir.join(".conway").join("conway.json");
         if candidate.is_file() {
             return Some(candidate);
         }
@@ -20,7 +20,7 @@ pub fn discover(start: &Path) -> Option<PathBuf> {
     }
 }
 
-/// The XDG config path for `conway`: `$XDG_CONFIG_HOME/conway/conway.toml`
+/// The XDG config path for `conway`: `$XDG_CONFIG_HOME/conway/conway.json`
 /// when `XDG_CONFIG_HOME` is set (and non-empty) in `env`, otherwise the
 /// platform default from `directories::ProjectDirs`.
 ///
@@ -30,11 +30,11 @@ pub fn discover(start: &Path) -> Option<PathBuf> {
 pub fn xdg_config_path(env: &HashMap<String, String>) -> Option<PathBuf> {
     if let Some(xdg) = env.get("XDG_CONFIG_HOME") {
         if !xdg.is_empty() {
-            return Some(Path::new(xdg).join("conway").join("conway.toml"));
+            return Some(Path::new(xdg).join("conway").join("conway.json"));
         }
     }
     directories::ProjectDirs::from("", "", "conway")
-        .map(|dirs| dirs.config_dir().join("conway.toml"))
+        .map(|dirs| dirs.config_dir().join("conway.json"))
 }
 
 #[cfg(test)]
@@ -47,16 +47,16 @@ mod tests {
         let tmp = tempfile_dir();
         let root_conf = tmp.join(".conway");
         fs::create_dir_all(&root_conf).unwrap();
-        fs::write(root_conf.join("conway.toml"), "").unwrap();
+        fs::write(root_conf.join("conway.json"), "").unwrap();
 
         let nested = tmp.join("a").join("b").join("c");
         fs::create_dir_all(&nested).unwrap();
         let nested_conf_dir = tmp.join("a").join("b").join(".conway");
         fs::create_dir_all(&nested_conf_dir).unwrap();
-        fs::write(nested_conf_dir.join("conway.toml"), "").unwrap();
+        fs::write(nested_conf_dir.join("conway.json"), "").unwrap();
 
         let found = discover(&nested).unwrap();
-        assert_eq!(found, nested_conf_dir.join("conway.toml"));
+        assert_eq!(found, nested_conf_dir.join("conway.json"));
     }
 
     #[test]
@@ -72,7 +72,7 @@ mod tests {
         let mut env = HashMap::new();
         env.insert("XDG_CONFIG_HOME".to_string(), "/custom/xdg".to_string());
         let path = xdg_config_path(&env).unwrap();
-        assert_eq!(path, PathBuf::from("/custom/xdg/conway/conway.toml"));
+        assert_eq!(path, PathBuf::from("/custom/xdg/conway/conway.json"));
     }
 
     #[test]
@@ -82,7 +82,7 @@ mod tests {
         // resolves to *something* ending in the expected suffix.
         let path = xdg_config_path(&env);
         if let Some(path) = path {
-            assert!(path.ends_with("conway/conway.toml"));
+            assert!(path.ends_with("conway/conway.json"));
         }
     }
 
