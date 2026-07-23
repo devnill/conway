@@ -44,7 +44,7 @@
 use std::sync::Arc;
 
 use conway_core::capabilities::CacheMode;
-use conway_core::content::{ContentBlock, Role, ToolSpec};
+use conway_core::content::{ContentBlock, Role, ToolResult, ToolSpec};
 use conway_core::error::RuntimeError;
 use conway_core::ids::{AgentId, ModelId, PrefixKey, SegmentId, SeqRange, SessionId};
 use conway_core::log::LogRecord;
@@ -332,6 +332,23 @@ fn text_block(text: &str) -> Vec<ContentBlock> {
     }]
 }
 
+/// Wraps a recorded `ToolResult` as the single `ContentBlock::ToolResultBlock`
+/// a `Role::ToolResult` segment must carry (WI-137). Both wire adapters
+/// (`openai_compat::tool_result_messages` and `anthropic::tool_result_blocks`)
+/// serialize a tool result ONLY from a `ToolResultBlock` -- it is the block
+/// that carries the `call_id` tying the result back to its `tool_use` /
+/// `tool_call`. The tool runner produces raw `Text` blocks, so before this
+/// wrapping the segment held bare `Text`, matched neither wire adapter, and the
+/// tool result was silently dropped from every request: the model saw its own
+/// tool call (WI-122) but never the output, so it confabulated an answer.
+fn tool_result_block(result: &ToolResult) -> Vec<ContentBlock> {
+    vec![ContentBlock::ToolResultBlock {
+        call_id: result.call_id.clone(),
+        blocks: result.blocks.clone(),
+        is_error: result.is_error,
+    }]
+}
+
 /// Generic `(role, content)` extraction used for inherited records, whose
 /// original provenance is discarded and replaced with
 /// `Provenance::Inherited` regardless of record kind.
@@ -340,7 +357,7 @@ fn record_role_and_content(record: &LogRecord) -> Option<(Role, Vec<ContentBlock
         LogRecord::UserTurn { text, .. } => Some((Role::User, text_block(text))),
         LogRecord::Assistant { content, .. } => Some((Role::Assistant, content.clone())),
         LogRecord::ToolResultRecord { result, .. } => {
-            Some((Role::ToolResult, result.blocks.clone()))
+            Some((Role::ToolResult, tool_result_block(result)))
         }
         LogRecord::ForkDirective { text, .. } => Some((Role::User, text_block(text))),
         LogRecord::ParentSteer { text, .. } => Some((Role::User, text_block(text))),
@@ -371,7 +388,7 @@ fn own_segment(record: &LogRecord) -> Option<(Role, Vec<ContentBlock>, Provenanc
         )),
         LogRecord::ToolResultRecord { result, .. } => Some((
             Role::ToolResult,
-            result.blocks.clone(),
+            tool_result_block(result),
             Provenance::ToolResult {
                 call_id: result.call_id.clone(),
                 tool: result.tool.clone(),
