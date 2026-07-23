@@ -57,6 +57,13 @@ impl CapabilityIndex {
         CapabilityIndexBuilder::default()
     }
 
+    /// Reopens a built index as a [`CapabilityIndexBuilder`] so a caller can
+    /// layer more entries on top (e.g. the facade's optional startup probe
+    /// overlay) without re-querying every already-resolved pair.
+    pub fn into_builder(self) -> CapabilityIndexBuilder {
+        CapabilityIndexBuilder { map: self.map }
+    }
+
     /// O(1) `HashMap` lookup — no scan.
     pub fn get(&self, model_ref: &ModelRef) -> Option<&Capabilities> {
         self.map
@@ -67,6 +74,15 @@ impl CapabilityIndex {
     /// per `(backend, model)` pair in `refs`. Refs whose backend id is not
     /// present in `backends` are silently omitted. Synchronous —
     /// `Backend::capabilities` performs no I/O.
+    ///
+    /// This is the *only* place the facade should populate a
+    /// `CapabilityIndex` from real backends: routing this way (rather than
+    /// recomputing `Capabilities` independently from the same source
+    /// metadata) is what pins the router's admission decisions to exactly
+    /// what `Backend::capabilities()` — and therefore
+    /// `conway_runtime::attempt::AttemptEngine`'s T-1 gate — will actually
+    /// see. A second, parallel `models.json` → `Capabilities` conversion is
+    /// the divergence bug class WI-123 closes; don't reintroduce one.
     pub fn from_backends(backends: &[Arc<dyn Backend>], refs: &[ModelRef]) -> CapabilityIndex {
         let by_id: HashMap<BackendId, &Arc<dyn Backend>> =
             backends.iter().map(|b| (b.id(), b)).collect();
@@ -315,6 +331,29 @@ mod tests {
         {
             self.inner.probe().await
         }
+    }
+
+    #[test]
+    fn into_builder_preserves_existing_entries_for_further_layering() {
+        let index = CapabilityIndex::builder()
+            .insert(BackendId::new("local"), ModelId::new("m1"), caps(1000))
+            .build();
+        let rebuilt = index
+            .into_builder()
+            .insert(BackendId::new("local"), ModelId::new("m2"), caps(2000))
+            .build();
+        assert_eq!(
+            rebuilt
+                .get(&"local/m1".parse().unwrap())
+                .map(|c| c.max_context_tokens),
+            Some(1000)
+        );
+        assert_eq!(
+            rebuilt
+                .get(&"local/m2".parse().unwrap())
+                .map(|c| c.max_context_tokens),
+            Some(2000)
+        );
     }
 
     #[test]
