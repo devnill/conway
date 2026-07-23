@@ -109,11 +109,17 @@ pub fn matches(input: &str) -> Vec<&'static CommandSpec> {
 /// `input_area`. A `Block`/border here is fine -- criterion 2's clean-copy
 /// guarantee is about the conversation stream (`transcript.rs`), not this
 /// on-demand overlay, which never contains conversation content.
-pub fn draw_overlay(frame: &mut Frame, input_area: Rect, input: &str) {
-    let candidates = matches(input);
+///
+/// `stem` is the text the match list is anchored to (see
+/// [`crate::tui::state::AppState::palette_source`]); `selected`, when
+/// `Some(i)`, is the arrow-navigated row to highlight -- clamped here so a
+/// shrinking match list can never index out of range.
+pub fn draw_overlay(frame: &mut Frame, input_area: Rect, stem: &str, selected: Option<usize>) {
+    let candidates = matches(stem);
     if candidates.is_empty() {
         return;
     }
+    let selected = selected.map(|i| i.min(candidates.len() - 1));
     // Bounded by both a sane maximum and the room actually available above
     // the input box (`input_area.y` is exactly that: everything above it is
     // the transcript, and an optional agent panel). Below 3 rows there is
@@ -133,15 +139,29 @@ pub fn draw_overlay(frame: &mut Frame, input_area: Rect, input: &str) {
 
     let items: Vec<ListItem> = candidates
         .iter()
-        .map(|c| {
-            ListItem::new(Line::from(vec![
+        .enumerate()
+        .map(|(i, c)| {
+            let line = Line::from(vec![
                 Span::styled(c.usage, Style::default().add_modifier(Modifier::BOLD)),
                 Span::raw("  "),
                 Span::raw(c.description),
-            ]))
+            ]);
+            let item = ListItem::new(line);
+            if selected == Some(i) {
+                // The arrow-highlighted row (WI-130): reversed so it reads as
+                // "this is what Enter/autofill has selected", matching the
+                // agent panel's own selection style.
+                item.style(Style::default().add_modifier(Modifier::REVERSED))
+            } else {
+                item
+            }
         })
         .collect();
-    let list = List::new(items).block(Block::default().borders(Borders::ALL).title("commands"));
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title("commands (↑/↓ select)"),
+    );
     frame.render_widget(Clear, area);
     frame.render_widget(list, area);
 }

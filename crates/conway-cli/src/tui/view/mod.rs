@@ -19,7 +19,7 @@
 
 mod agents;
 mod input_box;
-mod palette;
+pub mod palette;
 mod status;
 mod transcript;
 
@@ -67,8 +67,13 @@ pub fn draw(state: &AppState, frame: &mut Frame) {
 
     status::draw(frame, rows[next], state);
 
-    if state.input.starts_with('/') {
-        palette::draw_overlay(frame, input_area, &state.input);
+    if state.palette_source().starts_with('/') {
+        palette::draw_overlay(
+            frame,
+            input_area,
+            state.palette_source(),
+            state.palette_selected,
+        );
     }
 
     if let Mode::AwaitingPermission(pending) = &state.mode {

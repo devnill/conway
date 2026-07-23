@@ -157,6 +157,20 @@ pub struct AppState {
     /// `commands.rs` -- out of this item's file scope -- owns no such
     /// command); never an always-on pane.
     pub agent_view_open: bool,
+    /// Arrow-navigated row in the slash-command palette (WI-130), or `None`
+    /// when the user has typed a `/` prefix but not yet pressed an arrow. The
+    /// arrow keys move this and autofill [`AppState::input`] with the
+    /// highlighted command (see `input.rs`); typing resets it to `None`.
+    pub palette_selected: Option<usize>,
+    /// The text the palette's match list stays anchored to: whatever the
+    /// user last *typed*. Arrow navigation autofills `input` with a whole
+    /// command but leaves this alone, so cycling the list does not collapse
+    /// it to the single autofilled entry. Read via [`AppState::palette_source`].
+    palette_stem: String,
+    /// Arrow-selected row in the on-demand agent panel (WI-130). Index into
+    /// `tree.nodes`; clamped wherever it is read, so tree growth/shrink never
+    /// leaves it dangling. Only meaningful while `agent_view_open`.
+    pub agent_selected: usize,
     /// Monotonic id source for [`Entry::EphemeralAsk`] entries -- see that
     /// variant's own doc for why an id is needed at all.
     next_ask_id: u64,
@@ -184,8 +198,52 @@ impl AppState {
             scroll: 0,
             queued_prompts: std::collections::VecDeque::new(),
             agent_view_open: false,
+            palette_selected: None,
+            palette_stem: String::new(),
+            agent_selected: 0,
             next_ask_id: 0,
         }
+    }
+
+    /// The text the slash-command palette's match list is anchored to
+    /// (WI-130): the stem the user last *typed* when set, else the raw
+    /// `input`. Arrow navigation autofills `input` with a whole command but
+    /// leaves the stem alone, so cycling the list does not collapse it; the
+    /// `input` fallback keeps the palette visible for callers/tests that set
+    /// `input` directly without going through key handling.
+    pub fn palette_source(&self) -> &str {
+        if self.palette_stem.is_empty() {
+            &self.input
+        } else {
+            &self.palette_stem
+        }
+    }
+
+    /// Re-anchors the palette to whatever the user just typed and clears the
+    /// arrow highlight (WI-130). Called after every edit to `input` in
+    /// `input.rs`, so typing always re-filters live from the new text.
+    pub fn sync_palette_stem(&mut self) {
+        self.palette_stem = self.input.clone();
+        self.palette_selected = None;
+    }
+
+    /// Closes the palette navigation state (WI-130): called when `input` is
+    /// submitted, so a fresh line starts with no stem and no highlight.
+    pub fn clear_palette(&mut self) {
+        self.palette_stem.clear();
+        self.palette_selected = None;
+    }
+
+    /// Moves the agent-panel selection by `delta` rows, clamped to the tree
+    /// (WI-130). No wrap -- a browsing list stops at its ends.
+    pub fn agent_scroll(&mut self, delta: isize) {
+        let n = self.tree.nodes.len();
+        if n == 0 {
+            return;
+        }
+        let max = (n - 1) as isize;
+        let cur = (self.agent_selected.min(n - 1)) as isize;
+        self.agent_selected = (cur + delta).clamp(0, max) as usize;
     }
 
     /// Shows/hides the below-chat agent-tree panel (`/agents`, WI-127
@@ -793,6 +851,47 @@ mod tests {
         assert!(state.agent_view_open);
         state.toggle_agent_view();
         assert!(!state.agent_view_open);
+    }
+
+    #[test]
+    fn agent_scroll_moves_within_bounds_and_clamps_at_the_ends() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root); // starts with the root node
+        let child = AgentId::new();
+        state.tree.insert(TreeNode {
+            agent_id: child,
+            parent: Some(root),
+            agent_def: Some("child".to_string()),
+            status: NodeStatus::Running,
+        });
+        // Two nodes: 0..=1.
+        state.agent_scroll(1);
+        assert_eq!(state.agent_selected, 1);
+        state.agent_scroll(1);
+        assert_eq!(state.agent_selected, 1, "clamps at the last row");
+        state.agent_scroll(-1);
+        assert_eq!(state.agent_selected, 0);
+        state.agent_scroll(-1);
+        assert_eq!(state.agent_selected, 0, "clamps at the first row");
+    }
+
+    #[test]
+    fn palette_source_prefers_the_stem_over_autofilled_input() {
+        let mut state = AppState::new(AgentId::new());
+        // No stem yet: the source mirrors `input` (covers direct-set callers).
+        state.input = "/x".to_string();
+        assert_eq!(state.palette_source(), "/x");
+        // The user "typed" /a; an arrow then autofills `input` to a whole
+        // command. The source stays the stem so the match list does not
+        // collapse to the single autofilled entry.
+        state.input = "/a".to_string();
+        state.sync_palette_stem();
+        state.input = "/agents".to_string();
+        assert_eq!(state.palette_source(), "/a");
+        // Submitting clears the stem; the source falls back to `input`.
+        state.clear_palette();
+        assert_eq!(state.palette_selected, None);
+        assert_eq!(state.palette_source(), "/agents");
     }
 
     #[test]

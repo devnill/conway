@@ -79,6 +79,7 @@ fn handle_normal_key(state: &mut AppState, key: KeyEvent) -> Action {
             }
             KeyCode::Char('w') | KeyCode::Char('W') => {
                 delete_word_before_cursor(state);
+                state.sync_palette_stem();
                 return Action::None;
             }
             _ => {}
@@ -92,6 +93,7 @@ fn handle_normal_key(state: &mut AppState, key: KeyEvent) -> Action {
             }
             let text = std::mem::take(&mut state.input);
             state.cursor = 0;
+            state.clear_palette();
             Action::Submit(text)
         }
         KeyCode::Backspace => {
@@ -100,6 +102,7 @@ fn handle_normal_key(state: &mut AppState, key: KeyEvent) -> Action {
                 let start = byte_index(&state.input, state.cursor - 1);
                 state.input.replace_range(start..end, "");
                 state.cursor -= 1;
+                state.sync_palette_stem();
             }
             Action::None
         }
@@ -119,16 +122,73 @@ fn handle_normal_key(state: &mut AppState, key: KeyEvent) -> Action {
             state.cursor = char_count(&state.input);
             Action::None
         }
+        // WI-130: arrows drive the on-demand surfaces. The slash-command
+        // palette takes priority when it is showing (the user is composing a
+        // command); otherwise the arrows scroll the agent panel when it is
+        // open. Neither active -> no-op (PageUp/PageDown still scroll the
+        // transcript).
+        KeyCode::Up => {
+            if !palette_navigate(state, -1) && state.agent_view_open {
+                state.agent_scroll(-1);
+            }
+            Action::None
+        }
+        KeyCode::Down => {
+            if !palette_navigate(state, 1) && state.agent_view_open {
+                state.agent_scroll(1);
+            }
+            Action::None
+        }
+        KeyCode::Esc => {
+            // WI-130: Esc closes the agent panel when it is open.
+            if state.agent_view_open {
+                state.agent_view_open = false;
+            }
+            Action::None
+        }
         KeyCode::PageUp => Action::ScrollUp,
         KeyCode::PageDown => Action::ScrollDown,
         KeyCode::Char(c) => {
             let idx = byte_index(&state.input, state.cursor);
             state.input.insert(idx, c);
             state.cursor += 1;
+            state.sync_palette_stem();
             Action::None
         }
         _ => Action::None,
     }
+}
+
+/// Moves the slash-command palette selection by `delta` and autofills
+/// `input` with the newly-highlighted command (WI-130). Returns whether the
+/// palette was active and thus consumed the key.
+///
+/// The candidate list is anchored to [`AppState::palette_source`] (the stem
+/// the user typed), NOT to the live `input` -- so autofilling `input` with a
+/// whole command on each arrow press does not shrink the list to that one
+/// entry; cycling stays over the full set the stem matched. A `None`
+/// selection means "not navigating yet": the first `Down` lands on the first
+/// match, the first `Up` on the last; further presses wrap.
+fn palette_navigate(state: &mut AppState, delta: isize) -> bool {
+    let candidates = super::view::palette::matches(state.palette_source());
+    let len = candidates.len();
+    if len == 0 {
+        return false;
+    }
+    let next = match state.palette_selected {
+        None => {
+            if delta > 0 {
+                0
+            } else {
+                len - 1
+            }
+        }
+        Some(i) => (i.min(len - 1) as isize + delta).rem_euclid(len as isize) as usize,
+    };
+    state.palette_selected = Some(next);
+    state.input = candidates[next].name.to_string();
+    state.cursor = char_count(&state.input);
+    true
 }
 
 fn char_count(s: &str) -> usize {
@@ -201,6 +261,71 @@ mod tests {
         let action = handle_key(&mut state, key(KeyCode::Enter));
         assert_eq!(action, Action::Submit("hello".to_string()));
         assert!(state.input.is_empty());
+    }
+
+    // ---- WI-130: palette arrow navigation + agent-panel scroll ----
+
+    fn type_str(state: &mut AppState, s: &str) {
+        for c in s.chars() {
+            handle_key(state, key(KeyCode::Char(c)));
+        }
+    }
+
+    #[test]
+    fn palette_down_autofills_successive_matches_without_collapsing() {
+        let mut state = AppState::new(AgentId::new());
+        type_str(&mut state, "/a"); // matches [/ask, /agents]
+                                    // First Down lands on the first match and autofills it.
+        handle_key(&mut state, key(KeyCode::Down));
+        assert_eq!(state.input, "/ask");
+        assert_eq!(state.palette_selected, Some(0));
+        // Second Down advances even though `input` is now a full command --
+        // the list stayed anchored to the "/a" stem, so it did not collapse.
+        handle_key(&mut state, key(KeyCode::Down));
+        assert_eq!(state.input, "/agents");
+        assert_eq!(state.palette_selected, Some(1));
+        // Wraps back to the top.
+        handle_key(&mut state, key(KeyCode::Down));
+        assert_eq!(state.input, "/ask");
+    }
+
+    #[test]
+    fn palette_up_from_no_selection_lands_on_the_last_match() {
+        let mut state = AppState::new(AgentId::new());
+        type_str(&mut state, "/a");
+        handle_key(&mut state, key(KeyCode::Up));
+        assert_eq!(state.input, "/agents");
+        assert_eq!(state.palette_selected, Some(1));
+    }
+
+    #[test]
+    fn typing_resets_the_palette_highlight() {
+        let mut state = AppState::new(AgentId::new());
+        type_str(&mut state, "/");
+        handle_key(&mut state, key(KeyCode::Down));
+        assert!(state.palette_selected.is_some());
+        handle_key(&mut state, key(KeyCode::Char('h')));
+        assert_eq!(state.palette_selected, None);
+    }
+
+    #[test]
+    fn esc_closes_the_agent_panel() {
+        let mut state = AppState::new(AgentId::new());
+        state.agent_view_open = true;
+        handle_key(&mut state, key(KeyCode::Esc));
+        assert!(!state.agent_view_open);
+    }
+
+    #[test]
+    fn palette_arrows_take_priority_over_the_agent_panel() {
+        let mut state = AppState::new(AgentId::new());
+        state.agent_view_open = true;
+        type_str(&mut state, "/a"); // palette active
+        handle_key(&mut state, key(KeyCode::Down));
+        // The palette consumed the key: input autofilled, panel selection
+        // untouched.
+        assert_eq!(state.input, "/ask");
+        assert_eq!(state.agent_selected, 0);
     }
 
     #[test]
