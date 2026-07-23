@@ -64,6 +64,13 @@ impl App {
     pub async fn new(cli: &Cli, conway: &Conway) -> conway::Result<Self> {
         let spec = SessionSpec {
             role: cli.role_override.clone().map(RoleAlias::new),
+            // The TUI drives one `SessionHandle::prompt` call per chat
+            // message on the same handle/session for the app's whole
+            // lifetime (`App::submit`, below) -- without this, the root
+            // agent's task terminates after the FIRST message's turn and
+            // every later message silently runs no turn (the confirmed
+            // keep-alive bug; see `SessionSpec::keep_alive`'s own doc).
+            keep_alive: true,
             ..SessionSpec::default()
         };
         let handle = conway.new_session(spec).await?;

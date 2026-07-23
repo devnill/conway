@@ -273,6 +273,7 @@ fn build_loop(
         max_parallel_tools: 4,
         report_slot: None,
         result_contract: None,
+        keep_alive: false,
     };
 
     let cancel = CancellationToken::new();

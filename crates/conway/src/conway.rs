@@ -117,6 +117,7 @@ impl Conway {
             budget,
             cwd,
             prompt: None,
+            keep_alive: spec.keep_alive,
         };
         let root = self.rt.start_root(root_spec).await?;
 

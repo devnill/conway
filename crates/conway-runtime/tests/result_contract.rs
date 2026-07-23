@@ -280,6 +280,7 @@ fn build_loop_with_contract(
         max_parallel_tools: 4,
         report_slot: None,
         result_contract,
+        keep_alive: false,
     };
 
     let cancel = CancellationToken::new();
@@ -887,6 +888,7 @@ async fn a_spawned_childs_result_contract_is_enforced_through_subagent_host() {
             budget: Budget::default(),
             cwd: PathBuf::from("/tmp"),
             prompt: Some("go".to_string()),
+            keep_alive: false,
         })
         .await
         .unwrap();

@@ -563,6 +563,10 @@ fn build_loop_inner(
         // WI-086: not exercised by this file -- `tests/result_contract.rs`
         // owns result-contract coverage.
         result_contract: None,
+        // Keep-alive is exercised at the facade level
+        // (`crates/conway/tests/session_handle.rs`), not through this
+        // file's own hand-built harness.
+        keep_alive: false,
     };
 
     let cancel = CancellationToken::new();

@@ -265,6 +265,7 @@ fn root_spec(prompt: &str) -> RootSpec {
         budget: Budget::default(),
         cwd: PathBuf::from("/tmp"),
         prompt: Some(prompt.to_string()),
+        keep_alive: false,
     }
 }
 

@@ -56,6 +56,16 @@ pub struct SessionSpec {
     pub cwd: Option<PathBuf>,
     pub budget: Option<Budget>,
     pub labels: Vec<String>,
+    /// Opt-in multi-turn keep-alive: passed straight through to
+    /// `RootSpec::keep_alive` (`conway_runtime::runtime::RootSpec` -- see
+    /// that field's own doc for the confirmed bug this fixes and why it
+    /// must stay opt-in, not universal). `false` (`SessionSpec::default()`)
+    /// preserves this crate's pre-existing behavior exactly: the session's
+    /// root agent task terminates after its first `Completed` turn, and a
+    /// second `SessionHandle::prompt` on the same handle silently runs no
+    /// turn. `true` is what `conway-cli`'s TUI opts its own root session
+    /// into, so a second chat message in the same process actually runs.
+    pub keep_alive: bool,
 }
 
 /// A live handle onto one running session: `id()`/`root()` are static, and
@@ -97,6 +107,21 @@ impl SessionHandle {
     /// broadcast subscription taken out *before* the prompt is appended --
     /// so the turn's own first events can never be missed by a
     /// subscribe-after-append race.
+    ///
+    /// **Concurrent-call footgun:** if two `prompt` calls race and both land
+    /// before the agent's own idle loop wakes to consume them, both
+    /// `UserTurn` records are durably appended regardless (no data lost --
+    /// whichever turn runs next re-reads the full session history and sees
+    /// both), but the wake signal itself is a single-permit
+    /// `tokio::sync::Notify` (`conway_runtime::agent_loop::ResumeGate`'s own
+    /// doc) shared by the whole agent -- a second `notify_one()` before the
+    /// first is consumed is not queued, just coalesced into the same
+    /// permit. The practical effect: both callers' `TurnHandle`s each hold
+    /// their own event subscription, but both end up observing the SAME
+    /// underlying turn's `TurnFinished`/`AgentFinished`, not one turn each.
+    /// Harmless for `conway-cli`'s TUI (input is strictly sequential -- one
+    /// prompt in flight at a time) but a footgun for any caller issuing
+    /// concurrent `prompt`s against the same session.
     pub async fn prompt(&self, text: impl Into<String>) -> Result<TurnHandle> {
         let stream = EventStream::live(self.session, Some(self.root), self.rt.subscribe());
         self.rt.prompt(self.root, text.into()).await?;
@@ -762,6 +787,22 @@ impl TurnHandle {
     /// still delivered as one `AgentFinished` event (architecture §8: every
     /// `AgentSpawned` is eventually followed by exactly one
     /// `AgentFinished`), never as a stream error.
+    ///
+    /// **`SessionSpec::keep_alive` sessions:** the "exactly one
+    /// `AgentFinished`" pairing above holds for the session's root agent as
+    /// a WHOLE, not per turn. A keep-alive turn that completes with no
+    /// pending work does not emit `AgentFinished` at all -- it idle-awaits
+    /// the next prompt instead (`conway_runtime::agent_loop::AgentLoop`'s
+    /// own doc on its natural-completion branch); the ONE `AgentFinished`
+    /// a keep-alive session ever produces arrives only when the session
+    /// itself really ends (cancel/deadline/budget), for whichever turn is
+    /// in flight at that moment. Concretely: `let turn =
+    /// handle.prompt(x).await?; turn.result().await` will hang for the
+    /// lifetime of the session if `x`'s turn completes normally -- consume
+    /// a keep-alive session's individual turns via [`Self::text`] or
+    /// [`Self::events`] instead, and reserve `result()` for the case where
+    /// the caller genuinely wants to block until the whole session
+    /// terminates.
     ///
     /// The `AgentNotFound` error below is not expected to occur in
     /// practice (it only fires if the runtime's broadcast bus itself ends,

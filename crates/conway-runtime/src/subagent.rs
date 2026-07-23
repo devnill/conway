@@ -284,6 +284,11 @@ impl SubagentHost for Runtime {
             // branch), so this is a plain value handoff, not a design
             // decision this item needs to make.
             result_contract: spec.result_contract.clone(),
+            // A fork/spawn child is always one-off: a parent that
+            // `await_result`s it (`AgentTree::await_result`, WI-083) depends
+            // on it actually terminating on `Completed` -- keep-alive is an
+            // opt-in only `runtime.rs`'s `start_root` exposes.
+            keep_alive: false,
         };
 
         // WI-085: this child's own mailbox, plus the already-attached
