@@ -6,9 +6,9 @@
 //! browsing the whole tree at a glance, not the only place activity shows.
 
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem};
+use ratatui::widgets::{Block, Borders, List, ListItem, ListState};
 use ratatui::Frame;
 
 use crate::tui::state::{AppState, NodeStatus};
@@ -34,12 +34,21 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
             ]))
         })
         .collect();
-    let list = List::new(items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title("agents (/agents to hide)"),
-    );
-    frame.render_widget(list, area);
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("agents (↑/↓ scroll · esc to close)"),
+        )
+        // The arrow-selected row (WI-130). Using a `ListState` (rather than
+        // pre-styling one `ListItem`) lets ratatui scroll the selection into
+        // view when the tree is taller than the panel.
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+    let mut list_state = ListState::default();
+    if !state.tree.nodes.is_empty() {
+        list_state.select(Some(state.agent_selected.min(state.tree.nodes.len() - 1)));
+    }
+    frame.render_stateful_widget(list, area, &mut list_state);
 }
 
 fn ancestor_depth(state: &AppState, agent: conway::AgentId) -> usize {
