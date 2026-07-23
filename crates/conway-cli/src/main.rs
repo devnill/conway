@@ -31,6 +31,7 @@ async fn main() -> std::process::ExitCode {
     // exits 2 -- clap's own `Error::exit()`, which this calls internally.
     let cli = Cli::parse();
     diag::set_verbosity(cli.verbose);
+    install_tracing(cli.verbose);
 
     if let Some(dir) = &cli.cwd {
         if let Err(e) = std::env::set_current_dir(dir) {
@@ -130,6 +131,40 @@ async fn dispatch(
             tui::run(cli, conway, gate_rx).await
         }
     }
+}
+
+/// Installs a `tracing_subscriber::fmt` subscriber to stderr when `-v`/`-vv`
+/// is passed (WI-121). Without this, `diag::set_verbosity` had no effect on
+/// the `tracing::{trace,info,warn,error}!` calls already scattered through
+/// conway-runtime/-backends/-session/conway (agent-loop failures, backend
+/// health-breaker trips, probe warnings): nothing installs a subscriber, so
+/// those events went nowhere and `-vv` produced no output at all.
+///
+/// `-v` surfaces `info` and above (routing/health notices); `-vv` (or more)
+/// also surfaces `trace`. Scoped to this workspace's own crates so `-v`
+/// doesn't also turn on dependency-level tracing noise (reqwest/hyper/tokio
+/// emit nothing here today, but nothing stops a future dependency from
+/// wiring in `tracing`). `RUST_LOG`, when set, overrides this entirely.
+///
+/// Writes to stderr only, via `with_writer` -- `-p` one-shot mode's stdout
+/// purity contract (stdout carries only model output) must hold regardless
+/// of verbosity.
+fn install_tracing(verbose: u8) {
+    if verbose == 0 {
+        return;
+    }
+    let level = if verbose >= 2 { "trace" } else { "info" };
+    let directive = format!(
+        "warn,conway={level},conway_core={level},conway_backends={level},\
+         conway_routing={level},conway_tools={level},conway_session={level},\
+         conway_runtime={level},conway_cli={level}"
+    );
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(directive));
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .init();
 }
 
 fn to_process_code(code: ExitCode) -> std::process::ExitCode {

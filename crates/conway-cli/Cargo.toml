@@ -19,6 +19,11 @@ futures = { workspace = true }
 ratatui = { workspace = true }
 crossterm = { workspace = true }
 serde_json = { workspace = true }
+# WI-121: `-v`/`-vv` install a `tracing_subscriber::fmt` subscriber to
+# stderr (`main.rs`) so the `tracing::{trace,info,warn,error}!` calls
+# already scattered through conway-runtime/-backends/-session/conway
+# become visible instead of going nowhere.
+tracing-subscriber = { workspace = true }
 # WI-116: `commands::fmt`'s `ts`/`id_short` helpers and `commands::routes`'
 # breaker-state rendering need to name `chrono::DateTime<Utc>` -- `conway`
 # re-exports several `chrono`-typed fields (e.g. `SessionMeta::created`) but
