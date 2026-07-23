@@ -277,6 +277,21 @@ impl Conway {
         Ok(self.store.list(filter).await?)
     }
 
+    /// A session's own local record count -- `SessionStore::head`, the same
+    /// value [`Conway::fork_from`]'s own bounds check compares `at` against.
+    ///
+    /// Distinct from [`SessionHandle::transcript`](crate::SessionHandle::transcript)'s
+    /// length: `transcript` returns the *effective, ancestry-resolved* view
+    /// (inherited prefix + this session's own records), which overcounts the
+    /// local head for any session that is itself a fork child. Callers that
+    /// need "this session's current head, as `fork_from` itself sees it" --
+    /// e.g. `conway-cli`'s `--fork-from <ref>` with no `@seq`, which must
+    /// compute "fork this branch at its current head" -- need this method,
+    /// not `transcript().len()`.
+    pub async fn session_head(&self, sid: SessionId) -> Result<LogSeq> {
+        Ok(self.store.head(&sid).await?)
+    }
+
     /// Forks a *stored* session at an arbitrary point, offline -- no live
     /// parent agent is involved, and `SessionStore::fork`'s O(1)-by-
     /// reference contract (architecture §5.1/§8, D-11's local-unit `at_seq`)
