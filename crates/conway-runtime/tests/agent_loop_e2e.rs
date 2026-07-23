@@ -725,14 +725,21 @@ async fn tool_call_then_text_runs_two_turns_and_second_context_sees_the_result()
         )),
         "second turn's context must include the first turn's tool result"
     );
+    // WI-137: the tool result rides in a `ToolResultBlock` (carrying its
+    // call_id) so the wire adapters can serialize it as a `tool` message --
+    // its text lives inside that block, not as a bare top-level `Text`.
     assert!(
         second_turn_segments
             .iter()
             .any(|s| s.content.iter().any(|b| matches!(
                 b,
-                ContentBlock::Text { text } if text.contains("file contents")
+                ContentBlock::ToolResultBlock { blocks, .. }
+                    if blocks.iter().any(|inner| matches!(
+                        inner,
+                        ContentBlock::Text { text } if text.contains("file contents")
+                    ))
             ))),
-        "second turn's context must contain the tool result's text"
+        "second turn's context must contain the tool result's text inside a ToolResultBlock"
     );
     // WI-122 regression: the second turn's context must ALSO carry the first
     // turn's tool CALL as an assistant `ToolUse` block. Without it the
