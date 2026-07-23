@@ -60,6 +60,21 @@
 //! reconciliation stand-in (there is no single offending line; the corrupt
 //! *ancestry link*, not a line, is the defect) and `detail` names the cycle
 //! or the depth bound.
+//!
+//! ## Context mask (WI-125)
+//!
+//! `LogRecord::ContextMask { target_seq, excluded, .. }` is a persisted
+//! overlay, not a deletion: `target_seq` names another record in the SAME
+//! session (local units, as above), and the latest `ContextMask` for a given
+//! `target_seq` — by append order — decides whether that record is included
+//! in the effective transcript. `apply_context_mask` filters each level's `own`
+//! slice by this rule *before* it is combined with the (already-filtered)
+//! inherited prefix, so the mask is folded into the same memoized
+//! `Arc<[LogRecord]>` as everything else in this module: a fork's inherited
+//! prefix is masked exactly as of the parent's state at the fork point, and
+//! the parent's later mask/un-mask appends only ever affect keys strictly
+//! above what the fork already captured — the same "snapshot invariant" the
+//! Memoization section above describes for ordinary appends.
 
 use std::collections::HashSet;
 use std::num::NonZeroUsize;
@@ -101,6 +116,42 @@ fn corrupt_ancestry(session: SessionId, detail: impl Into<String>) -> StoreError
         line: 0,
         detail: detail.into(),
     }
+}
+
+/// Applies WI-125's context-exclusion mask to one session's own records
+/// (never the inherited prefix -- see the call site): `ContextMask::target_seq`
+/// is local to the session that owns both the mask and its target, the same
+/// units this module uses everywhere, so masking only ever needs to look
+/// within `own`, not across the ancestry.
+///
+/// Later records win when a `target_seq` is masked more than once (`own` is
+/// already in seq order, so a linear scan suffices). `ContextMask` records
+/// themselves are left in place -- same precedent as `Header`-adjacent kinds
+/// like `ToolCallRecord`/`ContextReportRecord`, which already flow through
+/// `resolve_prefix` unfiltered and are dropped downstream (context/builder.rs,
+/// WI-126) by kind rather than by the resolver.
+fn apply_context_mask(own: Vec<LogRecord>) -> Vec<LogRecord> {
+    let mut excluded: HashSet<LogSeq> = HashSet::new();
+    for rec in &own {
+        if let LogRecord::ContextMask {
+            target_seq,
+            excluded: is_excluded,
+            ..
+        } = rec
+        {
+            if *is_excluded {
+                excluded.insert(*target_seq);
+            } else {
+                excluded.remove(target_seq);
+            }
+        }
+    }
+    if excluded.is_empty() {
+        return own;
+    }
+    own.into_iter()
+        .filter(|rec| !matches!(rec.seq(), Some(seq) if excluded.contains(&seq)))
+        .collect()
 }
 
 impl TranscriptResolver {
@@ -235,6 +286,7 @@ impl TranscriptResolver {
                 let own = store
                     .read(&level_sid, SeqRange::new(LogSeq::ZERO, Some(level_upto)))
                     .await?;
+                let own = apply_context_mask(own);
                 let mut combined = Vec::with_capacity(prefix.len() + own.len());
                 combined.extend(prefix.iter().cloned());
                 combined.extend(own);

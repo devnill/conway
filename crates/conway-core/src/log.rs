@@ -171,6 +171,26 @@ pub enum LogRecord {
         ts: DateTime<Utc>,
         report: ContextReport,
     },
+    /// Marks another record in this SAME session's log as excluded from (or
+    /// re-included in) the assembled outgoing LLM payload, without deleting
+    /// or mutating it (WI-125). `target_seq` is a local seq in this
+    /// session's own numbering -- the same units `resolve_prefix` already
+    /// uses everywhere else in this module's ancestry walk.
+    ///
+    /// This is itself an ordinary append-only log record: masking (and
+    /// un-masking, by appending a second `ContextMask` for the same
+    /// `target_seq` with `excluded: false`) is reversible and carries its
+    /// own seq/ts/provenance, so "who masked what, and when" is always
+    /// reconstructable from the log alone -- no separate side-table. A
+    /// per-record flag on the target would mutate a record already written,
+    /// which the append-only log never does elsewhere; an overlay record
+    /// keeps that invariant intact.
+    ContextMask {
+        seq: LogSeq,
+        ts: DateTime<Utc>,
+        target_seq: LogSeq,
+        excluded: bool,
+    },
 }
 
 impl LogRecord {
@@ -186,7 +206,8 @@ impl LogRecord {
             | LogRecord::ParentSteer { seq, .. }
             | LogRecord::SystemNote { seq, .. }
             | LogRecord::AgentResultRecord { seq, .. }
-            | LogRecord::ContextReportRecord { seq, .. } => Some(*seq),
+            | LogRecord::ContextReportRecord { seq, .. }
+            | LogRecord::ContextMask { seq, .. } => Some(*seq),
         }
     }
 
@@ -203,6 +224,7 @@ impl LogRecord {
             LogRecord::SystemNote { .. } => "system_note",
             LogRecord::AgentResultRecord { .. } => "agent_result",
             LogRecord::ContextReportRecord { .. } => "context_report",
+            LogRecord::ContextMask { .. } => "context_mask",
         }
     }
 }
@@ -333,6 +355,15 @@ mod tests {
                     },
                 },
                 "context_report",
+            ),
+            (
+                LogRecord::ContextMask {
+                    seq: LogSeq(8),
+                    ts: ts(),
+                    target_seq: LogSeq(2),
+                    excluded: true,
+                },
+                "context_mask",
             ),
         ];
         for (record, expected) in &records {
@@ -465,6 +496,38 @@ mod tests {
         match record {
             LogRecord::Header(meta) => assert!(!meta.ephemeral),
             other => panic!("expected Header, got {other:?}"),
+        }
+    }
+
+    /// A mask and its reversal are two distinct, independently-valid
+    /// `ContextMask` records targeting the same `target_seq` -- masking
+    /// never mutates the masked record or an earlier mask record in place
+    /// (WI-125's "no silent loss" guiding principle: exclusion is explicit
+    /// and reversible by appending the opposite, not by editing history).
+    #[test]
+    fn context_mask_and_its_reversal_round_trip_as_independent_records() {
+        let mask = LogRecord::ContextMask {
+            seq: LogSeq(10),
+            ts: ts(),
+            target_seq: LogSeq(3),
+            excluded: true,
+        };
+        let unmask = LogRecord::ContextMask {
+            seq: LogSeq(11),
+            ts: ts(),
+            target_seq: LogSeq(3),
+            excluded: false,
+        };
+        assert_ne!(mask, unmask);
+        assert_eq!(mask.seq(), Some(LogSeq(10)));
+        assert_eq!(unmask.seq(), Some(LogSeq(11)));
+
+        for record in [&mask, &unmask] {
+            let value = serde_json::to_value(record).unwrap();
+            assert_eq!(value["kind"], "context_mask");
+            assert_eq!(value["target_seq"], 3);
+            let back: LogRecord = serde_json::from_value(value).unwrap();
+            assert_eq!(&back, record);
         }
     }
 
