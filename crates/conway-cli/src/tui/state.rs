@@ -25,6 +25,28 @@ pub enum Entry {
         status: ToolStatus,
         preview: String,
     },
+    /// A subagent's lifecycle, rendered inline in the conversation stream
+    /// (WI-127 criterion: "inline subagent activity in the stream,
+    /// Claude-Code-style") instead of only being reflected in the
+    /// below-chat `/agents` panel. Pushed once at spawn time
+    /// (`apply_agent_spawned`) and updated in place at finish time
+    /// (`apply_agent_finished`) -- never a second entry for the same agent.
+    Agent {
+        agent_id: AgentId,
+        label: String,
+        status: NodeStatus,
+    },
+    /// A `/ask` ephemeral fork-ask (facade `SessionHandle::ask`, WI-127
+    /// criterion 5): `reply` is `None` while the forked child's turn is
+    /// still in flight, populated once `App`'s spawned task resolves it.
+    /// `id` correlates this entry with the async result -- there is no
+    /// other identifier in scope for it (unlike `Tool`'s `call_id`, which
+    /// the facade itself assigns).
+    EphemeralAsk {
+        id: u64,
+        question: String,
+        reply: Option<String>,
+    },
     Notice {
         text: String,
     },
@@ -130,6 +152,14 @@ pub struct AppState {
     /// into `mode` as each one resolves (module notes: "concurrent requests
     /// queue in arrival order").
     pub queued_prompts: std::collections::VecDeque<PendingPrompt>,
+    /// Whether the below-chat agent-tree panel (WI-127 criterion 4) is
+    /// currently shown. Toggled by `/agents` (handled in `app.rs`, since
+    /// `commands.rs` -- out of this item's file scope -- owns no such
+    /// command); never an always-on pane.
+    pub agent_view_open: bool,
+    /// Monotonic id source for [`Entry::EphemeralAsk`] entries -- see that
+    /// variant's own doc for why an id is needed at all.
+    next_ask_id: u64,
 }
 
 impl AppState {
@@ -153,6 +183,46 @@ impl AppState {
             mode: Mode::Normal,
             scroll: 0,
             queued_prompts: std::collections::VecDeque::new(),
+            agent_view_open: false,
+            next_ask_id: 0,
+        }
+    }
+
+    /// Shows/hides the below-chat agent-tree panel (`/agents`, WI-127
+    /// criterion 4). A pure toggle -- no facade call, no transcript entry --
+    /// so it is unit-testable with no `Host`/`SessionHandle` at all.
+    pub fn toggle_agent_view(&mut self) {
+        self.agent_view_open = !self.agent_view_open;
+    }
+
+    /// Records a `/ask` question as a pending [`Entry::EphemeralAsk`] and
+    /// returns its id, for the caller (`app.rs`) to correlate with the async
+    /// reply once the spawned fork-ask task resolves.
+    pub fn push_ephemeral_ask(&mut self, question: String) -> u64 {
+        let id = self.next_ask_id;
+        self.next_ask_id += 1;
+        self.transcript.push(Entry::EphemeralAsk {
+            id,
+            question,
+            reply: None,
+        });
+        id
+    }
+
+    /// Fills in the reply for the [`Entry::EphemeralAsk`] matching `id`.
+    /// A no-op if `id` is not found (e.g. the entry scrolled out of a
+    /// truncated transcript in some future change) -- never panics.
+    pub fn resolve_ephemeral_ask(&mut self, id: u64, reply: String) {
+        for entry in self.transcript.iter_mut().rev() {
+            if let Entry::EphemeralAsk {
+                id: eid, reply: r, ..
+            } = entry
+            {
+                if *eid == id {
+                    *r = Some(reply);
+                    return;
+                }
+            }
         }
     }
 
@@ -270,6 +340,13 @@ impl AppState {
             }
             return;
         }
+        // Recognized-parent spawns get an inline `Entry::Agent` (WI-127
+        // criterion 4: "subagent activity appears inline in the stream").
+        // The unknown-parent case below is deliberately excluded: it already
+        // gets its own `Notice`, and that `Notice` must stay the LAST entry
+        // pushed here -- existing tests (this module's own
+        // `agent_spawned_with_unknown_parent_attaches_under_root_and_notes_it`)
+        // assert `transcript.last()` is that `Notice`.
         let attach = match parent {
             None => {
                 if self.tree.root.is_none() {
@@ -277,7 +354,14 @@ impl AppState {
                 }
                 None
             }
-            Some(p) if self.tree.contains(p) => Some(p),
+            Some(p) if self.tree.contains(p) => {
+                self.transcript.push(Entry::Agent {
+                    agent_id: agent,
+                    label: agent_def.clone().unwrap_or_else(|| "agent".to_string()),
+                    status: NodeStatus::Running,
+                });
+                Some(p)
+            }
             Some(p) => {
                 self.transcript.push(Entry::Notice {
                     text: format!("agent {agent} claimed unknown parent {p}; attached under root"),
@@ -303,6 +387,14 @@ impl AppState {
             _ => NodeStatus::Finished,
         };
         self.set_tree_status(agent, status);
+        // Updates the SAME `Entry::Agent` pushed at spawn time in place --
+        // never appends -- so a non-root agent finishing does not grow the
+        // transcript (this module's own
+        // `non_root_agent_finished_does_not_push_a_session_ended_notice`
+        // relies on exactly this). A no-op for the root (which never gets
+        // an `Entry::Agent`, per `apply_agent_spawned`'s doc) and for the
+        // unknown-parent case (same reason).
+        self.set_agent_entry_status(agent, status);
 
         // A `keep_alive` root's task can end for any reason (budget/
         // deadline/cancel) with no other visible signal -- the TUI simply
@@ -323,6 +415,22 @@ impl AppState {
     fn set_tree_status(&mut self, agent: AgentId, status: NodeStatus) {
         if let Some(node) = self.tree.get_mut(agent) {
             node.status = status;
+        }
+    }
+
+    fn set_agent_entry_status(&mut self, agent: AgentId, status: NodeStatus) {
+        for entry in self.transcript.iter_mut().rev() {
+            if let Entry::Agent {
+                agent_id: id,
+                status: s,
+                ..
+            } = entry
+            {
+                if *id == agent {
+                    *s = status;
+                    return;
+                }
+            }
         }
     }
 
@@ -620,5 +728,123 @@ mod tests {
             before,
             "a non-root AgentFinished must not push a session-ended notice"
         );
+    }
+
+    /// WI-127 criterion 4: a recognized-parent spawn must show up inline in
+    /// the conversation stream, not only in `state.tree`.
+    #[test]
+    fn agent_spawned_with_known_parent_pushes_an_inline_agent_entry() {
+        let session = SessionId::new();
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let child = AgentId::new();
+
+        state.apply(&envelope(session, child, spawned(Some(root))));
+
+        assert!(matches!(
+            state.transcript.last(),
+            Some(Entry::Agent { agent_id, status: NodeStatus::Running, .. }) if *agent_id == child
+        ));
+    }
+
+    /// The finish half of the same criterion: the entry updates in place --
+    /// no second entry for the same agent.
+    #[test]
+    fn agent_finished_updates_its_own_inline_entry_status_in_place() {
+        let session = SessionId::new();
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let child = AgentId::new();
+        state.apply(&envelope(session, child, spawned(Some(root))));
+        let agent_entries_before = state
+            .transcript
+            .iter()
+            .filter(|e| matches!(e, Entry::Agent { .. }))
+            .count();
+
+        state.apply(&envelope(
+            session,
+            child,
+            Event::AgentFinished {
+                result: AgentResult::new(child, session, ResultStatus::Completed, "done"),
+            },
+        ));
+
+        let agent_entries_after = state
+            .transcript
+            .iter()
+            .filter(|e| matches!(e, Entry::Agent { .. }))
+            .count();
+        assert_eq!(
+            agent_entries_after, agent_entries_before,
+            "finishing must update the existing Agent entry, not append a new one"
+        );
+        assert!(matches!(
+            state.transcript.last(),
+            Some(Entry::Agent { agent_id, status: NodeStatus::Finished, .. }) if *agent_id == child
+        ));
+    }
+
+    #[test]
+    fn toggle_agent_view_flips_the_flag() {
+        let mut state = AppState::new(AgentId::new());
+        assert!(!state.agent_view_open);
+        state.toggle_agent_view();
+        assert!(state.agent_view_open);
+        state.toggle_agent_view();
+        assert!(!state.agent_view_open);
+    }
+
+    #[test]
+    fn push_ephemeral_ask_starts_with_no_reply() {
+        let mut state = AppState::new(AgentId::new());
+        let id = state.push_ephemeral_ask("what's the status?".to_string());
+        assert!(matches!(
+            state.transcript.last(),
+            Some(Entry::EphemeralAsk { id: eid, question, reply: None })
+                if *eid == id && question == "what's the status?"
+        ));
+    }
+
+    #[test]
+    fn resolve_ephemeral_ask_fills_in_the_matching_entry() {
+        let mut state = AppState::new(AgentId::new());
+        let id = state.push_ephemeral_ask("q".to_string());
+
+        state.resolve_ephemeral_ask(id, "the answer".to_string());
+
+        assert!(matches!(
+            state.transcript.last(),
+            Some(Entry::EphemeralAsk { reply: Some(r), .. }) if r == "the answer"
+        ));
+    }
+
+    #[test]
+    fn resolve_ephemeral_ask_targets_the_right_entry_among_several() {
+        let mut state = AppState::new(AgentId::new());
+        let first = state.push_ephemeral_ask("first".to_string());
+        let second = state.push_ephemeral_ask("second".to_string());
+
+        state.resolve_ephemeral_ask(first, "first reply".to_string());
+
+        let find = |id: u64| {
+            state.transcript.iter().find_map(|e| match e {
+                Entry::EphemeralAsk { id: eid, reply, .. } if *eid == id => Some(reply.clone()),
+                _ => None,
+            })
+        };
+        assert_eq!(find(first), Some(Some("first reply".to_string())));
+        assert_eq!(find(second), Some(None));
+    }
+
+    #[test]
+    fn resolve_ephemeral_ask_with_unknown_id_does_not_panic_or_mutate() {
+        let mut state = AppState::new(AgentId::new());
+        let _id = state.push_ephemeral_ask("q".to_string());
+        let before = state.transcript.clone();
+
+        state.resolve_ephemeral_ask(9999, "stray reply".to_string());
+
+        assert_eq!(state.transcript, before);
     }
 }
