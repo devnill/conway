@@ -79,6 +79,7 @@ fn root_spec(prompt: &str) -> RootSpec {
         cwd: PathBuf::from("/tmp"),
         prompt: Some(prompt.to_string()),
         keep_alive: false,
+        model: None,
     }
 }
 

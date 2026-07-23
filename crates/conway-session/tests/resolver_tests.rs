@@ -49,6 +49,39 @@ fn user_turn(text: &str) -> LogRecord {
     }
 }
 
+fn context_mask(target_seq: LogSeq, excluded: bool) -> LogRecord {
+    LogRecord::ContextMask {
+        seq: LogSeq(0), // overwritten by `append`; the store is the seq authority.
+        ts: ts(),
+        target_seq,
+        excluded,
+    }
+}
+
+/// Appends a `ContextMask` and returns it with the seq the store actually
+/// assigned (mirrors `append_n`'s pattern) -- the mask record itself is
+/// left in `resolve_prefix`'s output (same precedent as `ToolCallRecord`/
+/// `ContextReportRecord`, which already flow through unfiltered and are
+/// dropped downstream by kind, not by the resolver), so tests need the
+/// exact record to build their expected transcript.
+async fn append_mask(
+    store: &JsonlSessionStore,
+    sid: &SessionId,
+    target_seq: LogSeq,
+    excluded: bool,
+) -> LogRecord {
+    let seq = store
+        .append(sid, context_mask(target_seq, excluded))
+        .await
+        .unwrap();
+    LogRecord::ContextMask {
+        seq,
+        ts: ts(),
+        target_seq,
+        excluded,
+    }
+}
+
 /// `Never`-fsync store: these tests care about resolution logic, not
 /// durability, so skip the fsync-policy machinery entirely.
 async fn open_store(root: &std::path::Path) -> JsonlSessionStore {
@@ -114,6 +147,132 @@ async fn root_session_with_zero_records_resolves_to_empty() {
 
     let resolved = resolver.resolve(&store, &sid).await.unwrap();
     assert!(resolved.is_empty());
+}
+
+// ---------------------------------------------------------------------
+// context mask (WI-125): excluded from resolve_prefix output, never
+// deleted from the raw log; persists across a store reopen; inherited by
+// a fork up to the fork point.
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn masked_record_is_omitted_from_resolved_transcript_but_present_in_raw_log() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = open_store(dir.path()).await;
+    let resolver = TranscriptResolver::new(8);
+
+    let sid = SessionId::new();
+    store.create(meta_for(sid)).await.unwrap();
+    let records = append_n(&store, &sid, "r", 3).await;
+    let target = records[1].seq().unwrap();
+    let mask = append_mask(&store, &sid, target, true).await;
+
+    let resolved = resolver.resolve(&store, &sid).await.unwrap();
+    assert_eq!(
+        &*resolved,
+        &[records[0].clone(), records[2].clone(), mask.clone()],
+        "the masked record must be omitted from the resolved transcript"
+    );
+
+    // The raw log is untouched: all 3 original records plus the mask
+    // record itself, in append order, still readable and inspectable.
+    let raw = store
+        .read(&sid, conway_core::ids::SeqRange::full())
+        .await
+        .unwrap();
+    assert_eq!(
+        raw.len(),
+        4,
+        "masking must not delete anything from the log"
+    );
+    assert_eq!(&raw[0..3], records.as_slice());
+    assert_eq!(raw[3], mask);
+}
+
+#[tokio::test]
+async fn a_later_unmask_reverses_an_earlier_mask() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = open_store(dir.path()).await;
+    let resolver = TranscriptResolver::new(8);
+
+    let sid = SessionId::new();
+    store.create(meta_for(sid)).await.unwrap();
+    let records = append_n(&store, &sid, "r", 2).await;
+    let target = records[0].seq().unwrap();
+
+    let mask = append_mask(&store, &sid, target, true).await;
+    let masked = resolver.resolve(&store, &sid).await.unwrap();
+    assert_eq!(masked.as_ref(), &[records[1].clone(), mask.clone()]);
+
+    let unmask = append_mask(&store, &sid, target, false).await;
+    let unmasked = resolver
+        .resolve_prefix(&store, &sid, store.head(&sid).await.unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        unmasked.as_ref(),
+        &[records[0].clone(), records[1].clone(), mask, unmask,],
+        "un-masking (a second ContextMask with excluded: false) must restore the record"
+    );
+}
+
+#[tokio::test]
+async fn mask_persists_across_a_store_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    let sid = SessionId::new();
+    let target;
+    let records;
+    let mask;
+    {
+        let store = open_store(&root).await;
+        store.create(meta_for(sid)).await.unwrap();
+        records = append_n(&store, &sid, "r", 3).await;
+        target = records[1].seq().unwrap();
+        mask = append_mask(&store, &sid, target, true).await;
+    } // dropped: every in-memory handle discarded, next open is cold.
+
+    let store = open_store(&root).await;
+    let resolver = TranscriptResolver::new(8);
+    let resolved = resolver.resolve(&store, &sid).await.unwrap();
+    assert_eq!(
+        resolved.as_ref(),
+        &[records[0].clone(), records[2].clone(), mask],
+        "the mask must survive a store reopen, not just live in memory"
+    );
+}
+
+#[tokio::test]
+async fn fork_inherits_parents_mask_state_up_to_the_fork_point() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = open_store(dir.path()).await;
+    let resolver = TranscriptResolver::new(8);
+
+    let parent = SessionId::new();
+    store.create(meta_for(parent)).await.unwrap();
+    let parent_records = append_n(&store, &parent, "p", 3).await;
+    let target = parent_records[1].seq().unwrap();
+    let mask = append_mask(&store, &parent, target, true).await;
+
+    // Mask a *second* record only after the fork point, so the fork
+    // snapshot must NOT pick it up (matches the module's existing
+    // local-bound/snapshot semantics for ordinary appends).
+    let at_seq = store.head(&parent).await.unwrap();
+    let child = SessionId::new();
+    store.fork(&parent, at_seq, meta_for(child)).await.unwrap();
+    append_mask(&store, &parent, parent_records[2].seq().unwrap(), true).await;
+
+    let child_records = append_n(&store, &child, "c", 2).await;
+
+    let resolved = resolver.resolve(&store, &child).await.unwrap();
+    let mut expected = vec![parent_records[0].clone(), parent_records[2].clone(), mask];
+    expected.extend(child_records.iter().cloned());
+    assert_eq!(
+        resolved.as_ref(),
+        expected.as_slice(),
+        "the child inherits the parent's mask state as of the fork point (record 1 masked), \
+         but not a mask the parent appends afterward (record 2 stays visible)"
+    );
 }
 
 // ---------------------------------------------------------------------
