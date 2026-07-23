@@ -101,7 +101,7 @@ fn five_source_precedence_across_representative_keys() {
     let xdg_home = root.join("xdg-home");
     std::fs::create_dir_all(xdg_home.join("conway")).unwrap();
     std::fs::write(
-        xdg_home.join("conway").join("conway.json"),
+        xdg_home.join("conway").join("settings.json"),
         r#"
 {
   "default_role": "role-x",
@@ -124,7 +124,7 @@ fn five_source_precedence_across_representative_keys() {
     let project_dir = root.join("project");
     std::fs::create_dir_all(project_dir.join(".conway")).unwrap();
     std::fs::write(
-        project_dir.join(".conway").join("conway.json"),
+        project_dir.join(".conway").join("settings.json"),
         r#"
 {
   "default_role": "role-p",
@@ -265,7 +265,7 @@ fn load_discovers_the_nearest_project_config_via_parent_walk() {
     let conf_dir = root.join("a").join(".conway");
     std::fs::create_dir_all(&conf_dir).unwrap();
     std::fs::write(
-        conf_dir.join("conway.json"),
+        conf_dir.join("settings.json"),
         r#"{"default_role":"coder","roles":{"coder":{"chain":[]}},"limits":{"max_steps":5}}"#,
     )
     .unwrap();
