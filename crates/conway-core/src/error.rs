@@ -101,13 +101,43 @@ pub enum StoreError {
 }
 
 /// Errors produced by the `Router`.
+/// Renders `RoutingError::NoCandidate`'s `considered` list for `Display`:
+/// empty when there was nothing to consider (e.g. the `RoleAlias` had no
+/// chain at all), otherwise `": <model>: <reason>, <model>: <reason>, ..."`
+/// so the actual per-candidate rejection cause -- not just the count -- is
+/// visible wherever the error is printed.
+fn render_considered(considered: &[(ModelRef, String)]) -> String {
+    if considered.is_empty() {
+        return String::new();
+    }
+    let rendered = considered
+        .iter()
+        .map(|(model, reason)| format!("{model}: {reason}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(": {rendered}")
+}
+
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
 pub enum RoutingError {
     /// No candidate in the role's chain was admissible. The `String` in each
     /// pair is the rendered routing reason (a typed `RoutingReason` cannot be
-    /// used here without a module cycle; keep the rendered form).
-    #[error("no candidate for role {role} ({} considered)", considered.len())]
+    /// used here without a module cycle; keep the rendered form) --
+    /// capability-skip ("missing: ...") or the backend/health failure a live
+    /// attempt hit (e.g. a `BackendError`'s own `Display`, which for
+    /// `ServerError` already carries the HTTP status and provider error
+    /// body). `render_considered` (WI-121) is what makes those reasons
+    /// visible instead of just the bare count: every wrapping layer's
+    /// `Display` (`RuntimeError::Routing`, both `ConwayError::Routing`/
+    /// `::Runtime`) forwards this variant's `Display` verbatim, so the
+    /// per-candidate detail reaches every surfacing path (CLI top-level
+    /// error print, `Event::Error` render) for free.
+    #[error(
+        "no candidate for role {role} ({} considered){}",
+        considered.len(),
+        render_considered(considered)
+    )]
     NoCandidate {
         role: RoleAlias,
         considered: Vec<(ModelRef, String)>,
@@ -293,6 +323,44 @@ mod tests {
                 "missing {needle:?} in {runtime:?}"
             );
         }
+    }
+
+    #[test]
+    fn no_candidate_display_names_role_count_and_zero_reasons() {
+        let err = RoutingError::NoCandidate {
+            role: RoleAlias::new("coder"),
+            considered: Vec::new(),
+        };
+        assert_eq!(
+            err.to_string(),
+            "no candidate for role coder (0 considered)"
+        );
+    }
+
+    #[test]
+    fn no_candidate_display_renders_per_candidate_reasons() {
+        let other = ModelRef {
+            backend: BackendId::new("openai"),
+            model: ModelId::new("gpt-5"),
+        };
+        let err = RoutingError::NoCandidate {
+            role: RoleAlias::new("coder"),
+            considered: vec![
+                (
+                    model_ref(),
+                    "server error (status 503): upstream unavailable".to_string(),
+                ),
+                (
+                    other,
+                    "rate limited (retry after Some(30) seconds)".to_string(),
+                ),
+            ],
+        };
+        let rendered = err.to_string();
+        assert!(rendered.starts_with("no candidate for role coder (2 considered): "));
+        assert!(rendered
+            .contains("local/qwen3-coder:30b: server error (status 503): upstream unavailable"));
+        assert!(rendered.contains("openai/gpt-5: rate limited (retry after Some(30) seconds)"));
     }
 
     #[test]
