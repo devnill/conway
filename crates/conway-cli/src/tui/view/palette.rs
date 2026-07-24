@@ -65,13 +65,14 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "/fork",
-        usage: "/fork <agent> <directive>",
-        description: "fork a live agent with a directive",
+        usage: "/fork [<text>] | @<agent> <directive>",
+        description: "open an interactive fork of the focused agent (or fork a specific agent)",
     },
     CommandSpec {
         name: "/spawn",
-        usage: "/spawn <agent_def> <prompt>",
-        description: "spawn a fresh agent",
+        usage: "/spawn [@<agent_def>] [<prompt>]",
+        description:
+            "open an interactive spawned agent (inherits parent's role/model if no @agent_def)",
     },
     CommandSpec {
         name: "/resume",
@@ -87,6 +88,11 @@ pub const COMMANDS: &[CommandSpec] = &[
         name: "/quit",
         usage: "/quit",
         description: "exit",
+    },
+    CommandSpec {
+        name: "/exit",
+        usage: "/exit",
+        description: "alias for /quit",
     },
 ];
 
@@ -204,6 +210,14 @@ mod tests {
         let found = matches("/quit");
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].name, "/quit");
+    }
+
+    #[test]
+    fn exit_is_listed_as_an_alias_for_quit() {
+        let found = matches("/exit");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].name, "/exit");
+        assert!(found[0].description.contains("/quit"));
     }
 
     // WI-134 (finding M1): render-layer coverage of the arrow selection.

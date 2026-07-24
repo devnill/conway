@@ -42,6 +42,22 @@ impl PendingPrompt {
     pub(crate) fn reply_sender(self) -> oneshot::Sender<PermissionDecision> {
         self.reply
     }
+
+    /// Test-only constructor (01KYB0F7V65QAMZWWYH8K7DWDC): `reply` is
+    /// private outside this module by design -- only `TuiGate::check` ever
+    /// builds a real one, tied to the live gate channel. Render/input tests
+    /// elsewhere under `tui/` that need a `Mode::AwaitingPermission`
+    /// `AppState` with no live gate at all (e.g. the permission overlay's
+    /// own render tests) go through this instead of reaching into a private
+    /// field. The paired `oneshot::Receiver` is returned so a test can
+    /// assert on what gets sent if it cares to; most just drop it.
+    #[cfg(test)]
+    pub(crate) fn new_for_test(
+        request: PermissionRequest,
+    ) -> (PendingPrompt, oneshot::Receiver<PermissionDecision>) {
+        let (reply, rx) = oneshot::channel();
+        (PendingPrompt { request, reply }, rx)
+    }
 }
 
 /// The app loop's half of a [`TuiGate`] channel -- selected on alongside the

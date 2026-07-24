@@ -5,3 +5,11 @@
 .ideate/index.db
 .ideate/index.db-wal
 .ideate/index.db-shm
+
+# ideate v3 migration — local only (not tracked)
+.ideate/record/
+.ideate-record/
+.ideate-work/
+.ideate/steering/*.md
+.ideate/.migrated-to-v3.json
+.ideate-telemetry/

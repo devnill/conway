@@ -3,8 +3,7 @@
 //! for the headroom gate).
 //!
 //! Filter order is binding and fixed: pin -> capability (headroom-aware) ->
-//! health -> chain order. See `docs/plan/wi-conway-routing.md` and
-//! `wi-conway-routing-amendment.md`, section WI-034.
+//! health -> chain order. See `docs/crates/conway-routing.md`.
 //!
 //! Divergence note (flagged, not worked around): `conway_core::ports::Router`'s
 //! doc comment on `resolve` states that T-1 (no candidate's headroom-adjusted

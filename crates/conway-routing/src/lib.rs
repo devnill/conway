@@ -6,9 +6,9 @@
 //!
 //! `conway-core` owns the port traits (`Router`, `HealthRegistry`) and the
 //! content-free request/response/config types this crate operates on; this
-//! crate provides the implementations. See `docs/plan/architecture.md`,
-//! "Module: conway-routing", for the module contract, and
-//! `docs/plan/wi-conway-routing*.md` for the work-item breakdown.
+//! crate provides the implementations. See `ARCHITECTURE.md` for the
+//! whole-system picture, and `docs/crates/conway-routing.md` for this
+//! crate's design (WI-031 through WI-036).
 //!
 //! No classifier, embedding model, or other learned component may be linked
 //! into this crate, at MVP or ever, absent an explicit decision reversal

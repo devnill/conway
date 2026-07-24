@@ -30,6 +30,13 @@ use futures_core::Stream;
 /// freshly generated, unrelated session/agent id (it belongs to no
 /// session's sequence), so filtering it out by session/agent would
 /// silently swallow the one signal a slow consumer needs to see.
+///
+/// [`Event::AgentSpawned`]/[`Event::AgentFinished`] are likewise always
+/// forwarded regardless of the session/agent filter -- tree lifecycle is a
+/// global concern, and a subagent's own lifecycle events are stamped with
+/// its OWN, freshly-minted session/agent id, not its parent's. See
+/// [`EventStream::accept`]'s doc for the full rationale and the
+/// `TurnHandle`-safety note this depends on.
 pub struct EventStream {
     session: SessionId,
     agent: Option<AgentId>,
@@ -81,6 +88,21 @@ pub struct EventStream {
 /// vetoes a match that would otherwise fire.
 struct Dedup {
     pending: Vec<(Event, DateTime<Utc>)>,
+    /// Agents whose in-flight turn's reply text was already yielded IN FULL
+    /// from the replay batch (a replayed `Assistant`-derived
+    /// `Event::TextDelta` -- see `record_to_event` -- with `ts >=
+    /// subscribed_at`, i.e. persisted during the subscribe-then-read overlap
+    /// window). This exists for exactly the case `pending`/[`has_live_twin`]
+    /// cannot cover: a whole-text replay `TextDelta` can never
+    /// content-match any single chunked LIVE `TextDelta` from the same
+    /// turn, so there is nothing to dedup by content here -- the tail must
+    /// instead be suppressed by TURN BOUNDARY. Each entry pairs the
+    /// suppressed agent with the `ts` of the replay record that triggered
+    /// it, for the same bounded-expiry discipline `pending` uses (see
+    /// [`DEDUP_TTL`]). See [`EventStream::suppress_turn_tail`] for how an
+    /// entry is cleared (on that SAME agent's next live turn-boundary
+    /// marker) and why that can never suppress a later, genuinely new turn.
+    suppress_turn_tail: Vec<(AgentId, DateTime<Utc>)>,
 }
 
 /// How long an unmatched `pending` entry is kept alive past its own
@@ -92,12 +114,11 @@ const DEDUP_TTL: chrono::Duration = chrono::Duration::seconds(30);
 /// Whether `event`'s `LogRecord` origin (see
 /// `session_handle::record_to_event`) has a live-side twin that could
 /// collide with it at the replay/live junction. `AgentResultRecord` (->
-/// `AgentFinished`), `Assistant` (-> `TurnFinished`), and `ToolResultRecord`
-/// (-> `ToolCallFinished`) are each 1:1 mapped to a single live event with
-/// the same payload: an agent finishes exactly once (a unique
-/// `AgentResult`), a turn emits exactly one `TurnFinished`, and a tool call
-/// has a unique `call_id` with `ToolResultRecord`'s persisted fields
-/// (`call_id`, `is_error`, and `tool_result_preview`, which mirrors
+/// `AgentFinished`) and `ToolResultRecord` (-> `ToolCallFinished`) are each
+/// 1:1 mapped to a single live event with the same payload: an agent
+/// finishes exactly once (a unique `AgentResult`), and a tool call has a
+/// unique `call_id` with `ToolResultRecord`'s persisted fields (`call_id`,
+/// `is_error`, and `tool_result_preview`, which mirrors
 /// `conway-runtime::tools::runner`'s live `preview_text` derivation
 /// logic-for-logic) byte-identical to the live `ToolCallFinished` built from
 /// the same `ToolOutcome`. Every other record kind
@@ -109,10 +130,36 @@ const DEDUP_TTL: chrono::Duration = chrono::Duration::seconds(30);
 /// emitted on every tool call) has no replayed counterpart that could ever
 /// content-equal a live event, so there is nothing to dedup for those and
 /// including them would only waste `pending` slots.
+///
+/// **`Assistant` (-> `Event::TextDelta`, WI-140 review fix) is deliberately
+/// NOT included here, and `Event::TurnFinished` no longer needs to be
+/// either:** `record_to_event`'s `Assistant` arm used to map to
+/// `Event::TurnFinished{usage, stop}`, a genuine 1:1 live twin, which is why
+/// `TurnFinished` was matched below. It now maps to one `Event::TextDelta`
+/// carrying the record's FULL concatenated reply text -- which is never
+/// byte-identical to any single LIVE `TextDelta` (the live side is chunked
+/// into many small deltas per turn, per this module's own doc above on
+/// mismatched replay/live cardinality), so it could never validly match a
+/// live envelope here even if included -- content matching is structurally
+/// the wrong tool for this pair.
+///
+/// **This does NOT mean the resulting duplicate goes unhandled (cycle-3
+/// review finding, fixed):** a replayed `Assistant` record and its live
+/// turn's still-queued `TextDelta` chunks CAN coexist on the same stream, in
+/// the same subscribe-before-read race window `events_from`/`agent_events`
+/// already accept for the other mapped kinds -- and left alone, that
+/// duplicates the reply's tail in the rendered transcript (`AppState::
+/// append_assistant_text` appends the live chunks onto the already-replayed
+/// full-text bubble). That case is instead handled by a SEPARATE,
+/// turn-boundary-scoped mechanism -- [`Dedup::suppress_turn_tail`] /
+/// [`EventStream::suppress_turn_tail`] -- entirely outside `has_live_twin`'s
+/// content-match scope: see that field's doc for why boundary suppression,
+/// not content matching, is the correct tool for a cardinality-mismatched
+/// pair like this one.
 fn has_live_twin(event: &Event) -> bool {
     matches!(
         event,
-        Event::AgentFinished { .. } | Event::TurnFinished { .. } | Event::ToolCallFinished { .. }
+        Event::AgentFinished { .. } | Event::ToolCallFinished { .. }
     )
 }
 
@@ -201,6 +248,21 @@ impl EventStream {
     /// apparent duplicate) -- content-matching first, with `ts` used only to
     /// bound `pending`'s lifetime, means this can never produce a **gap**
     /// (a real, non-duplicate event wrongly dropped).
+    ///
+    /// **The `Assistant`/`TextDelta` duplicate (cycle-3 review finding,
+    /// fixed separately from `pending` above):** `has_live_twin` deliberately
+    /// excludes `TextDelta` -- a replayed `Assistant` record's full-text
+    /// `TextDelta` can never content-match a chunked live `TextDelta`, so
+    /// `pending`'s content-match mechanism cannot catch this pair. Left
+    /// unhandled, the SAME subscribe-before-read race this constructor's doc
+    /// above describes would duplicate an in-flight turn's reply tail (the
+    /// replayed full text, immediately followed by that same turn's still-
+    /// queued live chunks). This constructor separately seeds
+    /// [`Dedup::suppress_turn_tail`] with every replay envelope whose event
+    /// is a `TextDelta` (i.e. an `Assistant`-derived one -- `record_to_event`
+    /// maps no other kind to `TextDelta`) and whose `ts` falls at or after
+    /// `subscribed_at`, exactly the same overlap-window test `pending` uses.
+    /// See [`EventStream::suppress_turn_tail`] for how it is drained.
     pub(crate) fn replay_then_live(
         session: SessionId,
         agent: Option<AgentId>,
@@ -213,10 +275,18 @@ impl EventStream {
             .filter(|e| e.ts >= subscribed_at && has_live_twin(&e.event))
             .map(|e| (e.event.clone(), e.ts))
             .collect();
-        let dedup = if pending.is_empty() {
+        let suppress_turn_tail: Vec<(AgentId, DateTime<Utc>)> = replay
+            .iter()
+            .filter(|e| e.ts >= subscribed_at && matches!(e.event, Event::TextDelta { .. }))
+            .map(|e| (e.agent, e.ts))
+            .collect();
+        let dedup = if pending.is_empty() && suppress_turn_tail.is_empty() {
             None
         } else {
-            Some(Dedup { pending })
+            Some(Dedup {
+                pending,
+                suppress_turn_tail,
+            })
         };
         Self {
             session,
@@ -230,6 +300,38 @@ impl EventStream {
 
     fn accept(&self, envelope: &Envelope) -> bool {
         if matches!(envelope.event, Event::Lagged { .. }) {
+            return true;
+        }
+        // Tree-lifecycle events are a session-agnostic, global concern, not
+        // this-session turn text: a subagent is spawned and finishes on its
+        // OWN, freshly-minted session (`tree.rs::attach`'s `self.bus.emit(
+        // node.session, node.id, event)`, and `supervisor.rs`'s matching
+        // `AgentFinished` emit are both stamped with the CHILD's own
+        // session/agent id, by design -- see `events_from`'s doc above on
+        // `SessionId` keying "one session per agent"). A subscriber scoped
+        // to any single session -- the TUI's root `handle.events()`, or a
+        // per-turn `TurnHandle`'s internal stream -- would otherwise never
+        // observe another agent's spawn/finish at all: exactly the bug this
+        // passthrough fixes (the `/agents` panel and inline `Entry::Agent`
+        // activity staying empty when a subagent is spawned). Bypass BOTH
+        // the session and the agent filter for these two variants,
+        // unconditionally, exactly like `Event::Lagged` above.
+        //
+        // This means an agent-scoped stream (`self.agent: Some(_)`, i.e. a
+        // `TurnHandle`) can now observe an `AgentFinished` for an agent
+        // other than its own. `TurnHandle::text`/`TurnHandle::result`
+        // (`session_handle.rs`) are written to tolerate exactly that: both
+        // check the finished `AgentResult`'s own `agent_id` before treating
+        // an `AgentFinished` as THEIR turn's terminal event, rather than
+        // assuming (as they could when this stream was fully session/agent
+        // scoped) that any `AgentFinished` reaching them must be their own.
+        // This filter deliberately does not attempt that narrower scoping
+        // itself -- it has no notion of "this turn's own agent" to check
+        // against, only "this subscription's declared session/agent filter".
+        if matches!(
+            envelope.event,
+            Event::AgentSpawned { .. } | Event::AgentFinished { .. }
+        ) {
             return true;
         }
         if envelope.session != self.session {
@@ -284,10 +386,129 @@ impl EventStream {
         dedup
             .pending
             .retain(|(_, ts)| envelope.ts - *ts <= DEDUP_TTL);
-        if dedup.pending.is_empty() {
-            self.dedup = None;
-        }
+        self.clear_dedup_if_spent();
         matched
+    }
+
+    /// `true` if `envelope` is a live `TextDelta` whose tail belongs to a
+    /// turn already replayed in full ([`Dedup::suppress_turn_tail`]) and
+    /// must therefore be dropped. This is a SEPARATE mechanism from
+    /// [`EventStream::is_live_duplicate`], not an extension of it: that
+    /// method dedups by exact content match, which is structurally
+    /// impossible here (a whole-text replay `TextDelta` never byte-equals
+    /// any one chunked live `TextDelta` -- see [`has_live_twin`]'s doc). This
+    /// suppresses by TURN BOUNDARY instead.
+    ///
+    /// **Boundary detection, and why it cannot over-suppress a later turn:**
+    /// a live `Event::TurnFinished` or `Event::AgentFinished` is never itself
+    /// suppressed by this method -- it is read purely as a MARKER (never a
+    /// content-match target) that the in-flight turn responsible for a
+    /// `suppress_turn_tail` entry has truly ended, and it clears ONLY the
+    /// entry for the SAME agent (`envelope.agent`, matched against the
+    /// entry's own agent). Three things make this safe:
+    /// - `agent_loop.rs::finish` persists the `Assistant` record (which is
+    ///   what seeds a `suppress_turn_tail` entry, in `replay_then_live`) and
+    ///   then emits the matching live `TurnFinished` `Event` for the SAME
+    ///   agent's SAME turn, persist strictly before emit -- so in the
+    ///   overwhelmingly common case a boundary for the suppressed turn is
+    ///   already on its way once an entry exists. This is not exceptionless:
+    ///   `TurnFinished` is only reached after a SECOND store append (the
+    ///   context-report persist) succeeds; if that append errors,
+    ///   `run_inner` returns early and unwinds to `finish`/`finish_error`
+    ///   instead, whose `AgentFinished` emission is itself gated on winning
+    ///   `AgentTree::publish_result`'s CAS (the supervisor may already have
+    ///   published first, e.g. on a grace-timeout) -- so neither boundary
+    ///   variant is unconditionally guaranteed. This is harmless here: in
+    ///   every such case the agent has necessarily terminated, so there is
+    ///   no further live `TextDelta` traffic for it to wrongly suppress --
+    ///   the orphaned entry just ages out via [`DEDUP_TTL`] (or, per the
+    ///   `Event::Lagged` handling below, clears immediately if a lag
+    ///   happens to intervene first). Suppression therefore never depends on
+    ///   a boundary that is truly guaranteed, only on one that is either
+    ///   overwhelmingly likely to arrive promptly, or -- when it doesn't --
+    ///   provably harmless to wait out.
+    /// - Scoping the clear to `envelope.agent` matters because
+    ///   `Event::AgentFinished` bypasses this stream's own session/agent
+    ///   filter entirely (`accept`, above) -- a SIBLING agent's finish can
+    ///   reach this method. Matching on the specific agent id (not "any
+    ///   AgentFinished") is what stops a sibling's boundary from wrongly
+    ///   clearing (and thus prematurely un-suppressing) this agent's own
+    ///   still-in-flight tail.
+    /// - Once cleared, an entry cannot be reinstated except by a FRESH call
+    ///   to `replay_then_live` (a fresh subscribe), so a later, genuinely new
+    ///   live turn for that same agent is never itself suppressed -- only
+    ///   the SPECIFIC already-replayed turn's tail was ever in scope, and
+    ///   the boundary marker that ends it also ends the suppression.
+    ///
+    /// Also expires stale entries on the same [`DEDUP_TTL`] discipline
+    /// [`EventStream::is_live_duplicate`] uses for `pending` -- a defensive
+    /// bound only; in production the boundary above always arrives first.
+    ///
+    /// **`Event::Lagged` fails this mechanism OPEN, not closed (cycle-4
+    /// review finding, fixed):** `EventBus` is one process-wide
+    /// `broadcast::channel`, shared by every agent in the tree; when this
+    /// subscription lags, the whole missed range collapses into a single
+    /// `Event::Lagged` with no per-agent/session information at all (see
+    /// this module's own top-level doc). If the specific boundary marker
+    /// that would have cleared an agent's entry fell inside that dropped
+    /// range, the entry would otherwise linger -- and since it is scoped
+    /// only by `agent`, not by the specific turn that seeded it, it would
+    /// then wrongly suppress every subsequent `TextDelta` for that agent,
+    /// including a genuinely NEW turn's real reply, until TTL expiry. That
+    /// is a **dropped real event**, the opposite failure mode from
+    /// `pending`'s (whose worst case, documented above, is only ever a
+    /// missed dedup -- a rare surviving duplicate, never a gap). A
+    /// transcript silently missing a reply is strictly worse than an
+    /// occasional duplicated one, especially since a `Lagged` envelope
+    /// itself already tells the caller "N events were missed" -- so on
+    /// `Event::Lagged`, EVERY entry is cleared unconditionally (not just the
+    /// one for a matching agent -- `Lagged` carries no agent to match
+    /// against, and after a lag any agent's boundary could be the one that
+    /// was dropped). The `Lagged` envelope itself is never suppressed by
+    /// this method (matching [`EventStream::accept`]'s own unconditional
+    /// passthrough for it).
+    fn suppress_turn_tail(&mut self, envelope: &Envelope) -> bool {
+        let Some(dedup) = &mut self.dedup else {
+            return false;
+        };
+        if matches!(envelope.event, Event::Lagged { .. }) {
+            dedup.suppress_turn_tail.clear();
+            self.clear_dedup_if_spent();
+            return false;
+        }
+        if matches!(
+            envelope.event,
+            Event::TurnFinished { .. } | Event::AgentFinished { .. }
+        ) {
+            dedup
+                .suppress_turn_tail
+                .retain(|(agent, _)| *agent != envelope.agent);
+            self.clear_dedup_if_spent();
+            return false;
+        }
+        let suppress = matches!(envelope.event, Event::TextDelta { .. })
+            && dedup
+                .suppress_turn_tail
+                .iter()
+                .any(|(agent, _)| *agent == envelope.agent);
+        dedup
+            .suppress_turn_tail
+            .retain(|(_, ts)| envelope.ts - *ts <= DEDUP_TTL);
+        self.clear_dedup_if_spent();
+        suppress
+    }
+
+    /// Drops `self.dedup` once both its `pending` content-match slots and
+    /// its `suppress_turn_tail` entries are empty -- shared by
+    /// [`EventStream::is_live_duplicate`] and
+    /// [`EventStream::suppress_turn_tail`], which each mutate one of the two
+    /// vecs and must not tear down the other's still-live state.
+    fn clear_dedup_if_spent(&mut self) {
+        if let Some(dedup) = &self.dedup {
+            if dedup.pending.is_empty() && dedup.suppress_turn_tail.is_empty() {
+                self.dedup = None;
+            }
+        }
     }
 
     fn renumber(&mut self, mut envelope: Envelope) -> Envelope {
@@ -316,7 +537,19 @@ impl Stream for EventStream {
             match this.live.as_mut().poll_next(cx) {
                 Poll::Ready(Some(envelope)) => {
                     if this.accept(&envelope) {
-                        if this.is_live_duplicate(&envelope) {
+                        // Both checks always run -- not short-circuited via
+                        // `||` -- because `suppress_turn_tail` must still
+                        // observe a `TurnFinished`/`AgentFinished` boundary
+                        // marker even when `is_live_duplicate` has already
+                        // decided to drop that SAME envelope as a content
+                        // duplicate (e.g. a tool-call-free final turn whose
+                        // `AgentResultRecord` also landed in the replay
+                        // overlap window): the boundary must still clear
+                        // this agent's suppressed tail regardless of whether
+                        // the envelope carrying it is itself forwarded.
+                        let is_dup = this.is_live_duplicate(&envelope);
+                        let is_suppressed = this.suppress_turn_tail(&envelope);
+                        if is_dup || is_suppressed {
                             continue;
                         }
                         return Poll::Ready(Some(this.renumber(envelope)));
@@ -419,6 +652,117 @@ mod tests {
         assert!(
             saw_after_lag,
             "events must keep arriving after a Lagged notice"
+        );
+    }
+
+    /// The bug this item fixes: a subagent's `AgentSpawned`/`AgentFinished`
+    /// is emitted on the CHILD's own session (`tree.rs::attach`,
+    /// `supervisor.rs::finish`), not the parent's -- so a subscriber
+    /// filtered to the parent's session must still observe it. Also asserts
+    /// the mirror-image half of the fix: a NON-lifecycle event on the other
+    /// session (e.g. `AgentProgress`) must stay dropped -- this passthrough
+    /// is scoped to tree lifecycle only, not a blanket session bypass.
+    #[tokio::test]
+    async fn lifecycle_events_bypass_session_filter_but_other_events_stay_scoped() {
+        let bus = EventBus::new(64);
+        let session_a = SessionId::new();
+        let session_b = SessionId::new();
+        let agent_a = AgentId::new();
+        let agent_b = AgentId::new();
+
+        let mut stream = EventStream::live(session_a, None, bus.subscribe());
+
+        // A non-lifecycle event on the other session: must NOT reach a
+        // session-A subscriber.
+        bus.emit(
+            session_b,
+            agent_b,
+            Event::AgentProgress {
+                note: "unrelated".into(),
+            },
+        );
+        // The child's own spawn/finish, on the child's own session: MUST
+        // reach a session-A subscriber despite `session_b != session_a`.
+        bus.emit(
+            session_b,
+            agent_b,
+            Event::AgentSpawned {
+                kind: conway_core::agent::SubagentMode::Spawn,
+                parent: Some(agent_a),
+                agent_def: Some("reviewer".into()),
+                inherited_upto: None,
+            },
+        );
+        bus.emit(
+            session_b,
+            agent_b,
+            fixture_agent_finished(session_b, agent_b),
+        );
+        // A genuinely session-A event must still arrive too, after the
+        // cross-session lifecycle pair.
+        bus.emit(
+            session_a,
+            agent_a,
+            Event::AgentProgress { note: "own".into() },
+        );
+
+        let spawned = next(&mut stream).await.expect("stream ended early");
+        assert_eq!(
+            spawned.session, session_b,
+            "the envelope's own session must be preserved (it identifies which agent spawned)"
+        );
+        assert!(
+            matches!(spawned.event, Event::AgentSpawned { .. }),
+            "the unrelated AgentProgress must have been dropped, not this; got {:?}",
+            spawned.event
+        );
+
+        let finished = next(&mut stream).await.expect("stream ended early");
+        assert_eq!(finished.session, session_b);
+        assert!(matches!(finished.event, Event::AgentFinished { .. }));
+
+        let own = next(&mut stream).await.expect("stream ended early");
+        assert_eq!(own.session, session_a);
+        assert!(matches!(&own.event, Event::AgentProgress { note } if note == "own"));
+    }
+
+    /// The agent filter (used by `TurnHandle`'s internal, per-turn stream)
+    /// is bypassed for lifecycle events exactly like the session filter --
+    /// a stream scoped to one agent must still observe another agent's
+    /// (e.g. a spawned child's) spawn/finish, while a non-lifecycle event
+    /// for that other agent stays dropped.
+    #[tokio::test]
+    async fn lifecycle_events_bypass_agent_filter_too() {
+        let bus = EventBus::new(64);
+        let session = SessionId::new();
+        let agent = AgentId::new();
+        let other_agent = AgentId::new();
+
+        let mut stream = EventStream::live(session, Some(agent), bus.subscribe());
+
+        bus.emit(
+            session,
+            other_agent,
+            Event::AgentProgress {
+                note: "unrelated".into(),
+            },
+        );
+        bus.emit(
+            session,
+            other_agent,
+            Event::AgentSpawned {
+                kind: conway_core::agent::SubagentMode::Spawn,
+                parent: Some(agent),
+                agent_def: None,
+                inherited_upto: None,
+            },
+        );
+
+        let envelope = next(&mut stream).await.expect("stream ended early");
+        assert!(
+            matches!(envelope.event, Event::AgentSpawned { .. }),
+            "the unrelated AgentProgress for `other_agent` must have been dropped, not this; got {:?}",
+            envelope.event
         );
     }
 
@@ -722,6 +1066,480 @@ mod tests {
         assert_eq!(
             third.event, never_raced_event,
             "a content-equal event arriving after the watermark has passed must NOT be dropped"
+        );
+    }
+
+    fn fixture_turn_finished() -> Event {
+        Event::TurnFinished {
+            usage: Default::default(),
+            stop: conway_core::content::StopReason::EndTurn,
+        }
+    }
+
+    /// The bug this item fixes (cycle-3 review finding, "focus-switch can
+    /// duplicate an in-flight turn's assistant text at the replay/live
+    /// junction"): `record_to_event` maps a persisted `Assistant` record to
+    /// ONE `Event::TextDelta` carrying the record's FULL reply text
+    /// (`has_live_twin` deliberately excludes `TextDelta`, so
+    /// `is_live_duplicate`'s content-match dedup structurally cannot catch
+    /// this pair -- see that function's doc). Left unhandled, a replay batch
+    /// containing that whole-text delta, immediately followed by the SAME
+    /// turn's still-queued LIVE chunked `TextDelta`s, would render the
+    /// reply's tail twice. This constructs exactly that junction
+    /// deterministically (a fixed `replay: Vec<Envelope>`, a pinned
+    /// `subscribed_at`, and a `FixedStream` standing in for the live bus --
+    /// no timing race) and asserts:
+    /// - the replayed full text is yielded exactly once;
+    /// - the live tail chunks of the SAME already-replayed turn are
+    ///   suppressed entirely (never reach the caller);
+    /// - the turn-boundary marker (`TurnFinished`) that ends the suppression
+    ///   is itself still delivered, unsuppressed;
+    /// - critically, a NEW live turn's `TextDelta`s that arrive AFTER that
+    ///   boundary are delivered in full, unsuppressed -- proving this cannot
+    ///   over-suppress a later, genuinely new turn.
+    #[tokio::test]
+    async fn replay_then_live_suppresses_duplicated_assistant_tail_then_resumes_after_boundary() {
+        let session = SessionId::new();
+        let agent = AgentId::new();
+
+        let subscribed_at = chrono::Utc::now();
+
+        // The persisted side of the race: `record_to_event` synthesized this
+        // from the `Assistant` record `store.read()` picked up because it
+        // landed after `subscribed_at` -- exactly the overlap window
+        // `replay_then_live`'s doc describes. Its `ts` is stamped before any
+        // live envelope below, mirroring `agent_loop.rs::finish`'s real
+        // ordering (persist, then emit).
+        let record_ts = subscribed_at + chrono::Duration::milliseconds(1);
+        let replay = vec![Envelope {
+            seq: 999,
+            ts: record_ts,
+            session,
+            agent,
+            event: Event::TextDelta {
+                text: "Hello world".into(),
+            },
+        }];
+
+        let live = fixed_live(vec![
+            // The SAME turn's still-queued live chunks -- must be
+            // suppressed, not delivered.
+            Envelope {
+                seq: 0,
+                ts: record_ts + chrono::Duration::milliseconds(1),
+                session,
+                agent,
+                event: Event::TextDelta {
+                    text: "Hello".into(),
+                },
+            },
+            Envelope {
+                seq: 1,
+                ts: record_ts + chrono::Duration::milliseconds(2),
+                session,
+                agent,
+                event: Event::TextDelta {
+                    text: " world".into(),
+                },
+            },
+            // The turn's real boundary marker: clears the suppression for
+            // this agent. Must itself be delivered, unsuppressed.
+            Envelope {
+                seq: 2,
+                ts: record_ts + chrono::Duration::milliseconds(3),
+                session,
+                agent,
+                event: fixture_turn_finished(),
+            },
+            // A genuinely NEW turn's live text, arriving after the
+            // boundary -- must be delivered in full, proving suppression
+            // does not leak into the next turn.
+            Envelope {
+                seq: 3,
+                ts: record_ts + chrono::Duration::milliseconds(4),
+                session,
+                agent,
+                event: Event::TextDelta {
+                    text: "Second turn reply".into(),
+                },
+            },
+        ]);
+
+        let mut stream = EventStream::replay_then_live(session, None, replay, subscribed_at, live);
+
+        let first = next(&mut stream).await.expect("replay envelope");
+        assert!(
+            matches!(&first.event, Event::TextDelta { text } if text == "Hello world"),
+            "the replayed full-text delta must be yielded first; got {:?}",
+            first.event
+        );
+        assert_eq!(first.seq, 0);
+
+        let second = next(&mut stream).await.expect("stream ended early");
+        assert!(
+            matches!(second.event, Event::TurnFinished { .. }),
+            "the two duplicated live tail chunks must be suppressed -- the turn boundary must \
+             be the very next envelope; got {:?}",
+            second.event
+        );
+        assert_eq!(
+            second.seq, 1,
+            "seq must stay monotonic and gap-free across the suppressed tail"
+        );
+
+        let third = next(&mut stream).await.expect("stream ended early");
+        assert!(
+            matches!(&third.event, Event::TextDelta { text } if text == "Second turn reply"),
+            "a NEW turn's live text arriving after the boundary must be delivered in full, not \
+             suppressed; got {:?}",
+            third.event
+        );
+        assert_eq!(third.seq, 2);
+    }
+
+    /// The agent-scoping half of the same fix: `Event::AgentFinished`
+    /// bypasses this stream's own session/agent filter (`accept`, tree
+    /// lifecycle is a global concern), so a SIBLING agent's `AgentFinished`
+    /// can reach `suppress_turn_tail` while this agent's own tail is still
+    /// suppressed. That must NOT clear this agent's suppression -- only a
+    /// boundary marker for THIS agent may. This also exercises
+    /// `AgentFinished` (rather than `TurnFinished`) as the clearing marker.
+    #[tokio::test]
+    async fn replay_then_live_turn_tail_suppression_ignores_a_siblings_boundary_marker() {
+        let session = SessionId::new();
+        let agent = AgentId::new();
+        let sibling = AgentId::new();
+
+        let subscribed_at = chrono::Utc::now();
+        let record_ts = subscribed_at + chrono::Duration::milliseconds(1);
+
+        let replay = vec![Envelope {
+            seq: 999,
+            ts: record_ts,
+            session,
+            agent,
+            event: Event::TextDelta {
+                text: "Full reply".into(),
+            },
+        }];
+
+        let live = fixed_live(vec![
+            // A sibling's own AgentFinished, unrelated to `agent`'s
+            // suppressed turn -- must NOT clear it.
+            Envelope {
+                seq: 0,
+                ts: record_ts + chrono::Duration::milliseconds(1),
+                session,
+                agent: sibling,
+                event: fixture_agent_finished(session, sibling),
+            },
+            // The duplicated live tail chunk -- must still be suppressed,
+            // since the sibling's finish above must not have cleared it.
+            Envelope {
+                seq: 1,
+                ts: record_ts + chrono::Duration::milliseconds(2),
+                session,
+                agent,
+                event: Event::TextDelta {
+                    text: "tail".into(),
+                },
+            },
+            // THIS agent's own boundary marker: now it clears.
+            Envelope {
+                seq: 2,
+                ts: record_ts + chrono::Duration::milliseconds(3),
+                session,
+                agent,
+                event: fixture_agent_finished(session, agent),
+            },
+        ]);
+
+        let mut stream = EventStream::replay_then_live(session, None, replay, subscribed_at, live);
+
+        let first = next(&mut stream).await.expect("replay envelope");
+        assert!(matches!(&first.event, Event::TextDelta { text } if text == "Full reply"));
+
+        let second = next(&mut stream).await.expect("stream ended early");
+        assert!(
+            matches!(second.event, Event::AgentFinished { .. }),
+            "the sibling's own AgentFinished must pass through (lifecycle events bypass the \
+             session/agent filter); the suppressed tail chunk must still be dropped after it; \
+             got {:?}",
+            second.event
+        );
+        if let Event::AgentFinished { result } = &second.event {
+            assert_eq!(
+                result.agent_id, sibling,
+                "this must be the sibling's own AgentFinished, not agent's"
+            );
+        }
+
+        let third = next(&mut stream).await.expect("stream ended early");
+        assert!(
+            matches!(third.event, Event::AgentFinished { .. }),
+            "after the sibling's finish (which must not have cleared this agent's \
+             suppression) and the still-suppressed tail chunk, this agent's OWN AgentFinished \
+             must be next; got {:?}",
+            third.event
+        );
+        if let Event::AgentFinished { result } = &third.event {
+            assert_eq!(
+                result.agent_id, agent,
+                "this must be this agent's own AgentFinished"
+            );
+        }
+    }
+
+    /// Cycle-4 review finding: `EventBus` is one process-wide broadcast
+    /// channel shared by every agent in the tree, and a lagging subscriber's
+    /// missed range collapses into a single `Event::Lagged` with no
+    /// per-agent/session information at all. If the boundary marker that
+    /// would have cleared a `suppress_turn_tail` entry fell inside that
+    /// dropped range, the entry -- scoped only by `agent`, not by the
+    /// specific turn that seeded it -- would otherwise linger and wrongly
+    /// suppress a later, genuinely NEW turn's real `TextDelta`s: a dropped
+    /// real event, the opposite of this module's documented
+    /// never-drop-a-real-event invariant. This asserts `Event::Lagged`
+    /// clears the suppression outright (fails OPEN) rather than leaving it
+    /// to linger: seed suppression for `agent` via a replayed
+    /// `Assistant`-derived `TextDelta`, then deliver a `Lagged` on the live
+    /// side WITHOUT `agent`'s own `TurnFinished`/`AgentFinished`, then a new
+    /// turn's `TextDelta` for the SAME agent -- the new turn's text must be
+    /// delivered, not silently eaten.
+    #[tokio::test]
+    async fn replay_then_live_lagged_clears_turn_tail_suppression() {
+        let session = SessionId::new();
+        let agent = AgentId::new();
+
+        let subscribed_at = chrono::Utc::now();
+        let record_ts = subscribed_at + chrono::Duration::milliseconds(1);
+
+        let replay = vec![Envelope {
+            seq: 999,
+            ts: record_ts,
+            session,
+            agent,
+            event: Event::TextDelta {
+                text: "First turn reply".into(),
+            },
+        }];
+
+        let live = fixed_live(vec![
+            // A lag notice -- NOT `agent`'s own `TurnFinished`/
+            // `AgentFinished` -- must clear the suppression outright rather
+            // than leaving it to linger until TTL expiry.
+            Envelope {
+                seq: 0,
+                ts: record_ts + chrono::Duration::milliseconds(1),
+                session: SessionId::new(), // Lagged carries an unrelated, freshly-minted id
+                agent: AgentId::new(),
+                event: Event::Lagged { skipped: 3 },
+            },
+            // A genuinely NEW turn's live text for the SAME agent, arriving
+            // after the lag -- must be delivered, not suppressed.
+            Envelope {
+                seq: 1,
+                ts: record_ts + chrono::Duration::milliseconds(2),
+                session,
+                agent,
+                event: Event::TextDelta {
+                    text: "Second turn reply".into(),
+                },
+            },
+        ]);
+
+        let mut stream = EventStream::replay_then_live(session, None, replay, subscribed_at, live);
+
+        let first = next(&mut stream).await.expect("replay envelope");
+        assert!(matches!(&first.event, Event::TextDelta { text } if text == "First turn reply"));
+
+        let second = next(&mut stream).await.expect("stream ended early");
+        assert!(
+            matches!(second.event, Event::Lagged { .. }),
+            "the Lagged envelope must be forwarded, never suppressed; got {:?}",
+            second.event
+        );
+
+        let third = next(&mut stream).await.expect("stream ended early");
+        assert!(
+            matches!(&third.event, Event::TextDelta { text } if text == "Second turn reply"),
+            "the Lagged notice must have cleared the suppression, so the new turn's real text \
+             must be delivered, not silently dropped; got {:?}",
+            third.event
+        );
+    }
+
+    /// Regression guard for `poll_next`'s deliberate non-short-circuit
+    /// evaluation of `is_live_duplicate` and `suppress_turn_tail` (see the
+    /// inline comment at the `is_dup`/`is_suppressed` call site): a single
+    /// live envelope can simultaneously be a `pending` content-duplicate
+    /// AND the boundary marker that clears `suppress_turn_tail` for its
+    /// agent. If a future edit reintroduced `||` short-circuiting
+    /// (`is_live_duplicate(&envelope) || suppress_turn_tail(&envelope)`),
+    /// the second call would never run once the first returned `true` --
+    /// silently breaking the boundary clear and reintroducing
+    /// over-suppression of the agent's NEXT, genuinely new turn, with
+    /// nothing to catch it.
+    ///
+    /// Constructs exactly that overlap: the replay batch, in the overlap
+    /// window, contains for the SAME agent BOTH an `Assistant`-derived
+    /// `TextDelta` (seeds `suppress_turn_tail`) and an `AgentFinished`
+    /// (seeds `pending` via `has_live_twin`) -- a turn that both replied
+    /// and completed the agent's run (no tool calls), so both a text
+    /// duplicate and a result duplicate are in flight for the same
+    /// occurrence. On the live side: a duplicate tail chunk of the
+    /// replayed turn (must be suppressed), then the live `AgentFinished`
+    /// twin -- BOTH the `pending` content-duplicate to dedup AND the
+    /// boundary marker that must clear this agent's suppression -- then a
+    /// NEW turn's `TextDelta` (must be delivered, proving the
+    /// boundary-clear fired even though the very same envelope was also
+    /// content-deduped).
+    #[tokio::test]
+    async fn replay_then_live_boundary_marker_both_dedups_and_clears_suppression() {
+        let session = SessionId::new();
+        let agent = AgentId::new();
+
+        let subscribed_at = chrono::Utc::now();
+        let record_ts = subscribed_at + chrono::Duration::milliseconds(1);
+        let finished_event = fixture_agent_finished(session, agent);
+
+        let replay = vec![
+            Envelope {
+                seq: 999,
+                ts: record_ts,
+                session,
+                agent,
+                event: Event::TextDelta {
+                    text: "Full reply".into(),
+                },
+            },
+            Envelope {
+                seq: 1000,
+                ts: record_ts + chrono::Duration::milliseconds(1),
+                session,
+                agent,
+                event: finished_event.clone(),
+            },
+        ];
+
+        let live = fixed_live(vec![
+            // The SAME turn's still-queued live tail chunk -- must be
+            // suppressed.
+            Envelope {
+                seq: 0,
+                ts: record_ts + chrono::Duration::milliseconds(2),
+                session,
+                agent,
+                event: Event::TextDelta {
+                    text: "tail".into(),
+                },
+            },
+            // The live twin of the replayed AgentFinished: simultaneously a
+            // `pending` content-duplicate AND the boundary marker.
+            Envelope {
+                seq: 1,
+                ts: record_ts + chrono::Duration::milliseconds(3),
+                session,
+                agent,
+                event: finished_event.clone(),
+            },
+            // A genuinely NEW turn's live text -- must be delivered.
+            Envelope {
+                seq: 2,
+                ts: record_ts + chrono::Duration::milliseconds(4),
+                session,
+                agent,
+                event: Event::TextDelta {
+                    text: "Second turn reply".into(),
+                },
+            },
+        ]);
+
+        let mut stream = EventStream::replay_then_live(session, None, replay, subscribed_at, live);
+
+        let first = next(&mut stream).await.expect("replay envelope");
+        assert!(matches!(&first.event, Event::TextDelta { text } if text == "Full reply"));
+
+        let second = next(&mut stream).await.expect("replay envelope");
+        assert_eq!(
+            second.event, finished_event,
+            "the replayed copy of AgentFinished must be yielded"
+        );
+
+        let third = next(&mut stream).await.expect("stream ended early");
+        assert!(
+            matches!(&third.event, Event::TextDelta { text } if text == "Second turn reply"),
+            "the duplicate tail chunk must be suppressed and the live AgentFinished twin must \
+             be deduped by content -- both dropped -- so the boundary-clear it also carries \
+             must still have fired, making the NEW turn's text the very next envelope; got {:?}",
+            third.event
+        );
+    }
+
+    /// Completeness check: the boundary branch of `suppress_turn_tail` must
+    /// not depend on having first observed a suppressed live `TextDelta` --
+    /// it must clear correctly even when the boundary marker is the very
+    /// first live envelope after the replay batch (an empty live tail, e.g.
+    /// the subscribe-then-read race window closed with nothing further
+    /// queued before the turn's boundary was broadcast).
+    #[tokio::test]
+    async fn replay_then_live_boundary_clears_suppression_with_no_intervening_tail() {
+        let session = SessionId::new();
+        let agent = AgentId::new();
+
+        let subscribed_at = chrono::Utc::now();
+        let record_ts = subscribed_at + chrono::Duration::milliseconds(1);
+
+        let replay = vec![Envelope {
+            seq: 999,
+            ts: record_ts,
+            session,
+            agent,
+            event: Event::TextDelta {
+                text: "Full reply".into(),
+            },
+        }];
+
+        let live = fixed_live(vec![
+            // The boundary itself, with NO suppressed live TextDelta chunk
+            // preceding it.
+            Envelope {
+                seq: 0,
+                ts: record_ts + chrono::Duration::milliseconds(1),
+                session,
+                agent,
+                event: fixture_turn_finished(),
+            },
+            // A new turn's text -- must be delivered.
+            Envelope {
+                seq: 1,
+                ts: record_ts + chrono::Duration::milliseconds(2),
+                session,
+                agent,
+                event: Event::TextDelta {
+                    text: "Second turn reply".into(),
+                },
+            },
+        ]);
+
+        let mut stream = EventStream::replay_then_live(session, None, replay, subscribed_at, live);
+
+        let first = next(&mut stream).await.expect("replay envelope");
+        assert!(matches!(&first.event, Event::TextDelta { text } if text == "Full reply"));
+
+        let second = next(&mut stream).await.expect("stream ended early");
+        assert!(
+            matches!(second.event, Event::TurnFinished { .. }),
+            "the boundary marker itself must be forwarded; got {:?}",
+            second.event
+        );
+
+        let third = next(&mut stream).await.expect("stream ended early");
+        assert!(
+            matches!(&third.event, Event::TextDelta { text } if text == "Second turn reply"),
+            "the boundary must clear suppression even with zero intervening suppressed deltas; \
+             got {:?}",
+            third.event
         );
     }
 }

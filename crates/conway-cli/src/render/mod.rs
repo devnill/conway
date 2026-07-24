@@ -12,7 +12,7 @@ pub mod text;
 
 use std::io;
 
-use conway::{AgentResult, Envelope};
+use conway::{AgentId, AgentResult, Envelope};
 
 use crate::cli::OutputFormat;
 
@@ -23,9 +23,23 @@ use crate::cli::OutputFormat;
 /// `finish` is then called exactly once, separately, with that envelope's
 /// `AgentResult` -- or `None` if the run ended without ever producing one
 /// (e.g. a SIGINT grace-window timeout).
+///
+/// The subscribed stream carries the whole session, and since
+/// `AgentSpawned`/`AgentFinished` now bypass the stream's session/agent
+/// filter (a subagent's lifecycle events reach a root subscriber -- see
+/// `conway::EventStream`), a renderer that reacts to `AgentFinished` must
+/// know which agent's finish is the run's own terminal occasion.
+/// [`Renderer::set_root`] supplies that id; the default is a no-op for
+/// renderers whose output doesn't depend on it.
 pub trait Renderer: Send {
     fn on_event(&mut self, env: &Envelope) -> io::Result<()>;
     fn finish(&mut self, result: Option<&AgentResult>) -> io::Result<()>;
+
+    /// Tells the renderer which agent is the run's root, so it can
+    /// distinguish the root's terminal `AgentFinished` from a subagent's
+    /// (which now also reaches the stream). Called once, before the first
+    /// `on_event`. Default: ignore it.
+    fn set_root(&mut self, _root: AgentId) {}
 }
 
 /// Selects the `Renderer` for `format`, writing through `out`.

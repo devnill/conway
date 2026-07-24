@@ -44,7 +44,7 @@ pub use conway_core::agent::{
     PermissionRequest, PermissionScope, ResultStatus, ToolSelector,
 };
 pub use conway_core::config::AgentDef;
-pub use conway_core::content::ToolCategory;
+pub use conway_core::content::{ToolCategory, Usage};
 pub use conway_core::event::{Envelope, Event};
 pub use conway_core::ids::{AgentId, LogSeq, ModelRef, RoleAlias, SessionId, ToolName};
 pub use conway_core::log::{LogRecord, SessionFilter, SessionMeta, SubagentMode};

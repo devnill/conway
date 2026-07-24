@@ -139,6 +139,10 @@ pub async fn run(cli: &Cli, conway: Conway) -> conway::Result<ExitCode> {
     );
 
     let root = handle.root();
+    // The renderer needs the root's id so it treats only the root's own
+    // `AgentFinished` as terminal: a subagent's lifecycle events now reach
+    // this session-scoped stream too (they bypass the stream filter).
+    renderer.set_root(root);
     let mut final_result: Option<AgentResult> = None;
     let mut grace_deadline: Option<tokio::time::Instant> = None;
 

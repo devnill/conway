@@ -185,8 +185,16 @@ async fn events_are_filtered_to_this_session_only() {
     // `Runtime::start_root`), so `handle_b` legitimately has some of its
     // own activity on the bus even though this test never calls
     // `handle_b.prompt(..)`. The invariant this test actually checks is
-    // narrower and criterion-faithful: every envelope `stream_b` yields is
-    // tagged with `handle_b`'s own session, never `handle_a`'s.
+    // narrower and criterion-faithful: every NON-lifecycle envelope
+    // `stream_b` yields is tagged with `handle_b`'s own session, never
+    // `handle_a`'s.
+    //
+    // `Event::AgentSpawned`/`Event::AgentFinished` are the deliberate
+    // exception (WI fixing "spawn doesn't populate the /agents panel"):
+    // `EventStream::accept` passes tree-lifecycle events through
+    // regardless of session, so `handle_a`'s own root finishing its
+    // one-shot turn is legitimately observable here too, tagged with
+    // `handle_a`'s session -- not a leak, the documented behavior.
     handle_a
         .prompt("only for a")
         .await
@@ -198,13 +206,19 @@ async fn events_are_filtered_to_this_session_only() {
         })
         .await;
         match observed {
-            Ok(Some(envelope)) => assert_eq!(
-                envelope.session,
-                handle_b.id(),
-                "session b's event stream must never yield session a's envelopes"
-            ),
+            Ok(Some(envelope)) => {
+                let is_lifecycle = matches!(
+                    envelope.event,
+                    Event::AgentSpawned { .. } | Event::AgentFinished { .. }
+                );
+                assert!(
+                    is_lifecycle || envelope.session == handle_b.id(),
+                    "session b's event stream must never yield session a's NON-lifecycle \
+                     envelopes; got {envelope:?}"
+                );
+            }
             // No more of b's own spontaneous activity within the window --
-            // and, crucially, nothing from a either.
+            // and, crucially, nothing non-lifecycle from a either.
             _ => break,
         }
     }

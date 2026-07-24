@@ -178,8 +178,18 @@ async fn spawn_with_agent_def_records_spawn_mode_and_cache_hint_false() {
 }
 
 #[tokio::test]
-async fn spawn_without_agent_def_is_model_recoverable_error_with_zero_starts() {
-    let (ctx, handles) = test_ctx(PathBuf::from("/tmp/x"));
+async fn spawn_without_agent_def_starts_with_agent_def_none() {
+    // WI-099's "agent_def required for spawn" rule is relaxed: a spawn with
+    // no agent_def is no longer a model-recoverable error -- it starts a
+    // child with `agent_def: None`, which `conway_runtime`'s
+    // `SubagentHost::start` resolves as "inherit the caller's role/model".
+    let (ctx, _handles) = test_ctx(PathBuf::from("/tmp/x"));
+    let (fake, _scripted_id) = fake_with_result(ResultStatus::Completed);
+    let ctx = ToolCtx {
+        subagents: fake.clone() as Arc<dyn SubagentHost>,
+        ..ctx
+    };
+
     let out = SubagentTool::new()
         .invoke(
             call(
@@ -190,9 +200,12 @@ async fn spawn_without_agent_def_is_model_recoverable_error_with_zero_starts() {
         )
         .await
         .unwrap();
-    assert!(out.is_error);
-    assert!(text_of(&out).contains(r#"agent_def is required for mode "spawn""#));
-    assert!(handles.subagents.started().is_empty());
+    assert!(!out.is_error);
+
+    let started = fake.started();
+    assert_eq!(started.len(), 1);
+    assert!(matches!(started[0].1.mode, SubagentMode::Spawn));
+    assert_eq!(started[0].1.agent_def, None);
 }
 
 #[tokio::test]

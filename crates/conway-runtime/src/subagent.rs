@@ -144,6 +144,12 @@ impl SubagentHost for Runtime {
     /// 4. Append the head record: `LogRecord::ForkDirective` (fork) or
     ///    `LogRecord::UserTurn` (spawn) — `agent_loop::split_head` (WI-081,
     ///    unmodified) already turns either into the right `HeadSegment`.
+    ///    **Skipped** when `spec.keep_alive` is set AND `spec.prompt` is
+    ///    empty (the interactive keep-alive case, this item's addition): no
+    ///    placeholder record is written and the child's `resume_gate` starts
+    ///    `awaiting_prompt: true` instead, so it idles until the caller's
+    ///    first real message arrives via `Runtime::prompt` — mirrors
+    ///    `Runtime::start_root`'s own handling of a prompt-less root.
     /// 5. Attach to the tree (`Runtime::launch_agent` -> `AgentTree::attach`
     ///    emits `Event::AgentSpawned` for us — see the module doc's carried
     ///    note on why this code must not emit it a second time) and launch
@@ -254,25 +260,42 @@ impl SubagentHost for Runtime {
             }
         };
 
-        let head_record = match spec.mode {
-            SubagentMode::Fork => LogRecord::ForkDirective {
-                seq: LogSeq::ZERO,
-                ts: now,
-                text: spec.prompt.clone(),
-                by: parent,
-                prov: Provenance::ForkDirective { by: parent },
-            },
-            SubagentMode::Spawn => LogRecord::UserTurn {
-                seq: LogSeq::ZERO,
-                ts: now,
-                text: spec.prompt.clone(),
-                prov: Provenance::UserPrompt,
-            },
-        };
-        self.loop_deps()
-            .store
-            .append(&session_id, head_record)
-            .await?;
+        // Interactive keep-alive children (bare TUI `/spawn`/`/fork`, WI's
+        // "open an interactive session" item) are built with `keep_alive:
+        // true` and an EMPTY prompt/directive -- the caller's first real
+        // message arrives later, via `Runtime::prompt`. For exactly that
+        // case this mirrors `start_root`'s own "no placeholder record, gate
+        // the first iteration" handling for a prompt-less root (see that
+        // method's doc): no empty head record is appended here, so the
+        // child never runs a turn against blank input. A `keep_alive` spec
+        // with a NON-empty prompt (a library consumer could construct one,
+        // even though the TUI never does) still appends its head record and
+        // runs its first turn immediately, same as before -- only
+        // `keep_alive` alone means "idle after this turn ends", per
+        // `AgentSpec::keep_alive`'s own doc; `keep_alive` PLUS an empty
+        // prompt is what additionally means "idle from the very start".
+        let starts_idle = spec.keep_alive && spec.prompt.is_empty();
+        if !starts_idle {
+            let head_record = match spec.mode {
+                SubagentMode::Fork => LogRecord::ForkDirective {
+                    seq: LogSeq::ZERO,
+                    ts: now,
+                    text: spec.prompt.clone(),
+                    by: parent,
+                    prov: Provenance::ForkDirective { by: parent },
+                },
+                SubagentMode::Spawn => LogRecord::UserTurn {
+                    seq: LogSeq::ZERO,
+                    ts: now,
+                    text: spec.prompt.clone(),
+                    prov: Provenance::UserPrompt,
+                },
+            };
+            self.loop_deps()
+                .store
+                .append(&session_id, head_record)
+                .await?;
+        }
 
         let cancel = self.tree_ref().child_cancel_token(parent)?;
         let last_report = Arc::new(Mutex::new(None));
@@ -294,11 +317,15 @@ impl SubagentHost for Runtime {
             // branch), so this is a plain value handoff, not a design
             // decision this item needs to make.
             result_contract: spec.result_contract.clone(),
-            // A fork/spawn child is always one-off: a parent that
-            // `await_result`s it (`AgentTree::await_result`, WI-083) depends
-            // on it actually terminating on `Completed` -- keep-alive is an
-            // opt-in only `runtime.rs`'s `start_root` exposes.
-            keep_alive: false,
+            // Threaded straight from the spec (WI keep-alive item): a
+            // fork/spawn child that `await_result`s (`AgentTree::
+            // await_result`, WI-083) still depends on `keep_alive: false`
+            // (`SubagentSpec::fork`/`::spawn`'s own constructor default,
+            // unchanged) actually terminating on `Completed`; keep-alive is
+            // an explicit opt-in only an interactive-session caller (the
+            // TUI's bare `/spawn`/`/fork`, via `conway`'s `SpawnSpec::
+            // keep_alive`/`ForkSpec::keep_alive`) sets.
+            keep_alive: spec.keep_alive,
         };
 
         // WI-085: this child's own mailbox, plus the already-attached
@@ -327,9 +354,23 @@ impl SubagentHost for Runtime {
             inbox: mailbox_rx,
             parent_mailbox: Some(parent_mailbox),
             pending_cancel: None,
-            // WI-118: only `Runtime::resume_root` ever gates a loop's first
-            // iteration -- a fork/spawn child always starts ungated.
-            resume_gate: crate::agent_loop::ResumeGate::default(),
+            // WI-118: only `Runtime::resume_root` and (this item's
+            // addition) an interactive keep-alive child with no initial
+            // prompt gate a loop's first iteration -- every other fork/spawn
+            // child still starts ungated (`Default`), exactly as before.
+            // `launch_agent` clones this SAME `notify` out before spawning
+            // the task (see that method's own comment), so
+            // `Runtime::prompt`/`SessionHandle::prompt_agent` wake this
+            // child's gated first iteration precisely as they already wake
+            // a resumed root's.
+            resume_gate: if starts_idle {
+                crate::agent_loop::ResumeGate {
+                    awaiting_prompt: true,
+                    ..Default::default()
+                }
+            } else {
+                crate::agent_loop::ResumeGate::default()
+            },
         };
 
         let node = AgentNode {

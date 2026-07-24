@@ -5,7 +5,7 @@
 //! filtering, which is the specific bug this structure prevents.
 //!
 //! Divergence note (flagged, not worked around): the binding plan
-//! (`docs/plan/wi-conway-routing.md` and its amendment) specifies each
+//! (`docs/crates/conway-routing.md`) specifies each
 //! entry's `breaker` field as `BreakerSnapshot { transport: BreakerState,
 //! probe: BreakerState }` -- an independent read of each of the two breaker
 //! kinds. `conway_core::ports::HealthRegistry` (the only handle this crate's
@@ -127,8 +127,8 @@ pub struct ExplainReport {
 }
 
 impl ExplainReport {
-    /// A stable, line-oriented rendering (see `docs/plan/wi-conway-routing.md`
-    /// and its amendment, section WI-036, for the exact format). Two-space
+    /// A stable, line-oriented rendering (see `docs/crates/conway-routing.md`
+    /// for the exact format). Two-space
     /// indent, `[<position>]` (or `[pin]`), the model ref right-padded to the
     /// longest ref in the report plus two spaces, `SELECTED`/`SKIPPED`
     /// padded to eight columns, then the reason. Timestamps are RFC 3339

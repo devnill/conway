@@ -12,6 +12,8 @@ pub mod commands;
 pub mod gate;
 pub mod input;
 pub mod state;
+#[cfg(test)]
+pub(crate) mod test_support;
 pub mod view;
 
 use conway::{Conway, ConwayError};
