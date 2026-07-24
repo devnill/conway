@@ -95,6 +95,10 @@ permissions, and limits. The library equivalent is
 
 ## Architecture
 
+**[`ARCHITECTURE.md`](ARCHITECTURE.md)** is the full system overview, and
+**[`docs/crates/`](docs/crates/)** has a detailed doc for each crate. The table
+below is the quick reference.
+
 conway is a Cargo workspace of eight crates in a ports-and-adapters layout —
 the core defines traits (ports), and backends/session/tools are adapters.
 
