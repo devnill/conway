@@ -17,7 +17,7 @@ use std::collections::HashMap;
 
 use conway::{
     AgentId, AgentTreeSnapshot, ContextReport, Conway, Event, ForkSpec, Provenance, RoutingReason,
-    SessionHandle, SessionId, SpawnSpec,
+    SessionHandle, SessionId, SpawnSpec, ToolSelector, Usage,
 };
 
 use super::state::{AppState, Entry};
@@ -27,13 +27,44 @@ use super::state::{AppState, Entry};
 /// [`execute`], the only place with a tree to resolve against.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SlashCommand {
-    Steer { target: String, text: String },
+    Steer {
+        target: String,
+        text: String,
+    },
     Tree,
-    Context { agent: String },
+    Context {
+        agent: String,
+    },
     Why,
-    Fork { agent: String, directive: String },
-    Spawn { agent_def: String, prompt: String },
-    Resume { sid: String },
+    /// `agent` is `None` for a BARE `/fork`/`/fork <directive>` (WI "bare
+    /// /spawn & /fork open an interactive session"): the child is created
+    /// as a fresh, interactive KEEP-ALIVE session forked from the FOCUSED
+    /// agent -- see [`execute`]'s own `Fork` arm and [`parse_fork`] for the
+    /// exact forms this covers. `agent` is `Some` only for the explicit-
+    /// target form `/fork @<agent> <directive>` (this item's generalization
+    /// of the pre-existing `/fork <agent> <directive>`, unchanged in
+    /// substance: an autonomous, non-keep-alive fork of that SPECIFIC live
+    /// agent). `directive` is `None` when the caller supplies no first
+    /// message -- the interactive child then idles until prompted
+    /// (`Effect::FocusNewSession`'s own doc); for the explicit-target form
+    /// `directive` is always `Some` (required, exactly as it always was).
+    Fork {
+        agent: Option<String>,
+        directive: Option<String>,
+    },
+    /// `agent_def` is `None` when the caller omits it (`/spawn <prompt>`) --
+    /// the spawned child then inherits the parent session's role/model (see
+    /// [`parse`]'s `/spawn` branch and `conway::SpawnSpec`'s own doc).
+    /// `prompt` is `None` for a BARE `/spawn`/`/spawn @<agent_def>` (this
+    /// item): the child is created as a fresh, interactive KEEP-ALIVE
+    /// session with no first message -- it idles until prompted.
+    Spawn {
+        agent_def: Option<String>,
+        prompt: Option<String>,
+    },
+    Resume {
+        sid: String,
+    },
     Help,
     Quit,
 }
@@ -78,11 +109,11 @@ pub fn parse(input: &str) -> Result<SlashCommand, ParseError> {
             Ok(SlashCommand::Why)
         }
         "/fork" => {
-            let (agent, directive) = parse_two_arg(rest, "/fork <agent> <directive>")?;
+            let (agent, directive) = parse_fork(rest, "/fork [@<agent> <directive>] | [<text>]")?;
             Ok(SlashCommand::Fork { agent, directive })
         }
         "/spawn" => {
-            let (agent_def, prompt) = parse_two_arg(rest, "/spawn <agent_def> <prompt>")?;
+            let (agent_def, prompt) = parse_spawn(rest, "/spawn [@<agent_def>] [<prompt>]")?;
             Ok(SlashCommand::Spawn { agent_def, prompt })
         }
         "/resume" => {
@@ -93,8 +124,8 @@ pub fn parse(input: &str) -> Result<SlashCommand, ParseError> {
             parse_no_arg(rest, "/help")?;
             Ok(SlashCommand::Help)
         }
-        "/quit" => {
-            parse_no_arg(rest, "/quit")?;
+        "/quit" | "/exit" => {
+            parse_no_arg(rest, word)?;
             Ok(SlashCommand::Quit)
         }
         other => Err(ParseError(format!(
@@ -133,12 +164,115 @@ fn parse_one_arg(rest: &str, form: &str) -> Result<String, ParseError> {
 /// after the single separating whitespace char, verbatim (module notes:
 /// "consume the remainder verbatim, no re-tokenization"). Errors when
 /// either half is missing -- covers both "no arguments at all" and "first
-/// argument but no free-text second argument" (e.g. `/spawn reviewer` with
-/// no prompt) under the same message.
+/// argument but no free-text second argument" (e.g. `/fork a7` with no
+/// directive) under the same message.
 fn parse_two_arg(rest: &str, form: &str) -> Result<(String, String), ParseError> {
     match rest.split_once(char::is_whitespace) {
         Some((first, text)) if !text.trim().is_empty() => Ok((first.to_string(), text.to_string())),
         _ => Err(ParseError(format!("usage: {form}"))),
+    }
+}
+
+/// Parses `/spawn`'s argument list, where naming an `agent_def` is optional
+/// (module notes / this item's own doc: no `agent_def` means the spawned
+/// child inherits the parent session's role/model) AND -- since the "bare
+/// /spawn & /fork open an interactive session" item -- the prompt itself is
+/// now ALSO optional (a bare `/spawn`/`/spawn @<agent_def>` creates a fresh,
+/// interactive keep-alive session with no first message; `execute` supplies
+/// the first message later, via `Effect::FocusNewSession`, only if one was
+/// given here). The unambiguous syntax for naming an `agent_def` is a
+/// leading `@<agent_def>` token -- distinguishable from the prompt by the
+/// `@` sigil with no positional guessing:
+///
+/// - `/spawn` -- no agent_def, no prompt: bare interactive spawn.
+/// - `/spawn <prompt>` -- no agent_def, `prompt` is the first message.
+/// - `/spawn @<agent_def>` -- names an agent_def, no first message.
+/// - `/spawn @<agent_def> <prompt>` -- names an agent_def AND a first
+///   message.
+/// - `/spawn @@<prompt>` -- escape hatch: a prompt that must begin with a
+///   literal `@` (no agent_def). Without this, a prompt like `@channel ...`
+///   would be silently mis-split into an agent_def + a truncated prompt.
+fn parse_spawn(rest: &str, _form: &str) -> Result<(Option<String>, Option<String>), ParseError> {
+    if let Some(after_at_at) = rest.strip_prefix("@@") {
+        // Literal-`@` prompt, no agent_def: re-attach the single `@` the
+        // escape consumed and treat the whole thing as the prompt.
+        let after = after_at_at.trim();
+        let prompt = if after.is_empty() {
+            None
+        } else {
+            Some(format!("@{after}"))
+        };
+        return Ok((None, prompt));
+    }
+    match rest.strip_prefix('@') {
+        Some(after_at) => {
+            let after_at = after_at.trim_start();
+            match after_at.split_once(char::is_whitespace) {
+                Some((agent_def, prompt)) if !agent_def.is_empty() => {
+                    let prompt = prompt.trim();
+                    let prompt = if prompt.is_empty() {
+                        None
+                    } else {
+                        Some(prompt.to_string())
+                    };
+                    Ok((Some(agent_def.to_string()), prompt))
+                }
+                // No whitespace at all (or an empty leading token): the
+                // entire remainder is the agent_def name, no prompt.
+                _ if !after_at.is_empty() => Ok((Some(after_at.to_string()), None)),
+                _ => Ok((None, None)),
+            }
+        }
+        None => {
+            let prompt = rest.trim();
+            if prompt.is_empty() {
+                Ok((None, None))
+            } else {
+                Ok((None, Some(prompt.to_string())))
+            }
+        }
+    }
+}
+
+/// Parses `/fork`'s argument list. Generalizes the pre-existing explicit
+/// two-argument form (`/fork <agent> <directive>`, forking a NAMED live
+/// agent autonomously) to a leading `@<agent>` sigil -- mirroring
+/// [`parse_spawn`]'s own `@` convention for the same reason (unambiguously
+/// distinguishing "name a target" from free text, no positional guessing)
+/// -- and adds the bare/optional-text forms the "bare /spawn & /fork open
+/// an interactive session" item introduces:
+///
+/// - `/fork` -- no target, no directive: a bare interactive fork of the
+///   FOCUSED agent (`execute` resolves it via `AppState::focused_agent`),
+///   idling until prompted.
+/// - `/fork <text>` -- no target; `text` (verbatim, however many words)
+///   becomes the interactive child's first message.
+/// - `/fork @<agent> <directive>` -- explicit target: forks that SPECIFIC
+///   live agent with `directive` (both required, exactly like the
+///   pre-this-item two-argument form did) -- `execute` keeps this
+///   autonomous, NOT keep-alive.
+/// - `/fork @@<text>` -- escape hatch: a first message that must begin with
+///   a literal `@`, no explicit target.
+fn parse_fork(rest: &str, form: &str) -> Result<(Option<String>, Option<String>), ParseError> {
+    if rest.trim().is_empty() {
+        return Ok((None, None));
+    }
+    if let Some(after_at_at) = rest.strip_prefix("@@") {
+        let directive = parse_one_arg(&format!("@{after_at_at}"), form)?;
+        return Ok((None, Some(directive)));
+    }
+    match rest.strip_prefix('@') {
+        Some(after_at) => {
+            let (agent, directive) = parse_two_arg(after_at, form)?;
+            if agent.is_empty() {
+                return Err(ParseError(format!("usage: {form}")));
+            }
+            Ok((Some(agent), Some(directive)))
+        }
+        None => {
+            let directive = parse_one_arg(rest, form)?;
+            Ok((None, Some(directive)))
+        }
     }
 }
 
@@ -154,6 +288,27 @@ pub enum Effect {
     /// swapped for this one and its event stream resubscribed (`execute`
     /// cannot do either itself: both live in the app loop, not here).
     Resumed(SessionHandle),
+    /// A bare/implicit `/spawn` or `/fork` succeeded (WI "bare /spawn &
+    /// /fork open an interactive session"): `child` was created as a fresh,
+    /// interactive KEEP-ALIVE session and must be auto-focused by the app
+    /// loop (`app.rs` reuses the existing `Action::FocusAgent` path --
+    /// `AppState::focus_agent` + re-subscribing `handle.agent_events(child)`
+    /// -- neither of which `execute` can do itself: focus-switching needs
+    /// the live facade, which only `app.rs` holds). `first_message`, when
+    /// `Some` (the caller supplied `/spawn <text>`/`/fork <text>`), must
+    /// then be delivered to `child` via `SessionHandle::prompt_agent` --
+    /// again something only `app.rs` can do, since `execute` has no live
+    /// handle either. Deliberately NOT baked into the `SpawnSpec`/
+    /// `ForkSpec` that created `child`: those are always built with an
+    /// EMPTY prompt/directive (`execute`'s own `Spawn`/`Fork` arms), so the
+    /// child starts genuinely idle (`conway_runtime::subagent`'s own doc on
+    /// `keep_alive` + an empty prompt) and `first_message` becomes the
+    /// child's own first `UserTurn`, indistinguishable from any later
+    /// message the user types once focused on it.
+    FocusNewSession {
+        child: AgentId,
+        first_message: Option<String>,
+    },
 }
 
 /// The facade surface commands dispatch through -- abstracted behind a
@@ -164,6 +319,12 @@ pub trait Host {
     fn root(&self) -> AgentId;
     fn tree(&self) -> AgentTreeSnapshot;
     async fn context_report(&self, agent: AgentId) -> conway::Result<ContextReport>;
+    /// The focused agent's cumulative token spend (board item
+    /// 01KYAGP11FF9YC3G60TWHHKKST): a thin passthrough to
+    /// `SessionHandle::session_usage`, reached through this trait -- like
+    /// every other method here -- so `app.rs`'s status-line refresh logic
+    /// stays unit-testable against a fake, with no live `Runtime`.
+    async fn session_usage(&self, agent: AgentId) -> conway::Result<Usage>;
     async fn fork(&self, from: AgentId, spec: ForkSpec) -> conway::Result<AgentId>;
     async fn spawn(&self, from: AgentId, spec: SpawnSpec) -> conway::Result<AgentId>;
     async fn steer(&self, target: AgentId, text: String) -> conway::Result<()>;
@@ -192,6 +353,10 @@ impl Host for LiveHost<'_> {
         self.handle.context_report(agent).await
     }
 
+    async fn session_usage(&self, agent: AgentId) -> conway::Result<Usage> {
+        self.handle.session_usage(agent).await
+    }
+
     async fn fork(&self, from: AgentId, spec: ForkSpec) -> conway::Result<AgentId> {
         self.handle.fork(from, spec).await
     }
@@ -207,6 +372,20 @@ impl Host for LiveHost<'_> {
     async fn resume(&self, sid: SessionId) -> conway::Result<SessionHandle> {
         self.conway.resume(sid).await
     }
+}
+
+/// The tool profile a bare `/fork`/`/spawn`'s fresh, interactive keep-alive
+/// child gets (decision 01KYB0BWY27DWB69NCNK85D56J): the same "pure and
+/// light" exclusion `App::new` gives the TUI root -- excludes `report`, since
+/// an interactive keep-alive child (like the root) has no parent to report an
+/// `AgentResult` to, and would otherwise hit the permission gate on a tool
+/// call nothing downstream ever unblocks. `conway_subagent` and every other
+/// builtin tool stay available. Deliberately NOT applied to the
+/// explicit-target `/fork @<agent> <directive>` arm above -- that fork stays
+/// autonomous (non-keep-alive) and keeps the default toolset, `report`
+/// included, exactly as an autonomous `conway_subagent`-spawned child does.
+fn interactive_keep_alive_tools() -> ToolSelector {
+    ToolSelector::Except(vec!["report".into()])
 }
 
 /// Executes one parsed command against `host`, mutating `state` directly
@@ -250,26 +429,76 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
             render_why(state);
             Effect::None
         }
-        SlashCommand::Fork { agent, directive } => {
-            match resolve_agent(state, &agent) {
-                Ok(agent_id) => match host.fork(agent_id, ForkSpec::new(directive)).await {
-                    Ok(child) => notice(state, format!("forked {agent_id} -> {child}")),
-                    Err(e) => notice(state, e.to_string()),
-                },
-                Err(e) => notice(state, e),
+        SlashCommand::Fork { agent, directive } => match agent {
+            // Explicit target (`/fork @<agent> <directive>`): the
+            // pre-existing autonomous, non-keep-alive fork-of-a-named-agent
+            // behavior, unchanged in substance -- `parse_fork` guarantees
+            // `directive` is `Some` whenever `agent` is.
+            Some(token) => {
+                let directive_text = directive.unwrap_or_default();
+                match resolve_agent(state, &token) {
+                    Ok(agent_id) => {
+                        match host.fork(agent_id, ForkSpec::new(directive_text)).await {
+                            Ok(child) => notice(state, format!("forked {agent_id} -> {child}")),
+                            Err(e) => notice(state, e.to_string()),
+                        }
+                    }
+                    Err(e) => notice(state, e),
+                }
+                Effect::None
             }
-            Effect::None
-        }
+            // Bare/implicit (`/fork`, `/fork <text>`): a fresh, interactive
+            // keep-alive fork of the FOCUSED agent -- empty directive (the
+            // child inherits context at head and idles); `directive`, if
+            // given, becomes its first message via `Effect::
+            // FocusNewSession`, not baked into the `ForkSpec` itself (see
+            // that variant's own doc).
+            None => {
+                let focused = state.focused_agent;
+                match host
+                    .fork(
+                        focused,
+                        ForkSpec::new("")
+                            .keep_alive(true)
+                            .tools(interactive_keep_alive_tools()),
+                    )
+                    .await
+                {
+                    Ok(child) => Effect::FocusNewSession {
+                        child,
+                        first_message: directive,
+                    },
+                    Err(e) => {
+                        notice(state, e.to_string());
+                        Effect::None
+                    }
+                }
+            }
+        },
         SlashCommand::Spawn { agent_def, prompt } => {
+            // Always a fresh, interactive keep-alive session (this item):
+            // empty prompt (the child idles until `prompt`, if given, is
+            // delivered separately by the app loop -- see `Effect::
+            // FocusNewSession`'s own doc), attached under `host.root()`
+            // exactly as every spawn always has been (spawn never named a
+            // "from" agent).
             let root = host.root();
-            match host
-                .spawn(root, SpawnSpec::new(agent_def.clone(), prompt))
-                .await
-            {
-                Ok(child) => notice(state, format!("spawned `{agent_def}` -> {child}")),
-                Err(e) => notice(state, e.to_string()),
+            let mut spec = SpawnSpec::new("")
+                .keep_alive(true)
+                .tools(interactive_keep_alive_tools());
+            if let Some(def) = &agent_def {
+                spec = spec.agent_def(def.clone());
             }
-            Effect::None
+            match host.spawn(root, spec).await {
+                Ok(child) => Effect::FocusNewSession {
+                    child,
+                    first_message: prompt,
+                },
+                Err(e) => {
+                    notice(state, e.to_string());
+                    Effect::None
+                }
+            }
         }
         SlashCommand::Resume { sid } => match sid.parse::<SessionId>() {
             Ok(id) => match host.resume(id).await {
@@ -479,11 +708,13 @@ const HELP_LINES: &[&str] = &[
     "/tree                       -- show the whole agent tree",
     "/context <agent>            -- show an agent's assembled context",
     "/why                        -- show the last routing decision",
-    "/fork <agent> <directive>   -- fork a live agent with a directive",
-    "/spawn <agent_def> <prompt> -- spawn a fresh agent",
+    "/fork [<text>]              -- open an interactive fork of the focused agent (optional first message)",
+    "/fork @<agent> <directive>  -- fork a specific live agent with a directive",
+    "/spawn [@<agent_def>] [<prompt>] -- open an interactive spawned agent (inherits role/model if no @agent_def)",
     "/resume <session-id>        -- resume a prior session",
     "/help                       -- show this help",
     "/quit                       -- exit",
+    "/exit                       -- alias for /quit",
 ];
 
 fn render_help(state: &mut AppState) {
@@ -506,6 +737,12 @@ mod tests {
     use conway_core::provenance::ContextReportEntry;
 
     use super::*;
+
+    /// Wide enough that a rendered status line's `focused: <ulid>` suffix
+    /// (a 26-char ULID, after every other status segment) is never itself
+    /// clipped by the terminal width -- see the render/state tests near the
+    /// bottom of this module.
+    const RENDER_WIDTH: u16 = 200;
 
     // ---------------------------------------------------------------
     // parse()
@@ -567,37 +804,112 @@ mod tests {
     }
 
     #[test]
-    fn fork_splits_agent_and_directive() {
+    fn fork_at_agent_splits_agent_and_directive() {
+        // Explicit target via `@` (this item's generalization of the old
+        // `/fork <agent> <directive>` two-arg form).
         assert_eq!(
-            parse("/fork a7 review the diff"),
+            parse("/fork @a7 review the diff"),
             Ok(SlashCommand::Fork {
-                agent: "a7".to_string(),
-                directive: "review the diff".to_string(),
+                agent: Some("a7".to_string()),
+                directive: Some("review the diff".to_string()),
             })
         );
     }
 
     #[test]
-    fn fork_missing_directive_is_a_parse_error_naming_the_form() {
-        let err = parse("/fork a7").unwrap_err();
-        assert!(err.to_string().contains("/fork <agent> <directive>"));
+    fn fork_at_agent_missing_directive_is_a_parse_error_naming_the_form() {
+        let err = parse("/fork @a7").unwrap_err();
+        assert!(err.to_string().contains("/fork"));
     }
 
     #[test]
-    fn spawn_splits_agent_def_and_prompt() {
+    fn bare_fork_parses_with_no_agent_and_no_directive() {
+        // Bare `/fork` (this item): a fresh, interactive keep-alive fork of
+        // the FOCUSED agent, idling until prompted.
+        assert_eq!(
+            parse("/fork"),
+            Ok(SlashCommand::Fork {
+                agent: None,
+                directive: None,
+            })
+        );
+    }
+
+    #[test]
+    fn fork_with_text_and_no_at_sigil_is_a_bare_fork_with_a_first_message() {
+        // No `@` sigil -- the entire remainder (however many words) is the
+        // interactive child's first message, not an explicit target.
+        assert_eq!(
+            parse("/fork please review this"),
+            Ok(SlashCommand::Fork {
+                agent: None,
+                directive: Some("please review this".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn spawn_with_no_agent_def_treats_the_whole_remainder_as_the_prompt() {
+        // No `@<agent_def>` token -- the entire remainder is the prompt and
+        // `agent_def` is `None` (the spawned child inherits the parent's
+        // role/model).
         assert_eq!(
             parse("/spawn reviewer review the diff"),
             Ok(SlashCommand::Spawn {
-                agent_def: "reviewer".to_string(),
-                prompt: "review the diff".to_string(),
+                agent_def: None,
+                prompt: Some("reviewer review the diff".to_string()),
             })
         );
     }
 
     #[test]
-    fn spawn_without_prompt_is_a_parse_error() {
-        let err = parse("/spawn reviewer").unwrap_err();
-        assert!(err.to_string().contains("/spawn <agent_def> <prompt>"));
+    fn spawn_with_at_agent_def_splits_agent_def_and_prompt() {
+        assert_eq!(
+            parse("/spawn @reviewer review the diff"),
+            Ok(SlashCommand::Spawn {
+                agent_def: Some("reviewer".to_string()),
+                prompt: Some("review the diff".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn bare_spawn_parses_with_no_agent_def_and_no_prompt() {
+        // Bare `/spawn` (this item): a fresh, interactive keep-alive spawn,
+        // idling until prompted -- no longer a parse error.
+        assert_eq!(
+            parse("/spawn"),
+            Ok(SlashCommand::Spawn {
+                agent_def: None,
+                prompt: None,
+            })
+        );
+    }
+
+    #[test]
+    fn spawn_at_agent_def_with_no_prompt_parses_with_prompt_none() {
+        // `/spawn @<agent_def>` (this item): names an agent_def with no
+        // first message -- no longer a parse error.
+        assert_eq!(
+            parse("/spawn @reviewer"),
+            Ok(SlashCommand::Spawn {
+                agent_def: Some("reviewer".to_string()),
+                prompt: None,
+            })
+        );
+    }
+
+    #[test]
+    fn spawn_double_at_escapes_a_literal_at_prompt_with_no_agent_def() {
+        // `@@` is the escape hatch for a prompt that must begin with `@`;
+        // without it, `@channel ...` would be mis-split into an agent_def.
+        assert_eq!(
+            parse("/spawn @@channel please refactor the parser"),
+            Ok(SlashCommand::Spawn {
+                agent_def: None,
+                prompt: Some("@channel please refactor the parser".to_string()),
+            })
+        );
     }
 
     #[test]
@@ -639,6 +951,25 @@ mod tests {
     }
 
     #[test]
+    fn exit_parses_as_an_alias_for_quit() {
+        assert_eq!(parse("/exit"), Ok(SlashCommand::Quit));
+    }
+
+    #[test]
+    fn exit_with_trailing_argument_is_a_parse_error_naming_the_form() {
+        let err = parse("/exit now").unwrap_err();
+        assert!(err.to_string().contains("/exit"));
+    }
+
+    #[test]
+    fn bareword_exit_and_quit_do_not_parse_as_slash_commands() {
+        // No leading `/` -- these must stay normal prompts sent to the
+        // model, never intercepted as a slash command.
+        assert!(parse("exit").is_err());
+        assert!(parse("quit").is_err());
+    }
+
+    #[test]
     fn unknown_command_is_a_parse_error() {
         let err = parse("/nope").unwrap_err();
         assert!(err.to_string().contains("/nope"));
@@ -653,6 +984,17 @@ mod tests {
         root: AgentId,
         tree: AgentTreeSnapshot,
         context: Option<ContextReport>,
+        /// When `Some`, `fork`/`spawn` succeed with this child id instead of
+        /// the default `fake_error()` -- lets a test exercise the
+        /// `Effect::FocusNewSession` success path.
+        fork_child: Option<AgentId>,
+        spawn_child: Option<AgentId>,
+        /// The most recent `ForkSpec`/`SpawnSpec` `execute` actually passed
+        /// -- lets a test assert the bare/implicit paths build a
+        /// `keep_alive(true)`, empty-prompt spec (module notes: never baked
+        /// into the spec itself, see `Effect::FocusNewSession`'s own doc).
+        last_fork_spec: Mutex<Option<ForkSpec>>,
+        last_spawn_spec: Mutex<Option<SpawnSpec>>,
     }
 
     impl FakeHost {
@@ -666,6 +1008,10 @@ mod tests {
                     at: chrono::Utc::now(),
                 },
                 context: None,
+                fork_child: None,
+                spawn_child: None,
+                last_fork_spec: Mutex::new(None),
+                last_spawn_spec: Mutex::new(None),
             }
         }
 
@@ -697,13 +1043,23 @@ mod tests {
             self.context.clone().ok_or_else(fake_error)
         }
 
-        async fn fork(&self, _from: AgentId, _spec: ForkSpec) -> conway::Result<AgentId> {
-            self.calls.lock().unwrap().push("fork");
+        async fn session_usage(&self, _agent: AgentId) -> conway::Result<Usage> {
+            self.calls.lock().unwrap().push("session_usage");
             Err(fake_error())
         }
 
-        async fn spawn(&self, _from: AgentId, _spec: SpawnSpec) -> conway::Result<AgentId> {
+        async fn fork(&self, _from: AgentId, spec: ForkSpec) -> conway::Result<AgentId> {
+            self.calls.lock().unwrap().push("fork");
+            *self.last_fork_spec.lock().unwrap() = Some(spec);
+            self.fork_child.ok_or_else(fake_error)
+        }
+
+        async fn spawn(&self, _from: AgentId, spec: SpawnSpec) -> conway::Result<AgentId> {
             self.calls.lock().unwrap().push("spawn");
+            *self.last_spawn_spec.lock().unwrap() = Some(spec);
+            if let Some(child) = self.spawn_child {
+                return Ok(child);
+            }
             Err(fake_error())
         }
 
@@ -774,15 +1130,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fork_maps_to_exactly_one_fork_call() {
+    async fn fork_at_agent_maps_to_exactly_one_fork_call() {
         let root = AgentId::new();
         let mut state = AppState::new(root);
         let host = FakeHost::new(root);
 
         execute(
             SlashCommand::Fork {
-                agent: root.to_string(),
-                directive: "review the diff".to_string(),
+                agent: Some(root.to_string()),
+                directive: Some("review the diff".to_string()),
             },
             &mut state,
             &host,
@@ -790,6 +1146,20 @@ mod tests {
         .await;
 
         assert_eq!(host.calls(), vec!["fork"]);
+        // The explicit-target `/fork @<agent> <directive>` arm is the
+        // pre-existing AUTONOMOUS (non-keep-alive) fork -- unlike the bare
+        // fork/spawn arms, it must keep the default toolset (`report`
+        // included), exactly like a `conway_subagent`-spawned child does.
+        let spec = host
+            .last_fork_spec
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("fork should have been called");
+        assert_eq!(
+            spec.tools, None,
+            "an explicit-target autonomous fork must keep the default toolset"
+        );
     }
 
     #[tokio::test]
@@ -800,8 +1170,8 @@ mod tests {
 
         execute(
             SlashCommand::Spawn {
-                agent_def: "reviewer".to_string(),
-                prompt: "review the diff".to_string(),
+                agent_def: Some("reviewer".to_string()),
+                prompt: Some("review the diff".to_string()),
             },
             &mut state,
             &host,
@@ -809,6 +1179,188 @@ mod tests {
         .await;
 
         assert_eq!(host.calls(), vec!["spawn"]);
+    }
+
+    #[tokio::test]
+    async fn spawn_without_agent_def_still_maps_to_exactly_one_spawn_call() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let host = FakeHost::new(root);
+
+        execute(
+            SlashCommand::Spawn {
+                agent_def: None,
+                prompt: Some("review the diff".to_string()),
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+
+        assert_eq!(host.calls(), vec!["spawn"]);
+    }
+
+    #[tokio::test]
+    async fn bare_spawn_builds_a_keep_alive_empty_prompt_spec_and_returns_focus_new_session() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let mut host = FakeHost::new(root);
+        let child = AgentId::new();
+        host.spawn_child = Some(child);
+
+        let effect = execute(
+            SlashCommand::Spawn {
+                agent_def: None,
+                prompt: None,
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+
+        assert_eq!(host.calls(), vec!["spawn"]);
+        match effect {
+            Effect::FocusNewSession {
+                child: focused,
+                first_message,
+            } => {
+                assert_eq!(focused, child);
+                assert_eq!(first_message, None);
+            }
+            _ => panic!("expected Effect::FocusNewSession, got a different effect"),
+        }
+        let spec = host
+            .last_spawn_spec
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("spawn should have been called");
+        assert!(spec.keep_alive, "a bare spawn must be keep_alive");
+        assert_eq!(spec.prompt, "", "the SpawnSpec's own prompt must be empty");
+        assert_eq!(
+            spec.tools,
+            Some(ToolSelector::Except(vec!["report".into()])),
+            "a bare, interactive keep-alive spawn must exclude `report`"
+        );
+    }
+
+    #[tokio::test]
+    async fn spawn_with_text_carries_the_text_as_the_effects_first_message_not_the_spec_prompt() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let mut host = FakeHost::new(root);
+        let child = AgentId::new();
+        host.spawn_child = Some(child);
+
+        let effect = execute(
+            SlashCommand::Spawn {
+                agent_def: None,
+                prompt: Some("hello there".to_string()),
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+
+        match effect {
+            Effect::FocusNewSession {
+                child: focused,
+                first_message,
+            } => {
+                assert_eq!(focused, child);
+                assert_eq!(first_message, Some("hello there".to_string()));
+            }
+            _ => panic!("expected Effect::FocusNewSession, got a different effect"),
+        }
+        let spec = host
+            .last_spawn_spec
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("spawn should have been called");
+        assert_eq!(
+            spec.prompt, "",
+            "the first message must not be baked into the SpawnSpec"
+        );
+    }
+
+    #[tokio::test]
+    async fn bare_fork_builds_a_keep_alive_empty_directive_spec_targeting_the_focused_agent() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let child_focus = AgentId::new();
+        state.focus_agent(child_focus);
+        let mut host = FakeHost::new(root);
+        let grandchild = AgentId::new();
+        host.fork_child = Some(grandchild);
+
+        let effect = execute(
+            SlashCommand::Fork {
+                agent: None,
+                directive: None,
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+
+        assert_eq!(host.calls(), vec!["fork"]);
+        match effect {
+            Effect::FocusNewSession {
+                child,
+                first_message,
+            } => {
+                assert_eq!(child, grandchild);
+                assert_eq!(first_message, None);
+            }
+            _ => panic!("expected Effect::FocusNewSession, got a different effect"),
+        }
+        let spec = host
+            .last_fork_spec
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("fork should have been called");
+        assert!(spec.keep_alive, "a bare fork must be keep_alive");
+        assert_eq!(
+            spec.directive, "",
+            "the ForkSpec's own directive must be empty"
+        );
+        assert_eq!(
+            spec.tools,
+            Some(ToolSelector::Except(vec!["report".into()])),
+            "a bare, interactive keep-alive fork must exclude `report`"
+        );
+    }
+
+    #[tokio::test]
+    async fn fork_with_text_carries_the_text_as_the_effects_first_message() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let mut host = FakeHost::new(root);
+        let child = AgentId::new();
+        host.fork_child = Some(child);
+
+        let effect = execute(
+            SlashCommand::Fork {
+                agent: None,
+                directive: Some("please review".to_string()),
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+
+        match effect {
+            Effect::FocusNewSession {
+                child: focused,
+                first_message,
+            } => {
+                assert_eq!(focused, child);
+                assert_eq!(first_message, Some("please review".to_string()));
+            }
+            _ => panic!("expected Effect::FocusNewSession, got a different effect"),
+        }
     }
 
     #[tokio::test]
@@ -1061,5 +1613,102 @@ mod tests {
             state.transcript.last(),
             Some(Entry::Notice { text }) if text.contains("ambiguous")
         ));
+    }
+
+    // ---------------------------------------------------------------
+    // Render/state: after the `Effect::FocusNewSession` an app loop would
+    // handle by focusing `child` (`app.rs::try_focus_agent`, thin over
+    // `AppState::focus_agent` -- reused, not duplicated, here since this
+    // module has no live facade to drive the REAL `agent_events` resubscribe
+    // that `try_focus_agent` also performs), the focused agent really is the
+    // new child, through the REAL render pass (`crate::tui::test_support`).
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn after_a_bare_spawns_focus_new_session_effect_the_focused_agent_is_the_new_child() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let mut host = FakeHost::new(root);
+        let child = AgentId::new();
+        host.spawn_child = Some(child);
+
+        let effect = execute(
+            SlashCommand::Spawn {
+                agent_def: None,
+                prompt: None,
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+        let Effect::FocusNewSession {
+            child: focused_child,
+            ..
+        } = effect
+        else {
+            panic!("expected Effect::FocusNewSession");
+        };
+        assert_eq!(focused_child, child);
+
+        // Mirrors `App::try_focus_agent`'s own state mutation for this
+        // effect -- the live `agent_events` resubscribe it also performs
+        // has no equivalent here (no facade), but the `AppState` mutation
+        // under test is exactly this one call.
+        assert_ne!(
+            state.focused_agent, child,
+            "must not already be focused on the not-yet-focused child"
+        );
+        state.focus_agent(child);
+
+        assert_eq!(state.focused_agent, child);
+        // Through the REAL render pass, not a hand-rolled assertion on
+        // `AppState` alone: the status line names the newly focused child
+        // (mirrors `view::status`'s own `status_line_names_the_focused_
+        // agent_once_switched_off_root` test). Rendered wide enough
+        // (`RENDER_WIDTH`) that the status line's `focused: <ulid>` suffix
+        // is not itself clipped by the terminal width -- a ULID is 26
+        // chars, wider than `DEFAULT_SIZE`'s 80-column status line leaves
+        // room for once every other status segment is in front of it.
+        let rendered = crate::tui::test_support::render(&state, RENDER_WIDTH, 24);
+        assert!(
+            rendered.iter().any(|row| row.contains(&child.to_string())),
+            "the rendered status line must name the newly focused child: {rendered:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn after_a_bare_forks_focus_new_session_effect_the_focused_agent_is_the_new_child() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let mut host = FakeHost::new(root);
+        let child = AgentId::new();
+        host.fork_child = Some(child);
+
+        let effect = execute(
+            SlashCommand::Fork {
+                agent: None,
+                directive: Some("go".to_string()),
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+        let Effect::FocusNewSession {
+            child: focused_child,
+            first_message,
+        } = effect
+        else {
+            panic!("expected Effect::FocusNewSession");
+        };
+        assert_eq!(focused_child, child);
+        assert_eq!(first_message, Some("go".to_string()));
+
+        state.focus_agent(child);
+        assert_eq!(state.focused_agent, child);
+        let rendered = crate::tui::test_support::render(&state, RENDER_WIDTH, 24);
+        assert!(
+            rendered.iter().any(|row| row.contains(&child.to_string())),
+            "the rendered status line must name the newly focused child: {rendered:?}"
+        );
     }
 }

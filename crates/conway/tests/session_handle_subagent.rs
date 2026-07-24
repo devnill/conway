@@ -22,7 +22,9 @@ use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, LimitsConfig, ModelsConfig, PermissionsConfig,
     RoleEntry, RoutingSection, SessionConfig,
 };
-use conway::{Conway, ConwayBuilder, ConwayError, ForkSpec, SessionHandle, SessionSpec, SpawnSpec};
+use conway::{
+    Conway, ConwayBuilder, ConwayError, ForkSpec, SessionHandle, SessionId, SessionSpec, SpawnSpec,
+};
 use conway_core::agent::{Budget, PermissionDecision, ResultStatus, SubagentMode};
 use conway_core::capabilities::{
     CacheMode, Capabilities, ProbeReport, ReliabilityTier, StructuredOutput, ToolCallSupport,
@@ -36,6 +38,7 @@ use conway_core::ports::{
     Backend, BoxStream, GenerateRequest, GenerateResponse, SessionStore, StreamChunk,
 };
 use conway_core::provenance::Provenance;
+use futures_core::Stream as _;
 
 // ---------------------------------------------------------------------
 // Fixtures (mirrors tests/session_handle.rs's own helpers)
@@ -361,7 +364,8 @@ async fn spawn_produces_a_child_with_mapped_fields_and_no_inherited_prefix() {
         max_tokens: None,
         max_tool_calls: None,
     };
-    let spec = SpawnSpec::new("unregistered-agent-def", "please review")
+    let spec = SpawnSpec::new("please review")
+        .agent_def("unregistered-agent-def")
         .role(RoleAlias::new("reviewer"))
         .budget(budget.clone());
 
@@ -540,7 +544,7 @@ async fn spawn_rejects_an_unknown_from_agent() {
 
     let unknown = AgentId::new();
     let err = handle
-        .spawn(unknown, SpawnSpec::new("x", "y"))
+        .spawn(unknown, SpawnSpec::new("y").agent_def("x"))
         .await
         .expect_err("an unknown from agent must be rejected");
     assert!(matches!(err, ConwayError::Runtime(_)));
@@ -722,6 +726,572 @@ async fn cancel_resolves_the_root_turn_handles_result_as_cancelled() {
 }
 
 // ---------------------------------------------------------------------
+// EventStream tree-lifecycle passthrough -- the actual bug this item
+// fixes: a spawned child's `Event::AgentSpawned`/`Event::AgentFinished`
+// are emitted on the CHILD's own session (`tree.rs::attach`,
+// `supervisor.rs::finish`), so before the fix a subscriber scoped to the
+// PARENT's session (e.g. the TUI's `handle.events()`, exercised here via
+// `SessionHandle::events()` directly) never observed them, leaving the
+// `/agents` panel and inline `Entry::Agent` activity empty.
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn root_event_stream_observes_a_spawned_childs_agent_spawned_and_finished() {
+    let store = Arc::new(FakeStore::new());
+    let conway = build_conway_with_echo_backend(store);
+    let handle = new_handle(&conway).await;
+
+    let mut events = handle.events();
+
+    let child = handle
+        .spawn(
+            handle.root(),
+            SpawnSpec::new("please review").agent_def("reviewer"),
+        )
+        .await
+        .expect("spawn should succeed");
+
+    let spawned = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let envelope = std::future::poll_fn(|cx| std::pin::Pin::new(&mut events).poll_next(cx))
+                .await
+                .expect("root event stream ended early");
+            if matches!(
+                envelope.event,
+                conway_core::event::Event::AgentSpawned { .. }
+            ) && envelope.agent == child
+            {
+                return envelope;
+            }
+        }
+    })
+    .await
+    .expect("must observe the child's AgentSpawned on the root's own event stream, not hang");
+    assert_eq!(
+        spawned.agent, child,
+        "the AgentSpawned envelope must identify the CHILD agent, not the parent"
+    );
+    assert_ne!(
+        spawned.session,
+        handle.id(),
+        "sanity: the child's AgentSpawned is emitted on the CHILD's own session, not the \
+         root's -- this test only passes because EventStream::accept now bypasses the session \
+         filter for it"
+    );
+
+    let finished = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let envelope = std::future::poll_fn(|cx| std::pin::Pin::new(&mut events).poll_next(cx))
+                .await
+                .expect("root event stream ended early");
+            if let conway_core::event::Event::AgentFinished { result } = &envelope.event {
+                if result.agent_id == child {
+                    return envelope;
+                }
+            }
+        }
+    })
+    .await
+    .expect("must observe the child's AgentFinished on the root's own event stream, not hang");
+    assert_ne!(finished.session, handle.id());
+}
+
+// ---------------------------------------------------------------------
+// agent_events() -- WI-140: a spawned child's own transcript + live events
+// are observable via the new per-agent facade method, distinctly from the
+// parent/root's own `events()`/`events_from()`.
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn agent_events_replays_a_spawned_childs_own_transcript() {
+    let store = Arc::new(FakeStore::new());
+    let conway = build_conway_with_echo_backend(store);
+    let handle = new_handle(&conway).await;
+
+    // A prior turn on the ROOT, before the spawn -- if `agent_events`
+    // regressed to building its replay from the ancestry-prefixed
+    // `effective_transcript` (bug 4), this would appear as the first
+    // envelope below instead of the child's own spawn prompt.
+    let root_turn = handle
+        .prompt("root turn before spawn")
+        .await
+        .expect("prompt should succeed");
+    let _ = tokio::time::timeout(Duration::from_secs(5), root_turn.result()).await;
+
+    let child = handle
+        .spawn(
+            handle.root(),
+            SpawnSpec::new("please review").agent_def("reviewer"),
+        )
+        .await
+        .expect("spawn should succeed");
+
+    // Let the child's one-shot turn actually run to completion before
+    // observing its transcript, so the replay batch below has real content
+    // beyond just the spawn prompt.
+    let _ = tokio::time::timeout(Duration::from_secs(5), handle.await_agent(child)).await;
+
+    let mut events = handle
+        .agent_events(child)
+        .await
+        .expect("agent_events should resolve for a known child");
+
+    // The replay batch must be built from the CHILD's own records ONLY
+    // (its own head record is the spawn prompt) -- not the root's prior
+    // conversation.
+    let first = tokio::time::timeout(Duration::from_secs(5), async {
+        std::future::poll_fn(|cx| std::pin::Pin::new(&mut events).poll_next(cx)).await
+    })
+    .await
+    .expect("must not hang")
+    .expect("stream ended before any replay envelope");
+    assert!(
+        matches!(&first.event, conway_core::event::Event::AgentProgress { note } if note.contains("please review")),
+        "expected the replayed spawn prompt as the child's own first record, got {:?}",
+        first.event
+    );
+}
+
+#[tokio::test]
+async fn agent_events_replay_excludes_the_inherited_prefix_transcript_still_includes_it() {
+    // Bug 4 (decision 01KYAN6AHFG9JHQ6D2FAYCNFZJ): focusing a spawned
+    // agent used to show the parent's prior conversation because
+    // `agent_events` built its replay from `effective_transcript` (the
+    // ancestry-prefixed view). This mirrors
+    // `session_usage_sums_the_agents_own_assistant_turns_and_excludes_the_
+    // inherited_prefix`'s own contrast, but for `agent_events`'s replay
+    // batch versus `transcript`'s effective view.
+    let store = Arc::new(FakeStore::new());
+    let conway = build_conway_with_echo_backend(store);
+    let handle = new_handle(&conway).await;
+
+    // A distinctive turn on the root BEFORE the spawn -- this is the
+    // "previous chat log" bug 4 reported leaking into the child's view.
+    let root_turn = handle
+        .prompt("root distinctive marker turn")
+        .await
+        .expect("prompt should succeed");
+    let _ = tokio::time::timeout(Duration::from_secs(5), root_turn.result()).await;
+
+    let child = handle
+        .spawn(
+            handle.root(),
+            SpawnSpec::new("child distinctive marker turn").agent_def("reviewer"),
+        )
+        .await
+        .expect("spawn should succeed");
+    let _ = tokio::time::timeout(Duration::from_secs(5), handle.await_agent(child)).await;
+
+    // Sanity: `transcript(child)` (the effective, ancestry-prefixed view)
+    // really does carry the root's prior turn as an inherited prefix --
+    // the leak this item's `agent_events` doc explicitly guards against
+    // would only be possible via this same prefix mechanism.
+    let child_transcript = handle
+        .transcript(child)
+        .await
+        .expect("transcript should resolve");
+    assert!(
+        child_transcript.iter().any(|r| matches!(
+            r,
+            LogRecord::UserTurn { text, .. } if text.contains("root distinctive marker turn")
+        )),
+        "transcript(child) must still show the root's inherited prompt -- \
+         effective_transcript's ancestry-prefixed semantics are unchanged"
+    );
+
+    // `agent_events(child)`'s replay must NOT surface the root's prior
+    // conversation -- only the child's own records.
+    let mut events = handle
+        .agent_events(child)
+        .await
+        .expect("agent_events should resolve for a known child");
+
+    let mut saw_root_marker = false;
+    let mut saw_child_marker = false;
+    let _ = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match std::future::poll_fn(|cx| std::pin::Pin::new(&mut events).poll_next(cx)).await {
+                Some(env) => {
+                    let text = match &env.event {
+                        conway_core::event::Event::AgentProgress { note } => note.clone(),
+                        conway_core::event::Event::TextDelta { text } => text.clone(),
+                        _ => String::new(),
+                    };
+                    if text.contains("root distinctive marker turn") {
+                        saw_root_marker = true;
+                    }
+                    if text.contains("child distinctive marker turn") {
+                        saw_child_marker = true;
+                    }
+                    if matches!(env.event, conway_core::event::Event::AgentFinished { .. }) {
+                        return;
+                    }
+                }
+                None => return,
+            }
+        }
+    })
+    .await;
+
+    assert!(
+        saw_child_marker,
+        "agent_events(child)'s replay must contain the child's own spawn prompt"
+    );
+    assert!(
+        !saw_root_marker,
+        "agent_events(child)'s replay must NOT contain the root's prior conversation \
+         (bug 4: focusing a spawned agent showed the parent's chat log)"
+    );
+}
+
+#[tokio::test]
+async fn agent_events_replay_excludes_the_inherited_prefix_for_a_forked_child_too() {
+    // Regression guard (coordinator review): the two tests above only
+    // exercise a SPAWNED child. `agent_events` is mode-agnostic by
+    // construction -- it reads `[0, head)` of `agent`'s own session and
+    // never consults `SessionMeta.origin`/mode at all -- so a forked
+    // child's focus view must exclude the inherited prefix exactly the
+    // same way, even though `transcript()`'s ancestry-prefixed view (which
+    // DOES consult `origin`) still shows it for both fork and spawn alike.
+    // This mirrors `agent_events_replay_excludes_the_inherited_prefix_
+    // transcript_still_includes_it` above, but builds the child via
+    // `handle.fork(...)` (a `ForkSpec`), the same way
+    // `fork_produces_a_child_with_mapped_fields_and_an_inherited_prefix`
+    // does.
+    let store = Arc::new(FakeStore::new());
+    let conway = build_conway_with_echo_backend(store);
+    let handle = new_handle(&conway).await;
+
+    // A distinctive turn on the root BEFORE the fork -- this is the
+    // inherited fork prefix `transcript(child)` must still show, but
+    // `agent_events(child)` must not.
+    let root_turn = handle
+        .prompt("root distinctive marker turn")
+        .await
+        .expect("prompt should succeed");
+    let _ = tokio::time::timeout(Duration::from_secs(5), root_turn.result()).await;
+
+    let child = handle
+        .fork(
+            handle.root(),
+            ForkSpec::new("child distinctive marker turn"),
+        )
+        .await
+        .expect("fork should succeed");
+    let _ = tokio::time::timeout(Duration::from_secs(5), handle.await_agent(child)).await;
+
+    // Sanity: `transcript(child)` (the effective, ancestry-prefixed view)
+    // really does carry the root's prior turn as an inherited prefix for a
+    // FORKED child too -- the same mechanism
+    // `fork_produces_a_child_with_mapped_fields_and_an_inherited_prefix`
+    // already exercises.
+    let child_transcript = handle
+        .transcript(child)
+        .await
+        .expect("transcript should resolve");
+    assert!(
+        child_transcript.iter().any(|r| matches!(
+            r,
+            LogRecord::UserTurn { text, .. } if text.contains("root distinctive marker turn")
+        )),
+        "transcript(child) must still show the root's inherited prompt for a forked child"
+    );
+
+    // `agent_events(child)`'s replay must NOT surface the root's prior
+    // conversation -- only the child's own records -- for a FORKED child,
+    // exactly as it already does for a spawned one.
+    let mut events = handle
+        .agent_events(child)
+        .await
+        .expect("agent_events should resolve for a known child");
+
+    let mut saw_root_marker = false;
+    let mut saw_child_marker = false;
+    let _ = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match std::future::poll_fn(|cx| std::pin::Pin::new(&mut events).poll_next(cx)).await {
+                Some(env) => {
+                    let text = match &env.event {
+                        conway_core::event::Event::AgentProgress { note } => note.clone(),
+                        conway_core::event::Event::TextDelta { text } => text.clone(),
+                        _ => String::new(),
+                    };
+                    if text.contains("root distinctive marker turn") {
+                        saw_root_marker = true;
+                    }
+                    if text.contains("child distinctive marker turn") {
+                        saw_child_marker = true;
+                    }
+                    if matches!(env.event, conway_core::event::Event::AgentFinished { .. }) {
+                        return;
+                    }
+                }
+                None => return,
+            }
+        }
+    })
+    .await;
+
+    assert!(
+        saw_child_marker,
+        "agent_events(child)'s replay must contain the forked child's own fork directive"
+    );
+    assert!(
+        !saw_root_marker,
+        "agent_events(child)'s replay must NOT contain the root's prior conversation for a \
+         forked child either -- agent_events reads [0, head) of the agent's own session and \
+         never consults SessionMeta.origin/mode, so fork and spawn must behave identically here"
+    );
+}
+
+#[tokio::test]
+async fn agent_events_replay_surfaces_a_finished_childs_assistant_reply_text() {
+    // End-to-end guard for the cycle-3 critical fix: a spawned child's own
+    // ASSISTANT reply must be observable via `agent_events` replay (record_
+    // to_event now maps `Assistant -> TextDelta{joined text}`), not silently
+    // dropped -- so focusing a finished subagent shows its actual answer.
+    let store = Arc::new(FakeStore::new());
+    let conway = build_conway_with_echo_backend(store);
+    let handle = new_handle(&conway).await;
+
+    let child = handle
+        .spawn(
+            handle.root(),
+            SpawnSpec::new("please review").agent_def("reviewer"),
+        )
+        .await
+        .expect("spawn should succeed");
+    let _ = tokio::time::timeout(Duration::from_secs(5), handle.await_agent(child)).await;
+
+    let mut events = handle
+        .agent_events(child)
+        .await
+        .expect("agent_events should resolve for a known child");
+
+    // Drain the replay batch and confirm the child's assistant turn appears
+    // as a non-empty `TextDelta` (the echo backend produces a real reply).
+    let saw_reply_text = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match std::future::poll_fn(|cx| std::pin::Pin::new(&mut events).poll_next(cx)).await {
+                Some(env) => {
+                    if let conway_core::event::Event::TextDelta { text } = &env.event {
+                        if !text.is_empty() {
+                            return true;
+                        }
+                    }
+                    if matches!(env.event, conway_core::event::Event::AgentFinished { .. }) {
+                        return false;
+                    }
+                }
+                None => return false,
+            }
+        }
+    })
+    .await
+    .expect("must not hang");
+
+    assert!(
+        saw_reply_text,
+        "the finished child's assistant reply text must surface as a TextDelta on replay"
+    );
+}
+
+#[tokio::test]
+async fn agent_events_on_an_unknown_agent_returns_an_error() {
+    let store = Arc::new(FakeStore::new());
+    let conway = build_conway_with_echo_backend(store);
+    let handle = new_handle(&conway).await;
+
+    let unknown = AgentId::new();
+    let result = handle.agent_events(unknown).await;
+    match result {
+        Err(ConwayError::Runtime(_)) => {}
+        Ok(_) => panic!("an unknown agent must be rejected"),
+        Err(other) => panic!("expected ConwayError::Runtime, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn agent_events_on_the_root_observes_live_progress_after_replay() {
+    let store = Arc::new(FakeStore::new());
+    let conway = build_conway_with_echo_backend(store);
+    let handle = new_handle(&conway).await;
+
+    let mut events = handle
+        .agent_events(handle.root())
+        .await
+        .expect("agent_events should resolve for the root");
+
+    let turn = handle.prompt("hello").await.expect("prompt should succeed");
+    let _ = tokio::time::timeout(Duration::from_secs(5), turn.result()).await;
+
+    // The live half of the stream must observe the turn's own
+    // `AgentFinished`, exactly as a fresh `events()`/`events_from()`
+    // subscriber would.
+    let saw_finished = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let envelope = std::future::poll_fn(|cx| std::pin::Pin::new(&mut events).poll_next(cx))
+                .await
+                .expect("root agent_events stream ended early");
+            if matches!(
+                envelope.event,
+                conway_core::event::Event::AgentFinished { .. }
+            ) {
+                return true;
+            }
+        }
+    })
+    .await
+    .expect("must observe the root's own AgentFinished, not hang");
+    assert!(saw_finished);
+}
+
+// ---------------------------------------------------------------------
+// session_usage() -- board item 01KYAGP11FF9YC3G60TWHHKKST: sums an
+// agent's OWN Assistant records, excluding any inherited fork prefix.
+// ---------------------------------------------------------------------
+
+/// A `LogRecord::Assistant` with a caller-chosen `usage`, otherwise a
+/// minimal, valid record -- `seq` is ignored by `FakeStore::append` (it
+/// assigns the real seq from the log's current length, mirroring every
+/// other direct-`store.append` fixture in this file), so any placeholder
+/// value here is fine.
+fn assistant_record(usage: Usage) -> LogRecord {
+    LogRecord::Assistant {
+        seq: LogSeq::ZERO,
+        ts: chrono::Utc::now(),
+        content: vec![ContentBlock::Text {
+            text: "ok".to_string(),
+        }],
+        model: conway_core::ids::ModelRef {
+            backend: BackendId::new("fake"),
+            model: ModelId::new("echo-model"),
+        },
+        route_reason: serde_json::Value::Null,
+        usage,
+        stop: StopReason::EndTurn,
+    }
+}
+
+#[tokio::test]
+async fn session_usage_is_zero_for_a_fresh_agent() {
+    let store = Arc::new(FakeStore::new());
+    let conway = build_conway_with_echo_backend(store);
+    let handle = new_handle(&conway).await;
+
+    // A freshly created session's root has no `Assistant` record at all
+    // yet (no turn has ever run).
+    let usage = handle
+        .session_usage(handle.root())
+        .await
+        .expect("session_usage should resolve for a known agent");
+    assert_eq!(usage, Usage::default());
+}
+
+#[tokio::test]
+async fn session_usage_sums_the_agents_own_assistant_turns_and_excludes_the_inherited_prefix() {
+    let store = Arc::new(FakeStore::new());
+    let conway = build_conway_with_echo_backend(store.clone());
+    let handle = new_handle(&conway).await;
+
+    // Two `Assistant` records appended directly to the ROOT's own log --
+    // this is the "inherited prefix" a forked child below will see via
+    // `transcript()`, but must NOT see via `session_usage`.
+    let root_usage_a = Usage {
+        input_tokens: 10,
+        output_tokens: 5,
+        ..Usage::default()
+    };
+    let root_usage_b = Usage {
+        input_tokens: 3,
+        output_tokens: 2,
+        cache_read_tokens: 1,
+        ..Usage::default()
+    };
+    store
+        .append(&handle.id(), assistant_record(root_usage_a))
+        .await
+        .expect("append should succeed");
+    store
+        .append(&handle.id(), assistant_record(root_usage_b))
+        .await
+        .expect("append should succeed");
+
+    // `session_usage(root)` sums exactly the root's own two records.
+    let root_total = handle
+        .session_usage(handle.root())
+        .await
+        .expect("session_usage should resolve for the root");
+    assert_eq!(root_total, root_usage_a + root_usage_b);
+
+    // Fork a child -- it inherits the root's WHOLE prefix (the two records
+    // above) for `transcript()`, but `session_usage` must count only the
+    // child's own turns. Let its own one-shot (echo, zero-usage) turn
+    // finish first so no direct-append below races the agent loop's own
+    // append.
+    let child = handle
+        .fork(handle.root(), ForkSpec::new("keep going"))
+        .await
+        .expect("fork should succeed");
+    let _ = tokio::time::timeout(Duration::from_secs(5), handle.await_agent(child)).await;
+
+    // Sanity: the child's effective `transcript()` really does carry the
+    // root's own records as an inherited prefix -- the double-count this
+    // item's `session_usage` doc explicitly guards against would only be
+    // possible if this held.
+    let child_transcript = handle
+        .transcript(child)
+        .await
+        .expect("transcript should resolve");
+    assert!(
+        child_transcript
+            .iter()
+            .any(|r| matches!(r, LogRecord::Assistant { usage, .. } if *usage == root_usage_a)),
+        "the child's effective transcript must show the root's inherited Assistant record"
+    );
+
+    // A large, distinctive usage appended directly to the CHILD's own log,
+    // after its real turn has finished.
+    let child_usage = Usage {
+        input_tokens: 100,
+        output_tokens: 50,
+        reasoning_tokens: 7,
+        ..Usage::default()
+    };
+    let child_session = store
+        .list(conway_core::log::SessionFilter {
+            include_ephemeral: true,
+            ..Default::default()
+        })
+        .await
+        .expect("list should succeed")
+        .into_iter()
+        .find(|meta| meta.agent_id == child)
+        .map(|meta| meta.id)
+        .expect("the forked child must have its own session");
+    store
+        .append(&child_session, assistant_record(child_usage))
+        .await
+        .expect("append should succeed");
+
+    let child_total = handle
+        .session_usage(child)
+        .await
+        .expect("session_usage should resolve for the child");
+    // The echo backend's own real turn contributes `Usage::default()`
+    // (zero), so the child's total is exactly the directly-appended
+    // `child_usage` -- critically, NOT `child_usage + root_usage_a +
+    // root_usage_b`, which is what summing the effective (ancestry-
+    // prefixed) transcript instead would have produced.
+    assert_eq!(child_total, child_usage);
+    assert_ne!(
+        child_total,
+        child_usage + root_total,
+        "the inherited root prefix must not be double-counted into the child's own total"
+    );
+}
+
+// ---------------------------------------------------------------------
 // No fork/spawn *logic* in session_handle.rs (this item's own criterion).
 // ---------------------------------------------------------------------
 
@@ -747,16 +1317,261 @@ fn subagent_block_in_session_handle_has_no_fork_spawn_logic() {
     }
 }
 
+#[tokio::test]
+async fn spawn_without_an_agent_def_inherits_the_parents_role_not_the_literal_default() {
+    // Mirrors `fork_without_a_role_inherits_the_parents_role_not_the_literal_default`
+    // above: a spawn with no `agent_def` (and no `role`) must resolve its
+    // role the same way a roleless fork does -- inherit the PARENT
+    // session's role, not the hardcoded literal `"default"`. This is the
+    // relaxed WI-099 "agent_def mandatory for spawn" rule's actual runtime
+    // behavior: `agent_def: None` no longer fails `SubagentSpec::validate`,
+    // and `conway_runtime`'s `SubagentHost::start` routes exactly like a
+    // roleless fork (`spec.role -> agent_def.role (skipped, none) ->
+    // parent_meta.role -> literal "default"`).
+    let mut roles = BTreeMap::new();
+    roles.insert(
+        "coder".to_string(),
+        RoleEntry {
+            chain: vec![],
+            headroom_tokens: None,
+        },
+    );
+    let config = ConwayConfig {
+        default_role: RoleAlias::new("coder"),
+        roles,
+        ..base_config()
+    };
+    let store = Arc::new(FakeStore::new());
+    let conway = ConwayBuilder::from_parts(config)
+        .with_backend(Arc::new(FakeBackend::echo(BackendId::new("fake"))))
+        .with_session_store(store.clone())
+        .with_permission_gate(Arc::new(FakeGate::new(PermissionDecision::AllowOnce)))
+        .with_router(fake_router())
+        .build()
+        .expect("build should succeed");
+    // The root's role defaults to config.default_role ("coder").
+    let handle = conway
+        .new_session(SessionSpec::default())
+        .await
+        .expect("new_session should succeed");
+
+    // Spawn with NO agent_def and NO role.
+    let child = handle
+        .spawn(handle.root(), SpawnSpec::new("please review"))
+        .await
+        .expect("spawn should succeed even with no agent_def");
+
+    let tree = handle.tree();
+    let node = tree
+        .nodes
+        .iter()
+        .find(|n| n.agent_id == child)
+        .expect("child must be attached to the tree");
+    assert_eq!(
+        node.role,
+        Some(RoleAlias::new("coder")),
+        "a spawn with no agent_def must inherit the parent's role, not the literal \"default\""
+    );
+    assert_eq!(node.mode, Some(SubagentMode::Spawn));
+
+    let _ = tokio::time::timeout(Duration::from_secs(5), handle.await_agent(child)).await;
+}
+
 // ---------------------------------------------------------------------
-// `SpawnSpec` compile-fail coverage note.
+// `keep_alive` interactive children + `prompt_agent` (WI "bare /spawn &
+// /fork open an interactive session")
 // ---------------------------------------------------------------------
-//
-// The binding criterion asks for a `trybuild`-based compile-fail test
-// asserting `SpawnSpec` construction without `agent_def` does not compile.
-// `trybuild` is not a dependency of this crate, and `Cargo.toml` is not in
-// this item's file scope (only `session_handle.rs`, `subagent_spec.rs`,
-// `lib.rs`, and this test file are). Rather than widen scope to add a new
-// dev-dependency, the same guarantee is covered by a `compile_fail` doctest
-// on `SpawnSpec` in `src/subagent_spec.rs` (a standard-library mechanism,
-// no new dependency needed), which `cargo test -p conway` already runs as
-// part of its doctests.
+
+/// Resolves `agent`'s own `SessionId` directly against `store` -- the same
+/// lookup `session_usage`'s own test above already performs, factored out
+/// here since every test below needs it.
+async fn child_session(store: &FakeStore, agent: AgentId) -> SessionId {
+    store
+        .list(conway_core::log::SessionFilter {
+            include_ephemeral: true,
+            ..Default::default()
+        })
+        .await
+        .expect("list should succeed")
+        .into_iter()
+        .find(|meta| meta.agent_id == agent)
+        .map(|meta| meta.id)
+        .expect("the child must have its own session")
+}
+
+#[tokio::test]
+async fn keep_alive_spawn_starts_idle_with_no_own_records_then_runs_and_is_repromptable() {
+    let store = Arc::new(FakeStore::new());
+    let conway = build_conway_with_echo_backend(store.clone());
+    let handle = new_handle(&conway).await;
+
+    // Bare `/spawn`'s own shape: empty prompt, `keep_alive: true`.
+    let child = handle
+        .spawn(handle.root(), SpawnSpec::new("").keep_alive(true))
+        .await
+        .expect("keep-alive spawn should succeed");
+
+    // Idle: no placeholder head record was written, so the child's own
+    // session has zero records of its own -- proves the child never ran a
+    // spontaneous turn against blank input (unlike the old hardcoded
+    // `keep_alive: false` path, whose head record IS its own first turn).
+    let session = child_session(&store, child).await;
+    assert_eq!(
+        store.head(&session).await.expect("head should resolve"),
+        LogSeq::ZERO,
+        "an idle keep-alive child must have no own records until its first prompt"
+    );
+
+    // First prompt: wakes the gated first iteration and runs a real turn.
+    let turn1 = handle
+        .prompt_agent(child, "first message")
+        .await
+        .expect("prompt_agent should drive the idle child's first turn");
+    let text1 = tokio::time::timeout(Duration::from_secs(5), turn1.text())
+        .await
+        .expect("turn1.text() must not hang")
+        .expect("turn1.text() should resolve");
+    assert_eq!(text1, "first message", "echo backend echoes the prompt");
+
+    // Re-promptable: the child's task must still be alive for a SECOND
+    // turn, not have finished after the first (the whole point of
+    // `keep_alive`).
+    let turn2 = handle
+        .prompt_agent(child, "second message")
+        .await
+        .expect("a keep-alive child must accept a second prompt");
+    let text2 = tokio::time::timeout(Duration::from_secs(5), turn2.text())
+        .await
+        .expect("turn2.text() must not hang")
+        .expect("turn2.text() should resolve");
+    assert_eq!(text2, "second message");
+}
+
+#[tokio::test]
+async fn keep_alive_fork_starts_idle_inherits_context_then_runs_and_is_repromptable() {
+    let store = Arc::new(FakeStore::new());
+    let conway = build_conway_with_echo_backend(store.clone());
+    let handle = new_handle(&conway).await;
+
+    // Give the root a real turn first, so the fork below has something to
+    // inherit.
+    let seed = handle.prompt("seed message").await.expect("prompt");
+    tokio::time::timeout(Duration::from_secs(5), seed.text())
+        .await
+        .expect("seed turn must not hang")
+        .expect("seed turn should resolve");
+
+    // Bare `/fork`'s own shape: empty directive, `keep_alive: true`.
+    let child = handle
+        .fork(handle.root(), ForkSpec::new("").keep_alive(true))
+        .await
+        .expect("keep-alive fork should succeed");
+
+    let session = child_session(&store, child).await;
+    assert_eq!(
+        store.head(&session).await.expect("head should resolve"),
+        LogSeq::ZERO,
+        "an idle keep-alive fork child must have no own records until its first prompt"
+    );
+
+    let turn1 = handle
+        .prompt_agent(child, "fork first message")
+        .await
+        .expect("prompt_agent should drive the idle fork child's first turn");
+    let text1 = tokio::time::timeout(Duration::from_secs(5), turn1.text())
+        .await
+        .expect("turn1.text() must not hang")
+        .expect("turn1.text() should resolve");
+    assert_eq!(text1, "fork first message");
+
+    // Inherited context still reaches the child: its effective transcript
+    // (ancestry-prefixed) includes the root's pre-fork "seed message" turn.
+    let child_transcript = handle
+        .transcript(child)
+        .await
+        .expect("transcript should resolve");
+    assert!(
+        child_transcript
+            .iter()
+            .any(|r| matches!(r, LogRecord::UserTurn { text, .. } if text == "seed message")),
+        "a keep-alive fork child must still inherit the parent's pre-fork transcript"
+    );
+
+    // Re-promptable across a second turn, same as the spawn case above.
+    let turn2 = handle
+        .prompt_agent(child, "fork second message")
+        .await
+        .expect("a keep-alive fork child must accept a second prompt");
+    let text2 = tokio::time::timeout(Duration::from_secs(5), turn2.text())
+        .await
+        .expect("turn2.text() must not hang")
+        .expect("turn2.text() should resolve");
+    assert_eq!(text2, "fork second message");
+}
+
+#[tokio::test]
+async fn prompt_agent_drives_a_named_non_root_agents_turn_not_the_root() {
+    let store = Arc::new(FakeStore::new());
+    let conway = build_conway_with_echo_backend(store);
+    let handle = new_handle(&conway).await;
+
+    let child = handle
+        .spawn(handle.root(), SpawnSpec::new("").keep_alive(true))
+        .await
+        .expect("keep-alive spawn should succeed");
+
+    let turn = handle
+        .prompt_agent(child, "hello child")
+        .await
+        .expect("prompt_agent should succeed");
+    let text = tokio::time::timeout(Duration::from_secs(5), turn.text())
+        .await
+        .expect("text() must not hang")
+        .expect("text() should resolve");
+    assert_eq!(text, "hello child");
+
+    // The root's own transcript must be untouched -- `prompt_agent`
+    // targeted the child, not the root.
+    let root_transcript = handle
+        .transcript(handle.root())
+        .await
+        .expect("root transcript should resolve");
+    assert!(
+        !root_transcript
+            .iter()
+            .any(|r| matches!(r, LogRecord::UserTurn { text, .. } if text == "hello child")),
+        "prompt_agent must not have prompted the root"
+    );
+}
+
+#[tokio::test]
+async fn autonomous_spawn_and_fork_default_keep_alive_false_and_finish_after_one_turn() {
+    // The existing library behavior (a plain `SpawnSpec`/`ForkSpec`, no
+    // `.keep_alive(true)`) must be entirely unchanged by this item: the
+    // child still runs its one real-prompt turn immediately and finishes
+    // (`await_agent` resolves), rather than idling for a second prompt that
+    // will never come.
+    let store = Arc::new(FakeStore::new());
+    let conway = build_conway_with_echo_backend(store);
+    let handle = new_handle(&conway).await;
+
+    let spawned = handle
+        .spawn(handle.root(), SpawnSpec::new("do it"))
+        .await
+        .expect("spawn should succeed");
+    let spawn_result = tokio::time::timeout(Duration::from_secs(5), handle.await_agent(spawned))
+        .await
+        .expect("await_agent must not hang for a non-keep-alive spawn")
+        .expect("await_agent should resolve");
+    assert_eq!(spawn_result.status, ResultStatus::Completed);
+
+    let forked = handle
+        .fork(handle.root(), ForkSpec::new("do it too"))
+        .await
+        .expect("fork should succeed");
+    let fork_result = tokio::time::timeout(Duration::from_secs(5), handle.await_agent(forked))
+        .await
+        .expect("await_agent must not hang for a non-keep-alive fork")
+        .expect("await_agent should resolve");
+    assert_eq!(fork_result.status, ResultStatus::Completed);
+}

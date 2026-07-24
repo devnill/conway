@@ -46,8 +46,7 @@ use serde::{Deserialize, Serialize};
 /// `default_role` has no sensible built-in default (the binding config always
 /// sets it explicitly), so it is the one field with no `#[serde(default)]`.
 /// Every other field defaults per the documented schema in
-/// `docs/plan/wi-conway-facade.md` (WI-097) /
-/// `wi-conway-facade-amendment.md`.
+/// `docs/crates/conway.md` (WI-097).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConwayConfig {

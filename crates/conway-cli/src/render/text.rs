@@ -11,7 +11,7 @@
 
 use std::io::{self, Write};
 
-use conway::{AgentResult, Envelope, Event, PermissionDecisionKind};
+use conway::{AgentId, AgentResult, Envelope, Event, PermissionDecisionKind};
 
 use super::Renderer;
 use crate::diag;
@@ -23,6 +23,14 @@ pub struct TextRenderer {
     /// and "last write ended with a newline" aren't conflated (finishing an
     /// empty run must not emit a bare `\n`).
     ends_with_newline: Option<bool>,
+    /// The run's root agent, once [`Renderer::set_root`] supplies it.
+    /// `AgentFinished`'s trailing-newline flush fires only for this agent:
+    /// a subagent's `AgentFinished` now reaches this session-scoped stream
+    /// too (it bypasses the stream filter), and flushing on it would inject
+    /// a spurious `\n` into the root's still-streaming stdout. `None` (never
+    /// set, e.g. direct unit tests) preserves the pre-subagent behavior of
+    /// treating any `AgentFinished` as terminal.
+    root: Option<AgentId>,
 }
 
 impl TextRenderer {
@@ -30,6 +38,7 @@ impl TextRenderer {
         Self {
             out,
             ends_with_newline: None,
+            root: None,
         }
     }
 
@@ -99,7 +108,17 @@ impl Renderer for TextRenderer {
             Event::Error { error, fatal: true } => {
                 diag::error(error.to_string());
             }
-            Event::AgentFinished { .. } => self.ensure_trailing_newline()?,
+            // Only the ROOT's finish is this run's terminal occasion. A
+            // subagent's `AgentFinished` reaches this stream too (lifecycle
+            // events bypass the session/agent filter), and flushing on it
+            // would split the root's still-streaming stdout with a stray
+            // `\n`. Until `set_root` is called (`None`), any finish is
+            // treated as terminal, preserving the single-agent behavior.
+            Event::AgentFinished { .. } => {
+                if self.root.is_none_or(|root| env.agent == root) {
+                    self.ensure_trailing_newline()?;
+                }
+            }
             _ => {}
         }
         Ok(())
@@ -108,6 +127,10 @@ impl Renderer for TextRenderer {
     fn finish(&mut self, _result: Option<&AgentResult>) -> io::Result<()> {
         self.ensure_trailing_newline()?;
         self.out.flush()
+    }
+
+    fn set_root(&mut self, root: AgentId) {
+        self.root = Some(root);
     }
 }
 
@@ -222,6 +245,59 @@ mod tests {
         renderer.finish(Some(&result)).unwrap();
 
         assert_eq!(writer.contents(), b"hi\n");
+    }
+
+    #[test]
+    fn subagent_finish_does_not_flush_newline_into_root_stream() {
+        // Once `set_root` names the root, a *subagent's* AgentFinished
+        // (arriving mid-root-stream, now that lifecycle events bypass the
+        // stream filter) must NOT inject a trailing `\n` -- only the root's
+        // own finish does. Regression guard for the -p clean-output contract.
+        let writer = RecordingWriter::default();
+        let mut renderer = TextRenderer::new(Box::new(writer.clone()));
+        let session = SessionId::new();
+        let root = AgentId::new();
+        let child = AgentId::new();
+        renderer.set_root(root);
+
+        renderer
+            .on_event(&envelope(
+                session,
+                root,
+                Event::TextDelta {
+                    text: "partial".into(),
+                },
+            ))
+            .unwrap();
+        // Subagent finishes while the root is still mid-stream.
+        let child_result = AgentResult::new(child, session, ResultStatus::Completed, "");
+        renderer
+            .on_event(&envelope(
+                session,
+                child,
+                Event::AgentFinished {
+                    result: child_result,
+                },
+            ))
+            .unwrap();
+        assert_eq!(
+            writer.contents(),
+            b"partial",
+            "a subagent's finish must not append a newline to the root's stream"
+        );
+
+        // The root's own finish still flushes the trailing newline.
+        let root_result = AgentResult::new(root, session, ResultStatus::Completed, "");
+        renderer
+            .on_event(&envelope(
+                session,
+                root,
+                Event::AgentFinished {
+                    result: root_result,
+                },
+            ))
+            .unwrap();
+        assert_eq!(writer.contents(), b"partial\n");
     }
 
     #[test]

@@ -354,7 +354,7 @@ async fn truncation_matches_the_documented_table_per_tool() {
     assert!(!out.is_error, "conway_cancel: {}", text_of(&out));
     actual.insert("conway_cancel", out.truncation);
 
-    // Authoritative per docs/plan/wi-conway-tools.md WI-067 truncation table,
+    // Authoritative per docs/crates/conway-tools.md WI-067 truncation table,
     // adjusted for conway-core's actual `HeadTail { head_bytes, tail_bytes }`
     // shape (WI-064 deviation: the plan sketched `{ max_bytes }`, which
     // conway-core does not have; `bash.rs` splits its 30_000-byte budget

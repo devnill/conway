@@ -154,17 +154,33 @@ pub struct SubagentSpec {
     /// `false` enables fan-out: the caller does not block on this child's
     /// result (§"conway-tools").
     pub await_result: bool,
+    /// Opt-in interactive keep-alive (mirrors `conway_runtime`'s
+    /// `agent_loop::AgentSpec::keep_alive`/`runtime::RootSpec::keep_alive`):
+    /// the child idles for the caller's next prompt after each turn instead
+    /// of finishing on natural completion. Defaults `false` via the `fork`/
+    /// `spawn` constructors below, preserving the pre-existing autonomous
+    /// (one-shot, `await_result`-able) fork/spawn behavior unchanged. When
+    /// this is `true` AND `prompt` is empty, `conway_runtime`'s
+    /// `SubagentHost::start` additionally starts the child IDLE (no
+    /// placeholder turn run against blank input) -- the shape a caller
+    /// wanting a fresh, interactive, re-promptable session (the TUI's bare
+    /// `/spawn`/`/fork`) constructs via `conway`'s `SpawnSpec::keep_alive`/
+    /// `ForkSpec::keep_alive`.
+    pub keep_alive: bool,
 }
 
 impl SubagentSpec {
-    /// `Err(ConwayError::Config{..})` when `mode == Spawn && agent_def.is_none()`
-    /// (§5.2: `agent_def` is required for `Spawn`).
+    /// **Relaxed (WI-099 superseded):** §5.2's original "`agent_def` is
+    /// required for `Spawn`" rule -- enforced here as an
+    /// `Err(ConwayError::Config{..})` -- is relaxed by a recorded design
+    /// decision: a spawn with `agent_def: None` is now valid. It means the
+    /// child gets no agent-def system prompt and no model pin, and instead
+    /// inherits the spawning session's role (and, transitively, its model
+    /// routing) -- `conway_runtime`'s `SubagentHost::start` implements the
+    /// inheriting resolution. Kept as a method (rather than removed
+    /// outright) since it remains the natural place for any future
+    /// spec-shape validation.
     pub fn validate(&self) -> Result<(), ConwayError> {
-        if matches!(self.mode, SubagentMode::Spawn) && self.agent_def.is_none() {
-            return Err(ConwayError::Config {
-                detail: "SubagentSpec: `agent_def` is required when mode == Spawn".into(),
-            });
-        }
         Ok(())
     }
 
@@ -180,6 +196,7 @@ impl SubagentSpec {
             cache_hint: true,
             result_contract: None,
             await_result: true,
+            keep_alive: false,
         }
     }
 
@@ -196,6 +213,7 @@ impl SubagentSpec {
             cache_hint: false,
             result_contract: None,
             await_result: true,
+            keep_alive: false,
         }
     }
 }
@@ -487,7 +505,10 @@ mod tests {
     }
 
     #[test]
-    fn subagent_spec_validate_rejects_spawn_without_agent_def() {
+    fn subagent_spec_validate_accepts_spawn_without_agent_def() {
+        // WI-099's original "agent_def mandatory for spawn" rule is relaxed:
+        // a spawn with no agent_def is valid and means "inherit the
+        // spawning session's role/model" (see `validate`'s own doc).
         let spec = SubagentSpec {
             mode: SubagentMode::Spawn,
             prompt: "do it".into(),
@@ -498,8 +519,9 @@ mod tests {
             cache_hint: false,
             result_contract: None,
             await_result: true,
+            keep_alive: false,
         };
-        assert!(spec.validate().is_err());
+        assert!(spec.validate().is_ok());
     }
 
     #[test]

@@ -26,11 +26,22 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
                 .clone()
                 .unwrap_or_else(|| "agent".to_string());
             let marker = status_marker(node.status);
+            // WI-140: the agent whose conversation the transcript pane
+            // currently shows gets an explicit, textual tag -- distinct
+            // from `agent_selected`'s own reversed-highlight (the browsing
+            // cursor), which ratatui already applies via `ListState`
+            // below, and which need not be the same row at all.
+            let focus_tag = if node.agent_id == state.focused_agent {
+                " (focused)"
+            } else {
+                ""
+            };
             ListItem::new(Line::from(vec![
                 Span::raw(indent),
                 Span::styled(marker, status_style(node.status)),
                 Span::raw(" "),
                 Span::raw(label),
+                Span::styled(focus_tag, Style::default().add_modifier(Modifier::BOLD)),
             ]))
         })
         .collect();
@@ -141,6 +152,35 @@ mod tests {
         assert!(
             any_reversed,
             "the selected agent row must render highlighted (reversed)"
+        );
+    }
+
+    // WI-140: the focused agent (distinct from the browsing cursor above)
+    // gets its own visible tag in the panel.
+    #[test]
+    fn draw_tags_the_focused_agent_row() {
+        use crate::tui::state::TreeNode;
+
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let child = AgentId::new();
+        state.tree.nodes.push(TreeNode {
+            agent_id: child,
+            parent: Some(root),
+            agent_def: Some("child".to_string()),
+            status: NodeStatus::Running,
+        });
+        state.focus_agent(child);
+
+        let backend = TestBackend::new(40, 10);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|f| draw(f, f.area(), &state)).expect("draw");
+
+        let buffer = terminal.backend().buffer();
+        let text: String = buffer.content().iter().map(|c| c.symbol()).collect();
+        assert!(
+            text.contains("focused"),
+            "expected the focused agent's row to be tagged, got: {text:?}"
         );
     }
 }

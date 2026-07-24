@@ -37,6 +37,49 @@ const AGENT_PANEL_HEIGHT: u16 = 8;
 
 pub fn draw(state: &AppState, frame: &mut Frame) {
     let area = frame.area();
+    let areas = layout(state, area);
+
+    transcript::draw(frame, areas.transcript, state);
+
+    if let Some(agents_area) = areas.agents {
+        agents::draw(frame, agents_area, state);
+    }
+
+    input_box::draw(frame, areas.input, state);
+    status::draw(frame, areas.status, state);
+
+    if state.palette_source().starts_with('/') {
+        palette::draw_overlay(
+            frame,
+            areas.input,
+            state.palette_source(),
+            state.palette_selected,
+        );
+    }
+
+    if let Mode::AwaitingPermission(pending) = &state.mode {
+        draw_permission_overlay(
+            frame,
+            areas.transcript,
+            &pending.request,
+            state.permission_scroll,
+        );
+    }
+}
+
+/// The frame's row split -- exactly what [`draw`] renders into, factored
+/// out so `app.rs` can find the transcript viewport's width/height (for the
+/// scroll-clamp math in [`max_scroll`]) without re-deriving this same
+/// `Constraint`/`Layout` sequence a second time and risking it drifting out
+/// of sync with what is actually on screen.
+struct Areas {
+    transcript: Rect,
+    agents: Option<Rect>,
+    input: Rect,
+    status: Rect,
+}
+
+fn layout(state: &AppState, area: Rect) -> Areas {
     let show_agents = state.agent_view_open && area.height > INPUT_HEIGHT + STATUS_HEIGHT + 3;
 
     let mut constraints = vec![Constraint::Min(0)];
@@ -52,34 +95,56 @@ pub fn draw(state: &AppState, frame: &mut Frame) {
         .split(area);
 
     let mut next = 0;
-    let transcript_area = rows[next];
+    let transcript = rows[next];
     next += 1;
-    transcript::draw(frame, transcript_area, state);
-
-    if show_agents {
-        agents::draw(frame, rows[next], state);
+    let agents = if show_agents {
+        let a = rows[next];
         next += 1;
-    }
-
-    let input_area = rows[next];
+        Some(a)
+    } else {
+        None
+    };
+    let input = rows[next];
     next += 1;
-    input_box::draw(frame, input_area, state);
+    let status = rows[next];
 
-    status::draw(frame, rows[next], state);
-
-    if state.palette_source().starts_with('/') {
-        palette::draw_overlay(
-            frame,
-            input_area,
-            state.palette_source(),
-            state.palette_selected,
-        );
-    }
-
-    if let Mode::AwaitingPermission(pending) = &state.mode {
-        draw_permission_overlay(frame, transcript_area, &pending.request);
+    Areas {
+        transcript,
+        agents,
+        input,
+        status,
     }
 }
+
+/// The transcript viewport's on-screen `Rect` for `state`/`area`, exactly as
+/// [`draw`] computes it -- `app.rs` needs this (via [`max_scroll`]) to turn
+/// a `PageUp`/`PageDown` keypress into a wrapped-line clamp outside of any
+/// actual render pass.
+pub(crate) fn transcript_area(state: &AppState, area: Rect) -> Rect {
+    layout(state, area).transcript
+}
+
+/// The scroll-clamp ceiling (total wrapped transcript lines minus the
+/// transcript viewport's height) for `state` at `area`'s current size --
+/// `app.rs`'s `PageUp`/`PageDown` handling passes this straight into
+/// `AppState::scroll_page_up`/`scroll_page_down`. Delegates the actual line
+/// count to `transcript::wrapped_line_count`, which wraps with the SAME
+/// `Paragraph`/`Wrap` parameters `transcript::draw` renders with, so this
+/// can never disagree with what ends up on screen.
+pub(crate) fn max_scroll(state: &AppState, area: Rect) -> u16 {
+    let transcript = transcript_area(state, area);
+    let total = transcript::wrapped_line_count(state, transcript.width);
+    total
+        .saturating_sub(transcript.height as usize)
+        .min(u16::MAX as usize) as u16
+}
+
+/// Rows the permission overlay's footer ALWAYS reserves, regardless of how
+/// long the command being displayed is: the tool/category line, the agent
+/// path line, and the `[y]/[a]/[n]/[Esc]` decision-key hint. This is the
+/// load-bearing invariant behind [`draw_permission_overlay`]'s whole
+/// rework -- see that function's own doc.
+const PERMISSION_FOOTER_ROWS: u16 = 3;
 
 /// The permission prompt: a bordered block over the bottom of the
 /// transcript area, unmistakably distinct from ordinary transcript output
@@ -87,12 +152,52 @@ pub fn draw(state: &AppState, frame: &mut Frame) {
 /// is fine -- it is a modal overlay, never part of the copyable
 /// conversation (it replaces transcript content on screen only while a
 /// decision is pending, via `Clear`).
+///
+/// Bug fix (01KYB0F7V65QAMZWWYH8K7DWDC): this used to be a fixed ~6-row box
+/// with the ENTIRE `req.rendered` command as line 0 of one unscrolled
+/// `Paragraph` -- a long tool-call argument overflowed the box and clipped
+/// the tool/category line, the agent path, and the `[y]/[a]/[n]/[Esc]`
+/// decision-key hint off-screen, so the user could see neither the full
+/// command nor how to answer the prompt. Reworked so:
+/// - The overlay claims a much larger share of the transcript area (nearly
+///   all of it, `transcript_area`-height permitting) instead of a fixed
+///   handful of rows, so a long command has real room before scrolling is
+///   even needed.
+/// - The block's interior is split into a scrollable command body (grows
+///   to fill whatever's left) and a FIXED-height footer
+///   ([`PERMISSION_FOOTER_ROWS`]) below it holding the tool/category line,
+///   the agent path, and the decision-key hint -- rows the command
+///   `Paragraph` can never grow into, however long `req.rendered` is or
+///   however far it's scrolled. This is what keeps the hint on screen,
+///   not the command's own wrapping.
+/// - `scroll` (`AppState::permission_scroll`, paged by `PageUp`/`PageDown`
+///   while `Mode::AwaitingPermission` -- see `input.rs::handle_permission_key`)
+///   drives the command body's `Paragraph::scroll`, clamped here to the
+///   command's own wrapped line count so an over-large value (this
+///   function's only real validation of it) just lands on the true bottom,
+///   never past real content.
+/// - Review fix: on a small terminal the footer itself can be forced below
+///   [`PERMISSION_FOOTER_ROWS`] (border rows alone can eat most of a tiny
+///   transcript area) -- the decision-key hint is ordered FIRST within the
+///   footer specifically so it is the LAST thing to get clipped, not the
+///   first, as the footer shrinks. See the footer-line construction below
+///   for the full reasoning.
 fn draw_permission_overlay(
     frame: &mut Frame,
     transcript_area: Rect,
     req: &conway::PermissionRequest,
+    scroll: u16,
 ) {
-    let height = 6u16.min(transcript_area.height);
+    // At minimum: 2 border rows + the pinned footer + one row of command.
+    let min_height = (2 + PERMISSION_FOOTER_ROWS + 1).min(transcript_area.height);
+    // Claim nearly the whole transcript area (a "larger fraction of the
+    // screen" per this item's spec) rather than a fixed handful of rows,
+    // leaving just a sliver of ordinary transcript visible above it.
+    let height = transcript_area
+        .height
+        .saturating_sub(1)
+        .max(min_height)
+        .min(transcript_area.height);
     let area = Rect {
         x: transcript_area.x,
         y: transcript_area.y + transcript_area.height.saturating_sub(height),
@@ -110,33 +215,79 @@ fn draw_permission_overlay(
             .join(" -> ")
     };
 
-    let lines = vec![
-        Line::from(Span::styled(
-            req.rendered.clone(),
-            Style::default().add_modifier(Modifier::BOLD),
-        )),
-        Line::from(format!("tool: {}  category: {:?}", req.tool, req.category)),
-        Line::from(format!("agent path: {agent_path}")),
-        Line::from("[y] allow once  [a] allow always  [n] deny  [Esc] deny with feedback"),
-    ];
-
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" PERMISSION REQUIRED ")
         .border_style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD));
-    let paragraph = Paragraph::new(lines).block(block).wrap(Wrap { trim: true });
+    let inner = block.inner(area);
     frame.render_widget(Clear, area);
-    frame.render_widget(paragraph, area);
+    frame.render_widget(block, area);
+
+    // Reserve the footer's rows FIRST -- up to `PERMISSION_FOOTER_ROWS`, but
+    // never more than the block's interior actually has. The command BODY
+    // (below) is what shrinks on a tight viewport -- all the way to zero --
+    // never the footer: `Constraint::Length(footer_rows)` is satisfied in
+    // full before `Constraint::Min(0)` gets whatever is left over, so a
+    // small overlay squeezes the command out long before it can squeeze the
+    // footer.
+    let footer_rows = PERMISSION_FOOTER_ROWS.min(inner.height);
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(footer_rows)])
+        .split(inner);
+    let body_area = rows[0];
+    let footer_area = rows[1];
+
+    let body = Paragraph::new(Line::from(Span::styled(
+        req.rendered.clone(),
+        Style::default().add_modifier(Modifier::BOLD),
+    )))
+    .wrap(Wrap { trim: false });
+    let body_max_scroll = body
+        .line_count(body_area.width)
+        .saturating_sub(body_area.height as usize)
+        .min(u16::MAX as usize) as u16;
+    let clamped_scroll = scroll.min(body_max_scroll);
+    frame.render_widget(body.scroll((clamped_scroll, 0)), body_area);
+
+    // Review fix (01KYB0F7V65QAMZWWYH8K7DWDC): even with the footer's rows
+    // reserved first (above), `footer_area` can still end up shorter than
+    // `PERMISSION_FOOTER_ROWS` on a genuinely tiny viewport -- the block's
+    // own 2 border rows alone can eat most of a small transcript area, with
+    // nothing left to reserve. A `Paragraph` clips top-down, so whichever
+    // line is FIRST survives longest as the footer shrinks. The decision-key
+    // hint is what the user actually needs to act on the prompt -- it goes
+    // FIRST here, ahead of the purely informational tool/category and
+    // agent-path lines, so even a 1-row footer still shows it. (Previously
+    // the hint was last and was the FIRST thing clipped -- exactly
+    // backwards.)
+    let hint = if body_max_scroll > 0 {
+        "[y] allow once  [a] allow always  [n] deny  [Esc] deny with feedback  \
+         [PageUp/PageDown] scroll command"
+    } else {
+        "[y] allow once  [a] allow always  [n] deny  [Esc] deny with feedback"
+    };
+    let footer_lines = vec![
+        Line::from(hint),
+        Line::from(format!("tool: {}  category: {:?}", req.tool, req.category)),
+        Line::from(format!("agent path: {agent_path}")),
+    ];
+    let footer = Paragraph::new(footer_lines).wrap(Wrap { trim: true });
+    frame.render_widget(footer, footer_area);
 }
 
 #[cfg(test)]
 mod tests {
-    use conway::AgentId;
+    use conway::{AgentId, PermissionDecision, PermissionRequest, ToolCategory, ToolName};
     use ratatui::backend::TestBackend;
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::Terminal;
 
     use super::*;
+    use crate::tui::gate::PendingPrompt;
+    use crate::tui::input::{self, Action};
     use crate::tui::state::Entry;
+    use crate::tui::test_support::render_text;
 
     #[test]
     fn draw_produces_a_non_empty_buffer_and_does_not_mutate_state() {
@@ -222,5 +373,162 @@ mod tests {
         // word "commands" -- assert against a palette-only string (a
         // command's usage form) instead of that word.
         assert!(!text.contains("/ask <text>"));
+    }
+
+    // ---- 01KYB0F7V65QAMZWWYH8K7DWDC: permission overlay always shows the
+    // action keys + a long command is viewable ----
+
+    fn sample_request(rendered: &str) -> PermissionRequest {
+        PermissionRequest {
+            agent_id: AgentId::new(),
+            agent_path: Vec::new(),
+            tool: ToolName::new("bash"),
+            category: ToolCategory::Execute,
+            arguments: serde_json::json!({}),
+            rendered: rendered.to_string(),
+            call_id: "tc_1".to_string(),
+        }
+    }
+
+    fn awaiting_permission(rendered: &str) -> AppState {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let (prompt, _rx) = PendingPrompt::new_for_test(sample_request(rendered));
+        state.mode = Mode::AwaitingPermission(prompt);
+        state
+    }
+
+    /// Bug's own reproduction: a huge argument used to clip the
+    /// tool/category line, the agent path, and the decision-key hint
+    /// entirely off-screen. The hint must now ALWAYS be present, however
+    /// long `rendered` is.
+    #[test]
+    fn permission_overlay_never_clips_the_action_key_hint_for_a_huge_command() {
+        let huge_rendered = format!("bash({})", "argument-chunk-".repeat(500));
+        let state = awaiting_permission(&huge_rendered);
+
+        let text = render_text(&state, 80, 24);
+
+        assert!(
+            text.contains("[y] allow once"),
+            "the [y] hint must never be clipped off-screen: {text}"
+        );
+        assert!(
+            text.contains("[a] allow always"),
+            "the [a] hint must never be clipped off-screen: {text}"
+        );
+        assert!(
+            text.contains("[n] deny"),
+            "the [n] hint must never be clipped off-screen: {text}"
+        );
+        assert!(
+            text.contains("[Esc] deny with feedback"),
+            "the [Esc] hint must never be clipped off-screen: {text}"
+        );
+        assert!(
+            text.contains("tool: bash"),
+            "the tool/category line must never be clipped off-screen: {text}"
+        );
+    }
+
+    /// Review-fix regression guard: a SMALL viewport (a ~7-row terminal --
+    /// input(3) + status(1) leaves a 3-row transcript area, plausible for a
+    /// split pane, not a 1-row extreme) used to squeeze the footer below
+    /// `PERMISSION_FOOTER_ROWS`, and because the decision-key hint was the
+    /// LAST footer line, it was the FIRST thing a `Paragraph`'s top-down
+    /// clipping dropped -- exactly when the user most needed to see how to
+    /// answer. The hint must survive even here.
+    #[test]
+    fn permission_overlay_shows_the_action_key_hint_on_a_small_viewport() {
+        let huge_rendered = format!("bash({})", "argument-chunk-".repeat(500));
+        let state = awaiting_permission(&huge_rendered);
+
+        // 7-row terminal: layout() gives the transcript pane 7 - 3 (input)
+        // - 1 (status) = 3 rows, well inside the "3-4 rows, not a 1-row
+        // extreme" scenario this fix targets.
+        let text = render_text(&state, 80, 7);
+
+        assert!(
+            text.contains("[y] allow once"),
+            "the [y] hint must survive a small-viewport footer: {text}"
+        );
+        assert!(
+            text.contains("[a] allow always"),
+            "the [a] hint must survive a small-viewport footer: {text}"
+        );
+        assert!(
+            text.contains("[n] deny"),
+            "the [n] hint must survive a small-viewport footer: {text}"
+        );
+    }
+
+    /// The command itself must stay viewable: at the top of a long command
+    /// the tail is not yet on screen, but paging down (`PageDown`, driven
+    /// through the real `input::handle_key` router, exactly as a keypress
+    /// would) brings it into view while the hint stays pinned.
+    #[test]
+    fn permission_overlay_page_down_reveals_the_rest_of_a_long_command() {
+        let rendered = format!("bash({} TAIL_MARKER_XYZ)", "word ".repeat(800));
+        let mut state = awaiting_permission(&rendered);
+
+        let before = render_text(&state, 80, 24);
+        assert!(
+            !before.contains("TAIL_MARKER_XYZ"),
+            "the tail of a huge command must not already be visible with no scrolling: {before}"
+        );
+        // Still true at the top: the hint is visible even before any
+        // scrolling happens (the main invariant this item fixes).
+        assert!(before.contains("[y] allow once"));
+
+        // Page down generously -- `draw_permission_overlay` clamps the
+        // scroll to the command's own real wrapped height, so overshooting
+        // just lands on the true bottom.
+        for _ in 0..40 {
+            let action = input::handle_key(
+                &mut state,
+                KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE),
+            );
+            assert_eq!(action, Action::None);
+        }
+
+        let after = render_text(&state, 80, 24);
+        assert!(
+            after.contains("TAIL_MARKER_XYZ"),
+            "paging down must bring the rest of the command into view: {after}"
+        );
+        // The hint must STILL be visible after scrolling -- pinned, not
+        // part of the scrolled region.
+        assert!(after.contains("[y] allow once"));
+        assert!(after.contains("[a] allow always"));
+        assert!(after.contains("[n] deny"));
+        assert!(after.contains("[Esc]"));
+    }
+
+    /// A short command must still render normally (no regression from the
+    /// rework), and the decision keys must keep working exactly as before.
+    #[test]
+    fn permission_overlay_short_command_renders_and_decision_keys_still_resolve() {
+        let mut state = awaiting_permission("bash: ls");
+
+        let text = render_text(&state, 80, 24);
+        assert!(text.contains("bash: ls"));
+        assert!(text.contains("[y] allow once"));
+        assert!(text.contains("[a] allow always"));
+        assert!(text.contains("[n] deny"));
+        assert!(text.contains("[Esc] deny with feedback"));
+
+        let action = input::handle_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
+        );
+        assert_eq!(
+            action,
+            Action::PermissionDecision(PermissionDecision::AllowOnce)
+        );
+        state.resolve_current_prompt(PermissionDecision::AllowOnce);
+        assert!(
+            matches!(state.mode, Mode::Normal),
+            "resolving the decision must return to Mode::Normal"
+        );
     }
 }

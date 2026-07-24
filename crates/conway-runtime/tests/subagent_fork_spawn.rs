@@ -426,14 +426,18 @@ async fn spawn_context_has_no_inherited_segment_and_uses_agent_def_system_prompt
     ));
 }
 
-/// `RuntimeError` has no `InvalidSpec` variant (see `subagent.rs`'s module
-/// doc): a `Spawn` without `agent_def` is rejected via
-/// `SubagentSpec::validate()`, surfaced here as `RuntimeError::Tool
-/// (ToolError::Internal{..})`, the crate's established "closest fit"
-/// mapping for a gap shaped like this one.
+/// **Relaxed (WI-099 superseded):** a `Spawn` without `agent_def` used to be
+/// rejected via `SubagentSpec::validate()` (§5.2's original "agent_def
+/// required for spawn" rule). A recorded design decision relaxes that: it is
+/// now a valid spawn that inherits the PARENT's role (and, transitively, its
+/// model routing) exactly like a roleless fork does -- see
+/// `subagent.rs::start`'s role-resolution chain (`spec.role -> agent_def.role
+/// (skipped, none) -> parent_meta.role -> the literal "default"`). The root
+/// here is started with role "planner" (`root_spec`); the spawned child must
+/// end up with that same role, not `None` and not the literal `"default"`.
 #[tokio::test]
-async fn spawn_without_agent_def_is_rejected() {
-    let (runtime, _store) = build_runtime(1, HashMap::new());
+async fn spawn_without_agent_def_inherits_the_parents_role() {
+    let (runtime, _store) = build_runtime(2, HashMap::new());
     let root = start_and_finish_root(&runtime, "hi").await;
 
     let spec = SubagentSpec {
@@ -446,14 +450,27 @@ async fn spawn_without_agent_def_is_rejected() {
         cache_hint: false,
         result_contract: None,
         await_result: true,
+        keep_alive: false,
     };
-    let err = SubagentHost::start(&*runtime, root, spec)
-        .await
-        .unwrap_err();
-    assert!(matches!(
-        err,
-        RuntimeError::Tool(ToolError::Internal { .. })
-    ));
+    let mut stream = runtime.subscribe();
+    let child = SubagentHost::start(&*runtime, root, spec).await.unwrap();
+    wait_for_agent_finished(&mut stream, child).await;
+
+    let node = runtime
+        .tree()
+        .nodes
+        .into_iter()
+        .find(|n| n.agent_id == child)
+        .expect("spawned child must be attached to the tree");
+    assert_eq!(
+        node.role,
+        Some(RoleAlias::new("planner")),
+        "a spawn with no agent_def must inherit the parent's role"
+    );
+    assert_eq!(
+        node.agent_def, None,
+        "no agent_def was given -- none resolved"
+    );
 }
 
 // ---------------------------------------------------------------------

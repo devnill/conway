@@ -21,7 +21,7 @@ use conway_core::ids::{AgentId, RoleAlias, ToolName};
 use conway_core::log::SubagentMode;
 use conway_core::ports::{PluginConfig, Tool, ToolCtx, ToolOutput};
 
-use crate::common::{check_cancel, error_text, parse_args, text_output};
+use crate::common::{check_cancel, parse_args, text_output};
 
 /// Declared by every tool here: an oversized result keeps its tail
 /// (summary/facts/status), the part that must survive.
@@ -59,10 +59,13 @@ struct BudgetArg {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct SubagentArgs {
+    /// "fork": new agent continuing from this agent's context, plus the
+    /// prompt. "spawn": new independent agent, fresh context.
     mode: ModeArg,
     /// Fork: the fork directive. Spawn: the whole task.
     prompt: String,
-    /// Agent definition name; required when mode=spawn
+    /// Agent definition name. Optional for both modes: omitting it on a
+    /// spawn means the child inherits this agent's own role/model.
     #[serde(default)]
     agent_def: Option<String>,
     /// Role alias for routing
@@ -210,7 +213,7 @@ impl Tool for SubagentTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: ToolName::new("conway_subagent"),
-            description: "Fork or spawn a child agent. `fork` inherits this agent's entire context plus an additional prompt; `spawn` starts a named agent definition from a clean slate.".into(),
+            description: "Fork or spawn a child agent. `agent_def` is optional for `spawn`: name one to set the child's system prompt/tools/model, or omit it to inherit this agent's role and model.".into(),
             schema: schemars::schema_for!(SubagentArgs),
             category: ToolCategory::Delegate,
             // Starting a child grants it the capability to itself perform arbitrary tool
@@ -227,11 +230,8 @@ impl Tool for SubagentTool {
             ModeArg::Fork => SubagentMode::Fork,
             ModeArg::Spawn => SubagentMode::Spawn,
         };
-        if matches!(mode, SubagentMode::Spawn) && args.agent_def.is_none() {
-            return Ok(error_text(
-                r#"agent_def is required for mode "spawn""#.to_string(),
-            ));
-        }
+        // WI-099's "agent_def required for spawn" rule is relaxed: a spawn
+        // with no agent_def inherits this agent's own role/model.
 
         let result_contract = args
             .result_contract
@@ -251,6 +251,13 @@ impl Tool for SubagentTool {
             budget: resolve_budget(args.budget, &ctx.config),
             result_contract,
             await_result: args.await_flag,
+            // The model-invoked `conway_subagent` tool is always the
+            // autonomous, one-shot fork/spawn primitive (P-1: "exactly two
+            // subagent primitives") -- `keep_alive` is an opt-in only the
+            // interactive-session facade paths (`conway`'s `SpawnSpec`/
+            // `ForkSpec::keep_alive`, the TUI's bare `/spawn`/`/fork`) ever
+            // set.
+            keep_alive: false,
         };
 
         let child = ctx

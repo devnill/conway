@@ -16,7 +16,14 @@ clap = { workspace = true, features = ["derive", "env"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }
 async-trait = { workspace = true }
 futures = { workspace = true }
-ratatui = { workspace = true }
+# `unstable-rendered-line-info`: `Paragraph::line_count(width)`, used by
+# `tui/view/transcript.rs`'s scroll-clamp math (the TUI transcript-scrolling
+# item) to measure the SAME wrapped-line count `Paragraph::render` actually
+# draws with, rather than hand-rolling a second word-wrap implementation
+# that could drift out of sync with it. "Unstable" is ratatui's own
+# semver-stability marker for the API shape, not a usability/soundness
+# caveat -- this is the documented, supported way to measure wrap height.
+ratatui = { workspace = true, features = ["unstable-rendered-line-info"] }
 crossterm = { workspace = true }
 serde_json = { workspace = true }
 # WI-121: `-v`/`-vv` install a `tracing_subscriber::fmt` subscriber to

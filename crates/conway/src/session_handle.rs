@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use conway_core::agent::{AgentResult, AgentTreeSnapshot, Budget};
-use conway_core::content::{ContentBlock, ToolResult};
+use conway_core::content::{ContentBlock, ToolResult, Usage};
 use conway_core::error::{RuntimeError, StoreError};
 use conway_core::event::{Envelope, Event};
 use conway_core::ids::{AgentId, LogSeq, ModelRef, RoleAlias, SeqRange, SessionId};
@@ -70,6 +70,16 @@ pub struct SessionSpec {
     /// turn. `true` is what `conway-cli`'s TUI opts its own root session
     /// into, so a second chat message in the same process actually runs.
     pub keep_alive: bool,
+    /// Overrides the resolved agent def's own tool selector, passed straight
+    /// through to `RootSpec::tools`. `None` preserves `start_root`'s existing
+    /// fallback (`spec.tools.or(agent_def.tools)` -- see that method's own
+    /// doc): the agent def's declared tools, or every builtin tool if the def
+    /// declares none. `conway-cli`'s TUI root uses `Some(ToolSelector::
+    /// Except(vec!["report".into()]))` -- an interactive chat root has no
+    /// parent to report an `AgentResult` to, so excluding the `report` tool
+    /// makes the model answer in plain text instead of hitting the
+    /// permission gate for a tool call nothing downstream ever unblocks.
+    pub tools: Option<conway_core::agent::ToolSelector>,
 }
 
 /// A live handle onto one running session: `id()`/`root()` are static, and
@@ -127,14 +137,34 @@ impl SessionHandle {
     /// prompt in flight at a time) but a footgun for any caller issuing
     /// concurrent `prompt`s against the same session.
     pub async fn prompt(&self, text: impl Into<String>) -> Result<TurnHandle> {
-        let stream = EventStream::live(self.session, Some(self.root), self.rt.subscribe());
-        self.rt.prompt(self.root, text.into()).await?;
-        Ok(TurnHandle::new(
-            self.rt.clone(),
-            self.session,
-            self.root,
-            stream,
-        ))
+        self.prompt_agent(self.root, text).await
+    }
+
+    /// [`Self::prompt`], generalized to any agent this handle's tree can
+    /// reach -- not just `self.root`. Added for the interactive keep-alive
+    /// session item (bare TUI `/spawn`/`/fork`): once a caller has an
+    /// `AgentId` for an interactive keep-alive child (`SpawnSpec::
+    /// keep_alive`/`ForkSpec::keep_alive`), this is how it drives that
+    /// child's turns directly, exactly the way `prompt` drives the root's.
+    ///
+    /// `Runtime::prompt(agent, text)` already accepts any agent id (WI-118's
+    /// generalization, unmodified by this item) -- this method is a thin
+    /// wrapper that additionally resolves `agent`'s owning `SessionId` (via
+    /// [`Self::resolve_agent_session`], the same resolution
+    /// [`Self::agent_events`] uses) so the returned [`TurnHandle`] is scoped
+    /// correctly, and subscribes to the live bus BEFORE appending the
+    /// prompt -- the same subscribe-before-act ordering [`Self::prompt`]'s
+    /// own doc explains, generalized to `agent` instead of hardcoding
+    /// `self.root`.
+    pub async fn prompt_agent(
+        &self,
+        agent: AgentId,
+        text: impl Into<String>,
+    ) -> Result<TurnHandle> {
+        let session = self.resolve_agent_session(agent).await?;
+        let stream = EventStream::live(session, Some(agent), self.rt.subscribe());
+        self.rt.prompt(agent, text.into()).await?;
+        Ok(TurnHandle::new(self.rt.clone(), session, agent, stream))
     }
 
     /// The `/ask` fork-ask primitive: forks this session's agent at its
@@ -252,6 +282,100 @@ impl SessionHandle {
         ))
     }
 
+    /// Observes ONE specific agent's own conversation: that agent's OWN
+    /// records (`[0, head)` of its own session, NOT the ancestry-prefixed
+    /// effective view -- see the "Own records only" note below), replayed
+    /// as synthesized envelopes, followed by that agent's live event stream
+    /// (WI-140: "switching the focused agent switches the transcript to
+    /// that agent's conversation").
+    ///
+    /// This is [`SessionHandle::events_from`]'s own no-gap-first ordering,
+    /// generalized from "this handle's own root" to an arbitrary `agent`
+    /// this handle's tree can reach: subscribe to the live bus BEFORE
+    /// reading the persisted store, so nothing broadcast in between is
+    /// missed, then let [`EventStream::replay_then_live`]'s junction-dedup
+    /// drop the resulting duplicate. See that method's doc for the
+    /// mechanism and its disclosed residual gap; see `record_to_event`'s
+    /// doc for the (also disclosed) `LogRecord` -> `Event` mapping the
+    /// replay batch is built from -- the SAME mapping `events_from` uses,
+    /// not a parallel one.
+    ///
+    /// **Deviation from the suggested `fn agent_events(&self, agent:
+    /// AgentId) -> EventStream` shape (disclosed):** that signature cannot
+    /// be implemented as written. Resolving `agent` to its owning
+    /// `SessionId` (an as-yet-not-necessarily-live agent may belong to a
+    /// DIFFERENT session than `self.session` -- see
+    /// [`SessionHandle::resolve_agent_session`]) and reading its own
+    /// records both require `SessionStore` I/O, which is `async` and
+    /// fallible (`Err` on an unknown/foreign `agent`, exactly like
+    /// [`SessionHandle::transcript`]). This method is `pub async fn ... ->
+    /// Result<EventStream>` instead -- the same shape `events_from` already
+    /// has, for the same reason.
+    ///
+    /// **Finished-agent edge case:** if `agent` has already finished, this
+    /// still returns `Ok` -- the replay batch is that agent's complete,
+    /// final transcript, and the live half of the returned stream simply
+    /// never yields another envelope for it (a finished agent's task has
+    /// already stopped emitting). A caller polling this stream does not
+    /// hang; it just sees no further growth, which is the correct
+    /// behavior for a conversation that is genuinely over.
+    ///
+    /// **Ephemeral agents:** `agent` is resolved the same way
+    /// [`SessionHandle::transcript`] resolves one -- via
+    /// `resolve_agent_session`, which searches with
+    /// `SessionFilter{include_ephemeral: true, ..}` -- so an `/ask`
+    /// scratchpad child (hidden from listings, but a caller who already
+    /// holds its `AgentId` may still resolve it) is observable here too.
+    ///
+    /// **Own records only, NOT the ancestry-prefixed effective transcript
+    /// (bug 4 fix, decision 01KYAN6AHFG9JHQ6D2FAYCNFZJ):** the replay batch
+    /// below reads `agent`'s own session, `[0, head)` -- exactly the same
+    /// read [`Self::session_usage`] already performs, and for the same
+    /// reason that method's doc explains: an inherited fork/spawn prefix is
+    /// the PARENT's own prior conversation, not this agent's. Building the
+    /// replay from [`Self::effective_transcript`] (as this method used to)
+    /// prepended that parent conversation ahead of the focused agent's own
+    /// records, so switching focus to a spawned or forked child appeared to
+    /// show "the previous chat log" -- the parent's, not the child's. This
+    /// method now shows the SAME view uniformly for spawn and fork alike;
+    /// per the governing decision, a user who wants the inherited/shared
+    /// history focuses the parent instead. [`Self::transcript`] is
+    /// unaffected -- it still returns the ancestry-prefixed effective view,
+    /// which remains the correct answer for callers that explicitly want
+    /// the full lineage.
+    pub async fn agent_events(&self, agent: AgentId) -> Result<EventStream> {
+        let session = self.resolve_agent_session(agent).await?;
+        // Subscribe first, exactly as `events_from` does -- see that
+        // method's own doc for why this ordering (not read-then-subscribe)
+        // is what prevents a silent gap at the cost of a detectable,
+        // dedupable duplicate.
+        let live = self.rt.subscribe();
+        let subscribed_at = Utc::now();
+        let head = self.store.head(&session).await?;
+        let records = self
+            .store
+            .read(&session, SeqRange::new(LogSeq::ZERO, Some(head)))
+            .await?;
+        let replay = records
+            .iter()
+            .filter_map(record_to_event)
+            .map(|(_, ts, event)| Envelope {
+                seq: 0, // renumbered by `EventStream::replay_then_live`
+                ts,
+                session,
+                agent,
+                event,
+            })
+            .collect();
+        Ok(EventStream::replay_then_live(
+            session,
+            None,
+            replay,
+            subscribed_at,
+            live,
+        ))
+    }
+
     /// A snapshot of the whole agent tree this `Conway`'s `Runtime` knows
     /// about (`Runtime::tree`, sync, no I/O). Delegated unchanged: neither
     /// `Runtime::tree` nor `AgentTreeSnapshot` offers a way to scope the
@@ -278,6 +402,42 @@ impl SessionHandle {
     /// live-then-store-scan fallback).
     pub async fn context_report_at(&self, agent: AgentId, turn: u32) -> Result<ContextReport> {
         Ok(self.rt.context_report_at(agent, turn).await?)
+    }
+
+    /// Cumulative token spend for `agent`'s OWN turns (board item
+    /// 01KYAGP11FF9YC3G60TWHHKKST -- the TUI status line's per-agent
+    /// counter): sums the `usage` of every `LogRecord::Assistant` record in
+    /// `agent`'s own session log.
+    ///
+    /// **Deliberately NOT [`Self::transcript`]'s effective (ancestry-
+    /// prefixed) view:** a forked/spawned child's inherited prefix is the
+    /// FORKER's own prior turns -- those tokens were already spent (and
+    /// already counted) under the forker's own `session_usage`, not this
+    /// agent's. Summing the effective transcript here would double-count
+    /// the same tokens under two different agents' cumulative totals, so
+    /// this reads only `agent`'s own session records, `[0, head)`, the same
+    /// way [`Self::effective_transcript`]'s inner read does for one link of
+    /// the chain -- just without walking `SessionMeta.origin` at all.
+    ///
+    /// **Not [`Self::context_report`]'s `total_tokens_est`:** that number is
+    /// context-WINDOW occupancy (what the NEXT turn's prompt would cost),
+    /// not cumulative spend across turns already run -- a different
+    /// question with a different answer, disclosed here so a future reader
+    /// does not "simplify" this into a call to that method.
+    pub async fn session_usage(&self, agent: AgentId) -> Result<Usage> {
+        let session = self.resolve_agent_session(agent).await?;
+        let head = self.store.head(&session).await?;
+        let records = self
+            .store
+            .read(&session, SeqRange::new(LogSeq::ZERO, Some(head)))
+            .await?;
+        Ok(records
+            .iter()
+            .filter_map(|record| match record {
+                LogRecord::Assistant { usage, .. } => Some(*usage),
+                _ => None,
+            })
+            .fold(Usage::default(), |acc, usage| acc + usage))
     }
 
     /// The *effective* transcript for `agent`: its own records, prefixed by
@@ -607,12 +767,23 @@ impl SessionHandle {
 /// all today. This function uses the one faithful mapping that does exist
 /// where it exists -- `AgentResultRecord` -> `Event::AgentFinished`,
 /// matching exactly what `conway-runtime`'s agent loop emits live for that
-/// occurrence, and `Assistant` -> `Event::TurnFinished{usage, stop}`, same
-/// rationale -- and falls back to `Event::AgentProgress{note}` (the one
+/// occurrence -- and falls back to `Event::AgentProgress{note}` (the one
 /// variant that exists precisely for free-text informational replay) for
 /// every record kind with no faithful equivalent, rather than inventing a
 /// new `Event` variant outside this item's file scope (`conway-core` owns
 /// that enum).
+///
+/// **`Assistant` -> `Event::TextDelta`, not `Event::TurnFinished` (WI-140
+/// review fix, was the opposite -- see this arm's own inline doc):** a bare
+/// `TurnFinished{usage, stop}` carries no reply text, and nothing downstream
+/// (`conway-cli`'s `AppState::apply`) turns one into visible transcript
+/// content -- by design, since live, `TurnFinished` only ever marks the END
+/// of a run of real `TextDelta`s that already rendered the reply. Replaying
+/// `Assistant` as `TurnFinished` therefore made a focus-switched transcript
+/// silently omit every assistant reply. Mapping to one `TextDelta` carrying
+/// the record's full, concatenated text instead lets the SAME live
+/// `TextDelta -> append_assistant_text` path (`AppState::apply`) render it,
+/// with no second, parallel replay-only rendering path introduced.
 fn record_to_event(record: &LogRecord) -> Option<(LogSeq, DateTime<Utc>, Event)> {
     match record {
         LogRecord::Header(_) => None,
@@ -624,17 +795,28 @@ fn record_to_event(record: &LogRecord) -> Option<(LogSeq, DateTime<Utc>, Event)>
             },
         )),
         LogRecord::Assistant {
-            seq,
-            ts,
-            usage,
-            stop,
-            ..
+            seq, ts, content, ..
         } => Some((
             *seq,
             *ts,
-            Event::TurnFinished {
-                usage: *usage,
-                stop: *stop,
+            // **Fixed (was `Event::TurnFinished{usage, stop}`, WI-140
+            // review finding 1, CRITICAL):** that mapping discarded the
+            // reply text entirely, so a focus-switch replay showed no
+            // assistant dialogue at all -- `AppState::apply` has no arm
+            // that turns a bare `TurnFinished` into transcript content (by
+            // design; live `TurnFinished` only marks the end of a run of
+            // real `TextDelta`s, which is exactly what replay was missing).
+            // Mapping to `TextDelta` with the record's full text instead
+            // makes `apply`'s existing `TextDelta -> append_assistant_text`
+            // path build a real `Entry::Assistant` bubble on replay, with
+            // no second, parallel `LogRecord -> Entry` mapper needed.
+            // `usage`/`stop` are dropped -- irrelevant to what the
+            // transcript pane renders, and (per this function's own
+            // one-event-per-record shape) there is nowhere left to carry
+            // them once this record maps to `TextDelta` instead of
+            // `TurnFinished`.
+            Event::TextDelta {
+                text: assistant_text(content),
             },
         )),
         LogRecord::ToolCallRecord { seq, ts, call } => Some((
@@ -712,6 +894,26 @@ fn record_to_event(record: &LogRecord) -> Option<(LogSeq, DateTime<Utc>, Event)>
     }
 }
 
+/// Concatenates every `ContentBlock::Text` block's text, in order, with no
+/// separator -- exactly how live `TextDelta`s already accumulate into one
+/// `Entry::Assistant` bubble (`conway-cli`'s `AppState::append_assistant_text`
+/// just `push_str`s each delta onto the last one with nothing in between),
+/// so replaying an `Assistant` record's full text as a single `TextDelta`
+/// (`record_to_event`'s `LogRecord::Assistant` arm) renders identically to
+/// however that same reply looked when it streamed in live. Non-`Text`
+/// blocks (`Thinking`/`ToolUse`/etc.) are skipped -- this is the reply TEXT
+/// specifically, the same narrowing `tool_result_preview` below already
+/// applies for the analogous tool-result case.
+fn assistant_text(content: &[ContentBlock]) -> String {
+    content
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
 /// The first text block's text, truncated to 200 chars -- mirrors
 /// `conway-runtime`'s own live `ToolCallFinished.preview` derivation
 /// (`crates/conway-runtime/src/tools/runner.rs`'s `preview_text`, private
@@ -769,6 +971,15 @@ impl TurnHandle {
     /// finishes within the same generation without a distinct
     /// `TurnFinished`, up to `Event::AgentFinished` (whose `AgentResult` is
     /// buffered for a subsequent `result()` call).
+    ///
+    /// **`AgentFinished` is agent-id-checked here, not just filtered
+    /// upstream:** `EventStream::accept` passes every `AgentFinished`
+    /// through regardless of session/agent (tree lifecycle is global -- see
+    /// its doc), so this turn's own internal stream can now observe a
+    /// DIFFERENT agent's (e.g. a subagent spawned mid-turn) completion.
+    /// Only an `AgentFinished` whose `result.agent_id` matches this turn's
+    /// own `self.agent` is treated as terminal; any other is silently
+    /// ignored here, same as an unrelated lifecycle note would be.
     pub async fn text(&self) -> Result<String> {
         let mut inner = self.inner.lock().await;
         let mut text = String::new();
@@ -776,7 +987,7 @@ impl TurnHandle {
             match envelope.event {
                 Event::TextDelta { text: delta } => text.push_str(&delta),
                 Event::TurnFinished { .. } => break,
-                Event::AgentFinished { result } => {
+                Event::AgentFinished { result } if result.agent_id == self.agent => {
                     inner.buffered_result = Some(result);
                     break;
                 }
@@ -815,6 +1026,12 @@ impl TurnHandle {
     /// dropped); it exists so this method has a total, typed return rather
     /// than panicking on an unreachable-but-not-provably-impossible stream
     /// end.
+    ///
+    /// **Agent-id-checked, same reason as [`Self::text`]:** `EventStream`'s
+    /// tree-lifecycle passthrough means this turn's stream can observe an
+    /// `AgentFinished` for an agent other than `self.agent` (e.g. a
+    /// subagent this turn spawned finishing first); only a matching
+    /// `result.agent_id` resolves this call.
     pub async fn result(&self) -> Result<AgentResult> {
         let mut inner = self.inner.lock().await;
         if let Some(result) = inner.buffered_result.take() {
@@ -824,7 +1041,9 @@ impl TurnHandle {
             match next_envelope(&mut inner.stream).await {
                 Some(envelope) => {
                     if let Event::AgentFinished { result } = envelope.event {
-                        return Ok(result);
+                        if result.agent_id == self.agent {
+                            return Ok(result);
+                        }
                     }
                 }
                 None => {
@@ -840,6 +1059,14 @@ impl TurnHandle {
     /// agent -- distinct from the internal stream `text()`/`result()`
     /// drain, so calling this does not consume events those methods still
     /// need (and vice versa).
+    ///
+    /// One exception to the "scoped to this turn's agent" filter: as with
+    /// every [`EventStream`], `AgentSpawned`/`AgentFinished` bypass the
+    /// filter and are delivered regardless of which agent they name (tree
+    /// lifecycle is a global concern -- see [`EventStream`]). A consumer
+    /// building a "this agent only" view from lifecycle events must check
+    /// `envelope.agent` itself; `text()`/`result()` do exactly that
+    /// internally to avoid resolving on a subagent's finish.
     pub fn events(&self) -> EventStream {
         EventStream::live(self.session, Some(self.agent), self.rt.subscribe())
     }

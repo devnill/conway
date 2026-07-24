@@ -10,7 +10,7 @@
 //! char boundary, since it walks `char_indices`) right before any `String`
 //! mutation, so multi-byte UTF-8 input can never split a character.
 
-use conway::{PermissionDecision, PermissionScope};
+use conway::{AgentId, PermissionDecision, PermissionScope};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::state::{AppState, Mode};
@@ -36,6 +36,24 @@ pub enum Action {
     Quit,
     ScrollUp,
     ScrollDown,
+    /// Board item 01KYASZPVVRCHGTEAN9XS5C6EC: bare arrow `Up`/`Down` (when
+    /// neither the palette nor the agent panel is active) scroll ONE line,
+    /// not a page -- in alt-screen the terminal reports touchpad/wheel
+    /// scroll as arrow keys (WI-127 clean-copy: mouse capture stays off, so
+    /// this is how a touchpad swipe actually reaches the app), and routing
+    /// those through the page-sized `ScrollUp`/`ScrollDown` made a light
+    /// touchpad nudge jump a whole page. `PageUp`/`PageDown` keep emitting
+    /// `ScrollUp`/`ScrollDown` unchanged.
+    ScrollLineUp,
+    ScrollLineDown,
+    /// WI-140: switch the transcript pane to `AgentId`'s own conversation.
+    /// Emitted by `Enter` on the `/agents` panel's highlighted row (any
+    /// row, including the root's own -- focusing the root row is one of
+    /// the two documented ways back), and by `Esc` while focused on a
+    /// non-root agent (the other way back, per the item's own doc). The
+    /// app loop (out of this module's scope) both mutates
+    /// `AppState::focus_agent` and re-subscribes `handle.agent_events`.
+    FocusAgent(AgentId),
 }
 
 /// Routes a keypress based on `state.mode`, mutating `state.input`/`cursor`
@@ -43,12 +61,23 @@ pub enum Action {
 /// app loop must act on.
 pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Action {
     match &state.mode {
-        Mode::AwaitingPermission(_) => handle_permission_key(key),
+        Mode::AwaitingPermission(_) => handle_permission_key(state, key),
         Mode::Normal => handle_normal_key(state, key),
     }
 }
 
-fn handle_permission_key(key: KeyEvent) -> Action {
+/// The permission overlay's own command-body scroll step (bug fix,
+/// 01KYB0F7V65QAMZWWYH8K7DWDC): `PageUp`/`PageDown` doesn't collide with the
+/// `y`/`a`/`n`/`Esc` decision keys below, so it's free to drive
+/// `AppState::permission_scroll` without touching decision handling at all.
+/// A generous fixed step (rather than deriving one from the actual overlay
+/// viewport height, which this module has no `Rect` for) -- `view/mod.rs`'s
+/// `draw_permission_overlay` clamps the value it's actually handed to the
+/// command's own wrapped line count, so an over-large step here can never
+/// scroll past real content; it just lands on the true bottom/top.
+const PERMISSION_SCROLL_STEP: u16 = 5;
+
+fn handle_permission_key(state: &mut AppState, key: KeyEvent) -> Action {
     match key.code {
         KeyCode::Char('y') | KeyCode::Char('Y') => {
             Action::PermissionDecision(PermissionDecision::AllowOnce)
@@ -66,6 +95,25 @@ fn handle_permission_key(key: KeyEvent) -> Action {
         KeyCode::Esc => Action::PermissionDecision(PermissionDecision::DenyWithFeedback {
             message: "user declined; try another approach".to_string(),
         }),
+        // Bug fix (01KYB0F7V65QAMZWWYH8K7DWDC): a long command's argument
+        // used to clip the decision keys off-screen with no way to see the
+        // rest of it. `PageUp`/`PageDown` page the overlay's own command
+        // body while the decision keys keep working exactly as above --
+        // mutated directly here (like `handle_normal_key`'s plain-editing
+        // keys) rather than via a new `Action` variant, since nothing here
+        // needs a live facade call.
+        KeyCode::PageDown => {
+            state.permission_scroll = state
+                .permission_scroll
+                .saturating_add(PERMISSION_SCROLL_STEP);
+            Action::None
+        }
+        KeyCode::PageUp => {
+            state.permission_scroll = state
+                .permission_scroll
+                .saturating_sub(PERMISSION_SCROLL_STEP);
+            Action::None
+        }
         _ => Action::None,
     }
 }
@@ -89,6 +137,20 @@ fn handle_normal_key(state: &mut AppState, key: KeyEvent) -> Action {
     match key.code {
         KeyCode::Enter => {
             if state.input.is_empty() {
+                // WI-140: with the agent panel open and nothing typed,
+                // Enter focuses the highlighted row's agent instead of
+                // being a pure no-op (its only prior behavior) -- the
+                // input line has nothing else to submit in this state, so
+                // this cannot collide with a real prompt/command.
+                if state.agent_view_open {
+                    if let Some(node) = state.tree.nodes.get(
+                        state
+                            .agent_selected
+                            .min(state.tree.nodes.len().saturating_sub(1)),
+                    ) {
+                        return Action::FocusAgent(node.agent_id);
+                    }
+                }
                 return Action::None;
             }
             let text = std::mem::take(&mut state.input);
@@ -122,27 +184,47 @@ fn handle_normal_key(state: &mut AppState, key: KeyEvent) -> Action {
             state.cursor = char_count(&state.input);
             Action::None
         }
-        // WI-130: arrows drive the on-demand surfaces. The slash-command
-        // palette takes priority when it is showing (the user is composing a
-        // command); otherwise the arrows scroll the agent panel when it is
-        // open. Neither active -> no-op (PageUp/PageDown still scroll the
-        // transcript).
+        // WI-130/bug 3 (01KYAN9XZ6E22NSQ3GS3726XW6): arrows drive the
+        // on-demand surfaces. The slash-command palette takes priority when
+        // it is showing (the user is composing a command); otherwise the
+        // arrows scroll the agent panel when it is open; otherwise -- the
+        // lowest-priority, most common case -- they scroll the transcript
+        // ONE LINE at a time (01KYASZPVVRCHGTEAN9XS5C6EC; `PageUp`/`PageDown`,
+        // below, are the full-page binding). Mouse wheel stays disabled by
+        // design (WI-127 clean-copy); this is a keyboard-only fix.
         KeyCode::Up => {
-            if !palette_navigate(state, -1) && state.agent_view_open {
+            if palette_navigate(state, -1) {
+                Action::None
+            } else if state.agent_view_open {
                 state.agent_scroll(-1);
+                Action::None
+            } else {
+                Action::ScrollLineUp
             }
-            Action::None
         }
         KeyCode::Down => {
-            if !palette_navigate(state, 1) && state.agent_view_open {
+            if palette_navigate(state, 1) {
+                Action::None
+            } else if state.agent_view_open {
                 state.agent_scroll(1);
+                Action::None
+            } else {
+                Action::ScrollLineDown
             }
-            Action::None
         }
         KeyCode::Esc => {
             // WI-130: Esc closes the agent panel when it is open.
             if state.agent_view_open {
                 state.agent_view_open = false;
+            }
+            // WI-140: Esc is also the other documented way back to the
+            // root's own conversation (alongside focusing the root row via
+            // Enter, above) -- whether or not the panel was open, so it
+            // still works once the panel has already been dismissed. A
+            // no-op (no `FocusAgent` emitted) when already on the root, so
+            // Esc does not force an unnecessary transcript clear+replay.
+            if !state.is_root_focused() {
+                return Action::FocusAgent(state.root_agent());
             }
             Action::None
         }
@@ -228,6 +310,7 @@ fn delete_word_before_cursor(state: &mut AppState) {
 #[cfg(test)]
 mod tests {
     use conway::AgentId;
+    use ratatui::layout::Rect;
 
     use super::*;
     use crate::tui::state::AppState;
@@ -316,6 +399,316 @@ mod tests {
         assert!(!state.agent_view_open);
     }
 
+    // ---- bug 3 (01KYAN9XZ6E22NSQ3GS3726XW6): arrow keys scroll the
+    // transcript when neither the palette nor the agent panel is active,
+    // preserving priority over both when they are. ----
+
+    // The small viewport `test_support`'s own PageUp test uses to force the
+    // 30-line transcript below to overflow -- mirrored here so the Up/Down
+    // tests exercise the same overflow condition (at the default 80x24
+    // size, 30 short lines fit with no scrolling at all, which would make
+    // `scroll > 0` assertions vacuous).
+    fn small_viewport() -> Rect {
+        Rect::new(0, 0, 20, 10)
+    }
+
+    #[test]
+    fn up_scrolls_the_transcript_when_neither_palette_nor_panel_is_active() {
+        use crate::tui::state::Entry;
+        use crate::tui::test_support::press;
+
+        let mut state = AppState::new(AgentId::new());
+        for i in 0..30 {
+            state.transcript.push(Entry::Assistant {
+                text: format!("line {i}"),
+            });
+        }
+        assert!(state.follow_tail);
+
+        let action = press(&mut state, key(KeyCode::Up), small_viewport());
+
+        assert_eq!(action, Action::ScrollLineUp);
+        assert!(
+            state.scroll > 0,
+            "Up must move `scroll` off the bottom, exactly like PageUp"
+        );
+        assert!(
+            !state.follow_tail,
+            "Up must disengage auto-follow, exactly like PageUp"
+        );
+    }
+
+    #[test]
+    fn down_scrolls_back_toward_the_bottom_and_reengages_follow() {
+        use crate::tui::state::Entry;
+        use crate::tui::test_support::press;
+
+        let mut state = AppState::new(AgentId::new());
+        for i in 0..30 {
+            state.transcript.push(Entry::Assistant {
+                text: format!("line {i}"),
+            });
+        }
+        // Scroll up first (as the previous test does), so there is
+        // somewhere for Down to scroll back down to.
+        assert_eq!(
+            press(&mut state, key(KeyCode::Up), small_viewport()),
+            Action::ScrollLineUp
+        );
+        assert!(!state.follow_tail);
+        let scrolled_up_to = state.scroll;
+
+        let action = press(&mut state, key(KeyCode::Down), small_viewport());
+
+        assert_eq!(action, Action::ScrollLineDown);
+        assert!(
+            state.scroll > scrolled_up_to,
+            "Down must move `scroll` back toward the bottom"
+        );
+        assert!(
+            state.follow_tail,
+            "Down must re-engage auto-follow once it reaches the bottom, \
+             exactly like PageDown"
+        );
+    }
+
+    // ---- 01KYASZPVVRCHGTEAN9XS5C6EC: arrows scroll ONE line, PageUp/
+    // PageDown keep the full-page step ----
+
+    #[test]
+    fn up_moves_scroll_by_exactly_one_line_not_a_page() {
+        use crate::tui::state::Entry;
+        use crate::tui::test_support::press;
+
+        let mut state = AppState::new(AgentId::new());
+        for i in 0..30 {
+            state.transcript.push(Entry::Assistant {
+                text: format!("line {i}"),
+            });
+        }
+        // First Up disengages `follow_tail` and establishes a real `scroll`
+        // baseline (while following, `scroll` itself is stale -- see
+        // `scroll_page_up`'s own doc on why it reads from `max_scroll`
+        // instead).
+        press(&mut state, key(KeyCode::Up), small_viewport());
+        let before = state.scroll;
+
+        let action = press(&mut state, key(KeyCode::Up), small_viewport());
+
+        assert_eq!(action, Action::ScrollLineUp);
+        assert_eq!(
+            state.scroll,
+            before - 1,
+            "Up must move `scroll` by exactly one line, not a page"
+        );
+    }
+
+    #[test]
+    fn down_moves_scroll_by_exactly_one_line_not_a_page() {
+        use crate::tui::state::Entry;
+        use crate::tui::test_support::press;
+
+        let mut state = AppState::new(AgentId::new());
+        for i in 0..30 {
+            state.transcript.push(Entry::Assistant {
+                text: format!("line {i}"),
+            });
+        }
+        // Scroll up several lines first, so there is room for Down to move
+        // without hitting the bottom clamp (which would re-engage
+        // `follow_tail` and make the step assertion vacuous).
+        for _ in 0..5 {
+            press(&mut state, key(KeyCode::Up), small_viewport());
+        }
+        let before = state.scroll;
+
+        let action = press(&mut state, key(KeyCode::Down), small_viewport());
+
+        assert_eq!(action, Action::ScrollLineDown);
+        assert_eq!(
+            state.scroll,
+            before + 1,
+            "Down must move `scroll` by exactly one line, not a page"
+        );
+    }
+
+    #[test]
+    fn page_up_and_page_down_still_move_a_full_page_unlike_the_arrows() {
+        use crate::tui::state::Entry;
+        use crate::tui::test_support::press;
+
+        let mut state = AppState::new(AgentId::new());
+        for i in 0..30 {
+            state.transcript.push(Entry::Assistant {
+                text: format!("line {i}"),
+            });
+        }
+        // First PageUp disengages `follow_tail` and establishes a real
+        // `scroll` baseline, same reasoning as the arrow test above.
+        press(&mut state, key(KeyCode::PageUp), small_viewport());
+        let before = state.scroll;
+
+        let up_action = press(&mut state, key(KeyCode::PageUp), small_viewport());
+        let after_page_up = state.scroll;
+
+        assert_eq!(up_action, Action::ScrollUp);
+        let page_step = before - after_page_up;
+        assert!(
+            page_step > 1,
+            "PageUp's step ({page_step}) must remain a full page, not the \
+             one-line arrow step"
+        );
+
+        let down_action = press(&mut state, key(KeyCode::PageDown), small_viewport());
+
+        assert_eq!(down_action, Action::ScrollDown);
+        assert_eq!(
+            state.scroll,
+            after_page_up + page_step,
+            "PageDown's step must be the same full-page size as PageUp's"
+        );
+    }
+
+    #[test]
+    fn agent_panel_open_keeps_up_down_driving_panel_nav_not_scroll() {
+        use crate::tui::state::{Entry, NodeStatus, TreeNode};
+        use crate::tui::test_support::press_key;
+
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let child = AgentId::new();
+        state.tree.nodes.push(TreeNode {
+            agent_id: child,
+            parent: Some(root),
+            agent_def: Some("reviewer".to_string()),
+            status: NodeStatus::Running,
+        });
+        for i in 0..30 {
+            state.transcript.push(Entry::Assistant {
+                text: format!("line {i}"),
+            });
+        }
+        state.agent_view_open = true;
+        assert_eq!(state.agent_selected, 0);
+
+        let action = press_key(&mut state, KeyCode::Down);
+
+        assert_eq!(
+            action,
+            Action::None,
+            "the agent panel must consume Down, not the transcript scroll"
+        );
+        assert_eq!(state.agent_selected, 1, "panel selection must have moved");
+        assert!(
+            state.follow_tail,
+            "the transcript must be untouched while the panel owns the key"
+        );
+
+        let action = press_key(&mut state, KeyCode::Up);
+
+        assert_eq!(action, Action::None);
+        assert_eq!(state.agent_selected, 0);
+        assert!(state.follow_tail);
+    }
+
+    #[test]
+    fn palette_composing_keeps_up_down_driving_the_palette_not_scroll() {
+        use crate::tui::state::Entry;
+        use crate::tui::test_support::press_key;
+
+        let mut state = AppState::new(AgentId::new());
+        for i in 0..30 {
+            state.transcript.push(Entry::Assistant {
+                text: format!("line {i}"),
+            });
+        }
+        type_str(&mut state, "/a"); // matches [/ask, /agents]; palette active
+
+        let action = press_key(&mut state, KeyCode::Down);
+
+        assert_eq!(
+            action,
+            Action::None,
+            "the palette must consume Down, not the transcript scroll"
+        );
+        assert_eq!(state.input, "/ask");
+        assert!(
+            state.follow_tail,
+            "the transcript must be untouched while the palette owns the key"
+        );
+
+        let action = press_key(&mut state, KeyCode::Up);
+
+        assert_eq!(action, Action::None);
+        assert!(state.follow_tail);
+    }
+
+    // ---- WI-140: focused-agent switch ----
+
+    #[test]
+    fn enter_on_an_empty_input_with_the_agent_panel_open_focuses_the_highlighted_row() {
+        use crate::tui::state::{NodeStatus, TreeNode};
+
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let child = AgentId::new();
+        state.tree.nodes.push(TreeNode {
+            agent_id: child,
+            parent: Some(root),
+            agent_def: Some("reviewer".to_string()),
+            status: NodeStatus::Running,
+        });
+        state.agent_view_open = true;
+        state.agent_selected = 1; // the child row
+
+        let action = handle_key(&mut state, key(KeyCode::Enter));
+
+        assert_eq!(action, Action::FocusAgent(child));
+    }
+
+    #[test]
+    fn enter_on_an_empty_input_with_the_panel_closed_is_still_a_noop() {
+        let mut state = AppState::new(AgentId::new());
+        assert!(!state.agent_view_open);
+        assert_eq!(handle_key(&mut state, key(KeyCode::Enter)), Action::None);
+    }
+
+    #[test]
+    fn esc_while_focused_off_root_returns_focus_to_root() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let child = AgentId::new();
+        state.focus_agent(child);
+
+        let action = handle_key(&mut state, key(KeyCode::Esc));
+
+        assert_eq!(action, Action::FocusAgent(root));
+    }
+
+    #[test]
+    fn esc_while_already_on_root_does_not_emit_a_focus_switch() {
+        let mut state = AppState::new(AgentId::new());
+        assert!(state.is_root_focused());
+
+        let action = handle_key(&mut state, key(KeyCode::Esc));
+
+        assert_eq!(action, Action::None);
+    }
+
+    #[test]
+    fn esc_closes_the_panel_and_refocuses_root_together() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let child = AgentId::new();
+        state.focus_agent(child);
+        state.agent_view_open = true;
+
+        let action = handle_key(&mut state, key(KeyCode::Esc));
+
+        assert!(!state.agent_view_open);
+        assert_eq!(action, Action::FocusAgent(root));
+    }
+
     #[test]
     fn palette_arrows_take_priority_over_the_agent_panel() {
         let mut state = AppState::new(AgentId::new());
@@ -366,27 +759,58 @@ mod tests {
     fn permission_mode_keys_map_to_decisions() {
         // Exercised directly (mode-independent of how `Mode::AwaitingPermission`
         // gets populated -- that wiring is `app.rs`'s job, via `AppState::offer_prompt`).
+        let mut state = AppState::new(AgentId::new());
         assert_eq!(
-            handle_permission_key(key(KeyCode::Char('y'))),
+            handle_permission_key(&mut state, key(KeyCode::Char('y'))),
             Action::PermissionDecision(PermissionDecision::AllowOnce)
         );
         assert_eq!(
-            handle_permission_key(key(KeyCode::Char('a'))),
+            handle_permission_key(&mut state, key(KeyCode::Char('a'))),
             Action::PermissionDecision(PermissionDecision::AllowAlways {
                 scope: PermissionScope::Session
             })
         );
         assert_eq!(
-            handle_permission_key(key(KeyCode::Char('n'))),
+            handle_permission_key(&mut state, key(KeyCode::Char('n'))),
             Action::PermissionDecision(PermissionDecision::Deny {
                 reason: "user denied".to_string()
             })
         );
         assert_eq!(
-            handle_permission_key(key(KeyCode::Esc)),
+            handle_permission_key(&mut state, key(KeyCode::Esc)),
             Action::PermissionDecision(PermissionDecision::DenyWithFeedback {
                 message: "user declined; try another approach".to_string()
             })
+        );
+    }
+
+    /// Bug fix companion: `PageDown`/`PageUp` while awaiting a permission
+    /// decision must page `AppState::permission_scroll` (for a long
+    /// command's overlay, 01KYB0F7V65QAMZWWYH8K7DWDC) instead of falling
+    /// through to `Action::None` doing nothing, and must never collide with
+    /// the `y`/`a`/`n`/`Esc` decision keys tested above.
+    #[test]
+    fn permission_mode_page_keys_scroll_instead_of_deciding() {
+        let mut state = AppState::new(AgentId::new());
+        assert_eq!(state.permission_scroll, 0);
+
+        assert_eq!(
+            handle_permission_key(&mut state, key(KeyCode::PageDown)),
+            Action::None
+        );
+        assert!(
+            state.permission_scroll > 0,
+            "PageDown must advance the overlay's own scroll offset"
+        );
+
+        let after_down = state.permission_scroll;
+        assert_eq!(
+            handle_permission_key(&mut state, key(KeyCode::PageUp)),
+            Action::None
+        );
+        assert!(
+            state.permission_scroll < after_down,
+            "PageUp must step the scroll offset back down"
         );
     }
 

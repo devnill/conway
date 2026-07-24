@@ -113,7 +113,7 @@ impl Conway {
             session: Some(session),
             agent_def,
             role: Some(role),
-            tools: None,
+            tools: spec.tools,
             budget,
             cwd,
             prompt: None,
