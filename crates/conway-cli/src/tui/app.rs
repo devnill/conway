@@ -77,6 +77,12 @@ enum SubmitOutcome {
     /// deliver it to `child` as that session's first prompt.
     FocusNewSession {
         child: conway::AgentId,
+        /// The agent `child` was created under -- seeds its `/agents` tree
+        /// node immediately (`AppState::ensure_agent_tracked`), since the
+        /// child's own `AgentSpawned` never reaches the stream the loop is
+        /// about to switch to (see that method's doc and `Effect::
+        /// FocusNewSession::parent`).
+        parent: conway::AgentId,
         first_message: Option<String>,
     },
 }
@@ -242,8 +248,19 @@ impl App {
                                     SubmitOutcome::Quit => return Ok(ExitCode::Completed),
                                     SubmitOutcome::FocusNewSession {
                                         child,
+                                        parent,
                                         first_message,
                                     } => {
+                                        // Seed the `/agents` node NOW, before
+                                        // the subscription swap below drops the
+                                        // parent stream (with the child's
+                                        // buffered `AgentSpawned` still in it,
+                                        // undrained). Without this the new
+                                        // session is absent from the panel --
+                                        // its spawn event reaches neither the
+                                        // child's replay nor its live half.
+                                        // See `AppState::ensure_agent_tracked`.
+                                        self.state.ensure_agent_tracked(child, parent);
                                         // Fix 3 (minor, review): if the
                                         // resubscribe itself fails, a
                                         // pending `first_message` would
@@ -375,10 +392,12 @@ impl App {
                         }
                         Effect::FocusNewSession {
                             child,
+                            parent,
                             first_message,
                         } => {
                             return Ok(SubmitOutcome::FocusNewSession {
                                 child,
+                                parent,
                                 first_message,
                             });
                         }

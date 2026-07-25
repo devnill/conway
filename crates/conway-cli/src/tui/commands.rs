@@ -307,6 +307,18 @@ pub enum Effect {
     /// message the user types once focused on it.
     FocusNewSession {
         child: AgentId,
+        /// The agent `child` was spawned/forked under (root for `/spawn`, the
+        /// focused agent for `/fork`). The app loop seeds `child`'s `/agents`
+        /// tree node under this parent immediately (`AppState::
+        /// ensure_agent_tracked`), rather than waiting for `child`'s
+        /// `AgentSpawned` event -- which never arrives on the stream the app
+        /// switches to. The app swaps its event subscription to
+        /// `agent_events(child)` the SAME turn, and that stream's replay is
+        /// `child`'s own records only (never its own spawn lifecycle event),
+        /// while the live half subscribed only AFTER the spawn already fired.
+        /// Without this seed the freshly created session is missing from the
+        /// panel until some LATER tree event happens to redraw it.
+        parent: AgentId,
         first_message: Option<String>,
     },
 }
@@ -466,6 +478,7 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
                 {
                     Ok(child) => Effect::FocusNewSession {
                         child,
+                        parent: focused,
                         first_message: directive,
                     },
                     Err(e) => {
@@ -492,6 +505,7 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
             match host.spawn(root, spec).await {
                 Ok(child) => Effect::FocusNewSession {
                     child,
+                    parent: root,
                     first_message: prompt,
                 },
                 Err(e) => {
@@ -1222,9 +1236,11 @@ mod tests {
         match effect {
             Effect::FocusNewSession {
                 child: focused,
+                parent,
                 first_message,
             } => {
                 assert_eq!(focused, child);
+                assert_eq!(parent, root, "a bare spawn attaches the child under root");
                 assert_eq!(first_message, None);
             }
             _ => panic!("expected Effect::FocusNewSession, got a different effect"),
@@ -1265,9 +1281,11 @@ mod tests {
         match effect {
             Effect::FocusNewSession {
                 child: focused,
+                parent,
                 first_message,
             } => {
                 assert_eq!(focused, child);
+                assert_eq!(parent, root, "a bare spawn attaches the child under root");
                 assert_eq!(first_message, Some("hello there".to_string()));
             }
             _ => panic!("expected Effect::FocusNewSession, got a different effect"),
@@ -1308,9 +1326,14 @@ mod tests {
         match effect {
             Effect::FocusNewSession {
                 child,
+                parent,
                 first_message,
             } => {
                 assert_eq!(child, grandchild);
+                assert_eq!(
+                    parent, child_focus,
+                    "a bare fork attaches the child under the focused agent"
+                );
                 assert_eq!(first_message, None);
             }
             _ => panic!("expected Effect::FocusNewSession, got a different effect"),
@@ -1354,9 +1377,14 @@ mod tests {
         match effect {
             Effect::FocusNewSession {
                 child: focused,
+                parent,
                 first_message,
             } => {
                 assert_eq!(focused, child);
+                assert_eq!(
+                    parent, root,
+                    "the focused agent (root here) is the fork parent"
+                );
                 assert_eq!(first_message, Some("please review".to_string()));
             }
             _ => panic!("expected Effect::FocusNewSession, got a different effect"),
@@ -1643,20 +1671,38 @@ mod tests {
         .await;
         let Effect::FocusNewSession {
             child: focused_child,
+            parent,
             ..
         } = effect
         else {
             panic!("expected Effect::FocusNewSession");
         };
         assert_eq!(focused_child, child);
+        assert_eq!(parent, root, "a bare spawn's parent is root");
 
-        // Mirrors `App::try_focus_agent`'s own state mutation for this
-        // effect -- the live `agent_events` resubscribe it also performs
-        // has no equivalent here (no facade), but the `AppState` mutation
-        // under test is exactly this one call.
+        // Mirrors `App::run`'s own handling of this effect: seed the tree
+        // node, THEN focus + resubscribe. The seed is the fix under test --
+        // without it the freshly spawned child is absent from the `/agents`
+        // panel, since its own `AgentSpawned` reaches neither the child
+        // stream's replay (own records only) nor its live half (subscribed
+        // after the spawn already fired).
         assert_ne!(
             state.focused_agent, child,
             "must not already be focused on the not-yet-focused child"
+        );
+        assert!(
+            !state.tree.nodes.iter().any(|n| n.agent_id == child),
+            "precondition: the child is not in the tree until seeded"
+        );
+        state.ensure_agent_tracked(child, parent);
+        assert!(
+            state
+                .tree
+                .nodes
+                .iter()
+                .any(|n| n.agent_id == child && n.parent == Some(root)),
+            "the /agents tree must list the newly spawned child under root: {:?}",
+            state.tree.nodes
         );
         state.focus_agent(child);
 
@@ -1695,14 +1741,27 @@ mod tests {
         .await;
         let Effect::FocusNewSession {
             child: focused_child,
+            parent,
             first_message,
         } = effect
         else {
             panic!("expected Effect::FocusNewSession");
         };
         assert_eq!(focused_child, child);
+        assert_eq!(
+            parent, root,
+            "a bare fork's parent is the focused agent (root here)"
+        );
         assert_eq!(first_message, Some("go".to_string()));
 
+        // Same regression as the spawn case: seed the tree node (the fix)
+        // before focusing, and confirm the child now appears in the panel.
+        state.ensure_agent_tracked(child, parent);
+        assert!(
+            state.tree.nodes.iter().any(|n| n.agent_id == child),
+            "the /agents tree must list the newly forked child: {:?}",
+            state.tree.nodes
+        );
         state.focus_agent(child);
         assert_eq!(state.focused_agent, child);
         let rendered = crate::tui::test_support::render(&state, RENDER_WIDTH, 24);
