@@ -563,6 +563,47 @@ impl AppState {
         }
     }
 
+    /// Seeds a `/agents` tree node for a freshly created interactive child
+    /// (bare `/spawn` or `/fork`) immediately, so the panel shows it the
+    /// instant the session exists -- WITHOUT waiting for `child`'s own
+    /// `Event::AgentSpawned` to reach [`Self::apply`].
+    ///
+    /// That event never arrives on the stream the app switches to: the app
+    /// swaps its subscription to `handle.agent_events(child)` the same turn
+    /// the child is created, and that stream's replay is `child`'s own
+    /// session records only -- which never contain its own spawn lifecycle
+    /// event (`record_to_event` maps stored `LogRecord`s, and `AgentSpawned`
+    /// is not one) -- while its live half was subscribed only AFTER
+    /// `host.spawn`/`host.fork` already broadcast the event. The old
+    /// (parent) subscription HAD buffered that `AgentSpawned`, but it is
+    /// dropped, undrained, when the app replaces `events` with the child's
+    /// stream. Seeding here closes that gap directly, from the id and parent
+    /// the app already holds.
+    ///
+    /// Idempotent and safe against a later real `AgentSpawned` for the same
+    /// agent: if the node already exists this is a no-op, and
+    /// [`Self::apply_agent_spawned`] itself no-ops (only refreshes status)
+    /// when the tree already contains the agent. No transcript entry is
+    /// pushed -- unlike `apply_agent_spawned`, which would push an inline
+    /// `Entry::Agent` under the (about-to-be-unfocused) parent, only for
+    /// [`Self::focus_agent`] to clear it a moment later.
+    pub fn ensure_agent_tracked(&mut self, agent: AgentId, parent: AgentId) {
+        if self.tree.contains(agent) {
+            return;
+        }
+        let attach = if self.tree.contains(parent) {
+            Some(parent)
+        } else {
+            self.tree.root
+        };
+        self.tree.insert(TreeNode {
+            agent_id: agent,
+            parent: attach,
+            agent_def: None,
+            status: NodeStatus::Running,
+        });
+    }
+
     /// The single mutation entry point: applies one envelope's effect to
     /// `transcript`/`tree`. Never panics -- an event about an unknown
     /// call/agent degrades to a `Notice` rather than being dropped silently
@@ -1549,6 +1590,95 @@ mod tests {
                 "status {status:?} must be treated as terminal (not live)"
             );
         }
+    }
+
+    #[test]
+    fn ensure_agent_tracked_seeds_a_running_node_under_the_given_parent() {
+        // The panel-population fix: a bare /spawn or /fork child must appear
+        // in the tree immediately, since its own `AgentSpawned` never reaches
+        // the stream the app switches to.
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let child = AgentId::new();
+
+        state.ensure_agent_tracked(child, root);
+
+        let node = state
+            .tree
+            .nodes
+            .iter()
+            .find(|n| n.agent_id == child)
+            .expect("the child must have been seeded into the tree");
+        assert_eq!(node.parent, Some(root));
+        assert_eq!(node.status, NodeStatus::Running);
+    }
+
+    #[test]
+    fn ensure_agent_tracked_is_idempotent_and_never_downgrades_an_existing_node() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let child = AgentId::new();
+        // A real `AgentSpawned` already put the child in the tree, and it has
+        // since finished. A late seed must not resurrect it as `Running`.
+        state.apply(&envelope(
+            SessionId::new(),
+            child,
+            Event::AgentSpawned {
+                kind: SubagentMode::Spawn,
+                parent: Some(root),
+                agent_def: None,
+                inherited_upto: None,
+            },
+        ));
+        state.apply(&envelope(
+            SessionId::new(),
+            child,
+            Event::AgentFinished {
+                result: AgentResult::new(child, SessionId::new(), ResultStatus::Completed, "done"),
+            },
+        ));
+        let before = state.tree.nodes.len();
+
+        state.ensure_agent_tracked(child, root);
+
+        assert_eq!(
+            state.tree.nodes.len(),
+            before,
+            "seeding an already-tracked agent must not add a duplicate node"
+        );
+        let node = state
+            .tree
+            .nodes
+            .iter()
+            .find(|n| n.agent_id == child)
+            .unwrap();
+        assert_eq!(
+            node.status,
+            NodeStatus::Finished,
+            "an existing finished node must not be downgraded to Running"
+        );
+    }
+
+    #[test]
+    fn ensure_agent_tracked_attaches_under_root_when_the_parent_is_unknown() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let child = AgentId::new();
+        let unknown_parent = AgentId::new();
+
+        state.ensure_agent_tracked(child, unknown_parent);
+
+        let node = state
+            .tree
+            .nodes
+            .iter()
+            .find(|n| n.agent_id == child)
+            .expect("the child must still be seeded");
+        assert_eq!(
+            node.parent,
+            Some(root),
+            "an unknown parent falls back to attaching under the tree root"
+        );
     }
 
     #[test]
