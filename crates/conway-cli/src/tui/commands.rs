@@ -619,8 +619,13 @@ fn render_tree_snapshot(snapshot: &AgentTreeSnapshot, state: &mut AppState) {
             .agent_def
             .clone()
             .unwrap_or_else(|| "agent".to_string());
+        // Ephemeral `/ask` children stay in the snapshot (P-2 provenance);
+        // the plain-text suffix is what distinguishes them from persistent
+        // subagents -- ASCII only, no color-only distinction, so a copied
+        // transcript line keeps the marker.
+        let ephemeral_marker = if node.ephemeral { " (ephemeral)" } else { "" };
         lines.push(format!(
-            "{indent}{} {label} [{:?}]",
+            "{indent}{} {label} [{:?}]{ephemeral_marker}",
             node.agent_id, node.status
         ));
     }
@@ -1123,6 +1128,80 @@ mod tests {
         execute(SlashCommand::Tree, &mut state, &host).await;
 
         assert_eq!(host.calls(), vec!["tree"]);
+    }
+
+    /// MIN-3: `/tree` keeps ephemeral `/ask` children in the rendered output
+    /// (P-2 provenance) but suffixes their line with a plain-text
+    /// `(ephemeral)` marker so they read distinctly from persistent
+    /// subagents. `conway_core::agent::AgentNode` is not in this crate's
+    /// curated `conway` re-export list, so the fixture reaches into
+    /// `conway-core` directly -- the same pattern the
+    /// `ContextReportEntry`/`SegmentId` fixtures above already use.
+    #[test]
+    fn render_tree_snapshot_marks_ephemeral_nodes_only() {
+        let root = AgentId::new();
+        let ephemeral_child = AgentId::new();
+        let persistent_child = AgentId::new();
+        let session = SessionId::new();
+        let node = |id: AgentId, parent: Option<AgentId>, ephemeral: bool| {
+            conway_core::agent::AgentNode {
+                agent_id: id,
+                session,
+                parent,
+                mode: parent.map(|_| SubagentMode::Fork),
+                agent_def: None,
+                role: None,
+                status: conway_core::agent::AgentStatus::Running,
+                steps_taken: 0,
+                budget: conway_core::agent::Budget::default(),
+                ephemeral,
+            }
+        };
+        let snapshot = AgentTreeSnapshot {
+            root,
+            nodes: vec![
+                node(root, None, false),
+                node(ephemeral_child, Some(root), true),
+                node(persistent_child, Some(root), false),
+            ],
+            at: chrono::Utc::now(),
+        };
+        let mut state = AppState::new(root);
+
+        render_tree_snapshot(&snapshot, &mut state);
+
+        let lines: Vec<&str> = state
+            .transcript
+            .iter()
+            .filter_map(|entry| match entry {
+                Entry::Notice { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        // Every node renders exactly one line -- the marker is added, never
+        // a node filtered.
+        assert_eq!(lines.len(), 3, "one rendered line per snapshot node");
+        let line_of = |id: AgentId| {
+            lines
+                .iter()
+                .find(|line| line.contains(&id.to_string()))
+                .unwrap_or_else(|| panic!("{id} must have a rendered line"))
+        };
+        assert!(
+            line_of(ephemeral_child).ends_with("(ephemeral)"),
+            "ephemeral child's line carries the marker: {:?}",
+            line_of(ephemeral_child)
+        );
+        assert!(
+            !line_of(persistent_child).contains("(ephemeral)"),
+            "persistent child's line carries no marker: {:?}",
+            line_of(persistent_child)
+        );
+        assert!(
+            !line_of(root).contains("(ephemeral)"),
+            "root's line carries no marker: {:?}",
+            line_of(root)
+        );
     }
 
     #[tokio::test]
