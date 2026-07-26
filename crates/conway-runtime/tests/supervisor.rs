@@ -44,6 +44,7 @@ fn mk_node(
         budget,
         cancel,
         inherited_upto: None,
+        ephemeral: false,
     }
 }
 
@@ -528,6 +529,7 @@ async fn agent_spawned_precedes_and_exactly_one_agent_finished_follows() {
             agent,
             Event::AgentFinished {
                 result: expected_for_task.clone(),
+                ephemeral: false,
             },
         );
         expected_for_task
@@ -643,6 +645,7 @@ async fn concurrent_task_completion_and_grace_synthesis_never_double_emit_agent_
                     agent,
                     Event::AgentFinished {
                         result: result.clone(),
+                        ephemeral: false,
                     },
                 );
             }

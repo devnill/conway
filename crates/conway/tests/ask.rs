@@ -579,3 +579,98 @@ async fn ask_child_can_invoke_a_tool_the_parent_session_had() {
         "the inherited 'marker' tool call must succeed, not error"
     );
 }
+
+// ---------------------------------------------------------------------
+// Ephemeral flag on the live event stream (board item b)
+// ---------------------------------------------------------------------
+
+/// The facade `/ask` child is born with `SessionMeta::ephemeral = true`
+/// (`fork_child`), which `resume_root` stamps into `AgentNode::ephemeral`.
+/// The live `Event::AgentFinished` for that child must therefore carry
+/// `ephemeral: true` (stamped by `agent_loop.rs`/`supervisor.rs` via
+/// `AgentTree::ephemeral_of`).
+///
+/// Disclosure (matches the spec's design, NOT a gap): `resume_root` attaches
+/// the child with `kind: None` (a resumed root is re-started, not spawned --
+/// see `tree.rs`'s module doc), so `AgentTree::attach` does NOT emit an
+/// `Event::AgentSpawned` for the facade `/ask` path. Only `AgentFinished` is
+/// observable on the live stream; the `ephemeral: true` flag still reaches
+/// it via `AgentNode::ephemeral` -> `ephemeral_of`. The runtime-level
+/// `AgentSpawned { ephemeral: true }` stamping is covered by
+/// `crates/conway-runtime/tests/ephemeral_events.rs` (direct `AgentTree::attach`
+/// with `kind: Some(Fork)`).
+#[tokio::test]
+async fn ask_child_emits_agent_finished_with_ephemeral_true() {
+    use conway_core::event::Event;
+    use futures_core::Stream as _;
+
+    let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
+    let backend = Arc::new(
+        ScriptedBackend::new(vec![
+            ScriptedTurn::Respond(text_response("parent ack")),
+            ScriptedTurn::Respond(text_response("ask answer")),
+        ])
+        .with_id(BackendId::new("fake")),
+    );
+    let conway = build_conway_with_backend(store.clone(), backend);
+
+    let handle = conway
+        .new_session(SessionSpec::default())
+        .await
+        .expect("new_session should succeed");
+    let turn = handle.prompt("parent turn").await.expect("prompt");
+    let _ = tokio::time::timeout(Duration::from_secs(5), turn.result())
+        .await
+        .expect("parent result must not hang")
+        .expect("parent result should succeed");
+
+    // Subscribe BEFORE `ask` so the child's finish cannot race past the
+    // subscriber. `handle.events()` is session-scoped to the parent, but
+    // `EventStream::accept` bypasses the session filter for lifecycle events
+    // (`AgentSpawned`/`AgentFinished`) -- see `event_stream.rs` -- so the
+    // child's `AgentFinished` reaches this stream.
+    let mut events = handle.events();
+
+    let ask_turn = handle
+        .ask("(ephemeral) checking")
+        .await
+        .expect("ask should succeed");
+    // Drive the child's turn to completion so its `AgentFinished` is emitted.
+    let _ = tokio::time::timeout(Duration::from_secs(5), ask_turn.result())
+        .await
+        .expect("ask result must not hang")
+        .expect("ask result should succeed");
+
+    let child_id = conway
+        .sessions(SessionFilter {
+            include_ephemeral: true,
+            ..SessionFilter::default()
+        })
+        .await
+        .expect("sessions() should succeed")
+        .into_iter()
+        .find(|m| m.id != handle.id())
+        .expect("the ask child must be present")
+        .agent_id;
+
+    let finished = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let envelope =
+                std::future::poll_fn(|cx| std::pin::Pin::new(&mut events).poll_next(cx))
+                    .await
+                    .expect("event stream open");
+            if let Event::AgentFinished { ephemeral, .. } = envelope.event {
+                if envelope.agent == child_id {
+                    return ephemeral;
+                }
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for the ask child's AgentFinished");
+
+    assert!(
+        finished,
+        "the facade /ask child's AgentFinished must carry ephemeral: true"
+    );
+}

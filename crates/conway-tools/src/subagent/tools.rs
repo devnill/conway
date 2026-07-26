@@ -1,8 +1,13 @@
-//! `conway_subagent`, `conway_steer`, `conway_await`, `conway_cancel`: a pure
-//! wrapper over `ToolCtx::subagents` (WI-066). Zero delegation logic: every
-//! tool does argument parsing, one `ToolCtx::subagents` call (the same
-//! `SubagentHost` port the developer API's `fork`/`spawn` calls), and result
-//! shaping.
+//! `conway_subagent`: a pure wrapper over `ToolCtx::subagents` (WI-066).
+//! Zero delegation logic: argument parsing, one `ToolCtx::subagents` call
+//! (the same `SubagentHost` port the developer API's `fork`/`spawn` calls),
+//! and result shaping.
+//!
+//! The small delegation tools `conway_steer`/`conway_await`/`conway_cancel`
+//! live in `control.rs`; `conway_ask` lives in `ask.rs`. This file holds the
+//! shared helpers those siblings need (`host_error`, `parse_agent_id`,
+//! `wait_for_result`, `BudgetArg`, the config helpers, `TRUNCATION`) plus
+//! `SubagentTool` itself.
 
 use std::time::Duration;
 
@@ -10,9 +15,7 @@ use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use conway_core::agent::{
-    AgentDefRef, AgentResult, Budget, ResultStatus, SubagentSpec, ToolSelector,
-};
+use conway_core::agent::{AgentDefRef, AgentResult, Budget, ResultStatus, SubagentSpec, ToolSelector};
 use conway_core::content::{
     ContentBlock, PermissionClass, ToolCall, ToolCategory, ToolSpec, TruncationPolicy,
 };
@@ -23,9 +26,9 @@ use conway_core::ports::{PluginConfig, Tool, ToolCtx, ToolOutput};
 
 use crate::common::{check_cancel, parse_args, text_output};
 
-/// Declared by every tool here: an oversized result keeps its tail
+/// Declared by every subagent tool: an oversized result keeps its tail
 /// (summary/facts/status), the part that must survive.
-const TRUNCATION: TruncationPolicy = TruncationPolicy::Tail { max_bytes: 16_384 };
+pub(super) const TRUNCATION: TruncationPolicy = TruncationPolicy::Tail { max_bytes: 16_384 };
 
 const DEFAULT_MAX_STEPS: u32 = 40;
 /// Default `Budget::deadline`, in seconds from now, absent an override.
@@ -45,15 +48,17 @@ enum ModeArg {
     Spawn,
 }
 
+/// A resource ceiling passed to a subagent call. Shared by `conway_subagent`
+/// and `conway_ask`.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct BudgetArg {
+pub(super) struct BudgetArg {
     #[schemars(range(min = 1))]
-    max_steps: Option<u32>,
+    pub(super) max_steps: Option<u32>,
     #[schemars(range(min = 1))]
-    deadline_secs: Option<u64>,
+    pub(super) deadline_secs: Option<u64>,
     #[schemars(range(min = 1))]
-    max_tokens: Option<u32>,
+    pub(super) max_tokens: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -84,54 +89,60 @@ struct SubagentArgs {
     await_flag: bool,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-struct SteerArgs {
-    agent_id: String,
-    text: String,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-struct AwaitArgs {
-    agent_id: String,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-struct CancelArgs {
-    agent_id: String,
-    #[serde(default)]
-    reason: Option<String>,
-}
-
 /// Maps a `SubagentHost` failure (host/infrastructure, never
 /// model-recoverable) to a `ToolError`. `conway-core` has no `Host` variant
 /// (WI-061 assumption 3 named one that doesn't exist); `Internal` is the
 /// closest fit, vs. `InvalidArguments` (a caller mistake).
-fn host_error(err: RuntimeError) -> ToolError {
+pub(super) fn host_error(err: RuntimeError) -> ToolError {
     ToolError::Internal {
         detail: err.to_string(),
     }
 }
 
-fn parse_agent_id(raw: &str) -> Result<AgentId, ToolError> {
+pub(super) fn parse_agent_id(raw: &str) -> Result<AgentId, ToolError> {
     raw.parse::<AgentId>()
         .map_err(|e| ToolError::InvalidArguments {
             detail: format!("agent_id: {e}"),
         })
 }
 
-fn config_u64(config: &PluginConfig, key: &str) -> Option<u64> {
+pub(super) fn config_u64(config: &PluginConfig, key: &str) -> Option<u64> {
     config.values.get(key).and_then(|v| v.as_u64())
 }
-fn config_u32(config: &PluginConfig, key: &str) -> Option<u32> {
+pub(super) fn config_u32(config: &PluginConfig, key: &str) -> Option<u32> {
     config_u64(config, key).and_then(|v| u32::try_from(v).ok())
+}
+
+/// The largest `deadline_secs` accepted from a model/config-supplied budget.
+/// Well under `chrono::Duration::seconds`' i64 nanosecond bound (~9.2e9s /
+/// ~292y), and well over any sane deadline for a single subagent/ephemeral run
+/// (~50y). Larger values are rejected as `InvalidArguments` (P-10: model-
+/// supplied numeric args are range-checked, never panic) rather than
+/// saturating -- the previous `i64::try_from(..).unwrap_or(i64::MAX)` saturated
+/// straight into `Duration::seconds`' overflow panic (cycle-3 review SIG-1;
+/// the earlier "saturate rather than wrap" note was a cycle-1 fix for a
+/// silent-wrap bug that traded one defect for another).
+pub(super) const MAX_DEADLINE_SECS: u64 = 1_576_800_000; // 50 * 365 * 86_400
+
+/// Builds the `deadline` `DateTime` from a model/config-supplied `deadline_secs`,
+/// range-checking per P-10. Out-of-range -> `ToolError::InvalidArguments`
+/// (never a panic). Shared by `conway_subagent` and `conway_ask`.
+pub(super) fn deadline_from_secs(secs: u64) -> Result<chrono::DateTime<chrono::Utc>, ToolError> {
+    if secs > MAX_DEADLINE_SECS {
+        return Err(ToolError::InvalidArguments {
+            detail: format!(
+                "deadline_secs ({secs}) exceeds the maximum ({MAX_DEADLINE_SECS} seconds, ~50 years)"
+            ),
+        });
+    }
+    // `secs <= MAX_DEADLINE_SECS` (~1.58e9) fits i64 and is well under chrono's
+    // nanosecond bound, so this cast and `Duration::seconds` cannot overflow.
+    Ok(chrono::Utc::now() + chrono::Duration::seconds(secs as i64))
 }
 
 /// Precedence: the call's `budget` argument, then `ctx.config`'s
 /// `subagent.*` keys, then the defaults (40 steps, 10-minute deadline).
-fn resolve_budget(arg: Option<BudgetArg>, config: &PluginConfig) -> Budget {
+fn resolve_budget(arg: Option<BudgetArg>, config: &PluginConfig) -> Result<Budget, ToolError> {
     let max_steps = arg
         .as_ref()
         .and_then(|b| b.max_steps)
@@ -147,17 +158,12 @@ fn resolve_budget(arg: Option<BudgetArg>, config: &PluginConfig) -> Budget {
         .and_then(|b| b.max_tokens)
         .or_else(|| config_u32(config, "subagent.max_tokens"));
 
-    Budget {
+    Ok(Budget {
         max_steps,
-        // Saturate rather than wrap: `u64::MAX as i64` would silently become
-        // an already-expired deadline (cycle-1 review M1).
-        deadline: Some(
-            chrono::Utc::now()
-                + chrono::Duration::seconds(i64::try_from(deadline_secs).unwrap_or(i64::MAX)),
-        ),
+        deadline: Some(deadline_from_secs(deadline_secs)?),
         max_tokens,
         max_tool_calls: None,
-    }
+    })
 }
 
 /// `is_error` is `false` only for `ResultStatus::Completed`.
@@ -175,7 +181,7 @@ fn agent_result_output(result: &AgentResult) -> ToolOutput {
 /// Waits for `child`'s result, honoring `ctx.cancel` cooperatively. On
 /// cancellation, best-effort cancels the child (its own error is ignored)
 /// and returns `Err(ToolError::Cancelled)`.
-async fn wait_for_result(ctx: &ToolCtx, child: AgentId) -> Result<ToolOutput, ToolError> {
+pub(super) async fn wait_for_result(ctx: &ToolCtx, child: AgentId) -> Result<ToolOutput, ToolError> {
     // One pinned future, re-polled across iterations: selecting on a fresh
     // `await_result` call each loop would drop and re-issue the in-flight
     // wait every poll tick — ~30k redundant host calls over a default
@@ -248,7 +254,7 @@ impl Tool for SubagentTool {
             agent_def: args.agent_def.map(AgentDefRef),
             role: args.role.map(RoleAlias::new),
             tools: args.tools.map(ToolSelector::Only),
-            budget: resolve_budget(args.budget, &ctx.config),
+            budget: resolve_budget(args.budget, &ctx.config)?,
             result_contract,
             await_result: args.await_flag,
             // The model-invoked `conway_subagent` tool is always the
@@ -258,6 +264,7 @@ impl Tool for SubagentTool {
             // `ForkSpec::keep_alive`, the TUI's bare `/spawn`/`/fork`) ever
             // set.
             keep_alive: false,
+            ephemeral: false,
         };
 
         let child = ctx
@@ -273,133 +280,5 @@ impl Tool for SubagentTool {
             ));
         }
         wait_for_result(&ctx, child).await
-    }
-}
-
-/// `conway_steer`: sends a text message to a running child.
-#[derive(Debug, Default)]
-pub struct SteerTool;
-
-impl SteerTool {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-#[async_trait]
-impl Tool for SteerTool {
-    fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: ToolName::new("conway_steer"),
-            description: "Send a steering message to a running child agent".into(),
-            schema: schemars::schema_for!(SteerArgs),
-            category: ToolCategory::Delegate,
-            permission: PermissionClass::RequiresApproval,
-        }
-    }
-
-    async fn invoke(&self, call: ToolCall, ctx: ToolCtx) -> Result<ToolOutput, ToolError> {
-        check_cancel(&ctx)?;
-        let args: SteerArgs = parse_args(&call)?;
-        let target = parse_agent_id(&args.agent_id)?;
-        ctx.subagents
-            .steer(target, args.text)
-            .await
-            .map_err(host_error)?;
-        Ok(text_output(format!("steered agent {target}"), TRUNCATION))
-    }
-}
-
-/// `conway_await`: blocks for a child's terminal result.
-#[derive(Debug, Default)]
-pub struct AwaitTool;
-
-impl AwaitTool {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-#[async_trait]
-impl Tool for AwaitTool {
-    fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: ToolName::new("conway_await"),
-            description: "Block for a child agent's terminal result".into(),
-            schema: schemars::schema_for!(AwaitArgs),
-            category: ToolCategory::Delegate,
-            permission: PermissionClass::Safe,
-        }
-    }
-
-    async fn invoke(&self, call: ToolCall, ctx: ToolCtx) -> Result<ToolOutput, ToolError> {
-        check_cancel(&ctx)?;
-        let args: AwaitArgs = parse_args(&call)?;
-        let target = parse_agent_id(&args.agent_id)?;
-        wait_for_result(&ctx, target).await
-    }
-}
-
-/// `conway_cancel`: cancels a running child.
-#[derive(Debug, Default)]
-pub struct CancelTool;
-
-impl CancelTool {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-#[async_trait]
-impl Tool for CancelTool {
-    fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: ToolName::new("conway_cancel"),
-            description: "Cancel a running child agent".into(),
-            schema: schemars::schema_for!(CancelArgs),
-            category: ToolCategory::Delegate,
-            permission: PermissionClass::RequiresApproval,
-        }
-    }
-
-    async fn invoke(&self, call: ToolCall, ctx: ToolCtx) -> Result<ToolOutput, ToolError> {
-        check_cancel(&ctx)?;
-        let args: CancelArgs = parse_args(&call)?;
-        let target = parse_agent_id(&args.agent_id)?;
-        let reason = args
-            .reason
-            .unwrap_or_else(|| "cancelled by parent agent".to_string());
-        ctx.subagents
-            .cancel(target, reason.clone())
-            .await
-            .map_err(host_error)?;
-        Ok(text_output(
-            format!("cancelled agent {target}: {reason}"),
-            TRUNCATION,
-        ))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn tool_names_and_categories() {
-        let subagent = SubagentTool::new();
-        let steer = SteerTool::new();
-        let wait = AwaitTool::new();
-        let cancel = CancelTool::new();
-        let tools: [(&dyn Tool, &str); 4] = [
-            (&subagent, "conway_subagent"),
-            (&steer, "conway_steer"),
-            (&wait, "conway_await"),
-            (&cancel, "conway_cancel"),
-        ];
-        for (tool, name) in tools {
-            let spec = tool.spec();
-            assert_eq!(spec.name.as_str(), name);
-            assert_eq!(spec.category, ToolCategory::Delegate);
-        }
     }
 }

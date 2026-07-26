@@ -1355,11 +1355,13 @@ impl AgentLoop {
             .unwrap_or(true);
 
         if is_first {
+            let ephemeral = self.deps.tree.ephemeral_of(self.agent_id);
             self.deps.bus.emit(
                 self.session,
                 self.agent_id,
                 Event::AgentFinished {
                     result: result.clone(),
+                    ephemeral,
                 },
             );
             if let Some(parent_mailbox) = &self.parent_mailbox {

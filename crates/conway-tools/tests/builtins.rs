@@ -19,7 +19,7 @@ use conway_tools::builtin_plugins;
 use conway_tools::fs::{EditTool, GlobTool, GrepTool, ReadTool, WriteTool};
 use conway_tools::report::ReportTool;
 use conway_tools::shell::BashTool;
-use conway_tools::subagent::{AwaitTool, CancelTool, SteerTool, SubagentTool};
+use conway_tools::subagent::{AskTool, AwaitTool, CancelTool, SteerTool, SubagentTool};
 use conway_tools::testing::{test_ctx, FakeSubagentHost};
 use tempfile::TempDir;
 
@@ -76,6 +76,10 @@ fn all_tools_with_minimal_args() -> Vec<(Arc<dyn Tool>, serde_json::Value)> {
             serde_json::json!({"mode": "fork", "prompt": "p"}),
         ),
         (
+            Arc::new(AskTool::new()) as Arc<dyn Tool>,
+            serde_json::json!({"prompt": "p"}),
+        ),
+        (
             Arc::new(SteerTool::new()),
             serde_json::json!({"agent_id": AgentId::new().to_string(), "text": "x"}),
         ),
@@ -108,7 +112,7 @@ fn builtin_plugins_returns_exactly_four_with_expected_ids() {
 }
 
 #[test]
-fn union_of_tools_is_exactly_the_documented_eleven() {
+fn union_of_tools_is_exactly_the_documented_twelve() {
     let mut names: Vec<String> = builtin_plugins()
         .iter()
         .flat_map(|p| p.tools())
@@ -119,6 +123,7 @@ fn union_of_tools_is_exactly_the_documented_eleven() {
         names,
         vec![
             "bash",
+            "conway_ask",
             "conway_await",
             "conway_cancel",
             "conway_steer",
@@ -298,6 +303,30 @@ async fn truncation_matches_the_documented_table_per_tool() {
     assert!(!out.is_error, "conway_subagent: {}", text_of(&out));
     actual.insert("conway_subagent", out.truncation);
 
+    // `conway_ask` scripts an `AskOutcome` via `FakeSubagentHost`'s
+    // `with_ask_outcome` builder so `SubagentHost::ask` resolves immediately
+    // with a completed status — only `out.truncation` is under test here.
+    let ask_parent = AgentId::new();
+    let ask_outcome = conway_core::agent::AskOutcome {
+        text: "curated brief".into(),
+        usage: conway_core::content::Usage::default(),
+        status: ResultStatus::Completed,
+        transcript_ref: SessionId::new(),
+    };
+    let ask_host = Arc::new(FakeSubagentHost::new().with_ask_outcome(ask_parent, ask_outcome));
+    let (ctx, _h) = test_ctx(dir.path().to_path_buf());
+    let ctx = ToolCtx {
+        agent_id: ask_parent,
+        subagents: ask_host as Arc<dyn SubagentHost>,
+        ..ctx
+    };
+    let out = AskTool::new()
+        .invoke(call("conway_ask", serde_json::json!({"prompt": "p"})), ctx)
+        .await
+        .unwrap();
+    assert!(!out.is_error, "conway_ask: {}", text_of(&out));
+    actual.insert("conway_ask", out.truncation);
+
     let (ctx, handles) = test_ctx(dir.path().to_path_buf());
     let steer_target = handles.subagents.next_agent_id();
     let out = SteerTool::new()
@@ -377,6 +406,7 @@ async fn truncation_matches_the_documented_table_per_tool() {
             "conway_subagent",
             TruncationPolicy::Tail { max_bytes: 16_384 },
         ),
+        ("conway_ask", TruncationPolicy::Tail { max_bytes: 16_384 }),
         ("conway_steer", TruncationPolicy::Tail { max_bytes: 16_384 }),
         ("conway_await", TruncationPolicy::Tail { max_bytes: 16_384 }),
         (

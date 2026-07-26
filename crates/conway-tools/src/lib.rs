@@ -11,8 +11,8 @@
 //! Four built-in plugins, one per submodule:
 //! - [`fs`] — `read`, `write`, `edit`, `glob`, `grep` (`FsPlugin`)
 //! - [`shell`] — `bash` (`ShellPlugin`)
-//! - [`subagent`] — `conway_subagent`, `conway_steer`, `conway_await`,
-//!   `conway_cancel` (`SubagentPlugin`)
+//! - [`subagent`] — `conway_subagent`, `conway_ask`, `conway_steer`,
+//!   `conway_await`, `conway_cancel` (`SubagentPlugin`)
 //! - [`report`] — `report` (`ReportPlugin`)
 //!
 //! [`common`] holds the shared helper layer every tool builds on.

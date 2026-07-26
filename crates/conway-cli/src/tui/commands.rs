@@ -1618,6 +1618,7 @@ mod tests {
                     parent: Some(root),
                     agent_def: None,
                     inherited_upto: None,
+                    ephemeral: false,
                 },
             });
         }

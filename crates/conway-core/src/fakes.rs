@@ -18,8 +18,8 @@ use async_trait::async_trait;
 use chrono::Utc;
 
 use crate::agent::{
-    AgentResult, AgentTreeSnapshot, PermissionDecision, PermissionRequest, ResultStatus,
-    SubagentSpec,
+    AgentResult, AgentTreeSnapshot, AskOutcome, PermissionDecision, PermissionRequest,
+    ResultStatus, SubagentSpec,
 };
 use crate::capabilities::{
     CacheMode, Capabilities, ProbeReport, ReliabilityTier, StructuredOutput, ToolCallSupport,
@@ -686,6 +686,8 @@ impl HealthRegistry for FakeHealth {
 pub struct FakeSubagentHost {
     started: Mutex<Vec<(AgentId, SubagentSpec)>>,
     results: Mutex<BTreeMap<AgentId, AgentResult>>,
+    asks: Mutex<Vec<(AgentId, SubagentSpec)>>,
+    ask_outcomes: Mutex<BTreeMap<AgentId, AskOutcome>>,
     tree: RwLock<AgentTreeSnapshot>,
 }
 
@@ -694,6 +696,8 @@ impl FakeSubagentHost {
         Self {
             started: Mutex::new(Vec::new()),
             results: Mutex::new(BTreeMap::new()),
+            asks: Mutex::new(Vec::new()),
+            ask_outcomes: Mutex::new(BTreeMap::new()),
             tree: RwLock::new(AgentTreeSnapshot {
                 root,
                 nodes: Vec::new(),
@@ -708,9 +712,23 @@ impl FakeSubagentHost {
         self
     }
 
+    /// Preconfigures the [`AskOutcome`] `ask` returns when called with
+    /// `parent`. Unconfigured parents get the default `AskOutcome { text:
+    /// "fake ask reply", usage: Usage::default(), status:
+    /// ResultStatus::Completed, transcript_ref: SessionId::new() }`.
+    pub fn with_ask_outcome(self, parent: AgentId, outcome: AskOutcome) -> Self {
+        self.ask_outcomes.lock().unwrap().insert(parent, outcome);
+        self
+    }
+
     /// Every `(agent_id, spec)` pair recorded by `start`, in call order.
     pub fn started(&self) -> Vec<(AgentId, SubagentSpec)> {
         self.started.lock().unwrap().clone()
+    }
+
+    /// Every `(agent_id, spec)` pair recorded by `ask`, in call order.
+    pub fn asks(&self) -> Vec<(AgentId, SubagentSpec)> {
+        self.asks.lock().unwrap().clone()
     }
 }
 
@@ -739,6 +757,17 @@ impl SubagentHost for FakeSubagentHost {
 
     fn tree(&self) -> AgentTreeSnapshot {
         self.tree.read().unwrap().clone()
+    }
+
+    async fn ask(&self, parent: AgentId, spec: SubagentSpec) -> Result<AskOutcome, RuntimeError> {
+        self.asks.lock().unwrap().push((parent, spec));
+        let outcome = self.ask_outcomes.lock().unwrap().get(&parent).cloned();
+        Ok(outcome.unwrap_or_else(|| AskOutcome {
+            text: "fake ask reply".into(),
+            usage: Usage::default(),
+            status: ResultStatus::Completed,
+            transcript_ref: SessionId::new(),
+        }))
     }
 }
 

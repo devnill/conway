@@ -288,6 +288,7 @@ fn build_loop(
         budget: Budget::default(),
         cancel: cancel.clone(),
         inherited_upto: None,
+        ephemeral: false,
     })
     .expect("fresh tree attach never fails");
     let (_mailbox_tx, mailbox_rx) =

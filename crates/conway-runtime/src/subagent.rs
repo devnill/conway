@@ -108,16 +108,20 @@ use std::sync::{Arc, Mutex, Weak};
 use async_trait::async_trait;
 use chrono::Utc;
 use conway_core::agent::{
-    AgentMessage, AgentResult, AgentTreeSnapshot, SubagentMode, SubagentSpec,
+    AgentMessage, AgentResult, AgentTreeSnapshot, AskOutcome, ResultStatus, SubagentMode,
+    SubagentSpec,
 };
 use conway_core::capabilities::CacheMode;
 use conway_core::config::DEFAULT_MAX_PARALLEL_TOOLS;
+use conway_core::content::Usage;
 use conway_core::error::{ConwayError, RuntimeError, ToolError};
+use conway_core::event::Event;
 use conway_core::ids::{AgentId, LogSeq, RoleAlias, SeqRange, SessionId};
 use conway_core::log::{ForkOrigin, LogRecord, SessionMeta, SessionStatus};
 use conway_core::ports::SubagentHost;
 use conway_core::provenance::Provenance;
 use conway_core::segment::CacheTtl;
+use futures::StreamExt;
 
 use crate::agent_loop::{AgentLoop, AgentSpec};
 use crate::context::{InheritedPrefix, SystemPromptSpec};
@@ -205,13 +209,23 @@ impl SubagentHost for Runtime {
             cwd: parent_meta.cwd.clone(),
             labels: Vec::new(),
             status: SessionStatus::Active,
-            // Agent-initiated fork/spawn (this trait impl) is never
-            // ephemeral -- only `conway`'s facade-level `SessionHandle::ask`
-            // sets this, by building its own child `SessionMeta` and calling
-            // `SessionStore::fork` directly rather than going through
-            // `SubagentHost::start`.
-            ephemeral: false,
+            // `ephemeral` flows straight from the caller's `SubagentSpec`: a
+            // `conway_ask` fork (item d sets `spec.ephemeral = true`) stamps
+            // `AgentSpawned`/`AgentFinished` with `ephemeral: true` via the
+            // captured local below; legacy `conway_subagent` fork/spawn paths
+            // build their `SubagentSpec` with `ephemeral: false`
+            // (`SubagentSpec::fork`/`::spawn`'s own constructor default), so
+            // they stay non-ephemeral exactly as before. Only `start_root`
+            // (a root is never ephemeral, per spec point 4) and `resume_root`
+            // (the facade `/ask`'s ephemeral:true path) set this field
+            // themselves; this `start` path defers to the spec.
+            ephemeral: spec.ephemeral,
         };
+
+        // Capture before `meta` is moved into `store.fork`/`store.create` below
+        // -- the child's `ephemeral` flag is stamped into `AgentNode` (and thus
+        // `Event::AgentSpawned`/`Event::AgentFinished`) verbatim from it.
+        let ephemeral = meta.ephemeral;
 
         let (session_id, inherited, inherited_upto) = match spec.mode {
             SubagentMode::Fork => {
@@ -383,6 +397,13 @@ impl SubagentHost for Runtime {
             budget: spec.budget,
             cancel,
             inherited_upto,
+            // `meta.ephemeral` is `spec.ephemeral` (see the literal above): a
+            // `conway_ask` fork carries `ephemeral: true` end-to-end through
+            // `AgentNode` and thus `Event::AgentSpawned`/`Event::AgentFinished`;
+            // a legacy `conway_subagent` fork/spawn (`SubagentSpec::fork`/
+            // `::spawn`, `ephemeral: false` by construction) keeps `false` all
+            // the way through, exactly as before this field existed.
+            ephemeral,
         };
 
         self.launch_agent(node, agent_loop, last_report, mailbox_tx)?;
@@ -453,6 +474,129 @@ impl SubagentHost for Runtime {
     fn tree(&self) -> AgentTreeSnapshot {
         Runtime::tree(self)
     }
+
+    /// The real `Runtime::ask` impl: fork+await-text (P-1 -- `ask` is exactly
+    /// the two existing primitives composed, NOT a third one). Mirrors
+    /// `conway`'s facade `SessionHandle::ask`/`TurnHandle::text`/`result`
+    /// (`crates/conway/src/session_handle.rs:165`, `:985-1050`) but uses the
+    /// raw `EventBus` broadcast receiver directly so conway-runtime does not
+    /// depend on the `conway` facade crate.
+    ///
+    /// ## Subscribe BEFORE launch
+    ///
+    /// `Runtime::subscribe` (which delegates to `self.bus.subscribe()`) is
+    /// called BEFORE `self.start(parent, spec)` so the child's first
+    /// `Event::TextDelta` cannot be missed (GP-01: the full text is what the
+    /// orchestrator feeds onward; a missed first delta would silently truncate
+    /// it). This is the same ordering `SessionHandle::prompt_agent` uses
+    /// (subscribe before append/launch).
+    ///
+    /// ## Agent-id-checked drain
+    ///
+    /// The drain accumulates every `Event::TextDelta` whose `envelope.agent`
+    /// is the child, captures `usage` from the first `Event::TurnFinished`,
+    /// and resolves ONLY on an `Event::AgentFinished` whose `result.agent_id`
+    /// equals the child -- a SIBLING's (or any other agent's) `AgentFinished`
+    /// MUST NOT resolve this drain (mirrors `TurnHandle::text`/`result`'s
+    /// agent-id guard at `session_handle.rs:998`/`:1052`). The raw bus delivers
+    /// every agent's envelopes unfiltered (unlike the facade's `EventStream`,
+    /// which scopes by session/agent), so the `envelope.agent == child_agent`
+    /// top-level filter is what keeps a sibling's `TextDelta`/`ThinkingDelta`
+    /// out of this `AskOutcome::text`; the `result.agent_id == child_agent`
+    /// match guard is the spec-mandated belt-and-braces check on the terminal
+    /// event.
+    ///
+    /// ## Cancellation
+    ///
+    /// `ask` has no `ctx` parameter, so the drain loop cannot observe a parent
+    /// `CancellationToken` directly. It does not need to: `start` already
+    /// wires the child's cancel token to the parent's via
+    /// `tree.child_cancel_token(parent)` (architecture §3.2), so if the
+    /// parent is cancelled the child is cancelled too, the child's
+    /// `AgentLoop` emits `Event::AgentFinished { result: AgentResult { status:
+    /// Cancelled, .. }, .. }` (via the supervisor's grace-timeout
+    /// synthesized finish if the loop itself does not), and the drain
+    /// resolves on that -- returning `AskOutcome { status: Cancelled, .. }`.
+    /// No special-casing is needed here.
+    ///
+    /// ## `transcript_ref`
+    ///
+    /// The child's `SessionId` is resolved via `Runtime::agent_session`, the
+    /// same agent-to-session lookup `start` itself uses (via `agents` map,
+    /// populated by `launch_agent`). P-2: carried in `AskOutcome` so the
+    /// orchestrator's `ToolResultRecord` can name the ephemeral child
+    /// session.
+    async fn ask(&self, parent: AgentId, spec: SubagentSpec) -> Result<AskOutcome, RuntimeError> {
+        // P-1 (amended): `ask` is fork+await-text -- the fork-only invariant is
+        // enforced here at the trait boundary, not only at the `conway_ask`
+        // tool callsite, so no other caller can bypass it with a Spawn spec.
+        debug_assert!(
+            matches!(spec.mode, SubagentMode::Fork),
+            "SubagentHost::ask is fork-only (P-1); got {:?}",
+            spec.mode
+        );
+        // 1. Subscribe BEFORE launch so the first TextDelta is not missed.
+        let mut stream = Runtime::subscribe(self);
+        // 2. Launch the child (fork per `spec.mode`; `ask` is fork-only -- P-1).
+        let child_agent = self.start(parent, spec).await?;
+        // 3. Resolve the child's SessionId for `transcript_ref` (P-2). The
+        //    child is already attached (start -> launch_agent -> tree.attach
+        //    -> agents map populated), so this lookup cannot miss.
+        let child_session = self.agent_session(child_agent)?;
+
+        // 4. Drain events from the live bus until the child's terminal event.
+        let mut text = String::new();
+        let mut status = ResultStatus::Completed;
+        // Cumulative usage across the child's whole run, taken from the
+        // terminal `AgentResult` (`agent_loop` accumulates per-turn usage
+        // into `state.usage` and builds the result from it). This is more
+        // correct than capturing a single `TurnFinished`'s usage (which
+        // would be just one turn's slice -- first or last depending on
+        // capture policy); `AskOutcome.usage` should account for the whole
+        // ephemeral run.
+        let mut usage = Usage::default();
+        let mut saw_finish = false;
+        while let Some(envelope) = stream.next().await {
+            // Top-level agent filter: the raw bus delivers every agent's
+            // envelopes; keep only this child's. (`AgentFinished` is
+            // re-checked by `result.agent_id` below as the spec-mandated
+            // terminal guard, but every other event variant is gated only
+            // here.)
+            if envelope.agent != child_agent {
+                continue;
+            }
+            match envelope.event {
+                Event::TextDelta { text: delta } => text.push_str(&delta),
+                // Agent-id-checked terminal: a sibling's finish (different
+                // `result.agent_id`) is filtered above by `envelope.agent`,
+                // and this guard is the spec-required belt-and-braces check
+                // (mirrors `TurnHandle::text`/`result`).
+                Event::AgentFinished { result, .. } if result.agent_id == child_agent => {
+                    status = result.status;
+                    usage = result.usage;
+                    saw_finish = true;
+                    break;
+                }
+                _ => {}
+            }
+        }
+
+        if !saw_finish {
+            // The bus stream ended without the child's `AgentFinished`: only
+            // happens once the runtime itself is dropped. Mirror
+            // `TurnHandle::result`'s terminal-error shape.
+            return Err(RuntimeError::AgentNotFound {
+                agent: child_agent,
+            });
+        }
+
+        Ok(AskOutcome {
+            text,
+            usage,
+            status,
+            transcript_ref: child_session,
+        })
+    }
 }
 
 /// `RuntimeError` has no `InvalidSpec` variant — see the module doc.
@@ -521,6 +665,14 @@ impl SubagentHost for WeakRuntimeHost {
         // that method resolution prefers over this trait method of the
         // same name -- fully qualified syntax forces the trait impl above.
         SubagentHost::cancel(&*self.upgrade()?, target, reason).await
+    }
+
+    /// Delegates to the real `Runtime` impl (which a later item adds). The
+    /// `ask` primitive is fork+await-text (P-1), surfaced on the same
+    /// `SubagentHost` trait every consumer uses (P-6: built-ins have no
+    /// privileged API).
+    async fn ask(&self, parent: AgentId, spec: SubagentSpec) -> Result<AskOutcome, RuntimeError> {
+        self.upgrade()?.ask(parent, spec).await
     }
 
     fn tree(&self) -> AgentTreeSnapshot {

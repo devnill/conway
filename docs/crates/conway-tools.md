@@ -22,8 +22,9 @@ defines.
 ```
 fs        read, write, edit, glob, grep     (FsPlugin)
 shell     bash                              (ShellPlugin)
-subagent  conway_subagent, conway_steer,
-          conway_await, conway_cancel       (SubagentPlugin)
+subagent  conway_subagent, conway_ask,
+          conway_steer, conway_await,
+          conway_cancel                    (SubagentPlugin)
 report    report                            (ReportPlugin)
 ```
 
@@ -166,7 +167,7 @@ incrementally via `ToolCtx::events`; cancelling the tool's
 child, so a shell pipeline or backgrounded subprocess can't outlive
 cancellation.
 
-### `SubagentPlugin` — `conway_subagent`, `conway_steer`, `conway_await`, `conway_cancel`
+### `SubagentPlugin` — `conway_subagent`, `conway_ask`, `conway_steer`, `conway_await`, `conway_cancel`
 
 A pure, zero-delegation-logic wrapper over `ToolCtx::subagents`: every tool
 here does argument parsing, exactly one `SubagentHost` call — the same
@@ -187,6 +188,21 @@ privileged access the public API lacks.
   can start several children back-to-back and later `conway_await` each
   one — this is what makes an N-way tournament/fan-out pattern practical
   rather than serial.
+- **`conway_ask`** (category `Delegate`, permission `Dangerous` — like
+  `conway_subagent`, the fork child inherits the caller's full tool set, so
+  arbitrary tool calls are one hop away). **Fork-only**: takes a `prompt` and
+  an optional `budget` (no `mode`/`agent_def`/`role`/`tools` — the fork already
+  inherits the caller's context, agent_def, role, and tool set; GP-02). Runs
+  the prompt in an **ephemeral fork** of the caller and returns the child's
+  **full** concatenated reply text (not the truncated `AgentResult::summary`;
+  GP-01), plus an `EphemeralSessionRef` artifact naming the child's session for
+  provenance (P-2). The child is marked `ephemeral`, so it never appears in the
+  TUI `/agents` panel or default session listings, while staying attached to
+  the live `AgentTree`. The intended composition (P-1: `ask` is fork+await-text,
+  not a third primitive) is `conway_ask` → `conway_subagent { mode: spawn,
+  prompt: <the returned brief> }`: the model drafts/curates context for a fresh
+  spawn out-of-band, then spawns with it, keeping the curation reasoning out of
+  the orchestrator's context window.
 - **`conway_steer`** (category `Delegate`, permission `RequiresApproval`)
   — sends a text message to a running child; delivered at the child's next
   turn boundary (see [`conway-runtime`](conway-runtime.md)'s mailbox).

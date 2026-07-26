@@ -22,6 +22,26 @@ pub use crate::log::SubagentMode;
 /// [`AgentResult::new`] truncates on a `char` boundary, never a byte offset.
 pub const DEFAULT_SUMMARY_LIMIT: usize = 2000;
 
+/// The outcome of a `SubagentHost::ask` call: the FULL concatenated
+/// `TextDelta` reply text from the ephemeral child, plus the terminal
+/// `AgentResult`'s `usage`/`status` and the child's `transcript_ref`.
+///
+/// `text` is explicitly NOT [`AgentResult::summary`]: that field is bounded
+/// to [`DEFAULT_SUMMARY_LIMIT`] (2000) `char`s -- too small for a curated
+/// context/prompt the orchestrator may want to feed onward -- whereas
+/// `AskOutcome::text` carries the entire reply, untruncated. `transcript_ref`
+/// names the ephemeral child session so the orchestrator's
+/// `ToolResultRecord` can point at it (P-2 provenance reachability).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AskOutcome {
+    /// The FULL concatenated `TextDelta` reply -- NOT `AgentResult::summary`
+    /// (which truncates at [`DEFAULT_SUMMARY_LIMIT`] = 2000 chars).
+    pub text: String,
+    pub usage: Usage,
+    pub status: ResultStatus,
+    pub transcript_ref: SessionId,
+}
+
 /// The terminal outcome of one agent's run: the only thing a parent (or the
 /// CLI/IDE) ever sees of a finished child, by design (MAST: bound what
 /// crosses the trust boundary).
@@ -167,6 +187,14 @@ pub struct SubagentSpec {
     /// `/spawn`/`/fork`) constructs via `conway`'s `SpawnSpec::keep_alive`/
     /// `ForkSpec::keep_alive`.
     pub keep_alive: bool,
+    /// `ephemeral` is a [`crate::log::SessionMeta`] listing-visibility bit,
+    /// NOT a mode -- it filters the child out of default session catalog
+    /// listings and the TUI `/agents` panel while keeping it attached to the
+    /// live [`AgentTreeSnapshot`] for provenance (P-2). This is not a third
+    /// subagent primitive (P-1): `ask` is fork+await-text, not a new mode.
+    /// Defaults `false` via the `fork`/`spawn` constructors below, preserving
+    /// the pre-existing non-ephemeral fork/spawn behavior unchanged.
+    pub ephemeral: bool,
 }
 
 impl SubagentSpec {
@@ -197,6 +225,7 @@ impl SubagentSpec {
             result_contract: None,
             await_result: true,
             keep_alive: false,
+            ephemeral: false,
         }
     }
 
@@ -214,6 +243,7 @@ impl SubagentSpec {
             result_contract: None,
             await_result: true,
             keep_alive: false,
+            ephemeral: false,
         }
     }
 }
@@ -520,6 +550,7 @@ mod tests {
             result_contract: None,
             await_result: true,
             keep_alive: false,
+            ephemeral: false,
         };
         assert!(spec.validate().is_ok());
     }
@@ -548,6 +579,17 @@ mod tests {
         let spec = SubagentSpec::spawn("x", AgentDefRef("r".into()), Budget::default());
         assert_eq!(spec.mode, SubagentMode::Spawn);
         assert!(!spec.cache_hint);
+    }
+
+    #[test]
+    fn subagent_spec_fork_and_spawn_default_ephemeral_false() {
+        // Regression: existing fork/spawn is non-ephemeral. `ephemeral` is a
+        // listing-visibility bit, NOT a mode (P-2), and defaults `false` via
+        // both constructors so pre-existing fork/spawn behavior is unchanged.
+        let fork = SubagentSpec::fork("x", Budget::default());
+        assert!(!fork.ephemeral);
+        let spawn = SubagentSpec::spawn("x", AgentDefRef("r".into()), Budget::default());
+        assert!(!spawn.ephemeral);
     }
 
     #[test]

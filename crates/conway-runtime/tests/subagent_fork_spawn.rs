@@ -213,7 +213,7 @@ async fn wait_for_agent_finished(
         loop {
             let envelope = stream.next().await.expect("event stream ended early");
             if envelope.agent == agent {
-                if let Event::AgentFinished { result } = envelope.event {
+                if let Event::AgentFinished { result, .. } = envelope.event {
                     return result;
                 }
             }
@@ -451,6 +451,7 @@ async fn spawn_without_agent_def_inherits_the_parents_role() {
         result_contract: None,
         await_result: true,
         keep_alive: false,
+        ephemeral: false,
     };
     let mut stream = runtime.subscribe();
     let child = SubagentHost::start(&*runtime, root, spec).await.unwrap();

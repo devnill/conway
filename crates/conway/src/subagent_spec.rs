@@ -151,6 +151,7 @@ impl From<ForkSpec> for SubagentSpec {
             // is not a place this facade needs to expose a toggle.
             await_result: true,
             keep_alive: spec.keep_alive,
+            ephemeral: false,
         }
     }
 }
@@ -261,6 +262,7 @@ impl From<SpawnSpec> for SubagentSpec {
             // See the matching note on `From<ForkSpec>` above.
             await_result: true,
             keep_alive: spec.keep_alive,
+            ephemeral: false,
         }
     }
 }

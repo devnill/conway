@@ -5,6 +5,20 @@ All notable changes to **conway** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`conway_ask` model-facing tool**: runs a prompt in an ephemeral fork of
+  the calling agent and returns the child's full reply text (not a truncated
+  summary), so the model can compose it into a `conway_subagent` spawn and
+  keep curation/context-drafting inference out of the orchestrator's context
+  window. Fork-only (`prompt` + optional `budget`); the child is marked
+  ephemeral (hidden from the TUI `/agents` panel and default session listings,
+  still attached to the live agent tree for provenance). Composes
+  `conway_subagent` per the "exactly two subagent primitives" principle —
+  `ask` is fork+await-text, not a third primitive.
+
 ## [0.2.0] — 2026-07-23
 
 ### Changed

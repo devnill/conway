@@ -877,6 +877,14 @@ fn record_to_event(record: &LogRecord) -> Option<(LogSeq, DateTime<Utc>, Event)>
             *ts,
             Event::AgentFinished {
                 result: result.clone(),
+                // Replay synthesis: a persisted `AgentResultRecord` does not
+                // carry the `ephemeral` flag (P-2: provenance is preserved via
+                // the session store, not via this replayed event). Default
+                // `false` to match the pre-ephemeral replay semantics -- the
+                // live `Event::AgentFinished` at finish time carries the true
+                // value; this replay path is only for reconstructing the event
+                // stream from a cold log.
+                ephemeral: false,
             },
         )),
         LogRecord::ContextReportRecord { seq, ts, report } => Some((
@@ -987,7 +995,7 @@ impl TurnHandle {
             match envelope.event {
                 Event::TextDelta { text: delta } => text.push_str(&delta),
                 Event::TurnFinished { .. } => break,
-                Event::AgentFinished { result } if result.agent_id == self.agent => {
+                Event::AgentFinished { result, .. } if result.agent_id == self.agent => {
                     inner.buffered_result = Some(result);
                     break;
                 }
@@ -1040,7 +1048,7 @@ impl TurnHandle {
         loop {
             match next_envelope(&mut inner.stream).await {
                 Some(envelope) => {
-                    if let Event::AgentFinished { result } = envelope.event {
+                    if let Event::AgentFinished { result, .. } = envelope.event {
                         if result.agent_id == self.agent {
                             return Ok(result);
                         }

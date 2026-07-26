@@ -163,6 +163,10 @@ pub enum ArtifactKind {
     Diff,
     Value,
     Log,
+    /// A reference to an ephemeral child session created by `SubagentHost::ask`
+    /// (P-2 provenance): the artifact points at the ephemeral child's
+    /// `SessionId` so the orchestrator's `ToolResultRecord` can name it.
+    EphemeralSessionRef,
 }
 
 /// Token usage accounting. Addable for aggregation across turns and agents.

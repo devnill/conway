@@ -288,7 +288,7 @@ async fn wait_for_agent_finished(
         loop {
             let envelope = stream.next().await.expect("event stream ended early");
             if envelope.agent == agent {
-                if let Event::AgentFinished { result } = envelope.event {
+                if let Event::AgentFinished { result, .. } = envelope.event {
                     return result;
                 }
             }
@@ -437,7 +437,7 @@ async fn cancel_trips_token_and_agent_finishes_cancelled() {
         loop {
             let envelope = stream.next().await.expect("stream open");
             if envelope.agent == agent_id {
-                if let Event::AgentFinished { result } = envelope.event {
+                if let Event::AgentFinished { result, .. } = envelope.event {
                     return result;
                 }
             }

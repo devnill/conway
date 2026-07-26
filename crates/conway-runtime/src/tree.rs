@@ -91,6 +91,15 @@ pub struct AgentNode {
     /// Forwarded verbatim into `Event::AgentSpawned::inherited_upto` when
     /// `kind.is_some()`; ignored (and should be `None`) for a root.
     pub inherited_upto: Option<LogSeq>,
+    /// Whether this agent is an ephemeral `/ask`-style aside (decision
+    /// 01KYD1TWXMZD4BT842CMJT1AED). Stamped verbatim into
+    /// `Event::AgentSpawned::ephemeral` (when `kind.is_some()`) and read back
+    /// by [`AgentTree::ephemeral_of`] for `Event::AgentFinished::ephemeral`.
+    /// Defaults to `false` for every non-facade-`/ask` path: a root is never
+    /// ephemeral, and a `conway_subagent` fork/spawn child is never ephemeral
+    /// either (only `conway`'s facade-level `SessionHandle::ask` constructs a
+    /// child `SessionMeta` with `ephemeral: true`).
+    pub ephemeral: bool,
 }
 
 /// Tree-internal bookkeeping for one attached agent: the caller-supplied
@@ -150,6 +159,7 @@ impl AgentTree {
             parent: node.parent,
             agent_def: node.agent_def.clone(),
             inherited_upto: node.inherited_upto,
+            ephemeral: node.ephemeral,
         });
         let (session, id) = (node.session, node.id);
 
@@ -248,6 +258,17 @@ impl AgentTree {
         } else {
             Ok(false)
         }
+    }
+
+    /// Reads `agent`'s `ephemeral` flag from its attached [`AgentNode`], for
+    /// stamping `Event::AgentFinished::ephemeral` at every emission site (the
+    /// live `AgentLoop::finish` and the supervisor's synthesized finish).
+    /// Returns `false` for an unknown agent (a synthesized finish for an agent
+    /// that was never attached, e.g. a bare test mock), matching the
+    /// non-ephemeral default every pre-`/ask` path already had.
+    pub fn ephemeral_of(&self, agent: AgentId) -> bool {
+        let nodes = self.nodes.read().expect("agent tree lock poisoned");
+        nodes.get(&agent).map(|entry| entry.node.ephemeral).unwrap_or(false)
     }
 
     /// Awaits `agent`'s terminal result. Always terminates once *something*

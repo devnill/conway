@@ -691,6 +691,7 @@ mod tests {
                 parent: Some(agent_a),
                 agent_def: Some("reviewer".into()),
                 inherited_upto: None,
+                ephemeral: false,
             },
         );
         bus.emit(
@@ -755,6 +756,7 @@ mod tests {
                 parent: Some(agent),
                 agent_def: None,
                 inherited_upto: None,
+                ephemeral: false,
             },
         );
 
@@ -839,6 +841,7 @@ mod tests {
                 usage: Default::default(),
                 steps_taken: 1,
             },
+            ephemeral: false,
         }
     }
 
@@ -1267,7 +1270,7 @@ mod tests {
              got {:?}",
             second.event
         );
-        if let Event::AgentFinished { result } = &second.event {
+        if let Event::AgentFinished { result, .. } = &second.event {
             assert_eq!(
                 result.agent_id, sibling,
                 "this must be the sibling's own AgentFinished, not agent's"
@@ -1282,7 +1285,7 @@ mod tests {
              must be next; got {:?}",
             third.event
         );
-        if let Event::AgentFinished { result } = &third.event {
+        if let Event::AgentFinished { result, .. } = &third.event {
             assert_eq!(
                 result.agent_id, agent,
                 "this must be this agent's own AgentFinished"
