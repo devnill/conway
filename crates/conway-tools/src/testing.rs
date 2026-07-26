@@ -23,7 +23,8 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use chrono::Utc;
 
-use conway_core::agent::{AgentResult, AgentTreeSnapshot, SubagentSpec};
+use conway_core::agent::{AgentResult, AgentTreeSnapshot, AskOutcome, SubagentSpec};
+use conway_core::content::Usage;
 use conway_core::error::RuntimeError;
 use conway_core::event::Event;
 use conway_core::ids::{AgentId, SessionId};
@@ -42,6 +43,8 @@ pub struct FakeSubagentHost {
     steers: Mutex<Vec<(AgentId, String)>>,
     cancels: Mutex<Vec<(AgentId, String)>>,
     results: Mutex<HashMap<AgentId, AgentResult>>,
+    asks: Mutex<Vec<(AgentId, SubagentSpec)>>,
+    ask_outcomes: Mutex<HashMap<AgentId, AskOutcome>>,
 }
 
 impl FakeSubagentHost {
@@ -54,6 +57,8 @@ impl FakeSubagentHost {
             steers: Mutex::new(Vec::new()),
             cancels: Mutex::new(Vec::new()),
             results: Mutex::new(HashMap::new()),
+            asks: Mutex::new(Vec::new()),
+            ask_outcomes: Mutex::new(HashMap::new()),
         }
     }
 
@@ -66,6 +71,15 @@ impl FakeSubagentHost {
     /// Preconfigures the result `await_result(agent_id)` returns.
     pub fn with_result(self, agent_id: AgentId, result: AgentResult) -> Self {
         self.results.lock().unwrap().insert(agent_id, result);
+        self
+    }
+
+    /// Preconfigures the [`AskOutcome`] `ask(parent, spec)` returns when
+    /// called with `parent`. Unconfigured parents get the default
+    /// `AskOutcome { text: "fake", usage: Usage::default(), status:
+    /// ResultStatus::Completed, transcript_ref: SessionId::new() }`.
+    pub fn with_ask_outcome(self, parent: AgentId, outcome: AskOutcome) -> Self {
+        self.ask_outcomes.lock().unwrap().insert(parent, outcome);
         self
     }
 
@@ -87,6 +101,11 @@ impl FakeSubagentHost {
     /// Every `(target, reason)` pair recorded by `cancel`, in call order.
     pub fn cancels(&self) -> Vec<(AgentId, String)> {
         self.cancels.lock().unwrap().clone()
+    }
+
+    /// Every `(parent, spec)` pair recorded by `ask`, in call order.
+    pub fn asks(&self) -> Vec<(AgentId, SubagentSpec)> {
+        self.asks.lock().unwrap().clone()
     }
 }
 
@@ -132,6 +151,17 @@ impl SubagentHost for FakeSubagentHost {
             nodes: Vec::new(),
             at: Utc::now(),
         }
+    }
+
+    async fn ask(&self, parent: AgentId, spec: SubagentSpec) -> Result<AskOutcome, RuntimeError> {
+        self.asks.lock().unwrap().push((parent, spec));
+        let outcome = self.ask_outcomes.lock().unwrap().get(&parent).cloned();
+        Ok(outcome.unwrap_or_else(|| AskOutcome {
+            text: "fake".into(),
+            usage: Usage::default(),
+            status: conway_core::agent::ResultStatus::Completed,
+            transcript_ref: SessionId::new(),
+        }))
     }
 }
 

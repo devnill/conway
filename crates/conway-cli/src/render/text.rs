@@ -186,7 +186,11 @@ mod tests {
             .unwrap();
         let result = AgentResult::new(agent, session, ResultStatus::Completed, "");
         renderer
-            .on_event(&envelope(session, agent, Event::AgentFinished { result }))
+            .on_event(&envelope(
+                session,
+                agent,
+                Event::AgentFinished { result, ephemeral: false },
+            ))
             .unwrap();
 
         assert_eq!(writer.contents(), b"hello\n");
@@ -239,6 +243,7 @@ mod tests {
                 agent,
                 Event::AgentFinished {
                     result: result.clone(),
+                    ephemeral: false,
                 },
             ))
             .unwrap();
@@ -277,6 +282,7 @@ mod tests {
                 child,
                 Event::AgentFinished {
                     result: child_result,
+                    ephemeral: false,
                 },
             ))
             .unwrap();
@@ -294,6 +300,7 @@ mod tests {
                 root,
                 Event::AgentFinished {
                     result: root_result,
+                    ephemeral: false,
                 },
             ))
             .unwrap();

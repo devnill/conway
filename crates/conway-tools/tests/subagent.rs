@@ -12,8 +12,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use conway_core::agent::{AgentDefRef, AgentResult, AgentTreeSnapshot, ResultStatus, SubagentSpec};
-use conway_core::content::{ContentBlock, ToolCall, ToolCategory};
+use conway_core::agent::{
+    AgentDefRef, AgentResult, AgentTreeSnapshot, AskOutcome, ResultStatus, SubagentSpec,
+};
+use conway_core::content::{ArtifactKind, ContentBlock, ToolCall, ToolCategory, TruncationPolicy};
 use conway_core::error::{RuntimeError, ToolError};
 use conway_core::ids::{AgentId, SessionId, ToolName};
 use conway_core::log::SubagentMode;
@@ -21,7 +23,7 @@ use conway_core::ports::{
     CancellationToken, EventSinkHandle, Plugin, PluginConfig, SubagentHost, Tool, ToolCtx,
     ToolOutput,
 };
-use conway_tools::subagent::{AwaitTool, CancelTool, SteerTool, SubagentPlugin, SubagentTool};
+use conway_tools::subagent::{AskTool, AwaitTool, CancelTool, SteerTool, SubagentPlugin, SubagentTool};
 use conway_tools::testing::{test_ctx, FakeSubagentHost, RecordingEventSink};
 
 fn call(name: &str, arguments: serde_json::Value) -> ToolCall {
@@ -82,7 +84,7 @@ fn tools_module_has_no_fork_spawn_or_runtime_logic_and_stays_under_400_lines() {
 }
 
 #[test]
-fn plugin_has_four_tools_all_delegate_category() {
+fn plugin_has_five_tools_all_delegate_category() {
     let plugin = SubagentPlugin::new();
     assert_eq!(plugin.manifest().id, "conway.subagent");
 
@@ -95,6 +97,7 @@ fn plugin_has_four_tools_all_delegate_category() {
     assert_eq!(
         names,
         vec![
+            "conway_ask",
             "conway_await",
             "conway_cancel",
             "conway_steer",
@@ -206,6 +209,66 @@ async fn spawn_without_agent_def_starts_with_agent_def_none() {
     assert_eq!(started.len(), 1);
     assert!(matches!(started[0].1.mode, SubagentMode::Spawn));
     assert_eq!(started[0].1.agent_def, None);
+}
+
+#[tokio::test]
+async fn ask_tool_calls_subagent_host_ask_with_ephemeral_fork_spec() {
+    // P-1: `conway_ask` composes `SubagentHost::ask` — it is NOT a third
+    // primitive. The tool is a pure wrapper: it builds an ephemeral fork spec
+    // and delegates. GP-02: fork-only (no mode arg); GP-01: returns the full
+    // reply text; P-2: an `EphemeralSessionRef` artifact names the child.
+    let parent = AgentId::new();
+    let transcript_ref = SessionId::new();
+    let outcome = AskOutcome {
+        text: "curated brief".into(),
+        usage: conway_core::content::Usage::default(),
+        status: ResultStatus::Completed,
+        transcript_ref,
+    };
+    let fake = Arc::new(FakeSubagentHost::new().with_ask_outcome(parent, outcome));
+    let (ctx, _h) = test_ctx(PathBuf::from("/tmp/x"));
+    let ctx = ToolCtx {
+        agent_id: parent,
+        subagents: fake.clone() as Arc<dyn SubagentHost>,
+        ..ctx
+    };
+
+    let out = AskTool::new()
+        .invoke(
+            call("conway_ask", serde_json::json!({"prompt": "summarize"})),
+            ctx,
+        )
+        .await
+        .unwrap();
+    assert!(!out.is_error, "conway_ask: {}", text_of(&out));
+
+    let asks = fake.asks();
+    assert_eq!(asks.len(), 1);
+    assert_eq!(asks[0].0, parent);
+    let spec = &asks[0].1;
+    assert!(matches!(spec.mode, SubagentMode::Fork));
+    assert!(spec.ephemeral, "ask spec must be ephemeral");
+    assert!(!spec.keep_alive, "ask spec must not keep_alive");
+    assert!(spec.cache_hint, "ask (fork) spec must set cache_hint");
+    assert_eq!(spec.prompt, "summarize");
+    assert_eq!(spec.agent_def, None);
+    assert_eq!(spec.role, None);
+    assert_eq!(spec.tools, None);
+    assert!(spec.await_result);
+
+    // GP-01: the model sees the full, clean reply text.
+    assert_eq!(text_of(&out), "curated brief");
+    assert_eq!(
+        out.truncation,
+        TruncationPolicy::Tail { max_bytes: 16_384 }
+    );
+    // P-2: an `EphemeralSessionRef` artifact carrying the child's
+    // `transcript_ref`.
+    assert_eq!(out.artifacts.len(), 1);
+    let artifact = &out.artifacts[0];
+    assert_eq!(artifact.kind, ArtifactKind::EphemeralSessionRef);
+    assert_eq!(artifact.id, transcript_ref.to_string());
+    assert_eq!(artifact.label, "ephemeral_session_ref");
 }
 
 #[tokio::test]
@@ -505,6 +568,10 @@ async fn pre_cancelled_ctx_short_circuits_every_tool() {
             serde_json::json!({"mode": "fork", "prompt": "p"}),
         ),
         (
+            "conway_ask",
+            serde_json::json!({"prompt": "p"}),
+        ),
+        (
             "conway_steer",
             serde_json::json!({"agent_id": AgentId::new().to_string(), "text": "x"}),
         ),
@@ -522,6 +589,7 @@ async fn pre_cancelled_ctx_short_circuits_every_tool() {
         handles.cancel.cancel();
         let result = match name {
             "conway_subagent" => SubagentTool::new().invoke(call(name, arguments), ctx).await,
+            "conway_ask" => AskTool::new().invoke(call(name, arguments), ctx).await,
             "conway_steer" => SteerTool::new().invoke(call(name, arguments), ctx).await,
             "conway_await" => AwaitTool::new().invoke(call(name, arguments), ctx).await,
             "conway_cancel" => CancelTool::new().invoke(call(name, arguments), ctx).await,
@@ -563,6 +631,9 @@ impl SubagentHost for BlockingAwaitHost {
     }
     fn tree(&self) -> AgentTreeSnapshot {
         self.inner.tree()
+    }
+    async fn ask(&self, parent: AgentId, spec: SubagentSpec) -> Result<AskOutcome, RuntimeError> {
+        self.inner.ask(parent, spec).await
     }
 }
 

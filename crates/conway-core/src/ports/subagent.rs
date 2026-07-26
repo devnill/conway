@@ -6,7 +6,7 @@
 
 use async_trait::async_trait;
 
-use crate::agent::{AgentResult, AgentTreeSnapshot, SubagentSpec};
+use crate::agent::{AgentResult, AgentTreeSnapshot, AskOutcome, SubagentSpec};
 use crate::error::RuntimeError;
 use crate::ids::AgentId;
 
@@ -24,4 +24,16 @@ pub trait SubagentHost: Send + Sync + 'static {
     async fn cancel(&self, target: AgentId, reason: String) -> Result<(), RuntimeError>;
 
     fn tree(&self) -> AgentTreeSnapshot;
+
+    /// Runs `spec` (fork-only by convention) as an ephemeral child of
+    /// `parent` and returns the child's FULL concatenated `TextDelta` reply
+    /// in [`AskOutcome::text`] -- NOT [`AgentResult::summary`], which
+    /// truncates at `DEFAULT_SUMMARY_LIMIT = 2000` chars.
+    ///
+    /// Implementations MUST subscribe to the `EventBus` BEFORE
+    /// `launch_agent` so the first `TextDelta` is not missed, and MUST
+    /// agent-id-check the child's `AgentFinished` so a sibling finishing
+    /// does not resolve the drain. `ask` is fork+await-text, NOT a third
+    /// subagent primitive (P-1): no mode parameter.
+    async fn ask(&self, parent: AgentId, spec: SubagentSpec) -> Result<AskOutcome, RuntimeError>;
 }

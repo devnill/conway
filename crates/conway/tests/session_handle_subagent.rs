@@ -784,7 +784,7 @@ async fn root_event_stream_observes_a_spawned_childs_agent_spawned_and_finished(
             let envelope = std::future::poll_fn(|cx| std::pin::Pin::new(&mut events).poll_next(cx))
                 .await
                 .expect("root event stream ended early");
-            if let conway_core::event::Event::AgentFinished { result } = &envelope.event {
+            if let conway_core::event::Event::AgentFinished { result, .. } = &envelope.event {
                 if result.agent_id == child {
                     return envelope;
                 }

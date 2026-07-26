@@ -627,6 +627,10 @@ impl Runtime {
             budget: spec.budget.clone(),
             cancel: cancel.clone(),
             inherited_upto: None,
+            // A root is never ephemeral (decision 01KYD1TWXMZD4BT842CMJT1AED:
+            // only `conway`'s facade `SessionHandle::ask` builds an ephemeral
+            // child, and that goes through `resume_root`, not `start_root`).
+            ephemeral: false,
         })?;
 
         let task: JoinHandle<AgentResult> = tokio::spawn(async move { agent_loop.run().await });
@@ -857,6 +861,13 @@ impl Runtime {
             budget: spec.budget.clone(),
             cancel: cancel.clone(),
             inherited_upto: None,
+            // Stamped from the persisted `SessionMeta::ephemeral`: `conway`'s
+            // facade `fork_child` (the `/ask` path) sets `meta.ephemeral = true`
+            // before `store.fork`; a normal `conway::resume`/`fork_from` leaves
+            // it `false`. `attach` does not emit `Event::AgentSpawned` for this
+            // node (a resumed root has `kind: None`), but `ephemeral_of` reads
+            // this field for the `Event::AgentFinished` stamp at finish time.
+            ephemeral: meta.ephemeral,
         };
 
         self.launch_agent(node, agent_loop, last_report, mailbox_tx)?;

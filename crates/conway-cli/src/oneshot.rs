@@ -164,7 +164,7 @@ pub async fn run(cli: &Cli, conway: Conway) -> conway::Result<ExitCode> {
                     continue;
                 }
                 renderer.on_event(&env)?;
-                if let Event::AgentFinished { result } = &env.event {
+                if let Event::AgentFinished { result, .. } = &env.event {
                     if env.agent == root {
                         final_result = Some(result.clone());
                         break;

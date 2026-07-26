@@ -57,12 +57,25 @@ pub enum Event {
         parent: Option<AgentId>,
         agent_def: Option<String>,
         inherited_upto: Option<LogSeq>,
+        /// Whether this child is an ephemeral `/ask`-style aside (decision
+        /// 01KYD1TWXMZD4BT842CMJT1AED): stamped from the child's
+        /// `SessionMeta::ephemeral` at `attach` time. `#[serde(default)]`
+        /// keeps old JSON logs readable (C-04): a missing key deserializes to
+        /// `false`, matching the pre-ephemeral semantics every non-ask fork/
+        /// spawn/root already had.
+        #[serde(default)]
+        ephemeral: bool,
     },
     AgentProgress {
         note: String,
     },
     AgentFinished {
         result: AgentResult,
+        /// See [`Event::AgentSpawned::ephemeral`]: stamped from the child
+        /// node's `ephemeral` field at every emission site (the live
+        /// `AgentLoop` finish and the supervisor's synthesized finish).
+        #[serde(default)]
+        ephemeral: bool,
     },
 
     TurnStarted {
@@ -208,6 +221,7 @@ mod tests {
                     parent: Some(AgentId::new()),
                     agent_def: Some("reviewer".into()),
                     inherited_upto: Some(LogSeq(10)),
+                    ephemeral: false,
                 },
                 "agent_spawned",
             ),
@@ -225,6 +239,7 @@ mod tests {
                         ResultStatus::Completed,
                         "done",
                     ),
+                    ephemeral: false,
                 },
                 "agent_finished",
             ),
@@ -422,6 +437,7 @@ mod tests {
             parent: None,
             agent_def: None,
             inherited_upto: None,
+            ephemeral: false,
         };
         assert_eq!(spawned.agent_lifecycle_kind(), Some(LifecyclePhase::Start));
 
@@ -432,6 +448,7 @@ mod tests {
                 ResultStatus::Completed,
                 "done",
             ),
+            ephemeral: false,
         };
         assert_eq!(finished.agent_lifecycle_kind(), Some(LifecyclePhase::End));
 
@@ -445,5 +462,77 @@ mod tests {
                 "unexpected lifecycle kind for {event:?}"
             );
         }
+    }
+
+    /// C-04 backward-compat: an old JSON log line for `agent_spawned` (and,
+    /// symmetrically, `agent_finished`) written before `ephemeral` existed
+    /// deserializes with `ephemeral: false`, and a round trip of an
+    /// ephemeral-flagged value preserves it.
+    #[test]
+    fn agent_spawned_and_finished_ephemeral_field_round_trips_and_defaults_false_when_absent() {
+        // Spawned: absent key -> false.
+        let spawned_json = serde_json::json!({
+            "event": "agent_spawned",
+            "kind": "fork",
+            "parent": null,
+            "agent_def": null,
+            "inherited_upto": null,
+        });
+        let back: Event = serde_json::from_value(spawned_json).unwrap();
+        match back {
+            Event::AgentSpawned { ephemeral, .. } => assert!(!ephemeral),
+            other => panic!("expected AgentSpawned, got {other:?}"),
+        }
+
+        // Spawned: explicit true round-trips.
+        let spawned_true = Event::AgentSpawned {
+            kind: SubagentMode::Fork,
+            parent: Some(AgentId::new()),
+            agent_def: None,
+            inherited_upto: None,
+            ephemeral: true,
+        };
+        let value = serde_json::to_value(&spawned_true).unwrap();
+        assert_eq!(value["ephemeral"], true);
+        let back: Event = serde_json::from_value(value).unwrap();
+        assert_eq!(back, spawned_true);
+
+        // Finished: build from a real value, then strip the `ephemeral` key
+        // to simulate an old log line written before the field existed.
+        let finished = Event::AgentFinished {
+            result: AgentResult::new(
+                AgentId::new(),
+                SessionId::new(),
+                ResultStatus::Completed,
+                "done",
+            ),
+            ephemeral: false,
+        };
+        let mut value = serde_json::to_value(&finished).unwrap();
+        assert!(value
+            .as_object_mut()
+            .unwrap()
+            .remove("ephemeral")
+            .is_some());
+        let back: Event = serde_json::from_value(value).unwrap();
+        match back {
+            Event::AgentFinished { ephemeral, .. } => assert!(!ephemeral),
+            other => panic!("expected AgentFinished, got {other:?}"),
+        }
+
+        // Finished: explicit true round-trips.
+        let finished_true = Event::AgentFinished {
+            result: AgentResult::new(
+                AgentId::new(),
+                SessionId::new(),
+                ResultStatus::Completed,
+                "done",
+            ),
+            ephemeral: true,
+        };
+        let value = serde_json::to_value(&finished_true).unwrap();
+        assert_eq!(value["ephemeral"], true);
+        let back: Event = serde_json::from_value(value).unwrap();
+        assert_eq!(back, finished_true);
     }
 }

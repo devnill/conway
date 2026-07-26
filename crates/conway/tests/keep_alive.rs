@@ -212,7 +212,7 @@ async fn next_agent_finished(
     loop {
         let envelope =
             std::future::poll_fn(|cx| std::pin::Pin::new(&mut *stream).poll_next(cx)).await?;
-        if let Event::AgentFinished { result } = envelope.event {
+        if let Event::AgentFinished { result, .. } = envelope.event {
             return Some(result);
         }
     }

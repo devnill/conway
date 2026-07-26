@@ -186,7 +186,7 @@ impl App {
                                 conway::Event::TurnFinished { .. } => {
                                     env.agent == self.state.focused_agent
                                 }
-                                conway::Event::AgentFinished { result } => {
+                                conway::Event::AgentFinished { result, .. } => {
                                     result.agent_id == self.state.focused_agent
                                 }
                                 _ => false,

@@ -619,11 +619,43 @@ impl AppState {
                 });
             }
             Event::AgentSpawned {
-                parent, agent_def, ..
+                ephemeral,
+                parent,
+                agent_def,
+                ..
             } => {
+                // Ephemeral `/ask`-style forks (decision
+                // 01KYD1TWXMZD4BT842CMJT1AED) are a distinct /btw-like
+                // category, not persistent tree subagents. Drop the live
+                // event here so the `/agents` panel and the inline
+                // transcript never list them: do NOT call
+                // `apply_agent_spawned` (no tree node, no `Entry::Agent`).
+                // The runtime's own `AgentTree` snapshot -- what `tree()`
+                // returns (P-2 provenance) -- STILL includes ephemeral
+                // children; this filter is on the live event stream only,
+                // never on `AppState::tree` itself (see
+                // `ephemeral_event_filter_does_not_affect_tree_snapshot`).
+                if *ephemeral {
+                    return;
+                }
                 self.apply_agent_spawned(env.agent, *parent, agent_def.clone());
             }
-            Event::AgentFinished { result } => {
+            Event::AgentFinished {
+                result,
+                ephemeral,
+                ..
+            } => {
+                // Same ephemeral filter as the `AgentSpawned` arm above:
+                // an ephemeral child's finish must not reset the focused
+                // agent's activity indicator, must not update any tree
+                // node, and must not push a transcript entry. The
+                // dedicated `/ask` UI is handled separately by
+                // `push_ephemeral_ask`/`resolve_ephemeral_ask`; this just
+                // prevents the live `AgentFinished` arm from
+                // double-counting the ephemeral child.
+                if *ephemeral {
+                    return;
+                }
                 self.apply_agent_finished(env.agent, result);
                 // Board item 01KYAGP11FF9YC3G60TWHHKKST: the focused
                 // agent's own finish is the terminal "stopped working"
@@ -955,6 +987,7 @@ mod tests {
             parent,
             agent_def: None,
             inherited_upto: None,
+            ephemeral: false,
         }
     }
 
@@ -995,6 +1028,7 @@ mod tests {
             },
             Event::AgentFinished {
                 result: AgentResult::new(root, session, ResultStatus::Completed, "done"),
+                ephemeral: false,
             },
         ];
         for event in events {
@@ -1125,6 +1159,7 @@ mod tests {
                     },
                     "",
                 ),
+                ephemeral: false,
             },
         ));
 
@@ -1157,6 +1192,7 @@ mod tests {
             child,
             Event::AgentFinished {
                 result: AgentResult::new(child, session, ResultStatus::Completed, "child done"),
+                ephemeral: false,
             },
         ));
 
@@ -1204,6 +1240,7 @@ mod tests {
             child,
             Event::AgentFinished {
                 result: AgentResult::new(child, session, ResultStatus::Completed, "done"),
+                ephemeral: false,
             },
         ));
 
@@ -1628,6 +1665,7 @@ mod tests {
                 parent: Some(root),
                 agent_def: None,
                 inherited_upto: None,
+                ephemeral: false,
             },
         ));
         state.apply(&envelope(
@@ -1635,6 +1673,7 @@ mod tests {
             child,
             Event::AgentFinished {
                 result: AgentResult::new(child, SessionId::new(), ResultStatus::Completed, "done"),
+                ephemeral: false,
             },
         ));
         let before = state.tree.nodes.len();
@@ -1828,6 +1867,7 @@ mod tests {
                     },
                     "",
                 ),
+                ephemeral: false,
             },
         ));
 
@@ -2112,6 +2152,7 @@ mod tests {
             sibling,
             Event::AgentFinished {
                 result: AgentResult::new(sibling, session, ResultStatus::Completed, "done"),
+                ephemeral: false,
             },
         ));
         assert_eq!(
@@ -2126,6 +2167,7 @@ mod tests {
             root,
             Event::AgentFinished {
                 result: AgentResult::new(root, session, ResultStatus::Completed, "done"),
+                ephemeral: false,
             },
         ));
         assert_eq!(state.activity, Activity::Idle);
@@ -2208,5 +2250,185 @@ mod tests {
 
         assert_eq!(state.activity, Activity::Idle);
         assert_eq!(state.focused_agent_usage, Usage::default());
+    }
+
+    // ---- Board item 01KYD2GY1QASN3PB8YEPY99SGS (conway_ask item e):
+    // ephemeral forks must never appear in the `/agents` panel nor push
+    // inline lifecycle entries into the focused agent's transcript. The
+    // filter is at `apply`'s `Event::AgentSpawned`/`AgentFinished` arms
+    // ONLY -- the runtime `tree()` snapshot still includes ephemeral
+    // children (P-2), and `AppState::tree` is NOT filtered at the data
+    // structure level (a directly-`insert`ed ephemeral node stays). ----
+
+    #[test]
+    fn ephemeral_spawn_does_not_appear_in_appstate_tree() {
+        let session = SessionId::new();
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let child = AgentId::new();
+        let before = state.transcript.len();
+
+        state.apply(&envelope(
+            session,
+            child,
+            Event::AgentSpawned {
+                kind: SubagentMode::Fork,
+                parent: Some(root),
+                agent_def: None,
+                inherited_upto: None,
+                ephemeral: true,
+            },
+        ));
+
+        assert!(
+            !state.tree.nodes.iter().any(|n| n.agent_id == child),
+            "an ephemeral spawn must not insert a tree node"
+        );
+        assert_eq!(
+            state.transcript.len(),
+            before,
+            "an ephemeral spawn must not push any transcript entry"
+        );
+        assert!(
+            !state
+                .transcript
+                .iter()
+                .any(|e| matches!(e, Entry::Agent { agent_id, .. } if *agent_id == child)),
+            "an ephemeral spawn must not push an Entry::Agent for the child"
+        );
+    }
+
+    #[test]
+    fn non_ephemeral_spawn_still_appears_in_appstate_tree() {
+        let session = SessionId::new();
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let child = AgentId::new();
+        // `parent == focused_agent (root)` so the spawn is a direct child of
+        // the focused view and pushes an inline `Entry::Agent` (the existing
+        // behavior the ephemeral filter must preserve for `ephemeral: false`).
+        assert_eq!(state.focused_agent, root);
+
+        state.apply(&envelope(
+            session,
+            child,
+            Event::AgentSpawned {
+                kind: SubagentMode::Fork,
+                parent: Some(root),
+                agent_def: None,
+                inherited_upto: None,
+                ephemeral: false,
+            },
+        ));
+
+        assert!(
+            state.tree.nodes.iter().any(|n| n.agent_id == child),
+            "a non-ephemeral spawn must still insert a tree node"
+        );
+        assert!(
+            matches!(
+                state.transcript.last(),
+                Some(Entry::Agent { agent_id, status: NodeStatus::Running, .. })
+                    if *agent_id == child
+            ),
+            "a non-ephemeral direct child of the focused agent must still push an Entry::Agent"
+        );
+    }
+
+    #[test]
+    fn ephemeral_finished_does_not_reset_activity_or_push_transcript() {
+        let session = SessionId::new();
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let child = AgentId::new();
+        // The focused agent is the parent (`root`), so without the filter the
+        // finish's `if env.agent == self.focused_agent` guard would NOT fire
+        // (it's the child finishing, not the parent) -- but `apply_agent_finished`
+        // would still run, set tree status, and update any matching `Entry::Agent`.
+        // Pre-set a non-Idle activity so a reset is observable, and pre-seed the
+        // child as `Running` so `set_tree_status` would have a node to mutate.
+        state.focused_agent = root;
+        state.activity = Activity::Responding;
+        state.tree.insert(TreeNode {
+            agent_id: child,
+            parent: Some(root),
+            agent_def: None,
+            status: NodeStatus::Running,
+        });
+        let transcript_before = state.transcript.clone();
+
+        state.apply(&envelope(
+            session,
+            child,
+            Event::AgentFinished {
+                result: AgentResult::new(child, session, ResultStatus::Completed, "x"),
+                ephemeral: true,
+            },
+        ));
+
+        assert_eq!(
+            state.activity,
+            Activity::Responding,
+            "an ephemeral finish must not touch the focused agent's activity"
+        );
+        assert_eq!(
+            state.transcript, transcript_before,
+            "an ephemeral finish must not push any transcript entry"
+        );
+        // The pre-seeded tree node status must NOT be advanced to `Finished`
+        // by the ephemeral finish -- the filter drops the event before
+        // `apply_agent_finished` runs.
+        let node = state
+            .tree
+            .nodes
+            .iter()
+            .find(|n| n.agent_id == child)
+            .expect("the pre-seeded child node must still be present (filter is on the event, not the tree)");
+        assert_eq!(
+            node.status,
+            NodeStatus::Running,
+            "an ephemeral finish must not update the child's tree node status"
+        );
+    }
+
+    #[test]
+    fn ephemeral_event_filter_does_not_affect_tree_snapshot() {
+        // The filter is on the live event only -- never on `AppState::tree`
+        // itself. A node `insert`ed directly (mimicking what the runtime
+        // `tree()` snapshot would carry, P-2) must survive an ephemeral spawn
+        // event for a DIFFERENT agent being dropped by `apply`.
+        let session = SessionId::new();
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let ephemeral_in_tree = AgentId::new();
+        let other = AgentId::new();
+        // Directly seed an ephemeral node -- bypassing the `apply` filter.
+        state.tree.insert(TreeNode {
+            agent_id: ephemeral_in_tree,
+            parent: Some(root),
+            agent_def: None,
+            status: NodeStatus::Running,
+        });
+
+        state.apply(&envelope(
+            session,
+            other,
+            Event::AgentSpawned {
+                kind: SubagentMode::Fork,
+                parent: Some(root),
+                agent_def: None,
+                inherited_upto: None,
+                ephemeral: true,
+            },
+        ));
+
+        assert!(
+            state.tree.nodes.iter().any(|n| n.agent_id == ephemeral_in_tree),
+            "a directly-seeded ephemeral node must stay -- the filter is on the live event only, not the tree"
+        );
+        assert!(
+            !state.tree.nodes.iter().any(|n| n.agent_id == other),
+            "the ephemeral spawn event itself must still be dropped (no node for `other`)"
+        );
     }
 }

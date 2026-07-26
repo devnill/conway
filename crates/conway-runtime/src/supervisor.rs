@@ -152,7 +152,8 @@ pub fn supervise(args: SuperviseArgs) -> JoinHandle<()> {
                 // actually published -- see the module doc.
                 let won = tree.publish_result(agent, result.clone()).unwrap_or(true);
                 if won {
-                    bus.emit(session, agent, Event::AgentFinished { result });
+                    let ephemeral = tree.ephemeral_of(agent);
+                    bus.emit(session, agent, Event::AgentFinished { result, ephemeral });
                 }
             }
         }
