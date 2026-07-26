@@ -306,6 +306,16 @@ pub struct AgentNode {
     pub status: AgentStatus,
     pub steps_taken: u32,
     pub budget: Budget,
+    /// Whether this agent is an ephemeral `/ask`-style aside (decision
+    /// 01KYD1TWXMZD4BT842CMJT1AED), projected from the attached node's
+    /// `ephemeral` flag at `snapshot` time (the same source
+    /// `Event::AgentSpawned::ephemeral` is stamped from). The snapshot keeps
+    /// ephemeral children (P-2 provenance); this flag is what lets a
+    /// consumer tell them apart from persistent subagents. `#[serde(default)]`
+    /// keeps old serialized snapshots readable (C-04): a missing key
+    /// deserializes to `false`, matching the pre-ephemeral semantics.
+    #[serde(default)]
+    pub ephemeral: bool,
 }
 
 /// An agent's lifecycle state within the tree.
@@ -645,6 +655,7 @@ mod tests {
             status: AgentStatus::Running,
             steps_taken: 3,
             budget: Budget::default(),
+            ephemeral: false,
         };
         let snapshot = AgentTreeSnapshot {
             root: node.agent_id,
@@ -654,5 +665,25 @@ mod tests {
         let json = serde_json::to_string(&snapshot).unwrap();
         let back: AgentTreeSnapshot = serde_json::from_str(&json).unwrap();
         assert_eq!(snapshot, back);
+    }
+
+    #[test]
+    fn agent_node_without_ephemeral_key_deserializes_to_false() {
+        // C-04 backward compat: a snapshot serialized before the `ephemeral`
+        // field existed has no key for it; `#[serde(default)]` must read it
+        // back as `false` (the pre-ephemeral semantics), never fail.
+        let json = r#"{
+            "agent_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            "session": "01ARZ3NDEKTSV4RRFFQ69G5FB0",
+            "parent": null,
+            "mode": null,
+            "agent_def": null,
+            "role": null,
+            "status": "running",
+            "steps_taken": 0,
+            "budget": {"max_steps": 40, "deadline": null, "max_tokens": null, "max_tool_calls": null}
+        }"#;
+        let node: AgentNode = serde_json::from_str(json).unwrap();
+        assert!(!node.ephemeral);
     }
 }

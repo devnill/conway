@@ -272,6 +272,165 @@ async fn ask_tool_calls_subagent_host_ask_with_ephemeral_fork_spec() {
 }
 
 #[tokio::test]
+async fn ask_result_status_maps_to_is_error_per_variant() {
+    // `ask.rs`'s `is_error: !matches!(outcome.status, ResultStatus::Completed)`
+    // -- every non-Completed AskOutcome status must surface as `is_error`
+    // (the same mapping `result_status_maps_to_is_error_per_variant` pins for
+    // conway_subagent's AgentResult path).
+    let cases = vec![
+        (ResultStatus::Completed, false),
+        (
+            ResultStatus::Failed {
+                error: "boom".into(),
+            },
+            true,
+        ),
+        (ResultStatus::Cancelled { reason: "r".into() }, true),
+        (
+            ResultStatus::BudgetExceeded {
+                limit: "max_steps=20".into(),
+            },
+            true,
+        ),
+        (
+            ResultStatus::Rejected {
+                missing: vec!["tool_calling".into()],
+            },
+            true,
+        ),
+    ];
+    for (status, expected_is_error) in cases {
+        let parent = AgentId::new();
+        let outcome = AskOutcome {
+            text: "t".into(),
+            usage: conway_core::content::Usage::default(),
+            status: status.clone(),
+            transcript_ref: SessionId::new(),
+        };
+        let fake = Arc::new(FakeSubagentHost::new().with_ask_outcome(parent, outcome));
+        let (ctx, _h) = test_ctx(PathBuf::from("/tmp/x"));
+        let ctx = ToolCtx {
+            agent_id: parent,
+            subagents: fake as Arc<dyn SubagentHost>,
+            ..ctx
+        };
+        let out = AskTool::new()
+            .invoke(call("conway_ask", serde_json::json!({"prompt": "p"})), ctx)
+            .await
+            .unwrap();
+        assert_eq!(out.is_error, expected_is_error, "status {status:?}");
+    }
+}
+
+#[tokio::test]
+async fn ask_host_runtime_error_surfaces_as_err_not_is_error() {
+    // Mirrors `host_runtime_error_surfaces_as_err_not_is_error` (conway_await):
+    // a `SubagentHost::ask` failure maps through `map_err(host_error)` to
+    // `Err(ToolError::Internal)` -- it must NOT come back as `Ok` with
+    // `is_error` set (that shape is reserved for a non-Completed AskOutcome).
+    let (ctx, _h) = test_ctx(PathBuf::from("/tmp/x"));
+    let missing = AgentId::new();
+    let fake = Arc::new(
+        FakeSubagentHost::new().with_ask_error(RuntimeError::AgentNotFound { agent: missing }),
+    );
+    let ctx = ToolCtx {
+        subagents: fake as Arc<dyn SubagentHost>,
+        ..ctx
+    };
+    let err = AskTool::new()
+        .invoke(call("conway_ask", serde_json::json!({"prompt": "p"})), ctx)
+        .await
+        .unwrap_err();
+    match err {
+        ToolError::Internal { detail } => {
+            assert!(detail.contains("not found"), "detail was {detail:?}");
+        }
+        other => panic!("expected Internal (conway-core has no Host variant), got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn ask_budget_defaults_to_20_steps_and_two_minute_deadline_unless_configured() {
+    // `conway_ask`'s defaults are tighter than `conway_subagent`'s (40 steps /
+    // 10 minutes): curation is a bounded drafting step, not an open-ended
+    // delegation.
+    let (ctx, handles) = test_ctx(PathBuf::from("/tmp/x"));
+    let before = chrono::Utc::now();
+    AskTool::new()
+        .invoke(call("conway_ask", serde_json::json!({"prompt": "p"})), ctx)
+        .await
+        .unwrap();
+    let budget = &handles.subagents.asks()[0].1.budget;
+    assert_eq!(budget.max_steps, 20);
+    assert!(budget.max_tokens.is_none());
+    let deadline = budget.deadline.expect("default deadline is set");
+    assert!(deadline >= before + chrono::Duration::seconds(119));
+    assert!(deadline <= before + chrono::Duration::seconds(122));
+}
+
+#[tokio::test]
+async fn ask_config_keys_override_default_budget() {
+    // Mirrors `config_key_overrides_default_max_steps` (conway_subagent): the
+    // `ask.*` PluginConfig keys sit between the call's budget args and the
+    // defaults in `resolve_ask_budget`'s precedence chain.
+    let (ctx, handles) = test_ctx(PathBuf::from("/tmp/x"));
+    let mut values = serde_json::Map::new();
+    values.insert("ask.max_steps".into(), serde_json::json!(7));
+    values.insert("ask.deadline_secs".into(), serde_json::json!(30));
+    values.insert("ask.max_tokens".into(), serde_json::json!(500));
+    let ctx = ToolCtx {
+        config: Arc::new(PluginConfig { values }),
+        ..ctx
+    };
+    let before = chrono::Utc::now();
+    AskTool::new()
+        .invoke(call("conway_ask", serde_json::json!({"prompt": "p"})), ctx)
+        .await
+        .unwrap();
+    let budget = &handles.subagents.asks()[0].1.budget;
+    assert_eq!(budget.max_steps, 7);
+    assert_eq!(budget.max_tokens, Some(500));
+    let deadline = budget.deadline.expect("configured deadline is set");
+    assert!(deadline >= before + chrono::Duration::seconds(29));
+    assert!(deadline <= before + chrono::Duration::seconds(32));
+}
+
+#[tokio::test]
+async fn ask_budget_args_override_config_keys() {
+    // The call's `budget` argument outranks every `ask.*` config key
+    // (`resolve_ask_budget`'s first precedence tier).
+    let (ctx, handles) = test_ctx(PathBuf::from("/tmp/x"));
+    let mut values = serde_json::Map::new();
+    values.insert("ask.max_steps".into(), serde_json::json!(7));
+    values.insert("ask.deadline_secs".into(), serde_json::json!(30));
+    values.insert("ask.max_tokens".into(), serde_json::json!(500));
+    let ctx = ToolCtx {
+        config: Arc::new(PluginConfig { values }),
+        ..ctx
+    };
+    let before = chrono::Utc::now();
+    AskTool::new()
+        .invoke(
+            call(
+                "conway_ask",
+                serde_json::json!({
+                    "prompt": "p",
+                    "budget": {"max_steps": 3, "deadline_secs": 9, "max_tokens": 42}
+                }),
+            ),
+            ctx,
+        )
+        .await
+        .unwrap();
+    let budget = &handles.subagents.asks()[0].1.budget;
+    assert_eq!(budget.max_steps, 3);
+    assert_eq!(budget.max_tokens, Some(42));
+    let deadline = budget.deadline.expect("arg deadline is set");
+    assert!(deadline >= before + chrono::Duration::seconds(8));
+    assert!(deadline <= before + chrono::Duration::seconds(11));
+}
+
+#[tokio::test]
 async fn invalid_mode_is_invalid_arguments_with_zero_starts() {
     let (ctx, handles) = test_ctx(PathBuf::from("/tmp/x"));
     let err = SubagentTool::new()

@@ -131,6 +131,78 @@ async fn attach_stamps_agent_spawned_ephemeral_from_node_and_ephemeral_of_reads_
     assert!(seen_normal, "normal child observed");
 }
 
+/// The `tree()` snapshot keeps ephemeral children (P-2 provenance) but must
+/// project each node's `ephemeral` flag so a consumer (the TUI `/tree`
+/// renderer) can tell an ephemeral `/ask` child apart from a persistent
+/// subagent (MIN-3).
+#[tokio::test]
+async fn snapshot_projects_ephemeral_flag_per_node() {
+    let bus = EventBus::with_default_capacity();
+    let tree = AgentTree::new(bus);
+
+    let parent = AgentId::new();
+    let session = SessionId::new();
+    tree.attach(AgentNode {
+        id: parent,
+        parent: None,
+        session,
+        kind: None,
+        agent_def: None,
+        role: None,
+        budget: Budget::default(),
+        cancel: CancellationToken::new(),
+        inherited_upto: None,
+        ephemeral: false,
+    })
+    .expect("root attach");
+
+    let ephemeral_child = AgentId::new();
+    tree.attach(AgentNode {
+        id: ephemeral_child,
+        parent: Some(parent),
+        session,
+        kind: Some(SubagentMode::Fork),
+        agent_def: None,
+        role: None,
+        budget: Budget::default(),
+        cancel: CancellationToken::new(),
+        inherited_upto: Some(LogSeq(0)),
+        ephemeral: true,
+    })
+    .expect("ephemeral child attach");
+
+    let persistent_child = AgentId::new();
+    tree.attach(AgentNode {
+        id: persistent_child,
+        parent: Some(parent),
+        session,
+        kind: Some(SubagentMode::Spawn),
+        agent_def: None,
+        role: None,
+        budget: Budget::default(),
+        cancel: CancellationToken::new(),
+        inherited_upto: None,
+        ephemeral: false,
+    })
+    .expect("persistent child attach");
+
+    let snapshot = tree.snapshot();
+    // Both children stay IN the snapshot (P-2: adding a marker, never
+    // filtering).
+    assert_eq!(snapshot.nodes.len(), 3, "snapshot keeps every attached node");
+    let flag_of = |id: AgentId| {
+        snapshot
+            .nodes
+            .iter()
+            .find(|n| n.agent_id == id)
+            .unwrap_or_else(|| panic!("{id} must be in the snapshot"))
+            .ephemeral
+    };
+    assert!(flag_of(ephemeral_child), "ephemeral child projects true");
+    assert!(!flag_of(persistent_child), "persistent child projects false");
+    assert!(!flag_of(parent), "root projects false");
+}
+
 // ---------------------------------------------------------------------
 // End-to-end `conway_subagent` fork: both events `ephemeral: false`
 // ---------------------------------------------------------------------

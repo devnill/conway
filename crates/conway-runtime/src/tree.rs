@@ -314,6 +314,11 @@ impl AgentTree {
                     status,
                     steps_taken,
                     budget: entry.node.budget.clone(),
+                    // Same source `Event::AgentSpawned::ephemeral` is stamped
+                    // from (see `attach`); ephemeral children stay IN the
+                    // snapshot (P-2 provenance) -- this flag is how a
+                    // consumer distinguishes them from persistent subagents.
+                    ephemeral: entry.node.ephemeral,
                 }
             })
             .collect();

@@ -45,6 +45,11 @@ pub struct FakeSubagentHost {
     results: Mutex<HashMap<AgentId, AgentResult>>,
     asks: Mutex<Vec<(AgentId, SubagentSpec)>>,
     ask_outcomes: Mutex<HashMap<AgentId, AskOutcome>>,
+    /// When set (via [`Self::with_ask_error`]), every `ask` call fails with
+    /// this error instead of returning an outcome — drives the host-error
+    /// path (`map_err(host_error)`), which a scripted [`AskOutcome`] cannot
+    /// reach. Read-only after construction, so no `Mutex`.
+    ask_error: Option<RuntimeError>,
 }
 
 impl FakeSubagentHost {
@@ -59,6 +64,7 @@ impl FakeSubagentHost {
             results: Mutex::new(HashMap::new()),
             asks: Mutex::new(Vec::new()),
             ask_outcomes: Mutex::new(HashMap::new()),
+            ask_error: None,
         }
     }
 
@@ -80,6 +86,15 @@ impl FakeSubagentHost {
     /// ResultStatus::Completed, transcript_ref: SessionId::new() }`.
     pub fn with_ask_outcome(self, parent: AgentId, outcome: AskOutcome) -> Self {
         self.ask_outcomes.lock().unwrap().insert(parent, outcome);
+        self
+    }
+
+    /// Makes every `ask(parent, spec)` call fail with `error` (cloned), the
+    /// call still being recorded. Takes precedence over any scripted
+    /// [`Self::with_ask_outcome`] — the host-error path is infrastructure
+    /// failure, not a per-parent outcome.
+    pub fn with_ask_error(mut self, error: RuntimeError) -> Self {
+        self.ask_error = Some(error);
         self
     }
 
@@ -155,6 +170,9 @@ impl SubagentHost for FakeSubagentHost {
 
     async fn ask(&self, parent: AgentId, spec: SubagentSpec) -> Result<AskOutcome, RuntimeError> {
         self.asks.lock().unwrap().push((parent, spec));
+        if let Some(error) = &self.ask_error {
+            return Err(error.clone());
+        }
         let outcome = self.ask_outcomes.lock().unwrap().get(&parent).cloned();
         Ok(outcome.unwrap_or_else(|| AskOutcome {
             text: "fake".into(),
@@ -276,6 +294,17 @@ mod tests {
 
         assert_eq!(host.steers(), vec![(target, "keep going".to_string())]);
         assert_eq!(host.cancels(), vec![(target, "stop".to_string())]);
+    }
+
+    #[tokio::test]
+    async fn fake_subagent_host_ask_errors_when_scripted_and_still_records() {
+        let parent = AgentId::new();
+        let host = FakeSubagentHost::new()
+            .with_ask_error(RuntimeError::AgentNotFound { agent: parent });
+
+        let err = host.ask(parent, fork_spec("do it")).await.unwrap_err();
+        assert!(matches!(err, RuntimeError::AgentNotFound { agent } if agent == parent));
+        assert_eq!(host.asks().len(), 1, "the failed call is still recorded");
     }
 
     #[test]

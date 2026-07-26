@@ -491,3 +491,63 @@ async fn ask_child_emits_agent_finished_with_ephemeral_true() {
     .expect("child AgentFinished never observed");
     assert!(saw_ephemeral_finish);
 }
+
+// ---------------------------------------------------------------------
+// Acceptance: a cancelled child still resolves the drain (NO HANG)
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn ask_drain_resolves_with_cancelled_status_when_parent_is_cancelled() {
+    // The `SubagentHost::ask` contract (`conway-core/src/ports/subagent.rs`):
+    // ask ALWAYS terminates -- a cancelled child emits `AgentFinished` with
+    // `status: Cancelled` (its own `finish_cancelled`, or the supervisor's
+    // grace-timeout synthesized finish if the loop itself cannot) and the
+    // drain resolves on it, returning `AskOutcome { status: Cancelled, .. }`.
+    //
+    // The parent (root) is cancelled BEFORE `ask`: `start` derives the
+    // child's cancel token from the parent's (`tree.child_cancel_token`), so
+    // the child is born cancelled and never consumes its 60s-delayed backend
+    // turn. That delay is the no-hang guard: if the drain waited on the
+    // backend response (or on a Completed finish) instead of resolving on the
+    // Cancelled `AgentFinished`, the 5s timeout below would trip first.
+    let backend = Arc::new(AskBackend::new(
+        BackendId::new("b"),
+        vec![
+            AskTurn::text("root ok", Duration::ZERO),
+            AskTurn::text("unreachable", Duration::from_secs(60)),
+        ],
+    ));
+    let bus = EventBus::with_default_capacity();
+    let runtime = build_runtime_with_backend(backend, bus);
+
+    let parent = start_and_finish_root(&runtime, "investigate").await;
+    runtime
+        .cancel(parent, "test: parent cancelled before ask".to_string())
+        .expect("cancel root");
+
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(5),
+        runtime.ask(parent, ask_fork_spec("say hi")),
+    )
+    .await
+    .expect("ask hung on a cancelled child")
+    .expect("ask errored");
+
+    assert!(
+        matches!(outcome.status, ResultStatus::Cancelled { .. }),
+        "expected Cancelled, got {:?}",
+        outcome.status
+    );
+    // No turn ever ran: no TextDeltas accumulated, zero usage -- but
+    // `transcript_ref` still names the (empty) child session (P-2).
+    assert_eq!(outcome.text, "");
+    assert_eq!(outcome.usage, Usage::default());
+    let child_session = runtime
+        .tree()
+        .nodes
+        .iter()
+        .find(|n| n.parent == Some(parent))
+        .expect("child node present in tree")
+        .session;
+    assert_eq!(outcome.transcript_ref, child_session);
+}
