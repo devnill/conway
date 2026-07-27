@@ -223,6 +223,24 @@ fn handle_normal_key(state: &mut AppState, key: KeyEvent) -> Action {
                 state.sync_palette_stem();
                 return Action::None;
             }
+            // T5: Ctrl-E expands/collapses ALL tool entries in the
+            // transcript at once (MVP -- no per-entry selection). A control
+            // key, not a bare `e` (D-keys: a bare `e` must stay ordinary
+            // text input for the always-on input box). Pure state mutation
+            // -- `AppState::toggle_all_tool_entries_expanded` flips
+            // `expanded` on every `Entry::Tool` and leaves `scroll`/
+            // `follow_tail` untouched (the next render's clamp re-clamps
+            // without snapping the viewport). No `Action` variant needed,
+            // mirroring the `v` visibility-filter key's direct-mutation
+            // pattern. Note: this RECLAIMS Ctrl-E from the T3 hint's
+            // advertised-but-never-wired "Ctrl-E submit" -- Enter was and
+            // remains the actual submit key (T8 will move submit to
+            // Alt/Shift-Enter); the hint segment is updated in
+            // `view/status.rs`.
+            KeyCode::Char('e') | KeyCode::Char('E') => {
+                state.toggle_all_tool_entries_expanded();
+                return Action::None;
+            }
             _ => {}
         }
     }
@@ -994,6 +1012,101 @@ mod tests {
             handle_key(&mut state, ctrl_key(KeyCode::Char('c'))),
             Action::CtrlC
         );
+    }
+
+    // ---- T5: Ctrl-E toggles all tool entries' `expanded` flag ----
+
+    use crate::tui::state::{Entry, ToolStatus};
+
+    #[test]
+    fn ctrl_e_toggles_all_tool_entries_expanded() {
+        let mut state = AppState::new(AgentId::new());
+        state.transcript.push(Entry::Tool {
+            call_id: "c1".to_string(),
+            name: "bash".to_string(),
+            status: ToolStatus::Finished { is_error: false },
+            preview: "a\nb\nc".to_string(),
+            expanded: false,
+        });
+        state.transcript.push(Entry::Tool {
+            call_id: "c2".to_string(),
+            name: "bash".to_string(),
+            status: ToolStatus::Finished { is_error: false },
+            preview: "x\ny".to_string(),
+            expanded: false,
+        });
+
+        // Ctrl-E: pure state mutation, returns `Action::None` (mirrors the
+        // `v` visibility-filter key's direct-mutation pattern).
+        assert_eq!(
+            handle_key(&mut state, ctrl_key(KeyCode::Char('e'))),
+            Action::None,
+            "Ctrl-E must report Action::None (the toggle is pure state)"
+        );
+        let all_expanded: Vec<bool> = state
+            .transcript
+            .iter()
+            .filter_map(|e| match e {
+                Entry::Tool { expanded, .. } => Some(*expanded),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(all_expanded, vec![true, true], "Ctrl-E must expand ALL");
+
+        // A second Ctrl-E collapses them again (involution).
+        handle_key(&mut state, ctrl_key(KeyCode::Char('e')));
+        let all_expanded: Vec<bool> = state
+            .transcript
+            .iter()
+            .filter_map(|e| match e {
+                Entry::Tool { expanded, .. } => Some(*expanded),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(all_expanded, vec![false, false]);
+    }
+
+    /// Ctrl-E must NOT touch `scroll`/`follow_tail` (the no-snap contract).
+    #[test]
+    fn ctrl_e_does_not_touch_scroll_or_follow_tail() {
+        let mut state = AppState::new(AgentId::new());
+        state.transcript.push(Entry::Tool {
+            call_id: "c1".to_string(),
+            name: "bash".to_string(),
+            status: ToolStatus::Finished { is_error: false },
+            preview: "a\nb\nc".to_string(),
+            expanded: false,
+        });
+        state.scroll = 5;
+        state.follow_tail = false;
+
+        handle_key(&mut state, ctrl_key(KeyCode::Char('e')));
+
+        assert_eq!(state.scroll, 5, "Ctrl-E must not change scroll");
+        assert!(!state.follow_tail, "Ctrl-E must not change follow_tail");
+    }
+
+    /// A bare `e` (no modifier) must remain ordinary text input -- Ctrl-E
+    /// is the binding, not `e` (D-keys: no bare printable keys as
+    /// bindings). This is the load-bearing reason the binding is on Ctrl-E.
+    #[test]
+    fn bare_e_types_into_the_input_box_not_toggles() {
+        let mut state = AppState::new(AgentId::new());
+        state.transcript.push(Entry::Tool {
+            call_id: "c1".to_string(),
+            name: "bash".to_string(),
+            status: ToolStatus::Finished { is_error: false },
+            preview: "a\nb\nc".to_string(),
+            expanded: false,
+        });
+
+        assert_eq!(handle_key(&mut state, key(KeyCode::Char('e'))), Action::None);
+        assert_eq!(state.input, "e", "bare `e` must type into the input box");
+        // The tool entry is untouched.
+        match &state.transcript[0] {
+            Entry::Tool { expanded, .. } => assert!(!*expanded, "bare `e` must not toggle"),
+            other => panic!("expected Tool, got {other:?}"),
+        }
     }
 
     #[test]

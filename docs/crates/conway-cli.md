@@ -326,7 +326,7 @@ fields = ["mode", "model", "ctx", "tokens", "git", "activity", "hint"]
 | `ctx` | `ctx 42%` when the focused model's max context is known, else `ctx 12.3k` (raw tokens, compact-suffixed; capped at `ctx 100%`) | cumulative `Event::ContextSegmentAdded { tokens_est }` ÷ the focused model's `max_context_tokens` from `[models.metadata_path]` |
 | `tokens` | `<total> tok (<n%> cached)` when cache data is present, else `<total> tok` | cumulative `Event::TurnFinished { usage }` (`Usage`'s input + output + both cache dimensions + reasoning); `n%` = `cache_read / (input + cache_read + cache_write)`, omitted when the denominator is 0 or `cache_read` is 0 |
 | `activity` | T2's working indicator: `⠋ thinking… 12s · +45 tok` while active, `idle` while idle (spinner + phrase pulse via `Theme::spinner_palette`; `+{n} tok` is session-deduped new-segment tokens added this turn) | `AppState::activity` + T2 counters |
-| `hint` | a persistent keybinding/affordance hint, dim: `Ctrl-E submit · ↑↓ history · PgUp/PgDn · /help · /agents to {view\|hide}`, plus `focused: <id>` when the transcript is focused on a non-root agent | static + `AppState::agent_view_open`/`focused_agent` |
+| `hint` | a persistent keybinding/affordance hint, dim: `Enter submit · Ctrl-E expand · ↑↓ history · PgUp/PgDn · /help · /agents to {view\|hide}`, plus `focused: <id>` when the transcript is focused on a non-root agent | static + `AppState::agent_view_open`/`focused_agent` |
 | `git` | the current branch (e.g. `main`); omitted when not a git repo, git is absent, or the command fails | one-shot `git rev-parse --abbrev-ref HEAD` at startup, no polling |
 | `cwd` | the session's working directory; omitted when unset | `Cli --cwd` or `config.cwd` |
 
@@ -434,6 +434,58 @@ entries (the clean-copy invariant is relaxed only for the actively-
 streaming line, per decision D-clean-copy). When the turn settles the
 cursor disappears from the next render because the
 `activity == Responding` gate stops firing.
+
+### Tool output folding + expand (T5)
+
+A settled tool entry (`Entry::Tool` with a non-empty `preview`) renders
+its preview **folded** by default: only the first
+`[tui.tool_preview_lines]` physical lines (default 3) render, followed
+by a dim `… (+M lines, Ctrl-E to expand)` affordance naming how many
+lines are hidden. `Ctrl-E` flips `expanded` on **every** tool entry in
+the transcript at once (MVP — there is no transcript-cursor/selection
+state, so expand/collapse is all-at-once); an expanded entry renders
+its full preview with no affordance. The stored `preview` is never
+truncated — the cap is render-time only, so toggling never loses data.
+
+The toggle is pure state mutation: `Ctrl-E` does NOT touch `scroll` or
+`follow_tail`. The next render's existing clamp
+(`state.scroll.min(max_scroll)`) re-clamps to the nearest valid
+position without snapping the viewport — a toggle that shrinks the
+content height clamps an overscrolled `scroll` down to the new
+`max_scroll`; a toggle that grows it back restores the original
+`scroll` since it was never overwritten.
+
+`Ctrl-E` (a control key, not a bare `e` — the always-on input box must
+keep `e` as ordinary text input) is bound in `input.rs::handle_normal_key`
+and calls `AppState::toggle_all_tool_entries_expanded` directly,
+mirroring the `v` visibility-filter key's direct-mutation pattern (no
+`Action` variant, since the toggle has no facade side effect). The
+status-line `hint` field advertises `Ctrl-E expand` (reconciling the
+earlier `Ctrl-E submit` hint — Enter was and remains the actual submit
+key; T8 will move submit to Alt/Shift-Enter).
+
+**Configuration** — `[tui.tool_preview_lines]` is an optional integer
+(default 3, clamped to `1..=200` with a fallback to 3 on a
+missing/out-of-range/bad value — P-10: config is untrusted input, never
+a panic). `CONWAY_TUI__TOOL_PREVIEW_LINES=10` overrides via env.
+
+```toml
+[tui]
+tool_preview_lines = 5
+```
+
+**Clean-copy invariant.** Settled tool output uses no box-drawing and no
+`Block`: the entry ends with a blank line followed by a dim plain `-`
+rule (a single dash, styled with `theme.dim`) as a non-box separator.
+The `entry_lines_never_contain_box_drawing_glyphs` test covers this —
+no `│`/`─`/`Block` appears in collapsed or expanded tool output.
+
+**T4 reuse.** The `Entry::Tool::expanded` flag and the
+`tool_lines` collapsed/expanded render branch are intentionally generic:
+T4's tool-args preview is the same shape (a one-line-truncated args
+preview is the collapsed branch with `cap = 1` and a different content
+string), so T4 can reuse the mechanism without changing the `expanded`
+field, the affordance format, or the `Ctrl-E` action.
 
 ### The `/` command palette, with arrow-select
 

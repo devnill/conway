@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **TUI: tool output folding + expand (T5).** A settled tool entry's
+  preview in the transcript now renders **folded** by default: the first
+  `[tui.tool_preview_lines]` physical lines (default 3) plus a dim
+  `… (+M lines, Ctrl-E to expand)` affordance naming how many lines are
+  hidden, instead of spilling the entire preview inline with no bound.
+  `Ctrl-E` flips `expanded` on **every** tool entry at once (MVP — no
+  transcript-cursor/selection state, so expand/collapse is all-at-once);
+  an expanded entry renders its full preview. The stored `preview` is
+  never truncated — the cap is render-time only, so toggling never loses
+  data. The toggle is pure state mutation: `Ctrl-E` does NOT touch
+  `scroll` or `follow_tail`; the next render's existing clamp
+  (`state.scroll.min(max_scroll)`) re-clamps to the nearest valid
+  position without snapping the viewport. `Ctrl-E` is a control key
+  (not a bare `e`, which stays ordinary text input for the always-on
+  input box), bound directly to
+  `AppState::toggle_all_tool_entries_expanded` (mirroring the `v`
+  visibility-filter key's direct-mutation pattern — no `Action` variant,
+  no facade side effect). Settled tool output honors the clean-copy
+  invariant: no box-drawing, no `Block` — the entry ends with a blank
+  line + a dim plain `-` rule as a non-box separator. New config key
+  `[tui.tool_preview_lines]` (optional integer, default 3, clamped to
+  `1..=200` with a fallback to 3 on bad input — P-10, never a panic);
+  `CONWAY_TUI__TOOL_PREVIEW_LINES=10` overrides via env. The
+  `Entry::Tool::expanded` flag and the `tool_lines` collapsed/expanded
+  render branch are generic for T4's tool-args reuse. The status-line
+  `hint` field now advertises `Enter submit · Ctrl-E expand` (reconciling
+  the earlier `Ctrl-E submit` hint — Enter was always the actual submit
+  key; T8 will move submit to Alt/Shift-Enter). See
+  `docs/crates/conway-cli.md`'s "Tool output folding + expand (T5)"
+  section.
+
 ### Changed
 
 - **TUI: status line rework — model + ctx% + cwd + git + field config

@@ -109,7 +109,7 @@ fn build_lines(state: &AppState, theme: &Theme) -> Vec<Line<'static>> {
         .iter()
         .enumerate()
         .flat_map(|(i, entry)| {
-            let mut lines = entry_lines(entry, theme);
+            let mut lines = entry_lines(entry, state.tool_preview_lines, theme);
             if streaming && Some(i) == last_assistant_idx {
                 if let Some(last) = lines.last_mut() {
                     // Reuse the assistant body style for the cursor so it
@@ -150,7 +150,7 @@ pub(super) fn wrapped_line_count(state: &AppState, width: u16) -> usize {
 /// against a `TestBackend`-free `Line`/`Span`. The `theme` parameter drives
 /// every color/modifier on the emitted `Span`s (T1); the text content is
 /// identical to a pre-T1 build at the default theme (visual parity).
-pub fn entry_lines(entry: &Entry, theme: &Theme) -> Vec<Line<'static>> {
+pub fn entry_lines(entry: &Entry, tool_cap: u32, theme: &Theme) -> Vec<Line<'static>> {
     match entry {
         Entry::User(text) => {
             let prefix = theme.user;
@@ -176,8 +176,9 @@ pub fn entry_lines(entry: &Entry, theme: &Theme) -> Vec<Line<'static>> {
             name,
             status,
             preview,
+            expanded,
             ..
-        } => tool_lines(name, *status, preview, theme),
+        } => tool_lines(name, *status, preview, *expanded, tool_cap, theme),
         Entry::Agent { label, status, .. } => vec![agent_line(label, *status, theme)],
         Entry::Notice { text } => text
             .split('\n')
@@ -198,13 +199,29 @@ fn split_lines(text: &str, theme: &Theme) -> Vec<Line<'static>> {
         .collect()
 }
 
-/// The tool's `[tag] name -- preview` line(s): a `preview` containing `\n`
-/// (e.g. a multi-line command output) splits onto its own continuation
-/// lines, unprefixed, following the same pattern as `Entry::User` above.
+/// The tool's `[tag] name -- preview` line(s), with T5 folding. The stored
+/// `preview` is NEVER truncated -- the cap is render-time only. While
+/// `expanded` is `false`, only the first `cap` physical lines of the
+/// preview render, followed by a dim `… (+M lines, Ctrl-E to expand)`
+/// affordance (M = total - cap, total being the preview's physical line
+/// count). While `expanded` is `true`, the full preview renders. No
+/// box-drawing, no `Block` -- the clean-copy invariant (settled tool
+/// output) is preserved. A settled tool entry (non-empty preview) ends
+/// with a blank line + a dim plain `-` rule as a non-box separator.
+///
+/// **T4 reuse:** the `expanded` flag + this collapsed/expanded render
+/// branch are intentionally generic -- T4's tool-args preview is the same
+/// shape: the `expanded` flag, the `cap`-gated collapsed branch, and the
+/// `… (+M lines, Ctrl-E to expand)` affordance are reusable. The header
+/// here is tool-output-specific (`[{tag}] {name} -- {first}`), so T4 should
+/// share the collapsed-branch shape via a sibling function rather than call
+/// `tool_lines` directly -- the mechanism is reusable, the function is not.
 fn tool_lines(
     name: &str,
     status: ToolStatus,
     preview: &str,
+    expanded: bool,
+    cap: u32,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
     let (tag, style) = tool_status_style(status, theme);
@@ -216,14 +233,47 @@ fn tool_lines(
         ])];
     }
 
-    let mut preview_lines = preview.split('\n');
-    let first = preview_lines.next().unwrap_or_default();
+    let all_lines: Vec<&str> = preview.split('\n').collect();
+    let total = all_lines.len();
+    let first = all_lines.first().copied().unwrap_or_default();
+
     let mut lines = vec![Line::from(vec![
         Span::styled(format!("[{tag}] "), style),
         Span::raw(name.to_string()),
         Span::raw(format!(" -- {first}")),
     ])];
-    lines.extend(preview_lines.map(|line| Line::from(line.to_string())));
+
+    let cap = cap.max(1) as usize;
+    if expanded || total <= cap {
+        // Expanded (or short enough that the cap doesn't bite): emit every
+        // remaining physical line of the preview, unprefixed.
+        lines.extend(all_lines.iter().skip(1).map(|line| Line::from(line.to_string())));
+    } else {
+        // Collapsed: the first `cap` lines total (the header line above is
+        // line 1, so `cap - 1` continuation lines here) + the dim
+        // affordance naming how many lines are hidden.
+        let continuation = cap.saturating_sub(1);
+        lines.extend(
+            all_lines
+                .iter()
+                .skip(1)
+                .take(continuation)
+                .map(|line| Line::from(line.to_string())),
+        );
+        let hidden = total.saturating_sub(cap);
+        lines.push(Line::from(Span::styled(
+            format!("… (+{hidden} lines, Ctrl-E to expand)"),
+            theme.dim,
+        )));
+    }
+
+    // Clean-copy separator for settled tool output: a blank line + a dim
+    // plain `-` rule (non-box). No `Block`, no box-drawing glyph -- the
+    // clean-copy invariant is preserved (the `entry_lines_never_contain_
+    // box_drawing_glyphs` test covers this).
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled("-", theme.dim)));
+
     lines
 }
 
@@ -298,6 +348,7 @@ mod tests {
                 name: "bash".to_string(),
                 status: ToolStatus::Finished { is_error: false },
                 preview: "ok".to_string(),
+                expanded: false,
             },
             Entry::Agent {
                 agent_id: AgentId::new(),
@@ -310,7 +361,7 @@ mod tests {
         ];
 
         for entry in &entries {
-            for line in entry_lines(entry, &Theme::default()) {
+            for line in entry_lines(entry, 3, &Theme::default()) {
                 let text = plain_text(&line);
                 assert!(
                     !text.chars().any(|c| BOX_DRAWING_CHARS.contains(&c)),
@@ -322,7 +373,7 @@ mod tests {
 
     #[test]
     fn user_entry_keeps_the_you_prefix() {
-        let lines = entry_lines(&Entry::User("hello".to_string()), &Theme::default());
+        let lines = entry_lines(&Entry::User("hello".to_string()), 3, &Theme::default());
         assert_eq!(lines.len(), 1);
         assert!(plain_text(&lines[0]).starts_with("you> hello"));
     }
@@ -469,6 +520,61 @@ mod tests {
         );
     }
 
+    /// T5 no-snap-on-shrink (review finding 2): when a toggle SHRINKS content
+    /// so `max_scroll` drops below the stored `scroll`, the render clamp must
+    /// seat the viewport at the new `max_scroll` (nearest valid position) --
+    /// not a blank viewport, not a stale offset. The toggle itself never
+    /// writes `scroll`/`follow_tail`; only the render clamp adjusts.
+    #[test]
+    fn toggle_shrink_re_clamps_viewport_to_new_bottom_not_blank() {
+        let preview = (0..20)
+            .map(|i| format!("out line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let expanded_entry = Entry::Tool {
+            call_id: "c1".to_string(),
+            name: "bash".to_string(),
+            status: ToolStatus::Finished { is_error: false },
+            preview,
+            expanded: true,
+        };
+        let mut state = AppState::new(AgentId::new());
+        state.transcript.push(expanded_entry);
+        state.follow_tail = false;
+        // Overscroll, mirroring a user who paged to the very bottom while
+        // expanded: `scroll` sits at/past the expanded `max_scroll`.
+        state.scroll = u16::MAX;
+
+        // Expanded render: clamps to the expanded bottom, shows the last line.
+        let expanded_text = rendered_text(&state, 40, 6);
+        assert!(
+            expanded_text.contains("out line 19"),
+            "expanded overscroll must clamp to the expanded bottom: {expanded_text:?}"
+        );
+
+        // Toggle: collapse every tool entry. Content shrinks ~17 lines; the
+        // stored `scroll` (u16::MAX) is now far above the collapsed `max_scroll`.
+        state.toggle_all_tool_entries_expanded();
+        // The toggle must NOT have touched scroll/follow_tail -- only the
+        // render re-clamps (state-level contract pinned in state.rs tests).
+        assert_eq!(state.scroll, u16::MAX, "toggle must not write scroll");
+        assert!(!state.follow_tail, "toggle must not engage follow_tail");
+
+        let collapsed_text = rendered_text(&state, 40, 6);
+        let blank_rows = collapsed_text.chars().filter(|&c| c != ' ').count();
+        assert!(
+            blank_rows > 0,
+            "shrunken content must re-clamp to the new bottom, not render blank: {collapsed_text:?}"
+        );
+        // The affordance line is the collapsed tail's last content line; it
+        // must be visible, proving the viewport sits at the collapsed
+        // `max_scroll` rather than floating in stale overscroll.
+        assert!(
+            collapsed_text.contains("Ctrl-E to expand"),
+            "collapsed re-clamp must show the affordance at the new bottom: {collapsed_text:?}"
+        );
+    }
+
     // ---- embedded-newline splitting (the bug this item fixes) ----
 
     /// The bug itself: `entry_lines` must build one `Line` PER physical
@@ -483,6 +589,7 @@ mod tests {
             &Entry::Assistant {
                 text: "line one\nline two\nline three".to_string(),
             },
+            3,
             &Theme::default(),
         );
 
@@ -504,6 +611,7 @@ mod tests {
             &Entry::Notice {
                 text: "notice one\nnotice two".to_string(),
             },
+            3,
             &Theme::default(),
         );
 
@@ -702,7 +810,7 @@ mod tests {
         let entry = Entry::Assistant {
             text: "hello".to_string(),
         };
-        for line in entry_lines(&entry, &Theme::default()) {
+        for line in entry_lines(&entry, 3, &Theme::default()) {
             let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
             assert!(
                 !text.contains(STREAMING_CURSOR),
@@ -764,5 +872,242 @@ mod tests {
             !text.contains(STREAMING_CURSOR),
             "an idle assistant line must not render the cursor: {text}"
         );
+    }
+
+    // ---- T5: tool output folding + expand ----
+
+    /// Helper: a settled `Entry::Tool` with a `preview` of `n` physical
+    /// lines, collapsed (`expanded: false`).
+    fn collapsed_tool_with_n_lines(n: usize) -> Entry {
+        let preview = (0..n)
+            .map(|i| format!("out line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        Entry::Tool {
+            call_id: "c1".to_string(),
+            name: "bash".to_string(),
+            status: ToolStatus::Finished { is_error: false },
+            preview,
+            expanded: false,
+        }
+    }
+
+    /// Helper: the total rendered-line count for an entry at a given cap.
+    fn rendered_line_count(entry: &Entry, cap: u32) -> usize {
+        entry_lines(entry, cap, &Theme::default()).len()
+    }
+
+    /// The affordance text the collapsed branch emits, as plain text.
+    fn affordance_text(line: &Line) -> Option<String> {
+        let text = plain_text(line);
+        if text.contains("Ctrl-E to expand") {
+            Some(text)
+        } else {
+            None
+        }
+    }
+
+    /// Acceptance: a 20-line preview collapsed under a cap of 3 renders
+    /// at most N+1 lines (the cap, plus the `… (+M lines, Ctrl-E to
+    /// expand)` affordance) -- NOT all 20. The header line is one of the
+    /// capped lines, so the total is `cap + 1` (affordance) + 2 (blank +
+    /// dim `-` separator) = `cap + 3`.
+    #[test]
+    fn collapsed_tool_preview_caps_at_n_plus_affordance() {
+        let entry = collapsed_tool_with_n_lines(20);
+        let cap = 3u32;
+        let lines = entry_lines(&entry, cap, &Theme::default());
+
+        // The affordance line is present and names the hidden count:
+        // 20 total - 3 shown = 17 hidden.
+        let affordance = lines
+            .iter()
+            .find_map(|l| affordance_text(l))
+            .expect("collapsed preview must include the Ctrl-E affordance");
+        assert!(
+            affordance.contains("+17 lines"),
+            "affordance must name the hidden count: {affordance}"
+        );
+
+        // No physical "out line {i}" past the cap appears.
+        for i in 3..20 {
+            let needle = format!("out line {i}");
+            assert!(
+                !lines.iter().any(|l| plain_text(l).contains(&needle)),
+                "collapsed preview must not include line {i}: {:?}",
+                lines.iter().map(plain_text).collect::<Vec<_>>()
+            );
+        }
+
+        // Total line count: cap (header + cap-1 continuation) + 1
+        // affordance + 2 separator (blank + `-`) = cap + 3.
+        assert_eq!(
+            lines.len(),
+            cap as usize + 3,
+            "collapsed 20-line preview at cap=3 must render cap+3 lines (cap + affordance + blank + `-`): {:?}",
+            lines.iter().map(plain_text).collect::<Vec<_>>()
+        );
+    }
+
+    /// Acceptance: with `expanded: true`, the full 20-line preview renders
+    /// -- no affordance, no capping. The total is 1 header + 19
+    /// continuation + 2 separator = 22.
+    #[test]
+    fn expanded_tool_preview_renders_all_lines() {
+        let mut entry = collapsed_tool_with_n_lines(20);
+        if let Entry::Tool { expanded, .. } = &mut entry {
+            *expanded = true;
+        }
+        let lines = entry_lines(&entry, 3, &Theme::default());
+
+        assert!(
+            !lines.iter().any(|l| affordance_text(l).is_some()),
+            "expanded preview must not include the collapsed affordance"
+        );
+        // Every physical line of the preview is present.
+        for i in 0..20 {
+            let needle = if i == 0 {
+                "out line 0".to_string()
+            } else {
+                format!("out line {i}")
+            };
+            assert!(
+                lines.iter().any(|l| plain_text(l).contains(&needle)),
+                "expanded preview must include line {i}: {:?}",
+                lines.iter().map(plain_text).collect::<Vec<_>>()
+            );
+        }
+        assert_eq!(
+            lines.len(),
+            22,
+            "expanded 20-line preview must render 1 header + 19 continuation + 2 separator = 22 lines"
+        );
+    }
+
+    /// A preview with FEWER physical lines than the cap never collapses --
+    /// no affordance, just the content + separator.
+    #[test]
+    fn short_tool_preview_is_not_collapsed() {
+        let entry = collapsed_tool_with_n_lines(2);
+        let lines = entry_lines(&entry, 3, &Theme::default());
+        assert!(
+            !lines.iter().any(|l| affordance_text(l).is_some()),
+            "a preview shorter than the cap must not show the affordance"
+        );
+        // 1 header + 1 continuation + 2 separator = 4.
+        assert_eq!(lines.len(), 4, "2-line preview at cap=3: {lines:?}");
+    }
+
+    /// The cap is honored: at cap=5, a 20-line preview shows 5 content
+    /// lines + the affordance naming 15 hidden.
+    #[test]
+    fn collapsed_tool_preview_honors_a_configured_cap() {
+        let entry = collapsed_tool_with_n_lines(20);
+        let lines = entry_lines(&entry, 5, &Theme::default());
+        let affordance = lines
+            .iter()
+            .find_map(|l| affordance_text(l))
+            .expect("affordance present");
+        assert!(
+            affordance.contains("+15 lines"),
+            "cap=5 -> 20-5=15 hidden: {affordance}"
+        );
+    }
+
+    /// Clean-copy invariant: no box-drawing glyphs in collapsed OR expanded
+    /// tool output (settled). The separator is a plain `-`, never `─` or
+    /// `│`.
+    #[test]
+    fn tool_output_contains_no_box_drawing_glyphs_collapsed_or_expanded() {
+        let collapsed = collapsed_tool_with_n_lines(20);
+        for line in entry_lines(&collapsed, 3, &Theme::default()) {
+            let text = plain_text(&line);
+            assert!(
+                !text.chars().any(|c| BOX_DRAWING_CHARS.contains(&c)),
+                "collapsed tool output leaked a box glyph: {text:?}"
+            );
+        }
+
+        let mut expanded = collapsed;
+        if let Entry::Tool { expanded, .. } = &mut expanded {
+            *expanded = true;
+        }
+        for line in entry_lines(&expanded, 3, &Theme::default()) {
+            let text = plain_text(&line);
+            assert!(
+                !text.chars().any(|c| BOX_DRAWING_CHARS.contains(&c)),
+                "expanded tool output leaked a box glyph: {text:?}"
+            );
+        }
+    }
+
+    /// The separator is a dim plain `-` (one character) on its own line,
+    /// preceded by a blank line -- never a box-drawing rule.
+    #[test]
+    fn settled_tool_output_ends_with_a_blank_line_and_a_dim_plain_dash() {
+        let entry = collapsed_tool_with_n_lines(2);
+        let lines = entry_lines(&entry, 3, &Theme::default());
+        // The last line is the `-` rule; the second-to-last is blank.
+        let last = plain_text(lines.last().expect("at least the separator"));
+        assert_eq!(last, "-", "the separator must be a single plain `-`: {last:?}");
+        let second_last = plain_text(&lines[lines.len() - 2]);
+        assert_eq!(
+            second_last, "",
+            "a blank line must precede the `-` separator: {second_last:?}"
+        );
+        // The `-` rule is styled with `theme.dim`.
+        assert_eq!(
+            lines.last().unwrap().spans.first().unwrap().style,
+            Theme::default().dim,
+            "the `-` separator must use theme.dim"
+        );
+    }
+
+    /// An empty preview (a tool that has not finished, or finished with no
+    /// output) does NOT get a separator -- only settled (non-empty preview)
+    /// tool output does.
+    #[test]
+    fn empty_tool_preview_has_no_separator() {
+        let entry = Entry::Tool {
+            call_id: "c1".to_string(),
+            name: "bash".to_string(),
+            status: ToolStatus::Proposed,
+            preview: String::new(),
+            expanded: false,
+        };
+        let lines = entry_lines(&entry, 3, &Theme::default());
+        assert_eq!(lines.len(), 1, "empty preview -> just the header line: {lines:?}");
+        assert!(
+            !lines.iter().any(|l| plain_text(l) == "-"),
+            "no separator for an empty preview"
+        );
+    }
+
+    /// `cap.max(1)` guard: a cap of 0 (which P-10 prevents at the config
+    /// boundary, but the render path must still never divide-by-zero or
+    /// emit zero capped lines) degrades to a 1-line cap.
+    #[test]
+    fn cap_of_zero_degrades_to_one_line() {
+        let entry = collapsed_tool_with_n_lines(20);
+        let lines = entry_lines(&entry, 0, &Theme::default());
+        // cap=1 -> 1 content line + affordance + 2 separator = 4.
+        assert_eq!(lines.len(), 4, "cap=0 degrades to cap=1: {lines:?}");
+        let affordance = lines
+            .iter()
+            .find_map(|l| affordance_text(l))
+            .expect("affordance present");
+        assert!(
+            affordance.contains("+19 lines"),
+            "cap=1 -> 20-1=19 hidden: {affordance}"
+        );
+    }
+
+    /// `rendered_line_count` helper sanity: a 20-line collapsed preview at
+    /// cap=3 renders exactly cap+3 lines.
+    #[test]
+    fn rendered_line_count_helper_is_consistent() {
+        let entry = collapsed_tool_with_n_lines(20);
+        assert_eq!(rendered_line_count(&entry, 3), 6);
+        assert_eq!(rendered_line_count(&entry, 5), 8);
     }
 }

@@ -65,6 +65,23 @@ pub enum Entry {
         name: String,
         status: ToolStatus,
         preview: String,
+        /// T5: whether this tool entry's preview is shown in full (`true`)
+        /// or collapsed to the `tool_preview_lines` cap + a dim affordance
+        /// (`false`, the default). Flipped on EVERY `Entry::Tool` at once by
+        /// [`AppState::toggle_all_tool_entries_expanded`] (the `Ctrl-E`
+        /// keybinding). The flag is kept on the entry itself -- not derived
+        /// from a single global toggle -- so a future per-entry selective
+        /// expand (T4's tool-args reuse, or a transcript-cursor selection)
+        /// can flip individual entries without touching the rest. The render
+        /// branch in `view/transcript.rs::tool_lines` reads this plus the
+        /// stored `preview` (which is NEVER truncated -- the cap is
+        /// render-time only) and emits either the first N lines + a `… (+M
+        /// lines, Ctrl-E to expand)` affordance or the full content. T4
+        /// reuses the same `expanded` flag + render branch for tool-args
+        /// previews: a one-line-truncated args preview is the same shape
+        /// (collapsed: cap lines + affordance; expanded: full), just with a
+        /// different cap and content.
+        expanded: bool,
     },
     /// A subagent's lifecycle, rendered inline in the conversation stream
     /// (WI-127 criterion: "inline subagent activity in the stream,
@@ -573,6 +590,18 @@ pub struct AppState {
     /// `AppState::new` defaults to the Lean line. The status-line renderer
     /// reads this to decide which fields to render and in what order.
     pub status_line_config: StatusLineConfig,
+    /// T5: the cap on collapsed tool-preview lines in the transcript
+    /// (`[tui.tool_preview_lines]`, default 3). A tool entry whose stored
+    /// `preview` has more physical lines than this renders the first N
+    /// lines followed by a dim `… (+M lines, Ctrl-E to expand)` affordance
+    /// while `Entry::Tool::expanded` is `false`; the full preview renders
+    /// while `expanded` is `true`. The stored `preview` is NEVER truncated
+    /// -- the cap is render-time only. Set at `App::new` from
+    /// `conway.config().tui.tool_preview_lines` via
+    /// [`clamp_tool_preview_lines`] (P-10: clamped to `1..=200` with a
+    /// fallback to the default of 3 on a missing/out-of-range/bad value,
+    /// never a panic).
+    pub tool_preview_lines: u32,
     /// T3: the local model-metadata map (`"backend/model"` -> max context
     /// tokens), loaded once at `App::new` from `[models.metadata_path]`.
     /// `apply`'s `ModelDecision` arm looks up the chosen model here to set
@@ -630,6 +659,7 @@ impl AppState {
             git_branch: None,
             cwd_display: None,
             status_line_config: StatusLineConfig::default(),
+            tool_preview_lines: 3,
             model_max_context: HashMap::new(),
         }
     }
@@ -877,6 +907,27 @@ impl AppState {
     /// so it is unit-testable with no `Host`/`SessionHandle` at all.
     pub fn toggle_agent_view(&mut self) {
         self.agent_view_open = !self.agent_view_open;
+    }
+
+    /// T5: flips `expanded` on EVERY `Entry::Tool` in the transcript at once
+    /// (the `Ctrl-E` keybinding). MVP is all-at-once -- there is no
+    /// transcript-cursor/selection state, so "expand/collapse all" is the
+    /// only meaningful toggle. Pure state mutation: does NOT touch
+    /// `scroll`/`follow_tail`/`max_scroll` -- the next render's existing
+    /// clamp in `view/transcript.rs::draw` (`state.scroll.min(max)`)
+    /// re-clamps to the nearest valid position without snapping the
+    /// viewport (a toggle that shrinks the content height clamps an
+    /// overscrolled `scroll` down to the new `max`; a toggle that grows it
+    /// back restores the original `scroll` since it was never overwritten).
+    /// Factored as a method (not inlined in `input.rs`) so the all-at-once
+    /// behavior + the no-snap contract are directly unit-testable with no
+    /// terminal/key event at all.
+    pub fn toggle_all_tool_entries_expanded(&mut self) {
+        for entry in self.transcript.iter_mut() {
+            if let Entry::Tool { expanded, .. } = entry {
+                *expanded = !*expanded;
+            }
+        }
     }
 
     /// `PageUp`: scrolls the transcript up by `page` (wrapped) lines and
@@ -1318,6 +1369,7 @@ impl AppState {
                     name: tool.to_string(),
                     status: ToolStatus::Proposed,
                     preview: String::new(),
+                    expanded: false,
                 });
                 self.set_tree_status(env.agent, NodeStatus::Running);
                 if env.agent == self.focused_agent {
@@ -1595,6 +1647,22 @@ fn terminal_reason(status: &ResultStatus) -> String {
         ResultStatus::Rejected { missing } => format!("rejected: {}", missing.join(", ")),
         _ => "unknown".to_string(),
     }
+}
+
+/// T5: clamps a loaded `[tui.tool_preview_lines]` config value into a safe
+/// render-time cap. `None` (the serde default for the `Option<u32>` field)
+/// -> the built-in default of 3. A value in `1..=200` is kept as-is. Any
+/// other value (0, > 200, or a value that failed to parse as `u32` and so
+/// arrived as `None`) falls back to the default of 3. P-10: config is
+/// untrusted input -- this function never panics, and there is no
+/// `unwrap`/`expect`/indexing on the config value (the `?`-shaped
+/// `and_then` + `unwrap_or` chain is the entire bound on `n`). The
+/// `1..=200` range keeps the cap meaningful (a cap of 0 would collapse
+/// every preview to zero content lines + the affordance; a cap of
+/// `u32::MAX` would effectively disable folding, defeating T5's purpose).
+pub fn clamp_tool_preview_lines(n: Option<u32>) -> u32 {
+    n.and_then(|v| if (1..=200).contains(&v) { Some(v) } else { None })
+        .unwrap_or(3)
 }
 
 #[cfg(test)]
@@ -4121,5 +4189,156 @@ mod tests {
             state.focused_ctx_tokens, 0,
             "focus switch resets focused_ctx_tokens"
         );
+    }
+
+    // ---- T5: Ctrl-E toggle_all_tool_entries_expanded ----
+
+    fn tool_entry(call_id: &str, preview: &str, expanded: bool) -> Entry {
+        Entry::Tool {
+            call_id: call_id.to_string(),
+            name: "bash".to_string(),
+            status: ToolStatus::Finished { is_error: false },
+            preview: preview.to_string(),
+            expanded,
+        }
+    }
+
+    #[test]
+    fn toggle_flips_expanded_on_every_tool_entry() {
+        let mut state = AppState::new(AgentId::new());
+        // Three tool entries: two collapsed, one already expanded. Plus a
+        // non-tool entry to confirm the toggle only touches `Entry::Tool`.
+        state.transcript.push(Entry::Assistant {
+            text: "hi".to_string(),
+        });
+        state.transcript.push(tool_entry("c1", "out1\nout2", false));
+        state.transcript.push(tool_entry("c2", "x\ny\nz", false));
+        state.transcript.push(tool_entry("c3", "p", true));
+
+        state.toggle_all_tool_entries_expanded();
+
+        let expanded_flags: Vec<bool> = state
+            .transcript
+            .iter()
+            .filter_map(|e| match e {
+                Entry::Tool { expanded, .. } => Some(*expanded),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(expanded_flags, vec![true, true, false]);
+        // The assistant entry is untouched (still an Assistant, not a Tool).
+        assert!(matches!(state.transcript[0], Entry::Assistant { .. }));
+    }
+
+    #[test]
+    fn toggle_is_an_involution_round_trips_back_to_the_original_state() {
+        let mut state = AppState::new(AgentId::new());
+        state.transcript.push(tool_entry("c1", "out1\nout2", false));
+        state.transcript.push(tool_entry("c2", "x\ny\nz", true));
+
+        state.toggle_all_tool_entries_expanded();
+        let after_first: Vec<bool> = state
+            .transcript
+            .iter()
+            .filter_map(|e| match e {
+                Entry::Tool { expanded, .. } => Some(*expanded),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(after_first, vec![true, false]);
+
+        state.toggle_all_tool_entries_expanded();
+        let after_second: Vec<bool> = state
+            .transcript
+            .iter()
+            .filter_map(|e| match e {
+                Entry::Tool { expanded, .. } => Some(*expanded),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(after_second, vec![false, true]);
+    }
+
+    /// The no-snap contract: toggling `expanded` must NOT touch `scroll` or
+    /// `follow_tail`. The next render's clamp (`state.scroll.min(max)`)
+    /// re-clamps to the nearest valid position without jumping the viewport.
+    #[test]
+    fn toggle_does_not_touch_scroll_or_follow_tail() {
+        let mut state = AppState::new(AgentId::new());
+        state.transcript.push(tool_entry("c1", "a\nb\nc\nd\ne", false));
+        state.scroll = 7;
+        state.follow_tail = false;
+
+        state.toggle_all_tool_entries_expanded();
+
+        assert_eq!(
+            state.scroll, 7,
+            "toggle must not change `scroll` -- the render clamp re-clamps"
+        );
+        assert!(
+            !state.follow_tail,
+            "toggle must not change `follow_tail`"
+        );
+    }
+
+    /// T5 default: a freshly-constructed `Entry::Tool` (via `apply`'s
+    /// `ToolCallProposed` arm) starts collapsed.
+    #[test]
+    fn new_tool_entry_from_apply_starts_collapsed() {
+        let session = SessionId::new();
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+
+        state.apply(&envelope(
+            session,
+            root,
+            Event::ToolCallProposed {
+                call_id: "tc_1".to_string(),
+                tool: ToolName::new("bash"),
+                args: serde_json::json!({"command": "ls"}),
+            },
+        ));
+
+        match state.transcript.last() {
+            Some(Entry::Tool { expanded, .. }) => assert!(
+                !*expanded,
+                "a freshly-proposed tool entry must start collapsed"
+            ),
+            other => panic!("expected a Tool entry, got {other:?}"),
+        }
+    }
+
+    /// T5 config default: `AppState::new` defaults `tool_preview_lines` to
+    /// 3 (the documented default).
+    #[test]
+    fn new_state_defaults_tool_preview_lines_to_3() {
+        let state = AppState::new(AgentId::new());
+        assert_eq!(state.tool_preview_lines, 3);
+    }
+
+    // ---- T5 P-10: `clamp_tool_preview_lines` never panics on bad input ----
+
+    #[test]
+    fn clamp_none_falls_back_to_default_3() {
+        assert_eq!(clamp_tool_preview_lines(None), 3);
+    }
+
+    #[test]
+    fn clamp_in_range_value_is_kept() {
+        assert_eq!(clamp_tool_preview_lines(Some(1)), 1);
+        assert_eq!(clamp_tool_preview_lines(Some(3)), 3);
+        assert_eq!(clamp_tool_preview_lines(Some(50)), 50);
+        assert_eq!(clamp_tool_preview_lines(Some(200)), 200);
+    }
+
+    #[test]
+    fn clamp_zero_falls_back_to_default() {
+        assert_eq!(clamp_tool_preview_lines(Some(0)), 3);
+    }
+
+    #[test]
+    fn clamp_above_max_falls_back_to_default() {
+        assert_eq!(clamp_tool_preview_lines(Some(201)), 3);
+        assert_eq!(clamp_tool_preview_lines(Some(u32::MAX)), 3);
     }
 }
