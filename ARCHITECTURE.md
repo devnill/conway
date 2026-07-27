@@ -155,6 +155,16 @@ reasoning) against the turn's requirements. Routing never inspects prompt
 content — there is no code path in `conway-routing` that can see request
 text.
 
+That is a crate-level guarantee, not a claim that conway can never route on
+content. It makes the router's decision a pure function of role,
+capabilities, and health. Content-aware policy lives one layer up, in role
+*selection*: the caller picks the role, whether that is the host, an agent
+definition, or a plugin spawning with a role it chose. `ContextHook` cannot
+do this today — `ContextPayload` carries only `segments` and `tools`, and
+`AgentSpec::role` is fixed before `Router::resolve` runs — so a hook reads
+the routing outcome (`ContextHookCtx::model`) rather than steering it.
+Widening that surface is future work.
+
 Two independent circuit breakers are tracked per endpoint — **transport**
 (connection failures) and **probe** (a background liveness/readiness check) —
 because a slow-but-alive local server and a genuinely dead one are different
