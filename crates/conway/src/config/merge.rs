@@ -254,6 +254,7 @@ const KNOWN_TOP_LEVEL_KEYS: &[&str] = &[
     "health",
     "agents",
     "models",
+    "tui",
 ];
 
 /// Array-valued leaf keys, so their env values are comma-split rather than

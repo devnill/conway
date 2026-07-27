@@ -24,7 +24,7 @@ use super::commands::{self, Effect, Host};
 use super::gate::GateReceiver;
 use super::input::{self, Action};
 use super::state::AppState;
-use super::view;
+use super::view::{self, Theme};
 
 /// The result of one spawned `/ask` task (B5 -- see [`App::submit`]'s
 /// `/ask` branch and [`run_modal_ask`]). `child` is the ephemeral fork
@@ -52,6 +52,12 @@ pub struct App {
     // `SessionHandle` -- cheap to hold (every field is `Arc`-backed, per
     // `Conway`'s own doc: "Cheap to `Clone`").
     conway: Conway,
+    /// The TUI's resolved color/style table (T1): built once at startup from
+    /// `[tui.theme]` config (defaults when the key is absent or a value is
+    /// malformed -- P-10) and passed by reference into `view::draw` every
+    /// frame. Decision D-T1: threaded as `&Theme`, not re-fetched via a
+    /// call-site accessor or a global `Lazy`.
+    theme: Theme,
     /// `/ask` (B5) spawns a `tokio::spawn`ed task per question (fork-ask,
     /// then drain the child's single turn to completion via
     /// `TurnHandle::text` -- see [`run_modal_ask`]) rather than folding it
@@ -124,11 +130,17 @@ impl App {
         };
         let handle = conway.new_session(spec).await?;
         let state = AppState::new(handle.root());
+        // T1: build the theme once from the loaded `[tui.theme]` config
+        // (defaults when the section is absent; malformed values fall back
+        // to per-slot defaults -- P-10, never a panic). `Theme::from_config`
+        // is infallible by construction.
+        let theme = Theme::from_config(&conway.config().tui.theme);
         let (modal_ask_tx, modal_ask_rx) = mpsc::unbounded_channel();
         Ok(Self {
             handle,
             state,
             conway: conway.clone(),
+            theme,
             modal_ask_tx,
             modal_ask_rx: Some(modal_ask_rx),
         })
@@ -161,7 +173,7 @@ impl App {
             tokio::select! {
                 _ = ticker.tick() => {
                     if dirty {
-                        terminal.draw(|f| view::draw(&self.state, f))
+                        terminal.draw(|f| view::draw(&self.state, f, &self.theme))
                             .map_err(conway::ConwayError::Io)?;
                         dirty = false;
                     }

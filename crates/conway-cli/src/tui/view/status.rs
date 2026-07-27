@@ -4,16 +4,15 @@
 //! agent-tree panel).
 
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
+use super::theme::Theme;
 use crate::tui::state::{Activity, AppState, Mode};
 
-pub fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
-    let paragraph = Paragraph::new(Line::from(status_line(state)))
-        .style(Style::default().add_modifier(Modifier::REVERSED));
+pub fn draw(frame: &mut Frame, area: Rect, state: &AppState, theme: &Theme) {
+    let paragraph = Paragraph::new(Line::from(status_line(state))).style(theme.status_mode);
     frame.render_widget(paragraph, area);
 }
 

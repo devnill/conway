@@ -6,16 +6,17 @@
 //! browsing the whole tree at a glance, not the only place activity shows.
 
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState};
 use ratatui::Frame;
 
 use conway::SubagentMode;
 
+use super::theme::Theme;
 use crate::tui::state::{AppState, NodeStatus, TreeNode};
 
-pub fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
+pub fn draw(frame: &mut Frame, area: Rect, state: &AppState, theme: &Theme) {
     // Item A2: the visibility filter lives entirely HERE, at draw time --
     // `state.tree` itself is never filtered (P-2: finished agents are
     // hidden, not removed), so `visible` is the only place the
@@ -44,7 +45,7 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
             };
             let mut spans = vec![
                 Span::raw(indent),
-                Span::styled(marker, status_style(node.status)),
+                Span::styled(marker, status_style(node.status, theme)),
                 Span::raw(" "),
                 Span::raw(label),
             ];
@@ -53,15 +54,9 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
             // row's own label.
             for part in recipe_parts(node) {
                 spans.push(Span::raw(" "));
-                spans.push(Span::styled(
-                    part,
-                    Style::default().add_modifier(Modifier::DIM),
-                ));
+                spans.push(Span::styled(part, theme.dim));
             }
-            spans.push(Span::styled(
-                focus_tag,
-                Style::default().add_modifier(Modifier::BOLD),
-            ));
+            spans.push(Span::styled(focus_tag, theme.focused));
             ListItem::new(Line::from(spans))
         })
         .collect();
@@ -70,11 +65,16 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
         state.agent_visibility.label()
     );
     let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(title))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(title)
+                .border_style(theme.border_normal),
+        )
         // The arrow-selected row (WI-130). Using a `ListState` (rather than
         // pre-styling one `ListItem`) lets ratatui scroll the selection into
         // view when the tree is taller than the panel.
-        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+        .highlight_style(theme.selected);
     let mut list_state = ListState::default();
     if !visible.is_empty() {
         list_state.select(Some(state.agent_selected.min(visible.len() - 1)));
@@ -145,15 +145,20 @@ fn status_marker(status: NodeStatus) -> &'static str {
     }
 }
 
-fn status_style(status: NodeStatus) -> Style {
-    match status {
-        NodeStatus::Running => Style::default().fg(Color::Yellow),
-        NodeStatus::AwaitingPermission => Style::default().fg(Color::Magenta),
-        NodeStatus::Finished => Style::default().fg(Color::Green),
-        NodeStatus::Failed => Style::default().fg(Color::Red),
-        NodeStatus::Cancelled => Style::default().fg(Color::DarkGray),
-        NodeStatus::Starting => Style::default(),
+fn status_style(status: NodeStatus, theme: &Theme) -> Style {
+    // Parity pin (T1 review finding 1): pre-T1 the agent panel used
+    // `Style::default()` (unstyled, terminal default fg) for `Starting`,
+    // while the transcript's inline `Entry::Agent` line used `Color::Gray`.
+    // The two call sites genuinely differed, so delegating `Starting` to
+    // `transcript::node_status_style` (which returns `theme.agent_starting`
+    // = Gray) would be a re-skin, not a refactor. Special-case `Starting`
+    // to unstyled here; the other five statuses match pre-T1 parity and
+    // delegate to the shared mapping so the panel and the inline line
+    // never drift apart on a color override.
+    if matches!(status, NodeStatus::Starting) {
+        return Style::default();
     }
+    super::transcript::node_status_style(status, theme).1
 }
 
 #[cfg(test)]
@@ -164,6 +169,30 @@ mod tests {
 
     use super::*;
     use crate::tui::state::{AgentVisibility, TreeNode};
+
+    // ---- T1 review finding 1: the agent panel's `Starting` marker stays
+    // unstyled at the default theme (pre-T1 parity pin). Pre-T1 the panel
+    // used `Style::default()` for `Starting` while the transcript's inline
+    // `Entry::Agent` line used `Color::Gray`; the refactor must not unify
+    // them into Gray. ----
+
+    #[test]
+    fn panel_starting_status_style_is_unstyled_at_default_theme() {
+        let theme = Theme::default();
+        assert_eq!(
+            status_style(NodeStatus::Starting, &theme),
+            Style::default(),
+            "the agent panel's Starting marker must stay unstyled (pre-T1 parity), \
+             not pick up theme.agent_starting's Gray"
+        );
+        // The other statuses delegate to the shared per-status mapping and
+        // match their pre-T1 colors.
+        assert_eq!(status_style(NodeStatus::Running, &theme), theme.agent_running);
+        assert_eq!(
+            status_style(NodeStatus::Cancelled, &theme),
+            theme.agent_cancelled
+        );
+    }
 
     fn node(
         agent_id: AgentId,
@@ -188,7 +217,7 @@ mod tests {
     fn rendered(state: &AppState, width: u16, height: u16) -> String {
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal.draw(|f| draw(f, f.area(), state)).expect("draw");
+        terminal.draw(|f| draw(f, f.area(), state, &Theme::default())).expect("draw");
         terminal
             .backend()
             .buffer()
@@ -205,7 +234,7 @@ mod tests {
 
         let backend = TestBackend::new(40, 10);
         let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal.draw(|f| draw(f, f.area(), &state)).expect("draw");
+        terminal.draw(|f| draw(f, f.area(), &state, &Theme::default())).expect("draw");
 
         let buffer = terminal.backend().buffer();
         assert!(buffer.content().iter().any(|cell| cell.symbol() != " "));
@@ -264,7 +293,7 @@ mod tests {
 
         let backend = TestBackend::new(40, 10);
         let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal.draw(|f| draw(f, f.area(), &state)).expect("draw");
+        terminal.draw(|f| draw(f, f.area(), &state, &Theme::default())).expect("draw");
 
         let any_reversed = terminal
             .backend()
@@ -521,7 +550,7 @@ mod tests {
 
         let backend = TestBackend::new(80, 10);
         let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal.draw(|f| draw(f, f.area(), &state)).expect("draw");
+        terminal.draw(|f| draw(f, f.area(), &state, &Theme::default())).expect("draw");
 
         let any_reversed = terminal
             .backend()

@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **TUI: central theme module + named styles (T1).** The TUI's render
+  pass now reads colors/styles from a single `Theme` struct threaded
+  through `view::draw` and each per-view `draw` fn as `&Theme`, replacing
+  the per-call-site `Style::default().fg(Color::…)` the five view files
+  used to hand-roll inline. The theme is configurable from the start via
+  a new `[tui.theme]` `settings.json` section (per-named-style `fg`/`bg`/
+  `modifiers` overrides; defaults match the pre-T1 exact
+  `(Color, Modifier)` pairs, so an unconfigured TUI renders identically).
+  Malformed overrides fall back to the affected slot's default — never a
+  panic (P-10). New accent styles `assistant_marker`, `reasoning`,
+  `agent_marker`, `fatal_error`, `status_dim`, and `spinner` are defined
+  for later v0.3.0 polish items to consume. See
+  `docs/crates/conway-cli.md`'s `[tui.theme]` section for the full named-
+  style table and accepted color/modifier spellings.
 - **`/ask` is now a single-turn modal with three forced fates.** Asking
   forks an ephemeral child (visible in `/agents` marked `(ephemeral)`),
   runs one turn, and opens a modal over the child's answer. Closing the

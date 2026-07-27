@@ -4,25 +4,34 @@
 //! (`transcript.rs`), which this is not.
 
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
+use super::theme::Theme;
 use crate::tui::state::{AppState, Mode};
 
 const PLACEHOLDER: &str = "Type a message, or / for commands";
 
-pub fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
+pub fn draw(frame: &mut Frame, area: Rect, state: &AppState, theme: &Theme) {
     let disabled = !matches!(state.mode, Mode::Normal);
     let title = if disabled { "input (paused)" } else { "input" };
 
     let paragraph = if state.input.is_empty() && !disabled {
         Paragraph::new(PLACEHOLDER)
-            .style(Style::default().add_modifier(Modifier::DIM))
-            .block(Block::default().borders(Borders::ALL).title(title))
+            .style(theme.dim)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(title)
+                    .border_style(theme.border_normal),
+            )
     } else {
-        Paragraph::new(state.input.as_str())
-            .block(Block::default().borders(Borders::ALL).title(title))
+        Paragraph::new(state.input.as_str()).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(title)
+                .border_style(theme.border_normal),
+        )
     };
     frame.render_widget(paragraph, area);
 
@@ -53,7 +62,7 @@ mod tests {
 
         let backend = TestBackend::new(40, 5);
         let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal.draw(|f| draw(f, f.area(), &state)).expect("draw");
+        terminal.draw(|f| draw(f, f.area(), &state, &Theme::default())).expect("draw");
 
         let buffer = terminal.backend().buffer();
         assert!(buffer.content().iter().any(|cell| cell.symbol() != " "));
@@ -65,7 +74,7 @@ mod tests {
 
         let backend = TestBackend::new(60, 5);
         let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal.draw(|f| draw(f, f.area(), &state)).expect("draw");
+        terminal.draw(|f| draw(f, f.area(), &state, &Theme::default())).expect("draw");
 
         let buffer = terminal.backend().buffer();
         let text: String = buffer.content().iter().map(|c| c.symbol()).collect();

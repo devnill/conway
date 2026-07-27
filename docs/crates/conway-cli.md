@@ -198,6 +198,92 @@ box, and a bottom status line.
   *all* nodes, terminal ones included, since a transcript dump is a
   provenance artifact.
 
+### Theme: `[tui.theme]`
+
+`tui/view/theme.rs` is the TUI's central color/style system. A single
+`Theme` struct holds one named `ratatui::style::Style` per concern, and
+`view::draw` plus each per-view `draw` fn takes `&Theme` and reads
+`theme.<name>` instead of building a `Style` inline. The `Theme` is
+constructed once at startup (`App::new`) from the loaded `[tui.theme]`
+config table and passed by reference into every render pass — it is
+injected, not re-fetched via a call-site accessor or a global (decision
+D-T1). An unconfigured TUI renders identically to a pre-theme build: the
+`Theme::default()` values are the exact `(Color, Modifier)` pairs the view
+files used to hand-roll inline, captured faithfully (visual parity is an
+acceptance criterion for the refactor).
+
+`[tui.theme]` is a `[tui]` subsection of `settings.json` (schema:
+`conway::config::schema::ThemeConfig`). Each named style is an optional
+sub-table with `fg`, `bg`, and `modifiers`; a field you omit uses the
+built-in default for that slot. The TUI resolves `fg`/`bg` as ratatui
+color names and `modifiers` as ratatui modifier names; an unparseable or
+out-of-range value falls back to the default for that slot — never a
+panic (P-10: config is untrusted input). Example:
+
+```toml
+[tui.theme.notice]
+fg = "yellow"
+modifiers = ["bold"]
+
+[tui.theme.tool_running]
+fg = "#ff8800"
+```
+
+**Accepted color spellings** (case-insensitive, `snake_case` or
+`kebab-case`): `black`, `red`, `green`, `yellow`, `blue`, `magenta`,
+`cyan`, `gray`/`grey`, `dark_gray`/`dark-gray`, `light_red`/`light-red`,
+`light_green`/`light-green`, `light_yellow`/`light-yellow`,
+`light_blue`/`light-blue`, `light_magenta`/`light-magenta`,
+`light_cyan`/`light-cyan`, `white`, `reset`, and `#rrggbb` / `#rgb` hex.
+
+**Accepted modifier spellings**: `bold`, `dim`, `italic`, `underlined`,
+`reversed`, `slow_blink`/`slow-blink`, `rapid_blink`/`rapid-blink`,
+`hidden`, `crossed_out`/`crossed-out`.
+
+**Named styles** (each defaults to the pre-theme inline style; new accent
+styles have no pre-theme call site and are defined for later v0.3.0 items
+to consume):
+
+| Name | Default | Used by |
+| --- | --- | --- |
+| `user` | bold, no fg | transcript `you>` prefix |
+| `assistant` | unstyled | transcript assistant text body |
+| `assistant_marker` | magenta + bold | *(NEW, T4 will consume)* assistant turn marker |
+| `reasoning` | dark_gray + italic | *(NEW, T4 will consume)* reasoning-trace text |
+| `tool_proposed` | gray | tool-call tag, `Proposed` |
+| `tool_awaiting` | magenta | tool-call tag, `AwaitingPermission` |
+| `tool_running` | yellow | tool-call tag, `Running` |
+| `tool_done` | green | tool-call tag, `Finished` (ok) |
+| `tool_failed` | red | tool-call tag, `Finished` (error) |
+| `agent_marker` | blue + bold | *(NEW, T4 will consume)* generic agent marker |
+| `agent_starting` | gray | agent-tree/transcript marker, `Starting` |
+| `agent_running` | yellow | agent-tree/transcript marker, `Running` |
+| `agent_awaiting` | magenta | agent-tree/transcript marker, `AwaitingPermission` |
+| `agent_finished` | green | agent-tree/transcript marker, `Finished` |
+| `agent_failed` | red | agent-tree/transcript marker, `Failed` |
+| `agent_cancelled` | dark_gray | agent-tree/transcript marker, `Cancelled` |
+| `notice` | cyan | transcript `Entry::Notice` |
+| `error` | red | `/ask` modal error line |
+| `fatal_error` | red + bold | *(NEW, no pre-theme call site)* fatal-error accent |
+| `dim` | dim modifier | agent-tree recipe labels, input-box placeholder |
+| `focused` | bold modifier | agent-tree `(focused)` tag |
+| `selected` | reversed modifier | agent-tree arrow-selected row highlight |
+| `emphasized` | bold modifier | modal-overlay body lines (command, `you asked:`, `recipe:`) |
+| `border_normal` | unstyled | input-box / agent-panel block borders |
+| `border_warning` | yellow + bold | `/ask` modal border |
+| `border_danger` | red + bold | permission-prompt modal border |
+| `border_accent` | cyan + bold | NL intent confirmation card border |
+| `status_mode` | reversed modifier | the bottom status line |
+| `status_dim` | dim modifier | *(NEW, no pre-theme call site)* status-line dim accent |
+| `spinner` | yellow | *(NEW, no pre-theme call site)* activity spinner accent |
+
+A unit test (`tui::view::theme::tests::no_inline_style_default_fg_color_remains_in_view_files`)
+guards the refactor's central invariant: no `Style::default().fg(Color::…)`
+literal remains in any `view/*.rs` other than `theme.rs` (the one place
+the defaults live). `Theme::default()`'s exact pairs are pinned by
+`default_*_match_pre_t1` tests so a future change cannot silently drift
+the colors.
+
 ### The `/` command palette, with arrow-select
 
 `tui/commands.rs` owns the authoritative slash-command parser
