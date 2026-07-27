@@ -286,6 +286,105 @@ the defaults live). `Theme::default()`'s exact pairs are pinned by
 `default_*_match_pre_t1` tests so a future change cannot silently drift
 the colors.
 
+### Status line: `[tui.status_line]` (T3)
+
+The bottom status line is a single, always-visible plain line (no border)
+that summarizes the focused agent's turn at a glance. It is an **ordered,
+configurable set of fields** driven by the `[tui.status_line]` table in
+`settings.json` (schema: `conway::config::schema::StatusLineConfig`).
+Each field renders only when it is both listed in the configured `fields`
+order AND has data to show (e.g. `git` is omitted when not in a repo,
+`model` is omitted before the first `Event::ModelDecision`).
+
+The whole line uses `theme.status_mode` (reversed) as its base style; the
+`activity` field overlays its T2 spinner pulse color and dim
+elapsed/tokens tail, and the `hint` field overlays `theme.status_dim`.
+
+**Default Lean line:** `mode | model | ctx | tokens | activity | hint`
+(`model` is omitted until the first turn routes, so a brand-new session
+shows `mode | ctx | tokens | activity | hint`).
+
+**Configuration** — `[tui.status_line]` has one key, `fields`: an ordered
+list of field names to render. A field absent from the list is hidden; the
+list order is the render order. Unknown names are dropped at render time
+(P-10: config is untrusted input, never a panic). An empty/empty-after-
+validation list falls back to the default Lean order rather than rendering
+a blank line. `CONWAY_TUI__STATUS_LINE__FIELDS=mode,model,ctx,tokens,activity,hint`
+overrides the order via env (comma-split).
+
+```toml
+[tui.status_line]
+fields = ["mode", "model", "ctx", "tokens", "git", "activity", "hint"]
+```
+
+**Available fields** (all orderable):
+
+| Field | Renders | Source |
+| --- | --- | --- |
+| `mode` | `ready` / `awaiting permission` / `ask` / `intent` | `AppState::mode` |
+| `model` | the serving model display name, e.g. `anthropic/claude-sonnet-4-6`; omitted before the first turn routes | `Event::ModelDecision { chosen }` |
+| `ctx` | `ctx 42%` when the focused model's max context is known, else `ctx 12.3k` (raw tokens, compact-suffixed; capped at `ctx 100%`) | cumulative `Event::ContextSegmentAdded { tokens_est }` ÷ the focused model's `max_context_tokens` from `[models.metadata_path]` |
+| `tokens` | `<total> tok (<n%> cached)` when cache data is present, else `<total> tok` | cumulative `Event::TurnFinished { usage }` (`Usage`'s input + output + both cache dimensions + reasoning); `n%` = `cache_read / (input + cache_read + cache_write)`, omitted when the denominator is 0 or `cache_read` is 0 |
+| `activity` | T2's working indicator: `⠋ thinking… 12s · +45 tok` while active, `idle` while idle (spinner + phrase pulse via `Theme::spinner_palette`; `+{n} tok` is session-deduped new-segment tokens added this turn) | `AppState::activity` + T2 counters |
+| `hint` | a persistent keybinding/affordance hint, dim: `Ctrl-E submit · ↑↓ history · PgUp/PgDn · /help · /agents to {view\|hide}`, plus `focused: <id>` when the transcript is focused on a non-root agent | static + `AppState::agent_view_open`/`focused_agent` |
+| `git` | the current branch (e.g. `main`); omitted when not a git repo, git is absent, or the command fails | one-shot `git rev-parse --abbrev-ref HEAD` at startup, no polling |
+| `cwd` | the session's working directory; omitted when unset | `Cli --cwd` or `config.cwd` |
+
+**`tokens (n% cached)` format.** The `tokens` field is a single combined
+field: the cumulative token total followed by a cache-hit-rate
+parenthetical. `total` is the sum of every `Usage` field
+(`input_tokens + output_tokens + cache_read_tokens + cache_write_tokens +
+reasoning_tokens`) — all of them are tokens the model actually processed
+for this agent's own turns. The parenthetical `(<n%> cached)` is the cache
+hit rate `cache_read_tokens / (input_tokens + cache_read_tokens +
+cache_write_tokens)`, shown as a whole-number percentage. The
+parenthetical is omitted entirely (rendering just `<total> tok`) when the
+denominator is 0 (no input or cache activity yet) or when `cache_read` is
+0 (no cache hits to report a rate from) — divide-by-zero is guarded, never
+a panic.
+
+**`ctx%` computation.** The numerator is `AppState::focused_ctx_tokens`:
+the segment-id-deduped sum of every `Event::ContextSegmentAdded { tokens_est }`
+observed on the focused agent's own stream since the focus began. Each
+segment id is counted at most once per focused session
+(`AppState::focused_seen_segments`), so a non-keep-alive child whose fresh
+`AgentLoop` re-emits its existing context on the first turn of a new run
+does not double-count. The denominator is the focused model's
+`max_context_tokens` from the local model-metadata file
+(`[models.metadata_path]`), looked up by the model's `"backend/model"`
+string at the time a `ModelDecision` arrives. When the metadata file has
+no entry for the chosen model (or no metadata file exists), the field
+falls back to the raw token count, compact-suffixed (`ctx 12.3k` for
+12,345 tokens; `ctx 750` for sub-thousand counts). The percentage is
+capped at `ctx 100%` — a deliberate lossy clamp: a context estimate that
+exceeds the declared max (headroom, rounding, an under-declaring metadata
+file) is shown as `ctx 100%` rather than `ctx 137%` so the line never
+looks like a bug; this CAN hide a genuine overshoot, accepted as a
+tradeoff (the authoritative total lands via the turn-end summary, and a
+proper runtime re-fetch on focus is a separate follow-up).
+
+A freshly focused agent shows `ctx 0%` / no model until its own next LIVE
+`ContextSegmentAdded`/`ModelDecision` arrives — replay does NOT synthesize
+these events (`record_to_event` maps a replayed `Assistant` record to
+`TextDelta`, never to `ContextSegmentAdded` or `ModelDecision`). A proper
+re-fetch of the true context total from the runtime on focus is tracked as
+a separate follow-up board item.
+
+**Git branch read.** `App::new` runs `git rev-parse --abbrev-ref HEAD`
+once via `std::process::Command` on the blocking pool (best-effort: `None`
+on non-repo / git-absent / non-zero exit / non-UTF8 output / spawn error;
+never panics, never blocks startup on a hung `git`). No polling — the
+branch is read once and stored on `AppState::git_branch`. C-04: no new
+deps.
+
+**Model display name.** `AppState::apply`'s `ModelDecision` arm (which
+the spec called out as previously dropped by the wildcard arm) captures
+`chosen.to_string()` into `AppState::focused_model` and looks up the max
+context in `AppState::model_max_context` (populated once at `App::new`
+from `[models.metadata_path]`). Both reset on `focus_agent`; the new
+focus's own first LIVE `ModelDecision` repopulates them (replay does NOT
+synthesize `ModelDecision` — see the `ctx%` computation note above).
+
 ### Activity spinner + animation tick (T2)
 
 The status line's activity slot is the TUI's primary "is it working?"
@@ -322,9 +421,10 @@ total. On turn 1 it reads ~full context size (every segment is new);
 on turn 2+ only genuinely new segments fire, so for the same
 conversation it is large on turn 1 then small on turn 2. The leading
 `+` signals "added this turn" and visually distinguishes it from the
-cumulative `| {tokens} tok |` slot (which stays in its own slot, so
-both figures are visible while active). The authoritative turn-end
-token total lands via the turn-end summary (T4).
+cumulative `tokens` field (`<total> tok (<n%> cached)`, formalized by T3
+— see the `[tui.status_line]` section below), so both figures are visible
+while active. The authoritative turn-end token total lands via the
+turn-end summary (T4).
 
 A second T2 flourish: while `activity == Responding`, the live,
 in-progress `Entry::Assistant` line in the transcript gets a block `▌`

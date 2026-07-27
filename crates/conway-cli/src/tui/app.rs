@@ -136,12 +136,48 @@ impl App {
             ..SessionSpec::default()
         };
         let handle = conway.new_session(spec).await?;
-        let state = AppState::new(handle.root());
+        let mut state = AppState::new(handle.root());
         // T1: build the theme once from the loaded `[tui.theme]` config
         // (defaults when the section is absent; malformed values fall back
         // to per-slot defaults -- P-10, never a panic). `Theme::from_config`
         // is infallible by construction.
         let theme = Theme::from_config(&conway.config().tui.theme);
+        // T3: status-line field order/visibility from `[tui.status_line]`
+        // (defaults to the Lean line when absent; unknown field names are
+        // dropped at render time -- P-10, never a panic).
+        state.status_line_config = conway.config().tui.status_line.clone();
+        // T3: cwd display -- prefer the CLI `--cwd` override, fall back to
+        // the config's `cwd`. Both are `PathBuf`; render the display string
+        // via `display()` (lossy for non-UTF8).
+        state.cwd_display = cli
+            .cwd
+            .as_ref()
+            .or(Some(&conway.config().cwd))
+            .map(|p| p.display().to_string());
+        // T3: load the local model-metadata map (`[models.metadata_path]`)
+        // once at startup so the status line's `ctx%` field can look up
+        // the focused model's max context window by `"backend/model"`
+        // string. Best-effort: a missing/unreadable file yields an empty
+        // map, which makes the renderer fall back to raw tokens (no
+        // percentage) -- never an error, never blocks startup.
+        let metadata_path = conway
+            .config()
+            .cwd
+            .join(&conway.config().models.metadata_path);
+        if let Ok(metadata) = conway::config::model_metadata::load(&metadata_path) {
+            state.model_max_context = metadata
+                .models
+                .iter()
+                .map(|(k, v)| (k.clone(), v.max_context_tokens))
+                .collect();
+        }
+        // T3: read the current git branch once at startup (best-effort,
+        // no polling). On any failure (not a repo, git absent, non-UTF8
+        // output) -> `None`, and the status line's `git` field is omitted.
+        // Run on the blocking pool so it never stalls the async startup
+        // path -- `git rev-parse` is fast, but the spawn isolates us from
+        // a hung `git` or a slow filesystem.
+        state.git_branch = read_git_branch().await;
         let (modal_ask_tx, modal_ask_rx) = mpsc::unbounded_channel();
         Ok(Self {
             handle,
@@ -867,4 +903,33 @@ async fn run_modal_ask(handle: SessionHandle, question: String) -> ModalAskOutco
             reply: Err(e),
         },
     }
+}
+
+/// T3: best-effort one-shot `git rev-parse --abbrev-ref HEAD` at startup,
+/// returning the current branch name. `None` on any failure -- not a git
+/// repo, `git` not on `PATH`, non-zero exit, non-UTF8 output, or a spawn
+/// error. Never panics, never blocks startup on a hung `git`: the command
+/// runs on the blocking pool and its output is bounded by `Command::output`
+/// (which reads stdout into a buffer and waits for the child). C-04: no new
+/// deps -- `std::process::Command` only.
+async fn read_git_branch() -> Option<String> {
+    tokio::task::spawn_blocking(|| {
+        let output = std::process::Command::new("git")
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let branch = String::from_utf8(output.stdout).ok()?;
+        let trimmed = branch.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+    .await
+    .ok()
+    .flatten()
 }

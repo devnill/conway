@@ -72,7 +72,8 @@ pub struct ConwayConfig {
     #[serde(default)]
     pub models: ModelsConfig,
     /// `[tui]` (TUI-only options; the facade owns the schema, the
-    /// `conway-cli` TUI consumes it). Currently just `[tui.theme]`.
+    /// `conway-cli` TUI consumes it). Currently `[tui.theme]` (T1) and
+    /// `[tui.status_line]` (T3).
     #[serde(default)]
     pub tui: TuiSection,
 }
@@ -391,6 +392,47 @@ impl Default for ModelsConfig {
 pub struct TuiSection {
     #[serde(default)]
     pub theme: ThemeConfig,
+    /// `[tui.status_line]` (T3): declarative status-line field order +
+    /// visibility. `fields` is the ordered list of field names to render; a
+    /// field absent from the list is hidden, and the list's order is the
+    /// render order. Unknown names are silently dropped at render time
+    /// (P-10: config is untrusted input, never a panic). Default = the
+    /// Lean line `["mode","model","ctx","tokens","activity","hint"]`. See
+    /// `docs/crates/conway-cli.md`'s `[tui.status_line]` section for the
+    /// full field list.
+    #[serde(default)]
+    pub status_line: StatusLineConfig,
+}
+
+/// `[tui.status_line]`: declarative status-line field order + visibility
+/// (T3). The `fields` list is the ordered set of field names the TUI
+/// renders, left to right; a field not in the list is hidden, and the list
+/// order is the render order. Unknown names are dropped at render time
+/// (P-10: never a panic). Defaults to the Lean line
+/// `["mode","model","ctx","tokens","activity","hint"]`.
+///
+/// Available field names (see `docs/crates/conway-cli.md`): `mode`, `model`,
+/// `ctx`, `tokens`, `activity`, `hint`, `git`, `cwd`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct StatusLineConfig {
+    /// Ordered field names to render. Default = Lean line.
+    pub fields: Vec<String>,
+}
+
+impl Default for StatusLineConfig {
+    fn default() -> Self {
+        Self {
+            fields: vec![
+                "mode".to_string(),
+                "model".to_string(),
+                "ctx".to_string(),
+                "tokens".to_string(),
+                "activity".to_string(),
+                "hint".to_string(),
+            ],
+        }
+    }
 }
 
 /// `[tui.theme]`: a per-named-style override table. Each entry is an

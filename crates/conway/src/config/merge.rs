@@ -259,7 +259,7 @@ const KNOWN_TOP_LEVEL_KEYS: &[&str] = &[
 
 /// Array-valued leaf keys, so their env values are comma-split rather than
 /// parsed as a single scalar.
-const ARRAY_LEAF_KEYS: &[&str] = &["allowed_tools", "denied_tools"];
+const ARRAY_LEAF_KEYS: &[&str] = &["allowed_tools", "denied_tools", "fields"];
 
 /// Builds the env-derived merge layer. `CONWAY_` prefix, `__` as the table
 /// separator, uppercase with single `_` preserved within a segment.

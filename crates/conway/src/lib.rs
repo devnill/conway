@@ -48,7 +48,7 @@ pub use conway_core::agent::{
 pub use conway_core::config::AgentDef;
 pub use conway_core::content::{ToolCategory, Usage};
 pub use conway_core::event::{Envelope, Event};
-pub use conway_core::ids::{AgentId, LogSeq, ModelRef, RoleAlias, SessionId, ToolName};
+pub use conway_core::ids::{AgentId, LogSeq, ModelRef, RoleAlias, SegmentId, SessionId, ToolName};
 pub use conway_core::log::{AskOrigin, LogRecord, SessionFilter, SessionMeta, SubagentMode};
 pub use conway_core::ports::{
     Backend, HealthRegistry, PermissionGate, Plugin, Router, SessionStore, Tool,
