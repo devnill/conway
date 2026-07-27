@@ -26,7 +26,7 @@ use conway_core::fakes::{
 };
 use conway_core::ids::{AgentId, BackendId, LogSeq, ModelId, ModelRef, RoleAlias, SessionId};
 use conway_core::log::{ForkOrigin, SessionFilter, SessionMeta};
-use conway_core::ports::{Backend, Router, SessionStore, SubagentHost};
+use conway_core::ports::{Backend, LiveOwner, Router, SessionStore, SubagentHost};
 use conway_core::provenance::Provenance;
 use conway_routing::config::HeadroomPolicy;
 use conway_runtime::events::EventBus;
@@ -128,6 +128,18 @@ impl SessionStore for CountingStore {
         ephemeral: bool,
     ) -> Result<(), conway_core::error::StoreError> {
         self.inner.set_ephemeral(sid, ephemeral).await
+    }
+
+    async fn live_owner(&self) -> Result<Option<LiveOwner>, conway_core::error::StoreError> {
+        self.inner.live_owner().await
+    }
+
+    async fn touch_live_owner(&self, pid: u32) -> Result<(), conway_core::error::StoreError> {
+        self.inner.touch_live_owner(pid).await
+    }
+
+    async fn clear_live_owner(&self) -> Result<(), conway_core::error::StoreError> {
+        self.inner.clear_live_owner().await
     }
 }
 

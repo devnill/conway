@@ -55,6 +55,14 @@ pub async fn run(cli: &Cli, conway: Conway, gate_rx: GateReceiver) -> conway::Re
     // `EphemeralSessionRef` artifacts would dangle). Best-effort: a sweep
     // failure only leaves residue for the NEXT startup's sweep -- it must
     // never block the TUI from starting.
+    //
+    // S1 follow-up: the sweep consults the store's cross-process liveness
+    // marker and defers entirely if ANOTHER process is actively using this
+    // store (fresh heartbeat). We publish OUR OWN marker only AFTER the
+    // sweep below, so a sweep never sees its own marker. The heartbeat task
+    // keeps it fresh while we run; `clear_live_owner` on exit lets a
+    // subsequent cold start reap immediately instead of waiting for the
+    // marker to go stale.
     let _ = conway.sweep_stale_modal_asks().await;
 
     enable_raw_mode().map_err(ConwayError::Io)?;
@@ -80,8 +88,38 @@ pub async fn run(cli: &Cli, conway: Conway, gate_rx: GateReceiver) -> conway::Re
         }
     };
 
+    // Publish our liveness marker (after the sweep, so the sweep never saw
+    // it) and start a heartbeat task so a second process starting against
+    // this store sees a fresh marker and defers its sweep. 15s interval <<
+    // 60s `SWEEP_LIVE_THRESHOLD`, so a few missed beats under load do not
+    // flip us to "stale". No early returns after this point: the cleanup
+    // below (clear marker + abort heartbeat) runs on every exit from
+    // `app.run`.
+    let pid = std::process::id();
+    let _ = conway.heartbeat_live_owner(pid).await;
+    let heartbeat_conway = conway.clone();
+    let heartbeat = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
+        loop {
+            interval.tick().await;
+            let _ = heartbeat_conway.heartbeat_live_owner(pid).await;
+        }
+    });
+
     let result = app.run(&mut terminal, gate_rx).await;
     restore_terminal();
+    // Clean shutdown. Stop the heartbeat FIRST so an in-flight `touch` can
+    // no longer rename the marker back over a just-cleared file, then drop
+    // our marker so a next cold start reaps residue immediately. A
+    // blocking-pool `rename` already dispatched before `abort` could in
+    // theory still land — if it does, the orphaned marker goes stale (this
+    // process is exiting) and the next startup's sweep reaps it within
+    // `SWEEP_LIVE_THRESHOLD`; that race is the acceptable residual under
+    // the S1 scope. Best-effort both: a failure here must never mask the
+    // app's own result.
+    heartbeat.abort();
+    let _ = heartbeat.await;
+    let _ = conway.clear_live_owner().await;
     result
 }
 
