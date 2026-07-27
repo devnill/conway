@@ -285,7 +285,7 @@ fn hint_spans(state: &AppState, theme: &Theme) -> Vec<Span<'static>> {
         "/agents to view"
     };
     let mut hint = format!(
-        "Enter submit · Ctrl-E expand · ↑↓ history · PgUp/PgDn · /help · {agents_hint}"
+        "Enter submit · Ctrl-E expand · ↑↓ history · PgUp/PgDn · /help · /thinking · /timestamps · {agents_hint}"
     );
     // WI-140: name which agent's conversation is currently shown whenever
     // it is not the root -- the root case stays silent (an always-on
@@ -840,6 +840,9 @@ mod tests {
         assert!(line.contains("/help"), "{line}");
         assert!(line.contains("↑↓ history"), "{line}");
         assert!(line.contains("PgUp/PgDn"), "{line}");
+        // T4: the new toggles are surfaced in the hint.
+        assert!(line.contains("/thinking"), "{line}");
+        assert!(line.contains("/timestamps"), "{line}");
     }
 
     #[test]

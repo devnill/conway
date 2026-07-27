@@ -548,6 +548,9 @@ mod tests {
         for i in 0..30 {
             state.transcript.push(Entry::Assistant {
                 text: format!("line {i}"),
+                model: None,
+                summary: None,
+                ts: None,
             });
         }
         assert!(state.follow_tail);
@@ -574,6 +577,9 @@ mod tests {
         for i in 0..30 {
             state.transcript.push(Entry::Assistant {
                 text: format!("line {i}"),
+                model: None,
+                summary: None,
+                ts: None,
             });
         }
         // Scroll up first (as the previous test does), so there is
@@ -611,6 +617,9 @@ mod tests {
         for i in 0..30 {
             state.transcript.push(Entry::Assistant {
                 text: format!("line {i}"),
+                model: None,
+                summary: None,
+                ts: None,
             });
         }
         // First Up disengages `follow_tail` and establishes a real `scroll`
@@ -639,6 +648,9 @@ mod tests {
         for i in 0..30 {
             state.transcript.push(Entry::Assistant {
                 text: format!("line {i}"),
+                model: None,
+                summary: None,
+                ts: None,
             });
         }
         // Scroll up several lines first, so there is room for Down to move
@@ -668,6 +680,9 @@ mod tests {
         for i in 0..30 {
             state.transcript.push(Entry::Assistant {
                 text: format!("line {i}"),
+                model: None,
+                summary: None,
+                ts: None,
             });
         }
         // First PageUp disengages `follow_tail` and establishes a real
@@ -716,6 +731,9 @@ mod tests {
         for i in 0..30 {
             state.transcript.push(Entry::Assistant {
                 text: format!("line {i}"),
+                model: None,
+                summary: None,
+                ts: None,
             });
         }
         state.agent_view_open = true;
@@ -750,6 +768,9 @@ mod tests {
         for i in 0..30 {
             state.transcript.push(Entry::Assistant {
                 text: format!("line {i}"),
+                model: None,
+                summary: None,
+                ts: None,
             });
         }
         type_str(&mut state, "/a"); // matches [/ask, /agents]; palette active
@@ -1026,14 +1047,20 @@ mod tests {
             name: "bash".to_string(),
             status: ToolStatus::Finished { is_error: false },
             preview: "a\nb\nc".to_string(),
+            args: String::new(),
+            progress: String::new(),
             expanded: false,
+            ts: None,
         });
         state.transcript.push(Entry::Tool {
             call_id: "c2".to_string(),
             name: "bash".to_string(),
             status: ToolStatus::Finished { is_error: false },
             preview: "x\ny".to_string(),
+            args: String::new(),
+            progress: String::new(),
             expanded: false,
+            ts: None,
         });
 
         // Ctrl-E: pure state mutation, returns `Action::None` (mirrors the
@@ -1075,7 +1102,10 @@ mod tests {
             name: "bash".to_string(),
             status: ToolStatus::Finished { is_error: false },
             preview: "a\nb\nc".to_string(),
+            args: String::new(),
+            progress: String::new(),
             expanded: false,
+            ts: None,
         });
         state.scroll = 5;
         state.follow_tail = false;
@@ -1097,7 +1127,10 @@ mod tests {
             name: "bash".to_string(),
             status: ToolStatus::Finished { is_error: false },
             preview: "a\nb\nc".to_string(),
+            args: String::new(),
+            progress: String::new(),
             expanded: false,
+            ts: None,
         });
 
         assert_eq!(handle_key(&mut state, key(KeyCode::Char('e'))), Action::None);

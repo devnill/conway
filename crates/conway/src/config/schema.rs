@@ -468,6 +468,9 @@ pub struct ThemeConfig {
     pub assistant: Option<ThemeStyleConfig>,
     pub assistant_marker: Option<ThemeStyleConfig>,
     pub reasoning: Option<ThemeStyleConfig>,
+    /// T4: the `HH:MM ` timestamp prefix prepended to each entry's first
+    /// rendered line while `show_timestamps` is on.
+    pub timestamp: Option<ThemeStyleConfig>,
     pub tool_proposed: Option<ThemeStyleConfig>,
     pub tool_awaiting: Option<ThemeStyleConfig>,
     pub tool_running: Option<ThemeStyleConfig>,

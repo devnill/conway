@@ -162,6 +162,9 @@ mod tests {
         let mut state = AppState::new(AgentId::new());
         state.transcript.push(Entry::Assistant {
             text: "hello from the harness".to_string(),
+            model: None,
+            summary: None,
+            ts: None,
         });
 
         let rows = render(&state, 80, 24);
@@ -234,6 +237,9 @@ mod tests {
         for i in 0..30 {
             state.transcript.push(Entry::Assistant {
                 text: format!("line {i}"),
+                model: None,
+                summary: None,
+                ts: None,
             });
         }
         assert!(state.follow_tail);

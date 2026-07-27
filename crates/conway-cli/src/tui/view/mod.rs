@@ -494,6 +494,9 @@ mod tests {
         let mut state = AppState::new(root);
         state.transcript.push(Entry::Assistant {
             text: "hello".to_string(),
+            model: None,
+            summary: None,
+            ts: None,
         });
         let before = format!("{:?}", state.transcript);
 

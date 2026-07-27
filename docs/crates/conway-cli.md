@@ -248,8 +248,9 @@ to consume):
 | --- | --- | --- |
 | `user` | bold, no fg | transcript `you>` prefix |
 | `assistant` | unstyled | transcript assistant text body |
-| `assistant_marker` | magenta + bold | *(NEW, T4 will consume)* assistant turn marker |
-| `reasoning` | dark_gray + italic | *(NEW, T4 will consume)* reasoning-trace text |
+| `assistant_marker` | magenta + bold | (T4) assistant `[modelname]>` speaker marker |
+| `reasoning` | dark_gray + italic | (T4) `Entry::Reasoning` trace body + `thinking>` prefix |
+| `timestamp` | dark_gray | (T4) `HH:MM ` per-entry timestamp prefix (`/timestamps`) |
 | `tool_proposed` | gray | tool-call tag, `Proposed` |
 | `tool_awaiting` | magenta | tool-call tag, `AwaitingPermission` |
 | `tool_running` | yellow | tool-call tag, `Running` |
@@ -326,7 +327,7 @@ fields = ["mode", "model", "ctx", "tokens", "git", "activity", "hint"]
 | `ctx` | `ctx 42%` when the focused model's max context is known, else `ctx 12.3k` (raw tokens, compact-suffixed; capped at `ctx 100%`) | cumulative `Event::ContextSegmentAdded { tokens_est }` ÷ the focused model's `max_context_tokens` from `[models.metadata_path]` |
 | `tokens` | `<total> tok (<n%> cached)` when cache data is present, else `<total> tok` | cumulative `Event::TurnFinished { usage }` (`Usage`'s input + output + both cache dimensions + reasoning); `n%` = `cache_read / (input + cache_read + cache_write)`, omitted when the denominator is 0 or `cache_read` is 0 |
 | `activity` | T2's working indicator: `⠋ thinking… 12s · +45 tok` while active, `idle` while idle (spinner + phrase pulse via `Theme::spinner_palette`; `+{n} tok` is session-deduped new-segment tokens added this turn) | `AppState::activity` + T2 counters |
-| `hint` | a persistent keybinding/affordance hint, dim: `Enter submit · Ctrl-E expand · ↑↓ history · PgUp/PgDn · /help · /agents to {view\|hide}`, plus `focused: <id>` when the transcript is focused on a non-root agent | static + `AppState::agent_view_open`/`focused_agent` |
+| `hint` | a persistent keybinding/affordance hint, dim: `Enter submit · Ctrl-E expand · ↑↓ history · PgUp/PgDn · /help · /thinking · /timestamps · /agents to {view\|hide}`, plus `focused: <id>` when the transcript is focused on a non-root agent | static + `AppState::agent_view_open`/`focused_agent` |
 | `git` | the current branch (e.g. `main`); omitted when not a git repo, git is absent, or the command fails | one-shot `git rev-parse --abbrev-ref HEAD` at startup, no polling |
 | `cwd` | the session's working directory; omitted when unset | `Cli --cwd` or `config.cwd` |
 
@@ -486,6 +487,61 @@ T4's tool-args preview is the same shape (a one-line-truncated args
 preview is the collapsed branch with `cap = 1` and a different content
 string), so T4 can reuse the mechanism without changing the `expanded`
 field, the affordance format, or the `Ctrl-E` action.
+
+### Transcript provenance (T4)
+
+The transcript entries (`Entry` in `tui/state.rs`) carry provenance fields
+that the renderer (`tui/view/transcript.rs::entry_lines`) surfaces:
+
+- **Reasoning traces** — `Event::ThinkingDelta` now creates/appends an
+  `Entry::Reasoning { text, model, summary, ts }` (previously only
+  `activity` was flipped to `Thinking`; the delta itself was dropped).
+  Rendered dim+italic with a `thinking> ` prefix, **expanded by default**
+  (`AppState::show_reasoning` defaults `true`). The `/thinking` slash
+  command toggles `show_reasoning`; when off, `build_lines` skips
+  `Entry::Reasoning` entirely (the entries are still stored, so toggling
+  back on restores them without replay). The keybinding is advertised in
+  the status-line `hint` and `/help`.
+- **Speaker markers** — `Entry::Assistant` gains `model: Option<String>`
+  (stamped from `AppState::focused_model` at creation time). The renderer
+  prepends `[modelname]> ` (plain `[`/`]`/`>`, no box-drawing) styled with
+  `theme.assistant_marker` when `model` is `Some`; omitted when `None`
+  (replay — `record_to_event` maps a stored `Assistant` record to a bare
+  `TextDelta` carrying no model, so a replayed bubble renders as it
+  originally streamed).
+- **Tool args + progress** — `Entry::Tool` gains `args: String` (from
+  `Event::ToolCallProposed::args`, stored compact) and `progress: String`
+  (accumulated `Event::ToolProgress { call_id, note }` notes, previously
+  dropped by `apply`'s wildcard arm, appended to the matching in-flight
+  tool entry by `call_id`). Args render as a one-line truncated `args: …`
+  preview while collapsed and an `args:` label + pretty-printed JSON while
+  expanded; both args and output expand/collapse together via the single
+  `expanded` flag (T5's `Ctrl-E` toggle). Progress notes render as dim
+  `-> {note}` lines between the args line and the output block.
+- **Per-entry timestamps** — `Entry::Assistant`/`Reasoning`/`Tool` gain
+  `ts: Option<DateTime<Utc>>`, stamped from the envelope's `ts` at apply
+  time. The `/timestamps` slash command toggles
+  `AppState::show_timestamps` (default off); when on, `entry_lines`
+  prepends an `HH:MM ` prefix (styled with `theme.timestamp`) to the
+  entry's first rendered line.
+- **Turn-end summary** — `Event::TurnFinished` stamps a
+  `summary: Option<String>` onto the last `Entry::Assistant` or
+  `Entry::Reasoning` (whichever was the last block under the turn),
+  formatted `{elapsed} · {tokens} ({n%} cached)` from the turn's `Usage`
+  and `turn_started_at` elapsed (e.g. `1m 6s · 1.4k tok (88% cached)`).
+  Rendered as a final dim line on the block. A turn with no
+  assistant/reasoning block (only tool calls) gets no summary.
+
+The streaming cursor (T2's `▌`) extends to the live reasoning line: while
+`activity == Thinking`, the cursor attaches to the last `Entry::Reasoning`'s
+last line (same render-time carve-out T2 uses for the assistant streaming
+line; the clean-copy invariant is preserved for settled output).
+
+`/thinking` and `/timestamps` are intercepted in `app.rs::submit`
+(mirroring `/agents`'s pattern) — state-only toggles that never reach
+`commands::parse` and are never sent to the model. Both are listed in the
+`/help` overlay (`commands.rs::HELP_LINES`), the command palette
+(`view/palette.rs::COMMANDS`), and the status-line hint.
 
 ### The `/` command palette, with arrow-select
 
