@@ -29,6 +29,10 @@ may be linked into this crate — routing never inspects prompt content, and
 `RouteRequest`'s field set is enforced elsewhere (in `conway-core`) to make
 that a compile-time property, not just a convention here.
 
+Content-aware routing is therefore expressed by choosing the *role*, above
+this crate, rather than by teaching the resolver to read text. See
+`ARCHITECTURE.md` §3.3.
+
 ## Capability-based routing
 
 `CapabilityIndex` (`capability.rs`) is the startup-built `(backend, model)
