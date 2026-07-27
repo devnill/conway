@@ -37,6 +37,33 @@ pub struct ForkOrigin {
     pub mode: SubagentMode,
 }
 
+/// Which of the two `/ask`-style ephemeral-fork paths created an ephemeral
+/// session (B5). This distinction is LOAD-BEARING for exactly one consumer:
+/// the TUI's crash-residue sweep (`Conway::sweep_stale_modal_asks`), which
+/// purges leftover ephemeral sessions created by the MODAL `/ask` path
+/// (the TUI's own `/ask <prompt>` command, via `conway`'s
+/// `SessionHandle::ask`) after a crash left them behind — but must NEVER
+/// purge a `conway_ask` TOOL child, whose `EphemeralSessionRef` artifact in
+/// the calling agent's persisted `ToolOutput` would be left dangling
+/// (P-2: that artifact is the only durable provenance the tool call ever
+/// had). Both paths build an identical ephemeral fork through
+/// `SubagentHost::start`; this tag is the only thing that tells them apart
+/// after the fact, which is why it lives on the durable header rather than
+/// in any live-only structure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AskOrigin {
+    /// The interactive TUI `/ask <prompt>` modal (`SessionHandle::ask`).
+    /// Crash residue of these IS sweep-eligible: the modal that would have
+    /// shown their answer died with the process, so no user will ever make
+    /// the fork/pull-in/discard choice for them.
+    ModalAsk,
+    /// The model-invoked `conway_ask` tool (`conway-tools`' `AskTool`).
+    /// NEVER sweep-eligible: the caller's `ToolOutput` artifact references
+    /// the child's transcript.
+    ToolAsk,
+}
+
 /// Session lifecycle status.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,13 +105,27 @@ pub struct SessionMeta {
     /// (`ActiveEphemeral`, `CompletedEphemeral`, ...) or conflate two
     /// independent axes into one enum.
     ///
-    /// Set once, at fork time, in the child's own `SessionMeta` -- there is
-    /// no `SessionStore` method to flip it later (the store is append-only
-    /// and has no meta-update/delete method, by design). `#[serde(default)]`
-    /// so a header written before this field existed still decodes, as
-    /// `false` (visible, matching pre-existing behavior).
+    /// Set once, at fork time, in the child's own `SessionMeta`. The single
+    /// sanctioned later mutation is the one-way promote (true→false) via
+    /// `SessionStore::set_ephemeral` (B3 — the `/ask` modal's "keep" fate);
+    /// the false→true direction is refused everywhere, so a persistent
+    /// record can never silently become purge-eligible scratchpad.
+    /// `#[serde(default)]` so a header written before this field existed
+    /// still decodes, as `false` (visible, matching pre-existing behavior).
     #[serde(default)]
     pub ephemeral: bool,
+    /// Which `/ask`-style path created this ephemeral session (B5) — see
+    /// [`AskOrigin`]'s own doc for why this distinction is load-bearing
+    /// (the TUI's crash-residue sweep purges `ModalAsk` residue but must
+    /// never touch a `ToolAsk` child). `None` for every non-`/ask` session
+    /// (roots, plain forks/spawns) and — via `#[serde(default)]`, C-04 —
+    /// for every header written before this field existed, which the sweep
+    /// correctly treats as "not modal-ask residue" (never purged). Set at
+    /// creation only, from `SubagentSpec::ask_origin` in `conway-runtime`'s
+    /// `SubagentHost::start`; like `ephemeral` itself there is no sanctioned
+    /// later mutation.
+    #[serde(default)]
+    pub ask_origin: Option<AskOrigin>,
 }
 
 /// Filter for session listing.
@@ -253,6 +294,7 @@ mod tests {
             labels: vec![],
             status: SessionStatus::Active,
             ephemeral: false,
+            ask_origin: None,
         };
         let records: Vec<(LogRecord, &str)> = vec![
             (LogRecord::Header(meta.clone()), "header"),
@@ -392,6 +434,7 @@ mod tests {
             labels: vec!["x".into()],
             status: SessionStatus::Active,
             ephemeral: false,
+            ask_origin: None,
         };
         let record = LogRecord::Header(meta.clone());
         assert_eq!(record.seq(), None);
@@ -472,6 +515,7 @@ mod tests {
             labels: vec![],
             status: SessionStatus::Active,
             ephemeral: true,
+            ask_origin: None,
         };
         let value = serde_json::to_value(LogRecord::Header(meta.clone())).unwrap();
         assert_eq!(value["ephemeral"], true);
@@ -495,6 +539,55 @@ mod tests {
         let record: LogRecord = serde_json::from_str(&header).unwrap();
         match record {
             LogRecord::Header(meta) => assert!(!meta.ephemeral),
+            other => panic!("expected Header, got {other:?}"),
+        }
+    }
+
+    /// `SessionMeta::ask_origin` round-trips through the header line (B5) --
+    /// the sweep reads it back from a PERSISTED header, not from memory, so
+    /// the tag must survive the store round-trip to be of any use at all.
+    #[test]
+    fn session_meta_ask_origin_round_trips() {
+        for origin in [AskOrigin::ModalAsk, AskOrigin::ToolAsk] {
+            let meta = SessionMeta {
+                id: SessionId::new(),
+                agent_id: AgentId::new(),
+                origin: None,
+                agent_def: None,
+                role: None,
+                created: ts(),
+                cwd: PathBuf::from("/tmp/ask"),
+                labels: vec![],
+                status: SessionStatus::Active,
+                ephemeral: true,
+                ask_origin: Some(origin),
+            };
+            let value = serde_json::to_value(LogRecord::Header(meta.clone())).unwrap();
+            let back: LogRecord = serde_json::from_value(value).unwrap();
+            match back {
+                LogRecord::Header(decoded) => assert_eq!(decoded, meta),
+                other => panic!("expected Header, got {other:?}"),
+            }
+        }
+    }
+
+    /// C-04: a header written before `ask_origin` existed (the same
+    /// pre-field wire shape the ephemeral default test above uses) must
+    /// decode with `ask_origin: None` -- which the crash-residue sweep
+    /// correctly reads as "not modal-ask residue" (never purged).
+    #[test]
+    fn session_meta_ask_origin_defaults_none_when_absent_from_wire() {
+        let sid = SessionId::new();
+        let agent = AgentId::new();
+        let header = format!(
+            r#"{{"kind":"header","session":"{sid}","agent":"{agent}","created":"2026-07-20T00:00:00Z","origin":null,"agent_def":null,"role":null,"cwd":"/tmp/p","status":"active","ephemeral":true}}"#
+        );
+        let record: LogRecord = serde_json::from_str(&header).unwrap();
+        match record {
+            LogRecord::Header(meta) => {
+                assert_eq!(meta.ask_origin, None);
+                assert!(meta.ephemeral);
+            }
             other => panic!("expected Header, got {other:?}"),
         }
     }

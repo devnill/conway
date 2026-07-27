@@ -106,6 +106,10 @@ impl From<&Provenance> for SegmentKind {
             Provenance::ToolRegistry { .. } => SegmentKind::ToolSchemas,
             Provenance::Inherited { .. } => SegmentKind::InheritedPrefix,
             Provenance::ForkDirective { .. } | Provenance::UserPrompt => SegmentKind::Directive,
+            // A merged `/ask` question is user-authored directive text
+            // folded into the parent's log (B4) — same `[4]` slot as
+            // `UserPrompt`/`ForkDirective`, not a model-turn artifact.
+            Provenance::MergedAsk { .. } => SegmentKind::Directive,
             Provenance::ParentSteer { .. }
             | Provenance::ToolResult { .. }
             | Provenance::SystemNote { .. } => SegmentKind::Turn,

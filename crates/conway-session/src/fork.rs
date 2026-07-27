@@ -68,12 +68,34 @@ use crate::store::JsonlSessionStore;
 /// the delegation to `store.create` in step 4 already records the child's
 /// header in the index (that call is `create`'s single wiring point), so
 /// fork children are indexed with no edit to this file.
+///
+/// ## Serialization against `remove`
+///
+/// The store's `lifecycle` mutex (lock order documented on
+/// `JsonlSessionStore`) is held across the head-check (step 1) AND the
+/// create (step 4). `remove` holds the same mutex across its own
+/// guard-check-plus-delete, so a `remove(parent)` racing this fork either
+/// completes first — the head check then fails `NotFound` on the removal
+/// tombstone — or starts after this fork returns, in which case the
+/// remove's children check sees the new child and refuses. The pair can
+/// never produce an orphaned child with dangling provenance (P-2, review
+/// F-1). `create_inner` is called directly because `SessionStore::create`
+/// would re-take the non-reentrant `lifecycle` mutex and self-deadlock.
+///
+/// Stall note: `lifecycle` is also held across the step-1 head check, so
+/// a COLD parent handle — whose `get_or_open_handle` performs a full-file
+/// scan (and possibly a `set_len` repair write) — blocks all concurrent
+/// create/fork/remove store-wide for the scan's duration. In practice
+/// forks follow warm parents (the parent agent just appended through the
+/// same store), making this a cold-path-only cost.
 pub(crate) async fn fork_impl(
     store: &JsonlSessionStore,
     parent: &SessionId,
     at: LogSeq,
     mut meta: SessionMeta,
 ) -> Result<SessionId, StoreError> {
+    let _lifecycle = store.lifecycle.lock().await;
+
     let head = store.head(parent).await?;
     if at.0 > head.0 {
         return Err(StoreError::SeqOutOfRange {
@@ -94,6 +116,6 @@ pub(crate) async fn fork_impl(
     });
 
     let child = meta.id;
-    store.create(meta).await?;
+    store.create_inner(meta).await?;
     Ok(child)
 }

@@ -7,17 +7,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`/ask` is now a single-turn modal with three forced fates.** Asking
+  forks an ephemeral child (visible in `/agents` marked `(ephemeral)`),
+  runs one turn, and opens a modal over the child's answer. Closing the
+  modal forces exactly one choice: `[f]` fork (promote the child to a
+  persistent session), `[p]` pull in (merge the question and answer into
+  the parent's own transcript, then purge the child), or `[esc]` discard
+  (purge outright). Quitting with the modal open discards. A failed fate
+  keeps the modal open with the error shown. The 0.2.0 rendering — a
+  dimmed aside inline in the transcript — is gone. On startup the TUI
+  sweeps modal-`/ask` residue left behind by a crashed process; a new
+  `ask_origin` tag on the session header distinguishes these from
+  `conway_ask` tool children, which are never swept.
+- **TUI `/agents` panel is now the single agent surface.** Every row shows
+  the agent's recipe label — `fork @seq N` for forks (with the inherited
+  fork point), `@<agent_def>` for spawns with a named agent definition,
+  `(inherit)` for spawns that inherited the parent's role/model — and
+  ephemeral `/ask` forks are now visible in the tree with an `(ephemeral)`
+  marker instead of being omitted. While the panel is open, `v` cycles row
+  visibility (active-only by default, all, finished-only) as a draw-time
+  filter that never mutates the tree. `/tree` is demoted to a hidden
+  alias: it still parses and renders, but its output is derived from the
+  same panel tree — the same nodes and recipe labels, shown unfiltered as
+  plain-text transcript lines — and it no longer appears in `/help` or the
+  command palette.
+
 ### Added
 
+- **Facade lifecycle ops for ephemeral `/ask` children** —
+  `Conway::promote` (the one-way ephemeral→persistent flip: durable header
+  rewrite, live-tree flip, and an `Event::AgentPromoted` for UIs, in that
+  failure-ordered sequence), `Conway::pull_in` (merge the child's question
+  and answer into the parent's log — the question re-stamped
+  `Provenance::MergedAsk`, assistant records verbatim — then purge the
+  child), `Conway::purge` (discard a terminal ephemeral child), and
+  `Conway::sweep_stale_modal_asks` (crash-residue reaper). Ephemeral `/ask`
+  children now attach as proper fork children of the asker, so they appear
+  in `/agents` marked `(ephemeral)` while running.
 - **`conway_ask` model-facing tool**: runs a prompt in an ephemeral fork of
   the calling agent and returns the child's full reply text (not a truncated
   summary), so the model can compose it into a `conway_subagent` spawn and
   keep curation/context-drafting inference out of the orchestrator's context
   window. Fork-only (`prompt` + optional `budget`); the child is marked
-  ephemeral (hidden from the TUI `/agents` panel and default session listings,
-  still attached to the live agent tree for provenance). Composes
+  ephemeral (shown in the TUI `/agents` panel with an `(ephemeral)` marker
+  while running, and under the `v`-cycled all/finished views once done;
+  excluded from default session listings; still attached to the live agent
+  tree for provenance). Composes
   `conway_subagent` per the "exactly two subagent primitives" principle —
   `ask` is fork+await-text, not a third primitive.
+- **`conway_ask` gains an optional `tools` arg**: narrows the ephemeral fork
+  child's tool set to the named tools (`ToolSelector::Only`, the same
+  selector `conway_subagent`'s `tools` arg produces) — e.g.
+  `{"prompt": "summarize the diff", "tools": ["read"]}` restricts the child
+  to read-only inspection. Narrowing-only: it can restrict, never widen, the
+  tool set the child would otherwise inherit.
+- **NL intent on `/fork` and `/spawn` with a mandatory confirmation card.**
+  Free text after `/fork` or `/spawn` that does NOT start with explicit
+  `@<agent_def>` syntax is classified by the facade's `intent` role
+  (`Conway::classify_agent_intent`, C1) BEFORE any agent is created, and
+  the classified result is shown in a confirmation card
+  (`[enter]` confirm / `[e]` edit / `[esc]` manual) so inference can never
+  silently choose (P-10). `[enter]` runs the classified recipe as-is
+  (possibly cross-classified); `[e]` drops the classified prompt into the
+  input line for editing; `[esc]` falls back to today's pre-classification
+  manual flow with the raw text untouched. The verbatim passthrough
+  (unconfigured `[roles.intent]` role, unparseable reply, invalid recipe,
+  empty prompt) still shows the card with the raw text; a hard
+  `ConwayError::IntentClassification` does NOT show the card and falls back
+  to the manual flow with a notice. Explicit `@<agent_def>` syntax and bare
+  invocations are unchanged. Oneshot (`-p`) `/fork`/`/spawn` paths are
+  unchanged (deferred).
 
 ## [0.2.0] — 2026-07-23
 

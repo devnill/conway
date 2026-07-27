@@ -218,6 +218,7 @@ mod tests {
             labels: vec!["x".into()],
             status: SessionStatus::Active,
             ephemeral: false,
+            ask_origin: None,
         }
     }
 

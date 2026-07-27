@@ -48,8 +48,11 @@ duplicating it would fork the type.
   build`. Its surface: `new_session(SessionSpec) -> SessionHandle`,
   `resume(SessionId) -> SessionHandle`, `sessions(SessionFilter)`,
   `session_head`, `fork_from` (see `/ask` below), `explain_routing(&RoleAlias)
-  -> ExplainReport` (the `conway routes explain` data source), plus
-  `config()`/`warnings()` for introspecting the merged config.
+  -> ExplainReport` (the `conway routes explain` data source), the three
+  ephemeral-`/ask` lifecycle ops `promote`/`pull_in`/`purge` (see `/ask`
+  below), `sweep_stale_modal_asks` (the TUI's crash-residue reaper, same
+  section), plus `config()`/`warnings()` for introspecting the merged
+  config.
 - **`SessionHandle`** (`session_handle.rs`) is the consumer-facing surface
   over one running session: `prompt`, `ask` (see below), `events`/
   `events_from(seq)`/`agent_events(agent)` (the last replays and then live-
@@ -89,24 +92,89 @@ request shape and that conversion.
 ## The `/ask` ephemeral fork
 
 `SessionHandle::ask(text) -> TurnHandle` is the ephemeral side-question
-primitive: it forks the session at its **current head** into a fresh
-child marked `SessionMeta::ephemeral: true` (set once, at creation, never
-changed later), then drives one turn on that child with the given text.
-The child inherits the full context and tool set — tool calls it makes are
-real — but its transcript never touches the parent session, and ephemeral
-sessions are excluded from default `sessions()`/`SessionFilter` results
-(visible only by direct `SessionId` lookup or `SessionFilter {
+primitive: it forks the session's root agent at its **current head** into a
+fresh child marked `SessionMeta::ephemeral: true` (set once, at creation),
+then drives one turn on that child with the given text. Post-B2 the child
+goes through the runtime's own subagent machinery (`SubagentHost::start`,
+the same path `SessionHandle::fork` and the `conway_ask` tool use), so it
+attaches as a **proper fork child of the asker** — `kind: Fork`, a real
+`parent` link, `inherited_upto` at the fork point — and `AgentTree::attach`
+emits `Event::AgentSpawned { ephemeral: true, .. }` on the live bus (the
+TUI's `/agents` panel shows the node with an `(ephemeral)` marker while the
+ask runs). The child inherits the full context and tool set — tool calls it
+makes are real — but its transcript never touches the parent session, and
+ephemeral sessions are excluded from default `sessions()`/`SessionFilter`
+results (visible only by direct `SessionId` lookup or `SessionFilter {
 include_ephemeral: true, .. }`) — a throwaway question never pollutes the
-live conversation or its catalog listing.
+live conversation or its catalog listing. The returned `TurnHandle`'s
+`agent()` names the child; `text()` drains its single turn to the finished
+reply.
 
-`fork_child.rs` factors out the sequence `/ask` and `Conway::fork_from`
-both need — `SessionStore::fork` (the zero-copy, one-header-write
-operation from [`conway-session`](conway-session.md)) followed by
-`Runtime::resume_root` (re-registering the child as a live, drivable
-agent, resolving its inherited prefix) — into one shared implementation, so
-the `ephemeral` bit each caller sets differently is the only thing that
-varies between the two call sites, rather than two copies of the sequence
-that could drift apart.
+An ephemeral ask child has exactly **three fates**, all facade lifecycle
+ops on the child's `AgentId` (each live-checked against `Runtime::tree()`
+and guarded before anything is mutated; P-1 — these are lifecycle
+operations on existing agents, not new subagent primitives):
+
+- **`Conway::promote(agent) -> SessionId`** (keep — the TUI modal's `[f]`
+  fork fate): the one-way ephemeral→persistent flip, performed atomically
+  as durable header rewrite (`SessionStore::set_ephemeral`, the single
+  sanctioned header mutation) → live-tree flag flip → `Event::AgentPromoted`
+  emission, in that failure-ordered sequence so the three views can never
+  split-brain. No re-parenting, no record rewriting: the child's whole
+  transcript, origin, and provenance survive verbatim (P-2).
+- **`Conway::pull_in(child)`** (the modal's `[p]` fate): merges the child's
+  turns into its parent's log — the child's `ForkDirective` head record
+  materialized as a `UserTurn` re-stamped `Provenance::MergedAsk { from:
+  child_session }`, its `Assistant` records copied verbatim — then purges
+  the child via `SessionStore::remove`. Refuses (before any parent
+  mutation) when the child is unknown, still running, non-ephemeral, has
+  children of its own, or its parent is no longer live.
+- **`Conway::purge(agent)`** (the modal's `[esc]` discard fate, and the
+  forced fate when the TUI quits with the modal open): deletes the child's
+  session outright, merging nothing — the single user-explicit exception to
+  mandatory provenance retention (P-2/GP-10). Live-checked, terminal-only,
+  and guarded by the store's own ephemeral-only/no-children matrix.
+
+`fork_child.rs` factors out the sequence `Conway::fork_from` needs —
+`SessionStore::fork` (the zero-copy, one-header-write operation from
+[`conway-session`](conway-session.md)) followed by `Runtime::resume_root`
+(re-registering the child as a live, drivable agent, resolving its
+inherited prefix) — into one shared implementation. `/ask` itself no longer
+uses it: B2 moved the ask flow onto `SubagentHost::start` so the child
+attaches as a proper fork child (above).
+
+**`ask_origin` and the crash-residue sweep.** `SessionMeta::ask_origin`
+(`Option<AskOrigin>`, `#[serde(default)]` so pre-existing headers decode as
+`None`) distinguishes the two ephemeral-ask paths at creation:
+`AskOrigin::ModalAsk` (stamped by `SessionHandle::ask`, the TUI's modal
+`/ask`) vs `AskOrigin::ToolAsk` (stamped by the `conway_ask` tool). The tag
+exists for exactly one consumer: `Conway::sweep_stale_modal_asks()`, which
+the TUI runs once at startup to purge modal-`/ask` leftovers whose agent is
+not live (a crashed TUI leaves no modal that will ever show the answer, so
+no user will ever choose a fate). `ToolAsk` children are **never** swept —
+their transcripts are referenced by `EphemeralSessionRef` artifacts in the
+calling agent's persisted tool output, and purging one would leave that
+artifact dangling.
+
+## NL intent classification (`classify_agent_intent`)
+
+`Conway::classify_agent_intent(parent, default_recipe, text) -> Result<AgentIntent>`
+is the facade capability the TUI's `/fork`/`/spawn` free-text path routes
+through (C1): it runs an EPHEMERAL, tool-less, one-turn spawn under the
+declarative `intent` role alias, parses the reply strictly, and returns an
+`AgentIntent { recipe, agent_def, prompt }` — then purges the classifier
+session before returning, on every exit path. `default_recipe` is the
+caller's command default (`Fork` for `/fork`, `Spawn` for `/spawn`); every
+degraded path (unconfigured `[roles.intent]` role, unparseable reply,
+invalid recipe, empty prompt) returns a verbatim passthrough `AgentIntent`
+carrying that recipe, the raw text, and no agent def — a classifier
+failure can never break the command. Other errors (store I/O, backend
+failure inside the turn) propagate as `ConwayError::IntentClassification`.
+The full design — session shape, prompt-prefix system prompt, the P-10
+reply-validation policy, and every disclosed residual — lives in the
+`intent` module's doc (`crates/conway/src/intent.rs`); the TUI's
+confirmation card (the trust gate, P-10) is documented in
+[`conway-cli`](conway-cli.md)'s NL intent section.
 
 ## Config discovery
 

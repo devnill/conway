@@ -380,11 +380,11 @@ async fn keep_alive_false_default_session_still_terminates_after_one_turn() {
 /// Light, item-local confirmation alongside `tests/ask.rs`'s own existing
 /// coverage (every test there already awaits `ask_turn.result()`
 /// successfully, e.g. `ask_child_is_hidden_from_default_listing_...`) that
-/// `/ask`'s fork-ask child is NOT keep-alive: `SessionHandle::ask` ->
-/// `fork_child::fork_child` -> `Runtime::resume_root`, which this item hard-
-/// codes to `keep_alive: false` (out of scope for this item to extend). If
-/// the child were keep-alive, `result()` below would hang instead of
-/// resolving.
+/// `/ask`'s fork-ask child is NOT keep-alive: `SessionHandle::ask` builds
+/// its `SubagentSpec` with `keep_alive: false` (post-B2 it goes through
+/// `SubagentHost::start`; pre-B2 the `resume_root` path hard-coded the
+/// same). If the child were keep-alive, `result()` below would hang instead
+/// of resolving.
 #[tokio::test]
 async fn ask_child_is_not_keep_alive_and_its_result_resolves() {
     let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());

@@ -74,6 +74,13 @@ struct IndexLine {
     /// already calls out for that field.
     #[serde(default)]
     ephemeral: bool,
+    /// Projects `SessionMeta::ask_origin` (B5) -- required for the same
+    /// reason as `ephemeral` above: the TUI's crash-residue sweep finds
+    /// modal-ask leftovers via `list`, and a `list` served from a *loaded*
+    /// index that dropped this tag would silently miss every leftover (or,
+    /// worse, misclassify one) until the next rebuild.
+    #[serde(default)]
+    ask_origin: Option<conway_core::log::AskOrigin>,
 }
 
 impl IndexLine {
@@ -95,6 +102,7 @@ impl IndexLine {
             labels: meta.labels.clone(),
             status: meta.status,
             ephemeral: meta.ephemeral,
+            ask_origin: meta.ask_origin,
         }
     }
 
@@ -118,6 +126,7 @@ impl IndexLine {
             labels: self.labels,
             status: self.status,
             ephemeral: self.ephemeral,
+            ask_origin: self.ask_origin,
         }
     }
 }
@@ -154,6 +163,21 @@ impl IndexState {
             }
         }
         self.by_id.insert(meta.id, meta);
+    }
+
+    /// Evicts `sid` from both projections: `by_id`, its entry in its
+    /// parent's `children` list, and its own `children` entry (empty under
+    /// the store's remove guard matrix, evicted regardless for symmetry
+    /// with `upsert`'s defensive re-record handling).
+    fn remove(&mut self, sid: &SessionId) {
+        if let Some(old) = self.by_id.remove(sid) {
+            if let Some(origin) = &old.origin {
+                if let Some(list) = self.children.get_mut(&origin.parent) {
+                    list.retain(|c| c != sid);
+                }
+            }
+        }
+        self.children.remove(sid);
     }
 }
 
@@ -348,6 +372,23 @@ impl SessionIndex {
     /// write `index.jsonl.tmp`, fsync, rename over the real file. The
     /// rename is the only non-append write this module ever performs, and
     /// it targets only the derived file, never a session file.
+    ///
+    /// ORDERING REQUIREMENT: the snapshot above and the rename below are
+    /// deliberately NOT covered by `self.state` (a `std::sync::RwLock` —
+    /// this module's invariant is that it is never held across an
+    /// `.await`, and `record_header`'s blocking `write()` must never
+    /// stall a runtime worker behind this rewrite's async file I/O).
+    /// Instead the caller must hold the store's `lifecycle` mutex (see
+    /// `JsonlSessionStore`'s lock-order docs), which serializes this
+    /// snapshot-and-rename against `record_header`'s upsert-plus-append:
+    /// without it, a `record_header` interleaved between the snapshot and
+    /// the rename would have its appended line destroyed by the rename,
+    /// leaving `index.jsonl` one entry short of the in-memory state (the
+    /// next open then WARN-rebuilds — self-healed, but spurious; review
+    /// F-2). Today's only callers satisfy this: `load_or_rebuild` runs
+    /// before the store accepts calls, and `SessionStore::remove` holds
+    /// `lifecycle` (as do `create`/`fork`, the only `record_header`
+    /// callers).
     async fn persist_full(&self) -> Result<(), StoreError> {
         let metas: Vec<SessionMeta> = {
             let state = self.state.read().unwrap();
@@ -430,6 +471,97 @@ impl SessionIndex {
             Ok(file) => file.sync_data().map_err(io_err),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(io_err(e)),
+        }
+    }
+
+    /// Evicts `sid` from the in-memory index and rewrites `index.jsonl`
+    /// via [`persist_full`](Self::persist_full). A full rewrite is the only
+    /// option: `index.jsonl` is append-only, so a line naming a deleted
+    /// session cannot be retracted any other way. Without this eviction +
+    /// persist, every subsequent store open would see the index disagree
+    /// with disk (`try_load`'s disk-ids-vs-index-ids check) and WARN-rebuild.
+    ///
+    /// Must be called with the store's `lifecycle` mutex held — see
+    /// [`persist_full`](Self::persist_full)'s ordering requirement (review
+    /// F-2).
+    pub(crate) async fn remove(&self, sid: &SessionId) -> Result<(), StoreError> {
+        {
+            let mut state = self.state.write().unwrap();
+            state.remove(sid);
+        }
+        self.persist_full().await
+    }
+
+    /// Re-records an EXISTING header after an in-place meta mutation — the
+    /// store's `set_ephemeral` promote path, the only header mutation the
+    /// store supports. `upsert` handles the re-record (replacing the stale
+    /// entry under the same id; `IndexState::upsert`'s defensive
+    /// old-parent eviction covers any origin change, which promote never
+    /// makes), and `persist_full` rewrites `index.jsonl` — a full rewrite
+    /// is the only option, exactly as [`remove`](Self::remove)'s doc
+    /// explains, since an appended line cannot retract the stale
+    /// `ephemeral: true` projection the file already carries.
+    ///
+    /// Must be called with the store's `lifecycle` mutex held — see
+    /// [`persist_full`](Self::persist_full)'s ordering requirement (review
+    /// F-2).
+    ///
+    /// Failure policy (deviates deliberately from `remove`'s
+    /// warn-and-swallow): a failed `persist_full` here is NOT self-healing
+    /// the way `remove`'s is. `try_load`'s disk-consistency check compares
+    /// only the ID SET of index entries against session files, never their
+    /// content — so a stale `ephemeral: true` line surviving on disk would
+    /// load cleanly on next open and mis-hide the promoted session
+    /// indefinitely, silently. Instead, a persist failure deletes
+    /// `index.jsonl` outright (best-effort), which forces the next open's
+    /// `load_or_rebuild` down the rebuild-by-scan path — and the scan reads
+    /// the session files' own (already flipped) headers, so the rebuilt
+    /// index is correct. The in-memory upsert above is unaffected by every
+    /// failure mode here, so the running store is always immediately
+    /// correct; only cross-restart staleness is at stake.
+    pub(crate) async fn update_header(&self, meta: &SessionMeta) {
+        {
+            let mut state = self.state.write().unwrap();
+            state.upsert(meta.clone());
+        }
+        if let Err(e) = self.persist_full().await {
+            tracing::warn!(
+                session = %meta.id,
+                error = %e,
+                "index persist after header update failed; deleting stale index.jsonl to force a rebuild-by-scan on next open"
+            );
+            if let Err(e) = std::fs::remove_file(self.root.join("index.jsonl")) {
+                // A missing file is the desired end state anyway; only a
+                // real deletion failure leaves the stale index in place
+                // (next open loads it, content-stale — logged here, and
+                // the in-memory state remains correct for this process).
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    tracing::warn!(
+                        error = %e,
+                        "stale index.jsonl could not be deleted; next open may load a content-stale index"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Delete the persisted `index.jsonl`, tolerating its absence. Called
+    /// by `JsonlSessionStore::set_ephemeral` BEFORE the session-header
+    /// rename so a crash at ANY point in the promote leaves a self-healing
+    /// absence (rebuild-by-scan reads the session files' own headers) rather
+    /// than a loadable-but-stale index — `try_load` compares only id SETS,
+    /// so a stale `ephemeral: true` line would otherwise load cleanly and
+    /// mis-hide the promoted session forever (a mid-remove crash produces
+    /// an id-set MISMATCH and self-heals; a mid-promote crash produces
+    /// matching sets with stale content and never does — cycle-5 B3 review).
+    pub(crate) async fn invalidate_persisted(&self) {
+        if let Err(e) = tokio::fs::remove_file(self.root.join("index.jsonl")).await {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                tracing::warn!(
+                    error = %e,
+                    "index.jsonl could not be deleted before a promote; a crash before the next persist may load a content-stale index"
+                );
+            }
         }
     }
 

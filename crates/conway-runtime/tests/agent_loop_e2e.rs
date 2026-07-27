@@ -395,6 +395,14 @@ impl SessionStore for OrderingStore {
     async fn list(&self, filter: SessionFilter) -> Result<Vec<SessionMeta>, StoreError> {
         self.inner.list(filter).await
     }
+
+    async fn remove(&self, sid: &SessionId) -> Result<(), StoreError> {
+        self.inner.remove(sid).await
+    }
+
+    async fn set_ephemeral(&self, sid: &SessionId, ephemeral: bool) -> Result<(), StoreError> {
+        self.inner.set_ephemeral(sid, ephemeral).await
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -416,6 +424,7 @@ async fn seed_prompt(store: &dyn SessionStore, role: &str, prompt: &str) -> (Ses
             labels: vec![],
             status: SessionStatus::Active,
             ephemeral: false,
+            ask_origin: None,
         })
         .await
         .unwrap();

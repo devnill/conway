@@ -14,6 +14,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use conway_core::agent::{
     AgentDefRef, AgentResult, AgentTreeSnapshot, AskOutcome, ResultStatus, SubagentSpec,
+    ToolSelector,
 };
 use conway_core::content::{ArtifactKind, ContentBlock, ToolCall, ToolCategory, TruncationPolicy};
 use conway_core::error::{RuntimeError, ToolError};
@@ -250,6 +251,14 @@ async fn ask_tool_calls_subagent_host_ask_with_ephemeral_fork_spec() {
     assert!(spec.ephemeral, "ask spec must be ephemeral");
     assert!(!spec.keep_alive, "ask spec must not keep_alive");
     assert!(spec.cache_hint, "ask (fork) spec must set cache_hint");
+    // B5: the spec must stamp AskOrigin::ToolAsk -- the tag the TUI's
+    // crash-residue sweep discriminates on (a ToolAsk child is NEVER
+    // swept; its EphemeralSessionRef artifact would dangle).
+    assert_eq!(
+        spec.ask_origin,
+        Some(conway_core::log::AskOrigin::ToolAsk),
+        "the conway_ask tool must stamp AskOrigin::ToolAsk at creation"
+    );
     assert_eq!(spec.prompt, "summarize");
     assert_eq!(spec.agent_def, None);
     assert_eq!(spec.role, None);
@@ -269,6 +278,77 @@ async fn ask_tool_calls_subagent_host_ask_with_ephemeral_fork_spec() {
     assert_eq!(artifact.kind, ArtifactKind::EphemeralSessionRef);
     assert_eq!(artifact.id, transcript_ref.to_string());
     assert_eq!(artifact.label, "ephemeral_session_ref");
+}
+
+#[tokio::test]
+async fn ask_tools_arg_maps_to_only_selector_on_child_spec() {
+    // The `tools` arg narrows the ephemeral child's tool set: it flows as
+    // `ToolSelector::Only` straight into the captured SubagentSpec (the same
+    // mapping `conway_subagent`'s `tools` arg uses at tools.rs), leaving
+    // resolution/narrowing to the runtime's existing spec plumbing — the
+    // tool layer adds no plumbing of its own (P-6).
+    let parent = AgentId::new();
+    let outcome = AskOutcome {
+        text: "curated brief".into(),
+        usage: conway_core::content::Usage::default(),
+        status: ResultStatus::Completed,
+        transcript_ref: SessionId::new(),
+    };
+    let fake = Arc::new(FakeSubagentHost::new().with_ask_outcome(parent, outcome));
+    let (ctx, _h) = test_ctx(PathBuf::from("/tmp/x"));
+    let ctx = ToolCtx {
+        agent_id: parent,
+        subagents: fake.clone() as Arc<dyn SubagentHost>,
+        ..ctx
+    };
+
+    let out = AskTool::new()
+        .invoke(
+            call(
+                "conway_ask",
+                serde_json::json!({"prompt": "summarize", "tools": ["read"]}),
+            ),
+            ctx,
+        )
+        .await
+        .unwrap();
+    assert!(!out.is_error, "conway_ask: {}", text_of(&out));
+
+    let asks = fake.asks();
+    assert_eq!(asks.len(), 1);
+    assert_eq!(
+        asks[0].1.tools,
+        Some(ToolSelector::Only(vec!["read".to_string()]))
+    );
+}
+
+#[tokio::test]
+async fn ask_args_reject_unknown_fields_and_deserialize_without_tools() {
+    // C-04: `AskArgs` keeps `deny_unknown_fields` — a typo'd arg is an
+    // `InvalidArguments` error with zero asks recorded...
+    let (ctx, handles) = test_ctx(PathBuf::from("/tmp/x"));
+    let err = AskTool::new()
+        .invoke(
+            call(
+                "conway_ask",
+                serde_json::json!({"prompt": "p", "toolz": ["read"]}),
+            ),
+            ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, ToolError::InvalidArguments { .. }));
+    assert!(handles.subagents.asks().is_empty());
+
+    // ...while a call with no `tools` arg still deserializes (the new field
+    // is `#[serde(default)] Option`), leaving `spec.tools` None so the
+    // runtime's fallback path (inherit the full set) is unchanged.
+    let (ctx, handles) = test_ctx(PathBuf::from("/tmp/x"));
+    AskTool::new()
+        .invoke(call("conway_ask", serde_json::json!({"prompt": "p"})), ctx)
+        .await
+        .unwrap();
+    assert_eq!(handles.subagents.asks()[0].1.tools, None);
 }
 
 #[tokio::test]

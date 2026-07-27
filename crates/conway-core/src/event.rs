@@ -77,6 +77,18 @@ pub enum Event {
         #[serde(default)]
         ephemeral: bool,
     },
+    /// An ephemeral `/ask`-style agent was promoted to persistent (the
+    /// facade `Conway::promote` — the `/ask` modal's "keep" fate). Emitted
+    /// exactly once per promotion, only AFTER both the durable session-header
+    /// rewrite (`SessionStore::set_ephemeral`) and the live-tree flag flip
+    /// (`AgentTree::set_ephemeral`) have succeeded: this event is the "all
+    /// three flips are done" signal, so a UI may flip its own cached copy of
+    /// the flag unconditionally on receipt (no optimistic pre-flip). Carries
+    /// no fields of its own — the envelope's `agent` names the promoted
+    /// agent and its `session` that agent's own session. Fieldless, so old
+    /// and new logs agree on its shape; additive under `#[non_exhaustive]`
+    /// (C-04: a new variant never disturbs existing ones' deserialization).
+    AgentPromoted {},
 
     TurnStarted {
         turn: u32,
@@ -243,6 +255,7 @@ mod tests {
                 },
                 "agent_finished",
             ),
+            (Event::AgentPromoted {}, "agent_promoted"),
             (Event::TurnStarted { turn: 1 }, "turn_started"),
             (
                 Event::ModelDecision {
@@ -366,12 +379,12 @@ mod tests {
     #[test]
     fn every_variant_constructs_and_round_trips_with_exact_tag() {
         let variants = all_variants();
-        // Twenty-two variants: the twenty from architecture §6.5 (Envelope's
+        // Twenty-three variants: the twenty from architecture §6.5 (Envelope's
         // inline `event` field dropped from the count) plus `Lagged`,
-        // `SteerDropped`, and the extra `SteerQueued` field, minus the
-        // §6.5 listing's un-additioned `SteerQueued` — i.e. every variant
-        // currently defined on `Event`.
-        assert_eq!(variants.len(), 22);
+        // `SteerDropped`, the extra `SteerQueued` field, and the B3
+        // `AgentPromoted` addition — i.e. every variant currently defined on
+        // `Event`.
+        assert_eq!(variants.len(), 23);
         for (event, expected_tag) in variants {
             let value = serde_json::to_value(&event).unwrap();
             assert_eq!(value["event"], expected_tag, "tag for {event:?}");

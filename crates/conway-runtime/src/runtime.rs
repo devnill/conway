@@ -116,6 +116,7 @@ use conway_core::agent::{AgentDefRef, AgentResult, AgentTreeSnapshot, Budget, To
 use conway_core::capabilities::CacheMode;
 use conway_core::config::{AgentDef, DEFAULT_MAX_PARALLEL_TOOLS};
 use conway_core::error::RuntimeError;
+use conway_core::event::Event;
 use conway_core::ids::{AgentId, BackendId, LogSeq, ModelRef, RoleAlias, SeqRange, SessionId};
 use conway_core::log::{
     ForkOrigin, LogRecord, SessionFilter, SessionMeta, SessionStatus, SubagentMode,
@@ -534,6 +535,10 @@ impl Runtime {
             // child is (`conway`'s `SessionHandle::ask`, which sets this
             // itself before calling `store.fork`, never `start_root`).
             ephemeral: false,
+            // B5: a root is never an `/ask` child either -- the tag only
+            // exists on ephemeral ask children (stamped from the spec in
+            // `subagent.rs`'s `SubagentHost::start`).
+            ask_origin: None,
         };
         self.store.create(meta).await?;
 
@@ -861,12 +866,16 @@ impl Runtime {
             budget: spec.budget.clone(),
             cancel: cancel.clone(),
             inherited_upto: None,
-            // Stamped from the persisted `SessionMeta::ephemeral`: `conway`'s
-            // facade `fork_child` (the `/ask` path) sets `meta.ephemeral = true`
-            // before `store.fork`; a normal `conway::resume`/`fork_from` leaves
-            // it `false`. `attach` does not emit `Event::AgentSpawned` for this
-            // node (a resumed root has `kind: None`), but `ephemeral_of` reads
-            // this field for the `Event::AgentFinished` stamp at finish time.
+            // Stamped from the persisted `SessionMeta::ephemeral`: a session
+            // forked off ephemeral (e.g. a `/ask` child, born via
+            // `SubagentHost::start` with `spec.ephemeral = true` -- board
+            // item B2 moved the facade `/ask` onto that path) keeps the bit
+            // in its header, so resuming it later re-attaches an ephemeral
+            // node; a normal `conway::resume`/`fork_from` header has it
+            // `false`. `attach` does not emit `Event::AgentSpawned` for this
+            // node (a resumed root has `kind: None`), but `ephemeral_of`
+            // reads this field for the `Event::AgentFinished` stamp at
+            // finish time.
             ephemeral: meta.ephemeral,
         };
 
@@ -1015,6 +1024,29 @@ impl Runtime {
     /// arrive once WI-084 attaches them.
     pub fn tree(&self) -> AgentTreeSnapshot {
         self.tree.snapshot()
+    }
+
+    /// The runtime half of the facade's ephemeral→persistent promote (B3):
+    /// flips `agent`'s `ephemeral` flag to `false` in the live tree, then
+    /// emits exactly one `Event::AgentPromoted` under the agent's OWN
+    /// session, and returns that `SessionId`.
+    ///
+    /// ORDERING CONTRACT (binding on callers — `conway`'s `Conway::promote`
+    /// owns the full sequence): the durable session-header rewrite
+    /// (`SessionStore::set_ephemeral`) must have ALREADY succeeded before
+    /// this is called. The flag flip strictly precedes the event emission
+    /// inside this method, so the event is always the LAST of the three
+    /// promote steps — a UI observing `AgentPromoted` may flip its own
+    /// cached copy of the flag unconditionally, with no optimistic
+    /// pre-flip. `AgentTree` never detaches nodes, so once the facade's
+    /// own presence guard has passed this method cannot fail with
+    /// `AgentNotFound` in practice; the error return exists because the
+    /// tree setter is total over unknown ids (a direct-call bug), not
+    /// because a race can remove the node.
+    pub fn promote_agent(&self, agent: AgentId) -> Result<SessionId, RuntimeError> {
+        let session = self.tree.set_ephemeral(agent, false)?;
+        self.bus.emit(session, agent, Event::AgentPromoted {});
+        Ok(session)
     }
 }
 

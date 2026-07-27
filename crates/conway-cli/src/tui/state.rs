@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use conway::{AgentId, AgentResult, Envelope, Event, ResultStatus, Usage};
+use conway::{AgentId, AgentIntent, AgentResult, Envelope, Event, LogSeq, ResultStatus, SubagentMode, Usage};
 
 use super::gate::PendingPrompt;
 
@@ -56,17 +56,6 @@ pub enum Entry {
         label: String,
         status: NodeStatus,
     },
-    /// A `/ask` ephemeral fork-ask (facade `SessionHandle::ask`, WI-127
-    /// criterion 5): `reply` is `None` while the forked child's turn is
-    /// still in flight, populated once `App`'s spawned task resolves it.
-    /// `id` correlates this entry with the async result -- there is no
-    /// other identifier in scope for it (unlike `Tool`'s `call_id`, which
-    /// the facade itself assigns).
-    EphemeralAsk {
-        id: u64,
-        question: String,
-        reply: Option<String>,
-    },
     Notice {
         text: String,
     },
@@ -100,6 +89,18 @@ pub struct TreeNode {
     pub parent: Option<AgentId>,
     pub agent_def: Option<String>,
     pub status: NodeStatus,
+    /// How this agent was spawned (`Fork`/`Spawn`/...), from
+    /// `Event::AgentSpawned::kind`. `None` for the root and for nodes
+    /// seeded out-of-band (`ensure_agent_tracked`), which never saw a
+    /// spawn event.
+    pub kind: Option<SubagentMode>,
+    /// Fork provenance: the parent's log position the child inherited up
+    /// to, from `Event::AgentSpawned::inherited_upto`.
+    pub inherited_upto: Option<LogSeq>,
+    /// Whether this is an ephemeral `/ask`-style aside (P-2: it stays in
+    /// the tree with its provenance attached; draw-time visibility
+    /// filtering is a separate concern).
+    pub ephemeral: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,6 +111,64 @@ pub enum NodeStatus {
     Finished,
     Failed,
     Cancelled,
+}
+
+impl NodeStatus {
+    /// Terminal statuses share one predicate between the `/agents` panel's
+    /// visibility filter (item A2) and the live-agent checks below.
+    fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            NodeStatus::Finished | NodeStatus::Failed | NodeStatus::Cancelled
+        )
+    }
+}
+
+/// The `/agents` panel's draw-time visibility filter (item A2): which tree
+/// nodes the panel's ROWS show. Lives entirely at draw time -- the
+/// `AgentTreeView` itself stays unfiltered (P-2: finished agents are hidden,
+/// never removed), so the predicate is a pure function of the node and the
+/// mode (GP-04), unit-testable with no terminal, and flipping the mode never
+/// mutates the tree. Cycled by `v` while the panel is open (`input.rs`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentVisibility {
+    /// The default: terminal-status nodes (Finished/Failed/Cancelled) are
+    /// hidden (user decision, item A2), so the panel reads as "what is
+    /// still running".
+    ActiveOnly,
+    /// Show every node, terminal or not.
+    All,
+    /// Show ONLY terminal-status nodes -- the "what already ran" view.
+    FinishedOnly,
+}
+
+impl AgentVisibility {
+    /// The `v`-key cycle order: ActiveOnly -> All -> FinishedOnly -> ActiveOnly.
+    pub fn next(self) -> Self {
+        match self {
+            Self::ActiveOnly => Self::All,
+            Self::All => Self::FinishedOnly,
+            Self::FinishedOnly => Self::ActiveOnly,
+        }
+    }
+
+    /// The pure filter predicate (GP-04): tree node + mode -> visible?
+    pub fn shows(self, node: &TreeNode) -> bool {
+        match self {
+            Self::ActiveOnly => !node.status.is_terminal(),
+            Self::All => true,
+            Self::FinishedOnly => node.status.is_terminal(),
+        }
+    }
+
+    /// The short label the panel's header shows for the current mode.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::ActiveOnly => "active",
+            Self::All => "all",
+            Self::FinishedOnly => "finished",
+        }
+    }
 }
 
 impl AgentTreeView {
@@ -128,6 +187,89 @@ impl AgentTreeView {
     }
 }
 
+/// The `/ask` modal's state (B5): one answered ephemeral fork-ask waiting
+/// for the user to choose its fate. The modal opens only once the child's
+/// single turn has COMPLETED (`app.rs` drives `SessionHandle::ask` +
+/// `TurnHandle::text` to the finished reply, then `offer_ask_modal`), so
+/// `answer` is always the final reply text -- never a pending placeholder.
+/// `child` is the ephemeral fork child's [`AgentId`] (from
+/// `TurnHandle::agent`), the value all three fates' facade ops take.
+/// `error` is `Some` only after a fate attempt FAILED -- the modal stays
+/// open with the error shown (the user still must choose; a failed fate
+/// never silently falls through to another one).
+#[derive(Debug, Clone, PartialEq)]
+pub struct AskModal {
+    pub question: String,
+    pub child: AgentId,
+    pub answer: String,
+    pub error: Option<String>,
+}
+
+/// One of the three forced fates closing the `/ask` modal (B5) -- exactly
+/// one of these runs; there is no fourth way out (quitting with the modal
+/// open purges, wired in `app.rs`'s quit path). Each maps to exactly one
+/// facade op (`commands::apply_ask_fate`): `Fork` -> `Conway::promote`
+/// (B3: keep -- the node loses its `(ephemeral)` marking and becomes a
+/// session in its own right), `PullIn` -> `Conway::pull_in` (B4: the
+/// question+answer merge into the parent's own log, child purged),
+/// `Discard` -> `Conway::purge` (the explicit P-2/GP-10 exception: the
+/// answer is thrown away).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AskFate {
+    Fork,
+    PullIn,
+    Discard,
+}
+
+/// The confirmation card's three ways out (C2 -- the trust gate for
+/// classified `/fork`/`/spawn` intent, P-10). Each maps to exactly one
+/// outcome the app loop carries out (`commands::execute_intent_confirm`):
+/// `Confirm` runs the classified recipe as-is, `Edit` drops the classified
+/// prompt into the input line for the user to re-shape and resubmit, and
+/// `Manual` falls back to today's pre-classification flow with the original
+/// raw text. There is no fourth way out: quitting with the card open
+/// (`Ctrl-C`/`Ctrl-D`) is the manual fallback -- nothing has been created
+/// yet (unlike the `/ask` modal, which has a live child to purge), so the
+/// quit keys simply pass through and the app loop never reaches
+/// `execute_intent_confirm` for them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntentChoice {
+    Confirm,
+    Edit,
+    Manual,
+}
+
+/// The confirmation card's state (C2): one classified [`AgentIntent`] (the
+/// output of `Conway::classify_agent_intent`, P-8) waiting for the user to
+/// confirm, edit, or discard before ANY agent is created -- inference must
+/// never silently choose (P-10). The card is a single modal slot like
+/// [`AskModal`].
+///
+/// Besides the classified `intent` itself, the card carries everything the
+/// executor needs to act on `Confirm`/`Manual`:
+/// - `default_recipe` is the CALLER's command default (`Fork` for `/fork`,
+///   `Spawn` for `/spawn`) -- `Manual` dispatches back to the original
+///   command's bare-recipe path with the raw text, and `Confirm` dispatches
+///   on `intent.recipe` (which may have been cross-classified).
+/// - `raw_text` is the user's original free text, untouched. `Manual` uses
+///   it verbatim as the first message; `Edit` populates the input line with
+///   `intent.prompt` (the classifier's rewrite), NOT `raw_text`, since the
+///   user picked "edit the classified version".
+/// - `parent` is the caller's current live agent (`AppState::focused_agent`
+///   at classify time) -- the intent session was attached under it as an
+///   ephemeral child for the few moments it existed (already purged by C1
+///   before this card opens); it is NOT the eventual spawn/fork parent
+///   (which is `focused_agent` for `/fork`, `host.root()` for `/spawn` --
+///   `commands::execute_intent_confirm` re-derives those the same way
+///   `commands::execute`'s bare arms do).
+#[derive(Debug, Clone, PartialEq)]
+pub struct IntentConfirm {
+    pub intent: AgentIntent,
+    pub default_recipe: SubagentMode,
+    pub raw_text: String,
+    pub parent: AgentId,
+}
+
 /// `Normal` (the input line submits a prompt or a `/command`) or
 /// `AwaitingPermission` (the input line is inert; `y`/`a`/`n`/`Esc` resolve
 /// the pending prompt -- see `input.rs`). Only one prompt is shown at a
@@ -136,6 +278,30 @@ impl AgentTreeView {
 pub enum Mode {
     Normal,
     AwaitingPermission(PendingPrompt),
+    /// The `/ask` single-turn modal (B5). While this is the mode, the input
+    /// line is inert and `/agents` is neither visible nor available --
+    /// `input.rs::handle_ask_modal_key` swallows every key except the three
+    /// fate keys (`f`/`p`/`Esc`) and the quit keys (`Ctrl-C`/`Ctrl-D`,
+    /// which purge before exiting -- see `app.rs`). A permission prompt
+    /// arriving while the modal is open queues in `queued_prompts` exactly
+    /// as it does behind another prompt, and an ask answer arriving while a
+    /// permission prompt is showing parks in `pending_ask_modal` until the
+    /// prompt resolves -- the two modals never stack.
+    AskModal(AskModal),
+    /// The NL intent confirmation card (C2). While this is the mode, the
+    /// input line is inert and `/agents` is neither visible nor available
+    /// -- `input.rs::handle_intent_confirm_key` swallows every key except
+    /// `Enter` (confirm), `e` (edit -- drops the classified prompt into the
+    /// input line and closes the card) and `Esc` (manual fallback), plus
+    /// the quit keys (`Ctrl-C`/`Ctrl-D`, which pass through -- unlike the
+    /// `/ask` modal there is no live child to purge, since the card opens
+    /// BEFORE any agent is created). A permission prompt arriving while the
+    /// card is open queues in `queued_prompts` exactly as it does behind
+    /// another prompt, and an intent card arriving while a permission prompt
+    /// OR an `/ask` modal is showing parks in `pending_intent_confirm` until
+    /// the surface clears -- the three modal-bearing surfaces
+    /// (`AwaitingPermission`, `AskModal`, `IntentConfirm`) never stack.
+    IntentConfirm(IntentConfirm),
 }
 
 impl std::fmt::Debug for Mode {
@@ -144,6 +310,10 @@ impl std::fmt::Debug for Mode {
             Mode::Normal => write!(f, "Normal"),
             Mode::AwaitingPermission(p) => {
                 write!(f, "AwaitingPermission({})", p.request.call_id)
+            }
+            Mode::AskModal(m) => write!(f, "AskModal(child={})", m.child),
+            Mode::IntentConfirm(ic) => {
+                write!(f, "IntentConfirm(recipe={:?})", ic.intent.recipe)
             }
         }
     }
@@ -201,10 +371,21 @@ pub struct AppState {
     /// command but leaves this alone, so cycling the list does not collapse
     /// it to the single autofilled entry. Read via [`AppState::palette_source`].
     palette_stem: String,
-    /// Arrow-selected row in the on-demand agent panel (WI-130). Index into
-    /// `tree.nodes`; clamped wherever it is read, so tree growth/shrink never
-    /// leaves it dangling. Only meaningful while `agent_view_open`.
+    /// Arrow-selected row in the on-demand agent panel (WI-130). An index
+    /// into the panel's FILTERED rows (`Self::visible_agent_nodes`), not the
+    /// raw `tree.nodes` (item A2: the draw-time visibility filter decides
+    /// which rows exist); clamped against the filtered count wherever it is
+    /// read, so tree growth/shrink or a filter change never leaves it
+    /// dangling. Only meaningful while `agent_view_open`.
     pub agent_selected: usize,
+    /// The `/agents` panel's draw-time visibility filter (item A2) --
+    /// which tree nodes the panel rows show. Defaults to `ActiveOnly`
+    /// (finished agents hidden, not deleted -- P-2); cycled by `v` while
+    /// the panel is open via [`Self::cycle_agent_visibility`]. Read only at
+    /// draw time (`view/agents.rs`) and by the panel's own navigation
+    /// (`Self::agent_scroll`, `input.rs`'s Enter-to-focus); the tree itself
+    /// is never filtered.
+    pub agent_visibility: AgentVisibility,
     /// The agent whose conversation the transcript pane currently shows
     /// (WI-140). Distinct from `agent_selected` -- that field is only the
     /// `/agents` panel's browsing cursor (which row is highlighted while
@@ -235,9 +416,29 @@ pub struct AppState {
     /// after any focus switch onto an agent with prior turns without that
     /// authoritative refresh).
     pub focused_agent_usage: Usage,
-    /// Monotonic id source for [`Entry::EphemeralAsk`] entries -- see that
-    /// variant's own doc for why an id is needed at all.
-    next_ask_id: u64,
+    /// An answered `/ask` modal waiting for a permission prompt (or another
+    /// modal) to clear first (B5) -- `app.rs`'s ask-result arm calls
+    /// [`Self::offer_ask_modal`], which parks the modal here whenever `mode`
+    /// is not `Normal`; [`Self::resolve_current_prompt`] opens it once the
+    /// prompt queue drains. The two modal surfaces never stack.
+    pending_ask_modal: Option<AskModal>,
+    /// A C2 confirmation card parked behind another modal-bearing surface
+    /// (a permission prompt or an `/ask` modal) -- `commands::execute`'s
+    /// free-text `/fork`/`/spawn` arm calls [`Self::offer_intent_confirm`]
+    /// right after `Conway::classify_agent_intent` returns, which parks here
+    /// whenever `mode` is not `Normal`. [`Self::close_ask_modal`],
+    /// [`Self::close_intent_confirm`], and [`Self::resolve_current_prompt`]
+    /// all funnel through [`Self::promote_next_surface`] to drain the
+    /// queued-prompts / `pending_ask_modal` / `pending_intent_confirm`
+    /// slots in that fixed priority order, so the three modal-bearing
+    /// surfaces never stack.
+    pending_intent_confirm: Option<IntentConfirm>,
+    /// Whether an `/ask` child's single turn is currently in flight (B5).
+    /// Set by `app.rs` when it spawns the ask task, cleared when the result
+    /// arrives -- while set, a second `/ask` is refused with a `Notice`
+    /// (the modal is a single-question surface; concurrent asks would
+    /// compete for the one [`Mode::AskModal`] slot).
+    pub ask_in_flight: bool,
     /// The permission overlay's own command-body scroll offset (bug fix,
     /// 01KYB0F7V65QAMZWWYH8K7DWDC: "no way to see the entire command" for a
     /// long tool-call argument). Driven by `PageUp`/`PageDown` while
@@ -263,6 +464,9 @@ impl AppState {
             parent: None,
             agent_def: None,
             status: NodeStatus::Starting,
+            kind: None,
+            inherited_upto: None,
+            ephemeral: false,
         });
         Self {
             transcript: Vec::new(),
@@ -278,11 +482,14 @@ impl AppState {
             palette_selected: None,
             palette_stem: String::new(),
             agent_selected: 0,
+            agent_visibility: AgentVisibility::ActiveOnly,
             focused_agent: root,
             activity: Activity::Idle,
             focused_agent_usage: Usage::default(),
-            next_ask_id: 0,
+            pending_ask_modal: None,
+            ask_in_flight: false,
             permission_scroll: 0,
+            pending_intent_confirm: None,
         }
     }
 
@@ -330,10 +537,7 @@ impl AppState {
             .iter()
             .find(|n| n.agent_id == self.focused_agent)
         {
-            Some(node) => !matches!(
-                node.status,
-                NodeStatus::Finished | NodeStatus::Failed | NodeStatus::Cancelled
-            ),
+            Some(node) => !node.status.is_terminal(),
             None => true,
         }
     }
@@ -429,10 +633,42 @@ impl AppState {
         self.palette_selected = None;
     }
 
-    /// Moves the agent-panel selection by `delta` rows, clamped to the tree
-    /// (WI-130). No wrap -- a browsing list stops at its ends.
+    /// The panel's visible rows under the current [`Self::agent_visibility`]
+    /// filter (item A2), in tree insertion order. This is the ONLY thing the
+    /// filter affects -- `tree.nodes` itself stays unfiltered (P-2) -- and it
+    /// is what the panel's row count, selection clamping, and Enter-to-focus
+    /// all index into.
+    pub fn visible_agent_nodes(&self) -> impl Iterator<Item = &TreeNode> {
+        let mode = self.agent_visibility;
+        self.tree.nodes.iter().filter(move |n| mode.shows(n))
+    }
+
+    /// Cycles the `/agents` panel's visibility filter (item A2, the `v` key
+    /// while the panel is open) and re-clamps the selection against the NEW
+    /// filtered row count -- e.g. cycling to `ActiveOnly` while a finished
+    /// agent's row was selected must not leave the cursor pointing past the
+    /// (now shorter) row list.
+    pub fn cycle_agent_visibility(&mut self) {
+        self.agent_visibility = self.agent_visibility.next();
+        self.clamp_agent_selected();
+    }
+
+    /// Clamps [`Self::agent_selected`] to the filtered row count (or 0 when
+    /// the filter hides every row).
+    fn clamp_agent_selected(&mut self) {
+        let n = self.visible_agent_nodes().count();
+        self.agent_selected = if n == 0 {
+            0
+        } else {
+            self.agent_selected.min(n - 1)
+        };
+    }
+
+    /// Moves the agent-panel selection by `delta` rows, clamped to the
+    /// FILTERED row list (WI-130 + item A2). No wrap -- a browsing list
+    /// stops at its ends.
     pub fn agent_scroll(&mut self, delta: isize) {
-        let n = self.tree.nodes.len();
+        let n = self.visible_agent_nodes().count();
         if n == 0 {
             return;
         }
@@ -498,34 +734,142 @@ impl AppState {
         self.scroll_page_down(1, max_scroll);
     }
 
-    /// Records a `/ask` question as a pending [`Entry::EphemeralAsk`] and
-    /// returns its id, for the caller (`app.rs`) to correlate with the async
-    /// reply once the spawned fork-ask task resolves.
-    pub fn push_ephemeral_ask(&mut self, question: String) -> u64 {
-        let id = self.next_ask_id;
-        self.next_ask_id += 1;
-        self.transcript.push(Entry::EphemeralAsk {
-            id,
-            question,
-            reply: None,
-        });
-        id
+    /// Opens the `/ask` modal for one answered ask (B5), parking it in
+    /// `pending_ask_modal` instead whenever another modal surface (a
+    /// permission prompt, an intent confirmation card, or another ask
+    /// modal) currently owns `mode` -- mirroring [`Self::offer_prompt`]'s
+    /// own queue-if-busy behavior, so the modal-bearing surfaces never
+    /// stack. [`Self::promote_next_surface`] opens the parked modal once
+    /// the surface ahead of it clears.
+    pub fn offer_ask_modal(&mut self, modal: AskModal) {
+        if matches!(self.mode, Mode::Normal) {
+            self.mode = Mode::AskModal(modal);
+        } else {
+            self.pending_ask_modal = Some(modal);
+        }
     }
 
-    /// Fills in the reply for the [`Entry::EphemeralAsk`] matching `id`.
-    /// A no-op if `id` is not found (e.g. the entry scrolled out of a
-    /// truncated transcript in some future change) -- never panics.
-    pub fn resolve_ephemeral_ask(&mut self, id: u64, reply: String) {
-        for entry in self.transcript.iter_mut().rev() {
-            if let Entry::EphemeralAsk {
-                id: eid, reply: r, ..
-            } = entry
-            {
-                if *eid == id {
-                    *r = Some(reply);
-                    return;
-                }
-            }
+    /// Drains a modal parked in `pending_ask_modal` (B5's M1 fix). Used by
+    /// `app.rs::purge_open_ask_modal` so the quit path also discards a
+    /// modal that was queued behind a permission prompt when the ask
+    /// completed -- without this the parked modal's child leaks as residue
+    /// (reaped by the next startup sweep, but still a fourth way out of an
+    /// undecided ask). Returns the parked modal if one was waiting, else
+    /// `None`; either way `pending_ask_modal` is cleared.
+    pub fn take_pending_ask_modal(&mut self) -> Option<AskModal> {
+        self.pending_ask_modal.take()
+    }
+
+    /// Closes the `/ask` modal after a fate SUCCEEDED (B5 --
+    /// `commands::apply_ask_fate`'s success path), promoting the next
+    /// parked/queued surface via [`Self::promote_next_surface`] (a queued
+    /// permission prompt, a parked intent card, or a parked ask -- in that
+    /// priority order). A no-op when no ask modal is open.
+    pub fn close_ask_modal(&mut self) {
+        if !matches!(self.mode, Mode::AskModal(_)) {
+            return;
+        }
+        self.mode = Mode::Normal;
+        self.promote_next_surface();
+    }
+
+    /// Records a fate attempt's FAILURE on the open modal (B5 --
+    /// `commands::apply_ask_fate`'s error path): the modal STAYS OPEN with
+    /// the error shown, so the user still must choose a fate -- a failed
+    /// fate never silently falls through to another one. A no-op when no
+    /// modal is open.
+    pub fn fail_ask_modal(&mut self, error: String) {
+        if let Mode::AskModal(modal) = &mut self.mode {
+            modal.error = Some(error);
+        }
+    }
+
+    /// Opens the NL intent confirmation card (C2), parking it in
+    /// `pending_intent_confirm` instead whenever another modal surface (a
+    /// permission prompt or an `/ask` modal) currently owns `mode` --
+    /// mirroring [`Self::offer_ask_modal`]'s parking behavior, so the
+    /// modal-bearing surfaces never stack. [`Self::promote_next_surface`]
+    /// opens the parked card once the surface ahead of it clears. Called
+    /// by `commands::execute`'s free-text `/fork`/`/spawn` arm right after
+    /// `Conway::classify_agent_intent` returns `Ok`.
+    pub fn offer_intent_confirm(&mut self, card: IntentConfirm) {
+        if matches!(self.mode, Mode::Normal) {
+            self.mode = Mode::IntentConfirm(card);
+        } else {
+            self.pending_intent_confirm = Some(card);
+        }
+    }
+
+    /// Drains a card parked in `pending_intent_confirm`. Used by
+    /// `app.rs`'s quit path so a card parked behind a permission prompt
+    /// when the user quits does not leave a dangling classified intent --
+    /// unlike the `/ask` modal there is no live child to purge (the card
+    /// opens BEFORE any agent is created), so "draining" here just means
+    /// dropping it on the floor. Returns the parked card if one was
+    /// waiting, else `None`; either way `pending_intent_confirm` is
+    /// cleared.
+    pub fn take_pending_intent_confirm(&mut self) -> Option<IntentConfirm> {
+        self.pending_intent_confirm.take()
+    }
+
+    /// Closes the intent confirmation card (C2) after a `Confirm` or
+    /// `Manual` choice, promoting the next parked/queued surface via
+    /// [`Self::promote_next_surface`]. A no-op when no card is open.
+    /// `Edit` does NOT call this -- [`Self::begin_intent_confirm_edit`]
+    /// drops the classified prompt into the input line and then closes the
+    /// card via this same method, but with the input line populated so the
+    /// user can edit and resubmit normally.
+    pub fn close_intent_confirm(&mut self) {
+        if !matches!(self.mode, Mode::IntentConfirm(_)) {
+            return;
+        }
+        self.mode = Mode::Normal;
+        self.promote_next_surface();
+    }
+
+    /// The `Edit` choice (C2): drops the classified `intent.prompt` into
+    /// the input line (replacing whatever was there), positions the cursor
+    /// at the end, and closes the card -- the user edits and submits
+    /// normally. The classifier's rewrite (not the raw text) is what lands
+    /// in the input line: the user picked "edit the classified version",
+    /// not "edit my raw text". A no-op when no card is open.
+    pub fn begin_intent_confirm_edit(&mut self) {
+        if let Mode::IntentConfirm(card) = &self.mode {
+            let prompt = card.intent.prompt.clone();
+            self.input = prompt;
+            self.cursor = self.input.chars().count();
+        }
+        self.close_intent_confirm();
+    }
+
+    /// The shared "what surfaces gets promoted next after a modal/prompt
+    /// closes" logic (C2 generalizes B5's two-surface version to three).
+    /// Called with `mode` already reset to `Mode::Normal` by the caller
+    /// ([`Self::close_ask_modal`], [`Self::close_intent_confirm`],
+    /// [`Self::resolve_current_prompt`]). Priority order:
+    /// 1. A queued permission prompt ([`Self::queued_prompts`]) -- the
+    ///    gate's pending prompts are always the highest-priority surface
+    ///    (a tool call is waiting on a decision).
+    /// 2. A parked `/ask` modal ([`Self::pending_ask_modal`]) -- an ask
+    ///    that completed while a prompt was showing.
+    /// 3. A parked intent card ([`Self::pending_intent_confirm`]) -- a
+    ///    classify that completed while a prompt or an ask was showing.
+    /// 4. Nothing -- `mode` stays `Normal`.
+    ///
+    /// Exactly one surface (at most) is promoted per call; the next call
+    /// happens when THAT surface closes.
+    fn promote_next_surface(&mut self) {
+        if let Some(next) = self.queued_prompts.pop_front() {
+            self.mode = Mode::AwaitingPermission(next);
+            self.permission_scroll = 0;
+            return;
+        }
+        if let Some(modal) = self.pending_ask_modal.take() {
+            self.mode = Mode::AskModal(modal);
+            return;
+        }
+        if let Some(card) = self.pending_intent_confirm.take() {
+            self.mode = Mode::IntentConfirm(card);
         }
     }
 
@@ -554,13 +898,13 @@ impl AppState {
             unreachable!()
         };
         prompt.resolve(decision);
-        if let Some(next) = self.queued_prompts.pop_front() {
-            self.mode = Mode::AwaitingPermission(next);
-            // Same reset as `offer_prompt`'s initial promotion -- a queued
-            // prompt for a different call must not inherit the just-resolved
-            // one's scroll position.
-            self.permission_scroll = 0;
-        }
+        // C2: the prompt queue drains first (highest priority -- a tool
+        // call is waiting on a decision); then a parked `/ask` modal (B5);
+        // then a parked intent card (C2). [`Self::promote_next_surface`]
+        // encodes that fixed priority order so the three modal-bearing
+        // surfaces never stack and never drift out of sync across the
+        // close/resolve call sites.
+        self.promote_next_surface();
     }
 
     /// Seeds a `/agents` tree node for a freshly created interactive child
@@ -601,6 +945,9 @@ impl AppState {
             parent: attach,
             agent_def: None,
             status: NodeStatus::Running,
+            kind: None,
+            inherited_upto: None,
+            ephemeral: false,
         });
     }
 
@@ -619,43 +966,29 @@ impl AppState {
                 });
             }
             Event::AgentSpawned {
-                ephemeral,
+                kind,
                 parent,
                 agent_def,
-                ..
-            } => {
-                // Ephemeral `/ask`-style forks (decision
-                // 01KYD1TWXMZD4BT842CMJT1AED) are a distinct /btw-like
-                // category, not persistent tree subagents. Drop the live
-                // event here so the `/agents` panel and the inline
-                // transcript never list them: do NOT call
-                // `apply_agent_spawned` (no tree node, no `Entry::Agent`).
-                // The runtime's own `AgentTree` snapshot -- what `tree()`
-                // returns (P-2 provenance) -- STILL includes ephemeral
-                // children; this filter is on the live event stream only,
-                // never on `AppState::tree` itself (see
-                // `ephemeral_event_filter_does_not_affect_tree_snapshot`).
-                if *ephemeral {
-                    return;
-                }
-                self.apply_agent_spawned(env.agent, *parent, agent_def.clone());
-            }
-            Event::AgentFinished {
-                result,
+                inherited_upto,
                 ephemeral,
                 ..
             } => {
-                // Same ephemeral filter as the `AgentSpawned` arm above:
-                // an ephemeral child's finish must not reset the focused
-                // agent's activity indicator, must not update any tree
-                // node, and must not push a transcript entry. The
-                // dedicated `/ask` UI is handled separately by
-                // `push_ephemeral_ask`/`resolve_ephemeral_ask`; this just
-                // prevents the live `AgentFinished` arm from
-                // double-counting the ephemeral child.
-                if *ephemeral {
-                    return;
-                }
+                // Ephemeral `/ask`-style forks flow through
+                // `apply_agent_spawned` like any other agent: they enter
+                // the tree with `ephemeral: true` on their node (P-2
+                // provenance stays attached); only the inline
+                // `Entry::Agent` transcript push is suppressed for them
+                // (inside `apply_agent_spawned`).
+                self.apply_agent_spawned(
+                    env.agent,
+                    *kind,
+                    *parent,
+                    agent_def.clone(),
+                    *inherited_upto,
+                    *ephemeral,
+                );
+            }
+            Event::AgentFinished { result, .. } => {
                 self.apply_agent_finished(env.agent, result);
                 // Board item 01KYAGP11FF9YC3G60TWHHKKST: the focused
                 // agent's own finish is the terminal "stopped working"
@@ -664,6 +997,26 @@ impl AppState {
                 // about the FOCUSED agent specifically.
                 if env.agent == self.focused_agent {
                     self.activity = Activity::Idle;
+                }
+            }
+            Event::AgentPromoted { .. } => {
+                // B3: the event is the ONLY signal for this flip -- no
+                // optimistic TUI-side flip. The facade emits it strictly
+                // after BOTH the durable header rewrite and the runtime
+                // tree flip have succeeded (`Conway::promote`'s failure
+                // ordering), so the cached node can be flipped
+                // unconditionally on receipt. An unknown agent degrades to
+                // a `Notice` per `apply`'s never-panic contract (same
+                // contract the unknown-parent `AgentSpawned` arm honors).
+                if let Some(node) = self.tree.get_mut(env.agent) {
+                    node.ephemeral = false;
+                } else {
+                    self.transcript.push(Entry::Notice {
+                        text: format!(
+                            "agent {} was promoted but is not in the tree",
+                            env.agent
+                        ),
+                    });
                 }
             }
             // Bug 2 fix (01KYAN9EQ5BRZQ0V3DCW590YCZ): without this arm,
@@ -778,8 +1131,11 @@ impl AppState {
     fn apply_agent_spawned(
         &mut self,
         agent: AgentId,
+        kind: SubagentMode,
         parent: Option<AgentId>,
         agent_def: Option<String>,
+        inherited_upto: Option<LogSeq>,
+        ephemeral: bool,
     ) {
         if self.tree.contains(agent) {
             // Already seeded (e.g. the root, inserted by `new`).
@@ -812,7 +1168,11 @@ impl AppState {
                 // conversation (the tree model itself is still updated
                 // unconditionally by `self.tree.insert` below, so the
                 // `/agents` panel stays complete regardless of focus).
-                if p == self.focused_agent {
+                // Ephemeral `/ask`-style asides never get an inline entry:
+                // their UI surface is the B5 single-turn modal
+                // (`Mode::AskModal`, driven by `app.rs`'s `/ask` flow); the
+                // tree insert below is still unconditional for them.
+                if p == self.focused_agent && !ephemeral {
                     self.transcript.push(Entry::Agent {
                         agent_id: agent,
                         label: agent_def.clone().unwrap_or_else(|| "agent".to_string()),
@@ -839,6 +1199,9 @@ impl AppState {
             parent: attach,
             agent_def,
             status: NodeStatus::Running,
+            kind: Some(kind),
+            inherited_upto,
+            ephemeral,
         });
     }
 
@@ -1279,6 +1642,9 @@ mod tests {
             parent: Some(root),
             agent_def: Some("child".to_string()),
             status: NodeStatus::Running,
+            kind: None,
+            inherited_upto: None,
+            ephemeral: false,
         });
         // Two nodes: 0..=1.
         state.agent_scroll(1);
@@ -1308,59 +1674,6 @@ mod tests {
         state.clear_palette();
         assert_eq!(state.palette_selected, None);
         assert_eq!(state.palette_source(), "/agents");
-    }
-
-    #[test]
-    fn push_ephemeral_ask_starts_with_no_reply() {
-        let mut state = AppState::new(AgentId::new());
-        let id = state.push_ephemeral_ask("what's the status?".to_string());
-        assert!(matches!(
-            state.transcript.last(),
-            Some(Entry::EphemeralAsk { id: eid, question, reply: None })
-                if *eid == id && question == "what's the status?"
-        ));
-    }
-
-    #[test]
-    fn resolve_ephemeral_ask_fills_in_the_matching_entry() {
-        let mut state = AppState::new(AgentId::new());
-        let id = state.push_ephemeral_ask("q".to_string());
-
-        state.resolve_ephemeral_ask(id, "the answer".to_string());
-
-        assert!(matches!(
-            state.transcript.last(),
-            Some(Entry::EphemeralAsk { reply: Some(r), .. }) if r == "the answer"
-        ));
-    }
-
-    #[test]
-    fn resolve_ephemeral_ask_targets_the_right_entry_among_several() {
-        let mut state = AppState::new(AgentId::new());
-        let first = state.push_ephemeral_ask("first".to_string());
-        let second = state.push_ephemeral_ask("second".to_string());
-
-        state.resolve_ephemeral_ask(first, "first reply".to_string());
-
-        let find = |id: u64| {
-            state.transcript.iter().find_map(|e| match e {
-                Entry::EphemeralAsk { id: eid, reply, .. } if *eid == id => Some(reply.clone()),
-                _ => None,
-            })
-        };
-        assert_eq!(find(first), Some(Some("first reply".to_string())));
-        assert_eq!(find(second), Some(None));
-    }
-
-    #[test]
-    fn resolve_ephemeral_ask_with_unknown_id_does_not_panic_or_mutate() {
-        let mut state = AppState::new(AgentId::new());
-        let _id = state.push_ephemeral_ask("q".to_string());
-        let before = state.transcript.clone();
-
-        state.resolve_ephemeral_ask(9999, "stray reply".to_string());
-
-        assert_eq!(state.transcript, before);
     }
 
     // ---- transcript scrolling: auto-follow + clamp ----
@@ -1596,6 +1909,9 @@ mod tests {
                 parent: Some(root),
                 agent_def: None,
                 status,
+                kind: None,
+                inherited_upto: None,
+                ephemeral: false,
             });
             state.focus_agent(child);
             assert!(
@@ -1620,6 +1936,9 @@ mod tests {
                 parent: Some(root),
                 agent_def: None,
                 status,
+                kind: None,
+                inherited_upto: None,
+                ephemeral: false,
             });
             state.focus_agent(child);
             assert!(
@@ -1742,6 +2061,9 @@ mod tests {
             parent: Some(root),
             agent_def: None,
             status: NodeStatus::Finished,
+            kind: None,
+            inherited_upto: None,
+            ephemeral: false,
         });
         state.focus_agent(child);
         assert_eq!(state.activity, Activity::Idle);
@@ -1793,6 +2115,9 @@ mod tests {
             parent: Some(root),
             agent_def: None,
             status: NodeStatus::Finished,
+            kind: None,
+            inherited_upto: None,
+            ephemeral: false,
         });
         state.focus_agent(child);
 
@@ -2252,16 +2577,17 @@ mod tests {
         assert_eq!(state.focused_agent_usage, Usage::default());
     }
 
-    // ---- Board item 01KYD2GY1QASN3PB8YEPY99SGS (conway_ask item e):
-    // ephemeral forks must never appear in the `/agents` panel nor push
-    // inline lifecycle entries into the focused agent's transcript. The
-    // filter is at `apply`'s `Event::AgentSpawned`/`AgentFinished` arms
-    // ONLY -- the runtime `tree()` snapshot still includes ephemeral
-    // children (P-2), and `AppState::tree` is NOT filtered at the data
-    // structure level (a directly-`insert`ed ephemeral node stays). ----
+    // ---- /agents surface rework item A1: ephemeral `/ask`-style forks
+    // ENTER the tree like any other agent (P-2 provenance stays attached;
+    // draw-time visibility filtering is item A2, NOT here) carrying their
+    // spawn metadata (`kind`/`inherited_upto`/`ephemeral`) on the
+    // `TreeNode`. The ONLY thing an ephemeral spawn suppresses is the
+    // inline `Entry::Agent` transcript entry (the B5 single-turn modal --
+    // `Mode::AskModal` -- is its UI surface). `AgentTreeView` itself stays
+    // unfiltered. ----
 
     #[test]
-    fn ephemeral_spawn_does_not_appear_in_appstate_tree() {
+    fn ephemeral_spawn_appears_in_appstate_tree_with_metadata() {
         let session = SessionId::new();
         let root = AgentId::new();
         let mut state = AppState::new(root);
@@ -2275,15 +2601,33 @@ mod tests {
                 kind: SubagentMode::Fork,
                 parent: Some(root),
                 agent_def: None,
-                inherited_upto: None,
+                inherited_upto: Some(LogSeq(7)),
                 ephemeral: true,
             },
         ));
 
+        let node = state
+            .tree
+            .nodes
+            .iter()
+            .find(|n| n.agent_id == child)
+            .expect("an ephemeral spawn must insert a tree node");
         assert!(
-            !state.tree.nodes.iter().any(|n| n.agent_id == child),
-            "an ephemeral spawn must not insert a tree node"
+            node.ephemeral,
+            "the ephemeral flag must land on the TreeNode"
         );
+        assert_eq!(
+            node.kind,
+            Some(SubagentMode::Fork),
+            "the spawn kind must land on the TreeNode"
+        );
+        assert_eq!(
+            node.inherited_upto,
+            Some(LogSeq(7)),
+            "the fork provenance (inherited_upto) must land on the TreeNode"
+        );
+        assert_eq!(node.parent, Some(root));
+        assert_eq!(node.status, NodeStatus::Running);
         assert_eq!(
             state.transcript.len(),
             before,
@@ -2306,7 +2650,7 @@ mod tests {
         let child = AgentId::new();
         // `parent == focused_agent (root)` so the spawn is a direct child of
         // the focused view and pushes an inline `Entry::Agent` (the existing
-        // behavior the ephemeral filter must preserve for `ephemeral: false`).
+        // behavior the ephemeral gating must preserve for `ephemeral: false`).
         assert_eq!(state.focused_agent, root);
 
         state.apply(&envelope(
@@ -2321,10 +2665,14 @@ mod tests {
             },
         ));
 
-        assert!(
-            state.tree.nodes.iter().any(|n| n.agent_id == child),
-            "a non-ephemeral spawn must still insert a tree node"
-        );
+        let node = state
+            .tree
+            .nodes
+            .iter()
+            .find(|n| n.agent_id == child)
+            .expect("a non-ephemeral spawn must still insert a tree node");
+        assert!(!node.ephemeral);
+        assert_eq!(node.kind, Some(SubagentMode::Fork));
         assert!(
             matches!(
                 state.transcript.last(),
@@ -2336,17 +2684,16 @@ mod tests {
     }
 
     #[test]
-    fn ephemeral_finished_does_not_reset_activity_or_push_transcript() {
+    fn ephemeral_finished_updates_tree_status_without_resetting_focused_activity() {
         let session = SessionId::new();
         let root = AgentId::new();
         let mut state = AppState::new(root);
         let child = AgentId::new();
-        // The focused agent is the parent (`root`), so without the filter the
-        // finish's `if env.agent == self.focused_agent` guard would NOT fire
-        // (it's the child finishing, not the parent) -- but `apply_agent_finished`
-        // would still run, set tree status, and update any matching `Entry::Agent`.
-        // Pre-set a non-Idle activity so a reset is observable, and pre-seed the
-        // child as `Running` so `set_tree_status` would have a node to mutate.
+        // The focused agent is the parent (`root`): the finish's
+        // `if env.agent == self.focused_agent` guard does NOT fire (it's the
+        // child finishing, not the parent), so the focused activity must
+        // survive untouched -- but `apply_agent_finished` DOES run now, so
+        // the ephemeral child's tree node advances to `Finished`.
         state.focused_agent = root;
         state.activity = Activity::Responding;
         state.tree.insert(TreeNode {
@@ -2354,6 +2701,9 @@ mod tests {
             parent: Some(root),
             agent_def: None,
             status: NodeStatus::Running,
+            kind: Some(SubagentMode::Fork),
+            inherited_upto: None,
+            ephemeral: true,
         });
         let transcript_before = state.transcript.clone();
 
@@ -2369,45 +2719,44 @@ mod tests {
         assert_eq!(
             state.activity,
             Activity::Responding,
-            "an ephemeral finish must not touch the focused agent's activity"
+            "an ephemeral child's finish must not touch the focused (parent) agent's activity"
         );
         assert_eq!(
             state.transcript, transcript_before,
             "an ephemeral finish must not push any transcript entry"
         );
-        // The pre-seeded tree node status must NOT be advanced to `Finished`
-        // by the ephemeral finish -- the filter drops the event before
-        // `apply_agent_finished` runs.
         let node = state
             .tree
             .nodes
             .iter()
             .find(|n| n.agent_id == child)
-            .expect("the pre-seeded child node must still be present (filter is on the event, not the tree)");
+            .expect("the pre-seeded child node must still be present");
         assert_eq!(
             node.status,
-            NodeStatus::Running,
-            "an ephemeral finish must not update the child's tree node status"
+            NodeStatus::Finished,
+            "an ephemeral finish must update the child's tree node status (the event is no longer dropped)"
         );
     }
 
     #[test]
-    fn ephemeral_event_filter_does_not_affect_tree_snapshot() {
-        // The filter is on the live event only -- never on `AppState::tree`
-        // itself. A node `insert`ed directly (mimicking what the runtime
-        // `tree()` snapshot would carry, P-2) must survive an ephemeral spawn
-        // event for a DIFFERENT agent being dropped by `apply`.
+    fn ephemeral_spawn_event_does_not_affect_other_tree_nodes() {
+        // `AppState::tree` is unfiltered at the data-structure level: a
+        // node `insert`ed directly (mimicking what the runtime `tree()`
+        // snapshot would carry, P-2) must survive an unrelated ephemeral
+        // spawn event flowing through `apply`.
         let session = SessionId::new();
         let root = AgentId::new();
         let mut state = AppState::new(root);
         let ephemeral_in_tree = AgentId::new();
         let other = AgentId::new();
-        // Directly seed an ephemeral node -- bypassing the `apply` filter.
         state.tree.insert(TreeNode {
             agent_id: ephemeral_in_tree,
             parent: Some(root),
             agent_def: None,
             status: NodeStatus::Running,
+            kind: Some(SubagentMode::Fork),
+            inherited_upto: None,
+            ephemeral: true,
         });
 
         state.apply(&envelope(
@@ -2424,11 +2773,625 @@ mod tests {
 
         assert!(
             state.tree.nodes.iter().any(|n| n.agent_id == ephemeral_in_tree),
-            "a directly-seeded ephemeral node must stay -- the filter is on the live event only, not the tree"
+            "a directly-seeded ephemeral node must stay"
+        );
+        let other_node = state
+            .tree
+            .nodes
+            .iter()
+            .find(|n| n.agent_id == other)
+            .expect("the ephemeral spawn event itself must now insert a node for `other`");
+        assert!(other_node.ephemeral);
+    }
+
+    // ---- /agents surface rework item A2: draw-time visibility filter.
+    // The filter is a pure function over (tree node, mode) (GP-04); the
+    // tree itself is NEVER filtered (P-2: finished agents are hidden, not
+    // removed); selection indexes the filtered rows and is re-clamped when
+    // the filter changes. ----
+
+    fn tracked_node(state: &mut AppState, parent: AgentId, status: NodeStatus) -> AgentId {
+        let id = AgentId::new();
+        state.tree.insert(TreeNode {
+            agent_id: id,
+            parent: Some(parent),
+            agent_def: None,
+            status,
+            kind: None,
+            inherited_upto: None,
+            ephemeral: false,
+        });
+        id
+    }
+
+    #[test]
+    fn agent_visibility_defaults_to_active_only_and_cycles_in_order() {
+        let mut state = AppState::new(AgentId::new());
+        assert_eq!(state.agent_visibility, AgentVisibility::ActiveOnly);
+        state.cycle_agent_visibility();
+        assert_eq!(state.agent_visibility, AgentVisibility::All);
+        state.cycle_agent_visibility();
+        assert_eq!(state.agent_visibility, AgentVisibility::FinishedOnly);
+        state.cycle_agent_visibility();
+        assert_eq!(
+            state.agent_visibility,
+            AgentVisibility::ActiveOnly,
+            "the cycle must wrap back to ActiveOnly"
+        );
+    }
+
+    #[test]
+    fn active_only_hides_every_terminal_status_and_keeps_every_live_one() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root); // root itself is Starting (live)
+        let finished = tracked_node(&mut state, root, NodeStatus::Finished);
+        let failed = tracked_node(&mut state, root, NodeStatus::Failed);
+        let cancelled = tracked_node(&mut state, root, NodeStatus::Cancelled);
+        let running = tracked_node(&mut state, root, NodeStatus::Running);
+        let starting = tracked_node(&mut state, root, NodeStatus::Starting);
+        let awaiting = tracked_node(&mut state, root, NodeStatus::AwaitingPermission);
+
+        assert_eq!(state.agent_visibility, AgentVisibility::ActiveOnly);
+        let visible: Vec<AgentId> = state.visible_agent_nodes().map(|n| n.agent_id).collect();
+
+        for terminal in [finished, failed, cancelled] {
+            assert!(
+                !visible.contains(&terminal),
+                "ActiveOnly must hide the terminal node {terminal}"
+            );
+        }
+        for live in [root, running, starting, awaiting] {
+            assert!(
+                visible.contains(&live),
+                "ActiveOnly must keep the live node {live}"
+            );
+        }
+    }
+
+    #[test]
+    fn finished_only_shows_only_terminal_nodes() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let finished = tracked_node(&mut state, root, NodeStatus::Finished);
+        let failed = tracked_node(&mut state, root, NodeStatus::Failed);
+        let running = tracked_node(&mut state, root, NodeStatus::Running);
+        state.agent_visibility = AgentVisibility::FinishedOnly;
+
+        let visible: Vec<AgentId> = state.visible_agent_nodes().map(|n| n.agent_id).collect();
+
+        assert!(visible.contains(&finished));
+        assert!(visible.contains(&failed));
+        assert!(
+            !visible.contains(&running),
+            "FinishedOnly must hide Running nodes"
         );
         assert!(
-            !state.tree.nodes.iter().any(|n| n.agent_id == other),
-            "the ephemeral spawn event itself must still be dropped (no node for `other`)"
+            !visible.contains(&root),
+            "FinishedOnly must hide the Starting root"
         );
+    }
+
+    #[test]
+    fn visibility_all_shows_every_node() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        for status in [
+            NodeStatus::Finished,
+            NodeStatus::Failed,
+            NodeStatus::Cancelled,
+            NodeStatus::Running,
+        ] {
+            tracked_node(&mut state, root, status);
+        }
+        state.agent_visibility = AgentVisibility::All;
+
+        assert_eq!(
+            state.visible_agent_nodes().count(),
+            state.tree.nodes.len(),
+            "All must show exactly the whole tree"
+        );
+    }
+
+    #[test]
+    fn filtering_never_changes_the_tree_itself() {
+        // P-2: finished agents are HIDDEN, not removed -- cycling through
+        // every mode must leave `tree.nodes` exactly as it was.
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        tracked_node(&mut state, root, NodeStatus::Finished);
+        tracked_node(&mut state, root, NodeStatus::Running);
+        let count_before = state.tree.nodes.len();
+        let nodes_before = state.tree.nodes.clone();
+
+        state.cycle_agent_visibility(); // -> All
+        state.cycle_agent_visibility(); // -> FinishedOnly
+        state.cycle_agent_visibility(); // -> ActiveOnly
+
+        assert_eq!(state.tree.nodes.len(), count_before);
+        assert_eq!(
+            state.tree.nodes, nodes_before,
+            "the filter must be draw-time only; the tree itself never changes"
+        );
+    }
+
+    #[test]
+    fn agent_scroll_uses_the_filtered_row_count() {
+        // root(Starting), done(Finished), live(Running). Under the default
+        // ActiveOnly the visible rows are [root, live]: selection must
+        // clamp at index 1 even though the raw tree has 3 nodes.
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        tracked_node(&mut state, root, NodeStatus::Finished);
+        tracked_node(&mut state, root, NodeStatus::Running);
+
+        state.agent_scroll(1);
+        assert_eq!(state.agent_selected, 1);
+        state.agent_scroll(1);
+        assert_eq!(
+            state.agent_selected, 1,
+            "selection must clamp at the last FILTERED row, not the raw tree's"
+        );
+
+        // Under All (3 rows) the same key reaches further.
+        state.agent_visibility = AgentVisibility::All;
+        state.agent_scroll(1);
+        assert_eq!(state.agent_selected, 2);
+    }
+
+    #[test]
+    fn cycling_the_filter_reclamps_a_selection_past_the_new_row_count() {
+        // root(Starting), a(Finished), b(Finished). Under All: 3 rows,
+        // select the last (b). Cycling to FinishedOnly leaves 2 rows:
+        // selection must re-clamp from 2 to 1.
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        tracked_node(&mut state, root, NodeStatus::Finished);
+        tracked_node(&mut state, root, NodeStatus::Finished);
+        state.agent_visibility = AgentVisibility::All;
+        state.agent_selected = 2;
+
+        state.cycle_agent_visibility(); // All -> FinishedOnly
+
+        assert_eq!(state.agent_visibility, AgentVisibility::FinishedOnly);
+        assert_eq!(
+            state.agent_selected, 1,
+            "a selection past the new filtered row count must re-clamp"
+        );
+
+        // Cycling again to ActiveOnly leaves only the root: clamp to 0.
+        state.cycle_agent_visibility();
+        assert_eq!(state.agent_visibility, AgentVisibility::ActiveOnly);
+        assert_eq!(state.agent_selected, 0);
+    }
+
+    #[test]
+    fn cycling_to_a_filter_with_no_visible_rows_resets_the_selection_to_zero() {
+        // Everything terminal: FinishedOnly shows rows, ActiveOnly shows
+        // none -- the selection must land on 0, not dangle.
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        tracked_node(&mut state, root, NodeStatus::Finished);
+        // Make the root itself terminal too, so ActiveOnly hides all.
+        state.tree.nodes[0].status = NodeStatus::Finished;
+        state.agent_visibility = AgentVisibility::All;
+        state.agent_selected = 1;
+
+        state.cycle_agent_visibility(); // All -> FinishedOnly (2 rows, still in range)
+        assert_eq!(state.agent_selected, 1);
+
+        state.cycle_agent_visibility(); // FinishedOnly -> ActiveOnly (0 rows)
+        assert_eq!(state.agent_selected, 0);
+    }
+
+    /// B3: `AgentPromoted` is the ONLY signal for the ephemeral→persistent
+    /// flip (no optimistic TUI-side flip) — applying it flips the cached
+    /// `TreeNode.ephemeral` to false.
+    #[test]
+    fn agent_promoted_flips_the_cached_tree_node_flag() {
+        let session = SessionId::new();
+        let root = AgentId::new();
+        let child = AgentId::new();
+        let mut state = AppState::new(root);
+
+        // An ephemeral `/ask`-style child enters the tree via its spawn.
+        state.apply(&envelope(
+            session,
+            child,
+            Event::AgentSpawned {
+                kind: SubagentMode::Fork,
+                parent: Some(root),
+                agent_def: None,
+                inherited_upto: None,
+                ephemeral: true,
+            },
+        ));
+        assert!(
+            state
+                .tree
+                .nodes
+                .iter()
+                .find(|n| n.agent_id == child)
+                .expect("child node")
+                .ephemeral,
+            "precondition: the child node is cached as ephemeral"
+        );
+
+        state.apply(&envelope(session, child, Event::AgentPromoted {}));
+
+        assert!(
+            !state
+                .tree
+                .nodes
+                .iter()
+                .find(|n| n.agent_id == child)
+                .expect("child node")
+                .ephemeral,
+            "AgentPromoted must flip the cached node's ephemeral flag to false"
+        );
+    }
+
+    /// B3, never-panic contract: an `AgentPromoted` for an agent the tree
+    /// does not know degrades to a `Notice` (same contract the
+    /// unknown-parent `AgentSpawned` arm honors) — never a panic, never a
+    /// silent drop.
+    #[test]
+    fn agent_promoted_for_an_unknown_agent_degrades_to_a_notice() {
+        let session = SessionId::new();
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let before = state.transcript.len();
+
+        state.apply(&envelope(session, AgentId::new(), Event::AgentPromoted {}));
+
+        assert_eq!(state.transcript.len(), before + 1);
+        assert!(
+            matches!(state.transcript.last(), Some(Entry::Notice { .. })),
+            "an unknown-agent AgentPromoted must degrade to a Notice, got: {:?}",
+            state.transcript.last()
+        );
+    }
+
+    // ---- B5: the /ask single-turn modal -- offer/park/close/fail. The
+    // fate dispatch itself (which facade op each fate invokes) is covered
+    // in `commands.rs`'s `apply_ask_fate` tests; these cover the modal's
+    // own mode bookkeeping. ----
+
+    fn ask_modal(question: &str) -> AskModal {
+        AskModal {
+            question: question.to_string(),
+            child: AgentId::new(),
+            answer: "the answer".to_string(),
+            error: None,
+        }
+    }
+
+    fn permission_prompt(rendered: &str) -> crate::tui::gate::PendingPrompt {
+        let (prompt, _rx) = crate::tui::gate::PendingPrompt::new_for_test(
+            conway::PermissionRequest {
+                agent_id: AgentId::new(),
+                agent_path: Vec::new(),
+                tool: ToolName::new("bash"),
+                category: conway::ToolCategory::Execute,
+                arguments: serde_json::json!({}),
+                rendered: rendered.to_string(),
+                call_id: "tc_1".to_string(),
+            },
+        );
+        prompt
+    }
+
+    #[test]
+    fn offer_ask_modal_opens_immediately_in_normal_mode() {
+        let mut state = AppState::new(AgentId::new());
+        assert!(matches!(state.mode, Mode::Normal));
+
+        state.offer_ask_modal(ask_modal("q"));
+
+        assert!(
+            matches!(&state.mode, Mode::AskModal(m) if m.question == "q" && m.error.is_none()),
+            "the modal must open immediately, got: {:?}",
+            state.mode
+        );
+    }
+
+    #[test]
+    fn offer_ask_modal_parks_behind_a_permission_prompt_and_opens_once_it_resolves() {
+        let mut state = AppState::new(AgentId::new());
+        state.offer_prompt(permission_prompt("bash: ls"));
+        assert!(matches!(state.mode, Mode::AwaitingPermission(_)));
+
+        state.offer_ask_modal(ask_modal("q"));
+
+        assert!(
+            matches!(state.mode, Mode::AwaitingPermission(_)),
+            "the permission prompt must keep the floor; the modal parks, got: {:?}",
+            state.mode
+        );
+
+        state.resolve_current_prompt(conway::PermissionDecision::AllowOnce);
+
+        assert!(
+            matches!(&state.mode, Mode::AskModal(m) if m.question == "q"),
+            "the parked modal must open once the prompt queue drains, got: {:?}",
+            state.mode
+        );
+    }
+
+    #[test]
+    fn take_pending_ask_modal_drains_a_parked_modal_and_clears_the_slot() {
+        // M1's quit-path fix: `purge_open_ask_modal` must be able to reach a
+        // modal that was parked behind a permission prompt when the ask
+        // completed, or its child leaks as residue. `take_pending_ask_modal`
+        // is the accessor that lets app.rs drain it without `pending_ask_modal`
+        // being pub.
+        let mut state = AppState::new(AgentId::new());
+        state.offer_prompt(permission_prompt("bash: ls"));
+        state.offer_ask_modal(ask_modal("parked"));
+
+        let drained = state.take_pending_ask_modal();
+        assert!(
+            matches!(&drained, Some(m) if m.question == "parked"),
+            "the parked modal must be returned, got: {drained:?}"
+        );
+        assert!(
+            state.take_pending_ask_modal().is_none(),
+            "the slot must be cleared after the take"
+        );
+        assert!(
+            matches!(state.mode, Mode::AwaitingPermission(_)),
+            "take must NOT clobber the surface currently owning `mode`"
+        );
+    }
+
+    #[test]
+    fn take_pending_ask_modal_is_none_when_nothing_is_parked() {
+        let mut state = AppState::new(AgentId::new());
+        assert!(state.take_pending_ask_modal().is_none());
+        // An open (live) modal is in `mode`, not in the parking slot.
+        state.offer_ask_modal(ask_modal("live"));
+        assert!(
+            state.take_pending_ask_modal().is_none(),
+            "a live modal is not parked -- take must return None"
+        );
+    }
+
+    #[test]
+    fn close_ask_modal_returns_to_normal() {
+        let mut state = AppState::new(AgentId::new());
+        state.offer_ask_modal(ask_modal("q"));
+
+        state.close_ask_modal();
+
+        assert!(matches!(state.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn close_ask_modal_promotes_a_prompt_queued_while_the_modal_was_open() {
+        let mut state = AppState::new(AgentId::new());
+        state.offer_ask_modal(ask_modal("q"));
+        // A permission request arrives WHILE the modal owns the floor --
+        // `offer_prompt` queues it, exactly as behind another prompt.
+        state.offer_prompt(permission_prompt("bash: ls"));
+        assert!(matches!(state.mode, Mode::AskModal(_)));
+
+        state.close_ask_modal();
+
+        assert!(
+            matches!(state.mode, Mode::AwaitingPermission(_)),
+            "closing the modal must promote the queued prompt, got: {:?}",
+            state.mode
+        );
+    }
+
+    #[test]
+    fn fail_ask_modal_keeps_the_modal_open_with_the_error_shown() {
+        let mut state = AppState::new(AgentId::new());
+        state.offer_ask_modal(ask_modal("q"));
+
+        state.fail_ask_modal("pull_in refused".to_string());
+
+        match &state.mode {
+            Mode::AskModal(m) => {
+                assert_eq!(m.error.as_deref(), Some("pull_in refused"));
+                assert_eq!(m.question, "q", "the modal's content is untouched");
+            }
+            other => panic!("a failed fate must KEEP the modal open, got: {other:?}"),
+        }
+    }
+
+    // ---- C2: the NL intent confirmation card -- offer/park/close, and the
+    // three-way key routing (Confirm/Edit/Manual) lives in `input.rs`'s
+    // tests; the facade dispatch (which SlashCommand each choice rebuilds)
+    // is covered in `commands.rs`'s `execute_intent_confirm` tests. These
+    // cover the card's own mode bookkeeping and the parking priority. ----
+
+    fn intent_card(prompt: &str) -> IntentConfirm {
+        IntentConfirm {
+            intent: AgentIntent {
+                recipe: SubagentMode::Spawn,
+                agent_def: None,
+                prompt: prompt.to_string(),
+            },
+            default_recipe: SubagentMode::Spawn,
+            raw_text: prompt.to_string(),
+            parent: AgentId::new(),
+        }
+    }
+
+    #[test]
+    fn offer_intent_confirm_opens_immediately_in_normal_mode() {
+        let mut state = AppState::new(AgentId::new());
+        assert!(matches!(state.mode, Mode::Normal));
+
+        state.offer_intent_confirm(intent_card("refactor the parser"));
+
+        assert!(
+            matches!(&state.mode, Mode::IntentConfirm(ic) if ic.intent.prompt == "refactor the parser"),
+            "the card must open immediately, got: {:?}",
+            state.mode
+        );
+    }
+
+    #[test]
+    fn offer_intent_confirm_parks_behind_a_permission_prompt_and_opens_once_it_resolves() {
+        let mut state = AppState::new(AgentId::new());
+        state.offer_prompt(permission_prompt("bash: ls"));
+        assert!(matches!(state.mode, Mode::AwaitingPermission(_)));
+
+        state.offer_intent_confirm(intent_card("parked"));
+
+        assert!(
+            matches!(state.mode, Mode::AwaitingPermission(_)),
+            "the permission prompt must keep the floor; the card parks, got: {:?}",
+            state.mode
+        );
+
+        state.resolve_current_prompt(conway::PermissionDecision::AllowOnce);
+
+        assert!(
+            matches!(&state.mode, Mode::IntentConfirm(ic) if ic.intent.prompt == "parked"),
+            "the parked card must open once the prompt queue drains, got: {:?}",
+            state.mode
+        );
+    }
+
+    #[test]
+    fn offer_intent_confirm_parks_behind_an_ask_modal_and_opens_once_it_closes() {
+        // The three modal-bearing surfaces never stack: an intent card
+        // arriving while an /ask modal owns the floor parks in
+        // `pending_intent_confirm`, and `close_ask_modal` promotes it via
+        // `promote_next_surface`.
+        let mut state = AppState::new(AgentId::new());
+        state.offer_ask_modal(ask_modal("q"));
+        assert!(matches!(state.mode, Mode::AskModal(_)));
+
+        state.offer_intent_confirm(intent_card("parked-behind-ask"));
+
+        assert!(
+            matches!(state.mode, Mode::AskModal(_)),
+            "the ask modal must keep the floor; the card parks, got: {:?}",
+            state.mode
+        );
+
+        state.close_ask_modal();
+
+        assert!(
+            matches!(&state.mode, Mode::IntentConfirm(ic) if ic.intent.prompt == "parked-behind-ask"),
+            "the parked card must open once the ask modal closes, got: {:?}",
+            state.mode
+        );
+    }
+
+    #[test]
+    fn take_pending_intent_confirm_drains_a_parked_card_and_clears_the_slot() {
+        let mut state = AppState::new(AgentId::new());
+        state.offer_prompt(permission_prompt("bash: ls"));
+        state.offer_intent_confirm(intent_card("parked"));
+
+        let drained = state.take_pending_intent_confirm();
+        assert!(
+            matches!(&drained, Some(ic) if ic.intent.prompt == "parked"),
+            "the parked card must be returned, got: {drained:?}"
+        );
+        assert!(
+            state.take_pending_intent_confirm().is_none(),
+            "the slot must be cleared after the take"
+        );
+        assert!(
+            matches!(state.mode, Mode::AwaitingPermission(_)),
+            "take must NOT clobber the surface currently owning `mode`"
+        );
+    }
+
+    #[test]
+    fn close_intent_confirm_returns_to_normal() {
+        let mut state = AppState::new(AgentId::new());
+        state.offer_intent_confirm(intent_card("q"));
+
+        state.close_intent_confirm();
+
+        assert!(matches!(state.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn close_intent_confirm_promotes_a_prompt_queued_while_the_card_was_open() {
+        let mut state = AppState::new(AgentId::new());
+        state.offer_intent_confirm(intent_card("q"));
+        state.offer_prompt(permission_prompt("bash: ls"));
+        assert!(matches!(state.mode, Mode::IntentConfirm(_)));
+
+        state.close_intent_confirm();
+
+        assert!(
+            matches!(state.mode, Mode::AwaitingPermission(_)),
+            "closing the card must promote the queued prompt, got: {:?}",
+            state.mode
+        );
+    }
+
+    #[test]
+    fn close_intent_confirm_promotes_a_parked_ask_modal() {
+        // Priority order: queued prompts, then parked ask modal, then
+        // parked intent card. With no queued prompt, closing the card
+        // promotes a parked ask modal.
+        let mut state = AppState::new(AgentId::new());
+        state.offer_intent_confirm(intent_card("q"));
+        // Park an ask behind the card (offer_ask_modal parks when mode !=
+        // Normal).
+        state.offer_ask_modal(ask_modal("parked-ask"));
+        assert!(matches!(state.mode, Mode::IntentConfirm(_)));
+
+        state.close_intent_confirm();
+
+        assert!(
+            matches!(&state.mode, Mode::AskModal(m) if m.question == "parked-ask"),
+            "closing the card must promote the parked ask modal, got: {:?}",
+            state.mode
+        );
+    }
+
+    #[test]
+    fn begin_intent_confirm_edit_drops_the_classified_prompt_into_the_input_line() {
+        let mut state = AppState::new(AgentId::new());
+        state.input = "stale text".to_string();
+        state.cursor = state.input.chars().count();
+        state.offer_intent_confirm(IntentConfirm {
+            intent: AgentIntent {
+                recipe: SubagentMode::Spawn,
+                agent_def: Some("reviewer".to_string()),
+                prompt: "review the diff carefully".to_string(),
+            },
+            default_recipe: SubagentMode::Spawn,
+            raw_text: "review the diff".to_string(),
+            parent: AgentId::new(),
+        });
+
+        state.begin_intent_confirm_edit();
+
+        assert_eq!(
+            state.input, "review the diff carefully",
+            "the classified prompt (not the raw text) must land in the input line"
+        );
+        assert_eq!(
+            state.cursor,
+            state.input.chars().count(),
+            "the cursor must be at the end of the dropped prompt"
+        );
+        assert!(
+            matches!(state.mode, Mode::Normal),
+            "the card must close after edit, got: {:?}",
+            state.mode
+        );
+    }
+
+    #[test]
+    fn begin_intent_confirm_edit_is_a_noop_when_no_card_is_open() {
+        let mut state = AppState::new(AgentId::new());
+        state.input = "keep me".to_string();
+
+        state.begin_intent_confirm_edit();
+
+        assert_eq!(state.input, "keep me", "a no-card edit must not touch the input line");
+        assert!(matches!(state.mode, Mode::Normal));
     }
 }

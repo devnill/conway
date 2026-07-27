@@ -49,11 +49,6 @@ pub const COMMANDS: &[CommandSpec] = &[
         description: "send a steer message to a running agent",
     },
     CommandSpec {
-        name: "/tree",
-        usage: "/tree",
-        description: "show the whole agent tree",
-    },
-    CommandSpec {
         name: "/context",
         usage: "/context <agent>",
         description: "show an agent's assembled context",
@@ -197,6 +192,16 @@ mod tests {
     #[test]
     fn unknown_prefix_yields_no_matches() {
         assert!(matches("/zzz").is_empty());
+    }
+
+    // Item A3: `/tree` is demoted to a hidden alias -- it still parses
+    // (`commands.rs` keeps the arm) but the palette must no longer surface
+    // it as completion.
+    #[test]
+    fn tree_is_a_hidden_alias_not_a_palette_entry() {
+        assert!(matches("/tree").is_empty());
+        assert!(matches("/t").is_empty());
+        assert!(!COMMANDS.iter().any(|c| c.name == "/tree"));
     }
 
     #[test]

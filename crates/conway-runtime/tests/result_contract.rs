@@ -192,6 +192,7 @@ async fn seed_prompt(store: &dyn SessionStore, prompt: &str) -> (SessionId, Agen
             labels: vec![],
             status: SessionStatus::Active,
             ephemeral: false,
+            ask_origin: None,
         })
         .await
         .unwrap();

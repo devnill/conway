@@ -80,9 +80,10 @@ pub(crate) fn key(code: KeyCode) -> KeyEvent {
 /// - `PermissionDecision`: `AppState::resolve_current_prompt` -- mirrors the
 ///   run loop's `Action::PermissionDecision` arm exactly.
 ///
-/// `Submit`/`CtrlC`/`Quit`/`FocusAgent` are NOT applied here: each of those
-/// needs a live facade call in `app.rs` (`self.submit`, `self.handle.cancel`,
-/// `self.handle.agent_events`) that this harness has no session to make.
+/// `Submit`/`CtrlC`/`Quit`/`FocusAgent`/`AskFate` are NOT applied here:
+/// each of those needs a live facade call in `app.rs` (`self.submit`,
+/// `self.handle.cancel`, `self.handle.agent_events`,
+/// `commands::apply_ask_fate`) that this harness has no session to make.
 /// Returning the unapplied `Action` still lets a test assert the router
 /// picked the right one (e.g. `assert_eq!(press(..), Action::FocusAgent(id))`)
 /// -- the live half of applying it is covered where that facade call lives,
@@ -97,8 +98,13 @@ pub(crate) fn press(state: &mut AppState, event: KeyEvent, area: Rect) -> Action
         Action::PermissionDecision(decision) => {
             state.resolve_current_prompt(decision.clone());
         }
-        Action::None | Action::Submit(_) | Action::CtrlC | Action::Quit | Action::FocusAgent(_) => {
-        }
+        Action::None
+        | Action::Submit(_)
+        | Action::CtrlC
+        | Action::Quit
+        | Action::FocusAgent(_)
+        | Action::AskFate(_)
+        | Action::IntentConfirm(_) => {}
     }
     action
 }
@@ -202,6 +208,9 @@ mod tests {
             parent: Some(root),
             agent_def: Some("reviewer".to_string()),
             status: NodeStatus::Running,
+            kind: None,
+            inherited_upto: None,
+            ephemeral: false,
         });
         state.agent_view_open = true;
         state.agent_selected = 1;

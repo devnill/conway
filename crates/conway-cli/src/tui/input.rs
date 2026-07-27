@@ -13,7 +13,7 @@
 use conway::{AgentId, PermissionDecision, PermissionScope};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use super::state::{AppState, Mode};
+use super::state::{AppState, AskFate, IntentChoice, Mode};
 
 /// What a keypress means for the app loop to carry out.
 #[derive(Debug, Clone, PartialEq)]
@@ -54,6 +54,18 @@ pub enum Action {
     /// app loop (out of this module's scope) both mutates
     /// `AppState::focus_agent` and re-subscribes `handle.agent_events`.
     FocusAgent(AgentId),
+    /// B5: a fate key was pressed while the `/ask` modal was open (`f` fork
+    /// / `p` pull-in / `Esc` discard). The app loop runs the corresponding
+    /// facade op (`commands::apply_ask_fate`); this module only reports
+    /// which fate was chosen.
+    AskFate(AskFate),
+    /// C2: a choice key was pressed while the NL intent confirmation card
+    /// was open (`Enter` confirm / `e` edit / `Esc` manual). The app loop
+    /// runs `commands::execute_intent_confirm`; this module only reports
+    /// which choice was chosen (and, for `Edit`, has already dropped the
+    /// classified prompt into `state.input` and closed the card via
+    /// `AppState::begin_intent_confirm_edit`).
+    IntentConfirm(IntentChoice),
 }
 
 /// Routes a keypress based on `state.mode`, mutating `state.input`/`cursor`
@@ -62,7 +74,88 @@ pub enum Action {
 pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Action {
     match &state.mode {
         Mode::AwaitingPermission(_) => handle_permission_key(state, key),
+        Mode::AskModal(_) => handle_ask_modal_key(state, key),
+        Mode::IntentConfirm(_) => handle_intent_confirm_key(state, key),
         Mode::Normal => handle_normal_key(state, key),
+    }
+}
+
+/// The `/ask` modal's key handling (B5): exactly three ways out, each
+/// forcing one fate -- `f` (fork/keep), `p` (pull in), `Esc` (discard).
+/// Everything else is SWALLOWED: the input line is inert (no typing, no
+/// palette, no scrolling), and the `/agents` panel is neither visible nor
+/// available while the modal is open (user decision, binding) -- the panel
+/// toggle (a typed `/agents` command) can never be entered here. The quit
+/// keys (`Ctrl-C`/`Ctrl-D`) still pass through as `Action::CtrlC`/
+/// `Action::Quit` -- quitting with the modal open purges the child first
+/// (wired in `app.rs`'s quit path), so there is no fourth, fate-less way
+/// out.
+fn handle_ask_modal_key(_state: &mut AppState, key: KeyEvent) -> Action {
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        match key.code {
+            KeyCode::Char('c') | KeyCode::Char('C') => return Action::CtrlC,
+            KeyCode::Char('d') | KeyCode::Char('D') => return Action::Quit,
+            _ => {}
+        }
+    }
+    // Fate keys only fire on a bare keypress -- a modifier held (Ctrl-F,
+    // Alt-P, ...) is NOT a fate. Without this guard the second match below
+    // inspected `key.code` alone, so Ctrl-F/Ctrl-P leaked through as
+    // fork/pull-in while the user was reaching for some other binding.
+    if !key.modifiers.is_empty() {
+        return Action::None;
+    }
+    match key.code {
+        KeyCode::Char('f') | KeyCode::Char('F') => Action::AskFate(AskFate::Fork),
+        KeyCode::Char('p') | KeyCode::Char('P') => Action::AskFate(AskFate::PullIn),
+        KeyCode::Esc => Action::AskFate(AskFate::Discard),
+        _ => Action::None,
+    }
+}
+
+/// The NL intent confirmation card's key handling (C2): exactly three ways
+/// out -- `Enter` (confirm), `e` (edit), `Esc` (manual fallback). Everything
+/// else is SWALLOWED: the input line is inert (no typing, no palette, no
+/// scrolling), and `/agents` is neither visible nor available while the card
+/// is open -- the panel toggle (a typed `/agents` command) can never be
+/// entered here. The quit keys (`Ctrl-C`/`Ctrl-D`) still pass through as
+/// `Action::CtrlC`/`Action::Quit` -- quitting with the card open IS the
+/// manual fallback (nothing has been created yet, so there is nothing to
+/// purge, unlike the `/ask` modal), and the app loop never reaches
+/// `execute_intent_confirm` for them.
+///
+/// `e` (edit) fires only on a bare keypress -- a modifier held (Ctrl-E,
+/// Alt-E, ...) is NOT the edit choice, mirroring B5's M2 fix for the fate
+/// keys. `Enter` and `Esc` are not modifier-sensitive in crossterm's key
+/// model (a bare Enter/Esc is what the user types). On `e`, the classified
+/// `intent.prompt` is dropped into `state.input` (replacing whatever was
+/// there) and the card closes via `AppState::begin_intent_confirm_edit`,
+/// then `Action::IntentConfirm(IntentChoice::Edit)` is returned -- the app
+/// loop's arm for it is a no-op, the state mutation already happened here.
+fn handle_intent_confirm_key(state: &mut AppState, key: KeyEvent) -> Action {
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        match key.code {
+            KeyCode::Char('c') | KeyCode::Char('C') => return Action::CtrlC,
+            KeyCode::Char('d') | KeyCode::Char('D') => return Action::Quit,
+            _ => {}
+        }
+    }
+    // `e` only fires on a bare keypress -- a modifier held (Ctrl-E, Alt-E,
+    // ...) is NOT the edit choice. Without this guard the second match
+    // below inspected `key.code` alone, so Ctrl-E would leak through as
+    // edit while the user was reaching for some other binding (B5's M2
+    // fix, applied to the same shape here).
+    if !key.modifiers.is_empty() {
+        return Action::None;
+    }
+    match key.code {
+        KeyCode::Enter => Action::IntentConfirm(IntentChoice::Confirm),
+        KeyCode::Char('e') | KeyCode::Char('E') => {
+            state.begin_intent_confirm_edit();
+            Action::IntentConfirm(IntentChoice::Edit)
+        }
+        KeyCode::Esc => Action::IntentConfirm(IntentChoice::Manual),
+        _ => Action::None,
     }
 }
 
@@ -142,12 +235,16 @@ fn handle_normal_key(state: &mut AppState, key: KeyEvent) -> Action {
                 // being a pure no-op (its only prior behavior) -- the
                 // input line has nothing else to submit in this state, so
                 // this cannot collide with a real prompt/command.
+                // Item A2: `agent_selected` indexes the panel's FILTERED
+                // rows, so the row lookup must walk the same filtered list
+                // the draw code renders (`visible_agent_nodes`), not the
+                // raw `tree.nodes`.
                 if state.agent_view_open {
-                    if let Some(node) = state.tree.nodes.get(
-                        state
-                            .agent_selected
-                            .min(state.tree.nodes.len().saturating_sub(1)),
-                    ) {
+                    let row_count = state.visible_agent_nodes().count();
+                    if let Some(node) = state
+                        .visible_agent_nodes()
+                        .nth(state.agent_selected.min(row_count.saturating_sub(1)))
+                    {
                         return Action::FocusAgent(node.agent_id);
                     }
                 }
@@ -230,6 +327,18 @@ fn handle_normal_key(state: &mut AppState, key: KeyEvent) -> Action {
         }
         KeyCode::PageUp => Action::ScrollUp,
         KeyCode::PageDown => Action::ScrollDown,
+        // Item A2: `v` cycles the /agents panel's draw-time visibility
+        // filter (ActiveOnly -> All -> FinishedOnly -> ActiveOnly). Bound
+        // only while the panel is open AND the input line is empty -- with
+        // any text typed, `v` stays ordinary text input (the same gating
+        // Enter's focus-row binding above uses), so the filter key can
+        // never eat a character of a prompt being composed. No other key
+        // in this branch uses `v`: Enter/Up/Down/Esc/PageUp/PageDown are
+        // the panel's existing bindings and `Char(c)` was plain text input.
+        KeyCode::Char('v') if state.agent_view_open && state.input.is_empty() => {
+            state.cycle_agent_visibility();
+            Action::None
+        }
         KeyCode::Char(c) => {
             let idx = byte_index(&state.input, state.cursor);
             state.input.insert(idx, c);
@@ -582,6 +691,9 @@ mod tests {
             parent: Some(root),
             agent_def: Some("reviewer".to_string()),
             status: NodeStatus::Running,
+            kind: None,
+            inherited_upto: None,
+            ephemeral: false,
         });
         for i in 0..30 {
             state.transcript.push(Entry::Assistant {
@@ -657,6 +769,9 @@ mod tests {
             parent: Some(root),
             agent_def: Some("reviewer".to_string()),
             status: NodeStatus::Running,
+            kind: None,
+            inherited_upto: None,
+            ephemeral: false,
         });
         state.agent_view_open = true;
         state.agent_selected = 1; // the child row
@@ -719,6 +834,132 @@ mod tests {
         // untouched.
         assert_eq!(state.input, "/ask");
         assert_eq!(state.agent_selected, 0);
+    }
+
+    // ---- Item A2: `v` cycles the /agents panel's visibility filter ----
+
+    #[test]
+    fn v_with_the_panel_open_and_empty_input_cycles_the_visibility_filter() {
+        use crate::tui::state::AgentVisibility;
+
+        let mut state = AppState::new(AgentId::new());
+        state.agent_view_open = true;
+        assert_eq!(state.agent_visibility, AgentVisibility::ActiveOnly);
+
+        for expected in [
+            AgentVisibility::All,
+            AgentVisibility::FinishedOnly,
+            AgentVisibility::ActiveOnly,
+        ] {
+            assert_eq!(handle_key(&mut state, key(KeyCode::Char('v'))), Action::None);
+            assert_eq!(state.agent_visibility, expected);
+            assert!(
+                state.input.is_empty(),
+                "the filter key must not type into the input line"
+            );
+        }
+    }
+
+    #[test]
+    fn v_with_the_panel_closed_types_a_v() {
+        use crate::tui::state::AgentVisibility;
+
+        let mut state = AppState::new(AgentId::new());
+        assert!(!state.agent_view_open);
+
+        handle_key(&mut state, key(KeyCode::Char('v')));
+
+        assert_eq!(state.input, "v");
+        assert_eq!(
+            state.agent_visibility,
+            AgentVisibility::ActiveOnly,
+            "the filter must not cycle while the panel is closed"
+        );
+    }
+
+    #[test]
+    fn v_with_text_typed_stays_text_input_even_with_the_panel_open() {
+        use crate::tui::state::AgentVisibility;
+
+        let mut state = AppState::new(AgentId::new());
+        state.agent_view_open = true;
+        type_str(&mut state, "ga");
+
+        handle_key(&mut state, key(KeyCode::Char('v')));
+
+        assert_eq!(
+            state.input, "gav",
+            "with a prompt being composed, v must remain ordinary text input"
+        );
+        assert_eq!(state.agent_visibility, AgentVisibility::ActiveOnly);
+    }
+
+    #[test]
+    fn enter_focuses_the_filtered_row_not_the_raw_tree_index() {
+        use crate::tui::state::{AgentVisibility, NodeStatus, TreeNode};
+
+        // root(Starting), done(Finished), live(Running). Under the default
+        // ActiveOnly the visible rows are [root, live], so row index 1 is
+        // `live` -- NOT the raw tree's index 1 (`done`).
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let done = AgentId::new();
+        let live = AgentId::new();
+        for (id, status) in [(done, NodeStatus::Finished), (live, NodeStatus::Running)] {
+            state.tree.nodes.push(TreeNode {
+                agent_id: id,
+                parent: Some(root),
+                agent_def: None,
+                status,
+                kind: None,
+                inherited_upto: None,
+                ephemeral: false,
+            });
+        }
+        state.agent_view_open = true;
+        state.agent_selected = 1;
+
+        let action = handle_key(&mut state, key(KeyCode::Enter));
+        assert_eq!(
+            action,
+            Action::FocusAgent(live),
+            "Enter must resolve the selection through the filtered rows"
+        );
+
+        // Under All the same index 1 is the raw tree's `done` row.
+        state.agent_visibility = AgentVisibility::All;
+        let action = handle_key(&mut state, key(KeyCode::Enter));
+        assert_eq!(action, Action::FocusAgent(done));
+    }
+
+    #[test]
+    fn v_reclamps_the_selection_when_terminal_rows_disappear() {
+        use crate::tui::state::{AgentVisibility, NodeStatus, TreeNode};
+
+        // root(Starting), a(Finished), b(Finished). Under All (3 rows) the
+        // last row is selected; cycling `v` to FinishedOnly (2 rows) must
+        // re-clamp the selection to 1.
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        for _ in 0..2 {
+            state.tree.nodes.push(TreeNode {
+                agent_id: AgentId::new(),
+                parent: Some(root),
+                agent_def: None,
+                status: NodeStatus::Finished,
+                kind: None,
+                inherited_upto: None,
+                ephemeral: false,
+            });
+        }
+        state.agent_view_open = true;
+        state.agent_visibility = AgentVisibility::All;
+        state.agent_selected = 2;
+
+        handle_key(&mut state, key(KeyCode::Char('v')));
+
+        assert_eq!(state.agent_visibility, AgentVisibility::FinishedOnly);
+        assert_eq!(state.agent_selected, 1);
     }
 
     #[test]
@@ -811,6 +1052,88 @@ mod tests {
         assert!(
             state.permission_scroll < after_down,
             "PageUp must step the scroll offset back down"
+        );
+    }
+
+    // ---- B5: the /ask modal's forced-fate keys ----
+
+    fn ask_modal_state() -> AppState {
+        let mut state = AppState::new(AgentId::new());
+        state.offer_ask_modal(crate::tui::state::AskModal {
+            question: "q".to_string(),
+            child: AgentId::new(),
+            answer: "a".to_string(),
+            error: None,
+        });
+        state
+    }
+
+    #[test]
+    fn ask_modal_f_p_esc_map_to_the_three_fates() {
+        let mut state = ask_modal_state();
+        assert_eq!(
+            handle_key(&mut state, key(KeyCode::Char('f'))),
+            Action::AskFate(AskFate::Fork)
+        );
+        assert_eq!(
+            handle_key(&mut state, key(KeyCode::Char('p'))),
+            Action::AskFate(AskFate::PullIn)
+        );
+        assert_eq!(
+            handle_key(&mut state, key(KeyCode::Esc)),
+            Action::AskFate(AskFate::Discard)
+        );
+        // The modal itself is untouched -- the app loop runs the fate.
+        assert!(matches!(state.mode, Mode::AskModal(_)));
+    }
+
+    #[test]
+    fn ask_modal_swallows_text_palette_and_panel_keys() {
+        let mut state = ask_modal_state();
+        // Ordinary text input is inert.
+        assert_eq!(
+            handle_key(&mut state, key(KeyCode::Char('x'))),
+            Action::None
+        );
+        assert!(state.input.is_empty(), "the input line must stay inert");
+        // `/` never reaches the input line, so the palette/panel-toggle
+        // command can never be composed while the modal is open.
+        assert_eq!(
+            handle_key(&mut state, key(KeyCode::Char('/'))),
+            Action::None
+        );
+        assert!(state.input.is_empty());
+        assert!(!state.agent_view_open);
+        // The `v` visibility-filter key and Enter/arrows are swallowed too.
+        for code in [
+            KeyCode::Char('v'),
+            KeyCode::Enter,
+            KeyCode::Up,
+            KeyCode::Down,
+            KeyCode::PageUp,
+            KeyCode::PageDown,
+        ] {
+            assert_eq!(
+                handle_key(&mut state, key(code)),
+                Action::None,
+                "{code:?} must be swallowed while the modal is open"
+            );
+        }
+        assert!(matches!(state.mode, Mode::AskModal(_)));
+    }
+
+    #[test]
+    fn ask_modal_quit_keys_pass_through_for_the_purge_then_quit_path() {
+        let mut state = ask_modal_state();
+        // Ctrl-C / Ctrl-D still report their actions -- `app.rs` purges the
+        // modal's child before honoring them (no fate-less way out).
+        assert_eq!(
+            handle_key(&mut state, ctrl_key(KeyCode::Char('c'))),
+            Action::CtrlC
+        );
+        assert_eq!(
+            handle_key(&mut state, ctrl_key(KeyCode::Char('d'))),
+            Action::Quit
         );
     }
 
@@ -948,5 +1271,148 @@ mod tests {
         handle_key(&mut state, key(KeyCode::Backspace));
         assert_eq!(state.input, "hllo");
         assert_eq!(state.cursor, 1);
+    }
+
+    // ---- C2: the NL intent confirmation card's three choice keys ----
+
+    use crate::tui::state::IntentConfirm;
+    use conway::{AgentIntent, SubagentMode};
+
+    fn intent_confirm_state(prompt: &str) -> AppState {
+        let mut state = AppState::new(AgentId::new());
+        state.offer_intent_confirm(IntentConfirm {
+            intent: AgentIntent {
+                recipe: SubagentMode::Spawn,
+                agent_def: None,
+                prompt: prompt.to_string(),
+            },
+            default_recipe: SubagentMode::Spawn,
+            raw_text: prompt.to_string(),
+            parent: AgentId::new(),
+        });
+        state
+    }
+
+    #[test]
+    fn intent_confirm_enter_e_esc_map_to_the_three_choices() {
+        let mut state = intent_confirm_state("refactor");
+        assert_eq!(
+            handle_key(&mut state, key(KeyCode::Enter)),
+            Action::IntentConfirm(IntentChoice::Confirm)
+        );
+        // The modal stays open after Confirm -- the app loop closes it via
+        // `execute_intent_confirm` (which reads the card from `state.mode`).
+        assert!(matches!(state.mode, Mode::IntentConfirm(_)));
+
+        let mut state = intent_confirm_state("refactor");
+        assert_eq!(
+            handle_key(&mut state, key(KeyCode::Esc)),
+            Action::IntentConfirm(IntentChoice::Manual)
+        );
+        assert!(matches!(state.mode, Mode::IntentConfirm(_)));
+
+        let mut state = intent_confirm_state("refactor");
+        assert_eq!(
+            handle_key(&mut state, key(KeyCode::Char('e'))),
+            Action::IntentConfirm(IntentChoice::Edit)
+        );
+    }
+
+    #[test]
+    fn intent_confirm_edit_drops_the_classified_prompt_into_the_input_line_and_closes() {
+        let mut state = intent_confirm_state("review the diff carefully");
+
+        handle_key(&mut state, key(KeyCode::Char('e')));
+
+        assert_eq!(
+            state.input, "review the diff carefully",
+            "e must drop the classified prompt into the input line"
+        );
+        assert_eq!(
+            state.cursor,
+            state.input.chars().count(),
+            "the cursor must be at the end of the dropped prompt"
+        );
+        assert!(
+            matches!(state.mode, Mode::Normal),
+            "e must close the card, got: {:?}",
+            state.mode
+        );
+    }
+
+    #[test]
+    fn intent_confirm_e_only_fires_on_a_bare_keypress() {
+        // B5's M2 fix applied to the edit key: Ctrl-E / Alt-E must NOT be
+        // the edit choice -- a modifier held is NOT a choice.
+        let mut state = intent_confirm_state("refactor");
+
+        let ctrl_e = KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL);
+        assert_eq!(
+            handle_key(&mut state, ctrl_e),
+            Action::None,
+            "Ctrl-E must not fire edit"
+        );
+        assert!(
+            matches!(state.mode, Mode::IntentConfirm(_)),
+            "the card must stay open on Ctrl-E"
+        );
+        assert!(
+            state.input.is_empty(),
+            "Ctrl-E must not touch the input line"
+        );
+
+        let alt_e = KeyEvent::new(KeyCode::Char('e'), KeyModifiers::ALT);
+        assert_eq!(handle_key(&mut state, alt_e), Action::None);
+        assert!(matches!(state.mode, Mode::IntentConfirm(_)));
+    }
+
+    #[test]
+    fn intent_confirm_swallows_text_palette_and_panel_keys() {
+        let mut state = intent_confirm_state("refactor");
+        // Ordinary text input is inert.
+        assert_eq!(
+            handle_key(&mut state, key(KeyCode::Char('x'))),
+            Action::None
+        );
+        assert!(state.input.is_empty(), "the input line must stay inert");
+        // `/` never reaches the input line, so the palette/panel-toggle
+        // command can never be composed while the card is open.
+        assert_eq!(
+            handle_key(&mut state, key(KeyCode::Char('/'))),
+            Action::None
+        );
+        assert!(state.input.is_empty());
+        assert!(!state.agent_view_open);
+        // The `v` visibility-filter key and arrows are swallowed too.
+        for code in [
+            KeyCode::Char('v'),
+            KeyCode::Up,
+            KeyCode::Down,
+            KeyCode::PageUp,
+            KeyCode::PageDown,
+        ] {
+            assert_eq!(
+                handle_key(&mut state, key(code)),
+                Action::None,
+                "{code:?} must be swallowed while the card is open"
+            );
+        }
+        assert!(matches!(state.mode, Mode::IntentConfirm(_)));
+    }
+
+    #[test]
+    fn intent_confirm_quit_keys_pass_through() {
+        // Ctrl-C / Ctrl-D still report their actions -- quitting with the
+        // card open IS the manual fallback (no live child to purge, unlike
+        // the /ask modal -- the card opens BEFORE any agent is created).
+        let mut state = intent_confirm_state("refactor");
+        assert_eq!(
+            handle_key(&mut state, ctrl_key(KeyCode::Char('c'))),
+            Action::CtrlC
+        );
+        assert_eq!(
+            handle_key(&mut state, ctrl_key(KeyCode::Char('d'))),
+            Action::Quit
+        );
     }
 }

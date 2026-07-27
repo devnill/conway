@@ -233,6 +233,12 @@ impl Backend for FakeBackend {
 pub enum ScriptedTurn {
     Respond(GenerateResponse),
     Fail(BackendError),
+    /// Never resolves (`std::future::pending`) — the calling agent stays
+    /// mid-turn until the test runtime tears its task down. Deterministic
+    /// alternative to a sleep for tests that need an agent held in a
+    /// non-terminal state (e.g. pull_in's still-running-child guard);
+    /// std-only, so conway-core keeps its no-async-runtime boundary.
+    Pending,
 }
 
 /// A backend that plays back a fixed script of responses/failures in order,
@@ -289,6 +295,7 @@ impl Backend for ScriptedBackend {
         match next {
             Some(ScriptedTurn::Respond(response)) => Ok(response),
             Some(ScriptedTurn::Fail(err)) => Err(err),
+            Some(ScriptedTurn::Pending) => std::future::pending().await,
             None => Err(BackendError::BadRequest {
                 detail: "scripted backend exhausted".into(),
             }),
@@ -351,6 +358,26 @@ impl FakeStore {
     }
 }
 
+/// Parity with `JsonlSessionStore`'s `assign_seq`: the store — not the
+/// caller — owns seq assignment on append, so a record carrying a stale or
+/// foreign seq (e.g. B4's `Conway::pull_in` appending a child session's
+/// records verbatim into the parent's log) is re-sequenced to the session's
+/// head, never stored with a gap or a duplicate. Implemented as a serde
+/// round-trip for the same reason `assign_seq` is: `LogRecord` has no seq
+/// setter, and matching every variant here would duplicate the enum's shape
+/// (and silently drift when it grows).
+fn reassign_seq(rec: LogRecord, seq: LogSeq) -> LogRecord {
+    let mut value = serde_json::to_value(&rec).expect("LogRecord always serializes");
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert(
+            "seq".to_string(),
+            serde_json::to_value(seq).expect("LogSeq always serializes"),
+        );
+    }
+    serde_json::from_value(value)
+        .expect("a LogRecord with only its `seq` key replaced always deserializes")
+}
+
 #[async_trait]
 impl SessionStore for FakeStore {
     async fn create(&self, meta: SessionMeta) -> Result<SessionId, StoreError> {
@@ -375,7 +402,7 @@ impl SessionStore for FakeStore {
             .get_mut(sid)
             .ok_or(StoreError::NotFound { session: *sid })?;
         let seq = LogSeq(session.records.len() as u64);
-        session.records.push(rec);
+        session.records.push(reassign_seq(rec, seq));
         Ok(seq)
     }
 
@@ -500,6 +527,59 @@ impl SessionStore for FakeStore {
             result.truncate(limit);
         }
         Ok(result)
+    }
+
+    /// Enforces the same guard matrix as `JsonlSessionStore::remove` (see
+    /// the trait-level doc): ephemeral-only, and ANY children — ephemeral
+    /// ones included — block removal.
+    async fn remove(&self, sid: &SessionId) -> Result<(), StoreError> {
+        let mut sessions = self.sessions.write().unwrap();
+        let session = sessions
+            .get(sid)
+            .ok_or(StoreError::NotFound { session: *sid })?;
+        if !session.meta.ephemeral {
+            return Err(StoreError::NotRemovable {
+                session: *sid,
+                reason: "session is not ephemeral (purge is only for ephemeral sessions)".into(),
+            });
+        }
+        let child_count = sessions
+            .values()
+            .filter(|s| s.meta.origin.as_ref().map(|o| o.parent) == Some(*sid))
+            .count();
+        if child_count > 0 {
+            return Err(StoreError::NotRemovable {
+                session: *sid,
+                reason: format!("session has {child_count} child session(s)"),
+            });
+        }
+        sessions.remove(sid);
+        Ok(())
+    }
+
+    /// Enforces the same one-way guard as `JsonlSessionStore::set_ephemeral`
+    /// (see the trait-level doc): only a true→false flip on a currently
+    /// ephemeral session succeeds.
+    async fn set_ephemeral(&self, sid: &SessionId, ephemeral: bool) -> Result<(), StoreError> {
+        if ephemeral {
+            return Err(StoreError::NotPromotable {
+                session: *sid,
+                reason: "demotion (ephemeral false -> true) is not supported; promotion is one-way"
+                    .into(),
+            });
+        }
+        let mut sessions = self.sessions.write().unwrap();
+        let session = sessions
+            .get_mut(sid)
+            .ok_or(StoreError::NotFound { session: *sid })?;
+        if !session.meta.ephemeral {
+            return Err(StoreError::NotPromotable {
+                session: *sid,
+                reason: "session is not ephemeral".into(),
+            });
+        }
+        session.meta.ephemeral = false;
+        Ok(())
     }
 }
 

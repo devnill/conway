@@ -25,8 +25,9 @@
 //!
 //! ## A documented interpretation gap: assistant-turn provenance
 //!
-//! `conway_core::provenance::Provenance` is exhaustively nine variants
-//! (enforced by that crate's own tests) and none of them represents "the
+//! `conway_core::provenance::Provenance` is exhaustively ten variants
+//! (enforced by that crate's own tests; the original §5.3 nine plus
+//! `MergedAsk`, added by B4) and none of them represents "the
 //! model's own prior turn" — `LogRecord::Assistant` does not even carry a
 //! `prov` field. Architecture §5.3's own-records mapping table names a
 //! provenance for `tool_result`, `parent_steer`, and system notes, but only
@@ -376,8 +377,17 @@ fn record_role_and_content(record: &LogRecord) -> Option<(Role, Vec<ContentBlock
 /// derived from record kind. See the module doc for the `Assistant` gap.
 fn own_segment(record: &LogRecord) -> Option<(Role, Vec<ContentBlock>, Provenance)> {
     match record {
-        LogRecord::UserTurn { text, .. } => {
-            Some((Role::User, text_block(text), Provenance::UserPrompt))
+        LogRecord::UserTurn { text, prov, .. } => {
+            // B4: honor the STORED provenance rather than deriving it from
+            // record kind alone — a `Conway::pull_in`-merged `/ask` question
+            // is a `UserTurn` whose `prov` is `Provenance::MergedAsk { from
+            // }`, and kind-derivation mislabeled it `UserPrompt` in
+            // `/context`, erasing the merge origin (P-2/GP-10). Records
+            // written before `MergedAsk` existed all carry
+            // `Provenance::UserPrompt` here (the field is mandatory on the
+            // wire), so old-record behavior is preserved by construction
+            // (C-04).
+            Some((Role::User, text_block(text), prov.clone()))
         }
         LogRecord::Assistant { content, .. } => Some((
             Role::Assistant,
@@ -525,6 +535,7 @@ fn provenance_discriminant(provenance: &Provenance) -> &'static str {
         Provenance::ParentSteer { .. } => "parent_steer",
         Provenance::ToolResult { .. } => "tool_result",
         Provenance::SystemNote { .. } => "system_note",
+        Provenance::MergedAsk { .. } => "merged_ask",
         _ => "unknown",
     }
 }
@@ -688,5 +699,99 @@ mod estimator_tests {
 
         let report = retotal(agent_id, 0, &mut segments);
         assert_eq!(report.segments.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod own_segment_provenance_tests {
+    use super::*;
+    use chrono::Utc;
+    use conway_core::ids::LogSeq;
+
+    fn user_turn(prov: Provenance) -> LogRecord {
+        LogRecord::UserTurn {
+            seq: LogSeq(0),
+            ts: Utc::now(),
+            text: "the merged question".into(),
+            prov,
+        }
+    }
+
+    /// B4: a `Conway::pull_in`-merged `/ask` question lands in the parent's
+    /// log as a `UserTurn` stamped `Provenance::MergedAsk { from }` — and
+    /// `own_segment` must surface THAT stored provenance (so `/context`'s
+    /// report shows `merged_ask`, naming the purged child session), not the
+    /// kind-derived `UserPrompt` it used to fabricate.
+    #[test]
+    fn own_segment_honors_stored_provenance_on_a_merged_user_turn() {
+        let from = SessionId::new();
+        let (role, _content, prov) =
+            own_segment(&user_turn(Provenance::MergedAsk { from })).expect("a UserTurn maps");
+        assert_eq!(role, Role::User);
+        assert_eq!(prov, Provenance::MergedAsk { from });
+    }
+
+    /// C-04 back-compat: records written before `MergedAsk` existed all
+    /// carry `Provenance::UserPrompt` in their (mandatory) `prov` field, so
+    /// honoring the stored provenance reproduces the old kind-derived
+    /// behavior for them exactly.
+    #[test]
+    fn own_segment_keeps_user_prompt_for_pre_merge_records() {
+        let (role, _content, prov) =
+            own_segment(&user_turn(Provenance::UserPrompt)).expect("a UserTurn maps");
+        assert_eq!(role, Role::User);
+        assert_eq!(prov, Provenance::UserPrompt);
+    }
+
+    /// The same property end-to-end through `ContextBuilder::build`: a
+    /// merged turn in `own` produces a segment (and a context-report entry)
+    /// whose provenance is `MergedAsk`, not `UserPrompt`.
+    #[test]
+    fn build_labels_a_merged_turn_with_its_stored_provenance() {
+        let from = SessionId::new();
+        let input = ContextInput {
+            agent_id: AgentId::new(),
+            turn: 1,
+            model: ModelId::new("echo-model"),
+            cache_mode: CacheMode::None,
+            system_prompt: None,
+            skills: vec![],
+            tools: vec![],
+            inherited: None,
+            head: HeadSegment::Prompt {
+                text: "parent prompt".into(),
+            },
+            own: Arc::from(vec![user_turn(Provenance::MergedAsk { from })]),
+            cache_ttl: CacheTtl::FiveMinutes,
+        };
+
+        let (segments, report) = ContextBuilder::new().build(&input).unwrap();
+        let merged = segments
+            .iter()
+            .find(|s| s.provenance == Provenance::MergedAsk { from })
+            .expect("the merged turn must appear with its stored MergedAsk provenance");
+        assert!(
+            report
+                .segments
+                .iter()
+                .any(|entry| entry.segment == merged.id
+                    && entry.provenance == Provenance::MergedAsk { from }),
+            "the context report must carry the MergedAsk provenance too"
+        );
+        assert!(
+            segments
+                .iter()
+                .all(|s| s.provenance != Provenance::UserPrompt
+                    || s.content
+                        == merged_prompt_content(&input)),
+            "no segment may mislabel the merged turn as UserPrompt"
+        );
+    }
+
+    fn merged_prompt_content(input: &ContextInput) -> Vec<ContentBlock> {
+        match &input.head {
+            HeadSegment::Prompt { text } => text_block(text),
+            _ => unreachable!("this test's head is always a Prompt"),
+        }
     }
 }

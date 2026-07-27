@@ -195,6 +195,17 @@ pub struct SubagentSpec {
     /// Defaults `false` via the `fork`/`spawn` constructors below, preserving
     /// the pre-existing non-ephemeral fork/spawn behavior unchanged.
     pub ephemeral: bool,
+    /// Which `/ask`-style path is creating this child (B5), stamped VERBATIM
+    /// into the child's durable `SessionMeta::ask_origin` by `conway-runtime`'s
+    /// `SubagentHost::start`. Only the two ephemeral-ask builders set this:
+    /// the TUI's modal `/ask` (`conway`'s `SessionHandle::ask`,
+    /// [`crate::log::AskOrigin::ModalAsk`]) and the `conway_ask` tool
+    /// ([`crate::log::AskOrigin::ToolAsk`]) -- see that enum's own doc for
+    /// why the distinction is load-bearing (the TUI's crash-residue sweep
+    /// purges modal-ask leftovers but must never touch a tool-ask child).
+    /// `None` everywhere else, including via the `fork`/`spawn` constructors
+    /// below.
+    pub ask_origin: Option<crate::log::AskOrigin>,
 }
 
 impl SubagentSpec {
@@ -226,6 +237,7 @@ impl SubagentSpec {
             await_result: true,
             keep_alive: false,
             ephemeral: false,
+            ask_origin: None,
         }
     }
 
@@ -244,6 +256,7 @@ impl SubagentSpec {
             await_result: true,
             keep_alive: false,
             ephemeral: false,
+            ask_origin: None,
         }
     }
 }
@@ -561,6 +574,7 @@ mod tests {
             await_result: true,
             keep_alive: false,
             ephemeral: false,
+            ask_origin: None,
         };
         assert!(spec.validate().is_ok());
     }

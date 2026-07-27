@@ -1,17 +1,31 @@
 //! The "fork a session, then re-register it as a live, drivable agent"
-//! sequence shared by [`crate::Conway::fork_from`] and
-//! [`crate::SessionHandle::ask`] (the `/ask` fork-ask slice).
+//! sequence backing [`crate::Conway::fork_from`].
 //!
-//! Both callers need exactly the same two calls -- `SessionStore::fork`
-//! (zero-copy, one header write) followed by `Runtime::resume_root`
-//! (re-registers the child as a live agent, resolving its inherited prefix)
-//! -- differing only in *which* fields of the child's `SessionMeta`/
-//! `AgentSpec` they override. This module exists so that sequence, and in
-//! particular the `ephemeral` bit each caller sets differently, lives in
-//! exactly one place rather than two copies that could drift apart. It does
-//! not re-implement any ancestry/inherited-prefix resolution itself -- that
-//! logic lives entirely inside `Runtime::resume_root` (`conway-runtime`),
-//! unchanged by this module.
+//! `fork_from` needs exactly two calls -- `SessionStore::fork` (zero-copy,
+//! one header write) followed by `Runtime::resume_root` (re-registers the
+//! child as a live agent, resolving its inherited prefix at the caller's
+//! arbitrary, possibly-earlier `at`) -- plus the overrides onto the child's
+//! `SessionMeta`/`AgentSpec` `ForkSpec` carries. This module exists so that
+//! sequence lives in exactly one place. It does not re-implement any
+//! ancestry/inherited-prefix resolution itself -- that logic lives entirely
+//! inside `Runtime::resume_root` (`conway-runtime`), unchanged by this
+//! module.
+//!
+//! **Why not `SubagentHost::start`:** `subagent.rs`'s live-fork path forks
+//! only at the parent's CURRENT head; `fork_from`'s whole point is forking a
+//! persisted session at an arbitrary earlier seq (see `fork_from`'s own doc,
+//! which ruled that substitution out for exactly that reason).
+//!
+//! **History (board item B2):** the `/ask` fork-ask flow
+//! (`SessionHandle::ask`) used to share this module, passing
+//! `ephemeral: true`. It no longer does: B2 moved `/ask` onto the runtime's
+//! own attach path (`SubagentHost::start`) so the ephemeral child attaches
+//! as a proper fork child of the asker (`kind: Fork`, `parent: Some(asker)`,
+//! `AgentSpawned` emitted) instead of a `kind: None` root with no event.
+//! `fork_from`'s child remains a first-class, NON-ephemeral catalog citizen
+//! resumed as a root -- this module's only remaining caller -- so the
+//! `ephemeral` knob the shared helper once carried is gone with the `/ask`
+//! caller: `SessionMeta::ephemeral` is fixed `false` here.
 
 use std::sync::Arc;
 
@@ -29,13 +43,12 @@ use crate::session_handle::SessionHandle;
 /// Overrides onto the parent's own `agent_def`/`role` (`None` inherits the
 /// parent's value, the same fallback [`crate::Conway::fork_from`] used
 /// before this module existed), plus the live child agent's `tools`/
-/// `budget`, plus whether the child is born ephemeral.
+/// `budget`.
 pub(crate) struct ForkChildRequest {
     pub agent_def: Option<String>,
     pub role: Option<RoleAlias>,
     pub tools: Option<ToolSelector>,
     pub budget: Budget,
-    pub ephemeral: bool,
 }
 
 /// Forks `parent` at `at` into a fresh, drivable child session.
@@ -44,10 +57,10 @@ pub(crate) struct ForkChildRequest {
 /// everything else inherited from `parent_meta`), `store.fork` it (a single
 /// header write, zero parent records copied), then `rt.resume_root` it --
 /// re-registering the freshly created session as a live root agent, exactly
-/// as [`crate::Conway::resume`]/[`crate::Conway::fork_from`] already do.
-/// `resume_root`'s own `ResumeGate` means the child idles until the
-/// returned handle's first `prompt`/`ask`-driven turn -- this function never
-/// runs a turn as a side effect of forking by itself.
+/// as [`crate::Conway::resume`] already does. `resume_root`'s own
+/// `ResumeGate` means the child idles until the returned handle's first
+/// `prompt`-driven turn -- this function never runs a turn as a side effect
+/// of forking by itself.
 pub(crate) async fn fork_child(
     rt: &Arc<Runtime>,
     store: &Arc<dyn SessionStore>,
@@ -68,7 +81,13 @@ pub(crate) async fn fork_child(
         cwd: parent_meta.cwd,
         labels: Vec::new(),
         status: SessionStatus::Active,
-        ephemeral: req.ephemeral,
+        // Never ephemeral: a `fork_from` child is a first-class catalog
+        // citizen (see the module doc's B2 history note).
+        ephemeral: false,
+        // B5: not an `/ask` child either -- the tag exists only on ephemeral
+        // ask children (stamped from `SubagentSpec::ask_origin` in
+        // `conway-runtime`'s `SubagentHost::start`).
+        ask_origin: None,
     };
     let child = store.fork(&parent, at, child_meta).await?;
 

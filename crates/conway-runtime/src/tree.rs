@@ -271,6 +271,26 @@ impl AgentTree {
         nodes.get(&agent).map(|entry| entry.node.ephemeral).unwrap_or(false)
     }
 
+    /// Flips `agent`'s `ephemeral` flag in place and returns the agent's
+    /// own `SessionId` (so the caller can emit under it without a second
+    /// lookup) — the runtime-tree half of the facade's ephemeral→persistent
+    /// promote (B3). Added for `Runtime::promote_agent`; unlike
+    /// [`ephemeral_of`](Self::ephemeral_of)'s read, an unknown agent is an
+    /// error (`RuntimeError::AgentNotFound`), matching every other mutating
+    /// lookup here — a promote targeting a non-attached agent is a caller
+    /// bug, not a defaultable condition. One-way in practice (the facade
+    /// only ever passes `false`, and the store layer refuses the reverse)
+    /// but the setter itself is value-agnostic: the tree records what it is
+    /// told, it does not adjudicate lifecycle policy.
+    pub fn set_ephemeral(&self, agent: AgentId, ephemeral: bool) -> Result<SessionId, RuntimeError> {
+        let mut nodes = self.nodes.write().expect("agent tree lock poisoned");
+        let entry = nodes
+            .get_mut(&agent)
+            .ok_or(RuntimeError::AgentNotFound { agent })?;
+        entry.node.ephemeral = ephemeral;
+        Ok(entry.node.session)
+    }
+
     /// Awaits `agent`'s terminal result. Always terminates once *something*
     /// publishes one -- the supervisor's guarantee -- with no unresolvable
     /// path. Holds no tree lock while awaiting.

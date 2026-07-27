@@ -189,10 +189,16 @@ privileged access the public API lacks.
   one — this is what makes an N-way tournament/fan-out pattern practical
   rather than serial.
 - **`conway_ask`** (category `Delegate`, permission `Dangerous` — like
-  `conway_subagent`, the fork child inherits the caller's full tool set, so
-  arbitrary tool calls are one hop away). **Fork-only**: takes a `prompt` and
-  an optional `budget` (no `mode`/`agent_def`/`role`/`tools` — the fork already
-  inherits the caller's context, agent_def, role, and tool set; GP-02). Runs
+  `conway_subagent`, the fork child inherits at most the caller's requested
+  tool set, so arbitrary tool calls are one hop away). **Fork-only**: takes a
+  `prompt`, an optional `budget`, and an optional `tools` list (no
+  `mode`/`agent_def`/`role` — the fork already inherits the caller's context,
+  agent_def, and role; GP-02). `tools` narrows the ephemeral child's tool set
+  to the named tools (`ToolSelector::Only`, the same selector
+  `conway_subagent`'s `tools` arg produces) — e.g.
+  `{"prompt": "summarize the diff", "tools": ["read"]}` restricts the child
+  to read-only inspection. The arg is narrowing-only: it can restrict, never
+  widen, the tool set the child would otherwise inherit. Runs
   the prompt in an **ephemeral fork** of the caller and returns the child's
   **full** concatenated reply text (not the truncated `AgentResult::summary`;
   GP-01), plus an `EphemeralSessionRef` artifact naming the child's session for

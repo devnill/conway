@@ -4,17 +4,17 @@
 //! NOT a third primitive — fork+await-text, no mode parameter, GP-02).
 //!
 //! Fork-only (v1): the child inherits this agent's full context, agent_def,
-//! role, and tool set (fork semantics), so this tool takes only `prompt` and
-//! an optional `budget` — no `mode`/`result_contract`/`tools`/`role`/
-//! `agent_def` args. Returns the full reply text (GP-01) so the model can
-//! compose a fresh spawn out-of-band, keeping the curation reasoning out of
-//! this agent's context window.
+//! role, and tool set (fork semantics), so this tool takes only `prompt`,
+//! an optional `budget`, and an optional `tools` narrowing list — no
+//! `mode`/`result_contract`/`role`/`agent_def` args. Returns the full reply
+//! text (GP-01) so the model can compose a fresh spawn out-of-band, keeping
+//! the curation reasoning out of this agent's context window.
 
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use conway_core::agent::{Budget, ResultStatus, SubagentSpec};
+use conway_core::agent::{Budget, ResultStatus, SubagentSpec, ToolSelector};
 use conway_core::content::{
     Artifact, ArtifactKind, ContentBlock, PermissionClass, ToolCall, ToolCategory, ToolSpec,
 };
@@ -39,6 +39,14 @@ pub(super) struct AskArgs {
     prompt: String,
     #[serde(default)]
     budget: Option<BudgetArg>,
+    /// Restrict the ephemeral child's tool set to these names
+    /// (`ToolSelector::Only`, the same mapping `conway_subagent`'s `tools`
+    /// arg uses). Narrowing-only (P-10): the runtime resolves the selector
+    /// against the registered tools the child would otherwise inherit in
+    /// full, so this can restrict but never widen the child's set. Optional
+    /// (C-04): absent means the child inherits the full set, as before.
+    #[serde(default)]
+    tools: Option<Vec<String>>,
 }
 
 /// Precedence: the call's `budget` argument, then `ctx.config`'s `ask.*`
@@ -87,11 +95,12 @@ impl Tool for AskTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: ToolName::new("conway_ask"),
-            description: "Run a prompt in an ephemeral fork of this agent and return the child's full reply text. Use this to draft or curate context for a fresh spawn out-of-band, keeping the curation reasoning out of this agent's context window.".into(),
+            description: "Run a prompt in an ephemeral fork of this agent and return the child's full reply text. Use this to draft or curate context for a fresh spawn out-of-band, keeping the curation reasoning out of this agent's context window. Pass `tools` to restrict the child's tool set to the named tools (narrowing-only — it can never grant tools the child would not otherwise inherit).".into(),
             schema: schemars::schema_for!(AskArgs),
             category: ToolCategory::Delegate,
-            // The child inherits the parent's full tool set, so arbitrary
-            // tool calls are one hop away — same risk class as
+            // The child inherits AT MOST the caller's requested tool set
+            // (an absent `tools` arg means the full inherited set), so
+            // arbitrary tool calls are one hop away — same risk class as
             // `conway_subagent` and `bash`.
             permission: PermissionClass::Dangerous,
         }
@@ -106,13 +115,22 @@ impl Tool for AskTool {
             prompt: args.prompt,
             agent_def: None,
             role: None,
-            tools: None,
+            tools: args.tools.map(ToolSelector::Only),
             budget: resolve_ask_budget(args.budget, &ctx.config)?,
             cache_hint: true,
             result_contract: None,
             await_result: true,
             keep_alive: false,
             ephemeral: true,
+            // B5: tag this child as TOOL-ask residue -- DISTINCT from the
+            // TUI's modal `/ask` (`AskOrigin::ModalAsk`, set by `conway`'s
+            // `SessionHandle::ask`). LOAD-BEARING: the TUI's startup
+            // crash-residue sweep purges only `ModalAsk`-tagged ephemeral
+            // sessions; this child's transcript is referenced by the
+            // `EphemeralSessionRef` artifact below, so sweeping it would
+            // leave that artifact dangling (see
+            // `conway_core::log::AskOrigin`'s own doc).
+            ask_origin: Some(conway_core::log::AskOrigin::ToolAsk),
         };
 
         let outcome = ctx
