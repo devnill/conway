@@ -1,9 +1,0 @@
-id: J-001-032
-type: journal_entry
-phase: autopilot
-date: 2026-07-21
-cycle_created: 1
-title: work-item-complete
-content: "Cycle 1 — Work item WI-078: PermissionBroker. Status: complete with
-  rework (2 minor: AuthorizedCall rename removing the core-name shadow; grant
-  dedup-on-insert). Commit 55ccc47. Runtime 28 tests. WI-079 unblocked."

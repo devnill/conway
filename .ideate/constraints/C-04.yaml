@@ -1,9 +1,0 @@
-id: C-04
-type: constraint
-category: process
-status: active
-description: "Private repo now, OSS later. Conway is developed in a private GitHub repository but is intended for open-source release: code hygiene, licensing choices, and dependencies must be OSS-release-ready from the start (no proprietary or unlicensable dependencies)."
-cycle_created: 0
-cycle_modified: null
-content_hash: b6a6a2f14939ab841850c6502664e52697ed3f9e7cc64d12bdc21ccec999e231
-token_count: 92

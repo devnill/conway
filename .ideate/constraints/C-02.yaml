@@ -1,9 +1,0 @@
-id: C-02
-type: constraint
-category: scope
-status: active
-description: No Claude subscription auth. Anthropic access is via metered API keys only. Third-party reuse of Claude Pro/Max OAuth tokens is contractually prohibited by Anthropic's consumer ToS and technically blocked at the API level (as of Feb 2026); conway must not implement, document, or facilitate that path.
-cycle_created: 0
-cycle_modified: null
-content_hash: b4eff38d6977a80c12bc3752a510212b7f095af94b13f1e180ccd31809524ffa
-token_count: 102

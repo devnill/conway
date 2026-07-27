@@ -1,8 +1,0 @@
-id: J-001-009
-type: journal_entry
-phase: autopilot
-date: 2026-07-20
-cycle_created: 1
-title: work-item-complete
-content: "Cycle 1 — Work item WI-006: Event and Envelope stream types. Status:
-  complete. No rework — zero findings. Commit 9ed68ab. 72 tests passing."
