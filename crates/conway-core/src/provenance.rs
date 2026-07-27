@@ -13,8 +13,9 @@ use crate::ids::{AgentId, LogSeq, SegmentId, SeqRange, SessionId, ToolName};
 
 /// Why a segment of assembled context exists.
 ///
-/// Exactly nine variants (architecture §5.3, GP-10). Adding a tenth is a
-/// breaking wire-format change and must be treated as such.
+/// Ten variants: the original nine of architecture §5.3 (GP-10) plus
+/// [`Provenance::MergedAsk`] (board item B4). Adding another is a breaking
+/// wire-format change and must be treated as such.
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -42,6 +43,14 @@ pub enum Provenance {
     ToolResult { call_id: String, tool: ToolName },
     /// A runtime-authored note (e.g. repeated-step detection).
     SystemNote { reason: String },
+    /// A question merged into the parent's log by `Conway::pull_in` (B4)
+    /// when an ephemeral `/ask` child is folded back into its asker. The
+    /// child's `ForkDirective` head record (and any genuine `UserTurn`s in
+    /// the child) lands in the parent as a `UserTurn` re-stamped with this
+    /// variant, so the merge origin — the purged child's `SessionId` —
+    /// stays explicit and inspectable (P-2/GP-10) even after the child's
+    /// own session file is gone.
+    MergedAsk { from: SessionId },
 }
 
 /// Where a segment sits in the fixed §5.3 ordering: `Static` segments are
@@ -80,7 +89,8 @@ impl Provenance {
             | Provenance::ForkDirective { .. }
             | Provenance::ParentSteer { .. }
             | Provenance::ToolResult { .. }
-            | Provenance::SystemNote { .. } => SegmentTier::Volatile,
+            | Provenance::SystemNote { .. }
+            | Provenance::MergedAsk { .. } => SegmentTier::Volatile,
         }
     }
 }
@@ -174,6 +184,12 @@ mod tests {
                 },
                 "system_note",
             ),
+            (
+                Provenance::MergedAsk {
+                    from: SessionId::new(),
+                },
+                "merged_ask",
+            ),
         ]
     }
 
@@ -185,8 +201,8 @@ mod tests {
             let back: Provenance = serde_json::from_value(value).unwrap();
             assert_eq!(back, prov);
         }
-        // Nine variants, no more, no fewer.
-        assert_eq!(all_tagged().len(), 9);
+        // Ten variants, no more, no fewer.
+        assert_eq!(all_tagged().len(), 10);
     }
 
     #[test]

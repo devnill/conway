@@ -45,6 +45,18 @@ use gate::GateReceiver;
 pub async fn run(cli: &Cli, conway: Conway, gate_rx: GateReceiver) -> conway::Result<ExitCode> {
     install_panic_hook(restore_terminal);
 
+    // B5 crash-residue sweep, once per startup, BEFORE the session below is
+    // even created (so the tree is still empty and every modal-ask leftover
+    // is eligible -- see `Conway::sweep_stale_modal_asks`'s own not-live
+    // caution). Purges ONLY `AskOrigin::ModalAsk`-tagged ephemeral sessions:
+    // a modal ask child left behind by a crashed/killed TUI has no modal
+    // that will ever show its answer, so no user will ever choose a fate
+    // for it. `conway_ask` TOOL children are never touched (their
+    // `EphemeralSessionRef` artifacts would dangle). Best-effort: a sweep
+    // failure only leaves residue for the NEXT startup's sweep -- it must
+    // never block the TUI from starting.
+    let _ = conway.sweep_stale_modal_asks().await;
+
     enable_raw_mode().map_err(ConwayError::Io)?;
     if let Err(e) = execute!(std::io::stdout(), EnterAlternateScreen) {
         restore_terminal();

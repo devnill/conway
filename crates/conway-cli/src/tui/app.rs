@@ -26,11 +26,15 @@ use super::input::{self, Action};
 use super::state::AppState;
 use super::view;
 
-/// The result of one spawned `/ask` task (see [`App::submit`]'s `/ask`
-/// branch and [`run_ask`]), matched back to its [`super::state::Entry::EphemeralAsk`]
-/// by `id`.
-struct AskResult {
-    id: u64,
+/// The result of one spawned `/ask` task (B5 -- see [`App::submit`]'s
+/// `/ask` branch and [`run_modal_ask`]). `child` is the ephemeral fork
+/// child's `AgentId` (from `TurnHandle::agent`), the value the modal's
+/// three fates need; it is `None` only when `SessionHandle::ask` itself
+/// failed (no child was ever attached -- nothing to open a modal over, so
+/// the failure becomes a plain transcript `Notice` instead).
+struct ModalAskOutcome {
+    question: String,
+    child: Option<conway::AgentId>,
     reply: conway::Result<String>,
 }
 
@@ -48,15 +52,18 @@ pub struct App {
     // `SessionHandle` -- cheap to hold (every field is `Arc`-backed, per
     // `Conway`'s own doc: "Cheap to `Clone`").
     conway: Conway,
-    /// `/ask` (WI-127 criterion 5) spawns a `tokio::spawn`ed task per
-    /// question (fork-ask, then drain the child's turn to completion via
-    /// `TurnHandle::text` -- see [`run_ask`]) rather than folding it into
-    /// `self.handle.events()`: the forked child is a DIFFERENT session, so
-    /// its envelopes never arrive on that stream. `ask_tx` is cloned into
-    /// each spawned task; `ask_rx` is taken out of `self` once, in `run`,
-    /// and polled there as an extra `tokio::select!` arm.
-    ask_tx: mpsc::UnboundedSender<AskResult>,
-    ask_rx: Option<mpsc::UnboundedReceiver<AskResult>>,
+    /// `/ask` (B5) spawns a `tokio::spawn`ed task per question (fork-ask,
+    /// then drain the child's single turn to completion via
+    /// `TurnHandle::text` -- see [`run_modal_ask`]) rather than folding it
+    /// into `self.handle.events()`: the forked child is a DIFFERENT
+    /// session, so its envelopes never arrive on that stream. When the
+    /// task resolves, the loop opens the single-turn modal
+    /// (`state.offer_ask_modal`) showing the child's answer and forcing
+    /// exactly one fate (`f`/`p`/`Esc`). `modal_ask_tx` is cloned into
+    /// each spawned task; `modal_ask_rx` is taken out of `self` once, in
+    /// `run`, and polled there as an extra `tokio::select!` arm.
+    modal_ask_tx: mpsc::UnboundedSender<ModalAskOutcome>,
+    modal_ask_rx: Option<mpsc::UnboundedReceiver<ModalAskOutcome>>,
 }
 
 /// What `App::submit` learned the app loop must additionally do, beyond the
@@ -117,13 +124,13 @@ impl App {
         };
         let handle = conway.new_session(spec).await?;
         let state = AppState::new(handle.root());
-        let (ask_tx, ask_rx) = mpsc::unbounded_channel();
+        let (modal_ask_tx, modal_ask_rx) = mpsc::unbounded_channel();
         Ok(Self {
             handle,
             state,
             conway: conway.clone(),
-            ask_tx,
-            ask_rx: Some(ask_rx),
+            modal_ask_tx,
+            modal_ask_rx: Some(modal_ask_rx),
         })
     }
 
@@ -141,14 +148,14 @@ impl App {
         let mut dirty = true;
         let mut last_ctrl_c: Option<Instant> = None;
         // Taken out of `self` once here (rather than borrowed from it inside
-        // the loop below) so this `select!`'s `ask_rx.recv()` arm and the
-        // other arms' `&mut self.state` borrows don't conflict -- the same
-        // reason `events`/`keys`/`ticker` are already locals, not fields
-        // borrowed in place.
-        let mut ask_rx = self
-            .ask_rx
+        // the loop below) so this `select!`'s `modal_ask_rx.recv()` arm and
+        // the other arms' `&mut self.state` borrows don't conflict -- the
+        // same reason `events`/`keys`/`ticker` are already locals, not
+        // fields borrowed in place.
+        let mut modal_ask_rx = self
+            .modal_ask_rx
             .take()
-            .expect("ask_rx is set in App::new and taken exactly once, here");
+            .expect("modal_ask_rx is set in App::new and taken exactly once, here");
 
         loop {
             tokio::select! {
@@ -159,10 +166,41 @@ impl App {
                         dirty = false;
                     }
                 }
-                maybe_ask = ask_rx.recv() => {
-                    if let Some(AskResult { id, reply }) = maybe_ask {
-                        let text = reply.unwrap_or_else(|e| format!("error: {e}"));
-                        self.state.resolve_ephemeral_ask(id, text);
+                maybe_ask = modal_ask_rx.recv() => {
+                    if let Some(outcome) = maybe_ask {
+                        self.state.ask_in_flight = false;
+                        match outcome.child {
+                            // The child's single turn is done -- open the
+                            // modal over its answer and force the fate
+                            // choice. A turn-level error still opens the
+                            // modal (with the error text as the answer): the
+                            // child exists and the user must still choose
+                            // its fate (esc purges it, as ever).
+                            Some(child) => {
+                                let answer = outcome
+                                    .reply
+                                    .unwrap_or_else(|e| format!("error: {e}"));
+                                self.state.offer_ask_modal(super::state::AskModal {
+                                    question: outcome.question,
+                                    child,
+                                    answer,
+                                    error: None,
+                                });
+                            }
+                            // `SessionHandle::ask` itself failed: no child
+                            // was ever attached, so there is nothing to
+                            // fate -- a plain notice, no modal.
+                            None => {
+                                let err = outcome
+                                    .reply
+                                    .err()
+                                    .map(|e| e.to_string())
+                                    .unwrap_or_else(|| "unknown error".to_string());
+                                self.state.transcript.push(super::state::Entry::Notice {
+                                    text: format!("ask failed: {err}"),
+                                });
+                            }
+                        }
                         dirty = true;
                     }
                 }
@@ -295,12 +333,89 @@ impl App {
                                 Action::PermissionDecision(decision) => {
                                     self.state.resolve_current_prompt(decision);
                                 }
+                                Action::AskFate(fate) => {
+                                    // B5: exactly one facade op per fate,
+                                    // via the same Host seam `commands::execute`
+                                    // uses -- a failure keeps the modal open
+                                    // with the error shown (see
+                                    // `commands::apply_ask_fate`'s own doc).
+                                    let host = commands::LiveHost {
+                                        handle: &self.handle,
+                                        conway: &self.conway,
+                                    };
+                                    commands::apply_ask_fate(fate, &mut self.state, &host).await;
+                                }
+                                Action::IntentConfirm(choice) => {
+                                    // C2: the confirmation card's trust
+                                    // gate. `execute_intent_confirm` runs the
+                                    // classified/default recipe for
+                                    // `Confirm`/`Manual` via `bare_fork`/
+                                    // `bare_spawn` directly (returning
+                                    // whatever `Effect` that produces --
+                                    // typically `FocusNewSession`, wired
+                                    // below exactly as a bare `/fork`/
+                                    // `/spawn` would be) and is a no-op for
+                                    // `Edit` (the key handler already
+                                    // dropped the prompt into `state.input`
+                                    // and closed the card).
+                                    let host = commands::LiveHost {
+                                        handle: &self.handle,
+                                        conway: &self.conway,
+                                    };
+                                    match commands::execute_intent_confirm(
+                                        choice,
+                                        &mut self.state,
+                                        &host,
+                                    )
+                                    .await
+                                    {
+                                        Effect::None => {}
+                                        Effect::Quit => return Ok(ExitCode::Completed),
+                                        Effect::Resumed(handle) => {
+                                            self.handle = handle;
+                                            events = self.handle.events();
+                                        }
+                                        Effect::FocusNewSession {
+                                            child,
+                                            parent,
+                                            first_message,
+                                        } => {
+                                            // Same seed-then-focus-then-
+                                            // deliver sequence as a bare
+                                            // /fork//spawn -- see the
+                                            // `Action::Submit` arm's own
+                                            // `FocusNewSession` handling
+                                            // for the rationale.
+                                            self.state.ensure_agent_tracked(child, parent);
+                                            let on_fail_extra =
+                                                first_message.is_some().then_some(
+                                                    "; your message was not sent",
+                                                );
+                                            if let Some(stream) = self
+                                                .try_focus_agent(child, on_fail_extra)
+                                                .await
+                                            {
+                                                events = stream;
+                                                if let Some(text) = first_message {
+                                                    self.deliver_first_message(child, text).await;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                                 Action::CtrlC => {
                                     if let Some(code) = self.handle_ctrl_c(&mut last_ctrl_c).await? {
                                         return Ok(code);
                                     }
                                 }
-                                Action::Quit => return Ok(ExitCode::Completed),
+                                Action::Quit => {
+                                    // B5: quitting with the /ask modal open
+                                    // is the discard fate -- the child is
+                                    // purged first, so there is no fourth,
+                                    // fate-less way out of the modal.
+                                    self.purge_open_ask_modal().await;
+                                    return Ok(ExitCode::Completed);
+                                }
                                 Action::ScrollUp => self.page_scroll(terminal, true)?,
                                 Action::ScrollDown => self.page_scroll(terminal, false)?,
                                 Action::ScrollLineUp => self.line_scroll(terminal, true)?,
@@ -361,17 +476,24 @@ impl App {
                 self.state.transcript.push(super::state::Entry::Notice {
                     text: "usage: /ask <text>".to_string(),
                 });
+            } else if self.state.ask_in_flight {
+                // B5: the modal is a single-question surface -- one ask at
+                // a time, never a pile-up competing for the one
+                // `Mode::AskModal` slot.
+                self.state.transcript.push(super::state::Entry::Notice {
+                    text: "an /ask is already running -- wait for its answer".to_string(),
+                });
             } else {
-                let id = self.state.push_ephemeral_ask(question.clone());
+                self.state.ask_in_flight = true;
                 let handle = self.handle.clone();
-                let tx = self.ask_tx.clone();
+                let tx = self.modal_ask_tx.clone();
                 tokio::spawn(async move {
-                    let reply = run_ask(handle, question).await;
+                    let outcome = run_modal_ask(handle, question).await;
                     // The receiver only goes away when `App::run`'s loop
                     // has already exited -- nothing left to notify, so a
                     // send failure here is silently dropped rather than
                     // treated as an error.
-                    let _ = tx.send(AskResult { id, reply });
+                    let _ = tx.send(outcome);
                 });
             }
             return Ok(SubmitOutcome::Continue);
@@ -622,6 +744,9 @@ impl App {
         let now = Instant::now();
         if let Some(prev) = *last_ctrl_c {
             if now.duration_since(prev) <= DOUBLE_CTRL_C_WINDOW {
+                // B5: exiting with the /ask modal open purges its child
+                // first, exactly like `Action::Quit` (see that arm).
+                self.purge_open_ask_modal().await;
                 return Ok(Some(ExitCode::Interrupted));
             }
         }
@@ -635,15 +760,77 @@ impl App {
         }
         Ok(None)
     }
+
+    /// B5's "no fourth way out": every quit path (`Action::Quit`, the
+    /// double-`Ctrl-C` exit) funnels through here before leaving the app
+    /// loop. If the `/ask` modal is open -- OR parked behind a permission
+    /// prompt in `pending_ask_modal` (the two compete for the one modal
+    /// slot, so at most one is present) -- its child is purged via
+    /// `Conway::purge`. Quitting IS the discard fate (P-2/GP-10: purge
+    /// only ever happens by an explicit user action, and quitting with the
+    /// modal open is one). Best-effort: the process is exiting anyway, so
+    /// a purge failure only leaves residue the NEXT startup's crash sweep
+    /// (`Conway::sweep_stale_modal_asks`, wired in `tui::mod.rs`) reaps --
+    /// it never blocks the exit.
+    async fn purge_open_ask_modal(&mut self) {
+        // The modal is either live (`Mode::AskModal`) or parked in
+        // `pending_ask_modal` while a permission prompt is showing; take
+        // the child from whichever holds it. Without the parked arm,
+        // quitting while a prompt covered the modal would leave the child
+        // for the next startup's sweep instead of discarding it now (M1).
+        let live_child = if matches!(self.state.mode, super::state::Mode::AskModal(_)) {
+            let modal = match std::mem::replace(&mut self.state.mode, super::state::Mode::Normal) {
+                super::state::Mode::AskModal(m) => m,
+                _ => unreachable!("guarded by the matches! check above"),
+            };
+            Some(modal.child)
+        } else {
+            None
+        };
+        let parked_child = self.state.take_pending_ask_modal().map(|m| m.child);
+        for child in live_child.into_iter().chain(parked_child) {
+            if let Err(e) = self.conway.purge(child).await {
+                self.state.transcript.push(super::state::Entry::Notice {
+                    text: format!("could not discard the /ask child on exit: {e}"),
+                });
+            }
+        }
+        // C2: drain a parked intent confirmation card on exit too. Unlike
+        // the /ask modal there is no live child to purge (the card opens
+        // BEFORE any agent is created -- quitting with the card open IS
+        // the manual fallback), so this is just a drop-on-the-floor for
+        // symmetry with `take_pending_ask_modal` above: it keeps the
+        // parking slot empty rather than leaving a classified intent
+        // dangling in `pending_intent_confirm` at process exit.
+        let _ = self.state.take_pending_intent_confirm();
+    }
 }
 
-/// Drives one `/ask` (WI-127 criterion 5) to completion: `SessionHandle::ask`
-/// forks an ephemeral child and returns a `TurnHandle` over it (exactly like
+/// Drives one `/ask` (B5) to completion: `SessionHandle::ask` forks an
+/// ephemeral child (attaching it as a proper fork child of the asker --
+/// post-B2, so its `AgentSpawned` reaches the `/agents` tree marked
+/// `(ephemeral)`) and returns a `TurnHandle` over it (exactly like
 /// `SessionHandle::prompt`, but scoped to that throwaway child); `text()`
-/// drains it to the finished reply. A free function (not an `App` method)
-/// since it owns none of `App`'s state -- it runs inside a `tokio::spawn`ed
-/// task that outlives any single `submit` call, so it cannot borrow `self`.
-async fn run_ask(handle: SessionHandle, question: String) -> conway::Result<String> {
-    let turn = handle.ask(question).await?;
-    turn.text().await
+/// drains it to the finished reply. The child's `AgentId`
+/// (`TurnHandle::agent`) rides along in the outcome -- the modal's fates
+/// all need it. A free function (not an `App` method) since it owns none
+/// of `App`'s state -- it runs inside a `tokio::spawn`ed task that
+/// outlives any single `submit` call, so it cannot borrow `self`.
+async fn run_modal_ask(handle: SessionHandle, question: String) -> ModalAskOutcome {
+    match handle.ask(question.clone()).await {
+        Ok(turn) => {
+            let child = turn.agent();
+            let reply = turn.text().await;
+            ModalAskOutcome {
+                question,
+                child: Some(child),
+                reply,
+            }
+        }
+        Err(e) => ModalAskOutcome {
+            question,
+            child: None,
+            reply: Err(e),
+        },
+    }
 }

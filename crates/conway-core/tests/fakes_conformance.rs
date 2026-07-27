@@ -101,6 +101,7 @@ fn sample_session_meta(id: SessionId, origin: Option<ForkOrigin>) -> SessionMeta
         labels: vec![],
         status: SessionStatus::Active,
         ephemeral: false,
+        ask_origin: None,
     }
 }
 
@@ -272,6 +273,98 @@ fn fake_store_read_out_of_range_and_head() {
 
     let err = block_on(store.read(&id, SeqRange::new(LogSeq(5), None))).unwrap_err();
     assert!(matches!(err, StoreError::SeqOutOfRange { .. }));
+}
+
+#[test]
+fn fake_store_remove_enforces_the_ephemeral_and_children_guards() {
+    let store = FakeStore::new();
+
+    // Non-ephemeral: refused.
+    let persistent = block_on(store.create(sample_session_meta(SessionId::new(), None))).unwrap();
+    let err = block_on(store.remove(&persistent)).unwrap_err();
+    assert!(
+        matches!(err, StoreError::NotRemovable { .. }),
+        "non-ephemeral removal must be refused, got: {err:?}"
+    );
+
+    // Ephemeral with an EPHEMERAL child: still refused (the
+    // include_ephemeral trap — children() hides ephemeral children, so
+    // only the guard's unfiltered child scan can see this one).
+    let mut parent_meta = sample_session_meta(SessionId::new(), None);
+    parent_meta.ephemeral = true;
+    let parent = block_on(store.create(parent_meta)).unwrap();
+    let mut child_meta = sample_session_meta(
+        SessionId::new(),
+        Some(ForkOrigin {
+            parent,
+            at_seq: LogSeq(0),
+            mode: SubagentMode::Fork,
+        }),
+    );
+    child_meta.ephemeral = true;
+    let child = block_on(store.create(child_meta)).unwrap();
+    assert!(
+        block_on(store.children(&parent)).unwrap().is_empty(),
+        "children() must hide the ephemeral child (this is why the guard cannot use it)"
+    );
+    let err = block_on(store.remove(&parent)).unwrap_err();
+    assert!(
+        matches!(err, StoreError::NotRemovable { .. }),
+        "an ephemeral child must block removal, got: {err:?}"
+    );
+
+    // Remove the child, then the parent: both succeed, and both are gone.
+    block_on(store.remove(&child)).unwrap();
+    block_on(store.remove(&parent)).unwrap();
+    let err = block_on(store.meta(&parent)).unwrap_err();
+    assert!(matches!(err, StoreError::NotFound { .. }));
+
+    // Missing session: NotFound.
+    let err = block_on(store.remove(&SessionId::new())).unwrap_err();
+    assert!(matches!(err, StoreError::NotFound { .. }));
+}
+
+#[test]
+fn fake_store_set_ephemeral_enforces_the_one_way_promote_guard() {
+    let store = FakeStore::new();
+
+    // Demotion (false -> true request) is refused first, even for a
+    // session that does not exist.
+    let err = block_on(store.set_ephemeral(&SessionId::new(), true)).unwrap_err();
+    assert!(
+        matches!(err, StoreError::NotPromotable { .. }),
+        "demotion must be refused, got: {err:?}"
+    );
+
+    // An ephemeral session flips, and the flip is visible through both
+    // meta() and the default (exclude-ephemeral) listing.
+    let mut meta = sample_session_meta(SessionId::new(), None);
+    meta.ephemeral = true;
+    let sid = block_on(store.create(meta)).unwrap();
+    assert!(
+        block_on(store.list(SessionFilter::default())).unwrap().is_empty(),
+        "precondition: the ephemeral session is catalog-hidden"
+    );
+    block_on(store.set_ephemeral(&sid, false)).unwrap();
+    assert!(
+        !block_on(store.meta(&sid)).unwrap().ephemeral,
+        "meta must show the flipped flag"
+    );
+    assert_eq!(
+        block_on(store.list(SessionFilter::default())).unwrap().len(),
+        1,
+        "the promoted session must now appear in the default listing"
+    );
+
+    // A second flip (now a non-ephemeral no-op) is refused, and a false
+    // request on a missing session is NotFound.
+    let err = block_on(store.set_ephemeral(&sid, false)).unwrap_err();
+    assert!(
+        matches!(err, StoreError::NotPromotable { .. }),
+        "a double promote must be refused, got: {err:?}"
+    );
+    let err = block_on(store.set_ephemeral(&SessionId::new(), false)).unwrap_err();
+    assert!(matches!(err, StoreError::NotFound { .. }));
 }
 
 // ---------------------------------------------------------------------

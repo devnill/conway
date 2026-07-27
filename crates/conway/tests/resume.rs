@@ -376,6 +376,7 @@ async fn resume_succeeds_on_a_session_with_a_truncated_trailing_line() {
                 labels: vec![],
                 status: conway_session::SessionStatus::Active,
                 ephemeral: false,
+                ask_origin: None,
             })
             .await
             .expect("create should succeed");
@@ -578,6 +579,7 @@ fn session_meta_with_labels(labels: Vec<String>) -> conway_core::log::SessionMet
         labels,
         status: conway_core::log::SessionStatus::Active,
         ephemeral: false,
+        ask_origin: None,
     }
 }
 

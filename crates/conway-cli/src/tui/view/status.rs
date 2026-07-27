@@ -23,6 +23,10 @@ pub fn status_line(state: &AppState) -> String {
     let mode = match state.mode {
         Mode::Normal => "ready",
         Mode::AwaitingPermission(_) => "awaiting permission",
+        // B5: the /ask modal owns the screen -- the status line says so.
+        Mode::AskModal(_) => "ask",
+        // C2: the NL intent confirmation card owns the screen.
+        Mode::IntentConfirm(_) => "intent",
     };
     let count = state.tree.nodes.len();
     let noun = if count == 1 { "agent" } else { "agents" };

@@ -174,6 +174,7 @@ async fn seed_prompt(store: &dyn SessionStore, agent: AgentId, session: SessionI
             labels: vec![],
             status: SessionStatus::Active,
             ephemeral: false,
+            ask_origin: None,
         })
         .await
         .unwrap();

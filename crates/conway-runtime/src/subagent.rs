@@ -215,11 +215,24 @@ impl SubagentHost for Runtime {
             // captured local below; legacy `conway_subagent` fork/spawn paths
             // build their `SubagentSpec` with `ephemeral: false`
             // (`SubagentSpec::fork`/`::spawn`'s own constructor default), so
-            // they stay non-ephemeral exactly as before. Only `start_root`
-            // (a root is never ephemeral, per spec point 4) and `resume_root`
-            // (the facade `/ask`'s ephemeral:true path) set this field
-            // themselves; this `start` path defers to the spec.
+            // they stay non-ephemeral exactly as before. The facade's `/ask`
+            // (`conway`'s `SessionHandle::ask`, board item B2) also comes
+            // through THIS path with `spec.ephemeral = true` -- only
+            // `start_root` (a root is never ephemeral, per spec point 4) and
+            // `resume_root` (which re-stamps from the persisted header, for
+            // any resumed session that was forked off ephemeral) set this
+            // field from anywhere other than the spec.
             ephemeral: spec.ephemeral,
+            // B5: the `/ask`-origin tag flows straight from the caller's
+            // `SubagentSpec`, exactly like `ephemeral` above: the TUI's
+            // modal `/ask` (`SessionHandle::ask`) stamps
+            // `Some(AskOrigin::ModalAsk)`, the `conway_ask` tool stamps
+            // `Some(AskOrigin::ToolAsk)`, everything else leaves `None`.
+            // The TUI's crash-residue sweep (`Conway::
+            // sweep_stale_modal_asks`) purges ONLY `ModalAsk`-tagged
+            // leftovers -- a `ToolAsk` child's `EphemeralSessionRef`
+            // artifact would dangle (see `conway_core::log::AskOrigin`).
+            ask_origin: spec.ask_origin,
         };
 
         // Capture before `meta` is moved into `store.fork`/`store.create` below

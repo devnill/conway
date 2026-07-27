@@ -31,6 +31,7 @@ fn meta_for(id: SessionId) -> SessionMeta {
         labels: vec![],
         status: SessionStatus::Active,
         ephemeral: false,
+        ask_origin: None,
     }
 }
 

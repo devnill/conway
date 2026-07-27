@@ -62,6 +62,17 @@ pub enum ConwayError {
         feature: &'static str,
         message: String,
     },
+
+    /// The ephemeral intent-classification turn (`Conway::
+    /// classify_agent_intent`, C1) ended without a usable reply: the child
+    /// agent reached a non-`Completed` terminal status (a backend/routing
+    /// failure folded into `ResultStatus::Failed` by the runtime's agent
+    /// loop, budget exhaustion, or cancellation). Distinct from an
+    /// UNPARSEABLE reply, which is not an error at all — it degrades to a
+    /// verbatim passthrough `AgentIntent` (see `crate::intent`'s module
+    /// doc for the full policy).
+    #[error("intent classification failed: {message}")]
+    IntentClassification { message: String },
 }
 
 /// Alias for `std::result::Result<T, ConwayError>`, exported from the crate

@@ -278,6 +278,7 @@ async fn resume_root_does_not_create_or_append_initial_turn() {
             labels: Vec::new(),
             status: conway_core::log::SessionStatus::Active,
             ephemeral: false,
+            ask_origin: None,
         })
         .await
         .unwrap_err();

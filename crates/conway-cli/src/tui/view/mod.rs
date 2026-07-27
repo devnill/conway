@@ -17,7 +17,10 @@
 //! small, independently testable pure-rendering unit (module notes' own
 //! ask: "keep rendering functions small and testable").
 
-mod agents;
+// `pub(crate)` for item A3: `tui::commands`'s `/tree` snapshot renderer
+// reuses `agents::recipe_parts`/`agents::ancestor_depth` so the hidden
+// alias can never drift from what the panel draws.
+pub(crate) mod agents;
 mod input_box;
 pub mod palette;
 mod status;
@@ -29,7 +32,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
-use super::state::{AppState, Mode};
+use super::state::{AppState, AskModal, IntentConfirm, Mode};
 
 const INPUT_HEIGHT: u16 = 3;
 const STATUS_HEIGHT: u16 = 1;
@@ -65,6 +68,14 @@ pub fn draw(state: &AppState, frame: &mut Frame) {
             state.permission_scroll,
         );
     }
+
+    if let Mode::AskModal(modal) = &state.mode {
+        draw_ask_modal(frame, areas.transcript, modal);
+    }
+
+    if let Mode::IntentConfirm(card) = &state.mode {
+        draw_intent_confirm(frame, areas.transcript, card);
+    }
 }
 
 /// The frame's row split -- exactly what [`draw`] renders into, factored
@@ -80,7 +91,13 @@ struct Areas {
 }
 
 fn layout(state: &AppState, area: Rect) -> Areas {
-    let show_agents = state.agent_view_open && area.height > INPUT_HEIGHT + STATUS_HEIGHT + 3;
+    // B5: while the /ask modal owns the screen, the /agents panel is NOT
+    // visible (user decision, binding) even if it was open when the modal
+    // appeared -- `state.agent_view_open` itself is left untouched, so the
+    // panel comes back exactly as it was once a fate closes the modal.
+    let show_agents = state.agent_view_open
+        && !matches!(state.mode, Mode::AskModal(_) | Mode::IntentConfirm(_))
+        && area.height > INPUT_HEIGHT + STATUS_HEIGHT + 3;
 
     let mut constraints = vec![Constraint::Min(0)];
     if show_agents {
@@ -271,6 +288,184 @@ fn draw_permission_overlay(
         Line::from(hint),
         Line::from(format!("tool: {}  category: {:?}", req.tool, req.category)),
         Line::from(format!("agent path: {agent_path}")),
+    ];
+    let footer = Paragraph::new(footer_lines).wrap(Wrap { trim: true });
+    frame.render_widget(footer, footer_area);
+}
+
+/// Rows the /ask modal's footer ALWAYS reserves (B5): the fate-key hint,
+/// plus one line for the in-modal error shown after a failed fate (blank
+/// when there is none, so the hint never jumps vertically when an error
+/// appears).
+const ASK_MODAL_FOOTER_ROWS: u16 = 2;
+
+/// The `/ask` single-turn modal (B5): a bordered block over the bottom of
+/// the transcript area, following [`draw_permission_overlay`]'s precedent
+/// (a modal overlay replacing transcript content only while a decision is
+/// pending, via `Clear` -- never part of the copyable conversation).
+/// Unlike the permission overlay there is no scrolling: the modal's whole
+/// point is the forced choice in the footer, so the answer renders from
+/// its top and clips on a small viewport (the full answer always remains
+/// reachable afterward via whichever fate the user picks -- pull-in merges
+/// it into the parent's transcript; fork keeps the session).
+///
+/// The footer shows the three fate keys -- `[p] pull in · [f] fork ·
+/// [esc] discard` -- and, after a FAILED fate, the error that kept the
+/// modal open (red). The hint is ordered FIRST within the footer for the
+/// same small-viewport reason the permission overlay's doc explains: a
+/// `Paragraph` clips top-down, so the line the user needs to act on is the
+/// last thing clipped.
+fn draw_ask_modal(frame: &mut Frame, transcript_area: Rect, modal: &AskModal) {
+    // At minimum: 2 border rows + the pinned footer + one row of body.
+    let min_height = (2 + ASK_MODAL_FOOTER_ROWS + 1).min(transcript_area.height);
+    let height = transcript_area
+        .height
+        .saturating_sub(1)
+        .max(min_height)
+        .min(transcript_area.height);
+    let area = Rect {
+        x: transcript_area.x,
+        y: transcript_area.y + transcript_area.height.saturating_sub(height),
+        width: transcript_area.width,
+        height,
+    };
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" ASK ")
+        .border_style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        );
+    let inner = block.inner(area);
+    frame.render_widget(Clear, area);
+    frame.render_widget(block, area);
+
+    // Reserve the footer's rows FIRST (same invariant the permission
+    // overlay documents): the body shrinks on a tight viewport, never the
+    // footer.
+    let footer_rows = ASK_MODAL_FOOTER_ROWS.min(inner.height);
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(footer_rows)])
+        .split(inner);
+    let body_area = rows[0];
+    let footer_area = rows[1];
+
+    let mut body_lines = vec![
+        Line::from(Span::styled(
+            format!("you asked: {}", modal.question),
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+    ];
+    body_lines.extend(
+        modal
+            .answer
+            .split('\n')
+            .map(|line| Line::from(line.to_string())),
+    );
+    let body = Paragraph::new(body_lines).wrap(Wrap { trim: false });
+    frame.render_widget(body, body_area);
+
+    let error_line = match &modal.error {
+        Some(err) => Line::from(Span::styled(
+            format!("error: {err}"),
+            Style::default().fg(Color::Red),
+        )),
+        None => Line::from(""),
+    };
+    let footer_lines = vec![
+        Line::from("[p] pull in  [f] fork  [esc] discard"),
+        error_line,
+    ];
+    let footer = Paragraph::new(footer_lines).wrap(Wrap { trim: true });
+    frame.render_widget(footer, footer_area);
+}
+
+/// Rows the intent confirmation card's footer ALWAYS reserves (C2): the
+/// choice-key hint -- `[enter] confirm  [e] edit  [esc] manual` -- plus a
+/// blank line reserved for symmetry with [`ASK_MODAL_FOOTER_ROWS`] (the
+/// card has no in-modal error state: a failed confirm/manual re-enters
+/// `commands::execute`, which pushes the failure as a transcript `Notice`
+/// and returns `Effect::None`, so the card closes on the failure rather
+/// than staying open the way the `/ask` modal does).
+const INTENT_CONFIRM_FOOTER_ROWS: u16 = 2;
+
+/// The NL intent confirmation card (C2): a bordered block over the bottom of
+/// the transcript area, following [`draw_ask_modal`]'s overlay precedent (a
+/// modal overlay replacing transcript content only while a decision is
+/// pending, via `Clear` -- never part of the copyable conversation). The
+/// card shows the classified `recipe` (`fork`/`spawn`), the `agent_def`
+/// (or `(inherit)` when `None`), and the `prompt` the classifier produced
+/// (or the user's raw text on the verbatim-passthrough path), then forces
+/// exactly one choice via the footer: `[enter] confirm  [e] edit  [esc]
+/// manual`. The hint is ordered FIRST within the footer for the same
+/// small-viewport reason the `/ask` modal's doc explains: a `Paragraph`
+/// clips top-down, so the line the user needs to act on is the last thing
+/// clipped.
+fn draw_intent_confirm(frame: &mut Frame, transcript_area: Rect, card: &IntentConfirm) {
+    // At minimum: 2 border rows + the pinned footer + one row of body.
+    let min_height = (2 + INTENT_CONFIRM_FOOTER_ROWS + 1).min(transcript_area.height);
+    let height = transcript_area
+        .height
+        .saturating_sub(1)
+        .max(min_height)
+        .min(transcript_area.height);
+    let area = Rect {
+        x: transcript_area.x,
+        y: transcript_area.y + transcript_area.height.saturating_sub(height),
+        width: transcript_area.width,
+        height,
+    };
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" INTENT ")
+        .border_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD));
+    let inner = block.inner(area);
+    frame.render_widget(Clear, area);
+    frame.render_widget(block, area);
+
+    // Reserve the footer's rows FIRST (same invariant the /ask modal
+    // documents): the body shrinks on a tight viewport, never the footer.
+    let footer_rows = INTENT_CONFIRM_FOOTER_ROWS.min(inner.height);
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(footer_rows)])
+        .split(inner);
+    let body_area = rows[0];
+    let footer_area = rows[1];
+
+    let recipe = match card.intent.recipe {
+        conway::SubagentMode::Fork => "fork",
+        conway::SubagentMode::Spawn => "spawn",
+    };
+    let agent_def = card
+        .intent
+        .agent_def
+        .clone()
+        .unwrap_or_else(|| "(inherit)".to_string());
+    let mut body_lines = vec![
+        Line::from(Span::styled(
+            format!("recipe: {recipe}    agent_def: {agent_def}"),
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+    ];
+    body_lines.extend(
+        card.intent
+            .prompt
+            .split('\n')
+            .map(|line| Line::from(line.to_string())),
+    );
+    let body = Paragraph::new(body_lines).wrap(Wrap { trim: false });
+    frame.render_widget(body, body_area);
+
+    let footer_lines = vec![
+        Line::from("[enter] confirm  [e] edit  [esc] manual"),
+        Line::from(""),
     ];
     let footer = Paragraph::new(footer_lines).wrap(Wrap { trim: true });
     frame.render_widget(footer, footer_area);
@@ -529,6 +724,135 @@ mod tests {
         assert!(
             matches!(state.mode, Mode::Normal),
             "resolving the decision must return to Mode::Normal"
+        );
+    }
+
+    // ---- B5: the /ask single-turn modal ----
+
+    fn ask_modal_state(question: &str, answer: &str, error: Option<&str>) -> AppState {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        state.offer_ask_modal(crate::tui::state::AskModal {
+            question: question.to_string(),
+            child: AgentId::new(),
+            answer: answer.to_string(),
+            error: error.map(str::to_string),
+        });
+        state
+    }
+
+    #[test]
+    fn ask_modal_renders_the_question_answer_and_fate_keys() {
+        let state = ask_modal_state("what is the status?", "all green", None);
+
+        let text = render_text(&state, 80, 24);
+
+        assert!(text.contains("you asked: what is the status?"), "{text}");
+        assert!(text.contains("all green"), "{text}");
+        assert!(text.contains("[p] pull in"), "{text}");
+        assert!(text.contains("[f] fork"), "{text}");
+        assert!(text.contains("[esc] discard"), "{text}");
+    }
+
+    #[test]
+    fn ask_modal_shows_the_error_after_a_failed_fate() {
+        let state = ask_modal_state("q", "a", Some("pull_in refused: child is still running"));
+
+        let text = render_text(&state, 80, 24);
+
+        assert!(
+            text.contains("pull_in refused: child is still running"),
+            "the failed fate's error must show in-modal: {text}"
+        );
+        // The fate keys are still on screen -- the user still must choose.
+        assert!(text.contains("[p] pull in"), "{text}");
+    }
+
+    #[test]
+    fn ask_modal_hides_the_agents_panel_even_when_it_was_open() {
+        let mut state = ask_modal_state("q", "a", None);
+        state.agent_view_open = true;
+
+        let text = render_text(&state, 80, 24);
+
+        assert!(
+            !text.contains("agents ("),
+            "the /agents panel must not be visible while the modal is open: {text}"
+        );
+        assert!(
+            state.agent_view_open,
+            "the flag itself is left untouched -- the panel returns once the modal closes"
+        );
+    }
+
+    // ---- C2: the NL intent confirmation card ----
+
+    fn intent_confirm_state(
+        recipe: conway::SubagentMode,
+        agent_def: Option<&str>,
+        prompt: &str,
+    ) -> AppState {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        state.offer_intent_confirm(crate::tui::state::IntentConfirm {
+            intent: conway::AgentIntent {
+                recipe,
+                agent_def: agent_def.map(str::to_string),
+                prompt: prompt.to_string(),
+            },
+            default_recipe: recipe,
+            raw_text: prompt.to_string(),
+            parent: root,
+        });
+        state
+    }
+
+    #[test]
+    fn intent_confirm_card_renders_recipe_def_prompt_and_footer() {
+        let state = intent_confirm_state(conway::SubagentMode::Spawn, Some("reviewer"), "review the diff carefully");
+
+        let text = render_text(&state, 80, 24);
+
+        assert!(text.contains("recipe: spawn"), "the classified recipe must render: {text}");
+        assert!(text.contains("agent_def: reviewer"), "the classified agent_def must render: {text}");
+        assert!(
+            text.contains("review the diff carefully"),
+            "the classified prompt must render: {text}"
+        );
+        assert!(
+            text.contains("[enter] confirm  [e] edit  [esc] manual"),
+            "the three-choice footer must render: {text}"
+        );
+    }
+
+    #[test]
+    fn intent_confirm_card_shows_inherit_when_no_agent_def() {
+        let state = intent_confirm_state(conway::SubagentMode::Fork, None, "go");
+
+        let text = render_text(&state, 80, 24);
+
+        assert!(text.contains("recipe: fork"), "{text}");
+        assert!(
+            text.contains("agent_def: (inherit)"),
+            "None agent_def must render as (inherit): {text}"
+        );
+        assert!(text.contains("[enter] confirm  [e] edit  [esc] manual"));
+    }
+
+    #[test]
+    fn intent_confirm_card_hides_the_agents_panel_even_when_it_was_open() {
+        let mut state = intent_confirm_state(conway::SubagentMode::Spawn, None, "go");
+        state.agent_view_open = true;
+
+        let text = render_text(&state, 80, 24);
+
+        assert!(
+            !text.contains("agents ("),
+            "the /agents panel must not be visible while the card is open: {text}"
+        );
+        assert!(
+            state.agent_view_open,
+            "the flag itself is left untouched -- the panel returns once the card closes"
         );
     }
 }

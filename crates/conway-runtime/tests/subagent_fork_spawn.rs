@@ -119,6 +119,16 @@ impl SessionStore for CountingStore {
     ) -> Result<Vec<SessionMeta>, conway_core::error::StoreError> {
         self.inner.list(filter).await
     }
+    async fn remove(&self, sid: &SessionId) -> Result<(), conway_core::error::StoreError> {
+        self.inner.remove(sid).await
+    }
+    async fn set_ephemeral(
+        &self,
+        sid: &SessionId,
+        ephemeral: bool,
+    ) -> Result<(), conway_core::error::StoreError> {
+        self.inner.set_ephemeral(sid, ephemeral).await
+    }
 }
 
 /// Builds a runtime whose backend script has `turns` text-only responses
@@ -452,6 +462,7 @@ async fn spawn_without_agent_def_inherits_the_parents_role() {
         await_result: true,
         keep_alive: false,
         ephemeral: false,
+        ask_origin: None,
     };
     let mut stream = runtime.subscribe();
     let child = SubagentHost::start(&*runtime, root, spec).await.unwrap();

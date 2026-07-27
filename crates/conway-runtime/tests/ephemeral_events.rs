@@ -6,9 +6,10 @@
 //! - `AgentTree::attach` stamps `Event::AgentSpawned::ephemeral` from
 //!   `AgentNode::ephemeral` verbatim, and `AgentTree::ephemeral_of` reads it
 //!   back for the `Event::AgentFinished` stamp. Exercised directly here with
-//!   an `ephemeral: true` node (mirroring how `conway`'s facade `fork_child`
-//!   path attaches an `/ask` child via `resume_root`, which is the one
-//!   production site that sets `AgentNode::ephemeral = true`).
+//!   an `ephemeral: true` node -- the exact shape `SubagentHost::start`
+//!   builds for an `ephemeral: true` fork spec, which is how both the
+//!   `conway_ask` tool and (post-B2) the facade's `SessionHandle::ask`
+//!   attach their `/ask` children.
 //! - A `conway_subagent` fork (`SubagentHost::start`, the `Runtime` impl in
 //!   `subagent.rs`) is NEVER ephemeral -- `SessionMeta::ephemeral` is
 //!   hardcoded `false` on that path -- so both its `AgentSpawned` and
@@ -67,8 +68,9 @@ async fn attach_stamps_agent_spawned_ephemeral_from_node_and_ephemeral_of_reads_
     })
     .expect("root attach");
 
-    // An ephemeral fork child (the shape `conway`'s facade `fork_child` /
-    // `resume_root` path produces for `/ask`): `ephemeral: true`,
+    // An ephemeral fork child (the shape `SubagentHost::start` produces for
+    // an `ephemeral: true` fork spec -- the `conway_ask` tool's, and
+    // post-B2 the facade `/ask`'s, child): `ephemeral: true`,
     // `kind: Some(Fork)` -> `attach` emits `AgentSpawned { ephemeral: true }`.
     let ephemeral_child = AgentId::new();
     tree.attach(AgentNode {
@@ -352,4 +354,179 @@ fn _provenance_anchor() -> Provenance {
 #[allow(dead_code)]
 fn _session_meta_anchor(meta: &SessionMeta) -> bool {
     meta.ephemeral
+}
+// ---------------------------------------------------------------------
+// B3: `AgentTree::set_ephemeral` + `Runtime::promote_agent`
+// ---------------------------------------------------------------------
+
+/// The tree setter behind the facade's promote: flips the flag in place
+/// (`ephemeral_of` — the `Event::AgentFinished` stamp source — reads the
+/// new value back immediately), and an unknown agent is a typed
+/// `AgentNotFound`, never a silent no-op.
+#[tokio::test]
+async fn set_ephemeral_flips_the_flag_and_errors_on_unknown_agent() {
+    let bus = EventBus::with_default_capacity();
+    let tree = AgentTree::new(bus);
+
+    let parent = AgentId::new();
+    let session = SessionId::new();
+    tree.attach(AgentNode {
+        id: parent,
+        parent: None,
+        session,
+        kind: None,
+        agent_def: None,
+        role: None,
+        budget: Budget::default(),
+        cancel: CancellationToken::new(),
+        inherited_upto: None,
+        ephemeral: false,
+    })
+    .expect("root attach");
+
+    let child = AgentId::new();
+    let child_session = SessionId::new();
+    tree.attach(AgentNode {
+        id: child,
+        parent: Some(parent),
+        session: child_session,
+        kind: Some(SubagentMode::Fork),
+        agent_def: None,
+        role: None,
+        budget: Budget::default(),
+        cancel: CancellationToken::new(),
+        inherited_upto: Some(LogSeq(0)),
+        ephemeral: true,
+    })
+    .expect("ephemeral child attach");
+
+    assert!(tree.ephemeral_of(child), "precondition: child is ephemeral");
+    let returned = tree
+        .set_ephemeral(child, false)
+        .expect("set_ephemeral on an attached agent");
+    assert_eq!(
+        returned, child_session,
+        "set_ephemeral must return the agent's own session for the caller's emit"
+    );
+    assert!(
+        !tree.ephemeral_of(child),
+        "ephemeral_of must read the flipped flag back"
+    );
+    let snapshot = tree.snapshot();
+    assert!(
+        !snapshot
+            .nodes
+            .iter()
+            .find(|n| n.agent_id == child)
+            .expect("child in snapshot")
+            .ephemeral,
+        "the snapshot must project the flipped flag"
+    );
+
+    let err = tree
+        .set_ephemeral(AgentId::new(), false)
+        .expect_err("unknown agent must error");
+    assert!(
+        matches!(err, conway_core::error::RuntimeError::AgentNotFound { .. }),
+        "unknown agent must be AgentNotFound, got: {err:?}"
+    );
+}
+
+/// `Runtime::promote_agent` end-to-end: an ephemeral fork child (the exact
+/// shape `SubagentHost::start` builds for an `ephemeral: true` spec — the
+/// facade `/ask`'s child) is flipped in the live tree and exactly one
+/// `Event::AgentPromoted` is emitted under the CHILD's own session/agent,
+/// which the method also returns.
+#[tokio::test]
+async fn promote_agent_flips_tree_and_emits_agent_promoted_under_the_child() {
+    let runtime = build_runtime(2);
+    let mut stream = runtime.subscribe();
+    let root = runtime.start_root(root_spec("investigate")).await.unwrap();
+
+    // Quiesce the bus (see the fork test above for why this drain exists).
+    loop {
+        let envelope = stream.next().await.expect("root stream open");
+        if matches!(envelope.event, Event::AgentFinished { .. }) && envelope.agent == root {
+            break;
+        }
+    }
+
+    let child = SubagentHost::start(
+        &*runtime,
+        root,
+        SubagentSpec {
+            ephemeral: true,
+            ..fork_spec("an ephemeral aside")
+        },
+    )
+    .await
+    .unwrap();
+    let child_session = runtime
+        .tree()
+        .nodes
+        .iter()
+        .find(|n| n.agent_id == child)
+        .expect("child in tree")
+        .session;
+
+    let returned = runtime
+        .promote_agent(child)
+        .expect("promote_agent on an attached child");
+    assert_eq!(
+        returned, child_session,
+        "promote_agent must return the promoted agent's own session"
+    );
+    assert!(
+        !runtime
+            .tree()
+            .nodes
+            .iter()
+            .find(|n| n.agent_id == child)
+            .expect("child in tree")
+            .ephemeral,
+        "the live tree must show the flipped flag"
+    );
+
+    let envelope = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let envelope = stream.next().await.expect("stream open");
+            if matches!(envelope.event, Event::AgentPromoted { .. }) {
+                break envelope;
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for AgentPromoted");
+    assert_eq!(envelope.agent, child);
+    assert_eq!(
+        envelope.session, child_session,
+        "AgentPromoted must be stamped under the child's own session"
+    );
+
+    // Drain the child's finish so the test leaves no live task; the finish
+    // must now carry `ephemeral: false` (stamped from the flipped node).
+    let finish_ephemeral = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let envelope = stream.next().await.expect("stream open");
+            if let Event::AgentFinished { ephemeral, .. } = envelope.event {
+                if envelope.agent == child {
+                    break ephemeral;
+                }
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for the promoted child's AgentFinished");
+    assert!(
+        !finish_ephemeral,
+        "the promoted child's AgentFinished must carry ephemeral: false"
+    );
+
+    let err = runtime
+        .promote_agent(AgentId::new())
+        .expect_err("unknown agent must error");
+    assert!(
+        matches!(err, conway_core::error::RuntimeError::AgentNotFound { .. }),
+        "unknown agent must be AgentNotFound, got: {err:?}"
+    );
 }

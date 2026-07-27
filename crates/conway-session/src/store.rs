@@ -92,7 +92,43 @@ struct SessionFile {
     /// syncs dirty idle handles so a session that stops appending is never
     /// left un-fsynced longer than the interval (WI-047 review S1).
     dirty: bool,
+    /// Set by `remove` under this session's own mutex, before the file is
+    /// unlinked. An `append` that already cloned the handle `Arc` before
+    /// the tombstone was published (and so can still reach this mutex)
+    /// checks this flag after acquiring it and fails `NotFound` instead of
+    /// writing to the unlinked inode and reporting a record as durably
+    /// stored when it was silently discarded (review F-1).
+    removed: bool,
 }
+
+/// Entry in the `handles` map.
+enum Handle {
+    /// A live per-session write handle.
+    Live(Arc<AsyncMutex<SessionFile>>),
+    /// Removal tombstone left by `remove`. A cold-open racing the delete
+    /// may have opened the session file just before `remove_file` unlinked
+    /// it; without the tombstone its insert below would resurrect a warm
+    /// handle for a purged session and later appends would write to the
+    /// unlinked inode while returning `Ok` (review F-1). The tombstone
+    /// makes every handle acquisition for the purged id fail `NotFound`.
+    /// A later `create` of the same id (practically impossible — ids are
+    /// ULIDs) simply overwrites it.
+    ///
+    /// Tombstones accumulate for the store's lifetime: each entry is
+    /// `SessionId`-sized and bounded by user purge activity, and they are
+    /// deliberately never reaped because a cold-open racing the purge may
+    /// still be in flight when `remove` returns.
+    Removed,
+}
+
+/// A cloned live per-session handle, opaque to callers. Exists only so
+/// tests can hold a raw handle Arc across a `remove` and then drive the
+/// append path through it (see
+/// [`JsonlSessionStore::clone_handle_for_test`] /
+/// [`JsonlSessionStore::append_via_raw_handle`]). Test-only
+/// instrumentation, not part of the public store contract.
+#[doc(hidden)]
+pub struct RawSessionHandle(Arc<AsyncMutex<SessionFile>>);
 
 /// One `.jsonl`-per-session, append-only session store.
 ///
@@ -100,9 +136,40 @@ struct SessionFile {
 /// `handles`; the outer `RwLock` is only ever held for the brief
 /// map-lookup/insert, never across file I/O, so N sessions append with N
 /// independent locks and no store-wide contention.
+///
+/// ## Lock order
+///
+/// Outermost first: `lifecycle` → `handles` → the per-session
+/// `SessionFile` mutex → `SessionIndex::state` (a `std::sync::RwLock`,
+/// never held across an `.await`). No code path holds two of these locks
+/// at once out of this order — `SessionIndex::state` is always a leaf,
+/// acquired and released synchronously — so there is no lock-ordering
+/// inversion.
+///
+/// `lifecycle` is taken only by `create`/`fork`/`remove`/`set_ephemeral`
+/// and is held
+/// across remove's guard-check-plus-delete AND across fork's
+/// head-check-plus-create (and plain `create`'s file-write-plus-index-
+/// record — the spawn path in `conway-runtime` creates children through
+/// `create` directly, so fork-only serialization would leave the same
+/// orphan window open there) — and across `set_ephemeral`'s guard-check-
+/// plus-header-rewrite (so a promote and a purge of the same session
+/// linearize: the purge fails `NotFound`, or the promote lands first and
+/// the purge fails `NotRemovable` on the flipped header). This closes the TOCTOU in which a remove's
+/// children check could miss a concurrently created child, orphaning it
+/// with dangling provenance (P-2, review F-1), and serializes
+/// `SessionIndex::remove`'s `persist_full` rewrite against a concurrent
+/// `record_header` append (review F-2). The hot path (`append`/`read`/
+/// `head`/`meta`) never touches `lifecycle`, preserving per-session
+/// append concurrency.
 pub struct JsonlSessionStore {
     root: PathBuf,
-    handles: Arc<AsyncRwLock<HashMap<SessionId, Arc<AsyncMutex<SessionFile>>>>>,
+    handles: Arc<AsyncRwLock<HashMap<SessionId, Handle>>>,
+    /// Store-wide lifecycle serialization for `create`/`fork`/`remove` —
+    /// see the type-level "Lock order" docs. `pub(crate)` so
+    /// `crate::fork::fork_impl` can hold it across its head-check plus the
+    /// delegated create.
+    pub(crate) lifecycle: AsyncMutex<()>,
     fsync: FsyncPolicy,
     fsync_count: Arc<AtomicU64>,
     /// Total lines read across every cold-open full-file scan performed by
@@ -157,7 +224,7 @@ fn io_err(e: std::io::Error) -> StoreError {
 /// interval (WI-047 review S1). Exits when the store is dropped (the
 /// `Weak` fails to upgrade) or the task is aborted.
 async fn flush_idle_handles(
-    handles: std::sync::Weak<AsyncRwLock<HashMap<SessionId, Arc<AsyncMutex<SessionFile>>>>>,
+    handles: std::sync::Weak<AsyncRwLock<HashMap<SessionId, Handle>>>,
     fsync_count: Arc<AtomicU64>,
     interval: Duration,
     index: std::sync::Weak<SessionIndex>,
@@ -168,8 +235,15 @@ async fn flush_idle_handles(
     loop {
         tick.tick().await;
         let Some(map) = handles.upgrade() else { return };
-        let snapshot: Vec<Arc<AsyncMutex<SessionFile>>> =
-            map.read().await.values().cloned().collect();
+        let snapshot: Vec<Arc<AsyncMutex<SessionFile>>> = map
+            .read()
+            .await
+            .values()
+            .filter_map(|h| match h {
+                Handle::Live(h) => Some(Arc::clone(h)),
+                Handle::Removed => None,
+            })
+            .collect();
         drop(map);
         for handle in snapshot {
             let mut sf = handle.lock().await;
@@ -340,7 +414,7 @@ impl JsonlSessionStore {
     pub async fn open_with(root: PathBuf, cfg: StoreConfig) -> Result<Self, StoreError> {
         tokio::fs::create_dir_all(&root).await.map_err(io_err)?;
         let index = Arc::new(SessionIndex::load_or_rebuild(&root).await?);
-        let handles: Arc<AsyncRwLock<HashMap<SessionId, Arc<AsyncMutex<SessionFile>>>>> =
+        let handles: Arc<AsyncRwLock<HashMap<SessionId, Handle>>> =
             Arc::new(AsyncRwLock::new(HashMap::new()));
         let fsync_count = Arc::new(AtomicU64::new(0));
         let flusher = match cfg.fsync {
@@ -356,6 +430,7 @@ impl JsonlSessionStore {
         Ok(Self {
             root,
             handles,
+            lifecycle: AsyncMutex::new(()),
             fsync: cfg.fsync,
             fsync_count,
             lines_scanned: Arc::new(AtomicU64::new(0)),
@@ -383,8 +458,12 @@ impl JsonlSessionStore {
         &self,
         sid: &SessionId,
     ) -> Result<Arc<AsyncMutex<SessionFile>>, StoreError> {
-        if let Some(h) = self.handles.read().await.get(sid) {
-            return Ok(Arc::clone(h));
+        match self.handles.read().await.get(sid) {
+            Some(Handle::Live(h)) => return Ok(Arc::clone(h)),
+            // Removal tombstone: the session was purged; never resurrect a
+            // handle for it (see `Handle::Removed`).
+            Some(Handle::Removed) => return Err(StoreError::NotFound { session: *sid }),
+            None => {}
         }
 
         // Cold path: open, read, and (if needed) repair the file WITHOUT
@@ -421,110 +500,47 @@ impl JsonlSessionStore {
             records: recovered.records,
             last_fsync: Instant::now(),
             dirty: false,
+            removed: false,
         };
         let arc = Arc::new(AsyncMutex::new(sf));
         let mut handles = self.handles.write().await;
-        if let Some(existing) = handles.get(sid) {
+        match handles.get(sid) {
             // Lost a cold-open race: use the winner's handle; ours has
             // performed no writes (repair via set_len is idempotent —
             // both racers computed the same recovery from the same bytes).
-            return Ok(Arc::clone(existing));
-        }
-        handles.insert(*sid, Arc::clone(&arc));
-        Ok(arc)
-    }
-
-    /// Total number of `sync_data()` calls issued by this store so far
-    /// (header writes, `append`'s fsync-policy syncs). Test-only
-    /// instrumentation, not part of the public store contract.
-    #[doc(hidden)]
-    pub fn fsync_count(&self) -> u64 {
-        self.fsync_count.load(Ordering::Relaxed)
-    }
-
-    /// Total lines read across every cold-open full-file scan so far (see
-    /// the field doc on [`JsonlSessionStore::lines_scanned`]). WI-048's O(1)
-    /// fork tests pre-warm the parent handle, snapshot this counter, call
-    /// `fork`, and assert it is unchanged. Test-only instrumentation, not
-    /// part of the public store contract.
-    #[doc(hidden)]
-    pub fn lines_scanned(&self) -> u64 {
-        self.lines_scanned.load(Ordering::Relaxed)
-    }
-
-    /// Whether `a` and `b` currently have distinct in-memory per-session
-    /// write handles — proves `append` never funnels through one
-    /// store-wide lock. Test-only, not part of the public store contract.
-    #[doc(hidden)]
-    pub async fn distinct_handles(&self, a: &SessionId, b: &SessionId) -> bool {
-        let handles = self.handles.read().await;
-        match (handles.get(a), handles.get(b)) {
-            (Some(ha), Some(hb)) => !Arc::ptr_eq(ha, hb),
-            _ => false,
+            Some(Handle::Live(existing)) => Ok(Arc::clone(existing)),
+            // Lost a race with `remove`: the session was purged while we
+            // were opening it (possibly before `remove_file` unlinked it).
+            // Drop our handle — it points at a dead-or-dying inode.
+            Some(Handle::Removed) => Err(StoreError::NotFound { session: *sid }),
+            None => {
+                handles.insert(*sid, Handle::Live(Arc::clone(&arc)));
+                Ok(arc)
+            }
         }
     }
-}
 
-#[async_trait]
-impl SessionStore for JsonlSessionStore {
-    async fn create(&self, meta: SessionMeta) -> Result<SessionId, StoreError> {
-        let sid = meta.id;
-        let path = self.session_path(&sid);
-        let mut file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .append(true)
-            .create_new(true)
-            .open(&path)
-            .await
-            .map_err(|e| {
-                if e.kind() == ErrorKind::AlreadyExists {
-                    StoreError::AlreadyExists { session: sid }
-                } else {
-                    io_err(e)
-                }
-            })?;
-
-        let line = codec::encode_header(&meta);
-        file.write_all(line.as_bytes()).await.map_err(io_err)?;
-        // `tokio::fs::File` only guarantees a write has reached the OS once
-        // the handle is flushed/synced (a bare `write_all().await` may
-        // still have the write in flight on the blocking pool). Headers
-        // always fsync, regardless of policy, which subsumes the flush.
-        file.sync_data().await.map_err(io_err)?;
-        self.fsync_count.fetch_add(1, Ordering::Relaxed);
-
-        // Single wiring point for the index (WI-050): `fork` delegates to
-        // `create` (see `crate::fork::fork_impl`), so recording here covers
-        // both paths without any edit to `fork.rs`. Best-effort — index
-        // I/O errors are logged and swallowed inside `record_header`,
-        // never surfaced as a `create`/`fork` failure.
-        self.index.record_header(&meta);
-
-        let sf = SessionFile {
-            file,
-            meta,
-            head: LogSeq(0),
-            records: Vec::new(),
-            last_fsync: Instant::now(),
-            dirty: false,
-        };
-        self.handles
-            .write()
-            .await
-            .insert(sid, Arc::new(AsyncMutex::new(sf)));
-        Ok(sid)
-    }
-
-    async fn append(&self, sid: &SessionId, rec: LogRecord) -> Result<LogSeq, StoreError> {
-        if matches!(rec, LogRecord::Header(_)) {
-            return Err(StoreError::Io {
-                detail: "append: cannot append a Header record (use create/fork)".into(),
-            });
-        }
-
-        let handle = self.get_or_open_handle(sid).await?;
+    /// The body of [`SessionStore::append`] starting from an already
+    /// acquired per-session handle. Factored out so the `removed`-flag
+    /// regression tests can drive the append path through a stale,
+    /// pre-cloned handle Arc (see [`append_via_raw_handle`]) instead of
+    /// relying on the probabilistic barrier race.
+    async fn append_with_handle(
+        &self,
+        sid: &SessionId,
+        handle: Arc<AsyncMutex<SessionFile>>,
+        rec: LogRecord,
+    ) -> Result<LogSeq, StoreError> {
         let mut sf = handle.lock().await;
+
+        // The handle was cloned before `remove` published its tombstone,
+        // and `remove` has since marked the session purged under this same
+        // mutex (lock order: `handles` → session mutex, type-level docs).
+        // Fail rather than write a record to the unlinked inode and report
+        // it as stored (review F-1).
+        if sf.removed {
+            return Err(StoreError::NotFound { session: *sid });
+        }
 
         let seq = sf.head;
         let rec = assign_seq(rec, seq)?;
@@ -556,6 +572,160 @@ impl SessionStore for JsonlSessionStore {
         sf.records.push(rec);
         sf.head = seq.succ();
         Ok(seq)
+    }
+
+    /// Total number of `sync_data()` calls issued by this store so far
+    /// (header writes, `append`'s fsync-policy syncs). Test-only
+    /// instrumentation, not part of the public store contract.
+    #[doc(hidden)]
+    pub fn fsync_count(&self) -> u64 {
+        self.fsync_count.load(Ordering::Relaxed)
+    }
+
+    /// Total lines read across every cold-open full-file scan so far (see
+    /// the field doc on [`JsonlSessionStore::lines_scanned`]). WI-048's O(1)
+    /// fork tests pre-warm the parent handle, snapshot this counter, call
+    /// `fork`, and assert it is unchanged. Test-only instrumentation, not
+    /// part of the public store contract.
+    #[doc(hidden)]
+    pub fn lines_scanned(&self) -> u64 {
+        self.lines_scanned.load(Ordering::Relaxed)
+    }
+
+    /// Whether `a` and `b` currently have distinct in-memory per-session
+    /// write handles — proves `append` never funnels through one
+    /// store-wide lock. Test-only, not part of the public store contract.
+    #[doc(hidden)]
+    pub async fn distinct_handles(&self, a: &SessionId, b: &SessionId) -> bool {
+        let handles = self.handles.read().await;
+        match (handles.get(a), handles.get(b)) {
+            (Some(Handle::Live(ha)), Some(Handle::Live(hb))) => !Arc::ptr_eq(ha, hb),
+            _ => false,
+        }
+    }
+
+    /// Whether `sid`'s handles-map entry is currently a removal tombstone
+    /// (see [`Handle::Removed`]). Test-only instrumentation for the F-1
+    /// regression tests, not part of the public store contract.
+    #[doc(hidden)]
+    pub async fn is_removal_tombstoned(&self, sid: &SessionId) -> bool {
+        matches!(self.handles.read().await.get(sid), Some(Handle::Removed))
+    }
+
+    /// Clones `sid`'s live per-session handle Arc, if one is currently in
+    /// the map. Test-only instrumentation for the deterministic F-1
+    /// stale-Arc regression test (pair with [`append_via_raw_handle`]),
+    /// not part of the public store contract.
+    #[doc(hidden)]
+    pub async fn clone_handle_for_test(&self, sid: &SessionId) -> Option<RawSessionHandle> {
+        match self.handles.read().await.get(sid) {
+            Some(Handle::Live(h)) => Some(RawSessionHandle(Arc::clone(h))),
+            _ => None,
+        }
+    }
+
+    /// Performs `append` through a previously cloned [`RawSessionHandle`],
+    /// bypassing handle acquisition — deterministically exercising the
+    /// `SessionFile::removed` flag check that refuses stale-Arc appends
+    /// after a removal (review F-1). Test-only instrumentation, not part
+    /// of the public store contract.
+    #[doc(hidden)]
+    pub async fn append_via_raw_handle(
+        &self,
+        sid: &SessionId,
+        handle: RawSessionHandle,
+        rec: LogRecord,
+    ) -> Result<LogSeq, StoreError> {
+        self.append_with_handle(sid, handle.0, rec).await
+    }
+
+    /// The body of [`SessionStore::create`], factored out so
+    /// `crate::fork::fork_impl` can call it while already holding
+    /// `lifecycle` (taking the lock here too would self-deadlock — a
+    /// `tokio::sync::Mutex` is not reentrant). MUST only be called with
+    /// `lifecycle` held: the lock is what serializes the file-write +
+    /// `record_header` below against a concurrent `remove`'s
+    /// guard-check-plus-delete and its `persist_full` rewrite of
+    /// `index.jsonl` (review F-1/F-2; lock order on the type docs).
+    pub(crate) async fn create_inner(&self, meta: SessionMeta) -> Result<SessionId, StoreError> {
+        let sid = meta.id;
+        let path = self.session_path(&sid);
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .append(true)
+            .create_new(true)
+            .open(&path)
+            .await
+            .map_err(|e| {
+                if e.kind() == ErrorKind::AlreadyExists {
+                    StoreError::AlreadyExists { session: sid }
+                } else {
+                    io_err(e)
+                }
+            })?;
+
+        let line = codec::encode_header(&meta);
+        file.write_all(line.as_bytes()).await.map_err(io_err)?;
+        // `tokio::fs::File` only guarantees a write has reached the OS once
+        // the handle is flushed/synced (a bare `write_all().await` may
+        // still have the write in flight on the blocking pool). Headers
+        // always fsync, regardless of policy, which subsumes the flush.
+        file.sync_data().await.map_err(io_err)?;
+        self.fsync_count.fetch_add(1, Ordering::Relaxed);
+
+        // Single wiring point for the index (WI-050): `fork` delegates to
+        // `create` (see `crate::fork::fork_impl`), so recording here covers
+        // both paths without any edit to `fork.rs`. Best-effort — index
+        // I/O errors are logged and swallowed inside `record_header`,
+        // never surfaced as a `create`/`fork` failure. Ordered against
+        // `SessionIndex::remove`'s `persist_full` rewrite by `lifecycle`
+        // (held by every caller — see the signature docs), so a full
+        // rewrite can never rename over and destroy this appended line
+        // (review F-2).
+        self.index.record_header(&meta);
+
+        let sf = SessionFile {
+            file,
+            meta,
+            head: LogSeq(0),
+            records: Vec::new(),
+            last_fsync: Instant::now(),
+            dirty: false,
+            removed: false,
+        };
+        // Overwrites a `Handle::Removed` tombstone in the practically
+        // impossible case of an id being reused after a purge.
+        self.handles
+            .write()
+            .await
+            .insert(sid, Handle::Live(Arc::new(AsyncMutex::new(sf))));
+        Ok(sid)
+    }
+}
+
+#[async_trait]
+impl SessionStore for JsonlSessionStore {
+    async fn create(&self, meta: SessionMeta) -> Result<SessionId, StoreError> {
+        // Lock order (type-level docs): `lifecycle` is the outermost lock.
+        // Held across the whole create so a concurrent `remove` of this
+        // session's parent either completes first (and, for `fork`, fails
+        // the head check) or runs afterwards and sees this child in its
+        // guard — and so `record_header` can never interleave with
+        // `SessionIndex::remove`'s `persist_full` (review F-1/F-2).
+        let _lifecycle = self.lifecycle.lock().await;
+        self.create_inner(meta).await
+    }
+
+    async fn append(&self, sid: &SessionId, rec: LogRecord) -> Result<LogSeq, StoreError> {
+        if matches!(rec, LogRecord::Header(_)) {
+            return Err(StoreError::Io {
+                detail: "append: cannot append a Header record (use create/fork)".into(),
+            });
+        }
+
+        let handle = self.get_or_open_handle(sid).await?;
+        self.append_with_handle(sid, handle, rec).await
     }
 
     async fn read(&self, sid: &SessionId, range: SeqRange) -> Result<Vec<LogRecord>, StoreError> {
@@ -590,9 +760,13 @@ impl SessionStore for JsonlSessionStore {
     }
 
     async fn meta(&self, sid: &SessionId) -> Result<SessionMeta, StoreError> {
-        if let Some(h) = self.handles.read().await.get(sid) {
-            let sf = h.lock().await;
-            return Ok(sf.meta.clone());
+        match self.handles.read().await.get(sid) {
+            Some(Handle::Live(h)) => {
+                let sf = h.lock().await;
+                return Ok(sf.meta.clone());
+            }
+            Some(Handle::Removed) => return Err(StoreError::NotFound { session: *sid }),
+            None => {}
         }
 
         // Cold path: read only line 0, never the whole file — WI-048's
@@ -630,5 +804,276 @@ impl SessionStore for JsonlSessionStore {
     /// I/O on this path.
     async fn list(&self, filter: SessionFilter) -> Result<Vec<SessionMeta>, StoreError> {
         Ok(self.index.list(&filter))
+    }
+
+    /// Guarded purge — see the trait-level doc for the full guard matrix,
+    /// including the facade-layer live-session (`rt.tree()`) check that
+    /// deliberately does not live at this layer.
+    async fn remove(&self, sid: &SessionId) -> Result<(), StoreError> {
+        // Lock order (type-level docs): `lifecycle` is the outermost lock,
+        // held across the whole guard-check-plus-delete. A `fork`/`create`
+        // racing this remove therefore either completes first (the Guard-2
+        // list below sees the new child and refuses) or starts after (for
+        // `fork`, the parent head check fails `NotFound` on the tombstone)
+        // — the pair can never produce an orphaned child with dangling
+        // provenance (P-2, review F-1). The same hold orders
+        // `SessionIndex::remove`'s `persist_full` against a concurrent
+        // `record_header` append (review F-2).
+        let _lifecycle = self.lifecycle.lock().await;
+
+        // Guard 1: purge is for ephemeral sessions only (P-2/GP-10's single
+        // explicit exception to mandatory provenance retention).
+        let meta = self.meta(sid).await?;
+        if !meta.ephemeral {
+            return Err(StoreError::NotRemovable {
+                session: *sid,
+                reason: "session is not ephemeral (purge is only for ephemeral sessions)".into(),
+            });
+        }
+
+        // Guard 2: ANY children block removal. Queried via `list` with
+        // `include_ephemeral: true`, never via `children()` — the latter
+        // hides ephemeral children and would orphan them.
+        let kids = self
+            .list(SessionFilter {
+                parent: Some(*sid),
+                include_ephemeral: true,
+                ..Default::default()
+            })
+            .await?;
+        if !kids.is_empty() {
+            return Err(StoreError::NotRemovable {
+                session: *sid,
+                reason: format!("session has {} child session(s)", kids.len()),
+            });
+        }
+
+        // Publish the removal tombstone BEFORE touching the file: from
+        // this point no new handle can be acquired for `sid` — neither
+        // from the map nor from a cold-open that raced the delete and
+        // opened the file just before `remove_file` unlinks it (see
+        // `Handle::Removed`).
+        let prev = self
+            .handles
+            .write()
+            .await
+            .insert(*sid, Handle::Removed);
+
+        // An append that cloned the handle Arc before the tombstone can
+        // still reach the per-session mutex. Mark the session removed
+        // under that mutex: any such append either completed before this
+        // point (linearized before the removal — fine, the whole session
+        // is being deleted) or acquires the mutex after, sees the flag,
+        // and fails `NotFound` instead of writing to the unlinked inode
+        // and returning `Ok` for a silently lost record (review F-1).
+        //
+        // The interval flusher may also hold a snapshot Arc of this handle
+        // (see `flush_idle_handles`): a `sync_data` from it still lands on
+        // the now-unlinked inode and is harmlessly swallowed by the OS —
+        // deliberately no synchronization against that race.
+        if let Some(Handle::Live(handle)) = &prev {
+            handle.lock().await.removed = true;
+        }
+
+        if let Err(e) = tokio::fs::remove_file(self.session_path(sid)).await {
+            // ENOENT is NOT an error here: the file already being gone
+            // (e.g. deleted externally) is exactly the purge outcome, so
+            // fall through to index eviction. Mapping it to `NotFound`
+            // would wedge the session — tombstone published (so every
+            // data path fails `NotFound`) but the index entry survives
+            // (so it stays listed) and a retry hits the tombstone in
+            // Guard 1, making it un-removable until restart.
+            if e.kind() != ErrorKind::NotFound {
+                // Any other io error means the file very likely still
+                // exists: roll the removal back so the session stays
+                // usable AND removable (a permanent tombstone over a
+                // surviving file + index entry is the wedge above).
+                // Restoring `prev` wholesale is safe because `lifecycle`
+                // is still held — no create can have overwritten the
+                // tombstone, and a cold-open that saw it failed
+                // `NotFound` without inserting — and the flag is cleared
+                // before re-publishing the handle (lock order: `handles`
+                // → session mutex, never the reverse).
+                if let Some(Handle::Live(handle)) = &prev {
+                    handle.lock().await.removed = false;
+                }
+                let mut handles = self.handles.write().await;
+                match prev {
+                    Some(h) => {
+                        handles.insert(*sid, h);
+                    }
+                    None => {
+                        handles.remove(sid);
+                    }
+                }
+                return Err(io_err(e));
+            }
+        }
+
+        // Index eviction + persist, best-effort under the same failure
+        // policy as `record_header`: a failed persist leaves `index.jsonl`
+        // disagreeing with disk, which `load_or_rebuild` self-heals (with
+        // a WARN) on next open. Serialized against `record_header` by
+        // `lifecycle` (still held), so the `persist_full` rewrite can
+        // never clobber a concurrent create's appended line (review F-2).
+        if let Err(e) = self.index.remove(sid).await {
+            tracing::warn!(
+                session = %sid,
+                error = %e,
+                "index eviction after remove failed to persist; will be reconciled by rebuild-by-scan on next open"
+            );
+        }
+        Ok(())
+    }
+
+    /// The guarded one-way header flip — see the trait-level doc for the
+    /// full guard matrix. Durably rewrites line 0 of the session file with
+    /// `ephemeral: false`, updates the in-memory `SessionFile::meta`, and
+    /// re-records the header in the index.
+    async fn set_ephemeral(&self, sid: &SessionId, ephemeral: bool) -> Result<(), StoreError> {
+        // Lock order (type-level docs): `lifecycle` is the outermost lock,
+        // held across the whole guard-check-plus-rewrite. A `remove` racing
+        // this promote therefore either completes first (the handle
+        // acquisition below fails `NotFound` on the tombstone) or runs
+        // after and sees the flipped header — its Guard 1 then refuses the
+        // purge (`NotRemovable`) because the session is no longer
+        // ephemeral. The pair can never both succeed. The same hold
+        // serializes the index `update_header`'s `persist_full` rewrite
+        // against a concurrent `create`'s `record_header` append, exactly
+        // as `remove` does (review F-2).
+        let _lifecycle = self.lifecycle.lock().await;
+
+        // Guard 0: demotion (persistent -> ephemeral) does not exist —
+        // promotion is one-way, so a persistent record can never silently
+        // become purge-eligible scratchpad (P-2).
+        if ephemeral {
+            return Err(StoreError::NotPromotable {
+                session: *sid,
+                reason:
+                    "demotion (ephemeral false -> true) is not supported; promotion is one-way"
+                        .into(),
+            });
+        }
+
+        let handle = self.get_or_open_handle(sid).await?;
+        let mut sf = handle.lock().await;
+
+        // Same stale-Arc refusal as `append_with_handle` — unreachable while
+        // `lifecycle` is held (`remove` takes it too), but cheap, and keeps
+        // the "never write through a removed handle" invariant local to the
+        // handle rather than relying on the caller's lock discipline alone.
+        if sf.removed {
+            return Err(StoreError::NotFound { session: *sid });
+        }
+
+        // Guard 1: only a true -> false flip is a promote. A no-op on a
+        // non-ephemeral session would silently mask a double promote or a
+        // caller bug.
+        if !sf.meta.ephemeral {
+            return Err(StoreError::NotPromotable {
+                session: *sid,
+                reason: "session is not ephemeral".into(),
+            });
+        }
+
+        let mut new_meta = sf.meta.clone();
+        new_meta.ephemeral = false;
+
+        // Crash-window ordering (cycle-5 B3 review): delete the persisted
+        // index BEFORE the header rename below. `try_load`'s consistency
+        // check compares only id SETS, so a crash between the rename and
+        // the index rewrite would otherwise leave a loadable-but-stale
+        // `ephemeral: true` line that mis-hides the promoted session
+        // forever (a mid-remove crash produces an id-set MISMATCH and
+        // self-heals; a mid-promote crash produces matching sets with
+        // stale content and never does). With the delete first, a crash at
+        // any point leaves NO index on disk, and rebuild-by-scan reads the
+        // session files' own headers — old header (the promote didn't
+        // happen) or new (it did), both correct.
+        self.index.invalidate_persisted().await;
+
+        // The header rewrite, crash-atomic via tmp + fsync + rename — the
+        // same discipline `SessionIndex::persist_full` uses for
+        // `index.jsonl`. The new line 0 is followed by every record byte
+        // copied VERBATIM from the live file (P-2: promotion rewrites
+        // nothing except the flag — record lines are not even re-encoded).
+        // An in-place overwrite of line 0 is impossible here: the promoted
+        // header serializes one byte LONGER than the ephemeral one
+        // (`"ephemeral":true` -> `"ephemeral":false`), so it can never fit
+        // back into the same span — and a mid-write crash of an in-place
+        // rewrite would corrupt record bytes the store's crash recovery
+        // (trailing-line truncation only, see `recover`) cannot heal. The
+        // rename either happens or it doesn't: a crash before it leaves the
+        // original ephemeral header fully intact (the promote simply fails
+        // and can be retried), and a stray temp file left behind is skipped
+        // by every directory scan (non-`.jsonl` extension) and overwritten
+        // by the next promote.
+        //
+        // Reading the raw bytes under the session mutex is what makes the
+        // verbatim copy complete: an `append` only pushes to `sf.records`
+        // after its write+flush has fully landed, and no append can be in
+        // flight while this mutex is held, so the file on disk is exactly
+        // the current header plus every record this store has ever
+        // acknowledged.
+        let path = self.session_path(sid);
+        let tmp_path = self.root.join(format!("{sid}.promote.tmp"));
+        let raw = tokio::fs::read(&path).await.map_err(io_err)?;
+        let header_len = raw
+            .iter()
+            .position(|b| *b == b'\n')
+            .map(|pos| pos + 1)
+            .ok_or_else(|| StoreError::Corrupt {
+                session: *sid,
+                line: 0,
+                detail: "session file has no newline-terminated header".into(),
+            })?;
+
+        let rewrite = async {
+            let mut tmp = File::create(&tmp_path).await.map_err(io_err)?;
+            tmp.write_all(codec::encode_header(&new_meta).as_bytes())
+                .await
+                .map_err(io_err)?;
+            tmp.write_all(&raw[header_len..]).await.map_err(io_err)?;
+            // Headers always fsync (same durability class as `create`'s
+            // header write, regardless of the append-path fsync policy).
+            tmp.sync_data().await.map_err(io_err)?;
+            drop(tmp);
+            tokio::fs::rename(&tmp_path, &path).await.map_err(io_err)
+        };
+        if let Err(e) = rewrite.await {
+            // Best-effort cleanup; a leftover temp file is harmless (see
+            // the comment above) but tidy when the failure is recoverable.
+            let _ = tokio::fs::remove_file(&tmp_path).await;
+            return Err(e);
+        }
+        self.fsync_count.fetch_add(1, Ordering::Relaxed);
+
+        // The rename detached the inode this handle's `file` still points
+        // at: without this swap, every later `append` would write to the
+        // unlinked inode while reporting success — the exact failure mode
+        // `Handle::Removed` exists to prevent for purge. Reopen the path
+        // (now the rewritten file) in the same append mode `create` uses.
+        // The interval flusher cannot be mid-`sync_data` on the old fd: it
+        // locks this same session mutex.
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .append(true)
+            .open(&path)
+            .await
+            .map_err(io_err)?;
+        sf.file = file;
+        sf.meta = new_meta.clone();
+        sf.last_fsync = Instant::now();
+        sf.dirty = false;
+
+        // Index upsert + `persist_full`, under the same `lifecycle` hold as
+        // `remove`'s eviction (review F-2). Never fails the promote — the
+        // session file (source of truth) is already durably flipped, and
+        // `update_header` converts a persist failure into a forced
+        // rebuild-by-scan on next open rather than surfacing it here (see
+        // its doc for why warn-and-swallow alone would be silently wrong).
+        self.index.update_header(&new_meta).await;
+        Ok(())
     }
 }

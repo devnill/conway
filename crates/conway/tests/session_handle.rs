@@ -428,6 +428,7 @@ async fn transcript_resolves_the_effective_ancestry_of_a_forked_fixture() {
         labels: vec![],
         status: SessionStatus::Active,
         ephemeral: false,
+        ask_origin: None,
     };
     store
         .fork(&handle.id(), fork_at, child_meta)
@@ -524,6 +525,7 @@ async fn transcript_resolves_a_grandchild_fork_three_generations_deep() {
                 labels: vec![],
                 status: SessionStatus::Active,
                 ephemeral: false,
+                ask_origin: None,
             },
         )
         .await
@@ -564,6 +566,7 @@ async fn transcript_resolves_a_grandchild_fork_three_generations_deep() {
                 labels: vec![],
                 status: SessionStatus::Active,
                 ephemeral: false,
+                ask_origin: None,
             },
         )
         .await

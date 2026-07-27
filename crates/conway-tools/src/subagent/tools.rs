@@ -265,6 +265,10 @@ impl Tool for SubagentTool {
             // set.
             keep_alive: false,
             ephemeral: false,
+            // Not an `/ask` child (B5): the `conway_ask` tool (`ask.rs`)
+            // stamps `AskOrigin::ToolAsk`, the TUI's modal `/ask` stamps
+            // `ModalAsk`; `conway_subagent` is neither.
+            ask_origin: None,
         };
 
         let child = ctx

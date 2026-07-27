@@ -17,7 +17,9 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use conway_core::agent::{AgentResult, AgentTreeSnapshot, Budget};
+use conway_core::agent::{
+    AgentDefRef, AgentResult, AgentTreeSnapshot, Budget, SubagentMode, SubagentSpec,
+};
 use conway_core::content::{ContentBlock, ToolResult, Usage};
 use conway_core::error::{RuntimeError, StoreError};
 use conway_core::event::{Envelope, Event};
@@ -167,63 +169,119 @@ impl SessionHandle {
         Ok(TurnHandle::new(self.rt.clone(), session, agent, stream))
     }
 
-    /// The `/ask` fork-ask primitive: forks this session's agent at its
+    /// The `/ask` fork-ask primitive: forks this session's root agent at its
     /// CURRENT head into a fresh, ephemeral child -- inheriting this
-    /// session's entire context and tool set, since a fork always does (see
-    /// `crate::fork_child`'s doc for the shared fork+resume sequence) -- then
-    /// drives the child's first turn with `text`, exactly as `prompt` would
-    /// for a normal turn.
+    /// session's entire context, agent-def system prompt, and tool set,
+    /// since a fork always does -- and drives the child's first (and only)
+    /// turn with `text`.
+    ///
+    /// **Attach semantics (board item B2):** the child goes through the
+    /// runtime's own subagent machinery (`SubagentHost::start`, the same
+    /// path `SessionHandle::fork` and the `conway_ask` tool already use),
+    /// NOT the `fork_child` -> `resume_root` sequence this method used
+    /// before B2. That means the child attaches as a proper fork child of
+    /// the asker -- `kind: Some(SubagentMode::Fork)`, `parent: Some(
+    /// self.root)`, `inherited_upto: Some(<fork-point seq>)` -- and
+    /// `AgentTree::attach` emits `Event::AgentSpawned { kind: Fork,
+    /// parent: Some(asker), ephemeral: true, .. }` on the live bus, so the
+    /// TUI's tree view shows the node (P-2: ephemeral children stay
+    /// attached and visible to provenance; never-attach was rejected). The
+    /// old path attached the child as a `kind: None` root with no
+    /// `AgentSpawned` at all.
     ///
     /// Returns a [`TurnHandle`] over the CHILD, in the same shape `prompt`
-    /// returns one over `self` -- so a caller (e.g. the `/ask` TUI command,
-    /// a separate slice) subscribes and renders it exactly like a normal
-    /// prompt turn, with no special-casing. `self`'s own transcript and live
-    /// agent are untouched: no record is appended to `self.session`, and
-    /// `self.root` never sees the question -- fork semantics already
-    /// guarantee this (a child is bounded at its fork seq; the parent only
-    /// ever reads its own ancestry, never a child's turns).
+    /// returns one over `self` -- so a caller (e.g. the `/ask` TUI command)
+    /// subscribes and renders it exactly like a normal prompt turn, with no
+    /// special-casing. The raw bus subscription is taken out BEFORE `start`
+    /// launches the child (the same subscribe-before-launch ordering
+    /// `prompt_agent` and `SubagentHost::ask`'s own doc explain), so the
+    /// child's first `TextDelta` cannot be missed. `self`'s own transcript
+    /// is untouched: no record is appended to `self.session` -- the
+    /// question lands in the CHILD's log as its `ForkDirective` head
+    /// record, and fork semantics bound the child at its fork seq (the
+    /// parent only ever reads its own ancestry, never a child's turns).
     ///
-    /// The child is born with `SessionMeta::ephemeral: true` -- set once, at
-    /// fork time, in the child's own header; there is no way to flip it
-    /// later, `SessionStore` being append-only with no meta-update or delete
-    /// method. This is what keeps it out of `Conway::sessions`'s default
-    /// listing and `SessionStore::children` -- see those methods' own docs
-    /// for the default-exclude filtering this depends on. The child remains
-    /// reachable only through this call's own returned `TurnHandle`/child
-    /// `SessionId`, or via `SessionFilter{include_ephemeral: true, ..}`.
+    /// The child is born with `SessionMeta::ephemeral: true` (via
+    /// `SubagentSpec::ephemeral`, which `SubagentHost::start` threads into
+    /// the forked header and the attached `AgentNode` verbatim) -- set
+    /// once, at fork time, in the child's own header; the only way to flip
+    /// it later is the one-way promote (`Conway::promote`, B3 -- the `/ask`
+    /// modal's `[f]` "keep" fate), the store's single sanctioned header
+    /// mutation. This is what keeps it out of `Conway::sessions`'s
+    /// default listing and `SessionStore::children` -- see those methods'
+    /// own docs for the default-exclude filtering this depends on. The
+    /// child remains reachable through this call's own returned
+    /// `TurnHandle`, through [`Self::tree`]'s snapshot (it stays attached
+    /// under the asker), or via `SessionFilter{include_ephemeral: true, ..}`.
     ///
-    /// **Tool inheritance:** the child's `SessionMeta.agent_def` defaults to
-    /// this session's own (`crate::fork_child::fork_child`'s fallback -- see
-    /// that function's doc), so `resume_root`'s tool resolution lands on the
-    /// same tool set this session's own agent runs with. Tool calls the
-    /// child makes during the ask are real and permanent -- only the
-    /// transcript is ephemeral; that is intended, not a gap (a throwaway
-    /// *question* does not imply throwaway tool side effects).
+    /// **Agent-def/role/tool inheritance:** `agent_def` is carried over
+    /// from this session's own `SessionMeta` (what the pre-B2
+    /// `fork_child` fallback did), so the child resolves the same system
+    /// prompt and tool selector this session's own agent runs with;
+    /// `role: None` lets `SubagentHost::start` inherit the parent's
+    /// effective role itself (its WI-136 fallback). Tool calls the child
+    /// makes during the ask are real and permanent -- only the transcript
+    /// is ephemeral; that is intended, not a gap (a throwaway *question*
+    /// does not imply throwaway tool side effects).
+    ///
+    /// **Not keep-alive:** `keep_alive: false` matches the pre-B2 behavior
+    /// exactly (a resumed root always terminated on its first `Completed`
+    /// turn) -- the child finishes after answering, which is what makes the
+    /// returned `TurnHandle`'s `result()` resolve.
     ///
     /// **Disclosed simplification:** the child's `budget` is always
     /// `Budget::default()` (`conway-core`'s baseline), not this session's own
     /// configured budget -- `SessionHandle` has no reference to that
     /// configuration to read it from, the same disclosed deviation
     /// `ForkSpec::new`'s own doc already makes for `SessionHandle::fork`.
+    ///
+    /// **Cancellation:** the child's cancel token is a structural child of
+    /// the asker's (`tree.child_cancel_token`), so cancelling the asker (or
+    /// its subtree) cancels an in-flight ask too — post-B2 behavior,
+    /// matching `conway_ask` children (pre-B2 the child survived parent
+    /// cancellation).
     pub async fn ask(&self, text: impl Into<String>) -> Result<TurnHandle> {
         let parent_meta = self.store.meta(&self.session).await?;
-        let at = self.store.head(&self.session).await?;
-        let child = crate::fork_child::fork_child(
-            &self.rt,
-            &self.store,
-            self.session,
-            parent_meta,
-            at,
-            crate::fork_child::ForkChildRequest {
-                agent_def: None,
-                role: None,
-                tools: None,
-                budget: Budget::default(),
-                ephemeral: true,
-            },
-        )
-        .await?;
-        child.prompt(text).await
+        let spec = SubagentSpec {
+            mode: SubagentMode::Fork,
+            prompt: text.into(),
+            // Inherit this session's own agent def (system prompt + tool
+            // selector); `SubagentHost::start` resolves it through the same
+            // registry the parent's own start did.
+            agent_def: parent_meta.agent_def.map(AgentDefRef),
+            // `None` -> the runtime inherits the parent's effective role
+            // (`subagent.rs`'s WI-136 fallback), same routing as the asker.
+            role: None,
+            tools: None,
+            budget: Budget::default(),
+            cache_hint: true,
+            result_contract: None,
+            await_result: true,
+            keep_alive: false,
+            ephemeral: true,
+            // B5: tag this child as MODAL-ask residue (the TUI's `/ask
+            // <prompt>` modal drives this method) -- DISTINCT from a
+            // `conway_ask` tool child (`AskOrigin::ToolAsk`, set in
+            // `conway-tools`' `AskTool`). The TUI's startup crash-residue
+            // sweep (`Conway::sweep_stale_modal_asks`) purges only
+            // `ModalAsk`-tagged leftovers; a tool-ask child's
+            // `EphemeralSessionRef` artifact would dangle if it were ever
+            // swept (see `conway_core::log::AskOrigin`'s own doc).
+            ask_origin: Some(conway_core::log::AskOrigin::ModalAsk),
+        };
+        // Subscribe BEFORE `start` so the child's first events cannot race
+        // past this handle's stream (see the doc above).
+        let live = self.rt.subscribe();
+        let child = SubagentHost::start(self.rt.as_ref(), self.root, spec)
+            .await
+            .map_err(ConwayError::Runtime)?;
+        // The child is already attached (start -> launch_agent -> attach),
+        // so its session is listable here; `resolve_agent_session`'s
+        // ephemeral-inclusive lookup is exactly the "resolve an agent id the
+        // caller legitimately holds" case its own doc describes.
+        let child_session = self.resolve_agent_session(child).await?;
+        let stream = EventStream::live(child_session, Some(child), live);
+        Ok(TurnHandle::new(self.rt.clone(), child_session, child, stream))
     }
 
     /// Every envelope emitted for this session (no agent filter beyond
@@ -972,6 +1030,14 @@ impl TurnHandle {
                 buffered_result: None,
             }),
         }
+    }
+
+    /// The agent this turn belongs to (B5): for a `SessionHandle::ask` turn
+    /// this is the ephemeral CHILD's id -- the value the `/ask` modal's
+    /// forced fates need (`Conway::promote`/`pull_in`/`purge` all take the
+    /// child `AgentId`, and nothing else on this handle exposes it).
+    pub fn agent(&self) -> AgentId {
+        self.agent
     }
 
     /// Concatenates every `Event::TextDelta` observed for this turn, up to

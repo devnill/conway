@@ -4,18 +4,20 @@
 use std::sync::Arc;
 
 use chrono::{Duration as ChronoDuration, Utc};
-use conway_core::agent::{AgentDefRef, Budget};
+use conway_core::agent::{AgentDefRef, AgentStatus, Budget, SubagentMode};
 use conway_core::capabilities::RequiredCaps;
 use conway_core::error::{RuntimeError, StoreError};
-use conway_core::ids::{AgentId, LogSeq, RoleAlias, SessionId};
-use conway_core::log::{SessionFilter, SessionMeta};
+use conway_core::ids::{AgentId, LogSeq, RoleAlias, SeqRange, SessionId};
+use conway_core::log::{LogRecord, SessionFilter, SessionMeta};
 use conway_core::ports::SessionStore;
+use conway_core::provenance::Provenance;
 use conway_core::routing::RouteRequest;
 use conway_routing::{DeclarativeRouter, ExplainReport, RoutingExplain};
 use conway_runtime::runtime::{ResumeSpec, RootSpec, Runtime};
 
 use crate::config::{ConfigWarning, ConwayConfig};
 use crate::error::{ConwayError, Result};
+use crate::intent::AgentIntent;
 use crate::session_handle::{SessionHandle, SessionSpec};
 use crate::subagent_spec::ForkSpec;
 
@@ -370,14 +372,15 @@ impl Conway {
     /// bound is checked here too, against the same error shape, so the
     /// criterion holds under every `SessionStore` implementation.
     ///
-    /// **Shared with `SessionHandle::ask` (disclosed refactor):** the
-    /// `store.fork` -> `rt.resume_root` sequence below used to live inline
-    /// here. It now delegates to `crate::fork_child::fork_child`, the same
-    /// helper the `/ask` fork-ask flow's `SessionHandle::ask` calls with
-    /// `ephemeral: true` -- this method always passes `ephemeral: false`, so
-    /// a session created through this method is never catalog-hidden. See
-    /// that module's doc for why the sequence is factored rather than
-    /// duplicated.
+    /// **Shared helper (disclosed refactor):** the `store.fork` ->
+    /// `rt.resume_root` sequence below used to live inline here. It now
+    /// delegates to `crate::fork_child::fork_child` -- which only this
+    /// method calls, since board item B2 moved the `/ask` fork-ask flow
+    /// (`SessionHandle::ask`) onto the runtime's own attach path
+    /// (`SubagentHost::start`) so ephemeral `/ask` children attach as proper
+    /// fork children of the asker. A session created through this method is
+    /// never catalog-hidden: `fork_child` fixes `SessionMeta::ephemeral` to
+    /// `false`. See that module's doc for the full history.
     pub async fn fork_from(
         &self,
         sid: SessionId,
@@ -404,9 +407,443 @@ impl Conway {
                 role: spec.role,
                 tools: spec.tools,
                 budget: spec.budget,
-                ephemeral: false,
             },
         )
         .await
+    }
+
+    /// Promotes an ephemeral `/ask`-style agent to persistent (B3 — the
+    /// `/ask` modal's `[f]` "keep" fate), atomically performing ALL THREE
+    /// of: the durable session-header rewrite, the live-tree flag flip, and
+    /// the `Event::AgentPromoted` emission that tells UIs to update. After
+    /// B2, promotion is a flag flip ONLY — no re-parenting, no record
+    /// rewriting beyond the header's `ephemeral` bit (P-2: the child's
+    /// entire transcript, origin, and provenance are preserved verbatim).
+    ///
+    /// **Failure ordering (binding): header first, then tree, then
+    /// event.** The store is the source of truth, so the durable flip
+    /// (`SessionStore::set_ephemeral`) runs first; if it fails — unknown
+    /// session, non-ephemeral session, I/O error — this method returns
+    /// `Err` having touched NOTHING else: no tree flip, no event, so the
+    /// three views can never split-brain. The tree flip and the event are
+    /// then performed together by `Runtime::promote_agent` (flip strictly
+    /// before emission), and both are infallible once the guard below has
+    /// passed: `AgentTree` never detaches nodes, so an agent present in
+    /// the snapshot stays flippable for this runtime's lifetime. The
+    /// reverse ordering (tree/event first) was rejected precisely because
+    /// a subsequent durable failure would then leave the live views
+    /// claiming "persistent" while the header still says ephemeral —
+    /// including making the session wrongly purge-eligible via
+    /// `SessionStore::remove`.
+    ///
+    /// **Facade-layer live check (guard-matrix boundary):** `agent` must
+    /// be present in `Runtime::tree()` — promotion is a LIVE operation
+    /// (the modal acts on a child it is looking at), and this is also what
+    /// resolves `agent` to its owning session without a store scan. The
+    /// check lives here, not in the store, for the same reason B1's
+    /// `remove` guard matrix documents its own (inverse) live check at the
+    /// facade layer: the store has no view of the runtime's tree. The
+    /// store-level `set_ephemeral` primitive itself imposes no liveness
+    /// requirement and would also work on a cold session; this facade
+    /// method deliberately does not expose that. The snapshot read and the
+    /// later flip cannot race stale: nodes are never detached from
+    /// `AgentTree`, so presence cannot go stale between the two.
+    ///
+    /// P-1: promote is a lifecycle operation on an existing agent, NOT a
+    /// new subagent primitive — no fork, no spawn, no new session.
+    ///
+    /// Errors: `ConwayError::Runtime(RuntimeError::AgentNotFound)` when
+    /// `agent` is not in the live tree; `ConwayError::Store(
+    /// StoreError::NotPromotable)` when the agent's session is not
+    /// ephemeral (a double promote, or a non-`/ask` session); other
+    /// `StoreError`s propagated unchanged.
+    ///
+    /// Returns the promoted agent's `SessionId` (unchanged by the promote
+    /// — the flip touches no ids), so the caller can immediately e.g.
+    /// focus or resume the now-persistent session.
+    pub async fn promote(&self, agent: AgentId) -> Result<SessionId> {
+        // Facade-layer live check + agent -> session resolution in one
+        // read (see the doc above for why the check lives at this layer).
+        let snapshot = self.rt.tree();
+        let node = snapshot
+            .nodes
+            .iter()
+            .find(|n| n.agent_id == agent)
+            .ok_or(ConwayError::Runtime(RuntimeError::AgentNotFound { agent }))?;
+        let session = node.session;
+
+        // Step 1 (durable, source of truth): the guarded header rewrite.
+        // On ANY failure here nothing else has happened — see the
+        // failure-ordering paragraph in this method's doc.
+        self.store.set_ephemeral(&session, false).await?;
+
+        // Steps 2+3 (live): tree flip, then the event — strictly in that
+        // order inside `Runtime::promote_agent` (see its doc).
+        self.rt.promote_agent(agent)?;
+        Ok(session)
+    }
+
+    /// Merges an ephemeral `/ask` child's turns into its parent's log,
+    /// verbatim, then purges the child (B4 — the `/ask` modal's "pull in"
+    /// fate, the semantic opposite of [`Conway::promote`]'s "keep": instead
+    /// of the child becoming a session in its own right, its question and
+    /// answer become part of the parent's own history and the child ceases
+    /// to exist).
+    ///
+    /// **The merge set (binding, from the B2 review):** post-B2, BOTH
+    /// facade `/ask` children (`SessionHandle::ask`) and `conway_ask` tool
+    /// children carry their question as a `LogRecord::ForkDirective { by:
+    /// parent }` head record, NOT a `UserTurn`. The merge set is exactly:
+    /// - the child's `ForkDirective` head record, materialized as a
+    ///   `UserTurn` (text = the directive's text, `ts` preserved) re-stamped
+    ///   `Provenance::MergedAsk { from: child_session }` — so the merge
+    ///   origin stays explicit and inspectable (P-2/GP-10) even after the
+    ///   child's own session file is purged;
+    /// - the child's `Assistant` records, copied VERBATIM — real `model`,
+    ///   `route_reason`, `usage`, `stop`, `content`, `ts` all pass through
+    ///   untouched (P-10: these are untrusted model-produced fields; this
+    ///   method never fabricates synthetic values for them);
+    /// - any genuine `UserTurn` records in the child (defensive: older or
+    ///   other ask shapes), copied verbatim except `prov` re-stamped to
+    ///   `MergedAsk`.
+    ///
+    /// `ContextReportRecord`/`AgentResultRecord`/tool records are NOT
+    /// merged as top-level records — tool calls persist inside the
+    /// `Assistant` records' content blocks (the `conway_ask` item-f
+    /// precedent), and the child's context reports/results describe the
+    /// child's own (now-purged) session, not the parent's.
+    ///
+    /// **Sequencing:** merged records are appended to the parent's log via
+    /// `SessionStore::append`, which re-sequences them to the parent's head
+    /// (`JsonlSessionStore`'s `assign_seq`; `FakeStore` has parity) — this
+    /// method deliberately does NOT hand-assign seqs. The placeholder seq on
+    /// the materialized `UserTurn` never reaches disk.
+    ///
+    /// **Guard matrix and failure ordering (binding):** every refusal runs
+    /// BEFORE the parent's log is mutated, so a refused pull leaves no
+    /// partial merge behind:
+    /// 1. `child` must be present in `Runtime::tree()` (else
+    ///    `RuntimeError::AgentNotFound`) — the same facade-layer live check
+    ///    [`Conway::promote`] documents, and also how `child` resolves to
+    ///    its owning session and parent without a store scan. Tree nodes
+    ///    are never detached, so the snapshot taken here cannot go stale
+    ///    before the store calls below.
+    /// 2. The child's parent (from the tree) must be LIVE — present in the
+    ///    tree with a non-terminal `AgentStatus` — else
+    ///    `RuntimeError::AgentNotLive`. A finished parent will never run
+    ///    another turn, so merging into its log would write records nothing
+    ///    ever reads. No wake is needed for a live parent: `agent_loop`
+    ///    re-reads its full context from the store every turn
+    ///    (agent_loop.rs), so the merged records are simply part of the
+    ///    parent's next turn.
+    /// 3. B1's `remove` guards, mirrored as pre-checks so they fail before
+    ///    any parent mutation: the child's session must be ephemeral (else
+    ///    `StoreError::NotRemovable`) and must have NO children of its own,
+    ///    ephemeral ones included (else `NotRemovable`).
+    ///
+    /// Only then are the merged records appended and `SessionStore::remove`
+    /// called for the child — whose own guard matrix re-runs authoritatively
+    /// under the store's lifecycle lock, so a concurrent fork of the child
+    /// between the pre-check and the purge is still refused (that race
+    /// leaves the appended records in the parent AND the child unpurged —
+    /// disclosed as the one non-atomic seam in this operation; a crash in
+    /// the same window has the same shape. Recovery is a store-level
+    /// `SessionStore::remove` of the child, NOT a `pull_in` retry: the
+    /// child is still ephemeral and childless, so `remove`'s guards pass —
+    /// whereas re-calling `pull_in` would append the whole merge set a
+    /// SECOND time before purging, duplicating the question and answer in
+    /// the parent's log).
+    ///
+    /// The child's tree node is NOT detached (`AgentTree` never detaches —
+    /// the same invariant [`Conway::promote`] relies on), so the tree keeps
+    /// a provenance record that the ask happened (P-2) even though the
+    /// session behind it is gone.
+    ///
+    /// P-1: pull-in is a lifecycle operation on two existing agents' logs,
+    /// NOT a new subagent primitive — no fork, no spawn, no new session is
+    /// created here.
+    pub async fn pull_in(&self, child: AgentId) -> Result<()> {
+        // 1+2. Live-tree resolution and the parent liveness guard, from one
+        // snapshot (nodes never detach, so this cannot race stale).
+        let snapshot = self.rt.tree();
+        let child_node = snapshot
+            .nodes
+            .iter()
+            .find(|n| n.agent_id == child)
+            .ok_or(ConwayError::Runtime(RuntimeError::AgentNotFound { agent: child }))?;
+        let child_session = child_node.session;
+        let parent_agent = child_node.parent.ok_or(ConwayError::Store(
+            StoreError::NotRemovable {
+                session: child_session,
+                reason: "pull_in: the child has no parent in the live tree to merge into".into(),
+            },
+        ))?;
+        let parent_node = snapshot
+            .nodes
+            .iter()
+            .find(|n| n.agent_id == parent_agent)
+            .ok_or(ConwayError::Runtime(RuntimeError::AgentNotFound {
+                agent: parent_agent,
+            }))?;
+        if matches!(
+            parent_node.status,
+            AgentStatus::Finished | AgentStatus::Failed | AgentStatus::Cancelled
+        ) {
+            return Err(ConwayError::Runtime(RuntimeError::AgentNotLive {
+                agent: parent_agent,
+            }));
+        }
+        let parent_session = parent_node.session;
+
+        // The child must be terminal: merging a still-running child would
+        // miss its trailing records and then purge the session under a
+        // live agent loop (whose next append would fail `NotFound`).
+        // Terminal status is absorbing — a Finished/Failed/Cancelled child
+        // can never append again — so this snapshot check cannot go stale
+        // (cycle-5 B4 review, significant finding 1).
+        if !matches!(
+            child_node.status,
+            AgentStatus::Finished | AgentStatus::Failed | AgentStatus::Cancelled
+        ) {
+            return Err(ConwayError::Store(StoreError::NotRemovable {
+                session: child_session,
+                reason: "child is still running (pull_in merges only completed asks)".into(),
+            }));
+        }
+
+        // 3. B1's remove guards, mirrored as pre-checks so a refused pull
+        // never leaves a partial merge in the parent's log (see the doc
+        // above). `remove` re-checks both authoritatively under its
+        // lifecycle lock before anything is deleted.
+        let child_meta = self.store.meta(&child_session).await?;
+        if !child_meta.ephemeral {
+            return Err(ConwayError::Store(StoreError::NotRemovable {
+                session: child_session,
+                reason: "session is not ephemeral (pull_in merges only ephemeral /ask children)"
+                    .into(),
+            }));
+        }
+        let grandchildren = self
+            .store
+            .list(SessionFilter {
+                parent: Some(child_session),
+                include_ephemeral: true,
+                ..SessionFilter::default()
+            })
+            .await?;
+        if !grandchildren.is_empty() {
+            return Err(ConwayError::Store(StoreError::NotRemovable {
+                session: child_session,
+                reason: "session has children (pull_in would orphan their provenance)".into(),
+            }));
+        }
+
+        // The merge set, per the AMENDMENT in this method's doc.
+        let head = self.store.head(&child_session).await?;
+        let records = self
+            .store
+            .read(&child_session, SeqRange::new(LogSeq::ZERO, Some(head)))
+            .await?;
+        let mut merged = Vec::new();
+        for record in records {
+            match record {
+                LogRecord::ForkDirective { ts, text, .. } => {
+                    merged.push(LogRecord::UserTurn {
+                        // Placeholder only — the store re-sequences on
+                        // append; this value never reaches disk.
+                        seq: LogSeq::ZERO,
+                        ts,
+                        text,
+                        prov: Provenance::MergedAsk {
+                            from: child_session,
+                        },
+                    });
+                }
+                // VERBATIM (P-10): real model/route_reason/usage/stop/ts —
+                // passed through, never fabricated.
+                assistant @ LogRecord::Assistant { .. } => merged.push(assistant),
+                LogRecord::UserTurn { seq, ts, text, .. } => merged.push(LogRecord::UserTurn {
+                    seq,
+                    ts,
+                    text,
+                    prov: Provenance::MergedAsk {
+                        from: child_session,
+                    },
+                }),
+                // Everything else (tool records, context reports, agent
+                // results, system notes, the header) is not part of the
+                // merge set — see the doc above.
+                _ => {}
+            }
+        }
+
+        // Append to the parent's log; the store re-sequences each record to
+        // the parent's head (see the doc above).
+        for record in merged {
+            self.store.append(&parent_session, record).await?;
+        }
+
+        // Purge the child. B1's guards re-run authoritatively here; the
+        // pre-checks above only exist for failure ordering.
+        self.store.remove(&child_session).await?;
+        Ok(())
+    }
+
+    /// Purges an ephemeral `/ask` child outright, WITHOUT merging its turns
+    /// anywhere (B5 — the `/ask` modal's `[esc]` "discard" fate, and the
+    /// forced fate when the TUI quits with the modal open). The semantic
+    /// opposite of [`Conway::pull_in`]: the user has explicitly chosen to
+    /// throw the answer away, which is the single sanctioned exception to
+    /// mandatory provenance retention (P-2/GP-10 — discard only ever happens
+    /// via this explicit choice, never silently).
+    ///
+    /// **Guard matrix (mirrors the facade-layer checks [`Conway::promote`]
+    /// and [`Conway::pull_in`] document, with the store's B1 guards
+    /// authoritative at the end):**
+    /// 1. `agent` must be present in `Runtime::tree()` (else
+    ///    `RuntimeError::AgentNotFound`) — purge is a LIVE operation here
+    ///    (the modal discards a child it is looking at), the same
+    ///    facade-layer live check the store's own `remove` doc assigns to
+    ///    this layer, and also how `agent` resolves to its owning session
+    ///    without a store scan. Tree nodes are never detached, so the
+    ///    snapshot cannot go stale before the store call below.
+    /// 2. The child must be TERMINAL (`Finished`/`Failed`/`Cancelled`),
+    ///    else `StoreError::NotRemovable` — purging under a still-running
+    ///    agent loop would orphan its next append (the same still-running
+    ///    guard `pull_in` carries; terminal status is absorbing, so this
+    ///    snapshot check cannot race stale either). The modal only offers
+    ///    the discard fate after the child's turn has ended, but this is a
+    ///    public facade op and guards itself.
+    /// 3. B1's `SessionStore::remove` guards then run authoritatively under
+    ///    the store's lifecycle lock: ephemeral-only (`NotRemovable`
+    ///    otherwise — a promoted child can no longer be discarded; the two
+    ///    fates are exclusive) and no children of its own.
+    ///
+    /// The child's tree node is NOT detached (`AgentTree` never detaches),
+    /// so the tree keeps a provenance record that the ask happened even
+    /// though the session behind it is gone — same invariant
+    /// [`Conway::pull_in`] documents.
+    ///
+    /// P-1: purge is a lifecycle operation on an existing agent's session,
+    /// NOT a new subagent primitive.
+    pub async fn purge(&self, agent: AgentId) -> Result<()> {
+        // 1. Live-tree resolution (see the doc above).
+        let snapshot = self.rt.tree();
+        let node = snapshot
+            .nodes
+            .iter()
+            .find(|n| n.agent_id == agent)
+            .ok_or(ConwayError::Runtime(RuntimeError::AgentNotFound { agent }))?;
+        let session = node.session;
+
+        // 2. Terminal-only (see the doc above; same reasoning as
+        // `pull_in`'s still-running guard).
+        if !matches!(
+            node.status,
+            AgentStatus::Finished | AgentStatus::Failed | AgentStatus::Cancelled
+        ) {
+            return Err(ConwayError::Store(StoreError::NotRemovable {
+                session,
+                reason: "agent is still running (purge discards only completed asks)".into(),
+            }));
+        }
+
+        // 3. B1's guards (ephemeral-only, no children) run authoritatively
+        // under the store's lifecycle lock.
+        self.store.remove(&session).await?;
+        Ok(())
+    }
+
+    /// Crash-residue sweep (B5): purges leftover ephemeral sessions created
+    /// by the MODAL `/ask` path (`SessionHandle::ask`,
+    /// `AskOrigin::ModalAsk`) whose agent is NOT live in this runtime's
+    /// tree. Runs once at TUI startup, where nothing is live yet — a modal
+    /// ask child left behind by a crashed/killed TUI process has no modal
+    /// that will ever show its answer, so no user will ever make the
+    /// fork/pull-in/discard choice for it; leaving it would accumulate
+    /// unreachable scratchpad sessions.
+    ///
+    /// **`AskOrigin::ToolAsk` sessions are NEVER swept** (the whole reason
+    /// the tag exists — see `conway_core::log::AskOrigin`'s doc): a
+    /// `conway_ask` tool child's transcript is referenced by an
+    /// `EphemeralSessionRef` artifact in the calling agent's persisted
+    /// `ToolOutput`, and purging it would leave that artifact dangling
+    /// (P-2). Untagged (`None`) ephemeral sessions — every header written
+    /// before the tag existed — are likewise never swept.
+    ///
+    /// **Not-live caution (the same one B1's `remove` guard matrix assigns
+    /// to the facade layer):** a session whose agent IS live in
+    /// `Runtime::tree()` is skipped, not purged — so although this is
+    /// intended for startup (empty tree, everything eligible is residue),
+    /// calling it later is still safe: it can never purge a session out
+    /// from under a live agent loop.
+    ///
+    /// **Single-instance assumption (disclosed S1):** the not-live check is
+    /// PER-PROCESS — it sees only THIS runtime's `tree()`. Two TUI processes
+    /// sharing one store directory are not a supported configuration: the
+    /// second process's startup sweep would see the first's open modal-ask
+    /// child as "not live" (it is not in the second process's tree) and
+    /// purge it, after which the first process's fork/pull-in/discard fates
+    /// all fail with `AgentNotFound`. The session store has no cross-process
+    /// liveness marker (no pid/heartbeat/age), so this cannot be fixed at
+    /// the sweep layer alone; the supported deployment is one TUI per store
+    /// dir. Closing that gap is a follow-up (cross-process liveness), not a
+    /// B5 blocker — see the B5 review's S1 finding.
+    ///
+    /// Best-effort per session: a session whose `remove` fails (e.g. it has
+    /// since acquired children) is skipped and counting continues — the
+    /// sweep is janitorial, and a leftover simply stays for the next
+    /// startup's sweep. Returns the number of sessions purged.
+    pub async fn sweep_stale_modal_asks(&self) -> Result<usize> {
+        let sessions = self
+            .store
+            .list(SessionFilter {
+                include_ephemeral: true,
+                ..SessionFilter::default()
+            })
+            .await?;
+        let snapshot = self.rt.tree();
+        let mut purged = 0;
+        for meta in sessions {
+            if meta.ask_origin != Some(conway_core::log::AskOrigin::ModalAsk) {
+                continue;
+            }
+            // Never purge a live agent's session out from under it (see the
+            // doc above).
+            if snapshot.nodes.iter().any(|n| n.agent_id == meta.agent_id) {
+                continue;
+            }
+            if self.store.remove(&meta.id).await.is_ok() {
+                purged += 1;
+            }
+        }
+        Ok(purged)
+    }
+
+    /// Classifies a natural-language `/fork`/`/spawn` request into an
+    /// [`AgentIntent`] (C1) by running an EPHEMERAL one-turn classification
+    /// session under the declarative `intent` role, then purging that
+    /// session before returning — on every exit path. The full design
+    /// (session shape, prompt-prefix system prompt, the unconfigured-role
+    /// passthrough fallback, the P-10 reply-validation policy, and every
+    /// disclosed residual) lives in the `intent` module's doc; this is
+    /// the one-method delegation this item is scoped to add here.
+    ///
+    /// `parent` is the caller's current live agent (the TUI's focused
+    /// session root): the intent session attaches under it as an ephemeral
+    /// spawn child for the few moments it exists. `default_recipe` is the
+    /// CALLER's command default (`Fork` when the user typed `/fork`,
+    /// `Spawn` for `/spawn`): every degraded path — unconfigured role,
+    /// unparseable reply, invalid recipe, empty prompt — returns a verbatim
+    /// passthrough `AgentIntent` carrying THIS recipe, the raw `text`, and
+    /// no agent def, so a classifier failure can never break the command.
+    pub async fn classify_agent_intent(
+        &self,
+        parent: AgentId,
+        default_recipe: SubagentMode,
+        text: &str,
+    ) -> Result<AgentIntent> {
+        crate::intent::classify(&self.rt, &self.store, &self.config, parent, default_recipe, text)
+            .await
     }
 }

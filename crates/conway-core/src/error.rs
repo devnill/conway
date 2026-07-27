@@ -98,6 +98,10 @@ pub enum StoreError {
     SeqOutOfRange { requested: LogSeq, head: LogSeq },
     #[error("session {session} already exists")]
     AlreadyExists { session: SessionId },
+    #[error("session {session} cannot be removed: {reason}")]
+    NotRemovable { session: SessionId, reason: String },
+    #[error("session {session} cannot be promoted: {reason}")]
+    NotPromotable { session: SessionId, reason: String },
 }
 
 /// Errors produced by the `Router`.
@@ -178,6 +182,16 @@ pub enum RuntimeError {
     /// for this case and reused `AgentNotFound` for both.
     #[error("agent {agent} does not belong to session {session}")]
     AgentNotInSession { agent: AgentId, session: SessionId },
+    /// The agent exists in the live tree but has already reached a terminal
+    /// status (`Finished`/`Failed`/`Cancelled`) — it will never run another
+    /// turn, so an operation whose whole effect depends on a future turn
+    /// (B4's `Conway::pull_in`, which merges records into the parent agent's
+    /// log for its NEXT turn to read) is refused rather than silently
+    /// writing records nothing will ever consume. Distinct from
+    /// [`RuntimeError::AgentNotFound`] (unknown to this runtime entirely):
+    /// the agent is present, just done.
+    #[error("agent {agent} is not live (it has reached a terminal status)")]
+    AgentNotLive { agent: AgentId },
     #[error("agent {agent} exceeded its budget")]
     BudgetExceeded { agent: AgentId },
     #[error("agent {agent} cancelled: {reason}")]

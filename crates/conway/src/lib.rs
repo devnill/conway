@@ -28,6 +28,7 @@ mod error;
 mod event_stream;
 mod fork_child;
 pub mod gates;
+mod intent;
 pub mod presets;
 mod session_handle;
 mod subagent_spec;
@@ -36,6 +37,7 @@ pub use builder::ConwayBuilder;
 pub use conway::Conway;
 pub use error::{ConwayError, Result};
 pub use event_stream::EventStream;
+pub use intent::AgentIntent;
 pub use session_handle::{SessionHandle, SessionSpec, TurnHandle};
 pub use subagent_spec::{ForkSpec, SpawnSpec};
 
@@ -47,7 +49,7 @@ pub use conway_core::config::AgentDef;
 pub use conway_core::content::{ToolCategory, Usage};
 pub use conway_core::event::{Envelope, Event};
 pub use conway_core::ids::{AgentId, LogSeq, ModelRef, RoleAlias, SessionId, ToolName};
-pub use conway_core::log::{LogRecord, SessionFilter, SessionMeta, SubagentMode};
+pub use conway_core::log::{AskOrigin, LogRecord, SessionFilter, SessionMeta, SubagentMode};
 pub use conway_core::ports::{
     Backend, HealthRegistry, PermissionGate, Plugin, Router, SessionStore, Tool,
 };

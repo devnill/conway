@@ -152,6 +152,7 @@ impl From<ForkSpec> for SubagentSpec {
             await_result: true,
             keep_alive: spec.keep_alive,
             ephemeral: false,
+            ask_origin: None,
         }
     }
 }
@@ -263,6 +264,7 @@ impl From<SpawnSpec> for SubagentSpec {
             await_result: true,
             keep_alive: spec.keep_alive,
             ephemeral: false,
+            ask_origin: None,
         }
     }
 }

@@ -36,7 +36,8 @@ use futures_core::Stream;
 /// global concern, and a subagent's own lifecycle events are stamped with
 /// its OWN, freshly-minted session/agent id, not its parent's. See
 /// [`EventStream::accept`]'s doc for the full rationale and the
-/// `TurnHandle`-safety note this depends on.
+/// `TurnHandle`-safety note this depends on. [`Event::AgentPromoted`]
+/// (B3) gets the same passthrough -- see `accept`.
 pub struct EventStream {
     session: SessionId,
     agent: Option<AgentId>,
@@ -328,9 +329,19 @@ impl EventStream {
         // This filter deliberately does not attempt that narrower scoping
         // itself -- it has no notion of "this turn's own agent" to check
         // against, only "this subscription's declared session/agent filter".
+        // `AgentPromoted` (B3) rides the same passthrough: it is stamped
+        // with the PROMOTED child's own session/agent id
+        // (`Runtime::promote_agent` emits under the node's own session),
+        // exactly like its spawn/finish — a parent-scoped subscriber (the
+        // TUI's root `handle.events()`) must still observe it, or the
+        // `/agents` panel's cached `ephemeral` flag would never clear when
+        // the user promotes a child from anywhere but the child's own
+        // focused view. It carries no turn content, so the `TurnHandle`
+        // safety argument above applies unchanged (`text`/`result` ignore
+        // it via their wildcard arms).
         if matches!(
             envelope.event,
-            Event::AgentSpawned { .. } | Event::AgentFinished { .. }
+            Event::AgentSpawned { .. } | Event::AgentFinished { .. } | Event::AgentPromoted { .. }
         ) {
             return true;
         }
@@ -764,6 +775,49 @@ mod tests {
         assert!(
             matches!(envelope.event, Event::AgentSpawned { .. }),
             "the unrelated AgentProgress for `other_agent` must have been dropped, not this; got {:?}",
+            envelope.event
+        );
+    }
+
+    /// `AgentPromoted` (B3) rides the same lifecycle passthrough as
+    /// `AgentSpawned`/`AgentFinished`: it is stamped under the PROMOTED
+    /// child's own session (`Runtime::promote_agent`), so a parent-scoped
+    /// subscriber must still observe it, while a non-lifecycle event on
+    /// that same foreign session stays dropped.
+    #[tokio::test]
+    async fn promoted_events_bypass_session_and_agent_filters() {
+        let bus = EventBus::new(64);
+        let parent_session = SessionId::new();
+        let child_session = SessionId::new();
+        let parent = AgentId::new();
+        let child = AgentId::new();
+
+        // Session-scoped (no agent filter): the passthrough half.
+        let mut stream = EventStream::live(parent_session, None, bus.subscribe());
+        bus.emit(
+            child_session,
+            child,
+            Event::AgentProgress {
+                note: "unrelated".into(),
+            },
+        );
+        bus.emit(child_session, child, Event::AgentPromoted {});
+        let envelope = next(&mut stream).await.expect("stream ended early");
+        assert!(
+            matches!(envelope.event, Event::AgentPromoted { .. }),
+            "the unrelated AgentProgress must have been dropped, not this; got {:?}",
+            envelope.event
+        );
+        assert_eq!(envelope.session, child_session);
+        assert_eq!(envelope.agent, child);
+
+        // Agent-scoped (a TurnHandle-shaped filter): same passthrough.
+        let mut stream = EventStream::live(parent_session, Some(parent), bus.subscribe());
+        bus.emit(child_session, child, Event::AgentPromoted {});
+        let envelope = next(&mut stream).await.expect("stream ended early");
+        assert!(
+            matches!(envelope.event, Event::AgentPromoted { .. }),
+            "AgentPromoted must bypass the agent filter too; got {:?}",
             envelope.event
         );
     }

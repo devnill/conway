@@ -1,9 +1,11 @@
 //! Acceptance tests for `SessionHandle::ask` (the `/ask` fork-ask slice,
-//! slice A): forks the caller's agent at its current head into an
-//! ephemeral, catalog-hidden child, then drives that child's first turn
-//! with the question.
+//! slice A; re-attached by board item B2): forks the caller's agent at its
+//! current head into an ephemeral, catalog-hidden child -- attached as a
+//! proper fork child of the asker, `AgentSpawned { kind: Fork,
+//! parent: Some(asker), ephemeral: true, inherited_upto: Some(_) }` emitted
+//! -- then drives that child's first turn with the question.
 //!
-//! Four properties, each its own test below (not folded into one, so a
+//! Properties, each its own test below (not folded into one, so a
 //! regression in any single one fails loudly and specifically):
 //! - `ask_child_is_hidden_from_default_listing_but_visible_with_include_ephemeral`
 //!   -- catalog hiding, both via `Conway::sessions`/`SessionFilter` and via
@@ -19,6 +21,14 @@
 //! - `ask_child_can_invoke_a_tool_the_parent_session_had` -- tool
 //!   inheritance: a tool restricted via a named `agent_def` the parent used
 //!   is still invocable by the child.
+//! - `ask_child_attaches_as_ephemeral_fork_child_of_the_asker` (B2) -- the
+//!   child attaches under the asker (not as a root): `AgentSpawned` on the
+//!   live stream carries `kind: Fork`, `parent: Some(asker)`,
+//!   `ephemeral: true`, `inherited_upto: Some(<fork-point seq>)`, and the
+//!   `tree()` snapshot shows the child node under the asker (P-2:
+//!   ephemeral children stay attached and visible to provenance).
+//! - `ask_child_emits_agent_finished_with_ephemeral_true` -- the child's
+//!   terminal event is stamped ephemeral too.
 
 mod support;
 
@@ -373,8 +383,11 @@ async fn transcript_resolves_the_ephemeral_ask_child_by_agent_id_via_the_parents
         "transcript(child_agent) must resolve the ephemeral child by agent id through \
              `handle` -- a SessionHandle whose own root is the PARENT, not the child",
     );
+    // Post-B2 the question lands as the child's `ForkDirective` head record
+    // (the runtime's own fork-attach path), not the `UserTurn` the old
+    // `fork_child` -> `resume_root` -> `prompt` sequence appended.
     let saw_ask_question = child_transcript.iter().any(|record| match record {
-        LogRecord::UserTurn { text, .. } => {
+        LogRecord::ForkDirective { text, .. } => {
             text.contains("SENTINEL_ASK_QUESTION_FOR_TRANSCRIPT_LOOKUP")
         }
         _ => false,
@@ -585,20 +598,14 @@ async fn ask_child_can_invoke_a_tool_the_parent_session_had() {
 // ---------------------------------------------------------------------
 
 /// The facade `/ask` child is born with `SessionMeta::ephemeral = true`
-/// (`fork_child`), which `resume_root` stamps into `AgentNode::ephemeral`.
-/// The live `Event::AgentFinished` for that child must therefore carry
-/// `ephemeral: true` (stamped by `agent_loop.rs`/`supervisor.rs` via
-/// `AgentTree::ephemeral_of`).
-///
-/// Disclosure (matches the spec's design, NOT a gap): `resume_root` attaches
-/// the child with `kind: None` (a resumed root is re-started, not spawned --
-/// see `tree.rs`'s module doc), so `AgentTree::attach` does NOT emit an
-/// `Event::AgentSpawned` for the facade `/ask` path. Only `AgentFinished` is
-/// observable on the live stream; the `ephemeral: true` flag still reaches
-/// it via `AgentNode::ephemeral` -> `ephemeral_of`. The runtime-level
-/// `AgentSpawned { ephemeral: true }` stamping is covered by
-/// `crates/conway-runtime/tests/ephemeral_events.rs` (direct `AgentTree::attach`
-/// with `kind: Some(Fork)`).
+/// (post-B2: via `SubagentSpec::ephemeral` -> `SubagentHost::start`, which
+/// threads it into the forked header and the attached `AgentNode`
+/// verbatim). The live `Event::AgentFinished` for that child must therefore
+/// carry `ephemeral: true` (stamped by `agent_loop.rs`/`supervisor.rs` via
+/// `AgentTree::ephemeral_of`). The matching `Event::AgentSpawned`
+/// assertions live in `ask_child_attaches_as_ephemeral_fork_child_of_the_asker`
+/// below; the runtime-level stamping itself is covered by
+/// `crates/conway-runtime/tests/ephemeral_events.rs`.
 #[tokio::test]
 async fn ask_child_emits_agent_finished_with_ephemeral_true() {
     use conway_core::event::Event;
@@ -673,4 +680,150 @@ async fn ask_child_emits_agent_finished_with_ephemeral_true() {
         finished,
         "the facade /ask child's AgentFinished must carry ephemeral: true"
     );
+}
+
+// ---------------------------------------------------------------------
+// B2: the ask child attaches as a proper ephemeral fork child of the asker
+// ---------------------------------------------------------------------
+
+/// Board item B2's acceptance shape: `SessionHandle::ask` must attach its
+/// ephemeral child as a FORK CHILD of the asker -- not (as the pre-B2
+/// `fork_child` -> `resume_root` path did) as a `kind: None` root with no
+/// `AgentSpawned` event at all. Two observation points, both asserted here:
+///
+/// 1. The live stream carries `Event::AgentSpawned { kind: Fork,
+///    parent: Some(asker), ephemeral: true, inherited_upto: Some(fork
+///    point) }` for the child -- this is what the post-A1 TUI tree view
+///    renders the node from.
+/// 2. `SessionHandle::tree()`'s snapshot keeps the child attached UNDER
+///    the asker (P-2: runtime provenance keeps ephemeral children attached
+///    -- never-attach was REJECTED, decision
+///    01KYFS1W7CJ1HW7N30H56B1VZZ) with `mode: Some(Fork)` and
+///    `ephemeral: true` projected.
+#[tokio::test]
+async fn ask_child_attaches_as_ephemeral_fork_child_of_the_asker() {
+    use conway_core::agent::SubagentMode;
+    use conway_core::event::Event;
+    use futures_core::Stream as _;
+
+    let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
+    let backend = Arc::new(
+        ScriptedBackend::new(vec![
+            ScriptedTurn::Respond(text_response("parent ack")),
+            ScriptedTurn::Respond(text_response("ask answer")),
+        ])
+        .with_id(BackendId::new("fake")),
+    );
+    let conway = build_conway_with_backend(store.clone(), backend);
+
+    let handle = conway
+        .new_session(SessionSpec::default())
+        .await
+        .expect("new_session should succeed");
+    let turn = handle.prompt("parent turn").await.expect("prompt");
+    let _ = tokio::time::timeout(Duration::from_secs(5), turn.result())
+        .await
+        .expect("parent result must not hang")
+        .expect("parent result should succeed");
+
+    // The fork point: the parent's head at the moment of `ask` -- what
+    // `AgentSpawned::inherited_upto` must name.
+    let fork_point = store
+        .head(&handle.id())
+        .await
+        .expect("head should succeed");
+
+    // Subscribe BEFORE `ask` so the child's `AgentSpawned` cannot race past
+    // the subscriber. `handle.events()` is session-scoped to the parent, but
+    // `EventStream::accept` bypasses the session filter for lifecycle events
+    // (`AgentSpawned`/`AgentFinished`) -- see `event_stream.rs`.
+    let mut events = handle.events();
+
+    let ask_turn = handle
+        .ask("attach me properly")
+        .await
+        .expect("ask should succeed");
+
+    // 1. The live `AgentSpawned` for the child, with the full B2 field set.
+    let (child_agent, spawned) = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let envelope =
+                std::future::poll_fn(|cx| std::pin::Pin::new(&mut events).poll_next(cx))
+                    .await
+                    .expect("event stream open");
+            if let Event::AgentSpawned {
+                kind,
+                parent,
+                ephemeral,
+                inherited_upto,
+                ..
+            } = envelope.event
+            {
+                // The only fork child spawned in this test is the ask
+                // child; the root itself never emits `AgentSpawned`
+                // (`kind: None` roots are re-started, not spawned).
+                return (
+                    envelope.agent,
+                    (kind, parent, ephemeral, inherited_upto),
+                );
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for the ask child's AgentSpawned");
+
+    assert_ne!(
+        child_agent,
+        handle.root(),
+        "the AgentSpawned must be the child's, not the asker's"
+    );
+    assert_eq!(
+        spawned.0,
+        SubagentMode::Fork,
+        "the ask child must attach as kind: Fork (P-1: ask is the fork primitive, not a new one)"
+    );
+    assert_eq!(
+        spawned.1,
+        Some(handle.root()),
+        "the ask child's parent must be the asking agent"
+    );
+    assert!(
+        spawned.2,
+        "the ask child's AgentSpawned must carry ephemeral: true"
+    );
+    assert_eq!(
+        spawned.3,
+        Some(fork_point),
+        "inherited_upto must name the fork point (the parent's head at ask time)"
+    );
+
+    // 2. The tree snapshot keeps the child attached under the asker.
+    let tree = handle.tree();
+    let node = tree
+        .nodes
+        .iter()
+        .find(|n| n.agent_id == child_agent)
+        .expect("the ephemeral ask child must stay attached in the tree snapshot (P-2)");
+    assert_eq!(
+        node.parent,
+        Some(handle.root()),
+        "the tree node must hang under the asker, not off the root set"
+    );
+    assert_eq!(
+        node.mode,
+        Some(SubagentMode::Fork),
+        "the tree node must record the fork mode"
+    );
+    assert!(
+        node.ephemeral,
+        "the tree node must project ephemeral: true"
+    );
+
+    // Drive the child's turn to completion so the test leaves no live task
+    // running past its assertions (and proves the returned TurnHandle still
+    // resolves under the new attach path).
+    let _ = tokio::time::timeout(Duration::from_secs(5), ask_turn.result())
+        .await
+        .expect("ask result must not hang")
+        .expect("ask result should succeed");
 }

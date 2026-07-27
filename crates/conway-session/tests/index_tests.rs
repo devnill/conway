@@ -40,6 +40,7 @@ fn meta_full(id: SessionId, created: DateTime<Utc>, origin: Option<ForkOrigin>) 
         labels: vec![],
         status: SessionStatus::Active,
         ephemeral: false,
+        ask_origin: None,
     }
 }
 

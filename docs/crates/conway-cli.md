@@ -173,10 +173,30 @@ box, and a bottom status line.
   affordances: `/` for the command palette, `/agents` for the agent-tree
   panel.
 - **`agents.rs`** — the below-chat agent-tree panel, shown on demand
-  (toggled by `/agents`) rather than as an always-on side pane. Ordinary
-  subagent lifecycle is *also* surfaced inline in the conversation stream
-  itself; this panel is for browsing the whole tree at a glance, not the
-  only place activity shows.
+  (toggled by `/agents`) rather than as an always-on side pane. `/agents`
+  is the canonical agent surface: every row carries the agent's status
+  marker and label plus its *recipe label* — how the agent was spawned —
+  composed from the spawn event's provenance: `fork @seq N` for a fork
+  (with its inherited-up-to fork point), `@<agent_def>` for a spawn with a
+  named agent definition, `(inherit)` for a spawn that inherited the
+  parent's role/model, and an `(ephemeral)` marker on `/ask`-style
+  ephemeral forks (which are full tree citizens, shown with their
+  provenance attached). While the panel is open, `v` cycles a draw-time
+  visibility filter — **active-only** (the default: terminal-status agents
+  hidden), **all**, **finished-only** — without ever mutating the tree
+  itself; the header names the current mode. Ordinary subagent lifecycle
+  is *also* surfaced inline in the conversation stream itself; this panel
+  is for browsing the whole tree at a glance, not the only place activity
+  shows.
+
+  `/tree` still parses but is demoted to a **hidden alias** (dropped from
+  `/help` and the palette): it renders the same content as the panel —
+  the same `state.tree` nodes, the same recipe labels — as plain-text
+  transcript notices, one line per agent, indented by depth, with the full
+  agent id kept on each line so it can be copied into `/steer` /
+  `/context`. Unlike the panel it ignores the visibility filter and shows
+  *all* nodes, terminal ones included, since a transcript dump is a
+  provenance artifact.
 
 ### The `/` command palette, with arrow-select
 
@@ -209,6 +229,101 @@ apply. The selection highlight itself is a plain reversed-style row (no
 box-drawing), consistent with the rest of the single-column redesign, and
 is covered by dedicated render-layer tests asserting the highlighted row
 is reachable and correctly styled.
+
+### The `/ask` single-turn modal
+
+`/ask <prompt>` asks an ephemeral fork of the current session a side
+question: the child attaches as a proper fork child (visible in `/agents`
+with an `(ephemeral)` marker while it runs), inherits the session's full
+context and tool set, and runs exactly one turn. When the answer is ready,
+a **modal overlay** opens over the transcript showing the question and the
+child's reply — the 0.2.0 rendering of `/ask` as a dimmed aside inline in
+the transcript is gone; the answer is no longer part of the copyable
+conversation until the user says so.
+
+Closing the modal **forces exactly one fate** — there is no fourth way out:
+
+- `[f]` **fork** — `Conway::promote`: the child becomes a persistent
+  session in its own right (its `/agents` node stays and loses the
+  `(ephemeral)` marker via the `AgentPromoted` event).
+- `[p]` **pull in** — `Conway::pull_in`: the question and answer merge
+  into the parent's own transcript (the question re-stamped
+  `Provenance::MergedAsk`), and the child is purged.
+- `[esc]` **discard** — `Conway::purge`: the child is deleted outright,
+  merging nothing.
+
+A fate that fails (e.g. a refused pull-in) keeps the modal open with the
+error shown in-modal — the user still must choose; a failed fate never
+silently falls through to another one. Quitting with the modal open
+(`Ctrl-D`, double `Ctrl-C`) **is** the discard fate: the child is purged
+before the process exits. While the modal is open the input line is inert
+and `/agents` is neither visible nor available (the mode swallows the
+panel toggle) — a panel that was open returns, unchanged, once a fate
+closes the modal. One ask at a time: a second `/ask` while one is in
+flight is refused with a notice.
+
+Because a crashed or killed TUI leaves no modal that will ever show the
+answer, the TUI runs a **crash-residue sweep** once at startup
+(`Conway::sweep_stale_modal_asks`): leftover ephemeral sessions created by
+this modal path are purged (nothing is live yet at startup). `conway_ask`
+*tool* children are never swept — a new `ask_origin` tag on the session
+header (`modal_ask` vs `tool_ask`) tells the two ephemeral-ask paths
+apart, and a tool child's transcript is referenced by an
+`EphemeralSessionRef` artifact that would dangle. See
+[`conway`](conway.md)'s `/ask` section for the facade ops themselves.
+
+### NL intent on `/fork` and `/spawn` with a confirmation card
+
+`/fork <free text>` and `/spawn <free text>` (free text that does NOT
+start with explicit `@<agent_def>` syntax) are run through the facade's
+NL intent classifier (`Conway::classify_agent_intent`, C1) BEFORE any
+agent is created, and the classified result is shown in a
+**confirmation card** — a modal overlay over the transcript — so
+inference can never silently choose (P-10: classified output is untrusted
+until the user confirms). The card shows the classified `recipe`
+(`fork`/`spawn`), the `agent_def` (or `(inherit)` when `None`), and the
+`prompt` the classifier produced (or the user's raw text on the verbatim
+passthrough), and forces exactly one choice:
+
+- `[enter]` **confirm** — run the classified recipe as-is: fork or spawn
+  with `intent.agent_def` (for spawn; a fork ignores a classifier-returned
+  def — `ForkSpec` has no agent_def field) and `intent.prompt` as the
+  first message. The recipe may have been cross-classified (user typed
+  `/fork`, classifier said `spawn`).
+- `[e]` **edit** — drop the classified `prompt` (not the raw text) into
+  the input line and close the card; the user edits and submits normally.
+- `[esc]` **manual** — fall back to today's pre-classification flow with
+  the original raw text (untouched) under the original command's default
+  recipe.
+
+`Ctrl-C`/`Ctrl-D` pass through while the card is open — quitting with the
+card open IS the manual fallback (no agent has been created yet, so
+there is nothing to purge, unlike the `/ask` modal). While the card is
+open the input line is inert and `/agents` is neither visible nor
+available, exactly like the `/ask` modal. One card at a time: a card
+arriving while a permission prompt or an `/ask` modal is showing parks
+behind it and opens once that surface clears.
+
+The verbatim **passthrough** path (unconfigured `[roles.intent]` role,
+unparseable reply, invalid recipe, or empty prompt) is NOT an error —
+the card still opens with the raw text as the prompt and no agent def,
+and the user confirms it as-is. A real backend failure propagates as
+`ConwayError::IntentClassification`; the card does NOT appear for a hard
+error, and the command falls back to today's manual flow with a notice.
+
+**Configuration requirement:** the classifier routes through the
+declarative `intent` role alias, which must be configured in
+`settings.json` under `roles.intent` (see the snippet in
+[`conway`](conway.md)'s `intent` module doc / `crates/conway/src/intent.rs`).
+With no `[roles.intent]` entry, classification degrades to the verbatim
+passthrough described above — no session is ever created for it.
+
+**Unchanged paths:** explicit `@<agent_def>` syntax
+(`/fork @<agent> <directive>`, `/spawn @<agent_def> <prompt>`) and bare
+invocations (`/fork`, `/spawn` with no text) skip inference entirely and
+behave exactly as before — the card never appears for them. Oneshot
+(`-p`) NL intent classification is deferred (out of this epic); the
+`-p` `/fork`/`/spawn` paths are unchanged.
 
 ## How it fits the whole
 

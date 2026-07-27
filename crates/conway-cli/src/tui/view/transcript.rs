@@ -79,10 +79,11 @@ pub(super) fn wrapped_line_count(state: &AppState, width: u16) -> usize {
     build_paragraph(state).line_count(width)
 }
 
-/// Renders one transcript [`Entry`] into its plain-text line(s) -- most
-/// entries are exactly one line; [`Entry::EphemeralAsk`] is two (question,
-/// reply). A free function (not inlined into `draw`) so it is directly
-/// unit-testable against a `TestBackend`-free `Line`/`Span`.
+/// Renders one transcript [`Entry`] into its plain-text line(s) -- every
+/// entry kind is exactly one line except multi-line text bodies, which
+/// split into one [`Line`] per physical line (see [`split_lines`]). A free
+/// function (not inlined into `draw`) so it is directly unit-testable
+/// against a `TestBackend`-free `Line`/`Span`.
 pub fn entry_lines(entry: &Entry) -> Vec<Line<'static>> {
     match entry {
         Entry::User(text) => {
@@ -112,9 +113,6 @@ pub fn entry_lines(entry: &Entry) -> Vec<Line<'static>> {
             ..
         } => tool_lines(name, *status, preview),
         Entry::Agent { label, status, .. } => vec![agent_line(label, *status)],
-        Entry::EphemeralAsk {
-            question, reply, ..
-        } => ephemeral_ask_lines(question, reply.as_deref()),
         Entry::Notice { text } => text
             .split('\n')
             .map(|line| {
@@ -187,20 +185,6 @@ fn agent_line(label: &str, status: NodeStatus) -> Line<'static> {
     ])
 }
 
-/// `/ask` renders as a dimmed, clearly-ephemeral aside (WI-127 criterion 5):
-/// a `[ephemeral ...]` text tag on every line (not just a dim style, which
-/// some terminals render subtly enough to miss) plus `Modifier::DIM`.
-fn ephemeral_ask_lines(question: &str, reply: Option<&str>) -> Vec<Line<'static>> {
-    let dim = Style::default().add_modifier(Modifier::DIM);
-    let reply_text = reply
-        .map(str::to_string)
-        .unwrap_or_else(|| "...".to_string());
-    vec![
-        Line::from(Span::styled(format!("[ephemeral ask] {question}"), dim)),
-        Line::from(Span::styled(format!("[ephemeral reply] {reply_text}"), dim)),
-    ]
-}
-
 #[cfg(test)]
 mod tests {
     use conway::AgentId;
@@ -238,16 +222,6 @@ mod tests {
                 label: "reviewer".to_string(),
                 status: NodeStatus::Running,
             },
-            Entry::EphemeralAsk {
-                id: 0,
-                question: "what now?".to_string(),
-                reply: Some("do this".to_string()),
-            },
-            Entry::EphemeralAsk {
-                id: 1,
-                question: "pending?".to_string(),
-                reply: None,
-            },
             Entry::Notice {
                 text: "a notice".to_string(),
             },
@@ -262,28 +236,6 @@ mod tests {
                 );
             }
         }
-    }
-
-    #[test]
-    fn ephemeral_ask_renders_two_lines_tagged_ephemeral() {
-        let lines = entry_lines(&Entry::EphemeralAsk {
-            id: 0,
-            question: "q".to_string(),
-            reply: Some("r".to_string()),
-        });
-        assert_eq!(lines.len(), 2);
-        assert!(plain_text(&lines[0]).contains("[ephemeral ask] q"));
-        assert!(plain_text(&lines[1]).contains("[ephemeral reply] r"));
-    }
-
-    #[test]
-    fn ephemeral_ask_pending_shows_a_placeholder_not_a_panic() {
-        let lines = entry_lines(&Entry::EphemeralAsk {
-            id: 0,
-            question: "q".to_string(),
-            reply: None,
-        });
-        assert!(plain_text(&lines[1]).contains("[ephemeral reply]"));
     }
 
     #[test]
