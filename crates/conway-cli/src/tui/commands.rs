@@ -1024,6 +1024,8 @@ const HELP_LINES: &[&str] = &[
     "/fork @<agent> <directive>  -- fork a specific live agent with a directive",
     "/spawn [@<agent_def>] [<prompt>] -- open an interactive spawned agent (inherits role/model if no @agent_def)",
     "/resume <session-id>        -- resume a prior session",
+    "/thinking                   -- hide/show reasoning traces (default visible)",
+    "/timestamps                 -- toggle per-entry HH:MM timestamps (default off)",
     "/help                       -- show this help",
     "/quit                       -- exit",
     "/exit                       -- alias for /quit",

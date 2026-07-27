@@ -59,6 +59,11 @@ pub struct Theme {
     /// Reasoning-trace text (NEW, no pre-T1 call site; T4 will consume).
     /// Default: `Color::DarkGray` + `Modifier::ITALIC`.
     pub reasoning: Style,
+    /// T4: the `HH:MM ` timestamp prefix prepended to each entry's first
+    /// rendered line while `show_timestamps` is on. Default:
+    /// `Color::DarkGray` (no modifier) -- a quiet annotation that should
+    /// not compete with the entry body itself.
+    pub timestamp: Style,
     /// Tool-call tag, `ToolStatus::Proposed`. Pre-T1: `Color::Gray`.
     pub tool_proposed: Style,
     /// Tool-call tag, `ToolStatus::AwaitingPermission`. Pre-T1:
@@ -157,6 +162,7 @@ impl Default for Theme {
             reasoning: Style::default()
                 .fg(Color::DarkGray)
                 .add_modifier(Modifier::ITALIC),
+            timestamp: Style::default().fg(Color::DarkGray),
             tool_proposed: Style::default().fg(Color::Gray),
             tool_awaiting: Style::default().fg(Color::Magenta),
             tool_running: Style::default().fg(Color::Yellow),
@@ -203,6 +209,7 @@ impl Theme {
         theme.assistant_marker =
             overlay(theme.assistant_marker, config.assistant_marker.as_ref());
         theme.reasoning = overlay(theme.reasoning, config.reasoning.as_ref());
+        theme.timestamp = overlay(theme.timestamp, config.timestamp.as_ref());
         theme.tool_proposed = overlay(theme.tool_proposed, config.tool_proposed.as_ref());
         theme.tool_awaiting = overlay(theme.tool_awaiting, config.tool_awaiting.as_ref());
         theme.tool_running = overlay(theme.tool_running, config.tool_running.as_ref());
@@ -641,6 +648,9 @@ mod tests {
         let mut state = AppState::new(AgentId::new());
         state.transcript.push(Entry::Assistant {
             text: "hello-assistant".to_string(),
+            model: None,
+            summary: None,
+            ts: None,
         });
         let theme = Theme {
             assistant: Style::default().fg(Color::Red),

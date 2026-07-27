@@ -28,6 +28,8 @@
 //! `scroll_page_down`) is the required core per this item's own spec and
 //! ships without that trade-off; mouse wheel is left undone.
 
+use chrono::{DateTime, Utc};
+
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -95,7 +97,8 @@ fn build_paragraph(state: &AppState, theme: &Theme) -> Paragraph<'static> {
 /// never baked into [`entry_lines`] output for settled entries (clean-copy
 /// invariant preserved -- see [`STREAMING_CURSOR`]'s doc).
 fn build_lines(state: &AppState, theme: &Theme) -> Vec<Line<'static>> {
-    let streaming = matches!(state.activity, Activity::Responding);
+    let streaming_assistant = matches!(state.activity, Activity::Responding);
+    let streaming_reasoning = matches!(state.activity, Activity::Thinking);
     // Index of the last `Entry::Assistant` in the transcript, if any -- the
     // streaming cursor is attached to ITS last line only, never to a
     // settled assistant entry that happens to sit before a later
@@ -103,14 +106,34 @@ fn build_lines(state: &AppState, theme: &Theme) -> Vec<Line<'static>> {
     let last_assistant_idx = state
         .transcript
         .iter()
-        .rposition(|e| matches!(e, Entry::Assistant { .. }));
+        .enumerate()
+        .rposition(|(_, e)| matches!(e, Entry::Assistant { .. }));
+    // T4: same treatment for the live reasoning trace -- the streaming
+    // cursor attaches to the last `Entry::Reasoning` while `activity ==
+    // Thinking` (the trace is what is actively streaming in that phase).
+    let last_reasoning_idx = state
+        .transcript
+        .iter()
+        .enumerate()
+        .rposition(|(_, e)| matches!(e, Entry::Reasoning { .. }));
     state
         .transcript
         .iter()
         .enumerate()
         .flat_map(|(i, entry)| {
-            let mut lines = entry_lines(entry, state.tool_preview_lines, theme);
-            if streaming && Some(i) == last_assistant_idx {
+            // T4: hide reasoning entries entirely when `show_reasoning` is
+            // off (the `/thinking` toggle). The entries are still stored,
+            // so toggling back on restores them without replay.
+            if matches!(entry, Entry::Reasoning { .. }) && !state.show_reasoning {
+                return Vec::new();
+            }
+            let mut lines = entry_lines(
+                entry,
+                state.tool_preview_lines,
+                state.show_timestamps,
+                theme,
+            );
+            if streaming_assistant && Some(i) == last_assistant_idx {
                 if let Some(last) = lines.last_mut() {
                     // Reuse the assistant body style for the cursor so it
                     // reads as part of the streaming line, not a separate
@@ -120,6 +143,17 @@ fn build_lines(state: &AppState, theme: &Theme) -> Vec<Line<'static>> {
                     // `theme.rs`).
                     last.spans
                         .push(Span::styled(STREAMING_CURSOR.to_string(), theme.assistant));
+                }
+            }
+            if streaming_reasoning && Some(i) == last_reasoning_idx {
+                if let Some(last) = lines.last_mut() {
+                    // T4: reasoning streaming cursor -- same carve-out T2
+                    // uses for the assistant streaming line (the
+                    // clean-copy invariant is relaxed for the actively-
+                    // streaming line only). Reuses the `theme.reasoning`
+                    // slot so the cursor reads as part of the trace.
+                    last.spans
+                        .push(Span::styled(STREAMING_CURSOR.to_string(), theme.reasoning));
                 }
             }
             lines
@@ -150,7 +184,27 @@ pub(super) fn wrapped_line_count(state: &AppState, width: u16) -> usize {
 /// against a `TestBackend`-free `Line`/`Span`. The `theme` parameter drives
 /// every color/modifier on the emitted `Span`s (T1); the text content is
 /// identical to a pre-T1 build at the default theme (visual parity).
-pub fn entry_lines(entry: &Entry, tool_cap: u32, theme: &Theme) -> Vec<Line<'static>> {
+///
+/// T4 additions:
+/// - `show_timestamps`: when `true`, an `HH:MM ` prefix (styled with
+///   `theme.timestamp`) is prepended to the entry's first rendered line, for
+///   entries that carry a `ts` (`Assistant`/`Reasoning`/`Tool`). `User` and
+///   `Agent`/`Notice` have no `ts` and so get no prefix.
+/// - `Entry::Assistant` renders a `[modelname]> ` prefix on the first line
+///   (plain `[`/`]`/`>`, no box-drawing) when `model` is `Some`; omitted
+///   when `None` (replay). A turn-end `summary`, if attached, renders as a
+///   final dim line.
+/// - `Entry::Reasoning` (NEW) renders dim+italic with a `thinking> ` prefix.
+/// - `Entry::Tool` renders an `args:` preview (one-line truncated while
+///   collapsed, pretty-printed while expanded) and any accumulated
+///   `progress` notes (dim `-> {note}` lines) between the args and the
+///   output block.
+pub fn entry_lines(
+    entry: &Entry,
+    tool_cap: u32,
+    show_timestamps: bool,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
     match entry {
         Entry::User(text) => {
             let prefix = theme.user;
@@ -171,20 +225,138 @@ pub fn entry_lines(entry: &Entry, tool_cap: u32, theme: &Theme) -> Vec<Line<'sta
                 })
                 .collect()
         }
-        Entry::Assistant { text } => split_lines(text, theme),
+        Entry::Assistant {
+            text,
+            model,
+            summary,
+            ts,
+        } => {
+            let mut lines = assistant_lines(text, model.as_deref(), theme);
+            if let Some(s) = summary {
+                // T4: turn-end summary as a final dim line on the block.
+                lines.push(Line::from(Span::styled(s.clone(), theme.dim)));
+            }
+            stamp_first(&mut lines, ts.as_ref(), show_timestamps, theme);
+            lines
+        }
+        Entry::Reasoning {
+            text,
+            summary,
+            ts,
+            ..
+        } => {
+            let mut lines = reasoning_lines(text, theme);
+            if let Some(s) = summary {
+                lines.push(Line::from(Span::styled(s.clone(), theme.dim)));
+            }
+            stamp_first(&mut lines, ts.as_ref(), show_timestamps, theme);
+            lines
+        }
         Entry::Tool {
             name,
             status,
             preview,
+            args,
+            progress,
             expanded,
+            ts,
             ..
-        } => tool_lines(name, *status, preview, *expanded, tool_cap, theme),
+        } => {
+            let mut lines = tool_lines(
+                name,
+                *status,
+                preview,
+                args,
+                progress,
+                *expanded,
+                tool_cap,
+                theme,
+            );
+            stamp_first(&mut lines, ts.as_ref(), show_timestamps, theme);
+            lines
+        }
         Entry::Agent { label, status, .. } => vec![agent_line(label, *status, theme)],
         Entry::Notice { text } => text
             .split('\n')
             .map(|line| Line::from(Span::styled(line.to_string(), theme.notice)))
             .collect(),
     }
+}
+
+/// T4: assistant body lines with the `[modelname]> ` speaker marker on the
+/// first line. The marker uses plain ASCII `[`/`]`/`>` (no box-drawing --
+/// the clean-copy invariant forbids box glyphs in settled output). Styled
+/// with `theme.assistant_marker` (default Magenta+BOLD). When `model` is
+/// `None` (replay -- `record_to_event` maps a stored `Assistant` record to
+/// a bare `TextDelta` carrying no model), the marker is omitted and the
+/// entry renders as plain `theme.assistant` text (backward-compatible with
+/// pre-T4 parity).
+fn assistant_lines(text: &str, model: Option<&str>, theme: &Theme) -> Vec<Line<'static>> {
+    let mut lines = split_lines(text, theme);
+    if let Some(name) = model {
+        if let Some(first) = lines.first_mut() {
+            // Rebuild the first line with the marker prefix in front of the
+            // existing body span. The marker is its own `Span` so the body
+            // style is untouched.
+            let body = std::mem::take(first);
+            let body_spans = body.spans;
+            let mut spans = vec![Span::styled(
+                format!("[{name}]> "),
+                theme.assistant_marker,
+            )];
+            spans.extend(body_spans);
+            first.spans = spans;
+        }
+    }
+    lines
+}
+
+/// T4: reasoning-trace lines, dim+italic with a `thinking> ` prefix on the
+/// first line. Mirrors `assistant_lines`'s marker shape but uses
+/// `theme.reasoning` (default DarkGray+ITALIC) for both the prefix and the
+/// body, so the whole trace reads as one quiet, italicized block.
+fn reasoning_lines(text: &str, theme: &Theme) -> Vec<Line<'static>> {
+    let mut lines = text
+        .split('\n')
+        .map(|line| Line::from(Span::styled(line.to_string(), theme.reasoning)))
+        .collect::<Vec<_>>();
+    if let Some(first) = lines.first_mut() {
+        let body = std::mem::take(first);
+        let body_spans = body.spans;
+        let mut spans = vec![Span::styled("thinking> ", theme.reasoning)];
+        spans.extend(body_spans);
+        first.spans = spans;
+    }
+    lines
+}
+
+/// T4: prepends an `HH:MM ` timestamp prefix (styled with
+/// `theme.timestamp`) to the first of `lines` when `show` is `true` and
+/// `ts` is `Some`. A no-op otherwise. The prefix is its own `Span` so the
+/// body spans' styles are untouched. Never panics (P-10).
+fn stamp_first(
+    lines: &mut Vec<Line<'static>>,
+    ts: Option<&DateTime<Utc>>,
+    show: bool,
+    theme: &Theme,
+) {
+    if !show {
+        return;
+    }
+    let Some(ts) = ts else {
+        return;
+    };
+    let Some(first) = lines.first_mut() else {
+        return;
+    };
+    let body = std::mem::take(first);
+    let body_spans = body.spans;
+    let mut spans = vec![Span::styled(
+        format!("{} ", ts.format("%H:%M")),
+        theme.timestamp,
+    )];
+    spans.extend(body_spans);
+    first.spans = spans;
 }
 
 /// Splits `text` on `\n` into one [`Line`] per physical line, each styled
@@ -209,62 +381,119 @@ fn split_lines(text: &str, theme: &Theme) -> Vec<Line<'static>> {
 /// output) is preserved. A settled tool entry (non-empty preview) ends
 /// with a blank line + a dim plain `-` rule as a non-box separator.
 ///
-/// **T4 reuse:** the `expanded` flag + this collapsed/expanded render
-/// branch are intentionally generic -- T4's tool-args preview is the same
-/// shape: the `expanded` flag, the `cap`-gated collapsed branch, and the
-/// `… (+M lines, Ctrl-E to expand)` affordance are reusable. The header
-/// here is tool-output-specific (`[{tag}] {name} -- {first}`), so T4 should
-/// share the collapsed-branch shape via a sibling function rather than call
-/// `tool_lines` directly -- the mechanism is reusable, the function is not.
+/// **T4 additions:** the `args` and `progress` parameters. `args` is a
+/// compact JSON string (from `Event::ToolCallProposed::args`); it renders
+/// as a one-line truncated `args: …` preview while collapsed and a
+/// `args:` label + pretty-printed multi-line JSON while expanded. Both
+/// args and output expand/collapse together via the single `expanded`
+/// flag (the spec: "both args and output expand together"). `progress` is
+/// the accumulated `Event::ToolProgress` notes (joined with `\n`); each
+/// note renders as a dim `-> {note}` line between the args line and the
+/// output block.
+#[allow(clippy::too_many_arguments)]
 fn tool_lines(
     name: &str,
     status: ToolStatus,
     preview: &str,
+    args: &str,
+    progress: &str,
     expanded: bool,
     cap: u32,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
     let (tag, style) = tool_status_style(status, theme);
 
-    if preview.is_empty() {
+    if preview.is_empty() && args.is_empty() && progress.is_empty() {
         return vec![Line::from(vec![
             Span::styled(format!("[{tag}] "), style),
             Span::raw(name.to_string()),
         ])];
     }
 
-    let all_lines: Vec<&str> = preview.split('\n').collect();
-    let total = all_lines.len();
-    let first = all_lines.first().copied().unwrap_or_default();
+    let mut lines = Vec::new();
 
-    let mut lines = vec![Line::from(vec![
+    // Header: `[tag] name`. The output preview's first line used to be
+    // inlined here as ` -- {first}`; T4 separates the args preview (below)
+    // from the output preview (further below) so the two render
+    // independently while sharing the `expanded` flag.
+    lines.push(Line::from(vec![
         Span::styled(format!("[{tag}] "), style),
         Span::raw(name.to_string()),
-        Span::raw(format!(" -- {first}")),
-    ])];
+    ]));
 
-    let cap = cap.max(1) as usize;
-    if expanded || total <= cap {
-        // Expanded (or short enough that the cap doesn't bite): emit every
-        // remaining physical line of the preview, unprefixed.
-        lines.extend(all_lines.iter().skip(1).map(|line| Line::from(line.to_string())));
-    } else {
-        // Collapsed: the first `cap` lines total (the header line above is
-        // line 1, so `cap - 1` continuation lines here) + the dim
-        // affordance naming how many lines are hidden.
-        let continuation = cap.saturating_sub(1);
-        lines.extend(
-            all_lines
-                .iter()
-                .skip(1)
-                .take(continuation)
-                .map(|line| Line::from(line.to_string())),
-        );
-        let hidden = total.saturating_sub(cap);
-        lines.push(Line::from(Span::styled(
-            format!("… (+{hidden} lines, Ctrl-E to expand)"),
-            theme.dim,
-        )));
+    // T4: args preview. Collapsed: a one-line truncated `args: {compact}`
+    // (collapse internal newlines to spaces, truncate to
+    // `ARGS_COLLAPSED_LIMIT` chars with a `…` sentinel). Expanded: an
+    // `args:` label followed by pretty-printed multi-line JSON (each
+    // physical line its own `Line`). Pretty-printing parses the stored
+    // compact JSON; a parse failure (impossible for `Value::to_string`
+    // output, but P-10: never panic) falls back to the raw string split
+    // on `\n`.
+    if !args.is_empty() {
+        if expanded {
+            lines.push(Line::from(Span::styled("args:", theme.dim)));
+            let pretty = serde_json::from_str::<serde_json::Value>(args)
+                .ok()
+                .map(|v| serde_json::to_string_pretty(&v).unwrap_or_else(|_| args.to_string()))
+                .unwrap_or_else(|| args.to_string());
+            for line in pretty.split('\n') {
+                lines.push(Line::from(Span::styled(line.to_string(), theme.dim)));
+            }
+        } else {
+            let flat: String = args.split('\n').collect::<Vec<_>>().join(" ");
+            let preview_str = if flat.len() > ARGS_COLLAPSED_LIMIT {
+                format!("{}…", &flat[..ARGS_COLLAPSED_LIMIT])
+            } else {
+                flat
+            };
+            lines.push(Line::from(Span::styled(
+                format!("args: {preview_str}"),
+                theme.dim,
+            )));
+        }
+    }
+
+    // T4: progress notes (from `Event::ToolProgress`), each as a dim
+    // `-> {note}` line. Rendered between the args line and the output
+    // block -- a tool that emits progress while running reads as
+    // `[running] bash · args: … · -> step 1… · -> step 2… · <output>`.
+    //
+    // The marker is plain ASCII `->`, not `→` (U+2192). U+2192 is outside
+    // the Unicode box-drawing block so it passes the clean-copy glyph test
+    // on a technicality, but it is still decorative non-ASCII baked
+    // permanently into SETTLED transcript text that a user copies out --
+    // against the spirit of the clean-copy guarantee, and inconsistent with
+    // T4's own plain-`[`/`]`/`>` speaker marker. (T4 review, minor 2.)
+    if !progress.is_empty() {
+        for note in progress.split('\n') {
+            if note.is_empty() {
+                continue;
+            }
+            lines.push(Line::from(Span::styled(format!("-> {note}"), theme.dim)));
+        }
+    }
+
+    // Output preview block (T5). The stored `preview` is never truncated;
+    // the cap is render-time only.
+    if !preview.is_empty() {
+        let all_lines: Vec<&str> = preview.split('\n').collect();
+        let total = all_lines.len();
+        let cap = cap.max(1) as usize;
+        if expanded || total <= cap {
+            lines.extend(all_lines.iter().map(|line| Line::from(line.to_string())));
+        } else {
+            lines.extend(
+                all_lines
+                    .iter()
+                    .take(cap)
+                    .map(|line| Line::from(line.to_string())),
+            );
+            let hidden = total.saturating_sub(cap);
+            lines.push(Line::from(Span::styled(
+                format!("… (+{hidden} lines, Ctrl-E to expand)"),
+                theme.dim,
+            )));
+        }
     }
 
     // Clean-copy separator for settled tool output: a blank line + a dim
@@ -276,6 +505,12 @@ fn tool_lines(
 
     lines
 }
+
+/// T4: the maximum number of characters of the compact JSON args string
+/// shown in the collapsed one-line `args: …` preview. 120 is a
+/// comfortable single-row width on a typical terminal; longer args are
+/// truncated with a `…` sentinel and revealed in full by Ctrl-E.
+const ARGS_COLLAPSED_LIMIT: usize = 120;
 
 /// Maps a [`ToolStatus`] to its `[tag]` label and the theme slot for the
 /// tag's color. Kept as a free function so the per-status -> style mapping
@@ -342,13 +577,19 @@ mod tests {
             Entry::User("hi there".to_string()),
             Entry::Assistant {
                 text: "hello back".to_string(),
+                model: None,
+                summary: None,
+                ts: None,
             },
             Entry::Tool {
                 call_id: "c1".to_string(),
                 name: "bash".to_string(),
                 status: ToolStatus::Finished { is_error: false },
                 preview: "ok".to_string(),
+                args: String::new(),
+                progress: String::new(),
                 expanded: false,
+                ts: None,
             },
             Entry::Agent {
                 agent_id: AgentId::new(),
@@ -361,7 +602,7 @@ mod tests {
         ];
 
         for entry in &entries {
-            for line in entry_lines(entry, 3, &Theme::default()) {
+            for line in entry_lines(entry, 3, false, &Theme::default()) {
                 let text = plain_text(&line);
                 assert!(
                     !text.chars().any(|c| BOX_DRAWING_CHARS.contains(&c)),
@@ -373,7 +614,7 @@ mod tests {
 
     #[test]
     fn user_entry_keeps_the_you_prefix() {
-        let lines = entry_lines(&Entry::User("hello".to_string()), 3, &Theme::default());
+        let lines = entry_lines(&Entry::User("hello".to_string()), 3, false, &Theme::default());
         assert_eq!(lines.len(), 1);
         assert!(plain_text(&lines[0]).starts_with("you> hello"));
     }
@@ -386,8 +627,11 @@ mod tests {
         let root = AgentId::new();
         let mut state = AppState::new(root);
         state.transcript.push(Entry::Assistant {
-            text: "hello".to_string(),
-        });
+                text: "hello".to_string(),
+                model: None,
+                summary: None,
+                ts: None,
+            });
         let before = format!("{:?}", state.transcript);
 
         let backend = TestBackend::new(80, 24);
@@ -410,8 +654,11 @@ mod tests {
         let mut state = AppState::new(root);
         state.transcript.push(Entry::User("hi".to_string()));
         state.transcript.push(Entry::Assistant {
-            text: "hello".to_string(),
-        });
+                text: "hello".to_string(),
+                model: None,
+                summary: None,
+                ts: None,
+            });
 
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
@@ -437,6 +684,9 @@ mod tests {
         for i in 0..n {
             state.transcript.push(Entry::Assistant {
                 text: format!("line {i}"),
+                model: None,
+                summary: None,
+                ts: None,
             });
         }
         state
@@ -536,7 +786,10 @@ mod tests {
             name: "bash".to_string(),
             status: ToolStatus::Finished { is_error: false },
             preview,
+            args: String::new(),
+            progress: String::new(),
             expanded: true,
+            ts: None,
         };
         let mut state = AppState::new(AgentId::new());
         state.transcript.push(expanded_entry);
@@ -588,8 +841,12 @@ mod tests {
         let lines = entry_lines(
             &Entry::Assistant {
                 text: "line one\nline two\nline three".to_string(),
+                model: None,
+                summary: None,
+                ts: None,
             },
             3,
+            false,
             &Theme::default(),
         );
 
@@ -612,6 +869,7 @@ mod tests {
                 text: "notice one\nnotice two".to_string(),
             },
             3,
+            false,
             &Theme::default(),
         );
 
@@ -634,8 +892,11 @@ mod tests {
 
         let mut state = AppState::new(AgentId::new());
         state.transcript.push(Entry::Assistant {
-            text: "line one\nline two\nline three".to_string(),
-        });
+                text: "line one\nline two\nline three".to_string(),
+                model: None,
+                summary: None,
+                ts: None,
+            });
 
         let rows = test_support::render(&state, 80, 24);
 
@@ -709,8 +970,11 @@ mod tests {
     fn streaming_cursor_present_on_last_assistant_line_while_responding() {
         let mut state = AppState::new(AgentId::new());
         state.transcript.push(Entry::Assistant {
-            text: "streaming live".to_string(),
-        });
+                text: "streaming live".to_string(),
+                model: None,
+                summary: None,
+                ts: None,
+            });
         state.activity = Activity::Responding;
 
         let lines = build_lines(&state, &Theme::default());
@@ -730,8 +994,11 @@ mod tests {
     fn streaming_cursor_absent_when_not_responding() {
         let mut state = AppState::new(AgentId::new());
         state.transcript.push(Entry::Assistant {
-            text: "settled line".to_string(),
-        });
+                text: "settled line".to_string(),
+                model: None,
+                summary: None,
+                ts: None,
+            });
 
         // Idle: no cursor.
         state.activity = Activity::Idle;
@@ -773,11 +1040,17 @@ mod tests {
     fn streaming_cursor_lands_on_the_last_physical_line_of_the_last_assistant_entry() {
         let mut state = AppState::new(AgentId::new());
         state.transcript.push(Entry::Assistant {
-            text: "earlier\nmulti\nline".to_string(),
-        });
+                text: "earlier\nmulti\nline".to_string(),
+                model: None,
+                summary: None,
+                ts: None,
+            });
         state.transcript.push(Entry::Assistant {
-            text: "live\nsecond".to_string(),
-        });
+                text: "live\nsecond".to_string(),
+                model: None,
+                summary: None,
+                ts: None,
+            });
         state.activity = Activity::Responding;
 
         let lines = build_lines(&state, &Theme::default());
@@ -808,9 +1081,12 @@ mod tests {
     #[test]
     fn entry_lines_itself_never_emits_the_streaming_cursor() {
         let entry = Entry::Assistant {
-            text: "hello".to_string(),
-        };
-        for line in entry_lines(&entry, 3, &Theme::default()) {
+                text: "hello".to_string(),
+                model: None,
+                summary: None,
+                ts: None,
+            };
+        for line in entry_lines(&entry, 3, false, &Theme::default()) {
             let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
             assert!(
                 !text.contains(STREAMING_CURSOR),
@@ -829,8 +1105,11 @@ mod tests {
 
         let mut state = AppState::new(AgentId::new());
         state.transcript.push(Entry::Assistant {
-            text: "streaming live".to_string(),
-        });
+                text: "streaming live".to_string(),
+                model: None,
+                summary: None,
+                ts: None,
+            });
         state.activity = Activity::Responding;
 
         let backend = TestBackend::new(80, 24);
@@ -857,8 +1136,11 @@ mod tests {
 
         let mut state = AppState::new(AgentId::new());
         state.transcript.push(Entry::Assistant {
-            text: "settled line".to_string(),
-        });
+                text: "settled line".to_string(),
+                model: None,
+                summary: None,
+                ts: None,
+            });
         // activity stays Idle (the default).
 
         let backend = TestBackend::new(80, 24);
@@ -888,13 +1170,16 @@ mod tests {
             name: "bash".to_string(),
             status: ToolStatus::Finished { is_error: false },
             preview,
+            args: String::new(),
+            progress: String::new(),
             expanded: false,
+            ts: None,
         }
     }
 
     /// Helper: the total rendered-line count for an entry at a given cap.
     fn rendered_line_count(entry: &Entry, cap: u32) -> usize {
-        entry_lines(entry, cap, &Theme::default()).len()
+        entry_lines(entry, cap, false, &Theme::default()).len()
     }
 
     /// The affordance text the collapsed branch emits, as plain text.
@@ -909,14 +1194,14 @@ mod tests {
 
     /// Acceptance: a 20-line preview collapsed under a cap of 3 renders
     /// at most N+1 lines (the cap, plus the `… (+M lines, Ctrl-E to
-    /// expand)` affordance) -- NOT all 20. The header line is one of the
-    /// capped lines, so the total is `cap + 1` (affordance) + 2 (blank +
-    /// dim `-` separator) = `cap + 3`.
+    /// expand)` affordance) -- NOT all 20. T4 separated the header from the
+    /// preview block, so the total is 1 header + cap preview lines + 1
+    /// affordance + 2 (blank + dim `-` separator) = `cap + 4`.
     #[test]
     fn collapsed_tool_preview_caps_at_n_plus_affordance() {
         let entry = collapsed_tool_with_n_lines(20);
         let cap = 3u32;
-        let lines = entry_lines(&entry, cap, &Theme::default());
+        let lines = entry_lines(&entry, cap, false, &Theme::default());
 
         // The affordance line is present and names the hidden count:
         // 20 total - 3 shown = 17 hidden.
@@ -939,26 +1224,26 @@ mod tests {
             );
         }
 
-        // Total line count: cap (header + cap-1 continuation) + 1
-        // affordance + 2 separator (blank + `-`) = cap + 3.
+        // Total line count: 1 header + cap preview + 1 affordance + 2
+        // separator (blank + `-`) = cap + 4.
         assert_eq!(
             lines.len(),
-            cap as usize + 3,
-            "collapsed 20-line preview at cap=3 must render cap+3 lines (cap + affordance + blank + `-`): {:?}",
+            cap as usize + 4,
+            "collapsed 20-line preview at cap=3 must render cap+4 lines (header + cap + affordance + blank + `-`): {:?}",
             lines.iter().map(plain_text).collect::<Vec<_>>()
         );
     }
 
     /// Acceptance: with `expanded: true`, the full 20-line preview renders
-    /// -- no affordance, no capping. The total is 1 header + 19
-    /// continuation + 2 separator = 22.
+    /// -- no affordance, no capping. The total is 1 header + 20 preview +
+    /// 2 separator = 23.
     #[test]
     fn expanded_tool_preview_renders_all_lines() {
         let mut entry = collapsed_tool_with_n_lines(20);
         if let Entry::Tool { expanded, .. } = &mut entry {
             *expanded = true;
         }
-        let lines = entry_lines(&entry, 3, &Theme::default());
+        let lines = entry_lines(&entry, 3, false, &Theme::default());
 
         assert!(
             !lines.iter().any(|l| affordance_text(l).is_some()),
@@ -979,8 +1264,8 @@ mod tests {
         }
         assert_eq!(
             lines.len(),
-            22,
-            "expanded 20-line preview must render 1 header + 19 continuation + 2 separator = 22 lines"
+            23,
+            "expanded 20-line preview must render 1 header + 20 preview + 2 separator = 23 lines"
         );
     }
 
@@ -989,13 +1274,13 @@ mod tests {
     #[test]
     fn short_tool_preview_is_not_collapsed() {
         let entry = collapsed_tool_with_n_lines(2);
-        let lines = entry_lines(&entry, 3, &Theme::default());
+        let lines = entry_lines(&entry, 3, false, &Theme::default());
         assert!(
             !lines.iter().any(|l| affordance_text(l).is_some()),
             "a preview shorter than the cap must not show the affordance"
         );
-        // 1 header + 1 continuation + 2 separator = 4.
-        assert_eq!(lines.len(), 4, "2-line preview at cap=3: {lines:?}");
+        // 1 header + 2 preview + 2 separator = 5.
+        assert_eq!(lines.len(), 5, "2-line preview at cap=3: {lines:?}");
     }
 
     /// The cap is honored: at cap=5, a 20-line preview shows 5 content
@@ -1003,7 +1288,7 @@ mod tests {
     #[test]
     fn collapsed_tool_preview_honors_a_configured_cap() {
         let entry = collapsed_tool_with_n_lines(20);
-        let lines = entry_lines(&entry, 5, &Theme::default());
+        let lines = entry_lines(&entry, 5, false, &Theme::default());
         let affordance = lines
             .iter()
             .find_map(|l| affordance_text(l))
@@ -1020,7 +1305,7 @@ mod tests {
     #[test]
     fn tool_output_contains_no_box_drawing_glyphs_collapsed_or_expanded() {
         let collapsed = collapsed_tool_with_n_lines(20);
-        for line in entry_lines(&collapsed, 3, &Theme::default()) {
+        for line in entry_lines(&collapsed, 3, false, &Theme::default()) {
             let text = plain_text(&line);
             assert!(
                 !text.chars().any(|c| BOX_DRAWING_CHARS.contains(&c)),
@@ -1032,7 +1317,7 @@ mod tests {
         if let Entry::Tool { expanded, .. } = &mut expanded {
             *expanded = true;
         }
-        for line in entry_lines(&expanded, 3, &Theme::default()) {
+        for line in entry_lines(&expanded, 3, false, &Theme::default()) {
             let text = plain_text(&line);
             assert!(
                 !text.chars().any(|c| BOX_DRAWING_CHARS.contains(&c)),
@@ -1046,7 +1331,7 @@ mod tests {
     #[test]
     fn settled_tool_output_ends_with_a_blank_line_and_a_dim_plain_dash() {
         let entry = collapsed_tool_with_n_lines(2);
-        let lines = entry_lines(&entry, 3, &Theme::default());
+        let lines = entry_lines(&entry, 3, false, &Theme::default());
         // The last line is the `-` rule; the second-to-last is blank.
         let last = plain_text(lines.last().expect("at least the separator"));
         assert_eq!(last, "-", "the separator must be a single plain `-`: {last:?}");
@@ -1073,9 +1358,12 @@ mod tests {
             name: "bash".to_string(),
             status: ToolStatus::Proposed,
             preview: String::new(),
+            args: String::new(),
+            progress: String::new(),
             expanded: false,
+            ts: None,
         };
-        let lines = entry_lines(&entry, 3, &Theme::default());
+        let lines = entry_lines(&entry, 3, false, &Theme::default());
         assert_eq!(lines.len(), 1, "empty preview -> just the header line: {lines:?}");
         assert!(
             !lines.iter().any(|l| plain_text(l) == "-"),
@@ -1089,9 +1377,9 @@ mod tests {
     #[test]
     fn cap_of_zero_degrades_to_one_line() {
         let entry = collapsed_tool_with_n_lines(20);
-        let lines = entry_lines(&entry, 0, &Theme::default());
-        // cap=1 -> 1 content line + affordance + 2 separator = 4.
-        assert_eq!(lines.len(), 4, "cap=0 degrades to cap=1: {lines:?}");
+        let lines = entry_lines(&entry, 0, false, &Theme::default());
+        // cap=1 -> 1 header + 1 content line + affordance + 2 separator = 5.
+        assert_eq!(lines.len(), 5, "cap=0 degrades to cap=1: {lines:?}");
         let affordance = lines
             .iter()
             .find_map(|l| affordance_text(l))
@@ -1103,11 +1391,290 @@ mod tests {
     }
 
     /// `rendered_line_count` helper sanity: a 20-line collapsed preview at
-    /// cap=3 renders exactly cap+3 lines.
+    /// cap=3 renders exactly cap+4 lines (header + cap + affordance + 2
+    /// separator).
     #[test]
     fn rendered_line_count_helper_is_consistent() {
         let entry = collapsed_tool_with_n_lines(20);
-        assert_eq!(rendered_line_count(&entry, 3), 6);
-        assert_eq!(rendered_line_count(&entry, 5), 8);
+        assert_eq!(rendered_line_count(&entry, 3), 7);
+        assert_eq!(rendered_line_count(&entry, 5), 9);
+    }
+
+    // ---- T4: reasoning variant, speaker markers, tool args/progress,
+    // timestamps, turn-end summary ----
+
+    /// `Entry::Reasoning` renders dim+italic with a `thinking> ` prefix on
+    /// the first line. The prefix and body share `theme.reasoning`.
+    #[test]
+    fn reasoning_entry_renders_thinking_prefix() {
+        let entry = Entry::Reasoning {
+            text: "pondering\nthe question".to_string(),
+            model: None,
+            summary: None,
+            ts: None,
+        };
+        let lines = entry_lines(&entry, 3, false, &Theme::default());
+        assert_eq!(lines.len(), 2);
+        assert!(
+            plain_text(&lines[0]).starts_with("thinking> pondering"),
+            "first line carries the thinking prefix: {:?}",
+            plain_text(&lines[0])
+        );
+        assert_eq!(plain_text(&lines[1]), "the question");
+        // Style check: the prefix span uses `theme.reasoning`.
+        assert_eq!(lines[0].spans[0].style, Theme::default().reasoning);
+    }
+
+    /// `Entry::Assistant` with `Some(model)` renders a `[modelname]> `
+    /// prefix on the first line, styled with `theme.assistant_marker`.
+    /// Plain `[`/`]`/`>` -- no box-drawing.
+    #[test]
+    fn assistant_with_model_renders_speaker_marker() {
+        let entry = Entry::Assistant {
+            text: "hello\nworld".to_string(),
+            model: Some("anthropic/claude-sonnet-4-6".to_string()),
+            summary: None,
+            ts: None,
+        };
+        let lines = entry_lines(&entry, 3, false, &Theme::default());
+        assert_eq!(lines.len(), 2);
+        assert!(
+            plain_text(&lines[0]).starts_with("[anthropic/claude-sonnet-4-6]> hello"),
+            "first line carries the speaker marker: {:?}",
+            plain_text(&lines[0])
+        );
+        assert_eq!(plain_text(&lines[1]), "world");
+        assert_eq!(lines[0].spans[0].style, Theme::default().assistant_marker);
+    }
+
+    /// `Entry::Assistant` with `model: None` (replay) omits the marker --
+    /// backward-compatible with pre-T4 parity.
+    #[test]
+    fn assistant_without_model_omits_marker() {
+        let entry = Entry::Assistant {
+            text: "hello".to_string(),
+            model: None,
+            summary: None,
+            ts: None,
+        };
+        let lines = entry_lines(&entry, 3, false, &Theme::default());
+        assert_eq!(lines.len(), 1);
+        assert_eq!(plain_text(&lines[0]), "hello");
+    }
+
+    /// `Entry::Tool` with `args` renders a one-line truncated `args: …`
+    /// preview while collapsed.
+    #[test]
+    fn tool_args_collapsed_renders_one_line_preview() {
+        let entry = Entry::Tool {
+            call_id: "c1".to_string(),
+            name: "bash".to_string(),
+            status: ToolStatus::Finished { is_error: false },
+            preview: "ok".to_string(),
+            args: r#"{"command":"ls","path":"/tmp"}"#.to_string(),
+            progress: String::new(),
+            expanded: false,
+            ts: None,
+        };
+        let lines = entry_lines(&entry, 3, false, &Theme::default());
+        let args_line = lines
+            .iter()
+            .map(plain_text)
+            .find(|t| t.starts_with("args: "))
+            .expect("collapsed args preview present");
+        assert!(
+            args_line.contains(r#""command":"ls""#),
+            "collapsed args shows the compact JSON: {args_line}"
+        );
+        assert!(
+            !args_line.contains('\n'),
+            "collapsed args is a single line: {args_line:?}"
+        );
+    }
+
+    /// `Entry::Tool` with `args` renders an `args:` label + pretty-printed
+    /// multi-line JSON while expanded.
+    #[test]
+    fn tool_args_expanded_renders_pretty_printed() {
+        let entry = Entry::Tool {
+            call_id: "c1".to_string(),
+            name: "bash".to_string(),
+            status: ToolStatus::Finished { is_error: false },
+            preview: "ok".to_string(),
+            args: r#"{"command":"ls","path":"/tmp"}"#.to_string(),
+            progress: String::new(),
+            expanded: true,
+            ts: None,
+        };
+        let lines = entry_lines(&entry, 3, false, &Theme::default());
+        let plain: Vec<String> = lines.iter().map(plain_text).collect();
+        assert!(
+            plain.iter().any(|t| t == "args:"),
+            "expanded args has an `args:` label line: {plain:?}"
+        );
+        // Pretty-printed JSON spans multiple lines.
+        assert!(
+            plain.iter().any(|t| t.contains("\"command\"")),
+            "expanded args shows the command key: {plain:?}"
+        );
+        assert!(
+            plain.iter().any(|t| t.contains("\"path\"")),
+            "expanded args shows the path key: {plain:?}"
+        );
+    }
+
+    /// `Entry::Tool` with `progress` renders each note as a dim `-> {note}`
+    /// line between the args and the output.
+    #[test]
+    fn tool_progress_renders_arrow_lines() {
+        let entry = Entry::Tool {
+            call_id: "c1".to_string(),
+            name: "bash".to_string(),
+            status: ToolStatus::Running,
+            preview: String::new(),
+            args: String::new(),
+            progress: "step 1\nstep 2".to_string(),
+            expanded: false,
+            ts: None,
+        };
+        let lines = entry_lines(&entry, 3, false, &Theme::default());
+        let plain: Vec<String> = lines.iter().map(plain_text).collect();
+        assert!(
+            plain.iter().any(|t| t == "-> step 1"),
+            "progress note 1 renders as `-> step 1`: {plain:?}"
+        );
+        assert!(
+            plain.iter().any(|t| t == "-> step 2"),
+            "progress note 2 renders as `-> step 2`: {plain:?}"
+        );
+    }
+
+    /// `show_timestamps: true` prepends `HH:MM ` to the first line of an
+    /// entry with a `ts`; `false` does not.
+    #[test]
+    fn timestamps_toggle_prepends_hh_mm_to_first_line() {
+        let ts = chrono::Utc::now();
+        let entry = Entry::Assistant {
+            text: "hello".to_string(),
+            model: None,
+            summary: None,
+            ts: Some(ts),
+        };
+        // Off: no prefix.
+        let off = entry_lines(&entry, 3, false, &Theme::default());
+        assert_eq!(plain_text(&off[0]), "hello");
+        // On: `HH:MM ` prefix.
+        let on = entry_lines(&entry, 3, true, &Theme::default());
+        let expected = format!("{} hello", ts.format("%H:%M"));
+        assert_eq!(plain_text(&on[0]), expected);
+        // The timestamp span uses `theme.timestamp`.
+        assert_eq!(on[0].spans[0].style, Theme::default().timestamp);
+    }
+
+    /// A turn-end `summary` renders as a final dim line on the
+    /// assistant/reasoning block.
+    #[test]
+    fn turn_end_summary_renders_as_dim_line() {
+        let entry = Entry::Assistant {
+            text: "hello".to_string(),
+            model: None,
+            summary: Some("1m 6s · 1.4k tok (88% cached)".to_string()),
+            ts: None,
+        };
+        let lines = entry_lines(&entry, 3, false, &Theme::default());
+        let last = plain_text(lines.last().expect("at least the summary"));
+        assert_eq!(last, "1m 6s · 1.4k tok (88% cached)");
+        assert_eq!(
+            lines.last().unwrap().spans[0].style,
+            Theme::default().dim,
+            "summary styled with theme.dim"
+        );
+    }
+
+    /// `build_lines` hides `Entry::Reasoning` when `show_reasoning` is
+    /// false, and shows it when true.
+    #[test]
+    fn build_lines_hides_reasoning_when_show_reasoning_is_false() {
+        let mut state = AppState::new(AgentId::new());
+        state.transcript.push(Entry::Reasoning {
+            text: "hidden".to_string(),
+            model: None,
+            summary: None,
+            ts: None,
+        });
+        state.show_reasoning = false;
+        let lines = build_lines(&state, &Theme::default());
+        assert!(
+            lines.is_empty(),
+            "reasoning is hidden when show_reasoning is false: {lines:?}"
+        );
+        state.show_reasoning = true;
+        let lines = build_lines(&state, &Theme::default());
+        assert!(
+            lines.iter().any(|l| plain_text(l).contains("hidden")),
+            "reasoning is shown when show_reasoning is true: {lines:?}"
+        );
+    }
+
+    /// The streaming cursor attaches to the last `Entry::Reasoning` while
+    /// `activity == Thinking` (T4 mirrors T2's assistant streaming cursor).
+    #[test]
+    fn streaming_cursor_present_on_last_reasoning_line_while_thinking() {
+        let mut state = AppState::new(AgentId::new());
+        state.transcript.push(Entry::Reasoning {
+            text: "musing".to_string(),
+            model: None,
+            summary: None,
+            ts: None,
+        });
+        state.activity = Activity::Thinking;
+
+        let lines = build_lines(&state, &Theme::default());
+        let last = lines.last().expect("at least one line");
+        let text: String = last.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            text.ends_with(STREAMING_CURSOR),
+            "the live reasoning line must end with the streaming cursor while Thinking, got: {text:?}"
+        );
+    }
+
+    /// Clean-copy invariant extended: reasoning, args, timestamp, and
+    /// summary text never contain a box-drawing glyph.
+    #[test]
+    fn t4_provenance_text_contains_no_box_drawing_glyphs() {
+        let ts = chrono::Utc::now();
+        let entries = vec![
+            Entry::Reasoning {
+                text: "thinking\nhard".to_string(),
+                model: Some("m".to_string()),
+                summary: Some("1m 6s · 1.4k tok (88% cached)".to_string()),
+                ts: Some(ts),
+            },
+            Entry::Assistant {
+                text: "hello".to_string(),
+                model: Some("m".to_string()),
+                summary: Some("1m 6s · 1.4k tok (88% cached)".to_string()),
+                ts: Some(ts),
+            },
+            Entry::Tool {
+                call_id: "c1".to_string(),
+                name: "bash".to_string(),
+                status: ToolStatus::Finished { is_error: false },
+                preview: "out".to_string(),
+                args: r#"{"k":"v"}"#.to_string(),
+                progress: "note".to_string(),
+                expanded: true,
+                ts: Some(ts),
+            },
+        ];
+        for entry in &entries {
+            for line in entry_lines(entry, 3, true, &Theme::default()) {
+                let text = plain_text(&line);
+                assert!(
+                    !text.chars().any(|c| BOX_DRAWING_CHARS.contains(&c)),
+                    "T4 provenance text leaked a box glyph: {text:?}"
+                );
+            }
+        }
     }
 }

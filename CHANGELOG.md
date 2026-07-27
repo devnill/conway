@@ -40,6 +40,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `docs/crates/conway-cli.md`'s "Tool output folding + expand (T5)"
   section.
 
+- **TUI: transcript provenance — speaker markers, reasoning variant,
+  timestamps, tool args/progress (T4).** The transcript now surfaces
+  per-entry provenance: reasoning traces (`Event::ThinkingDelta` ->
+  `Entry::Reasoning`, dim+italic with a `thinking> ` prefix, **expanded
+  by default**; `/thinking` toggles `show_reasoning` and hides them
+  entirely while off, but entries are still stored so toggling back on
+  restores them without replay); assistant speaker markers
+  (`Entry::Assistant` carries the serving model name, rendered as a
+  `[modelname]> ` prefix in `theme.assistant_marker`; omitted on replay
+  where no model provenance is available); tool args + progress
+  (`Entry::Tool` stores `Event::ToolCallProposed::args` as a compact
+  JSON string, rendered as a one-line truncated `args: …` preview while
+  collapsed and pretty-printed while expanded — both args and output
+  expand/collapse together via T5's `Ctrl-E` toggle; accumulated
+  `Event::ToolProgress { call_id, note }` notes — previously dropped —
+  append to the matching in-flight tool entry by `call_id` and render as
+  dim `-> {note}` lines); per-entry timestamps (`/timestamps` toggles
+  `show_timestamps`, default off, prepending an `HH:MM ` prefix styled
+  with `theme.timestamp` to each entry's first rendered line); and a
+  turn-end summary (`Event::TurnFinished` stamps `{elapsed} · {tokens}
+  ({n%} cached)` — e.g. `1m 6s · 1.4k tok (88% cached)` — onto the last
+  assistant/reasoning block, rendered as a final dim line). The
+  streaming cursor (T2) extends to the live reasoning line while
+  `activity == Thinking`. New theme slots `assistant_marker`,
+  `reasoning`, and `timestamp` (defaults: magenta+bold, dark_gray+italic,
+  dark_gray) are configurable via `[tui.theme]`. `/thinking` and
+  `/timestamps` are intercepted in `app.rs::submit` (state-only toggles,
+  never sent to the model), listed in `/help`, the command palette, and
+  the status-line hint. Settled `entry_lines` output honors the
+  clean-copy invariant (no box-drawing glyphs). See
+  `docs/crates/conway-cli.md`'s "Transcript provenance (T4)" section.
+
 ### Changed
 
 - **TUI: status line rework — model + ctx% + cwd + git + field config

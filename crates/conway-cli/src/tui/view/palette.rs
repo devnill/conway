@@ -44,6 +44,16 @@ pub const COMMANDS: &[CommandSpec] = &[
         description: "toggle the below-chat agent-tree panel",
     },
     CommandSpec {
+        name: "/thinking",
+        usage: "/thinking",
+        description: "hide/show reasoning traces (default visible)",
+    },
+    CommandSpec {
+        name: "/timestamps",
+        usage: "/timestamps",
+        description: "toggle per-entry HH:MM timestamps (default off)",
+    },
+    CommandSpec {
         name: "/steer",
         usage: "/steer <agent> <text>",
         description: "send a steer message to a running agent",
@@ -196,11 +206,12 @@ mod tests {
 
     // Item A3: `/tree` is demoted to a hidden alias -- it still parses
     // (`commands.rs` keeps the arm) but the palette must no longer surface
-    // it as completion.
+    // it as completion. T4: `/t` is no longer an empty prefix -- `/thinking`
+    // and `/timestamps` (both T4 additions) match it; only the full `/tree`
+    // stays hidden.
     #[test]
     fn tree_is_a_hidden_alias_not_a_palette_entry() {
         assert!(matches("/tree").is_empty());
-        assert!(matches("/t").is_empty());
         assert!(!COMMANDS.iter().any(|c| c.name == "/tree"));
     }
 

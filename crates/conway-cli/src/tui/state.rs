@@ -9,6 +9,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
+use chrono::{DateTime, Utc};
 use conway::{
     config::schema::StatusLineConfig, AgentId, AgentIntent, AgentResult, Envelope, Event, LogSeq,
     ResultStatus, SegmentId, SubagentMode, Usage,
@@ -57,14 +58,66 @@ pub fn should_animate(activity: &Activity) -> bool {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Entry {
     User(String),
+    /// Assistant reply text. T4 adds three provenance fields:
+    /// - `model` is the serving model's display name (e.g.
+    ///   `anthropic/claude-sonnet-4-6`), stamped from
+    ///   [`AppState::focused_model`] at the time the entry is created by
+    ///   `TextDelta` -> [`AppState::append_assistant_text`]. `None` for
+    ///   replayed entries (`record_to_event` maps a stored `Assistant` record
+    ///   to a bare `TextDelta` carrying no model -- see that function's own
+    ///   doc); the renderer then omits the `[modelname]> ` marker so a
+    ///   replayed bubble renders as it originally streamed.
+    /// - `summary` is the turn-end summary line (`1m 6s · 1.4k tok (88%
+    ///   cached)`), stamped onto the last assistant/reasoning entry by
+    ///   `TurnFinished` -> [`AppState::stamp_turn_summary`]. `None` until
+    ///   the turn ends (and stays `None` if no assistant/reasoning block
+    ///   exists to attach to).
+    /// - `ts` is the per-entry timestamp, stamped from the envelope's `ts`
+    ///   at apply time. The `/timestamps` toggle prepends `HH:MM ` to the
+    ///   entry's first rendered line.
     Assistant {
         text: String,
+        model: Option<String>,
+        summary: Option<String>,
+        ts: Option<DateTime<Utc>>,
+    },
+    /// T4: reasoning-trace text, fed by `Event::ThinkingDelta` (previously
+    /// dropped by `apply`'s wildcard arm -- only `activity` was flipped to
+    /// `Thinking`). Mirrors [`Entry::Assistant`]: `ThinkingDelta` -> [
+    /// `AppState::append_reasoning_text`] creates-or-appends, stamping the
+    /// current serving model + envelope timestamp onto a freshly-created
+    /// entry. Rendered dim+italic with a `thinking` prefix, EXPANDED by
+    /// default (the `show_reasoning` flag -- toggled by `/thinking` --
+    /// defaults `true`, so reasoning is visible until the user hides it;
+    /// when hidden, `build_lines` skips `Entry::Reasoning` entirely). The
+    /// `summary` field is shared with `Entry::Assistant`: a turn-end
+    /// summary attaches to whichever of the two was the LAST block under
+    /// the turn.
+    Reasoning {
+        text: String,
+        model: Option<String>,
+        summary: Option<String>,
+        ts: Option<DateTime<Utc>>,
     },
     Tool {
         call_id: String,
         name: String,
         status: ToolStatus,
         preview: String,
+        /// T4: the tool call's arguments, stored from
+        /// `Event::ToolCallProposed { args, .. }` (previously discarded --
+        /// only `name` was stored). Serialized to a compact JSON string at
+        /// apply time. Rendered as a one-line truncated `args: …` preview
+        /// while collapsed and pretty-printed (multi-line) while expanded.
+        /// Reuses the `expanded` flag + Ctrl-E toggle below -- args and
+        /// output expand/collapse together (the single flag governs both).
+        args: String,
+        /// T4: accumulated `Event::ToolProgress { call_id, note }` notes
+        /// (previously dropped by `apply`'s wildcard arm), appended to the
+        /// matching in-flight tool entry by `call_id`. Joined with `\n` and
+        /// rendered as dim `-> {note}` lines between the args line and the
+        /// output block.
+        progress: String,
         /// T5: whether this tool entry's preview is shown in full (`true`)
         /// or collapsed to the `tool_preview_lines` cap + a dim affordance
         /// (`false`, the default). Flipped on EVERY `Entry::Tool` at once by
@@ -82,6 +135,10 @@ pub enum Entry {
         /// (collapsed: cap lines + affordance; expanded: full), just with a
         /// different cap and content.
         expanded: bool,
+        /// T4: per-entry timestamp, stamped from the envelope's `ts` at
+        /// apply time. The `/timestamps` toggle prepends `HH:MM ` to the
+        /// entry's first rendered line.
+        ts: Option<DateTime<Utc>>,
     },
     /// A subagent's lifecycle, rendered inline in the conversation stream
     /// (WI-127 criterion: "inline subagent activity in the stream,
@@ -526,6 +583,23 @@ pub struct AppState {
     /// Distinct from [`Self::focused_agent_usage`], which is the cumulative
     /// spend across all of the focused agent's turns.
     pub turn_running_tokens: u64,
+    /// T4: the transcript length at the moment the focused agent's current
+    /// turn started (`Event::TurnStarted`) -- the watermark that bounds
+    /// [`Self::stamp_turn_summary`]'s reverse scan to entries THIS turn
+    /// produced.
+    ///
+    /// Without it the scan walks the whole transcript, so a turn that emits
+    /// no model text of its own (a tool-only agentic round) would walk past
+    /// its own `Tool` entries into the PREVIOUS turn and re-stamp that
+    /// already-settled bubble with this turn's elapsed/token figures --
+    /// silently misattributing spend to an unrelated reply, the exact
+    /// provenance corruption T4 exists to prevent. Bounding the scan makes
+    /// the tool-only case the intended no-op instead.
+    ///
+    /// Reset to the current transcript length on `TurnStarted` and to 0 on
+    /// [`Self::focus_agent`] (a fresh focus clears the transcript, so 0 is
+    /// the correct floor).
+    pub turn_transcript_start: usize,
     /// T3: the focused agent's serving model display name, from
     /// `Event::ModelDecision { chosen }` (`ModelRef::to_string()`). `None`
     /// until the first `ModelDecision` arrives on the focused agent's
@@ -609,6 +683,24 @@ pub struct AppState {
     /// it names no models -- the status line then renders raw context
     /// tokens instead of a percentage.
     pub model_max_context: HashMap<String, u32>,
+    /// T4: whether reasoning-trace entries ([`Entry::Reasoning`]) are
+    /// rendered in the transcript. Defaults `true` (reasoning EXPANDED by
+    /// default) -- the user opts OUT with `/thinking`, which flips this to
+    /// `false` and `build_lines` then skips `Entry::Reasoning` entirely.
+    /// Toggled by [`AppState::toggle_thinking`]. Kept on the state (not the
+    /// entry) because the show/hide is a global view preference, not
+    /// per-entry state -- reasoning entries are still STORED regardless, so
+    /// toggling back on restores them without replay.
+    pub show_reasoning: bool,
+    /// T4: whether per-entry timestamps are rendered. Defaults `false`
+    /// (timestamps OFF by default) -- the user opts IN with `/timestamps`,
+    /// which flips this to `true` and `entry_lines` then prepends `HH:MM `
+    /// to each entry's first rendered line. Toggled by
+    /// [`AppState::toggle_timestamps`]. The timestamp itself is always
+    /// STORED on the entry (`Entry::Assistant::ts` etc., stamped from the
+    /// envelope's `ts` at apply time) so toggling back on restores the
+    /// stamps without replay.
+    pub show_timestamps: bool,
 }
 
 impl AppState {
@@ -652,6 +744,7 @@ impl AppState {
             spinner_color_idx: 0,
             turn_started_at: None,
             turn_running_tokens: 0,
+            turn_transcript_start: 0,
             focused_model: None,
             focused_model_max_context: None,
             focused_ctx_tokens: 0,
@@ -661,6 +754,8 @@ impl AppState {
             status_line_config: StatusLineConfig::default(),
             tool_preview_lines: 3,
             model_max_context: HashMap::new(),
+            show_reasoning: true,
+            show_timestamps: false,
         }
     }
 
@@ -781,6 +876,9 @@ impl AppState {
         self.spinner_color_idx = 0;
         self.turn_started_at = None;
         self.turn_running_tokens = 0;
+        // T4: `focus_agent` clears the transcript above, so the turn-summary
+        // watermark floors at 0 for the newly focused agent.
+        self.turn_transcript_start = 0;
         // T3: the model display name, max-context, and cumulative context
         // tokens are per focused-agent -- a freshly focused agent has no
         // routing decision yet and no accumulated context figure until its
@@ -1288,15 +1386,27 @@ impl AppState {
                     // authoritative `Usage` into `focused_agent_usage`).
                     self.turn_started_at = Some(Instant::now());
                     self.turn_running_tokens = 0;
+                    // T4: watermark the transcript so the turn-end summary
+                    // can only attach to a block THIS turn produced (see
+                    // `turn_transcript_start`).
+                    self.turn_transcript_start = self.transcript.len();
                 }
             }
-            Event::ThinkingDelta { .. } => {
+            Event::ThinkingDelta { text } => {
+                // T4: feed the reasoning-trace delta into the transcript
+                // (previously only `activity` was flipped to `Thinking`).
+                // Mirrors `TextDelta` -> `append_assistant_text`:
+                // create-or-append an `Entry::Reasoning`, stamping the
+                // serving model + envelope timestamp on a fresh entry.
+                // Reasoning is EXPANDED by default (`show_reasoning`);
+                // `build_lines` skips it when the flag is off.
                 if env.agent == self.focused_agent {
+                    self.append_reasoning_text(text, env.ts);
                     self.activity = Activity::Thinking;
                 }
             }
             Event::TextDelta { text } => {
-                self.append_assistant_text(text);
+                self.append_assistant_text(text, env.ts);
                 if env.agent == self.focused_agent {
                     self.activity = Activity::Responding;
                 }
@@ -1363,13 +1473,23 @@ impl AppState {
                     self.focused_model_max_context = max;
                 }
             }
-            Event::ToolCallProposed { call_id, tool, .. } => {
+            Event::ToolCallProposed { call_id, tool, args, .. } => {
+                // T4: store the call's `args` (previously discarded via
+                // `..`). Serialized to a compact JSON string at apply time
+                // (a `serde_json::Value` is not `Clone`-cheap to keep on the
+                // entry, and the renderer only needs a string anyway). A
+                // non-serializable value is impossible for valid JSON, so
+                // `to_string` cannot panic on real input; on the empty
+                // object it yields `"{}"`.
                 self.transcript.push(Entry::Tool {
                     call_id: call_id.clone(),
                     name: tool.to_string(),
                     status: ToolStatus::Proposed,
                     preview: String::new(),
+                    args: args.to_string(),
+                    progress: String::new(),
                     expanded: false,
+                    ts: Some(env.ts),
                 });
                 self.set_tree_status(env.agent, NodeStatus::Running);
                 if env.agent == self.focused_agent {
@@ -1390,6 +1510,11 @@ impl AppState {
                 // authoritative `session_usage` refetch still overwrites
                 // this afterward.
                 if env.agent == self.focused_agent {
+                    // T4: stamp the turn-end summary (`1m 6s · 1.4k tok
+                    // (88% cached)`) onto the last Assistant or Reasoning
+                    // block BEFORE `clear_turn_state` zeroes
+                    // `turn_started_at` (which the elapsed figure reads).
+                    self.stamp_turn_summary(usage);
                     self.activity = Activity::Idle;
                     self.focused_agent_usage += *usage;
                     // T2: the turn is over -- stop the elapsed clock and drop
@@ -1413,6 +1538,15 @@ impl AppState {
             }
             Event::ToolCallStarted { call_id } => {
                 self.set_tool_status(call_id, ToolStatus::Running);
+            }
+            // T4: append the progress note to the matching in-flight
+            // `Entry::Tool` by `call_id` (previously dropped by the wildcard
+            // arm). Rendered as a dim `-> {note}` line between the args line
+            // and the output block. A no-op if no matching tool entry exists
+            // (e.g. a progress event for a call whose `ToolCallProposed` was
+            // never seen -- never panics; P-10).
+            Event::ToolProgress { call_id, note } => {
+                self.append_tool_progress(call_id, note);
             }
             Event::ToolCallFinished {
                 call_id,
@@ -1589,13 +1723,125 @@ impl AppState {
         }
     }
 
-    fn append_assistant_text(&mut self, delta: &str) {
-        if let Some(Entry::Assistant { text }) = self.transcript.last_mut() {
+    fn append_assistant_text(&mut self, delta: &str, ts: DateTime<Utc>) {
+        if let Some(Entry::Assistant { text, .. }) = self.transcript.last_mut() {
             text.push_str(delta);
         } else {
             self.transcript.push(Entry::Assistant {
                 text: delta.to_string(),
+                // T4: stamp the serving model from the live focus. Replay
+                // (`record_to_event` maps a stored `Assistant` record to a
+                // bare `TextDelta` carrying no model) leaves `focused_model`
+                // as whatever the live focus happens to be -- but a replay
+                // envelope is only ever applied on the focused agent's
+                // stream, and the renderer omits the marker when `None`,
+                // which is the backward-compatible shape for a replayed
+                // bubble that has no model provenance.
+                model: self.focused_model.clone(),
+                summary: None,
+                ts: Some(ts),
             });
+        }
+    }
+
+    /// T4: append a reasoning-trace delta (from `Event::ThinkingDelta`),
+    /// mirroring [`append_assistant_text`]. Creates a new
+    /// [`Entry::Reasoning`] on the first delta of a run (stamping the
+    /// serving model + envelope timestamp), or appends to the last
+    /// `Reasoning` entry if one is already in progress. Reasoning is
+    /// EXPANDED by default (the `show_reasoning` flag defaults `true`);
+    /// `build_lines` skips `Entry::Reasoning` entirely when the flag is
+    /// `false`, but the entries are still STORED, so toggling back on
+    /// restores them without replay.
+    fn append_reasoning_text(&mut self, delta: &str, ts: DateTime<Utc>) {
+        if let Some(Entry::Reasoning { text, .. }) = self.transcript.last_mut() {
+            text.push_str(delta);
+        } else {
+            self.transcript.push(Entry::Reasoning {
+                text: delta.to_string(),
+                model: self.focused_model.clone(),
+                summary: None,
+                ts: Some(ts),
+            });
+        }
+    }
+
+    /// T4: append a `ToolProgress { call_id, note }` note to the matching
+    /// in-flight [`Entry::Tool`] by `call_id` (previously dropped by the
+    /// wildcard arm). Joined with `\n` -- the renderer emits each as a dim
+    /// `-> {note}` line. A no-op if no tool entry with that `call_id` exists
+    /// (never panics; P-10).
+    fn append_tool_progress(&mut self, call_id: &str, note: &str) {
+        for entry in self.transcript.iter_mut().rev() {
+            if let Entry::Tool {
+                call_id: id,
+                progress,
+                ..
+            } = entry
+            {
+                if id == call_id {
+                    if !progress.is_empty() {
+                        progress.push('\n');
+                    }
+                    progress.push_str(note);
+                    return;
+                }
+            }
+        }
+    }
+
+    /// T4: toggle the `show_reasoning` flag (the `/thinking` command).
+    /// Returns the new value so `app.rs` can surface a one-shot `Notice` to
+    /// the user (mirrors `/agents`'s open/close notice pattern).
+    pub fn toggle_thinking(&mut self) -> bool {
+        self.show_reasoning = !self.show_reasoning;
+        self.show_reasoning
+    }
+
+    /// T4: toggle the `show_timestamps` flag (the `/timestamps` command).
+    /// Returns the new value so `app.rs` can surface a one-shot `Notice` to
+    /// the user.
+    pub fn toggle_timestamps(&mut self) -> bool {
+        self.show_timestamps = !self.show_timestamps;
+        self.show_timestamps
+    }
+
+    /// T4: stamp the turn-end summary (`1m 6s · 1.4k tok (88% cached)`)
+    /// onto the last `Entry::Assistant` or `Entry::Reasoning` block in the
+    /// transcript. Called from the `TurnFinished` arm BEFORE
+    /// [`clear_turn_state`] zeroes `turn_started_at` (the elapsed figure
+    /// reads `turn_started_at.elapsed()`). A no-op if THIS TURN produced no
+    /// Assistant/Reasoning block to attach to (e.g. a turn that produced
+    /// only tool calls)
+    /// -- the summary is genuinely about a model-emitted block, so attaching
+    /// it to a bare tool entry would be misleading; the status line's own
+    /// token figures still convey the spend. Stamps onto Reasoning if it is
+    /// the last block (the trace is what the user sees last in that case),
+    /// else onto the last Assistant block.
+    ///
+    /// The scan is bounded below by [`Self::turn_transcript_start`], the
+    /// transcript length at `TurnStarted`. An UNBOUNDED scan would walk a
+    /// tool-only turn's own entries and then keep going into the PREVIOUS
+    /// turn, overwriting an already-settled bubble's summary with this
+    /// turn's elapsed/token figures -- misattributing spend to an unrelated
+    /// reply.
+    fn stamp_turn_summary(&mut self, usage: &Usage) {
+        let elapsed_secs = self
+            .turn_started_at
+            .map(|t| t.elapsed().as_secs())
+            .unwrap_or(0);
+        let summary = format_turn_summary(elapsed_secs, usage);
+        // Clamp defensively: a `TurnFinished` with no preceding `TurnStarted`
+        // (or a transcript cleared mid-turn) must never index out of range.
+        let start = self.turn_transcript_start.min(self.transcript.len());
+        for entry in self.transcript[start..].iter_mut().rev() {
+            match entry {
+                Entry::Reasoning { summary: s, .. } | Entry::Assistant { summary: s, .. } => {
+                    *s = Some(summary);
+                    return;
+                }
+                _ => {}
+            }
         }
     }
 
@@ -1646,6 +1892,54 @@ fn terminal_reason(status: &ResultStatus) -> String {
         ResultStatus::BudgetExceeded { limit } => format!("budget exceeded ({limit})"),
         ResultStatus::Rejected { missing } => format!("rejected: {}", missing.join(", ")),
         _ => "unknown".to_string(),
+    }
+}
+
+/// T4: compact token-count formatting for the turn-end summary. `< 1000`
+/// renders as-is; `>= 1000` renders as `{k}.{tenths}k` (e.g. `12345` ->
+/// `12.3k`). Mirrors [`crate::tui::view::status::compact_tokens`] (which is
+/// private to the status module); duplicated here rather than made `pub` to
+/// keep the status module's helpers private to the status line's own
+/// rendering surface, matching the existing module boundaries.
+fn compact_tokens(n: u64) -> String {
+    if n < 1000 {
+        return n.to_string();
+    }
+    let k = n / 1000;
+    let tenths = (n % 1000) / 100;
+    format!("{k}.{tenths}k")
+}
+
+/// T4: format the turn-end summary line (`1m 6s · 1.4k tok (88% cached)`)
+/// from the elapsed seconds (read from `turn_started_at` before
+/// `clear_turn_state` zeroes it) and the turn's `Usage`. Elapsed is `1m 6s`
+/// for >= 60s, else `{secs}s`. Tokens is the sum of every `Usage` field
+/// (matching [`crate::tui::view::status::spent_tokens`]); the cache hit
+/// rate is `cache_read / (input + cache_read + cache_write)`, omitted when
+/// the denominator is zero or no cache read occurred (same formula as the
+/// status line's `tokens` field). Never panics (P-10): no division by zero
+/// -- the cache % is only computed when `denom != 0`.
+fn format_turn_summary(elapsed_secs: u64, usage: &Usage) -> String {
+    let elapsed = if elapsed_secs >= 60 {
+        let m = elapsed_secs / 60;
+        let s = elapsed_secs % 60;
+        format!("{m}m {s}s")
+    } else {
+        format!("{elapsed_secs}s")
+    };
+    let total = u64::from(usage.input_tokens)
+        + u64::from(usage.output_tokens)
+        + u64::from(usage.cache_read_tokens)
+        + u64::from(usage.cache_write_tokens)
+        + u64::from(usage.reasoning_tokens);
+    let denom = u64::from(usage.input_tokens)
+        + u64::from(usage.cache_read_tokens)
+        + u64::from(usage.cache_write_tokens);
+    if denom == 0 || usage.cache_read_tokens == 0 {
+        format!("{elapsed} · {} tok", compact_tokens(total))
+    } else {
+        let pct = (u64::from(usage.cache_read_tokens) * 100) / denom;
+        format!("{elapsed} · {} tok ({pct}% cached)", compact_tokens(total))
     }
 }
 
@@ -1741,7 +2035,7 @@ mod tests {
             .transcript
             .iter()
             .filter_map(|e| match e {
-                Entry::Assistant { text } => Some(text.as_str()),
+                Entry::Assistant { text, .. } => Some(text.as_str()),
                 _ => None,
             })
             .collect();
@@ -2185,6 +2479,9 @@ mod tests {
         let mut state = AppState::new(root);
         state.transcript.push(Entry::Assistant {
             text: "root said hi".to_string(),
+            model: None,
+            summary: None,
+            ts: None,
         });
         // Scrolled up, reviewing history -- must not leak into the new
         // agent's view.
@@ -2628,7 +2925,7 @@ mod tests {
         assert!(
             state.transcript.iter().any(|e| matches!(
                 e,
-                Entry::Assistant { text } if text == "hello there"
+                Entry::Assistant { text, .. } if text == "hello there"
             )),
             "the replayed assistant reply must render as a real Entry::Assistant, not be \
              dropped: {:?}",
@@ -2668,7 +2965,7 @@ mod tests {
             .transcript
             .iter()
             .filter_map(|e| match e {
-                Entry::Assistant { text } => Some(text.as_str()),
+                Entry::Assistant { text, .. } => Some(text.as_str()),
                 _ => None,
             })
             .collect();
@@ -4199,7 +4496,10 @@ mod tests {
             name: "bash".to_string(),
             status: ToolStatus::Finished { is_error: false },
             preview: preview.to_string(),
+            args: String::new(),
+            progress: String::new(),
             expanded,
+            ts: None,
         }
     }
 
@@ -4210,6 +4510,9 @@ mod tests {
         // non-tool entry to confirm the toggle only touches `Entry::Tool`.
         state.transcript.push(Entry::Assistant {
             text: "hi".to_string(),
+            model: None,
+            summary: None,
+            ts: None,
         });
         state.transcript.push(tool_entry("c1", "out1\nout2", false));
         state.transcript.push(tool_entry("c2", "x\ny\nz", false));
@@ -4340,5 +4643,398 @@ mod tests {
     fn clamp_above_max_falls_back_to_default() {
         assert_eq!(clamp_tool_preview_lines(Some(201)), 3);
         assert_eq!(clamp_tool_preview_lines(Some(u32::MAX)), 3);
+    }
+
+    // ---- T4: transcript provenance ----
+
+    /// `ThinkingDelta` creates an `Entry::Reasoning` on the first delta and
+    /// appends to it on subsequent deltas (mirroring `TextDelta` ->
+    /// `Entry::Assistant`). The entry is stored EXPANDED-by-default --
+    /// `show_reasoning` defaults `true`; `build_lines` is the gate that
+    /// hides it when the flag is off, not the apply path.
+    #[test]
+    fn thinking_delta_creates_and_appends_reasoning_entry() {
+        let session = SessionId::new();
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        state.focused_model = Some("anthropic/claude-sonnet-4-6".to_string());
+
+        state.apply(&envelope(
+            session,
+            root,
+            Event::ThinkingDelta {
+                text: "think".to_string(),
+            },
+        ));
+        state.apply(&envelope(
+            session,
+            root,
+            Event::ThinkingDelta {
+                text: "ing".to_string(),
+            },
+        ));
+
+        match state.transcript.last() {
+            Some(Entry::Reasoning { text, model, .. }) => {
+                assert_eq!(text, "thinking", "deltas coalesce");
+                assert_eq!(
+                    model.as_deref(),
+                    Some("anthropic/claude-sonnet-4-6"),
+                    "model stamped from focused_model"
+                );
+            }
+            other => panic!("expected a Reasoning entry, got {other:?}"),
+        }
+        assert!(
+            state.show_reasoning,
+            "show_reasoning defaults true (EXPANDED by default)"
+        );
+    }
+
+    /// `ToolProgress` notes append to the matching in-flight `Entry::Tool`
+    /// by `call_id` (previously dropped by the wildcard arm).
+    #[test]
+    fn tool_progress_appends_to_matching_tool_entry() {
+        let session = SessionId::new();
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+
+        state.apply(&envelope(
+            session,
+            root,
+            Event::ToolCallProposed {
+                call_id: "tc_1".to_string(),
+                tool: ToolName::new("bash"),
+                args: serde_json::json!({"command": "ls"}),
+            },
+        ));
+        state.apply(&envelope(
+            session,
+            root,
+            Event::ToolProgress {
+                call_id: "tc_1".to_string(),
+                note: "step 1".to_string(),
+            },
+        ));
+        state.apply(&envelope(
+            session,
+            root,
+            Event::ToolProgress {
+                call_id: "tc_1".to_string(),
+                note: "step 2".to_string(),
+            },
+        ));
+
+        match state.transcript.last() {
+            Some(Entry::Tool { progress, .. }) => {
+                assert_eq!(progress, "step 1\nstep 2", "notes joined with newline");
+            }
+            other => panic!("expected a Tool entry, got {other:?}"),
+        }
+    }
+
+    /// `ToolProgress` for an unknown `call_id` is a no-op (never panics;
+    /// P-10).
+    #[test]
+    fn tool_progress_for_unknown_call_id_is_a_noop() {
+        let mut state = AppState::new(AgentId::new());
+        state.append_tool_progress("nope", "note");
+        assert!(state.transcript.is_empty());
+    }
+
+    /// `ToolCallProposed` stores the `args` as a compact JSON string
+    /// (previously discarded).
+    #[test]
+    fn tool_call_proposed_stores_args() {
+        let session = SessionId::new();
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+
+        state.apply(&envelope(
+            session,
+            root,
+            Event::ToolCallProposed {
+                call_id: "tc_1".to_string(),
+                tool: ToolName::new("bash"),
+                args: serde_json::json!({"command": "ls", "path": "/tmp"}),
+            },
+        ));
+
+        match state.transcript.last() {
+            Some(Entry::Tool { args, .. }) => {
+                assert!(args.contains("\"command\":\"ls\""), "args stored compact: {args}");
+                assert!(args.contains("\"path\":\"/tmp\""), "args stored compact: {args}");
+            }
+            other => panic!("expected a Tool entry, got {other:?}"),
+        }
+    }
+
+    /// `TurnFinished` stamps a turn-end summary onto the last
+    /// `Entry::Assistant` (or `Entry::Reasoning` if that was the last
+    /// block). The summary reads `turn_started_at` BEFORE
+    /// `clear_turn_state` zeroes it.
+    #[test]
+    fn turn_finished_stamps_summary_on_last_assistant() {
+        let session = SessionId::new();
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        state.apply(&envelope(
+            session,
+            root,
+            Event::TextDelta {
+                text: "hello".to_string(),
+            },
+        ));
+        state.turn_started_at = Some(Instant::now() - std::time::Duration::from_secs(66));
+
+        state.apply(&envelope(
+            session,
+            root,
+            Event::TurnFinished {
+                usage: Usage {
+                    input_tokens: 100,
+                    output_tokens: 300,
+                    cache_read_tokens: 800,
+                    cache_write_tokens: 100,
+                    reasoning_tokens: 0,
+                },
+                stop: conway_core::content::StopReason::EndTurn,
+            },
+        ));
+
+        match state.transcript.last() {
+            Some(Entry::Assistant { summary, .. }) => {
+                let s = summary.as_ref().expect("summary stamped");
+                assert!(s.contains("1m 6s"), "elapsed in m/s form: {s}");
+                assert!(s.contains("tok"), "token count present: {s}");
+                assert!(s.contains("% cached"), "cache pct present: {s}");
+            }
+            other => panic!("expected an Assistant entry, got {other:?}"),
+        }
+    }
+
+    /// When the last block is `Entry::Reasoning`, the summary attaches to
+    /// IT instead (the trace is what the user sees last in that case).
+    #[test]
+    fn turn_finished_stamps_summary_on_last_reasoning_when_last() {
+        let session = SessionId::new();
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        state.apply(&envelope(
+            session,
+            root,
+            Event::ThinkingDelta {
+                text: "pondering".to_string(),
+            },
+        ));
+        state.turn_started_at = Some(Instant::now() - std::time::Duration::from_secs(5));
+
+        state.apply(&envelope(
+            session,
+            root,
+            Event::TurnFinished {
+                usage: Usage {
+                    input_tokens: 10,
+                    output_tokens: 20,
+                    cache_read_tokens: 0,
+                    cache_write_tokens: 0,
+                    reasoning_tokens: 0,
+                },
+                stop: conway_core::content::StopReason::EndTurn,
+            },
+        ));
+
+        match state.transcript.last() {
+            Some(Entry::Reasoning { summary, .. }) => {
+                let s = summary.as_ref().expect("summary stamped");
+                assert!(s.contains("5s"), "elapsed in seconds form: {s}");
+                // No cache read -> no "(n% cached)" suffix.
+                assert!(!s.contains("cached"), "no cache pct when no cache read: {s}");
+            }
+            other => panic!("expected a Reasoning entry, got {other:?}"),
+        }
+    }
+
+    /// A turn with no assistant/reasoning block (only tool calls) gets no
+    /// summary -- the summary is genuinely about a model-emitted block.
+    #[test]
+    fn turn_finished_with_no_assistant_or_reasoning_attaches_no_summary() {
+        let session = SessionId::new();
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        state.apply(&envelope(
+            session,
+            root,
+            Event::ToolCallProposed {
+                call_id: "tc_1".to_string(),
+                tool: ToolName::new("bash"),
+                args: serde_json::json!({}),
+            },
+        ));
+        state.turn_started_at = Some(Instant::now());
+
+        state.apply(&envelope(
+            session,
+            root,
+            Event::TurnFinished {
+                usage: Usage::default(),
+                stop: conway_core::content::StopReason::EndTurn,
+            },
+        ));
+
+        match state.transcript.last() {
+            Some(Entry::Tool { .. }) => {}
+            other => panic!("expected a Tool entry unchanged, got {other:?}"),
+        }
+    }
+
+    /// T4 review regression (significant): a tool-only turn must NOT reach
+    /// back past its own entries and re-stamp the PREVIOUS turn's settled
+    /// assistant bubble with this turn's elapsed/token figures.
+    ///
+    /// The companion test above only covers a transcript with no prior
+    /// Assistant entry at all, so it cannot catch the walk-into-the-previous
+    /// -turn path. Here turn 1 produces a real reply that gets a correct
+    /// summary; turn 2 is a tool-only agentic round. Turn 2's `TurnFinished`
+    /// must be a no-op, leaving turn 1's summary exactly as it was.
+    #[test]
+    fn tool_only_turn_does_not_restamp_the_previous_turns_summary() {
+        let session = SessionId::new();
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+
+        // --- Turn 1: a real model reply, correctly summarized. ---
+        state.apply(&envelope(session, root, Event::TurnStarted { turn: 1 }));
+        state.apply(&envelope(
+            session,
+            root,
+            Event::TextDelta {
+                text: "hi".to_string(),
+            },
+        ));
+        state.turn_started_at = Some(Instant::now());
+        state.apply(&envelope(
+            session,
+            root,
+            Event::TurnFinished {
+                usage: Usage {
+                    input_tokens: 100,
+                    output_tokens: 20,
+                    ..Usage::default()
+                },
+                stop: conway_core::content::StopReason::EndTurn,
+            },
+        ));
+
+        let turn_one_summary = state
+            .transcript
+            .iter()
+            .find_map(|e| match e {
+                Entry::Assistant { summary, .. } => summary.clone(),
+                _ => None,
+            })
+            .expect("turn 1 must stamp a summary on its assistant block");
+
+        // --- Turn 2: a tool-only round (no model text of its own). ---
+        state.apply(&envelope(session, root, Event::TurnStarted { turn: 2 }));
+        state.apply(&envelope(
+            session,
+            root,
+            Event::ToolCallProposed {
+                call_id: "tc_1".to_string(),
+                tool: ToolName::new("bash"),
+                args: serde_json::json!({}),
+            },
+        ));
+        state.turn_started_at = Some(Instant::now());
+        state.apply(&envelope(
+            session,
+            root,
+            Event::TurnFinished {
+                usage: Usage {
+                    input_tokens: 9_000,
+                    output_tokens: 900,
+                    ..Usage::default()
+                },
+                stop: conway_core::content::StopReason::EndTurn,
+            },
+        ));
+
+        let after = state
+            .transcript
+            .iter()
+            .find_map(|e| match e {
+                Entry::Assistant { summary, .. } => summary.clone(),
+                _ => None,
+            })
+            .expect("turn 1's assistant block must still exist");
+
+        assert_eq!(
+            after, turn_one_summary,
+            "a tool-only turn must not overwrite the previous turn's summary \
+             (turn 2's 9.9k-token figures leaked onto turn 1's 120-token reply)"
+        );
+    }
+
+    /// `toggle_thinking` flips `show_reasoning` and returns the new value.
+    #[test]
+    fn toggle_thinking_flips_show_reasoning() {
+        let mut state = AppState::new(AgentId::new());
+        assert!(state.show_reasoning, "defaults true");
+        assert!(!state.toggle_thinking(), "toggles to false");
+        assert!(state.toggle_thinking(), "toggles back to true");
+    }
+
+    /// `toggle_timestamps` flips `show_timestamps` (default false) and
+    /// returns the new value.
+    #[test]
+    fn toggle_timestamps_flips_show_timestamps() {
+        let mut state = AppState::new(AgentId::new());
+        assert!(!state.show_timestamps, "defaults false");
+        assert!(state.toggle_timestamps(), "toggles to true");
+        assert!(!state.toggle_timestamps(), "toggles back to false");
+    }
+
+    /// `format_turn_summary` formats elapsed >= 60s as `1m 6s` and < 60s
+    /// as `{n}s`; cache pct only when `cache_read > 0` and the denominator
+    /// is non-zero.
+    #[test]
+    fn format_turn_summary_shapes() {
+        let with_cache = Usage {
+            input_tokens: 100,
+            output_tokens: 400,
+            cache_read_tokens: 800,
+            cache_write_tokens: 100,
+            reasoning_tokens: 0,
+        };
+        // 800 / (100+800+100) = 80%.
+        assert_eq!(
+            format_turn_summary(66, &with_cache),
+            "1m 6s · 1.4k tok (80% cached)"
+        );
+        assert_eq!(
+            format_turn_summary(5, &with_cache),
+            "5s · 1.4k tok (80% cached)"
+        );
+
+        let no_cache = Usage {
+            input_tokens: 100,
+            output_tokens: 400,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            reasoning_tokens: 0,
+        };
+        assert_eq!(format_turn_summary(5, &no_cache), "5s · 500 tok");
+    }
+
+    /// `compact_tokens` mirrors the status line's helper: `<1000` as-is,
+    /// `>=1000` as `{k}.{tenths}k`.
+    #[test]
+    fn compact_tokens_formats() {
+        assert_eq!(compact_tokens(0), "0");
+        assert_eq!(compact_tokens(999), "999");
+        assert_eq!(compact_tokens(1000), "1.0k");
+        assert_eq!(compact_tokens(12345), "12.3k");
+        assert_eq!(compact_tokens(1400), "1.4k");
     }
 }
