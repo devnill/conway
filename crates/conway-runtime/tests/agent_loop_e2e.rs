@@ -30,9 +30,9 @@ use conway_core::ids::{
 };
 use conway_core::log::{LogRecord, SessionFilter, SessionMeta, SessionStatus};
 use conway_core::ports::{
-    Backend, BoxStream, GenerateRequest, GenerateResponse, HealthRegistry, PermissionGate, Plugin,
-    PluginConfig, PluginManifest, Router, SessionStore, StreamChunk, SubagentHost, Tool, ToolCtx,
-    ToolOutput,
+    Backend, BoxStream, GenerateRequest, GenerateResponse, HealthRegistry, LiveOwner,
+    PermissionGate, Plugin, PluginConfig, PluginManifest, Router, SessionStore, StreamChunk,
+    SubagentHost, Tool, ToolCtx, ToolOutput,
 };
 use conway_core::provenance::Provenance;
 use conway_core::routing::{Route, RouteRequest, RoutingReason};
@@ -403,11 +403,19 @@ impl SessionStore for OrderingStore {
     async fn set_ephemeral(&self, sid: &SessionId, ephemeral: bool) -> Result<(), StoreError> {
         self.inner.set_ephemeral(sid, ephemeral).await
     }
-}
 
-// ---------------------------------------------------------------------
-// Harness
-// ---------------------------------------------------------------------
+    async fn live_owner(&self) -> Result<Option<LiveOwner>, StoreError> {
+        self.inner.live_owner().await
+    }
+
+    async fn touch_live_owner(&self, pid: u32) -> Result<(), StoreError> {
+        self.inner.touch_live_owner(pid).await
+    }
+
+    async fn clear_live_owner(&self) -> Result<(), StoreError> {
+        self.inner.clear_live_owner().await
+    }
+}
 
 async fn seed_prompt(store: &dyn SessionStore, role: &str, prompt: &str) -> (SessionId, AgentId) {
     let session = SessionId::new();

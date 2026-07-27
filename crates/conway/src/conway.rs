@@ -38,6 +38,14 @@ pub struct Conway {
     warnings: Arc<Vec<ConfigWarning>>,
 }
 
+/// How fresh a store liveness marker must be for `sweep_stale_modal_asks` to
+/// treat it as a live owner and defer. 60s = 4× the TUI's 15s heartbeat
+/// interval, so a few missed beats under load do not flip a live owner to
+/// "stale". A crashed process stops heartbeating, so its marker crosses this
+/// threshold shortly after death and the NEXT startup reaps its residue. See
+/// [`Conway::sweep_stale_modal_asks`] (S1 follow-up to B5).
+const SWEEP_LIVE_THRESHOLD: ChronoDuration = ChronoDuration::seconds(60);
+
 impl Conway {
     pub(crate) fn new(
         rt: Arc<Runtime>,
@@ -778,23 +786,42 @@ impl Conway {
     /// calling it later is still safe: it can never purge a session out
     /// from under a live agent loop.
     ///
-    /// **Single-instance assumption (disclosed S1):** the not-live check is
-    /// PER-PROCESS — it sees only THIS runtime's `tree()`. Two TUI processes
-    /// sharing one store directory are not a supported configuration: the
-    /// second process's startup sweep would see the first's open modal-ask
-    /// child as "not live" (it is not in the second process's tree) and
-    /// purge it, after which the first process's fork/pull-in/discard fates
-    /// all fail with `AgentNotFound`. The session store has no cross-process
-    /// liveness marker (no pid/heartbeat/age), so this cannot be fixed at
-    /// the sweep layer alone; the supported deployment is one TUI per store
-    /// dir. Closing that gap is a follow-up (cross-process liveness), not a
-    /// B5 blocker — see the B5 review's S1 finding.
+    /// **Cross-process liveness (S1 follow-up):** BEFORE reaping, the sweep
+    /// asks the store for its cross-process liveness marker
+    /// ([`SessionStore::live_owner`]). If a marker is present AND its
+    /// `heartbeat` is within [`SWEEP_LIVE_THRESHOLD`] (60s) of now, ANOTHER
+    /// process is actively using this store directory, so the sweep returns
+    /// `Ok(0)` immediately — it defers ENTIRELY rather than risk purging
+    /// that process's open modal-ask child (which is not in THIS runtime's
+    /// tree and so would otherwise look like residue). The owning process's
+    /// periodic [`Conway::heartbeat_live_owner`] keeps the marker fresh;
+    /// when it exits cleanly ([`Conway::clear_live_owner`]) or crashes (the
+    /// marker goes stale), the NEXT startup's sweep reaps the residue. This
+    /// closes the "two TUIs on one store dir" gap scoped by S1 without a
+    /// `kill(0)` pid check: freshness + clean-shutdown removal cover crash
+    /// recovery and pid-reuse (a dead process stops heartbeating). The
+    /// caller publishes its OWN marker AFTER the sweep (see `tui::run`), so
+    /// a sweep never sees its own marker. Full multi-instance coordination
+    /// (e.g. a second process sweeping its OWN prior residue while the
+    /// first is live) is out of scope — the store-level marker means a
+    /// second process defers ALL sweeping while another is live.
     ///
     /// Best-effort per session: a session whose `remove` fails (e.g. it has
     /// since acquired children) is skipped and counting continues — the
     /// sweep is janitorial, and a leftover simply stays for the next
     /// startup's sweep. Returns the number of sessions purged.
     pub async fn sweep_stale_modal_asks(&self) -> Result<usize> {
+        // S1 follow-up: if another process is actively using this store, defer
+        // entirely. The caller publishes its OWN marker only AFTER the sweep,
+        // so a marker read here is necessarily someone else's. A `live_owner`
+        // error is treated as "no owner" (reap) — the sweep is best-effort and
+        // must never block startup, and a store that cannot report liveness
+        // behaves as a cold store (the same as one with no marker).
+        if let Some(owner) = self.store.live_owner().await.unwrap_or(None) {
+            if Utc::now().signed_duration_since(owner.heartbeat) <= SWEEP_LIVE_THRESHOLD {
+                return Ok(0);
+            }
+        }
         let sessions = self
             .store
             .list(SessionFilter {
@@ -818,6 +845,28 @@ impl Conway {
             }
         }
         Ok(purged)
+    }
+
+    /// Publishes or refreshes THIS process's store liveness marker — the
+    /// cross-process "I am using this store directory" signal consulted by
+    /// [`sweep_stale_modal_asks`](Self::sweep_stale_modal_asks) (S1 follow-up).
+    /// `pid` is the owning process's OS pid (diagnostic). The TUI calls this
+    /// at startup AFTER the sweep and then a heartbeat task calls it on an
+    /// interval, so a second process starting against the same store sees a
+    /// fresh marker and defers its sweep rather than reaping this process's
+    /// open modal-ask child. Best-effort: a failure here is non-fatal (the
+    /// marker is a cache, not a durable record) and the caller should log
+    /// and continue.
+    pub async fn heartbeat_live_owner(&self, pid: u32) -> Result<()> {
+        Ok(self.store.touch_live_owner(pid).await?)
+    }
+
+    /// Removes THIS process's store liveness marker — called on clean TUI
+    /// shutdown so a subsequent cold start reaps residue immediately instead
+    /// of waiting for the marker to go stale. Best-effort and non-fatal: a
+    /// missing marker (cleared already, or never written) is success.
+    pub async fn clear_live_owner(&self) -> Result<()> {
+        Ok(self.store.clear_live_owner().await?)
     }
 
     /// Classifies a natural-language `/fork`/`/spawn` request into an

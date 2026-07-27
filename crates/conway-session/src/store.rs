@@ -30,10 +30,11 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{Mutex as AsyncMutex, RwLock as AsyncRwLock};
 use tokio::time::Instant;
 
+use chrono::Utc;
 use conway_core::error::StoreError;
 use conway_core::ids::{LogSeq, SeqRange, SessionId};
 use conway_core::log::{LogRecord, SessionFilter, SessionMeta};
-use conway_core::ports::SessionStore;
+use conway_core::ports::{LiveOwner, SessionStore};
 
 use crate::codec;
 use crate::index::SessionIndex;
@@ -441,6 +442,13 @@ impl JsonlSessionStore {
 
     fn session_path(&self, sid: &SessionId) -> PathBuf {
         self.root.join(format!("{sid}.jsonl"))
+    }
+
+    /// Path to the cross-process liveness sidecar (S1 follow-up). Deliberately
+    /// NOT `.jsonl`-suffixed so `SessionIndex`'s directory scan (which filters
+    /// by `extension == "jsonl"`) never mistakes it for a session file.
+    fn live_marker_path(&self) -> PathBuf {
+        self.root.join(".conway-live")
     }
 
     fn map_open_err(&self, e: std::io::Error, sid: &SessionId) -> StoreError {
@@ -1074,6 +1082,86 @@ impl SessionStore for JsonlSessionStore {
         // rebuild-by-scan on next open rather than surfacing it here (see
         // its doc for why warn-and-swallow alone would be silently wrong).
         self.index.update_header(&new_meta).await;
+        Ok(())
+    }
+
+    // Cross-process liveness sidecar (S1 follow-up to B5). The sweep reads
+    // this to avoid reaping another process's open modal-ask child; the TUI
+    // refreshes it on a heartbeat and clears it on shutdown. Decoupled from
+    // the session files: no `.jsonl` extension (so the dir scan skips it),
+    // no header rewrite (so heartbeats are a cheap single-file write, not the
+    // O(transcript) crash-atomic rewrite `set_ephemeral` does), and no
+    // `lifecycle` lock — the marker never interacts with `create`/`fork`/
+    // `remove`/`set_ephemeral` and needs no serialization against them.
+    async fn live_owner(&self) -> Result<Option<LiveOwner>, StoreError> {
+        let raw = match tokio::fs::read(self.live_marker_path()).await {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(io_err(e)),
+        };
+        // A corrupt or half-written marker decodes to None, not an error:
+        // "I can't tell whether anyone is alive" is read as "nobody is" (reap
+        // residue, the cold-start behavior). This matches the trait doc and
+        // keeps a botched sidecar from wedging the sweep.
+        #[derive(serde::Deserialize)]
+        struct RawMarker {
+            pid: u32,
+            heartbeat: chrono::DateTime<chrono::Utc>,
+        }
+        let marker: RawMarker = match serde_json::from_slice(&raw) {
+            Ok(m) => m,
+            Err(_) => return Ok(None),
+        };
+        Ok(Some(LiveOwner {
+            pid: marker.pid,
+            heartbeat: marker.heartbeat,
+        }))
+    }
+
+    async fn touch_live_owner(&self, pid: u32) -> Result<(), StoreError> {
+        // Atomic write (tmp + fsync + rename) so a crash mid-write never
+        // leaves a half-decoded marker that would make `live_owner` spuriously
+        // return None — the same discipline `persist_full` and the promote
+        // header rewrite use. A missing tmp from a prior failed touch is
+        // overwritten harmlessly.
+        #[derive(serde::Serialize)]
+        struct RawMarker<'a> {
+            pid: u32,
+            heartbeat: &'a chrono::DateTime<chrono::Utc>,
+        }
+        let now = Utc::now();
+        let path = self.live_marker_path();
+        let tmp_path = self.root.join(".conway-live.tmp");
+        let body = serde_json::to_vec(&RawMarker {
+            pid,
+            heartbeat: &now,
+        })
+        .map_err(|e| StoreError::Io {
+            detail: format!("encode live marker: {e}"),
+        })?;
+        let write = async {
+            let mut tmp = File::create(&tmp_path).await.map_err(io_err)?;
+            tmp.write_all(&body).await.map_err(io_err)?;
+            tmp.sync_data().await.map_err(io_err)?;
+            drop(tmp);
+            tokio::fs::rename(&tmp_path, &path).await.map_err(io_err)
+        };
+        if let Err(e) = write.await {
+            let _ = tokio::fs::remove_file(&tmp_path).await;
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    async fn clear_live_owner(&self) -> Result<(), StoreError> {
+        // ENOENT is Ok — the marker is a liveness cache, not a durable
+        // record; its absence is the desired end state (clean shutdown,
+        // already cleared, or never written). Any other IO error surfaces.
+        if let Err(e) = tokio::fs::remove_file(self.live_marker_path()).await {
+            if e.kind() != ErrorKind::NotFound {
+                return Err(io_err(e));
+            }
+        }
         Ok(())
     }
 }

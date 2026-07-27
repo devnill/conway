@@ -24,7 +24,7 @@ use conway_core::error::{RuntimeError, StoreError};
 use conway_core::fakes::{FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
 use conway_core::ids::{AgentId, BackendId, ModelId, ModelRef, RoleAlias, SessionId};
 use conway_core::log::{SessionFilter, SessionMeta, SessionStatus};
-use conway_core::ports::{Backend, GenerateResponse, SessionStore};
+use conway_core::ports::{Backend, GenerateResponse, LiveOwner, SessionStore};
 
 fn fake_router() -> Arc<dyn conway_core::ports::Router> {
     Arc::new(FakeRouter::single(ModelRef {
@@ -443,4 +443,122 @@ async fn sweep_skips_a_modal_ask_child_that_is_still_live_in_the_tree() {
         .meta(&child_session)
         .await
         .expect("the live child session must survive the sweep");
+}
+
+// ---------------------------------------------------------------------
+// Conway::sweep_stale_modal_asks -- cross-process liveness (S1 follow-up).
+// ---------------------------------------------------------------------
+
+/// Builds a Conway, drives one completed `/ask` (leaving a `ModalAsk`
+/// ephemeral child in `store`), then returns a FRESH "restarted" `Conway`
+/// over the SAME store with an empty backend — its runtime tree is empty,
+/// so the leftover child is residue to it. This is the "crashed process
+/// left a modal-ask child behind, a new TUI starts against the same store"
+/// shape, without the time cost of a real restart.
+async fn restarted_with_modal_ask_residue(
+    store: Arc<dyn SessionStore>,
+) -> (Conway, SessionId) {
+    let backend = Arc::new(
+        ScriptedBackend::new(vec![
+            ScriptedTurn::Respond(text_response("parent ack")),
+            ScriptedTurn::Respond(text_response("the ask answer")),
+        ])
+        .with_id(BackendId::new("fake")),
+    );
+    let conway_a = build_conway_with_backend(store.clone(), backend);
+    let (_handle, _child_agent, child_session) = live_session_with_completed_ask(&conway_a).await;
+    let restarted = build_conway_with_backend(
+        store.clone(),
+        Arc::new(ScriptedBackend::new(vec![]).with_id(BackendId::new("fake"))),
+    );
+    (restarted, child_session)
+}
+
+/// S1 follow-up, the core new behavior: if the store carries a FRESH
+/// liveness marker (another process is actively using this store), the
+/// sweep defers entirely — it returns 0 and leaves the other process's
+/// modal-ask child untouched, rather than reaping it as "residue" (the
+/// not-live check is per-process; without the marker the second TUI would
+/// see the first's open child as not-live and purge it).
+#[tokio::test]
+async fn sweep_defers_when_a_fresh_live_owner_marker_is_present() {
+    let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
+    let (restarted, child_session) = restarted_with_modal_ask_residue(store.clone()).await;
+
+    // Simulate ANOTHER live process owning this store: a fresh marker (pid
+    // 999, heartbeat = now). The sweep must read it and defer.
+    store
+        .touch_live_owner(999)
+        .await
+        .expect("publishing the other process's marker");
+
+    let purged = restarted
+        .sweep_stale_modal_asks()
+        .await
+        .expect("the sweep must succeed");
+    assert_eq!(
+        purged, 0,
+        "a fresh live-owner marker means another process owns this store; the sweep must defer"
+    );
+    store
+        .meta(&child_session)
+        .await
+        .expect("the other process's modal-ask child must survive the deferred sweep");
+}
+
+/// S1 follow-up, crash-recovery: a STALE marker (heartbeat older than the
+/// threshold) is read as "no live owner" — the owning process has stopped
+/// heartbeating (crashed or exited without clearing), so its modal-ask
+/// residue is reaped exactly as on a cold store with no marker.
+#[tokio::test]
+async fn sweep_reaps_when_the_live_owner_marker_is_stale() {
+    // Hold the concrete `Arc<FakeStore>` so the test can inject a STALE
+    // heartbeat via the fake's test setter — `touch_live_owner` stamps `now`,
+    // and the sweep's decision is time-based (the test must not sleep). The
+    // residue helper takes an erased clone of the SAME store.
+    let fake = Arc::new(FakeStore::new());
+    let store: Arc<dyn SessionStore> = fake.clone();
+    let (restarted, child_session) = restarted_with_modal_ask_residue(store.clone()).await;
+
+    // pid 999 but heartbeat 120s ago, past the 60s `SWEEP_LIVE_THRESHOLD`.
+    fake.set_live_owner(Some(LiveOwner {
+        pid: 999,
+        heartbeat: chrono::Utc::now() - chrono::Duration::seconds(120),
+    }));
+
+    let purged = restarted
+        .sweep_stale_modal_asks()
+        .await
+        .expect("the sweep must succeed");
+    assert_eq!(
+        purged, 1,
+        "a stale marker means no live owner; the modal-ask residue must be reaped"
+    );
+    let err = store
+        .meta(&child_session)
+        .await
+        .expect_err("the reaped residue must be gone");
+    assert!(matches!(err, StoreError::NotFound { .. }));
+}
+
+/// S1 follow-up, the clear-shutdown path: when the owning process cleared
+/// its marker on exit (`clear_live_owner`), there is nothing to read and the
+/// sweep reaps normally — the marker's absence is the desired end state, not
+/// an error. (This is the same code path as a store that never had a marker.)
+#[tokio::test]
+async fn sweep_reaps_when_no_live_owner_marker_is_present() {
+    let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
+    let (restarted, child_session) = restarted_with_modal_ask_residue(store.clone()).await;
+
+    // No marker set — as on a cold start against a store whose last owner
+    // cleared its marker, or one that never had an owner.
+    let purged = restarted
+        .sweep_stale_modal_asks()
+        .await
+        .expect("the sweep must succeed");
+    assert_eq!(purged, 1, "with no live owner the modal-ask residue is reaped");
+    store
+        .meta(&child_session)
+        .await
+        .expect_err("the reaped residue must be gone");
 }

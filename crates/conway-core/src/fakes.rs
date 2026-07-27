@@ -33,7 +33,7 @@ use crate::ids::{
 use crate::log::{ForkOrigin, LogRecord, SessionFilter, SessionMeta, SubagentMode};
 use crate::ports::{
     Backend, BoxStream, EventSink, GenerateRequest, GenerateResponse, HealthRegistry,
-    PermissionGate, Router, SessionStore, StreamChunk, SubagentHost,
+    LiveOwner, PermissionGate, Router, SessionStore, StreamChunk, SubagentHost,
 };
 use crate::routing::{BreakerState, Observation, Route, RouteRequest, RoutingReason};
 
@@ -339,6 +339,12 @@ struct FakeSession {
 #[derive(Debug, Default)]
 pub struct FakeStore {
     sessions: RwLock<BTreeMap<SessionId, FakeSession>>,
+    /// Cross-process liveness marker — the test knob for
+    /// `sweep_stale_modal_asks`'s S1 follow-up. `touch_live_owner` sets
+    /// `Some(now)`; `live_owner` returns it; `clear_live_owner` sets `None`.
+    /// A test injects a STALE owner via [`Self::set_live_owner`] to drive the
+    /// sweep's "stale marker → reap" branch without waiting on a clock.
+    live_owner: Mutex<Option<LiveOwner>>,
 }
 
 impl FakeStore {
@@ -355,6 +361,16 @@ impl FakeStore {
             .values()
             .map(|s| s.records.len())
             .sum()
+    }
+
+    /// Test knob: inject an arbitrary liveness marker (e.g. a STALE
+    /// `heartbeat` to drive the sweep's reap branch, or `None` to clear).
+    /// Production paths use `touch_live_owner` / `clear_live_owner` via the
+    /// `SessionStore` trait, which stamp `heartbeat = now`; this setter
+    /// exists because the sweep's staleness decision is time-based and tests
+    /// must not sleep.
+    pub fn set_live_owner(&self, owner: Option<LiveOwner>) {
+        *self.live_owner.lock().unwrap() = owner;
     }
 }
 
@@ -579,6 +595,27 @@ impl SessionStore for FakeStore {
             });
         }
         session.meta.ephemeral = false;
+        Ok(())
+    }
+
+    // The liveness marker is a plain in-memory cell here — `live_owner`
+    // returns whatever a test (or `touch_live_owner`) last set, with no
+    // freshness filtering; the sweep owns the threshold. A `FakeStore` never
+    // touches the filesystem, so there is no sidecar to corrupt or lose.
+    async fn live_owner(&self) -> Result<Option<LiveOwner>, StoreError> {
+        Ok(self.live_owner.lock().unwrap().clone())
+    }
+
+    async fn touch_live_owner(&self, pid: u32) -> Result<(), StoreError> {
+        *self.live_owner.lock().unwrap() = Some(LiveOwner {
+            pid,
+            heartbeat: Utc::now(),
+        });
+        Ok(())
+    }
+
+    async fn clear_live_owner(&self) -> Result<(), StoreError> {
+        *self.live_owner.lock().unwrap() = None;
         Ok(())
     }
 }

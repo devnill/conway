@@ -475,3 +475,126 @@ async fn append_never_rewrites_existing_bytes() {
         prev = now;
     }
 }
+
+// ---------------------------------------------------------------------
+// Cross-process liveness sidecar (S1 follow-up to B5's sweep).
+// ---------------------------------------------------------------------
+
+/// The sidecar is NOT a session file: `SessionIndex`'s directory scan filters
+/// by `.jsonl` extension, so `.conway-live` never appears in `list`/`children`
+/// and never gets mistaken for a session. Sanity check that touching the
+/// marker does not pollute the session listing.
+#[tokio::test]
+async fn live_marker_sidecar_is_not_listed_as_a_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    let store = open_store(&root).await;
+    let sid = SessionId::new();
+    store.create(meta_for(sid)).await.unwrap();
+
+    store.touch_live_owner(1234).await.unwrap();
+    assert!(root.join(".conway-live").exists(), "marker sidecar written");
+
+    let listed = store
+        .list(conway_core::log::SessionFilter::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        listed.len(),
+        1,
+        "the sidecar must not appear in list(); only the real session"
+    );
+    assert_eq!(listed[0].id, sid);
+}
+
+/// Round-trip: `touch` writes `{pid, heartbeat=now}`, `live_owner` reads it
+/// back, `clear` removes it (absence reads back as `None`). A second `touch`
+/// refreshes the heartbeat and may change the pid.
+#[tokio::test]
+async fn live_marker_round_trip_touch_read_clear() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    let store = open_store(&root).await;
+
+    // No marker initially.
+    assert_eq!(
+        store.live_owner().await.unwrap(),
+        None,
+        "a fresh store has no live owner"
+    );
+
+    store.touch_live_owner(42).await.unwrap();
+    let owner = store.live_owner().await.unwrap().expect("marker present");
+    assert_eq!(owner.pid, 42);
+    let first_beat = owner.heartbeat;
+
+    // A second touch refreshes the heartbeat (and a different pid).
+    store.touch_live_owner(43).await.unwrap();
+    let owner = store.live_owner().await.unwrap().expect("marker still present");
+    assert_eq!(owner.pid, 43);
+    assert!(
+        owner.heartbeat >= first_beat,
+        "heartbeat must advance on a refresh"
+    );
+
+    // Clear removes it; absence reads back as None (not an error).
+    store.clear_live_owner().await.unwrap();
+    assert_eq!(
+        store.live_owner().await.unwrap(),
+        None,
+        "clear_live_owner removes the marker"
+    );
+
+    // Clearing an already-absent marker is Ok (idempotent).
+    store.clear_live_owner().await.unwrap();
+}
+
+/// A corrupt or half-written sidecar decodes to `None`, not an error: "I
+/// can't tell whether anyone is alive" is read as "nobody is" (reap residue,
+/// the cold-start behavior), so a botched marker never wedges the sweep.
+#[tokio::test]
+async fn live_marker_corrupt_file_decodes_to_none() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    let store = open_store(&root).await;
+
+    tokio::fs::write(root.join(".conway-live"), b"not valid json")
+        .await
+        .unwrap();
+
+    assert_eq!(
+        store.live_owner().await.unwrap(),
+        None,
+        "a corrupt marker is read as no live owner, not surfaced as an error"
+    );
+}
+
+/// `touch_live_owner` is crash-atomic (tmp + fsync + rename): a leftover tmp
+/// file from a failed prior touch does not break a subsequent touch, and no
+/// stray temp file leaks into the session listing.
+#[tokio::test]
+async fn live_marker_touch_is_atomic_and_overwrites_stale_tmp() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    let store = open_store(&root).await;
+
+    // Simulate a crashed prior touch: a stale tmp file left behind.
+    tokio::fs::write(root.join(".conway-live.tmp"), b"garbage")
+        .await
+        .unwrap();
+
+    store.touch_live_owner(7).await.unwrap();
+    let owner = store.live_owner().await.unwrap().expect("marker written");
+    assert_eq!(owner.pid, 7);
+    // The tmp is gone (renamed over) and did not leak into the listing.
+    assert!(!root.join(".conway-live.tmp").exists());
+    assert_eq!(
+        store
+            .list(conway_core::log::SessionFilter::default())
+            .await
+            .unwrap()
+            .len(),
+        0,
+        "no session files in this store; the marker/tmp must not be listed"
+    );
+}
