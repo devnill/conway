@@ -7,6 +7,7 @@
 //! `Envelope`s, and assert on the resulting `transcript`/`tree`.
 
 use std::collections::HashMap;
+use std::time::Instant;
 
 use conway::{AgentId, AgentIntent, AgentResult, Envelope, Event, LogSeq, ResultStatus, SubagentMode, Usage};
 
@@ -30,6 +31,23 @@ pub enum Activity {
     Responding,
     RunningTool(String),
     AwaitingPermission,
+}
+
+/// The braille spinner frame sequence (T2, 8 TPS animation tick). Advanced by
+/// [`AppState::tick_animation`] only while [`AppState::activity`] is not
+/// [`Activity::Idle`] (idle terminal stays flat-cost -- no animation tick
+/// work, no redraw). The 10-glyph braille cycle is the same one `spinners`-
+/// style CLI indicators use.
+pub const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+/// Whether `activity` should drive the 125ms animation tick (T2): true for
+/// every variant but [`Activity::Idle`]. The app loop's animation-tick arm
+/// calls this to decide whether to advance the spinner/frame counters and
+/// mark the frame dirty -- an idle terminal is never redrawn by the animation
+/// tick, keeping idle cost flat (the 16ms redraw tick still runs but is itself
+/// dirty-gated).
+pub fn should_animate(activity: &Activity) -> bool {
+    !matches!(activity, Activity::Idle)
 }
 
 /// One line of the transcript pane.
@@ -451,6 +469,43 @@ pub struct AppState {
     /// leftover scroll position from a previous, unrelated command never
     /// carries over.
     pub permission_scroll: u16,
+    /// The current braille spinner frame index (T2). Advanced by
+    /// [`Self::tick_animation`] modulo [`SPINNER_FRAMES`]' length, only while
+    /// [`Self::activity`] is not [`Activity::Idle`]. Rendered by
+    /// `view/status.rs` as the glyph preceding the activity phrase.
+    pub spinner_frame: usize,
+    /// The current spinner pulse-color index (T2). Advanced by
+    /// [`Self::tick_animation`] modulo the theme's spinner-palette length,
+    /// only while active. Rendered by `view/status.rs` to pick the pulse
+    /// color for both the braille glyph and the activity word (subtle
+    /// element-level contrast shift, NOT per-character TextShimmer, which is
+    /// out of scope per the T2 spec).
+    pub spinner_color_idx: usize,
+    /// When the focused agent's current turn started (T2): set by
+    /// `Event::TurnStarted` for the focused agent and cleared whenever
+    /// `activity` returns to [`Activity::Idle`] (`TurnFinished`/
+    /// `AgentFinished` for the focused agent, or [`Self::focus_agent`]). The
+    /// status line renders live `elapsed` from `Instant::now() -
+    /// turn_started_at` while this is `Some`; `None` while idle.
+    pub turn_started_at: Option<Instant>,
+    /// New context tokens ADDED this turn (T2): the sum of
+    /// `Event::ContextSegmentAdded { tokens_est }` deltas observed on the
+    /// focused agent's own stream between `TurnStarted` and `TurnFinished`.
+    /// The runtime emits `ContextSegmentAdded` only for segments NEW to a
+    /// session-scoped `seen_segments` set that is deliberately NEVER reset
+    /// across turns, so this is a session-deduped segment-delta count -- NOT
+    /// total context occupancy and NOT the authoritative turn-end token
+    /// total. On turn 1 it reads ~full context size (every segment is new);
+    /// on turn 2+ only genuinely new segments fire, so for the same
+    /// conversation it is large on turn 1 then small on turn 2. The status
+    /// line renders it with a leading `+` (`+{n} tok`) to signal "added
+    /// this turn" and to distinguish it from the cumulative
+    /// `| {tokens} tok |` slot; the authoritative turn-end token total
+    /// lands via the turn-end summary (T4). Reset to 0 on `TurnStarted` and
+    /// on [`Self::focus_agent`]; cleared when `activity` returns to idle.
+    /// Distinct from [`Self::focused_agent_usage`], which is the cumulative
+    /// spend across all of the focused agent's turns.
+    pub turn_running_tokens: u64,
 }
 
 impl AppState {
@@ -490,6 +545,10 @@ impl AppState {
             ask_in_flight: false,
             permission_scroll: 0,
             pending_intent_confirm: None,
+            spinner_frame: 0,
+            spinner_color_idx: 0,
+            turn_started_at: None,
+            turn_running_tokens: 0,
         }
     }
 
@@ -602,6 +661,42 @@ impl AppState {
         // on its own.
         self.activity = Activity::Idle;
         self.focused_agent_usage = Usage::default();
+        // T2: the spinner/elapsed/running-token state is per focused-agent --
+        // a freshly focused agent has no turn in flight, so the animation
+        // counters reset and the status line shows no elapsed/running tokens
+        // until the new focus's own `TurnStarted` arrives.
+        self.spinner_frame = 0;
+        self.spinner_color_idx = 0;
+        self.turn_started_at = None;
+        self.turn_running_tokens = 0;
+    }
+
+    /// T2 animation tick (125ms / 8 TPS): advances the braille spinner frame
+    /// and the pulse-color index, both wrapping. The caller (the app loop's
+    /// animation-tick arm) is responsible for only calling this while
+    /// [`should_animate`] is true for [`Self::activity`], so an idle terminal
+    /// never pays for animation. The color index wraps modulo
+    /// `palette_len` (the theme's spinner palette length, supplied by the
+    /// caller since `AppState` does not depend on `Theme`); the frame index
+    /// wraps modulo [`SPINNER_FRAMES`]' length.
+    pub fn tick_animation(&mut self, palette_len: usize) {
+        let frames = SPINNER_FRAMES.len();
+        if frames != 0 {
+            self.spinner_frame = (self.spinner_frame + 1) % frames;
+        }
+        let p = palette_len.max(1);
+        self.spinner_color_idx = (self.spinner_color_idx + 1) % p;
+    }
+
+    /// Clears the per-turn timing/token counters (T2). Called whenever
+    /// `activity` transitions back to [`Activity::Idle`] -- the working
+    /// indicator no longer shows elapsed/running tokens once the turn is
+    /// done. The spinner counters themselves are zeroed by [`Self::focus_agent`]
+    /// and otherwise left alone on idle (they simply stop advancing, which
+    /// is fine -- the renderer only draws them while active).
+    fn clear_turn_state(&mut self) {
+        self.turn_started_at = None;
+        self.turn_running_tokens = 0;
     }
 
     /// The text the slash-command palette's match list is anchored to
@@ -997,6 +1092,10 @@ impl AppState {
                 // about the FOCUSED agent specifically.
                 if env.agent == self.focused_agent {
                     self.activity = Activity::Idle;
+                    // T2: a finished focused agent has no turn in flight;
+                    // clear the elapsed/running-token counters so the status
+                    // line shows no working indicator.
+                    self.clear_turn_state();
                 }
             }
             Event::AgentPromoted { .. } => {
@@ -1032,6 +1131,12 @@ impl AppState {
             Event::TurnStarted { .. } => {
                 if env.agent == self.focused_agent {
                     self.activity = Activity::Thinking;
+                    // T2: a new turn for the focused agent starts the elapsed
+                    // clock and resets the new-segment-token count (the
+                    // previous turn's `TurnFinished` already folded its
+                    // authoritative `Usage` into `focused_agent_usage`).
+                    self.turn_started_at = Some(Instant::now());
+                    self.turn_running_tokens = 0;
                 }
             }
             Event::ThinkingDelta { .. } => {
@@ -1043,6 +1148,23 @@ impl AppState {
                 self.append_assistant_text(text);
                 if env.agent == self.focused_agent {
                     self.activity = Activity::Responding;
+                }
+            }
+            // T2: accumulate the focused agent's new-context-tokens-added-
+            // this-turn count from context-segment additions. The runtime
+            // emits `ContextSegmentAdded` only for segments NEW to a
+            // session-scoped `seen_segments` set that is never reset across
+            // turns, so `tokens_est` here is a session-deduped segment
+            // delta -- NOT total context occupancy and NOT the
+            // authoritative turn-end token total (the latter arrives with
+            // `TurnFinished::usage`, which finalizes the turn and folds
+            // into `focused_agent_usage`; the authoritative turn-end
+            // summary is T4). Accumulated here only for the focused agent,
+            // only while a turn is in flight (`turn_started_at` is `Some`).
+            Event::ContextSegmentAdded { tokens_est, .. } => {
+                if env.agent == self.focused_agent && self.turn_started_at.is_some() {
+                    self.turn_running_tokens =
+                        self.turn_running_tokens.saturating_add(u64::from(*tokens_est));
                 }
             }
             Event::ToolCallProposed { call_id, tool, .. } => {
@@ -1073,6 +1195,10 @@ impl AppState {
                 if env.agent == self.focused_agent {
                     self.activity = Activity::Idle;
                     self.focused_agent_usage += *usage;
+                    // T2: the turn is over -- stop the elapsed clock and drop
+                    // the running-estimate counter (the authoritative `Usage`
+                    // is now folded into `focused_agent_usage` above).
+                    self.clear_turn_state();
                 }
             }
             Event::PermissionResolved { call_id, decision } => {
@@ -3393,5 +3519,195 @@ mod tests {
 
         assert_eq!(state.input, "keep me", "a no-card edit must not touch the input line");
         assert!(matches!(state.mode, Mode::Normal));
+    }
+
+    // ---- T2: activity spinner + animation tick ----
+
+    #[test]
+    fn spinner_frame_cycles_the_braille_sequence_and_wraps() {
+        // Advance one full cycle plus one: the frame index must wrap back to
+        // 1 (frame 0 is the starting position, so a full `len` ticks lands
+        // back on 0, and one more lands on 1).
+        let mut state = AppState::new(AgentId::new());
+        assert_eq!(state.spinner_frame, 0);
+        let n = SPINNER_FRAMES.len();
+        for _ in 0..n {
+            state.tick_animation(3);
+        }
+        assert_eq!(state.spinner_frame, 0, "frame must wrap modulo {}", n);
+        state.tick_animation(3);
+        assert_eq!(state.spinner_frame, 1);
+        // The glyph lookup itself never panics on any in-range frame.
+        let glyph = SPINNER_FRAMES[state.spinner_frame % SPINNER_FRAMES.len()];
+        assert!(SPINNER_FRAMES.contains(&glyph));
+    }
+
+    #[test]
+    fn spinner_color_index_cycles_the_palette_and_wraps() {
+        let mut state = AppState::new(AgentId::new());
+        assert_eq!(state.spinner_color_idx, 0);
+        // A palette of 3: 0 -> 1 -> 2 -> 0 -> 1.
+        state.tick_animation(3);
+        assert_eq!(state.spinner_color_idx, 1);
+        state.tick_animation(3);
+        assert_eq!(state.spinner_color_idx, 2);
+        state.tick_animation(3);
+        assert_eq!(state.spinner_color_idx, 0, "color idx must wrap modulo 3");
+        state.tick_animation(3);
+        assert_eq!(state.spinner_color_idx, 1);
+    }
+
+    #[test]
+    fn tick_animation_handles_a_one_color_palette_without_div_by_zero() {
+        let mut state = AppState::new(AgentId::new());
+        // A degenerate 1-color palette (or 0, defensively) must not panic.
+        state.tick_animation(1);
+        assert_eq!(state.spinner_color_idx, 0);
+        state.tick_animation(0);
+        assert_eq!(state.spinner_color_idx, 0);
+    }
+
+    #[test]
+    fn should_animate_is_false_for_idle_true_otherwise() {
+        assert!(!should_animate(&Activity::Idle));
+        assert!(should_animate(&Activity::Thinking));
+        assert!(should_animate(&Activity::Responding));
+        assert!(should_animate(&Activity::RunningTool("bash".to_string())));
+        assert!(should_animate(&Activity::AwaitingPermission));
+    }
+
+    #[test]
+    fn turn_started_records_the_start_instant_and_resets_running_tokens() {
+        let session = SessionId::new();
+        let agent = AgentId::new();
+        let mut state = AppState::new(agent);
+        state.turn_running_tokens = 999;
+
+        state.apply(&envelope(session, agent, Event::TurnStarted { turn: 1 }));
+
+        assert!(
+            state.turn_started_at.is_some(),
+            "TurnStarted for the focused agent must stamp the start instant"
+        );
+        assert_eq!(
+            state.turn_running_tokens, 0,
+            "a new turn must reset the new-segment-token count"
+        );
+    }
+
+    #[test]
+    fn turn_started_for_a_non_focused_agent_does_not_stamp_or_reset() {
+        let session = SessionId::new();
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let other = AgentId::new();
+
+        state.apply(&envelope(session, other, Event::TurnStarted { turn: 1 }));
+
+        assert!(
+            state.turn_started_at.is_none(),
+            "a non-focused agent's TurnStarted must not stamp the focused agent's clock"
+        );
+    }
+
+    #[test]
+    fn context_segment_added_accumulates_running_tokens_for_the_focused_agent() {
+        let session = SessionId::new();
+        let agent = AgentId::new();
+        let mut state = AppState::new(agent);
+        // A turn must be in flight for the accumulator to engage.
+        state.apply(&envelope(session, agent, Event::TurnStarted { turn: 1 }));
+        assert_eq!(state.turn_running_tokens, 0);
+
+        state.apply(&envelope(
+            session,
+            agent,
+            Event::ContextSegmentAdded {
+                segment: conway_core::ids::SegmentId::new(),
+                provenance: conway::Provenance::UserPrompt,
+                tokens_est: 120,
+            },
+        ));
+        state.apply(&envelope(
+            session,
+            agent,
+            Event::ContextSegmentAdded {
+                segment: conway_core::ids::SegmentId::new(),
+                provenance: conway::Provenance::UserPrompt,
+                tokens_est: 200,
+            },
+        ));
+
+        assert_eq!(state.turn_running_tokens, 320);
+    }
+
+    #[test]
+    fn context_segment_added_outside_a_turn_does_not_accumulate() {
+        let session = SessionId::new();
+        let agent = AgentId::new();
+        let mut state = AppState::new(agent);
+        // No TurnStarted yet -- `turn_started_at` is None.
+        state.apply(&envelope(
+            session,
+            agent,
+            Event::ContextSegmentAdded {
+                segment: conway_core::ids::SegmentId::new(),
+                provenance: conway::Provenance::UserPrompt,
+                tokens_est: 120,
+            },
+        ));
+        assert_eq!(state.turn_running_tokens, 0);
+    }
+
+    #[test]
+    fn turn_finished_clears_the_turn_state() {
+        let session = SessionId::new();
+        let agent = AgentId::new();
+        let mut state = AppState::new(agent);
+        state.apply(&envelope(session, agent, Event::TurnStarted { turn: 1 }));
+        state.apply(&envelope(
+            session,
+            agent,
+            Event::ContextSegmentAdded {
+                segment: conway_core::ids::SegmentId::new(),
+                provenance: conway::Provenance::UserPrompt,
+                tokens_est: 50,
+            },
+        ));
+        assert!(state.turn_started_at.is_some());
+        assert_eq!(state.turn_running_tokens, 50);
+
+        state.apply(&envelope(
+            session,
+            agent,
+            Event::TurnFinished {
+                usage: Usage::default(),
+                stop: conway_core::content::StopReason::EndTurn,
+            },
+        ));
+
+        assert!(state.turn_started_at.is_none());
+        assert_eq!(state.turn_running_tokens, 0);
+        assert_eq!(state.activity, Activity::Idle);
+    }
+
+    #[test]
+    fn focus_agent_resets_the_spinner_and_turn_state() {
+        let root = AgentId::new();
+        let child = AgentId::new();
+        let mut state = AppState::new(root);
+        state.spinner_frame = 5;
+        state.spinner_color_idx = 2;
+        state.turn_started_at = Some(Instant::now());
+        state.turn_running_tokens = 42;
+        state.activity = Activity::Responding;
+
+        state.focus_agent(child);
+
+        assert_eq!(state.spinner_frame, 0);
+        assert_eq!(state.spinner_color_idx, 0);
+        assert!(state.turn_started_at.is_none());
+        assert_eq!(state.turn_running_tokens, 0);
+        assert_eq!(state.activity, Activity::Idle);
     }
 }

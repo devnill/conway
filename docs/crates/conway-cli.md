@@ -274,8 +274,10 @@ to consume):
 | `border_danger` | red + bold | permission-prompt modal border |
 | `border_accent` | cyan + bold | NL intent confirmation card border |
 | `status_mode` | reversed modifier | the bottom status line |
-| `status_dim` | dim modifier | *(NEW, no pre-theme call site)* status-line dim accent |
-| `spinner` | yellow | *(NEW, no pre-theme call site)* activity spinner accent |
+| `status_dim` | dim modifier | status-line dim accent (T2: the `elapsed · +tokens` tail of the working indicator) |
+| `spinner` | yellow | activity spinner accent (T2: first color of the pulse palette) |
+| `spinner_b` | light_yellow | *(NEW, T2)* second color of the spinner pulse palette |
+| `spinner_c` | white | *(NEW, T2)* third color of the spinner pulse palette |
 
 A unit test (`tui::view::theme::tests::no_inline_style_default_fg_color_remains_in_view_files`)
 guards the refactor's central invariant: no `Style::default().fg(Color::…)`
@@ -283,6 +285,55 @@ literal remains in any `view/*.rs` other than `theme.rs` (the one place
 the defaults live). `Theme::default()`'s exact pairs are pinned by
 `default_*_match_pre_t1` tests so a future change cannot silently drift
 the colors.
+
+### Activity spinner + animation tick (T2)
+
+The status line's activity slot is the TUI's primary "is it working?"
+signal. While the focused agent's `Activity` is anything other than
+`Idle`, the slot renders a braille spinner glyph plus the activity word
+plus live elapsed seconds plus the new context tokens added this turn,
+e.g. `⠋ thinking… 12s · +45 tok`. The spinner glyph and the activity
+word share one pulse color per frame, cycling through a small theme
+palette (`spinner`/`spinner_b`/`spinner_c` via `Theme::spinner_palette`)
+on each 125ms (8 TPS) animation tick — a subtle element-level contrast
+shift, not per-character `TextShimmer` (out of scope).
+
+The 125ms tick is additive to the existing 16ms redraw cap
+(`REDRAW_TICK`); it advances `AppState::spinner_frame` (modulo the
+10-glyph braille sequence `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`) and `AppState::spinner_color_idx`
+(modulo the palette length) and marks the frame dirty **only while
+`should_animate(activity)` is true**. An idle terminal never pays for
+animation: the tick arm is gated, so the counters don't advance and no
+redraw is forced (the 16ms redraw tick still runs but is itself
+dirty-gated).
+
+The elapsed clock starts at `Event::TurnStarted` for the focused agent
+(`AppState::turn_started_at`) and stops when `activity` returns to
+`Idle` (`TurnFinished`/`AgentFinished` for the focused agent, or a
+focus switch). The `+{n} tok` figure
+(`AppState::turn_running_tokens`) is the sum of
+`Event::ContextSegmentAdded { tokens_est }` deltas on the focused
+agent's own stream between `TurnStarted` and `TurnFinished`. The
+runtime emits `ContextSegmentAdded` only for segments NEW to a
+session-scoped `seen_segments` set that is deliberately never reset
+across turns, so this is a session-deduped segment-delta count — NOT
+total context occupancy and NOT the authoritative turn-end token
+total. On turn 1 it reads ~full context size (every segment is new);
+on turn 2+ only genuinely new segments fire, so for the same
+conversation it is large on turn 1 then small on turn 2. The leading
+`+` signals "added this turn" and visually distinguishes it from the
+cumulative `| {tokens} tok |` slot (which stays in its own slot, so
+both figures are visible while active). The authoritative turn-end
+token total lands via the turn-end summary (T4).
+
+A second T2 flourish: while `activity == Responding`, the live,
+in-progress `Entry::Assistant` line in the transcript gets a block `▌`
+cursor appended at **render time only** — never baked into the stored
+`Entry::Assistant` text or into `entry_lines` output for settled
+entries (the clean-copy invariant is relaxed only for the actively-
+streaming line, per decision D-clean-copy). When the turn settles the
+cursor disappears from the next render because the
+`activity == Responding` gate stops firing.
 
 ### The `/` command palette, with arrow-select
 

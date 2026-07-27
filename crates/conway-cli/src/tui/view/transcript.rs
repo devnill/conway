@@ -35,7 +35,18 @@ use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::Frame;
 
 use super::theme::Theme;
-use crate::tui::state::{AppState, Entry, NodeStatus, ToolStatus};
+use crate::tui::state::{Activity, AppState, Entry, NodeStatus, ToolStatus};
+
+/// The streaming-line cursor (T2): a block `▌` (U+258C) appended at RENDER
+/// time to the live, in-progress `Entry::Assistant` line while `activity ==
+/// Responding`. This is a render-time decoration ONLY -- it is never baked
+/// into the stored `Entry::Assistant` text or into [`entry_lines`] output
+/// for settled entries (the clean-copy invariant, decision
+/// 01KYJFB983G6KH491ZKYYHYM1K, is RELAXED only for the actively-streaming
+/// line per decision D-clean-copy). See [`build_paragraph`] for the
+/// append-at-render-time mechanism that keeps settled `entry_lines` output
+/// unchanged.
+const STREAMING_CURSOR: &str = "▌";
 
 /// Renders the transcript, auto-following its own bottom while
 /// `state.follow_tail` is set (the growing-conversation criterion: newest
@@ -59,13 +70,61 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState, theme: &Theme) {
 /// [`wrapped_line_count`] (used by `app.rs`, via `view::max_scroll`, to
 /// clamp `PageUp`/`PageDown` outside of a render pass) measures the exact
 /// same wrapping this module actually draws with.
+///
+/// T2 streaming cursor: while `state.activity == Responding`, a block `▌`
+/// ([`STREAMING_CURSOR`]) `Span` is appended to the LAST `Line` produced by
+/// the LAST `Entry::Assistant` in `state.transcript` -- the live,
+/// in-progress assistant line. This is a RENDER-TIME decoration: it is
+/// added HERE, on the `Line` produced from the entry, NEVER baked into the
+/// stored `Entry::Assistant` text or into [`entry_lines`] output for
+/// settled entries. The clean-copy invariant (settled `entry_lines` output
+/// never contains block/box glyphs) is preserved -- `entry_lines` itself is
+/// unchanged; the cursor lives only in this render path, and only while the
+/// line is actively streaming. When the turn settles (`TurnFinished` ->
+/// `activity` returns to `Idle`), the cursor disappears from the next
+/// render because the gate here stops firing.
 fn build_paragraph(state: &AppState, theme: &Theme) -> Paragraph<'static> {
-    let lines: Vec<Line> = state
+    Paragraph::new(build_lines(state, theme)).wrap(Wrap { trim: false })
+}
+
+/// The `Vec<Line>` `build_paragraph` wraps into a `Paragraph` -- factored
+/// out (T2) so the streaming-cursor behavior is directly unit-testable
+/// without a `TestBackend`/`Paragraph` round-trip. The streaming cursor
+/// (`STREAMING_CURSOR`) is appended to the last `Line` of the last
+/// `Entry::Assistant` ONLY while `state.activity == Responding`; it is
+/// never baked into [`entry_lines`] output for settled entries (clean-copy
+/// invariant preserved -- see [`STREAMING_CURSOR`]'s doc).
+fn build_lines(state: &AppState, theme: &Theme) -> Vec<Line<'static>> {
+    let streaming = matches!(state.activity, Activity::Responding);
+    // Index of the last `Entry::Assistant` in the transcript, if any -- the
+    // streaming cursor is attached to ITS last line only, never to a
+    // settled assistant entry that happens to sit before a later
+    // tool/agent/notice entry.
+    let last_assistant_idx = state
         .transcript
         .iter()
-        .flat_map(|entry| entry_lines(entry, theme))
-        .collect();
-    Paragraph::new(lines).wrap(Wrap { trim: false })
+        .rposition(|e| matches!(e, Entry::Assistant { .. }));
+    state
+        .transcript
+        .iter()
+        .enumerate()
+        .flat_map(|(i, entry)| {
+            let mut lines = entry_lines(entry, theme);
+            if streaming && Some(i) == last_assistant_idx {
+                if let Some(last) = lines.last_mut() {
+                    // Reuse the assistant body style for the cursor so it
+                    // reads as part of the streaming line, not a separate
+                    // accent. Uses the `theme.assistant` slot -- never an
+                    // inline `Style::default().fg(..)` literal (T1's grep
+                    // guard forbids that in view files other than
+                    // `theme.rs`).
+                    last.spans
+                        .push(Span::styled(STREAMING_CURSOR.to_string(), theme.assistant));
+                }
+            }
+            lines
+        })
+        .collect()
 }
 
 /// The wrapped-line clamp ceiling for a `width`x`height` viewport: total
@@ -527,6 +586,183 @@ mod tests {
             row_one.unwrap() + 1,
             row_two.unwrap(),
             "'notice two' must be the row immediately after 'notice one': {rows:?}"
+        );
+    }
+
+    // ---- T2: streaming cursor on the live assistant line ----
+
+    /// The streaming cursor ([`STREAMING_CURSOR`]) is a RENDER-TIME
+    /// decoration on the live, in-progress `Entry::Assistant` line while
+    /// `activity == Responding`. This is the pure half of the test: the
+    /// `Line`s produced by [`build_lines`] (the function `build_paragraph`
+    /// wraps into a `Paragraph`) end with the cursor glyph while
+    /// Responding.
+    #[test]
+    fn streaming_cursor_present_on_last_assistant_line_while_responding() {
+        let mut state = AppState::new(AgentId::new());
+        state.transcript.push(Entry::Assistant {
+            text: "streaming live".to_string(),
+        });
+        state.activity = Activity::Responding;
+
+        let lines = build_lines(&state, &Theme::default());
+        let last = lines.last().expect("at least one line");
+        let text: String = last.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            text.ends_with(STREAMING_CURSOR),
+            "the live assistant line must end with the streaming cursor while Responding, got: {text:?}"
+        );
+        assert!(
+            text.contains("streaming live"),
+            "the body text must still be present, got: {text:?}"
+        );
+    }
+
+    #[test]
+    fn streaming_cursor_absent_when_not_responding() {
+        let mut state = AppState::new(AgentId::new());
+        state.transcript.push(Entry::Assistant {
+            text: "settled line".to_string(),
+        });
+
+        // Idle: no cursor.
+        state.activity = Activity::Idle;
+        let lines = build_lines(&state, &Theme::default());
+        let last = lines.last().expect("at least one line");
+        let text: String = last.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            !text.contains(STREAMING_CURSOR),
+            "an idle/ settled assistant line must NOT carry the streaming cursor, got: {text:?}"
+        );
+
+        // Also explicitly: Thinking/RunningTool/AwaitingPermission do NOT
+        // add the cursor -- only Responding does (the spec: "while activity
+        // == Responding"). A Thinking state with an assistant entry on the
+        // transcript (e.g. mid-turn before the first TextDelta) must not
+        // show the cursor on the PREVIOUS turn's settled assistant line.
+        for activity in [
+            Activity::Thinking,
+            Activity::RunningTool("bash".to_string()),
+            Activity::AwaitingPermission,
+        ] {
+            state.activity = activity.clone();
+            let lines = build_lines(&state, &Theme::default());
+            let last = lines.last().expect("at least one line");
+            let text: String = last.spans.iter().map(|s| s.content.as_ref()).collect();
+            assert!(
+                !text.contains(STREAMING_CURSOR),
+                "a non-Responding activity ({activity:?}) must NOT add the cursor, got: {text:?}"
+            );
+        }
+    }
+
+    /// The cursor is attached ONLY to the LAST `Entry::Assistant`'s last
+    /// line -- an earlier assistant entry that sits before a later
+    /// assistant entry must not get the cursor (it's not the streaming
+    /// tail). And the cursor lands on the last PHYSICAL line of a
+    /// multi-line assistant entry.
+    #[test]
+    fn streaming_cursor_lands_on_the_last_physical_line_of_the_last_assistant_entry() {
+        let mut state = AppState::new(AgentId::new());
+        state.transcript.push(Entry::Assistant {
+            text: "earlier\nmulti\nline".to_string(),
+        });
+        state.transcript.push(Entry::Assistant {
+            text: "live\nsecond".to_string(),
+        });
+        state.activity = Activity::Responding;
+
+        let lines = build_lines(&state, &Theme::default());
+        // The last line of the last assistant entry is "second" + cursor.
+        let last = lines.last().expect("at least one line");
+        let text: String = last.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            text.ends_with(STREAMING_CURSOR),
+            "the last physical line of the last assistant entry must carry the cursor: {text:?}"
+        );
+        assert!(text.starts_with("second"));
+        // The earlier assistant entry's lines do NOT carry the cursor.
+        for line in &lines {
+            let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            if text.contains("earlier") || text == "multi" || text == "line" {
+                assert!(
+                    !text.contains(STREAMING_CURSOR),
+                    "a non-tail assistant line must not carry the cursor: {text:?}"
+                );
+            }
+        }
+    }
+
+    /// The clean-copy invariant is preserved: `entry_lines` itself NEVER
+    /// emits the streaming cursor (or any block glyph) -- the cursor is
+    /// added in `build_lines`'s render path only. This is the load-bearing
+    /// assertion behind the "render-time only" mechanism.
+    #[test]
+    fn entry_lines_itself_never_emits_the_streaming_cursor() {
+        let entry = Entry::Assistant {
+            text: "hello".to_string(),
+        };
+        for line in entry_lines(&entry, &Theme::default()) {
+            let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            assert!(
+                !text.contains(STREAMING_CURSOR),
+                "entry_lines must not bake the cursor into settled output: {text:?}"
+            );
+        }
+    }
+
+    /// End-to-end: the real `draw` render path adds the cursor to the
+    /// streaming line while Responding, and the rendered buffer contains
+    /// the cursor glyph on that row.
+    #[test]
+    fn rendered_buffer_shows_streaming_cursor_while_responding() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut state = AppState::new(AgentId::new());
+        state.transcript.push(Entry::Assistant {
+            text: "streaming live".to_string(),
+        });
+        state.activity = Activity::Responding;
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|f| draw(f, f.area(), &state, &Theme::default()))
+            .expect("draw");
+        let buffer = terminal.backend().buffer();
+        let text: String = buffer.content().iter().map(|c| c.symbol()).collect();
+        assert!(
+            text.contains(STREAMING_CURSOR),
+            "the rendered buffer must contain the streaming cursor while Responding: {text}"
+        );
+        // The streaming line's body is still present.
+        assert!(text.contains("streaming live"));
+    }
+
+    /// And the inverse end-to-end: an idle/ settled assistant line does
+    /// NOT render the cursor through the real `draw` path.
+    #[test]
+    fn rendered_buffer_has_no_streaming_cursor_when_idle() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut state = AppState::new(AgentId::new());
+        state.transcript.push(Entry::Assistant {
+            text: "settled line".to_string(),
+        });
+        // activity stays Idle (the default).
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|f| draw(f, f.area(), &state, &Theme::default()))
+            .expect("draw");
+        let buffer = terminal.backend().buffer();
+        let text: String = buffer.content().iter().map(|c| c.symbol()).collect();
+        assert!(
+            !text.contains(STREAMING_CURSOR),
+            "an idle assistant line must not render the cursor: {text}"
         );
     }
 }

@@ -439,6 +439,10 @@ pub struct ThemeConfig {
     pub status_mode: Option<ThemeStyleConfig>,
     pub status_dim: Option<ThemeStyleConfig>,
     pub spinner: Option<ThemeStyleConfig>,
+    /// T2 pulse-palette slots -- the activity spinner glyph + activity word
+    /// cycle through `spinner`/`spinner_b`/`spinner_c` on each 125ms tick.
+    pub spinner_b: Option<ThemeStyleConfig>,
+    pub spinner_c: Option<ThemeStyleConfig>,
 }
 
 /// One `[tui.theme.<name>]` entry: foreground/background color names plus a

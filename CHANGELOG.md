@@ -9,6 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **TUI: activity spinner + animation tick (T2).** The status line's
+  "is it working?" slot now renders a braille spinner glyph plus the
+  activity word plus live elapsed seconds plus the new context tokens
+  added this turn (`⠋ thinking… 12s · +45 tok`) while the focused agent
+  is working. The spinner glyph and the activity word pulse together
+  through a small theme palette (`spinner`/`spinner_b`/`spinner_c`,
+  defaulting to yellow/light_yellow/white) on a new 125ms (8 TPS)
+  animation tick, additive to the existing 16ms redraw cap. The tick is
+  gated by `should_animate(activity)` so an idle terminal never pays for
+  animation — the counters don't advance and no redraw is forced while
+  idle. The elapsed clock starts at `Event::TurnStarted`; the `+{n} tok`
+  figure accumulates from `Event::ContextSegmentAdded` deltas —
+  session-deduped new-segment tokens added this turn (NOT total context
+  occupancy: the runtime emits `ContextSegmentAdded` only for segments
+  new to a never-reset `seen_segments` set, so the figure is large on
+  turn 1 then small on turn 2+ for the same conversation). The leading
+  `+` signals "added this turn" and distinguishes it from the
+  cumulative `| {tokens} tok |` slot; the authoritative turn-end token
+  total lands via the turn-end summary (T4). New theme slots
+  `spinner_b` and `spinner_c` join the existing `spinner` slot to form
+  the pulse palette. While `activity == Responding`, the live,
+  in-progress assistant line in the transcript also gets a block `▌`
+  streaming cursor appended at render time only — never baked into the
+  stored `Entry::Assistant` text or into `entry_lines` output for
+  settled entries (clean-copy invariant relaxed only for the
+  actively-streaming line). See `docs/crates/conway-cli.md`'s "Activity
+  spinner + animation tick" section for the full mechanism.
+
 - **TUI: central theme module + named styles (T1).** The TUI's render
   pass now reads colors/styles from a single `Theme` struct threaded
   through `view::draw` and each per-view `draw` fn as `&Theme`, replacing

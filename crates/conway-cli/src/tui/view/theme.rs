@@ -138,8 +138,14 @@ pub struct Theme {
     /// `Modifier::DIM`.
     pub status_dim: Style,
     /// Activity spinner accent (NEW, no pre-T1 call site). Default:
-    /// `Color::Yellow`.
+    /// `Color::Yellow`. The first color of the T2 pulse palette -- the
+    /// spinner glyph and activity word cycle through [`Theme::spinner`],
+    /// [`Theme::spinner_b`], [`Theme::spinner_c`] on each 125ms tick.
     pub spinner: Style,
+    /// Second pulse-palette color (T2). Default: `Color::LightYellow`.
+    pub spinner_b: Style,
+    /// Third pulse-palette color (T2). Default: `Color::White`.
+    pub spinner_c: Style,
 }
 
 impl Default for Theme {
@@ -177,6 +183,8 @@ impl Default for Theme {
             status_mode: Style::default().add_modifier(Modifier::REVERSED),
             status_dim: Style::default().add_modifier(Modifier::DIM),
             spinner: Style::default().fg(Color::Yellow),
+            spinner_b: Style::default().fg(Color::LightYellow),
+            spinner_c: Style::default().fg(Color::White),
         }
     }
 }
@@ -221,7 +229,21 @@ impl Theme {
         theme.status_mode = overlay(theme.status_mode, config.status_mode.as_ref());
         theme.status_dim = overlay(theme.status_dim, config.status_dim.as_ref());
         theme.spinner = overlay(theme.spinner, config.spinner.as_ref());
+        theme.spinner_b = overlay(theme.spinner_b, config.spinner_b.as_ref());
+        theme.spinner_c = overlay(theme.spinner_c, config.spinner_c.as_ref());
         theme
+    }
+}
+
+impl Theme {
+    /// The T2 pulse palette: the three spinner slots in palette order. The
+    /// status line indexes this with `AppState::spinner_color_idx` (mod the
+    /// palette length) to pick the current pulse color for both the braille
+    /// glyph and the activity word. Returned as a `Vec` so a future theme
+    /// could surface a different palette length without touching call sites
+    /// (the renderer always uses `.len()` for the modulo).
+    pub fn spinner_palette(&self) -> Vec<Style> {
+        vec![self.spinner, self.spinner_b, self.spinner_c]
     }
 }
 
@@ -701,6 +723,44 @@ mod tests {
     fn parse_modifier_rejects_unknown_tag() {
         assert_eq!(parse_modifier("sparkly"), None);
         assert_eq!(parse_modifier(""), None);
+    }
+
+    // ---- T2: spinner pulse palette ----
+
+    #[test]
+    fn default_spinner_palette_is_yellow_light_yellow_white() {
+        let t = Theme::default();
+        assert_eq!(t.spinner, Style::default().fg(Color::Yellow));
+        assert_eq!(t.spinner_b, Style::default().fg(Color::LightYellow));
+        assert_eq!(t.spinner_c, Style::default().fg(Color::White));
+        let palette = t.spinner_palette();
+        assert_eq!(palette.len(), 3);
+        assert_eq!(palette[0], Style::default().fg(Color::Yellow));
+        assert_eq!(palette[1], Style::default().fg(Color::LightYellow));
+        assert_eq!(palette[2], Style::default().fg(Color::White));
+    }
+
+    #[test]
+    fn spinner_palette_overlays_apply_per_slot() {
+        let cfg = ThemeConfig {
+            spinner_b: Some(fg_only("cyan")),
+            ..Default::default()
+        };
+        let t = Theme::from_config(&cfg);
+        // The overridden slot picks up the new fg; the others keep defaults.
+        assert_eq!(t.spinner_b, Style::default().fg(Color::Cyan));
+        assert_eq!(t.spinner, Style::default().fg(Color::Yellow));
+        assert_eq!(t.spinner_c, Style::default().fg(Color::White));
+    }
+
+    #[test]
+    fn malformed_spinner_override_falls_back_to_default() {
+        let cfg = ThemeConfig {
+            spinner: Some(fg_only("not-a-color")),
+            ..Default::default()
+        };
+        let t = Theme::from_config(&cfg);
+        assert_eq!(t.spinner, Style::default().fg(Color::Yellow), "P-10: no panic");
     }
 
     // ---- T1 acceptance: no inline `Style::default().fg(Color::…)` remains

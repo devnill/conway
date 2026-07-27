@@ -44,6 +44,13 @@ struct ModalAskOutcome {
 const DOUBLE_CTRL_C_WINDOW: Duration = Duration::from_secs(2);
 /// The app loop's redraw cap (module notes: "60 fps cap / redraw-on-change").
 const REDRAW_TICK: Duration = Duration::from_millis(16);
+/// T2 animation tick (8 TPS): advances the braille spinner frame and the
+/// pulse-color index, and marks the frame dirty, ONLY while the focused
+/// agent's `activity` is not `Idle`. An idle terminal is never redrawn by
+/// this tick (the 16ms redraw tick still runs but is itself dirty-gated), so
+/// idle cost stays flat. Additive to `REDRAW_TICK`, which is kept for
+/// input/event responsiveness.
+const ANIMATION_TICK: Duration = Duration::from_millis(125);
 
 pub struct App {
     handle: conway::SessionHandle,
@@ -157,6 +164,7 @@ impl App {
         let mut events = self.handle.events();
         let mut keys = CrosstermEventStream::new();
         let mut ticker = tokio::time::interval(REDRAW_TICK);
+        let mut anim_ticker = tokio::time::interval(ANIMATION_TICK);
         let mut dirty = true;
         let mut last_ctrl_c: Option<Instant> = None;
         // Taken out of `self` once here (rather than borrowed from it inside
@@ -176,6 +184,20 @@ impl App {
                         terminal.draw(|f| view::draw(&self.state, f, &self.theme))
                             .map_err(conway::ConwayError::Io)?;
                         dirty = false;
+                    }
+                }
+                // T2: 125ms animation tick -- advances the spinner frame and
+                // pulse-color index (wrapping) and marks the frame dirty,
+                // ONLY while the focused agent's `activity` is not `Idle`.
+                // An idle terminal never pays for animation: `should_animate`
+                // gates the whole arm, so the counters don't advance and
+                // `dirty` stays false (no redraw). The palette length comes
+                // from the resolved `Theme` so a config-driven palette of a
+                // different size still wraps correctly.
+                _ = anim_ticker.tick() => {
+                    if super::state::should_animate(&self.state.activity) {
+                        self.state.tick_animation(self.theme.spinner_palette().len());
+                        dirty = true;
                     }
                 }
                 maybe_ask = modal_ask_rx.recv() => {
