@@ -29,7 +29,7 @@
 //!   turn, e.g. `⠋ thinking… 12s · +45 tok`, pulsing through
 //!   `Theme::spinner_palette` on each 125ms tick. While idle: just `idle`.
 //! - `hint` -- a persistent keybinding/affordance hint (T7 will reconcile):
-//!   `Ctrl-E submit · ↑↓ history · PgUp/PgDn · /help · /agents to {view|hide}`,
+//!   `Enter submit · Ctrl-E expand · ↑↓ history · PgUp/PgDn · /help · /agents to {view|hide}`,
 //!   plus `focused: <id>` when the transcript is focused on a non-root
 //!   agent.
 //! - `git` -- the current `git rev-parse --abbrev-ref HEAD` branch, read
@@ -285,7 +285,7 @@ fn hint_spans(state: &AppState, theme: &Theme) -> Vec<Span<'static>> {
         "/agents to view"
     };
     let mut hint = format!(
-        "Ctrl-E submit · ↑↓ history · PgUp/PgDn · /help · {agents_hint}"
+        "Enter submit · Ctrl-E expand · ↑↓ history · PgUp/PgDn · /help · {agents_hint}"
     );
     // WI-140: name which agent's conversation is currently shown whenever
     // it is not the root -- the root case stays silent (an always-on
@@ -835,7 +835,8 @@ mod tests {
     fn hint_field_includes_keybinding_hint() {
         let state = AppState::new(AgentId::new());
         let line = status_line(&state);
-        assert!(line.contains("Ctrl-E submit"), "{line}");
+        assert!(line.contains("Enter submit"), "{line}");
+        assert!(line.contains("Ctrl-E expand"), "{line}");
         assert!(line.contains("/help"), "{line}");
         assert!(line.contains("↑↓ history"), "{line}");
         assert!(line.contains("PgUp/PgDn"), "{line}");

@@ -146,6 +146,14 @@ impl App {
         // (defaults to the Lean line when absent; unknown field names are
         // dropped at render time -- P-10, never a panic).
         state.status_line_config = conway.config().tui.status_line.clone();
+        // T5: collapsed tool-preview line cap from
+        // `[tui.tool_preview_lines]` (default 3). P-10: the config is
+        // untrusted -- `clamp_tool_preview_lines` clamps to `1..=200` and
+        // falls back to the default of 3 on a missing/out-of-range value.
+        // Never a panic, no `unwrap`/`expect`/indexing on the config value.
+        state.tool_preview_lines = super::state::clamp_tool_preview_lines(
+            conway.config().tui.tool_preview_lines,
+        );
         // T3: cwd display -- prefer the CLI `--cwd` override, fall back to
         // the config's `cwd`. Both are `PathBuf`; render the display string
         // via `display()` (lossy for non-UTF8).

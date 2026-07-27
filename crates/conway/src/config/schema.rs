@@ -402,6 +402,19 @@ pub struct TuiSection {
     /// full field list.
     #[serde(default)]
     pub status_line: StatusLineConfig,
+    /// `[tui.tool_preview_lines]` (T5): the cap on collapsed tool-preview
+    /// lines in the TUI transcript. A tool entry whose stored `preview` has
+    /// more physical lines than this renders the first N lines + a dim
+    /// `… (+M lines, Ctrl-E to expand)` affordance while the entry's
+    /// `expanded` flag is `false`; the full preview renders while `true`.
+    /// The stored preview is never truncated -- the cap is render-time only.
+    /// `None` (the default) means the TUI's built-in default of 3. The TUI
+    /// clamps a loaded value to `1..=200` with a fallback to 3 on a
+    /// missing/out-of-range/bad value (P-10: config is untrusted input,
+    /// never a panic). `CONWAY_TUI__TOOL_PREVIEW_LINES=10` overrides via
+    /// env.
+    #[serde(default)]
+    pub tool_preview_lines: Option<u32>,
 }
 
 /// `[tui.status_line]`: declarative status-line field order + visibility
