@@ -9,6 +9,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **TUI: status line rework — model + ctx% + cwd + git + field config
+  (T3).** The bottom status line is now an ordered, configurable set of
+  fields driven by a new `[tui.status_line]` `settings.json` section
+  (schema: `conway::config::schema::StatusLineConfig`). The default Lean
+  line is `mode | model | ctx | tokens | activity | hint`; `git` and
+  `cwd` are also available as orderable fields. Each field renders only
+  when listed in the configured `fields` order AND has data to show
+  (`model` is omitted before the first turn routes; `git` is omitted
+  outside a repo; etc.). Unknown field names are dropped at render time
+  — never a panic (P-10). New fields: `model` (the focused agent's
+  serving model display name from `Event::ModelDecision`); `ctx`
+  (context-window occupancy — `ctx 42%` when the focused model's max
+  context is known from `[models.metadata_path]`, else the raw
+  cumulative `Event::ContextSegmentAdded` token estimate, compact-
+  suffixed as `ctx 12.3k`; capped at `ctx 100%`); `tokens` formalizes
+  the cumulative spend slot as `<total> tok (<n%> cached)`, where
+  `total` is every `Usage` field summed and `n%` is the cache hit rate
+  `cache_read / (input + cache_read + cache_write)` (the parenthetical
+  is omitted when the denominator is 0 — divide-by-zero guarded); `git`
+  (the current `git rev-parse --abbrev-ref HEAD` branch, read once at
+  startup, best-effort, no polling, no new deps); `cwd` (from `--cwd` or
+  `config.cwd`). The `activity` field IS T2's working indicator
+  (spinner + pulse + elapsed + `+{n} tok`), unchanged; the `hint` field
+  is a persistent keybinding/affordance hint (`Ctrl-E submit · ↑↓
+  history · PgUp/PgDn · /help · /agents to {view|hide}`, plus
+  `focused: <id>` off-root). `AppState::apply`'s previously-dropped
+  `ModelDecision` arm now captures the focused model + max context;
+  `ContextSegmentAdded` now also accumulates a session-wide cumulative
+  context-token estimate (distinct from T2's per-turn
+  `turn_running_tokens`). See `docs/crates/conway-cli.md`'s
+  `[tui.status_line]` section for the full field table, the
+  `tokens (n% cached)` format, and reordering/hiding instructions.
+
 - **TUI: activity spinner + animation tick (T2).** The status line's
   "is it working?" slot now renders a braille spinner glyph plus the
   activity word plus live elapsed seconds plus the new context tokens

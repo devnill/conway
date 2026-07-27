@@ -6,10 +6,13 @@
 //! terminal at all: construct an `AppState`, feed it a sequence of
 //! `Envelope`s, and assert on the resulting `transcript`/`tree`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
-use conway::{AgentId, AgentIntent, AgentResult, Envelope, Event, LogSeq, ResultStatus, SubagentMode, Usage};
+use conway::{
+    config::schema::StatusLineConfig, AgentId, AgentIntent, AgentResult, Envelope, Event, LogSeq,
+    ResultStatus, SegmentId, SubagentMode, Usage,
+};
 
 use super::gate::PendingPrompt;
 
@@ -506,6 +509,77 @@ pub struct AppState {
     /// Distinct from [`Self::focused_agent_usage`], which is the cumulative
     /// spend across all of the focused agent's turns.
     pub turn_running_tokens: u64,
+    /// T3: the focused agent's serving model display name, from
+    /// `Event::ModelDecision { chosen }` (`ModelRef::to_string()`). `None`
+    /// until the first `ModelDecision` arrives on the focused agent's
+    /// stream (a brand-new session has not yet routed a turn). Reset to
+    /// `None` on [`Self::focus_agent`]; repopulated when the new focus's
+    /// own first `ModelDecision` arrives. The status line's `model` field
+    /// renders this and is omitted while it is `None`.
+    pub focused_model: Option<String>,
+    /// T3: the focused model's max context window in tokens, looked up from
+    /// the local model-metadata file (`[models.metadata_path]`) by the
+    /// focused model's `"backend/model"` string at the time a
+    /// `ModelDecision` arrives. `None` when the metadata file has no entry
+    /// for the chosen model (or no metadata file exists) -- the status line
+    /// then renders the raw `focused_ctx_tokens` figure (e.g. `ctx 12.3k`)
+    /// instead of a percentage. Reset to `None` on [`Self::focus_agent`].
+    pub focused_model_max_context: Option<u32>,
+    /// T3: the focused agent's cumulative context-occupancy estimate, the
+    /// deduped-by-`SegmentId` sum of every
+    /// `Event::ContextSegmentAdded { tokens_est }` observed on the focused
+    /// agent's own stream since the focus began. The status line's `ctx`
+    /// field renders `focused_ctx_tokens / focused_model_max_context` as a
+    /// percentage when the max is known, else the raw token count. Reset to
+    /// 0 on [`Self::focus_agent`].
+    ///
+    /// Dedup rationale (T3 code-review fix 1): the runtime's
+    /// `seen_segments` is a LOCAL `HashSet` constructed fresh at the top of
+    /// each `AgentLoop::run_inner`, NOT a session-scoped set. For
+    /// `keep_alive: false` children (every spawned child), each new prompt
+    /// spawns a fresh `AgentLoop` with an empty `seen_segments`, so the
+    /// first turn of the new run re-emits `ContextSegmentAdded` for EVERY
+    /// existing context segment. Without per-segment-id dedup at the
+    /// renderer this double-counts and `focused_ctx_tokens` climbs to
+    /// `ctx 100%` and never comes back down. [`Self::focused_seen_segments`]
+    /// is the dedup set; accumulation is gated on its `insert(segment)`
+    /// returning true (genuinely new segment id for this focused session).
+    /// A proper re-fetch of the true total from the runtime on focus is
+    /// tracked as a separate follow-up board item; until that lands a
+    /// freshly focused agent shows `ctx 0%` until its own next LIVE
+    /// `ContextSegmentAdded` arrives (replay does NOT synthesize these
+    /// events -- `record_to_event` maps a replayed `Assistant` record to
+    /// `TextDelta`, never to `ContextSegmentAdded`).
+    pub focused_ctx_tokens: u64,
+    /// T3 code-review fix 1: per-focused-agent session-scoped dedup set for
+    /// `ContextSegmentAdded` segment ids. Accumulation into
+    /// [`Self::focused_ctx_tokens`] only happens when
+    /// `focused_seen_segments.insert(segment)` returns true. Reset on
+    /// [`Self::focus_agent`] -- a freshly focused agent starts with an
+    /// empty seen-set and dedup accumulates correctly for its session from
+    /// there.
+    pub focused_seen_segments: HashSet<SegmentId>,
+    /// T3: the current git branch, read once at startup via
+    /// `git rev-parse --abbrev-ref HEAD` (best-effort: `None` when not a
+    /// git repo, git is absent, or the command fails). No polling. The
+    /// status line's `git` field renders this and is omitted while `None`.
+    pub git_branch: Option<String>,
+    /// T3: the session's working directory display string, from the `Cli`
+    /// / session config at startup. The status line's `cwd` field renders
+    /// this; `None` means "do not render the cwd field".
+    pub cwd_display: Option<String>,
+    /// T3: the resolved `[tui.status_line]` config (ordered field names +
+    /// visibility). Set at `App::new` from `conway.config().tui.status_line`;
+    /// `AppState::new` defaults to the Lean line. The status-line renderer
+    /// reads this to decide which fields to render and in what order.
+    pub status_line_config: StatusLineConfig,
+    /// T3: the local model-metadata map (`"backend/model"` -> max context
+    /// tokens), loaded once at `App::new` from `[models.metadata_path]`.
+    /// `apply`'s `ModelDecision` arm looks up the chosen model here to set
+    /// `focused_model_max_context`. Empty when no metadata file exists or
+    /// it names no models -- the status line then renders raw context
+    /// tokens instead of a percentage.
+    pub model_max_context: HashMap<String, u32>,
 }
 
 impl AppState {
@@ -549,6 +623,14 @@ impl AppState {
             spinner_color_idx: 0,
             turn_started_at: None,
             turn_running_tokens: 0,
+            focused_model: None,
+            focused_model_max_context: None,
+            focused_ctx_tokens: 0,
+            focused_seen_segments: HashSet::new(),
+            git_branch: None,
+            cwd_display: None,
+            status_line_config: StatusLineConfig::default(),
+            model_max_context: HashMap::new(),
         }
     }
 
@@ -669,6 +751,24 @@ impl AppState {
         self.spinner_color_idx = 0;
         self.turn_started_at = None;
         self.turn_running_tokens = 0;
+        // T3: the model display name, max-context, and cumulative context
+        // tokens are per focused-agent -- a freshly focused agent has no
+        // routing decision yet and no accumulated context figure until its
+        // own events arrive. `app.rs` re-fetches the true cumulative total
+        // via `SessionHandle::session_usage` immediately after calling this
+        // (see `focused_agent_usage`'s own doc). The context-token estimate
+        // does NOT repopulate from replay: `record_to_event` (WI-140) maps a
+        // replayed `Assistant` record to `TextDelta`, never to
+        // `ContextSegmentAdded` or `ModelDecision`, so a freshly focused
+        // agent shows `ctx 0%` / no model until its own next LIVE
+        // `ContextSegmentAdded`/`ModelDecision` arrives. The proper
+        // re-fetch of the true context total from the runtime on focus is
+        // tracked as a separate follow-up board item; until that lands the
+        // zeroing below is what the renderer honestly reflects.
+        self.focused_model = None;
+        self.focused_model_max_context = None;
+        self.focused_ctx_tokens = 0;
+        self.focused_seen_segments.clear();
     }
 
     /// T2 animation tick (125ms / 8 TPS): advances the braille spinner frame
@@ -1150,21 +1250,66 @@ impl AppState {
                     self.activity = Activity::Responding;
                 }
             }
-            // T2: accumulate the focused agent's new-context-tokens-added-
-            // this-turn count from context-segment additions. The runtime
-            // emits `ContextSegmentAdded` only for segments NEW to a
-            // session-scoped `seen_segments` set that is never reset across
-            // turns, so `tokens_est` here is a session-deduped segment
-            // delta -- NOT total context occupancy and NOT the
-            // authoritative turn-end token total (the latter arrives with
-            // `TurnFinished::usage`, which finalizes the turn and folds
-            // into `focused_agent_usage`; the authoritative turn-end
-            // summary is T4). Accumulated here only for the focused agent,
-            // only while a turn is in flight (`turn_started_at` is `Some`).
-            Event::ContextSegmentAdded { tokens_est, .. } => {
-                if env.agent == self.focused_agent && self.turn_started_at.is_some() {
-                    self.turn_running_tokens =
-                        self.turn_running_tokens.saturating_add(u64::from(*tokens_est));
+            // T2/T3: accumulate the focused agent's context-token figures
+            // from context-segment additions. Two accumulators share this
+            // arm:
+            // - `turn_running_tokens` (T2): the per-turn "added this turn"
+            //   figure, reset on `TurnStarted`/`focus_agent`. Accumulated
+            //   only while a turn is in flight (`turn_started_at.is_some()`).
+            // - `focused_ctx_tokens` (T3): the CUMULATIVE context-occupancy
+            //   estimate across the focused session (NOT reset per turn),
+            //   the numerator for the status line's `ctx%` field.
+            //   Accumulated for every segment-add on the focused agent's
+            //   stream regardless of turn state, GATED on
+            //   `focused_seen_segments.insert(segment)` so a repeated
+            //   segment id (e.g. a non-keep-alive child's fresh
+            //   `AgentLoop` re-emitting its existing context on the first
+            //   turn of a new run) is counted once, not re-added every
+            //   run. `turn_running_tokens` is NOT deduped -- it is a
+            //   per-turn "what fired this turn" figure, so a re-emitted
+            //   segment legitimately counts toward the turn that re-saw
+            //   it.
+            Event::ContextSegmentAdded {
+                segment,
+                tokens_est,
+                ..
+            } => {
+                if env.agent == self.focused_agent {
+                    if self.turn_started_at.is_some() {
+                        self.turn_running_tokens =
+                            self.turn_running_tokens.saturating_add(u64::from(*tokens_est));
+                    }
+                    if self.focused_seen_segments.insert(*segment) {
+                        self.focused_ctx_tokens =
+                            self.focused_ctx_tokens.saturating_add(u64::from(*tokens_est));
+                    }
+                }
+            }
+            // T3: capture the focused agent's serving model display name
+            // (`ModelRef::to_string()`, e.g. `anthropic/claude-sonnet-4-6`)
+            // and look up its max context window from the model-metadata
+            // map populated at `App::new`. The status line's `model` field
+            // renders the display name; `ctx%` divides `focused_ctx_tokens`
+            // by this max. `app.rs` already captures the whole
+            // `ModelDecision` envelope for `/why` (`last_model_decision`),
+            // but that field is intentionally left untouched by `apply`
+            // (WI-115) -- this arm only updates the display-name/max-context
+            // pair on the focused agent's own stream.
+            Event::ModelDecision { chosen, .. } => {
+                if env.agent == self.focused_agent {
+                    let name = chosen.to_string();
+                    let max = self
+                        .model_max_context
+                        .get(&name)
+                        .copied()
+                        .or_else(|| {
+                            // Fall back to a bare `model` lookup (no
+                            // backend prefix) -- some metadata files key
+                            // on the model id alone.
+                            self.model_max_context.get(chosen.model.as_str()).copied()
+                        });
+                    self.focused_model = Some(name);
+                    self.focused_model_max_context = max;
                 }
             }
             Event::ToolCallProposed { call_id, tool, .. } => {
@@ -3709,5 +3854,272 @@ mod tests {
         assert!(state.turn_started_at.is_none());
         assert_eq!(state.turn_running_tokens, 0);
         assert_eq!(state.activity, Activity::Idle);
+    }
+
+    // ---- T3: ModelDecision -> focused_model/max_context, cumulative ctx
+    // tokens, and the focus-switch reset of all three. ----
+
+    fn model_decision_env(agent: AgentId, chosen: &str) -> Envelope {
+        Envelope {
+            seq: 0,
+            ts: chrono::Utc::now(),
+            session: SessionId::new(),
+            agent,
+            event: Event::ModelDecision {
+                role: conway::RoleAlias::new("coder"),
+                chosen: chosen.parse().expect("valid ModelRef"),
+                reason: conway::RoutingReason::PinnedByApi,
+                attempt: 0,
+            },
+        }
+    }
+
+    fn context_segment_env(agent: AgentId, tokens_est: u32) -> Envelope {
+        Envelope {
+            seq: 0,
+            ts: chrono::Utc::now(),
+            session: SessionId::new(),
+            agent,
+            event: Event::ContextSegmentAdded {
+                segment: conway_core::ids::SegmentId::new(),
+                provenance: conway::Provenance::UserPrompt,
+                tokens_est,
+            },
+        }
+    }
+
+    #[test]
+    fn model_decision_sets_focused_model_and_max_context() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        state.model_max_context.insert(
+            "anthropic/claude-sonnet-4-6".to_string(),
+            200_000,
+        );
+
+        state.apply(&model_decision_env(root, "anthropic/claude-sonnet-4-6"));
+
+        assert_eq!(
+            state.focused_model.as_deref(),
+            Some("anthropic/claude-sonnet-4-6")
+        );
+        assert_eq!(state.focused_model_max_context, Some(200_000));
+    }
+
+    #[test]
+    fn model_decision_with_unknown_model_leaves_max_context_none() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        // Metadata has a different model; the chosen one is unknown.
+        state
+            .model_max_context
+            .insert("anthropic/claude-haiku-4-5".to_string(), 32_768);
+
+        state.apply(&model_decision_env(root, "anthropic/claude-sonnet-4-6"));
+
+        assert_eq!(
+            state.focused_model.as_deref(),
+            Some("anthropic/claude-sonnet-4-6")
+        );
+        assert!(
+            state.focused_model_max_context.is_none(),
+            "unknown model -> no max context (renderer falls back to raw tokens)"
+        );
+    }
+
+    #[test]
+    fn model_decision_for_non_focused_agent_does_not_touch_focused_model() {
+        let root = AgentId::new();
+        let child = AgentId::new();
+        let mut state = AppState::new(root);
+        state.focus_agent(child);
+        state
+            .model_max_context
+            .insert("anthropic/claude-sonnet-4-6".to_string(), 200_000);
+
+        // A ModelDecision on the root (not focused) must not overwrite the
+        // focused child's model fields.
+        state.apply(&model_decision_env(root, "anthropic/claude-sonnet-4-6"));
+
+        assert!(
+            state.focused_model.is_none(),
+            "non-focused ModelDecision must not set focused_model"
+        );
+    }
+
+    #[test]
+    fn context_segment_added_accumulates_cumulative_ctx_tokens_across_turns() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        // Turn 1.
+        state.apply(&envelope(
+            SessionId::new(),
+            root,
+            Event::TurnStarted { turn: 1 },
+        ));
+        state.apply(&context_segment_env(root, 1_000));
+        state.apply(&context_segment_env(root, 500));
+        // Turn 1 ends.
+        state.apply(&envelope(
+            SessionId::new(),
+            root,
+            Event::TurnFinished {
+                usage: Usage::default(),
+                stop: conway_core::content::StopReason::EndTurn,
+            },
+        ));
+        assert_eq!(state.turn_running_tokens, 0, "per-turn counter resets");
+        assert_eq!(
+            state.focused_ctx_tokens, 1_500,
+            "cumulative counter persists across turns"
+        );
+
+        // Turn 2 -- only genuinely new segments fire.
+        state.apply(&envelope(
+            SessionId::new(),
+            root,
+            Event::TurnStarted { turn: 2 },
+        ));
+        state.apply(&context_segment_env(root, 200));
+        assert_eq!(state.turn_running_tokens, 200, "per-turn counter restarts");
+        assert_eq!(
+            state.focused_ctx_tokens, 1_700,
+            "cumulative counter keeps growing across turns"
+        );
+    }
+
+    #[test]
+    fn context_segment_added_dedups_cumulative_ctx_tokens_by_segment_id() {
+        // T3 code-review fix 1: a non-keep-alive focused agent's second
+        // run re-emits `ContextSegmentAdded` for EVERY existing context
+        // segment (its fresh `AgentLoop`'s local `seen_segments` is
+        // empty). The renderer must dedup by `SegmentId` so the
+        // cumulative `focused_ctx_tokens` counts each segment ONCE per
+        // focused session, not once per run.
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let segment = conway_core::ids::SegmentId::new();
+
+        // First emission of `segment` -- counted.
+        state.apply(&envelope(
+            SessionId::new(),
+            root,
+            Event::ContextSegmentAdded {
+                segment,
+                provenance: conway::Provenance::UserPrompt,
+                tokens_est: 1_000,
+            },
+        ));
+        assert_eq!(state.focused_ctx_tokens, 1_000);
+
+        // Re-emit the SAME segment id (simulating the second run of a
+        // non-keep-alive agent re-emitting its existing context). The
+        // cumulative figure must NOT double-count it.
+        state.apply(&envelope(
+            SessionId::new(),
+            root,
+            Event::ContextSegmentAdded {
+                segment,
+                provenance: conway::Provenance::UserPrompt,
+                tokens_est: 1_000,
+            },
+        ));
+        assert_eq!(
+            state.focused_ctx_tokens, 1_000,
+            "re-emitted segment id must not double-count into focused_ctx_tokens"
+        );
+
+        // A DISTINCT segment id is genuinely new -- counted.
+        let other = conway_core::ids::SegmentId::new();
+        state.apply(&envelope(
+            SessionId::new(),
+            root,
+            Event::ContextSegmentAdded {
+                segment: other,
+                provenance: conway::Provenance::UserPrompt,
+                tokens_est: 250,
+            },
+        ));
+        assert_eq!(
+            state.focused_ctx_tokens, 1_250,
+            "a distinct segment id is counted alongside the deduped one"
+        );
+    }
+
+    #[test]
+    fn focus_agent_resets_focused_seen_segments() {
+        // T3 code-review fix 1: `focused_seen_segments` is per focused
+        // session -- a freshly focused agent starts with an empty
+        // seen-set, so a segment id seen under the PREVIOUS focus is
+        // correctly counted again under the new focus (it is a different
+        // session's dedup window).
+        let root = AgentId::new();
+        let child = AgentId::new();
+        let mut state = AppState::new(root);
+        let segment = conway_core::ids::SegmentId::new();
+        state.apply(&envelope(
+            SessionId::new(),
+            root,
+            Event::ContextSegmentAdded {
+                segment,
+                provenance: conway::Provenance::UserPrompt,
+                tokens_est: 800,
+            },
+        ));
+        assert_eq!(state.focused_ctx_tokens, 800);
+        assert!(
+            state.focused_seen_segments.contains(&segment),
+            "segment id recorded for the root focus"
+        );
+
+        state.focus_agent(child);
+        assert!(
+            state.focused_seen_segments.is_empty(),
+            "focus switch clears the seen-set"
+        );
+        assert_eq!(state.focused_ctx_tokens, 0);
+
+        // The same segment id, re-emitted under the new focus, counts
+        // again -- it is new to THIS focused session's dedup window.
+        state.apply(&envelope(
+            SessionId::new(),
+            child,
+            Event::ContextSegmentAdded {
+                segment,
+                provenance: conway::Provenance::UserPrompt,
+                tokens_est: 800,
+            },
+        ));
+        assert_eq!(
+            state.focused_ctx_tokens, 800,
+            "segment id counts again under the new focused session"
+        );
+    }
+
+    #[test]
+    fn focus_agent_resets_focused_model_and_ctx_tokens() {
+        let root = AgentId::new();
+        let child = AgentId::new();
+        let mut state = AppState::new(root);
+        state
+            .model_max_context
+            .insert("anthropic/claude-sonnet-4-6".to_string(), 200_000);
+        state.apply(&model_decision_env(root, "anthropic/claude-sonnet-4-6"));
+        state.focused_ctx_tokens = 5_000;
+
+        state.focus_agent(child);
+
+        assert!(
+            state.focused_model.is_none(),
+            "focus switch resets focused_model"
+        );
+        assert!(
+            state.focused_model_max_context.is_none(),
+            "focus switch resets focused_model_max_context"
+        );
+        assert_eq!(
+            state.focused_ctx_tokens, 0,
+            "focus switch resets focused_ctx_tokens"
+        );
     }
 }
