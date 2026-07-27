@@ -22,7 +22,7 @@ use ratatui::Terminal;
 
 use super::input::{self, Action};
 use super::state::AppState;
-use super::view;
+use super::view::{self, Theme};
 
 /// The terminal size [`press_key`] (and any test that doesn't care about a
 /// specific size) renders/scrolls against -- large enough that the agent
@@ -40,7 +40,7 @@ pub(crate) fn render(state: &AppState, width: u16, height: u16) -> Vec<String> {
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).expect("TestBackend construction cannot fail");
     terminal
-        .draw(|f| view::draw(state, f))
+        .draw(|f| view::draw(state, f, &Theme::default()))
         .expect("drawing into a TestBackend cannot fail");
 
     let buffer = terminal.backend().buffer();

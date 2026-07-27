@@ -29,11 +29,12 @@
 //! ships without that trade-off; mouse wheel is left undone.
 
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::Frame;
 
+use super::theme::Theme;
 use crate::tui::state::{AppState, Entry, NodeStatus, ToolStatus};
 
 /// Renders the transcript, auto-following its own bottom while
@@ -43,8 +44,8 @@ use crate::tui::state::{AppState, Entry, NodeStatus, ToolStatus};
 /// no-blank-overscroll criterion) -- both computed fresh on every render
 /// from the SAME `Paragraph`/`Wrap` this function renders with, so the
 /// clamp ceiling can never disagree with what is actually on screen.
-pub fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
-    let paragraph = build_paragraph(state);
+pub fn draw(frame: &mut Frame, area: Rect, state: &AppState, theme: &Theme) {
+    let paragraph = build_paragraph(state, theme);
     let max = max_scroll(&paragraph, area.width, area.height);
     let effective_scroll = if state.follow_tail {
         max
@@ -58,8 +59,12 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState) {
 /// [`wrapped_line_count`] (used by `app.rs`, via `view::max_scroll`, to
 /// clamp `PageUp`/`PageDown` outside of a render pass) measures the exact
 /// same wrapping this module actually draws with.
-fn build_paragraph(state: &AppState) -> Paragraph<'static> {
-    let lines: Vec<Line> = state.transcript.iter().flat_map(entry_lines).collect();
+fn build_paragraph(state: &AppState, theme: &Theme) -> Paragraph<'static> {
+    let lines: Vec<Line> = state
+        .transcript
+        .iter()
+        .flat_map(|entry| entry_lines(entry, theme))
+        .collect();
     Paragraph::new(lines).wrap(Wrap { trim: false })
 }
 
@@ -76,18 +81,20 @@ fn max_scroll(paragraph: &Paragraph<'static>, width: u16, height: u16) -> u16 {
 /// (see `view::max_scroll`), since it runs outside of any `Frame`/render
 /// pass and so can't just read `draw`'s locals.
 pub(super) fn wrapped_line_count(state: &AppState, width: u16) -> usize {
-    build_paragraph(state).line_count(width)
+    build_paragraph(state, &Theme::default()).line_count(width)
 }
 
 /// Renders one transcript [`Entry`] into its plain-text line(s) -- every
 /// entry kind is exactly one line except multi-line text bodies, which
 /// split into one [`Line`] per physical line (see [`split_lines`]). A free
 /// function (not inlined into `draw`) so it is directly unit-testable
-/// against a `TestBackend`-free `Line`/`Span`.
-pub fn entry_lines(entry: &Entry) -> Vec<Line<'static>> {
+/// against a `TestBackend`-free `Line`/`Span`. The `theme` parameter drives
+/// every color/modifier on the emitted `Span`s (T1); the text content is
+/// identical to a pre-T1 build at the default theme (visual parity).
+pub fn entry_lines(entry: &Entry, theme: &Theme) -> Vec<Line<'static>> {
     match entry {
         Entry::User(text) => {
-            let bold = Style::default().add_modifier(Modifier::BOLD);
+            let prefix = theme.user;
             text.split('\n')
                 .enumerate()
                 .map(|(i, line)| {
@@ -96,7 +103,7 @@ pub fn entry_lines(entry: &Entry) -> Vec<Line<'static>> {
                     // line up under the text, not re-prefixed.
                     if i == 0 {
                         Line::from(vec![
-                            Span::styled("you> ", bold),
+                            Span::styled("you> ", prefix),
                             Span::raw(line.to_string()),
                         ])
                     } else {
@@ -105,49 +112,43 @@ pub fn entry_lines(entry: &Entry) -> Vec<Line<'static>> {
                 })
                 .collect()
         }
-        Entry::Assistant { text } => split_lines(text),
+        Entry::Assistant { text } => split_lines(text, theme),
         Entry::Tool {
             name,
             status,
             preview,
             ..
-        } => tool_lines(name, *status, preview),
-        Entry::Agent { label, status, .. } => vec![agent_line(label, *status)],
+        } => tool_lines(name, *status, preview, theme),
+        Entry::Agent { label, status, .. } => vec![agent_line(label, *status, theme)],
         Entry::Notice { text } => text
             .split('\n')
-            .map(|line| {
-                Line::from(Span::styled(
-                    line.to_string(),
-                    Style::default().fg(Color::Cyan),
-                ))
-            })
+            .map(|line| Line::from(Span::styled(line.to_string(), theme.notice)))
             .collect(),
     }
 }
 
-/// Splits `text` on `\n` into one unstyled [`Line`] per physical line --
-/// ratatui does NOT interpret embedded newlines within a single `Line`, so
-/// any multi-line entry text must be split before construction or it
-/// collapses onto one row (the bug this function exists to fix).
-fn split_lines(text: &str) -> Vec<Line<'static>> {
+/// Splits `text` on `\n` into one [`Line`] per physical line, each styled
+/// with `theme.assistant` -- ratatui does NOT interpret embedded newlines
+/// within a single `Line`, so any multi-line entry text must be split
+/// before construction or it collapses onto one row (the bug this function
+/// exists to fix). T1: the per-line style is the `assistant` theme slot
+/// (default `Style::default()`, preserving pre-T1 parity).
+fn split_lines(text: &str, theme: &Theme) -> Vec<Line<'static>> {
     text.split('\n')
-        .map(|line| Line::from(line.to_string()))
+        .map(|line| Line::from(Span::styled(line.to_string(), theme.assistant)))
         .collect()
 }
 
 /// The tool's `[tag] name -- preview` line(s): a `preview` containing `\n`
 /// (e.g. a multi-line command output) splits onto its own continuation
 /// lines, unprefixed, following the same pattern as `Entry::User` above.
-fn tool_lines(name: &str, status: ToolStatus, preview: &str) -> Vec<Line<'static>> {
-    let (tag, style) = match status {
-        ToolStatus::Proposed => ("proposed", Style::default().fg(Color::Gray)),
-        ToolStatus::AwaitingPermission => {
-            ("awaiting permission", Style::default().fg(Color::Magenta))
-        }
-        ToolStatus::Running => ("running", Style::default().fg(Color::Yellow)),
-        ToolStatus::Finished { is_error: false } => ("done", Style::default().fg(Color::Green)),
-        ToolStatus::Finished { is_error: true } => ("failed", Style::default().fg(Color::Red)),
-    };
+fn tool_lines(
+    name: &str,
+    status: ToolStatus,
+    preview: &str,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    let (tag, style) = tool_status_style(status, theme);
 
     if preview.is_empty() {
         return vec![Line::from(vec![
@@ -167,22 +168,44 @@ fn tool_lines(name: &str, status: ToolStatus, preview: &str) -> Vec<Line<'static
     lines
 }
 
+/// Maps a [`ToolStatus`] to its `[tag]` label and the theme slot for the
+/// tag's color. Kept as a free function so the per-status -> style mapping
+/// is testable on its own and so `tool_lines` reads as plain formatting.
+fn tool_status_style(status: ToolStatus, theme: &Theme) -> (&'static str, Style) {
+    match status {
+        ToolStatus::Proposed => ("proposed", theme.tool_proposed),
+        ToolStatus::AwaitingPermission => ("awaiting permission", theme.tool_awaiting),
+        ToolStatus::Running => ("running", theme.tool_running),
+        ToolStatus::Finished { is_error: false } => ("done", theme.tool_done),
+        ToolStatus::Finished { is_error: true } => ("failed", theme.tool_failed),
+    }
+}
+
 /// Subagent lifecycle, inline in the stream (WI-127 criterion 4).
-fn agent_line(label: &str, status: NodeStatus) -> Line<'static> {
-    let (tag, style) = match status {
-        NodeStatus::Starting => ("starting", Style::default().fg(Color::Gray)),
-        NodeStatus::Running => ("running", Style::default().fg(Color::Yellow)),
-        NodeStatus::AwaitingPermission => {
-            ("awaiting permission", Style::default().fg(Color::Magenta))
-        }
-        NodeStatus::Finished => ("done", Style::default().fg(Color::Green)),
-        NodeStatus::Failed => ("failed", Style::default().fg(Color::Red)),
-        NodeStatus::Cancelled => ("cancelled", Style::default().fg(Color::DarkGray)),
-    };
+fn agent_line(label: &str, status: NodeStatus, theme: &Theme) -> Line<'static> {
+    let (tag, style) = node_status_style(status, theme);
     Line::from(vec![
         Span::styled(format!("[agent {tag}] "), style),
         Span::raw(label.to_string()),
     ])
+}
+
+/// Maps a [`NodeStatus`] to its `[agent <tag>]` label and the theme slot
+/// for the tag's color. Shared between the transcript's inline
+/// `Entry::Agent` line and the agent panel's status marker so the two
+/// never drift apart on a color override. Kept `pub(super)` so the agent
+/// panel (`agents.rs`) can reuse it for its own status marker coloring.
+pub(super) fn node_status_style(status: NodeStatus, theme: &Theme) -> (&'static str, Style) {
+    match status {
+        NodeStatus::Starting => ("starting", theme.agent_starting),
+        NodeStatus::Running => ("running", theme.agent_running),
+        NodeStatus::AwaitingPermission => {
+            ("awaiting permission", theme.agent_awaiting)
+        }
+        NodeStatus::Finished => ("done", theme.agent_finished),
+        NodeStatus::Failed => ("failed", theme.agent_failed),
+        NodeStatus::Cancelled => ("cancelled", theme.agent_cancelled),
+    }
 }
 
 #[cfg(test)]
@@ -228,7 +251,7 @@ mod tests {
         ];
 
         for entry in &entries {
-            for line in entry_lines(entry) {
+            for line in entry_lines(entry, &Theme::default()) {
                 let text = plain_text(&line);
                 assert!(
                     !text.chars().any(|c| BOX_DRAWING_CHARS.contains(&c)),
@@ -240,7 +263,7 @@ mod tests {
 
     #[test]
     fn user_entry_keeps_the_you_prefix() {
-        let lines = entry_lines(&Entry::User("hello".to_string()));
+        let lines = entry_lines(&Entry::User("hello".to_string()), &Theme::default());
         assert_eq!(lines.len(), 1);
         assert!(plain_text(&lines[0]).starts_with("you> hello"));
     }
@@ -259,7 +282,7 @@ mod tests {
 
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal.draw(|f| draw(f, f.area(), &state)).expect("draw");
+        terminal.draw(|f| draw(f, f.area(), &state, &Theme::default())).expect("draw");
 
         assert_eq!(format!("{:?}", state.transcript), before);
     }
@@ -282,7 +305,7 @@ mod tests {
 
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal.draw(|f| draw(f, f.area(), &state)).expect("draw");
+        terminal.draw(|f| draw(f, f.area(), &state, &Theme::default())).expect("draw");
 
         let buffer = terminal.backend().buffer();
         for cell in buffer.content() {
@@ -315,7 +338,7 @@ mod tests {
 
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal.draw(|f| draw(f, f.area(), state)).expect("draw");
+        terminal.draw(|f| draw(f, f.area(), state, &Theme::default())).expect("draw");
         terminal
             .backend()
             .buffer()
@@ -397,9 +420,12 @@ mod tests {
     /// one row.
     #[test]
     fn assistant_entry_splits_embedded_newlines_into_separate_lines() {
-        let lines = entry_lines(&Entry::Assistant {
-            text: "line one\nline two\nline three".to_string(),
-        });
+        let lines = entry_lines(
+            &Entry::Assistant {
+                text: "line one\nline two\nline three".to_string(),
+            },
+            &Theme::default(),
+        );
 
         assert_eq!(
             lines.len(),
@@ -415,9 +441,12 @@ mod tests {
     /// one-`Line`-per-string pattern and needed the identical split.
     #[test]
     fn notice_entry_splits_embedded_newlines_into_separate_lines() {
-        let lines = entry_lines(&Entry::Notice {
-            text: "notice one\nnotice two".to_string(),
-        });
+        let lines = entry_lines(
+            &Entry::Notice {
+                text: "notice one\nnotice two".to_string(),
+            },
+            &Theme::default(),
+        );
 
         assert_eq!(lines.len(), 2, "expected 2 `Line`s: {lines:?}");
         assert_eq!(plain_text(&lines[0]), "notice one");

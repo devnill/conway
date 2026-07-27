@@ -24,32 +24,33 @@ pub(crate) mod agents;
 mod input_box;
 pub mod palette;
 mod status;
+pub mod theme;
 mod transcript;
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
 use super::state::{AppState, AskModal, IntentConfirm, Mode};
+pub use theme::Theme;
 
 const INPUT_HEIGHT: u16 = 3;
 const STATUS_HEIGHT: u16 = 1;
 const AGENT_PANEL_HEIGHT: u16 = 8;
 
-pub fn draw(state: &AppState, frame: &mut Frame) {
+pub fn draw(state: &AppState, frame: &mut Frame, theme: &Theme) {
     let area = frame.area();
     let areas = layout(state, area);
 
-    transcript::draw(frame, areas.transcript, state);
+    transcript::draw(frame, areas.transcript, state, theme);
 
     if let Some(agents_area) = areas.agents {
-        agents::draw(frame, agents_area, state);
+        agents::draw(frame, agents_area, state, theme);
     }
 
-    input_box::draw(frame, areas.input, state);
-    status::draw(frame, areas.status, state);
+    input_box::draw(frame, areas.input, state, theme);
+    status::draw(frame, areas.status, state, theme);
 
     if state.palette_source().starts_with('/') {
         palette::draw_overlay(
@@ -66,15 +67,16 @@ pub fn draw(state: &AppState, frame: &mut Frame) {
             areas.transcript,
             &pending.request,
             state.permission_scroll,
+            theme,
         );
     }
 
     if let Mode::AskModal(modal) = &state.mode {
-        draw_ask_modal(frame, areas.transcript, modal);
+        draw_ask_modal(frame, areas.transcript, modal, theme);
     }
 
     if let Mode::IntentConfirm(card) = &state.mode {
-        draw_intent_confirm(frame, areas.transcript, card);
+        draw_intent_confirm(frame, areas.transcript, card, theme);
     }
 }
 
@@ -204,6 +206,7 @@ fn draw_permission_overlay(
     transcript_area: Rect,
     req: &conway::PermissionRequest,
     scroll: u16,
+    theme: &Theme,
 ) {
     // At minimum: 2 border rows + the pinned footer + one row of command.
     let min_height = (2 + PERMISSION_FOOTER_ROWS + 1).min(transcript_area.height);
@@ -235,7 +238,7 @@ fn draw_permission_overlay(
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" PERMISSION REQUIRED ")
-        .border_style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD));
+        .border_style(theme.border_danger);
     let inner = block.inner(area);
     frame.render_widget(Clear, area);
     frame.render_widget(block, area);
@@ -257,7 +260,7 @@ fn draw_permission_overlay(
 
     let body = Paragraph::new(Line::from(Span::styled(
         req.rendered.clone(),
-        Style::default().add_modifier(Modifier::BOLD),
+        theme.emphasized,
     )))
     .wrap(Wrap { trim: false });
     let body_max_scroll = body
@@ -315,7 +318,7 @@ const ASK_MODAL_FOOTER_ROWS: u16 = 2;
 /// same small-viewport reason the permission overlay's doc explains: a
 /// `Paragraph` clips top-down, so the line the user needs to act on is the
 /// last thing clipped.
-fn draw_ask_modal(frame: &mut Frame, transcript_area: Rect, modal: &AskModal) {
+fn draw_ask_modal(frame: &mut Frame, transcript_area: Rect, modal: &AskModal, theme: &Theme) {
     // At minimum: 2 border rows + the pinned footer + one row of body.
     let min_height = (2 + ASK_MODAL_FOOTER_ROWS + 1).min(transcript_area.height);
     let height = transcript_area
@@ -333,11 +336,7 @@ fn draw_ask_modal(frame: &mut Frame, transcript_area: Rect, modal: &AskModal) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" ASK ")
-        .border_style(
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        );
+        .border_style(theme.border_warning);
     let inner = block.inner(area);
     frame.render_widget(Clear, area);
     frame.render_widget(block, area);
@@ -356,7 +355,7 @@ fn draw_ask_modal(frame: &mut Frame, transcript_area: Rect, modal: &AskModal) {
     let mut body_lines = vec![
         Line::from(Span::styled(
             format!("you asked: {}", modal.question),
-            Style::default().add_modifier(Modifier::BOLD),
+            theme.emphasized,
         )),
         Line::from(""),
     ];
@@ -372,7 +371,7 @@ fn draw_ask_modal(frame: &mut Frame, transcript_area: Rect, modal: &AskModal) {
     let error_line = match &modal.error {
         Some(err) => Line::from(Span::styled(
             format!("error: {err}"),
-            Style::default().fg(Color::Red),
+            theme.error,
         )),
         None => Line::from(""),
     };
@@ -405,7 +404,12 @@ const INTENT_CONFIRM_FOOTER_ROWS: u16 = 2;
 /// small-viewport reason the `/ask` modal's doc explains: a `Paragraph`
 /// clips top-down, so the line the user needs to act on is the last thing
 /// clipped.
-fn draw_intent_confirm(frame: &mut Frame, transcript_area: Rect, card: &IntentConfirm) {
+fn draw_intent_confirm(
+    frame: &mut Frame,
+    transcript_area: Rect,
+    card: &IntentConfirm,
+    theme: &Theme,
+) {
     // At minimum: 2 border rows + the pinned footer + one row of body.
     let min_height = (2 + INTENT_CONFIRM_FOOTER_ROWS + 1).min(transcript_area.height);
     let height = transcript_area
@@ -423,7 +427,7 @@ fn draw_intent_confirm(frame: &mut Frame, transcript_area: Rect, card: &IntentCo
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" INTENT ")
-        .border_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD));
+        .border_style(theme.border_accent);
     let inner = block.inner(area);
     frame.render_widget(Clear, area);
     frame.render_widget(block, area);
@@ -450,7 +454,7 @@ fn draw_intent_confirm(frame: &mut Frame, transcript_area: Rect, card: &IntentCo
     let mut body_lines = vec![
         Line::from(Span::styled(
             format!("recipe: {recipe}    agent_def: {agent_def}"),
-            Style::default().add_modifier(Modifier::BOLD),
+            theme.emphasized,
         )),
         Line::from(""),
     ];
@@ -495,7 +499,7 @@ mod tests {
 
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal.draw(|f| draw(&state, f)).expect("draw");
+        terminal.draw(|f| draw(&state, f, &Theme::default())).expect("draw");
 
         let buffer = terminal.backend().buffer();
         let non_blank = buffer.content().iter().any(|cell| cell.symbol() != " ");
@@ -511,7 +515,7 @@ mod tests {
         let state = AppState::new(root);
         let backend = TestBackend::new(40, 10);
         let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal.draw(|f| draw(&state, f)).expect("draw");
+        terminal.draw(|f| draw(&state, f, &Theme::default())).expect("draw");
         let buffer = terminal.backend().buffer();
         assert!(buffer.content().iter().any(|cell| cell.symbol() != " "));
     }
@@ -522,7 +526,7 @@ mod tests {
         let state = AppState::new(root);
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal.draw(|f| draw(&state, f)).expect("draw");
+        terminal.draw(|f| draw(&state, f, &Theme::default())).expect("draw");
         let buffer = terminal.backend().buffer();
         let text: String = buffer.content().iter().map(|c| c.symbol()).collect();
         assert!(!text.contains("agents ("));
@@ -535,7 +539,7 @@ mod tests {
         state.toggle_agent_view();
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal.draw(|f| draw(&state, f)).expect("draw");
+        terminal.draw(|f| draw(&state, f, &Theme::default())).expect("draw");
         let buffer = terminal.backend().buffer();
         let text: String = buffer.content().iter().map(|c| c.symbol()).collect();
         assert!(text.contains("agents ("));
@@ -548,7 +552,7 @@ mod tests {
         state.input = "/as".to_string();
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal.draw(|f| draw(&state, f)).expect("draw");
+        terminal.draw(|f| draw(&state, f, &Theme::default())).expect("draw");
         let buffer = terminal.backend().buffer();
         let text: String = buffer.content().iter().map(|c| c.symbol()).collect();
         assert!(text.contains("/ask"));
@@ -561,7 +565,7 @@ mod tests {
         state.input = "hello".to_string();
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal.draw(|f| draw(&state, f)).expect("draw");
+        terminal.draw(|f| draw(&state, f, &Theme::default())).expect("draw");
         let buffer = terminal.backend().buffer();
         let text: String = buffer.content().iter().map(|c| c.symbol()).collect();
         // The status line's own "/ for commands" hint always contains the

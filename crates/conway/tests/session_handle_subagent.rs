@@ -20,7 +20,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, LimitsConfig, ModelsConfig, PermissionsConfig,
-    RoleEntry, RoutingSection, SessionConfig,
+    RoleEntry, RoutingSection, SessionConfig, TuiSection,
 };
 use conway::{
     Conway, ConwayBuilder, ConwayError, ForkSpec, SessionHandle, SessionId, SessionSpec, SpawnSpec,
@@ -72,6 +72,7 @@ fn base_config() -> ConwayConfig {
         health: HealthSection::default(),
         agents: AgentsConfig::default(),
         models: ModelsConfig::default(),
+        tui: TuiSection::default(),
     }
 }
 

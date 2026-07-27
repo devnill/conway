@@ -71,6 +71,10 @@ pub struct ConwayConfig {
     pub agents: AgentsConfig,
     #[serde(default)]
     pub models: ModelsConfig,
+    /// `[tui]` (TUI-only options; the facade owns the schema, the
+    /// `conway-cli` TUI consumes it). Currently just `[tui.theme]`.
+    #[serde(default)]
+    pub tui: TuiSection,
 }
 
 fn default_cwd() -> PathBuf {
@@ -373,4 +377,82 @@ impl Default for ModelsConfig {
             probe_on_startup: false,
         }
     }
+}
+
+/// `[tui]` (TUI-only options). The facade owns the wire shape so the same
+/// discovery/precedence/`deny_unknown_fields` machinery that governs every
+/// other section governs this one too; the `conway-cli` TUI reads
+/// `conway.config().tui.theme` at startup and builds a ratatui `Theme` from
+/// it (see `crates/conway-cli/src/tui/view/theme.rs`). The facade itself
+/// never names ratatui types -- `ThemeConfig` is a string-keyed shape so the
+/// facade need not depend on the render crate.
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct TuiSection {
+    #[serde(default)]
+    pub theme: ThemeConfig,
+}
+
+/// `[tui.theme]`: a per-named-style override table. Each entry is an
+/// `Option<ThemeStyleConfig>` -- `None` (the default for every slot) means
+/// "use the TUI's built-in default for this named style"; `Some` overlays
+/// `fg`/`bg`/`modifiers` on top of the default. The TUI resolves the
+/// strings to ratatui `Color`/`Modifier` values and maps any unparseable
+/// or out-of-range value back to the default for that slot (P-10: config
+/// is untrusted input, never a panic). Every field is `Option` so a user
+/// can override just one named style without restating the rest.
+///
+/// Field names match the `Theme` slot names in
+/// `crates/conway-cli/src/tui/view/theme.rs` one-for-one. See
+/// `docs/crates/conway-cli.md`'s `[tui.theme]` section for the full list
+/// and the accepted color/modifier spellings.
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct ThemeConfig {
+    pub user: Option<ThemeStyleConfig>,
+    pub assistant: Option<ThemeStyleConfig>,
+    pub assistant_marker: Option<ThemeStyleConfig>,
+    pub reasoning: Option<ThemeStyleConfig>,
+    pub tool_proposed: Option<ThemeStyleConfig>,
+    pub tool_awaiting: Option<ThemeStyleConfig>,
+    pub tool_running: Option<ThemeStyleConfig>,
+    pub tool_done: Option<ThemeStyleConfig>,
+    pub tool_failed: Option<ThemeStyleConfig>,
+    pub agent_marker: Option<ThemeStyleConfig>,
+    pub agent_starting: Option<ThemeStyleConfig>,
+    pub agent_running: Option<ThemeStyleConfig>,
+    pub agent_awaiting: Option<ThemeStyleConfig>,
+    pub agent_finished: Option<ThemeStyleConfig>,
+    pub agent_failed: Option<ThemeStyleConfig>,
+    pub agent_cancelled: Option<ThemeStyleConfig>,
+    pub notice: Option<ThemeStyleConfig>,
+    pub error: Option<ThemeStyleConfig>,
+    pub fatal_error: Option<ThemeStyleConfig>,
+    pub dim: Option<ThemeStyleConfig>,
+    pub focused: Option<ThemeStyleConfig>,
+    pub selected: Option<ThemeStyleConfig>,
+    pub emphasized: Option<ThemeStyleConfig>,
+    pub border_normal: Option<ThemeStyleConfig>,
+    pub border_warning: Option<ThemeStyleConfig>,
+    pub border_danger: Option<ThemeStyleConfig>,
+    pub border_accent: Option<ThemeStyleConfig>,
+    pub status_mode: Option<ThemeStyleConfig>,
+    pub status_dim: Option<ThemeStyleConfig>,
+    pub spinner: Option<ThemeStyleConfig>,
+}
+
+/// One `[tui.theme.<name>]` entry: foreground/background color names plus a
+/// modifier tag list. All fields are optional -- a `None`/empty field means
+/// "leave the named style's default for that channel untouched". The TUI
+/// parses `fg`/`bg` as ratatui color names (`"cyan"`, `"dark_gray"`,
+/// `"#ff00ff"`, ...) and `modifiers` as ratatui modifier names
+/// (`"bold"`, `"dim"`, `"italic"`, `"reversed"`, ...); any unrecognized
+/// value falls back to the default (P-10), never a panic.
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct ThemeStyleConfig {
+    pub fg: Option<String>,
+    pub bg: Option<String>,
+    #[serde(default)]
+    pub modifiers: Vec<String>,
 }
