@@ -118,8 +118,16 @@ fn handle_help_key(state: &mut AppState, key: KeyEvent) -> Action {
             _ => {}
         }
     }
-    if key.code == KeyCode::Esc {
-        state.close_help();
+    match key.code {
+        KeyCode::Esc => state.close_help(),
+        // V1: the overlay now scrolls past its capped height instead of
+        // clipping (`view/help.rs`'s own doc) -- mirrors
+        // [`handle_permission_key`]'s `PageUp`/`PageDown` handling exactly,
+        // sharing `AppState::modal_scroll` with every other modal-bearing
+        // surface.
+        KeyCode::PageDown => adjust_modal_scroll(state, 1),
+        KeyCode::PageUp => adjust_modal_scroll(state, -1),
+        _ => {}
     }
     Action::None
 }
@@ -134,13 +142,28 @@ fn handle_help_key(state: &mut AppState, key: KeyEvent) -> Action {
 /// `Action::Quit` -- quitting with the modal open purges the child first
 /// (wired in `app.rs`'s quit path), so there is no fourth, fate-less way
 /// out.
-fn handle_ask_modal_key(_state: &mut AppState, key: KeyEvent) -> Action {
+fn handle_ask_modal_key(state: &mut AppState, key: KeyEvent) -> Action {
     if key.modifiers.contains(KeyModifiers::CONTROL) {
         match key.code {
             KeyCode::Char('c') | KeyCode::Char('C') => return Action::CtrlC,
             KeyCode::Char('d') | KeyCode::Char('D') => return Action::Quit,
             _ => {}
         }
+    }
+    // V1: the modal now scrolls past its capped height (`view/mod.rs::
+    // draw_ask_modal`'s own doc) -- checked before the fate keys' bare-
+    // keypress guard below since `PageUp`/`PageDown` carry no modifiers of
+    // their own and are not fate keys either way.
+    match key.code {
+        KeyCode::PageDown => {
+            adjust_modal_scroll(state, 1);
+            return Action::None;
+        }
+        KeyCode::PageUp => {
+            adjust_modal_scroll(state, -1);
+            return Action::None;
+        }
+        _ => {}
     }
     // Fate keys only fire on a bare keypress -- a modifier held (Ctrl-F,
     // Alt-P, ...) is NOT a fate. Without this guard the second match below
@@ -184,6 +207,20 @@ fn handle_intent_confirm_key(state: &mut AppState, key: KeyEvent) -> Action {
             _ => {}
         }
     }
+    // V1: the card now scrolls past its capped height (`view/mod.rs::
+    // draw_intent_confirm`'s own doc) -- checked before the choice keys'
+    // bare-keypress guard below, mirroring [`handle_ask_modal_key`].
+    match key.code {
+        KeyCode::PageDown => {
+            adjust_modal_scroll(state, 1);
+            return Action::None;
+        }
+        KeyCode::PageUp => {
+            adjust_modal_scroll(state, -1);
+            return Action::None;
+        }
+        _ => {}
+    }
     // `e` only fires on a bare keypress -- a modifier held (Ctrl-E, Alt-E,
     // ...) is NOT the edit choice. Without this guard the second match
     // below inspected `key.code` alone, so Ctrl-E would leak through as
@@ -203,16 +240,33 @@ fn handle_intent_confirm_key(state: &mut AppState, key: KeyEvent) -> Action {
     }
 }
 
-/// The permission overlay's own command-body scroll step (bug fix,
-/// 01KYB0F7V65QAMZWWYH8K7DWDC): `PageUp`/`PageDown` doesn't collide with the
-/// `y`/`a`/`n`/`Esc` decision keys below, so it's free to drive
-/// `AppState::permission_scroll` without touching decision handling at all.
-/// A generous fixed step (rather than deriving one from the actual overlay
-/// viewport height, which this module has no `Rect` for) -- `view/mod.rs`'s
-/// `draw_permission_overlay` clamps the value it's actually handed to the
-/// command's own wrapped line count, so an over-large step here can never
-/// scroll past real content; it just lands on the true bottom/top.
-const PERMISSION_SCROLL_STEP: u16 = 5;
+/// The shared modal body scroll step (originated as the permission
+/// overlay's own step, bug fix 01KYB0F7V65QAMZWWYH8K7DWDC; V1 generalizes it
+/// to every modal-bearing surface via [`adjust_modal_scroll`]):
+/// `PageUp`/`PageDown` doesn't collide with any surface's own decision/fate/
+/// choice keys, so it's free to drive `AppState::modal_scroll` without
+/// touching decision handling at all. A generous fixed step (rather than
+/// deriving one from the actual overlay viewport height, which this module
+/// has no `Rect` for) -- each `view/mod.rs::draw_*`/`view/help.rs::draw`
+/// clamps the value it's actually handed to its own content's wrapped line
+/// count (`view/modal.rs::clamp_scroll`), so an over-large step here can
+/// never scroll past real content; it just lands on the true bottom/top.
+const MODAL_SCROLL_STEP: u16 = 5;
+
+/// Steps `AppState::modal_scroll` by [`MODAL_SCROLL_STEP`] in `direction`'s
+/// sign (positive: `PageDown`, further into the content; negative:
+/// `PageUp`, back toward the top) -- the one place every modal-bearing
+/// surface's `PageUp`/`PageDown` handling lands, so the step size and the
+/// saturating add/sub can never drift apart across
+/// [`handle_permission_key`]/[`handle_ask_modal_key`]/
+/// [`handle_intent_confirm_key`]/[`handle_help_key`].
+fn adjust_modal_scroll(state: &mut AppState, direction: i8) {
+    state.modal_scroll = if direction >= 0 {
+        state.modal_scroll.saturating_add(MODAL_SCROLL_STEP)
+    } else {
+        state.modal_scroll.saturating_sub(MODAL_SCROLL_STEP)
+    };
+}
 
 fn handle_permission_key(state: &mut AppState, key: KeyEvent) -> Action {
     match key.code {
@@ -240,15 +294,11 @@ fn handle_permission_key(state: &mut AppState, key: KeyEvent) -> Action {
         // keys) rather than via a new `Action` variant, since nothing here
         // needs a live facade call.
         KeyCode::PageDown => {
-            state.permission_scroll = state
-                .permission_scroll
-                .saturating_add(PERMISSION_SCROLL_STEP);
+            adjust_modal_scroll(state, 1);
             Action::None
         }
         KeyCode::PageUp => {
-            state.permission_scroll = state
-                .permission_scroll
-                .saturating_sub(PERMISSION_SCROLL_STEP);
+            adjust_modal_scroll(state, -1);
             Action::None
         }
         _ => Action::None,
@@ -1410,33 +1460,112 @@ mod tests {
     }
 
     /// Bug fix companion: `PageDown`/`PageUp` while awaiting a permission
-    /// decision must page `AppState::permission_scroll` (for a long
-    /// command's overlay, 01KYB0F7V65QAMZWWYH8K7DWDC) instead of falling
-    /// through to `Action::None` doing nothing, and must never collide with
-    /// the `y`/`a`/`n`/`Esc` decision keys tested above.
+    /// decision must page `AppState::modal_scroll` (for a long command's
+    /// overlay, 01KYB0F7V65QAMZWWYH8K7DWDC) instead of falling through to
+    /// `Action::None` doing nothing, and must never collide with the
+    /// `y`/`a`/`n`/`Esc` decision keys tested above.
     #[test]
     fn permission_mode_page_keys_scroll_instead_of_deciding() {
         let mut state = AppState::new(AgentId::new());
-        assert_eq!(state.permission_scroll, 0);
+        assert_eq!(state.modal_scroll, 0);
 
         assert_eq!(
             handle_permission_key(&mut state, key(KeyCode::PageDown)),
             Action::None
         );
         assert!(
-            state.permission_scroll > 0,
+            state.modal_scroll > 0,
             "PageDown must advance the overlay's own scroll offset"
         );
 
-        let after_down = state.permission_scroll;
+        let after_down = state.modal_scroll;
         assert_eq!(
             handle_permission_key(&mut state, key(KeyCode::PageUp)),
             Action::None
         );
         assert!(
-            state.permission_scroll < after_down,
+            state.modal_scroll < after_down,
             "PageUp must step the scroll offset back down"
         );
+    }
+
+    // ---- V1: the shared `modal_scroll` field's PageUp/PageDown handling
+    // generalizes to every modal-bearing surface, not just the permission
+    // prompt -- the /ask modal, the intent-confirm card, and the
+    // informational /help overlay each get the same PageUp/PageDown
+    // scrolling now. ----
+
+    #[test]
+    fn ask_modal_page_keys_scroll_instead_of_choosing_a_fate() {
+        let mut state = AppState::new(AgentId::new());
+        state.offer_ask_modal(crate::tui::state::AskModal {
+            question: "q".to_string(),
+            child: AgentId::new(),
+            answer: "a".to_string(),
+            error: None,
+        });
+        assert_eq!(state.modal_scroll, 0);
+
+        assert_eq!(
+            handle_ask_modal_key(&mut state, key(KeyCode::PageDown)),
+            Action::None,
+            "PageDown must scroll, not fire a fate"
+        );
+        assert!(state.modal_scroll > 0);
+
+        let after_down = state.modal_scroll;
+        assert_eq!(
+            handle_ask_modal_key(&mut state, key(KeyCode::PageUp)),
+            Action::None
+        );
+        assert!(state.modal_scroll < after_down);
+    }
+
+    #[test]
+    fn intent_confirm_page_keys_scroll_instead_of_choosing() {
+        let mut state = AppState::new(AgentId::new());
+        state.offer_intent_confirm(crate::tui::state::IntentConfirm {
+            intent: conway::AgentIntent {
+                recipe: conway::SubagentMode::Spawn,
+                agent_def: None,
+                prompt: "go".to_string(),
+            },
+            default_recipe: conway::SubagentMode::Spawn,
+            raw_text: "go".to_string(),
+            parent: AgentId::new(),
+        });
+        assert_eq!(state.modal_scroll, 0);
+
+        assert_eq!(
+            handle_intent_confirm_key(&mut state, key(KeyCode::PageDown)),
+            Action::None,
+            "PageDown must scroll, not fire a choice"
+        );
+        assert!(state.modal_scroll > 0);
+
+        let after_down = state.modal_scroll;
+        assert_eq!(
+            handle_intent_confirm_key(&mut state, key(KeyCode::PageUp)),
+            Action::None
+        );
+        assert!(state.modal_scroll < after_down);
+    }
+
+    #[test]
+    fn help_overlay_page_keys_scroll_the_binding_list() {
+        let mut state = AppState::new(AgentId::new());
+        state.open_help();
+        assert_eq!(state.modal_scroll, 0);
+
+        assert_eq!(
+            handle_help_key(&mut state, key(KeyCode::PageDown)),
+            Action::None
+        );
+        assert!(state.modal_scroll > 0);
+
+        let after_down = state.modal_scroll;
+        assert_eq!(handle_help_key(&mut state, key(KeyCode::PageUp)), Action::None);
+        assert!(state.modal_scroll < after_down);
     }
 
     // ---- B5: the /ask modal's forced-fate keys ----

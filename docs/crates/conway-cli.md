@@ -810,6 +810,87 @@ three surfaces owns `mode`.
 New theme slots: `help_border` (blue, bold) and `help_key` (green, bold —
 the key/chord column), both configurable under `[tui.theme]`.
 
+### The shared modal primitive: bottom-anchored, content-sized, capped (V1)
+
+Before this item, the permission prompt, the `/ask` modal, the NL
+intent-confirm card, and `/help` each hand-rolled their own `Rect`/border/
+`Clear`/footer-split logic — four independent copies of roughly the same
+shape, and the permission overlay's own doc read *"claim nearly the whole
+transcript area,"* which is exactly what made it feel wrong: a modal that
+always ate the screen regardless of how little it had to say, and never
+scrolled a long command past its own edges.
+
+`tui/view/modal.rs` is now the ONE place that decides a modal's `Rect`:
+**bottom-anchored, sized to its own content, capped at a maximum**, so a
+short modal renders short and a long one grows only to the cap and then
+**scrolls** rather than either truncating or filling the screen. All four
+surfaces above call `modal::draw_modal_frame` for their border/`Clear`
+treatment and `modal::body_max_scroll`/`modal::clamp_scroll` for their
+scroll math.
+
+**The cap** is `transcript_area.height / cap_denominator`, a per-caller
+parameter rather than one global number — `modal::DEFAULT_CAP_DENOMINATOR`
+(`2`) is what the three DECISION-owed surfaces (permission prompt, `/ask`
+modal, intent-confirm card) use; `/help`, being informational rather than a
+decision the user owes an answer to, passes its own larger cap (`1`, i.e.
+up to the whole `transcript_area`) since its binding list is genuinely long
+and the user opened it on purpose to read. (The first cap tried here
+reused `/agents`' own `area.height / 3` — the user had named that panel as
+the feel they liked — but `/agents`' fraction is measured against the WHOLE
+frame while a modal's is measured against the already-shrunk
+`transcript_area`, and reusing the same fraction there proved too tight in
+practice: it left as few as two body rows for a modal on an ordinary 80x24
+terminal.)
+
+**Scrolling replaces the old `permission_scroll` field.** `AppState` now
+has one shared `modal_scroll: u16`, since at most one of the four
+modal-bearing surfaces is ever showing at a time (the three `Mode` variants
+are mutually exclusive, and `/help` never stacks on them either — see the
+T7 section above). `PageUp`/`PageDown` drive it in all four
+`input::handle_*_key` fns, and it resets to `0` every time a NEW surface
+becomes the active one (`AppState::offer_prompt`,
+`AppState::promote_next_surface`, `AppState::offer_ask_modal`,
+`AppState::offer_intent_confirm`, `AppState::open_help`) so a leftover
+scroll position from a previous, unrelated surface's content never carries
+over.
+
+**`/agents` stays a panel, not a modal.** The item that introduced this
+primitive asked for a justified answer either way. `/agents` is meant to be
+browsed *while still composing* — it shares the screen with a live input
+line, which a modal (drawn *over* the transcript, per this primitive's own
+shape) cannot do without contradicting itself. A modal is for a decision or
+a temporary read-only reference; `/agents` is an ambient, side-by-side
+view, which this primitive is not shaped for. What carries over is the
+*feel*, not the literal conversion: bottom-anchored, bordered, never eating
+the whole screen.
+
+**A tree/menu navigation primitive** (`tui/view/menu.rs`) is layered on top
+of the modal for V4 (a settings tree) to fill in later: `MenuNode::Leaf`/
+`MenuNode::Group` for nested, collapsible sections, and `MenuState` for
+arrow navigation (`move_selection`), expand/collapse
+(`toggle_group_at_selection`), and resolving the current selection down to
+an opaque leaf `id` (`selected_leaf_id`) through the visible, flattened row
+list — mirroring how `/agents`' own filtered-row lookup already works. It
+is not wired to anything yet (`#[allow(dead_code)]`, scoped to the file,
+mirrors the same "primitive lands before its first caller" precedent
+`conway-backends/src/http.rs` already uses) but is fully exercised by its
+own tests, including nested-group navigation, so a future settings surface
+can build on it directly rather than needing to fix a half-finished
+primitive first. When that surface lands it is expected to be
+**informational**, gated the same way `/help` is (a plain flag checked
+ahead of the `Mode` match in `input::handle_key`, never a `Mode` variant of
+its own) so its `Up`/`Down` handling slots into the existing arrow-key
+priority chain (V3) the same way the agent panel already does: exclusive
+ownership of the arrows only while it's open, released the moment it
+closes, never permanently claiming the keys wheel-scroll also arrives on.
+
+No new theme slots were needed for the primitive itself — it takes a
+caller-supplied `Style` for its border (each ported surface keeps its own
+`theme.border_danger`/`border_warning`/`border_accent`/`help_border`) and
+reuses the existing `theme.selected`/`theme.emphasized`/`theme.dim` slots
+for the menu primitive's highlighted/group/leaf rows, the same way
+`view/agents.rs` already does.
+
 ### The `/ask` single-turn modal
 
 `/ask <prompt>` asks an ephemeral fork of the current session a side

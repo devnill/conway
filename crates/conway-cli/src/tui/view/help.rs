@@ -21,13 +21,19 @@
 //! so a bare printable key (`?`, `F1`, ...) can never be a binding --
 //! `/help` is the only way in, and `Esc` is the only way out.
 //!
-//! **Shape.** Follows the permission/ask/intent-confirm overlays exactly
-//! (`view/mod.rs`): `Clear` + a bordered `Block` drawn over the transcript
-//! area, exempt from the transcript's own clean-copy guarantee (it is a
-//! modal, not conversation text -- see `transcript.rs`'s module doc for that
-//! guarantee's scope). Unlike those three it is not a `state::Mode` variant
-//! at all -- see `AppState::help_open`'s own doc for why a plain flag (not a
-//! fourth `Mode` variant) is the right shape here.
+//! **Shape.** V1 ports this overlay onto the shared bottom-anchored,
+//! content-sized, capped modal primitive (`view/modal.rs`) that the
+//! permission/ask/intent-confirm overlays now also use: `Clear` + a bordered
+//! `Block` drawn over the transcript area, exempt from the transcript's own
+//! clean-copy guarantee (it is a modal, not conversation text -- see
+//! `transcript.rs`'s module doc for that guarantee's scope). Unlike those
+//! three it is not a `state::Mode` variant at all -- see
+//! `AppState::help_open`'s own doc for why a plain flag (not a fourth `Mode`
+//! variant) is the right shape here. Also unlike the pre-V1 shape, the
+//! overlay now SCROLLS (`PageUp`/`PageDown`, sharing `AppState::modal_scroll`
+//! with the other three modal-bearing surfaces -- only one of the four is
+//! ever showing at a time) rather than silently clipping the binding list on
+//! a small terminal.
 //!
 //! **Mouse wheel is deliberately absent from the keybinding rows below.**
 //! Conway never calls `EnableMouseCapture` and has no `MouseEventKind`
@@ -42,11 +48,12 @@
 //! never sneak back in as if it were a real binding (`no_binding_row_mentions_mouse`
 //! below guards this).
 
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::Frame;
 
+use super::modal;
 use super::theme::Theme;
 
 /// One row: a key/chord and what it does.
@@ -220,47 +227,28 @@ pub(super) const MOUSE_NOTE: &str = "note: mouse wheel scrolling is your termina
 /// Rows the overlay's footer always reserves: the `[Esc] close` hint.
 const FOOTER_ROWS: u16 = 1;
 
-/// Draws the `/help` overlay over `transcript_area`, following
-/// `view/mod.rs::draw_permission_overlay`'s shape: claim nearly all of the
-/// transcript area, `Clear` + a bordered `Block`, footer pinned at the
-/// bottom. No `AppState` needed -- every line here is static.
+/// The overlay's OWN cap denominator, deliberately more generous than
+/// [`modal::DEFAULT_CAP_DENOMINATOR`] -- `1` means "up to the whole
+/// `transcript_area`", the pre-V1 behavior this overlay already had. This is
+/// the one case `modal.rs`'s own doc calls out explicitly: `/help` is
+/// INFORMATIONAL (the user opened it on purpose, to read, not a decision
+/// interrupting them -- `AppState::help_open`'s own doc on that
+/// distinction), so it can reasonably claim more of the screen than a
+/// decision-owed modal, and its binding list is genuinely long enough that
+/// the tighter default would force scrolling even on an ordinary terminal.
+/// It still scrolls past THIS cap on a small enough viewport (below).
+const CAP_DENOMINATOR: u16 = 1;
+
+/// Draws the `/help` overlay over `transcript_area` via the shared
+/// [`modal`] primitive (V1): bottom-anchored, sized to the binding list's
+/// own wrapped height, capped at [`CAP_DENOMINATOR`] of the transcript
+/// area, and SCROLLING (`scroll`, `AppState::modal_scroll`) past the cap
+/// rather than clipping. No other `AppState` is needed -- every line of
+/// content here is static.
 ///
-/// P-10: never panics on a tiny area. `height`/`area` are clamped exactly
-/// the way the other three overlays clamp theirs, and the body `Paragraph`
-/// simply clips (no scrolling, no indexing) when the content is taller than
-/// what's left after the footer -- a real terminal too small for the full
-/// list shows as much as fits rather than crashing.
-pub fn draw(frame: &mut Frame, transcript_area: Rect, theme: &Theme) {
-    // At minimum: 2 border rows + the pinned footer + one row of body.
-    let min_height = (2 + FOOTER_ROWS + 1).min(transcript_area.height);
-    let height = transcript_area
-        .height
-        .saturating_sub(1)
-        .max(min_height)
-        .min(transcript_area.height);
-    let area = Rect {
-        x: transcript_area.x,
-        y: transcript_area.y + transcript_area.height.saturating_sub(height),
-        width: transcript_area.width,
-        height,
-    };
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" HELP -- keybindings (/help does not list slash commands; see / for those) ")
-        .border_style(theme.help_border);
-    let inner = block.inner(area);
-    frame.render_widget(Clear, area);
-    frame.render_widget(block, area);
-
-    let footer_rows = FOOTER_ROWS.min(inner.height);
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(footer_rows)])
-        .split(inner);
-    let body_area = rows[0];
-    let footer_area = rows[1];
-
+/// P-10: never panics on a tiny area -- [`modal::modal_area`]'s own clamp
+/// covers that; see its doc for why the floor can never exceed the ceiling.
+pub fn draw(frame: &mut Frame, transcript_area: Rect, scroll: u16, theme: &Theme) {
     let mut body_lines: Vec<Line> = Vec::new();
     for group in GROUPS {
         body_lines.push(Line::from(Span::styled(group.title, theme.emphasized)));
@@ -275,12 +263,32 @@ pub fn draw(frame: &mut Frame, transcript_area: Rect, theme: &Theme) {
         body_lines.push(Line::from(""));
     }
     body_lines.push(Line::from(Span::styled(MOUSE_NOTE, theme.dim)));
-
     let body = Paragraph::new(body_lines).wrap(Wrap { trim: false });
-    frame.render_widget(body, body_area);
+    let content_rows = body
+        .line_count(modal::body_width(transcript_area))
+        .min(u16::MAX as usize) as u16;
 
-    let footer = Paragraph::new(Line::from("[Esc] close")).wrap(Wrap { trim: true });
-    frame.render_widget(footer, footer_area);
+    let frame_areas = modal::draw_modal_frame(
+        frame,
+        transcript_area,
+        content_rows,
+        FOOTER_ROWS,
+        CAP_DENOMINATOR,
+        " HELP -- keybindings (/help does not list slash commands; see / for those) ",
+        theme.help_border,
+    );
+
+    let body_max_scroll = modal::body_max_scroll(content_rows, frame_areas.body_area.height);
+    let clamped_scroll = modal::clamp_scroll(scroll, body_max_scroll);
+    frame.render_widget(body.scroll((clamped_scroll, 0)), frame_areas.body_area);
+
+    let hint = if body_max_scroll > 0 {
+        "[Esc] close  [PageUp/PageDown] scroll"
+    } else {
+        "[Esc] close"
+    };
+    let footer = Paragraph::new(Line::from(hint)).wrap(Wrap { trim: true });
+    frame.render_widget(footer, frame_areas.footer_area);
 }
 
 #[cfg(test)]

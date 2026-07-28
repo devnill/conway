@@ -923,6 +923,12 @@ mod tests {
             ("palette.rs", include_str!("palette.rs")),
             ("header.rs", include_str!("header.rs")),
             ("help.rs", include_str!("help.rs")),
+            // V1: the shared modal/menu primitives take a caller-supplied
+            // `Style` (the ported surfaces' own `theme.border_*`) rather
+            // than building one -- they must stay just as clean of an
+            // inline literal as every other view file.
+            ("modal.rs", include_str!("modal.rs")),
+            ("menu.rs", include_str!("menu.rs")),
         ] {
             // `theme.rs` is allowed to contain the needle (the defaults);
             // assert it is the ONLY file that does.
