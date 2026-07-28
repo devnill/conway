@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Two-finger scroll works again.** In v0.3.0 the mouse wheel recalled
+  input history instead of scrolling the transcript. Bare `Up`/`Down` now
+  scroll one line; history recall moved to `Ctrl-P`/`Ctrl-N`.
+
+  The cause is worth stating, because the earlier documentation had it
+  wrong. Conway does not capture the mouse — doing so would disable the
+  terminal's click-drag text selection, which the transcript's clean-copy
+  guarantee protects. The previous notes concluded from this that the wheel
+  never reached Conway at all. It does: terminals implement *alternate
+  scroll* (DECSET 1007), translating wheel events into `Up`/`Down` cursor
+  keys while the alternate screen is active. So when v0.3.0 bound those
+  arrows to history, it silently took the wheel with them.
+
+  Conway cannot distinguish a wheel-driven arrow from a typed one — that
+  distinction is precisely what mouse capture would provide — so the arrows
+  go to the more frequent interaction, and history takes the readline
+  chord. `PageUp`/`PageDown` and `Home`/`End` are unchanged.
+
 ### Added
 
 - **TUI: `/help` keybinding overlay (T7).** `/help` used to dump a static

@@ -523,6 +523,12 @@ impl App {
                                 }
                                 Action::ScrollUp => self.page_scroll(terminal, true)?,
                                 Action::ScrollDown => self.page_scroll(terminal, false)?,
+                                // V3: bare Up/Down scroll one line. Shares
+                                // `line_scroll` with the page variants so
+                                // the clamp/follow-tail rules can never
+                                // diverge between the two.
+                                Action::ScrollLineUp => self.line_scroll(terminal, true)?,
+                                Action::ScrollLineDown => self.line_scroll(terminal, false)?,
                                 // T6: `End`/`Home` jump straight to the
                                 // transcript's tail/top. `JumpToTail` needs
                                 // no terminal-size-derived input at all
@@ -875,6 +881,28 @@ impl App {
     /// disengage/re-engage, clamping) -- this method's only job is
     /// supplying the terminal-size-derived `max_scroll`/page inputs those
     /// pure methods need but don't have access to themselves.
+    /// V3: a one-line transcript scroll, for bare `Up`/`Down` (which is
+    /// what a terminal's alternate-scroll mode turns a wheel event into).
+    /// Delegates to the same `scroll_page_up`/`scroll_page_down` state
+    /// mutations with a page of 1, so the clamping and follow-tail
+    /// re-engagement rules are literally the same code as the page-sized
+    /// scroll -- one line is just a smaller page.
+    fn line_scroll<B: Backend>(
+        &mut self,
+        terminal: &Terminal<B>,
+        up: bool,
+    ) -> conway::Result<()> {
+        let size = terminal.size().map_err(conway::ConwayError::Io)?;
+        let area = ratatui::layout::Rect::new(0, 0, size.width, size.height);
+        let max = view::max_scroll(&self.state, area);
+        if up {
+            self.state.scroll_page_up(1, max);
+        } else {
+            self.state.scroll_page_down(1, max);
+        }
+        Ok(())
+    }
+
     fn page_scroll<B: Backend>(
         &mut self,
         terminal: &Terminal<B>,

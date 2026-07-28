@@ -14,19 +14,27 @@
 //! visual divider is ever needed, use blank-line spacing or styling, never
 //! a border/rule glyph.
 //!
-//! **Mouse-wheel decision (TUI transcript scrolling item):** crossterm mouse
-//! capture is NOT enabled. Enabling it would let `MouseEventKind::ScrollUp`/
-//! `ScrollDown` drive this pane, but crossterm mouse capture also disables
-//! the terminal's own native click-drag text selection (a captured terminal
-//! routes every mouse event to the app instead of the emulator), which is
-//! exactly the mechanism the clean-copy guarantee above exists to keep
-//! working (WI-127 criterion 2: the user selects/copies with the mouse).
-//! Trading that away for wheel support -- even with a documented
-//! modifier-drag escape hatch -- regresses a already-shipped, tested
-//! invariant for a nice-to-have. Auto-follow + clamp + keyboard scroll
-//! (`PageUp`/`PageDown`, this module's [`draw`] + `AppState::scroll_page_up`/
-//! `scroll_page_down`) is the required core per this item's own spec and
-//! ships without that trade-off; mouse wheel is left undone.
+//! **Mouse-wheel decision (see decision 01KYKDKYJEATSYXM7YS1C17HHA, as
+//! amended by V3):** crossterm mouse capture is NOT enabled. Enabling it
+//! would deliver `MouseEventKind::ScrollUp`/`ScrollDown` directly, but it
+//! also disables the terminal's own click-drag text selection (a captured
+//! terminal routes every mouse event to the app instead of the emulator),
+//! which is exactly the mechanism the clean-copy guarantee above exists to
+//! keep working. That trade-off still stands.
+//!
+//! What this module previously claimed -- that the wheel is therefore
+//! simply "left undone" and never reaches Conway -- was wrong, and V3
+//! corrected it. Terminals implement *alternate scroll* (DECSET 1007):
+//! while the alternate screen is active, they translate wheel events into
+//! `Up`/`Down` cursor-key presses. So the wheel DOES drive this pane -- as
+//! ordinary arrow keys, indistinguishable from a keystroke.
+//!
+//! That is why bare `Up`/`Down` scroll the transcript one line
+//! (`Action::ScrollLineUp`/`ScrollLineDown`) rather than recalling input
+//! history: T8 had bound them to history, which silently broke two-finger
+//! scrolling for anyone whose terminal does alternate scroll. History moved
+//! to `Ctrl-P`/`Ctrl-N`. Page-sized scrolling remains `PageUp`/`PageDown`,
+//! and `Home`/`End` jump to top/tail.
 
 use chrono::{DateTime, Utc};
 

@@ -107,9 +107,14 @@ const GROUPS: &[Group] = &[
         bindings: &[
             Binding {
                 keys: "Up / Down",
-                action: "recall history -- or move the palette/agent-panel \
-                          selection, or a multi-line draft's own lines, \
-                          whichever currently owns the key",
+                action: "scroll the transcript one line -- or move the \
+                          palette/agent-panel selection, or a multi-line \
+                          draft's own lines, whichever currently owns the \
+                          key. Your mouse wheel arrives here too.",
+            },
+            Binding {
+                keys: "Ctrl-P / Ctrl-N",
+                action: "recall previous/next input history",
             },
             Binding {
                 keys: "Home / End",
@@ -282,37 +287,34 @@ pub fn draw(frame: &mut Frame, transcript_area: Rect, theme: &Theme) {
 mod tests {
     use super::*;
 
-    /// Acceptance guard: `mouse` must never appear inside a [`Binding`] row
-    /// (key or action text) -- only in the freeform [`MOUSE_NOTE`] prose,
-    /// which this test does not touch. Scans the data directly (not a
-    /// rendered buffer) so it fails the instant a future "mouse: scroll"
-    /// row is added to [`GROUPS`], regardless of terminal size or wrapping.
+    /// No binding row may claim a MOUSE KEY, because Conway captures no
+    /// mouse events -- there is no such binding to document
+    /// (`EnableMouseCapture` stays off to preserve click-drag selection;
+    /// decision 01KYKDKYJEATSYXM7YS1C17HHA).
+    ///
+    /// V3 narrowed this guard. It used to forbid the word "mouse" in a
+    /// row's ACTION text too, on the reasoning that Conway never saw the
+    /// wheel at all. That turned out to be wrong: terminals implement
+    /// alternate scroll (DECSET 1007), which delivers wheel events as
+    /// `Up`/`Down` cursor keys while the alternate screen is active. So the
+    /// wheel really does drive a Conway binding, and the `Up`/`Down` row
+    /// says so. Forbidding that would suppress a true and useful fact --
+    /// the guard now protects only against inventing a mouse *key*.
     #[test]
-    fn no_binding_row_mentions_mouse() {
+    fn no_binding_row_claims_a_mouse_key() {
         for group in GROUPS {
             for binding in group.bindings {
                 assert!(
                     !binding.keys.to_lowercase().contains("mouse"),
-                    "group {:?}: binding key {:?} must not mention mouse -- \
-                     Conway does not capture the mouse, so this would document a \
-                     binding that doesn't exist",
+                    "group {:?}: binding key {:?} must not name a mouse key -- \
+                     Conway captures no mouse events, so this would document a \
+                     binding that does not exist",
                     group.title,
                     binding.keys
-                );
-                assert!(
-                    !binding.action.to_lowercase().contains("mouse"),
-                    "group {:?}: binding action {:?} must not mention mouse",
-                    group.title,
-                    binding.action
                 );
             }
         }
     }
-
-    /// Sanity: the mouse note itself DOES exist and DOES mention it -- this
-    /// test would be vacuous if a refactor accidentally dropped the note
-    /// (and the guard above would then be trivially satisfied for the wrong
-    /// reason).
     #[test]
     fn mouse_note_exists_and_mentions_mouse() {
         assert!(MOUSE_NOTE.to_lowercase().contains("mouse"));

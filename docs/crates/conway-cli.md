@@ -327,7 +327,7 @@ fields = ["mode", "model", "ctx", "tokens", "git", "activity", "hint"]
 | `ctx` | `ctx 42%` when the focused model's max context is known, else `ctx 12.3k` (raw tokens, compact-suffixed; capped at `ctx 100%`) | cumulative `Event::ContextSegmentAdded { tokens_est }` ÷ the focused model's `max_context_tokens` from `[models.metadata_path]` |
 | `tokens` | `<total> tok (<n%> cached)` when cache data is present, else `<total> tok` | cumulative `Event::TurnFinished { usage }` (`Usage`'s input + output + both cache dimensions + reasoning); `n%` = `cache_read / (input + cache_read + cache_write)`, omitted when the denominator is 0 or `cache_read` is 0 |
 | `activity` | T2's working indicator: `⠋ thinking… 12s · +45 tok` while active, `idle` while idle (spinner + phrase pulse via `Theme::spinner_palette`; `+{n} tok` is session-deduped new-segment tokens added this turn) | `AppState::activity` + T2 counters |
-| `hint` | a persistent keybinding/affordance hint, dim: `Enter submit · Ctrl-E expand · ↑↓ history · PgUp/PgDn · /help · /thinking · /timestamps · /agents to {view\|hide}`, plus `focused: <id>` when the transcript is focused on a non-root agent | static + `AppState::agent_view_open`/`focused_agent` |
+| `hint` | a persistent keybinding/affordance hint, dim: `Enter submit · Ctrl-E expand · Ctrl-P/N history · PgUp/PgDn · /help · /thinking · /timestamps · /agents to {view\|hide}`, plus `focused: <id>` when the transcript is focused on a non-root agent | static + `AppState::agent_view_open`/`focused_agent` |
 | `git` | the current branch (e.g. `main`); omitted when not a git repo, git is absent, or the command fails | one-shot `git rev-parse --abbrev-ref HEAD` at startup, no polling |
 | `cwd` | the session's working directory; omitted when unset | `Cli --cwd` or `config.cwd` |
 
@@ -586,15 +586,23 @@ guarantee is untouched — `entry_lines` never emits either one, so
 selecting and copying the transcript still yields exactly the conversation
 text.
 
-**Mouse-wheel scrolling is deliberately not implemented.** Enabling
-crossterm mouse capture would let the wheel drive this pane, but a
-captured terminal routes every mouse event to the application instead of
-the emulator — which disables the terminal's own click-drag text
-selection, the very mechanism the clean-copy guarantee exists to protect.
-Your terminal's native scrollback still works as it always has; it simply
-scrolls the emulator's buffer rather than Conway's, which is why it cannot
-drive the indicator above. `PageUp`/`PageDown` plus `End`/`Home` are the
-in-app equivalents, and they cost you nothing.
+**Mouse capture stays off, but the wheel still scrolls.** Conway does not
+enable crossterm mouse capture: a captured terminal routes every mouse
+event to the application instead of the emulator, which disables the
+terminal's own click-drag text selection — the mechanism the clean-copy
+guarantee exists to protect.
+
+That does not mean the wheel is inert. Terminals implement *alternate
+scroll* (DECSET 1007): while the alternate screen is active, they
+translate wheel events into `Up`/`Down` cursor-key presses. So a
+two-finger scroll reaches Conway as arrow keys, and bare `Up`/`Down`
+scroll the transcript one line — which is what makes the wheel work.
+
+This is why input history lives on `Ctrl-P`/`Ctrl-N` rather than on the
+arrows. Conway cannot tell a wheel-driven arrow from a typed one (the
+information that would distinguish them is exactly what mouse capture
+would provide), so the arrows go to the more frequent interaction.
+`PageUp`/`PageDown` scroll a full page; `Home`/`End` jump to top/tail.
 
 New theme slots: `header` (reversed) and `scroll_footer` (dim), both
 configurable under `[tui.theme]`.

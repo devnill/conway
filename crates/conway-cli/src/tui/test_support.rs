@@ -94,6 +94,10 @@ pub(crate) fn press(state: &mut AppState, event: KeyEvent, area: Rect) -> Action
     match &action {
         Action::ScrollUp => apply_page_scroll(state, area, true),
         Action::ScrollDown => apply_page_scroll(state, area, false),
+        // V3: mirrors `app.rs`'s `line_scroll` -- one line is just a
+        // smaller page, sharing the same clamp/follow-tail rules.
+        Action::ScrollLineUp => apply_line_scroll(state, area, true),
+        Action::ScrollLineDown => apply_line_scroll(state, area, false),
         Action::JumpToTop => {
             let max = view::max_scroll(state, area);
             state.jump_to_top(max);
@@ -127,6 +131,18 @@ pub(crate) fn press_key(state: &mut AppState, code: KeyCode) -> Action {
 /// `App::page_scroll`'s body, verbatim -- factored out so [`press`] cannot
 /// silently drift out of sync with what the app loop actually does for a
 /// `PageUp`/`PageDown` keypress.
+/// V3: the one-line counterpart of [`apply_page_scroll`], mirroring
+/// `app.rs`'s `line_scroll` so a `press`-driven test exercises the same
+/// state mutation the live loop performs.
+fn apply_line_scroll(state: &mut AppState, area: Rect, up: bool) {
+    let max = view::max_scroll(state, area);
+    if up {
+        state.scroll_page_up(1, max);
+    } else {
+        state.scroll_page_down(1, max);
+    }
+}
+
 fn apply_page_scroll(state: &mut AppState, area: Rect, page_up: bool) {
     let transcript_area = view::transcript_area(state, area);
     let max = view::max_scroll(state, area);
