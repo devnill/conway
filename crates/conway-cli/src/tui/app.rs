@@ -180,6 +180,42 @@ impl App {
         if let Some(path) = &history_path {
             state.history = super::history::load(path);
         }
+
+        // V2b: load persisted permission rules from both scopes, project
+        // first then global, and MERGE them.
+        //
+        // Merge rather than override: the two answer different questions.
+        // A global rule is "I always allow this, everywhere" (`read:*`);
+        // a project rule is "this checkout's build command is fine"
+        // (`bash:cargo test`). Having the project file silently discard a
+        // global grant would surprise an operator who set one deliberately,
+        // and the union is still bounded by the metacharacter gate, which
+        // applies to every rule regardless of where it came from.
+        //
+        // Every failure here is silent and narrowing: a missing file is
+        // normal, and `parse_rules` already fails closed on a corrupt one
+        // (returning no rules rather than erroring). Deliberately NOT
+        // surfaced as a startup error — a broken rules file should cost
+        // extra prompting, never a refusal to start.
+        let permission_paths = conway::config::discovery::permission_file_paths(
+            cli.cwd.as_deref().unwrap_or(&conway.config().cwd),
+            &std::env::vars().collect::<std::collections::HashMap<_, _>>(),
+        );
+        let root_agent = state.root_agent();
+        for path in &permission_paths {
+            let Ok(contents) = std::fs::read_to_string(path) else {
+                continue;
+            };
+            for rule in conway::permission_pattern::parse_rules(&contents) {
+                conway.grant_permission_pattern(
+                    rule,
+                    conway::PermissionScope::Session,
+                    root_agent,
+                );
+            }
+        }
+        state.permission_mode = conway.permission_mode();
+        state.permission_paths = permission_paths;
         // T3: cwd display -- prefer the CLI `--cwd` override, fall back to
         // the config's `cwd`. Both are `PathBuf`; render the display string
         // via `display()` (lossy for non-UTF8).
@@ -438,6 +474,55 @@ impl App {
                                 Action::PermissionDecision(decision) => {
                                     self.state.resolve_current_prompt(decision);
                                 }
+                                // V2b: install the grant, persist it
+                                // best-effort, then resolve the pending
+                                // prompt as an allow-once. The grant covers
+                                // FUTURE matching calls; this one is allowed
+                                // explicitly rather than relying on the
+                                // pattern to re-authorize it, so the
+                                // operator's decision takes effect even if
+                                // installation somehow did not.
+                                // V2b: the broker is the authority; the
+                                // AppState copy is a display mirror. Both
+                                // are written here, together, so the status
+                                // line can never disagree with what
+                                // actually gates calls.
+                                Action::CyclePermissionMode => {
+                                    let next = match self.conway.permission_mode() {
+                                        conway::PermissionMode::Prompt => {
+                                            conway::PermissionMode::Plan
+                                        }
+                                        conway::PermissionMode::Plan => {
+                                            conway::PermissionMode::AutoAllow
+                                        }
+                                        _ => conway::PermissionMode::Prompt,
+                                    };
+                                    self.conway.set_permission_mode(next);
+                                    self.state.permission_mode = next;
+                                }
+                                Action::RevokePermissionGrants => {
+                                    self.conway.revoke_permission_grants();
+                                    self.state.permission_grants.clear();
+                                }
+                                Action::GrantPermissionPattern(rule) => {
+                                    let agent = self.state.focused_agent;
+                                    self.conway.grant_permission_pattern(
+                                        rule.clone(),
+                                        conway::PermissionScope::Session,
+                                        agent,
+                                    );
+                                    // Persistence is best-effort by design:
+                                    // a write failure loses the rule's
+                                    // durability, never the operator's
+                                    // decision.
+                                    persist_permission_rule(
+                                        self.state.permission_paths.first(),
+                                        &rule,
+                                    );
+                                    self.state.resolve_current_prompt(
+                                        conway::PermissionDecision::AllowOnce,
+                                    );
+                                }
                                 Action::AskFate(fate) => {
                                     // B5: exactly one facade op per fate,
                                     // via the same Host seam `commands::execute`
@@ -605,6 +690,19 @@ impl App {
             let history = self.state.history.clone();
             let _ = tokio::task::spawn_blocking(move || super::history::save(&path, &history))
                 .await;
+        }
+        // V2b: refresh the grant mirror before `/settings` renders its
+        // review list. The broker is the authority; this copy exists so
+        // the menu builder stays a pure function of `AppState`, and it
+        // would be stale (or empty) if refreshed anywhere else.
+        if text.trim() == "/settings" {
+            self.state.permission_grants = self
+                .conway
+                .active_permission_patterns()
+                .iter()
+                .map(|rule| rule.describe())
+                .collect();
+            self.state.permission_mode = self.conway.permission_mode();
         }
         if text.trim() == "/agents" || text.starts_with("/agents ") {
             if text.trim() == "/agents" {
@@ -1013,6 +1111,52 @@ async fn run_modal_ask(handle: SessionHandle, question: String) -> ModalAskOutco
 /// runs on the blocking pool and its output is bounded by `Command::output`
 /// (which reads stdout into a buffer and waits for the child). C-04: no new
 /// deps -- `std::process::Command` only.
+/// V2b: appends `rule` to the permission file at `path`, best-effort.
+///
+/// Every failure path is a silent no-op. A rule that cannot be written
+/// still applies to the running session — losing durability is a far
+/// smaller harm than failing the operator's decision or, worse, tearing
+/// down the session over a filesystem problem.
+///
+/// Read-modify-write rather than append: the file is JSON, so a bare
+/// append would corrupt it. A corrupt or unreadable existing file is
+/// treated as empty, which means a broken file gets replaced by a valid
+/// one containing just this rule — the rules it could not parse were
+/// already authorizing nothing (`parse_rules` fails closed), so nothing is
+/// silently lost that was previously in force.
+///
+/// Writes via tmp-then-rename (`tui/history.rs`'s precedent) so a crash
+/// mid-write cannot leave a half-written rules file.
+fn persist_permission_rule(path: Option<&std::path::PathBuf>, rule: &conway::PatternRule) {
+    let Some(path) = path else {
+        return;
+    };
+    let mut file = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|c| serde_json::from_str::<conway::PermissionFile>(&c).ok())
+        .unwrap_or_default();
+
+    let wire = rule.to_wire();
+    if file.allow.contains(&wire) {
+        return;
+    }
+    file.allow.push(wire);
+
+    let Ok(serialized) = serde_json::to_string_pretty(&file) else {
+        return;
+    };
+    if let Some(dir) = path.parent() {
+        if std::fs::create_dir_all(dir).is_err() {
+            return;
+        }
+    }
+    let tmp = path.with_extension("json.tmp");
+    if std::fs::write(&tmp, serialized).is_err() {
+        return;
+    }
+    let _ = std::fs::rename(&tmp, path);
+}
+
 async fn read_git_branch() -> Option<String> {
     tokio::task::spawn_blocking(|| {
         let output = std::process::Command::new("git")

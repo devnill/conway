@@ -464,6 +464,16 @@ pub struct AppState {
     /// disagree the broker wins, and the visible consequence is a stale
     /// label -- which is why `/settings` writes both together.
     pub permission_mode: PermissionMode,
+    /// V2b: where a newly-granted pattern is persisted, in precedence
+    /// order (project first, then global). Resolved once at `App::new`.
+    /// Empty when neither scope resolves, in which case a grant applies
+    /// to the session but is not written anywhere.
+    pub permission_paths: Vec<std::path::PathBuf>,
+    /// V2b: human-readable descriptions of the active pattern grants, for
+    /// the settings review list. A mirror of the broker's
+    /// `active_patterns()`, refreshed when `/settings` opens — the broker
+    /// remains the authority.
+    pub permission_grants: Vec<String>,
     /// The transcript's scroll offset (wrapped lines from the top), only
     /// meaningful while `follow_tail` is `false` -- see that field's own
     /// doc. Mutated by [`Self::scroll_page_up`]/[`Self::scroll_page_down`]
@@ -872,6 +882,8 @@ impl AppState {
             cursor: 0,
             mode: Mode::Normal,
             permission_mode: PermissionMode::default(),
+            permission_paths: Vec::new(),
+            permission_grants: Vec::new(),
             scroll: 0,
             follow_tail: true,
             queued_prompts: std::collections::VecDeque::new(),
@@ -1600,6 +1612,23 @@ impl AppState {
     /// same session restores wherever the cursor/collapse state was left,
     /// the same way re-opening the `/agents` panel does not reset
     /// `agent_selected`.
+    /// V2b: the pattern grant Conway would offer for the pending
+    /// permission prompt, if any.
+    ///
+    /// `None` when no prompt is pending, or when the command carries shell
+    /// metacharacters — see `permission_pattern::suggested_rule`, which
+    /// declines to offer a grant the metacharacter gate would then refuse
+    /// to honor.
+    pub fn offered_permission_rule(&self) -> Option<conway::PatternRule> {
+        let Mode::AwaitingPermission(pending) = &self.mode else {
+            return None;
+        };
+        conway::permission_pattern::suggested_rule(
+            pending.request.tool.as_str(),
+            &pending.request.rendered,
+        )
+    }
+
     pub fn open_settings(&mut self) {
         self.settings_open = true;
         self.help_open = false;

@@ -294,6 +294,42 @@ mod tests {
     }
 }
 
+/// The pattern Conway OFFERS an operator for a given command (V2b).
+///
+/// Returns `None` when no sensible offer exists — an empty command, or one
+/// carrying shell metacharacters (offering a grant that the metacharacter
+/// gate would then refuse to honor would be actively confusing).
+///
+/// ## Why two tokens
+///
+/// The offer is deliberately narrow. `git status` is a useful grant;
+/// `git` alone would silently include `git push --force`, and an operator
+/// skimming a prompt could easily accept the latter believing they got the
+/// former. Two tokens captures the near-universal `<command> <subcommand>`
+/// shape (`git status`, `cargo test`, `npm run`) without reaching past it.
+///
+/// A single-token command (`ls`, `pwd`) offers just that token, since
+/// there is no subcommand to bound it with.
+///
+/// An operator who wants something broader can add it to
+/// `permissions.json` by hand, having thought about it. That asymmetry is
+/// the point: granting more should take deliberate effort, granting less
+/// should be the default. You can always grant again; you cannot
+/// un-authorize what already ran.
+pub fn suggested_rule(tool: &str, rendered: &str) -> Option<PatternRule> {
+    if contains_shell_metacharacters(rendered) {
+        return None;
+    }
+    let tokens: Vec<&str> = rendered.split_whitespace().take(2).collect();
+    if tokens.is_empty() {
+        return None;
+    }
+    Some(PatternRule {
+        tool: tool.to_string(),
+        command_prefix: tokens.join(" "),
+    })
+}
+
 /// The on-disk shape of `.conway/permissions.json`.
 ///
 /// Deliberately a flat list of wire-form strings (`"bash:git status"`)
@@ -378,4 +414,34 @@ mod store_tests {
     fn a_missing_allow_key_is_an_empty_rule_set_not_an_error() {
         assert!(parse_rules("{}").is_empty());
     }
+    // ---- V2b: the offered rule ----
+
+    /// The offer is two tokens: enough for `<command> <subcommand>`, not
+    /// enough to silently include a sibling subcommand.
+    #[test]
+    fn the_suggested_rule_is_narrow_by_default() {
+        let rule = suggested_rule("bash", "git status --short").expect("offered");
+        assert_eq!(rule.command_prefix, "git status");
+
+        // Crucially: the offered grant does NOT cover a different
+        // subcommand. An operator accepting this prompt has not
+        // accidentally authorized `git push`.
+        assert!(rule.matches("bash", "git status --short"));
+        assert!(!rule.matches("bash", "git push --force"));
+    }
+
+    #[test]
+    fn a_single_token_command_offers_just_that_token() {
+        let rule = suggested_rule("bash", "pwd").expect("offered");
+        assert_eq!(rule.command_prefix, "pwd");
+    }
+
+    /// Offering a grant the metacharacter gate would then refuse to honor
+    /// would be confusing, so no offer is made at all.
+    #[test]
+    fn no_rule_is_offered_for_a_command_the_gate_would_reject() {
+        assert!(suggested_rule("bash", "git status && rm -rf /").is_none());
+        assert!(suggested_rule("bash", "").is_none());
+    }
+
 }

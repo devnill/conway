@@ -44,6 +44,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   persist to `.conway/permissions.json` (project-first, then global) as a
   human-readable list; a corrupt file **fails closed**, authorizing nothing.
 
+  The permission prompt offers `[p]` to grant a pattern, and states what
+  accepting would permit before you press it. The offered prefix is two
+  tokens (`git status`, not `git`) — `git` alone would silently include
+  `git push --force`. No offer is made for a command carrying shell
+  metacharacters, since the gate would refuse to honor it anyway. Rules
+  from the project and global files merge; new grants are written to the
+  project file so they can be reviewed in a diff. Switch modes, review
+  grants, and revoke them all from `/settings` (per-rule revocation is not
+  implemented yet).
+
 ### Changed
 
 - **TUI: `/thinking` and `/timestamps` are replaced by a single `/settings`

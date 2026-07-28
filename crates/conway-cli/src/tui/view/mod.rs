@@ -297,10 +297,14 @@ pub(crate) fn max_scroll(state: &AppState, area: Rect) -> u16 {
 
 /// Rows the permission overlay's footer ALWAYS reserves, regardless of how
 /// long the command being displayed is: the tool/category line, the agent
-/// path line, and the `[y]/[a]/[n]/[Esc]` decision-key hint. This is the
+/// path line, the `[y]/[a]/[p]/[n]/[Esc]` decision-key hint, and (V2b) the
+/// one-line statement of what `[p]` would grant. Four rows, not three: the
+/// offer line must be reserved even when no pattern is on offer, because a
+/// footer that changes height as the operator scrolls would shift the
+/// command text under them mid-read. This is the
 /// load-bearing invariant behind [`draw_permission_overlay`]'s whole
 /// rework -- see that function's own doc.
-const PERMISSION_FOOTER_ROWS: u16 = 3;
+const PERMISSION_FOOTER_ROWS: u16 = 4;
 
 /// The permission prompt: bottom-anchored, content-sized, capped, drawn over
 /// the transcript via the shared [`modal`] primitive (V1) -- unmistakably
@@ -390,17 +394,37 @@ fn draw_permission_overlay(
     // the user actually needs to act on the prompt -- it goes FIRST here,
     // ahead of the purely informational tool/category and agent-path lines,
     // so even a 1-row footer still shows it.
-    let hint = if body_max_scroll > 0 {
-        "[y] allow once  [a] allow always  [n] deny  [Esc] deny with feedback  \
-         [PageUp/PageDown] scroll command"
+    // V2b: `[p]` appears only when a pattern grant is actually on offer --
+    // `suggested_rule` declines for a command carrying shell
+    // metacharacters, and advertising a key that would do nothing is worse
+    // than omitting it.
+    let offered = conway::permission_pattern::suggested_rule(req.tool.as_str(), &req.rendered);
+    // The decision keys must all stay legible on a narrow terminal --
+    // losing `[Esc] deny with feedback` off the right edge would hide a
+    // decision the operator may want. So the keys go on their own line and
+    // the scroll hint, which is an affordance rather than a decision, goes
+    // on the offer line's tail when there is room.
+    let hint = if offered.is_some() {
+        "[y] once  [a] always  [p] pattern  [n] deny  [Esc] deny w/ feedback"
     } else {
         "[y] allow once  [a] allow always  [n] deny  [Esc] deny with feedback"
     };
-    let footer_lines = vec![
-        Line::from(hint),
-        Line::from(format!("tool: {}  category: {:?}", req.tool, req.category)),
-        Line::from(format!("agent path: {agent_path}")),
-    ];
+    let mut footer_lines = vec![Line::from(hint)];
+    if body_max_scroll > 0 {
+        footer_lines.push(Line::from("  [PageUp/PageDown] scroll command"));
+    }
+    // The offered grant's BREADTH, stated in words, before the operator
+    // presses anything. This is the whole premise of choosing prefixes
+    // over regex: a grant you can evaluate by reading it. Placed directly
+    // under the key hint so it is not separated from the `[p]` it explains.
+    if let Some(rule) = &offered {
+        footer_lines.push(Line::from(format!("  [p] grants: {}", rule.describe())));
+    }
+    footer_lines.push(Line::from(format!(
+        "tool: {}  category: {:?}",
+        req.tool, req.category
+    )));
+    footer_lines.push(Line::from(format!("agent path: {agent_path}")));
     let footer = Paragraph::new(footer_lines).wrap(Wrap { trim: true });
     frame.render_widget(footer, frame_areas.footer_area);
 }
@@ -802,10 +826,21 @@ mod tests {
 
         let text = render_text(&state, 80, 24);
         assert!(text.contains("bash: ls"));
-        assert!(text.contains("[y] allow once"));
-        assert!(text.contains("[a] allow always"));
-        assert!(text.contains("[n] deny"));
-        assert!(text.contains("[Esc] deny with feedback"));
+        // V2b shortened the key labels so every decision -- including
+        // deny-with-feedback -- stays legible once `[p]` joined the row.
+        assert!(text.contains("[y]"), "{text}");
+        assert!(text.contains("[a]"), "{text}");
+        assert!(text.contains("[n] deny"), "{text}");
+        assert!(
+            text.contains("[Esc] deny w/ feedback"),
+            "the deny-with-feedback key must not be pushed off the edge: {text}"
+        );
+        // The offered grant is named, and its breadth is stated in words.
+        assert!(text.contains("[p]"), "{text}");
+        assert!(
+            text.contains("commands starting with"),
+            "the prompt must state what [p] would grant BEFORE it is pressed: {text}"
+        );
 
         let action = input::handle_key(
             &mut state,
@@ -1505,4 +1540,51 @@ mod tests {
 
         assert_eq!(state.modal_scroll, 0);
     }
+    /// V2b, end-to-end through the WIRED path: a command carrying shell
+    /// metacharacters gets no pattern offer at all.
+    ///
+    /// The engine-level guarantee (a chained command is never authorized
+    /// by a prefix grant) is proven in `conway-runtime`'s broker tests.
+    /// This asserts the UI half: Conway does not even OFFER a grant it
+    /// would then refuse to honor, because an offer that silently does
+    /// nothing is worse than no offer.
+    #[test]
+    fn no_pattern_grant_is_offered_for_a_chained_command() {
+        let state = awaiting_permission("git status && rm -rf /");
+        let text = render_text(&state, 100, 24);
+
+        assert!(
+            !text.contains("[p]"),
+            "a chained command must not be offered a pattern grant: {text}"
+        );
+        assert!(
+            text.contains("[y]") && text.contains("[n] deny"),
+            "the ordinary decisions must still be available: {text}"
+        );
+        assert!(
+            state.offered_permission_rule().is_none(),
+            "and the state helper must agree with what was rendered"
+        );
+    }
+
+    /// The narrow-by-default offer, verified where the operator sees it:
+    /// approving `git status --short` must not silently authorize
+    /// `git push`.
+    #[test]
+    fn the_offered_grant_is_the_narrow_two_token_prefix() {
+        let state = awaiting_permission("git status --short");
+
+        let rule = state
+            .offered_permission_rule()
+            .expect("a clean command gets an offer");
+        assert_eq!(rule.command_prefix, "git status");
+        assert!(!rule.matches("bash", "git push --force"));
+
+        let text = render_text(&state, 100, 24);
+        assert!(
+            text.contains("git status"),
+            "the prompt names the prefix it would grant: {text}"
+        );
+    }
+
 }

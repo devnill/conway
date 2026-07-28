@@ -87,6 +87,10 @@ use crate::tui::state::AppState;
 pub(crate) const LEAF_SHOW_REASONING: &str = "show_reasoning";
 pub(crate) const LEAF_SHOW_TIMESTAMPS: &str = "show_timestamps";
 pub(crate) const LEAF_TOOL_PREVIEW_LINES: &str = "tool_preview_lines";
+/// V2b: cycles `prompt` -> `plan` -> `AUTO-ALLOW` -> `prompt`.
+pub(crate) const LEAF_PERMISSION_MODE: &str = "permission_mode";
+/// V2b: drops every pattern grant and cached allow-always.
+pub(crate) const LEAF_REVOKE_GRANTS: &str = "revoke_grants";
 
 /// The two top-level group labels (see this module's own doc, "Grouping").
 /// `pub(crate)` for the same reason the leaf ids are -- `input.rs` and this
@@ -94,6 +98,7 @@ pub(crate) const LEAF_TOOL_PREVIEW_LINES: &str = "tool_preview_lines";
 /// AppState::settings_collapsed_groups`] is keyed by them.
 const DISPLAY_GROUP: &str = "display";
 const TOOL_OUTPUT_GROUP: &str = "tool output";
+const PERMISSIONS_GROUP: &str = "permissions";
 
 /// The footer's session-only disclosure (this item's decision record: no
 /// `settings.json` writer exists, and inventing one raises a "which layer"
@@ -135,6 +140,31 @@ pub(crate) fn build_tree(state: &AppState) -> MenuState {
                 LEAF_TOOL_PREVIEW_LINES,
             )],
         ),
+        // V2b. The grant list is rendered as non-selectable label text
+        // rather than as leaves: per-rule revocation is not implemented,
+        // so a selectable row that did nothing on Enter would be a worse
+        // lie than a plainly inert one. Revoke-all is the shipped floor.
+        group_node(PERMISSIONS_GROUP, state, {
+            let mut rows = vec![MenuNode::leaf(
+                format!(
+                    "mode -- {} (Enter to cycle)",
+                    state.permission_mode.label()
+                ),
+                LEAF_PERMISSION_MODE,
+            )];
+            if state.permission_grants.is_empty() {
+                rows.push(MenuNode::leaf("no active grants".to_string(), ""));
+            } else {
+                for grant in &state.permission_grants {
+                    rows.push(MenuNode::leaf(format!("granted: {grant}"), ""));
+                }
+                rows.push(MenuNode::leaf(
+                    "revoke all grants (Enter)".to_string(),
+                    LEAF_REVOKE_GRANTS,
+                ));
+            }
+            rows
+        }),
     ];
     let mut menu = MenuState::new(roots);
     menu.set_selected(state.settings_selected);
@@ -332,4 +362,51 @@ mod tests {
                 .unwrap_or_else(|e| panic!("panicked/errored at {w}x{h}: {e}"));
         }
     }
+    /// V2b: the permissions group exposes the mode and, once grants exist,
+    /// a review list plus revoke-all.
+    #[test]
+    fn the_permissions_group_shows_mode_and_grants() {
+        let mut state = AppState::new(AgentId::new());
+        state.open_settings();
+
+        let text = plain_rows(&state);
+        assert!(text.contains("permissions"), "{text}");
+        assert!(text.contains("mode -- prompt"), "{text}");
+        assert!(
+            text.contains("no active grants"),
+            "an empty grant list says so rather than rendering nothing: {text}"
+        );
+
+        state.permission_grants =
+            vec!["`bash` commands starting with `git status`".to_string()];
+        let text = plain_rows(&state);
+        assert!(text.contains("granted: `bash` commands starting with `git status`"), "{text}");
+        assert!(
+            text.contains("revoke all grants"),
+            "revoke-all appears only once there is something to revoke: {text}"
+        );
+    }
+
+    /// The mode label in the menu tracks `AppState`, so it cannot show a
+    /// stale value after a cycle.
+    #[test]
+    fn the_mode_row_reflects_the_current_permission_mode() {
+        let mut state = AppState::new(AgentId::new());
+        state.permission_mode = conway::PermissionMode::AutoAllow;
+        assert!(plain_rows(&state).contains("mode -- AUTO-ALLOW"));
+
+        state.permission_mode = conway::PermissionMode::Plan;
+        assert!(plain_rows(&state).contains("mode -- plan"));
+    }
+
+    /// Helper: the menu's visible row labels as one string.
+    fn plain_rows(state: &AppState) -> String {
+        build_tree(state)
+            .rows()
+            .iter()
+            .map(|r| r.label.clone())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
 }
