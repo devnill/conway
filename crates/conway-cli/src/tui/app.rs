@@ -496,8 +496,18 @@ impl App {
                                 }
                                 Action::ScrollUp => self.page_scroll(terminal, true)?,
                                 Action::ScrollDown => self.page_scroll(terminal, false)?,
-                                Action::ScrollLineUp => self.line_scroll(terminal, true)?,
-                                Action::ScrollLineDown => self.line_scroll(terminal, false)?,
+                                // T6: `End`/`Home` jump straight to the
+                                // transcript's tail/top. `JumpToTail` needs
+                                // no terminal-size-derived input at all
+                                // (`AppState::jump_to_tail` just re-engages
+                                // `follow_tail`); `JumpToTop` mirrors
+                                // `page_scroll`/`line_scroll`'s own
+                                // terminal-size lookup for `max_scroll`
+                                // (kept for call-site symmetry -- see
+                                // `AppState::jump_to_top`'s own doc on why
+                                // the value itself goes unused).
+                                Action::JumpToTail => self.state.jump_to_tail(),
+                                Action::JumpToTop => self.jump_to_top(terminal)?,
                                 Action::FocusAgent(agent) => {
                                     // See `Self::try_focus_agent`'s own doc
                                     // for why this is fallible-but-matched
@@ -827,28 +837,21 @@ impl App {
         Ok(())
     }
 
-    /// Bare arrow `Up`/`Down` (01KYASZPVVRCHGTEAN9XS5C6EC): steps the
-    /// transcript by exactly one line, unlike [`Self::page_scroll`]'s
-    /// viewport-height jump -- in alt-screen the terminal reports
-    /// touchpad/wheel scroll as arrow keys, so a light nudge must not jump a
-    /// whole page. Delegates the clamp/follow-tail math to
-    /// `AppState::scroll_line_up`/`scroll_line_down`, mirroring how
-    /// `page_scroll` delegates to the page-sized pair -- this method's only
-    /// job is the terminal-size-derived `max_scroll` those pure methods need
-    /// but don't have access to themselves.
-    fn line_scroll<B: Backend>(
-        &mut self,
-        terminal: &Terminal<B>,
-        line_up: bool,
-    ) -> conway::Result<()> {
+    /// `Home` (T6): jumps the transcript straight to its own top. Delegates
+    /// the actual mutation to `AppState::jump_to_top`, mirroring how
+    /// `page_scroll` delegates to `scroll_page_up`/`scroll_page_down` --
+    /// this method's only job is the terminal-size-derived `max_scroll`
+    /// that pure method's signature takes (for call-site symmetry with the
+    /// page-scroll pair; see `AppState::jump_to_top`'s own doc on why the
+    /// value itself goes unused). `End`'s `Action::JumpToTail` needs no
+    /// terminal size at all, so it calls `AppState::jump_to_tail` directly
+    /// from the action-dispatch match instead of routing through a method
+    /// here.
+    fn jump_to_top<B: Backend>(&mut self, terminal: &Terminal<B>) -> conway::Result<()> {
         let size = terminal.size().map_err(conway::ConwayError::Io)?;
         let area = ratatui::layout::Rect::new(0, 0, size.width, size.height);
         let max = view::max_scroll(&self.state, area);
-        if line_up {
-            self.state.scroll_line_up(max);
-        } else {
-            self.state.scroll_line_down(max);
-        }
+        self.state.jump_to_top(max);
         Ok(())
     }
 

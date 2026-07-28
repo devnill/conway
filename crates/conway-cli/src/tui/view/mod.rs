@@ -15,12 +15,18 @@
 //! Submodules are a directory (not one flat file) so each concern --
 //! transcript, input box, status line, palette, agent panel -- stays a
 //! small, independently testable pure-rendering unit (module notes' own
-//! ask: "keep rendering functions small and testable").
+//! ask: "keep rendering functions small and testable"). T6 adds
+//! `header.rs`: a sticky context header reserved above the transcript only
+//! while it overflows, plus a floating "jump to bottom" footer pill drawn
+//! over the transcript's own bottom row while scrolled up -- see that
+//! module's own doc for both, and [`layout`]'s doc for how the header's
+//! reserved row is decided without a layout feedback loop.
 
 // `pub(crate)` for item A3: `tui::commands`'s `/tree` snapshot renderer
 // reuses `agents::recipe_parts`/`agents::ancestor_depth` so the hidden
 // alias can never drift from what the panel draws.
 pub(crate) mod agents;
+mod header;
 mod input_box;
 pub mod palette;
 mod status;
@@ -44,6 +50,24 @@ pub fn draw(state: &AppState, frame: &mut Frame, theme: &Theme) {
     let areas = layout(state, area);
 
     transcript::draw(frame, areas.transcript, state, theme);
+
+    // T6: the sticky header, reserved only while the transcript overflows
+    // (`layout`'s own doc), and the floating "jump to bottom" footer,
+    // drawn OVER the transcript's own bottom row while scrolled up. Both
+    // are drawn as their own separate widgets, never folded into
+    // `transcript::draw`'s `Paragraph` -- see `header.rs`'s module doc for
+    // the clean-copy rationale. The footer's live `max_scroll` is
+    // deliberately recomputed here (not threaded out of `transcript::draw`,
+    // which computes its own internally) the same way `app.rs`'s
+    // `page_scroll`/`jump_to_top` recompute it fresh outside any render
+    // pass -- `max_scroll` is cheap and always derived from the SAME
+    // `Paragraph`/`Wrap` parameters `transcript::draw` just rendered with,
+    // so it can never disagree with what is actually on screen.
+    if let Some(header_area) = areas.header {
+        header::draw(frame, header_area, state, theme);
+    }
+    let live_max_scroll = max_scroll(state, area);
+    header::draw_scroll_footer(frame, areas.transcript, state, theme, live_max_scroll);
 
     if let Some(agents_area) = areas.agents {
         agents::draw(frame, agents_area, state, theme);
@@ -87,6 +111,10 @@ pub fn draw(state: &AppState, frame: &mut Frame, theme: &Theme) {
 /// of sync with what is actually on screen.
 struct Areas {
     transcript: Rect,
+    /// T6: the sticky context header's row, reserved above the transcript
+    /// only while the transcript overflows. `None` when the content fits,
+    /// so a short conversation never pays a row for it.
+    header: Option<Rect>,
     agents: Option<Rect>,
     input: Rect,
     status: Rect,
@@ -101,7 +129,38 @@ fn layout(state: &AppState, area: Rect) -> Areas {
         && !matches!(state.mode, Mode::AskModal(_) | Mode::IntentConfirm(_))
         && area.height > INPUT_HEIGHT + STATUS_HEIGHT + 3;
 
-    let mut constraints = vec![Constraint::Min(0)];
+    // T6: reserve the header row only while the transcript actually
+    // overflows. Deciding that needs a wrapped-line count, which needs a
+    // transcript height, which is what this function computes -- a
+    // feedback loop, and calling `max_scroll` here would recurse back into
+    // `layout` without terminating.
+    //
+    // Broken by measuring against the transcript height WITHOUT the header
+    // reserved (`unreserved_transcript_height`): a fixed point that cannot
+    // depend on its own output. The one-row disagreement this admits is in
+    // the safe direction -- content that overflows by exactly one row shows
+    // the header and then fits within the remaining rows, so the header
+    // appears a row "early" rather than flickering on and off as the
+    // reserved row changes the answer. `max_scroll` (and therefore the
+    // scroll clamp and the footer's count) is always computed from the
+    // FINAL, header-reserved area, so nothing downstream is affected.
+    let chrome = INPUT_HEIGHT
+        + STATUS_HEIGHT
+        + if show_agents {
+            AGENT_PANEL_HEIGHT.min(area.height / 3)
+        } else {
+            0
+        };
+    let unreserved_transcript_height = area.height.saturating_sub(chrome);
+    let show_header = unreserved_transcript_height > 0
+        && transcript::wrapped_line_count(state, area.width)
+            > unreserved_transcript_height as usize;
+
+    let mut constraints = Vec::new();
+    if show_header {
+        constraints.push(Constraint::Length(header::HEADER_HEIGHT));
+    }
+    constraints.push(Constraint::Min(0));
     if show_agents {
         constraints.push(Constraint::Length(AGENT_PANEL_HEIGHT.min(area.height / 3)));
     }
@@ -114,6 +173,13 @@ fn layout(state: &AppState, area: Rect) -> Areas {
         .split(area);
 
     let mut next = 0;
+    let header = if show_header {
+        let h = rows[next];
+        next += 1;
+        Some(h)
+    } else {
+        None
+    };
     let transcript = rows[next];
     next += 1;
     let agents = if show_agents {
@@ -129,6 +195,7 @@ fn layout(state: &AppState, area: Rect) -> Areas {
 
     Areas {
         transcript,
+        header,
         agents,
         input,
         status,

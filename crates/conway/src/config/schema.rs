@@ -501,6 +501,12 @@ pub struct ThemeConfig {
     /// cycle through `spinner`/`spinner_b`/`spinner_c` on each 125ms tick.
     pub spinner_b: Option<ThemeStyleConfig>,
     pub spinner_c: Option<ThemeStyleConfig>,
+    /// T6: the sticky context header shown above the transcript while it
+    /// overflows the viewport (`session · focused agent · model · ctx%`).
+    pub header: Option<ThemeStyleConfig>,
+    /// T6: the floating "jump to bottom" footer pill shown over the bottom
+    /// row of the transcript while scrolled up (`!follow_tail`).
+    pub scroll_footer: Option<ThemeStyleConfig>,
 }
 
 /// One `[tui.theme.<name>]` entry: foreground/background color names plus a

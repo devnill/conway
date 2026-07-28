@@ -151,6 +151,17 @@ pub struct Theme {
     pub spinner_b: Style,
     /// Third pulse-palette color (T2). Default: `Color::White`.
     pub spinner_c: Style,
+    /// T6: the sticky context header shown above the transcript pane while
+    /// it overflows the viewport (`session · focused agent · model ·
+    /// ctx%`). Default: `Modifier::REVERSED` (no fg) -- a persistent bar,
+    /// matching how [`Theme::status_mode`] treats the OTHER fixed,
+    /// always-legible affordance on screen.
+    pub header: Style,
+    /// T6: the floating "jump to bottom" footer pill drawn over the bottom
+    /// row of the transcript while scrolled up (`!follow_tail`). Default:
+    /// `Modifier::DIM` (no fg) -- a quiet annotation, matching
+    /// [`Theme::status_dim`]'s treatment of a similar dim affordance hint.
+    pub scroll_footer: Style,
 }
 
 impl Default for Theme {
@@ -191,6 +202,8 @@ impl Default for Theme {
             spinner: Style::default().fg(Color::Yellow),
             spinner_b: Style::default().fg(Color::LightYellow),
             spinner_c: Style::default().fg(Color::White),
+            header: Style::default().add_modifier(Modifier::REVERSED),
+            scroll_footer: Style::default().add_modifier(Modifier::DIM),
         }
     }
 }
@@ -238,6 +251,8 @@ impl Theme {
         theme.spinner = overlay(theme.spinner, config.spinner.as_ref());
         theme.spinner_b = overlay(theme.spinner_b, config.spinner_b.as_ref());
         theme.spinner_c = overlay(theme.spinner_c, config.spinner_c.as_ref());
+        theme.header = overlay(theme.header, config.header.as_ref());
+        theme.scroll_footer = overlay(theme.scroll_footer, config.scroll_footer.as_ref());
         theme
     }
 }
@@ -485,6 +500,47 @@ mod tests {
             t.reasoning,
             Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC)
         );
+    }
+
+    // ---- T6: sticky header + floating scroll footer ----
+
+    #[test]
+    fn default_header_is_reversed_no_fg() {
+        let t = Theme::default();
+        assert_eq!(t.header, Style::default().add_modifier(Modifier::REVERSED));
+    }
+
+    #[test]
+    fn default_scroll_footer_is_dim_no_fg() {
+        let t = Theme::default();
+        assert_eq!(t.scroll_footer, Style::default().add_modifier(Modifier::DIM));
+    }
+
+    #[test]
+    fn header_and_scroll_footer_overrides_apply_independently() {
+        let cfg = ThemeConfig {
+            header: Some(fg_only("cyan")),
+            ..Default::default()
+        };
+        let t = Theme::from_config(&cfg);
+        assert_eq!(
+            t.header,
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::REVERSED)
+        );
+        // Untouched slot keeps its default.
+        assert_eq!(t.scroll_footer, Style::default().add_modifier(Modifier::DIM));
+    }
+
+    #[test]
+    fn malformed_header_override_falls_back_to_default() {
+        let cfg = ThemeConfig {
+            header: Some(fg_only("not-a-color")),
+            ..Default::default()
+        };
+        let t = Theme::from_config(&cfg);
+        assert_eq!(t.header, Style::default().add_modifier(Modifier::REVERSED), "P-10: no panic");
     }
 
     // ---- from_config: empty config == default ----
@@ -796,6 +852,7 @@ mod tests {
             ("agents.rs", include_str!("agents.rs")),
             ("input_box.rs", include_str!("input_box.rs")),
             ("palette.rs", include_str!("palette.rs")),
+            ("header.rs", include_str!("header.rs")),
         ] {
             // `theme.rs` is allowed to contain the needle (the defaults);
             // assert it is the ONLY file that does.
