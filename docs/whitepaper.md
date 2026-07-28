@@ -1,6 +1,6 @@
-# conway
+# Conway
 
-*The case for conway: what it is, why it's shaped this way, and what it
+*The case for Conway: what it is, why it's shaped this way, and what it
 buys you.*
 
 ---
@@ -30,14 +30,14 @@ box: a request fails and you can't tell which model served it, why it was
 chosen, or why it broke. "Subagents" are one blurry feature with a
 partial-inheritance knob whose semantics nobody would call a primitive.
 
-conway's bet is that these are the same problem, and that context is the
+Conway's bet is that these are the same problem, and that context is the
 scarce resource a harness should be making visible and steerable.
 
 ---
 
-## 2. What conway is
+## 2. What Conway is
 
-conway is a Rust agent harness for agentic coding. It runs LLM-driven agents
+Conway is a Rust agent harness for agentic coding. It runs LLM-driven agents
 that call tools, fork and spawn children, and route across multiple model
 backends, behind an explicit permission system, with durable session
 persistence and full context provenance.
@@ -58,7 +58,7 @@ same public API:
   codes, and fail-closed tool permissions (an empty allow-list denies every
   tool, since there is no operator to prompt).
 
-No capability is trapped in one surface. The TUI is where conway aims to
+No capability is trapped in one surface. The TUI is where Conway aims to
 lead and where the fastest dogfooding loop lives, but everything it does is
 reachable from the library facade, and one-shot is a first-class consumer of
 the same API.
@@ -76,7 +76,7 @@ Context is the scarce resource in agentic coding. Attention degrades well
 before the nominal window limit, and every record a child inherits is a
 record it has to spend against. Most harnesses answer this with a built-in
 compactor, a generic policy that decides what to forget on the user's
-behalf. conway refuses that. The harness's job is to make context visible
+behalf. Conway refuses that. The harness's job is to make context visible
 and steerable, and to spend it deliberately. The mechanisms will evolve;
 the objective is fixed.
 
@@ -91,7 +91,7 @@ children small.
 The primitives that move work and context between agents are borrowed from
 Unix, where a parent spawns a child with an environment it chose, the child
 does one focused thing, and its output is a stream that flows back to the
-caller. conway does the same with agents. Fork hands a child the parent's
+caller. Conway does the same with agents. Fork hands a child the parent's
 entire context; spawn hands it none. That's two sharp primitives instead of
 one overloaded "subagent" knob, and the operator or the model picks which
 one, controlling what a child receives and where its work product lands.
@@ -105,7 +105,7 @@ work with the harness.
 Underneath all of this is a bet on minimalism. Opinions in the core aren't
 free: each one is a behavior an extension has to accommodate or work
 around, and they accumulate until extending the harness costs more than it
-should. conway ships the primitives and leaves the policy to you. Opinions
+should. Conway ships the primitives and leaves the policy to you. Opinions
 arrive as plugins and hooks the operator opts into, rather than as behavior
 the core hardcodes.
 
@@ -148,7 +148,7 @@ inspect what its context contains and where each part came from. The
 its place in the hierarchy, so checking what a child knew is a normal thing
 to do rather than a debugging expedition.
 
-Out of the box conway doesn't touch your context: no records dropped, no
+Out of the box Conway doesn't touch your context: no records dropped, no
 system prompt rewritten, no tool set narrowed. A host that wants to
 instrument context behavior does it through the `ContextHook` port: mask
 records, rewrite the system prompt, narrow tools, react to overflow. The
@@ -174,12 +174,12 @@ A role is an alias the caller asks for, and what picks the role sits above
 the router: the calling code, an agent definition, or a plugin that spawns
 with a role it chose. Routing on what's in a request is policy you can write
 there. Whether a summarization turn should go somewhere cheaper than a
-refactor depends on your workload and your budget, so conway leaves that
+refactor depends on your workload and your budget, so Conway leaves that
 judgment to you and keeps the decision explainable once you've made it.
 
 The default is the point, not a limitation to apologize for. A harness that
 guesses where your turns should go is one you have to fight when it guesses
-wrong. conway would rather do the predictable thing and give you the
+wrong. Conway would rather do the predictable thing and give you the
 controls, and the controls keep growing: expanding the API's reach over
 internals is ongoing work, so more of what the core does today becomes
 something you can drive yourself.
@@ -203,7 +203,7 @@ and then refuses, so you never get a quietly bad result. A caller-chosen
 session id that collides gets an error pointing you at `--resume`, not a
 silent overwrite. Prompt-cache reuse is never correctness-bearing.
 
-conway also errs hard toward being unopinionated. Behaviors another harness
+Conway also errs hard toward being unopinionated. Behaviors another harness
 might bake in, like repeated-step detection, automatic context compaction,
 or tool-set narrowing, belong in plugins and hooks the operator opts into.
 
@@ -233,7 +233,7 @@ workflow, and the gap widens the longer you use it.
 
 Compaction is the obvious example. Other harnesses ship a built-in
 compactor, a generic policy that decides what to forget on your behalf.
-conway has no compaction feature. When a context needs condensing, you write
+Conway has no compaction feature. When a context needs condensing, you write
 that policy yourself, in a plugin you control.
 
 The harness's responsibility ends at the permission gate. Sandboxing,
@@ -340,8 +340,8 @@ adapter as that protocol matures. These won't:
 7. **Predictability over cleverness.** Predictable failure over silent
    truncation, infinite loops, or surprising cost.
 
-conway is licensed **AGPL-3.0-only**. Free to distribute and modify as long
-as source is provided; running a modified conway as a network service
+Conway is licensed **AGPL-3.0-only**. Free to distribute and modify as long
+as source is provided; running a modified Conway as a network service
 requires making the modified source available to its users. That's a
-deliberate choice for an agent harness, and it means conway isn't meant to
+deliberate choice for an agent harness, and it means Conway isn't meant to
 be a permissively-licensed library dependency inside closed-source software.

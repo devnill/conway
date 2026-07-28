@@ -244,6 +244,38 @@ since a dropped or malformed signature invalidates the request. This is
 wire-layer plumbing, not policy — whether/how much a model reasons is a
 routing/config decision, not something the harness imposes.
 
+### 3.8 The extension model
+
+The same shape recurs at every extension point: `conway-core` defines a
+port, the core ships mechanism behind it, and the policy is the consumer's
+to write.
+
+- **Tools** (§3.4) are plugins. The filesystem, shell, subagent, and report
+  tools implement the same `Plugin`/`Tool` traits a third party would, so
+  there is nothing a built-in can do that a third-party plugin cannot.
+- **Permissions** (§3.4) are a `PermissionGate` the consumer supplies.
+  conway ships an allow-list, a deny-all, and an interactive gate, and
+  privileges none of them.
+- **Context curation** (§3.5) is a `ContextHook`. None is registered by
+  default and there is no compaction anywhere in the harness, so a consumer
+  that wants condensing, masking, or tool narrowing writes that policy
+  itself.
+- **Routing** (§3.3) resolves roles; selecting the role belongs to the
+  caller, which is where content-aware policy lives.
+
+`conway-core` is deliberately small and slow-moving under strict semver
+discipline (§2), because it is the surface third-party plugins depend on.
+Keeping opinions out of it is what keeps that surface stable: a policy baked
+into the core becomes a behavior every extension has to accommodate or work
+around, and those accumulate.
+
+The reach of these ports is not uniform yet, and §3.3 records one current
+limit: a `ContextHook` can read the routing outcome but cannot steer it.
+Widening port surfaces where they are narrower than the model implies is
+ongoing work, and the tool-facing types are serialization-ready, which
+leaves cheaper plugin hosts (subprocess, WASM) as a layered addition rather
+than a redesign.
+
 ## 4. Data flow of one turn
 
 ```
