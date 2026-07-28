@@ -518,6 +518,11 @@ pub struct ThemeConfig {
     /// T6: the floating "jump to bottom" footer pill shown over the bottom
     /// row of the transcript while scrolled up (`!follow_tail`).
     pub scroll_footer: Option<ThemeStyleConfig>,
+    /// T7: the `/help` keybinding overlay's block border.
+    pub help_border: Option<ThemeStyleConfig>,
+    /// T7: the key/chord column in the `/help` keybinding overlay's rows
+    /// (e.g. `Ctrl-E`, `PageUp/PageDown`).
+    pub help_key: Option<ThemeStyleConfig>,
 }
 
 /// One `[tui.theme.<name>]` entry: foreground/background color names plus a

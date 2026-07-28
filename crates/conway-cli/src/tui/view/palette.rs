@@ -7,13 +7,19 @@
 //!
 //! **Disclosed duplication:** `commands.rs` (out of this item's file scope
 //! -- see the work item's file-scope note) owns the authoritative
-//! `SlashCommand` parser and its own `HELP_LINES` table. This table is a
-//! second, independent listing so the palette can discover `/ask` and
-//! `/agents` (handled directly in `app.rs`, never reaching `commands.rs` --
-//! see that module's `submit` doc) alongside the commands `commands.rs`
-//! already parses. A future change to either table can drift from the
-//! other; unifying them requires touching `commands.rs`, which is out of
-//! scope here.
+//! `SlashCommand` parser. This table is a second, independent listing so
+//! the palette can discover `/ask` and `/agents` (handled directly in
+//! `app.rs`, never reaching `commands.rs` -- see that module's `submit`
+//! doc) alongside the commands `commands.rs` already parses. A future
+//! change to either can drift from the other; unifying them requires
+//! touching `commands.rs`, which is out of scope here.
+//!
+//! T7 removed `commands.rs`'s OWN second listing (`HELP_LINES`, formerly
+//! dumped into the transcript by `/help`) entirely rather than reconciling
+//! it with this one -- `/help` now opens a keybinding-only overlay
+//! (`view/help.rs`) that never lists a slash command at all, so this
+//! table (commands) is the only place command usage/description text lives
+//! outside `commands.rs`'s own parser.
 
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};

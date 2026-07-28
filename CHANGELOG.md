@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **TUI: `/help` keybinding overlay (T7).** `/help` used to dump a static
+  command list into the transcript as a pile of `Entry::Notice` lines,
+  spamming the conversation with content that already lived in the `/`
+  command palette, and there was no keybinding reference anywhere. `/help`
+  now opens a read-only overlay (`tui/view/help.rs`) instead and pushes
+  zero transcript entries.
+
+  The overlay is keybindings-only: every genuine slash command stays
+  exclusively in the `/` palette, so the two surfaces can never drift into
+  duplicating each other (`/thinking`/`/timestamps` are the one deliberate
+  exception, since they function as keyboard-driven view toggles). It
+  groups every binding Conway actually has — input & editing, history &
+  navigation, tools & display, the modal-only keys for the `/ask` modal /
+  intent-confirm card / permission prompt, and the agent panel — plus a
+  trailing note that mouse-wheel scrolling is deliberately not a Conway
+  binding (it's your terminal's own scrollback; capturing the mouse would
+  disable the terminal's native click-drag text selection). `Esc` closes
+  it; no hotkey opens it, since Conway is always in input-typing mode.
+
+  The overlay is not a `Mode` variant — it's a plain `AppState::help_open`
+  flag, gated on `mode == Normal` at both draw and key-routing time — so it
+  can never stack on top of an active permission prompt, `/ask` modal, or
+  intent-confirm card (each of those is a decision the user owes an
+  answer), and reappears on its own once one resolves. New theme slots:
+  `help_border` (blue, bold) and `help_key` (green, bold).
+
 - **TUI: input ergonomics — multi-line, persisted history, bracketed
   paste, and a cursor-clamp fix (T8).** The input line was
   single-line-only (`Enter` always submitted, `\n` could never land in

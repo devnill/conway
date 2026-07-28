@@ -162,6 +162,17 @@ pub struct Theme {
     /// `Modifier::DIM` (no fg) -- a quiet annotation, matching
     /// [`Theme::status_dim`]'s treatment of a similar dim affordance hint.
     pub scroll_footer: Style,
+    /// T7: the `/help` keybinding overlay's block border. Default:
+    /// `Color::Blue` + `Modifier::BOLD` -- distinct from the other three
+    /// modal borders ([`Theme::border_danger`] red, [`Theme::border_warning`]
+    /// yellow, [`Theme::border_accent`] cyan), since the help overlay is
+    /// informational, not a decision the user owes an answer to.
+    pub help_border: Style,
+    /// T7: the key/chord column in the `/help` overlay's rows (e.g.
+    /// `Ctrl-E`, `PageUp/PageDown`), distinguishing it from the plain
+    /// description text beside it. Default: `Color::Green` +
+    /// `Modifier::BOLD`.
+    pub help_key: Style,
 }
 
 impl Default for Theme {
@@ -204,6 +215,8 @@ impl Default for Theme {
             spinner_c: Style::default().fg(Color::White),
             header: Style::default().add_modifier(Modifier::REVERSED),
             scroll_footer: Style::default().add_modifier(Modifier::DIM),
+            help_border: Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD),
+            help_key: Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
         }
     }
 }
@@ -253,6 +266,8 @@ impl Theme {
         theme.spinner_c = overlay(theme.spinner_c, config.spinner_c.as_ref());
         theme.header = overlay(theme.header, config.header.as_ref());
         theme.scroll_footer = overlay(theme.scroll_footer, config.scroll_footer.as_ref());
+        theme.help_border = overlay(theme.help_border, config.help_border.as_ref());
+        theme.help_key = overlay(theme.help_key, config.help_key.as_ref());
         theme
     }
 }
@@ -541,6 +556,60 @@ mod tests {
         };
         let t = Theme::from_config(&cfg);
         assert_eq!(t.header, Style::default().add_modifier(Modifier::REVERSED), "P-10: no panic");
+    }
+
+    // ---- T7: /help keybinding overlay ----
+
+    #[test]
+    fn default_help_border_is_blue_bold() {
+        let t = Theme::default();
+        assert_eq!(
+            t.help_border,
+            Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD)
+        );
+    }
+
+    #[test]
+    fn default_help_key_is_green_bold() {
+        let t = Theme::default();
+        assert_eq!(
+            t.help_key,
+            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+        );
+    }
+
+    #[test]
+    fn help_border_and_help_key_overrides_apply_independently() {
+        let cfg = ThemeConfig {
+            help_border: Some(fg_only("magenta")),
+            ..Default::default()
+        };
+        let t = Theme::from_config(&cfg);
+        assert_eq!(
+            t.help_border,
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD)
+        );
+        // Untouched slot keeps its default.
+        assert_eq!(
+            t.help_key,
+            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+        );
+    }
+
+    #[test]
+    fn malformed_help_border_override_falls_back_to_default() {
+        let cfg = ThemeConfig {
+            help_border: Some(fg_only("not-a-color")),
+            ..Default::default()
+        };
+        let t = Theme::from_config(&cfg);
+        assert_eq!(
+            t.help_border,
+            Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD),
+            "P-10: no panic"
+        );
     }
 
     // ---- from_config: empty config == default ----
@@ -853,6 +922,7 @@ mod tests {
             ("input_box.rs", include_str!("input_box.rs")),
             ("palette.rs", include_str!("palette.rs")),
             ("header.rs", include_str!("header.rs")),
+            ("help.rs", include_str!("help.rs")),
         ] {
             // `theme.rs` is allowed to contain the needle (the defaults);
             // assert it is the ONLY file that does.

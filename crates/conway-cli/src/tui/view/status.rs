@@ -28,10 +28,14 @@
 //!   activity word plus live elapsed plus new-segment tokens added this
 //!   turn, e.g. `⠋ thinking… 12s · +45 tok`, pulsing through
 //!   `Theme::spinner_palette` on each 125ms tick. While idle: just `idle`.
-//! - `hint` -- a persistent keybinding/affordance hint (T7 will reconcile):
-//!   `Enter submit · Ctrl-E expand · ↑↓ history · PgUp/PgDn · /help · /agents to {view|hide}`,
+//! - `hint` -- a persistent keybinding/affordance hint:
+//!   `Enter submit · Ctrl-E expand · ↑↓ history · PgUp/PgDn · /help · /thinking · /timestamps · /agents to {view|hide}`,
 //!   plus `focused: <id>` when the transcript is focused on a non-root
-//!   agent.
+//!   agent. T7 confirmed this against the real binding set (`view/help.rs`'s
+//!   own doc enumerates it in full) and found it still accurate -- `/help`
+//!   now opens the keybinding overlay instead of dumping a command list into
+//!   the transcript, but it is still the correct, and only, thing to name
+//!   here for "how do I see the rest of the bindings".
 //! - `git` -- the current `git rev-parse --abbrev-ref HEAD` branch, read
 //!   once at startup; omitted when not in a git repo.
 //! - `cwd` -- the session's working directory; omitted when unset.

@@ -27,6 +27,7 @@
 // alias can never drift from what the panel draws.
 pub(crate) mod agents;
 mod header;
+mod help;
 mod input_box;
 pub mod palette;
 mod status;
@@ -125,6 +126,20 @@ pub fn draw(state: &AppState, frame: &mut Frame, theme: &Theme) {
 
     if let Mode::IntentConfirm(card) = &state.mode {
         draw_intent_confirm(frame, areas.transcript, card, theme);
+    }
+
+    // T7: the `/help` keybinding overlay is NOT a `Mode` variant (see
+    // `AppState::help_open`'s own doc) -- it is gated on `Mode::Normal`
+    // here instead, which is exactly how it avoids ever stacking on top of
+    // an active permission prompt / `/ask` modal / intent-confirm card:
+    // whichever of those three is live already claimed `mode` above (and
+    // drew its own overlay over this same `areas.transcript`), so this
+    // branch simply never fires while one of them is showing. No separate
+    // parking queue is needed -- `state.help_open` is untouched by any of
+    // those transitions, so the overlay reappears on its own the moment
+    // `mode` returns to `Normal`, with zero extra bookkeeping.
+    if state.help_open && matches!(state.mode, Mode::Normal) {
+        help::draw(frame, areas.transcript, theme);
     }
 }
 
@@ -1007,6 +1022,183 @@ mod tests {
         assert!(
             state.agent_view_open,
             "the flag itself is left untouched -- the panel returns once the card closes"
+        );
+    }
+
+    // ---- T7: the /help keybinding overlay ----
+
+    /// Acceptance: the overlay's content includes every binding in the
+    /// verified list (enumerated from `input.rs` at HEAD -- see
+    /// `view/help.rs`'s own doc for the full rationale), asserted against
+    /// the REAL rendered text, not a constant.
+    #[test]
+    fn help_overlay_shows_every_verified_binding() {
+        let mut state = AppState::new(AgentId::new());
+        state.open_help();
+
+        // Tall/wide enough that the full grouped list renders unclipped.
+        let text = render_text(&state, 100, 60);
+
+        // input & editing
+        assert!(text.contains("Enter") && text.contains("submit"), "{text}");
+        assert!(text.contains("Alt-Enter"), "{text}");
+        assert!(text.contains("Shift-Enter"), "{text}");
+        assert!(text.contains("insert a newline"), "{text}");
+        assert!(text.contains("Left / Right"), "{text}");
+        assert!(text.contains("move the cursor"), "{text}");
+        assert!(text.contains("Backspace"), "{text}");
+        assert!(text.contains("delete back"), "{text}");
+        assert!(text.contains("Ctrl-W"), "{text}");
+        assert!(text.contains("delete the previous word"), "{text}");
+        assert!(text.contains("Ctrl-D"), "{text}");
+        assert!(text.contains("Ctrl-C"), "{text}");
+        assert!(text.contains("interrupt"), "{text}");
+
+        // history and navigation
+        assert!(text.contains("Up / Down"), "{text}");
+        assert!(text.contains("Home / End"), "{text}");
+        assert!(text.contains("PageUp / PageDown"), "{text}");
+        assert!(text.contains("scroll the transcript by a page"), "{text}");
+
+        // tools and display
+        assert!(text.contains("Ctrl-E"), "{text}");
+        assert!(text.contains("expand/collapse all tool output"), "{text}");
+        assert!(text.contains("/thinking"), "{text}");
+        assert!(text.contains("hide/show reasoning traces"), "{text}");
+        assert!(text.contains("/timestamps"), "{text}");
+        assert!(text.contains("HH:MM"), "{text}");
+
+        // modal keys
+        assert!(text.contains("/ask modal"), "{text}");
+        assert!(text.contains("fork"), "{text}");
+        assert!(text.contains("pull in"), "{text}");
+        assert!(text.contains("discard"), "{text}");
+        assert!(text.contains("intent-confirm card"), "{text}");
+        assert!(text.contains("confirm"), "{text}");
+        assert!(text.contains("edit"), "{text}");
+        assert!(text.contains("manual"), "{text}");
+        assert!(text.contains("permission prompt"), "{text}");
+        assert!(text.contains("allow once"), "{text}");
+        assert!(text.contains("allow always"), "{text}");
+        assert!(text.contains("deny with feedback"), "{text}");
+        assert!(text.contains("scroll the command"), "{text}");
+
+        // agent panel
+        assert!(text.contains("visibility filter"), "{text}");
+        assert!(text.contains("close the agent panel"), "{text}");
+    }
+
+    /// Acceptance: `mouse` appears nowhere in the overlay's keybinding rows
+    /// (a guard against a future well-meaning re-add) -- `view/help.rs`'s
+    /// own `no_binding_row_mentions_mouse` test covers the data directly;
+    /// this is the render-level companion proving the same holds for what
+    /// actually reaches the screen. The one legitimate `mouse` occurrence is
+    /// the freeform note's own prose (which the `Paragraph`'s word-wrap may
+    /// split across several on-screen rows) -- so this asserts the word
+    /// appears EXACTLY ONCE in the whole rendered text, not zero times.
+    #[test]
+    fn help_overlay_render_does_not_mention_mouse_outside_its_note() {
+        let mut state = AppState::new(AgentId::new());
+        state.open_help();
+
+        let text = render_text(&state, 100, 60).to_lowercase();
+        let occurrences = text.matches("mouse").count();
+        let expected = help::MOUSE_NOTE.to_lowercase().matches("mouse").count();
+        assert_eq!(
+            occurrences, expected,
+            "every `mouse` occurrence must come from the freeform note (expected \
+             {expected}, found {occurrences}): {text}"
+        );
+    }
+
+    /// Acceptance: `/help` opening the overlay is a pure `AppState` flip --
+    /// no transcript entries.
+    #[test]
+    fn help_overlay_open_pushes_no_transcript_entries() {
+        let mut state = AppState::new(AgentId::new());
+        state.open_help();
+        assert!(state.transcript.is_empty());
+        let text = render_text(&state, 100, 60);
+        assert!(text.contains("HELP"), "{text}");
+    }
+
+    /// Acceptance: `Esc` closes the overlay, driven through the real key
+    /// router (not a direct `close_help()` call).
+    #[test]
+    fn esc_closes_the_help_overlay_end_to_end() {
+        let mut state = AppState::new(AgentId::new());
+        state.open_help();
+        let text_before = render_text(&state, 100, 60);
+        assert!(text_before.contains("HELP"), "{text_before}");
+
+        let action = input::handle_key(&mut state, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(action, Action::None);
+
+        assert!(!state.help_open);
+        let text_after = render_text(&state, 100, 60);
+        assert!(!text_after.contains(" HELP "), "{text_after}");
+    }
+
+    /// Acceptance: the overlay must not stack on top of an active
+    /// permission prompt / `/ask` modal / intent-confirm card -- each is
+    /// exercised with `help_open` left `true` in the background (exactly
+    /// how it would arrive in practice: help was already open when the
+    /// decision-owed surface showed up).
+    #[test]
+    fn help_overlay_does_not_stack_on_an_active_permission_prompt() {
+        let mut state = awaiting_permission("bash: ls");
+        state.open_help();
+
+        let text = render_text(&state, 100, 60);
+
+        assert!(
+            text.contains("PERMISSION REQUIRED"),
+            "the permission overlay must win: {text}"
+        );
+        assert!(
+            !text.contains(" HELP "),
+            "the help overlay must not be drawn on top of an active prompt: {text}"
+        );
+    }
+
+    #[test]
+    fn help_overlay_does_not_stack_on_an_active_ask_modal() {
+        let mut state = ask_modal_state("q", "a", None);
+        state.open_help();
+
+        let text = render_text(&state, 100, 60);
+
+        assert!(text.contains("you asked: q"), "the ask modal must win: {text}");
+        assert!(!text.contains(" HELP "), "{text}");
+    }
+
+    #[test]
+    fn help_overlay_does_not_stack_on_an_active_intent_confirm_card() {
+        let mut state = intent_confirm_state(conway::SubagentMode::Spawn, None, "go");
+        state.open_help();
+
+        let text = render_text(&state, 100, 60);
+
+        assert!(text.contains("recipe: spawn"), "the intent card must win: {text}");
+        assert!(!text.contains(" HELP "), "{text}");
+    }
+
+    /// Once the permission prompt resolves, `mode` returns to `Normal` and
+    /// the overlay -- whose `help_open` flag was never touched by any of
+    /// this -- reappears with no further action needed.
+    #[test]
+    fn help_overlay_reappears_once_the_blocking_prompt_resolves() {
+        let mut state = awaiting_permission("bash: ls");
+        state.open_help();
+        assert!(!render_text(&state, 100, 60).contains(" HELP "));
+
+        state.resolve_current_prompt(PermissionDecision::AllowOnce);
+
+        assert!(matches!(state.mode, Mode::Normal));
+        assert!(state.help_open, "help_open was never touched by the prompt resolving");
+        assert!(
+            render_text(&state, 100, 60).contains(" HELP "),
+            "the overlay must reappear once mode returns to Normal"
         );
     }
 }
