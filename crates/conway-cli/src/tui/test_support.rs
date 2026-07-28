@@ -96,6 +96,13 @@ pub(crate) fn press(state: &mut AppState, event: KeyEvent, area: Rect) -> Action
         Action::ScrollDown => apply_page_scroll(state, area, false),
         // V3: mirrors `app.rs`'s `line_scroll` -- one line is just a
         // smaller page, sharing the same clamp/follow-tail rules.
+        // V2b: installing the grant needs the live facade, which this
+        // terminal-free harness does not have. `press` returns the action
+        // unapplied, so a test asserts on the ACTION -- the install/persist
+        // half is covered where the facade lives.
+        Action::GrantPermissionPattern(_)
+        | Action::CyclePermissionMode
+        | Action::RevokePermissionGrants => {}
         Action::ScrollLineUp => apply_line_scroll(state, area, true),
         Action::ScrollLineDown => apply_line_scroll(state, area, false),
         Action::JumpToTop => {

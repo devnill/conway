@@ -488,6 +488,22 @@ impl Runtime {
     /// Creates a session, appends its head record, spawns one tokio task
     /// running the new root agent's `AgentLoop`, and returns once that task
     /// has been handed to the executor — before its first turn completes.
+    /// The permission broker this runtime authorizes tool calls through
+    /// (V2b).
+    ///
+    /// Exposed so a consumer can read and change permission MODE and
+    /// pattern grants at runtime — the TUI's `/settings` needs this, and
+    /// `conway-cli` is mechanically forbidden from depending on
+    /// `conway-runtime` (`no_forbidden_deps`), so the facade re-exposes
+    /// this rather than the CLI reaching in.
+    ///
+    /// The broker is the AUTHORITY on what is permitted. Any copy a
+    /// consumer keeps for display is a mirror, and must be refreshed from
+    /// here rather than written independently.
+    pub fn permission_broker(&self) -> Arc<PermissionBroker> {
+        Arc::clone(&self.broker)
+    }
+
     pub async fn start_root(&self, spec: RootSpec) -> Result<AgentId, RuntimeError> {
         let agent_id = AgentId::new();
         let session_id = spec.session.unwrap_or_default();

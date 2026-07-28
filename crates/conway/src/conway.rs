@@ -71,6 +71,52 @@ impl Conway {
     }
 
     /// The resolved configuration this `Conway` was built from.
+    /// The active permission mode (V2b).
+    ///
+    /// Read from the broker, which is the authority — the TUI keeps a
+    /// display mirror for the status line, but that mirror is refreshed
+    /// from here rather than trusted on its own.
+    pub fn permission_mode(&self) -> conway_core::permission_mode::PermissionMode {
+        self.rt.permission_broker().mode()
+    }
+
+    /// Switches the permission mode at runtime (V2b). This is the escape
+    /// hatch out of an over-broad mode: no restart required.
+    pub fn set_permission_mode(&self, mode: conway_core::permission_mode::PermissionMode) {
+        self.rt.permission_broker().set_mode(mode);
+    }
+
+    /// Installs a pattern grant (V2b).
+    ///
+    /// Note the metacharacter gate is NOT applied here: it lives in
+    /// `PatternRule::matches` and is evaluated against each incoming
+    /// command at decision time. Gating at install time instead would let
+    /// a rule loaded from a file bypass it.
+    pub fn grant_permission_pattern(
+        &self,
+        rule: conway_core::permission_pattern::PatternRule,
+        scope: conway_core::agent::PermissionScope,
+        granting_agent: conway_core::ids::AgentId,
+    ) {
+        self.rt
+            .permission_broker()
+            .remember_pattern(rule, scope, granting_agent);
+    }
+
+    /// Every active pattern grant, for a review list. A rule set nobody
+    /// can inspect is a trap.
+    pub fn active_permission_patterns(
+        &self,
+    ) -> Vec<conway_core::permission_pattern::PatternRule> {
+        self.rt.permission_broker().active_patterns()
+    }
+
+    /// Drops every pattern grant and cached `AllowAlways`, returning the
+    /// session to asking (V2b).
+    pub fn revoke_permission_grants(&self) {
+        self.rt.permission_broker().revoke_all_grants();
+    }
+
     pub fn config(&self) -> &ConwayConfig {
         &self.config
     }

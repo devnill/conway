@@ -825,7 +825,40 @@ A corrupt or unreadable file **fails closed** — it authorizes nothing, and
 the worst outcome is extra prompting. A malformed individual entry is
 dropped rather than guessed at; the rest of the file still loads.
 
-Review and revoke active grants from `/settings`.
+**Granting from the prompt.** When a command is proposed, the permission
+prompt offers `[p]` alongside allow-once and deny — and states in words
+what accepting would grant, before you press anything:
+
+```
+[y] once  [a] always  [p] pattern  [n] deny  [Esc] deny w/ feedback
+  [p] grants: `bash` commands starting with `git status`
+```
+
+The offered prefix is **two tokens** — `git status`, not `git`. That is
+deliberate: `git` alone would silently include `git push --force`, and an
+operator skimming a prompt could accept the broad grant believing they got
+the narrow one. A single-token command (`pwd`) offers just that token.
+
+`[p]` does not appear at all for a command carrying shell metacharacters,
+since the gate would refuse to honor such a grant anyway and offering one
+would be confusing.
+
+Want something broader? Edit `permissions.json` by hand. That asymmetry is
+the point — granting more should take deliberate effort, granting less
+should be the default. You can always grant again; you cannot un-authorize
+what already ran.
+
+**Loading and scope.** Rules load at startup from both files and **merge**.
+They answer different questions: a global rule is "I always allow this,
+everywhere" (`read:*`), a project rule is "this checkout's build command is
+fine" (`bash:cargo test`). Having the project file silently discard a global
+grant would surprise an operator who set one deliberately. New grants are
+written to the project file by default, so they can be reviewed in a diff
+alongside the code they authorize.
+
+Review the active grants, switch modes, and revoke everything from
+`/settings`. Per-rule revocation is not implemented yet — revoke-all is
+the current floor.
 
 ### The `/` command palette, with arrow-select
 

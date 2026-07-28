@@ -44,6 +44,15 @@ pub enum Action {
     /// actually produces.
     ScrollLineUp,
     ScrollLineDown,
+    /// V2b: the operator accepted the offered pattern grant from the
+    /// permission prompt. The app loop installs it, persists it
+    /// best-effort, and resolves the pending prompt as an allow.
+    GrantPermissionPattern(conway::PatternRule),
+    /// V2b: cycle prompt -> plan -> AUTO-ALLOW. The app loop writes the
+    /// broker (the authority) and refreshes the display mirror together.
+    CyclePermissionMode,
+    /// V2b: drop every pattern grant and cached allow-always.
+    RevokePermissionGrants,
     /// `End` (T6): snap the transcript straight to its own tail --
     /// re-engages `follow_tail`. Fires only while the input line is empty
     /// (mirroring the dual-meaning precedent `Enter`'s empty-input arm
@@ -165,7 +174,13 @@ fn handle_settings_key(state: &mut AppState, key: KeyEvent) -> Action {
         KeyCode::Esc => state.close_settings(),
         KeyCode::Up => settings_move_selection(state, -1),
         KeyCode::Down => settings_move_selection(state, 1),
-        KeyCode::Enter => activate_settings_selection(state),
+        // V2b: Enter may now yield an action (permission mode / revoke),
+        // which the app loop applies against the broker.
+        KeyCode::Enter => {
+            if let Some(action) = activate_settings_selection(state) {
+                return action;
+            }
+        }
         KeyCode::Left => step_settings_numeric(state, -1),
         KeyCode::Right => step_settings_numeric(state, 1),
         _ => {}
@@ -191,11 +206,9 @@ fn settings_move_selection(state: &mut AppState, delta: isize) {
 /// how `handle_normal_key`'s Enter-on-the-`/agents`-panel resolves through
 /// the filtered row list (`view/menu.rs::MenuState::selected_leaf_id`'s own
 /// doc: "the caller's activate action").
-fn activate_settings_selection(state: &mut AppState) {
+fn activate_settings_selection(state: &mut AppState) -> Option<Action> {
     let mut menu = super::view::settings::build_tree(state);
-    let Some(row) = menu.selected_row() else {
-        return;
-    };
+    let row = menu.selected_row()?;
     match row.kind {
         super::view::menu::MenuRowKind::Group { .. } => {
             // Reuses `MenuState::toggle_group_at_selection` itself (the
@@ -225,12 +238,22 @@ fn activate_settings_selection(state: &mut AppState) {
                 state.toggle_thinking();
             } else if id == super::view::settings::LEAF_SHOW_TIMESTAMPS {
                 state.toggle_timestamps();
+            } else if id == super::view::settings::LEAF_PERMISSION_MODE {
+                // V2b: cycles the DISPLAY mirror only. The app loop sees
+                // the returned action and writes the broker, which is the
+                // authority -- doing it here would leave the two able to
+                // disagree, and the broker's answer is the one that gates
+                // actual calls.
+                return Some(Action::CyclePermissionMode);
+            } else if id == super::view::settings::LEAF_REVOKE_GRANTS {
+                return Some(Action::RevokePermissionGrants);
             }
             // `LEAF_TOOL_PREVIEW_LINES`: Enter has nothing to activate on
             // the numeric leaf -- it is adjusted with Left/Right instead
             // (see `step_settings_numeric`).
         }
     }
+    None
 }
 
 /// `Left`/`Right` on the settings menu (V4): the numeric stepper for the
@@ -392,6 +415,18 @@ fn handle_permission_key(state: &mut AppState, key: KeyEvent) -> Action {
             Action::PermissionDecision(PermissionDecision::AllowAlways {
                 scope: PermissionScope::Session,
             })
+        }
+        // V2b: `p` grants the OFFERED pattern -- the narrow two-token
+        // prefix `suggested_rule` derives, whose breadth the prompt states
+        // in words before the operator presses anything. Absent when the
+        // command carries shell metacharacters, in which case no offer is
+        // made and this key does nothing rather than granting something
+        // the gate would refuse to honor anyway.
+        KeyCode::Char('p') | KeyCode::Char('P') => {
+            match state.offered_permission_rule() {
+                Some(rule) => Action::GrantPermissionPattern(rule),
+                None => Action::None,
+            }
         }
         KeyCode::Char('n') | KeyCode::Char('N') => {
             Action::PermissionDecision(PermissionDecision::Deny {
