@@ -734,6 +734,39 @@ pub struct AppState {
     /// idly pressing `Up` to glance at an old one, then pressing `Down`
     /// back down never loses what you were typing.
     history_draft: String,
+    /// T7: whether the `/help` keybinding overlay is showing. Toggled by
+    /// [`Self::open_help`]/[`Self::close_help`] (`commands.rs`'s `/help` arm
+    /// and `Esc`, respectively, via `input.rs`).
+    ///
+    /// **Deliberately NOT a [`Mode`] variant**, unlike the three modal-
+    /// bearing surfaces above (`AwaitingPermission`/`AskModal`/
+    /// `IntentConfirm`): those three are each a DECISION the user owes an
+    /// answer to (a tool call is blocked, an ephemeral ask needs a fate, a
+    /// classified intent needs confirming) -- `mode` exists precisely to
+    /// make "exactly one such decision is live at a time" a type-level
+    /// invariant, with `promote_next_surface` draining the queue/park slots
+    /// in a fixed priority order once one resolves. The help overlay is
+    /// nothing like that: it is a passive, read-only reference with no
+    /// state of its own to lose and nothing the user owes an answer to, so
+    /// giving it a `Mode` slot (and a park/promote path alongside the other
+    /// three) would be complexity with no payoff.
+    ///
+    /// Instead, `view::draw` gates the overlay on `help_open &&
+    /// matches!(mode, Mode::Normal)` (see that function's own comment) and
+    /// `input::handle_key` gates its own key-swallowing the same way. This
+    /// gives the required "never stacks on an active decision" behavior for
+    /// free: `offer_prompt`/`offer_ask_modal`/`offer_intent_confirm` all
+    /// transition `mode` away from `Normal` the instant one of those three
+    /// surfaces arrives, regardless of `help_open` -- the overlay just stops
+    /// being drawn/reachable the moment that happens, with no need to touch
+    /// this flag at all, and reappears on its own once `mode` returns to
+    /// `Normal` (nothing ever resets `help_open` on their account). A
+    /// `/help` submission can only ever reach [`Self::open_help`] while
+    /// `mode` is already `Normal` in the first place -- the input line is
+    /// inert while any of the other three surfaces owns `mode` (see each of
+    /// their own "input line is inert" docs), so `/help` itself can never be
+    /// typed/submitted while one is active.
+    pub help_open: bool,
 }
 
 impl AppState {
@@ -793,6 +826,7 @@ impl AppState {
             history_cap: DEFAULT_HISTORY_SIZE,
             history_index: None,
             history_draft: String::new(),
+            help_open: false,
         }
     }
 
@@ -1422,6 +1456,21 @@ impl AppState {
         // surfaces never stack and never drift out of sync across the
         // close/resolve call sites.
         self.promote_next_surface();
+    }
+
+    /// Opens the `/help` keybinding overlay (T7). See [`Self::help_open`]'s
+    /// own doc for why this is a plain flag flip rather than a `mode`
+    /// transition/park -- `commands.rs`'s `SlashCommand::Help` arm can only
+    /// ever reach this while `mode` is already `Normal` (the input line is
+    /// inert otherwise), so there is nothing to park against.
+    pub fn open_help(&mut self) {
+        self.help_open = true;
+    }
+
+    /// Closes the `/help` keybinding overlay (T7's `Esc` binding, wired in
+    /// `input.rs`). A no-op when it is already closed.
+    pub fn close_help(&mut self) {
+        self.help_open = false;
     }
 
     /// Seeds a `/agents` tree node for a freshly created interactive child

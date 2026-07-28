@@ -96,8 +96,9 @@ pub fn parse(input: &str) -> Result<SlashCommand, ParseError> {
         }
         "/tree" => {
             // Item A3: `/tree` stays parseable as a HIDDEN alias (dropped
-            // from `HELP_LINES` and the palette, but never a breaking
-            // removal) -- `execute` renders it from `state.tree`, the same
+            // from the palette, but never a breaking removal; T7 removed
+            // the transcript-dump `/help` listing it used to be excluded
+            // from too) -- `execute` renders it from `state.tree`, the same
             // view the `/agents` panel draws.
             parse_no_arg(rest, "/tree")?;
             Ok(SlashCommand::Tree)
@@ -621,7 +622,8 @@ pub async fn execute_intent_confirm<H: Host>(
 /// carry out. Every command maps to exactly one `host` call except `/why`
 /// (reads `state.last_model_decision`, no facade call at all), `/tree`
 /// (item A3: renders `state.tree` directly, no facade call), and `/help`
-/// (renders constants only).
+/// (T7: flips `AppState::help_open`, no facade call and no transcript
+/// mutation at all).
 ///
 /// Never panics and never propagates a facade error: a failing command
 /// becomes a `Notice` entry with the error's `Display` (module notes: "A
@@ -797,8 +799,11 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
                 Effect::None
             }
         },
+        // T7: `/help` opens the keybinding overlay (`view/help.rs`) instead
+        // of dumping a command list into the transcript -- `AppState::open_help`
+        // is a pure flag flip, pushing zero `Entry::Notice` lines.
         SlashCommand::Help => {
-            render_help(state);
+            state.open_help();
             Effect::None
         }
         SlashCommand::Quit => Effect::Quit,
@@ -1013,27 +1018,6 @@ fn render_routing_reason(reason: &RoutingReason) -> String {
             format!("skipped `{skipped}`: {breaker:?} breaker open")
         }
         _ => "unknown routing reason".to_string(),
-    }
-}
-
-const HELP_LINES: &[&str] = &[
-    "/steer <agent> <text>       -- send a steer message to a running agent",
-    "/context <agent>            -- show an agent's assembled context",
-    "/why                        -- show the last routing decision",
-    "/fork [<text>]              -- open an interactive fork of the focused agent (optional first message)",
-    "/fork @<agent> <directive>  -- fork a specific live agent with a directive",
-    "/spawn [@<agent_def>] [<prompt>] -- open an interactive spawned agent (inherits role/model if no @agent_def)",
-    "/resume <session-id>        -- resume a prior session",
-    "/thinking                   -- hide/show reasoning traces (default visible)",
-    "/timestamps                 -- toggle per-entry HH:MM timestamps (default off)",
-    "/help                       -- show this help",
-    "/quit                       -- exit",
-    "/exit                       -- alias for /quit",
-];
-
-fn render_help(state: &mut AppState) {
-    for line in HELP_LINES {
-        notice(state, *line);
     }
 }
 
@@ -2243,14 +2227,29 @@ mod tests {
         );
     }
 
-    /// Item A3: `/tree` is demoted to a hidden alias -- it still parses
-    /// (`tree_parses` above) but no longer appears in the `/help` listing.
-    #[test]
-    fn help_lines_no_longer_list_tree() {
+    /// T7 acceptance: `/help` opens the keybinding overlay and pushes ZERO
+    /// `Entry::Notice` lines -- the old transcript-dump behavior
+    /// (`HELP_LINES`/`render_help`, both removed) is gone entirely, not just
+    /// trimmed down.
+    #[tokio::test]
+    async fn help_opens_the_overlay_and_pushes_no_transcript_entries() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let host = FakeHost::new(root);
+        assert!(!state.help_open);
+
+        let effect = execute(SlashCommand::Help, &mut state, &host).await;
+
+        assert!(state.help_open, "/help must open the keybinding overlay");
         assert!(
-            !HELP_LINES.iter().any(|line| line.starts_with("/tree")),
-            "/tree is a hidden alias; the help listing must not surface it"
+            state.transcript.is_empty(),
+            "/help must push zero transcript entries (no `Entry::Notice` \
+             dump), got {:?}",
+            state.transcript
         );
+        assert!(matches!(effect, Effect::None));
+        // No facade call at all -- a pure state flip.
+        assert!(host.calls().is_empty());
     }
 
     #[tokio::test]

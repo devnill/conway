@@ -73,13 +73,47 @@ pub enum Action {
 /// Routes a keypress based on `state.mode`, mutating `state.input`/`cursor`
 /// directly for plain editing and returning an [`Action`] for anything the
 /// app loop must act on.
+///
+/// T7: the `/help` overlay is checked FIRST, ahead of the `mode` match --
+/// but only while `mode` is `Normal` (`state.help_open` is a plain flag, not
+/// a `Mode` variant; see that field's own doc for why). This ordering is
+/// what keeps the overlay from ever swallowing a key meant for an active
+/// permission prompt / `/ask` modal / intent-confirm card: those can only
+/// arrive while `mode` is already something other than `Normal`, so the
+/// guard here simply never fires for them, and `handle_key` falls through
+/// to the ordinary `mode` match exactly as it did before this item.
 pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Action {
+    if state.help_open && matches!(state.mode, Mode::Normal) {
+        return handle_help_key(state, key);
+    }
     match &state.mode {
         Mode::AwaitingPermission(_) => handle_permission_key(state, key),
         Mode::AskModal(_) => handle_ask_modal_key(state, key),
         Mode::IntentConfirm(_) => handle_intent_confirm_key(state, key),
         Mode::Normal => handle_normal_key(state, key),
     }
+}
+
+/// The `/help` overlay's key handling (T7): read-only, so almost everything
+/// is SWALLOWED -- `Esc` is the only way to close it (module spec: "No
+/// hotkey for help ... Esc closes it"). Mirrors
+/// [`handle_ask_modal_key`]/[`handle_intent_confirm_key`]'s shape: the quit
+/// keys (`Ctrl-C`/`Ctrl-D`) still pass through as `Action::CtrlC`/
+/// `Action::Quit` -- there is no live resource to purge first (unlike the
+/// `/ask` modal's child), so quitting with the overlay open needs no special
+/// handling at all beyond letting the keys through.
+fn handle_help_key(state: &mut AppState, key: KeyEvent) -> Action {
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        match key.code {
+            KeyCode::Char('c') | KeyCode::Char('C') => return Action::CtrlC,
+            KeyCode::Char('d') | KeyCode::Char('D') => return Action::Quit,
+            _ => {}
+        }
+    }
+    if key.code == KeyCode::Esc {
+        state.close_help();
+    }
+    Action::None
 }
 
 /// The `/ask` modal's key handling (B5): exactly three ways out, each
@@ -479,7 +513,8 @@ fn insert_newline(state: &mut AppState) {
 /// modal-bearing surface is showing (`Mode` other than `Normal`) -- the
 /// input line is inert there exactly as it is for ordinary typing (see
 /// `handle_ask_modal_key`/`handle_intent_confirm_key`'s own "input line is
-/// inert" docs).
+/// inert" docs) -- and, T7, while the `/help` overlay is open, for the same
+/// reason [`handle_help_key`] swallows ordinary keys.
 ///
 /// One `String::insert_str` call, not a loop over `handle_key` per
 /// character: looping would (a) fire `sync_palette_stem`/history-adjacent
@@ -488,7 +523,7 @@ fn insert_newline(state: &mut AppState) {
 /// character key rather than as literal text, which is exactly the
 /// char-by-char-arrival bug this item exists to fix.
 pub fn handle_paste(state: &mut AppState, text: &str) {
-    if !matches!(state.mode, Mode::Normal) {
+    if !matches!(state.mode, Mode::Normal) || state.help_open {
         return;
     }
     if text.is_empty() {
@@ -1996,6 +2031,91 @@ mod tests {
         assert!(
             state.input.is_empty(),
             "history must not have been recalled into the input line"
+        );
+    }
+
+    // ---- T7: the /help keybinding overlay's key handling ----
+
+    #[test]
+    fn esc_closes_the_help_overlay() {
+        let mut state = AppState::new(AgentId::new());
+        state.open_help();
+        assert!(state.help_open);
+
+        let action = handle_key(&mut state, key(KeyCode::Esc));
+
+        assert_eq!(action, Action::None);
+        assert!(!state.help_open, "Esc must close the overlay");
+    }
+
+    #[test]
+    fn help_overlay_swallows_ordinary_typing_and_navigation() {
+        let mut state = AppState::new(AgentId::new());
+        state.open_help();
+
+        for code in [
+            KeyCode::Char('x'),
+            KeyCode::Char('/'),
+            KeyCode::Enter,
+            KeyCode::Up,
+            KeyCode::Down,
+            KeyCode::PageUp,
+            KeyCode::PageDown,
+        ] {
+            assert_eq!(
+                handle_key(&mut state, key(code)),
+                Action::None,
+                "{code:?} must be swallowed while the help overlay is open"
+            );
+        }
+        assert!(state.input.is_empty(), "the input line must stay inert");
+        assert!(state.help_open, "only Esc closes the overlay");
+    }
+
+    #[test]
+    fn help_overlay_quit_keys_still_pass_through() {
+        let mut state = AppState::new(AgentId::new());
+        state.open_help();
+
+        assert_eq!(
+            handle_key(&mut state, ctrl_key(KeyCode::Char('c'))),
+            Action::CtrlC
+        );
+        assert_eq!(
+            handle_key(&mut state, ctrl_key(KeyCode::Char('d'))),
+            Action::Quit
+        );
+        // The overlay itself is untouched -- there is no live resource to
+        // purge first, unlike the /ask modal.
+        assert!(state.help_open);
+    }
+
+    /// T7 acceptance: the overlay must not steal keys meant for an active
+    /// permission prompt -- `state.help_open` staying `true` in the
+    /// background (set before the prompt arrived) must not matter once
+    /// `mode` is `AwaitingPermission`.
+    #[test]
+    fn help_overlay_does_not_intercept_keys_while_a_permission_prompt_is_active() {
+        let mut state = AppState::new(AgentId::new());
+        state.open_help();
+        let (prompt, _rx) = crate::tui::gate::PendingPrompt::new_for_test(conway::PermissionRequest {
+            agent_id: AgentId::new(),
+            agent_path: Vec::new(),
+            tool: conway::ToolName::new("bash"),
+            category: conway::ToolCategory::Execute,
+            arguments: serde_json::json!({}),
+            rendered: "bash: ls".to_string(),
+            call_id: "tc_1".to_string(),
+        });
+        state.mode = Mode::AwaitingPermission(prompt);
+
+        let action = handle_key(&mut state, key(KeyCode::Char('y')));
+
+        assert_eq!(
+            action,
+            Action::PermissionDecision(PermissionDecision::AllowOnce),
+            "the permission prompt's own `y` binding must still resolve, not be \
+             swallowed by the (backgrounded) help overlay"
         );
     }
 }

@@ -190,7 +190,7 @@ box, and a bottom status line.
   shows.
 
   `/tree` still parses but is demoted to a **hidden alias** (dropped from
-  `/help` and the palette): it renders the same content as the panel —
+  the palette): it renders the same content as the panel —
   the same `state.tree` nodes, the same recipe labels — as plain-text
   transcript notices, one line per agent, indented by depth, with the full
   agent id kept on each line so it can be copied into `/steer` /
@@ -542,7 +542,9 @@ line; the clean-copy invariant is preserved for settled output).
 `/thinking` and `/timestamps` are intercepted in `app.rs::submit`
 (mirroring `/agents`'s pattern) — state-only toggles that never reach
 `commands::parse` and are never sent to the model. Both are listed in the
-`/help` overlay (`commands.rs::HELP_LINES`), the command palette
+`/help` keybinding overlay (`view/help.rs` — T7; they are the one
+deliberate exception to "keybindings only", since they function as
+keyboard-driven view toggles on par with `Ctrl-E`), the command palette
 (`view/palette.rs::COMMANDS`), and the status-line hint.
 
 ### Sticky header, jump keys, and the scrolled-back indicator (T6)
@@ -733,6 +735,72 @@ apply. The selection highlight itself is a plain reversed-style row (no
 box-drawing), consistent with the rest of the single-column redesign, and
 is covered by dedicated render-layer tests asserting the highlighted row
 is reachable and correctly styled.
+
+### The `/help` keybinding overlay (T7)
+
+Before this item, `/help` dumped a static command list
+(`commands.rs::HELP_LINES`, now removed entirely) into the transcript as a
+pile of `Entry::Notice` lines — spamming the conversation with content that
+already lived in the `/` command palette above, and there was no keybinding
+reference anywhere. `/help` now opens a read-only overlay
+(`tui/view/help.rs`) instead and pushes **zero** transcript entries;
+`AppState::open_help` is a pure flag flip (`AppState::help_open`), nothing
+more.
+
+**Keybindings only.** Every genuine slash *command* (`/steer`, `/fork`,
+`/spawn`, `/ask`, `/agents`, `/resume`, `/quit`, ...) stays exclusively in
+the `/` palette — the overlay never lists one, so the two surfaces can never
+drift into duplicating each other. `/thinking` and `/timestamps` are the one
+deliberate exception: syntactically they are slash commands, but
+functionally they are keyboard-driven view toggles (on par with `Ctrl-E`,
+not with "spawn an agent"), so they appear in the overlay's "tools &
+display" group alongside `Ctrl-E`.
+
+The overlay groups every binding the TUI actually has: input & editing
+(`Enter`, `Alt-Enter`/`Shift-Enter`, `Left`/`Right`, `Backspace`, `Ctrl-W`,
+`Ctrl-D`, `Ctrl-C`), history & navigation (`Up`/`Down`, `Home`/`End`,
+`PageUp`/`PageDown`), tools & display (`Ctrl-E`, `/thinking`,
+`/timestamps`), the modal-only keys for the `/ask` modal / intent-confirm
+card / permission prompt (each only live while that surface is up), and the
+agent panel's `v`/`Esc`. It closes a trailing note explaining that **mouse
+wheel scrolling is deliberately not a Conway binding** — Conway never calls
+`EnableMouseCapture` and has no `MouseEventKind` handler anywhere in this
+crate, so the wheel scrolling you see is your terminal emulator's own
+scrollback, not something Conway captures (capturing it would disable the
+terminal's native click-drag text selection, the very mechanism the
+transcript's clean-copy guarantee exists to protect — see the T6 section
+above). `PageUp`/`PageDown` and `Home`/`End` are the in-app equivalents. The
+note is deliberately prose, never a keybinding *row*, so a future
+well-meaning "mouse: scroll" row can't sneak back in as if it were a real
+binding — a dedicated test scans the overlay's row data directly to guard
+this.
+
+**No hotkey opens it.** Conway is always in input-typing mode, so a bare
+printable key (`?`, `F1`, ...) can never be a binding — `/help` is the only
+way in, and `Esc` is the only way out.
+
+**Shape and stacking.** The overlay follows the permission/`/ask`/
+intent-confirm overlays' shape exactly: `Clear` + a bordered `Block` drawn
+over the transcript area, exempt from the transcript's own clean-copy
+guarantee (it is a modal, not conversation text). Unlike those three it is
+**not** a `Mode` variant — `AppState::help_open` is a plain flag, since the
+overlay is a passive reference with no decision the user owes an answer to,
+unlike a blocked tool call, an unfated `/ask`, or an unconfirmed classified
+intent. `view::draw` gates the overlay on `help_open && mode == Normal`, and
+`input::handle_key` gates its own key-swallowing (everything but `Esc`/
+`Ctrl-C`/`Ctrl-D`) the same way. This gives "never stacks on an active
+decision" for free: `offer_prompt`/`offer_ask_modal`/`offer_intent_confirm`
+all move `mode` away from `Normal` the instant one of those three surfaces
+arrives, regardless of `help_open` — the overlay simply stops being
+drawn/reachable the moment that happens, with no separate park/promote path
+needed, and it reappears on its own once `mode` returns to `Normal` (nothing
+ever resets `help_open` on the other three surfaces' account). A `/help`
+submission can only ever reach `open_help` while `mode` is already `Normal`
+in the first place, since the input line is inert while any of the other
+three surfaces owns `mode`.
+
+New theme slots: `help_border` (blue, bold) and `help_key` (green, bold —
+the key/chord column), both configurable under `[tui.theme]`.
 
 ### The `/ask` single-turn modal
 
