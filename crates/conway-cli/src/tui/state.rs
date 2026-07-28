@@ -534,18 +534,30 @@ pub struct AppState {
     /// (the modal is a single-question surface; concurrent asks would
     /// compete for the one [`Mode::AskModal`] slot).
     pub ask_in_flight: bool,
-    /// The permission overlay's own command-body scroll offset (bug fix,
+    /// The shared modal body-scroll offset (V1; originated as the
+    /// permission-overlay-only `permission_scroll`, bug fix
     /// 01KYB0F7V65QAMZWWYH8K7DWDC: "no way to see the entire command" for a
-    /// long tool-call argument). Driven by `PageUp`/`PageDown` while
-    /// `Mode::AwaitingPermission` (`input.rs::handle_permission_key`), read
-    /// by `view/mod.rs::draw_permission_overlay` (which clamps it to the
-    /// command's own wrapped line count, so this can hold an arbitrarily
-    /// large value with no risk of scrolling past real content). Reset to 0
-    /// whenever a NEW prompt becomes the active one -- see
-    /// [`Self::offer_prompt`]/[`Self::resolve_current_prompt`] -- so a
-    /// leftover scroll position from a previous, unrelated command never
-    /// carries over.
-    pub permission_scroll: u16,
+    /// long tool-call argument). Driven by `PageUp`/`PageDown` while any of
+    /// the four modal-bearing surfaces is up (`Mode::AwaitingPermission`/
+    /// `Mode::AskModal`/`Mode::IntentConfirm`, or the informational `/help`
+    /// overlay -- `input.rs`'s four `handle_*_key` fns), read by whichever
+    /// `view/mod.rs::draw_*`/`view/help.rs::draw` is currently on screen
+    /// (each clamps it to its OWN content's wrapped line count via
+    /// `view/modal.rs::clamp_scroll`, so this can hold an arbitrarily large
+    /// value with no risk of scrolling past real content).
+    ///
+    /// **One field serves all four surfaces** because at most one of them is
+    /// EVER showing at a time -- the three `Mode` variants are mutually
+    /// exclusive by construction (`Self::mode`'s own doc), and `/help` never
+    /// stacks on top of one either (`Self::help_open`'s own doc) -- so there
+    /// is never a moment where two surfaces could each want a different
+    /// scroll position out of this one field. Reset to 0 whenever a NEW
+    /// surface becomes the active one, so a leftover scroll position from a
+    /// previous, unrelated surface's content never carries over: see
+    /// [`Self::offer_prompt`], [`Self::promote_next_surface`],
+    /// [`Self::offer_ask_modal`], [`Self::offer_intent_confirm`], and
+    /// [`Self::open_help`].
+    pub modal_scroll: u16,
     /// The current braille spinner frame index (T2). Advanced by
     /// [`Self::tick_animation`] modulo [`SPINNER_FRAMES`]' length, only while
     /// [`Self::activity`] is not [`Activity::Idle`]. Rendered by
@@ -804,7 +816,7 @@ impl AppState {
             focused_agent_usage: Usage::default(),
             pending_ask_modal: None,
             ask_in_flight: false,
-            permission_scroll: 0,
+            modal_scroll: 0,
             pending_intent_confirm: None,
             spinner_frame: 0,
             spinner_color_idx: 0,
@@ -1295,6 +1307,10 @@ impl AppState {
     pub fn offer_ask_modal(&mut self, modal: AskModal) {
         if matches!(self.mode, Mode::Normal) {
             self.mode = Mode::AskModal(modal);
+            // V1: a freshly opened modal starts scrolled to its own top --
+            // see `Self::modal_scroll`'s own doc on why one field can serve
+            // every modal-bearing surface.
+            self.modal_scroll = 0;
         } else {
             self.pending_ask_modal = Some(modal);
         }
@@ -1346,6 +1362,9 @@ impl AppState {
     pub fn offer_intent_confirm(&mut self, card: IntentConfirm) {
         if matches!(self.mode, Mode::Normal) {
             self.mode = Mode::IntentConfirm(card);
+            // V1: see `Self::offer_ask_modal`'s own comment on the same
+            // reset.
+            self.modal_scroll = 0;
         } else {
             self.pending_intent_confirm = Some(card);
         }
@@ -1410,17 +1429,24 @@ impl AppState {
     /// Exactly one surface (at most) is promoted per call; the next call
     /// happens when THAT surface closes.
     fn promote_next_surface(&mut self) {
+        // V1: every branch below resets `modal_scroll` -- the newly
+        // promoted surface starts scrolled to its own top, never carrying
+        // over wherever a PREVIOUS, unrelated surface's content happened to
+        // be scrolled (see `Self::modal_scroll`'s own doc on why one field
+        // safely serves all of them).
         if let Some(next) = self.queued_prompts.pop_front() {
             self.mode = Mode::AwaitingPermission(next);
-            self.permission_scroll = 0;
+            self.modal_scroll = 0;
             return;
         }
         if let Some(modal) = self.pending_ask_modal.take() {
             self.mode = Mode::AskModal(modal);
+            self.modal_scroll = 0;
             return;
         }
         if let Some(card) = self.pending_intent_confirm.take() {
             self.mode = Mode::IntentConfirm(card);
+            self.modal_scroll = 0;
         }
     }
 
@@ -1432,7 +1458,7 @@ impl AppState {
             // A freshly promoted prompt starts scrolled to the top of its
             // own command -- never carries over wherever a PREVIOUS,
             // unrelated prompt's overlay happened to be scrolled.
-            self.permission_scroll = 0;
+            self.modal_scroll = 0;
         } else {
             self.queued_prompts.push_back(prompt);
         }
@@ -1462,9 +1488,12 @@ impl AppState {
     /// own doc for why this is a plain flag flip rather than a `mode`
     /// transition/park -- `commands.rs`'s `SlashCommand::Help` arm can only
     /// ever reach this while `mode` is already `Normal` (the input line is
-    /// inert otherwise), so there is nothing to park against.
+    /// inert otherwise), so there is nothing to park against. V1: also
+    /// resets `modal_scroll` -- see that field's own doc on why one shared
+    /// field serves every modal-bearing surface, `/help` included.
     pub fn open_help(&mut self) {
         self.help_open = true;
+        self.modal_scroll = 0;
     }
 
     /// Closes the `/help` keybinding overlay (T7's `Esc` binding, wired in

@@ -29,6 +29,12 @@ pub(crate) mod agents;
 mod header;
 mod help;
 mod input_box;
+// V1: the shared bottom-anchored/content-sized/capped modal primitive, and
+// the tree-navigation primitive layered on it. `pub(crate)` (not private)
+// so `help.rs` (a sibling) and a future V4 settings module can both reach
+// them the same way `agents.rs`'s recipe-label helpers are already shared.
+pub(crate) mod menu;
+pub(crate) mod modal;
 pub mod palette;
 mod status;
 pub mod theme;
@@ -36,7 +42,7 @@ mod transcript;
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::Frame;
 
 use super::state::{AppState, AskModal, IntentConfirm, Mode};
@@ -115,17 +121,17 @@ pub fn draw(state: &AppState, frame: &mut Frame, theme: &Theme) {
             frame,
             areas.transcript,
             &pending.request,
-            state.permission_scroll,
+            state.modal_scroll,
             theme,
         );
     }
 
     if let Mode::AskModal(modal) = &state.mode {
-        draw_ask_modal(frame, areas.transcript, modal, theme);
+        draw_ask_modal(frame, areas.transcript, modal, state.modal_scroll, theme);
     }
 
     if let Mode::IntentConfirm(card) = &state.mode {
-        draw_intent_confirm(frame, areas.transcript, card, theme);
+        draw_intent_confirm(frame, areas.transcript, card, state.modal_scroll, theme);
     }
 
     // T7: the `/help` keybinding overlay is NOT a `Mode` variant (see
@@ -139,7 +145,7 @@ pub fn draw(state: &AppState, frame: &mut Frame, theme: &Theme) {
     // those transitions, so the overlay reappears on its own the moment
     // `mode` returns to `Normal`, with zero extra bookkeeping.
     if state.help_open && matches!(state.mode, Mode::Normal) {
-        help::draw(frame, areas.transcript, theme);
+        help::draw(frame, areas.transcript, state.modal_scroll, theme);
     }
 }
 
@@ -280,36 +286,38 @@ pub(crate) fn max_scroll(state: &AppState, area: Rect) -> u16 {
 /// rework -- see that function's own doc.
 const PERMISSION_FOOTER_ROWS: u16 = 3;
 
-/// The permission prompt: a bordered block over the bottom of the
-/// transcript area, unmistakably distinct from ordinary transcript output
-/// (module notes; also this item's human criterion). A `Block`/border here
-/// is fine -- it is a modal overlay, never part of the copyable
-/// conversation (it replaces transcript content on screen only while a
-/// decision is pending, via `Clear`).
+/// The permission prompt: bottom-anchored, content-sized, capped, drawn over
+/// the transcript via the shared [`modal`] primitive (V1) -- unmistakably
+/// distinct from ordinary transcript output (module notes; also this item's
+/// human criterion), never part of the copyable conversation (it replaces
+/// transcript content on screen only while a decision is pending, via
+/// `Clear`).
 ///
 /// Bug fix (01KYB0F7V65QAMZWWYH8K7DWDC): this used to be a fixed ~6-row box
 /// with the ENTIRE `req.rendered` command as line 0 of one unscrolled
 /// `Paragraph` -- a long tool-call argument overflowed the box and clipped
 /// the tool/category line, the agent path, and the `[y]/[a]/[n]/[Esc]`
-/// decision-key hint off-screen, so the user could see neither the full
-/// command nor how to answer the prompt. Reworked so:
-/// - The overlay claims a much larger share of the transcript area (nearly
-///   all of it, `transcript_area`-height permitting) instead of a fixed
-///   handful of rows, so a long command has real room before scrolling is
-///   even needed.
-/// - The block's interior is split into a scrollable command body (grows
-///   to fill whatever's left) and a FIXED-height footer
-///   ([`PERMISSION_FOOTER_ROWS`]) below it holding the tool/category line,
-///   the agent path, and the decision-key hint -- rows the command
-///   `Paragraph` can never grow into, however long `req.rendered` is or
-///   however far it's scrolled. This is what keeps the hint on screen,
-///   not the command's own wrapping.
-/// - `scroll` (`AppState::permission_scroll`, paged by `PageUp`/`PageDown`
-///   while `Mode::AwaitingPermission` -- see `input.rs::handle_permission_key`)
-///   drives the command body's `Paragraph::scroll`, clamped here to the
-///   command's own wrapped line count so an over-large value (this
-///   function's only real validation of it) just lands on the true bottom,
-///   never past real content.
+/// decision-key hint off-screen. V1 replaces that fix's own interim shape
+/// (which over-corrected to "claim nearly the whole transcript area" --
+/// exactly the complaint THIS item exists to address) with
+/// [`modal::draw_modal_frame`]: the overlay sizes to `req.rendered`'s own
+/// wrapped line count, capped at [`modal::DEFAULT_CAP_DENOMINATOR`] of the
+/// transcript area, and SCROLLS past the cap instead of either truncating or
+/// eating the screen.
+/// - The block's interior is split into a scrollable command body and a
+///   FIXED-height footer ([`PERMISSION_FOOTER_ROWS`]) below it holding the
+///   tool/category line, the agent path, and the decision-key hint -- rows
+///   the command `Paragraph` can never grow into, however long
+///   `req.rendered` is or however far it's scrolled. This is what keeps the
+///   hint on screen, not the command's own wrapping.
+/// - `scroll` (`AppState::modal_scroll`, paged by `PageUp`/`PageDown` while
+///   `Mode::AwaitingPermission` -- see `input.rs::handle_permission_key`)
+///   drives the command body's `Paragraph::scroll`, clamped here
+///   ([`modal::clamp_scroll`]) to the command's own wrapped line count so an
+///   over-large value just lands on the true bottom, never past real
+///   content. `modal_scroll` is shared across every modal-bearing surface
+///   (see that field's own doc on `AppState`) -- only one is ever showing at
+///   a time, so one field suffices for all of them.
 /// - Review fix: on a small terminal the footer itself can be forced below
 ///   [`PERMISSION_FOOTER_ROWS`] (border rows alone can eat most of a tiny
 ///   transcript area) -- the decision-key hint is ordered FIRST within the
@@ -323,23 +331,6 @@ fn draw_permission_overlay(
     scroll: u16,
     theme: &Theme,
 ) {
-    // At minimum: 2 border rows + the pinned footer + one row of command.
-    let min_height = (2 + PERMISSION_FOOTER_ROWS + 1).min(transcript_area.height);
-    // Claim nearly the whole transcript area (a "larger fraction of the
-    // screen" per this item's spec) rather than a fixed handful of rows,
-    // leaving just a sliver of ordinary transcript visible above it.
-    let height = transcript_area
-        .height
-        .saturating_sub(1)
-        .max(min_height)
-        .min(transcript_area.height);
-    let area = Rect {
-        x: transcript_area.x,
-        y: transcript_area.y + transcript_area.height.saturating_sub(height),
-        width: transcript_area.width,
-        height,
-    };
-
     let agent_path = if req.agent_path.is_empty() {
         "root".to_string()
     } else {
@@ -350,52 +341,39 @@ fn draw_permission_overlay(
             .join(" -> ")
     };
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" PERMISSION REQUIRED ")
-        .border_style(theme.border_danger);
-    let inner = block.inner(area);
-    frame.render_widget(Clear, area);
-    frame.render_widget(block, area);
-
-    // Reserve the footer's rows FIRST -- up to `PERMISSION_FOOTER_ROWS`, but
-    // never more than the block's interior actually has. The command BODY
-    // (below) is what shrinks on a tight viewport -- all the way to zero --
-    // never the footer: `Constraint::Length(footer_rows)` is satisfied in
-    // full before `Constraint::Min(0)` gets whatever is left over, so a
-    // small overlay squeezes the command out long before it can squeeze the
-    // footer.
-    let footer_rows = PERMISSION_FOOTER_ROWS.min(inner.height);
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(footer_rows)])
-        .split(inner);
-    let body_area = rows[0];
-    let footer_area = rows[1];
-
     let body = Paragraph::new(Line::from(Span::styled(
         req.rendered.clone(),
         theme.emphasized,
     )))
     .wrap(Wrap { trim: false });
-    let body_max_scroll = body
-        .line_count(body_area.width)
-        .saturating_sub(body_area.height as usize)
+    let content_rows = body
+        .line_count(modal::body_width(transcript_area))
         .min(u16::MAX as usize) as u16;
-    let clamped_scroll = scroll.min(body_max_scroll);
-    frame.render_widget(body.scroll((clamped_scroll, 0)), body_area);
+
+    let frame_areas = modal::draw_modal_frame(
+        frame,
+        transcript_area,
+        content_rows,
+        PERMISSION_FOOTER_ROWS,
+        modal::DEFAULT_CAP_DENOMINATOR,
+        " PERMISSION REQUIRED ",
+        theme.border_danger,
+    );
+
+    let body_max_scroll = modal::body_max_scroll(content_rows, frame_areas.body_area.height);
+    let clamped_scroll = modal::clamp_scroll(scroll, body_max_scroll);
+    frame.render_widget(body.scroll((clamped_scroll, 0)), frame_areas.body_area);
 
     // Review fix (01KYB0F7V65QAMZWWYH8K7DWDC): even with the footer's rows
-    // reserved first (above), `footer_area` can still end up shorter than
-    // `PERMISSION_FOOTER_ROWS` on a genuinely tiny viewport -- the block's
-    // own 2 border rows alone can eat most of a small transcript area, with
-    // nothing left to reserve. A `Paragraph` clips top-down, so whichever
-    // line is FIRST survives longest as the footer shrinks. The decision-key
-    // hint is what the user actually needs to act on the prompt -- it goes
-    // FIRST here, ahead of the purely informational tool/category and
-    // agent-path lines, so even a 1-row footer still shows it. (Previously
-    // the hint was last and was the FIRST thing clipped -- exactly
-    // backwards.)
+    // reserved first ([`modal::draw_modal_frame`]'s own invariant),
+    // `footer_area` can still end up shorter than [`PERMISSION_FOOTER_ROWS`]
+    // on a genuinely tiny viewport -- the block's own 2 border rows alone
+    // can eat most of a small transcript area, with nothing left to
+    // reserve. A `Paragraph` clips top-down, so whichever line is FIRST
+    // survives longest as the footer shrinks. The decision-key hint is what
+    // the user actually needs to act on the prompt -- it goes FIRST here,
+    // ahead of the purely informational tool/category and agent-path lines,
+    // so even a 1-row footer still shows it.
     let hint = if body_max_scroll > 0 {
         "[y] allow once  [a] allow always  [n] deny  [Esc] deny with feedback  \
          [PageUp/PageDown] scroll command"
@@ -408,7 +386,7 @@ fn draw_permission_overlay(
         Line::from(format!("agent path: {agent_path}")),
     ];
     let footer = Paragraph::new(footer_lines).wrap(Wrap { trim: true });
-    frame.render_widget(footer, footer_area);
+    frame.render_widget(footer, frame_areas.footer_area);
 }
 
 /// Rows the /ask modal's footer ALWAYS reserves (B5): the fate-key hint,
@@ -417,15 +395,18 @@ fn draw_permission_overlay(
 /// appears).
 const ASK_MODAL_FOOTER_ROWS: u16 = 2;
 
-/// The `/ask` single-turn modal (B5): a bordered block over the bottom of
-/// the transcript area, following [`draw_permission_overlay`]'s precedent
-/// (a modal overlay replacing transcript content only while a decision is
-/// pending, via `Clear` -- never part of the copyable conversation).
-/// Unlike the permission overlay there is no scrolling: the modal's whole
-/// point is the forced choice in the footer, so the answer renders from
-/// its top and clips on a small viewport (the full answer always remains
-/// reachable afterward via whichever fate the user picks -- pull-in merges
-/// it into the parent's transcript; fork keeps the session).
+/// The `/ask` single-turn modal (B5): bottom-anchored, content-sized,
+/// capped, via the shared [`modal`] primitive (V1) -- following
+/// [`draw_permission_overlay`]'s precedent (a modal overlay replacing
+/// transcript content only while a decision is pending, via `Clear` --
+/// never part of the copyable conversation).
+///
+/// V1 adds scrolling here where B5 originally had none (the answer used to
+/// simply clip on a small viewport, on the reasoning that the full answer
+/// remains reachable afterward via whichever fate the user picks) -- this
+/// item's own acceptance criterion is that every ported surface scrolls
+/// past its cap rather than truncating, so a long answer is no longer lost
+/// to a small terminal even before the fate is chosen.
 ///
 /// The footer shows the three fate keys -- `[p] pull in · [f] fork ·
 /// [esc] discard` -- and, after a FAILED fate, the error that kept the
@@ -433,69 +414,57 @@ const ASK_MODAL_FOOTER_ROWS: u16 = 2;
 /// same small-viewport reason the permission overlay's doc explains: a
 /// `Paragraph` clips top-down, so the line the user needs to act on is the
 /// last thing clipped.
-fn draw_ask_modal(frame: &mut Frame, transcript_area: Rect, modal: &AskModal, theme: &Theme) {
-    // At minimum: 2 border rows + the pinned footer + one row of body.
-    let min_height = (2 + ASK_MODAL_FOOTER_ROWS + 1).min(transcript_area.height);
-    let height = transcript_area
-        .height
-        .saturating_sub(1)
-        .max(min_height)
-        .min(transcript_area.height);
-    let area = Rect {
-        x: transcript_area.x,
-        y: transcript_area.y + transcript_area.height.saturating_sub(height),
-        width: transcript_area.width,
-        height,
-    };
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" ASK ")
-        .border_style(theme.border_warning);
-    let inner = block.inner(area);
-    frame.render_widget(Clear, area);
-    frame.render_widget(block, area);
-
-    // Reserve the footer's rows FIRST (same invariant the permission
-    // overlay documents): the body shrinks on a tight viewport, never the
-    // footer.
-    let footer_rows = ASK_MODAL_FOOTER_ROWS.min(inner.height);
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(footer_rows)])
-        .split(inner);
-    let body_area = rows[0];
-    let footer_area = rows[1];
-
+fn draw_ask_modal(
+    frame: &mut Frame,
+    transcript_area: Rect,
+    modal_state: &AskModal,
+    scroll: u16,
+    theme: &Theme,
+) {
     let mut body_lines = vec![
         Line::from(Span::styled(
-            format!("you asked: {}", modal.question),
+            format!("you asked: {}", modal_state.question),
             theme.emphasized,
         )),
         Line::from(""),
     ];
     body_lines.extend(
-        modal
+        modal_state
             .answer
             .split('\n')
             .map(|line| Line::from(line.to_string())),
     );
     let body = Paragraph::new(body_lines).wrap(Wrap { trim: false });
-    frame.render_widget(body, body_area);
+    let content_rows = body
+        .line_count(modal::body_width(transcript_area))
+        .min(u16::MAX as usize) as u16;
 
-    let error_line = match &modal.error {
-        Some(err) => Line::from(Span::styled(
-            format!("error: {err}"),
-            theme.error,
-        )),
+    let frame_areas = modal::draw_modal_frame(
+        frame,
+        transcript_area,
+        content_rows,
+        ASK_MODAL_FOOTER_ROWS,
+        modal::DEFAULT_CAP_DENOMINATOR,
+        " ASK ",
+        theme.border_warning,
+    );
+
+    let body_max_scroll = modal::body_max_scroll(content_rows, frame_areas.body_area.height);
+    let clamped_scroll = modal::clamp_scroll(scroll, body_max_scroll);
+    frame.render_widget(body.scroll((clamped_scroll, 0)), frame_areas.body_area);
+
+    let hint = if body_max_scroll > 0 {
+        "[p] pull in  [f] fork  [esc] discard  [PageUp/PageDown] scroll"
+    } else {
+        "[p] pull in  [f] fork  [esc] discard"
+    };
+    let error_line = match &modal_state.error {
+        Some(err) => Line::from(Span::styled(format!("error: {err}"), theme.error)),
         None => Line::from(""),
     };
-    let footer_lines = vec![
-        Line::from("[p] pull in  [f] fork  [esc] discard"),
-        error_line,
-    ];
+    let footer_lines = vec![Line::from(hint), error_line];
     let footer = Paragraph::new(footer_lines).wrap(Wrap { trim: true });
-    frame.render_widget(footer, footer_area);
+    frame.render_widget(footer, frame_areas.footer_area);
 }
 
 /// Rows the intent confirmation card's footer ALWAYS reserves (C2): the
@@ -507,56 +476,26 @@ fn draw_ask_modal(frame: &mut Frame, transcript_area: Rect, modal: &AskModal, th
 /// than staying open the way the `/ask` modal does).
 const INTENT_CONFIRM_FOOTER_ROWS: u16 = 2;
 
-/// The NL intent confirmation card (C2): a bordered block over the bottom of
-/// the transcript area, following [`draw_ask_modal`]'s overlay precedent (a
-/// modal overlay replacing transcript content only while a decision is
-/// pending, via `Clear` -- never part of the copyable conversation). The
-/// card shows the classified `recipe` (`fork`/`spawn`), the `agent_def`
-/// (or `(inherit)` when `None`), and the `prompt` the classifier produced
-/// (or the user's raw text on the verbatim-passthrough path), then forces
-/// exactly one choice via the footer: `[enter] confirm  [e] edit  [esc]
-/// manual`. The hint is ordered FIRST within the footer for the same
-/// small-viewport reason the `/ask` modal's doc explains: a `Paragraph`
-/// clips top-down, so the line the user needs to act on is the last thing
-/// clipped.
+/// The NL intent confirmation card (C2): bottom-anchored, content-sized,
+/// capped, via the shared [`modal`] primitive (V1) -- following
+/// [`draw_ask_modal`]'s overlay precedent (a modal overlay replacing
+/// transcript content only while a decision is pending, via `Clear` --
+/// never part of the copyable conversation). The card shows the classified
+/// `recipe` (`fork`/`spawn`), the `agent_def` (or `(inherit)` when `None`),
+/// and the `prompt` the classifier produced (or the user's raw text on the
+/// verbatim-passthrough path), then forces exactly one choice via the
+/// footer: `[enter] confirm  [e] edit  [esc] manual`. V1 adds scrolling
+/// here too (a long classified prompt used to simply clip). The hint is
+/// ordered FIRST within the footer for the same small-viewport reason the
+/// `/ask` modal's doc explains: a `Paragraph` clips top-down, so the line
+/// the user needs to act on is the last thing clipped.
 fn draw_intent_confirm(
     frame: &mut Frame,
     transcript_area: Rect,
     card: &IntentConfirm,
+    scroll: u16,
     theme: &Theme,
 ) {
-    // At minimum: 2 border rows + the pinned footer + one row of body.
-    let min_height = (2 + INTENT_CONFIRM_FOOTER_ROWS + 1).min(transcript_area.height);
-    let height = transcript_area
-        .height
-        .saturating_sub(1)
-        .max(min_height)
-        .min(transcript_area.height);
-    let area = Rect {
-        x: transcript_area.x,
-        y: transcript_area.y + transcript_area.height.saturating_sub(height),
-        width: transcript_area.width,
-        height,
-    };
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" INTENT ")
-        .border_style(theme.border_accent);
-    let inner = block.inner(area);
-    frame.render_widget(Clear, area);
-    frame.render_widget(block, area);
-
-    // Reserve the footer's rows FIRST (same invariant the /ask modal
-    // documents): the body shrinks on a tight viewport, never the footer.
-    let footer_rows = INTENT_CONFIRM_FOOTER_ROWS.min(inner.height);
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(footer_rows)])
-        .split(inner);
-    let body_area = rows[0];
-    let footer_area = rows[1];
-
     let recipe = match card.intent.recipe {
         conway::SubagentMode::Fork => "fork",
         conway::SubagentMode::Spawn => "spawn",
@@ -580,14 +519,32 @@ fn draw_intent_confirm(
             .map(|line| Line::from(line.to_string())),
     );
     let body = Paragraph::new(body_lines).wrap(Wrap { trim: false });
-    frame.render_widget(body, body_area);
+    let content_rows = body
+        .line_count(modal::body_width(transcript_area))
+        .min(u16::MAX as usize) as u16;
 
-    let footer_lines = vec![
-        Line::from("[enter] confirm  [e] edit  [esc] manual"),
-        Line::from(""),
-    ];
+    let frame_areas = modal::draw_modal_frame(
+        frame,
+        transcript_area,
+        content_rows,
+        INTENT_CONFIRM_FOOTER_ROWS,
+        modal::DEFAULT_CAP_DENOMINATOR,
+        " INTENT ",
+        theme.border_accent,
+    );
+
+    let body_max_scroll = modal::body_max_scroll(content_rows, frame_areas.body_area.height);
+    let clamped_scroll = modal::clamp_scroll(scroll, body_max_scroll);
+    frame.render_widget(body.scroll((clamped_scroll, 0)), frame_areas.body_area);
+
+    let hint = if body_max_scroll > 0 {
+        "[enter] confirm  [e] edit  [esc] manual  [PageUp/PageDown] scroll"
+    } else {
+        "[enter] confirm  [e] edit  [esc] manual"
+    };
+    let footer_lines = vec![Line::from(hint), Line::from("")];
     let footer = Paragraph::new(footer_lines).wrap(Wrap { trim: true });
-    frame.render_widget(footer, footer_area);
+    frame.render_widget(footer, frame_areas.footer_area);
 }
 
 #[cfg(test)]
@@ -601,7 +558,7 @@ mod tests {
     use crate::tui::gate::PendingPrompt;
     use crate::tui::input::{self, Action};
     use crate::tui::state::Entry;
-    use crate::tui::test_support::render_text;
+    use crate::tui::test_support::{render, render_text};
 
     #[test]
     fn draw_produces_a_non_empty_buffer_and_does_not_mutate_state() {
@@ -1206,5 +1163,200 @@ mod tests {
             render_text(&state, 100, 60).contains(" HELP "),
             "the overlay must reappear once mode returns to Normal"
         );
+    }
+
+    // ---- V1: the shared modal primitive -- every ported surface is
+    // bottom-anchored, content-sized, capped, and the transcript stays
+    // visible above it. ----
+
+    /// Finds the row index of the modal's own top border (the row starting
+    /// with `┌`) -- the acceptance test below uses this to prove ordinary
+    /// transcript rows are still visible ABOVE a short modal, i.e. the
+    /// overlay no longer claims "nearly the whole transcript area" the way
+    /// the pre-V1 permission overlay's own doc used to describe.
+    fn top_border_row(rows: &[String]) -> Option<usize> {
+        rows.iter().position(|row| row.trim_start().starts_with('┌'))
+    }
+
+    #[test]
+    fn a_short_permission_command_leaves_transcript_text_visible_above_it() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        state.transcript.push(Entry::Assistant {
+            text: "TRANSCRIPT_MARKER_ABOVE_THE_MODAL".to_string(),
+            model: None,
+            summary: None,
+            ts: None,
+        });
+        let (prompt, _rx) = PendingPrompt::new_for_test(sample_request("bash: ls"));
+        state.mode = Mode::AwaitingPermission(prompt);
+
+        let rows = render(&state, 80, 24);
+        let border_row = top_border_row(&rows)
+            .expect("a short command's overlay must still draw a bordered block");
+
+        // The pre-V1 overlay claimed `transcript_area.height - 1` (nearly
+        // the whole area) regardless of content -- a short command now
+        // sizes to its own content, so the border must land well below
+        // row 0, leaving room for the transcript entry pushed above it.
+        assert!(
+            border_row > 5,
+            "a short command's modal must be content-sized, not claim nearly the \
+             whole transcript area (border landed at row {border_row}): {rows:?}"
+        );
+        let above: String = rows[..border_row].join("\n");
+        assert!(
+            above.contains("TRANSCRIPT_MARKER_ABOVE_THE_MODAL"),
+            "ordinary transcript text must remain visible above a short modal: {above}"
+        );
+    }
+
+    #[test]
+    fn ask_modal_and_intent_confirm_also_leave_transcript_text_visible_above_them() {
+        for mut state in [
+            ask_modal_state("q", "a", None),
+            intent_confirm_state(conway::SubagentMode::Spawn, None, "go"),
+        ] {
+            state.transcript.push(Entry::Assistant {
+                text: "TRANSCRIPT_MARKER_ABOVE_THE_MODAL".to_string(),
+                model: None,
+                summary: None,
+                ts: None,
+            });
+            // Both constructors above build a FRESH state via `AppState::new`
+            // and re-offer the modal -- push the marker, then re-open so it
+            // lands before the modal in the transcript the same way a real
+            // conversation would. `ask_modal_state`/`intent_confirm_state`
+            // already set `state.mode`; re-render is enough, no re-open
+            // needed since the marker is transcript content, independent of
+            // the modal itself.
+            let rows = render(&state, 80, 24);
+            let border_row = top_border_row(&rows).expect("modal must draw a bordered block");
+            assert!(
+                border_row > 3,
+                "a short modal must not claim nearly the whole transcript area \
+                 (border landed at row {border_row}): {rows:?}"
+            );
+            let above: String = rows[..border_row].join("\n");
+            assert!(
+                above.contains("TRANSCRIPT_MARKER_ABOVE_THE_MODAL"),
+                "ordinary transcript text must remain visible above the modal: {above}"
+            );
+        }
+    }
+
+    /// Acceptance: a long one grows to the cap and then SCROLLS rather than
+    /// truncating -- the permission overlay's own huge-command tests already
+    /// prove the hint survives and paging reveals the tail; this test proves
+    /// the CAP ITSELF is honored (the overlay does not simply keep growing
+    /// with the content the way the pre-V1 "nearly the whole area" shape
+    /// did).
+    #[test]
+    fn a_long_permission_command_caps_its_height_instead_of_filling_the_screen() {
+        let huge_rendered = format!("bash({})", "argument-chunk-".repeat(500));
+        let state = awaiting_permission(&huge_rendered);
+
+        let rows = render(&state, 80, 24);
+        let top = top_border_row(&rows).expect("a huge command's overlay must still draw a border");
+        // The modal's OWN bottom border, not the terminal's last row -- the
+        // overlay is bottom-anchored to `transcript_area` only, which sits
+        // above the (still-visible) input box and status line, not the
+        // whole terminal.
+        let bottom = rows[top..]
+            .iter()
+            .position(|row| row.trim_start().starts_with('└'))
+            .map(|i| top + i)
+            .expect("a huge command's overlay must still draw a closing border");
+        let modal_height = bottom - top + 1;
+
+        // `transcript_area.height` at 80x24 is 20 (24 - input(3) - status(1)),
+        // and `modal::DEFAULT_CAP_DENOMINATOR` is 2, so the cap is 10 -- a
+        // FAR cry from the ~23 rows the pre-V1 "claim nearly the whole area"
+        // shape would have used for content this long.
+        assert!(
+            modal_height <= 10,
+            "a capped modal must not grow anywhere near the full transcript \
+             area for arbitrarily long content (modal_height={modal_height}): {rows:?}"
+        );
+        assert!(
+            modal_height < 20,
+            "sanity: the cap must be meaningfully smaller than the transcript area itself"
+        );
+    }
+
+    // ---- P-10: every ported modal degrades without panicking on a
+    // terminal too small for it. ----
+
+    #[test]
+    fn every_ported_modal_survives_a_tiny_terminal_without_panicking() {
+        let permission = awaiting_permission("bash: ls");
+        let ask = ask_modal_state("q", "a", None);
+        let intent = intent_confirm_state(conway::SubagentMode::Spawn, None, "go");
+        let mut help = AppState::new(AgentId::new());
+        help.open_help();
+
+        for (name, state) in [
+            ("permission", &permission),
+            ("ask", &ask),
+            ("intent", &intent),
+            ("help", &help),
+        ] {
+            for (w, h) in [(80u16, 1u16), (80, 2), (80, 3), (1, 24), (0, 0)] {
+                let backend = TestBackend::new(w.max(1), h.max(1));
+                let mut terminal = Terminal::new(backend).expect("terminal");
+                terminal
+                    .draw(|f| draw(state, f, &Theme::default()))
+                    .unwrap_or_else(|e| panic!("{name} modal panicked/errored at {w}x{h}: {e}"));
+            }
+        }
+    }
+
+    // ---- V1: the shared `modal_scroll` field generalizes across every
+    // modal-bearing surface, and decision-owed surfaces still queue in
+    // priority order with it. ----
+
+    #[test]
+    fn modal_scroll_resets_when_a_queued_prompt_is_promoted() {
+        let mut state = awaiting_permission("first: a long command that was scrolled far");
+        state.modal_scroll = 40;
+
+        let (second, _rx) = PendingPrompt::new_for_test(sample_request("second"));
+        state.offer_prompt(second);
+        // The second prompt queued behind the first -- resolving the first
+        // promotes it, and the leftover scroll from the FIRST prompt's
+        // overlay must not carry over onto the second's.
+        state.resolve_current_prompt(PermissionDecision::AllowOnce);
+
+        assert!(matches!(state.mode, Mode::AwaitingPermission(_)));
+        assert_eq!(
+            state.modal_scroll, 0,
+            "a freshly promoted surface must not inherit the previous surface's scroll position"
+        );
+    }
+
+    #[test]
+    fn modal_scroll_resets_when_an_ask_modal_opens_immediately() {
+        let mut state = AppState::new(AgentId::new());
+        state.modal_scroll = 40;
+
+        state.offer_ask_modal(crate::tui::state::AskModal {
+            question: "q".to_string(),
+            child: AgentId::new(),
+            answer: "a".to_string(),
+            error: None,
+        });
+
+        assert!(matches!(state.mode, Mode::AskModal(_)));
+        assert_eq!(state.modal_scroll, 0);
+    }
+
+    #[test]
+    fn modal_scroll_resets_when_help_opens() {
+        let mut state = AppState::new(AgentId::new());
+        state.modal_scroll = 40;
+
+        state.open_help();
+
+        assert_eq!(state.modal_scroll, 0);
     }
 }

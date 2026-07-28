@@ -27,6 +27,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   go to the more frequent interaction, and history takes the readline
   chord. `PageUp`/`PageDown` and `Home`/`End` are unchanged.
 
+- **TUI: modals no longer eat the whole screen (V1).** The permission
+  prompt's own comment used to read *"claim nearly the whole transcript
+  area"* — which was the bug: a modal that always filled the screen
+  regardless of how little it had to say. The permission prompt, the
+  `/ask` modal, the NL intent-confirm card, and `/help` now share one
+  primitive (`tui/view/modal.rs`): bottom-anchored, sized to their own
+  content, capped at a maximum, with the transcript still visible above
+  them. A long command/answer/prompt that exceeds the cap now **scrolls**
+  (`PageUp`/`PageDown`, a single shared `AppState::modal_scroll` field —
+  the old permission-only `permission_scroll`, generalized) instead of
+  either truncating silently or filling the screen. `/agents` stays a
+  panel rather than becoming a fifth modal on this primitive — it's meant
+  to be browsed while still composing, sharing the screen with a live
+  input line, which a modal (drawn *over* the transcript) cannot do.
+
+  A new tree/menu navigation primitive (`tui/view/menu.rs`) is layered on
+  the modal for a later settings surface (V4) to fill in — nested,
+  collapsible groups with keyboard navigation, not wired to anything yet
+  but fully exercised by its own tests, so that surface can build on a
+  finished primitive rather than a half one. See `docs/crates/conway-cli.md`
+  for the cap-fraction measurement and the full reasoning.
+
 ### Added
 
 - **TUI: `/help` keybinding overlay (T7).** `/help` used to dump a static
