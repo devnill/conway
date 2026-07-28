@@ -9,6 +9,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **TUI: input ergonomics — multi-line, persisted history, bracketed
+  paste, and a cursor-clamp fix (T8).** The input line was
+  single-line-only (`Enter` always submitted, `\n` could never land in
+  it), had no memory of previous prompts, mangled a pasted block into a
+  flood of individual keystrokes, and clamped a long line's cursor to the
+  box's own width instead of scrolling — the cursor froze at the right
+  edge while the text kept extending off-screen invisibly.
+
+  `Alt-Enter` **and** `Shift-Enter` both insert a literal `\n` (some
+  terminals encode Shift-Enter indistinguishably from a plain Enter, so
+  only binding one would silently lose multi-line entry there); plain
+  `Enter` still submits. The box's own height grows with the draft
+  (capped at a third of the terminal height) without disturbing T6's
+  header-overflow math, which now reads the same grown height.
+
+  `Up`/`Down` recall a bounded, persisted history FIFO
+  (`[tui.history_size]`, default 500) — oldest evicted once the cap is
+  exceeded, `Down` past the newest entry restores whatever unsent draft
+  you had going, and a recalled entry is editable inline before
+  resubmit. History is contended with the `/` command palette, the
+  `/agents` panel, and a multi-line draft's own interior lines, resolved
+  in that fixed priority order so recall can never fire while another
+  surface owns the arrow keys. It persists to `~/.conway/history`
+  (alongside the global config, not the project checkout), one
+  JSON-string-encoded entry per line so an embedded `\n` round-trips,
+  written via a tmp-then-rename so a crash mid-write can't corrupt it. A
+  missing/corrupt file degrades to an empty history (P-10) and a failed
+  write never fails the submit that triggered it.
+
+  Bracketed paste is now actually enabled on the terminal (it previously
+  wasn't, so `Event::Paste` never even arrived) and inserts the whole
+  pasted block as one edit at the cursor, not a per-character flood.
+
+  The cursor-clamp bug is fixed: the box's cursor line now scrolls
+  horizontally (and, for a tall multi-line draft, the box scrolls
+  vertically) so the cursor is always genuinely at the character it
+  claims to be at, instead of visually pinned to `width - 2` regardless
+  of the draft's true length.
+
 - **TUI: sticky context header, End/Home jump keys, and a scrolled-back
   indicator (T6).** Scrolling back through a long conversation gave no
   sense of position and no way home but paging. Three keyboard-only

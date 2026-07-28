@@ -6,10 +6,18 @@
 //! panic mid-session never leaves the user's shell in raw mode), and
 //! restores the terminal on every other exit path too (`Ok`, `Err`, or a
 //! failure constructing the session).
+//!
+//! T8 also enables crossterm's bracketed-paste mode here: without it the
+//! terminal never emits `Event::Paste` at all, and a pasted block arrives as
+//! a flood of ordinary key events instead of one atomic paste (`app.rs`'s
+//! `CEvent::Paste` arm handles the event; THIS is what makes the terminal
+//! send it in the first place). Disabled in [`restore_terminal`] alongside
+//! raw mode and the alternate screen, on every exit path.
 
 pub mod app;
 pub mod commands;
 pub mod gate;
+pub mod history;
 pub mod input;
 pub mod state;
 #[cfg(test)]
@@ -18,6 +26,7 @@ pub mod view;
 
 use conway::{Conway, ConwayError};
 use ratatui::backend::CrosstermBackend;
+use ratatui::crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -66,7 +75,14 @@ pub async fn run(cli: &Cli, conway: Conway, gate_rx: GateReceiver) -> conway::Re
     let _ = conway.sweep_stale_modal_asks().await;
 
     enable_raw_mode().map_err(ConwayError::Io)?;
-    if let Err(e) = execute!(std::io::stdout(), EnterAlternateScreen) {
+    // T8: bracketed paste alongside the alternate screen -- one `execute!`
+    // call so a mid-sequence failure still leaves `restore_terminal` (which
+    // undoes both, best-effort) as the single cleanup path below.
+    if let Err(e) = execute!(
+        std::io::stdout(),
+        EnterAlternateScreen,
+        EnableBracketedPaste
+    ) {
         restore_terminal();
         return Err(ConwayError::Io(e));
     }
@@ -129,6 +145,11 @@ pub async fn run(cli: &Cli, conway: Conway, gate_rx: GateReceiver) -> conway::Re
 /// caller's perspective -- called from both normal exit paths and the panic
 /// hook, neither of which can usefully propagate a further error.
 fn restore_terminal() {
+    // T8: disable bracketed paste before leaving the alternate screen --
+    // reverse order of `run`'s enable, and independently best-effort like
+    // every other step here (a failure disabling paste mode must not skip
+    // leaving the alternate screen).
+    let _ = execute!(std::io::stdout(), DisableBracketedPaste);
     let _ = disable_raw_mode();
     let _ = execute!(std::io::stdout(), LeaveAlternateScreen);
 }

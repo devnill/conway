@@ -38,6 +38,19 @@ pub fn xdg_config_path(env: &HashMap<String, String>) -> Option<PathBuf> {
     directories::BaseDirs::new().map(|dirs| dirs.home_dir().join(".conway").join("settings.json"))
 }
 
+/// The TUI's persisted input-history file path (T8): alongside the
+/// user-scoped global config -- i.e. the same directory
+/// [`xdg_config_path`] resolves `settings.json` into, just with the
+/// filename `history` instead. Deliberately NOT the project-scoped
+/// `.conway/` directory `discover` looks in: history follows the user
+/// across every project, not the checkout. `conway-cli` has no direct
+/// `directories` dependency of its own (C-04: no new dependencies), so it
+/// reaches this resolution through the facade the same way it already
+/// reaches `xdg_config_path`'s directory choice.
+pub fn history_file_path(env: &HashMap<String, String>) -> Option<PathBuf> {
+    xdg_config_path(env).and_then(|settings| settings.parent().map(|dir| dir.join("history")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -74,6 +87,14 @@ mod tests {
         env.insert("XDG_CONFIG_HOME".to_string(), "/custom/xdg".to_string());
         let path = xdg_config_path(&env).unwrap();
         assert_eq!(path, PathBuf::from("/custom/xdg/conway/settings.json"));
+    }
+
+    #[test]
+    fn history_file_path_sits_alongside_the_resolved_settings_json() {
+        let mut env = HashMap::new();
+        env.insert("XDG_CONFIG_HOME".to_string(), "/custom/xdg".to_string());
+        let history = history_file_path(&env).unwrap();
+        assert_eq!(history, PathBuf::from("/custom/xdg/conway/history"));
     }
 
     #[test]
