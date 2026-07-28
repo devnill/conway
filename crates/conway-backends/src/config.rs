@@ -80,13 +80,6 @@ impl<'de> Deserialize<'de> for SecretString {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ConfigError {
-    /// C-02 / GP-09: Anthropic subscription OAuth tokens are contractually
-    /// prohibited and technically blocked. Rejected at config-parse time,
-    /// not at first request.
-    #[error(
-        "Anthropic subscription OAuth tokens (sk-ant-oat*) are not supported: subscription OAuth tokens are not supported by conway; use a standard API key (sk-ant-api*) from console.anthropic.com"
-    )]
-    SubscriptionTokenRejected,
     #[error("missing API key: api_key must not be empty or whitespace-only")]
     MissingApiKey,
     /// WI-017: `ModelMetadataStore::load` failed to parse a metadata file at
@@ -97,9 +90,9 @@ pub enum ConfigError {
     Metadata { path: String, detail: String },
 }
 
-/// Raw wire shape for [`AnthropicConfig`]. Exists solely so deserialization
-/// can route through `TryFrom` and reject subscription-OAuth keys as part of
-/// deserialization itself (C-02, GP-09), rather than only at first use.
+/// Raw wire shape for [`AnthropicConfig`]. Exists so deserialization routes
+/// through `TryFrom`, which runs [`AnthropicConfig::validate`] as part of
+/// deserialization itself rather than deferring it to first use.
 #[derive(Debug, Clone, Deserialize)]
 struct AnthropicConfigRaw {
     api_key: SecretString,
@@ -114,10 +107,17 @@ struct AnthropicConfigRaw {
 }
 
 /// Configuration for `AnthropicBackend` (feature `anthropic`; adapter itself
-/// is WI-021). Deserializing this type is how `sk-ant-oat*` rejection at
-/// config-parse time (C-02, GP-09) is enforced: a value that fails
-/// [`AnthropicConfig::validate`] fails deserialization, it is never
-/// possible to construct an `AnthropicConfig` carrying a rejected key.
+/// is WI-021). Deserializing this type runs [`AnthropicConfig::validate`]: a
+/// value that fails validation fails deserialization, so it is never
+/// possible to construct an `AnthropicConfig` carrying an empty key.
+///
+/// conway does not inspect the *shape* of an API key. Any non-empty key is
+/// passed through to the configured `base_url` as-is, which is what lets an
+/// Anthropic-compatible third-party endpoint (a coding-plan subscription, a
+/// self-hosted shim) work without conway adjudicating whether the
+/// credential looks legitimate. An unusable key surfaces as the provider's
+/// own auth error, which is more accurate than any guess conway could make
+/// from a prefix.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(try_from = "AnthropicConfigRaw")]
 pub struct AnthropicConfig {
@@ -129,16 +129,13 @@ pub struct AnthropicConfig {
 }
 
 impl AnthropicConfig {
-    /// Rejection rule: `api_key` trimmed; a value starting with
-    /// `sk-ant-oat` is a subscription OAuth token and is rejected. An
-    /// empty/whitespace-only key is rejected separately.
+    /// Rejects only an empty/whitespace-only `api_key`. Key *shape* is never
+    /// inspected: a missing credential is a configuration mistake conway can
+    /// name precisely, while an unrecognized key format is the provider's
+    /// call to make, not conway's.
     pub fn validate(&self) -> Result<(), ConfigError> {
-        let trimmed = self.api_key.expose_secret().trim();
-        if trimmed.is_empty() {
+        if self.api_key.expose_secret().trim().is_empty() {
             return Err(ConfigError::MissingApiKey);
-        }
-        if trimmed.starts_with("sk-ant-oat") {
-            return Err(ConfigError::SubscriptionTokenRejected);
         }
         Ok(())
     }
@@ -206,12 +203,46 @@ mod tests {
         assert_eq!(secret.expose_secret(), "sk-ant-api03-super-secret");
     }
 
+    /// conway does not police key shape. A subscription-style token is a
+    /// valid key as far as config validation is concerned -- whether it
+    /// works is the provider's answer to give, not conway's. This is what
+    /// lets a Kimi coding-plan key (or any Anthropic-compatible endpoint's
+    /// credential) configure without special-casing.
     #[test]
-    fn config_error_display_is_exact_for_subscription_token_rejection() {
-        let err = ConfigError::SubscriptionTokenRejected;
-        assert_eq!(
-            err.to_string(),
-            "Anthropic subscription OAuth tokens (sk-ant-oat*) are not supported: subscription OAuth tokens are not supported by conway; use a standard API key (sk-ant-api*) from console.anthropic.com"
-        );
+    fn subscription_style_keys_are_accepted_without_inspection() {
+        for key in [
+            "sk-ant-oat01-some-subscription-token",
+            "sk-ant-api03-a-standard-key",
+            "kimi-coding-plan-key",
+        ] {
+            let config = AnthropicConfig {
+                api_key: SecretString::new(key),
+                base_url: default_anthropic_base(),
+                anthropic_version: default_anthropic_version(),
+                timeout: None,
+                models: BTreeMap::new(),
+            };
+            assert!(
+                config.validate().is_ok(),
+                "key shape must not be inspected: {key}"
+            );
+        }
+    }
+
+    #[test]
+    fn empty_or_whitespace_api_key_is_still_rejected() {
+        for key in ["", "   ", "\t\n"] {
+            let config = AnthropicConfig {
+                api_key: SecretString::new(key),
+                base_url: default_anthropic_base(),
+                anthropic_version: default_anthropic_version(),
+                timeout: None,
+                models: BTreeMap::new(),
+            };
+            assert!(
+                matches!(config.validate(), Err(ConfigError::MissingApiKey)),
+                "a missing key is a config mistake conway should name: {key:?}"
+            );
+        }
     }
 }

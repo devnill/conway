@@ -1,6 +1,6 @@
 //! Five-source precedence merge (default < XDG < project < env < CLI),
 //! `CONWAY_*` environment mapping, and `ConwayConfig` semantic validation
-//! (including mandatory `sk-ant-oat*` rejection and the headroom checks).
+//! (the headroom checks and structural consistency checks).
 //!
 //! Merge happens on `serde_json::Value` (tables union by key, arrays and
 //! scalars replace wholesale), and only the final merged document is
@@ -117,7 +117,7 @@ pub fn load(options: LoadOptions) -> Result<LoadOutcome> {
 }
 
 /// Re-applies `cli_overrides` to an already-loaded config (used by
-/// `ConwayBuilder::build`, WI-100, so a CLI-supplied `sk-ant-oat*` key or an
+/// `ConwayBuilder::build`, WI-100, so an
 /// invalid override is caught even when `from_parts`/`from_config` bypassed
 /// `load`'s own CLI layer). Re-runs full validation.
 pub fn apply_cli(config: &ConwayConfig, cli: &CliOverrides) -> Result<ConwayConfig> {
@@ -411,47 +411,24 @@ fn cli_overrides_to_value(cli: &CliOverrides) -> Value {
     Value::Object(root)
 }
 
-const OAUTH_TOKEN_PREFIX: &str = "sk-ant-oat";
-
-fn oauth_error(backend_id: &str, source: &str) -> ConwayError {
-    ConwayError::Config {
-        path: None,
-        message: format!(
-            "Anthropic subscription OAuth tokens (sk-ant-oat*) are not supported: using a Claude \
-             subscription token through a third-party harness is prohibited by Anthropic's Terms \
-             of Service and has been technically blocked since February 2026. Use an API key \
-             (sk-ant-api*) from console.anthropic.com instead. (backend: {backend_id}, source: {source})"
-        ),
-    }
-}
-
 /// Runs every validation step in the documented order, failing on the
-/// first hard error (steps 1-7) and returning accumulated warnings from
-/// step 8.
+/// first hard error and returning accumulated warnings from the last step.
+///
+/// Note: conway does not validate the *shape* of an API key. Whether a
+/// credential is a metered API key, a coding-plan subscription key, or a
+/// token for some Anthropic-compatible third-party endpoint is not
+/// conway's business to adjudicate -- the provider answers that, and its
+/// answer is more accurate than a prefix match here.
 pub fn validate(
     config: &ConwayConfig,
     metadata: &ModelMetadata,
-    env: &HashMap<String, String>,
+    // Retained in the signature (this function is `pub`) though no current
+    // check consults it: the removed key-shape check was its only reader.
+    // A future validation that legitimately needs the injected environment
+    // has it available without a breaking signature change.
+    _env: &HashMap<String, String>,
 ) -> Result<Vec<ConfigWarning>> {
-    // 1. OAuth token rejection — direct `api_key`, and the value named by
-    //    `api_key_env` when it resolves in `env` (the injected
-    //    environment). Applies regardless of which layer (file, `CONWAY_*`
-    //    env, or a hypothetical CLI layer) produced the offending value:
-    //    this function only sees the final merged `ConwayConfig`.
-    for (id, backend) in &config.backends {
-        if backend.api_key.starts_with(OAUTH_TOKEN_PREFIX) {
-            return Err(oauth_error(id, "api_key"));
-        }
-        if !backend.api_key_env.is_empty() {
-            if let Some(resolved) = env.get(&backend.api_key_env) {
-                if resolved.starts_with(OAUTH_TOKEN_PREFIX) {
-                    return Err(oauth_error(id, "api_key_env"));
-                }
-            }
-        }
-    }
-
-    // 2. default_role exists in [roles].
+    // 1. default_role exists in [roles].
     if !config.roles.contains_key(config.default_role.as_str()) {
         let mut known: Vec<&str> = config.roles.keys().map(String::as_str).collect();
         known.sort_unstable();
@@ -465,7 +442,7 @@ pub fn validate(
         });
     }
 
-    // 3. Every ModelRef in every chain has the form <backend_id>/<model>
+    // 2. Every ModelRef in every chain has the form <backend_id>/<model>
     //    and <backend_id> exists in [backends].
     for (name, entry) in &config.roles {
         for raw in &entry.chain {
@@ -487,7 +464,7 @@ pub fn validate(
         }
     }
 
-    // 4. permissions.mode = "allowlist" requires non-empty allowed_tools.
+    // 3. permissions.mode = "allowlist" requires non-empty allowed_tools.
     if matches!(
         config.permissions.mode,
         crate::config::schema::PermissionMode::Allowlist
@@ -500,7 +477,7 @@ pub fn validate(
         });
     }
 
-    // 5. fsync = "interval" requires fsync_interval_ms > 0.
+    // 4. fsync = "interval" requires fsync_interval_ms > 0.
     if matches!(
         config.session.fsync,
         crate::config::schema::FsyncMode::Interval
@@ -512,7 +489,7 @@ pub fn validate(
         });
     }
 
-    // 6. api_key and api_key_env are not both non-empty for the same
+    // 5. api_key and api_key_env are not both non-empty for the same
     //    backend.
     for (id, backend) in &config.backends {
         if !backend.api_key.is_empty() && !backend.api_key_env.is_empty() {
@@ -525,7 +502,7 @@ pub fn validate(
         }
     }
 
-    // 7. Hard error: headroom values must be > 0 (global and every present
+    // 6. Hard error: headroom values must be > 0 (global and every present
     //    per-role override).
     if config.routing.default_headroom_tokens == 0 {
         return Err(ConwayError::Config {
@@ -544,7 +521,7 @@ pub fn validate(
         }
     }
 
-    // 8. Warning only: headroom >= smallest reachable model context.
+    // 7. Warning only: headroom >= smallest reachable model context.
     let mut warnings = Vec::new();
     if !metadata.models.is_empty() {
         let mut seen = BTreeSet::new();

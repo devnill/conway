@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Config no longer inspects the shape of an API key.** The
+  `sk-ant-oat*` prefix rejection is removed from all three layers that
+  enforced it (`AnthropicConfig::validate`, `config::merge::validate`, and
+  `ConwayBuilder`'s `api_key_env` resolution), along with the
+  `ConfigError::SubscriptionTokenRejected` variant. Any non-empty key is
+  now passed through to the configured `base_url` as-is.
+
+  Policing which credentials look legitimate is an opinion that does not
+  belong in the core, and it blocked a real use case: an
+  Anthropic-compatible third-party endpoint (a coding-plan subscription, a
+  self-hosted shim) could not be configured, and the resulting error
+  misdirected the user to `console.anthropic.com` — the wrong vendor
+  entirely. Whether a key works is the provider's answer to give, and its
+  auth error is more accurate than any prefix match conway could perform.
+
+  **Unchanged:** an empty or whitespace-only `api_key` is still rejected
+  (`ConfigError::MissingApiKey`), and an `api_key_env` naming an unset
+  variable is still a hard error that names the variable. Those describe a
+  missing credential, which conway can identify precisely, rather than
+  judging one it has.
+
 ### Added
 
 - **TUI: tool output folding + expand (T5).** A settled tool entry's

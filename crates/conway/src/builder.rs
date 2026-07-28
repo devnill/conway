@@ -35,12 +35,10 @@
 //!   is `pub`, so this module builds each directly via a struct literal
 //!   instead of round-tripping through a synthesized JSON document.
 //!   `AnthropicConfig::validate()` (which the private `TryFrom` path would
-//!   otherwise run) is called explicitly after construction — this is not
-//!   optional: `api_key_env` is resolved from the live process environment
-//!   at `build()` time (a value the earlier `config::load` OAuth check never
-//!   saw, since that check only inspected `LoadOptions.env`), so skipping
-//!   this call would let a live `sk-ant-oat*` token bypass GP-09's hard
-//!   gate.
+//!   otherwise run) is called explicitly after construction: `api_key_env`
+//!   is resolved from the live process environment at `build()` time, a
+//!   value the earlier `config::load` never saw (it only inspected
+//!   `LoadOptions.env`).
 //! - **`OpenAiCompatConfig.dialect` is parsed by hand** ([`parse_dialect`]),
 //!   not via that type's own `serde(rename_all = "snake_case")`
 //!   `Deserialize` impl: the facade's documented dialect values
@@ -261,11 +259,9 @@ impl ConwayBuilder {
             warnings,
         } = self;
 
-        // 1. Apply CLI overrides; re-validate. `CliOverrides` has no
-        //    `api_key` field, so this can't catch a CLI-supplied oat token --
-        //    its real value is catching a pre-existing sk-ant-oat* token in a
-        //    config assembled via `from_parts`, which bypasses `load`'s own
-        //    OAuth-token check entirely.
+        // 1. Apply CLI overrides; re-validate. This is what catches an
+        //    invalid override in a config assembled via `from_parts`, which
+        //    bypasses `load`'s own validation entirely.
         let config = config::merge::apply_cli(&config, &cli_overrides)?;
         let cwd = config.cwd.clone();
 
@@ -439,17 +435,12 @@ fn resolve_path(cwd: &Path, p: &Path) -> PathBuf {
 /// empty string (no key configured). `merge::validate` already established
 /// the two are mutually exclusive.
 ///
-/// Also re-applies GP-09's OAuth-token rejection to whatever `api_key_env`
-/// resolves to at `build()` time -- a value `config::merge::validate` never
-/// saw, since that check only inspects `LoadOptions.env` at `load()` time.
-/// For `kind = "anthropic"` this duplicates `AnthropicConfig::validate()`'s
-/// own check (harmless); `kind = "openai-compat"` has no equivalent
-/// self-check, so doing it here once, for both kinds, keeps the guard
-/// symmetric rather than Anthropic-only.
+/// The key's *shape* is never inspected. An `api_key_env` that names an
+/// unset variable is a configuration mistake conway can describe exactly,
+/// so that stays a hard error; what the resolved value looks like is the
+/// provider's judgment to make, not conway's.
 #[cfg(any(feature = "anthropic", feature = "openai-compat"))]
 fn resolve_api_key(id: &str, entry: &BackendEntry) -> Result<String> {
-    const OAUTH_TOKEN_PREFIX: &str = "sk-ant-oat";
-
     if !entry.api_key.is_empty() {
         return Ok(entry.api_key.clone());
     }
@@ -461,17 +452,6 @@ fn resolve_api_key(id: &str, entry: &BackendEntry) -> Result<String> {
                 entry.api_key_env
             ),
         })?;
-        if resolved.starts_with(OAUTH_TOKEN_PREFIX) {
-            return Err(ConwayError::Config {
-                path: None,
-                message: format!(
-                    "backend '{id}': api_key_env '{}' resolves to a Claude subscription OAuth \
-                     token (sk-ant-oat*), which is rejected everywhere a direct API key is \
-                     required",
-                    entry.api_key_env
-                ),
-            });
-        }
         return Ok(resolved);
     }
     Ok(String::new())
