@@ -22,6 +22,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn config(base_url: &str) -> AnthropicConfig {
     AnthropicConfig {
+        id: conway_core::ids::BackendId::new("anthropic"),
         api_key: SecretString::new("sk-ant-api03-test-key"),
         base_url: base_url.parse().unwrap(),
         anthropic_version: "2023-06-01".into(),

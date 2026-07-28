@@ -30,6 +30,13 @@ fn default_anthropic_base() -> Url {
     Url::parse("https://api.anthropic.com").expect("default Anthropic base URL must be valid")
 }
 
+/// The backend id an `AnthropicConfig` carries when none is configured.
+/// Preserves the pre-existing behavior for every config that does not name
+/// one, so adding the field is not a breaking change.
+fn default_anthropic_id() -> BackendId {
+    BackendId::new("anthropic")
+}
+
 fn default_anthropic_version() -> String {
     "2023-06-01".to_string()
 }
@@ -96,6 +103,8 @@ pub enum ConfigError {
 #[derive(Debug, Clone, Deserialize)]
 struct AnthropicConfigRaw {
     api_key: SecretString,
+    #[serde(default = "default_anthropic_id")]
+    id: BackendId,
     #[serde(default = "default_anthropic_base")]
     base_url: Url,
     #[serde(default = "default_anthropic_version")]
@@ -122,6 +131,14 @@ struct AnthropicConfigRaw {
 #[serde(try_from = "AnthropicConfigRaw")]
 pub struct AnthropicConfig {
     pub api_key: SecretString,
+    /// The `BackendId` this adapter reports from `Backend::id()`. Defaults
+    /// to `"anthropic"`, so an existing config that never named one behaves
+    /// exactly as before. Configurable because the endpoint is not
+    /// necessarily Anthropic's: a Kimi coding plan (or any other
+    /// Anthropic-compatible provider) wants its own id so it can be routed
+    /// to by name and coexist with a real `anthropic` backend in the same
+    /// config. Mirrors `OpenAiCompatConfig::id`.
+    pub id: BackendId,
     pub base_url: Url,
     pub anthropic_version: String,
     pub timeout: Option<Duration>,
@@ -152,6 +169,7 @@ impl TryFrom<AnthropicConfigRaw> for AnthropicConfig {
     fn try_from(raw: AnthropicConfigRaw) -> Result<Self, Self::Error> {
         let config = AnthropicConfig {
             api_key: raw.api_key,
+            id: raw.id,
             base_url: raw.base_url,
             anthropic_version: raw.anthropic_version,
             timeout: raw.timeout,
@@ -217,6 +235,7 @@ mod tests {
         ] {
             let config = AnthropicConfig {
                 api_key: SecretString::new(key),
+                id: default_anthropic_id(),
                 base_url: default_anthropic_base(),
                 anthropic_version: default_anthropic_version(),
                 timeout: None,
@@ -234,6 +253,7 @@ mod tests {
         for key in ["", "   ", "\t\n"] {
             let config = AnthropicConfig {
                 api_key: SecretString::new(key),
+                id: default_anthropic_id(),
                 base_url: default_anthropic_base(),
                 anthropic_version: default_anthropic_version(),
                 timeout: None,

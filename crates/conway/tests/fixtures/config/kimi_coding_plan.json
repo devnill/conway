@@ -1,0 +1,12 @@
+{
+  "backends": {
+    "kimi": {
+      "kind": "anthropic",
+      "base_url": "https://api.kimi.com/coding/",
+      "api_key_env": "KIMI_API_KEY"
+    }
+  },
+  "roles": {
+    "coder": { "chain": ["kimi/k3-256k"] }
+  }
+}

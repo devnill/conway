@@ -45,13 +45,6 @@ const DEFAULT_MAX_TOKENS: u32 = 8192;
 /// and must fail fast (Implementation Notes).
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Fixed backend identity: unlike `OpenAiCompatConfig`, `AnthropicConfig`
-/// carries no `id` field — there is exactly one Anthropic Messages API to
-/// speak, not a family of independently-identified endpoints.
-fn backend_id() -> BackendId {
-    BackendId::new("anthropic")
-}
-
 /// Constructs a `ToolCallAccumulator` for the Anthropic adapter. Anthropic's
 /// `content_block_start`/`content_block_delta` events are translated
 /// (`stream.rs`) into the `{"index":..,"id":..,"function":{"name":..,
@@ -65,6 +58,7 @@ pub(crate) fn new_tool_call_accumulator(tools: &[ToolSpec]) -> ToolCallAccumulat
 
 /// Native Anthropic Messages API adapter (feature `anthropic`).
 pub struct AnthropicBackend {
+    id: BackendId,
     base: Url,
     anthropic_version: String,
     api_key: SecretString,
@@ -80,6 +74,7 @@ impl AnthropicBackend {
         let http =
             HttpClient::with_timeout(timeout).expect("reqwest client with rustls TLS must build");
         Ok(Self {
+            id: config.id,
             base: config.base_url,
             anthropic_version: config.anthropic_version,
             api_key: config.api_key,
@@ -138,7 +133,7 @@ impl AnthropicBackend {
 #[async_trait]
 impl Backend for AnthropicBackend {
     fn id(&self) -> BackendId {
-        backend_id()
+        self.id.clone()
     }
 
     fn capabilities(&self, model: &ModelId) -> Capabilities {
@@ -266,5 +261,50 @@ mod tests {
     fn parse_probe_models_is_empty_on_malformed_body() {
         assert!(parse_probe_models("not json").is_empty());
         assert!(parse_probe_models(r#"{"nope": true}"#).is_empty());
+    }
+
+    fn backend_with_base(base: &str) -> AnthropicBackend {
+        AnthropicBackend::new(AnthropicConfig {
+            api_key: SecretString::new("test-key"),
+            id: BackendId::new("anthropic"),
+            base_url: base.parse().expect("test base_url must parse"),
+            anthropic_version: "2023-06-01".to_string(),
+            timeout: None,
+            models: BTreeMap::new(),
+        })
+        .expect("backend construction")
+    }
+
+    /// A third-party Anthropic-compatible endpoint can live under a path
+    /// prefix rather than at the host root -- Kimi's coding plan is served
+    /// from `https://api.kimi.com/coding/`. The prefix must be preserved
+    /// and exactly one `/` must join it to `v1/messages`, whether or not
+    /// the configured base carries a trailing slash.
+    ///
+    /// Pinned because a plausible "cleanup" of `messages_url` (using
+    /// `Url::join`, say) would silently drop the `/coding` prefix and point
+    /// every request at the wrong path.
+    #[test]
+    fn messages_url_preserves_a_path_prefix_with_or_without_a_trailing_slash() {
+        for base in [
+            "https://api.kimi.com/coding/",
+            "https://api.kimi.com/coding",
+        ] {
+            assert_eq!(
+                backend_with_base(base).messages_url().as_str(),
+                "https://api.kimi.com/coding/v1/messages",
+                "base {base} must compose to the /coding-prefixed messages path"
+            );
+        }
+    }
+
+    #[test]
+    fn messages_url_at_the_host_root_is_unchanged() {
+        assert_eq!(
+            backend_with_base("https://api.anthropic.com")
+                .messages_url()
+                .as_str(),
+            "https://api.anthropic.com/v1/messages"
+        );
     }
 }
