@@ -36,6 +36,12 @@ mod input_box;
 pub(crate) mod menu;
 pub(crate) mod modal;
 pub mod palette;
+// V4: the `/settings` menu, the first real caller of `menu`/`modal` beyond
+// `/help`. `pub(crate)` (not private) so `input.rs` can build/navigate the
+// SAME tree this module renders (`super::view::settings::build_tree`) --
+// mirrors `palette` (`pub mod`) already being reachable from `input.rs` the
+// same way.
+pub(crate) mod settings;
 mod status;
 pub mod theme;
 mod transcript;
@@ -146,6 +152,16 @@ pub fn draw(state: &AppState, frame: &mut Frame, theme: &Theme) {
     // `mode` returns to `Normal`, with zero extra bookkeeping.
     if state.help_open && matches!(state.mode, Mode::Normal) {
         help::draw(frame, areas.transcript, state.modal_scroll, theme);
+    }
+
+    // V4: the `/settings` menu follows the EXACT same gating as `/help`
+    // just above (informational, checked against `Mode::Normal`, never a
+    // `Mode` variant -- see `AppState::settings_open`'s own doc), and is
+    // mutually exclusive with it by construction
+    // (`AppState::open_settings`/`open_help` each clear the other), so this
+    // branch and the one above it never both fire.
+    if state.settings_open && matches!(state.mode, Mode::Normal) {
+        settings::draw(frame, areas.transcript, state, theme);
     }
 }
 
@@ -1020,10 +1036,12 @@ mod tests {
         // tools and display
         assert!(text.contains("Ctrl-E"), "{text}");
         assert!(text.contains("expand/collapse all tool output"), "{text}");
-        assert!(text.contains("/thinking"), "{text}");
-        assert!(text.contains("hide/show reasoning traces"), "{text}");
-        assert!(text.contains("/timestamps"), "{text}");
-        assert!(text.contains("HH:MM"), "{text}");
+
+        // settings menu (V4)
+        assert!(text.contains("settings menu"), "{text}");
+        assert!(text.contains("toggle a display setting"), "{text}");
+        assert!(text.contains("adjust the numeric setting"), "{text}");
+        assert!(text.contains("close the settings menu"), "{text}");
 
         // modal keys
         assert!(text.contains("/ask modal"), "{text}");
@@ -1043,6 +1061,20 @@ mod tests {
         // agent panel
         assert!(text.contains("visibility filter"), "{text}");
         assert!(text.contains("close the agent panel"), "{text}");
+    }
+
+    /// V4 acceptance: `/thinking` and `/timestamps` appear NOWHERE in the
+    /// `/help` overlay -- both are removed commands, not keybindings, so
+    /// they earn no row any more (unlike before V4, when they were the
+    /// overlay's one deliberate "syntactically a command" exception).
+    #[test]
+    fn help_overlay_never_mentions_the_removed_thinking_and_timestamps_commands() {
+        let mut state = AppState::new(AgentId::new());
+        state.open_help();
+
+        let text = render_text(&state, 100, 60);
+        assert!(!text.contains("/thinking"), "{text}");
+        assert!(!text.contains("/timestamps"), "{text}");
     }
 
     /// Acceptance: `mouse` appears nowhere in the overlay's keybinding rows
@@ -1165,6 +1197,87 @@ mod tests {
         );
     }
 
+    // ---- V4: the `/settings` menu -- same non-stacking guarantee `/help`
+    // has, plus mutual exclusion with `/help` itself. ----
+
+    #[test]
+    fn settings_menu_does_not_stack_on_an_active_permission_prompt() {
+        let mut state = awaiting_permission("bash: ls");
+        state.open_settings();
+
+        let text = render_text(&state, 100, 60);
+
+        assert!(
+            text.contains("PERMISSION REQUIRED"),
+            "the permission overlay must win: {text}"
+        );
+        assert!(
+            !text.contains(" SETTINGS "),
+            "the settings menu must not be drawn on top of an active prompt: {text}"
+        );
+    }
+
+    #[test]
+    fn settings_menu_does_not_stack_on_an_active_ask_modal() {
+        let mut state = ask_modal_state("q", "a", None);
+        state.open_settings();
+
+        let text = render_text(&state, 100, 60);
+
+        assert!(text.contains("you asked: q"), "the ask modal must win: {text}");
+        assert!(!text.contains(" SETTINGS "), "{text}");
+    }
+
+    #[test]
+    fn settings_menu_does_not_stack_on_an_active_intent_confirm_card() {
+        let mut state = intent_confirm_state(conway::SubagentMode::Spawn, None, "go");
+        state.open_settings();
+
+        let text = render_text(&state, 100, 60);
+
+        assert!(text.contains("recipe: spawn"), "the intent card must win: {text}");
+        assert!(!text.contains(" SETTINGS "), "{text}");
+    }
+
+    #[test]
+    fn settings_menu_reappears_once_the_blocking_prompt_resolves() {
+        let mut state = awaiting_permission("bash: ls");
+        state.open_settings();
+        assert!(!render_text(&state, 100, 60).contains(" SETTINGS "));
+
+        state.resolve_current_prompt(PermissionDecision::AllowOnce);
+
+        assert!(matches!(state.mode, Mode::Normal));
+        assert!(
+            state.settings_open,
+            "settings_open was never touched by the prompt resolving"
+        );
+        assert!(
+            render_text(&state, 100, 60).contains(" SETTINGS "),
+            "the menu must reappear once mode returns to Normal"
+        );
+    }
+
+    /// The settings menu and `/help` are mutually exclusive WITH EACH OTHER
+    /// (unlike the three decision-owed surfaces above, both of these are
+    /// merely informational, so nothing but their own open/close calls keeps
+    /// them from stacking on one another).
+    #[test]
+    fn settings_menu_and_help_never_stack_on_each_other() {
+        let mut state = AppState::new(AgentId::new());
+        state.open_help();
+        state.open_settings();
+
+        let text = render_text(&state, 100, 60);
+        assert!(text.contains(" SETTINGS "), "{text}");
+        assert!(!text.contains(" HELP "), "opening settings must close help: {text}");
+
+        state.open_help();
+        let text = render_text(&state, 100, 60);
+        assert!(text.contains(" HELP "), "{text}");
+        assert!(!text.contains(" SETTINGS "), "opening help must close settings: {text}");
+    }
+
     // ---- V1: the shared modal primitive -- every ported surface is
     // bottom-anchored, content-sized, capped, and the transcript stays
     // visible above it. ----
@@ -1245,6 +1358,36 @@ mod tests {
         }
     }
 
+    /// V4 acceptance: the settings menu is bottom-anchored and content-sized
+    /// too, on the same shared primitive -- ordinary transcript text stays
+    /// visible above its short, 5-row tree.
+    #[test]
+    fn settings_menu_is_bottom_anchored_and_content_sized() {
+        let mut state = AppState::new(AgentId::new());
+        state.transcript.push(Entry::Assistant {
+            text: "TRANSCRIPT_MARKER_ABOVE_THE_MODAL".to_string(),
+            model: None,
+            summary: None,
+            ts: None,
+        });
+        state.open_settings();
+
+        let rows = render(&state, 80, 24);
+        let border_row =
+            top_border_row(&rows).expect("the settings menu must draw a bordered block");
+
+        assert!(
+            border_row > 3,
+            "a short tree must not claim nearly the whole transcript area \
+             (border landed at row {border_row}): {rows:?}"
+        );
+        let above: String = rows[..border_row].join("\n");
+        assert!(
+            above.contains("TRANSCRIPT_MARKER_ABOVE_THE_MODAL"),
+            "ordinary transcript text must remain visible above the settings menu: {above}"
+        );
+    }
+
     /// Acceptance: a long one grows to the cap and then SCROLLS rather than
     /// truncating -- the permission overlay's own huge-command tests already
     /// prove the hint survives and paging reveals the tail; this test proves
@@ -1294,12 +1437,15 @@ mod tests {
         let intent = intent_confirm_state(conway::SubagentMode::Spawn, None, "go");
         let mut help = AppState::new(AgentId::new());
         help.open_help();
+        let mut settings = AppState::new(AgentId::new());
+        settings.open_settings();
 
         for (name, state) in [
             ("permission", &permission),
             ("ask", &ask),
             ("intent", &intent),
             ("help", &help),
+            ("settings", &settings),
         ] {
             for (w, h) in [(80u16, 1u16), (80, 2), (80, 3), (1, 24), (0, 0)] {
                 let backend = TestBackend::new(w.max(1), h.max(1));

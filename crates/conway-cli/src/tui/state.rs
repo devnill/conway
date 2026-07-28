@@ -73,8 +73,9 @@ pub enum Entry {
     ///   the turn ends (and stays `None` if no assistant/reasoning block
     ///   exists to attach to).
     /// - `ts` is the per-entry timestamp, stamped from the envelope's `ts`
-    ///   at apply time. The `/timestamps` toggle prepends `HH:MM ` to the
-    ///   entry's first rendered line.
+    ///   at apply time. The `/settings` menu's "show timestamps" toggle
+    ///   (V4; formerly the standalone `/timestamps` command) prepends
+    ///   `HH:MM ` to the entry's first rendered line.
     Assistant {
         text: String,
         model: Option<String>,
@@ -87,8 +88,9 @@ pub enum Entry {
     /// `AppState::append_reasoning_text`] creates-or-appends, stamping the
     /// current serving model + envelope timestamp onto a freshly-created
     /// entry. Rendered dim+italic with a `thinking` prefix, EXPANDED by
-    /// default (the `show_reasoning` flag -- toggled by `/thinking` --
-    /// defaults `true`, so reasoning is visible until the user hides it;
+    /// default (the `show_reasoning` flag -- toggled from the `/settings`
+    /// menu, V4; formerly the standalone `/thinking` command -- defaults
+    /// `true`, so reasoning is visible until the user hides it;
     /// when hidden, `build_lines` skips `Entry::Reasoning` entirely). The
     /// `summary` field is shared with `Entry::Assistant`: a turn-end
     /// summary attaches to whichever of the two was the LAST block under
@@ -136,8 +138,9 @@ pub enum Entry {
         /// different cap and content.
         expanded: bool,
         /// T4: per-entry timestamp, stamped from the envelope's `ts` at
-        /// apply time. The `/timestamps` toggle prepends `HH:MM ` to the
-        /// entry's first rendered line.
+        /// apply time. The `/settings` menu's "show timestamps" toggle (V4;
+        /// formerly the standalone `/timestamps` command) prepends
+        /// `HH:MM ` to the entry's first rendered line.
         ts: Option<DateTime<Utc>>,
     },
     /// A subagent's lifecycle, rendered inline in the conversation stream
@@ -710,18 +713,20 @@ pub struct AppState {
     pub model_max_context: HashMap<String, u32>,
     /// T4: whether reasoning-trace entries ([`Entry::Reasoning`]) are
     /// rendered in the transcript. Defaults `true` (reasoning EXPANDED by
-    /// default) -- the user opts OUT with `/thinking`, which flips this to
-    /// `false` and `build_lines` then skips `Entry::Reasoning` entirely.
-    /// Toggled by [`AppState::toggle_thinking`]. Kept on the state (not the
-    /// entry) because the show/hide is a global view preference, not
-    /// per-entry state -- reasoning entries are still STORED regardless, so
-    /// toggling back on restores them without replay.
+    /// default) -- the user opts OUT from the `/settings` menu's "show
+    /// reasoning traces" row (V4; formerly the standalone `/thinking`
+    /// command), which flips this to `false` and `build_lines` then skips
+    /// `Entry::Reasoning` entirely. Toggled by [`AppState::toggle_thinking`].
+    /// Kept on the state (not the entry) because the show/hide is a global
+    /// view preference, not per-entry state -- reasoning entries are still
+    /// STORED regardless, so toggling back on restores them without replay.
     pub show_reasoning: bool,
     /// T4: whether per-entry timestamps are rendered. Defaults `false`
-    /// (timestamps OFF by default) -- the user opts IN with `/timestamps`,
-    /// which flips this to `true` and `entry_lines` then prepends `HH:MM `
-    /// to each entry's first rendered line. Toggled by
-    /// [`AppState::toggle_timestamps`]. The timestamp itself is always
+    /// (timestamps OFF by default) -- the user opts IN from the `/settings`
+    /// menu's "show timestamps" row (V4; formerly the standalone
+    /// `/timestamps` command), which flips this to `true` and `entry_lines`
+    /// then prepends `HH:MM ` to each entry's first rendered line. Toggled
+    /// by [`AppState::toggle_timestamps`]. The timestamp itself is always
     /// STORED on the entry (`Entry::Assistant::ts` etc., stamped from the
     /// envelope's `ts` at apply time) so toggling back on restores the
     /// stamps without replay.
@@ -792,6 +797,47 @@ pub struct AppState {
     /// their own "input line is inert" docs), so `/help` itself can never be
     /// typed/submitted while one is active.
     pub help_open: bool,
+    /// V4: whether the `/settings` menu (`view/settings.rs`) is showing.
+    /// Follows [`Self::help_open`]'s own pattern EXACTLY -- see that field's
+    /// doc for the full "informational, not decision-owed, so a plain flag
+    /// rather than a `Mode` variant" reasoning, which applies here
+    /// unchanged: settings is a session-only display-preferences surface
+    /// with nothing the user owes an answer to.
+    ///
+    /// The one addition V4 makes: `settings_open` and `help_open` are also
+    /// mutually exclusive WITH EACH OTHER (`Self::open_settings`/
+    /// `Self::open_help` each clear the other). Both are gated the same way
+    /// (checked ahead of the `Mode` match in `input::handle_key`, drawn the
+    /// same way in `view::draw`), so if both were ever `true` at once, only
+    /// ONE of them would actually be reachable/visible -- whichever this
+    /// crate's fixed check order happens to see first -- stranding the
+    /// other open in the background with no way back to it except by
+    /// re-toggling its own flag from outside. Clearing the other on open
+    /// makes "at most one of the two is ever showing" a real invariant
+    /// instead of an accident of check order.
+    pub settings_open: bool,
+    /// V4: the settings menu's arrow-navigated cursor -- the RAW row index,
+    /// persisted across renders/keypresses the same way
+    /// [`Self::agent_selected`] is for the `/agents` panel. Read/written via
+    /// `view/settings.rs::build_tree` (which rebuilds a fresh `MenuState`
+    /// from the CURRENT settings values on every call and restores this
+    /// cursor onto it via `MenuState::set_selected`) and
+    /// `input::handle_settings_key` (which writes back whatever
+    /// `MenuState::selected_index` -- already clamped to the current row
+    /// count -- comes out the other side). Unclamped storage is safe: a
+    /// stale value left over from before a group collapsed elsewhere is
+    /// re-clamped on read the same way `MenuState::selected_index` already
+    /// clamps internally.
+    pub settings_selected: usize,
+    /// V4: which of the settings tree's top-level GROUP labels are
+    /// currently collapsed (default: none, i.e. every group starts
+    /// expanded -- mirrors `view/menu.rs::MenuNode::group`'s own
+    /// `expanded: true` default). Keyed by the group's own label text
+    /// rather than an enum,
+    /// so a future settings category needs no new field here -- only a new
+    /// entry in `view/settings.rs::build_tree`'s root list. Toggled by
+    /// `input::handle_settings_key`'s `Enter` arm on a group row.
+    pub settings_collapsed_groups: HashSet<String>,
 }
 
 impl AppState {
@@ -855,6 +901,9 @@ impl AppState {
             history_index: None,
             history_draft: String::new(),
             help_open: false,
+            settings_open: false,
+            settings_selected: 0,
+            settings_collapsed_groups: HashSet::new(),
         }
     }
 
@@ -1520,12 +1569,37 @@ impl AppState {
     pub fn open_help(&mut self) {
         self.help_open = true;
         self.modal_scroll = 0;
+        // V4: mutually exclusive with the settings menu -- see
+        // `Self::settings_open`'s own doc for why both flags clear each
+        // other on open rather than relying on check-order to keep at most
+        // one of them showing.
+        self.settings_open = false;
     }
 
     /// Closes the `/help` keybinding overlay (T7's `Esc` binding, wired in
     /// `input.rs`). A no-op when it is already closed.
     pub fn close_help(&mut self) {
         self.help_open = false;
+    }
+
+    /// Opens the `/settings` menu (V4). Mirrors [`Self::open_help`] exactly
+    /// -- see [`Self::settings_open`]'s own doc for the full "informational,
+    /// gated ahead of `Mode::Normal`, mutually exclusive with `/help`"
+    /// reasoning. Deliberately does NOT reset [`Self::settings_selected`] or
+    /// [`Self::settings_collapsed_groups`] -- re-opening the menu within the
+    /// same session restores wherever the cursor/collapse state was left,
+    /// the same way re-opening the `/agents` panel does not reset
+    /// `agent_selected`.
+    pub fn open_settings(&mut self) {
+        self.settings_open = true;
+        self.help_open = false;
+    }
+
+    /// Closes the `/settings` menu (V4's `Esc` binding, wired in
+    /// `input.rs`). A no-op when it is already closed. Cursor/collapse
+    /// state is left untouched (see [`Self::open_settings`]'s own doc).
+    pub fn close_settings(&mut self) {
+        self.settings_open = false;
     }
 
     /// Seeds a `/agents` tree node for a freshly created interactive child
@@ -2067,20 +2141,48 @@ impl AppState {
         }
     }
 
-    /// T4: toggle the `show_reasoning` flag (the `/thinking` command).
-    /// Returns the new value so `app.rs` can surface a one-shot `Notice` to
-    /// the user (mirrors `/agents`'s open/close notice pattern).
+    /// T4: toggle the `show_reasoning` flag. V4: the one caller of this is
+    /// now the `/settings` menu's `Enter` key on the "show reasoning traces"
+    /// leaf (`input::handle_settings_key`) -- the standalone `/thinking`
+    /// slash command this originally backed is REMOVED, not aliased (see
+    /// `commands.rs`'s module doc), but the toggle itself is unchanged: same
+    /// field, same flip, same return value.
     pub fn toggle_thinking(&mut self) -> bool {
         self.show_reasoning = !self.show_reasoning;
         self.show_reasoning
     }
 
-    /// T4: toggle the `show_timestamps` flag (the `/timestamps` command).
-    /// Returns the new value so `app.rs` can surface a one-shot `Notice` to
-    /// the user.
+    /// T4: toggle the `show_timestamps` flag. V4: now called from the
+    /// `/settings` menu's `Enter` key on the "show timestamps" leaf, exactly
+    /// as [`Self::toggle_thinking`]'s doc describes for its own removed
+    /// `/thinking` command -- the standalone `/timestamps` command is
+    /// REMOVED, the toggle is not.
     pub fn toggle_timestamps(&mut self) -> bool {
         self.show_timestamps = !self.show_timestamps;
         self.show_timestamps
+    }
+
+    /// V4: adjusts `tool_preview_lines` by `delta` -- the `/settings` menu's
+    /// Left(`-1`)/Right(`+1`) numeric stepper for the one non-boolean
+    /// setting. Floors/caps at [`TOOL_PREVIEW_LINES_RANGE`]'s own bounds
+    /// rather than routing the stepped value through
+    /// [`clamp_tool_preview_lines`] directly: that function's job is
+    /// validating an untrusted CONFIG value, where out-of-range means
+    /// "malformed, fall back to the built-in default (3)" -- applying that
+    /// same fallback to an interactive stepper would make pressing Left at
+    /// the floor (1) bounce UP to 3 instead of simply stopping, which reads
+    /// as broken, not as a safety net. Both functions still share the ONE
+    /// range constant (P-10: no independently-typed-in second bounds check
+    /// that could silently drift from it) -- only the OUT-OF-RANGE behavior
+    /// differs, matched to what each caller actually needs. Never panics on
+    /// any `delta` (`saturating_add` on a widened `i64` before the final
+    /// clamp). Returns the new value.
+    pub fn adjust_tool_preview_lines(&mut self, delta: i32) -> u32 {
+        let stepped = i64::from(self.tool_preview_lines).saturating_add(i64::from(delta));
+        let floor = i64::from(*TOOL_PREVIEW_LINES_RANGE.start());
+        let ceil = i64::from(*TOOL_PREVIEW_LINES_RANGE.end());
+        self.tool_preview_lines = stepped.clamp(floor, ceil) as u32;
+        self.tool_preview_lines
     }
 
     /// T4: stamp the turn-end summary (`1m 6s · 1.4k tok (88% cached)`)
@@ -2220,20 +2322,35 @@ fn format_turn_summary(elapsed_secs: u64, usage: &Usage) -> String {
     }
 }
 
+/// T5's valid range for `tool_preview_lines` (`1..=200`), factored out as a
+/// named constant (V4) so [`clamp_tool_preview_lines`] (config validation,
+/// which falls back to the built-in default on ANY out-of-range value) and
+/// [`AppState::adjust_tool_preview_lines`] (the `/settings` menu's
+/// interactive stepper, which floors/caps at the boundary instead) share
+/// ONE source of truth for the bound -- P-10: no second, independently
+/// typed-in bounds check that could silently drift from this one. The
+/// `1..=200` range itself keeps the cap meaningful (a cap of 0 would
+/// collapse every preview to zero content lines + the affordance; a cap of
+/// `u32::MAX` would effectively disable folding, defeating T5's purpose).
+const TOOL_PREVIEW_LINES_RANGE: std::ops::RangeInclusive<u32> = 1..=200;
+
 /// T5: clamps a loaded `[tui.tool_preview_lines]` config value into a safe
 /// render-time cap. `None` (the serde default for the `Option<u32>` field)
-/// -> the built-in default of 3. A value in `1..=200` is kept as-is. Any
-/// other value (0, > 200, or a value that failed to parse as `u32` and so
-/// arrived as `None`) falls back to the default of 3. P-10: config is
-/// untrusted input -- this function never panics, and there is no
+/// -> the built-in default of 3. A value in [`TOOL_PREVIEW_LINES_RANGE`] is
+/// kept as-is. Any other value (0, > 200, or a value that failed to parse
+/// as `u32` and so arrived as `None`) falls back to the default of 3. P-10:
+/// config is untrusted input -- this function never panics, and there is no
 /// `unwrap`/`expect`/indexing on the config value (the `?`-shaped
-/// `and_then` + `unwrap_or` chain is the entire bound on `n`). The
-/// `1..=200` range keeps the cap meaningful (a cap of 0 would collapse
-/// every preview to zero content lines + the affordance; a cap of
-/// `u32::MAX` would effectively disable folding, defeating T5's purpose).
+/// `and_then` + `unwrap_or` chain is the entire bound on `n`).
 pub fn clamp_tool_preview_lines(n: Option<u32>) -> u32 {
-    n.and_then(|v| if (1..=200).contains(&v) { Some(v) } else { None })
-        .unwrap_or(3)
+    n.and_then(|v| {
+        if TOOL_PREVIEW_LINES_RANGE.contains(&v) {
+            Some(v)
+        } else {
+            None
+        }
+    })
+    .unwrap_or(3)
 }
 
 /// T8: [`AppState::new`]'s default [`AppState::history_cap`] -- overridden
@@ -5328,6 +5445,76 @@ mod tests {
         assert!(!state.show_timestamps, "defaults false");
         assert!(state.toggle_timestamps(), "toggles to true");
         assert!(!state.toggle_timestamps(), "toggles back to false");
+    }
+
+    // ---- V4: the `/settings` menu's own AppState surface ----
+
+    #[test]
+    fn open_settings_and_help_are_mutually_exclusive() {
+        let mut state = AppState::new(AgentId::new());
+        state.open_help();
+        assert!(state.help_open);
+
+        state.open_settings();
+        assert!(state.settings_open, "/settings must open");
+        assert!(!state.help_open, "opening settings must close help");
+
+        state.open_help();
+        assert!(state.help_open, "/help must open");
+        assert!(!state.settings_open, "opening help must close settings");
+    }
+
+    #[test]
+    fn close_settings_is_a_noop_when_already_closed() {
+        let mut state = AppState::new(AgentId::new());
+        assert!(!state.settings_open);
+        state.close_settings();
+        assert!(!state.settings_open);
+    }
+
+    #[test]
+    fn adjust_tool_preview_lines_steps_by_delta() {
+        let mut state = AppState::new(AgentId::new());
+        assert_eq!(state.tool_preview_lines, 3, "the built-in default");
+        assert_eq!(state.adjust_tool_preview_lines(1), 4);
+        assert_eq!(state.adjust_tool_preview_lines(1), 5);
+        assert_eq!(state.adjust_tool_preview_lines(-2), 3);
+    }
+
+    /// P-10: stepping below the floor stops AT the floor -- it must not
+    /// bounce up to `clamp_tool_preview_lines`'s config-validation fallback
+    /// (3), which would read as broken for an interactive stepper.
+    #[test]
+    fn adjust_tool_preview_lines_floors_at_one_without_bouncing_to_the_default() {
+        let mut state = AppState::new(AgentId::new());
+        state.tool_preview_lines = 1;
+
+        assert_eq!(state.adjust_tool_preview_lines(-1), 1, "must stop at the floor");
+        assert_eq!(
+            state.adjust_tool_preview_lines(-1000),
+            1,
+            "a huge negative step must still land on the floor, not panic or wrap"
+        );
+    }
+
+    #[test]
+    fn adjust_tool_preview_lines_caps_at_two_hundred() {
+        let mut state = AppState::new(AgentId::new());
+        state.tool_preview_lines = 200;
+
+        assert_eq!(state.adjust_tool_preview_lines(1), 200, "must stop at the cap");
+        assert_eq!(
+            state.adjust_tool_preview_lines(1_000_000),
+            200,
+            "a huge positive step must still land on the cap, not panic or wrap"
+        );
+    }
+
+    #[test]
+    fn adjust_tool_preview_lines_never_panics_at_either_i32_extreme() {
+        let mut state = AppState::new(AgentId::new());
+        assert_eq!(state.adjust_tool_preview_lines(i32::MIN), 1);
+        assert_eq!(state.adjust_tool_preview_lines(i32::MAX), 200);
     }
 
     /// `format_turn_summary` formats elapsed >= 60s as `1m 6s` and < 60s

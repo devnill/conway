@@ -50,14 +50,9 @@ pub const COMMANDS: &[CommandSpec] = &[
         description: "toggle the below-chat agent-tree panel",
     },
     CommandSpec {
-        name: "/thinking",
-        usage: "/thinking",
-        description: "hide/show reasoning traces (default visible)",
-    },
-    CommandSpec {
-        name: "/timestamps",
-        usage: "/timestamps",
-        description: "toggle per-entry HH:MM timestamps (default off)",
+        name: "/settings",
+        usage: "/settings",
+        description: "open the settings menu (display preferences -- session only)",
     },
     CommandSpec {
         name: "/steer",
@@ -212,13 +207,23 @@ mod tests {
 
     // Item A3: `/tree` is demoted to a hidden alias -- it still parses
     // (`commands.rs` keeps the arm) but the palette must no longer surface
-    // it as completion. T4: `/t` is no longer an empty prefix -- `/thinking`
-    // and `/timestamps` (both T4 additions) match it; only the full `/tree`
-    // stays hidden.
+    // it as completion.
     #[test]
     fn tree_is_a_hidden_alias_not_a_palette_entry() {
         assert!(matches("/tree").is_empty());
         assert!(!COMMANDS.iter().any(|c| c.name == "/tree"));
+    }
+
+    /// V4: `/thinking` and `/timestamps` are REMOVED, not aliased --
+    /// `/settings` replaces both. Neither name appears in the palette table
+    /// at all any more (T4 had added them; V4 retired them together with
+    /// the standalone commands they backed).
+    #[test]
+    fn thinking_and_timestamps_are_gone_from_the_palette() {
+        assert!(!COMMANDS.iter().any(|c| c.name == "/thinking"));
+        assert!(!COMMANDS.iter().any(|c| c.name == "/timestamps"));
+        assert!(matches("/thinking").is_empty());
+        assert!(matches("/timestamps").is_empty());
     }
 
     #[test]

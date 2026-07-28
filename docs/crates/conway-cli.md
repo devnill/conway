@@ -258,7 +258,7 @@ to consume):
 | `assistant` | unstyled | transcript assistant text body |
 | `assistant_marker` | magenta + bold | (T4) assistant `[modelname]>` speaker marker |
 | `reasoning` | dark_gray + italic | (T4) `Entry::Reasoning` trace body + `thinking>` prefix |
-| `timestamp` | dark_gray | (T4) `HH:MM ` per-entry timestamp prefix (`/timestamps`) |
+| `timestamp` | dark_gray | (T4) `HH:MM ` per-entry timestamp prefix (`/settings` -- "show timestamps") |
 | `tool_proposed` | gray | tool-call tag, `Proposed` |
 | `tool_awaiting` | magenta | tool-call tag, `AwaitingPermission` |
 | `tool_running` | yellow | tool-call tag, `Running` |
@@ -509,11 +509,11 @@ that the renderer (`tui/view/transcript.rs::entry_lines`) surfaces:
   `Entry::Reasoning { text, model, summary, ts }` (previously only
   `activity` was flipped to `Thinking`; the delta itself was dropped).
   Rendered dim+italic with a `thinking> ` prefix, **expanded by default**
-  (`AppState::show_reasoning` defaults `true`). The `/thinking` slash
-  command toggles `show_reasoning`; when off, `build_lines` skips
-  `Entry::Reasoning` entirely (the entries are still stored, so toggling
-  back on restores them without replay). The keybinding is advertised in
-  the status-line `hint` and `/help`.
+  (`AppState::show_reasoning` defaults `true`). The `/settings` menu's
+  "show reasoning traces" row (V4; originally the standalone `/thinking`
+  slash command, removed) toggles `show_reasoning`; when off, `build_lines`
+  skips `Entry::Reasoning` entirely (the entries are still stored, so
+  toggling back on restores them without replay).
 - **Speaker markers** — `Entry::Assistant` gains `model: Option<String>`
   (stamped from `AppState::focused_model` at creation time). The renderer
   prepends `[modelname]> ` (plain `[`/`]`/`>`, no box-drawing) styled with
@@ -532,7 +532,8 @@ that the renderer (`tui/view/transcript.rs::entry_lines`) surfaces:
   `-> {note}` lines between the args line and the output block.
 - **Per-entry timestamps** — `Entry::Assistant`/`Reasoning`/`Tool` gain
   `ts: Option<DateTime<Utc>>`, stamped from the envelope's `ts` at apply
-  time. The `/timestamps` slash command toggles
+  time. The `/settings` menu's "show timestamps" row (V4; originally the
+  standalone `/timestamps` slash command, removed) toggles
   `AppState::show_timestamps` (default off); when on, `entry_lines`
   prepends an `HH:MM ` prefix (styled with `theme.timestamp`) to the
   entry's first rendered line.
@@ -549,13 +550,11 @@ The streaming cursor (T2's `▌`) extends to the live reasoning line: while
 last line (same render-time carve-out T2 uses for the assistant streaming
 line; the clean-copy invariant is preserved for settled output).
 
-`/thinking` and `/timestamps` are intercepted in `app.rs::submit`
-(mirroring `/agents`'s pattern) — state-only toggles that never reach
-`commands::parse` and are never sent to the model. Both are listed in the
-`/help` keybinding overlay (`view/help.rs` — T7; they are the one
-deliberate exception to "keybindings only", since they function as
-keyboard-driven view toggles on par with `Ctrl-E`), the command palette
-(`view/palette.rs::COMMANDS`), and the status-line hint.
+`/thinking` and `/timestamps` originally were intercepted in
+`app.rs::submit` (mirroring `/agents`'s pattern) — state-only toggles that
+never reached `commands::parse` and were never sent to the model. **V4
+removes both entirely** (not aliased) in favor of a single `/settings`
+menu — see "The `/settings` menu (V4)" below.
 
 ### Sticky header, jump keys, and the scrolled-back indicator (T6)
 
@@ -804,21 +803,23 @@ reference anywhere. `/help` now opens a read-only overlay
 more.
 
 **Keybindings only.** Every genuine slash *command* (`/steer`, `/fork`,
-`/spawn`, `/ask`, `/agents`, `/resume`, `/quit`, ...) stays exclusively in
-the `/` palette — the overlay never lists one, so the two surfaces can never
-drift into duplicating each other. `/thinking` and `/timestamps` are the one
-deliberate exception: syntactically they are slash commands, but
-functionally they are keyboard-driven view toggles (on par with `Ctrl-E`,
-not with "spawn an agent"), so they appear in the overlay's "tools &
-display" group alongside `Ctrl-E`.
+`/spawn`, `/ask`, `/agents`, `/settings`, `/resume`, `/quit`, ...) stays
+exclusively in the `/` palette — the overlay never lists one, so the two
+surfaces can never drift into duplicating each other. `/thinking` and
+`/timestamps` used to be the one exception (syntactically commands,
+functionally keyboard-driven view toggles); V4 removed both in favor of
+`/settings`, a genuine command like any other, so the "keybindings only"
+rule now holds with no carve-out.
 
 The overlay groups every binding the TUI actually has: input & editing
 (`Enter`, `Alt-Enter`/`Shift-Enter`, `Left`/`Right`, `Backspace`, `Ctrl-W`,
 `Ctrl-D`, `Ctrl-C`), history & navigation (`Up`/`Down`, `Home`/`End`,
-`PageUp`/`PageDown`), tools & display (`Ctrl-E`, `/thinking`,
-`/timestamps`), the modal-only keys for the `/ask` modal / intent-confirm
-card / permission prompt (each only live while that surface is up), and the
-agent panel's `v`/`Esc`. It closes a trailing note explaining that **mouse
+`PageUp`/`PageDown`), tools & display (`Ctrl-E`), the settings menu's own
+keys (`Up`/`Down`/`Enter`/`Left`/`Right`/`Esc`, live only while `/settings`
+is open — see below), the modal-only keys for the `/ask` modal /
+intent-confirm card / permission prompt (each only live while that surface
+is up), and the agent panel's `v`/`Esc`. It closes a trailing note
+explaining that **mouse
 wheel scrolling is deliberately not a Conway binding** — Conway never calls
 `EnableMouseCapture` and has no `MouseEventKind` handler anywhere in this
 crate, so the wheel scrolling you see is your terminal emulator's own
@@ -913,24 +914,14 @@ view, which this primitive is not shaped for. What carries over is the
 the whole screen.
 
 **A tree/menu navigation primitive** (`tui/view/menu.rs`) is layered on top
-of the modal for V4 (a settings tree) to fill in later: `MenuNode::Leaf`/
-`MenuNode::Group` for nested, collapsible sections, and `MenuState` for
-arrow navigation (`move_selection`), expand/collapse
-(`toggle_group_at_selection`), and resolving the current selection down to
-an opaque leaf `id` (`selected_leaf_id`) through the visible, flattened row
-list — mirroring how `/agents`' own filtered-row lookup already works. It
-is not wired to anything yet (`#[allow(dead_code)]`, scoped to the file,
-mirrors the same "primitive lands before its first caller" precedent
-`conway-backends/src/http.rs` already uses) but is fully exercised by its
-own tests, including nested-group navigation, so a future settings surface
-can build on it directly rather than needing to fix a half-finished
-primitive first. When that surface lands it is expected to be
-**informational**, gated the same way `/help` is (a plain flag checked
-ahead of the `Mode` match in `input::handle_key`, never a `Mode` variant of
-its own) so its `Up`/`Down` handling slots into the existing arrow-key
-priority chain (V3) the same way the agent panel already does: exclusive
-ownership of the arrows only while it's open, released the moment it
-closes, never permanently claiming the keys wheel-scroll also arrives on.
+of the modal: `MenuNode::Leaf`/`MenuNode::Group` for nested, collapsible
+sections, and `MenuState` for arrow navigation (`move_selection`),
+expand/collapse (`toggle_group_at_selection`), and resolving the current
+selection down to an opaque leaf `id` (`selected_leaf_id`) through the
+visible, flattened row list — mirroring how `/agents`' own filtered-row
+lookup already works. It landed unwired but fully exercised by its own
+tests (including nested-group navigation), and V4's `/settings` menu (below)
+is its first real caller.
 
 No new theme slots were needed for the primitive itself — it takes a
 caller-supplied `Style` for its border (each ported surface keeps its own
@@ -938,6 +929,92 @@ caller-supplied `Style` for its border (each ported surface keeps its own
 reuses the existing `theme.selected`/`theme.emphasized`/`theme.dim` slots
 for the menu primitive's highlighted/group/leaf rows, the same way
 `view/agents.rs` already does.
+
+### The `/settings` menu (V4)
+
+`/thinking` and `/timestamps` used to be two standalone slash commands,
+each owning exactly one boolean. That doesn't scale — every future display
+preference would mean another slash command competing for footer/palette
+space. `/settings` replaces both with one menu, built on the modal + menu
+primitives above.
+
+**Content.** Three settings, surveyed from `AppState`/`TuiSection` for
+genuinely user-facing display preferences — not swept from "every bool that
+happens to live on `AppState`" (internal bookkeeping like scroll offsets or
+in-flight flags isn't a setting, and settings that already have a
+dedicated, better-fitting binding — `v` for `/agents`' visibility filter,
+`Ctrl-E` for tool-output expand — stay there rather than gaining a second,
+redundant home here):
+
+- **show reasoning traces** (was `/thinking`) — `AppState::show_reasoning`.
+- **show timestamps** (was `/timestamps`) — `AppState::show_timestamps`.
+- **tool preview lines** — `AppState::tool_preview_lines` (T5's fold cap,
+  previously config-only; this menu is the first place it's reachable at
+  runtime at all).
+
+**Grouping.** Two `MenuNode::Group`s — "display" (the two booleans) and
+"tool output" (the one numeric setting) — the shape a third settings
+category would extend later, not nesting invented just to exercise the
+primitive.
+
+**The numeric setting.** `tool_preview_lines` is the one non-boolean, so it
+needs its own interaction: `Left`/`Right` step it by ±1 rather than cycling
+a fixed preset list. Every value in `1..=200` is an equally plausible
+answer to "how many lines before folding" — there's no natural
+"meaningfully different" preset set the way a theme picker would have — so
+a continuous stepper lets the user land on exactly the number they want.
+Stepping floors/caps at the boundary (`AppState::adjust_tool_preview_lines`)
+rather than reusing `clamp_tool_preview_lines`'s config-validation fallback
+directly: that function's job is "malformed config value → fall back to the
+default (3)", and applying that same fallback to an interactive stepper
+would make pressing `Left` at the floor (1) bounce **up** to 3 instead of
+simply stopping — confusing for a live control. Both functions still share
+one range constant (`TOOL_PREVIEW_LINES_RANGE`) so the bound itself can't
+drift between them; only the out-of-range *behavior* differs, matched to
+what each caller needs.
+
+**Session-only, disclosed in the UI.** Conway's config load
+(`conway::config::merge::load`) is a five-source layered read with no
+writer anywhere outside test fixtures — persisting a runtime toggle would
+mean inventing one, and "which layer gets written" (default/XDG/
+project/env/CLI) has no good default answer; that question is out of this
+item's scope. The menu changes `AppState` at runtime only, exactly as the
+two removed slash commands already did. A footer note
+("changes apply to this session only") says so on every render, and the
+one leaf with a real backing config key names it inline: "tool preview
+lines — 3 (Left/Right to adjust; persists via `[tui.tool_preview_lines]`)".
+The two booleans have no `[tui.*]` config-key equivalent today, so they
+carry no such annotation — the disclosure only claims what's true.
+
+**Interaction.** `Enter` toggles a boolean leaf or expands/collapses a
+group (mirrors `/agents`' own Enter-to-activate shape); the numeric leaf
+ignores `Enter` (nothing to activate — it has its own `Left`/`Right`
+stepper). `Esc` closes.
+
+**Fresh tree every call.** `view/settings.rs::build_tree` rebuilds a fresh
+`MenuState` — with each leaf's label baked from the CURRENT `AppState`
+values — on every render *and* every keypress, rather than mutating one
+long-lived tree in place: a stored tree would go stale the instant a toggle
+changed the very value its own label displays, and `menu.rs` deliberately
+exposes no "relabel this one leaf" mutator (it doesn't know what a leaf's
+opaque `id` means). Only the cursor (`AppState::settings_selected`) and
+which groups are collapsed (`AppState::settings_collapsed_groups`, keyed by
+label) persist across calls — `MenuState::set_selected` (a V4 addition to
+`menu.rs`) restores the cursor onto each freshly built tree.
+
+**Shape and stacking.** Informational, gated exactly the way `/help` is: a
+plain `AppState::settings_open` flag checked ahead of the `Mode` match in
+`input::handle_key`, never a `Mode` variant, so it can never stack on an
+active permission prompt / `/ask` modal / intent-confirm card. New for V4:
+`/settings` and `/help` are ALSO mutually exclusive with each other
+(`AppState::open_settings`/`open_help` each close the other) — both are
+gated the identical way, so without this, whichever one this crate's fixed
+check order saw first would silently be the only one reachable while the
+other sat open in the background. While `/settings` is open it owns
+`Up`/`Down`/`Enter`/`Left`/`Right` completely (never falling through to
+V3's palette/agent-panel/wheel-scroll priority chain) and releases them the
+instant it closes — the same trade the agent panel already makes for its
+own arrows.
 
 ### The `/ask` single-turn modal
 
