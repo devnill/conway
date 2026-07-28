@@ -1169,14 +1169,18 @@ mod tests {
     fn v_with_the_panel_open_and_empty_input_cycles_the_visibility_filter() {
         use crate::tui::state::AgentVisibility;
 
+        // V5: the default flipped to All; the cycle order itself is
+        // unchanged (ActiveOnly -> All -> FinishedOnly -> ActiveOnly), so
+        // starting from All the next three presses land on FinishedOnly,
+        // ActiveOnly, then back to All.
         let mut state = AppState::new(AgentId::new());
         state.agent_view_open = true;
-        assert_eq!(state.agent_visibility, AgentVisibility::ActiveOnly);
+        assert_eq!(state.agent_visibility, AgentVisibility::All);
 
         for expected in [
-            AgentVisibility::All,
             AgentVisibility::FinishedOnly,
             AgentVisibility::ActiveOnly,
+            AgentVisibility::All,
         ] {
             assert_eq!(handle_key(&mut state, key(KeyCode::Char('v'))), Action::None);
             assert_eq!(state.agent_visibility, expected);
@@ -1199,7 +1203,7 @@ mod tests {
         assert_eq!(state.input, "v");
         assert_eq!(
             state.agent_visibility,
-            AgentVisibility::ActiveOnly,
+            AgentVisibility::All,
             "the filter must not cycle while the panel is closed"
         );
     }
@@ -1218,16 +1222,16 @@ mod tests {
             state.input, "gav",
             "with a prompt being composed, v must remain ordinary text input"
         );
-        assert_eq!(state.agent_visibility, AgentVisibility::ActiveOnly);
+        assert_eq!(state.agent_visibility, AgentVisibility::All);
     }
 
     #[test]
     fn enter_focuses_the_filtered_row_not_the_raw_tree_index() {
         use crate::tui::state::{AgentVisibility, NodeStatus, TreeNode};
 
-        // root(Starting), done(Finished), live(Running). Under the default
-        // ActiveOnly the visible rows are [root, live], so row index 1 is
-        // `live` -- NOT the raw tree's index 1 (`done`).
+        // root(Starting), done(Finished), live(Running). Under ActiveOnly
+        // the visible rows are [root, live], so row index 1 is `live` --
+        // NOT the raw tree's index 1 (`done`).
         let root = AgentId::new();
         let mut state = AppState::new(root);
         let done = AgentId::new();
@@ -1245,6 +1249,7 @@ mod tests {
         }
         state.agent_view_open = true;
         state.agent_selected = 1;
+        state.agent_visibility = AgentVisibility::ActiveOnly;
 
         let action = handle_key(&mut state, key(KeyCode::Enter));
         assert_eq!(

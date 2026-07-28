@@ -182,12 +182,20 @@ box, and a bottom status line.
   parent's role/model, and an `(ephemeral)` marker on `/ask`-style
   ephemeral forks (which are full tree citizens, shown with their
   provenance attached). While the panel is open, `v` cycles a draw-time
-  visibility filter — **active-only** (the default: terminal-status agents
-  hidden), **all**, **finished-only** — without ever mutating the tree
-  itself; the header names the current mode. Ordinary subagent lifecycle
-  is *also* surfaced inline in the conversation stream itself; this panel
-  is for browsing the whole tree at a glance, not the only place activity
-  shows.
+  visibility filter — **all** (the default, V5), **finished-only**,
+  **active-only** (terminal-status agents hidden) — without ever mutating
+  the tree itself; the header names the current mode. Ordinary subagent
+  lifecycle is *also* surfaced inline in the conversation stream itself;
+  this panel is for browsing the whole tree at a glance, not the only place
+  activity shows.
+
+  **V5** flipped the default from active-only to all: hiding a node the
+  instant it finishes read, in practice, as "the agents screen doesn't
+  always list the same agents" — the panel reshaping itself with no visible
+  cause. The status marker (`v`/`x`/`-` vs `*`/`o`/`?`) already reads
+  status at a glance per row, so nothing about "what's still running" is
+  lost by defaulting to a stable, unfiltered list; active-only remains one
+  `v` press away.
 
   `/tree` still parses but is demoted to a **hidden alias** (dropped from
   the palette): it renders the same content as the panel —
@@ -564,6 +572,44 @@ transcript is focused off-root, and `<model>` only once the first
 uncluttered. The `ctx%` figure reuses `view/status.rs::ctx_label`
 directly rather than recomputing the percentage, so the header and the
 status line's `ctx` field cannot drift apart.
+
+**V5 — lineage breadcrumb.** Off-root, `agent <id>` grows a `via` clause
+naming how the focused agent came to be: `agent <id> via root → fork @seq
+3 → @reviewer`. This answers the "clicking into a subagent doesn't show the
+parents" report: `focus_agent` clears the transcript down to the focused
+agent's *own* log (unchanged), but the tree itself — `parent`/`kind`/
+`inherited_upto` on each `TreeNode` — is always available, so the
+breadcrumb reads it fresh on every render rather than seeding anything into
+the transcript. Each hop's text is built by `view/agents.rs::hop_label`,
+which reuses the exact same `recipe_parts` provenance string the `/agents`
+panel row already shows for that node — `fork @seq N` for a fork, `@def`/
+`(inherit)` for a spawn — so the breadcrumb and the panel can never
+disagree about how a given agent was created. A node with no recorded
+`kind` (the root, or one seeded out-of-band via `ensure_agent_tracked`,
+which never saw a spawn event) falls back to its own short id rather than
+being mislabeled as a fork or a spawn it never was.
+
+This is **metadata only** — never the ancestor's actual transcript
+content — and that is deliberate, not a shortcut. A fork child's inherited
+context is a literal, immutable prefix of the parent's log, so showing it
+would be accurate; a spawn child inherits nothing, so showing it parent
+content would display information the agent never actually saw. Rather
+than build two different rendering paths (one that shows fork content,
+one that carefully never shows spawn content) with the attendant risk of
+getting the distinction wrong, the breadcrumb stays at metadata for both —
+which is trivially safe for a spawn child, and still legitimately useful
+for a fork child (it names the fork point; the fork's own transcript, once
+focused, contains the inherited content itself).
+
+The breadcrumb degrades through shorter *complete* forms rather than being
+clipped mid-word — the same shape `footer_text` (below) already uses for
+the floating footer. A long chain first drops to `agent <id> via root →
+…(N) → <last hop>` (keeping the endpoints and the count of what was
+omitted), and finally to the plain `agent <id>` with no lineage at all if
+even that does not fit. The ancestry walk itself
+(`view/agents.rs::ancestor_chain`) is bounded to 64 hops and stops the
+instant it revisits an id already in the chain, so a cycle in `parent`
+(should be impossible) ends the walk rather than hanging.
 
 **End and Home** jump the transcript when the input box is empty: `End`
 snaps to the tail and re-engages auto-follow, `Home` jumps to the top and

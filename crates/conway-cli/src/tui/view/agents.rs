@@ -114,24 +114,77 @@ pub(crate) fn recipe_parts(node: &TreeNode) -> Vec<String> {
     parts
 }
 
-/// `pub(crate)` so item A3's `/tree` snapshot renderer (`tui::commands`)
-/// indents by the same ancestor-depth rule the panel rows use.
-pub(crate) fn ancestor_depth(state: &AppState, agent: conway::AgentId) -> usize {
-    let mut depth = 0;
+/// V5: one ancestry-chain hop's label for the header's lineage breadcrumb
+/// (`view/header.rs`) -- built from [`recipe_parts`] (the SAME provenance
+/// text the panel row shows) so the breadcrumb and the panel can never
+/// drift apart. When `recipe_parts` has nothing to say (`kind: None`: the
+/// root, or a node seeded out-of-band via `ensure_agent_tracked`, which
+/// never saw a spawn event -- V5 acceptance: this must render sensibly, not
+/// be mislabeled as a fork or a spawn it never was), falls back to the
+/// node's own short id so the hop still names WHO even when it cannot name
+/// HOW.
+pub(crate) fn hop_label(node: &TreeNode) -> String {
+    let parts = recipe_parts(node);
+    if parts.is_empty() {
+        short_agent_id(node.agent_id)
+    } else {
+        parts.join(" ")
+    }
+}
+
+/// An `AgentId`'s first 8 characters -- ULIDs are 26-character base32
+/// strings, ASCII-only, so slicing by byte can never land mid-character.
+/// `pub(crate)` so `view/header.rs`'s sticky header (which already showed
+/// `agent <id>` this way pre-V5) uses this SAME truncation rule for both
+/// the plain `agent <id>` field and the new lineage breadcrumb, rather than
+/// keeping two copies of an identical one-liner.
+pub(crate) fn short_agent_id(id: conway::AgentId) -> String {
+    id.to_string().chars().take(8).collect()
+}
+
+/// V5: a defensive bound on the ancestry walk (P-10 -- a cycle in `parent`
+/// should be impossible, but must never hang or overflow if it somehow
+/// happened). Generous for any tree this TUI will realistically show.
+const MAX_ANCESTOR_CHAIN: usize = 64;
+
+/// The root-first ancestry chain for `agent`, `agent` itself included as the
+/// LAST element -- e.g. `[root, child, grandchild]` for `grandchild`. Shared
+/// bounded walk (P-10, [`MAX_ANCESTOR_CHAIN`]) behind both [`ancestor_depth`]
+/// (the panel's own indent rule) and V5's lineage breadcrumb
+/// (`view/header.rs`), so there is exactly one cycle-safe tree walk rather
+/// than two copies that could disagree. A node missing from `state.tree`
+/// entirely (should not happen for anything reachable from `agent`, but
+/// `focused_agent` fails open elsewhere too) simply ends the walk there
+/// rather than panicking.
+pub(crate) fn ancestor_chain(state: &AppState, agent: conway::AgentId) -> Vec<conway::AgentId> {
+    let mut chain = vec![agent];
     let mut cursor = agent;
-    loop {
+    for _ in 0..MAX_ANCESTOR_CHAIN {
         let Some(node) = state.tree.nodes.iter().find(|n| n.agent_id == cursor) else {
             break;
         };
         match node.parent {
-            Some(p) => {
-                depth += 1;
+            // `contains` (not a `HashSet`) is fine at this scale -- the
+            // ancestry chains this walks are, by definition, shallow trees
+            // of live agents, never a large flat collection.
+            Some(p) if !chain.contains(&p) => {
+                chain.push(p);
                 cursor = p;
             }
-            None => break,
+            // No parent (reached the root), or `p` is already in the
+            // chain -- a cycle, which should be impossible but must not
+            // hang the walk (P-10).
+            _ => break,
         }
     }
-    depth
+    chain.reverse();
+    chain
+}
+
+/// `pub(crate)` so item A3's `/tree` snapshot renderer (`tui::commands`)
+/// indents by the same ancestor-depth rule the panel rows use.
+pub(crate) fn ancestor_depth(state: &AppState, agent: conway::AgentId) -> usize {
+    ancestor_chain(state, agent).len() - 1
 }
 
 fn status_marker(status: NodeStatus) -> &'static str {
@@ -240,9 +293,9 @@ mod tests {
         assert!(buffer.content().iter().any(|cell| cell.symbol() != " "));
     }
 
-    /// A2 review (minor): the default ActiveOnly filter can hide EVERY row
-    /// (e.g. an all-terminal tree). The draw must not panic and must render
-    /// the header-only panel (no node labels, no ListState selection).
+    /// A2 review (minor): the ActiveOnly filter can hide EVERY row (e.g. an
+    /// all-terminal tree). The draw must not panic and must render the
+    /// header-only panel (no node labels, no ListState selection).
     #[test]
     fn draw_with_zero_visible_rows_renders_header_only_without_panicking() {
         let root = AgentId::new();
@@ -259,7 +312,10 @@ mod tests {
             None,
             false,
         ));
-        // Default filter is ActiveOnly: every node here is terminal.
+        // V5: the default is All, which would show every row here -- force
+        // ActiveOnly (every node in this tree is terminal) to exercise the
+        // zero-visible-rows case.
+        state.agent_visibility = AgentVisibility::ActiveOnly;
 
         let text = rendered(&state, 80, 10);
 
@@ -467,10 +523,29 @@ mod tests {
         (state, live, done)
     }
 
+    /// V5 acceptance: the panel's default listing is stable -- a Finished
+    /// row stays represented under the default (`All`) filter.
     #[test]
-    fn draw_under_the_default_active_filter_hides_terminal_rows() {
+    fn draw_under_the_default_filter_still_shows_a_finished_agent() {
         let (state, _live, _done) = three_node_state();
-        assert_eq!(state.agent_visibility, AgentVisibility::ActiveOnly);
+        assert_eq!(state.agent_visibility, AgentVisibility::All);
+
+        let text = rendered(&state, 80, 10);
+
+        assert!(text.contains("livechild"), "live rows must show: {text:?}");
+        assert!(
+            text.contains("donechild"),
+            "a Finished row must still be represented under the default \
+             (All) filter: {text:?}"
+        );
+        // The tree itself is untouched (draw-time filtering only).
+        assert_eq!(state.tree.nodes.len(), 3);
+    }
+
+    #[test]
+    fn draw_under_active_only_hides_terminal_rows() {
+        let (mut state, _live, _done) = three_node_state();
+        state.agent_visibility = AgentVisibility::ActiveOnly;
 
         let text = rendered(&state, 80, 10);
 
@@ -546,7 +621,7 @@ mod tests {
         // live) rather than selecting nothing / panicking.
         let (mut state, _live, _done) = three_node_state();
         state.agent_selected = 2;
-        assert_eq!(state.agent_visibility, AgentVisibility::ActiveOnly);
+        state.agent_visibility = AgentVisibility::ActiveOnly;
 
         let backend = TestBackend::new(80, 10);
         let mut terminal = Terminal::new(backend).expect("terminal");
@@ -562,5 +637,142 @@ mod tests {
             any_reversed,
             "the clamped selection (last visible row) must still render highlighted"
         );
+    }
+
+    // ---- V5: ancestor_chain (the shared, bounded ancestry walk) ----
+
+    #[test]
+    fn ancestor_chain_is_root_first_and_includes_the_queried_agent_last() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let child = AgentId::new();
+        let grandchild = AgentId::new();
+        state.tree.nodes.push(node(
+            child,
+            Some(root),
+            None,
+            NodeStatus::Running,
+            None,
+            None,
+            false,
+        ));
+        state.tree.nodes.push(node(
+            grandchild,
+            Some(child),
+            None,
+            NodeStatus::Running,
+            None,
+            None,
+            false,
+        ));
+
+        assert_eq!(ancestor_chain(&state, root), vec![root]);
+        assert_eq!(ancestor_chain(&state, child), vec![root, child]);
+        assert_eq!(
+            ancestor_chain(&state, grandchild),
+            vec![root, child, grandchild]
+        );
+        assert_eq!(ancestor_depth(&state, grandchild), 2);
+    }
+
+    #[test]
+    fn ancestor_chain_of_an_untracked_agent_is_just_itself() {
+        let root = AgentId::new();
+        let state = AppState::new(root);
+        let stray = AgentId::new(); // never added to state.tree
+        assert_eq!(ancestor_chain(&state, stray), vec![stray]);
+    }
+
+    /// P-10: a cycle in `parent` should be impossible, but the walk must
+    /// never hang or overflow if one somehow existed. Two nodes pointing at
+    /// each other as their own "parent".
+    #[test]
+    fn ancestor_chain_terminates_on_a_cycle_instead_of_hanging() {
+        let a = AgentId::new();
+        let b = AgentId::new();
+        let mut state = AppState::new(a);
+        // Overwrite the auto-created root node and add a second node so
+        // `a.parent == Some(b)` and `b.parent == Some(a)`.
+        state.tree.nodes.clear();
+        state.tree.nodes.push(node(
+            a,
+            Some(b),
+            None,
+            NodeStatus::Running,
+            None,
+            None,
+            false,
+        ));
+        state.tree.nodes.push(node(
+            b,
+            Some(a),
+            None,
+            NodeStatus::Running,
+            None,
+            None,
+            false,
+        ));
+
+        let chain = ancestor_chain(&state, a);
+        assert!(
+            chain.len() <= MAX_ANCESTOR_CHAIN + 1,
+            "a cyclic parent chain must be bounded, got {} entries",
+            chain.len()
+        );
+        assert!(chain.contains(&a));
+    }
+
+    /// A deep, non-cyclic chain (below the bound) is walked in full --
+    /// distinct from the cycle case above.
+    #[test]
+    fn ancestor_chain_walks_a_deep_non_cyclic_chain_in_full() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let mut cursor = root;
+        let mut expected = vec![root];
+        for _ in 0..10 {
+            let next = AgentId::new();
+            state.tree.nodes.push(node(
+                next,
+                Some(cursor),
+                None,
+                NodeStatus::Running,
+                None,
+                None,
+                false,
+            ));
+            expected.push(next);
+            cursor = next;
+        }
+
+        assert_eq!(ancestor_chain(&state, cursor), expected);
+    }
+
+    // ---- V5: hop_label (the breadcrumb's per-hop text, reusing recipe_parts) ----
+
+    #[test]
+    fn hop_label_uses_the_same_recipe_text_as_the_panel_row() {
+        let n = node(
+            AgentId::new(),
+            None,
+            None,
+            NodeStatus::Running,
+            Some(SubagentMode::Fork),
+            Some(LogSeq(9)),
+            false,
+        );
+        assert_eq!(hop_label(&n), "fork @seq 9");
+    }
+
+    /// V5 acceptance: a node with `kind: None` (the root, or one seeded
+    /// out-of-band via `ensure_agent_tracked`) must render sensibly rather
+    /// than being mislabeled as a fork or a spawn it never was.
+    #[test]
+    fn hop_label_of_a_kindless_node_falls_back_to_its_short_id_not_a_recipe_guess() {
+        let id = AgentId::new();
+        let n = node(id, None, None, NodeStatus::Running, None, None, false);
+        assert_eq!(hop_label(&n), short_agent_id(id));
+        assert!(!hop_label(&n).contains("fork"));
+        assert!(!hop_label(&n).contains('@'));
     }
 }

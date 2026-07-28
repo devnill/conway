@@ -28,6 +28,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The `/agents` panel no longer appears to randomly lose agents, and
+  focusing a subagent now shows where it sits in the tree.** Two dogfooding
+  reports, one root cause each:
+
+  The panel's visibility filter defaulted to active-only, so a finished
+  agent's row vanished the instant it finished — with `v` (the filter
+  cycle key) undiscovered, that reads as agents disappearing at random. The
+  default is now **all**: the list's *shape* stays stable regardless of
+  status, and the existing per-row marker (`v`/`x`/`-` vs `*`/`o`/`?`)
+  already conveys "still running" at a glance. `v` still cycles
+  all → finished-only → active-only → all; only the starting point moved.
+
+  Focusing a subagent used to clear the transcript down to that agent's own
+  log with no indication of how it got there. The sticky context header
+  (T6) now grows a lineage breadcrumb off-root — `agent <id> via root →
+  fork @seq 3 → @reviewer` — built from the same per-node provenance text
+  the panel row already shows (`fork @seq N`, `@agent_def`, `(inherit)`),
+  so it can never disagree with the panel. It is metadata only, never the
+  ancestor's actual transcript content: a fork child truly inherited its
+  parent's log up to a fixed point and showing that would be accurate, but
+  a spawn child inherited nothing, and showing parent content next to it
+  would display information the agent never saw. A deep chain degrades to
+  a shorter complete form (`…(N)` collapsing the middle) rather than
+  clipping mid-word, the same shape the T6 floating footer already uses.
+
 - **Two-finger scroll works again.** In v0.3.0 the mouse wheel recalled
   input history instead of scrolling the transcript. Bare `Up`/`Down` now
   scroll one line; history recall moved to `Ctrl-P`/`Ctrl-N`.

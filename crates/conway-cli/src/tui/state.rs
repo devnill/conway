@@ -227,11 +227,29 @@ impl NodeStatus {
 /// mutates the tree. Cycled by `v` while the panel is open (`input.rs`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentVisibility {
-    /// The default: terminal-status nodes (Finished/Failed/Cancelled) are
-    /// hidden (user decision, item A2), so the panel reads as "what is
-    /// still running".
+    /// Terminal-status nodes (Finished/Failed/Cancelled) are hidden, so the
+    /// panel reads as "what is still running".
+    ///
+    /// NOT the default (V5 reversal of item A2's original decision):
+    /// dogfooding showed that hiding a node the instant it finishes reads
+    /// as "the agents screen doesn't always list the same agents" -- the
+    /// panel's *shape* changing on its own the moment a child completes,
+    /// with no visible cause, is exactly what "agents randomly
+    /// disappearing" looks like to someone who has not discovered `v`. The
+    /// filter itself is still useful (a long session's "what's still
+    /// running" view), so it stays -- it is simply no longer the first
+    /// thing a user sees.
     ActiveOnly,
-    /// Show every node, terminal or not.
+    /// The default (V5): every node, terminal or not. A stable list --
+    /// finishing never removes a row -- beats a shorter one that reshapes
+    /// itself underneath the user. `NodeStatus`'s own marker glyph (`v`/`x`/
+    /// `-` vs `*`/`o`/`?`) already reads status at a glance per row, so
+    /// nothing about "what's still running" is lost, unlike hiding it would
+    /// lose "what happened." A dimmed-but-visible middle ground was also
+    /// considered (V5 spec) and would work too, but `All` is the simpler
+    /// change and needs no new theme slot (T1: no bare inline styles in
+    /// `view/` outside `theme.rs`) -- the status glyph alone already
+    /// carries "this one is done."
     All,
     /// Show ONLY terminal-status nodes -- the "what already ran" view.
     FinishedOnly,
@@ -239,6 +257,8 @@ pub enum AgentVisibility {
 
 impl AgentVisibility {
     /// The `v`-key cycle order: ActiveOnly -> All -> FinishedOnly -> ActiveOnly.
+    /// Unchanged by V5's default flip (only the STARTING point of the cycle
+    /// moved, not the order).
     pub fn next(self) -> Self {
         match self {
             Self::ActiveOnly => Self::All,
@@ -474,8 +494,8 @@ pub struct AppState {
     /// dangling. Only meaningful while `agent_view_open`.
     pub agent_selected: usize,
     /// The `/agents` panel's draw-time visibility filter (item A2) --
-    /// which tree nodes the panel rows show. Defaults to `ActiveOnly`
-    /// (finished agents hidden, not deleted -- P-2); cycled by `v` while
+    /// which tree nodes the panel rows show. Defaults to `All` (V5: see
+    /// [`AgentVisibility::All`]'s own doc for why); cycled by `v` while
     /// the panel is open via [`Self::cycle_agent_visibility`]. Read only at
     /// draw time (`view/agents.rs`) and by the panel's own navigation
     /// (`Self::agent_scroll`, `input.rs`'s Enter-to-focus); the tree itself
@@ -803,7 +823,11 @@ impl AppState {
             palette_selected: None,
             palette_stem: String::new(),
             agent_selected: 0,
-            agent_visibility: AgentVisibility::ActiveOnly,
+            // V5: the default is `All`, not `ActiveOnly` -- see
+            // `AgentVisibility::All`'s own doc for why hiding finished
+            // agents by default reads as "agents randomly disappearing"
+            // rather than as the intended "what is still running" view.
+            agent_visibility: AgentVisibility::All,
             focused_agent: root,
             activity: Activity::Idle,
             focused_agent_usage: Usage::default(),
@@ -927,6 +951,15 @@ impl AppState {
     /// resets exactly as any other switch would -- deliberately, not
     /// specially skipped: cheap, and correct if `app.rs`'s own replay ever
     /// changed underneath (e.g. a session resumed mid-way).
+    ///
+    /// V5: this clears the transcript down to `agent`'s OWN log with no
+    /// lineage content mixed in, deliberately -- a spawn child's transcript
+    /// must never show text from a parent it never actually saw (the
+    /// fork/spawn trap; see `view/header.rs`'s module doc). What lineage
+    /// this DOES surface -- who created `agent` and how (fork/spawn,
+    /// fork point, `agent_def`) -- is read straight from `self.tree` by the
+    /// sticky header's breadcrumb (`view/header.rs::agent_field`) on every
+    /// render, so nothing needs to be seeded into the transcript here.
     pub fn focus_agent(&mut self, agent: AgentId) {
         self.focused_agent = agent;
         self.transcript.clear();
@@ -3748,18 +3781,39 @@ mod tests {
     }
 
     #[test]
-    fn agent_visibility_defaults_to_active_only_and_cycles_in_order() {
+    fn agent_visibility_defaults_to_all_and_cycles_in_order() {
+        // V5: the default flipped from ActiveOnly to All (a finished agent
+        // must not vanish from the panel the instant it finishes). The
+        // cycle ORDER itself is unchanged -- only the starting point moved.
         let mut state = AppState::new(AgentId::new());
-        assert_eq!(state.agent_visibility, AgentVisibility::ActiveOnly);
-        state.cycle_agent_visibility();
         assert_eq!(state.agent_visibility, AgentVisibility::All);
         state.cycle_agent_visibility();
         assert_eq!(state.agent_visibility, AgentVisibility::FinishedOnly);
         state.cycle_agent_visibility();
+        assert_eq!(state.agent_visibility, AgentVisibility::ActiveOnly);
+        state.cycle_agent_visibility();
         assert_eq!(
             state.agent_visibility,
-            AgentVisibility::ActiveOnly,
-            "the cycle must wrap back to ActiveOnly"
+            AgentVisibility::All,
+            "the cycle must wrap back to All"
+        );
+    }
+
+    /// V5 acceptance: the panel's default listing is stable -- a finished
+    /// agent stays represented under the default filter rather than
+    /// vanishing the instant it finishes.
+    #[test]
+    fn default_visibility_still_shows_a_finished_agent() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        assert_eq!(state.agent_visibility, AgentVisibility::All);
+        let finished = tracked_node(&mut state, root, NodeStatus::Finished);
+
+        assert!(
+            state
+                .visible_agent_nodes()
+                .any(|n| n.agent_id == finished),
+            "a Finished node must still be represented under the default filter"
         );
     }
 
@@ -3774,7 +3828,7 @@ mod tests {
         let starting = tracked_node(&mut state, root, NodeStatus::Starting);
         let awaiting = tracked_node(&mut state, root, NodeStatus::AwaitingPermission);
 
-        assert_eq!(state.agent_visibility, AgentVisibility::ActiveOnly);
+        state.agent_visibility = AgentVisibility::ActiveOnly;
         let visible: Vec<AgentId> = state.visible_agent_nodes().map(|n| n.agent_id).collect();
 
         for terminal in [finished, failed, cancelled] {
@@ -3846,9 +3900,9 @@ mod tests {
         let count_before = state.tree.nodes.len();
         let nodes_before = state.tree.nodes.clone();
 
-        state.cycle_agent_visibility(); // -> All
         state.cycle_agent_visibility(); // -> FinishedOnly
         state.cycle_agent_visibility(); // -> ActiveOnly
+        state.cycle_agent_visibility(); // -> All
 
         assert_eq!(state.tree.nodes.len(), count_before);
         assert_eq!(
@@ -3859,13 +3913,14 @@ mod tests {
 
     #[test]
     fn agent_scroll_uses_the_filtered_row_count() {
-        // root(Starting), done(Finished), live(Running). Under the default
-        // ActiveOnly the visible rows are [root, live]: selection must
-        // clamp at index 1 even though the raw tree has 3 nodes.
+        // root(Starting), done(Finished), live(Running). Under ActiveOnly
+        // the visible rows are [root, live]: selection must clamp at index
+        // 1 even though the raw tree has 3 nodes.
         let root = AgentId::new();
         let mut state = AppState::new(root);
         tracked_node(&mut state, root, NodeStatus::Finished);
         tracked_node(&mut state, root, NodeStatus::Running);
+        state.agent_visibility = AgentVisibility::ActiveOnly;
 
         state.agent_scroll(1);
         assert_eq!(state.agent_selected, 1);
