@@ -16,6 +16,8 @@ pub mod event;
 pub mod fakes;
 pub mod ids;
 pub mod log;
+pub mod permission_mode;
+pub mod permission_pattern;
 pub mod ports;
 pub mod provenance;
 pub mod routing;

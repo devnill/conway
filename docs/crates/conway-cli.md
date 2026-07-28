@@ -759,6 +759,74 @@ you're actively editing needs to track the cursor.
 **Out of scope** (explicitly, per the item spec): fuzzy autocomplete,
 arg-parameter hints, undo/redo, and vim/emacs editing modes.
 
+### Permission modes and pattern grants (V2)
+
+Approving every command individually does not scale — a real session can
+produce hundreds of prompts. Conway now has three modes and a pattern
+grant, and the mode is always visible in the status line.
+
+**Modes.** `prompt` (the default, and Conway's original behavior) asks
+about every distinct call. `plan` allows only non-mutating tools and
+denies the rest outright. `AUTO-ALLOW` allows everything without asking.
+Switch modes from `/settings`; that is also the escape hatch out of an
+over-broad mode, mid-session and without a restart.
+
+The status line names `plan` and `AUTO-ALLOW` but deliberately stays quiet
+about `prompt`. Labelling the ordinary case every frame trains the eye to
+skip the field, which is the wrong reflex for the one case that matters.
+
+**Plan mode is defined on the tool's declared category, not on the command
+text.** `read`, `grep`, and `glob` declare themselves `Read`/`Search`, so
+they run; `bash` declares `Execute` no matter what it is handed, so
+`bash cat file` is blocked even though it only reads. That is deliberate:
+deciding otherwise would mean parsing shell, and a parser that is wrong
+once is a hole. A category Conway does not have yet is blocked, not
+allowed.
+
+**Pattern grants** let one approval cover a family of commands:
+
+```
+bash:git status   → "git status", "git status --short"
+bash:git          → any git subcommand
+read:*            → any read
+```
+
+A pattern is a **prefix**, matched on whole arguments — not a regex. Regex
+was rejected on purpose: `bash:git .*` reads as tight, but `.` matches `;`,
+so it would authorize `git status; <anything>`. A prefix is predictable by
+reading, and matching token-wise means `git status` covers
+`git status --short` without covering `git statusfoo`.
+
+**The rule that makes prefixes safe.** `git status && <anything>` starts
+with `git status`. So a pattern grant applies **only when the command
+contains no shell metacharacters** — `;`, `&`, `|`, backtick, `$`, `<`,
+`>`, parentheses, braces, or a newline. A chained or substituted command
+always re-prompts, no matter what patterns exist. This is checked before
+any prefix comparison, so there is no path from a pattern to an allow that
+skips it.
+
+The gate is deliberately over-eager: a command with a harmless pipe still
+re-prompts. An unnecessary prompt costs a keystroke; a missed one costs
+arbitrary execution.
+
+**Grants inherit to subagents** via the existing `AgentSubtree` scope — a
+grant made by a parent covers its descendants, and does not leak sideways
+to an unrelated agent.
+
+**Persistence.** Rules live in `.conway/permissions.json`, resolved
+project-first then global, as a flat list of wire-form strings so the file
+can be read and diffed by a human:
+
+```json
+{ "allow": ["bash:git status", "read:*"] }
+```
+
+A corrupt or unreadable file **fails closed** — it authorizes nothing, and
+the worst outcome is extra prompting. A malformed individual entry is
+dropped rather than guessed at; the rest of the file still loads.
+
+Review and revoke active grants from `/settings`.
+
 ### The `/` command palette, with arrow-select
 
 `tui/commands.rs` owns the authoritative slash-command parser

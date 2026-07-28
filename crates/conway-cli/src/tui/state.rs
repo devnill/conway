@@ -12,7 +12,7 @@ use std::time::Instant;
 use chrono::{DateTime, Utc};
 use conway::{
     config::schema::StatusLineConfig, AgentId, AgentIntent, AgentResult, Envelope, Event, LogSeq,
-    ResultStatus, SegmentId, SubagentMode, Usage,
+    PermissionMode, ResultStatus, SegmentId, SubagentMode, Usage,
 };
 
 use super::gate::PendingPrompt;
@@ -455,6 +455,15 @@ pub struct AppState {
     /// Always in `0..=input.chars().count()`.
     pub cursor: usize,
     pub mode: Mode,
+    /// V2: the active permission mode, mirrored from the runtime broker so
+    /// the status line can render it every frame without reaching across
+    /// the facade per draw. Updated when `/settings` changes it.
+    ///
+    /// Mirrored rather than owned: the broker is the authority (it is what
+    /// actually gates calls); this is a display copy. If the two ever
+    /// disagree the broker wins, and the visible consequence is a stale
+    /// label -- which is why `/settings` writes both together.
+    pub permission_mode: PermissionMode,
     /// The transcript's scroll offset (wrapped lines from the top), only
     /// meaningful while `follow_tail` is `false` -- see that field's own
     /// doc. Mutated by [`Self::scroll_page_up`]/[`Self::scroll_page_down`]
@@ -862,6 +871,7 @@ impl AppState {
             input: String::new(),
             cursor: 0,
             mode: Mode::Normal,
+            permission_mode: PermissionMode::default(),
             scroll: 0,
             follow_tail: true,
             queued_prompts: std::collections::VecDeque::new(),

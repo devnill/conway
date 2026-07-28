@@ -52,6 +52,8 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use super::theme::Theme;
+use conway::PermissionMode;
+
 use crate::tui::state::{should_animate, Activity, AppState, Mode, SPINNER_FRAMES};
 
 pub fn draw(frame: &mut Frame, area: Rect, state: &AppState, theme: &Theme) {
@@ -170,7 +172,22 @@ fn render_field(
     theme: &Theme,
 ) -> Vec<Span<'static>> {
     match field {
-        StatusLineField::Mode => vec![Span::raw(mode_label(&state.mode))],
+        StatusLineField::Mode => {
+            // V2: the permission mode rides alongside the UI mode. While
+            // `Prompt` (the default) it is omitted -- naming the ordinary
+            // case every frame would train the operator to ignore the
+            // field, which is exactly the wrong reflex for the one case
+            // that matters. `plan` and `AUTO-ALLOW` always show.
+            let ui = mode_label(&state.mode);
+            match state.permission_mode {
+                PermissionMode::Prompt => vec![Span::raw(ui)],
+                other => vec![
+                    Span::raw(ui),
+                    Span::raw(" · "),
+                    Span::styled(other.label().to_string(), theme.emphasized),
+                ],
+            }
+        }
         StatusLineField::Model => state
             .focused_model
             .as_deref()
@@ -865,5 +882,36 @@ mod tests {
         );
     }
 
+
+    /// V2: auto-allow must never be ambiguous. An operator who has
+    /// forgotten they are in it, and believes they are still being asked,
+    /// is the failure this mode most needs to avoid -- so the label is
+    /// emphatic and always present.
+    #[test]
+    fn the_status_line_names_a_non_default_permission_mode() {
+        let mut state = AppState::new(AgentId::new());
+
+        // Prompt is the default and is deliberately NOT named: labelling
+        // the ordinary case every frame trains the eye to skip the field.
+        assert!(
+            !status_line(&state).contains("prompt"),
+            "the default mode is not named: {}",
+            status_line(&state)
+        );
+
+        state.permission_mode = PermissionMode::AutoAllow;
+        assert!(
+            status_line(&state).contains("AUTO-ALLOW"),
+            "auto-allow must be unmistakable: {}",
+            status_line(&state)
+        );
+
+        state.permission_mode = PermissionMode::Plan;
+        assert!(
+            status_line(&state).contains("plan"),
+            "plan mode must be visible: {}",
+            status_line(&state)
+        );
+    }
 
 }
