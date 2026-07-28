@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`Esc` no longer discards the agent you just focused.** Forking, opening
+  `/agents`, focusing the new child, then pressing `Esc` to dismiss the
+  panel bounced you straight back to the root — so "focus a child and get
+  the panel out of the way" was not expressible at all.
+
+  Two changes had independently bound `Esc` (one to close the panel, one to
+  return to the root) and both fired on a single press. Only the
+  panel-close half was ever documented in `/help`, which is what made this
+  a bug rather than a shortcut.
+
+  `Esc` now does one thing per press, innermost surface first: it closes
+  the panel if open and keeps your focus; a second press returns to the
+  root. With the panel already closed it returns to the root immediately,
+  so no keypress is wasted.
+
 ### Changed
 
 - **TUI: palette audit — what each color means, and a few defaults tighten
