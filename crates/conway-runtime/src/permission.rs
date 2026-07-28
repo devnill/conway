@@ -9,6 +9,9 @@
 //! for as long as the gate takes to answer.
 
 use std::collections::HashMap;
+
+use conway_core::permission_mode::PermissionMode;
+use conway_core::permission_pattern::PatternRule;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
@@ -122,12 +125,37 @@ impl GrantScope {
     }
 }
 
+/// Maps a `PermissionScope` onto the broker's internal `GrantScope`.
+///
+/// Shared by the `AllowAlways` cache and V2's pattern grants so the two
+/// cannot drift on the `#[non_exhaustive]` fallback: an unknown scope
+/// narrows to `Agent`, never widens to `Session`.
+fn grant_scope_for(scope: PermissionScope, granting_agent: AgentId) -> GrantScope {
+    match scope {
+        PermissionScope::Session => GrantScope::Session,
+        PermissionScope::Agent => GrantScope::Agent(granting_agent),
+        PermissionScope::AgentSubtree => GrantScope::Subtree(granting_agent),
+        // `PermissionScope` is `#[non_exhaustive]`: fall back to the
+        // narrowest known grant rather than silently widening it.
+        _ => GrantScope::Agent(granting_agent),
+    }
+}
+
 /// A per-session decision cache over the consumer's [`PermissionGate`]
 /// (architecture §4.3). One broker instance is shared across an agent tree.
 pub struct PermissionBroker {
     gate: Arc<dyn PermissionGate>,
     bus: Arc<EventBus>,
     cache: RwLock<HashMap<CacheKey, Vec<GrantScope>>>,
+    /// V2: how much the operator is asked. Runtime-mutable via
+    /// [`PermissionBroker::set_mode`] so `/settings` can switch out of an
+    /// over-broad mode mid-session without a restart.
+    mode: RwLock<PermissionMode>,
+    /// V2: prefix-pattern grants, paired with the scope they were granted
+    /// at. Checked BEFORE the gate, so a matching pattern spares the
+    /// operator a prompt -- but only for commands that clear
+    /// `PatternRule::matches`'s metacharacter gate.
+    patterns: RwLock<Vec<(PatternRule, GrantScope)>>,
 }
 
 impl PermissionBroker {
@@ -136,7 +164,78 @@ impl PermissionBroker {
             gate,
             bus,
             cache: RwLock::new(HashMap::new()),
+            mode: RwLock::new(PermissionMode::default()),
+            patterns: RwLock::new(Vec::new()),
         }
+    }
+
+    /// The current mode. Cheap enough to call per render -- the status
+    /// line reads it every frame so the operator can never be uncertain
+    /// which mode they are in.
+    pub fn mode(&self) -> PermissionMode {
+        *self.mode.read().expect("permission mode poisoned")
+    }
+
+    /// Switches mode at runtime. This is the escape hatch: an operator who
+    /// finds themselves in an over-broad `AutoAllow` returns to `Prompt`
+    /// without restarting the session.
+    pub fn set_mode(&self, mode: PermissionMode) {
+        *self.mode.write().expect("permission mode poisoned") = mode;
+    }
+
+    /// Installs a pattern grant at `scope`.
+    ///
+    /// Note this does NOT pre-validate the rule against metacharacters:
+    /// the gate lives in `PatternRule::matches`, applied to the incoming
+    /// COMMAND at decision time. Filtering at creation time instead would
+    /// be the wrong shape -- it would let a rule created before the gate
+    /// existed, or loaded from a file, slip past.
+    pub fn remember_pattern(&self, rule: PatternRule, scope: PermissionScope, granting_agent: AgentId) {
+        let grant = grant_scope_for(scope, granting_agent);
+        self.patterns
+            .write()
+            .expect("permission patterns poisoned")
+            .push((rule, grant));
+    }
+
+    /// Every active pattern grant, for the settings menu's review list. An
+    /// operator must be able to see what they have granted; a rule set
+    /// nobody can inspect is a trap.
+    pub fn active_patterns(&self) -> Vec<PatternRule> {
+        self.patterns
+            .read()
+            .expect("permission patterns poisoned")
+            .iter()
+            .map(|(rule, _)| rule.clone())
+            .collect()
+    }
+
+    /// Drops every pattern grant and every cached `AllowAlways`, returning
+    /// the session to asking. The revocation half of the escape hatch.
+    pub fn revoke_all_grants(&self) {
+        self.patterns
+            .write()
+            .expect("permission patterns poisoned")
+            .clear();
+        self.cache
+            .write()
+            .expect("permission cache poisoned")
+            .clear();
+    }
+
+    /// Whether any installed pattern authorizes this call.
+    ///
+    /// The metacharacter gate is inside `PatternRule::matches`, so a
+    /// chained command can never satisfy a pattern here regardless of what
+    /// is installed.
+    fn pattern_allows(&self, ctx: &PermissionCtx, call: &AuthorizedCall) -> bool {
+        self.patterns
+            .read()
+            .expect("permission patterns poisoned")
+            .iter()
+            .any(|(rule, grant)| {
+                grant.covers(ctx) && rule.matches(call.tool.as_str(), &call.rendered)
+            })
     }
 
     /// Authorize one tool call, consulting the cache first and the gate on a
@@ -160,6 +259,55 @@ impl PermissionBroker {
         );
 
         if self.cached_grant_covers(&key, ctx) {
+            self.emit(
+                ctx,
+                Event::PermissionResolved {
+                    call_id: call.call_id.clone(),
+                    decision: PermissionDecisionKind::Cached,
+                },
+            );
+            return PermissionOutcome::Allow;
+        }
+
+        // V2 mode gate. Ordered deliberately: PLAN's denial is checked
+        // before any allow path, so a plan-mode session cannot be talked
+        // out of its denial by a pattern grant or an auto-allow left over
+        // from earlier. Plan mode is the mode an operator selects when
+        // they want a guarantee, so it behaves like one.
+        let mode = self.mode();
+        if mode == PermissionMode::Plan && !mode.allows_category(call.category) {
+            self.emit(
+                ctx,
+                Event::PermissionResolved {
+                    call_id: call.call_id.clone(),
+                    decision: PermissionDecisionKind::Denied,
+                },
+            );
+            return PermissionOutcome::Deny {
+                rendered_error: format!(
+                    "plan mode: `{}` is a {:?} tool, which plan mode does not permit.                      Switch modes in /settings to run it.",
+                    call.tool.as_str(),
+                    call.category
+                ),
+            };
+        }
+
+        // A pattern grant spares the operator a prompt -- but only for a
+        // command that clears the metacharacter gate inside
+        // `PatternRule::matches`. A chained command falls through to the
+        // gate below no matter what patterns exist.
+        if self.pattern_allows(ctx, call) {
+            self.emit(
+                ctx,
+                Event::PermissionResolved {
+                    call_id: call.call_id.clone(),
+                    decision: PermissionDecisionKind::Cached,
+                },
+            );
+            return PermissionOutcome::Allow;
+        }
+
+        if mode == PermissionMode::AutoAllow {
             self.emit(
                 ctx,
                 Event::PermissionResolved {
@@ -205,14 +353,7 @@ impl PermissionBroker {
     }
 
     fn remember(&self, key: CacheKey, scope: PermissionScope, granting_agent: AgentId) {
-        let grant = match scope {
-            PermissionScope::Session => GrantScope::Session,
-            PermissionScope::Agent => GrantScope::Agent(granting_agent),
-            PermissionScope::AgentSubtree => GrantScope::Subtree(granting_agent),
-            // `PermissionScope` is `#[non_exhaustive]`: fall back to the
-            // narrowest known grant rather than silently widening it.
-            _ => GrantScope::Agent(granting_agent),
-        };
+        let grant = grant_scope_for(scope, granting_agent);
         let mut cache = self.cache.write().expect("permission cache poisoned");
         let grants = cache.entry(key).or_default();
         // Dedup on insert: concurrent decide() races on the same key may

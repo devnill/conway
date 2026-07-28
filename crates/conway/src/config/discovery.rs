@@ -51,6 +51,37 @@ pub fn history_file_path(env: &HashMap<String, String>) -> Option<PathBuf> {
     xdg_config_path(env).and_then(|settings| settings.parent().map(|dir| dir.join("history")))
 }
 
+/// V2: the persisted permission-rules file, resolved project-first then
+/// global — the same precedence `discover`/`xdg_config_path` already
+/// establish for `settings.json`.
+///
+/// Project-first is deliberate: a grant like "allow `cargo test`" is
+/// almost always about *this* checkout, and a project-scoped file can be
+/// reviewed in a diff alongside the code it authorizes. The global file is
+/// the fallback for grants that genuinely follow the operator.
+///
+/// Returns both candidates in precedence order so the caller can load and
+/// merge them; a missing file at either level is not an error.
+pub fn permission_file_paths(cwd: &std::path::Path, env: &HashMap<String, String>) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    // Project scope: alongside the nearest `.conway/settings.json`, or the
+    // cwd's own `.conway/` if no ancestor config exists yet.
+    if let Some(project) = discover(cwd) {
+        if let Some(dir) = project.parent() {
+            paths.push(dir.join("permissions.json"));
+        }
+    } else {
+        paths.push(cwd.join(".conway").join("permissions.json"));
+    }
+    // Global scope, alongside the resolved global settings.
+    if let Some(global) = xdg_config_path(env).and_then(|s| s.parent().map(|d| d.join("permissions.json"))) {
+        if !paths.contains(&global) {
+            paths.push(global);
+        }
+    }
+    paths
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

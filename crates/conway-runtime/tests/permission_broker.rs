@@ -14,6 +14,8 @@ use conway_runtime::events::EventBus;
 use conway_runtime::permission::{
     AuthorizedCall, PermissionBroker, PermissionCtx, PermissionOutcome,
 };
+use conway_core::permission_mode::PermissionMode;
+use conway_core::permission_pattern::PatternRule;
 use futures::StreamExt;
 
 /// A gate that plays back a fixed script of decisions in order, recording
@@ -395,4 +397,247 @@ async fn broker_builds_permission_request_with_full_agent_path() {
     assert_eq!(requests[0].call_id, "c1");
     assert_eq!(requests[0].rendered, "read a.txt");
     assert_eq!(requests[0].category, ToolCategory::Read);
+}
+
+// ---------------------------------------------------------------------
+// V2: permission modes and pattern grants.
+// ---------------------------------------------------------------------
+
+/// A `bash` call carrying `rendered` — the shape pattern grants care about.
+fn bash_call(call_id: &str, rendered: &str) -> AuthorizedCall {
+    AuthorizedCall {
+        call_id: call_id.into(),
+        tool: ToolName::new("bash"),
+        category: ToolCategory::Execute,
+        arguments: serde_json::json!({ "command": rendered }),
+        rendered: rendered.into(),
+    }
+}
+
+/// **The most important test in V2.**
+///
+/// A pattern grant for `git status` must not authorize a chained command
+/// that merely begins with it. The gate lives inside `PatternRule::matches`,
+/// but this proves it holds through the broker's real decision path — and,
+/// critically, that the chained command actually REACHES the operator's
+/// gate rather than being silently allowed or silently denied.
+#[tokio::test]
+async fn a_chained_command_still_reaches_the_operator_despite_a_matching_pattern() {
+    // The gate is scripted to deny, so if the pattern wrongly authorized
+    // the chained command we would see Allow with zero gate calls.
+    let gate = ScriptedGate::new(vec![PermissionDecision::Deny {
+        reason: "operator said no".into(),
+    }]);
+    let (broker, _bus) = broker(gate.clone());
+    let session = SessionId::new();
+    let agent = AgentId::new();
+    let c = ctx(agent, vec![agent], session);
+
+    broker.remember_pattern(
+        PatternRule::parse("bash:git status").expect("valid rule"),
+        PermissionScope::Session,
+        agent,
+    );
+
+    // The plain granted command is authorized without troubling the gate.
+    let plain = broker.decide(&c, &bash_call("c1", "git status")).await;
+    assert_eq!(plain, PermissionOutcome::Allow);
+    assert_eq!(
+        gate.call_count(),
+        0,
+        "the granted command must not re-prompt"
+    );
+
+    // The chained one must fall through to the operator.
+    let chained = broker
+        .decide(&c, &bash_call("c2", "git status && rm -rf /"))
+        .await;
+    assert!(
+        matches!(chained, PermissionOutcome::Deny { .. }),
+        "a chained command must not be authorized by a prefix grant"
+    );
+    assert_eq!(
+        gate.call_count(),
+        1,
+        "the chained command must actually REACH the operator's gate -- \
+         being silently denied would be almost as wrong as being allowed, \
+         because it would mean the pattern layer decided rather than deferred"
+    );
+}
+
+/// Adversarial: a grant for one subcommand must not cover another.
+#[tokio::test]
+async fn a_pattern_grant_does_not_cover_a_different_subcommand() {
+    let gate = ScriptedGate::new(vec![PermissionDecision::Deny {
+        reason: "nope".into(),
+    }]);
+    let (broker, _bus) = broker(gate.clone());
+    let session = SessionId::new();
+    let agent = AgentId::new();
+    let c = ctx(agent, vec![agent], session);
+
+    broker.remember_pattern(
+        PatternRule::parse("bash:git status").expect("valid rule"),
+        PermissionScope::Session,
+        agent,
+    );
+
+    let pushed = broker
+        .decide(&c, &bash_call("c1", "git push --force"))
+        .await;
+    assert!(
+        matches!(pushed, PermissionOutcome::Deny { .. }),
+        "a `git status` grant must never authorize `git push --force`"
+    );
+    assert_eq!(gate.call_count(), 1, "it must reach the operator");
+}
+
+/// Subtree inheritance rides the existing `AgentSubtree` scope: a grant
+/// made by a parent covers a descendant, and does not leak sideways to an
+/// unrelated agent.
+#[tokio::test]
+async fn a_subtree_pattern_grant_covers_descendants_but_not_strangers() {
+    let gate = ScriptedGate::new(vec![PermissionDecision::Deny {
+        reason: "nope".into(),
+    }]);
+    let (broker, _bus) = broker(gate.clone());
+    let session = SessionId::new();
+    let root = AgentId::new();
+    let child = AgentId::new();
+    let stranger = AgentId::new();
+
+    broker.remember_pattern(
+        PatternRule::parse("bash:git status").expect("valid rule"),
+        PermissionScope::AgentSubtree,
+        root,
+    );
+
+    let descendant = ctx(child, vec![root, child], session);
+    assert_eq!(
+        broker.decide(&descendant, &bash_call("c1", "git status")).await,
+        PermissionOutcome::Allow,
+        "a descendant inherits the subtree grant"
+    );
+
+    let unrelated = ctx(stranger, vec![stranger], session);
+    let outcome = broker
+        .decide(&unrelated, &bash_call("c2", "git status"))
+        .await;
+    assert!(
+        matches!(outcome, PermissionOutcome::Deny { .. }),
+        "an agent outside the granting subtree must not inherit the grant"
+    );
+}
+
+/// Plan mode denies mutating categories without consulting the gate, and
+/// its denial cannot be overridden by a pattern grant — plan mode is
+/// selected for a guarantee, so it behaves like one.
+#[tokio::test]
+async fn plan_mode_denies_execute_even_with_a_matching_pattern_grant() {
+    let gate = ScriptedGate::new(vec![]);
+    let (broker, _bus) = broker(gate.clone());
+    let session = SessionId::new();
+    let agent = AgentId::new();
+    let c = ctx(agent, vec![agent], session);
+
+    broker.remember_pattern(
+        PatternRule::parse("bash:git status").expect("valid rule"),
+        PermissionScope::Session,
+        agent,
+    );
+    broker.set_mode(PermissionMode::Plan);
+
+    let outcome = broker.decide(&c, &bash_call("c1", "git status")).await;
+    assert!(
+        matches!(outcome, PermissionOutcome::Deny { .. }),
+        "plan mode must deny an Execute tool even when a pattern matches"
+    );
+    assert_eq!(
+        gate.call_count(),
+        0,
+        "plan mode decides without troubling the operator"
+    );
+}
+
+/// Plan mode still permits the non-mutating categories.
+#[tokio::test]
+async fn plan_mode_allows_a_read_without_prompting() {
+    let gate = ScriptedGate::new(vec![PermissionDecision::AllowOnce]);
+    let (broker, _bus) = broker(gate.clone());
+    let session = SessionId::new();
+    let agent = AgentId::new();
+    let c = ctx(agent, vec![agent], session);
+
+    broker.set_mode(PermissionMode::Plan);
+
+    // `call()` is a Read-category read; plan mode lets it through to the
+    // gate as normal (it does not auto-allow, it simply does not block).
+    let outcome = broker.decide(&c, &call("c1")).await;
+    assert_eq!(outcome, PermissionOutcome::Allow);
+}
+
+/// Auto-allow does what it says, and — crucially — can be switched back
+/// out of mid-session. That is the escape hatch.
+#[tokio::test]
+async fn auto_allow_allows_without_prompting_and_can_be_revoked_mid_session() {
+    let gate = ScriptedGate::new(vec![PermissionDecision::Deny {
+        reason: "operator said no".into(),
+    }]);
+    let (broker, _bus) = broker(gate.clone());
+    let session = SessionId::new();
+    let agent = AgentId::new();
+    let c = ctx(agent, vec![agent], session);
+
+    broker.set_mode(PermissionMode::AutoAllow);
+    assert_eq!(
+        broker.decide(&c, &bash_call("c1", "rm -rf /tmp/x")).await,
+        PermissionOutcome::Allow,
+        "auto-allow allows"
+    );
+    assert_eq!(gate.call_count(), 0, "without asking");
+
+    // The escape hatch: back to prompting, no restart.
+    broker.set_mode(PermissionMode::Prompt);
+    let outcome = broker.decide(&c, &bash_call("c2", "rm -rf /tmp/x")).await;
+    assert!(
+        matches!(outcome, PermissionOutcome::Deny { .. }),
+        "switching back to Prompt must restore operator control"
+    );
+    assert_eq!(gate.call_count(), 1);
+}
+
+/// Revocation clears pattern grants AND the `AllowAlways` cache, so a
+/// previously-granted call asks again.
+#[tokio::test]
+async fn revoke_all_grants_restores_prompting_for_previously_granted_calls() {
+    let gate = ScriptedGate::new(vec![PermissionDecision::Deny {
+        reason: "nope".into(),
+    }]);
+    let (broker, _bus) = broker(gate.clone());
+    let session = SessionId::new();
+    let agent = AgentId::new();
+    let c = ctx(agent, vec![agent], session);
+
+    broker.remember_pattern(
+        PatternRule::parse("bash:git status").expect("valid rule"),
+        PermissionScope::Session,
+        agent,
+    );
+    assert_eq!(
+        broker.decide(&c, &bash_call("c1", "git status")).await,
+        PermissionOutcome::Allow
+    );
+    assert_eq!(broker.active_patterns().len(), 1, "reviewable before revoke");
+
+    broker.revoke_all_grants();
+    assert!(
+        broker.active_patterns().is_empty(),
+        "revocation clears the review list"
+    );
+
+    let outcome = broker.decide(&c, &bash_call("c2", "git status")).await;
+    assert!(
+        matches!(outcome, PermissionOutcome::Deny { .. }),
+        "a revoked grant must ask again"
+    );
 }

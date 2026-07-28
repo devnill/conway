@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Permission modes and pattern grants.** Approving every command
+  individually does not scale — a real session can produce hundreds of
+  prompts. Three modes now exist: `prompt` (the default, unchanged
+  behavior), `plan` (non-mutating tools only), and `AUTO-ALLOW`. The mode
+  is switchable from `/settings`, which is also the escape hatch out of an
+  over-broad mode mid-session, and it is always visible in the status line.
+
+  The underlying `AllowAlways` machinery already existed; the reason it
+  never helped is that its cache key included a digest of the exact
+  arguments, so `git status` and `git diff` were different entries and
+  every distinct command re-prompted.
+
+  Pattern grants fix that: `bash:git status` covers `git status --short`
+  but not `git push`. Patterns are **prefixes matched on whole arguments,
+  not regexes** — `bash:git .*` reads as tight, but `.` matches `;`, so it
+  would authorize `git status; <anything>`.
+
+  **The rule that makes prefixes safe:** a pattern applies only when the
+  command contains no shell metacharacters. `git status && <anything>`
+  starts with `git status`, so it always re-prompts regardless of any
+  matching grant. The check runs before any prefix comparison, so nothing
+  can bypass it. It is deliberately over-eager — a harmless pipe still
+  re-prompts, because an unnecessary prompt costs a keystroke and a missed
+  one costs arbitrary execution.
+
+  Plan mode is defined on the tool's **declared category**, never on
+  command text: `bash` declares `Execute` whatever it is handed, so
+  `bash cat file` is blocked even though it only reads. Deciding otherwise
+  would mean parsing shell. A category Conway does not have yet is blocked,
+  not allowed.
+
+  Grants inherit to subagents via the existing `AgentSubtree` scope. Rules
+  persist to `.conway/permissions.json` (project-first, then global) as a
+  human-readable list; a corrupt file **fails closed**, authorizing nothing.
+
 ### Changed
 
 - **TUI: `/thinking` and `/timestamps` are replaced by a single `/settings`
