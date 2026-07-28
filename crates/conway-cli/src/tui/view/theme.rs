@@ -142,15 +142,12 @@ pub struct Theme {
     /// Dimmed status-line accent (NEW, no pre-T1 call site). Default:
     /// `Modifier::DIM`.
     pub status_dim: Style,
-    /// Activity spinner accent (NEW, no pre-T1 call site). Default:
-    /// `Color::Yellow`. The first color of the T2 pulse palette -- the
-    /// spinner glyph and activity word cycle through [`Theme::spinner`],
-    /// [`Theme::spinner_b`], [`Theme::spinner_c`] on each 125ms tick.
+    /// Activity spinner accent. Default: `Color::Yellow`. Styles both the
+    /// braille glyph and the activity word, steadily -- V6 removed T2's
+    /// `spinner_b`/`spinner_c` pulse palette, since cycling color on every
+    /// tick strobed rather than signalled. The advancing frame is the
+    /// liveness cue.
     pub spinner: Style,
-    /// Second pulse-palette color (T2). Default: `Color::LightYellow`.
-    pub spinner_b: Style,
-    /// Third pulse-palette color (T2). Default: `Color::White`.
-    pub spinner_c: Style,
     /// T6: the sticky context header shown above the transcript pane while
     /// it overflows the viewport (`session · focused agent · model ·
     /// ctx%`). Default: `Modifier::REVERSED` (no fg) -- a persistent bar,
@@ -211,8 +208,6 @@ impl Default for Theme {
             status_mode: Style::default().add_modifier(Modifier::REVERSED),
             status_dim: Style::default().add_modifier(Modifier::DIM),
             spinner: Style::default().fg(Color::Yellow),
-            spinner_b: Style::default().fg(Color::LightYellow),
-            spinner_c: Style::default().fg(Color::White),
             header: Style::default().add_modifier(Modifier::REVERSED),
             scroll_footer: Style::default().add_modifier(Modifier::DIM),
             help_border: Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD),
@@ -262,25 +257,11 @@ impl Theme {
         theme.status_mode = overlay(theme.status_mode, config.status_mode.as_ref());
         theme.status_dim = overlay(theme.status_dim, config.status_dim.as_ref());
         theme.spinner = overlay(theme.spinner, config.spinner.as_ref());
-        theme.spinner_b = overlay(theme.spinner_b, config.spinner_b.as_ref());
-        theme.spinner_c = overlay(theme.spinner_c, config.spinner_c.as_ref());
         theme.header = overlay(theme.header, config.header.as_ref());
         theme.scroll_footer = overlay(theme.scroll_footer, config.scroll_footer.as_ref());
         theme.help_border = overlay(theme.help_border, config.help_border.as_ref());
         theme.help_key = overlay(theme.help_key, config.help_key.as_ref());
         theme
-    }
-}
-
-impl Theme {
-    /// The T2 pulse palette: the three spinner slots in palette order. The
-    /// status line indexes this with `AppState::spinner_color_idx` (mod the
-    /// palette length) to pick the current pulse color for both the braille
-    /// glyph and the activity word. Returned as a `Vec` so a future theme
-    /// could surface a different palette length without touching call sites
-    /// (the renderer always uses `.len()` for the modulo).
-    pub fn spinner_palette(&self) -> Vec<Style> {
-        vec![self.spinner, self.spinner_b, self.spinner_c]
     }
 }
 
@@ -863,32 +844,6 @@ mod tests {
     // ---- T2: spinner pulse palette ----
 
     #[test]
-    fn default_spinner_palette_is_yellow_light_yellow_white() {
-        let t = Theme::default();
-        assert_eq!(t.spinner, Style::default().fg(Color::Yellow));
-        assert_eq!(t.spinner_b, Style::default().fg(Color::LightYellow));
-        assert_eq!(t.spinner_c, Style::default().fg(Color::White));
-        let palette = t.spinner_palette();
-        assert_eq!(palette.len(), 3);
-        assert_eq!(palette[0], Style::default().fg(Color::Yellow));
-        assert_eq!(palette[1], Style::default().fg(Color::LightYellow));
-        assert_eq!(palette[2], Style::default().fg(Color::White));
-    }
-
-    #[test]
-    fn spinner_palette_overlays_apply_per_slot() {
-        let cfg = ThemeConfig {
-            spinner_b: Some(fg_only("cyan")),
-            ..Default::default()
-        };
-        let t = Theme::from_config(&cfg);
-        // The overridden slot picks up the new fg; the others keep defaults.
-        assert_eq!(t.spinner_b, Style::default().fg(Color::Cyan));
-        assert_eq!(t.spinner, Style::default().fg(Color::Yellow));
-        assert_eq!(t.spinner_c, Style::default().fg(Color::White));
-    }
-
-    #[test]
     fn malformed_spinner_override_falls_back_to_default() {
         let cfg = ThemeConfig {
             spinner: Some(fg_only("not-a-color")),
@@ -948,4 +903,20 @@ mod tests {
              if it no longer does, this guard is vacuous."
         );
     }
+    /// V6: the spinner is a single steady slot. The `spinner_b`/`spinner_c`
+    /// pulse-palette slots are gone -- and so are their `[tui.theme]` config
+    /// keys, deliberately: a config key that silently does nothing is worse
+    /// than no key at all.
+    #[test]
+    fn spinner_is_one_steady_slot_with_no_pulse_palette() {
+        let t = Theme::default();
+        assert_eq!(t.spinner, Style::default().fg(Color::Yellow));
+
+        let overridden = Theme::from_config(&ThemeConfig {
+            spinner: Some(fg_only("cyan")),
+            ..Default::default()
+        });
+        assert_eq!(overridden.spinner, Style::default().fg(Color::Cyan));
+    }
+
 }

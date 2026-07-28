@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The status line no longer pulses, and the footer no longer lists slash
+  commands.** The spinner's braille frames still advance — motion is the
+  liveness cue — but the color is now steady. Cycling it on every 125ms
+  tick read as strobing in the corner of the eye rather than as a signal,
+  and competed with the frame animation already doing that job.
+
+  The `spinner_b` and `spinner_c` theme slots are removed along with their
+  `[tui.theme]` config keys. A config key that silently does nothing is
+  worse than no key at all. If you had set either, the spinner now uses
+  `spinner` alone.
+
+  The footer read `Enter submit · Ctrl-E expand · Ctrl-P/N history ·
+  PgUp/PgDn · /help · /thinking · /timestamps · /agents…`. It now names
+  keys rather than commands: `Enter submit · Ctrl-E expand · /help ·
+  /agents…`. Nothing became undiscoverable — `/help` is the keybinding
+  overlay, which is where the rest already lives.
+
 ### Fixed
 
 - **Two-finger scroll works again.** In v0.3.0 the mouse wheel recalled

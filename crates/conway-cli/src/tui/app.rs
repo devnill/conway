@@ -267,7 +267,7 @@ impl App {
                 // different size still wraps correctly.
                 _ = anim_ticker.tick() => {
                     if super::state::should_animate(&self.state.activity) {
-                        self.state.tick_animation(self.theme.spinner_palette().len());
+                        self.state.tick_animation();
                         dirty = true;
                     }
                 }

@@ -276,9 +276,7 @@ to consume):
 | `border_accent` | cyan + bold | NL intent confirmation card border |
 | `status_mode` | reversed modifier | the bottom status line |
 | `status_dim` | dim modifier | status-line dim accent (T2: the `elapsed · +tokens` tail of the working indicator) |
-| `spinner` | yellow | activity spinner accent (T2: first color of the pulse palette) |
-| `spinner_b` | light_yellow | *(NEW, T2)* second color of the spinner pulse palette |
-| `spinner_c` | white | *(NEW, T2)* third color of the spinner pulse palette |
+| `spinner` | yellow | activity spinner accent (steady; V6 removed T2's pulse palette) |
 
 A unit test (`tui::view::theme::tests::no_inline_style_default_fg_color_remains_in_view_files`)
 guards the refactor's central invariant: no `Style::default().fg(Color::…)`
@@ -298,7 +296,7 @@ order AND has data to show (e.g. `git` is omitted when not in a repo,
 `model` is omitted before the first `Event::ModelDecision`).
 
 The whole line uses `theme.status_mode` (reversed) as its base style; the
-`activity` field overlays its T2 spinner pulse color and dim
+`activity` field overlays its spinner style and dim
 elapsed/tokens tail, and the `hint` field overlays `theme.status_dim`.
 
 **Default Lean line:** `mode | model | ctx | tokens | activity | hint`
@@ -326,8 +324,8 @@ fields = ["mode", "model", "ctx", "tokens", "git", "activity", "hint"]
 | `model` | the serving model display name, e.g. `anthropic/claude-sonnet-4-6`; omitted before the first turn routes | `Event::ModelDecision { chosen }` |
 | `ctx` | `ctx 42%` when the focused model's max context is known, else `ctx 12.3k` (raw tokens, compact-suffixed; capped at `ctx 100%`) | cumulative `Event::ContextSegmentAdded { tokens_est }` ÷ the focused model's `max_context_tokens` from `[models.metadata_path]` |
 | `tokens` | `<total> tok (<n%> cached)` when cache data is present, else `<total> tok` | cumulative `Event::TurnFinished { usage }` (`Usage`'s input + output + both cache dimensions + reasoning); `n%` = `cache_read / (input + cache_read + cache_write)`, omitted when the denominator is 0 or `cache_read` is 0 |
-| `activity` | T2's working indicator: `⠋ thinking… 12s · +45 tok` while active, `idle` while idle (spinner + phrase pulse via `Theme::spinner_palette`; `+{n} tok` is session-deduped new-segment tokens added this turn) | `AppState::activity` + T2 counters |
-| `hint` | a persistent keybinding/affordance hint, dim: `Enter submit · Ctrl-E expand · Ctrl-P/N history · PgUp/PgDn · /help · /thinking · /timestamps · /agents to {view\|hide}`, plus `focused: <id>` when the transcript is focused on a non-root agent | static + `AppState::agent_view_open`/`focused_agent` |
+| `activity` | the working indicator: `⠋ thinking… 12s · +45 tok` while active, `idle` while idle (steady `theme.spinner` style; `+{n} tok` is session-deduped new-segment tokens added this turn) | `AppState::activity` + T2 counters |
+| `hint` | a persistent keybinding hint, dim: `Enter submit · Ctrl-E expand · /help · /agents to {view\|hide}`, plus `focused: <id>` when the transcript is focused on a non-root agent. V6 trimmed the slash-command enumeration — `/help` is the single pointer to the rest | static + `AppState::agent_view_open`/`focused_agent` |
 | `git` | the current branch (e.g. `main`); omitted when not a git repo, git is absent, or the command fails | one-shot `git rev-parse --abbrev-ref HEAD` at startup, no polling |
 | `cwd` | the session's working directory; omitted when unset | `Cli --cwd` or `config.cwd` |
 
@@ -393,15 +391,19 @@ signal. While the focused agent's `Activity` is anything other than
 `Idle`, the slot renders a braille spinner glyph plus the activity word
 plus live elapsed seconds plus the new context tokens added this turn,
 e.g. `⠋ thinking… 12s · +45 tok`. The spinner glyph and the activity
-word share one pulse color per frame, cycling through a small theme
-palette (`spinner`/`spinner_b`/`spinner_c` via `Theme::spinner_palette`)
-on each 125ms (8 TPS) animation tick — a subtle element-level contrast
-shift, not per-character `TextShimmer` (out of scope).
+word share one steady `theme.spinner` style.
+
+T2 originally cycled that style through a three-color palette on every
+tick. V6 removed it: in practice it read as strobing in the corner of the
+eye rather than as a liveness signal. The advancing braille frame already
+carries that signal, and adding color motion on top only competed with
+it. The `spinner_b`/`spinner_c` theme slots and their `[tui.theme]` config
+keys were removed with it — a config key that silently does nothing is
+worse than no key at all.
 
 The 125ms tick is additive to the existing 16ms redraw cap
 (`REDRAW_TICK`); it advances `AppState::spinner_frame` (modulo the
-10-glyph braille sequence `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`) and `AppState::spinner_color_idx`
-(modulo the palette length) and marks the frame dirty **only while
+10-glyph braille sequence `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`) and marks the frame dirty **only while
 `should_animate(activity)` is true**. An idle terminal never pays for
 animation: the tick arm is gated, so the counters don't advance and no
 redraw is forced (the 16ms redraw tick still runs but is itself
