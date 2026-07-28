@@ -34,6 +34,64 @@
 //! accent for the assistant's turn marker) and [`Theme::reasoning`] (dim
 //! italic, for reasoning-trace text). Their defaults are picked to fit
 //! today's palette, not to change it.
+//!
+//! ## V7: what each color MEANS
+//!
+//! T1 assembled the named-style table; V7 is the pass that asks *why* each
+//! slot is the color it is, and writes the answer down so the next slot
+//! added here has a rule to follow instead of a nearest-neighbor guess. The
+//! full rationale (with examples) lives in `docs/crates/conway-cli.md`'s
+//! `[tui.theme]` section; the compressed version:
+//!
+//! - **Red is failure or active danger, never decoration.** `error`,
+//!   `tool_failed`, `agent_failed`, `border_danger`, and `fatal_error` are
+//!   the only red slots. `fatal_error` (Red+Bold) is V7's one addition to
+//!   what red *covers*: it is now the AUTO-ALLOW indicator in the status
+//!   line (`view/status.rs`), not just a reserved fatal-runtime-error
+//!   accent -- both are "the single highest-severity thing on screen right
+//!   now," so sharing the slot is a shared meaning, not a coincidence.
+//! - **Yellow is in-progress**, nothing else: `tool_running`,
+//!   `agent_running`, `spinner`, `border_warning` (the `/ask` modal is
+//!   "waiting on you," the in-progress state from the operator's side).
+//! - **Magenta is blocked-on-you**: `tool_awaiting`, `agent_awaiting`.
+//!   Distinct from yellow (in-progress on its own) and red (something went
+//!   wrong) -- this is "stopped, needs a decision."
+//! - **Green is success**, period: `tool_done`, `agent_finished`. V7
+//!   stopped reusing it for `help_key` (see below) so a green glyph
+//!   anywhere in the TUI means exactly one thing.
+//! - **Gray/dim is secondary, and is never a fixed dark color.**
+//!   `tool_proposed`/`agent_starting` (pending, not yet meaningful),
+//!   `dim`, `timestamp`, `agent_cancelled`, `reasoning`, `status_dim`,
+//!   `scroll_footer` all render via `Modifier::DIM` (a relative dimming of
+//!   the terminal's own foreground) rather than `Color::DarkGray` (an
+//!   absolute dark color that a dark-background terminal can render nearly
+//!   indistinguishable from the background -- V7 audited every `DarkGray`
+//!   default against this and moved the survivors to `DIM`).
+//! - **Conversation text is never colored.** `user`, `assistant` stay
+//!   unstyled; `assistant_marker` is the one exception, and it earns it:
+//!   the marker names *which model* answered, not how the answer should be
+//!   read, so it is provenance metadata sitting next to the text, not the
+//!   text itself.
+//! - **Chrome that carries no state is bold or dim, never colored.**
+//!   `focused`, `emphasized`, `help_key` (V7 dropped its Green -- the
+//!   key/description column split needed *distinguishing*, not a status
+//!   color) are bold-only; a color on pure layout chrome competes with the
+//!   red/yellow/magenta/green vocabulary above for the eye's attention
+//!   without adding information.
+//! - **Modal borders are colored by how urgent the decision behind them
+//!   is**: `border_danger` (red, a tool call you must approve or refuse),
+//!   `border_warning` (yellow, the `/ask` modal), `border_accent` (cyan,
+//!   the NL intent-confirm card), `help_border` (blue, `/help` -- the one
+//!   modal with no decision at all, deliberately the coolest, least urgent
+//!   hue of the four).
+//!
+//! V7 also removed [`Theme`]'s `agent_marker` slot: it had no call site
+//! anywhere in `view/*.rs` since the day T4 defined it (grep-verified), so
+//! it was a config key that could be set and would silently do nothing --
+//! the exact failure mode V6 already ruled out for `spinner_b`/`spinner_c`.
+//! See `docs/crates/conway-cli.md` for the full before/after and the
+//! `tool_*`/`agent_*` status-family duplication finding V7 chose NOT to act
+//! on (and why).
 
 use ratatui::style::{Color, Modifier, Style};
 
@@ -57,12 +115,17 @@ pub struct Theme {
     /// T4 will consume). Default: `Color::Magenta` + `Modifier::BOLD`.
     pub assistant_marker: Style,
     /// Reasoning-trace text (NEW, no pre-T1 call site; T4 will consume).
-    /// Default: `Color::DarkGray` + `Modifier::ITALIC`.
+    /// Default: `Modifier::DIM` + `Modifier::ITALIC` (V7: was
+    /// `Color::DarkGray` + `Modifier::ITALIC` -- moved to a relative `DIM`
+    /// so the trace stays legible on a dark-background terminal, where a
+    /// fixed dark color can render nearly indistinguishable from the
+    /// background; see the module doc's "gray/dim" rule).
     pub reasoning: Style,
     /// T4: the `HH:MM ` timestamp prefix prepended to each entry's first
-    /// rendered line while `show_timestamps` is on. Default:
-    /// `Color::DarkGray` (no modifier) -- a quiet annotation that should
-    /// not compete with the entry body itself.
+    /// rendered line while `show_timestamps` is on. Default: `Modifier::DIM`
+    /// (no fg) -- a quiet annotation that should not compete with the entry
+    /// body itself. V7: was `Color::DarkGray`, moved to `DIM` for the same
+    /// dark-background legibility reason as [`Theme::reasoning`] above.
     pub timestamp: Style,
     /// Tool-call tag, `ToolStatus::Proposed`. Pre-T1: `Color::Gray`.
     pub tool_proposed: Style,
@@ -77,11 +140,6 @@ pub struct Theme {
     /// Tool-call tag, `ToolStatus::Finished { is_error: true }`. Pre-T1:
     /// `Color::Red`.
     pub tool_failed: Style,
-    /// Generic agent marker accent (NEW, no pre-T1 call site; T4 will
-    /// consume). Default: `Color::Blue` + `Modifier::BOLD`. Distinct from
-    /// the per-status `agent_*` slots below, which carry the pre-T1
-    /// per-`NodeStatus` colors.
-    pub agent_marker: Style,
     /// Agent-tree/transcript marker, `NodeStatus::Starting`. Pre-T1:
     /// `Color::Gray`.
     pub agent_starting: Style,
@@ -97,16 +155,26 @@ pub struct Theme {
     /// Agent-tree/transcript marker, `NodeStatus::Failed`. Pre-T1:
     /// `Color::Red`.
     pub agent_failed: Style,
-    /// Agent-tree/transcript marker, `NodeStatus::Cancelled`. Pre-T1:
-    /// `Color::DarkGray`.
+    /// Agent-tree/transcript marker, `NodeStatus::Cancelled`. Default:
+    /// `Modifier::DIM` (no fg) -- V7: was `Color::DarkGray`, moved to `DIM`
+    /// for the same dark-background legibility reason as
+    /// [`Theme::reasoning`]/[`Theme::timestamp`]. A cancelled agent is
+    /// terminal, secondary information, same category as those two.
     pub agent_cancelled: Style,
     /// `Entry::Notice` text in the transcript. Pre-T1: `Color::Cyan`.
     pub notice: Style,
     /// Error text in modal overlays. Pre-T1: `Color::Red` (the `/ask`
     /// modal's failed-fate error line).
     pub error: Style,
-    /// Fatal-error accent (NEW, no pre-T1 call site). Default:
-    /// `Color::Red` + `Modifier::BOLD`.
+    /// The highest-alert accent: `Color::Red` + `Modifier::BOLD`. Reserved
+    /// (no pre-T1 call site) until V7, which wired it to the status line's
+    /// AUTO-ALLOW indicator (`view/status.rs`) -- the operator having
+    /// forgotten they are in a mode that auto-approves every tool call is
+    /// exactly the failure this accent exists to prevent (see the module
+    /// doc's red rule). Still available for a genuine fatal runtime error
+    /// (`Event::Error { fatal: true }`) once that path is wired to carry a
+    /// style through `Entry::Notice` -- tracked as a follow-up, not done
+    /// here (see `docs/crates/conway-cli.md`).
     pub fatal_error: Style,
     /// Dimmed annotation text (agent-tree recipe labels, input-box
     /// placeholder). Pre-T1: `Modifier::DIM` (no fg).
@@ -167,8 +235,12 @@ pub struct Theme {
     pub help_border: Style,
     /// T7: the key/chord column in the `/help` overlay's rows (e.g.
     /// `Ctrl-E`, `PageUp/PageDown`), distinguishing it from the plain
-    /// description text beside it. Default: `Color::Green` +
-    /// `Modifier::BOLD`.
+    /// description text beside it. Default: `Modifier::BOLD` (no fg) --
+    /// V7: was `Color::Green` + `Modifier::BOLD`. The split only needs
+    /// distinguishing, not a status color, and green already means
+    /// "success" ([`Theme::tool_done`]/[`Theme::agent_finished`]); reusing
+    /// it here for plain layout chrome blurred that meaning for no reason
+    /// (see the module doc's "chrome" rule).
     pub help_key: Style,
 }
 
@@ -179,21 +251,20 @@ impl Default for Theme {
             assistant: Style::default(),
             assistant_marker: Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
             reasoning: Style::default()
-                .fg(Color::DarkGray)
+                .add_modifier(Modifier::DIM)
                 .add_modifier(Modifier::ITALIC),
-            timestamp: Style::default().fg(Color::DarkGray),
+            timestamp: Style::default().add_modifier(Modifier::DIM),
             tool_proposed: Style::default().fg(Color::Gray),
             tool_awaiting: Style::default().fg(Color::Magenta),
             tool_running: Style::default().fg(Color::Yellow),
             tool_done: Style::default().fg(Color::Green),
             tool_failed: Style::default().fg(Color::Red),
-            agent_marker: Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD),
             agent_starting: Style::default().fg(Color::Gray),
             agent_running: Style::default().fg(Color::Yellow),
             agent_awaiting: Style::default().fg(Color::Magenta),
             agent_finished: Style::default().fg(Color::Green),
             agent_failed: Style::default().fg(Color::Red),
-            agent_cancelled: Style::default().fg(Color::DarkGray),
+            agent_cancelled: Style::default().add_modifier(Modifier::DIM),
             notice: Style::default().fg(Color::Cyan),
             error: Style::default().fg(Color::Red),
             fatal_error: Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
@@ -211,7 +282,7 @@ impl Default for Theme {
             header: Style::default().add_modifier(Modifier::REVERSED),
             scroll_footer: Style::default().add_modifier(Modifier::DIM),
             help_border: Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD),
-            help_key: Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+            help_key: Style::default().add_modifier(Modifier::BOLD),
         }
     }
 }
@@ -236,7 +307,6 @@ impl Theme {
         theme.tool_running = overlay(theme.tool_running, config.tool_running.as_ref());
         theme.tool_done = overlay(theme.tool_done, config.tool_done.as_ref());
         theme.tool_failed = overlay(theme.tool_failed, config.tool_failed.as_ref());
-        theme.agent_marker = overlay(theme.agent_marker, config.agent_marker.as_ref());
         theme.agent_starting = overlay(theme.agent_starting, config.agent_starting.as_ref());
         theme.agent_running = overlay(theme.agent_running, config.agent_running.as_ref());
         theme.agent_awaiting = overlay(theme.agent_awaiting, config.agent_awaiting.as_ref());
@@ -420,7 +490,18 @@ mod tests {
         assert_eq!(t.agent_awaiting, Style::default().fg(Color::Magenta));
         assert_eq!(t.agent_finished, Style::default().fg(Color::Green));
         assert_eq!(t.agent_failed, Style::default().fg(Color::Red));
-        assert_eq!(t.agent_cancelled, Style::default().fg(Color::DarkGray));
+    }
+
+    /// V7: `agent_cancelled` moved off a fixed `Color::DarkGray` (which can
+    /// render nearly indistinguishable from a dark-background terminal) to
+    /// a relative `Modifier::DIM`, matching `timestamp`/`reasoning` below.
+    #[test]
+    fn default_agent_cancelled_is_dim_not_dark_gray() {
+        let t = Theme::default();
+        assert_eq!(
+            t.agent_cancelled,
+            Style::default().add_modifier(Modifier::DIM)
+        );
     }
 
     #[test]
@@ -439,6 +520,14 @@ mod tests {
     fn default_dim_is_dim_modifier() {
         let t = Theme::default();
         assert_eq!(t.dim, Style::default().add_modifier(Modifier::DIM));
+    }
+
+    /// V7: `timestamp` moved off a fixed `Color::DarkGray` to a relative
+    /// `Modifier::DIM` -- see the module doc's "gray/dim" rule.
+    #[test]
+    fn default_timestamp_is_dim_not_dark_gray() {
+        let t = Theme::default();
+        assert_eq!(t.timestamp, Style::default().add_modifier(Modifier::DIM));
     }
 
     #[test]
@@ -489,12 +578,18 @@ mod tests {
         );
     }
 
+    /// V7: `reasoning` moved off a fixed `Color::DarkGray` to a relative
+    /// `Modifier::DIM` for the same dark-background legibility reason as
+    /// `timestamp`/`agent_cancelled` -- see the module doc's "gray/dim"
+    /// rule.
     #[test]
-    fn default_reasoning_is_dark_gray_italic() {
+    fn default_reasoning_is_dim_italic_not_dark_gray() {
         let t = Theme::default();
         assert_eq!(
             t.reasoning,
-            Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC)
+            Style::default()
+                .add_modifier(Modifier::DIM)
+                .add_modifier(Modifier::ITALIC)
         );
     }
 
@@ -550,13 +645,16 @@ mod tests {
         );
     }
 
+    /// V7: `help_key` dropped `Color::Green` -- the key/description column
+    /// split only needs distinguishing, and green already means "success"
+    /// elsewhere in the palette ([`Theme::tool_done`]/
+    /// [`Theme::agent_finished`]); reusing it for plain layout chrome
+    /// blurred that meaning. `Modifier::BOLD` alone still distinguishes the
+    /// column from the plain description text beside it.
     #[test]
-    fn default_help_key_is_green_bold() {
+    fn default_help_key_is_bold_not_green() {
         let t = Theme::default();
-        assert_eq!(
-            t.help_key,
-            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
-        );
+        assert_eq!(t.help_key, Style::default().add_modifier(Modifier::BOLD));
     }
 
     #[test]
@@ -573,10 +671,7 @@ mod tests {
                 .add_modifier(Modifier::BOLD)
         );
         // Untouched slot keeps its default.
-        assert_eq!(
-            t.help_key,
-            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
-        );
+        assert_eq!(t.help_key, Style::default().add_modifier(Modifier::BOLD));
     }
 
     #[test]
