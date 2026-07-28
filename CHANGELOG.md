@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Kimi coding-plan support, and Anthropic-compatible endpoints
+  generally.** Kimi's coding plan is served over an Anthropic-shaped
+  `/v1/messages`, so it needs no dedicated adapter — point `base_url` at
+  `https://api.kimi.com/coding/` with `kind = "anthropic"`. Endpoints
+  under a path prefix now have that prefix preserved (`.../coding/` →
+  `.../coding/v1/messages`), pinned by a test so a future refactor cannot
+  silently drop it.
+
+  `AnthropicConfig` gained an optional `id`, defaulting to `"anthropic"`
+  so existing configs are unaffected. Previously `AnthropicBackend::id()`
+  was hardcoded, which forced any Anthropic-kind backend to occupy the
+  config key `"anthropic"` — you could not name a backend `kimi`, and you
+  could not configure Kimi and Anthropic at the same time. Both now work;
+  the build-time key check that enforced the old constraint is removed.
+
+  Bundled model metadata gains `k3-256k` (262,144 tokens) and `k3[1m]`
+  (1,048,576 tokens), so the status line's `ctx%` is accurate rather than
+  falling back to raw counts. The literal brackets in `k3[1m]` are part of
+  the provider's model id; a test pins that they survive TOML parsing.
+
+  See `docs/crates/conway-backends.md` for a copy-pasteable config, which
+  is itself pinned by a test that loads it through the real config loader.
+
 ### Changed
 
 - **Config no longer inspects the shape of an API key.** The

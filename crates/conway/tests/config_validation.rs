@@ -62,3 +62,36 @@ fn api_key_and_api_key_env_both_set_is_rejected() {
         "error must name the api_key/api_key_env mutual exclusivity: {err}"
     );
 }
+
+/// The Kimi coding-plan config block published in
+/// `docs/crates/conway-backends.md` must actually load. A copy-pasteable
+/// example that does not parse is worse than no example, and this is the
+/// documented "easy setup" path, so it is pinned against schema drift.
+///
+/// Note this exercises the post-`d27b5c0` behavior: a third-party
+/// Anthropic-compatible endpoint configures without conway judging the
+/// credential's shape.
+#[test]
+fn documented_kimi_coding_plan_config_loads() {
+    let dir = support::unique_temp_dir("kimi-coding-plan");
+    let outcome = load(LoadOptions {
+        cwd: dir,
+        explicit_path: Some(support::fixtures_dir().join("kimi_coding_plan.json")),
+        env: HashMap::new(),
+        cli_overrides: CliOverrides::default(),
+        model_metadata_refresh: false,
+    })
+    .expect("the documented Kimi config must load");
+
+    let kimi = outcome
+        .config
+        .backends
+        .get("kimi")
+        .expect("kimi backend present");
+    assert_eq!(kimi.base_url, "https://api.kimi.com/coding/");
+    assert_eq!(kimi.api_key_env, "KIMI_API_KEY");
+    assert!(
+        kimi.api_key.is_empty(),
+        "the key itself must never be in the config file -- only the env var name"
+    );
+}

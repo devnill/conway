@@ -185,6 +185,25 @@ tool_calling = "non_streaming"
 id = "glm-5.2"
 reliability_tier = "community"
 tool_calling = "non_streaming"
+
+# Kimi K3 coding-plan models, served over an Anthropic-compatible endpoint
+# (see `docs/crates/conway-backends.md`). Two context variants ship as
+# separate ids because the window is selected by the model id itself, not by
+# a parameter. The `[1m]` suffix is literal — it is part of the id the
+# provider expects, not TOML syntax, which is why the id is quoted.
+[[model]]
+id = "k3-256k"
+max_context_tokens = 262144
+reliability_tier = "community"
+tool_calling = "streaming_validated"
+reasoning = true
+
+[[model]]
+id = "k3[1m]"
+max_context_tokens = 1048576
+reliability_tier = "community"
+tool_calling = "streaming_validated"
+reasoning = true
 "#;
 
 /// A loaded set of [`ModelMetadata`] entries, keyed by the raw `id` from
@@ -296,12 +315,44 @@ mod tests {
             "qwen3-coder-80b",
             "llama3.1-8b",
             "glm-5.2",
+            "k3-256k",
+            "k3[1m]",
         ] {
             assert!(
                 store.get(&ModelId::new(id)).is_some(),
                 "DEFAULTS missing entry for {id}"
             );
         }
+    }
+
+    /// The 1M-context Kimi variant's id contains literal `[`/`]`. TOML
+    /// would read those as table syntax if the id were ever unquoted, and a
+    /// mangled id silently costs the model its metadata (falling back to a
+    /// wrong context window). Pin the exact string and its window.
+    #[test]
+    fn kimi_1m_model_id_survives_toml_parsing_with_its_brackets_intact() {
+        let store = ModelMetadataStore::defaults();
+        let entry = store
+            .get(&ModelId::new("k3[1m]"))
+            .expect("k3[1m] must parse with brackets intact, not as a TOML table");
+        assert_eq!(entry.id, "k3[1m]");
+        assert_eq!(entry.max_context_tokens, Some(1_048_576));
+    }
+
+    /// The two Kimi variants differ only by context window, which is the
+    /// whole reason they are separate ids -- if these ever collapse to the
+    /// same number, choosing between them becomes meaningless.
+    #[test]
+    fn kimi_context_variants_declare_distinct_windows() {
+        let store = ModelMetadataStore::defaults();
+        let k256 = store.get(&ModelId::new("k3-256k")).expect("k3-256k");
+        let k1m = store.get(&ModelId::new("k3[1m]")).expect("k3[1m]");
+        assert_eq!(k256.max_context_tokens, Some(262_144));
+        assert_eq!(k1m.max_context_tokens, Some(1_048_576));
+        assert!(
+            k1m.max_context_tokens > k256.max_context_tokens,
+            "the 1M variant must declare the larger window"
+        );
     }
 
     #[test]

@@ -269,53 +269,44 @@ async fn build_constructs_default_jsonl_store_when_none_injected() {
     );
 }
 
-/// `AnthropicBackend::id()` always returns the fixed `BackendId::new("anthropic")`
-/// -- it has no `id` field to carry a configured name -- but the backend map
-/// `build()` assembles is keyed by that returned id, while
-/// `config::merge::validate` checks chain refs against the `backends.<id>`
-/// JSON key namespace. A mismatched key would otherwise pass all config
-/// validation and then panic every routed request in
-/// `AttemptEngine::backend_for`. `build_anthropic` must reject it instead, at
-/// `build()` time, as a `ConwayError::Config`.
+/// An `anthropic`-kind backend may be named anything: `AnthropicConfig`
+/// carries an `id`, set from the `backends.<id>` JSON key, and
+/// `AnthropicBackend::id()` returns it. This is what lets an
+/// Anthropic-compatible third-party endpoint be named for what it is
+/// (`kimi`) instead of squatting the key `"anthropic"`.
+///
+/// This previously errored: the id was hardcoded, so a non-`"anthropic"`
+/// key was rejected at `build()` time to avoid a routing panic. Now the
+/// backend map and `config::merge::validate`'s chain-ref namespace agree by
+/// construction, so no such guard is needed.
 #[cfg(feature = "anthropic")]
 #[test]
-fn build_rejects_anthropic_backend_when_json_key_does_not_match_hardcoded_id() {
+fn build_accepts_an_anthropic_backend_under_any_json_key() {
     let mut cfg = base_config();
     cfg.backends.insert(
-        "claude".to_string(),
+        "kimi".to_string(),
         BackendEntry {
             kind: BackendKind::Anthropic,
-            api_key: "sk-ant-api03-not-a-real-key".to_string(),
+            api_key: "any-non-empty-key".to_string(),
+            base_url: "https://api.kimi.com/coding/".to_string(),
             ..BackendEntry::default()
         },
     );
     let store = Arc::new(FakeStore::new());
     let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
 
-    let result = ConwayBuilder::from_parts(cfg)
+    ConwayBuilder::from_parts(cfg)
         .with_session_store(store)
         .with_permission_gate(gate)
         .with_router(fake_router())
-        .build();
-    let err = expect_build_err(
-        result,
-        "a JSON key other than 'anthropic' for an anthropic backend must be rejected",
-    );
-
-    match err {
-        ConwayError::Config { message, .. } => {
-            assert!(message.contains("claude"), "{message}");
-            assert!(message.contains("anthropic"), "{message}");
-        }
-        other => panic!("expected Config error, got {other:?}"),
-    }
+        .build()
+        .expect("an anthropic-kind backend under the key 'kimi' must build");
 }
 
-/// Control case for the above: a `backends.anthropic` entry (JSON key
-/// matches the hardcoded id) must still build successfully.
+/// The default case: a `backends.anthropic` entry still builds, unchanged.
 #[cfg(feature = "anthropic")]
 #[test]
-fn build_succeeds_when_anthropic_json_key_matches_hardcoded_id() {
+fn build_succeeds_for_a_conventionally_named_anthropic_backend() {
     let mut cfg = base_config();
     cfg.backends.insert(
         "anthropic".to_string(),
@@ -621,4 +612,44 @@ fn explain_routing_reports_the_configured_chain_for_the_role() {
     );
     assert_eq!(report.entries[0].chain_position, Some(0));
     assert_eq!(report.entries[1].chain_position, Some(1));
+}
+
+/// The first thing a new Kimi user hits if they follow the docs but forget
+/// to export the key. `api_key_env` is resolved from the live process
+/// environment at `build()` time, so a missing variable must fail loudly
+/// and name the variable -- not panic, and (since `d27b5c0`) not misdirect
+/// the user to another vendor's console.
+#[test]
+fn unset_api_key_env_fails_naming_the_variable() {
+    let mut cfg = base_config();
+    cfg.backends.insert(
+        "kimi".to_string(),
+        BackendEntry {
+            kind: BackendKind::Anthropic,
+            api_key: String::new(),
+            api_key_env: "CONWAY_TEST_DEFINITELY_UNSET_KEY_VAR".to_string(),
+            base_url: "https://api.kimi.com/coding/".to_string(),
+            dialect: None,
+            stream_tools: None,
+        },
+    );
+
+    let result = ConwayBuilder::from_parts(cfg)
+        .with_session_store(Arc::new(FakeStore::new()))
+        .with_permission_gate(Arc::new(FakeGate::new(PermissionDecision::AllowOnce)))
+        .with_router(fake_router())
+        .build();
+
+    let err = result
+        .err()
+        .expect("an unset api_key_env must be a hard error")
+        .to_string();
+    assert!(
+        err.contains("CONWAY_TEST_DEFINITELY_UNSET_KEY_VAR"),
+        "the error must name the missing variable: {err}"
+    );
+    assert!(
+        !err.contains("console.anthropic.com"),
+        "must not misdirect a third-party-endpoint user to Anthropic's console: {err}"
+    );
 }

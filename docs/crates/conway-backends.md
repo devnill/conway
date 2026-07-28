@@ -33,6 +33,71 @@ delta-accumulation paths. The `http` transport wrapper — the only module
 here that depends on `reqwest` — is compiled only when at least one adapter
 feature is enabled.
 
+## Anthropic-compatible third-party endpoints
+
+`AnthropicBackend` is not hardwired to `api.anthropic.com`. Any provider
+serving an Anthropic-shaped `/v1/messages` works by pointing `base_url` at
+it, including endpoints that live under a path prefix rather than at the
+host root: the prefix is preserved, so `https://host/coding/` resolves to
+`https://host/coding/v1/messages` (with or without the trailing slash).
+
+conway does not inspect the shape of an API key. Whether a credential is a
+metered API key, a coding-plan subscription key, or something a self-hosted
+shim issues is the provider's business, not conway's — an unusable key
+surfaces as that provider's own auth error, which says more than any
+prefix check here could. The only key-related failures conway raises are
+the ones it can describe precisely: an empty key, or an `api_key_env`
+naming a variable that is not set.
+
+### Kimi coding plan
+
+Kimi's coding plan is served over an Anthropic-compatible endpoint, so it
+needs no dedicated adapter:
+
+```json
+{
+  "backends": {
+    "kimi": {
+      "kind": "anthropic",
+      "base_url": "https://api.kimi.com/coding/",
+      "api_key_env": "KIMI_API_KEY"
+    }
+  },
+  "roles": {
+    "coder": { "chain": ["kimi/k3-256k"] }
+  }
+}
+```
+
+The backend is named `kimi`, not `anthropic`. `AnthropicConfig` carries an
+`id` taken from the config key, so an Anthropic-compatible provider is
+named for what it actually is and can sit alongside a real `anthropic`
+backend in the same config — route to either by name.
+
+`api_key_env` names the variable holding the key rather than the key
+itself, so the credential never lands in a config file. Get the key from
+the Kimi Code console and export it as `KIMI_API_KEY`. If that variable is
+unset at startup, conway fails with an error naming it.
+
+Two context variants ship in the bundled model metadata. The window is
+selected by the model id itself, which is why they are separate entries:
+
+| Model id | Context window |
+|---|---|
+| `k3-256k` | 262,144 tokens |
+| `k3[1m]` | 1,048,576 tokens |
+
+The `[1m]` suffix is literal — part of the id the provider expects. Both
+declare streaming validated tool-calling and `reasoning = true` (K3 thinks
+by default). Override either in a `[models.metadata_path]` file if the
+provider's limits change.
+
+A caveat worth stating plainly: third-party Anthropic-compatible shims do
+not always implement everything conway sends. Tool-use and thinking
+behaviors in particular differ between providers. That is a provider-side
+limitation — conway reports what it gets back rather than papering over
+the difference.
+
 ## Segment to wire message mapping
 
 Both adapters implement the same job — translate an ordered

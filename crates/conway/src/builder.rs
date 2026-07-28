@@ -47,19 +47,13 @@
 //!   so a real config file following the documented schema would fail to
 //!   deserialize `Dialect` directly.
 //! - **The backend map is keyed by each constructed backend's own
-//!   `Backend::id()`, not the `backends.<id>` JSON key.**
-//!   `AnthropicBackend::id()` unconditionally returns a hardcoded
-//!   `BackendId::new("anthropic")` (it has no `id` field to carry a
-//!   configured name) — a `conway-backends`-level constraint, out of this
-//!   item's file scope to fix at the source. `OpenAiCompatBackend::id()`,
-//!   by contrast, faithfully returns the config-provided id (`config.id`,
-//!   itself set from the JSON key in [`build_openai_compat`]), so it needs
-//!   no equivalent guard. Since `config::merge::validate` checks chain refs
-//!   against the JSON key namespace, a mismatched anthropic key would
-//!   otherwise pass all config validation and then panic every routed
-//!   request in `AttemptEngine::backend_for` (only key `"anthropic"` would
-//!   exist in the map); [`build_anthropic`] rejects a non-`"anthropic"` key
-//!   with a `ConwayError::Config` at `build()` time instead.
+//!   `Backend::id()`, which both adapters set from the `backends.<id>` JSON
+//!   key.** `config::merge::validate` checks chain refs
+//!   (`<backend_id>/<model>`) against that same key namespace, so the two
+//!   agree by construction. `AnthropicConfig` gained an `id` field for
+//!   this: an Anthropic-compatible third-party endpoint can be named for
+//!   what it is (`kimi`) and coexist with a real `anthropic` backend,
+//!   rather than every such config having to squat the key `"anthropic"`.
 //! - **`config.limits.max_parallel_tools` has no wiring point**: neither
 //!   `conway_runtime::runtime::RootSpec` nor `AgentSpec` (which
 //!   `Runtime::start_root` builds internally, hardcoding
@@ -518,28 +512,11 @@ fn build_anthropic(
     use conway_backends::anthropic::AnthropicBackend;
     use conway_backends::config::{AnthropicConfig, SecretString};
 
-    // `AnthropicBackend::id()` unconditionally returns `BackendId::new("anthropic")`
-    // (it has no `id` field to carry a configured name) -- the backend map in
-    // `build()` is keyed by that returned id, not by this JSON key, but
-    // `config::merge::validate` checks chain refs (`<backend_id>/<model>`)
-    // against the JSON key namespace. A mismatch here would pass all config
-    // validation and then panic every routed request in
-    // `AttemptEngine::backend_for` (only key "anthropic" would exist in the
-    // map). Reject it here instead, at build() time, until
-    // `conway-backends` adds an id override for `AnthropicConfig`.
-    if id != "anthropic" {
-        return Err(ConwayError::Config {
-            path: None,
-            message: format!(
-                "backend '{id}': kind 'anthropic' requires the JSON key to be \
-                 'anthropic' (i.e. \"backends\": {{\"anthropic\": {{...}}}}), not '{id}' -- \
-                 `AnthropicBackend::id()` always returns the fixed id \"anthropic\" \
-                 regardless of the configured key, so any other key would route/backend-lookup \
-                 under \"anthropic\" and panic at request time"
-            ),
-        });
-    }
-
+    // The configured JSON key becomes the backend's own id, so a chain ref
+    // (`<backend_id>/<model>`) resolves against the same namespace
+    // `config::merge::validate` checked. This is what lets an
+    // Anthropic-compatible third-party endpoint be named for what it is
+    // (`kimi`) and coexist with a real `anthropic` backend.
     let api_key = resolve_api_key(id, entry)?;
     let base_url = if entry.base_url.is_empty() {
         url::Url::parse("https://api.anthropic.com")
@@ -553,6 +530,9 @@ fn build_anthropic(
 
     let cfg = AnthropicConfig {
         api_key: SecretString::new(api_key),
+        // The JSON key is the backend's identity, so a chain ref resolves
+        // against the namespace `config::merge::validate` already checked.
+        id: BackendId::new(id),
         base_url,
         // Not exposed by the facade schema; mirrors
         // `conway_backends::config`'s own (private) default literal.
