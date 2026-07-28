@@ -29,7 +29,7 @@
 //!   turn, e.g. `⠋ thinking… 12s · +45 tok`, pulsing through
 //!   `Theme::spinner_palette` on each 125ms tick. While idle: just `idle`.
 //! - `hint` -- a persistent keybinding/affordance hint:
-//!   `Enter submit · Ctrl-E expand · ↑↓ history · PgUp/PgDn · /help · /thinking · /timestamps · /agents to {view|hide}`,
+//!   `Enter submit · Ctrl-E expand · Ctrl-P/N history · PgUp/PgDn · /help · /thinking · /timestamps · /agents to {view|hide}`,
 //!   plus `focused: <id>` when the transcript is focused on a non-root
 //!   agent. T7 confirmed this against the real binding set (`view/help.rs`'s
 //!   own doc enumerates it in full) and found it still accurate -- `/help`
@@ -295,7 +295,7 @@ fn hint_spans(state: &AppState, theme: &Theme) -> Vec<Span<'static>> {
         "/agents to view"
     };
     let mut hint = format!(
-        "Enter submit · Ctrl-E expand · ↑↓ history · PgUp/PgDn · /help · /thinking · /timestamps · {agents_hint}"
+        "Enter submit · Ctrl-E expand · Ctrl-P/N history · PgUp/PgDn · /help · /thinking · /timestamps · {agents_hint}"
     );
     // WI-140: name which agent's conversation is currently shown whenever
     // it is not the root -- the root case stays silent (an always-on
@@ -848,7 +848,10 @@ mod tests {
         assert!(line.contains("Enter submit"), "{line}");
         assert!(line.contains("Ctrl-E expand"), "{line}");
         assert!(line.contains("/help"), "{line}");
-        assert!(line.contains("↑↓ history"), "{line}");
+        assert!(
+            line.contains("Ctrl-P/N history"),
+            "V3 moved history off bare arrows: {line}"
+        );
         assert!(line.contains("PgUp/PgDn"), "{line}");
         // T4: the new toggles are surfaced in the hint.
         assert!(line.contains("/thinking"), "{line}");

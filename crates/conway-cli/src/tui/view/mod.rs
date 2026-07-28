@@ -1097,18 +1097,24 @@ mod tests {
     /// split across several on-screen rows) -- so this asserts the word
     /// appears EXACTLY ONCE in the whole rendered text, not zero times.
     #[test]
-    fn help_overlay_render_does_not_mention_mouse_outside_its_note() {
+    fn help_overlay_explains_the_mouse_situation() {
         let mut state = AppState::new(AgentId::new());
         state.open_help();
 
         let text = render_text(&state, 100, 60).to_lowercase();
-        let occurrences = text.matches("mouse").count();
-        let expected = help::MOUSE_NOTE.to_lowercase().matches("mouse").count();
-        assert_eq!(
-            occurrences, expected,
-            "every `mouse` occurrence must come from the freeform note (expected \
-             {expected}, found {occurrences}): {text}"
+        // V3: `mouse` may now appear in the note AND in the Up/Down row,
+        // which truthfully says the wheel arrives there via the terminal's
+        // alternate-scroll mode. What must never appear is a mouse KEY
+        // binding (guarded in `help.rs::no_binding_row_claims_a_mouse_key`).
+        assert!(
+            text.contains("mouse"),
+            "the overlay must still explain the mouse situation: {text}"
         );
+        // The stronger guarantee -- that no row claims a mouse KEY -- is
+        // asserted structurally against the binding data in
+        // `help.rs::no_binding_row_claims_a_mouse_key`, not by substring
+        // matching here: this rendered text is line-wrapped, so any
+        // substring assertion on it is fragile by construction.
     }
 
     /// Acceptance: `/help` opening the overlay is a pure `AppState` flip --

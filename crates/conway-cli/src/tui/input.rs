@@ -36,6 +36,14 @@ pub enum Action {
     Quit,
     ScrollUp,
     ScrollDown,
+    /// V3: a ONE-LINE transcript scroll, distinct from the page-sized
+    /// [`Action::ScrollUp`]/[`Action::ScrollDown`]. Bound to bare
+    /// `Up`/`Down`, which is what a terminal's *alternate scroll* mode
+    /// (DECSET 1007) translates wheel events into while the alternate
+    /// screen is active -- so this is the action a two-finger scroll
+    /// actually produces.
+    ScrollLineUp,
+    ScrollLineDown,
     /// `End` (T6): snap the transcript straight to its own tail --
     /// re-engages `follow_tail`. Fires only while the input line is empty
     /// (mirroring the dual-meaning precedent `Enter`'s empty-input arm
@@ -259,6 +267,26 @@ fn handle_normal_key(state: &mut AppState, key: KeyEvent) -> Action {
                 state.sync_palette_stem();
                 return Action::None;
             }
+            // V3: history recall lives on `Ctrl-P`/`Ctrl-N` (the readline
+            // pairing) because bare `Up`/`Down` had to go back to scrolling
+            // -- a terminal's alternate-scroll mode turns wheel events into
+            // cursor keys, so bare arrows are not exclusively a keyboard
+            // signal. See the `KeyCode::Up` arm for the full reasoning.
+            //
+            // These are unconditional: unlike the bare arrows, a control
+            // chord is unambiguously a keystroke, so there is no surface to
+            // yield priority to and no multi-line interior to navigate
+            // first.
+            KeyCode::Char('p') | KeyCode::Char('P') => {
+                state.history_recall_prev();
+                state.sync_palette_stem();
+                return Action::None;
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') => {
+                state.history_recall_next();
+                state.sync_palette_stem();
+                return Action::None;
+            }
             // T5: Ctrl-E expands/collapses ALL tool entries in the
             // transcript at once (MVP -- no per-entry selection). A control
             // key, not a bare `e` (D-keys: a bare `e` must stay ordinary
@@ -374,16 +402,30 @@ fn handle_normal_key(state: &mut AppState, key: KeyEvent) -> Action {
         // takes priority when it is showing (the user is composing a
         // command); otherwise the arrows scroll the agent panel when it is
         // open; otherwise -- T8 -- a multi-line draft's own interior lines
-        // take the key (so a recalled multi-line entry stays reachable
-        // line-by-line); otherwise -- the lowest-priority, most common case
-        // -- bare Up/Down recall input history (T8). Bare Up/Down do NOT
-        // scroll the transcript (T6 removed that path); Transcript
-        // scrolling is `PageUp`/`PageDown` (full page) and `Home`/`End`
-        // (jump to top/tail), below. Mouse wheel stays disabled by design
-        // (WI-127 clean-copy). Because the palette and agent-panel checks
-        // run FIRST and return before ever reaching `history_recall_prev`/
-        // `history_recall_next`, history recall can never fire while either
-        // surface owns the key -- by construction, not a separate flag.
+        // take the key (so a multi-line draft stays navigable
+        // line-by-line); otherwise -- V3 -- bare Up/Down scroll the
+        // transcript one line.
+        //
+        // V3 moved history recall OFF bare Up/Down (T8 had put it here) and
+        // onto `Ctrl-P`/`Ctrl-N`. The reason is not aesthetic: terminals
+        // implement *alternate scroll* (DECSET 1007), which translates
+        // wheel events into cursor-key presses while the alternate screen
+        // is active. So a two-finger scroll arrives here as `Up`/`Down`,
+        // indistinguishable from a keystroke -- and under T8 it recalled
+        // history instead of scrolling, which is what the user hit.
+        //
+        // Conway cannot tell the two apart, because the information that
+        // would distinguish them is exactly what `EnableMouseCapture`
+        // provides -- and enabling that would disable the terminal's own
+        // click-drag text selection, which the transcript's clean-copy
+        // guarantee exists to protect (see `view/transcript.rs`, and
+        // decision 01KYKDKYJEATSYXM7YS1C17HHA). Given that the two cannot
+        // be separated, the binding goes to the interaction that is both
+        // more frequent and more surprising when broken: scrolling.
+        //
+        // Because the palette and agent-panel checks run FIRST and return
+        // before reaching the scroll fallback, neither surface loses its
+        // arrows -- by construction, not a separate flag.
         KeyCode::Up => {
             if palette_navigate(state, -1) {
                 Action::None
@@ -393,8 +435,7 @@ fn handle_normal_key(state: &mut AppState, key: KeyEvent) -> Action {
             } else if move_cursor_line(state, -1) {
                 Action::None
             } else {
-                state.history_recall_prev();
-                Action::None
+                Action::ScrollLineUp
             }
         }
         KeyCode::Down => {
@@ -406,8 +447,7 @@ fn handle_normal_key(state: &mut AppState, key: KeyEvent) -> Action {
             } else if move_cursor_line(state, 1) {
                 Action::None
             } else {
-                state.history_recall_next();
-                Action::None
+                Action::ScrollLineDown
             }
         }
         KeyCode::Esc => {
@@ -764,8 +804,14 @@ mod tests {
         Rect::new(0, 0, 20, 10)
     }
 
+    /// V3 (regression fix): bare `Up`/`Down` scroll the transcript one
+    /// line. This is the wheel path -- a terminal's alternate-scroll mode
+    /// (DECSET 1007) turns a two-finger scroll into cursor-key presses
+    /// while the alternate screen is active, so this test IS the
+    /// two-finger-scroll test. T8 had bound these to history recall, which
+    /// is what broke scrolling; history moved to `Ctrl-P`/`Ctrl-N`.
     #[test]
-    fn bare_up_down_do_not_scroll_the_transcript_when_neither_palette_nor_panel_is_active() {
+    fn bare_up_down_scroll_the_transcript_one_line() {
         use crate::tui::state::Entry;
         use crate::tui::test_support::press;
 
@@ -783,26 +829,66 @@ mod tests {
         let up_action = press(&mut state, key(KeyCode::Up), small_viewport());
         assert_eq!(
             up_action,
-            Action::None,
-            "T6: bare Up must no longer emit a scroll action"
+            Action::ScrollLineUp,
+            "bare Up must scroll, not recall history -- this is the wheel path"
         );
-        assert_eq!(state.scroll, 0, "Up must not move `scroll`");
         assert!(
-            state.follow_tail,
-            "Up must not disengage auto-follow -- it no longer scrolls at all"
+            state.scroll > 0,
+            "Up must move `scroll` off the bottom"
+        );
+        assert!(
+            !state.follow_tail,
+            "scrolling up disengages auto-follow"
         );
 
+        // And back down again, one line at a time.
+        let before = state.scroll;
         let down_action = press(&mut state, key(KeyCode::Down), small_viewport());
-        assert_eq!(
-            down_action,
-            Action::None,
-            "T6: bare Down must no longer emit a scroll action"
+        assert_eq!(down_action, Action::ScrollLineDown);
+        assert!(
+            state.scroll > before || state.follow_tail,
+            "Down must move back toward the tail"
         );
-        assert!(state.follow_tail);
     }
 
+    /// The scroll must be ONE line, not a page -- otherwise a wheel tick
+    /// would jump a whole screen and the two actions would be redundant.
     #[test]
-    fn page_up_and_page_down_still_scroll_a_full_page_unlike_bare_arrows() {
+    fn bare_arrow_scroll_is_one_line_while_page_keys_move_a_full_page() {
+        use crate::tui::state::Entry;
+        use crate::tui::test_support::press;
+
+        // Two independently-built identical states (`AppState` is not
+        // `Clone`, and deriving it just for a test would widen the type's
+        // contract for no production reason).
+        let build = || {
+            let mut s = AppState::new(AgentId::new());
+            for i in 0..60 {
+                s.transcript.push(Entry::Assistant {
+                    text: format!("line {i}"),
+                    model: None,
+                    summary: None,
+                    ts: None,
+                });
+            }
+            s
+        };
+        let mut line_state = build();
+        let mut page_state = build();
+
+        press(&mut line_state, key(KeyCode::Up), small_viewport());
+        press(&mut page_state, key(KeyCode::PageUp), small_viewport());
+
+        assert!(
+            page_state.scroll < line_state.scroll,
+            "PageUp must travel further from the tail than a single-line Up \
+             (line={}, page={})",
+            line_state.scroll,
+            page_state.scroll
+        );
+    }
+    #[test]
+    fn page_up_and_page_down_scroll_a_full_page() {
         use crate::tui::state::Entry;
         use crate::tui::test_support::press;
 
@@ -815,11 +901,6 @@ mod tests {
                 ts: None,
             });
         }
-
-        // Bare arrows: no-op on `scroll`/`follow_tail`.
-        press(&mut state, key(KeyCode::Up), small_viewport());
-        assert_eq!(state.scroll, 0);
-        assert!(state.follow_tail);
 
         // PageUp: a real, full-page scroll that disengages follow.
         let up_action = press(&mut state, key(KeyCode::PageUp), small_viewport());
@@ -1945,48 +2026,64 @@ mod tests {
     }
 
     #[test]
-    fn up_on_the_first_line_of_a_multi_line_draft_falls_through_to_history() {
+    fn up_on_the_first_line_of_a_multi_line_draft_falls_through_to_scroll() {
         let mut state = AppState::new(AgentId::new());
         state.push_history("recalled".to_string());
         state.input = "first\nsecond".to_string();
         state.cursor = 2; // on line 0, column 2 -- already the top line
 
-        handle_key(&mut state, key(KeyCode::Up));
+        let action = handle_key(&mut state, key(KeyCode::Up));
 
         assert_eq!(
-            state.input, "recalled",
-            "Up on the FIRST line must fall through to history recall"
+            action,
+            Action::ScrollLineUp,
+            "V3: Up on the FIRST line falls through to scroll, not history"
+        );
+        assert_eq!(
+            state.input, "first\nsecond",
+            "the draft is untouched -- history is on Ctrl-P now"
         );
     }
 
     #[test]
-    fn down_on_the_last_line_of_a_multi_line_draft_falls_through_to_history() {
+    fn down_on_the_last_line_of_a_multi_line_draft_falls_through_to_scroll() {
         let mut state = AppState::new(AgentId::new());
         state.push_history("older".to_string());
-        state.push_history("newest".to_string());
         state.input = "first\nsecond".to_string();
         state.cursor = char_count(&state.input); // last line
 
-        // First Up recalls "newest" (single line, no interior lines), then
-        // Down should walk back to the in-progress draft.
-        state.history_recall_prev();
-        assert_eq!(state.input, "newest");
-        handle_key(&mut state, key(KeyCode::Down));
+        let action = handle_key(&mut state, key(KeyCode::Down));
+
+        assert_eq!(
+            action,
+            Action::ScrollLineDown,
+            "V3: Down on the LAST line falls through to scroll, not history"
+        );
         assert_eq!(
             state.input, "first\nsecond",
-            "Down past the newest history entry restores the multi-line draft"
+            "the draft is untouched -- history is on Ctrl-N now"
         );
     }
 
     #[test]
-    fn bare_up_down_recall_history_when_no_palette_panel_or_multiline_draft() {
+    fn ctrl_p_and_ctrl_n_recall_history_when_no_palette_panel_or_multiline_draft() {
         let mut state = AppState::new(AgentId::new());
         state.push_history("remembered".to_string());
 
-        let action = handle_key(&mut state, key(KeyCode::Up));
+        let action = handle_key(&mut state, ctrl_key(KeyCode::Char('p')));
 
         assert_eq!(action, Action::None);
-        assert_eq!(state.input, "remembered");
+        assert_eq!(
+            state.input, "remembered",
+            "Ctrl-P recalls the previous history entry"
+        );
+
+        // Ctrl-N walks back off it, restoring the (empty) in-progress draft.
+        handle_key(&mut state, ctrl_key(KeyCode::Char('n')));
+        assert_eq!(
+            state.input, "",
+            "Ctrl-N past the newest entry restores the in-progress draft"
+        );
     }
 
     #[test]
