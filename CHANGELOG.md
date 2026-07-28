@@ -5,74 +5,7 @@ All notable changes to **conway** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Fixed
-
-- **`Esc` no longer discards the agent you just focused.** Forking, opening
-  `/agents`, focusing the new child, then pressing `Esc` to dismiss the
-  panel bounced you straight back to the root — so "focus a child and get
-  the panel out of the way" was not expressible at all.
-
-  Two changes had independently bound `Esc` (one to close the panel, one to
-  return to the root) and both fired on a single press. Only the
-  panel-close half was ever documented in `/help`, which is what made this
-  a bug rather than a shortcut.
-
-  `Esc` now does one thing per press, innermost surface first: it closes
-  the panel if open and keeps your focus; a second press returns to the
-  root. With the panel already closed it returns to the root immediately,
-  so no keypress is wasted.
-
-### Changed
-
-- **TUI: palette audit — what each color means, and a few defaults tighten
-  up (V7).** The request was "a little more visual polish," which usually
-  means "more color" — the audit went the other way and found the palette
-  was already mostly restrained; the real gaps were a couple of colors
-  spent on things that don't carry meaning, and one real safety signal that
-  had none.
-
-  **Defaults change appearance** for three reasons, each narrow:
-
-  - `timestamp`, `reasoning`, and `agent_cancelled` move off a fixed
-    `Color::DarkGray` to a relative `Modifier::DIM`. `DarkGray` is an
-    absolute dark color, and a dark-background terminal's own "bright
-    black" frequently renders it nearly indistinguishable from the
-    background; `DIM` asks the terminal to dim its *own* foreground
-    instead, which stays legible on both a dark and a light scheme.
-  - `help_key` (the `/help` overlay's key/chord column) drops its green —
-    green already means "success" (`tool_done`/`agent_finished`) elsewhere
-    in the palette, and reusing it for a plain column split blurred that
-    meaning for no reason. It stays bold.
-  - The status line's `AUTO-ALLOW` indicator — every tool call
-    auto-approved with no prompt, a genuine safety-relevant state — now
-    renders with `theme.fatal_error` (red + bold) instead of the plain
-    `theme.emphasized` (bold, no color) it shared with the much lower-risk
-    `plan` mode. `plan` keeps the unstyled-but-bold treatment; it only ever
-    restricts what runs.
-
-  If you had pinned any of these via `[tui.theme.timestamp]`,
-  `[tui.theme.reasoning]`, `[tui.theme.agent_cancelled]`, or
-  `[tui.theme.help_key]`, your override still applies unchanged — only the
-  built-in defaults moved.
-
-  **Removed:** the `agent_marker` theme slot (and its `[tui.theme.
-  agent_marker]` config key) never had a call site anywhere in `view/*.rs`
-  — a key a user could set that would silently do nothing, the same
-  failure V6 already ruled out for `spinner_b`/`spinner_c`. It is now an
-  unrecognized key rather than a no-op; if you had it set, remove it. No
-  functional behavior changes either way, since it never rendered anything.
-
-  **Considered and not done:** collapsing the `tool_*`/`agent_*` status-tag
-  families (five duplicated color pairs) into one semantic set. The
-  duplication is real but not a rendered-UI problem — the two families
-  never draw side by side — and collapsing would have meant either breaking
-  configs that already set one of the ten names or a real aliasing
-  precedence risk, for a problem that is presently invisible on screen. See
-  `docs/crates/conway-cli.md`'s new "Palette rationale (V7)" section for
-  the full reasoning, the color-meaning rules, and what a future slot
-  addition should follow.
+## [0.3.0] — 2026-07-28
 
 ### Added
 
@@ -120,122 +53,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   project file so they can be reviewed in a diff. Switch modes, review
   grants, and revoke them all from `/settings` (per-rule revocation is not
   implemented yet).
-
-### Changed
-
-- **TUI: `/thinking` and `/timestamps` are replaced by a single `/settings`
-  menu (V4).** Two standalone slash commands, each owning exactly one
-  boolean, don't scale — every future display preference would mean another
-  command competing for footer/palette space. Both are now REMOVED (not
-  aliased): `/settings` opens a menu, built on V1's shared modal/tree
-  primitives (`tui/view/menu.rs`, its first real caller), covering "show
-  reasoning traces", "show timestamps", and a THIRD setting new to runtime
-  entirely — `tool_preview_lines` (T5's tool-output fold cap, previously
-  config-only). The one non-boolean setting is a `Left`/`Right` stepper
-  (±1, floor/cap at `1..=200`) rather than a cycled preset list — there's no
-  natural "meaningfully different" preset set for a fold-cap the way a
-  theme picker would have.
-
-  Settings are **session-only**, exactly as the two commands they replace
-  already were: Conway's config load is a five-source layered read with no
-  writer anywhere outside test fixtures, and inventing one raises "which
-  layer gets written" with no good default answer — out of this item's
-  scope. A footer note says so on every render; the one setting with a real
-  backing config key (`[tui.tool_preview_lines]`) names it inline, and the
-  two that have no config-key equivalent today carry no such claim.
-
-  `/settings` is gated exactly like `/help` — a plain `AppState::
-  settings_open` flag, never a `Mode` variant, so it can't stack on an
-  active permission prompt / `/ask` modal / intent-confirm card — and, new
-  for this item, `/settings` and `/help` are also mutually exclusive with
-  EACH OTHER (opening one closes the other), since both are informational
-  overlays gated the identical way.
-
-- **The status line no longer pulses, and the footer no longer lists slash
-  commands.** The spinner's braille frames still advance — motion is the
-  liveness cue — but the color is now steady. Cycling it on every 125ms
-  tick read as strobing in the corner of the eye rather than as a signal,
-  and competed with the frame animation already doing that job.
-
-  The `spinner_b` and `spinner_c` theme slots are removed along with their
-  `[tui.theme]` config keys. A config key that silently does nothing is
-  worse than no key at all. If you had set either, the spinner now uses
-  `spinner` alone.
-
-  The footer read `Enter submit · Ctrl-E expand · Ctrl-P/N history ·
-  PgUp/PgDn · /help · /thinking · /timestamps · /agents…`. It now names
-  keys rather than commands: `Enter submit · Ctrl-E expand · /help ·
-  /agents…`. Nothing became undiscoverable — `/help` is the keybinding
-  overlay, which is where the rest already lives.
-
-### Fixed
-
-- **The `/agents` panel no longer appears to randomly lose agents, and
-  focusing a subagent now shows where it sits in the tree.** Two dogfooding
-  reports, one root cause each:
-
-  The panel's visibility filter defaulted to active-only, so a finished
-  agent's row vanished the instant it finished — with `v` (the filter
-  cycle key) undiscovered, that reads as agents disappearing at random. The
-  default is now **all**: the list's *shape* stays stable regardless of
-  status, and the existing per-row marker (`v`/`x`/`-` vs `*`/`o`/`?`)
-  already conveys "still running" at a glance. `v` still cycles
-  all → finished-only → active-only → all; only the starting point moved.
-
-  Focusing a subagent used to clear the transcript down to that agent's own
-  log with no indication of how it got there. The sticky context header
-  (T6) now grows a lineage breadcrumb off-root — `agent <id> via root →
-  fork @seq 3 → @reviewer` — built from the same per-node provenance text
-  the panel row already shows (`fork @seq N`, `@agent_def`, `(inherit)`),
-  so it can never disagree with the panel. It is metadata only, never the
-  ancestor's actual transcript content: a fork child truly inherited its
-  parent's log up to a fixed point and showing that would be accurate, but
-  a spawn child inherited nothing, and showing parent content next to it
-  would display information the agent never saw. A deep chain degrades to
-  a shorter complete form (`…(N)` collapsing the middle) rather than
-  clipping mid-word, the same shape the T6 floating footer already uses.
-
-- **Two-finger scroll works again.** In v0.3.0 the mouse wheel recalled
-  input history instead of scrolling the transcript. Bare `Up`/`Down` now
-  scroll one line; history recall moved to `Ctrl-P`/`Ctrl-N`.
-
-  The cause is worth stating, because the earlier documentation had it
-  wrong. Conway does not capture the mouse — doing so would disable the
-  terminal's click-drag text selection, which the transcript's clean-copy
-  guarantee protects. The previous notes concluded from this that the wheel
-  never reached Conway at all. It does: terminals implement *alternate
-  scroll* (DECSET 1007), translating wheel events into `Up`/`Down` cursor
-  keys while the alternate screen is active. So when v0.3.0 bound those
-  arrows to history, it silently took the wheel with them.
-
-  Conway cannot distinguish a wheel-driven arrow from a typed one — that
-  distinction is precisely what mouse capture would provide — so the arrows
-  go to the more frequent interaction, and history takes the readline
-  chord. `PageUp`/`PageDown` and `Home`/`End` are unchanged.
-
-- **TUI: modals no longer eat the whole screen (V1).** The permission
-  prompt's own comment used to read *"claim nearly the whole transcript
-  area"* — which was the bug: a modal that always filled the screen
-  regardless of how little it had to say. The permission prompt, the
-  `/ask` modal, the NL intent-confirm card, and `/help` now share one
-  primitive (`tui/view/modal.rs`): bottom-anchored, sized to their own
-  content, capped at a maximum, with the transcript still visible above
-  them. A long command/answer/prompt that exceeds the cap now **scrolls**
-  (`PageUp`/`PageDown`, a single shared `AppState::modal_scroll` field —
-  the old permission-only `permission_scroll`, generalized) instead of
-  either truncating silently or filling the screen. `/agents` stays a
-  panel rather than becoming a fifth modal on this primitive — it's meant
-  to be browsed while still composing, sharing the screen with a live
-  input line, which a modal (drawn *over* the transcript) cannot do.
-
-  A new tree/menu navigation primitive (`tui/view/menu.rs`) is layered on
-  the modal for a later settings surface (V4) to fill in — nested,
-  collapsible groups with keyboard navigation, not wired to anything yet
-  but fully exercised by its own tests, so that surface can build on a
-  finished primitive rather than a half one. See `docs/crates/conway-cli.md`
-  for the cap-fraction measurement and the full reasoning.
-
-### Added
 
 - **TUI: `/help` keybinding overlay (T7).** `/help` used to dump a static
   command list into the transcript as a pile of `Entry::Notice` lines,
@@ -361,31 +178,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   See `docs/crates/conway-backends.md` for a copy-pasteable config, which
   is itself pinned by a test that loads it through the real config loader.
 
-### Changed
-
-- **Config no longer inspects the shape of an API key.** The
-  `sk-ant-oat*` prefix rejection is removed from all three layers that
-  enforced it (`AnthropicConfig::validate`, `config::merge::validate`, and
-  `ConwayBuilder`'s `api_key_env` resolution), along with the
-  `ConfigError::SubscriptionTokenRejected` variant. Any non-empty key is
-  now passed through to the configured `base_url` as-is.
-
-  Policing which credentials look legitimate is an opinion that does not
-  belong in the core, and it blocked a real use case: an
-  Anthropic-compatible third-party endpoint (a coding-plan subscription, a
-  self-hosted shim) could not be configured, and the resulting error
-  misdirected the user to `console.anthropic.com` — the wrong vendor
-  entirely. Whether a key works is the provider's answer to give, and its
-  auth error is more accurate than any prefix match Conway could perform.
-
-  **Unchanged:** an empty or whitespace-only `api_key` is still rejected
-  (`ConfigError::MissingApiKey`), and an `api_key_env` naming an unset
-  variable is still a hard error that names the variable. Those describe a
-  missing credential, which Conway can identify precisely, rather than
-  judging one it has.
-
-### Added
-
 - **TUI: tool output folding + expand (T5).** A settled tool entry's
   preview in the transcript now renders **folded** by default: the first
   `[tui.tool_preview_lines]` physical lines (default 3) plus a dim
@@ -449,7 +241,168 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   clean-copy invariant (no box-drawing glyphs). See
   `docs/crates/conway-cli.md`'s "Transcript provenance (T4)" section.
 
+- **Facade lifecycle ops for ephemeral `/ask` children** —
+  `Conway::promote` (the one-way ephemeral→persistent flip: durable header
+  rewrite, live-tree flip, and an `Event::AgentPromoted` for UIs, in that
+  failure-ordered sequence), `Conway::pull_in` (merge the child's question
+  and answer into the parent's log — the question re-stamped
+  `Provenance::MergedAsk`, assistant records verbatim — then purge the
+  child), `Conway::purge` (discard a terminal ephemeral child), and
+  `Conway::sweep_stale_modal_asks` (crash-residue reaper). Ephemeral `/ask`
+  children now attach as proper fork children of the asker, so they appear
+  in `/agents` marked `(ephemeral)` while running.
+
+- **`conway_ask` model-facing tool**: runs a prompt in an ephemeral fork of
+  the calling agent and returns the child's full reply text (not a truncated
+  summary), so the model can compose it into a `conway_subagent` spawn and
+  keep curation/context-drafting inference out of the orchestrator's context
+  window. Fork-only (`prompt` + optional `budget`); the child is marked
+  ephemeral (shown in the TUI `/agents` panel with an `(ephemeral)` marker
+  while running, and under the `v`-cycled all/finished views once done;
+  excluded from default session listings; still attached to the live agent
+  tree for provenance). Composes
+  `conway_subagent` per the "exactly two subagent primitives" principle —
+  `ask` is fork+await-text, not a third primitive.
+
+- **`conway_ask` gains an optional `tools` arg**: narrows the ephemeral fork
+  child's tool set to the named tools (`ToolSelector::Only`, the same
+  selector `conway_subagent`'s `tools` arg produces) — e.g.
+  `{"prompt": "summarize the diff", "tools": ["read"]}` restricts the child
+  to read-only inspection. Narrowing-only: it can restrict, never widen, the
+  tool set the child would otherwise inherit.
+
+- **NL intent on `/fork` and `/spawn` with a mandatory confirmation card.**
+  Free text after `/fork` or `/spawn` that does NOT start with explicit
+  `@<agent_def>` syntax is classified by the facade's `intent` role
+  (`Conway::classify_agent_intent`, C1) BEFORE any agent is created, and
+  the classified result is shown in a confirmation card
+  (`[enter]` confirm / `[e]` edit / `[esc]` manual) so inference can never
+  silently choose (P-10). `[enter]` runs the classified recipe as-is
+  (possibly cross-classified); `[e]` drops the classified prompt into the
+  input line for editing; `[esc]` falls back to today's pre-classification
+  manual flow with the raw text untouched. The verbatim passthrough
+  (unconfigured `[roles.intent]` role, unparseable reply, invalid recipe,
+  empty prompt) still shows the card with the raw text; a hard
+  `ConwayError::IntentClassification` does NOT show the card and falls back
+  to the manual flow with a notice. Explicit `@<agent_def>` syntax and bare
+  invocations are unchanged. Oneshot (`-p`) `/fork`/`/spawn` paths are
+  unchanged (deferred).
+
 ### Changed
+
+- **TUI: palette audit — what each color means, and a few defaults tighten
+  up (V7).** The request was "a little more visual polish," which usually
+  means "more color" — the audit went the other way and found the palette
+  was already mostly restrained; the real gaps were a couple of colors
+  spent on things that don't carry meaning, and one real safety signal that
+  had none.
+
+  **Defaults change appearance** for three reasons, each narrow:
+
+  - `timestamp`, `reasoning`, and `agent_cancelled` move off a fixed
+    `Color::DarkGray` to a relative `Modifier::DIM`. `DarkGray` is an
+    absolute dark color, and a dark-background terminal's own "bright
+    black" frequently renders it nearly indistinguishable from the
+    background; `DIM` asks the terminal to dim its *own* foreground
+    instead, which stays legible on both a dark and a light scheme.
+  - `help_key` (the `/help` overlay's key/chord column) drops its green —
+    green already means "success" (`tool_done`/`agent_finished`) elsewhere
+    in the palette, and reusing it for a plain column split blurred that
+    meaning for no reason. It stays bold.
+  - The status line's `AUTO-ALLOW` indicator — every tool call
+    auto-approved with no prompt, a genuine safety-relevant state — now
+    renders with `theme.fatal_error` (red + bold) instead of the plain
+    `theme.emphasized` (bold, no color) it shared with the much lower-risk
+    `plan` mode. `plan` keeps the unstyled-but-bold treatment; it only ever
+    restricts what runs.
+
+  If you had pinned any of these via `[tui.theme.timestamp]`,
+  `[tui.theme.reasoning]`, `[tui.theme.agent_cancelled]`, or
+  `[tui.theme.help_key]`, your override still applies unchanged — only the
+  built-in defaults moved.
+
+  **Removed:** the `agent_marker` theme slot (and its `[tui.theme.
+  agent_marker]` config key) never had a call site anywhere in `view/*.rs`
+  — a key a user could set that would silently do nothing, the same
+  failure V6 already ruled out for `spinner_b`/`spinner_c`. It is now an
+  unrecognized key rather than a no-op; if you had it set, remove it. No
+  functional behavior changes either way, since it never rendered anything.
+
+  **Considered and not done:** collapsing the `tool_*`/`agent_*` status-tag
+  families (five duplicated color pairs) into one semantic set. The
+  duplication is real but not a rendered-UI problem — the two families
+  never draw side by side — and collapsing would have meant either breaking
+  configs that already set one of the ten names or a real aliasing
+  precedence risk, for a problem that is presently invisible on screen. See
+  `docs/crates/conway-cli.md`'s new "Palette rationale (V7)" section for
+  the full reasoning, the color-meaning rules, and what a future slot
+  addition should follow.
+
+- **TUI: `/thinking` and `/timestamps` are replaced by a single `/settings`
+  menu (V4).** Two standalone slash commands, each owning exactly one
+  boolean, don't scale — every future display preference would mean another
+  command competing for footer/palette space. Both are now REMOVED (not
+  aliased): `/settings` opens a menu, built on V1's shared modal/tree
+  primitives (`tui/view/menu.rs`, its first real caller), covering "show
+  reasoning traces", "show timestamps", and a THIRD setting new to runtime
+  entirely — `tool_preview_lines` (T5's tool-output fold cap, previously
+  config-only). The one non-boolean setting is a `Left`/`Right` stepper
+  (±1, floor/cap at `1..=200`) rather than a cycled preset list — there's no
+  natural "meaningfully different" preset set for a fold-cap the way a
+  theme picker would have.
+
+  Settings are **session-only**, exactly as the two commands they replace
+  already were: Conway's config load is a five-source layered read with no
+  writer anywhere outside test fixtures, and inventing one raises "which
+  layer gets written" with no good default answer — out of this item's
+  scope. A footer note says so on every render; the one setting with a real
+  backing config key (`[tui.tool_preview_lines]`) names it inline, and the
+  two that have no config-key equivalent today carry no such claim.
+
+  `/settings` is gated exactly like `/help` — a plain `AppState::
+  settings_open` flag, never a `Mode` variant, so it can't stack on an
+  active permission prompt / `/ask` modal / intent-confirm card — and, new
+  for this item, `/settings` and `/help` are also mutually exclusive with
+  EACH OTHER (opening one closes the other), since both are informational
+  overlays gated the identical way.
+
+- **The status line no longer pulses, and the footer no longer lists slash
+  commands.** The spinner's braille frames still advance — motion is the
+  liveness cue — but the color is now steady. Cycling it on every 125ms
+  tick read as strobing in the corner of the eye rather than as a signal,
+  and competed with the frame animation already doing that job.
+
+  The `spinner_b` and `spinner_c` theme slots are removed along with their
+  `[tui.theme]` config keys. A config key that silently does nothing is
+  worse than no key at all. If you had set either, the spinner now uses
+  `spinner` alone.
+
+  The footer read `Enter submit · Ctrl-E expand · Ctrl-P/N history ·
+  PgUp/PgDn · /help · /thinking · /timestamps · /agents…`. It now names
+  keys rather than commands: `Enter submit · Ctrl-E expand · /help ·
+  /agents…`. Nothing became undiscoverable — `/help` is the keybinding
+  overlay, which is where the rest already lives.
+
+- **Config no longer inspects the shape of an API key.** The
+  `sk-ant-oat*` prefix rejection is removed from all three layers that
+  enforced it (`AnthropicConfig::validate`, `config::merge::validate`, and
+  `ConwayBuilder`'s `api_key_env` resolution), along with the
+  `ConfigError::SubscriptionTokenRejected` variant. Any non-empty key is
+  now passed through to the configured `base_url` as-is.
+
+  Policing which credentials look legitimate is an opinion that does not
+  belong in the core, and it blocked a real use case: an
+  Anthropic-compatible third-party endpoint (a coding-plan subscription, a
+  self-hosted shim) could not be configured, and the resulting error
+  misdirected the user to `console.anthropic.com` — the wrong vendor
+  entirely. Whether a key works is the provider's answer to give, and its
+  auth error is more accurate than any prefix match Conway could perform.
+
+  **Unchanged:** an empty or whitespace-only `api_key` is still rejected
+  (`ConfigError::MissingApiKey`), and an `api_key_env` naming an unset
+  variable is still a hard error that names the variable. Those describe a
+  missing credential, which Conway can identify precisely, rather than
+  judging one it has.
 
 - **TUI: status line rework — model + ctx% + cwd + git + field config
   (T3).** The bottom status line is now an ordered, configurable set of
@@ -526,6 +479,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for later v0.3.0 polish items to consume. See
   `docs/crates/conway-cli.md`'s `[tui.theme]` section for the full named-
   style table and accepted color/modifier spellings.
+
 - **`/ask` is now a single-turn modal with three forced fates.** Asking
   forks an ephemeral child (visible in `/agents` marked `(ephemeral)`),
   runs one turn, and opens a modal over the child's answer. Closing the
@@ -538,6 +492,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sweeps modal-`/ask` residue left behind by a crashed process; a new
   `ask_origin` tag on the session header distinguishes these from
   `conway_ask` tool children, which are never swept.
+
 - **TUI `/agents` panel is now the single agent surface.** Every row shows
   the agent's recipe label — `fork @seq N` for forks (with the inherited
   fork point), `@<agent_def>` for spawns with a named agent definition,
@@ -551,51 +506,87 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   plain-text transcript lines — and it no longer appears in `/help` or the
   command palette.
 
-### Added
+### Fixed
 
-- **Facade lifecycle ops for ephemeral `/ask` children** —
-  `Conway::promote` (the one-way ephemeral→persistent flip: durable header
-  rewrite, live-tree flip, and an `Event::AgentPromoted` for UIs, in that
-  failure-ordered sequence), `Conway::pull_in` (merge the child's question
-  and answer into the parent's log — the question re-stamped
-  `Provenance::MergedAsk`, assistant records verbatim — then purge the
-  child), `Conway::purge` (discard a terminal ephemeral child), and
-  `Conway::sweep_stale_modal_asks` (crash-residue reaper). Ephemeral `/ask`
-  children now attach as proper fork children of the asker, so they appear
-  in `/agents` marked `(ephemeral)` while running.
-- **`conway_ask` model-facing tool**: runs a prompt in an ephemeral fork of
-  the calling agent and returns the child's full reply text (not a truncated
-  summary), so the model can compose it into a `conway_subagent` spawn and
-  keep curation/context-drafting inference out of the orchestrator's context
-  window. Fork-only (`prompt` + optional `budget`); the child is marked
-  ephemeral (shown in the TUI `/agents` panel with an `(ephemeral)` marker
-  while running, and under the `v`-cycled all/finished views once done;
-  excluded from default session listings; still attached to the live agent
-  tree for provenance). Composes
-  `conway_subagent` per the "exactly two subagent primitives" principle —
-  `ask` is fork+await-text, not a third primitive.
-- **`conway_ask` gains an optional `tools` arg**: narrows the ephemeral fork
-  child's tool set to the named tools (`ToolSelector::Only`, the same
-  selector `conway_subagent`'s `tools` arg produces) — e.g.
-  `{"prompt": "summarize the diff", "tools": ["read"]}` restricts the child
-  to read-only inspection. Narrowing-only: it can restrict, never widen, the
-  tool set the child would otherwise inherit.
-- **NL intent on `/fork` and `/spawn` with a mandatory confirmation card.**
-  Free text after `/fork` or `/spawn` that does NOT start with explicit
-  `@<agent_def>` syntax is classified by the facade's `intent` role
-  (`Conway::classify_agent_intent`, C1) BEFORE any agent is created, and
-  the classified result is shown in a confirmation card
-  (`[enter]` confirm / `[e]` edit / `[esc]` manual) so inference can never
-  silently choose (P-10). `[enter]` runs the classified recipe as-is
-  (possibly cross-classified); `[e]` drops the classified prompt into the
-  input line for editing; `[esc]` falls back to today's pre-classification
-  manual flow with the raw text untouched. The verbatim passthrough
-  (unconfigured `[roles.intent]` role, unparseable reply, invalid recipe,
-  empty prompt) still shows the card with the raw text; a hard
-  `ConwayError::IntentClassification` does NOT show the card and falls back
-  to the manual flow with a notice. Explicit `@<agent_def>` syntax and bare
-  invocations are unchanged. Oneshot (`-p`) `/fork`/`/spawn` paths are
-  unchanged (deferred).
+- **`Esc` no longer discards the agent you just focused.** Forking, opening
+  `/agents`, focusing the new child, then pressing `Esc` to dismiss the
+  panel bounced you straight back to the root — so "focus a child and get
+  the panel out of the way" was not expressible at all.
+
+  Two changes had independently bound `Esc` (one to close the panel, one to
+  return to the root) and both fired on a single press. Only the
+  panel-close half was ever documented in `/help`, which is what made this
+  a bug rather than a shortcut.
+
+  `Esc` now does one thing per press, innermost surface first: it closes
+  the panel if open and keeps your focus; a second press returns to the
+  root. With the panel already closed it returns to the root immediately,
+  so no keypress is wasted.
+
+- **The `/agents` panel no longer appears to randomly lose agents, and
+  focusing a subagent now shows where it sits in the tree.** Two dogfooding
+  reports, one root cause each:
+
+  The panel's visibility filter defaulted to active-only, so a finished
+  agent's row vanished the instant it finished — with `v` (the filter
+  cycle key) undiscovered, that reads as agents disappearing at random. The
+  default is now **all**: the list's *shape* stays stable regardless of
+  status, and the existing per-row marker (`v`/`x`/`-` vs `*`/`o`/`?`)
+  already conveys "still running" at a glance. `v` still cycles
+  all → finished-only → active-only → all; only the starting point moved.
+
+  Focusing a subagent used to clear the transcript down to that agent's own
+  log with no indication of how it got there. The sticky context header
+  (T6) now grows a lineage breadcrumb off-root — `agent <id> via root →
+  fork @seq 3 → @reviewer` — built from the same per-node provenance text
+  the panel row already shows (`fork @seq N`, `@agent_def`, `(inherit)`),
+  so it can never disagree with the panel. It is metadata only, never the
+  ancestor's actual transcript content: a fork child truly inherited its
+  parent's log up to a fixed point and showing that would be accurate, but
+  a spawn child inherited nothing, and showing parent content next to it
+  would display information the agent never saw. A deep chain degrades to
+  a shorter complete form (`…(N)` collapsing the middle) rather than
+  clipping mid-word, the same shape the T6 floating footer already uses.
+
+- **Two-finger scroll works again.** In v0.3.0 the mouse wheel recalled
+  input history instead of scrolling the transcript. Bare `Up`/`Down` now
+  scroll one line; history recall moved to `Ctrl-P`/`Ctrl-N`.
+
+  The cause is worth stating, because the earlier documentation had it
+  wrong. Conway does not capture the mouse — doing so would disable the
+  terminal's click-drag text selection, which the transcript's clean-copy
+  guarantee protects. The previous notes concluded from this that the wheel
+  never reached Conway at all. It does: terminals implement *alternate
+  scroll* (DECSET 1007), translating wheel events into `Up`/`Down` cursor
+  keys while the alternate screen is active. So when v0.3.0 bound those
+  arrows to history, it silently took the wheel with them.
+
+  Conway cannot distinguish a wheel-driven arrow from a typed one — that
+  distinction is precisely what mouse capture would provide — so the arrows
+  go to the more frequent interaction, and history takes the readline
+  chord. `PageUp`/`PageDown` and `Home`/`End` are unchanged.
+
+- **TUI: modals no longer eat the whole screen (V1).** The permission
+  prompt's own comment used to read *"claim nearly the whole transcript
+  area"* — which was the bug: a modal that always filled the screen
+  regardless of how little it had to say. The permission prompt, the
+  `/ask` modal, the NL intent-confirm card, and `/help` now share one
+  primitive (`tui/view/modal.rs`): bottom-anchored, sized to their own
+  content, capped at a maximum, with the transcript still visible above
+  them. A long command/answer/prompt that exceeds the cap now **scrolls**
+  (`PageUp`/`PageDown`, a single shared `AppState::modal_scroll` field —
+  the old permission-only `permission_scroll`, generalized) instead of
+  either truncating silently or filling the screen. `/agents` stays a
+  panel rather than becoming a fifth modal on this primitive — it's meant
+  to be browsed while still composing, sharing the screen with a live
+  input line, which a modal (drawn *over* the transcript) cannot do.
+
+  A new tree/menu navigation primitive (`tui/view/menu.rs`) is layered on
+  the modal for a later settings surface (V4) to fill in — nested,
+  collapsible groups with keyboard navigation, not wired to anything yet
+  but fully exercised by its own tests, so that surface can build on a
+  finished primitive rather than a half one. See `docs/crates/conway-cli.md`
+  for the cap-fraction measurement and the full reasoning.
 
 ## [0.2.0] — 2026-07-23
 
