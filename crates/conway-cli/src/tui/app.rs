@@ -77,6 +77,16 @@ pub struct App {
     /// `run`, and polled there as an extra `tokio::select!` arm.
     modal_ask_tx: mpsc::UnboundedSender<ModalAskOutcome>,
     modal_ask_rx: Option<mpsc::UnboundedReceiver<ModalAskOutcome>>,
+    /// T8: where [`Self::submit`] persists `state.history` to after every
+    /// push -- `~/.conway/history` (or `$XDG_CONFIG_HOME/conway/history`
+    /// when set), resolved once at `App::new` via
+    /// `conway::config::discovery::history_file_path`. `None` only when
+    /// that resolution itself fails (no resolvable home directory --
+    /// `directories::BaseDirs::new()` returned `None`), in which case
+    /// history still works for the running session (in-memory, via
+    /// `AppState::history`), it just never round-trips to disk. P-10: this
+    /// is a degrade, never a startup failure.
+    history_path: Option<std::path::PathBuf>,
 }
 
 /// What `App::submit` learned the app loop must additionally do, beyond the
@@ -154,6 +164,22 @@ impl App {
         state.tool_preview_lines = super::state::clamp_tool_preview_lines(
             conway.config().tui.tool_preview_lines,
         );
+        // T8: input-history cap from `[tui.history_size]` (default 500,
+        // clamped the same P-10 way as `tool_preview_lines` just above),
+        // then load whatever history already exists on disk -- best-effort
+        // (`history::load` degrades to an empty history on a missing,
+        // unreadable, or corrupt file, never a panic/startup failure -- see
+        // that function's own doc). `history_file_path` itself can return
+        // `None` (no resolvable home directory); the session still runs
+        // with in-memory-only history in that case.
+        state.history_cap =
+            super::state::clamp_history_size(conway.config().tui.history_size);
+        let history_path = conway::config::discovery::history_file_path(
+            &std::env::vars().collect::<std::collections::HashMap<_, _>>(),
+        );
+        if let Some(path) = &history_path {
+            state.history = super::history::load(path);
+        }
         // T3: cwd display -- prefer the CLI `--cwd` override, fall back to
         // the config's `cwd`. Both are `PathBuf`; render the display string
         // via `display()` (lossy for non-UTF8).
@@ -194,6 +220,7 @@ impl App {
             theme,
             modal_ask_tx,
             modal_ask_rx: Some(modal_ask_rx),
+            history_path,
         })
     }
 
@@ -521,6 +548,19 @@ impl App {
                                 }
                             }
                         }
+                        // T8: bracketed paste (enabled in `tui/mod.rs`'s
+                        // terminal setup) -- the whole pasted block arrives
+                        // as one `Event::Paste(String)`, inserted as ONE
+                        // edit at the cursor by `input::handle_paste`
+                        // (rather than each character re-entering this
+                        // `select!` loop as its own `CEvent::Key`, which is
+                        // what happened before bracketed paste was enabled
+                        // at all -- the terminal fell back to sending a
+                        // paste as a flood of ordinary key events).
+                        CEvent::Paste(text) => {
+                            dirty = true;
+                            input::handle_paste(&mut self.state, &text);
+                        }
                         CEvent::Resize(_, _) => dirty = true,
                         _ => {}
                     }
@@ -544,6 +584,22 @@ impl App {
     /// command: neither ever reaches `commands::parse` as an "unknown
     /// command" error, and neither is ever sent to the model as a prompt.
     async fn submit(&mut self, text: String) -> conway::Result<SubmitOutcome> {
+        // T8: every submitted line (prompt or slash command) is recorded
+        // into the history FIFO before dispatch, so a slash command that
+        // changes `self.handle`/exits the loop still recorded exactly what
+        // the user typed. `AppState::push_history` is pure/in-memory and
+        // bounds the deque to `state.history_cap` itself; persisting the
+        // updated deque to disk is a SEPARATE, best-effort step (P-10: a
+        // failed WRITE must never fail the submit it was recording, so the
+        // `io::Result` is swallowed here, not `?`-propagated). Run on the
+        // blocking pool -- same reasoning `App::new`'s `read_git_branch`
+        // uses -- so a slow/contended filesystem never stalls the app loop.
+        self.state.push_history(text.clone());
+        if let Some(path) = self.history_path.clone() {
+            let history = self.state.history.clone();
+            let _ = tokio::task::spawn_blocking(move || super::history::save(&path, &history))
+                .await;
+        }
         if text.trim() == "/agents" || text.starts_with("/agents ") {
             if text.trim() == "/agents" {
                 self.state.toggle_agent_view();

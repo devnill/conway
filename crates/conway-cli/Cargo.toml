@@ -24,7 +24,13 @@ futures = { workspace = true }
 # semver-stability marker for the API shape, not a usability/soundness
 # caveat -- this is the documented, supported way to measure wrap height.
 ratatui = { workspace = true, features = ["unstable-rendered-line-info"] }
-crossterm = { workspace = true }
+# T8: `bracketed-paste` (on top of the workspace default `event-stream`)
+# gates crossterm's `Event::Paste`/`EnableBracketedPaste`/
+# `DisableBracketedPaste` -- without it the terminal never emits a paste
+# event at all, and `tui/mod.rs`'s enable/disable calls and `app.rs`'s
+# `CEvent::Paste` handling would not even compile. Adds a Cargo feature on
+# an already-present dependency, not a new crate (C-04).
+crossterm = { workspace = true, features = ["bracketed-paste"] }
 serde_json = { workspace = true }
 # WI-121: `-v`/`-vv` install a `tracing_subscriber::fmt` subscriber to
 # stderr (`main.rs`) so the `tracing::{trace,info,warn,error}!` calls

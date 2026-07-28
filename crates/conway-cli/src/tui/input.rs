@@ -235,10 +235,11 @@ fn handle_normal_key(state: &mut AppState, key: KeyEvent) -> Action {
             // without snapping the viewport). No `Action` variant needed,
             // mirroring the `v` visibility-filter key's direct-mutation
             // pattern. Note: this RECLAIMS Ctrl-E from the T3 hint's
-            // advertised-but-never-wired "Ctrl-E submit" -- Enter was and
-            // remains the actual submit key (T8 will move submit to
-            // Alt/Shift-Enter); the hint segment is updated in
-            // `view/status.rs`.
+            // advertised-but-never-wired "Ctrl-E submit" -- unmodified
+            // Enter was and remains the actual submit key; T8 adds
+            // Alt-Enter/Shift-Enter for inserting a literal newline
+            // instead, which is a distinct binding, not a move of submit
+            // itself. The hint segment is updated in `view/status.rs`.
             KeyCode::Char('e') | KeyCode::Char('E') => {
                 state.toggle_all_tool_entries_expanded();
                 return Action::None;
@@ -248,6 +249,20 @@ fn handle_normal_key(state: &mut AppState, key: KeyEvent) -> Action {
     }
 
     match key.code {
+        // T8: Alt-Enter AND Shift-Enter both insert `\n` -- deliberately
+        // both, not just one: some terminals encode Shift-Enter as a plain
+        // Enter (no distinguishable modifier ever reaches crossterm), so
+        // relying on Shift alone would silently lose multi-line entry on
+        // those terminals, and Alt is the more universally-passed-through
+        // modifier. Checked before the empty-input/submit logic below so
+        // neither modifier combination can ever reach it.
+        KeyCode::Enter
+            if key.modifiers.contains(KeyModifiers::ALT)
+                || key.modifiers.contains(KeyModifiers::SHIFT) =>
+        {
+            insert_newline(state);
+            Action::None
+        }
         KeyCode::Enter => {
             if state.input.is_empty() {
                 // WI-140: with the agent panel open and nothing typed,
@@ -321,23 +336,30 @@ fn handle_normal_key(state: &mut AppState, key: KeyEvent) -> Action {
             }
         }
         // WI-130/bug 3 (01KYAN9XZ6E22NSQ3GS3726XW6): arrows drive the
-        // on-demand surfaces. The slash-command palette takes priority when
-        // it is showing (the user is composing a command); otherwise the
-        // arrows scroll the agent panel when it is open; otherwise -- the
-        // lowest-priority, most common case -- bare Up/Down do NOT scroll
-        // the transcript (T6: that line-scroll path is removed; T8 will
-        // reassign bare Up/Down to input history instead, which is why the
-        // status-line hint already advertises `↑↓ history`). Transcript
+        // on-demand surfaces, in priority order. The slash-command palette
+        // takes priority when it is showing (the user is composing a
+        // command); otherwise the arrows scroll the agent panel when it is
+        // open; otherwise -- T8 -- a multi-line draft's own interior lines
+        // take the key (so a recalled multi-line entry stays reachable
+        // line-by-line); otherwise -- the lowest-priority, most common case
+        // -- bare Up/Down recall input history (T8). Bare Up/Down do NOT
+        // scroll the transcript (T6 removed that path); Transcript
         // scrolling is `PageUp`/`PageDown` (full page) and `Home`/`End`
         // (jump to top/tail), below. Mouse wheel stays disabled by design
-        // (WI-127 clean-copy).
+        // (WI-127 clean-copy). Because the palette and agent-panel checks
+        // run FIRST and return before ever reaching `history_recall_prev`/
+        // `history_recall_next`, history recall can never fire while either
+        // surface owns the key -- by construction, not a separate flag.
         KeyCode::Up => {
             if palette_navigate(state, -1) {
                 Action::None
             } else if state.agent_view_open {
                 state.agent_scroll(-1);
                 Action::None
+            } else if move_cursor_line(state, -1) {
+                Action::None
             } else {
+                state.history_recall_prev();
                 Action::None
             }
         }
@@ -347,7 +369,10 @@ fn handle_normal_key(state: &mut AppState, key: KeyEvent) -> Action {
             } else if state.agent_view_open {
                 state.agent_scroll(1);
                 Action::None
+            } else if move_cursor_line(state, 1) {
+                Action::None
             } else {
+                state.history_recall_next();
                 Action::None
             }
         }
@@ -437,6 +462,86 @@ fn byte_index(s: &str, char_idx: usize) -> usize {
         .unwrap_or(s.len())
 }
 
+/// Inserts a literal `\n` at the cursor (T8: Alt-Enter/Shift-Enter) -- the
+/// same insert-at-cursor shape `KeyCode::Char(c)` uses in
+/// [`handle_normal_key`], just with a fixed `'\n'` instead of the typed
+/// char.
+fn insert_newline(state: &mut AppState) {
+    let idx = byte_index(&state.input, state.cursor);
+    state.input.insert(idx, '\n');
+    state.cursor += 1;
+    state.sync_palette_stem();
+}
+
+/// Inserts a whole pasted block as ONE edit at the cursor (T8: bracketed
+/// paste, `CEvent::Paste` -- wired from `app.rs`, not through
+/// [`handle_key`], since a paste is not a `KeyEvent`). Swallowed while any
+/// modal-bearing surface is showing (`Mode` other than `Normal`) -- the
+/// input line is inert there exactly as it is for ordinary typing (see
+/// `handle_ask_modal_key`/`handle_intent_confirm_key`'s own "input line is
+/// inert" docs).
+///
+/// One `String::insert_str` call, not a loop over `handle_key` per
+/// character: looping would (a) fire `sync_palette_stem`/history-adjacent
+/// side effects once per pasted character instead of once for the whole
+/// paste, and (b) treat a pasted `\n` as if the user had pressed a
+/// character key rather than as literal text, which is exactly the
+/// char-by-char-arrival bug this item exists to fix.
+pub fn handle_paste(state: &mut AppState, text: &str) {
+    if !matches!(state.mode, Mode::Normal) {
+        return;
+    }
+    if text.is_empty() {
+        return;
+    }
+    let idx = byte_index(&state.input, state.cursor);
+    state.input.insert_str(idx, text);
+    state.cursor += char_count(text);
+    state.sync_palette_stem();
+}
+
+/// `Up`/`Down` within a multi-line draft (T8): moves the cursor to the
+/// equivalent column on the line above (`delta < 0`) or below (`delta >
+/// 0`) the cursor's current line. Returns whether it moved the cursor --
+/// `false` (no mutation) when `input` is a single line, or when the cursor
+/// is already on the first line (`delta < 0`) or last line (`delta > 0`) in
+/// that direction, letting the caller's `Up`/`Down` fall through to history
+/// recall instead. This mirrors the `Home`/`End` empty-input precedent
+/// (`handle_normal_key`'s own doc on that pair): the key means one thing
+/// while there is buffer-internal work left to do, and something else
+/// (here, history) once you're at the boundary in that direction -- so a
+/// recalled multi-line entry stays reachable line-by-line via `Up`/`Down`,
+/// while `Up` at the first line and `Down` at the last line keep recalling
+/// history, exactly as they do for a single-line draft.
+fn move_cursor_line(state: &mut AppState, delta: isize) -> bool {
+    let lines: Vec<&str> = state.input.split('\n').collect();
+    if lines.len() < 2 {
+        return false;
+    }
+    let (line_idx, col) = state.cursor_line_col();
+    let target_line = if delta < 0 {
+        if line_idx == 0 {
+            return false;
+        }
+        line_idx - 1
+    } else {
+        if line_idx + 1 >= lines.len() {
+            return false;
+        }
+        line_idx + 1
+    };
+    let target_len = char_count(lines[target_line]);
+    let new_col = col.min(target_len);
+    // The char-index start of `target_line`: the sum of every earlier
+    // line's length plus one char for the `\n` that follows it.
+    let target_start: usize = lines[..target_line]
+        .iter()
+        .map(|l| char_count(l) + 1)
+        .sum();
+    state.cursor = target_start + new_col;
+    true
+}
+
 /// Deletes the word immediately before the cursor: trailing whitespace
 /// first, then the run of non-whitespace before that (conventional `Ctrl-W`
 /// behavior), moving the cursor to the start of what was deleted.
@@ -472,6 +577,63 @@ mod tests {
 
     fn ctrl_key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::CONTROL)
+    }
+
+    /// T8 (worker-flagged gap): moving between lines of DIFFERENT lengths.
+    /// The boundary cases were covered, but not the ordinary one -- a
+    /// cursor deep into a long line moving onto a shorter one has to clamp
+    /// to that line's end, and `target_start` has to account for each `\n`
+    /// it skips. Off-by-one here would silently land the cursor on the
+    /// wrong line, which is the classic multi-line editor bug.
+    #[test]
+    fn moving_between_lines_clamps_the_column_onto_a_shorter_line() {
+        let mut state = AppState::new(AgentId::new());
+        state.input = "a-very-long-first-line\nshort\nanother-long-line".to_string();
+
+        // Cursor at column 20 of line 0.
+        state.cursor = 20;
+        assert_eq!(state.cursor_line_col(), (0, 20));
+
+        // Down onto "short" (5 chars) must clamp to its end, not overshoot
+        // into the line after it.
+        assert!(move_cursor_line(&mut state, 1));
+        assert_eq!(
+            state.cursor_line_col(),
+            (1, 5),
+            "column must clamp to the shorter line's length"
+        );
+
+        // Down again onto the long line: the column is now 5 (clamped), and
+        // must stay 5 rather than restoring the original 20.
+        assert!(move_cursor_line(&mut state, 1));
+        assert_eq!(state.cursor_line_col(), (2, 5));
+
+        // And back up, verifying `target_start` skipped exactly the right
+        // number of newline chars on the way.
+        assert!(move_cursor_line(&mut state, -1));
+        assert_eq!(state.cursor_line_col(), (1, 5));
+        assert!(move_cursor_line(&mut state, -1));
+        assert_eq!(state.cursor_line_col(), (0, 5));
+    }
+
+    /// The cursor index must land on the actual character the (line, col)
+    /// pair names -- proving `target_start`'s newline accounting, not just
+    /// that the derived pair looks right.
+    #[test]
+    fn moving_between_lines_lands_on_the_right_absolute_char_index() {
+        let mut state = AppState::new(AgentId::new());
+        state.input = "abc\ndefgh\nij".to_string();
+
+        // Line 1 ("defgh") starts at index 4: "abc" (3) + "\n" (1).
+        state.cursor = 1; // line 0, col 1
+        assert!(move_cursor_line(&mut state, 1));
+        assert_eq!(state.cursor, 5, "line 1 start (4) + col 1");
+        assert_eq!(state.cursor_line_col(), (1, 1));
+
+        // Line 2 ("ij") starts at index 10: 3 + 1 + 5 + 1.
+        assert!(move_cursor_line(&mut state, 1));
+        assert_eq!(state.cursor, 11, "line 2 start (10) + col 1");
+        assert_eq!(state.cursor_line_col(), (2, 1));
     }
 
     #[test]
@@ -551,9 +713,12 @@ mod tests {
     }
 
     // ---- T6: bare Up/Down do NOT scroll the transcript any more (removed
-    // in favor of PageUp/PageDown + Home/End; T8 will reassign bare Up/Down
-    // to input history). bug 3 (01KYAN9XZ6E22NSQ3GS3726XW6)'s palette/panel
-    // priority is unchanged -- only the lowest-priority fallback changed. ----
+    // in favor of PageUp/PageDown + Home/End; T8 reassigns bare Up/Down to
+    // input history -- with an empty history, `history_recall_prev`/`_next`
+    // are no-ops, so these tests (empty history, no palette/panel active)
+    // still pin the "no transcript scroll" behavior unchanged). bug 3
+    // (01KYAN9XZ6E22NSQ3GS3726XW6)'s palette/panel priority is unchanged --
+    // only the lowest-priority fallback changed. ----
 
     // The small viewport `test_support`'s own PageUp test uses to force the
     // 30-line transcript below to overflow -- mirrored here so the Up/Down
@@ -1620,6 +1785,217 @@ mod tests {
         assert_eq!(
             handle_key(&mut state, ctrl_key(KeyCode::Char('d'))),
             Action::Quit
+        );
+    }
+
+    // ---- T8: multi-line input (Alt-Enter/Shift-Enter), paste, and
+    // Up/Down history recall vs. multi-line cursor movement ----
+
+    fn alt_enter() -> KeyEvent {
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT)
+    }
+
+    fn shift_enter() -> KeyEvent {
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT)
+    }
+
+    #[test]
+    fn alt_enter_inserts_a_newline_instead_of_submitting() {
+        let mut state = AppState::new(AgentId::new());
+        type_str(&mut state, "line one");
+        let action = handle_key(&mut state, alt_enter());
+        assert_eq!(action, Action::None, "Alt-Enter must not submit");
+        assert_eq!(state.input, "line one\n");
+        assert_eq!(state.cursor, "line one\n".chars().count());
+    }
+
+    #[test]
+    fn shift_enter_inserts_a_newline_instead_of_submitting() {
+        let mut state = AppState::new(AgentId::new());
+        type_str(&mut state, "line one");
+        let action = handle_key(&mut state, shift_enter());
+        assert_eq!(action, Action::None, "Shift-Enter must not submit");
+        assert_eq!(state.input, "line one\n");
+    }
+
+    #[test]
+    fn plain_enter_still_submits_a_multi_line_buffer() {
+        let mut state = AppState::new(AgentId::new());
+        type_str(&mut state, "line one");
+        handle_key(&mut state, alt_enter());
+        type_str(&mut state, "line two");
+
+        let action = handle_key(&mut state, key(KeyCode::Enter));
+
+        assert_eq!(action, Action::Submit("line one\nline two".to_string()));
+        assert!(state.input.is_empty());
+    }
+
+    #[test]
+    fn plain_enter_on_empty_input_is_unaffected_by_the_newline_binding() {
+        // Regression guard: the empty-input Enter arm (submit no-op / focus
+        // the agent panel's highlighted row) must still be reachable --
+        // adding the ALT/SHIFT guard arm above it must not shadow it.
+        let mut state = AppState::new(AgentId::new());
+        assert_eq!(handle_key(&mut state, key(KeyCode::Enter)), Action::None);
+        assert!(state.input.is_empty());
+    }
+
+    // ---- T8: bracketed paste ----
+
+    #[test]
+    fn paste_inserts_the_whole_string_as_one_edit_at_the_cursor() {
+        let mut state = AppState::new(AgentId::new());
+        state.input = "ab".to_string();
+        state.cursor = 1; // between 'a' and 'b'
+
+        handle_paste(&mut state, "PASTED\ntext");
+
+        assert_eq!(state.input, "aPASTED\ntextb");
+        assert_eq!(state.cursor, 1 + "PASTED\ntext".chars().count());
+    }
+
+    #[test]
+    fn paste_is_swallowed_while_a_modal_bearing_surface_is_open() {
+        let mut state = AppState::new(AgentId::new());
+        state.input = "before".to_string();
+        state.cursor = 6;
+        let (prompt, _rx) = crate::tui::gate::PendingPrompt::new_for_test(conway::PermissionRequest {
+            agent_id: AgentId::new(),
+            agent_path: Vec::new(),
+            tool: conway::ToolName::new("bash"),
+            category: conway::ToolCategory::Execute,
+            arguments: serde_json::json!({}),
+            rendered: "bash: ls".to_string(),
+            call_id: "tc_1".to_string(),
+        });
+        state.mode = Mode::AwaitingPermission(prompt);
+
+        handle_paste(&mut state, "sneaky");
+
+        assert_eq!(
+            state.input, "before",
+            "a paste while the input line is inert must not mutate it"
+        );
+    }
+
+    #[test]
+    fn paste_of_an_empty_string_is_a_no_op() {
+        let mut state = AppState::new(AgentId::new());
+        state.input = "x".to_string();
+        state.cursor = 1;
+        handle_paste(&mut state, "");
+        assert_eq!(state.input, "x");
+        assert_eq!(state.cursor, 1);
+    }
+
+    // ---- T8: Up/Down disambiguation between multi-line cursor movement
+    // and history recall ----
+
+    #[test]
+    fn up_within_a_multi_line_draft_moves_the_cursor_not_history() {
+        let mut state = AppState::new(AgentId::new());
+        state.push_history("an old prompt".to_string());
+        state.input = "first\nsecond".to_string();
+        state.cursor = char_count(&state.input); // end of "second"
+
+        let action = handle_key(&mut state, key(KeyCode::Up));
+
+        assert_eq!(action, Action::None);
+        assert_eq!(
+            state.input, "first\nsecond",
+            "Up on an interior line must move the cursor, not recall history"
+        );
+        assert_eq!(state.cursor_line_col(), (0, 5));
+    }
+
+    #[test]
+    fn up_on_the_first_line_of_a_multi_line_draft_falls_through_to_history() {
+        let mut state = AppState::new(AgentId::new());
+        state.push_history("recalled".to_string());
+        state.input = "first\nsecond".to_string();
+        state.cursor = 2; // on line 0, column 2 -- already the top line
+
+        handle_key(&mut state, key(KeyCode::Up));
+
+        assert_eq!(
+            state.input, "recalled",
+            "Up on the FIRST line must fall through to history recall"
+        );
+    }
+
+    #[test]
+    fn down_on_the_last_line_of_a_multi_line_draft_falls_through_to_history() {
+        let mut state = AppState::new(AgentId::new());
+        state.push_history("older".to_string());
+        state.push_history("newest".to_string());
+        state.input = "first\nsecond".to_string();
+        state.cursor = char_count(&state.input); // last line
+
+        // First Up recalls "newest" (single line, no interior lines), then
+        // Down should walk back to the in-progress draft.
+        state.history_recall_prev();
+        assert_eq!(state.input, "newest");
+        handle_key(&mut state, key(KeyCode::Down));
+        assert_eq!(
+            state.input, "first\nsecond",
+            "Down past the newest history entry restores the multi-line draft"
+        );
+    }
+
+    #[test]
+    fn bare_up_down_recall_history_when_no_palette_panel_or_multiline_draft() {
+        let mut state = AppState::new(AgentId::new());
+        state.push_history("remembered".to_string());
+
+        let action = handle_key(&mut state, key(KeyCode::Up));
+
+        assert_eq!(action, Action::None);
+        assert_eq!(state.input, "remembered");
+    }
+
+    #[test]
+    fn history_recall_does_not_fire_while_the_palette_is_open() {
+        let mut state = AppState::new(AgentId::new());
+        state.push_history("should not appear".to_string());
+        type_str(&mut state, "/a"); // opens the palette (matches /ask, /agents)
+
+        handle_key(&mut state, key(KeyCode::Up));
+
+        assert_eq!(
+            state.input, "/agents",
+            "with the palette open, Up must navigate the palette, not recall history"
+        );
+    }
+
+    #[test]
+    fn history_recall_does_not_fire_while_the_agent_panel_is_focused() {
+        use crate::tui::state::{NodeStatus, TreeNode};
+
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        state.push_history("should not appear".to_string());
+        let child = AgentId::new();
+        state.tree.nodes.push(TreeNode {
+            agent_id: child,
+            parent: Some(root),
+            agent_def: Some("reviewer".to_string()),
+            status: NodeStatus::Running,
+            kind: None,
+            inherited_upto: None,
+            ephemeral: false,
+        });
+        state.agent_view_open = true;
+
+        handle_key(&mut state, key(KeyCode::Down));
+
+        assert_eq!(
+            state.agent_selected, 1,
+            "with the panel open, Down must move the panel selection, not recall history"
+        );
+        assert!(
+            state.input.is_empty(),
+            "history must not have been recalled into the input line"
         );
     }
 }

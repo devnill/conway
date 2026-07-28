@@ -415,6 +415,17 @@ pub struct TuiSection {
     /// env.
     #[serde(default)]
     pub tool_preview_lines: Option<u32>,
+    /// `[tui.history_size]` (T8): the cap on the persisted input-history
+    /// FIFO (`~/.conway/history`, or `$XDG_CONFIG_HOME/conway/history` when
+    /// set -- see `conway::config::discovery::history_file_path`). Loaded at
+    /// startup and appended to on every submit; oldest entries are evicted
+    /// once the cap is exceeded. `None` (the default) means the TUI's
+    /// built-in default of 500. The TUI clamps a loaded value to
+    /// `1..=100_000` with a fallback to 500 on a missing/out-of-range/bad
+    /// value (P-10: config is untrusted input, never a panic).
+    /// `CONWAY_TUI__HISTORY_SIZE=1000` overrides via env.
+    #[serde(default)]
+    pub history_size: Option<u32>,
 }
 
 /// `[tui.status_line]`: declarative status-line field order + visibility

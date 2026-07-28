@@ -41,9 +41,33 @@ use ratatui::Frame;
 use super::state::{AppState, AskModal, IntentConfirm, Mode};
 pub use theme::Theme;
 
-const INPUT_HEIGHT: u16 = 3;
+/// The input box's floor height: one row of text plus the two border rows
+/// (top/bottom) -- the pre-T8 fixed size, still the minimum a single-line
+/// draft ever occupies. [`input_height`] never returns less than this.
+const MIN_INPUT_HEIGHT: u16 = 3;
 const STATUS_HEIGHT: u16 = 1;
 const AGENT_PANEL_HEIGHT: u16 = 8;
+
+/// T8: the input box's height grows with its own content -- one row per
+/// line in `state.input` (`\n`-separated, so Alt/Shift-Enter's inserted
+/// newlines each earn a row), plus the two border rows -- capped at
+/// `area.height / 3` (item spec: "cap growth at `min(content_lines + 2,
+/// area.height / 3)`") so a very long paste or multi-line draft can never
+/// crowd the transcript/status out entirely. The cap itself is floored at
+/// [`MIN_INPUT_HEIGHT`] so a tiny terminal (`area.height / 3 < 3`) never
+/// shrinks the input box below one visible line of text.
+///
+/// [`layout`]'s own chrome math (and therefore the header-overflow
+/// decision, `show_header` below) reads THIS value, not a fixed constant --
+/// growing the input box shrinks the transcript's available height exactly
+/// where that overflow test measures it, so the two can never disagree
+/// about how many rows the transcript actually has.
+fn input_height(state: &AppState, area_height: u16) -> u16 {
+    let content_lines = state.input.split('\n').count().max(1) as u16;
+    let desired = content_lines.saturating_add(2);
+    let cap = (area_height / 3).max(MIN_INPUT_HEIGHT);
+    desired.clamp(MIN_INPUT_HEIGHT, cap)
+}
 
 pub fn draw(state: &AppState, frame: &mut Frame, theme: &Theme) {
     let area = frame.area();
@@ -121,13 +145,22 @@ struct Areas {
 }
 
 fn layout(state: &AppState, area: Rect) -> Areas {
+    // T8: the input box's height is content-dependent (grows with
+    // multi-line drafts, capped at `area.height / 3`) -- computed once here
+    // so `show_agents`'s size check, the header-overflow chrome math below,
+    // and the constraint list itself all agree on the SAME value. It
+    // depends only on `state.input`/`area.height`, neither of which this
+    // function itself derives, so (unlike `show_header` below) there is no
+    // feedback loop to worry about.
+    let input_height = input_height(state, area.height);
+
     // B5: while the /ask modal owns the screen, the /agents panel is NOT
     // visible (user decision, binding) even if it was open when the modal
     // appeared -- `state.agent_view_open` itself is left untouched, so the
     // panel comes back exactly as it was once a fate closes the modal.
     let show_agents = state.agent_view_open
         && !matches!(state.mode, Mode::AskModal(_) | Mode::IntentConfirm(_))
-        && area.height > INPUT_HEIGHT + STATUS_HEIGHT + 3;
+        && area.height > input_height + STATUS_HEIGHT + 3;
 
     // T6: reserve the header row only while the transcript actually
     // overflows. Deciding that needs a wrapped-line count, which needs a
@@ -144,7 +177,7 @@ fn layout(state: &AppState, area: Rect) -> Areas {
     // reserved row changes the answer. `max_scroll` (and therefore the
     // scroll clamp and the footer's count) is always computed from the
     // FINAL, header-reserved area, so nothing downstream is affected.
-    let chrome = INPUT_HEIGHT
+    let chrome = input_height
         + STATUS_HEIGHT
         + if show_agents {
             AGENT_PANEL_HEIGHT.min(area.height / 3)
@@ -164,7 +197,7 @@ fn layout(state: &AppState, area: Rect) -> Areas {
     if show_agents {
         constraints.push(Constraint::Length(AGENT_PANEL_HEIGHT.min(area.height / 3)));
     }
-    constraints.push(Constraint::Length(INPUT_HEIGHT));
+    constraints.push(Constraint::Length(input_height));
     constraints.push(Constraint::Length(STATUS_HEIGHT));
 
     let rows = Layout::default()
@@ -911,6 +944,53 @@ mod tests {
             "None agent_def must render as (inherit): {text}"
         );
         assert!(text.contains("[enter] confirm  [e] edit  [esc] manual"));
+    }
+
+    // ---- T8: dynamic input-box height ----
+
+    #[test]
+    fn single_line_input_keeps_the_pre_t8_fixed_height() {
+        let state = AppState::new(AgentId::new());
+        assert_eq!(input_height(&state, 24), MIN_INPUT_HEIGHT);
+    }
+
+    #[test]
+    fn input_height_grows_by_one_row_per_extra_line() {
+        let mut state = AppState::new(AgentId::new());
+        state.input = "line one\nline two\nline three".to_string();
+        // 3 content lines + 2 border rows, well under the height/3 cap at a
+        // normal terminal size.
+        assert_eq!(input_height(&state, 24), 5);
+    }
+
+    #[test]
+    fn input_height_is_capped_at_a_third_of_the_terminal_height() {
+        let mut state = AppState::new(AgentId::new());
+        state.input = "l\n".repeat(30); // 31 content lines -- way over any cap
+        let area_height = 24;
+        assert_eq!(input_height(&state, area_height), area_height / 3);
+    }
+
+    #[test]
+    fn growing_the_input_box_shrinks_the_transcript_area_by_the_same_amount() {
+        let root = AgentId::new();
+        let mut single_line = AppState::new(root);
+        single_line.input = "one line".to_string();
+        let mut multi_line = AppState::new(root);
+        multi_line.input = "one\ntwo\nthree".to_string();
+
+        let area = Rect::new(0, 0, 80, 24);
+        let single_areas = layout(&single_line, area);
+        let multi_areas = layout(&multi_line, area);
+
+        assert_eq!(single_areas.input.height, MIN_INPUT_HEIGHT);
+        assert_eq!(multi_areas.input.height, 5);
+        assert_eq!(
+            single_areas.transcript.height - multi_areas.transcript.height,
+            multi_areas.input.height - single_areas.input.height,
+            "every extra row the input box claims must come straight out of \
+             the transcript area, not somewhere else in the chrome"
+        );
     }
 
     #[test]

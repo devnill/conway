@@ -462,8 +462,10 @@ and calls `AppState::toggle_all_tool_entries_expanded` directly,
 mirroring the `v` visibility-filter key's direct-mutation pattern (no
 `Action` variant, since the toggle has no facade side effect). The
 status-line `hint` field advertises `Ctrl-E expand` (reconciling the
-earlier `Ctrl-E submit` hint — Enter was and remains the actual submit
-key; T8 will move submit to Alt/Shift-Enter).
+earlier `Ctrl-E submit` hint — unmodified Enter was and remains the actual
+submit key; T8 adds `Alt-Enter`/`Shift-Enter` for inserting a literal
+newline instead, a distinct binding from submit itself — see "Input
+ergonomics" below).
 
 **Configuration** — `[tui.tool_preview_lines]` is an optional integer
 (default 3, clamped to `1..=200` with a fallback to 3 on a
@@ -594,6 +596,111 @@ in-app equivalents, and they cost you nothing.
 
 New theme slots: `header` (reversed) and `scroll_footer` (dim), both
 configurable under `[tui.theme]`.
+
+### Input ergonomics: multi-line, history, paste, wrap-fix (T8)
+
+The input box (`view/input_box.rs`) used to be single-line-only (`Enter`
+always submitted; a literal `\n` could never land in it), had no memory of
+what you'd typed before, silently mangled a pasted block into a flood of
+individual keystrokes, and clamped a long line's cursor to the box's own
+width instead of scrolling — the cursor visually froze at the right edge
+while the text it was supposedly pointing at kept extending off-screen,
+invisibly. T8 fixes all four.
+
+**Multi-line: `Alt-Enter` *and* `Shift-Enter`.** Either inserts a literal
+`\n` at the cursor; unmodified `Enter` still submits. Both are bound,
+deliberately — some terminals encode Shift-Enter indistinguishably from a
+plain Enter, so relying on Shift alone would silently lose multi-line entry
+on those terminals. The input box's own height grows with the draft: one
+row per `\n`-separated line plus the two border rows, capped at
+`area.height / 3` so a long paste or draft can never crowd the
+transcript/status out entirely. `view/mod.rs::layout`'s chrome math (which
+also decides whether the sticky header from T6 gets a reserved row) reads
+this same grown height, so the two can never disagree about how much room
+the transcript actually has.
+
+**History: `Up`/`Down`, persisted.** Every submitted line (a prompt or a
+slash command) is pushed onto a bounded FIFO
+(`[tui.history_size]`, default 500 — see below), oldest entries evicted
+once the cap is exceeded. `Up` recalls the previous (older) entry into the
+input line; `Down` recalls the next (newer) one; `Down` past the newest
+entry restores whatever unsent draft you had been composing before the
+first `Up`, rather than leaving the input blank. A recalled entry is
+ordinary `input`/`cursor` state — it is immediately editable inline, with
+no separate "recalled" mode to escape first, and re-submitting it (`Enter`)
+pushes the edited text as a brand-new history entry.
+
+`Up`/`Down` are contended keys, resolved in a fixed priority order in
+`input.rs::handle_normal_key`:
+
+1. the `/` command palette, if it is showing (arrow-select a candidate
+   command);
+2. the on-demand `/agents` panel, if it is open (move the row selection);
+3. a multi-line draft's own interior lines — `Up` moves the cursor to the
+   line above (unless already on the first line), `Down` to the line below
+   (unless already on the last line) — so a recalled or freshly-typed
+   multi-line entry stays reachable line-by-line;
+4. history recall (the lowest-priority fallback).
+
+Because 1–3 all return before ever reaching step 4, history recall cannot
+fire while the palette or the panel owns the key, and `Up` on the first
+line / `Down` on the last line of a single- or multi-line draft always
+falls through to history — by construction, not a separate guard flag.
+
+History is **persisted** to `~/.conway/history` (or
+`$XDG_CONFIG_HOME/conway/history` when that's set — the same directory
+`settings.json` itself resolves to, just a different filename), loaded once
+at startup and appended to after every submit. It deliberately lives
+alongside the *global* config, not the project's own `.conway/` directory —
+history follows the user across every project, not the checkout. Entries
+are stored one JSON-string per line (not bare newline-delimited text),
+since a submitted entry can itself contain embedded `\n` from T8's own
+multi-line input — a bare-newline format could not round-trip that.
+Writes go through a `.tmp`-sibling-then-`rename` (the same atomic-write
+shape `conway-session`'s session index uses), so a crash mid-write can
+never leave a half-written history file in place. The history file is
+untrusted input exactly like `settings.json` (P-10): a missing, unreadable,
+or corrupt file degrades to an empty history — never a panic, never a
+startup failure — and a corrupt individual line is skipped rather than
+discarding the whole file; a failed history *write* is swallowed and never
+fails the submit that triggered it.
+
+**Configuration** — `[tui.history_size]` is an optional integer (default
+500, clamped to `1..=100_000` with a fallback to 500 on a
+missing/out-of-range/bad value — P-10). `CONWAY_TUI__HISTORY_SIZE=1000`
+overrides via env.
+
+```toml
+[tui]
+history_size = 1000
+```
+
+**Bracketed paste.** Crossterm only emits `Event::Paste` when bracketed
+paste mode is enabled on the terminal — `tui/mod.rs`'s terminal setup now
+does that (`EnableBracketedPaste`, alongside entering the alternate
+screen), and `restore_terminal` disables it again (`DisableBracketedPaste`)
+on every exit path, the same best-effort discipline already used for raw
+mode and the alternate screen. `app.rs`'s run loop inserts the whole pasted
+string as **one edit** at the cursor (`input::handle_paste`) — not a loop
+that re-enters the key handler once per character, which is what used to
+happen before bracketed paste was enabled at all (the terminal fell back to
+sending a paste as an ordinary flood of individual keystrokes, each one
+separately mutating `AppState`/the palette/etc.).
+
+**The cursor-clamp fix.** The input box's rendered cursor column used to be
+clamped to `area.width - 2` regardless of the draft's true length — for a
+line longer than the box, the cursor visually froze at the right edge while
+the actual text kept extending invisibly off-screen. Now the box's cursor
+line scrolls horizontally: whichever line currently holds the cursor is
+rendered as a window ending at the cursor's true position, so the cursor is
+always genuinely at the character it claims to be at. A multi-line draft
+taller than the box similarly scrolls vertically to keep the cursor's own
+line on screen. Every OTHER line (not the cursor's) renders from its own
+start and is simply clipped if it overflows the width — only the line
+you're actively editing needs to track the cursor.
+
+**Out of scope** (explicitly, per the item spec): fuzzy autocomplete,
+arg-parameter hints, undo/redo, and vim/emacs editing modes.
 
 ### The `/` command palette, with arrow-select
 
