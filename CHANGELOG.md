@@ -47,12 +47,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   self-hosted shim) could not be configured, and the resulting error
   misdirected the user to `console.anthropic.com` — the wrong vendor
   entirely. Whether a key works is the provider's answer to give, and its
-  auth error is more accurate than any prefix match conway could perform.
+  auth error is more accurate than any prefix match Conway could perform.
 
   **Unchanged:** an empty or whitespace-only `api_key` is still rejected
   (`ConfigError::MissingApiKey`), and an `api_key_env` naming an unset
   variable is still a hard error that names the variable. Those describe a
-  missing credential, which conway can identify precisely, rather than
+  missing credential, which Conway can identify precisely, rather than
   judging one it has.
 
 ### Added

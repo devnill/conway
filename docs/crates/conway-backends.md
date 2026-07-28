@@ -41,11 +41,11 @@ it, including endpoints that live under a path prefix rather than at the
 host root: the prefix is preserved, so `https://host/coding/` resolves to
 `https://host/coding/v1/messages` (with or without the trailing slash).
 
-conway does not inspect the shape of an API key. Whether a credential is a
+Conway does not inspect the shape of an API key. Whether a credential is a
 metered API key, a coding-plan subscription key, or something a self-hosted
-shim issues is the provider's business, not conway's — an unusable key
+shim issues is the provider's business, not Conway's — an unusable key
 surfaces as that provider's own auth error, which says more than any
-prefix check here could. The only key-related failures conway raises are
+prefix check here could. The only key-related failures Conway raises are
 the ones it can describe precisely: an empty key, or an `api_key_env`
 naming a variable that is not set.
 
@@ -77,7 +77,7 @@ backend in the same config — route to either by name.
 `api_key_env` names the variable holding the key rather than the key
 itself, so the credential never lands in a config file. Get the key from
 the Kimi Code console and export it as `KIMI_API_KEY`. If that variable is
-unset at startup, conway fails with an error naming it.
+unset at startup, Conway fails with an error naming it.
 
 Two context variants ship in the bundled model metadata. The window is
 selected by the model id itself, which is why they are separate entries:
@@ -93,9 +93,9 @@ by default). Override either in a `[models.metadata_path]` file if the
 provider's limits change.
 
 A caveat worth stating plainly: third-party Anthropic-compatible shims do
-not always implement everything conway sends. Tool-use and thinking
+not always implement everything Conway sends. Tool-use and thinking
 behaviors in particular differ between providers. That is a provider-side
-limitation — conway reports what it gets back rather than papering over
+limitation — Conway reports what it gets back rather than papering over
 the difference.
 
 ## Segment to wire message mapping
