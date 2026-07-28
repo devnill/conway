@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **TUI: palette audit — what each color means, and a few defaults tighten
+  up (V7).** The request was "a little more visual polish," which usually
+  means "more color" — the audit went the other way and found the palette
+  was already mostly restrained; the real gaps were a couple of colors
+  spent on things that don't carry meaning, and one real safety signal that
+  had none.
+
+  **Defaults change appearance** for three reasons, each narrow:
+
+  - `timestamp`, `reasoning`, and `agent_cancelled` move off a fixed
+    `Color::DarkGray` to a relative `Modifier::DIM`. `DarkGray` is an
+    absolute dark color, and a dark-background terminal's own "bright
+    black" frequently renders it nearly indistinguishable from the
+    background; `DIM` asks the terminal to dim its *own* foreground
+    instead, which stays legible on both a dark and a light scheme.
+  - `help_key` (the `/help` overlay's key/chord column) drops its green —
+    green already means "success" (`tool_done`/`agent_finished`) elsewhere
+    in the palette, and reusing it for a plain column split blurred that
+    meaning for no reason. It stays bold.
+  - The status line's `AUTO-ALLOW` indicator — every tool call
+    auto-approved with no prompt, a genuine safety-relevant state — now
+    renders with `theme.fatal_error` (red + bold) instead of the plain
+    `theme.emphasized` (bold, no color) it shared with the much lower-risk
+    `plan` mode. `plan` keeps the unstyled-but-bold treatment; it only ever
+    restricts what runs.
+
+  If you had pinned any of these via `[tui.theme.timestamp]`,
+  `[tui.theme.reasoning]`, `[tui.theme.agent_cancelled]`, or
+  `[tui.theme.help_key]`, your override still applies unchanged — only the
+  built-in defaults moved.
+
+  **Removed:** the `agent_marker` theme slot (and its `[tui.theme.
+  agent_marker]` config key) never had a call site anywhere in `view/*.rs`
+  — a key a user could set that would silently do nothing, the same
+  failure V6 already ruled out for `spinner_b`/`spinner_c`. It is now an
+  unrecognized key rather than a no-op; if you had it set, remove it. No
+  functional behavior changes either way, since it never rendered anything.
+
+  **Considered and not done:** collapsing the `tool_*`/`agent_*` status-tag
+  families (five duplicated color pairs) into one semantic set. The
+  duplication is real but not a rendered-UI problem — the two families
+  never draw side by side — and collapsing would have meant either breaking
+  configs that already set one of the ten names or a real aliasing
+  precedence risk, for a problem that is presently invisible on screen. See
+  `docs/crates/conway-cli.md`'s new "Palette rationale (V7)" section for
+  the full reasoning, the color-meaning rules, and what a future slot
+  addition should follow.
+
 ### Added
 
 - **Permission modes and pattern grants.** Approving every command

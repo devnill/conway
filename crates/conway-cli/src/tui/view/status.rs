@@ -44,7 +44,10 @@
 //!
 //! The whole line uses `theme.status_mode` (reversed) as its base style;
 //! the activity spinner/phrase pulse and the dim `hint` field overlay
-//! their own styles on top.
+//! their own styles on top. V7: the non-default permission-mode label
+//! overlays `theme.emphasized` (bold, `plan`) or `theme.fatal_error` (red +
+//! bold, `AUTO-ALLOW`) -- see [`render_field`]'s `Mode` arm for why the two
+//! no longer share a style.
 
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
@@ -178,9 +181,25 @@ fn render_field(
             // case every frame would train the operator to ignore the
             // field, which is exactly the wrong reflex for the one case
             // that matters. `plan` and `AUTO-ALLOW` always show.
+            //
+            // V7: the two non-default modes are not equally risky, so they
+            // no longer share a style. `plan` only ever RESTRICTS what runs
+            // (it denies mutating categories outright) -- `theme.emphasized`
+            // (bold, no color) is enough to flag "not the default" without
+            // implying danger. `AUTO-ALLOW` is the opposite: every call is
+            // approved with no prompt, and `PermissionMode::label`'s own doc
+            // names the exact failure this must avoid -- an operator who has
+            // forgotten they are in it. That is a real safety signal, so it
+            // gets `theme.fatal_error` (red + bold), the palette's one
+            // highest-alert accent (see `view/theme.rs`'s module doc).
             let ui = mode_label(&state.mode);
             match state.permission_mode {
                 PermissionMode::Prompt => vec![Span::raw(ui)],
+                PermissionMode::AutoAllow => vec![
+                    Span::raw(ui),
+                    Span::raw(" · "),
+                    Span::styled(state.permission_mode.label().to_string(), theme.fatal_error),
+                ],
                 other => vec![
                     Span::raw(ui),
                     Span::raw(" · "),
@@ -911,6 +930,42 @@ mod tests {
             status_line(&state).contains("plan"),
             "plan mode must be visible: {}",
             status_line(&state)
+        );
+    }
+
+    /// V7: AUTO-ALLOW is the one status the palette gives real color to
+    /// (`theme.fatal_error`, red + bold) -- it is a genuine safety signal,
+    /// not decoration. `plan` merely restricts what runs, so it keeps the
+    /// plain `theme.emphasized` (bold, no color) treatment.
+    #[test]
+    fn auto_allow_renders_with_fatal_error_style_plan_does_not() {
+        let theme = Theme::default();
+        let mut state = AppState::new(AgentId::new());
+
+        state.permission_mode = PermissionMode::AutoAllow;
+        let spans = status_line_spans(&state, &theme).spans;
+        let auto_allow_span = spans
+            .iter()
+            .find(|s| s.content.as_ref() == "AUTO-ALLOW")
+            .expect("AUTO-ALLOW span must be present");
+        assert_eq!(
+            auto_allow_span.style, theme.fatal_error,
+            "AUTO-ALLOW must render with the palette's highest-alert accent"
+        );
+
+        state.permission_mode = PermissionMode::Plan;
+        let spans = status_line_spans(&state, &theme).spans;
+        let plan_span = spans
+            .iter()
+            .find(|s| s.content.as_ref() == "plan")
+            .expect("plan span must be present");
+        assert_eq!(
+            plan_span.style, theme.emphasized,
+            "plan mode is a restriction, not a danger -- it keeps the plain bold treatment"
+        );
+        assert_ne!(
+            plan_span.style, theme.fatal_error,
+            "plan must not share AUTO-ALLOW's alert color"
         );
     }
 

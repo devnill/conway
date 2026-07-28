@@ -248,6 +248,114 @@ fg = "#ff8800"
 `reversed`, `slow_blink`/`slow-blink`, `rapid_blink`/`rapid-blink`,
 `hidden`, `crossed_out`/`crossed-out`.
 
+#### Palette rationale (V7): what each color MEANS
+
+T1 built the named-style table; every default in it is a **named ANSI
+color** (`Color::Yellow`, never `Color::Rgb`), deliberately — a named color
+resolves through the user's own terminal palette, so Conway sits inside
+whatever scheme they already run rather than fighting it. `Color::Rgb` (hex)
+parsing exists only for a user's own `[tui.theme]` override, never a
+built-in default.
+
+V7 audited that table for the failure mode a "more polish" request usually
+produces — adding color — and found the opposite problem in a few spots:
+color spent on things that don't mean anything, and one color-worthy meaning
+(AUTO-ALLOW) that had none. The rule set it settled on, so the next slot
+added here has something to follow instead of a nearest-neighbor guess:
+
+- **Red is failure or active danger, never decoration.** `error`,
+  `tool_failed`, `agent_failed`, `border_danger` are all red. `fatal_error`
+  (red + bold) is the palette's one *highest*-alert accent — V7 gave it a
+  real call site: the status line's `AUTO-ALLOW` indicator (every tool call
+  auto-approved with no prompt is a genuine safety-relevant state, previously
+  rendered with no color at all via `theme.emphasized`). It stays reserved
+  for a genuinely fatal runtime error too, once `Event::Error { fatal: true }`
+  is wired to carry a style through `Entry::Notice` (not done by V7 — see
+  Deferred, below).
+- **Yellow is in-progress.** `tool_running`, `agent_running`, `spinner`,
+  `border_warning` (the `/ask` modal is "waiting on you," in-progress from
+  the operator's side).
+- **Magenta is blocked-on-you.** `tool_awaiting`, `agent_awaiting` — distinct
+  from yellow (moving on its own) and red (something went wrong): this is
+  "stopped, needs a decision."
+- **Green is success, and only success.** `tool_done`, `agent_finished`. V7
+  stopped reusing green for `help_key` (a plain layout column, no status at
+  all — see "chrome," below) so a green glyph anywhere in the TUI means
+  exactly one thing.
+- **Gray/dim is secondary, and is never a fixed dark color.**
+  `tool_proposed`/`agent_starting` (pending — Gray, a lighter, more legible
+  gray on both dark and light backgrounds than DarkGray) mark "not yet
+  meaningful." Everything that means "secondary annotation" —
+  `dim`, `timestamp`, `agent_cancelled`, `reasoning`, `status_dim`,
+  `scroll_footer` — renders via `Modifier::DIM` rather than a fixed
+  `Color::DarkGray`. This is a V7 correction: `Color::DarkGray` is a
+  *fixed* dark color, and a dark-background terminal's own "bright black"
+  frequently renders it nearly indistinguishable from the background —
+  `timestamp`, `reasoning`, and `agent_cancelled` all defaulted to
+  `Color::DarkGray` before this item and are the ones V7 checked and moved.
+  `Modifier::DIM` instead asks the terminal to dim *its own* foreground
+  color relative to normal — legible by construction on both a dark and a
+  light scheme, since it is never an absolute color guess.
+- **Conversation text is never colored.** `user` and `assistant` stay
+  unstyled — the reading experience is plain text, the way `claude code`/
+  `opencode`-quality TUIs keep the actual conversation quiet so the
+  status/tool chrome around it can carry meaning without competing.
+  `assistant_marker` (magenta + bold) is the one deliberate exception: it
+  names *which model* answered, provenance metadata sitting next to the
+  text rather than the text itself, not an emphasis choice.
+- **Chrome that carries no state is bold or dim, never colored.** `focused`,
+  `emphasized`, and (as of V7) `help_key` are bold-only. `help_key` used to
+  be green + bold, distinguishing the `/help` overlay's key/chord column
+  from its plain description column — a real need, but green already means
+  "success" elsewhere, and reusing it for a column split blurred that
+  meaning for zero benefit (bold alone still reads as a distinct column).
+- **Modal borders are colored by how urgent the decision behind them is**:
+  `border_danger` (red — approve/refuse a tool call), `border_warning`
+  (yellow — the `/ask` modal), `border_accent` (cyan — the NL intent-confirm
+  card), `help_border` (blue — `/help`, the one modal with no decision at
+  all, deliberately the coolest, least urgent hue of the four).
+
+**Removed: `agent_marker`.** It had no call site anywhere in `view/*.rs`
+from the day T4 defined it through V7's audit (grep-verified) — a config key
+a user could set that would silently do nothing, the same failure mode V6
+already ruled out for `spinner_b`/`spinner_c`. `[tui.theme.agent_marker]` is
+now an unrecognized key (`deny_unknown_fields`) rather than a no-op; if you
+had it set, remove it. No alias: an override that never had any visible
+effect cannot regress by being rejected instead.
+
+**Considered and NOT done: collapsing `tool_*`/`agent_*` into one semantic
+set.** The ten tag slots share five default colors two-for-two (`tool_
+proposed`/`agent_starting` both Gray, `tool_running`/`agent_running` both
+Yellow, `tool_awaiting`/`agent_awaiting` both Magenta, `tool_done`/`agent_
+finished` both Green, `tool_failed`/`agent_failed` both Red — `agent_
+cancelled` has no tool-side counterpart, so it stays its own slot regardless).
+That duplication is real, but it is a maintenance/documentation fact, not a
+rendered-UI problem: the two families draw in different places (tool-call
+tags vs. agent-lifecycle tags), never side by side as a pair a user could
+notice disagreeing, and a user overriding one axis independently of the
+other (recoloring agent status without touching tool status, say, for
+scanability when both appear interleaved in one stream) is a real,
+if uncommon, use this rationale doc is exactly what makes safe: the meaning
+each slot carries is now written down, so an override that diverges from
+this default is a legible, deliberate choice, not drift. Collapsing would
+have required either breaking any config that already sets one of the ten
+names (schema `deny_unknown_fields`) or a genuine aliasing layer with real
+precedence-ordering risk — for a problem that is presently invisible on
+screen. Left as-is; this doc section is the fix for the "ten slots, five
+meanings" finding instead of a schema change.
+
+**Deferred: a fatal `Entry::Notice` still renders in `theme.notice`
+(cyan).** `Event::Error { error, fatal }` already distinguishes a fatal
+error in its *text* (`"fatal error: …"` vs. `"error: …"`) but both map to
+the same `Entry::Notice { text }` variant, which always renders cyan — the
+same color as an ordinary informational notice like `"backend degraded"`.
+`theme.fatal_error` (red + bold) exists and is now wired up (see the AUTO-
+ALLOW note above) but this second call site is not: giving `Entry::Notice`
+a `fatal: bool` so the two render distinctly touches roughly four dozen
+existing construction/match sites in `tui/state.rs` and its tests, which is
+real state-machine work, not a color-table pass — filed as a follow-up
+rather than done under this item's scope.
+
 **Named styles** (each defaults to the pre-theme inline style; new accent
 styles have no pre-theme call site and are defined for later v0.3.0 items
 to consume):
@@ -257,27 +365,26 @@ to consume):
 | `user` | bold, no fg | transcript `you>` prefix |
 | `assistant` | unstyled | transcript assistant text body |
 | `assistant_marker` | magenta + bold | (T4) assistant `[modelname]>` speaker marker |
-| `reasoning` | dark_gray + italic | (T4) `Entry::Reasoning` trace body + `thinking>` prefix |
-| `timestamp` | dark_gray | (T4) `HH:MM ` per-entry timestamp prefix (`/settings` -- "show timestamps") |
+| `reasoning` | dim + italic | (T4) `Entry::Reasoning` trace body + `thinking>` prefix (V7: was dark_gray) |
+| `timestamp` | dim | (T4) `HH:MM ` per-entry timestamp prefix (`/settings` -- "show timestamps") (V7: was dark_gray) |
 | `tool_proposed` | gray | tool-call tag, `Proposed` |
 | `tool_awaiting` | magenta | tool-call tag, `AwaitingPermission` |
 | `tool_running` | yellow | tool-call tag, `Running` |
 | `tool_done` | green | tool-call tag, `Finished` (ok) |
 | `tool_failed` | red | tool-call tag, `Finished` (error) |
-| `agent_marker` | blue + bold | *(NEW, T4 will consume)* generic agent marker |
 | `agent_starting` | gray | agent-tree/transcript marker, `Starting` |
 | `agent_running` | yellow | agent-tree/transcript marker, `Running` |
 | `agent_awaiting` | magenta | agent-tree/transcript marker, `AwaitingPermission` |
 | `agent_finished` | green | agent-tree/transcript marker, `Finished` |
 | `agent_failed` | red | agent-tree/transcript marker, `Failed` |
-| `agent_cancelled` | dark_gray | agent-tree/transcript marker, `Cancelled` |
+| `agent_cancelled` | dim | agent-tree/transcript marker, `Cancelled` (V7: was dark_gray) |
 | `notice` | cyan | transcript `Entry::Notice` |
 | `error` | red | `/ask` modal error line |
-| `fatal_error` | red + bold | *(NEW, no pre-theme call site)* fatal-error accent |
+| `fatal_error` | red + bold | the status line's `AUTO-ALLOW` indicator (V7; reserved before that) |
 | `dim` | dim modifier | agent-tree recipe labels, input-box placeholder |
 | `focused` | bold modifier | agent-tree `(focused)` tag |
 | `selected` | reversed modifier | agent-tree arrow-selected row highlight |
-| `emphasized` | bold modifier | modal-overlay body lines (command, `you asked:`, `recipe:`) |
+| `emphasized` | bold modifier | modal-overlay body lines (command, `you asked:`, `recipe:`), and `plan` mode in the status line |
 | `border_normal` | unstyled | input-box / agent-panel block borders |
 | `border_warning` | yellow + bold | `/ask` modal border |
 | `border_danger` | red + bold | permission-prompt modal border |
@@ -285,6 +392,10 @@ to consume):
 | `status_mode` | reversed modifier | the bottom status line |
 | `status_dim` | dim modifier | status-line dim accent (T2: the `elapsed · +tokens` tail of the working indicator) |
 | `spinner` | yellow | activity spinner accent (steady; V6 removed T2's pulse palette) |
+| `header` | reversed modifier | (T6) sticky context header above an overflowing transcript |
+| `scroll_footer` | dim modifier | (T6) floating "jump to bottom" footer pill |
+| `help_border` | blue + bold | (T7) `/help` overlay border, and the `/settings` menu border |
+| `help_key` | bold modifier | (T7) `/help` overlay's key/chord column (V7: was green + bold) |
 
 A unit test (`tui::view::theme::tests::no_inline_style_default_fg_color_remains_in_view_files`)
 guards the refactor's central invariant: no `Style::default().fg(Color::…)`
@@ -957,8 +1068,9 @@ submission can only ever reach `open_help` while `mode` is already `Normal`
 in the first place, since the input line is inert while any of the other
 three surfaces owns `mode`.
 
-New theme slots: `help_border` (blue, bold) and `help_key` (green, bold —
-the key/chord column), both configurable under `[tui.theme]`.
+New theme slots: `help_border` (blue, bold) and `help_key` (bold, no
+color — V7 dropped the green; see the palette rationale above), both
+configurable under `[tui.theme]`.
 
 ### The shared modal primitive: bottom-anchored, content-sized, capped (V1)
 

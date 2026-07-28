@@ -487,7 +487,6 @@ pub struct ThemeConfig {
     pub tool_running: Option<ThemeStyleConfig>,
     pub tool_done: Option<ThemeStyleConfig>,
     pub tool_failed: Option<ThemeStyleConfig>,
-    pub agent_marker: Option<ThemeStyleConfig>,
     pub agent_starting: Option<ThemeStyleConfig>,
     pub agent_running: Option<ThemeStyleConfig>,
     pub agent_awaiting: Option<ThemeStyleConfig>,
