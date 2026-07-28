@@ -563,13 +563,6 @@ pub struct AppState {
     /// [`Self::activity`] is not [`Activity::Idle`]. Rendered by
     /// `view/status.rs` as the glyph preceding the activity phrase.
     pub spinner_frame: usize,
-    /// The current spinner pulse-color index (T2). Advanced by
-    /// [`Self::tick_animation`] modulo the theme's spinner-palette length,
-    /// only while active. Rendered by `view/status.rs` to pick the pulse
-    /// color for both the braille glyph and the activity word (subtle
-    /// element-level contrast shift, NOT per-character TextShimmer, which is
-    /// out of scope per the T2 spec).
-    pub spinner_color_idx: usize,
     /// When the focused agent's current turn started (T2): set by
     /// `Event::TurnStarted` for the focused agent and cleared whenever
     /// `activity` returns to [`Activity::Idle`] (`TurnFinished`/
@@ -819,7 +812,6 @@ impl AppState {
             modal_scroll: 0,
             pending_intent_confirm: None,
             spinner_frame: 0,
-            spinner_color_idx: 0,
             turn_started_at: None,
             turn_running_tokens: 0,
             turn_transcript_start: 0,
@@ -956,7 +948,6 @@ impl AppState {
         // counters reset and the status line shows no elapsed/running tokens
         // until the new focus's own `TurnStarted` arrives.
         self.spinner_frame = 0;
-        self.spinner_color_idx = 0;
         self.turn_started_at = None;
         self.turn_running_tokens = 0;
         // T4: `focus_agent` clears the transcript above, so the turn-summary
@@ -986,17 +977,19 @@ impl AppState {
     /// and the pulse-color index, both wrapping. The caller (the app loop's
     /// animation-tick arm) is responsible for only calling this while
     /// [`should_animate`] is true for [`Self::activity`], so an idle terminal
-    /// never pays for animation. The color index wraps modulo
-    /// `palette_len` (the theme's spinner palette length, supplied by the
-    /// caller since `AppState` does not depend on `Theme`); the frame index
-    /// wraps modulo [`SPINNER_FRAMES`]' length.
-    pub fn tick_animation(&mut self, palette_len: usize) {
+    /// never pays for animation. The frame index wraps modulo
+    /// [`SPINNER_FRAMES`]' length.
+    ///
+    /// V6 removed the color-pulse half of this. T2 also advanced a palette
+    /// index so the glyph and activity word cycled colors on every tick;
+    /// that read as strobing rather than as liveness. The advancing frame
+    /// already conveys "something is happening" -- adding color motion on
+    /// top only competed with it.
+    pub fn tick_animation(&mut self) {
         let frames = SPINNER_FRAMES.len();
         if frames != 0 {
             self.spinner_frame = (self.spinner_frame + 1) % frames;
         }
-        let p = palette_len.max(1);
-        self.spinner_color_idx = (self.spinner_color_idx + 1) % p;
     }
 
     /// Clears the per-turn timing/token counters (T2). Called whenever
@@ -4356,39 +4349,14 @@ mod tests {
         assert_eq!(state.spinner_frame, 0);
         let n = SPINNER_FRAMES.len();
         for _ in 0..n {
-            state.tick_animation(3);
+            state.tick_animation();
         }
         assert_eq!(state.spinner_frame, 0, "frame must wrap modulo {}", n);
-        state.tick_animation(3);
+        state.tick_animation();
         assert_eq!(state.spinner_frame, 1);
         // The glyph lookup itself never panics on any in-range frame.
         let glyph = SPINNER_FRAMES[state.spinner_frame % SPINNER_FRAMES.len()];
         assert!(SPINNER_FRAMES.contains(&glyph));
-    }
-
-    #[test]
-    fn spinner_color_index_cycles_the_palette_and_wraps() {
-        let mut state = AppState::new(AgentId::new());
-        assert_eq!(state.spinner_color_idx, 0);
-        // A palette of 3: 0 -> 1 -> 2 -> 0 -> 1.
-        state.tick_animation(3);
-        assert_eq!(state.spinner_color_idx, 1);
-        state.tick_animation(3);
-        assert_eq!(state.spinner_color_idx, 2);
-        state.tick_animation(3);
-        assert_eq!(state.spinner_color_idx, 0, "color idx must wrap modulo 3");
-        state.tick_animation(3);
-        assert_eq!(state.spinner_color_idx, 1);
-    }
-
-    #[test]
-    fn tick_animation_handles_a_one_color_palette_without_div_by_zero() {
-        let mut state = AppState::new(AgentId::new());
-        // A degenerate 1-color palette (or 0, defensively) must not panic.
-        state.tick_animation(1);
-        assert_eq!(state.spinner_color_idx, 0);
-        state.tick_animation(0);
-        assert_eq!(state.spinner_color_idx, 0);
     }
 
     #[test]
@@ -4521,7 +4489,6 @@ mod tests {
         let child = AgentId::new();
         let mut state = AppState::new(root);
         state.spinner_frame = 5;
-        state.spinner_color_idx = 2;
         state.turn_started_at = Some(Instant::now());
         state.turn_running_tokens = 42;
         state.activity = Activity::Responding;
@@ -4529,7 +4496,6 @@ mod tests {
         state.focus_agent(child);
 
         assert_eq!(state.spinner_frame, 0);
-        assert_eq!(state.spinner_color_idx, 0);
         assert!(state.turn_started_at.is_none());
         assert_eq!(state.turn_running_tokens, 0);
         assert_eq!(state.activity, Activity::Idle);

@@ -27,9 +27,11 @@
 //! - `activity` -- T2's working indicator: a braille spinner glyph plus the
 //!   activity word plus live elapsed plus new-segment tokens added this
 //!   turn, e.g. `⠋ thinking… 12s · +45 tok`, pulsing through
-//!   `Theme::spinner_palette` on each 125ms tick. While idle: just `idle`.
+//!   a steady `theme.spinner` style (V6 removed T2's color pulse -- the
+//!   advancing braille frames carry liveness without strobing). While
+//!   idle: just `idle`.
 //! - `hint` -- a persistent keybinding/affordance hint:
-//!   `Enter submit · Ctrl-E expand · Ctrl-P/N history · PgUp/PgDn · /help · /thinking · /timestamps · /agents to {view|hide}`,
+//!   `Enter submit · Ctrl-E expand · /help · /agents to {view|hide}`,
 //!   plus `focused: <id>` when the transcript is focused on a non-root
 //!   agent. T7 confirmed this against the real binding set (`view/help.rs`'s
 //!   own doc enumerates it in full) and found it still accurate -- `/help`
@@ -262,11 +264,12 @@ fn activity_spans(state: &AppState, theme: &Theme) -> Vec<Span<'static>> {
     if !should_animate(&state.activity) {
         return vec![Span::raw("idle")];
     }
-    let palette = theme.spinner_palette();
-    let pulse = palette
-        .get(state.spinner_color_idx % palette.len())
-        .copied()
-        .unwrap_or(theme.spinner);
+    // V6: a single steady style. T2 cycled this through
+    // `Theme::spinner_palette` on every 125ms tick, which read as a pulse in
+    // the corner of the eye and was more distracting than informative. The
+    // braille frames below still advance, so liveness is still visible --
+    // motion carries that signal perfectly well without also strobing color.
+    let style = theme.spinner;
     let glyph = SPINNER_FRAMES
         .get(state.spinner_frame % SPINNER_FRAMES.len())
         .copied()
@@ -277,7 +280,7 @@ fn activity_spans(state: &AppState, theme: &Theme) -> Vec<Span<'static>> {
         .map(|t| t.elapsed().as_secs())
         .unwrap_or(0);
     vec![
-        Span::styled(format!("{glyph} {phrase}"), pulse),
+        Span::styled(format!("{glyph} {phrase}"), style),
         Span::styled(
             format!(" {elapsed}s · +{} tok", state.turn_running_tokens),
             theme.status_dim,
@@ -294,9 +297,14 @@ fn hint_spans(state: &AppState, theme: &Theme) -> Vec<Span<'static>> {
     } else {
         "/agents to view"
     };
-    let mut hint = format!(
-        "Enter submit · Ctrl-E expand · Ctrl-P/N history · PgUp/PgDn · /help · /thinking · /timestamps · {agents_hint}"
-    );
+    // V6: the footer names KEYS, not commands. It used to enumerate
+    // `/help`, `/thinking`, and `/timestamps`; the user's note was that a
+    // footer should not be a command list. `/help` stays as the single
+    // pointer -- it is the keybinding overlay (T7), so it is where the rest
+    // of this information actually lives -- and the display toggles move to
+    // the settings menu (V4). `/agents` keeps its affordance because it is a
+    // stateful toggle whose current state the hint reports.
+    let mut hint = format!("Enter submit · Ctrl-E expand · /help · {agents_hint}");
     // WI-140: name which agent's conversation is currently shown whenever
     // it is not the root -- the root case stays silent (an always-on
     // "focused: root" would be noise for the overwhelmingly common case).
@@ -518,66 +526,6 @@ mod tests {
         assert!(
             !line.contains("s · +"),
             "no `Ns · +N tok` elapsed/tail while idle: {line}"
-        );
-    }
-
-    #[test]
-    fn status_line_pulse_color_picks_from_the_theme_palette() {
-        // Drive the styled path directly: with a non-default palette, the
-        // spinner+phrase span's fg must come from the palette at the current
-        // spinner_color_idx. With spinner_color_idx = 1, the palette[1] is
-        // `spinner_b`.
-        let mut state = AppState::new(AgentId::new());
-        state.activity = Activity::Thinking;
-        state.spinner_color_idx = 1;
-        state.spinner_frame = 0;
-
-        let theme = Theme {
-            spinner_b: ratatui::style::Style::default().fg(ratatui::style::Color::Cyan),
-            ..Theme::default()
-        };
-
-        let line = status_line_spans(&state, &theme);
-        // Find the span whose content starts with the spinner glyph and
-        // assert its fg is the palette[1] color (Cyan), not the default
-        // Yellow.
-        let glyph = SPINNER_FRAMES[0];
-        let pulse_span = line
-            .spans
-            .iter()
-            .find(|s| s.content.as_ref().starts_with(glyph))
-            .expect("a spinner-leading span must be present while active");
-        assert_eq!(
-            pulse_span.style.fg,
-            Some(ratatui::style::Color::Cyan),
-            "the spinner glyph + activity word must use the palette color at spinner_color_idx"
-        );
-    }
-
-    #[test]
-    fn status_line_pulse_color_wraps_past_the_palette_end() {
-        // spinner_color_idx past the palette length wraps back to palette[0]
-        // (the renderer does `idx % palette.len()`).
-        let mut state = AppState::new(AgentId::new());
-        state.activity = Activity::Thinking;
-        state.spinner_color_idx = 3; // palette len is 3 -> wraps to 0.
-
-        let theme = Theme {
-            spinner: ratatui::style::Style::default().fg(ratatui::style::Color::Red),
-            ..Theme::default()
-        };
-
-        let line = status_line_spans(&state, &theme);
-        let glyph = SPINNER_FRAMES[state.spinner_frame % SPINNER_FRAMES.len()];
-        let pulse_span = line
-            .spans
-            .iter()
-            .find(|s| s.content.as_ref().starts_with(glyph))
-            .expect("a spinner-leading span must be present while active");
-        assert_eq!(
-            pulse_span.style.fg,
-            Some(ratatui::style::Color::Red),
-            "spinner_color_idx past the palette end must wrap to palette[0]"
         );
     }
 
@@ -841,21 +789,31 @@ mod tests {
         assert!(line.contains("Ctrl-E"));
     }
 
+    /// V6: the footer names KEYS, not commands. It used to enumerate
+    /// `/thinking` and `/timestamps` alongside `/help`; the user's note was
+    /// that a footer should not be a command list. `/help` survives as the
+    /// single pointer -- it is the keybinding overlay, so it is where the
+    /// rest of this actually lives.
     #[test]
-    fn hint_field_includes_keybinding_hint() {
+    fn hint_field_names_keys_not_a_command_list() {
         let state = AppState::new(AgentId::new());
         let line = status_line(&state);
+
         assert!(line.contains("Enter submit"), "{line}");
         assert!(line.contains("Ctrl-E expand"), "{line}");
         assert!(line.contains("/help"), "{line}");
+        assert!(line.contains("/agents"), "{line}");
+
+        // The enumeration is gone. These remain reachable via /help and the
+        // settings menu, but the footer no longer lists them.
         assert!(
-            line.contains("Ctrl-P/N history"),
-            "V3 moved history off bare arrows: {line}"
+            !line.contains("/thinking"),
+            "the footer must not enumerate display toggles: {line}"
         );
-        assert!(line.contains("PgUp/PgDn"), "{line}");
-        // T4: the new toggles are surfaced in the hint.
-        assert!(line.contains("/thinking"), "{line}");
-        assert!(line.contains("/timestamps"), "{line}");
+        assert!(
+            !line.contains("/timestamps"),
+            "the footer must not enumerate display toggles: {line}"
+        );
     }
 
     #[test]
@@ -868,4 +826,44 @@ mod tests {
         assert!(line.contains("feature-branch"), "{line}");
         assert!(line.contains("/Users/dan/conway"), "{line}");
     }
+    /// V6: the spinner no longer pulses. T2 cycled a palette index on every
+    /// tick so the glyph and activity word changed color; that read as
+    /// strobing. The frame still advances -- motion is the liveness cue --
+    /// but the style is now constant.
+    ///
+    /// Asserted at the RENDER level rather than on state, because "does not
+    /// pulse" is a claim about what the user sees: a state-only test would
+    /// still pass if some other tick-driven style crept back in.
+    #[test]
+    fn consecutive_ticks_advance_the_frame_without_changing_the_style() {
+        let mut state = AppState::new(AgentId::new());
+        state.activity = Activity::Thinking;
+        let theme = Theme::default();
+
+        let mut styles = Vec::new();
+        let mut glyphs = Vec::new();
+        for _ in 0..4 {
+            let line = status_line_spans(&state, &theme);
+            // The spinner span is the one carrying a braille frame.
+            let span = line
+                .spans
+                .iter()
+                .find(|s| SPINNER_FRAMES.iter().any(|f| s.content.starts_with(f)))
+                .expect("a spinner span must render while animating");
+            styles.push(span.style);
+            glyphs.push(span.content.to_string());
+            state.tick_animation();
+        }
+
+        assert!(
+            styles.windows(2).all(|w| w[0] == w[1]),
+            "the spinner style must not change between ticks (no pulse): {styles:?}"
+        );
+        assert!(
+            glyphs.windows(2).any(|w| w[0] != w[1]),
+            "the braille frame must still advance -- motion is the liveness cue: {glyphs:?}"
+        );
+    }
+
+
 }
