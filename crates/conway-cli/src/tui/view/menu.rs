@@ -1,16 +1,17 @@
 //! A selectable, keyboard-navigable **tree** primitive (V1), layered on the
 //! shared modal ([`super::modal`]) rather than deciding its own
-//! overlay/`Rect` shape -- V4's settings tree draws its content into
-//! whatever `body_area` [`super::modal::draw_modal_frame`] hands it, the
-//! same way every OTHER ported surface in this item does.
+//! overlay/`Rect` shape -- V4's settings tree (`view/settings.rs`) draws its
+//! content into whatever `body_area` [`super::modal::draw_modal_frame`]
+//! hands it, the same way every OTHER ported surface does.
 //!
-//! **Not wired to anything yet** (item spec: "Do not wire it to anything
-//! yet -- V1 provides the primitive; V4 fills it"). This module owns the
-//! data structure ([`MenuNode`]), the navigation state machine
-//! ([`MenuState`]), and the render fn ([`draw`]); nothing in `app.rs` or
-//! `input.rs` constructs a [`MenuState`] yet. It is still fully exercised by
-//! this module's own tests (below) so V4 can build directly on it without
-//! first having to fix a half-finished primitive.
+//! **Wired by V4** (`view/settings.rs`'s `/settings` menu -- see that
+//! module's own doc). This module owns the data structure ([`MenuNode`]),
+//! the navigation state machine ([`MenuState`]), and the render fn
+//! ([`draw`]); it stayed unwired-but-fully-tested for one item (V1 landed
+//! the primitive on its own, deliberately, so V4 could build directly on a
+//! finished primitive rather than a half one) and is now a live dependency
+//! of `view/settings.rs` and `input::handle_settings_key`, on top of its own
+//! tests below.
 //!
 //! ## Nested groups, not a flat list
 //!
@@ -30,33 +31,22 @@
 //!
 //! `input.rs::handle_normal_key`'s `Up`/`Down` arms resolve, in order:
 //! palette -> agent panel -> multi-line draft interior -> bare transcript
-//! line-scroll (V3, `a562550`). None of THIS module's future key-handling
-//! joins that chain at all -- exactly like `/help` (T7), a settings surface
-//! built on this primitive is **informational**, not decision-owed (see
-//! `AppState::help_open`'s own doc on that distinction), so it belongs
-//! alongside `/help`'s own top-level check in `input::handle_key` --
-//! `if state.settings_open && matches!(state.mode, Mode::Normal) { return
-//! handle_settings_key(state, key) }` checked BEFORE the `mode` match, the
-//! same way `state.help_open` already is. While such a flag is set, its own
-//! handler owns Up/Down completely (calling [`MenuState::move_selection`])
-//! and returns before `handle_normal_key`'s chain is ever reached, so wheel-
-//! scroll (which arrives as bare `Up`/`Down` via a terminal's alternate-
-//! scroll mode -- V3's own module doc) is never swallowed while no such
-//! surface is open, and is legitimately, deliberately claimed by the menu
-//! -- never permanently -- while one is, the exact same trade the agent
-//! panel already makes for its own arrows. V4 is expected to add that flag
-//! and its handler; this module supplies the [`MenuState`] navigation calls
-//! it would need, already tested standalone.
-
-//! `MenuNode`/`MenuState`/`draw` are not constructed anywhere outside this
-//! module's own tests yet -- V4 (the settings tree) is later work that
-//! supplies the actual content and wires a key handler onto
-//! [`MenuState::move_selection`]/[`MenuState::toggle_group_at_selection`].
-//! The `#[allow(dead_code)]` below is scoped to this file for exactly that
-//! reason (mirroring `conway-backends/src/http.rs`'s own precedent for the
-//! same "primitive lands before its first caller" shape) and should be
-//! revisited once V4 lands.
-#![allow(dead_code)]
+//! line-scroll (V3, `a562550`). None of this module's own key-handling
+//! joins that chain at all -- exactly like `/help` (T7), the settings
+//! surface built on this primitive (`view/settings.rs`) is **informational**,
+//! not decision-owed (see `AppState::help_open`'s own doc on that
+//! distinction), so it belongs alongside `/help`'s own top-level check in
+//! `input::handle_key`: `if state.settings_open && matches!(state.mode,
+//! Mode::Normal) { return handle_settings_key(state, key) }`, checked BEFORE
+//! the `mode` match, the same way `state.help_open` already is. While that
+//! flag is set, `input::handle_settings_key` owns Up/Down completely
+//! (calling [`MenuState::move_selection`]) and returns before
+//! `handle_normal_key`'s chain is ever reached, so wheel-scroll (which
+//! arrives as bare `Up`/`Down` via a terminal's alternate-scroll mode --
+//! V3's own module doc) is never swallowed while no such surface is open,
+//! and is legitimately, deliberately claimed by the menu -- never
+//! permanently -- while one is, the exact same trade the agent panel
+//! already makes for its own arrows.
 
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
@@ -168,6 +158,22 @@ impl MenuState {
         let max = (n - 1) as isize;
         let cur = self.selected_index() as isize;
         self.selected = (cur + delta).clamp(0, max) as usize;
+    }
+
+    /// Sets the selected row's RAW index directly (V4:
+    /// `view/settings.rs::build_tree` rebuilds a fresh `MenuState` -- with
+    /// up-to-date leaf labels -- on every render/keypress rather than
+    /// mutating one long-lived tree in place, since this module deliberately
+    /// exposes no "relabel this one leaf" mutator (it doesn't know what a
+    /// leaf's opaque `id` means -- see [`MenuNode::Leaf`]'s own doc). This is
+    /// how the caller restores its own persisted cursor position onto that
+    /// freshly built tree). Unclamped on write -- [`Self::selected_index`]
+    /// clamps on READ (the same "a stale index survives a shorter list"
+    /// shape [`Self::move_selection`] already relies on), so restoring an
+    /// index from before a group collapsed can never panic or point past the
+    /// current row list.
+    pub fn set_selected(&mut self, index: usize) {
+        self.selected = index;
     }
 
     /// The currently selected row, if any (`None` only when the tree is
@@ -403,6 +409,31 @@ mod tests {
             state.move_selection(-1);
         }
         assert_eq!(state.selected_index(), 0, "must clamp at the first row, not go negative");
+    }
+
+    // ---- V4: `set_selected` restores a cursor onto a freshly built tree ----
+
+    #[test]
+    fn set_selected_restores_a_raw_index_onto_a_fresh_tree() {
+        let mut state = MenuState::new(sample_tree());
+        state.set_selected(2);
+        assert_eq!(
+            state.selected_row().unwrap().label,
+            "status line",
+            "a freshly built tree must land on the restored index"
+        );
+    }
+
+    #[test]
+    fn set_selected_is_clamped_on_read_not_on_write() {
+        let mut state = MenuState::new(sample_tree());
+        // An index from a longer tree than this one currently has (e.g.
+        // restored right after a group collapsed elsewhere) must not panic
+        // -- it clamps at READ time, the same shape `move_selection` already
+        // relies on.
+        state.set_selected(999);
+        assert_eq!(state.selected_index(), 5, "clamps to the last visible row");
+        assert!(state.selected_row().is_some());
     }
 
     #[test]

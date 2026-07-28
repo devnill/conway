@@ -12,6 +12,18 @@
 //! None of this reaches past `SessionHandle`/`Conway` -- [`Host`] is a
 //! thin abstraction over exactly those two types' methods, and [`LiveHost`]
 //! is a pure delegation to them.
+//!
+//! ## `/thinking` and `/timestamps` are REMOVED (V4)
+//!
+//! Both used to be intercepted directly in `app.rs::submit`, ahead of
+//! [`parse`] (mirroring `/agents`'s own pattern) -- neither one ever reached
+//! this module's parser at all. They are now gone entirely, not aliased:
+//! [`SlashCommand::Settings`] (`/settings`) opens a menu
+//! (`view/settings.rs`) covering the same two toggles plus a numeric
+//! setting, on the reasoning that a dedicated slash command per single
+//! toggle does not scale as more display preferences are added. `parse`
+//! returns the ordinary "unknown command" [`ParseError`] for `/thinking`/
+//! `/timestamps` now, the same as any other retired command name.
 
 use conway::{
     AgentId, AgentIntent, ContextReport, Conway, Event, ForkSpec, Provenance, RoutingReason,
@@ -64,6 +76,13 @@ pub enum SlashCommand {
         sid: String,
     },
     Help,
+    /// V4: opens the `/settings` menu (`view/settings.rs`), replacing the
+    /// standalone `/thinking`/`/timestamps` toggles -- both REMOVED, not
+    /// aliased (see this module's own doc: a per-toggle command per
+    /// setting doesn't scale). Mirrors [`SlashCommand::Help`]'s own shape
+    /// exactly: a pure `AppState` flag flip, no facade call, no transcript
+    /// mutation.
+    Settings,
     Quit,
 }
 
@@ -126,6 +145,10 @@ pub fn parse(input: &str) -> Result<SlashCommand, ParseError> {
         "/help" => {
             parse_no_arg(rest, "/help")?;
             Ok(SlashCommand::Help)
+        }
+        "/settings" => {
+            parse_no_arg(rest, "/settings")?;
+            Ok(SlashCommand::Settings)
         }
         "/quit" | "/exit" => {
             parse_no_arg(rest, word)?;
@@ -806,6 +829,13 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
             state.open_help();
             Effect::None
         }
+        // V4: `/settings` opens the settings menu -- a pure `AppState::
+        // open_settings` flag flip, exactly like `/help` just above (no
+        // facade call, no transcript mutation).
+        SlashCommand::Settings => {
+            state.open_settings();
+            Effect::None
+        }
         SlashCommand::Quit => Effect::Quit,
     }
 }
@@ -1236,6 +1266,30 @@ mod tests {
     fn help_with_trailing_argument_is_a_parse_error_naming_the_form() {
         let err = parse("/help me").unwrap_err();
         assert!(err.to_string().contains("/help"));
+    }
+
+    #[test]
+    fn settings_parses() {
+        assert_eq!(parse("/settings"), Ok(SlashCommand::Settings));
+    }
+
+    #[test]
+    fn settings_with_trailing_argument_is_a_parse_error_naming_the_form() {
+        let err = parse("/settings all").unwrap_err();
+        assert!(err.to_string().contains("/settings"));
+    }
+
+    /// V4 acceptance: `/thinking` and `/timestamps` no longer parse at all
+    /// -- they are REMOVED, not aliased to `/settings`, and both were never
+    /// reachable through this parser in the first place (they used to be
+    /// intercepted in `app.rs::submit`, now deleted -- see this module's
+    /// own doc). Locks the removal down as an ordinary "unknown command".
+    #[test]
+    fn thinking_and_timestamps_no_longer_parse() {
+        let thinking_err = parse("/thinking").unwrap_err();
+        assert!(thinking_err.to_string().contains("unknown command"));
+        let timestamps_err = parse("/timestamps").unwrap_err();
+        assert!(timestamps_err.to_string().contains("unknown command"));
     }
 
     #[test]
@@ -2250,6 +2304,22 @@ mod tests {
         assert!(matches!(effect, Effect::None));
         // No facade call at all -- a pure state flip.
         assert!(host.calls().is_empty());
+    }
+
+    /// V4 acceptance: `/settings` opens the menu -- a pure `AppState` flip,
+    /// mirroring `/help`'s own test exactly.
+    #[tokio::test]
+    async fn settings_opens_the_menu() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let host = FakeHost::new(root);
+        assert!(!state.settings_open);
+
+        let effect = execute(SlashCommand::Settings, &mut state, &host).await;
+
+        assert!(state.settings_open, "/settings must open the menu");
+        assert!(matches!(effect, Effect::None));
+        assert!(host.calls().is_empty(), "no facade call at all -- a pure state flip");
     }
 
     #[tokio::test]

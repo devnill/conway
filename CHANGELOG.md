@@ -9,6 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **TUI: `/thinking` and `/timestamps` are replaced by a single `/settings`
+  menu (V4).** Two standalone slash commands, each owning exactly one
+  boolean, don't scale — every future display preference would mean another
+  command competing for footer/palette space. Both are now REMOVED (not
+  aliased): `/settings` opens a menu, built on V1's shared modal/tree
+  primitives (`tui/view/menu.rs`, its first real caller), covering "show
+  reasoning traces", "show timestamps", and a THIRD setting new to runtime
+  entirely — `tool_preview_lines` (T5's tool-output fold cap, previously
+  config-only). The one non-boolean setting is a `Left`/`Right` stepper
+  (±1, floor/cap at `1..=200`) rather than a cycled preset list — there's no
+  natural "meaningfully different" preset set for a fold-cap the way a
+  theme picker would have.
+
+  Settings are **session-only**, exactly as the two commands they replace
+  already were: Conway's config load is a five-source layered read with no
+  writer anywhere outside test fixtures, and inventing one raises "which
+  layer gets written" with no good default answer — out of this item's
+  scope. A footer note says so on every render; the one setting with a real
+  backing config key (`[tui.tool_preview_lines]`) names it inline, and the
+  two that have no config-key equivalent today carry no such claim.
+
+  `/settings` is gated exactly like `/help` — a plain `AppState::
+  settings_open` flag, never a `Mode` variant, so it can't stack on an
+  active permission prompt / `/ask` modal / intent-confirm card — and, new
+  for this item, `/settings` and `/help` are also mutually exclusive with
+  EACH OTHER (opening one closes the other), since both are informational
+  overlays gated the identical way.
+
 - **The status line no longer pulses, and the footer no longer lists slash
   commands.** The spinner's braille frames still advance — motion is the
   liveness cue — but the color is now steady. Cycling it on every 125ms
@@ -104,15 +132,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   The overlay is keybindings-only: every genuine slash command stays
   exclusively in the `/` palette, so the two surfaces can never drift into
-  duplicating each other (`/thinking`/`/timestamps` are the one deliberate
-  exception, since they function as keyboard-driven view toggles). It
+  duplicating each other (`/thinking`/`/timestamps` were the one deliberate
+  exception at the time, since they functioned as keyboard-driven view
+  toggles — both are since removed in favor of `/settings`, above). It
   groups every binding Conway actually has — input & editing, history &
-  navigation, tools & display, the modal-only keys for the `/ask` modal /
-  intent-confirm card / permission prompt, and the agent panel — plus a
-  trailing note that mouse-wheel scrolling is deliberately not a Conway
-  binding (it's your terminal's own scrollback; capturing the mouse would
-  disable the terminal's native click-drag text selection). `Esc` closes
-  it; no hotkey opens it, since Conway is always in input-typing mode.
+  navigation, tools & display, the settings menu's own keys, the modal-only
+  keys for the `/ask` modal / intent-confirm card / permission prompt, and
+  the agent panel — plus a trailing note that mouse-wheel scrolling is
+  deliberately not a Conway binding (it's your terminal's own scrollback;
+  capturing the mouse would disable the terminal's native click-drag text
+  selection). `Esc` closes it; no hotkey opens it, since Conway is always in
+  input-typing mode.
 
   The overlay is not a `Mode` variant — it's a plain `AppState::help_open`
   flag, gated on `mode == Normal` at both draw and key-routing time — so it

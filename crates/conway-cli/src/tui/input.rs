@@ -91,6 +91,15 @@ pub enum Action {
 /// guard here simply never fires for them, and `handle_key` falls through
 /// to the ordinary `mode` match exactly as it did before this item.
 pub fn handle_key(state: &mut AppState, key: KeyEvent) -> Action {
+    // V4: the `/settings` menu is checked the same way `/help` is just
+    // below -- informational, gated on `Mode::Normal`, never a `Mode`
+    // variant (see `AppState::settings_open`'s own doc) -- and mutually
+    // exclusive with `/help` by construction (`AppState::open_settings`/
+    // `open_help` each clear the other), so at most one of these two guards
+    // ever actually fires.
+    if state.settings_open && matches!(state.mode, Mode::Normal) {
+        return handle_settings_key(state, key);
+    }
     if state.help_open && matches!(state.mode, Mode::Normal) {
         return handle_help_key(state, key);
     }
@@ -130,6 +139,112 @@ fn handle_help_key(state: &mut AppState, key: KeyEvent) -> Action {
         _ => {}
     }
     Action::None
+}
+
+/// The `/settings` menu's key handling (V4): mirrors [`handle_help_key`]'s
+/// shape exactly (informational, not decision-owed -- see
+/// `AppState::settings_open`'s own doc), with its own navigation layered on
+/// top. `Up`/`Down` move the cursor, `Enter` toggles a boolean leaf or
+/// expands/collapses a group, `Left`/`Right` step the one numeric leaf
+/// (`tool_preview_lines`), and `Esc` closes -- everything else is
+/// SWALLOWED, exactly like the other three `handle_*_key` fns. Owns
+/// `Up`/`Down` COMPLETELY while open (never falls through to
+/// `handle_normal_key`'s palette/agent-panel/wheel-scroll chain -- see
+/// `view/menu.rs`'s own module doc, "How this slots into V3's arrow-key
+/// priority chain") and releases them the instant it closes, the same trade
+/// the agent panel already makes for its own arrows.
+fn handle_settings_key(state: &mut AppState, key: KeyEvent) -> Action {
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        match key.code {
+            KeyCode::Char('c') | KeyCode::Char('C') => return Action::CtrlC,
+            KeyCode::Char('d') | KeyCode::Char('D') => return Action::Quit,
+            _ => {}
+        }
+    }
+    match key.code {
+        KeyCode::Esc => state.close_settings(),
+        KeyCode::Up => settings_move_selection(state, -1),
+        KeyCode::Down => settings_move_selection(state, 1),
+        KeyCode::Enter => activate_settings_selection(state),
+        KeyCode::Left => step_settings_numeric(state, -1),
+        KeyCode::Right => step_settings_numeric(state, 1),
+        _ => {}
+    }
+    Action::None
+}
+
+/// `Up`/`Down` on the settings menu (V4): rebuilds the current tree (see
+/// `view/settings.rs::build_tree`'s own doc for why it is rebuilt fresh
+/// rather than kept as a long-lived value), moves the selection, and writes
+/// the resulting (already-clamped) index back onto
+/// `AppState::settings_selected` -- the one piece of navigation state that
+/// persists across calls.
+fn settings_move_selection(state: &mut AppState, delta: isize) {
+    let mut menu = super::view::settings::build_tree(state);
+    menu.move_selection(delta);
+    state.settings_selected = menu.selected_index();
+}
+
+/// `Enter` on the settings menu (V4): toggles a boolean leaf, expands/
+/// collapses a group, or is a no-op on the one numeric leaf (which has its
+/// own `Left`/`Right` stepper -- see [`step_settings_numeric`]) -- mirrors
+/// how `handle_normal_key`'s Enter-on-the-`/agents`-panel resolves through
+/// the filtered row list (`view/menu.rs::MenuState::selected_leaf_id`'s own
+/// doc: "the caller's activate action").
+fn activate_settings_selection(state: &mut AppState) {
+    let mut menu = super::view::settings::build_tree(state);
+    let Some(row) = menu.selected_row() else {
+        return;
+    };
+    match row.kind {
+        super::view::menu::MenuRowKind::Group { .. } => {
+            // Reuses `MenuState::toggle_group_at_selection` itself (the
+            // primitive's own flip + re-clamp) rather than recomputing an
+            // equivalent expand/collapse decision independently -- this
+            // `menu` is a throwaway, freshly built copy (see
+            // `view/settings.rs::build_tree`'s own doc), so its OWN
+            // `expanded` flag can't persist on its own; what persists is
+            // `AppState::settings_collapsed_groups`, read back from the
+            // SAME row (looked up by its stable label, since toggling
+            // never changes descendant ORDER) right after the toggle.
+            let label = row.label.clone();
+            menu.toggle_group_at_selection();
+            let now_expanded = menu.rows().iter().any(|r| {
+                r.label == label
+                    && matches!(r.kind, super::view::menu::MenuRowKind::Group { expanded: true })
+            });
+            if now_expanded {
+                state.settings_collapsed_groups.remove(&label);
+            } else {
+                state.settings_collapsed_groups.insert(label);
+            }
+            state.settings_selected = menu.selected_index();
+        }
+        super::view::menu::MenuRowKind::Leaf { id } => {
+            if id == super::view::settings::LEAF_SHOW_REASONING {
+                state.toggle_thinking();
+            } else if id == super::view::settings::LEAF_SHOW_TIMESTAMPS {
+                state.toggle_timestamps();
+            }
+            // `LEAF_TOOL_PREVIEW_LINES`: Enter has nothing to activate on
+            // the numeric leaf -- it is adjusted with Left/Right instead
+            // (see `step_settings_numeric`).
+        }
+    }
+}
+
+/// `Left`/`Right` on the settings menu (V4): the numeric stepper for the
+/// one non-boolean leaf (`tool_preview_lines`) -- a no-op on every other
+/// row (there is nothing to step). See
+/// `AppState::adjust_tool_preview_lines`'s own doc for why a continuous
+/// step, not a cycled preset list.
+fn step_settings_numeric(state: &mut AppState, delta: i32) {
+    let menu = super::view::settings::build_tree(state);
+    let is_numeric_leaf =
+        menu.selected_leaf_id().as_deref() == Some(super::view::settings::LEAF_TOOL_PREVIEW_LINES);
+    if is_numeric_leaf {
+        state.adjust_tool_preview_lines(delta);
+    }
 }
 
 /// The `/ask` modal's key handling (B5): exactly three ways out, each
@@ -2347,6 +2462,255 @@ mod tests {
             Action::PermissionDecision(PermissionDecision::AllowOnce),
             "the permission prompt's own `y` binding must still resolve, not be \
              swallowed by the (backgrounded) help overlay"
+        );
+    }
+
+    // ---- V4: the /settings menu's key handling ----
+
+    #[test]
+    fn esc_closes_the_settings_menu() {
+        let mut state = AppState::new(AgentId::new());
+        state.open_settings();
+        assert!(state.settings_open);
+
+        let action = handle_key(&mut state, key(KeyCode::Esc));
+
+        assert_eq!(action, Action::None);
+        assert!(!state.settings_open, "Esc must close the menu");
+    }
+
+    #[test]
+    fn settings_quit_keys_still_pass_through() {
+        let mut state = AppState::new(AgentId::new());
+        state.open_settings();
+
+        assert_eq!(
+            handle_key(&mut state, ctrl_key(KeyCode::Char('c'))),
+            Action::CtrlC
+        );
+        assert_eq!(
+            handle_key(&mut state, ctrl_key(KeyCode::Char('d'))),
+            Action::Quit
+        );
+        assert!(state.settings_open, "no live resource to purge -- stays open");
+    }
+
+    /// Acceptance: toggling through the menu produces the SAME state change
+    /// the old `/thinking` slash command did (`AppState::show_reasoning`
+    /// flips true -> false -> true), driven through the real `Up`/`Down`/
+    /// `Enter` keys rather than calling `toggle_thinking` directly.
+    #[test]
+    fn enter_on_the_show_reasoning_row_toggles_it_exactly_like_the_old_thinking_command() {
+        let mut state = AppState::new(AgentId::new());
+        assert!(state.show_reasoning, "defaults true");
+        state.open_settings();
+
+        // Row 0 is the "display" group; row 1 is "show reasoning traces".
+        handle_key(&mut state, key(KeyCode::Down));
+        assert!(
+            crate::tui::view::settings::build_tree(&state)
+                .selected_row()
+                .unwrap()
+                .label
+                .contains("show reasoning"),
+            "sanity: the cursor must be on the show-reasoning row"
+        );
+
+        handle_key(&mut state, key(KeyCode::Enter));
+        assert!(!state.show_reasoning, "the SAME toggle /thinking used to drive");
+
+        handle_key(&mut state, key(KeyCode::Enter));
+        assert!(state.show_reasoning, "toggles back, an involution exactly like before");
+    }
+
+    /// Same acceptance, for the `show_timestamps` row (was `/timestamps`).
+    #[test]
+    fn enter_on_the_show_timestamps_row_toggles_it_exactly_like_the_old_timestamps_command() {
+        let mut state = AppState::new(AgentId::new());
+        assert!(!state.show_timestamps, "defaults false");
+        state.open_settings();
+
+        // Row 0 "display", row 1 "show reasoning", row 2 "show timestamps".
+        handle_key(&mut state, key(KeyCode::Down));
+        handle_key(&mut state, key(KeyCode::Down));
+        assert!(
+            crate::tui::view::settings::build_tree(&state)
+                .selected_row()
+                .unwrap()
+                .label
+                .contains("show timestamps"),
+            "sanity: the cursor must be on the show-timestamps row"
+        );
+
+        handle_key(&mut state, key(KeyCode::Enter));
+        assert!(state.show_timestamps, "the SAME toggle /timestamps used to drive");
+
+        handle_key(&mut state, key(KeyCode::Enter));
+        assert!(!state.show_timestamps, "toggles back, an involution exactly like before");
+    }
+
+    /// Acceptance: the numeric setting can actually be changed (Left/Right)
+    /// and clamps safely -- driven through the real key router.
+    #[test]
+    fn left_right_on_the_tool_preview_lines_row_steps_it_and_clamps() {
+        let mut state = AppState::new(AgentId::new());
+        assert_eq!(state.tool_preview_lines, 3);
+        state.open_settings();
+
+        // Navigate onto the numeric leaf: display group (0), reasoning (1),
+        // timestamps (2), tool output group (3), tool preview lines (4).
+        for _ in 0..4 {
+            handle_key(&mut state, key(KeyCode::Down));
+        }
+        assert!(
+            crate::tui::view::settings::build_tree(&state)
+                .selected_leaf_id()
+                .as_deref()
+                == Some(crate::tui::view::settings::LEAF_TOOL_PREVIEW_LINES),
+            "sanity: the cursor must be on the numeric leaf"
+        );
+
+        handle_key(&mut state, key(KeyCode::Right));
+        assert_eq!(state.tool_preview_lines, 4);
+        handle_key(&mut state, key(KeyCode::Left));
+        handle_key(&mut state, key(KeyCode::Left));
+        assert_eq!(state.tool_preview_lines, 2);
+
+        // Drive it all the way down past the floor -- must clamp at 1, not
+        // panic or wrap.
+        for _ in 0..10 {
+            handle_key(&mut state, key(KeyCode::Left));
+        }
+        assert_eq!(state.tool_preview_lines, 1, "must clamp at the floor, never below");
+    }
+
+    /// Left/Right must be a no-op while the cursor is on a boolean row or a
+    /// group row -- there is nothing to step there.
+    #[test]
+    fn left_right_is_a_noop_off_the_numeric_row() {
+        let mut state = AppState::new(AgentId::new());
+        state.open_settings();
+        // Row 0: the "display" group.
+        assert_eq!(state.tool_preview_lines, 3);
+
+        handle_key(&mut state, key(KeyCode::Right));
+        handle_key(&mut state, key(KeyCode::Left));
+
+        assert_eq!(state.tool_preview_lines, 3, "Left/Right off the numeric row must not change it");
+    }
+
+    /// `Enter` on a group row expands/collapses it (V1's `MenuState::
+    /// toggle_group_at_selection`, driven end to end through the real key
+    /// router) and re-clamps the cursor.
+    #[test]
+    fn enter_on_a_group_row_collapses_and_expands_it() {
+        let mut state = AppState::new(AgentId::new());
+        state.open_settings();
+        assert!(state.settings_collapsed_groups.is_empty());
+
+        // Row 0 is the "display" group -- collapse it.
+        handle_key(&mut state, key(KeyCode::Enter));
+        assert!(
+            state.settings_collapsed_groups.contains("display"),
+            "Enter on an expanded group must collapse it"
+        );
+
+        // Its two children must now be hidden from the flattened tree.
+        let rows_after_collapse = crate::tui::view::settings::build_tree(&state).rows();
+        assert!(
+            !rows_after_collapse
+                .iter()
+                .any(|r| r.label.contains("show reasoning")),
+            "a collapsed group's children must be hidden: {rows_after_collapse:?}"
+        );
+
+        // Expand it again -- an involution.
+        handle_key(&mut state, key(KeyCode::Enter));
+        assert!(!state.settings_collapsed_groups.contains("display"));
+        let rows_after_expand = crate::tui::view::settings::build_tree(&state).rows();
+        assert!(
+            rows_after_expand
+                .iter()
+                .any(|r| r.label.contains("show reasoning")),
+            "re-expanding must restore the children: {rows_after_expand:?}"
+        );
+    }
+
+    /// Acceptance: arrows navigate the menu WHILE it is open.
+    #[test]
+    fn up_down_navigate_the_settings_menu_while_open() {
+        let mut state = AppState::new(AgentId::new());
+        state.open_settings();
+        assert_eq!(state.settings_selected, 0);
+
+        handle_key(&mut state, key(KeyCode::Down));
+        assert_eq!(state.settings_selected, 1);
+        handle_key(&mut state, key(KeyCode::Down));
+        assert_eq!(state.settings_selected, 2);
+        handle_key(&mut state, key(KeyCode::Up));
+        assert_eq!(state.settings_selected, 1);
+    }
+
+    /// Acceptance: transcript line-scroll (V3's bare Up/Down wheel path)
+    /// still works once the settings menu is CLOSED -- the menu claims the
+    /// arrows only while open, exactly like the agent panel already does.
+    #[test]
+    fn bare_up_down_scroll_the_transcript_once_settings_is_closed() {
+        use crate::tui::state::Entry;
+        use crate::tui::test_support::press;
+        use ratatui::layout::Rect;
+
+        let mut state = AppState::new(AgentId::new());
+        for i in 0..30 {
+            state.transcript.push(Entry::Assistant {
+                text: format!("line {i}"),
+                model: None,
+                summary: None,
+                ts: None,
+            });
+        }
+        state.open_settings();
+        state.close_settings();
+        assert!(state.follow_tail);
+
+        let small_viewport = Rect::new(0, 0, 20, 10);
+        let action = press(&mut state, key(KeyCode::Up), small_viewport);
+
+        assert_eq!(
+            action,
+            Action::ScrollLineUp,
+            "once closed, bare Up must fall back to transcript wheel-scroll, \
+             exactly as it did before the menu ever opened"
+        );
+        assert!(state.scroll > 0);
+    }
+
+    /// The settings menu must not steal keys meant for an active permission
+    /// prompt -- `state.settings_open` staying `true` in the background
+    /// (set before the prompt arrived) must not matter once `mode` is
+    /// `AwaitingPermission`.
+    #[test]
+    fn settings_menu_does_not_intercept_keys_while_a_permission_prompt_is_active() {
+        let mut state = AppState::new(AgentId::new());
+        state.open_settings();
+        let (prompt, _rx) = crate::tui::gate::PendingPrompt::new_for_test(conway::PermissionRequest {
+            agent_id: AgentId::new(),
+            agent_path: Vec::new(),
+            tool: conway::ToolName::new("bash"),
+            category: conway::ToolCategory::Execute,
+            arguments: serde_json::json!({}),
+            rendered: "bash: ls".to_string(),
+            call_id: "tc_1".to_string(),
+        });
+        state.mode = Mode::AwaitingPermission(prompt);
+
+        let action = handle_key(&mut state, key(KeyCode::Char('y')));
+
+        assert_eq!(
+            action,
+            Action::PermissionDecision(PermissionDecision::AllowOnce),
+            "the permission prompt's own `y` binding must still resolve, not be \
+             swallowed by the (backgrounded) settings menu"
         );
     }
 }

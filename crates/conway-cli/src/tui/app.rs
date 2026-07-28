@@ -648,45 +648,12 @@ impl App {
             }
             return Ok(SubmitOutcome::Continue);
         }
-        // T4: `/thinking` and `/timestamps` are state-only toggles
-        // intercepted HERE, mirroring `/agents`'s pattern -- they never
-        // reach `commands::parse` (whose `SlashCommand` table is out of
-        // this item's file scope) and are never sent to the model. Each
-        // surfaces a one-shot `Notice` so the user sees the new state.
-        if text.trim() == "/thinking" || text.starts_with("/thinking ") {
-            if text.trim() == "/thinking" {
-                let on = self.state.toggle_thinking();
-                self.state.transcript.push(super::state::Entry::Notice {
-                    text: if on {
-                        "reasoning visible".to_string()
-                    } else {
-                        "reasoning hidden".to_string()
-                    },
-                });
-            } else {
-                self.state.transcript.push(super::state::Entry::Notice {
-                    text: "usage: /thinking (no arguments)".to_string(),
-                });
-            }
-            return Ok(SubmitOutcome::Continue);
-        }
-        if text.trim() == "/timestamps" || text.starts_with("/timestamps ") {
-            if text.trim() == "/timestamps" {
-                let on = self.state.toggle_timestamps();
-                self.state.transcript.push(super::state::Entry::Notice {
-                    text: if on {
-                        "timestamps on".to_string()
-                    } else {
-                        "timestamps off".to_string()
-                    },
-                });
-            } else {
-                self.state.transcript.push(super::state::Entry::Notice {
-                    text: "usage: /timestamps (no arguments)".to_string(),
-                });
-            }
-            return Ok(SubmitOutcome::Continue);
-        }
+        // V4: `/thinking` and `/timestamps` -- the state-only toggles that
+        // used to be intercepted HERE (mirroring `/agents`'s pattern) --
+        // are REMOVED, not aliased. Both are now a single `/settings` menu
+        // (`view/settings.rs`), reached through the ordinary
+        // `commands::parse`/`execute` path just below like any other
+        // command with no live-facade special-casing need.
         if text.starts_with('/') {
             match commands::parse(&text) {
                 Ok(cmd) => {

@@ -884,6 +884,9 @@ mod tests {
             // inline literal as every other view file.
             ("modal.rs", include_str!("modal.rs")),
             ("menu.rs", include_str!("menu.rs")),
+            // V4: the `/settings` menu, the first real caller of the two
+            // primitives above.
+            ("settings.rs", include_str!("settings.rs")),
         ] {
             // `theme.rs` is allowed to contain the needle (the defaults);
             // assert it is the ONLY file that does.

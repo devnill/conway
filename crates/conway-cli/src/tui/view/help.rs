@@ -9,13 +9,18 @@
 //! overlay instead and pushes zero transcript entries.
 //!
 //! **Keybindings only.** Every genuine slash *command* (`/steer`, `/fork`,
-//! `/spawn`, `/ask`, `/agents`, `/resume`, `/quit`, ...) stays exclusively in
-//! the `/` palette -- this overlay never lists one, so the two surfaces never
-//! drift into duplicating each other. `/thinking` and `/timestamps` are the
-//! one deliberate exception: syntactically they are slash commands, but
-//! functionally they are keyboard-driven VIEW TOGGLES (on par with `Ctrl-E`,
-//! not with "spawn an agent"), so they are grouped under "tools & display"
-//! alongside `Ctrl-E` rather than omitted.
+//! `/spawn`, `/ask`, `/agents`, `/settings`, `/resume`, `/quit`, ...) stays
+//! exclusively in the `/` palette -- this overlay never lists one, so the
+//! two surfaces never drift into duplicating each other. V4 removed the one
+//! prior exception (`/thinking`/`/timestamps`, syntactically commands but
+//! functionally keyboard-driven view toggles): both are now consolidated
+//! into `/settings` (`view/settings.rs`), a genuine command like any other,
+//! so the "keybindings only" rule now holds with no carve-out. What DOES
+//! stay documented here is the settings menu's OWN key handling (`Up`/
+//! `Down`/`Enter`/`Left`/`Right`/`Esc`, live only while it's open) -- those
+//! are real keybindings, not a command signature, the same distinction that
+//! already earns the `/ask` modal / intent-confirm card / permission
+//! prompt's own keys a "modal keys" group below.
 //!
 //! **No hotkey opens this overlay.** Conway is always in input-typing mode,
 //! so a bare printable key (`?`, `F1`, ...) can never be a binding --
@@ -137,18 +142,29 @@ const GROUPS: &[Group] = &[
     },
     Group {
         title: "tools & display",
+        bindings: &[Binding {
+            keys: "Ctrl-E",
+            action: "expand/collapse all tool output",
+        }],
+    },
+    Group {
+        title: "settings menu (only while /settings is open)",
         bindings: &[
             Binding {
-                keys: "Ctrl-E",
-                action: "expand/collapse all tool output",
+                keys: "Up / Down",
+                action: "move the selection",
             },
             Binding {
-                keys: "/thinking",
-                action: "hide/show reasoning traces",
+                keys: "Enter",
+                action: "toggle a display setting, or expand/collapse a group",
             },
             Binding {
-                keys: "/timestamps",
-                action: "toggle per-entry HH:MM timestamps",
+                keys: "Left / Right",
+                action: "adjust the numeric setting (tool preview lines)",
+            },
+            Binding {
+                keys: "Esc",
+                action: "close the settings menu",
             },
         ],
     },

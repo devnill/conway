@@ -130,8 +130,10 @@ fn build_lines(state: &AppState, theme: &Theme) -> Vec<Line<'static>> {
         .enumerate()
         .flat_map(|(i, entry)| {
             // T4: hide reasoning entries entirely when `show_reasoning` is
-            // off (the `/thinking` toggle). The entries are still stored,
-            // so toggling back on restores them without replay.
+            // off (the `/settings` menu's "show reasoning traces" toggle,
+            // V4; formerly the standalone `/thinking` command). The
+            // entries are still stored, so toggling back on restores them
+            // without replay.
             if matches!(entry, Entry::Reasoning { .. }) && !state.show_reasoning {
                 return Vec::new();
             }
