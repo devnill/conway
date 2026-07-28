@@ -36,16 +36,18 @@ pub enum Action {
     Quit,
     ScrollUp,
     ScrollDown,
-    /// Board item 01KYASZPVVRCHGTEAN9XS5C6EC: bare arrow `Up`/`Down` (when
-    /// neither the palette nor the agent panel is active) scroll ONE line,
-    /// not a page -- in alt-screen the terminal reports touchpad/wheel
-    /// scroll as arrow keys (WI-127 clean-copy: mouse capture stays off, so
-    /// this is how a touchpad swipe actually reaches the app), and routing
-    /// those through the page-sized `ScrollUp`/`ScrollDown` made a light
-    /// touchpad nudge jump a whole page. `PageUp`/`PageDown` keep emitting
-    /// `ScrollUp`/`ScrollDown` unchanged.
-    ScrollLineUp,
-    ScrollLineDown,
+    /// `End` (T6): snap the transcript straight to its own tail --
+    /// re-engages `follow_tail`. Fires only while the input line is empty
+    /// (mirroring the dual-meaning precedent `Enter`'s empty-input arm
+    /// already sets for this same key range -- see `handle_normal_key`'s own
+    /// doc on `Home`/`End`); with text typed, `End` keeps its ordinary
+    /// cursor-to-end-of-line meaning, since a jump key has no work to do
+    /// while the user is mid-edit and stealing the key would break basic
+    /// line editing.
+    JumpToTail,
+    /// `Home`'s counterpart to [`Action::JumpToTail`] (T6): jump the
+    /// transcript straight to its own top. Same empty-input gating.
+    JumpToTop,
     /// WI-140: switch the transcript pane to `AgentId`'s own conversation.
     /// Emitted by `Enter` on the `/agents` panel's highlighted row (any
     /// row, including the root's own -- focusing the root row is one of
@@ -291,22 +293,44 @@ fn handle_normal_key(state: &mut AppState, key: KeyEvent) -> Action {
             state.cursor = (state.cursor + 1).min(char_count(&state.input));
             Action::None
         }
+        // T6: `Home`/`End` are the transcript's jump-to-top/jump-to-tail
+        // keys -- but ONLY while the input line is empty. With text typed,
+        // both keep their ordinary cursor-to-start/cursor-to-end-of-line
+        // meaning (the pre-T6 behavior, still pinned by
+        // `home_and_end_jump_cursor_to_bounds`): a jump key has nothing
+        // useful to do while composing a message, and unconditionally
+        // stealing `Home`/`End` would break ordinary line editing. This
+        // mirrors `Enter`'s own empty-input dual meaning just above (submit
+        // vs. focus the highlighted agent-panel row) -- the established
+        // precedent in this same function for "the key means something else
+        // once the input line has nothing to submit/edit".
         KeyCode::Home => {
-            state.cursor = 0;
-            Action::None
+            if state.input.is_empty() {
+                Action::JumpToTop
+            } else {
+                state.cursor = 0;
+                Action::None
+            }
         }
         KeyCode::End => {
-            state.cursor = char_count(&state.input);
-            Action::None
+            if state.input.is_empty() {
+                Action::JumpToTail
+            } else {
+                state.cursor = char_count(&state.input);
+                Action::None
+            }
         }
         // WI-130/bug 3 (01KYAN9XZ6E22NSQ3GS3726XW6): arrows drive the
         // on-demand surfaces. The slash-command palette takes priority when
         // it is showing (the user is composing a command); otherwise the
         // arrows scroll the agent panel when it is open; otherwise -- the
-        // lowest-priority, most common case -- they scroll the transcript
-        // ONE LINE at a time (01KYASZPVVRCHGTEAN9XS5C6EC; `PageUp`/`PageDown`,
-        // below, are the full-page binding). Mouse wheel stays disabled by
-        // design (WI-127 clean-copy); this is a keyboard-only fix.
+        // lowest-priority, most common case -- bare Up/Down do NOT scroll
+        // the transcript (T6: that line-scroll path is removed; T8 will
+        // reassign bare Up/Down to input history instead, which is why the
+        // status-line hint already advertises `↑↓ history`). Transcript
+        // scrolling is `PageUp`/`PageDown` (full page) and `Home`/`End`
+        // (jump to top/tail), below. Mouse wheel stays disabled by design
+        // (WI-127 clean-copy).
         KeyCode::Up => {
             if palette_navigate(state, -1) {
                 Action::None
@@ -314,7 +338,7 @@ fn handle_normal_key(state: &mut AppState, key: KeyEvent) -> Action {
                 state.agent_scroll(-1);
                 Action::None
             } else {
-                Action::ScrollLineUp
+                Action::None
             }
         }
         KeyCode::Down => {
@@ -324,7 +348,7 @@ fn handle_normal_key(state: &mut AppState, key: KeyEvent) -> Action {
                 state.agent_scroll(1);
                 Action::None
             } else {
-                Action::ScrollLineDown
+                Action::None
             }
         }
         KeyCode::Esc => {
@@ -526,9 +550,10 @@ mod tests {
         assert!(!state.agent_view_open);
     }
 
-    // ---- bug 3 (01KYAN9XZ6E22NSQ3GS3726XW6): arrow keys scroll the
-    // transcript when neither the palette nor the agent panel is active,
-    // preserving priority over both when they are. ----
+    // ---- T6: bare Up/Down do NOT scroll the transcript any more (removed
+    // in favor of PageUp/PageDown + Home/End; T8 will reassign bare Up/Down
+    // to input history). bug 3 (01KYAN9XZ6E22NSQ3GS3726XW6)'s palette/panel
+    // priority is unchanged -- only the lowest-priority fallback changed. ----
 
     // The small viewport `test_support`'s own PageUp test uses to force the
     // 30-line transcript below to overflow -- mirrored here so the Up/Down
@@ -540,7 +565,7 @@ mod tests {
     }
 
     #[test]
-    fn up_scrolls_the_transcript_when_neither_palette_nor_panel_is_active() {
+    fn bare_up_down_do_not_scroll_the_transcript_when_neither_palette_nor_panel_is_active() {
         use crate::tui::state::Entry;
         use crate::tui::test_support::press;
 
@@ -555,61 +580,29 @@ mod tests {
         }
         assert!(state.follow_tail);
 
-        let action = press(&mut state, key(KeyCode::Up), small_viewport());
-
-        assert_eq!(action, Action::ScrollLineUp);
-        assert!(
-            state.scroll > 0,
-            "Up must move `scroll` off the bottom, exactly like PageUp"
-        );
-        assert!(
-            !state.follow_tail,
-            "Up must disengage auto-follow, exactly like PageUp"
-        );
-    }
-
-    #[test]
-    fn down_scrolls_back_toward_the_bottom_and_reengages_follow() {
-        use crate::tui::state::Entry;
-        use crate::tui::test_support::press;
-
-        let mut state = AppState::new(AgentId::new());
-        for i in 0..30 {
-            state.transcript.push(Entry::Assistant {
-                text: format!("line {i}"),
-                model: None,
-                summary: None,
-                ts: None,
-            });
-        }
-        // Scroll up first (as the previous test does), so there is
-        // somewhere for Down to scroll back down to.
+        let up_action = press(&mut state, key(KeyCode::Up), small_viewport());
         assert_eq!(
-            press(&mut state, key(KeyCode::Up), small_viewport()),
-            Action::ScrollLineUp
+            up_action,
+            Action::None,
+            "T6: bare Up must no longer emit a scroll action"
         );
-        assert!(!state.follow_tail);
-        let scrolled_up_to = state.scroll;
-
-        let action = press(&mut state, key(KeyCode::Down), small_viewport());
-
-        assert_eq!(action, Action::ScrollLineDown);
-        assert!(
-            state.scroll > scrolled_up_to,
-            "Down must move `scroll` back toward the bottom"
-        );
+        assert_eq!(state.scroll, 0, "Up must not move `scroll`");
         assert!(
             state.follow_tail,
-            "Down must re-engage auto-follow once it reaches the bottom, \
-             exactly like PageDown"
+            "Up must not disengage auto-follow -- it no longer scrolls at all"
         );
+
+        let down_action = press(&mut state, key(KeyCode::Down), small_viewport());
+        assert_eq!(
+            down_action,
+            Action::None,
+            "T6: bare Down must no longer emit a scroll action"
+        );
+        assert!(state.follow_tail);
     }
 
-    // ---- 01KYASZPVVRCHGTEAN9XS5C6EC: arrows scroll ONE line, PageUp/
-    // PageDown keep the full-page step ----
-
     #[test]
-    fn up_moves_scroll_by_exactly_one_line_not_a_page() {
+    fn page_up_and_page_down_still_scroll_a_full_page_unlike_bare_arrows() {
         use crate::tui::state::Entry;
         use crate::tui::test_support::press;
 
@@ -622,53 +615,17 @@ mod tests {
                 ts: None,
             });
         }
-        // First Up disengages `follow_tail` and establishes a real `scroll`
-        // baseline (while following, `scroll` itself is stale -- see
-        // `scroll_page_up`'s own doc on why it reads from `max_scroll`
-        // instead).
+
+        // Bare arrows: no-op on `scroll`/`follow_tail`.
         press(&mut state, key(KeyCode::Up), small_viewport());
-        let before = state.scroll;
+        assert_eq!(state.scroll, 0);
+        assert!(state.follow_tail);
 
-        let action = press(&mut state, key(KeyCode::Up), small_viewport());
-
-        assert_eq!(action, Action::ScrollLineUp);
-        assert_eq!(
-            state.scroll,
-            before - 1,
-            "Up must move `scroll` by exactly one line, not a page"
-        );
-    }
-
-    #[test]
-    fn down_moves_scroll_by_exactly_one_line_not_a_page() {
-        use crate::tui::state::Entry;
-        use crate::tui::test_support::press;
-
-        let mut state = AppState::new(AgentId::new());
-        for i in 0..30 {
-            state.transcript.push(Entry::Assistant {
-                text: format!("line {i}"),
-                model: None,
-                summary: None,
-                ts: None,
-            });
-        }
-        // Scroll up several lines first, so there is room for Down to move
-        // without hitting the bottom clamp (which would re-engage
-        // `follow_tail` and make the step assertion vacuous).
-        for _ in 0..5 {
-            press(&mut state, key(KeyCode::Up), small_viewport());
-        }
-        let before = state.scroll;
-
-        let action = press(&mut state, key(KeyCode::Down), small_viewport());
-
-        assert_eq!(action, Action::ScrollLineDown);
-        assert_eq!(
-            state.scroll,
-            before + 1,
-            "Down must move `scroll` by exactly one line, not a page"
-        );
+        // PageUp: a real, full-page scroll that disengages follow.
+        let up_action = press(&mut state, key(KeyCode::PageUp), small_viewport());
+        assert_eq!(up_action, Action::ScrollUp);
+        assert!(state.scroll > 0, "PageUp must move `scroll` off the bottom");
+        assert!(!state.follow_tail);
     }
 
     #[test]
@@ -1328,6 +1285,110 @@ mod tests {
 
         handle_key(&mut state, key(KeyCode::End));
         assert_eq!(state.cursor, 5);
+    }
+
+    // ---- T6: Home/End are the transcript jump keys while the input line
+    // is empty -- the cursor-editing behavior above is unchanged whenever
+    // there is text to edit. ----
+
+    #[test]
+    fn home_on_empty_input_emits_jump_to_top() {
+        let mut state = AppState::new(AgentId::new());
+        assert!(state.input.is_empty());
+
+        let action = handle_key(&mut state, key(KeyCode::Home));
+
+        assert_eq!(action, Action::JumpToTop);
+        // The router itself does not mutate `scroll`/`follow_tail` --
+        // `Action::JumpToTop` needs the terminal-size-derived `max_scroll`
+        // app.rs supplies; see `test_support::press` for the applied path.
+    }
+
+    #[test]
+    fn end_on_empty_input_emits_jump_to_tail() {
+        let mut state = AppState::new(AgentId::new());
+        assert!(state.input.is_empty());
+
+        let action = handle_key(&mut state, key(KeyCode::End));
+
+        assert_eq!(action, Action::JumpToTail);
+    }
+
+    #[test]
+    fn home_and_end_keep_editing_the_cursor_when_input_is_not_empty() {
+        // The jump-key gating must never eat ordinary line editing: with
+        // text typed, Home/End still move the cursor, exactly as
+        // `home_and_end_jump_cursor_to_bounds` already pins.
+        let mut state = AppState::new(AgentId::new());
+        state.input = "hello".to_string();
+        state.cursor = 2;
+
+        assert_eq!(handle_key(&mut state, key(KeyCode::Home)), Action::None);
+        assert_eq!(state.cursor, 0);
+
+        assert_eq!(handle_key(&mut state, key(KeyCode::End)), Action::None);
+        assert_eq!(state.cursor, 5);
+    }
+
+    #[test]
+    fn press_end_jumps_to_the_tail_and_reengages_follow() {
+        use crate::tui::state::Entry;
+        use crate::tui::test_support::press;
+
+        let mut state = AppState::new(AgentId::new());
+        for i in 0..30 {
+            state.transcript.push(Entry::Assistant {
+                text: format!("line {i}"),
+                model: None,
+                summary: None,
+                ts: None,
+            });
+        }
+        // Scroll away from the tail first, via a real PageUp, so End has
+        // somewhere to jump back FROM.
+        press(&mut state, key(KeyCode::PageUp), small_viewport());
+        assert!(!state.follow_tail);
+
+        let action = press(&mut state, key(KeyCode::End), small_viewport());
+
+        assert_eq!(action, Action::JumpToTail);
+        assert!(state.follow_tail, "End must re-engage follow_tail");
+        assert_eq!(state.scroll, 0);
+    }
+
+    #[test]
+    fn press_home_jumps_to_the_top_and_shows_the_oldest_entry() {
+        use crate::tui::state::Entry;
+        use crate::tui::test_support::{press, render_text};
+
+        let mut state = AppState::new(AgentId::new());
+        for i in 0..30 {
+            state.transcript.push(Entry::Assistant {
+                text: format!("line {i}"),
+                model: None,
+                summary: None,
+                ts: None,
+            });
+        }
+        assert!(state.follow_tail);
+
+        let action = press(&mut state, key(KeyCode::Home), small_viewport());
+
+        assert_eq!(action, Action::JumpToTop);
+        assert!(
+            !state.follow_tail,
+            "Home must disengage follow_tail -- the user is reviewing history"
+        );
+        assert_eq!(state.scroll, 0);
+        let text = render_text(&state, small_viewport().width, small_viewport().height);
+        assert!(
+            text.contains("line 0 "),
+            "Home must actually show the OLDEST entry, not just zero a field: {text:?}"
+        );
+        assert!(
+            !text.contains("line 29"),
+            "Home must not still show the newest entry: {text:?}"
+        );
     }
 
     #[test]

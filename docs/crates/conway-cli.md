@@ -543,6 +543,58 @@ line; the clean-copy invariant is preserved for settled output).
 `/help` overlay (`commands.rs::HELP_LINES`), the command palette
 (`view/palette.rs::COMMANDS`), and the status-line hint.
 
+### Sticky header, jump keys, and the scrolled-back indicator (T6)
+
+Scrolling back through a long conversation used to lose you: nothing said
+where you were, and nothing but paging brought you home. T6 adds three
+affordances, all keyboard-only.
+
+**The sticky header** is a single plain row above the transcript showing
+`session <id> · agent <id> · <model> · ctx%`. It is reserved **only while
+the transcript overflows the viewport** — a conversation that fits on
+screen never gives up a row for it. `agent <id>` appears only when the
+transcript is focused off-root, and `<model>` only once the first
+`Event::ModelDecision` has routed, so the common single-agent case stays
+uncluttered. The `ctx%` figure reuses `view/status.rs::ctx_label`
+directly rather than recomputing the percentage, so the header and the
+status line's `ctx` field cannot drift apart.
+
+**End and Home** jump the transcript when the input box is empty: `End`
+snaps to the tail and re-engages auto-follow, `Home` jumps to the top and
+disengages it. When the input box has text, both keep their ordinary
+cursor-movement meaning — the transcript jump never steals a key you were
+using to edit. (No `G`/`gg`: Conway is always in input-typing mode, so a
+bare printable key can never be a binding.)
+
+**The floating footer** appears over the transcript's bottom row whenever
+you have scrolled away from the tail: `↓ N lines above tail — End to jump
+to bottom`, with a live count. It vanishes the moment auto-follow
+re-engages. On a narrow terminal it degrades to a shorter *complete* form
+(`↓ 8 above — End to jump`, then `↓ 8 — End`) rather than being clipped
+mid-word — a hard truncation would cut off the `End` hint first, which is
+the half that tells you what to do about it.
+
+Neither the header nor the footer is part of the transcript's own
+`Paragraph`. The header draws into its own reserved `Rect`; the footer is
+a `Clear` + `Paragraph` overlay on top of the transcript's last row, the
+same pattern the permission and `/ask` modals already use. The clean-copy
+guarantee is untouched — `entry_lines` never emits either one, so
+selecting and copying the transcript still yields exactly the conversation
+text.
+
+**Mouse-wheel scrolling is deliberately not implemented.** Enabling
+crossterm mouse capture would let the wheel drive this pane, but a
+captured terminal routes every mouse event to the application instead of
+the emulator — which disables the terminal's own click-drag text
+selection, the very mechanism the clean-copy guarantee exists to protect.
+Your terminal's native scrollback still works as it always has; it simply
+scrolls the emulator's buffer rather than Conway's, which is why it cannot
+drive the indicator above. `PageUp`/`PageDown` plus `End`/`Home` are the
+in-app equivalents, and they cost you nothing.
+
+New theme slots: `header` (reversed) and `scroll_footer` (dim), both
+configurable under `[tui.theme]`.
+
 ### The `/` command palette, with arrow-select
 
 `tui/commands.rs` owns the authoritative slash-command parser

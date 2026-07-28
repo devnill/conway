@@ -9,6 +9,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **TUI: sticky context header, End/Home jump keys, and a scrolled-back
+  indicator (T6).** Scrolling back through a long conversation gave no
+  sense of position and no way home but paging. Three keyboard-only
+  affordances now cover it.
+
+  A **sticky header** (`session · agent · model · ctx%`) sits above the
+  transcript, but only while the transcript actually overflows — content
+  that fits on screen never gives up a row. `agent` shows only off-root
+  and `model` only once routing has happened, so the single-agent case
+  stays uncluttered. The `ctx%` figure reuses `status::ctx_label` rather
+  than recomputing the percentage, so header and status line cannot
+  disagree.
+
+  **End** snaps to the tail and re-engages auto-follow; **Home** jumps to
+  the top and disengages it. Both apply only when the input box is empty
+  — with text present they keep their ordinary cursor-movement meaning,
+  so the jump never steals a key mid-edit.
+
+  A **floating footer** (`↓ N lines above tail — End to jump to bottom`)
+  overlays the transcript's bottom row while scrolled up, with a live
+  count, and disappears when auto-follow re-engages. On a narrow terminal
+  it degrades to a shorter complete form rather than clipping mid-word,
+  since a truncation would cut the `End` hint off first.
+
+  Neither widget joins the transcript's `Paragraph` (the header gets its
+  own `Rect`; the footer is a `Clear` overlay), so the clean-copy
+  guarantee is unchanged. New theme slots `header` and `scroll_footer`.
+
+  Mouse-wheel scrolling remains deliberately unimplemented: capturing the
+  wheel would disable the terminal's native click-drag text selection,
+  which clean-copy exists to protect. Native terminal scrollback is
+  unaffected — it scrolls the emulator's buffer, not Conway's, which is
+  why it cannot drive the indicator.
+
 - **Kimi coding-plan support, and Anthropic-compatible endpoints
   generally.** Kimi's coding plan is served over an Anthropic-shaped
   `/v1/messages`, so it needs no dedicated adapter — point `base_url` at

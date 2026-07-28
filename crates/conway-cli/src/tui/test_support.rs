@@ -74,9 +74,10 @@ pub(crate) fn key(code: KeyCode) -> KeyEvent {
 /// - `ScrollUp`/`ScrollDown`: `view::transcript_area`/`view::max_scroll` at
 ///   `area`, then `AppState::scroll_page_up`/`scroll_page_down` -- mirrors
 ///   `App::page_scroll` exactly (same page-height math, same clamp).
-/// - `ScrollLineUp`/`ScrollLineDown` (01KYASZPVVRCHGTEAN9XS5C6EC): the same
-///   `max_scroll` lookup, but `AppState::scroll_line_up`/`scroll_line_down`
-///   (a one-line step) instead of the page-sized pair above.
+/// - `JumpToTop`/`JumpToTail` (T6): the same `max_scroll` lookup, but
+///   `AppState::jump_to_top`/`jump_to_tail` (`Home`/`End`) instead of the
+///   page-sized pair above -- mirrors `App::jump_to_top`/the direct
+///   `state.jump_to_tail()` call in `app.rs`'s action dispatch.
 /// - `PermissionDecision`: `AppState::resolve_current_prompt` -- mirrors the
 ///   run loop's `Action::PermissionDecision` arm exactly.
 ///
@@ -93,8 +94,11 @@ pub(crate) fn press(state: &mut AppState, event: KeyEvent, area: Rect) -> Action
     match &action {
         Action::ScrollUp => apply_page_scroll(state, area, true),
         Action::ScrollDown => apply_page_scroll(state, area, false),
-        Action::ScrollLineUp => apply_line_scroll(state, area, true),
-        Action::ScrollLineDown => apply_line_scroll(state, area, false),
+        Action::JumpToTop => {
+            let max = view::max_scroll(state, area);
+            state.jump_to_top(max);
+        }
+        Action::JumpToTail => state.jump_to_tail(),
         Action::PermissionDecision(decision) => {
             state.resolve_current_prompt(decision.clone());
         }
@@ -131,18 +135,6 @@ fn apply_page_scroll(state: &mut AppState, area: Rect, page_up: bool) {
         state.scroll_page_up(page, max);
     } else {
         state.scroll_page_down(page, max);
-    }
-}
-
-/// `Action::ScrollLineUp`/`ScrollLineDown`'s counterpart to
-/// [`apply_page_scroll`], mirroring the app loop's own one-line application
-/// for bare-arrow scroll (01KYASZPVVRCHGTEAN9XS5C6EC).
-fn apply_line_scroll(state: &mut AppState, area: Rect, line_up: bool) {
-    let max = view::max_scroll(state, area);
-    if line_up {
-        state.scroll_line_up(max);
-    } else {
-        state.scroll_line_down(max);
     }
 }
 

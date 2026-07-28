@@ -215,7 +215,13 @@ fn mode_label(mode: &Mode) -> String {
 /// the runtime's true context total on focus is tracked as a separate
 /// follow-up board item. No behavior change vs. the original cap -- only the
 /// intent is now documented.
-fn ctx_label(state: &AppState) -> String {
+///
+/// `pub(super)` (T6): the sticky context header (`view/header.rs`) shows the
+/// same `ctx%`/raw-tokens figure and reuses this function directly rather
+/// than recomputing the percentage formula a second time, so the header and
+/// the status line's `ctx` field can never drift apart on the cap/fallback
+/// logic.
+pub(super) fn ctx_label(state: &AppState) -> String {
     match state.focused_model_max_context {
         Some(max) if max > 0 => {
             let pct = (state.focused_ctx_tokens * 100) / u64::from(max);
