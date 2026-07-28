@@ -1,36 +1,34 @@
-//! Integration tests for `conway_backends::config`: the `sk-ant-oat*`
-//! rejection-at-parse-time requirement (C-02, GP-09) and standard-key
-//! acceptance, exercised through both TOML and JSON deserialization.
+//! Integration tests for `conway_backends::config`: key acceptance and the
+//! empty-key check, exercised through both TOML and JSON deserialization.
+//!
+//! conway does not inspect the shape of an API key. Any non-empty value
+//! parses, which is what lets an Anthropic-compatible third-party endpoint
+//! (a coding-plan subscription, a self-hosted shim) be configured without
+//! conway adjudicating whether the credential looks legitimate.
 
-use conway_backends::config::{AnthropicConfig, ConfigError};
+use conway_backends::config::AnthropicConfig;
 
 #[test]
-fn subscription_oauth_token_is_rejected_at_parse_time_via_json() {
-    let json = r#"{"api_key": "sk-ant-oat01-abc"}"#;
-    let result: Result<AnthropicConfig, _> = serde_json::from_str(json);
-    let err = result.expect_err("a sk-ant-oat* key must fail to deserialize");
-    let message = err.to_string();
-    assert!(
-        message.contains("sk-ant-oat"),
-        "error message missing `sk-ant-oat` substring: {message:?}"
-    );
-    assert!(
-        message.contains("subscription OAuth tokens are not supported"),
-        "error message missing explanation substring: {message:?}"
-    );
+fn any_non_empty_key_shape_parses_via_json() {
+    for key in [
+        "sk-ant-oat01-abc",
+        "sk-ant-api03-abc",
+        "kimi-coding-plan-key",
+        "an-arbitrary-third-party-token",
+    ] {
+        let json = format!(r#"{{"api_key": "{key}"}}"#);
+        let cfg: AnthropicConfig = serde_json::from_str(&json)
+            .unwrap_or_else(|e| panic!("key shape must not be inspected: {key} ({e})"));
+        assert_eq!(cfg.api_key.expose_secret(), key);
+    }
 }
 
 #[test]
-fn subscription_oauth_token_is_rejected_at_parse_time_via_toml() {
+fn any_non_empty_key_shape_parses_via_toml() {
     let toml_src = r#"api_key = "sk-ant-oat01-abc""#;
-    let result: Result<AnthropicConfig, _> = toml::from_str(toml_src);
-    let err = result.expect_err("a sk-ant-oat* key must fail to deserialize");
-    let message = err.to_string();
-    assert!(message.contains("sk-ant-oat"), "{message:?}");
-    assert!(
-        message.contains("subscription OAuth tokens are not supported"),
-        "{message:?}"
-    );
+    let cfg: AnthropicConfig =
+        toml::from_str(toml_src).expect("key shape must not be inspected");
+    assert_eq!(cfg.api_key.expose_secret(), "sk-ant-oat01-abc");
 }
 
 #[test]
@@ -93,17 +91,21 @@ fn empty_or_whitespace_api_key_is_rejected_with_missing_api_key() {
     }
 }
 
+/// A key that is only whitespace is still a missing key: the trim happens
+/// so `"   "` cannot masquerade as a configured credential.
 #[test]
-fn subscription_token_prefix_check_ignores_leading_trailing_whitespace() {
-    let json = r#"{"api_key": "  sk-ant-oat01-abc  "}"#;
+fn a_whitespace_only_key_is_treated_as_missing() {
+    let json = r#"{"api_key": "   "}"#;
     let result: Result<AnthropicConfig, _> = serde_json::from_str(json);
-    assert!(result.is_err(), "trimmed key must still be rejected");
+    assert!(result.is_err(), "a whitespace-only key must be rejected");
 }
 
+/// Surrounding whitespace does not change a real key's acceptance -- only
+/// emptiness is checked, not shape.
 #[test]
-fn config_error_display_matches_the_exact_specified_message() {
-    assert_eq!(
-        ConfigError::SubscriptionTokenRejected.to_string(),
-        "Anthropic subscription OAuth tokens (sk-ant-oat*) are not supported: subscription OAuth tokens are not supported by conway; use a standard API key (sk-ant-api*) from console.anthropic.com"
-    );
+fn a_padded_key_still_parses() {
+    let json = r#"{"api_key": "  sk-ant-oat01-abc  "}"#;
+    let cfg: AnthropicConfig =
+        serde_json::from_str(json).expect("a padded but non-empty key must parse");
+    assert_eq!(cfg.api_key.expose_secret(), "  sk-ant-oat01-abc  ");
 }

@@ -5,11 +5,10 @@
 //! `wire.rs` owns the segment↔message and response↔`GenerateResponse`
 //! mapping, `stream.rs` owns SSE streaming and Anthropic's `content_block_*`
 //! tool-call delta translation, `cache.rs` owns the `CacheMode::
-//! ExplicitBreakpoints` cache-hint → `cache_control` mapping. API key only —
-//! no OAuth path exists anywhere in this file set: only `x-api-key`/
-//! `anthropic-version` headers are ever constructed (GP-09/C-02;
-//! `AnthropicConfig` already rejects `sk-ant-oat*` keys at config-parse
-//! time, WI-016).
+//! ExplicitBreakpoints` cache-hint → `cache_control` mapping. Auth is a
+//! single `x-api-key` header alongside `anthropic-version`; no OAuth
+//! handshake exists in this file set. The key's shape is never inspected,
+//! so any Anthropic-compatible endpoint's credential works as-is.
 
 mod cache;
 mod stream;
@@ -105,7 +104,7 @@ impl AnthropicBackend {
     }
 
     /// `x-api-key` + `anthropic-version` headers. No OAuth-style
-    /// `Authorization` header is ever constructed (GP-09/C-02).
+    /// `Authorization` header is ever constructed.
     fn request_builder(&self, url: Url, body: &Value) -> reqwest::RequestBuilder {
         self.http
             .inner()
