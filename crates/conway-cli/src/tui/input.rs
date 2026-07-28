@@ -651,16 +651,29 @@ fn handle_normal_key(state: &mut AppState, key: KeyEvent) -> Action {
             }
         }
         KeyCode::Esc => {
-            // WI-130: Esc closes the agent panel when it is open.
+            // Esc does ONE thing per press, innermost surface first.
+            //
+            // WI-130 made Esc close the agent panel; WI-140 separately made
+            // it return to the root's conversation. Both fired on a single
+            // press, so the natural flow -- open `/agents`, focus a child,
+            // press Esc to dismiss the panel -- closed the panel AND threw
+            // the focus away in one keystroke, with no way to keep the
+            // focus you had just chosen. The `/help` overlay only ever
+            // documented the panel-close half, so the coupling was a bug
+            // rather than an intended shortcut.
+            //
+            // Now: if the panel is open, Esc closes it and stops. A second
+            // Esc returns to the root. That matches how Esc behaves
+            // everywhere else in this TUI (dismiss the thing in front of
+            // you), and it makes "focus a child, then get the panel out of
+            // the way" expressible, which it previously was not.
             if state.agent_view_open {
                 state.agent_view_open = false;
+                return Action::None;
             }
-            // WI-140: Esc is also the other documented way back to the
-            // root's own conversation (alongside focusing the root row via
-            // Enter, above) -- whether or not the panel was open, so it
-            // still works once the panel has already been dismissed. A
-            // no-op (no `FocusAgent` emitted) when already on the root, so
-            // Esc does not force an unnecessary transcript clear+replay.
+            // Panel already closed: Esc is the way back to the root's own
+            // conversation. A no-op when already on the root, so it does
+            // not force an unnecessary transcript clear+replay.
             if !state.is_root_focused() {
                 return Action::FocusAgent(state.root_agent());
             }
@@ -1287,8 +1300,17 @@ mod tests {
         assert_eq!(action, Action::None);
     }
 
+    /// Esc does ONE thing per press. Closing the panel must NOT also throw
+    /// away the focus the user just chose.
+    ///
+    /// The reported bug: fork, open `/agents`, focus the new child, press
+    /// Esc to dismiss the panel -- and you were bounced back to the root,
+    /// with no way to keep the child focused and still get the panel out of
+    /// the way. Two work items had independently bound Esc (panel-close,
+    /// focus-root) and both fired at once; only the panel-close half was
+    /// ever documented in `/help`.
     #[test]
-    fn esc_closes_the_panel_and_refocuses_root_together() {
+    fn esc_closes_the_panel_without_discarding_the_focused_agent() {
         let root = AgentId::new();
         let mut state = AppState::new(root);
         let child = AgentId::new();
@@ -1297,7 +1319,48 @@ mod tests {
 
         let action = handle_key(&mut state, key(KeyCode::Esc));
 
+        assert!(!state.agent_view_open, "the panel closes");
+        assert_eq!(
+            action,
+            Action::None,
+            "but the focused child is KEPT -- closing the panel is not a \
+             request to change which conversation is shown"
+        );
+        assert_eq!(
+            state.focused_agent, child,
+            "the focus the user chose survives the panel closing"
+        );
+    }
+
+    /// The second press is what returns to the root -- so the escape route
+    /// still exists, it just is not fused to dismissing the panel.
+    #[test]
+    fn a_second_esc_returns_to_the_root_once_the_panel_is_closed() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let child = AgentId::new();
+        state.focus_agent(child);
+        state.agent_view_open = true;
+
+        // First press: panel only.
+        handle_key(&mut state, key(KeyCode::Esc));
         assert!(!state.agent_view_open);
+
+        // Second press: back to the root.
+        let action = handle_key(&mut state, key(KeyCode::Esc));
+        assert_eq!(action, Action::FocusAgent(root));
+    }
+
+    /// With the panel already closed, Esc goes straight back to the root --
+    /// no wasted keypress for a panel that is not showing.
+    #[test]
+    fn esc_with_no_panel_open_returns_to_the_root_immediately() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        state.focus_agent(AgentId::new());
+        assert!(!state.agent_view_open);
+
+        let action = handle_key(&mut state, key(KeyCode::Esc));
         assert_eq!(action, Action::FocusAgent(root));
     }
 

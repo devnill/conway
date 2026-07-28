@@ -227,7 +227,8 @@ const GROUPS: &[Group] = &[
             },
             Binding {
                 keys: "Esc",
-                action: "close the agent panel when open",
+                action: "close the panel (keeping the focused agent); press \
+                          again to return to the root conversation",
             },
         ],
     },

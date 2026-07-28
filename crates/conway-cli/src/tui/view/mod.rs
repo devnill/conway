@@ -1095,7 +1095,14 @@ mod tests {
 
         // agent panel
         assert!(text.contains("visibility filter"), "{text}");
-        assert!(text.contains("close the agent panel"), "{text}");
+        // Esc's two-step behavior must be described, not just "closes the
+        // panel" -- the previous wording documented only half of what the
+        // key did, which is how the focus-discarding bug went unnoticed.
+        assert!(text.contains("close the panel"), "{text}");
+        assert!(
+            text.contains("press") && text.contains("again"),
+            "the overlay must say a SECOND Esc returns to the root: {text}"
+        );
     }
 
     /// V4 acceptance: `/thinking` and `/timestamps` appear NOWHERE in the
