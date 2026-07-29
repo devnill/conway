@@ -15,12 +15,25 @@
 //! Submodules are a directory (not one flat file) so each concern --
 //! transcript, input box, status line, palette, agent panel -- stays a
 //! small, independently testable pure-rendering unit (module notes' own
-//! ask: "keep rendering functions small and testable"). T6 adds
-//! `header.rs`: a sticky context header reserved above the transcript only
-//! while it overflows, plus a floating "jump to bottom" footer pill drawn
-//! over the transcript's own bottom row while scrolled up -- see that
-//! module's own doc for both, and [`layout`]'s doc for how the header's
-//! reserved row is decided without a layout feedback loop.
+//! ask: "keep rendering functions small and testable"). T6 added
+//! `header.rs` for two scroll affordances: a sticky overlay above the
+//! transcript and a floating "jump to bottom" footer pill over its bottom
+//! row. A later item corrected T6's sticky overlay: it originally put
+//! `session · agent <id>[ via lineage] · model · ctx%` there -- application
+//! chrome, not scroll-position-dependent information -- gated on whether the
+//! transcript overflowed, which was itself the tell that the content was
+//! misfiled (chrome that flickers with scroll position is noise). That
+//! content moved to the status line (`view/status.rs`'s `session`/`lineage`
+//! fields); `header.rs` now shows only the current turn's own prompt, and
+//! only while it has scrolled out of view -- see that module's own doc for
+//! the full story and the exact trigger.
+//!
+//! Neither of `header.rs`'s two widgets reserves a layout row: both are
+//! drawn straight onto the frame after `transcript::draw`, so [`layout`]
+//! itself no longer needs to predict scroll-driven overflow (a real
+//! transcript-vs-reserved-row feedback loop T6 originally had to work
+//! around with a fixed-point trick -- gone along with the row it used to
+//! reserve).
 
 // `pub(crate)` for item A3: `tui::commands`'s `/tree` snapshot renderer
 // reuses `agents::recipe_parts`/`agents::ancestor_depth` so the hidden
@@ -70,11 +83,10 @@ const AGENT_PANEL_HEIGHT: u16 = 8;
 /// [`MIN_INPUT_HEIGHT`] so a tiny terminal (`area.height / 3 < 3`) never
 /// shrinks the input box below one visible line of text.
 ///
-/// [`layout`]'s own chrome math (and therefore the header-overflow
-/// decision, `show_header` below) reads THIS value, not a fixed constant --
+/// [`layout`]'s own constraint list reads THIS value, not a fixed constant --
 /// growing the input box shrinks the transcript's available height exactly
-/// where that overflow test measures it, so the two can never disagree
-/// about how many rows the transcript actually has.
+/// where `layout` measures it, so the two can never disagree about how many
+/// rows the transcript actually has.
 fn input_height(state: &AppState, area_height: u16) -> u16 {
     let content_lines = state.input.split('\n').count().max(1) as u16;
     let desired = content_lines.saturating_add(2);
@@ -88,22 +100,22 @@ pub fn draw(state: &AppState, frame: &mut Frame, theme: &Theme) {
 
     transcript::draw(frame, areas.transcript, state, theme);
 
-    // T6: the sticky header, reserved only while the transcript overflows
-    // (`layout`'s own doc), and the floating "jump to bottom" footer,
-    // drawn OVER the transcript's own bottom row while scrolled up. Both
-    // are drawn as their own separate widgets, never folded into
-    // `transcript::draw`'s `Paragraph` -- see `header.rs`'s module doc for
-    // the clean-copy rationale. The footer's live `max_scroll` is
-    // deliberately recomputed here (not threaded out of `transcript::draw`,
-    // which computes its own internally) the same way `app.rs`'s
-    // `page_scroll`/`jump_to_top` recompute it fresh outside any render
-    // pass -- `max_scroll` is cheap and always derived from the SAME
-    // `Paragraph`/`Wrap` parameters `transcript::draw` just rendered with,
-    // so it can never disagree with what is actually on screen.
-    if let Some(header_area) = areas.header {
-        header::draw(frame, header_area, state, theme);
-    }
+    // The sticky prompt overlay (shows the current turn's prompt once it
+    // scrolls out of view) and the floating "jump to bottom" footer (shown
+    // over the transcript's own bottom row while scrolled up) -- both drawn
+    // as their own separate widgets straight onto the frame, AFTER
+    // `transcript::draw`, never folded into its `Paragraph` and never
+    // claiming a layout row of their own (see `header.rs`'s module doc).
+    // `max_scroll`/the effective scroll offset are deliberately recomputed
+    // here (not threaded out of `transcript::draw`, which computes its own
+    // internally) the same way `app.rs`'s `page_scroll`/`jump_to_top`
+    // recompute them fresh outside any render pass -- both are cheap and
+    // always derived from the SAME `Paragraph`/`Wrap` parameters
+    // `transcript::draw` just rendered with, so neither can ever disagree
+    // with what is actually on screen.
     let live_max_scroll = max_scroll(state, area);
+    let live_scroll = effective_scroll(state, live_max_scroll);
+    header::draw_sticky_prompt(frame, areas.transcript, state, theme, live_scroll);
     header::draw_scroll_footer(frame, areas.transcript, state, theme, live_max_scroll);
 
     if let Some(agents_area) = areas.agents {
@@ -172,10 +184,6 @@ pub fn draw(state: &AppState, frame: &mut Frame, theme: &Theme) {
 /// of sync with what is actually on screen.
 struct Areas {
     transcript: Rect,
-    /// T6: the sticky context header's row, reserved above the transcript
-    /// only while the transcript overflows. `None` when the content fits,
-    /// so a short conversation never pays a row for it.
-    header: Option<Rect>,
     agents: Option<Rect>,
     input: Rect,
     status: Rect,
@@ -184,11 +192,8 @@ struct Areas {
 fn layout(state: &AppState, area: Rect) -> Areas {
     // T8: the input box's height is content-dependent (grows with
     // multi-line drafts, capped at `area.height / 3`) -- computed once here
-    // so `show_agents`'s size check, the header-overflow chrome math below,
-    // and the constraint list itself all agree on the SAME value. It
-    // depends only on `state.input`/`area.height`, neither of which this
-    // function itself derives, so (unlike `show_header` below) there is no
-    // feedback loop to worry about.
+    // so `show_agents`'s size check and the constraint list itself agree on
+    // the SAME value.
     let input_height = input_height(state, area.height);
 
     // B5: while the /ask modal owns the screen, the /agents panel is NOT
@@ -199,38 +204,14 @@ fn layout(state: &AppState, area: Rect) -> Areas {
         && !matches!(state.mode, Mode::AskModal(_) | Mode::IntentConfirm(_))
         && area.height > input_height + STATUS_HEIGHT + 3;
 
-    // T6: reserve the header row only while the transcript actually
-    // overflows. Deciding that needs a wrapped-line count, which needs a
-    // transcript height, which is what this function computes -- a
-    // feedback loop, and calling `max_scroll` here would recurse back into
-    // `layout` without terminating.
-    //
-    // Broken by measuring against the transcript height WITHOUT the header
-    // reserved (`unreserved_transcript_height`): a fixed point that cannot
-    // depend on its own output. The one-row disagreement this admits is in
-    // the safe direction -- content that overflows by exactly one row shows
-    // the header and then fits within the remaining rows, so the header
-    // appears a row "early" rather than flickering on and off as the
-    // reserved row changes the answer. `max_scroll` (and therefore the
-    // scroll clamp and the footer's count) is always computed from the
-    // FINAL, header-reserved area, so nothing downstream is affected.
-    let chrome = input_height
-        + STATUS_HEIGHT
-        + if show_agents {
-            AGENT_PANEL_HEIGHT.min(area.height / 3)
-        } else {
-            0
-        };
-    let unreserved_transcript_height = area.height.saturating_sub(chrome);
-    let show_header = unreserved_transcript_height > 0
-        && transcript::wrapped_line_count(state, area.width)
-            > unreserved_transcript_height as usize;
-
-    let mut constraints = Vec::new();
-    if show_header {
-        constraints.push(Constraint::Length(header::HEADER_HEIGHT));
-    }
-    constraints.push(Constraint::Min(0));
+    // This item removed T6's sticky-header row reservation entirely: the
+    // sticky prompt overlay and the floating scroll footer (`header.rs`) are
+    // both drawn straight onto the frame after `transcript::draw`, never
+    // claiming a `Constraint` of their own -- so this function no longer
+    // needs to predict whether the transcript will overflow (the feedback
+    // loop T6's own fixed-point trick used to work around is gone along
+    // with the row it was reserving).
+    let mut constraints = vec![Constraint::Min(0)];
     if show_agents {
         constraints.push(Constraint::Length(AGENT_PANEL_HEIGHT.min(area.height / 3)));
     }
@@ -243,13 +224,6 @@ fn layout(state: &AppState, area: Rect) -> Areas {
         .split(area);
 
     let mut next = 0;
-    let header = if show_header {
-        let h = rows[next];
-        next += 1;
-        Some(h)
-    } else {
-        None
-    };
     let transcript = rows[next];
     next += 1;
     let agents = if show_agents {
@@ -265,10 +239,24 @@ fn layout(state: &AppState, area: Rect) -> Areas {
 
     Areas {
         transcript,
-        header,
         agents,
         input,
         status,
+    }
+}
+
+/// The transcript's actual rendered scroll offset (wrapped rows from the
+/// top) -- the SAME clamp `transcript::draw` applies internally
+/// (`follow_tail` pins to `max_scroll`; otherwise `state.scroll` clamped to
+/// it). Recomputed here (not threaded out of that render pass) so the
+/// sticky-prompt overlay's trigger can never disagree with what is actually
+/// on screen -- mirrors why `max_scroll` itself is recomputed fresh rather
+/// than read back out of `transcript::draw`.
+fn effective_scroll(state: &AppState, max_scroll: u16) -> u16 {
+    if state.follow_tail {
+        max_scroll
+    } else {
+        state.scroll.min(max_scroll)
     }
 }
 
@@ -633,6 +621,28 @@ mod tests {
         terminal.draw(|f| draw(&state, f, &Theme::default())).expect("draw");
         let buffer = terminal.backend().buffer();
         assert!(buffer.content().iter().any(|cell| cell.symbol() != " "));
+    }
+
+    /// End-to-end companion to `view/status.rs`'s width-aware assembly
+    /// tests: through the REAL `draw` render pass at a realistic narrow
+    /// terminal (40 columns, the width the review measured `hint` losing
+    /// ~26 characters at), the status row still names `/help` -- proving
+    /// the width budgeting actually reaches the terminal, not just the
+    /// pure `status_line_spans` return value.
+    #[test]
+    fn status_row_keeps_a_hint_pointer_at_a_narrow_forty_column_terminal() {
+        let root = AgentId::new();
+        let state = AppState::new(root);
+        let backend = TestBackend::new(40, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal.draw(|f| draw(&state, f, &Theme::default())).expect("draw");
+        let buffer = terminal.backend().buffer();
+        let text: String = buffer.content().iter().map(|c| c.symbol()).collect();
+        assert!(
+            text.contains("/help"),
+            "the status line must still point at /help at 40 columns, not \
+             silently clip it off screen: {text:?}"
+        );
     }
 
     #[test]

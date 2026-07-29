@@ -114,8 +114,10 @@ pub(crate) fn recipe_parts(node: &TreeNode) -> Vec<String> {
     parts
 }
 
-/// V5: one ancestry-chain hop's label for the header's lineage breadcrumb
-/// (`view/header.rs`) -- built from [`recipe_parts`] (the SAME provenance
+/// V5: one ancestry-chain hop's label for the status line's `lineage`
+/// breadcrumb (`view/status.rs`; originally on T6's sticky header, relocated
+/// by the item that corrected that requirement miss) -- built from
+/// [`recipe_parts`] (the SAME provenance
 /// text the panel row shows) so the breadcrumb and the panel can never
 /// drift apart. When `recipe_parts` has nothing to say (`kind: None`: the
 /// root, or a node seeded out-of-band via `ensure_agent_tracked`, which
@@ -134,10 +136,11 @@ pub(crate) fn hop_label(node: &TreeNode) -> String {
 
 /// An `AgentId`'s first 8 characters -- ULIDs are 26-character base32
 /// strings, ASCII-only, so slicing by byte can never land mid-character.
-/// `pub(crate)` so `view/header.rs`'s sticky header (which already showed
-/// `agent <id>` this way pre-V5) uses this SAME truncation rule for both
-/// the plain `agent <id>` field and the new lineage breadcrumb, rather than
-/// keeping two copies of an identical one-liner.
+/// `pub(crate)` so `view/status.rs`'s `session`/`lineage` fields (which
+/// already showed `agent <id>` this way pre-V5, on T6's original sticky
+/// header) use this SAME truncation rule for both the plain `agent <id>`
+/// field and the lineage breadcrumb, rather than keeping two copies of an
+/// identical one-liner.
 pub(crate) fn short_agent_id(id: conway::AgentId) -> String {
     id.to_string().chars().take(8).collect()
 }
@@ -151,7 +154,7 @@ const MAX_ANCESTOR_CHAIN: usize = 64;
 /// LAST element -- e.g. `[root, child, grandchild]` for `grandchild`. Shared
 /// bounded walk (P-10, [`MAX_ANCESTOR_CHAIN`]) behind both [`ancestor_depth`]
 /// (the panel's own indent rule) and V5's lineage breadcrumb
-/// (`view/header.rs`), so there is exactly one cycle-safe tree walk rather
+/// (`view/status.rs`), so there is exactly one cycle-safe tree walk rather
 /// than two copies that could disagree. A node missing from `state.tree`
 /// entirely (should not happen for anything reachable from `agent`, but
 /// `focused_agent` fails open elsewhere too) simply ends the walk there

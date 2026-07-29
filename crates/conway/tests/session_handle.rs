@@ -272,9 +272,10 @@ async fn events_from_replays_persisted_records_then_continues_live() {
     }
     for (i, envelope) in replayed.iter().enumerate() {
         assert_eq!(envelope.seq, i as u64);
-        assert!(
-            matches!(&envelope.event, Event::AgentProgress { note } if note.contains(&format!("persisted-{i}")))
-        );
+        assert!(matches!(
+            &envelope.event,
+            Event::UserTurn { text, .. } if text == &format!("persisted-{i}")
+        ));
     }
 
     // Now drive live activity on the same session and confirm the same

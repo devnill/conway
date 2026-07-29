@@ -138,6 +138,35 @@ additionally owns structural `agent_path` resolution (the precondition
 `PermissionRequest::agent_path` needs) and cancellation propagation down
 the tree.
 
+**Live `Event::UserTurn`, and the one attach-ordering hazard it has to
+respect.** `Runtime::prompt` (the target of `SessionHandle::prompt`/
+`prompt_agent`, every plain TUI chat message) and `Runtime::start_root`
+(a root created with an initial prompt) each emit `Event::UserTurn`
+immediately after persisting the matching `LogRecord::UserTurn`, so a live
+subscriber and a later replay of the same session see the identical
+occurrence — closing the P-8 gap where only the TUI's own local transcript
+push ever showed a prompt. Both call sites are ordering-safe by
+construction: `prompt`'s target must already be a live, attached agent
+(looked up in `Runtime.agents`) to reach the emit at all, and a root's
+`kind: None` means `AgentTree::attach` never emits `Event::AgentSpawned`
+for it in the first place, so the "`AgentSpawned` precedes every event for
+its agent" guarantee is either already satisfied or vacuous.
+
+The THIRD site is not so simple, and is the one genuinely reachable
+pre-spawn-ordering hazard this item found: `subagent.rs::start`'s `Spawn`
+branch appends its own head `LogRecord::UserTurn` (the model-invoked
+`conway_subagent`/`conway_spawn` tool always supplies a real, non-empty
+prompt this way) **before** `launch_agent` attaches the child to the tree.
+Emitting the live event at that same append site — mirroring `Runtime::
+prompt`'s placement — would broadcast `Event::UserTurn` for a child agent
+id that has no `Event::AgentSpawned` yet, inverting the ordering
+guarantee. `start` instead emits it right after `launch_agent` returns
+(i.e. after `AgentTree::attach` has already emitted `AgentSpawned`), which
+is the only ordering-safe point for that one code path. A `Fork`'s own head
+record (`ForkDirective`) still has no `Event` counterpart at all — see
+[`conway-core`](conway-core.md)'s note on why that stays a disclosed,
+deliberate scope decision rather than being closed in the same change.
+
 ## Mailboxes and steering
 
 `mailbox.rs` implements each agent's bounded inbox as a plain

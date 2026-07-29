@@ -397,8 +397,9 @@ pub struct TuiSection {
     /// field absent from the list is hidden, and the list's order is the
     /// render order. Unknown names are silently dropped at render time
     /// (P-10: config is untrusted input, never a panic). Default = the
-    /// Lean line `["mode","model","ctx","tokens","activity","hint"]`. See
-    /// `docs/crates/conway-cli.md`'s `[tui.status_line]` section for the
+    /// Lean line
+    /// `["session","lineage","mode","model","ctx","tokens","activity","hint"]`.
+    /// See `docs/crates/conway-cli.md`'s `[tui.status_line]` section for the
     /// full field list.
     #[serde(default)]
     pub status_line: StatusLineConfig,
@@ -433,10 +434,21 @@ pub struct TuiSection {
 /// renders, left to right; a field not in the list is hidden, and the list
 /// order is the render order. Unknown names are dropped at render time
 /// (P-10: never a panic). Defaults to the Lean line
-/// `["mode","model","ctx","tokens","activity","hint"]`.
+/// `["session","lineage","mode","model","ctx","tokens","activity","hint"]`.
 ///
-/// Available field names (see `docs/crates/conway-cli.md`): `mode`, `model`,
-/// `ctx`, `tokens`, `activity`, `hint`, `git`, `cwd`.
+/// `session`/`lineage` were added by the item that corrected a requirement
+/// miss in the TUI's T6 scroll affordance: T6 put `session`/agent-lineage
+/// content on a scroll-triggered overlay, which is application chrome, not
+/// scroll-position-dependent information, so both moved here instead (see
+/// `crates/conway-cli/src/tui/view/header.rs`'s module doc for the full
+/// story). **A pinned `fields` list written before that item shipped keeps
+/// working unchanged, but will not gain either new field** -- unknown/
+/// missing names are never an error, so an older config simply renders
+/// without them.
+///
+/// Available field names (see `docs/crates/conway-cli.md`): `session`,
+/// `lineage`, `mode`, `model`, `ctx`, `tokens`, `activity`, `hint`, `git`,
+/// `cwd`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct StatusLineConfig {
@@ -448,6 +460,8 @@ impl Default for StatusLineConfig {
     fn default() -> Self {
         Self {
             fields: vec![
+                "session".to_string(),
+                "lineage".to_string(),
                 "mode".to_string(),
                 "model".to_string(),
                 "ctx".to_string(),

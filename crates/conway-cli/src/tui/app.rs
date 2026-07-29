@@ -809,9 +809,19 @@ impl App {
         if self.state.block_message_if_focused_agent_finished() {
             return Ok(SubmitOutcome::Continue);
         }
-        self.state
-            .transcript
-            .push(super::state::Entry::User(text.clone()));
+        // This item (typed `Event::UserTurn`, closing the P-8 gap): no
+        // local `Entry::User` push here anymore. `Runtime::prompt` (reached
+        // via `prompt_agent` below) now emits `Event::UserTurn` live on the
+        // SAME event stream this app's run loop already polls, and `state.
+        // rs`'s `apply` builds the `Entry::User` bubble from that envelope
+        // -- the one path both this TUI and a library embedder watching the
+        // bare `EventStream` now share. Pushing it here too would double it
+        // (the exact regression this item's own tests guard against); NOT
+        // pushing it at all on a failed `prompt_agent` (the `Err` arm below)
+        // is also correct, not a gap -- a message that was never actually
+        // sent must never appear to have been (echoing it locally used to
+        // do exactly that on a failure).
+        //
         // WI "bare /spawn & /fork open an interactive session": a plain
         // (non-slash-command) message now prompts the FOCUSED agent, not
         // unconditionally the root -- `handle.prompt_agent` (generalizing
@@ -919,17 +929,21 @@ impl App {
     }
 
     /// `SubmitOutcome::FocusNewSession`'s own first-message delivery (WI
-    /// "bare /spawn & /fork open an interactive session"): records `text`
-    /// as a `User` transcript entry (mirroring `Self::submit`'s own plain-
-    /// prompt tail) and sends it as `child`'s first turn via `prompt_agent`
-    /// -- best-effort, a failure becomes a `Notice` rather than propagating
-    /// (the new session was already successfully created and focused by
-    /// this point; losing the whole focus switch over a failed first
-    /// message would be worse than just reporting it).
+    /// "bare /spawn & /fork open an interactive session"): sends `text` as
+    /// `child`'s first turn via `prompt_agent` -- best-effort, a failure
+    /// becomes a `Notice` rather than propagating (the new session was
+    /// already successfully created and focused by this point; losing the
+    /// whole focus switch over a failed first message would be worse than
+    /// just reporting it).
+    ///
+    /// This item: no local `Entry::User` push here either (mirroring
+    /// `Self::submit`'s own tail, see its comment) -- the caller
+    /// (`App::run`'s `FocusNewSession` arm) already resubscribed `events` to
+    /// `child`'s own stream via `try_focus_agent` BEFORE calling this
+    /// method, so the `Event::UserTurn` `prompt_agent` emits below is
+    /// observed on that same, already-live subscription and rendered by
+    /// `state.rs`'s `apply` exactly once.
     async fn deliver_first_message(&mut self, child: conway::AgentId, text: String) {
-        self.state
-            .transcript
-            .push(super::state::Entry::User(text.clone()));
         match self.handle.prompt_agent(child, text).await {
             Ok(_) => self.state.activity = super::state::Activity::Thinking,
             Err(e) => self.state.transcript.push(super::state::Entry::Notice {
@@ -1177,4 +1191,213 @@ async fn read_git_branch() -> Option<String> {
     .await
     .ok()
     .flatten()
+}
+
+#[cfg(test)]
+mod tests {
+    //! This item's own end-to-end acceptance test: "a prompt appears exactly
+    //! once in the transcript -- not zero, not twice" (the regression the
+    //! removal of `submit`'s local `Entry::User` push risks). Unlike the
+    //! module doc's "`run` is not unit-tested directly" note -- which is
+    //! about the real-terminal, real-crossterm-stream loop -- `submit`
+    //! itself needs only a live `SessionHandle`, no PTY, so it is
+    //! reasonable, narrow scope to drive it directly here with a fully
+    //! in-memory `Conway` (the same fake port set `conway`'s own
+    //! `tests/session_handle.rs` builds).
+
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    use conway::config::schema::{
+        AgentsConfig, ConwayConfig, HealthSection, LimitsConfig, ModelsConfig,
+        PermissionsConfig, RoleEntry, RoutingSection, SessionConfig, TuiSection,
+    };
+    use conway::{Conway, ConwayBuilder, PermissionGate};
+    use conway_core::agent::PermissionDecision;
+    use conway_core::fakes::{FakeBackend, FakeGate, FakeRouter, FakeStore};
+    use conway_core::ids::{BackendId, ModelId};
+    use futures::Stream as _;
+
+    use super::*;
+    use crate::cli::OutputFormat;
+    use crate::tui::state::Entry;
+
+    fn base_config() -> ConwayConfig {
+        let mut roles = BTreeMap::new();
+        roles.insert(
+            "default".to_string(),
+            RoleEntry {
+                chain: vec![],
+                headroom_tokens: None,
+            },
+        );
+        ConwayConfig {
+            default_role: conway::RoleAlias::new("default"),
+            cwd: std::path::PathBuf::from("."),
+            session: SessionConfig::default(),
+            limits: LimitsConfig::default(),
+            permissions: PermissionsConfig::default(),
+            backends: BTreeMap::new(),
+            routing: RoutingSection::default(),
+            roles,
+            health: HealthSection::default(),
+            agents: AgentsConfig::default(),
+            models: ModelsConfig::default(),
+            tui: TuiSection::default(),
+        }
+    }
+
+    /// An echoing, fully in-memory `Conway`: its backend replies with
+    /// exactly the last user-role segment's text, so a submitted prompt's
+    /// round trip is deterministic and needs no real network/model.
+    fn build_conway_with_echo_backend() -> Conway {
+        let backend: Arc<dyn conway::Backend> =
+            Arc::new(FakeBackend::echo(BackendId::new("fake")));
+        let gate: Arc<dyn PermissionGate> = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
+        let router: Arc<dyn conway::Router> = Arc::new(FakeRouter::single(conway::ModelRef {
+            backend: BackendId::new("fake"),
+            model: ModelId::new("echo-model"),
+        }));
+        ConwayBuilder::from_parts(base_config())
+            .with_backend(backend)
+            .with_session_store(Arc::new(FakeStore::new()))
+            .with_permission_gate(gate)
+            .with_router(router)
+            .build()
+            .expect("build should succeed with every port injected")
+    }
+
+    fn minimal_cli() -> Cli {
+        Cli {
+            print: None,
+            output_format: OutputFormat::Text,
+            allowed_tools: Vec::new(),
+            deny_tools: Vec::new(),
+            permission_mode: crate::cli::PermissionMode::Allowlist,
+            role_override: None,
+            model: None,
+            session: None,
+            resume: None,
+            fork_from: None,
+            config: None,
+            cwd: None,
+            verbose: 0,
+            command: None,
+        }
+    }
+
+    /// Drains every envelope currently buffered on `events` (never blocks
+    /// past the first `Poll::Pending`) and applies each to `state` -- the
+    /// same `apply` call `App::run`'s own select-loop makes for every
+    /// envelope it polls, just without the terminal/crossterm half.
+    fn drain_and_apply(events: &mut conway::EventStream, state: &mut AppState) {
+        let waker = futures::task::noop_waker();
+        let mut cx = std::task::Context::from_waker(&waker);
+        while let std::task::Poll::Ready(Some(env)) =
+            std::pin::Pin::new(&mut *events).poll_next(&mut cx)
+        {
+            state.apply(&env);
+        }
+    }
+
+    #[tokio::test]
+    async fn submit_renders_the_prompt_exactly_once_not_zero_not_twice() {
+        let conway = build_conway_with_echo_backend();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway).await.expect("App::new should succeed");
+
+        // Subscribed BEFORE `submit`, exactly like `App::run`'s own `events`
+        // local -- the live `Event::UserTurn` `Runtime::prompt` emits (this
+        // item) must not be missed.
+        let mut events = app.handle.events();
+
+        let outcome = app
+            .submit("hello from the test".to_string())
+            .await
+            .expect("submit should not error");
+        assert!(matches!(outcome, SubmitOutcome::Continue));
+
+        // `submit` itself pushes nothing locally anymore (this item) --
+        // the transcript is empty until the live envelope is drained below.
+        drain_and_apply(&mut events, &mut app.state);
+
+        let user_entries: Vec<&str> = app
+            .state
+            .transcript
+            .iter()
+            .filter_map(|e| match e {
+                Entry::User(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            user_entries,
+            vec!["hello from the test"],
+            "the prompt must appear exactly once in the transcript, got {:?}",
+            app.state.transcript
+        );
+
+        // Buffer-asserting half (this crate's binding TUI test convention):
+        // render the REAL `AppState` through the REAL `view::draw` and
+        // confirm the prompt shows up exactly once on screen too, not
+        // duplicated.
+        let text = super::super::test_support::render_text(&app.state, 80, 24);
+        assert_eq!(
+            text.matches("hello from the test").count(),
+            1,
+            "the prompt must render exactly once on screen: {text}"
+        );
+    }
+
+    /// Acceptance test: "focus-switching to an agent with history shows its
+    /// prompts as user turns." Spawns a real child with a real prompt,
+    /// lets its one-shot turn finish (so `try_focus_agent`'s replay batch
+    /// has real, persisted history to reconstruct, not a live tail), then
+    /// focuses it and asserts the replayed prompt renders as `Entry::User`
+    /// -- not `Entry::Notice`, and not string-matched.
+    #[tokio::test]
+    async fn focus_switch_replays_a_spawned_childs_prompt_as_a_user_turn() {
+        let conway = build_conway_with_echo_backend();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway).await.expect("App::new should succeed");
+
+        let child = app
+            .handle
+            .spawn(app.handle.root(), conway::SpawnSpec::new("child's own prompt"))
+            .await
+            .expect("spawn should succeed");
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            app.handle.await_agent(child),
+        )
+        .await;
+
+        let mut events = app
+            .try_focus_agent(child, None)
+            .await
+            .expect("focusing a known child must succeed");
+        assert_eq!(
+            app.state.focused_agent, child,
+            "try_focus_agent must switch focus to the child"
+        );
+
+        drain_and_apply(&mut events, &mut app.state);
+
+        assert!(
+            app.state
+                .transcript
+                .iter()
+                .any(|e| matches!(e, Entry::User(text) if text == "child's own prompt")),
+            "the child's replayed prompt must render as Entry::User, got {:?}",
+            app.state.transcript
+        );
+        assert!(
+            !app.state
+                .transcript
+                .iter()
+                .any(|e| matches!(e, Entry::Notice { text } if text.contains("child's own prompt"))),
+            "the child's replayed prompt must NOT fall back to a Notice, got {:?}",
+            app.state.transcript
+        );
+    }
 }

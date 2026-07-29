@@ -815,21 +815,33 @@ impl SessionHandle {
 /// future variant this `#[non_exhaustive]` enum grows that this function
 /// does not yet know about.
 ///
-/// **Disclosed gap:** no committed mapping between `LogRecord` (persisted,
-/// one entry per session-log line) and `Event` (the live, ephemeral
-/// broadcast wire format) exists anywhere in this workspace -- confirmed by
-/// grep, not merely unwritten. They are independent representations of
+/// **Disclosed gap (partially closed by this item -- see below):** no
+/// committed mapping between `LogRecord` (persisted, one entry per
+/// session-log line) and `Event` (the live, ephemeral broadcast wire format)
+/// exists for most record kinds. They are independent representations of
 /// different cardinality: e.g. live, one `Assistant` record's worth of a
-/// turn corresponds to a run of `TextDelta`s plus one `TurnFinished`, and
-/// `UserTurn`/`ForkDirective`/`ParentSteer` have no `Event` counterpart at
-/// all today. This function uses the one faithful mapping that does exist
-/// where it exists -- `AgentResultRecord` -> `Event::AgentFinished`,
-/// matching exactly what `conway-runtime`'s agent loop emits live for that
-/// occurrence -- and falls back to `Event::AgentProgress{note}` (the one
-/// variant that exists precisely for free-text informational replay) for
-/// every record kind with no faithful equivalent, rather than inventing a
-/// new `Event` variant outside this item's file scope (`conway-core` owns
-/// that enum).
+/// turn corresponds to a run of `TextDelta`s plus one `TurnFinished`. This
+/// function uses the faithful mappings that exist -- `AgentResultRecord` ->
+/// `Event::AgentFinished` (matching exactly what `conway-runtime`'s agent
+/// loop emits live for that occurrence) and, as of this item,
+/// `LogRecord::UserTurn` -> `Event::UserTurn` (see that variant's own doc)
+/// -- and falls back to `Event::AgentProgress{note}` (the one variant that
+/// exists precisely for free-text informational replay) for every other
+/// record kind with no faithful equivalent, rather than inventing a new
+/// `Event` variant outside this item's file scope (`conway-core` owns that
+/// enum).
+///
+/// **`ForkDirective`/`ParentSteer` still fall back to `AgentProgress`,
+/// deliberately (this item's own decision, not an oversight):** both share
+/// `UserTurn`'s root cause, but closing them safely requires the SAME
+/// attach-ordering care `UserTurn`'s live emission needed (see
+/// `conway-runtime::subagent::start`'s own note on why a `Spawn`'s initial
+/// `UserTurn` had to be emitted AFTER `launch_agent`, not inline with its
+/// append) PLUS auditing an entirely different call site
+/// (`conway-runtime::mailbox`'s drain path) for `ParentSteer` -- a
+/// materially larger, differently-shaped change this item's acceptance
+/// criteria do not exercise. Left as explicit follow-up rather than folded
+/// in silently.
 ///
 /// **`Assistant` -> `Event::TextDelta`, not `Event::TurnFinished` (WI-140
 /// review fix, was the opposite -- see this arm's own inline doc):** a bare
@@ -845,11 +857,18 @@ impl SessionHandle {
 fn record_to_event(record: &LogRecord) -> Option<(LogSeq, DateTime<Utc>, Event)> {
     match record {
         LogRecord::Header(_) => None,
-        LogRecord::UserTurn { seq, ts, text, .. } => Some((
+        // Faithful, not a fallback (this item): mirrors exactly what
+        // `conway-runtime` emits live for the same occurrence (`Runtime::
+        // prompt`/`start_root`, `subagent.rs::start` for a non-empty-prompt
+        // `Spawn`) -- see `Event::UserTurn`'s own doc.
+        LogRecord::UserTurn {
+            seq, ts, text, prov,
+        } => Some((
             *seq,
             *ts,
-            Event::AgentProgress {
-                note: format!("user turn: {text}"),
+            Event::UserTurn {
+                text: text.clone(),
+                prov: prov.clone(),
             },
         )),
         LogRecord::Assistant {

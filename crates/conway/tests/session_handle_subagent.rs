@@ -847,8 +847,8 @@ async fn agent_events_replays_a_spawned_childs_own_transcript() {
     .expect("must not hang")
     .expect("stream ended before any replay envelope");
     assert!(
-        matches!(&first.event, conway_core::event::Event::AgentProgress { note } if note.contains("please review")),
-        "expected the replayed spawn prompt as the child's own first record, got {:?}",
+        matches!(&first.event, conway_core::event::Event::UserTurn { text, .. } if text.contains("please review")),
+        "expected the replayed spawn prompt as a typed Event::UserTurn (this item), got {:?}",
         first.event
     );
 }
@@ -915,6 +915,7 @@ async fn agent_events_replay_excludes_the_inherited_prefix_transcript_still_incl
                 Some(env) => {
                     let text = match &env.event {
                         conway_core::event::Event::AgentProgress { note } => note.clone(),
+                        conway_core::event::Event::UserTurn { text, .. } => text.clone(),
                         conway_core::event::Event::TextDelta { text } => text.clone(),
                         _ => String::new(),
                     };

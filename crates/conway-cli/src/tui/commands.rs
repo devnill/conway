@@ -2923,14 +2923,15 @@ mod tests {
         // Through the REAL render pass, not a hand-rolled assertion on
         // `AppState` alone: the status line names the newly focused child
         // (mirrors `view::status`'s own `status_line_names_the_focused_
-        // agent_once_switched_off_root` test). Rendered wide enough
-        // (`RENDER_WIDTH`) that the status line's `focused: <ulid>` suffix
-        // is not itself clipped by the terminal width -- a ULID is 26
-        // chars, wider than `DEFAULT_SIZE`'s 80-column status line leaves
-        // room for once every other status segment is in front of it.
+        // agent_once_switched_off_root` test). The status line's `lineage`
+        // field (this item relocated V5's breadcrumb here from T6's sticky
+        // header) names the agent by its SHORT id, not the full ULID --
+        // matching `view/agents.rs::short_agent_id`'s truncation.
         let rendered = crate::tui::test_support::render(&state, RENDER_WIDTH, 24);
         assert!(
-            rendered.iter().any(|row| row.contains(&child.to_string())),
+            rendered
+                .iter()
+                .any(|row| row.contains(&crate::tui::view::agents::short_agent_id(child))),
             "the rendered status line must name the newly focused child: {rendered:?}"
         );
     }
@@ -2979,7 +2980,9 @@ mod tests {
         assert_eq!(state.focused_agent, child);
         let rendered = crate::tui::test_support::render(&state, RENDER_WIDTH, 24);
         assert!(
-            rendered.iter().any(|row| row.contains(&child.to_string())),
+            rendered
+                .iter()
+                .any(|row| row.contains(&crate::tui::view::agents::short_agent_id(child))),
             "the rendered status line must name the newly focused child: {rendered:?}"
         );
     }
