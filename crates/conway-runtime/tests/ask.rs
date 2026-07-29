@@ -327,6 +327,53 @@ async fn ask_returns_full_text_status_completed_and_transcript_ref() {
 }
 
 // ---------------------------------------------------------------------
+// P-1 enforcement: `ask` with a non-fork mode is a typed error, at the
+// TRAIT boundary, in BOTH debug and release builds (the invariant this
+// item replaces a `debug_assert!` for -- a `debug_assert!` alone compiles
+// to nothing in release, which is every binary a user runs).
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn ask_with_spawn_mode_returns_typed_error_not_panic() {
+    // No backend turn is ever consumed for the (rejected) child -- an empty
+    // script proves the rejection happens before any agent runs.
+    let backend = Arc::new(AskBackend::new(
+        BackendId::new("b"),
+        vec![AskTurn::text("root ok", Duration::ZERO)],
+    ));
+    let bus = EventBus::with_default_capacity();
+    let runtime = build_runtime_with_backend(backend, bus);
+
+    let parent = start_and_finish_root(&runtime, "investigate").await;
+
+    let mut spawn_spec = ask_fork_spec("say hi");
+    spawn_spec.mode = SubagentMode::Spawn;
+
+    let err = runtime
+        .ask(parent, spawn_spec)
+        .await
+        .expect_err("ask must reject a non-fork mode with a typed error");
+
+    assert_eq!(
+        err,
+        conway_core::error::RuntimeError::AskRequiresFork {
+            mode: SubagentMode::Spawn,
+        }
+    );
+
+    // No child was ever attached to the tree -- the rejection happened
+    // before `start` was called.
+    assert!(
+        runtime
+            .tree()
+            .nodes
+            .iter()
+            .all(|n| n.parent != Some(parent)),
+        "no child should have been started for a rejected ask spec"
+    );
+}
+
+// ---------------------------------------------------------------------
 // Acceptance: the drain does NOT resolve on a sibling's AgentFinished
 // ---------------------------------------------------------------------
 
