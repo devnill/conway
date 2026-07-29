@@ -123,13 +123,40 @@
 //!    this guards against -- is the LAST thing on the line to ever lose
 //!    space, and is never itself removed. See [`mode_ladder`].
 //!
+//! **This width guarantee only protects a field that is actually in the
+//! resolved list (adversarial review finding 1, critical).** [`resolve_fields`]
+//! used to accept a configured `fields` list verbatim even when it simply
+//! never named `mode` -- the ladder's survival guarantee is worthless if
+//! `mode` never enters the list at all, and this was a real, silent way to
+//! disable `AUTO-ALLOW` via config (a hand-pinned `settings.json`, or
+//! `CONWAY_TUI__STATUS_LINE__FIELDS` set without it), not just a width
+//! accident. Fixed at [`resolve_fields`]: while `permission_mode` is
+//! non-default (`Plan`/`AutoAllow`), `mode` is forced into the resolved
+//! list even when the configured `fields` omits it -- unconditionally, not
+//! configurable, and reached uniformly from every `StatusLineConfig`
+//! source. See that function's own doc for why this is the "appear only
+//! when it carries information" option rather than "always force it in".
+//!
 //! **Never a silent clip.** Every ladder's shorter rungs are complete
 //! phrasings on their own (never a truncated fragment of a longer one --
 //! the same rule `header.rs::footer_text` already follows); when even the
 //! lowest rung of everything degradable doesn't fit, the assembly stops
 //! trying (there is nothing shorter left to say) rather than trimming a
-//! span mid-character. Whatever the terminal then does with the overflow is
-//! a property of an already-fully-degraded line, not of an un-budgeted one.
+//! span mid-character DURING THAT LOOP. Below the floor -- a pathological
+//! width narrower than even the most degraded line -- [`clamp_to_width`]
+//! (adversarial review finding 3) makes the LAST resort explicit instead of
+//! silent: the assembled line is cut at a character boundary and marked
+//! with a trailing `…`, rather than being handed over-length to a
+//! `Paragraph` with no `.wrap()` and letting ratatui truncate wherever the
+//! render `Rect` happens to end (verified empirically pre-fix: width 10
+//! rendered `" AUTO-ALLO"`, width 5 rendered `" AUTO"` -- indistinguishable
+//! from an accident). Width accounting throughout is in terminal COLUMNS,
+//! not `char` count (adversarial review finding 2): a field's text is not
+//! restricted to ASCII (`lineage`'s `@{agent_def}` hop names are
+//! user-chosen), and a CJK character or emoji is one `char` but two
+//! columns -- [`ladder_width`] and [`clamp_to_width`] both measure via
+//! `Span::width()` (ratatui's own display-width helper) rather than
+//! `.chars().count()`.
 
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
@@ -223,8 +250,38 @@ impl StatusLineField {
 /// the default Lean order when the configured list is empty (an empty
 /// `fields = []` would otherwise render a blank line -- treat that as
 /// "user wanted defaults" rather than "user wanted nothing").
-fn resolve_fields(config: &conway::config::schema::StatusLineConfig) -> Vec<StatusLineField> {
-    let parsed: Vec<StatusLineField> = config
+///
+/// **Adversarial review finding 1 (critical).** `mode_ladder`'s width
+/// -survival guarantee (`AUTO-ALLOW` is never dropped once space runs
+/// out -- see this module's own doc) only holds for a field that is in
+/// this resolved list AT ALL. A configured `fields` list that simply never
+/// names `mode` -- a hand-pinned `settings.json`, or
+/// `CONWAY_TUI__STATUS_LINE__FIELDS` set without it -- used to sail
+/// through unmodified (the empty-list fallback above only fires when the
+/// list is empty AFTER filtering unknown names, not when a KNOWN field is
+/// simply absent), which meant a config change alone could silently turn
+/// off the one genuine safety signal on the line with no error, no
+/// warning, and no visual sign anything was missing.
+///
+/// Fix (Option 3 of the three the review named, over Option 1 "always
+/// force `mode` in" and Option 2 "validate/refuse at config load"): while
+/// `permission_mode` is non-default (`Plan`/`AutoAllow`), `mode` is forced
+/// into the resolved list even when `fields` omits it. This is not
+/// user-disableable -- it depends only on the ACTIVE permission mode, not
+/// on anything in `config`. Picked over Option 1 because it means the
+/// field appears exactly when it carries information (an ordinary
+/// `Prompt`-mode session with a `fields` list that genuinely omits `mode`
+/// keeps rendering exactly as configured -- no `ready`/`awaiting
+/// permission` text appears out of nowhere); picked over Option 2 because
+/// this same function is reached from both the file-based `settings.json`
+/// path and the `CONWAY_TUI__STATUS_LINE__FIELDS` env-var path (both feed
+/// the same `StatusLineConfig`), so fixing it here covers both sources
+/// uniformly without needing a second enforcement point at config load.
+fn resolve_fields(
+    config: &conway::config::schema::StatusLineConfig,
+    permission_mode: PermissionMode,
+) -> Vec<StatusLineField> {
+    let mut parsed: Vec<StatusLineField> = config
         .fields
         .iter()
         .filter_map(|name| StatusLineField::parse(name))
@@ -232,11 +289,17 @@ fn resolve_fields(config: &conway::config::schema::StatusLineConfig) -> Vec<Stat
     if parsed.is_empty() {
         // Empty / all-unknown config: fall back to the Lean order rather
         // than rendering a blank line (P-10: bad input never produces a
-        // broken UI -- it falls back to defaults).
-        resolve_fields(&conway::config::schema::StatusLineConfig::default())
-    } else {
-        parsed
+        // broken UI -- it falls back to defaults). The Lean order already
+        // includes `mode`, so the forced-in step below is a no-op here.
+        return resolve_fields(
+            &conway::config::schema::StatusLineConfig::default(),
+            permission_mode,
+        );
     }
+    if permission_mode != PermissionMode::Prompt && !parsed.contains(&StatusLineField::Mode) {
+        parsed.push(StatusLineField::Mode);
+    }
+    parsed
 }
 
 /// Builds the status line as a styled [`Line`] (T3): an ordered,
@@ -257,7 +320,7 @@ fn resolve_fields(config: &conway::config::schema::StatusLineConfig) -> Vec<Stat
 /// width fits `width` or nothing more can be shrunk -- so a field only ever
 /// gives up space once every field with a weaker claim on it already has.
 pub fn status_line_spans(state: &AppState, theme: &Theme, width: u16) -> Line<'static> {
-    let fields = resolve_fields(&state.status_line_config);
+    let fields = resolve_fields(&state.status_line_config, state.permission_mode);
     // This item: `hint`'s own `focused: <id>` note is suppressed whenever
     // `lineage` is part of the resolved field list, so the two never say the
     // same thing twice -- see `hint_ladder`'s own doc. Based on CONFIGURED
@@ -303,15 +366,44 @@ pub fn status_line_spans(state: &AppState, theme: &Theme, width: u16) -> Line<'s
         spans.append(&mut chosen);
     }
     spans.push(Span::raw(" "));
-    Line::from(spans)
+    // Adversarial review finding 3: the give-up loop above can legitimately
+    // exit with every field already at its own floor and the assembly
+    // STILL over `width` (a floor is not guaranteed to fit an arbitrarily
+    // narrow terminal -- `AUTO-ALLOW` alone is 10 columns wide and cannot
+    // shrink further). Handing that over-length `Line` straight to a
+    // `Paragraph` with no `.wrap()` (`draw`, above) used to let ratatui
+    // silently truncate INSIDE a field's text -- contradicting this
+    // module's own "never a silent clip" promise (verified empirically:
+    // width 10 rendered `" AUTO-ALLO"`, width 5 rendered `" AUTO"`, no
+    // visible sign anything was cut). `clamp_to_width` makes that
+    // truncation explicit instead: an over-length line is cut at a
+    // character boundary and marked with a trailing `…`, so a pathological
+    // width still degrades honestly rather than looking like an accident.
+    Line::from(clamp_to_width(spans, budget))
 }
 
-/// The total rendered width (characters) of the currently SELECTED rung of
-/// each field's ladder, including the ` | ` separators between non-empty
-/// fields and the line's own leading/trailing single-space padding -- the
-/// exact same accounting [`status_line_spans`]'s assembly loop below
-/// actually produces, so the fit check can never disagree with what gets
-/// drawn.
+/// The total rendered width (terminal COLUMNS, not characters) of the
+/// currently SELECTED rung of each field's ladder, including the ` | `
+/// separators between non-empty fields and the line's own leading/trailing
+/// single-space padding -- the exact same accounting
+/// [`status_line_spans`]'s assembly loop below actually produces, so the
+/// fit check can never disagree with what gets drawn.
+///
+/// **Adversarial review finding 2 (critical).** This used to sum
+/// `.content.chars().count()` -- one CJK character or emoji is ONE `char`
+/// but TWO terminal columns, and ratatui accounts for display width when
+/// it writes cells (`Span::width()`/`Line::width()`, both backed by
+/// `unicode-width` internally), so the old arithmetic could be wrong by up
+/// to 2x for any field whose text is not ASCII-only. `lineage` embeds
+/// `agent_def` names verbatim (`"@{def}"`, `view/agents.rs`'s
+/// `recipe_parts`) -- arbitrary user-chosen text with no ASCII restriction
+/// -- so this was reachable, not theoretical: an undercounted `lineage`
+/// rung could make the fit-check believe the line had more room than it
+/// actually did, and the real overflow landed on whichever field ended up
+/// last in the assembled text (see `clamp_to_width`'s doc for what used to
+/// happen to that overflow). Fixed by summing each span's own `.width()`
+/// (ratatui's built-in display-width helper, C-04: no new dependency)
+/// instead of its character count.
 fn ladder_width(ladders: &[Vec<Vec<Span<'static>>>], rung: &[usize]) -> usize {
     let mut non_empty = 0usize;
     let mut content = 0usize;
@@ -321,12 +413,98 @@ fn ladder_width(ladders: &[Vec<Vec<Span<'static>>>], rung: &[usize]) -> usize {
             continue;
         }
         non_empty += 1;
-        content += spans
-            .iter()
-            .map(|s| s.content.chars().count())
-            .sum::<usize>();
+        content += spans.iter().map(Span::width).sum::<usize>();
     }
     content + non_empty.saturating_sub(1) * 3 /* " | " */ + 2 /* leading + trailing space */
+}
+
+/// **Adversarial review finding 3.** Clamps an assembled status-line span
+/// list to `budget` COLUMNS, explicitly and at a character boundary,
+/// rather than handing an over-length `Line` to a `Paragraph` with no
+/// `.wrap()` and letting ratatui truncate wherever the `Rect` happens to
+/// end. The give-up loop in [`status_line_spans`] can legitimately exit
+/// with every field already at its own floor and the total still over
+/// `budget` -- a floor is not guaranteed to fit an arbitrarily narrow
+/// terminal (`mode_ladder`'s own floor, the bare `AUTO-ALLOW` label, is 10
+/// columns wide on its own and has nowhere shorter to go). Pre-fix, THAT
+/// overflow reached `Paragraph` unclamped and ratatui cut it silently
+/// wherever the `Rect` boundary fell -- verified empirically: width 10
+/// rendered `" AUTO-ALLO"`, width 8 rendered `" AUTO-AL"`, width 5
+/// rendered `" AUTO"`, each indistinguishable from an accident and each a
+/// direct contradiction of this module's own "never a silent clip" promise
+/// (see the module doc).
+///
+/// This function walks the spans in order, keeping whole spans that still
+/// fit, and truncates the first span that does not at a character
+/// boundary, reserving one column for a trailing `…` marker whenever any
+/// content had to be cut. A span that fits EXACTLY (no cut needed) is kept
+/// whole with no `…` -- e.g. at exactly the floor's own width, the trailing
+/// pad space is what gets dropped, not the label (see the width-11 test
+/// case below). Below this function, nothing is ever silently trimmed
+/// mid-character again: whatever the assembled line shows at a
+/// pathological width, it says so.
+fn clamp_to_width(spans: Vec<Span<'static>>, budget: usize) -> Vec<Span<'static>> {
+    let total: usize = spans.iter().map(Span::width).sum();
+    if total <= budget {
+        return spans;
+    }
+    if budget == 0 {
+        return Vec::new();
+    }
+    let mut result = Vec::new();
+    let mut used = 0usize;
+    for span in spans {
+        let w = span.width();
+        if used + w <= budget {
+            result.push(span);
+            used += w;
+            continue;
+        }
+        // This span is the one that overflows -- truncate IT at a
+        // character boundary and stop; everything after it is dropped
+        // wholesale (never a fragment of a LATER span either).
+        let remaining = budget - used;
+        // Reserve one column for the `…` marker whenever this span itself
+        // does not fit whole (there is more content after the cut point,
+        // by definition -- this span alone already exceeds `remaining`).
+        let target = remaining.saturating_sub(1);
+        let truncated = truncate_to_width(span.content.as_ref(), target);
+        let truncated_width: usize = Span::raw(truncated.clone()).width();
+        if truncated_width < remaining {
+            // There is room for the `…` marker after the truncated text.
+            let mut content = truncated;
+            content.push('…');
+            result.push(Span::styled(content, span.style));
+        } else if remaining > 0 {
+            // No room even for one character plus the marker -- the
+            // marker alone still fits (`remaining >= 1` here, since the
+            // `used + w <= budget` check above already failed and
+            // `remaining > 0`, `…` is one column wide).
+            result.push(Span::raw("…"));
+        }
+        break;
+    }
+    result
+}
+
+/// Truncates `s` to the longest prefix whose display width does not exceed
+/// `target` columns, at a character boundary (never splitting a multi-byte
+/// `char`). Used only by [`clamp_to_width`]'s own pathological-width
+/// fallback -- ordinary rendering never reaches this, every field's own
+/// ladder rung is already a complete phrasing (this module's "never a
+/// truncated fragment" rule).
+fn truncate_to_width(s: &str, target: usize) -> String {
+    let mut out = String::new();
+    let mut w = 0usize;
+    for ch in s.chars() {
+        let cw = Span::raw(ch.to_string()).width();
+        if w + cw > target {
+            break;
+        }
+        w += cw;
+        out.push(ch);
+    }
+    out
 }
 
 /// The order fields give up space in when the line does not fit, LOWEST
@@ -1666,6 +1844,22 @@ mod tests {
     /// its own ladder's one degrade step keeps the label over the plain
     /// `ready`/`awaiting permission` UI word specifically so the label is
     /// what's left once space runs out.
+    ///
+    /// **Revised by the adversarial review (352d2f4), finding 3.** Below
+    /// the floor rung's own width (the `AUTO-ALLOW` label plus its
+    /// leading+trailing pad = 12 columns), the label itself cannot fit
+    /// whole. The original version of this test asserted the literal
+    /// substring `"AUTO-ALLOW"` at every width down to 5, which passed
+    /// only because it ran against [`flatten`]'s PRE-render span content
+    /// (finding 4) -- the real render (no `.wrap()` on the `Paragraph`)
+    /// silently clipped the label mid-word instead (verified empirically:
+    /// `" AUTO-ALLO"` at width 10, `" AUTO-AL"` at width 8, `" AUTO"` at
+    /// width 5). The fix makes [`status_line_spans`] itself clamp to an
+    /// explicit, character-boundary-safe `…` truncation before ever
+    /// reaching a `Paragraph` (see [`clamp_to_width`]), so `flatten` and
+    /// the real render can no longer disagree -- this test now asserts the
+    /// HONEST claim: full text OR an explicitly `…`-marked truncation of
+    /// it, never a silent bare fragment.
     #[test]
     fn auto_allow_survives_at_every_width_where_anything_survives() {
         let mut state = AppState::new(AgentId::new());
@@ -1676,10 +1870,13 @@ mod tests {
             if line.trim().is_empty() {
                 continue;
             }
+            let full = line.contains("AUTO-ALLOW");
+            let marked_truncation = line.ends_with('…');
             assert!(
-                line.contains("AUTO-ALLOW"),
-                "width {width}: AUTO-ALLOW must be present whenever the \
-                 line renders anything at all: {line:?}"
+                full || marked_truncation,
+                "width {width}: AUTO-ALLOW must render in full, or be \
+                 explicitly truncated with a trailing `…` -- never a bare, \
+                 unmarked fragment: {line:?}"
             );
         }
         // And concretely: at 12 columns (the exact width of the bare
@@ -1694,6 +1891,122 @@ mod tests {
             "at the floor width, AUTO-ALLOW must be the ENTIRE line, \
              everything else already given way: {floor:?}"
         );
+        // One column short of the floor: the trailing pad space is what
+        // drops, not the label -- the label itself stays whole.
+        let just_under = flatten(&status_line_spans(&state, &Theme::default(), 11));
+        assert_eq!(just_under.trim(), "AUTO-ALLOW", "{just_under:?}");
+    }
+
+    /// Renders `draw` through a REAL `Terminal<TestBackend>` and reads the
+    /// buffer's cells back -- the buffer-asserting test binding decision
+    /// (`01KYAN619EEDCY88E6QP0W282Y`) requires for exactly this class of
+    /// safety-critical claim (adversarial review finding 4). Every prior
+    /// width assertion in this module operated on [`flatten`]'s pre-render
+    /// span content, which can (and did) disagree with what a `Paragraph`
+    /// with no `.wrap()` actually puts on screen.
+    fn render_row(state: &AppState, theme: &Theme, width: u16) -> String {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let backend = TestBackend::new(width.max(1), 1);
+        let mut terminal = Terminal::new(backend).expect("TestBackend construction cannot fail");
+        terminal
+            .draw(|f| draw(f, Rect::new(0, 0, width, 1), state, theme))
+            .expect("draw must not panic");
+        let buffer = terminal.backend().buffer().clone();
+        (0..width)
+            .map(|x| buffer[(x, 0)].symbol().to_string())
+            .collect()
+    }
+
+    /// **Finding 4, the concrete regression guard.** Against the pre-fix
+    /// code, reading the REAL rendered buffer back at widths 5/8/10 shows
+    /// `" AUT"`/`" AUTO-AL"`/`" AUTO-ALLO"` -- a silent mid-word clip with
+    /// no sign anything was cut, exactly what the module's own "never a
+    /// silent clip" doc promises will not happen. The fix
+    /// ([`clamp_to_width`]) makes that truncation explicit: it always ends
+    /// in `…` at these widths instead.
+    #[test]
+    fn auto_allow_buffer_reads_back_a_deliberate_ellipsis_not_a_silent_mid_word_clip() {
+        let mut state = AppState::new(AgentId::new());
+        state.permission_mode = PermissionMode::AutoAllow;
+        let theme = Theme::default();
+
+        for width in [5u16, 8, 10] {
+            let rendered = render_row(&state, &theme, width);
+            assert!(
+                rendered.ends_with('…'),
+                "width {width}: an over-length mode floor must be \
+                 truncated with an explicit `…` marker, not silently \
+                 mid-word clipped by the terminal: {rendered:?}"
+            );
+        }
+
+        // Width 11: one column short of the floor's own width (12) -- the
+        // trailing pad space drops cleanly and the label itself renders
+        // whole, un-clipped.
+        let at_11 = render_row(&state, &theme, 11);
+        assert_eq!(at_11.trim(), "AUTO-ALLOW", "{at_11:?}");
+
+        // Width 12+: the floor rung (label + both pad spaces) fits exactly
+        // -- the safety label renders whole, no truncation needed.
+        let at_12 = render_row(&state, &theme, 12);
+        assert_eq!(at_12.trim(), "AUTO-ALLOW", "{at_12:?}");
+    }
+
+    /// **Finding 2, the concrete regression guard.** `ladder_width` used to
+    /// measure `.content.chars().count()` -- one CJK character counts as
+    /// one char but renders as TWO terminal columns, so the arithmetic
+    /// could be wrong by up to 2x. `lineage` embeds `agent_def` names
+    /// (`"@{def}"`, `view/agents.rs`'s `recipe_parts`) verbatim -- arbitrary
+    /// user-chosen text with no ASCII restriction -- and `lineage` sits
+    /// directly before `mode` in the default give-up order, so an
+    /// undercounted `lineage` rung used to leave the assembly thinking it
+    /// had more room than it did, and the overflow landed on -- and
+    /// mid-word-clipped -- the `AUTO-ALLOW` safety indicator instead of
+    /// `lineage` degrading (or dropping) first as `drop_priority` intends.
+    #[test]
+    fn cjk_lineage_content_is_measured_in_columns_not_chars_and_never_clips_mode() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        state.permission_mode = PermissionMode::AutoAllow;
+        let child = AgentId::new();
+        // 10 CJK characters -- 10 chars, but 20 terminal columns; a
+        // char-counting `ladder_width` undercounts this rung's true width
+        // by half.
+        push_node(
+            &mut state,
+            child,
+            root,
+            Some("称呼名字十字路口方向标识"),
+            Some(conway::SubagentMode::Spawn),
+            None,
+        );
+        state.focus_agent(child);
+        // `mode` immediately follows `lineage`, and nothing follows `mode`
+        // -- isolates exactly the reviewer's claim: with `lineage` sitting
+        // directly before `mode` and nothing after it to absorb an
+        // undercounted tail, a mismeasured `lineage` rung's overflow lands
+        // squarely on the safety indicator. Empirically confirmed against
+        // the pre-fix code: widths 62-72 mid-word-clip `AUTO-ALLOW` itself
+        // (e.g. width 67 renders `"...ready · AUTO"`, missing `-ALLOW`
+        // entirely, with no sign anything was cut) because `ladder_width`
+        // undercounts the 12 double-width CJK characters in `lineage`'s
+        // `Full` rung by 12 columns, so the fit-check believes `lineage`
+        // can stay at `Full` when the real render cannot fit it.
+        state.status_line_config = cfg(&["lineage", "mode"]);
+
+        for width in 62u16..=72 {
+            let rendered = render_row(&state, &Theme::default(), width);
+            let full = rendered.contains("AUTO-ALLOW");
+            let marked_truncation = rendered.trim_end().ends_with('…');
+            assert!(
+                full || marked_truncation,
+                "width {width}: a mis-measured CJK `lineage` rung must not \
+                 silently mid-word-clip the AUTO-ALLOW indicator -- it \
+                 must render whole, or be explicitly `…`-truncated: \
+                 {rendered:?}"
+            );
+        }
     }
 
     /// A non-default field order/config still keeps `mode` last to give up
@@ -1729,5 +2042,114 @@ mod tests {
         for width in [50u16, 106, 200, u16::MAX] {
             let _ = status_line_spans(&state, &Theme::default(), width);
         }
+    }
+
+    // ---- Adversarial review (352d2f4) of the width-degradation ladder:
+    // FINDING 1 (critical) -- `AUTO-ALLOW` can be silently disabled by
+    // config. `resolve_fields` accepted a configured `fields` list verbatim
+    // even when it omitted `mode` entirely -- the empty-list fallback only
+    // fires when the list is empty AFTER filtering unknown names, not when
+    // a KNOWN field is simply absent. `mode_ladder`'s width-survival
+    // guarantee is worthless if `mode` never enters the resolved list at
+    // all. Fix: while a non-default `PermissionMode` is active, `mode` is
+    // forced into the resolved list even when the configured `fields`
+    // omits it -- see `resolve_fields`'s own doc for why this is Option 3
+    // (appear only when it carries information) rather than Option 1
+    // (always forced) or Option 2 (validate/refuse at config load). ----
+
+    #[test]
+    fn auto_allow_survives_a_fields_list_that_omits_mode_entirely() {
+        // This is the direct regression test for the finding: a pinned
+        // `fields` list that simply never mentions `mode` must not be able
+        // to turn off the one genuine safety signal on the line.
+        let mut state = AppState::new(AgentId::new());
+        state.status_line_config = cfg(&["session", "hint"]);
+        state.permission_mode = PermissionMode::AutoAllow;
+        let line = status_line(&state);
+        assert!(
+            line.contains("AUTO-ALLOW"),
+            "a `fields` list that omits `mode` must not silently disable \
+             the AUTO-ALLOW indicator: {line}"
+        );
+    }
+
+    #[test]
+    fn plan_mode_also_survives_a_fields_list_that_omits_mode() {
+        // Not just AutoAllow: any non-default permission mode is
+        // information the operator needs, so the fix is not special-cased
+        // to the single most alarming variant.
+        let mut state = AppState::new(AgentId::new());
+        state.status_line_config = cfg(&["session", "hint"]);
+        state.permission_mode = PermissionMode::Plan;
+        let line = status_line(&state);
+        assert!(line.contains("plan"), "{line}");
+    }
+
+    #[test]
+    fn default_prompt_mode_stays_out_when_a_fields_list_omits_mode() {
+        // The forced-in behavior is conditional on carrying information
+        // (Option 3, not Option 1): while `Prompt` (the default) is
+        // active, an older/hand-pinned `fields` list that genuinely omits
+        // `mode` keeps rendering exactly as configured -- no `ready`/
+        // `awaiting permission` text appears out of nowhere.
+        let mut state = AppState::new(AgentId::new());
+        state.status_line_config = cfg(&["session", "hint"]);
+        let line = status_line(&state);
+        assert!(
+            !line.contains("ready"),
+            "the default Prompt mode must not be forced in when `fields` \
+             genuinely omits `mode`: {line}"
+        );
+    }
+
+    /// The env-var override path (`CONWAY_TUI__STATUS_LINE__FIELDS`) feeds
+    /// `StatusLineConfig` through the exact same comma-split array-leaf-key
+    /// mechanism the file-based `settings.json` `fields` key uses
+    /// (`conway::config::merge`'s `ARRAY_LEAF_KEYS`) -- this proves the env
+    /// path can ALSO produce a `fields` list missing `mode`, not just a
+    /// hand-pinned `settings.json`, and that the fix at the render layer
+    /// (not the config layer) covers both sources uniformly.
+    #[test]
+    fn env_var_fields_override_can_omit_mode_and_the_fix_still_covers_it() {
+        let xdg_dir = tempfile::tempdir().expect("tempdir");
+        let cwd_dir = tempfile::tempdir().expect("tempdir");
+        let mut env = std::collections::HashMap::new();
+        // Redirect the user-scoped config path into an empty tempdir so
+        // this test cannot pick up a real `~/.conway/settings.json` on the
+        // machine it runs on.
+        env.insert(
+            "XDG_CONFIG_HOME".to_string(),
+            xdg_dir.path().to_string_lossy().to_string(),
+        );
+        env.insert(
+            "CONWAY_TUI__STATUS_LINE__FIELDS".to_string(),
+            "session,hint".to_string(),
+        );
+        let outcome = conway::config::load(conway::config::LoadOptions {
+            cwd: cwd_dir.path().to_path_buf(),
+            explicit_path: None,
+            env,
+            cli_overrides: conway::config::CliOverrides::default(),
+            model_metadata_refresh: false,
+        })
+        .expect("load must succeed");
+
+        assert_eq!(
+            outcome.config.tui.status_line.fields,
+            vec!["session".to_string(), "hint".to_string()],
+            "the env override must actually produce a `fields` list \
+             omitting `mode` -- proving this is a reachable real config, \
+             not just a hypothetical one"
+        );
+
+        let mut state = AppState::new(AgentId::new());
+        state.status_line_config = outcome.config.tui.status_line;
+        state.permission_mode = PermissionMode::AutoAllow;
+        let line = status_line(&state);
+        assert!(
+            line.contains("AUTO-ALLOW"),
+            "AUTO-ALLOW must survive even when the env-sourced `fields` \
+             list omits `mode` entirely: {line}"
+        );
     }
 }
