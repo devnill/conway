@@ -1,7 +1,7 @@
 # Architecture: conway
 
 This is the living design overview for conway. It describes the system as
-committed at **0.4.0** — for the release-by-release history of what changed
+committed at **0.5.0** — for the release-by-release history of what changed
 and why, see [CHANGELOG.md](CHANGELOG.md); for the inception-era planning
 rationale that predates the current shape (why decisions were made, not
 just what they are), see this project's ideate decision/journal records —

@@ -5,7 +5,21 @@ All notable changes to **conway** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.5.0] — 2026-07-29
+
+### Security
+
+Two defects in the permission layer's pattern-grant path are fixed in this
+release. **Anyone on 0.4.0 or earlier who persists `permissions.json`
+pattern grants should upgrade.** In short: a `bash:git status`-style prefix
+grant never matched anything at all (fail-*closed*, so it over-prompted
+rather than over-permitted), and — found while fixing that — the
+shell-metacharacter check protecting those grants could be laundered by the
+display sanitizer that ran ahead of it, so a newline-chained command
+(`git status \n rm -rf /`) would have been **silently auto-approved** by an
+existing `bash:git status` grant while the shell executed the raw newline
+for real (fail-*open*). Full detail on both, including the tests that pin
+them, in the two `CRITICAL` entries under **Fixed** below.
 
 ### Fixed
 
