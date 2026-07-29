@@ -100,8 +100,8 @@ concerns in conway, not one:
   narrowable per-turn by a [`ContextHook`](conway-core.md) (`conway-core`,
   0.2.0) editing `ContextPayload::tools`, or per-agent-definition by
   `AgentDef::tools`/`SubagentSpec::tools` (a `ToolSelector`). A tool that
-  is never announced can never be proposed by the model this turn — it is
-  simply not offered, not silently denied.
+  is never announced is simply not offered to the model this turn — not
+  silently denied.
 - **Execution** is gated by `PermissionGate` (`conway-core::ports::
   permission`), a trait every consumer (CLI, IDE, embedder) implements —
   `conway-tools` and `conway-core` ship no privileged bypass:
@@ -131,6 +131,18 @@ concerns in conway, not one:
   strictly a UX/context-budget concern, not a permission bypass: the gate
   still governs every call the model *does* propose regardless of what was
   announced.
+
+**For embedders: narrowing is not a capability boundary.** A `ToolSelector`
+(and likewise a `ContextHook` that edits `ContextPayload::tools`) narrows
+*announcement* only. Tool dispatch resolves a proposed call by name against
+the whole `PluginRegistry` the agent was built with, so a tool that is
+registered but not selected stays fully reachable if the model happens to
+name it exactly — an unannounced-but-registered name is a real call, not an
+"unknown tool" error. If you need a hard guarantee ("this agent can never
+touch the filesystem"), get it one of two ways: don't register those tools
+into that agent's plugin set at all (simplest and unconditional), or run a
+deny-by-default `PermissionGate` that allows only what you intend. Do not
+rely on the selector for it.
 
 `ToolSpec::permission: PermissionClass` (`Safe | RequiresApproval |
 Dangerous`, `conway-core`) is a static, coarse-grained hint a gate
