@@ -601,14 +601,19 @@ impl SubagentHost for Runtime {
     /// orchestrator's `ToolResultRecord` can name the ephemeral child
     /// session.
     async fn ask(&self, parent: AgentId, spec: SubagentSpec) -> Result<AskOutcome, RuntimeError> {
-        // P-1 (amended): `ask` is fork+await-text -- the fork-only invariant is
-        // enforced here at the trait boundary, not only at the `conway_ask`
-        // tool callsite, so no other caller can bypass it with a Spawn spec.
-        debug_assert!(
-            matches!(spec.mode, SubagentMode::Fork),
-            "SubagentHost::ask is fork-only (P-1); got {:?}",
-            spec.mode
-        );
+        // P-1: `ask` is fork+await-text -- the fork-only invariant is
+        // enforced here at the trait boundary (not only at the `conway_ask`
+        // tool callsite, which happens to always construct `Fork` itself),
+        // so no other caller -- including a future out-of-process plugin
+        // supplying JSON, not a trusted in-process Rust type -- can bypass
+        // it with a `Spawn` spec. A real (non-`debug_assert!`) check: a
+        // `debug_assert!` compiles to nothing in release builds, which is
+        // every binary a user runs, so it left this invariant unenforced
+        // outside debug. P-10: a malformed spec is a typed error, never a
+        // panic -- `assert!`/`unwrap`/`expect` are not used here.
+        if spec.mode != SubagentMode::Fork {
+            return Err(RuntimeError::AskRequiresFork { mode: spec.mode });
+        }
         // 1. Subscribe BEFORE launch so the first TextDelta is not missed.
         let mut stream = Runtime::subscribe(self);
         // 2. Launch the child (fork per `spec.mode`; `ask` is fork-only -- P-1).

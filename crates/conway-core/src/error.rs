@@ -10,6 +10,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::ids::{AgentId, LogSeq, ModelRef, RoleAlias, SessionId, ToolName};
+use crate::log::SubagentMode;
 
 /// Errors produced by a `Backend` implementation.
 #[non_exhaustive]
@@ -215,6 +216,15 @@ pub enum RuntimeError {
         max_context_tokens: u32,
         shortfall_tokens: u32,
     },
+    /// P-1: `SubagentHost::ask` is fork-only — enforced HERE, at the trait
+    /// boundary, not only at the `conway_ask` tool callsite (a
+    /// `debug_assert!` alone compiles to nothing in release builds and
+    /// leaves the invariant unenforced for any caller other than that one
+    /// tool; see `conway-runtime`'s `subagent.rs` `ask` impl). A malformed
+    /// `SubagentSpec::mode` reaching `ask` is a typed error (P-10), never a
+    /// panic.
+    #[error("ask requires SubagentMode::Fork (P-1: ask is fork+await-text, not a third primitive); got {mode:?}")]
+    AskRequiresFork { mode: SubagentMode },
 }
 
 /// Errors produced by plugin registration and initialization.
