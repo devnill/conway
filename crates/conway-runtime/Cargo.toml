@@ -10,7 +10,7 @@ description = "Agent engine: event bus, agent loop/tree, context assembly, tool 
 conway-core = { path = "../conway-core" }
 conway-routing = { path = "../conway-routing" }
 conway-session = { path = "../conway-session" }
-tokio = { workspace = true, features = ["rt-multi-thread", "sync", "macros", "time"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "macros", "time", "fs"] }
 tokio-util = { workspace = true }
 tokio-stream = { workspace = true, features = ["sync"] }
 futures = { workspace = true }
@@ -48,3 +48,4 @@ schemars = { workspace = true }
 [dev-dependencies]
 conway-core = { path = "../conway-core", features = ["fakes"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util"] }
+tempfile = { workspace = true }

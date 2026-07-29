@@ -475,6 +475,7 @@ async fn spawn_without_agent_def_inherits_the_parents_role() {
         keep_alive: false,
         ephemeral: false,
         ask_origin: None,
+        cwd: None,
     };
     let mut stream = runtime.subscribe();
     let child = SubagentHost::start(&*runtime, root, spec).await.unwrap();
@@ -1149,5 +1150,366 @@ async fn tool_ctx_subagents_is_the_runtime_itself() {
             .count(),
         1,
         "the tool's fork call must have attached exactly one child of root to this runtime's tree"
+    );
+}
+
+// ---------------------------------------------------------------------
+// C1: `SubagentSpec::cwd` scopes a child to its own working directory,
+// independent of the parent's -- see `conway_core::agent::SubagentSpec::cwd`
+// for the full absolute/relative/nonexistent-path semantics these tests
+// prove against the real runtime.
+// ---------------------------------------------------------------------
+
+/// Records `ToolCtx::cwd` for whichever agent invokes it -- short of a
+/// dedicated runtime inspection API (none exists), this is the only way to
+/// observe an `AgentLoop`'s actually-resolved cwd; mirrors this file's own
+/// `ForkingTool`/`SlowTool` probe-plugin pattern.
+#[derive(Default)]
+struct CwdProbe {
+    observed: std::sync::Mutex<HashMap<AgentId, PathBuf>>,
+}
+
+struct CwdProbeTool {
+    probe: Arc<CwdProbe>,
+}
+
+fn cwd_probe_tool_spec() -> conway_core::content::ToolSpec {
+    conway_core::content::ToolSpec {
+        name: conway_core::ids::ToolName::new("cwd_probe"),
+        description: "records ctx.cwd for the calling agent".into(),
+        schema: serde_json::from_value(serde_json::json!({"type": "object"})).unwrap(),
+        category: conway_core::content::ToolCategory::Read,
+        permission: conway_core::content::PermissionClass::Safe,
+    }
+}
+
+#[async_trait]
+impl conway_core::ports::Tool for CwdProbeTool {
+    fn spec(&self) -> conway_core::content::ToolSpec {
+        cwd_probe_tool_spec()
+    }
+
+    async fn invoke(
+        &self,
+        _call: conway_core::content::ToolCall,
+        ctx: conway_core::ports::ToolCtx,
+    ) -> Result<conway_core::ports::ToolOutput, ToolError> {
+        self.probe
+            .observed
+            .lock()
+            .unwrap()
+            .insert(ctx.agent_id, ctx.cwd.clone());
+        Ok(conway_core::ports::ToolOutput {
+            blocks: vec![ContentBlock::Text {
+                text: "recorded".into(),
+            }],
+            is_error: false,
+            truncation: conway_core::content::TruncationPolicy::None,
+            artifacts: vec![],
+        })
+    }
+}
+
+struct CwdProbePlugin {
+    tool: Arc<CwdProbeTool>,
+}
+
+impl conway_core::ports::Plugin for CwdProbePlugin {
+    fn manifest(&self) -> conway_core::ports::PluginManifest {
+        conway_core::ports::PluginManifest {
+            id: "cwd_probe".to_string(),
+            version: "0.0.0".to_string(),
+            tools: vec![cwd_probe_tool_spec().name],
+            required_host_caps: vec![],
+        }
+    }
+
+    fn tools(&self) -> Vec<Arc<dyn conway_core::ports::Tool>> {
+        vec![self.tool.clone()]
+    }
+}
+
+fn tool_call_response(call_id: &str) -> conway_core::ports::GenerateResponse {
+    conway_core::ports::GenerateResponse {
+        content: vec![],
+        tool_calls: vec![conway_core::content::ToolCall {
+            call_id: call_id.into(),
+            name: conway_core::ids::ToolName::new("cwd_probe"),
+            arguments: serde_json::json!({}),
+        }],
+        stop: StopReason::ToolUse,
+        usage: Usage {
+            input_tokens: 10,
+            output_tokens: 5,
+            ..Default::default()
+        },
+    }
+}
+
+/// Builds a runtime wired with the `cwd_probe` tool and a real (non-`Fake`)
+/// backing store so `SessionMeta.cwd` can be read back directly -- the
+/// script is supplied by the caller, who interleaves `tool_call_response`/
+/// `text_response` turns to script exactly the tool-calling sequence their
+/// test needs.
+fn build_probe_runtime(
+    script: Vec<ScriptedTurn>,
+) -> (Arc<Runtime>, Arc<dyn SessionStore>, Arc<CwdProbe>) {
+    let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
+    let probe = Arc::new(CwdProbe::default());
+
+    let backend = Arc::new(ScriptedBackend::new(script).with_id(BackendId::new("b")));
+    let model = ModelRef {
+        backend: backend.id(),
+        model: ModelId::new("m"),
+    };
+    let router: Arc<dyn Router> = Arc::new(FakeRouter::single(model));
+    let mut backends: HashMap<BackendId, Arc<dyn Backend>> = HashMap::new();
+    backends.insert(backend.id(), backend);
+
+    let runtime = Runtime::new(RuntimeDeps {
+        store: store.clone(),
+        router,
+        health: Arc::new(FakeHealth::new()),
+        backends,
+        plugins: vec![Arc::new(CwdProbePlugin {
+            tool: Arc::new(CwdProbeTool {
+                probe: probe.clone(),
+            }),
+        })],
+        gate: Arc::new(FakeGate::new(PermissionDecision::AllowOnce)),
+        agent_defs: HashMap::new(),
+        event_bus: EventBus::with_default_capacity(),
+        headroom: Arc::new(HeadroomPolicy::default()),
+    });
+    (runtime, store, probe)
+}
+
+fn root_spec_with_cwd(prompt: &str, cwd: PathBuf) -> RootSpec {
+    RootSpec {
+        cwd,
+        ..root_spec(prompt)
+    }
+}
+
+fn spawn_spec_with_cwd(prompt: &str, cwd: Option<PathBuf>) -> SubagentSpec {
+    SubagentSpec {
+        mode: SubagentMode::Spawn,
+        prompt: prompt.to_string(),
+        agent_def: None,
+        role: None,
+        tools: None,
+        budget: Budget::default(),
+        cache_hint: false,
+        result_contract: None,
+        await_result: true,
+        keep_alive: false,
+        ephemeral: false,
+        ask_origin: None,
+        cwd,
+    }
+}
+
+/// (c) Spawn with `cwd: Some(tmp/sub)`: the child's `SessionMeta.cwd` AND
+/// its `AgentLoop`'s actually-resolved `ToolCtx.cwd` (probed live via
+/// `cwd_probe`) both equal it -- `subagent.rs`'s `child_cwd` is computed
+/// once and used at both application sites, and this is the test that would
+/// catch the two ever diverging. A sibling spawned with `cwd: None`
+/// instead gets the PARENT's cwd, unchanged from before this item.
+#[tokio::test]
+async fn spawn_cwd_scopes_child_session_meta_and_tool_ctx_sibling_inherits_parent() {
+    let root_dir = tempfile::tempdir().unwrap();
+    let sub_dir = root_dir.path().join("sub");
+    std::fs::create_dir(&sub_dir).unwrap();
+
+    let (runtime, store, probe) = build_probe_runtime(vec![
+        ScriptedTurn::Respond(text_response("root turn")), // root's own turn
+        ScriptedTurn::Respond(tool_call_response("a1")),   // child A: calls cwd_probe
+        ScriptedTurn::Respond(text_response("a done")),    // child A: follow-up finish
+        ScriptedTurn::Respond(tool_call_response("b1")),   // child B: calls cwd_probe
+        ScriptedTurn::Respond(text_response("b done")),    // child B: follow-up finish
+    ]);
+
+    let mut stream = runtime.subscribe();
+    let root = runtime
+        .start_root(root_spec_with_cwd("hi", root_dir.path().to_path_buf()))
+        .await
+        .unwrap();
+    wait_for_agent_finished(&mut stream, root).await;
+
+    // Child A: scoped to sub_dir.
+    let mut stream = runtime.subscribe();
+    let child_a = SubagentHost::start(
+        &*runtime,
+        root,
+        spawn_spec_with_cwd("scoped child", Some(sub_dir.clone())),
+    )
+    .await
+    .unwrap();
+    wait_for_agent_finished(&mut stream, child_a).await;
+
+    let a_session = session_of(&runtime, child_a);
+    let a_meta = store.meta(&a_session).await.unwrap();
+    assert_eq!(
+        a_meta.cwd, sub_dir,
+        "child A's SessionMeta.cwd must equal the explicit spec.cwd override"
+    );
+    assert_eq!(
+        probe.observed.lock().unwrap().get(&child_a),
+        Some(&sub_dir),
+        "child A's ToolCtx.cwd (as seen by its own tool call) must equal the same override"
+    );
+
+    // Child B: a sibling of A, spawned with `cwd: None`.
+    let mut stream = runtime.subscribe();
+    let child_b = SubagentHost::start(
+        &*runtime,
+        root,
+        spawn_spec_with_cwd("unscoped sibling", None),
+    )
+    .await
+    .unwrap();
+    wait_for_agent_finished(&mut stream, child_b).await;
+
+    let b_session = session_of(&runtime, child_b);
+    let b_meta = store.meta(&b_session).await.unwrap();
+    assert_eq!(
+        b_meta.cwd,
+        root_dir.path(),
+        "a sibling spawned with cwd: None must inherit the PARENT's (root's) cwd, not A's"
+    );
+    assert_eq!(
+        probe.observed.lock().unwrap().get(&child_b),
+        Some(&root_dir.path().to_path_buf()),
+        "child B's ToolCtx.cwd must equal the parent's cwd too"
+    );
+}
+
+/// (d) A grandchild spawned with `cwd: None` inherits its IMMEDIATE parent's
+/// (possibly-overridden) cwd, not the root's -- the same "immediate parent,
+/// not root" rule `grandchild_fork_inherits_immediate_parents_full_effective_transcript`
+/// already proves for inherited transcript content, now proven for `cwd`.
+#[tokio::test]
+async fn grandchild_with_cwd_none_inherits_immediate_parents_cwd_not_roots() {
+    let root_dir = tempfile::tempdir().unwrap();
+    let child_dir = root_dir.path().join("child_scope");
+    std::fs::create_dir(&child_dir).unwrap();
+
+    let (runtime, store, _probe) = build_probe_runtime(vec![
+        ScriptedTurn::Respond(text_response("root turn")),
+        ScriptedTurn::Respond(text_response("child turn")),
+        ScriptedTurn::Respond(text_response("grandchild turn")),
+    ]);
+    let mut stream = runtime.subscribe();
+    let root = runtime
+        .start_root(root_spec_with_cwd("hi", root_dir.path().to_path_buf()))
+        .await
+        .unwrap();
+    wait_for_agent_finished(&mut stream, root).await;
+
+    let mut stream = runtime.subscribe();
+    let child = SubagentHost::start(
+        &*runtime,
+        root,
+        spawn_spec_with_cwd("scoped child", Some(child_dir.clone())),
+    )
+    .await
+    .unwrap();
+    wait_for_agent_finished(&mut stream, child).await;
+
+    let mut stream = runtime.subscribe();
+    let grandchild = SubagentHost::start(
+        &*runtime,
+        child,
+        spawn_spec_with_cwd("grandchild, no override", None),
+    )
+    .await
+    .unwrap();
+    wait_for_agent_finished(&mut stream, grandchild).await;
+
+    let grandchild_session = session_of(&runtime, grandchild);
+    let grandchild_meta = store.meta(&grandchild_session).await.unwrap();
+    assert_eq!(
+        grandchild_meta.cwd, child_dir,
+        "a grandchild with cwd: None must inherit the CHILD's (immediate parent's) cwd"
+    );
+    assert_ne!(
+        grandchild_meta.cwd,
+        root_dir.path(),
+        "the grandchild's cwd must not be the root's cwd"
+    );
+}
+
+/// (e) A nonexistent `cwd` fails the spawn fast, with a clear error --
+/// mapped through this crate's established `invalid_spec` "closest fit"
+/// convention (see `subagent.rs`'s own doc), the same surface an invalid
+/// `SubagentSpec` already uses.
+#[tokio::test]
+async fn spawn_with_nonexistent_cwd_fails_fast_with_a_clear_error() {
+    let (runtime, _store) = build_runtime(1, HashMap::new());
+    let root = start_and_finish_root(&runtime, "hi").await;
+
+    let missing = tempfile::tempdir().unwrap();
+    let missing_path = missing.path().join("does-not-exist");
+    // `missing` itself is dropped (and its directory removed) here, but
+    // `missing_path` was never created inside it either way -- it never
+    // existed.
+    drop(missing);
+
+    let err = SubagentHost::start(
+        &*runtime,
+        root,
+        spawn_spec_with_cwd("doomed", Some(missing_path.clone())),
+    )
+    .await
+    .unwrap_err();
+
+    match &err {
+        RuntimeError::Tool(ToolError::Internal { detail }) => {
+            assert!(
+                detail.contains(&missing_path.display().to_string()),
+                "error must name the offending path; got {detail:?}"
+            );
+        }
+        other => panic!("expected RuntimeError::Tool(ToolError::Internal {{ .. }}), got {other:?}"),
+    }
+}
+
+/// Not one of C1's five named acceptance tests, but the other half of its
+/// settled semantics: "relative: resolved against the PARENT's cwd at spawn
+/// time" (`conway_core::agent::SubagentSpec::cwd`'s own doc) is exercised
+/// directly here rather than only by construction (every path in the tests
+/// above happens to already be absolute).
+#[tokio::test]
+async fn spawn_with_relative_cwd_resolves_against_the_parents_cwd() {
+    let root_dir = tempfile::tempdir().unwrap();
+    let sub_dir = root_dir.path().join("relative_sub");
+    std::fs::create_dir(&sub_dir).unwrap();
+
+    let (runtime, store, _probe) = build_probe_runtime(vec![
+        ScriptedTurn::Respond(text_response("root turn")),
+        ScriptedTurn::Respond(text_response("child turn")),
+    ]);
+    let mut stream = runtime.subscribe();
+    let root = runtime
+        .start_root(root_spec_with_cwd("hi", root_dir.path().to_path_buf()))
+        .await
+        .unwrap();
+    wait_for_agent_finished(&mut stream, root).await;
+
+    let mut stream = runtime.subscribe();
+    let child = SubagentHost::start(
+        &*runtime,
+        root,
+        spawn_spec_with_cwd("relatively scoped", Some(PathBuf::from("relative_sub"))),
+    )
+    .await
+    .unwrap();
+    wait_for_agent_finished(&mut stream, child).await;
+
+    let child_session = session_of(&runtime, child);
+    let child_meta = store.meta(&child_session).await.unwrap();
+    assert_eq!(
+        child_meta.cwd, sub_dir,
+        "a relative cwd override must resolve against the PARENT's cwd, not be stored bare"
     );
 }

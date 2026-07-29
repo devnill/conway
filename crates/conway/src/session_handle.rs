@@ -268,6 +268,9 @@ impl SessionHandle {
             // `EphemeralSessionRef` artifact would dangle if it were ever
             // swept (see `conway_core::log::AskOrigin`'s own doc).
             ask_origin: Some(conway_core::log::AskOrigin::ModalAsk),
+            // A fork inherits the asker's entire context (C1's rationale for
+            // never exposing cwd on `ForkSpec`) -- inherit its cwd too.
+            cwd: None,
         };
         // Subscribe BEFORE `start` so the child's first events cannot race
         // past this handle's stream (see the doc above).

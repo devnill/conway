@@ -269,6 +269,10 @@ impl Tool for SubagentTool {
             // stamps `AskOrigin::ToolAsk`, the TUI's modal `/ask` stamps
             // `ModalAsk`; `conway_subagent` is neither.
             ask_origin: None,
+            // The model-invoked `conway_subagent` tool has no `cwd` argument
+            // (C1 only adds `cwd` to the facade's `SpawnSpec`, not this
+            // tool's own args schema) -- inherit the parent's, unchanged.
+            cwd: None,
         };
 
         let child = ctx

@@ -261,6 +261,9 @@ pub(crate) async fn classify(
         // Not an ask of either kind — see the module doc. The sweep only
         // touches `ModalAsk`, and this session is purged inline below.
         ask_origin: None,
+        // Intent classification has no cwd-scoping need of its own (C1) --
+        // inherit the parent's, unchanged.
+        cwd: None,
     };
 
     // Subscribe BEFORE `start` so the child's first `TextDelta` cannot race

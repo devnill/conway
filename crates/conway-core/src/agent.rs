@@ -7,6 +7,8 @@
 //! This crate performs no I/O: `SubagentSpec::validate` only checks internal
 //! consistency, and the `fork`/`spawn` constructors only set field defaults.
 
+use std::path::PathBuf;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -206,6 +208,30 @@ pub struct SubagentSpec {
     /// `None` everywhere else, including via the `fork`/`spawn` constructors
     /// below.
     pub ask_origin: Option<crate::log::AskOrigin>,
+    /// The child's own working directory, independent of the parent's (C1).
+    /// `None` (the `fork`/`spawn` constructors' default, preserving the
+    /// pre-existing "child always inherits the parent's cwd" behavior
+    /// unchanged) means `conway_runtime`'s `SubagentHost::start` resolves
+    /// the child's cwd from the parent's own [`crate::log::SessionMeta::cwd`]
+    /// exactly as before this field existed.
+    ///
+    /// `Some(path)` scopes the child to `path` instead: an absolute path is
+    /// used as-is; a relative path is resolved against the PARENT's cwd at
+    /// spawn time (the child has no cwd of its own yet to resolve against).
+    /// A nonexistent resolved path fails the spawn fast, with a clear error,
+    /// rather than starting a child whose tools would silently fail on
+    /// every relative path. This is defense in depth, not a sandbox: it
+    /// governs relative-path resolution only (`conway_core::ports::ToolCtx::
+    /// cwd`, which every filesystem tool resolves relative paths against) --
+    /// an absolute path a tool is given (or a `..` that walks back out)
+    /// still escapes it. The permission gate remains the actual enforcement
+    /// layer.
+    ///
+    /// `#[serde(default)]` (C-04): a `SubagentSpec` serialized before this
+    /// field existed still deserializes, as `None` -- the pre-existing
+    /// inherit-the-parent's-cwd behavior for every such spec.
+    #[serde(default)]
+    pub cwd: Option<PathBuf>,
 }
 
 impl SubagentSpec {
@@ -238,6 +264,7 @@ impl SubagentSpec {
             keep_alive: false,
             ephemeral: false,
             ask_origin: None,
+            cwd: None,
         }
     }
 
@@ -257,6 +284,7 @@ impl SubagentSpec {
             keep_alive: false,
             ephemeral: false,
             ask_origin: None,
+            cwd: None,
         }
     }
 }
@@ -575,6 +603,7 @@ mod tests {
             keep_alive: false,
             ephemeral: false,
             ask_origin: None,
+            cwd: None,
         };
         assert!(spec.validate().is_ok());
     }
@@ -603,6 +632,45 @@ mod tests {
         let spec = SubagentSpec::spawn("x", AgentDefRef("r".into()), Budget::default());
         assert_eq!(spec.mode, SubagentMode::Spawn);
         assert!(!spec.cache_hint);
+    }
+
+    #[test]
+    fn fork_and_spawn_constructors_default_cwd_none() {
+        // C1: `cwd` didn't exist before this item; both constructors default
+        // it to `None` ("inherit the parent's cwd"), preserving the
+        // pre-existing fork/spawn behavior unchanged.
+        let fork = SubagentSpec::fork("x", Budget::default());
+        assert_eq!(fork.cwd, None);
+        let spawn = SubagentSpec::spawn("x", AgentDefRef("r".into()), Budget::default());
+        assert_eq!(spawn.cwd, None);
+    }
+
+    /// (b) C1's own acceptance test: a `SubagentSpec` in the shape it had
+    /// before this item -- no `cwd` key at all, exactly what pre-C1 code (or
+    /// any external caller/persisted snapshot -- C-04) produced -- still
+    /// deserializes, with `cwd` landing on its `None` default rather than
+    /// failing or requiring the key.
+    #[test]
+    fn legacy_subagent_spec_json_without_cwd_deserializes_to_none() {
+        let spec = SubagentSpec::spawn("do it", AgentDefRef("reviewer".into()), Budget::default());
+        let mut value = serde_json::to_value(&spec).unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("cwd")
+            .expect("cwd is a real key in the current shape, or this test proves nothing");
+
+        let legacy: SubagentSpec = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            legacy.cwd, None,
+            "a cwd-less legacy SubagentSpec must deserialize with cwd: None"
+        );
+        // Every other field round-trips untouched -- this isn't a partial
+        // legacy shape, just today's shape minus the one new key.
+        assert_eq!(legacy.mode, spec.mode);
+        assert_eq!(legacy.prompt, spec.prompt);
+        assert_eq!(legacy.agent_def, spec.agent_def);
+        assert_eq!(legacy.budget, spec.budget);
     }
 
     #[test]

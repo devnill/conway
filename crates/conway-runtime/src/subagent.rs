@@ -165,6 +165,36 @@ impl SubagentHost for Runtime {
         let parent_meta = self.loop_deps().store.meta(&parent_session).await?;
         let at_seq = self.loop_deps().store.head(&parent_session).await?;
 
+        // C1: the child's own cwd, resolved and validated ONCE here, then
+        // used at BOTH inheritance sites below (`SessionMeta.cwd` and
+        // `AgentLoop.cwd`) -- they must never diverge, or a session whose
+        // header says one directory while its tools actually resolve
+        // relative paths against another would be incoherent. `spec.cwd:
+        // None` (still what `SubagentSpec::fork`/`::spawn` produce) means
+        // "inherit the parent's cwd", exactly the behavior from before this
+        // field existed. `Some(path)`: an absolute path is used as-is; a
+        // relative path is resolved against the PARENT's cwd -- the child
+        // has no cwd of its own yet to resolve against, and re-resolving a
+        // relative override against the child's own (not-yet-existent) cwd
+        // would be circular. See `conway_core::agent::SubagentSpec::cwd`'s
+        // own doc for the full semantics this implements, including the "no
+        // sandbox claim" caveat (this governs relative-path resolution
+        // only; an absolute path, or a `..` that walks back out, still
+        // escapes it -- the permission gate remains the real enforcement
+        // layer). A nonexistent resolved path fails the spawn fast, below,
+        // rather than starting a child whose tools would silently fail on
+        // every relative path.
+        let child_cwd = match spec.cwd.clone() {
+            Some(cwd) if cwd.is_absolute() => cwd,
+            Some(cwd) => parent_meta.cwd.join(cwd),
+            None => parent_meta.cwd.clone(),
+        };
+        if tokio::fs::metadata(&child_cwd).await.is_err() {
+            return Err(invalid_spec(ConwayError::Config {
+                detail: format!("subagent cwd {} does not exist", child_cwd.display()),
+            }));
+        }
+
         let agent_id = AgentId::new();
         let mut agent_path = self.tree_ref().path(parent);
         agent_path.push(agent_id);
@@ -206,7 +236,7 @@ impl SubagentHost for Runtime {
             agent_def: agent_def.map(|d| d.name.clone()),
             role: Some(role.clone()),
             created: now,
-            cwd: parent_meta.cwd.clone(),
+            cwd: child_cwd.clone(),
             labels: Vec::new(),
             status: SessionStatus::Active,
             // `ephemeral` flows straight from the caller's `SubagentSpec`: a
@@ -373,7 +403,7 @@ impl SubagentHost for Runtime {
             session: session_id,
             parent: Some(parent),
             agent_path,
-            cwd: parent_meta.cwd,
+            cwd: child_cwd,
             deps: self.loop_deps().clone(),
             spec: agent_spec,
             cancel: cancel.clone(),
