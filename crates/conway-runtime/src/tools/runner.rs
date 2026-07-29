@@ -3,17 +3,22 @@
 //! concurrent execution, cancellation, truncation enforcement, and per-call
 //! event emission.
 //!
-//! ## A documented interpretation gap: `rendered`
+//! ## `rendered`: per-tool, via `Tool::render`
 //!
 //! Architecture §4.3 describes `PermissionRequest::rendered` as "a
-//! human-readable one-liner from the tool", implying `Tool` itself renders
-//! its own call. The committed `conway_core::ports::Tool` trait (WI-061)
-//! has no such method — only `spec()` and `invoke()`. Since extending that
-//! trait is out of this crate's file scope, [`render_call`] synthesizes a
-//! generic one-liner from the tool name and canonicalized arguments
-//! instead. This should be raised against `MODULE:conway-core`/`conway-tools`
-//! as a request for a per-tool renderer; until then every tool call renders
-//! identically regardless of what it does.
+//! human-readable one-liner from the tool" — `conway_core::ports::Tool` now
+//! has exactly that method (`Tool::render`, with a default reproducing the
+//! old generic `name(args)` shape for any tool that doesn't need something
+//! more specific). [`render_call`] calls it on the resolved tool instance
+//! and sanitizes the result ([`sanitize_rendered`]) before it becomes
+//! `AuthorizedCall::rendered` — the single seam every consumer of
+//! `rendered` (the permission prompt, `Event::PermissionRequested`,
+//! `PatternRule` prefix matching) shares. Previously this synthesized a
+//! generic one-liner unconditionally, which made every `PatternRule` grant
+//! permanently inert (`bash`'s rendering always carried the JSON
+//! metacharacters `(){}`, which `PatternRule::matches`'s hard gate rejects
+//! by design) — see `bash`'s `Tool::render` override, which fixes that by
+//! rendering the bare command string instead of a JSON dump.
 //!
 //! ## Cancellation bridging
 //!
@@ -37,7 +42,7 @@ use conway_core::error::ToolError;
 use conway_core::event::Event;
 use conway_core::ids::{AgentId, SessionId, ToolName};
 use conway_core::ports::{
-    CancellationToken as CoreCancellationToken, EventSinkHandle, PluginConfig, SubagentHost,
+    CancellationToken as CoreCancellationToken, EventSinkHandle, PluginConfig, SubagentHost, Tool,
     ToolCtx, ToolOutput,
 };
 use futures::FutureExt;
@@ -247,7 +252,7 @@ async fn execute_one(
         tool: tool_name.clone(),
         category: resolved.spec.category,
         arguments: call.arguments.clone(),
-        rendered: render_call(&call),
+        rendered: render_call(resolved.tool.as_ref(), &call.arguments),
     };
     let perm_ctx = PermissionCtx {
         agent_id,
@@ -344,10 +349,28 @@ async fn execute_one(
     outcome
 }
 
-/// A generic one-liner rendering of a proposed call — see the module doc
-/// comment's "documented interpretation gap" section.
-fn render_call(call: &ToolCall) -> String {
-    format!("{}({})", call.name, call.arguments)
+/// The single seam where every proposed call's `rendered` text is produced
+/// — see the module doc comment. Defers to the resolved tool's own
+/// [`Tool::render`] (rather than synthesizing a generic form here) and
+/// sanitizes the result before it becomes `AuthorizedCall::rendered`.
+fn render_call(tool: &dyn Tool, args: &serde_json::Value) -> String {
+    sanitize_rendered(&tool.render(args))
+}
+
+/// P-10: a tool's rendering is derived from model-supplied arguments and is
+/// therefore UNTRUSTED. Replaces every Unicode control character (`Cc`:
+/// `\x00`-`\x1F`, `\x7F`, and the C1 controls `\x80`-`\x9F`) with the
+/// Unicode replacement character, so a model-supplied argument containing
+/// e.g. an ANSI escape sequence (`\x1b[...`) cannot reach the TUI's
+/// permission prompt (or any other consumer of `rendered`) as raw
+/// terminal-control bytes. Applied once, here, rather than by each `Tool`
+/// implementation, so the guarantee holds for the default rendering AND
+/// every override without each one needing to know about it.
+fn sanitize_rendered(rendered: &str) -> String {
+    rendered
+        .chars()
+        .map(|c| if c.is_control() { '\u{FFFD}' } else { c })
+        .collect()
 }
 
 /// The first 200 chars of the first `Text` block, or empty if there is
@@ -494,4 +517,71 @@ fn truncate_head_tail(text: &str, head_bytes: usize, tail_bytes: usize) -> (Stri
         ),
         (head_boundary + (text.len() - tail_start)) as u64,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_rendered_is_a_no_op_on_ordinary_text() {
+        assert_eq!(
+            sanitize_rendered("git status --short"),
+            "git status --short"
+        );
+    }
+
+    /// P-10: the concrete threat this exists for — a model-supplied
+    /// argument smuggling an ANSI escape sequence into the permission
+    /// prompt must not reach the terminal as a raw ESC byte.
+    #[test]
+    fn sanitize_rendered_neutralizes_ansi_escape_sequences() {
+        let sanitized = sanitize_rendered("git status\x1b[31m; rm -rf /\x1b[0m");
+        assert!(!sanitized.contains('\x1b'), "{sanitized:?}");
+        assert!(sanitized.contains('\u{FFFD}'), "{sanitized:?}");
+    }
+
+    #[test]
+    fn sanitize_rendered_neutralizes_other_control_bytes() {
+        for raw in ["a\0b", "a\nb", "a\rb", "a\tb", "a\x07b", "a\x7fb"] {
+            let sanitized = sanitize_rendered(raw);
+            assert!(
+                sanitized.chars().all(|c| !c.is_control()),
+                "{raw:?} -> {sanitized:?}"
+            );
+        }
+    }
+
+    /// A minimal `Tool` whose `render` is the trait's default, to prove
+    /// `render_call` reaches the tool instance rather than re-implementing
+    /// the rendering itself.
+    struct ProbeTool;
+
+    #[async_trait::async_trait]
+    impl Tool for ProbeTool {
+        fn spec(&self) -> conway_core::content::ToolSpec {
+            conway_core::content::ToolSpec {
+                name: ToolName::new("probe"),
+                description: "test".into(),
+                schema: schemars::schema_for!(serde_json::Value),
+                category: conway_core::content::ToolCategory::Read,
+                permission: conway_core::content::PermissionClass::Safe,
+            }
+        }
+
+        async fn invoke(
+            &self,
+            _call: ToolCall,
+            _ctx: ToolCtx,
+        ) -> Result<ToolOutput, conway_core::error::ToolError> {
+            unreachable!("not exercised by this test")
+        }
+    }
+
+    #[test]
+    fn render_call_uses_the_resolved_tool_and_sanitizes_its_output() {
+        let rendered = render_call(&ProbeTool, &serde_json::json!({"a": "x\x1by"}));
+        assert!(rendered.starts_with("probe("), "{rendered:?}");
+        assert!(!rendered.contains('\x1b'), "{rendered:?}");
+    }
 }
