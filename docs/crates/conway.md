@@ -89,6 +89,42 @@ fork inherits its forker's role (a recorded design decision that relaxes the
 consumes — this module contains no fork/spawn logic of its own, only the
 request shape and that conversion.
 
+**`SpawnSpec.cwd: Option<PathBuf>` (C1)** scopes the spawned child to its own
+working directory instead of unconditionally inheriting the spawning
+session's — the motivating case is an embedder (Kepler) scoping a
+drill-down explorer child to one region of a codebase. Set it via
+`SpawnSpec::cwd(path)`; `None` (the `SpawnSpec::new` default) preserves the
+pre-existing "child inherits the parent's cwd" behavior unchanged.
+
+- **Absolute path:** used as-is.
+- **Relative path:** resolved against the PARENT's cwd at spawn time (the
+  child has no cwd of its own yet to resolve against) — not the child's own
+  eventual cwd, and not the process's current working directory.
+- **Nonexistent resolved path:** the spawn fails fast, with a clear error
+  naming the offending path (`RuntimeError::Tool(ToolError::Internal{..})`,
+  `conway-runtime`'s established "closest fit" error surface for a rejected
+  spec — see `subagent.rs`'s own doc), rather than starting a child whose
+  tools would silently fail on every relative path.
+- **Grandchildren:** a child spawned with `cwd: None` inherits its
+  IMMEDIATE parent's (possibly-overridden) cwd, not the root's — the same
+  "immediate parent, not root" rule the inherited-transcript machinery
+  already follows at fork depth ≥ 2.
+- **No sandbox claim:** this governs relative-path resolution only (every
+  filesystem tool resolves its relative arguments against
+  `conway_core::ports::ToolCtx::cwd`, which this field ultimately sets). An
+  absolute path a tool is given, or a `..` that walks back out, still
+  escapes it — the permission gate remains the actual enforcement layer;
+  `cwd` is defense in depth on top of it, not a replacement for it.
+
+Deliberately **not** a field on `ForkSpec`: a fork inherits the forker's
+ENTIRE context (GP-02), so a `ForkSpec.cwd` override would be incoherent
+with the context the child actually sees — the child's own transcript would
+keep describing the forker's directory while its tools silently resolved
+somewhere else. `conway_core::agent::SubagentSpec::cwd` (the type both specs
+convert into) does carry the field regardless of mode — `ForkSpec`'s own
+`From` impl simply always maps it to `None` — but only `SpawnSpec` exposes
+it as a request-shape option.
+
 ## The `/ask` ephemeral fork
 
 `SessionHandle::ask(text) -> TurnHandle` is the ephemeral side-question

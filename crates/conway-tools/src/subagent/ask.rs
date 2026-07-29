@@ -131,6 +131,9 @@ impl Tool for AskTool {
             // leave that artifact dangling (see
             // `conway_core::log::AskOrigin`'s own doc).
             ask_origin: Some(conway_core::log::AskOrigin::ToolAsk),
+            // A fork inherits the caller's entire context (C1's rationale) --
+            // inherit its cwd too.
+            cwd: None,
         };
 
         let outcome = ctx

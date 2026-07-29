@@ -153,6 +153,15 @@ impl From<ForkSpec> for SubagentSpec {
             keep_alive: spec.keep_alive,
             ephemeral: false,
             ask_origin: None,
+            // Deliberately NOT exposed on `ForkSpec` (C1): a fork inherits
+            // the forker's ENTIRE context (GP-02), so a `ForkSpec` field
+            // saying "but scope tools to this other directory" would be
+            // incoherent with the context the child actually sees -- the
+            // child's own transcript would keep describing the forker's
+            // directory while its tools silently resolved somewhere else.
+            // `cwd` is a `SpawnSpec`-only concept; see that struct's `cwd`
+            // field and `From<SpawnSpec>` below.
+            cwd: None,
         }
     }
 }
@@ -193,6 +202,20 @@ pub struct SpawnSpec {
     /// mapped through `From<SpawnSpec> for SubagentSpec` the same way.
     /// Defaults `false` via [`SpawnSpec::new`].
     pub keep_alive: bool,
+    /// (C1) Scopes the spawned child to its own working directory instead
+    /// of unconditionally inheriting this session's -- an embedder (Kepler)
+    /// scoping a drill-down explorer child to one region of a codebase is
+    /// the motivating case. `None` (the [`SpawnSpec::new`] default)
+    /// preserves the pre-existing "inherit the parent's cwd" behavior
+    /// unchanged. Set via [`SpawnSpec::cwd`]; see
+    /// [`conway_core::agent::SubagentSpec::cwd`]'s own doc for the exact
+    /// absolute/relative/nonexistent-path semantics
+    /// `conway_runtime::SubagentHost::start` resolves this against.
+    ///
+    /// Deliberately NOT a field on [`ForkSpec`] -- see that struct's own
+    /// `From` impl for why a fork's inherited-context semantics make a cwd
+    /// override incoherent there.
+    pub cwd: Option<std::path::PathBuf>,
 }
 
 impl SpawnSpec {
@@ -214,6 +237,7 @@ impl SpawnSpec {
             budget: Budget::default(),
             result_contract: None,
             keep_alive: false,
+            cwd: None,
         }
     }
 
@@ -247,6 +271,12 @@ impl SpawnSpec {
         self.keep_alive = keep_alive;
         self
     }
+
+    /// See [`SpawnSpec::cwd`]'s own field doc.
+    pub fn cwd(mut self, cwd: impl Into<std::path::PathBuf>) -> Self {
+        self.cwd = Some(cwd.into());
+        self
+    }
 }
 
 impl From<SpawnSpec> for SubagentSpec {
@@ -265,6 +295,7 @@ impl From<SpawnSpec> for SubagentSpec {
             keep_alive: spec.keep_alive,
             ephemeral: false,
             ask_origin: None,
+            cwd: spec.cwd,
         }
     }
 }
@@ -301,6 +332,10 @@ mod tests {
         assert!(!converted.cache_hint);
         assert!(converted.result_contract.is_none());
         assert!(converted.await_result);
+        assert_eq!(
+            converted.cwd, None,
+            "ForkSpec has no cwd field at all -- a fork always inherits the forker's cwd"
+        );
     }
 
     #[test]
@@ -351,6 +386,29 @@ mod tests {
             "spawn always forces cache_hint false"
         );
         assert!(converted.await_result);
+        assert_eq!(converted.cwd, None, "cwd defaults to None (inherit)");
+    }
+
+    /// (a) C1's own acceptance test: `SpawnSpec::cwd` maps through
+    /// `From<SpawnSpec> for SubagentSpec` unchanged, both when set and when
+    /// left at its default `None`.
+    #[test]
+    fn spawn_spec_cwd_maps_through_from_spawn_spec() {
+        let default_spec = SpawnSpec::new("x");
+        assert_eq!(default_spec.cwd, None);
+        let default_converted: SubagentSpec = default_spec.into();
+        assert_eq!(default_converted.cwd, None);
+
+        let scoped = SpawnSpec::new("x").cwd("/some/scoped/dir");
+        assert_eq!(
+            scoped.cwd,
+            Some(std::path::PathBuf::from("/some/scoped/dir"))
+        );
+        let converted: SubagentSpec = scoped.into();
+        assert_eq!(
+            converted.cwd,
+            Some(std::path::PathBuf::from("/some/scoped/dir"))
+        );
     }
 
     #[test]

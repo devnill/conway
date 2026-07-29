@@ -34,6 +34,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ForkDirective`/`ParentSteer` remain on the `AgentProgress` fallback for
   now, a disclosed scope decision, not an oversight.
 
+- **`SpawnSpec::cwd` — a spawned child can now run with its own working
+  directory (C1).** conway's hierarchical model spawns children to explore
+  small portions of a codebase; an embedder (Kepler) scopes each child to
+  one region. Previously a child's relative tool paths always resolved
+  against the PARENT's cwd — `SubagentSpec` had no `cwd` field at all — so
+  scoping a child to a subdirectory was possible only via prompt discipline
+  plus permission gating. `conway_core::agent::SubagentSpec` gains
+  `cwd: Option<PathBuf>` (`#[serde(default)]`, so an existing persisted
+  spec without the key still deserializes to `None`); `conway-runtime`'s
+  `SubagentHost::start` resolves it once and uses the SAME resolved value at
+  both the child's `SessionMeta.cwd` and its `AgentLoop`/`ToolCtx.cwd` — the
+  two must never diverge. An absolute override is used as-is; a relative one
+  resolves against the PARENT's cwd at spawn time; a nonexistent resolved
+  path fails the spawn fast, with a clear error, rather than starting a
+  child whose tools would silently fail on every relative path. A
+  grandchild spawned with `cwd: None` inherits its immediate parent's
+  (possibly-overridden) cwd, not the root's. This is defense in depth, not
+  a sandbox: it governs relative-path resolution only — an absolute path,
+  or a `..` that walks back out, still escapes it; the permission gate
+  remains the actual enforcement layer.
+
+  Exposed on the facade as `SpawnSpec::cwd(path)` (`conway/subagent_spec.rs`)
+  only — deliberately not on `ForkSpec`: a fork inherits the forker's ENTIRE
+  context (GP-02), so a cwd override there would be incoherent with the
+  context the child actually sees. See `docs/crates/conway.md`'s
+  `SpawnSpec` section for the full semantics.
+
 ### Fixed
 
 - **The TUI's sticky scroll header showed the wrong thing.** T6's own

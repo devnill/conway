@@ -246,6 +246,7 @@ fn ask_fork_spec(prompt: &str) -> SubagentSpec {
         keep_alive: false,
         ephemeral: true,
         ask_origin: None,
+        cwd: None,
     }
 }
 
