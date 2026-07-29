@@ -522,6 +522,43 @@ Give-up order, weakest claim on the line first:
    *anything* does, right down to the narrowest terminal that shows
    anything at all.
 
+**This guarantee only protects `mode` while it is actually in the resolved
+`fields` list — a subsequent adversarial review found and closed a gap
+here.** `fields` accepted a list that simply never named `mode` verbatim,
+which silently disabled `AUTO-ALLOW` at every width via config alone (a
+hand-pinned `settings.json`, or `CONWAY_TUI__STATUS_LINE__FIELDS` set
+without it) — not a width accident, and not something the width-degradation
+machinery above could ever protect against, since it only runs on fields
+already in the list. Fixed at the render layer, uniformly across every
+config source: while the active permission mode is non-default
+(`plan`/`AutoAllow`), `mode` is forced into the resolved field list even
+when the configured `fields` omits it. This is **not user-disableable** —
+it depends only on the live permission mode, not on anything in `config` —
+and it stays out while `Prompt` (the default) is active, so an
+ordinary/older `fields` list that genuinely doesn't want `mode` keeps
+rendering exactly as configured: the field only appears once it has
+something non-default to say.
+
+**Width accounting is in terminal columns, not `chars().count()`, and a
+pathological width truncates explicitly instead of silently — two more
+review findings closed alongside the one above.** A field's text is not
+ASCII-only (`lineage`'s `@{agent_def}` hop names are arbitrary user-chosen
+text), and a CJK character or emoji is one `char` but renders as two
+terminal columns; the width-fit arithmetic used to undercount those by up
+to 2x, which could make the assembly believe a line fit when it actually
+overflowed onto whichever field ended up last in the assembled text — every
+width calculation now goes through ratatui's own `Span::width()`/
+`Line::width()` display-width helpers instead. Separately, the give-up loop
+above can legitimately exhaust every field's own floor and still not fit an
+arbitrarily narrow terminal (the bare `AUTO-ALLOW` label alone is 10
+columns and has nowhere shorter to go) — that case now clamps the assembled
+line explicitly, at a character boundary, with a trailing `…` marker,
+rather than being handed over-length to the renderer and silently clipped
+mid-word wherever the terminal's own boundary happened to fall. Below ~12
+columns the mode label may render as e.g. `AUTO-ALL…` instead of the full
+`AUTO-ALLOW` — a deliberate, marked degradation at a genuinely pathological
+width, not an unmarked accident.
+
 **`tokens (n% cached)` format.** The `tokens` field is a single combined
 field: the cumulative token total followed by a cache-hit-rate
 parenthetical. `total` is the sum of every `Usage` field

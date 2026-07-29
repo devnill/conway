@@ -5,6 +5,48 @@ All notable changes to **conway** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **The status line's `AUTO-ALLOW` indicator could be silently disabled by
+  config.** The width-degradation ladder guaranteed `mode` survives WIDTH
+  pressure, but nothing required `mode` to be in the resolved `[tui.
+  status_line] fields` list in the first place — a `fields` config that
+  simply never named `mode` (a hand-pinned `settings.json`, or
+  `CONWAY_TUI__STATUS_LINE__FIELDS` set without it) rendered the line with
+  no safety indicator at all, at any width, permanently. `mode` is now
+  forced into the resolved field list whenever the active permission mode
+  is non-default (`plan`/`AutoAllow`) even when the configured `fields`
+  omits it — not user-disableable, and reached uniformly from every config
+  source (file or env). It stays out while `Prompt` (the default) is
+  active, so a `fields` list that genuinely doesn't want `mode` keeps
+  rendering exactly as configured.
+
+- **The status line's width-fit arithmetic counted characters, not
+  rendered columns.** A CJK character or emoji is one `char` but two
+  terminal columns, and the line's own fields are not ASCII-restricted
+  (`lineage`'s `@{agent_def}` hop names are arbitrary user-chosen text) —
+  the arithmetic could be wrong by up to 2x, and since `lineage` sits
+  directly before `mode` in the default field order, an undercounted
+  `lineage` rung could make the assembly believe it had more room than it
+  did, with the real overflow landing on — and mid-word-clipping — the
+  `AUTO-ALLOW` indicator. Width accounting now goes through ratatui's own
+  `Span::width()`/`Line::width()` display-width helpers instead of
+  `.chars().count()`.
+
+- **A status line too narrow to fit even its most degraded form was
+  silently clipped mid-word.** When every field bottomed out at its own
+  floor and the assembled line still didn't fit, it was handed unclamped to
+  a `Paragraph` with no `.wrap()`, and ratatui truncated inside a field's
+  text with no visible sign anything was cut (e.g. `AUTO-ALLOW` rendering
+  as `AUTO-ALLO` at 10 columns) — contradicting the status line's own
+  "never a silent clip" design. The assembled line is now clamped
+  explicitly before it ever reaches the renderer: an over-length line is
+  cut at a character boundary and marked with a trailing `…`, so a
+  pathological width still degrades honestly instead of looking like an
+  accident.
+
 ## [0.4.0] — 2026-07-29
 
 ### Added
