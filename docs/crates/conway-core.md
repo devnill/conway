@@ -198,6 +198,25 @@ exists so:
   field by construction — a segment cannot be built without declaring where
   it came from.
 
+- **`Event::UserTurn`** (`event.rs`) is the typed counterpart of a user's own
+  turn text on the flat event stream — `text: String, prov: Provenance`,
+  mirroring `LogRecord::UserTurn`'s own fields byte-for-byte. Before this
+  variant existed, a user turn had no `Event` representation at all: replay
+  fell back to `Event::AgentProgress { note: format!("user turn: {text}") }`,
+  so a consumer could only recognize one by matching that literal string
+  prefix — fragile (a genuine free-text notice could start with it too) and
+  a violation of GP-10 ("context provenance is visible"/inspectable without
+  string-sniffing). `Event` is `#[non_exhaustive]`, but its variant count is
+  pinned by a test (`event.rs`'s `every_variant_constructs_and_round_trips_
+  with_exact_tag`) precisely so a new variant is never added without that
+  test being updated deliberately, as this one was. `ForkDirective`/
+  `ParentSteer` remain on the `AgentProgress` fallback — a deliberate,
+  disclosed scope decision (not an oversight): closing them needs the same
+  attach-ordering care `UserTurn`'s live emission required (see
+  [`conway-runtime`](conway-runtime.md)) plus auditing a differently-shaped
+  call site (the parent-steer mailbox drain), which a later item can pick up
+  without revisiting this enum's shape again.
+
 - **Reasoning headroom** (`capabilities.rs`, 0.2.0). `Capabilities::
   max_context_tokens` is the *total* window — prompt plus generated output
   plus reasoning tokens — so gating only on assembled-prompt size would

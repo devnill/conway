@@ -566,6 +566,13 @@ impl Runtime {
         // a turn against an empty prompt and "explores" before the user has
         // said anything. `append`'s `assign_seq` overwrites `seq` with the
         // store's own next value regardless.
+        //
+        // The matching live `Event::UserTurn` (this item) is emitted right
+        // after the append succeeds -- ordering-safe unconditionally: a root
+        // is attached below with `kind: None` (see that call's own comment),
+        // so `AgentTree::attach` never emits `Event::AgentSpawned` for it at
+        // all, and the "AgentSpawned precedes every event for its agent"
+        // guarantee is vacuous for a root either way.
         if let Some(text) = spec.prompt.clone() {
             self.store
                 .append(
@@ -573,11 +580,19 @@ impl Runtime {
                     LogRecord::UserTurn {
                         seq: LogSeq::ZERO,
                         ts: Utc::now(),
-                        text,
+                        text: text.clone(),
                         prov: Provenance::UserPrompt,
                     },
                 )
                 .await?;
+            self.bus.emit(
+                session_id,
+                agent_id,
+                Event::UserTurn {
+                    text,
+                    prov: Provenance::UserPrompt,
+                },
+            );
         }
 
         let last_report = Arc::new(Mutex::new(None));
@@ -901,9 +916,22 @@ impl Runtime {
     }
 
     /// Appends a `LogRecord::UserTurn` to `agent`'s session before returning
-    /// (persist-before-act). Delivering this to a live agent task (so an
-    /// already-running conversation picks it up) is WI-085's mailbox wiring;
-    /// this item only guarantees the durable append.
+    /// (persist-before-act), then emits the live `Event::UserTurn` twin (this
+    /// item) so a subscriber on the event stream sees the SAME occurrence
+    /// live that replay would later reconstruct from the log -- closing the
+    /// P-8 gap where only the TUI (via its own local `Entry::User` push) ever
+    /// showed a prompt. Ordering-safe for every caller of this method: `agent`
+    /// must already be a KEY of `self.agents` (looked up just below) to reach
+    /// the emit at all, and the only way an agent id becomes a key is
+    /// `launch_agent`, which calls `AgentTree::attach` (and thus, for any
+    /// agent with `kind: Some(_)`, emits `Event::AgentSpawned`) BEFORE
+    /// inserting into `self.agents` -- so `Event::AgentSpawned` has always
+    /// already been emitted (if this agent has one at all -- a root's `kind`
+    /// is `None`, so it has none, and the ordering guarantee is vacuous for
+    /// it) by the time any `prompt` call for that agent can even find it.
+    /// Delivering this to a live agent task (so an already-running
+    /// conversation picks it up) is WI-085's mailbox wiring; this item only
+    /// guarantees the durable append plus this live broadcast.
     pub async fn prompt(&self, agent: AgentId, text: String) -> Result<(), RuntimeError> {
         let (session, prompt_notify) = {
             let agents = self.agents.read().expect("agents lock poisoned");
@@ -921,11 +949,19 @@ impl Runtime {
                 LogRecord::UserTurn {
                     seq: LogSeq::ZERO,
                     ts: Utc::now(),
-                    text,
+                    text: text.clone(),
                     prov: Provenance::UserPrompt,
                 },
             )
             .await?;
+        self.bus.emit(
+            session,
+            agent,
+            Event::UserTurn {
+                text,
+                prov: Provenance::UserPrompt,
+            },
+        );
         // WI-118, generalized by keep-alive: wakes a `resume_root` agent's
         // gated first iteration, OR a `keep_alive: true` agent's gated
         // end-of-turn idle wait -- both the same `ResumeGate` (see that

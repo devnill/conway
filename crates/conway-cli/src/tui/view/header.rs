@@ -1,232 +1,259 @@
-//! The sticky context header + the floating "jump to bottom" footer (T6).
+//! The sticky prompt overlay + the floating "jump to bottom" footer.
 //!
-//! Two small, independently-drawn scroll affordances that answer the
-//! "scrolled-back with no idea where I am" report:
+//! **This item corrects a requirement miss in T6.** T6's problem statement
+//! was scroll-shaped -- "you scroll and lose track of where you are" -- but
+//! its binding decision put `session · agent <id>[ via lineage] · model ·
+//! ctx%` in the overlay: application CHROME (what session/agent/model am I
+//! in), not an answer to "what am I looking at". The tell was T6's own
+//! gating: it showed that line only while the transcript overflowed the
+//! viewport, and nobody gates session/model/ctx on scroll position if they
+//! actually mean it as persistent chrome -- chrome that flickers with scroll
+//! position is noise, not information. The user's own correction: "the
+//! sticky header isn't a full app header. its just for scrolling, it was a
+//! requirement miss... We want a sticky header showing the prompt (or a
+//! preview of the prompt)."
 //!
-//! - **The sticky header** ([`draw`]) is a single plain line -- `session ·
-//!   focused agent · model · ctx%` -- pinned above the transcript pane
-//!   whenever the transcript actually overflows the viewport
-//!   (`view::mod::layout`'s own doc explains the non-recursive
-//!   overflow test that decides this without a layout feedback loop).
-//!   When content fits on screen, no header row is reserved at all -- the
-//!   layout does not shift for a session that never needs to scroll.
+//! So this module now draws exactly one thing above the transcript: the
+//! CURRENT TURN'S OWN PROMPT, and only while it has scrolled out of view.
+//! `session`/`model`/`ctx%` stay exactly where T6 already had them (the
+//! status line, `view/status.rs`) -- they were never removed, just never
+//! duplicated up here. The lineage breadcrumb (V5) is the one field that
+//! DID need a new home (it had none before T6 misfiled it here): it moved to
+//! `view/status.rs`'s new `Lineage` field, taking its width-degrade
+//! machinery (`LineageDetail`) and its fork/spawn-content trap with it
+//! unchanged -- see that module's own doc for the full "never show a spawn
+//! child its parent's content" reasoning, which still applies verbatim.
 //!
-//!   **V5** extends the off-root `agent <id>` field into a lineage
-//!   breadcrumb -- `agent <id> via root → fork @seq 3 → @reviewer` -- so
-//!   focusing a subagent conveys where it sits in the tree, not just which
-//!   one it is (the "clicking into a subagent doesn't show the parents"
-//!   report). It is METADATA only: each hop's text is the same
-//!   `view::agents::recipe_parts`/`hop_label` provenance string the
-//!   `/agents` panel row already shows for that node (fork's `@seq N`
-//!   fork point, spawn's `@agent_def`/`(inherit)`) -- never the ancestor's
-//!   actual transcript CONTENT. That is deliberate, not a shortcut: a fork
-//!   child truly inherited its parent's log up to `inherited_upto` and
-//!   showing that would be accurate, but a spawn child inherited nothing,
-//!   and rendering parent content next to it would show the user
-//!   information the agent itself never saw. Distinguishing the two
-//!   correctly at CONTENT granularity would need the ancestor's actual log
-//!   fetched into `AppState` (a bigger change, and not among the fields the
-//!   item's spec says already exist); staying at metadata sidesteps the
-//!   trap entirely while still making fork vs spawn visibly different in
-//!   the chain text. Degrades through shorter complete forms under a
-//!   narrow terminal or a deep chain (`agent_field`'s `LineageDetail`,
-//!   [`header_line`]'s width-fit search) -- the same "shorter complete
-//!   form, never a mid-word clip" precedent [`footer_text`] already set.
-//!   The walk itself is bounded (`view::agents::ancestor_chain`, P-10): a
-//!   cycle in `parent` (should be impossible) ends the walk rather than
-//!   hanging.
-//! - **The floating footer** ([`draw_scroll_footer`]) is a small pill drawn
-//!   over the BOTTOM ROW of the transcript area while `!state.follow_tail`
-//!   (the user has scrolled away from the tail): `↓ N lines above tail --
-//!   End to jump to bottom`. It disappears the instant `follow_tail`
-//!   re-engages (`End`, or paging back down to the true bottom).
+//! - **The sticky prompt** ([`draw_sticky_prompt`]) is a single plain line
+//!   pinned to the TOP of the transcript pane, shown only while the current
+//!   turn's own `Entry::User` prompt has scrolled above the viewport --
+//!   see that function's own doc for the exact trigger and the wrapped-row
+//!   mapping that decides it.
+//! - **The floating footer** ([`draw_scroll_footer`]) is unchanged from T6:
+//!   a small pill drawn over the BOTTOM ROW of the transcript area while
+//!   `!state.follow_tail` (the user has scrolled away from the tail):
+//!   `↓ N lines above tail -- End to jump to bottom`. It disappears the
+//!   instant `follow_tail` re-engages (`End`, or paging back down to the
+//!   true bottom).
 //!
-//! **Neither widget is ever part of the transcript's own `Paragraph`**
-//! (`view/transcript.rs`'s clean-copy guarantee: no `.block(..)`, no glyph
-//! `entry_lines` did not itself emit). Both are drawn as their own,
-//! separate `frame.render_widget` calls from `view::draw` -- the header
-//! into its own reserved `Rect` above the transcript, the footer as a
-//! `Clear` + `Paragraph` OVERLAY on top of the transcript's own last row,
-//! the same "modal overlay drawn over transcript content, never folded
-//! into its `Span`s" pattern `view/mod.rs`'s permission/`/ask`/intent
-//! overlays already use. `entry_lines`/`build_lines` themselves are
-//! completely untouched by this module -- the
-//! `entry_lines_never_contain_box_drawing_glyphs` and
-//! `rendered_buffer_contains_no_box_drawing_glyphs` tests in
-//! `transcript.rs` still pass unmodified.
+//! **Neither widget reserves a layout row.** T6's sticky header claimed a
+//! `Constraint::Length` row from `view/mod.rs::layout` whenever the
+//! transcript overflowed -- a reserved row that could appear/disappear
+//! between renders, reflowing the very content the reader was looking at
+//! right under them. An overlay needs no such reservation: both widgets here
+//! are drawn AFTER `transcript::draw`, as their own separate
+//! `frame.render_widget` calls straight onto the already-rendered frame --
+//! the sticky prompt at `transcript_area`'s own top row, the footer at its
+//! own bottom row. `entry_lines`/`build_lines` themselves are completely
+//! untouched by this module -- the `entry_lines_never_contain_box_drawing_
+//! glyphs` and `rendered_buffer_contains_no_box_drawing_glyphs` tests in
+//! `transcript.rs` still pass unmodified, and the transcript viewport is
+//! never a row shorter (or taller) because one of these widgets happened to
+//! turn on or off.
+//!
+//! **The trigger is "is THIS TURN'S prompt on screen", not "did the
+//! transcript overflow".** T6's old header used the wrong test entirely
+//! (`transcript overflows the viewport`) and the floating footer's test
+//! (`!follow_tail`) is *also* wrong for this purpose: a short turn scrolled
+//! back only slightly still has its own prompt genuinely on screen, and must
+//! show no overlay even though `follow_tail` is already false. The actual
+//! rule ([`draw_sticky_prompt`]): draw only when the entry governing the
+//! viewport's very top row is NOT (and does not contain) the nearest
+//! preceding `Entry::User` -- i.e. the prompt has scrolled fully above the
+//! visible area. This also settles which prompt to name: the NEAREST
+//! `Entry::User` at or before whatever the top visible row belongs to --
+//! "sticky" in the editor sense (the heading currently in scope), never
+//! simply "the most recent prompt anywhere in the transcript", which would
+//! name an unrelated question several turns back the moment the reader
+//! scrolls into an earlier one.
+//!
+//! **A focused spawn child with no user turn of its own shows nothing.**
+//! `AppState::focus_agent` clears the transcript down to that agent's OWN
+//! log with no lineage content mixed in (see that method's own doc) -- a
+//! spawn child inherited nothing from its parent, so if its own log has no
+//! `Entry::User` yet, there is no prompt this overlay could show without
+//! reaching into a parent's content the agent itself never saw. The governing-
+//! prompt search below returns `None` in exactly that case, and `None` draws
+//! nothing -- it never falls back to an ancestor's prompt.
 //!
 //! **Mouse wheel stays out of scope.** `view/transcript.rs`'s own module
 //! doc already explains why crossterm mouse capture is not enabled (it
 //! would disable the terminal's native click-drag text selection, which
-//! the clean-copy guarantee exists to protect). T6 ships `PageUp`/
-//! `PageDown` (existing) plus `End`/`Home` (new, this module's keys) and
-//! this floating footer as the keyboard-only, selection-preserving answer
-//! to "how do I get back to the bottom" -- not a mouse-wheel workaround.
+//! the clean-copy guarantee exists to protect). `PageUp`/`PageDown` (existing)
+//! plus `End`/`Home` (T6) and the floating footer remain the keyboard-only,
+//! selection-preserving answer to "how do I get back to the bottom".
 
 use ratatui::layout::Rect;
-use ratatui::text::{Line, Span};
+use ratatui::text::Span;
 use ratatui::widgets::{Clear, Paragraph};
 use ratatui::Frame;
 
-use conway::AgentId;
-
-use super::agents;
-use super::status;
 use super::theme::Theme;
-use crate::tui::state::AppState;
+use super::transcript;
+use crate::tui::state::{AppState, Entry};
 
-/// The sticky header's fixed height -- always exactly one plain line, no
-/// border (mirroring `view/status.rs`'s own single-line, borderless
-/// treatment of the bottom status line).
-pub const HEADER_HEIGHT: u16 = 1;
-
-/// Renders the sticky context header into `area` -- `view/mod.rs::layout`
-/// only ever calls this with a `Some` header `Rect` (reserved only while
-/// the transcript overflows), so there is no visibility check here: by the
-/// time this runs, the caller has already decided the header belongs on
-/// screen.
-pub fn draw(frame: &mut Frame, area: Rect, state: &AppState, theme: &Theme) {
-    let paragraph = Paragraph::new(header_line(state, theme, area.width));
-    frame.render_widget(paragraph, area);
-}
-
-/// The header's plain-text content: `session <id> [· agent <id>[ via
-/// <lineage>]] [· model] · ctx%`, joined with ` · `. The bracketed `agent`
-/// field is present only while the transcript is NOT showing the session's
-/// own root (mirroring `view/status.rs::hint_spans`'s identical
-/// "off-root only" convention for its own `focused: <id>` note, so the
-/// common single-agent case stays uncluttered); `model` is present only
-/// once the focused agent's first `Event::ModelDecision` has routed
-/// (mirrors the status line's `model` field, which is likewise omitted
-/// before that point). `ctx%`/raw-tokens reuses `status::ctx_label`
-/// directly -- see that function's own doc for why (never a second,
-/// drift-prone copy of the percentage formula).
+/// Renders the sticky prompt overlay over the TOP row of `transcript_area`
+/// while [`governing_prompt`] finds a prompt that has scrolled out of view;
+/// a no-op when it finds none (root turn still on screen, or a freshly
+/// focused agent/spawn child with no `Entry::User` of its own yet).
 ///
-/// `width` is the header's own render `Rect` width (`draw`'s caller,
-/// `view/mod.rs`) -- V5's lineage breadcrumb is the one part of this line
-/// whose length is NOT bounded by construction (a deep ancestry chain can
-/// be arbitrarily long), so unlike the pre-V5 line, this now degrades the
-/// breadcrumb through shorter complete forms (`agent_field`) rather than
-/// letting ratatui hard-clip the `Rect` mid-word.
-fn header_line(state: &AppState, theme: &Theme, width: u16) -> Line<'static> {
-    let session = format!("session {}", agents::short_agent_id(state.root_agent()));
-    let model = state.focused_model.clone();
-    let ctx = status::ctx_label(state);
-    let assemble = |agent_field: Option<String>| -> String {
-        let mut parts = vec![session.clone()];
-        parts.extend(agent_field);
-        parts.extend(model.clone());
-        parts.push(ctx.clone());
-        parts.join(" · ")
+/// `effective_scroll` is the SAME clamped, wrapped-row scroll offset
+/// `transcript::draw` actually rendered from this frame (`view/mod.rs::draw`
+/// recomputes it fresh, mirroring the way it already recomputes
+/// `max_scroll` for the floating footer, rather than threading a private
+/// out of that render pass) -- so the trigger below can never disagree with
+/// what is actually on screen.
+///
+/// Drawn as a `Clear` + `Paragraph` overlay directly on the frame -- never
+/// folded into `transcript::draw`'s own `Paragraph` (this module's doc), and
+/// never reserving a layout row of its own (also this module's doc): a
+/// transcript exactly as tall on a frame where this overlay shows as one
+/// where it does not.
+pub fn draw_sticky_prompt(
+    frame: &mut Frame,
+    transcript_area: Rect,
+    state: &AppState,
+    theme: &Theme,
+    effective_scroll: u16,
+) {
+    if transcript_area.height == 0 || transcript_area.width == 0 {
+        return;
+    }
+    let Some(prompt) = governing_prompt(state, effective_scroll, transcript_area.width) else {
+        return;
     };
-
-    let chosen = if state.is_root_focused() {
-        assemble(None)
-    } else {
-        [
-            LineageDetail::Full,
-            LineageDetail::Compact,
-            LineageDetail::Bare,
-        ]
-        .into_iter()
-        .map(|detail| assemble(Some(agent_field(state, detail))))
-        // `+ 2` for the line's own leading/trailing padding space below.
-        .find(|line| line.chars().count() + 2 <= width as usize)
-        .unwrap_or_else(|| assemble(Some(agent_field(state, LineageDetail::Bare))))
+    let area = Rect {
+        x: transcript_area.x,
+        y: transcript_area.y,
+        width: transcript_area.width,
+        height: 1,
     };
-
-    Line::from(Span::styled(format!(" {chosen} "), theme.header))
+    let text = sticky_prompt_text(prompt, area.width);
+    frame.render_widget(Clear, area);
+    frame.render_widget(Paragraph::new(Span::styled(text, theme.header)), area);
 }
 
-/// V5: how much of the focused agent's ancestry [`agent_field`] renders,
-/// tried in this order (most informative first) by [`header_line`]'s
-/// width-fit search -- the same "shorter COMPLETE form, never a mid-word
-/// clip" shape `footer_text` already uses for the floating footer.
-#[derive(Clone, Copy)]
-enum LineageDetail {
-    /// The whole chain, one hop per ancestor: `agent <id> via root →
-    /// <hop1> → ... → <hopN>`.
-    Full,
-    /// Ancestors between the head and the immediate parent collapse to a
-    /// `…(N)` count; the head and the LAST hop (how the focused agent
-    /// itself came to be -- the single most locally relevant fact) stay
-    /// named.
-    Compact,
-    /// The pre-V5 field with no lineage at all: `agent <id>`.
-    Bare,
+/// Finds the `Entry::User` text this frame's sticky overlay should show, or
+/// `None` when no overlay is warranted.
+///
+/// 1. [`transcript::entry_row_starts`] maps each transcript entry to the
+///    WRAPPED row (not logical line -- see that function's own doc for why
+///    the distinction matters) its own first rendered line starts at, up
+///    through the entry whose range contains `effective_scroll` -- it
+///    short-circuits there (its own doc), so this never re-wraps entries
+///    below the one this lookup actually cares about.
+/// 2. The entry governing the viewport's very top VISIBLE row is whichever
+///    entry's range contains `effective_scroll` -- the largest index whose
+///    start row is `<= effective_scroll`.
+/// 3. The prompt to show is the NEAREST `Entry::User` at or before that
+///    entry (the "sticky" governing heading, never simply the most recent
+///    prompt anywhere in the transcript).
+/// 4. If that nearest prompt IS the entry governing the top row itself, at
+///    least some part of the actual prompt is genuinely on screen already
+///    (a short turn scrolled back only slightly, or a multi-line prompt
+///    scrolled to a row within its own wrapped span) -- the overlay must
+///    stay away rather than point at a prompt the reader can already see.
+///    Otherwise the prompt has scrolled fully above the viewport, so its
+///    text is returned.
+/// 5. No `Entry::User` at or before the top row at all (a freshly focused
+///    spawn child with nothing of its own yet) returns `None` -- draw
+///    nothing, never an ancestor's prompt (this module's doc).
+///
+/// **A `state.follow_tail` short-circuit was considered and deliberately
+/// NOT added here** (a code-review suggestion, on the theory that "the
+/// overlay is hidden while following the tail anyway"). That theory does
+/// not hold: while following the tail, `effective_scroll` is `max_scroll`,
+/// the row at the viewport's own top while bottom-anchored -- and if the
+/// CURRENT turn's own response is itself taller than the viewport (a long
+/// streaming answer, the exact moment this function runs most often), that
+/// top row sits inside the response, past the prompt that already scrolled
+/// off above it. The overlay is exactly right to show there: the reader is
+/// auto-following a long answer and has lost sight of which question it's
+/// answering. A blanket `if state.follow_tail { return None }` gate would
+/// have silently hidden the overlay in precisely that case -- a behavior
+/// change, not a no-op optimization -- so the actual fix for the
+/// performance finding is [`transcript::entry_row_starts`]'s own
+/// `scroll_row` short-circuit instead (see that function's doc).
+fn governing_prompt(state: &AppState, effective_scroll: u16, width: u16) -> Option<&str> {
+    if state.transcript.is_empty() {
+        return None;
+    }
+    let starts = transcript::entry_row_starts(state, width, effective_scroll);
+    let top_entry = starts.partition_point(|&s| s <= effective_scroll).saturating_sub(1);
+
+    let (user_idx, text) = state.transcript[..=top_entry]
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(i, e)| match e {
+            Entry::User(text) => Some((i, text.as_str())),
+            _ => None,
+        })?;
+
+    if user_idx == top_entry {
+        None
+    } else {
+        Some(text)
+    }
 }
 
-/// Builds the off-root `agent` field at `detail`'s verbosity. `Bare` never
-/// touches the tree at all (guaranteed cheap, and the guaranteed-fits
-/// fallback). `Full`/`Compact` walk [`agents::ancestor_chain`] (bounded,
-/// P-10) and label each hop with [`agents::hop_label`] -- the SAME
-/// provenance text `view/agents.rs`'s panel row already shows for that
-/// node, so the breadcrumb and the panel can never disagree about how a
-/// given agent came to exist. A node with `kind: None` (the root itself,
-/// or one seeded out-of-band via `ensure_agent_tracked`, which never saw a
-/// spawn event) has no recipe text to show; `hop_label` already falls back
-/// to that node's own short id there, so it renders as "here's WHO" rather
-/// than being mislabeled as a fork or a spawn it never was.
-fn agent_field(state: &AppState, detail: LineageDetail) -> String {
-    let bare = format!("agent {}", agents::short_agent_id(state.focused_agent));
-    if matches!(detail, LineageDetail::Bare) {
-        return bare;
+/// The overlay's rendered text at `width` columns: `↑ {prompt}`, the prompt
+/// flattened to one line, control bytes stripped, and mid-string truncated
+/// with an ellipsis if it still doesn't fit.
+///
+/// **Truncation here is a deliberate exception**, not a lapse in the
+/// "shorter complete form, never a mid-word clip" precedent `footer_text`
+/// (below) and `view/status.rs`'s `LineageDetail` degrade both follow: those
+/// two have a menu of alternate, always-COMPLETE phrasings to fall back
+/// through. A user's own prompt has no such menu -- there is no shorter
+/// complete rewrite of someone's own words available to fall back to -- so
+/// once it doesn't fit, real mid-string truncation with a `…` sentinel is
+/// the only honest option left.
+///
+/// Two more things a pasted prompt can carry that plain formatting would
+/// mishandle:
+/// - **Multi-line** (`Alt`/`Shift-Enter` insert literal `\n`s) -- flattened
+///   to one line (newlines replaced with a space) before measuring width, so
+///   a multi-line prompt still renders as one tidy overlay row rather than
+///   pushing the footer/transcript around or silently showing only its
+///   first line.
+/// - **Control bytes** -- bracketed paste means a pasted prompt can contain
+///   raw ANSI escapes (`\x1b[...`). This overlay renders the text as a
+///   `Span`; an unescaped control byte reaching the terminal through it
+///   could inject styling that was never actually part of the message. Every
+///   `char::is_control` byte is dropped before truncation.
+///
+/// Truncation itself counts CHARACTERS, not bytes -- slicing a `String` by
+/// byte offset can land mid multi-byte UTF-8 sequence and render as garbage;
+/// `chars().take(n)` can't split a scalar value in two.
+fn sticky_prompt_text(prompt: &str, width: u16) -> String {
+    const PREFIX: &str = "↑ ";
+    let flat: String = prompt.split('\n').collect::<Vec<_>>().join(" ");
+    let clean: String = flat.chars().filter(|c| !c.is_control()).collect();
+    // `+ 2` for the line's own leading/trailing padding space, mirroring
+    // `footer_text`'s identical accounting below.
+    let budget = (width as usize).saturating_sub(PREFIX.chars().count() + 2);
+    let body = truncate_chars_with_ellipsis(&clean, budget);
+    format!(" {PREFIX}{body} ")
+}
+
+/// Truncates `text` to at most `budget` characters, replacing the tail with
+/// a single `…` sentinel once it doesn't fit whole -- never panics on any
+/// input (P-10: a 100KB pasted prompt, a pure-emoji prompt, or `budget == 0`
+/// all degrade to *something*, never a crash and never a mid-byte split).
+fn truncate_chars_with_ellipsis(text: &str, budget: usize) -> String {
+    if text.chars().count() <= budget {
+        return text.to_string();
     }
-
-    // Root-first: `chain[0]` is the topmost ancestor reached (normally the
-    // session root itself), `chain.last()` is the focused agent.
-    let chain = agents::ancestor_chain(state, state.focused_agent);
-    if chain.len() <= 1 {
-        // The focused agent has no tree node at all (should not happen for
-        // anything `focus_agent` was actually called with, but
-        // `is_focused_agent_live` already fails open for this same case
-        // elsewhere) -- nothing to walk, so no lineage claim is made.
-        return bare;
+    if budget == 0 {
+        return String::new();
     }
-
-    let hop_text = |id: &AgentId| -> String {
-        state
-            .tree
-            .nodes
-            .iter()
-            .find(|n| n.agent_id == *id)
-            .map(agents::hop_label)
-            .unwrap_or_else(|| agents::short_agent_id(*id))
-    };
-    // The chain's own head reads as literal "root" when it actually IS the
-    // session root (the overwhelmingly common case, and already named by
-    // the header's own leading `session <id>` field) -- otherwise (the
-    // walk was cut short by the P-10 bound or a missing node) it gets the
-    // same hop treatment as everything after it, so a truncated chain
-    // still names what it actually reached instead of silently claiming
-    // "root".
-    let head = if chain[0] == state.root_agent() {
-        "root".to_string()
-    } else {
-        hop_text(&chain[0])
-    };
-    let hops: Vec<String> = chain[1..].iter().map(hop_text).collect();
-
-    let via = match detail {
-        LineageDetail::Full => std::iter::once(head)
-            .chain(hops)
-            .collect::<Vec<_>>()
-            .join(" → "),
-        LineageDetail::Compact if hops.len() <= 1 => std::iter::once(head)
-            .chain(hops)
-            .collect::<Vec<_>>()
-            .join(" → "),
-        LineageDetail::Compact => {
-            let omitted = hops.len() - 1;
-            format!(
-                "{head} → …({omitted}) → {}",
-                hops.last().expect("hops.len() > 1 checked above")
-            )
-        }
-        LineageDetail::Bare => unreachable!("returned above"),
-    };
-
-    format!("{bare} via {via}")
+    if budget == 1 {
+        return "…".to_string();
+    }
+    let mut truncated: String = text.chars().take(budget - 1).collect();
+    truncated.push('…');
+    truncated
 }
 
 /// Renders the floating "jump to bottom" pill over the bottom row of
@@ -241,10 +268,10 @@ fn agent_field(state: &AppState, detail: LineageDetail) -> String {
 /// Drawn as a SEPARATE `Clear` + `Paragraph` overlay directly on the
 /// frame -- never folded into `transcript::draw`'s own `Paragraph`, so it
 /// can never leak into the transcript's clean-copy text. This is the exact
-/// "modal drawn over transcript content" shape `view/mod.rs`'s permission/
-/// `/ask`/intent-confirm overlays already use (`Clear`, then a widget, over
-/// a sub-`Rect` of the transcript area) -- just one row tall instead of
-/// claiming most of the pane.
+/// "modal overlay drawn over transcript content, never folded into its
+/// `Span`s" pattern `view/mod.rs`'s permission/`/ask`/intent overlays already
+/// use (`Clear`, then a widget, over a sub-`Rect` of the transcript area) --
+/// just one row tall instead of claiming most of the pane.
 pub fn draw_scroll_footer(
     frame: &mut Frame,
     transcript_area: Rect,
@@ -303,13 +330,7 @@ mod tests {
     use conway::AgentId as TestAgentId;
 
     use super::*;
-    use crate::tui::state::{Entry, NodeStatus, TreeNode};
-
-    /// A header width generous enough that no test in this module
-    /// accidentally exercises the [`LineageDetail`] degrade path unless it
-    /// means to -- see the dedicated `agent_field_degrades_*` tests below
-    /// for that.
-    const WIDE: u16 = 200;
+    use crate::tui::test_support::{render, render_text};
 
     fn thirty_lines_state() -> AppState {
         let mut state = AppState::new(TestAgentId::new());
@@ -324,309 +345,179 @@ mod tests {
         state
     }
 
-    // ---- header_line content ----
+    // ---- sticky prompt overlay: trigger + content ----
 
+    /// Acceptance: one turn longer than the viewport, scrolled down, shows
+    /// that turn's own prompt; scrolled back until the prompt is visible,
+    /// shows nothing.
     #[test]
-    fn header_line_includes_session_and_ctx_but_not_agent_or_model_by_default() {
-        let root = TestAgentId::new();
-        let state = AppState::new(root);
-        let text = plain(&header_line(&state, &Theme::default(), WIDE));
-
-        assert!(
-            text.contains(&format!("session {}", agents::short_agent_id(root))),
-            "{text}"
-        );
-        assert!(text.contains("ctx"), "{text}");
-        assert!(
-            !text.contains("agent "),
-            "root-focused must not show a redundant `agent <id>` field: {text}"
-        );
-    }
-
-    #[test]
-    fn header_line_shows_the_focused_agent_off_root() {
-        let root = TestAgentId::new();
-        let mut state = AppState::new(root);
-        let child = TestAgentId::new();
-        state.focus_agent(child);
-
-        let text = plain(&header_line(&state, &Theme::default(), WIDE));
-
-        assert!(text.contains(&format!("session {}", agents::short_agent_id(root))), "{text}");
-        assert!(
-            text.contains(&format!("agent {}", agents::short_agent_id(child))),
-            "{text}"
-        );
-    }
-
-    #[test]
-    fn header_line_shows_the_model_once_known() {
+    fn sticky_prompt_shows_the_current_turns_prompt_once_it_scrolls_off_and_hides_once_visible() {
         let mut state = AppState::new(TestAgentId::new());
-        state.focused_model = Some("anthropic/claude-sonnet-4-6".to_string());
-        let text = plain(&header_line(&state, &Theme::default(), WIDE));
-        assert!(text.contains("anthropic/claude-sonnet-4-6"), "{text}");
-    }
-
-    #[test]
-    fn header_line_ctx_matches_the_shared_status_line_helper() {
-        let mut state = AppState::new(TestAgentId::new());
-        state.focused_model_max_context = Some(200_000);
-        state.focused_ctx_tokens = 50_000; // 25%
-        let text = plain(&header_line(&state, &Theme::default(), WIDE));
-        assert!(
-            text.contains(&status::ctx_label(&state)),
-            "the header must reuse status::ctx_label verbatim, not a second \
-             copy of the percentage formula: {text}"
-        );
-        assert!(text.contains("ctx 25%"), "{text}");
-    }
-
-    fn plain(line: &Line) -> String {
-        line.spans.iter().map(|s| s.content.as_ref()).collect()
-    }
-
-    fn push_node(
-        state: &mut AppState,
-        id: AgentId,
-        parent: AgentId,
-        agent_def: Option<&str>,
-        kind: Option<conway::SubagentMode>,
-        inherited_upto: Option<conway::LogSeq>,
-    ) {
-        state.tree.nodes.push(TreeNode {
-            agent_id: id,
-            parent: Some(parent),
-            agent_def: agent_def.map(str::to_string),
-            status: NodeStatus::Running,
-            kind,
-            inherited_upto,
-            ephemeral: false,
-        });
-    }
-
-    // ---- V5: lineage breadcrumb (agent_field) ----
-
-    /// The item's most important test: a fork child and a spawn child are
-    /// distinguished in the breadcrumb, and the spawn child's header never
-    /// shows the parent's actual content -- only the recipe metadata
-    /// (`hop_label`/`recipe_parts`), which is all a spawn child ever truly
-    /// has.
-    #[test]
-    fn fork_and_spawn_children_are_distinguished_and_spawn_shows_no_parent_content() {
-        use conway::{LogSeq, SubagentMode};
-
-        let root = TestAgentId::new();
-        let mut state = AppState::new(root);
-        // Distinctive marker that would only ever appear if the header
-        // leaked the PARENT's actual conversation content -- the header
-        // must never contain it for either child.
-        state.transcript.push(Entry::Assistant {
-            text: "PARENT-SECRET-6f2c".to_string(),
-            model: None,
-            summary: None,
-            ts: None,
-        });
-
-        let fork_child = TestAgentId::new();
-        push_node(
-            &mut state,
-            fork_child,
-            root,
-            None,
-            Some(SubagentMode::Fork),
-            Some(LogSeq(5)),
-        );
-        let spawn_child = TestAgentId::new();
-        push_node(
-            &mut state,
-            spawn_child,
-            root,
-            Some("reviewer"),
-            Some(SubagentMode::Spawn),
-            None,
-        );
-
-        state.focus_agent(fork_child);
-        let fork_text = plain(&header_line(&state, &Theme::default(), WIDE));
-        assert!(
-            fork_text.contains("fork @seq 5"),
-            "the fork child's breadcrumb must name its fork point: {fork_text}"
-        );
-        assert!(
-            !fork_text.contains("PARENT-SECRET"),
-            "the header is metadata-only -- it must never embed the \
-             parent's actual transcript content: {fork_text}"
-        );
-
-        state.focus_agent(spawn_child);
-        let spawn_text = plain(&header_line(&state, &Theme::default(), WIDE));
-        assert!(
-            spawn_text.contains("@reviewer"),
-            "the spawn child's breadcrumb must name its agent_def: {spawn_text}"
-        );
-        assert!(
-            !spawn_text.contains("PARENT-SECRET"),
-            "a spawn child inherits NOTHING from its parent -- the header must \
-             never show it parent content it does not have: {spawn_text}"
-        );
-        assert_ne!(
-            fork_text.replace(&fork_child.to_string()[..8], ""),
-            spawn_text.replace(&spawn_child.to_string()[..8], ""),
-            "fork and spawn must render visibly differently in the chain: \
-             fork={fork_text:?} spawn={spawn_text:?}"
-        );
-    }
-
-    /// A node with `kind: None` between the root and the focused agent
-    /// (seeded out-of-band, e.g. `ensure_agent_tracked`, which never saw a
-    /// spawn event) must render sensibly -- its own short id -- rather than
-    /// being mislabeled as a fork or a spawn.
-    #[test]
-    fn a_kindless_ancestor_renders_its_short_id_not_a_mislabeled_recipe() {
-        let root = TestAgentId::new();
-        let mut state = AppState::new(root);
-        let untracked_kind = TestAgentId::new();
-        push_node(&mut state, untracked_kind, root, None, None, None);
-        let focused = TestAgentId::new();
-        push_node(
-            &mut state,
-            focused,
-            untracked_kind,
-            None,
-            Some(conway::SubagentMode::Spawn),
-            None,
-        );
-        state.focus_agent(focused);
-
-        let text = plain(&header_line(&state, &Theme::default(), WIDE));
-        assert!(
-            text.contains(&agents::short_agent_id(untracked_kind)),
-            "a kindless ancestor must still be named, by its own short id: {text}"
-        );
-        assert!(
-            !text.contains("fork"),
-            "a kindless ancestor must never be mislabeled as a fork: {text}"
-        );
-    }
-
-    /// A deep ancestry chain degrades to a shorter COMPLETE form rather
-    /// than being clipped mid-word, and never panics -- even at a GENEROUS
-    /// width, since a 40-hop `Full` chain is long enough to force `Compact`
-    /// on its own, independent of terminal size.
-    #[test]
-    fn deep_ancestry_chain_degrades_to_the_compact_ellipsis_form() {
-        let root = TestAgentId::new();
-        let mut state = AppState::new(root);
-        let mut cursor = root;
+        state.transcript.push(Entry::User("what is the plan for today".to_string()));
         for i in 0..40 {
-            let next = TestAgentId::new();
-            push_node(
-                &mut state,
-                next,
-                cursor,
-                Some(format!("agent{i}").as_str()),
-                Some(conway::SubagentMode::Spawn),
-                None,
-            );
-            cursor = next;
+            state.transcript.push(Entry::Assistant {
+                text: format!("reply line {i}"),
+                model: None,
+                summary: None,
+                ts: None,
+            });
         }
-        state.focus_agent(cursor);
+        state.follow_tail = false;
 
-        let text = plain(&header_line(&state, &Theme::default(), WIDE));
+        // Scrolled deep into the reply: the prompt is long gone off the top.
+        state.scroll = 30;
+        let scrolled = render_text(&state, 60, 10);
         assert!(
-            text.contains("…(39)"),
-            "a 40-hop chain must collapse to the compact ellipsis form even \
-             at a generous width: {text}"
-        );
-        assert!(
-            text.contains("@agent39"),
-            "the LAST hop (how the focused agent itself came to be) must \
-             stay named: {text}"
-        );
-        assert!(
-            !text.contains("@agent0"),
-            "an omitted middle hop must not appear as a dangling fragment: {text}"
+            scrolled.contains("what is the plan for today"),
+            "the overlay must name the current turn's own prompt once it \
+             scrolls off screen: {scrolled}"
         );
 
-        // Narrower widths degrade further, all the way to the bare field --
-        // never a fragment, never a panic.
-        for width in [60u16, 30, 15, 0] {
-            let narrow = plain(&header_line(&state, &Theme::default(), width));
-            assert!(
-                !narrow.trim().is_empty() || width == 0,
-                "a deep chain must still render something at width {width}"
-            );
-        }
-
-        // Also exercise it end to end through the real render pass (would
-        // panic on any width-arithmetic underflow).
-        let backend = ratatui::backend::TestBackend::new(20, 24);
-        let mut terminal = ratatui::Terminal::new(backend).expect("terminal");
-        terminal
-            .draw(|f| draw(f, Rect::new(0, 0, 20, HEADER_HEIGHT), &state, &Theme::default()))
-            .expect("draw must not panic on a deep chain at a narrow width");
-    }
-
-    /// The narrowest candidate (`Bare`, e.g. `agent <id>`) is always tried
-    /// last and is what a too-narrow terminal falls back to -- it is a
-    /// complete field on its own, not a fragment of a longer one.
-    #[test]
-    fn narrow_width_falls_back_to_the_bare_agent_field_not_a_fragment() {
-        use conway::SubagentMode;
-
-        let root = TestAgentId::new();
-        let mut state = AppState::new(root);
-        let child = TestAgentId::new();
-        push_node(
-            &mut state,
-            child,
-            root,
-            Some("a-fairly-long-agent-definition-name"),
-            Some(SubagentMode::Spawn),
-            None,
-        );
-        state.focus_agent(child);
-
-        let text = plain(&header_line(&state, &Theme::default(), 18));
-        assert!(
-            text.contains(&format!("agent {}", agents::short_agent_id(child))),
-            "even the narrowest form must still name the focused agent: {text}"
-        );
-        assert!(
-            !text.contains("via"),
-            "a too-narrow width must fall back to the plain `agent <id>` \
-             field, not a truncated lineage form: {text}"
+        // Scrolled all the way back to the top: the prompt itself is on
+        // screen, so the overlay must not appear.
+        state.scroll = 0;
+        let at_top = render_text(&state, 60, 10);
+        let overlay_rows = at_top
+            .lines()
+            .filter(|l| l.contains('↑') && l.contains("what is the plan"))
+            .count();
+        assert_eq!(
+            overlay_rows, 0,
+            "once the prompt is itself on screen the overlay must not \
+             duplicate it: {at_top}"
         );
     }
 
-    // ---- draw_scroll_footer ----
-
-    /// The header's visibility rule is the whole reason `layout` needs a
-    /// non-recursive overflow test: a short conversation must not pay a row
-    /// for it. This exercises the rule end to end through the real
-    /// `view::draw`, not the predicate in isolation.
+    /// Acceptance (the test that distinguishes this from the trivial "most
+    /// recent prompt" version): three turns, scrolled into the FIRST one --
+    /// the overlay must show the first prompt, never the third.
     #[test]
-    fn header_is_absent_when_content_fits_and_present_once_it_overflows() {
-        use crate::tui::test_support::render_text;
-
-        let root = TestAgentId::new();
-        let mut state = AppState::new(root);
+    fn sticky_prompt_shows_the_governing_prompt_not_the_most_recent_one() {
+        let mut state = AppState::new(TestAgentId::new());
+        state.transcript.push(Entry::User("first question".to_string()));
+        for i in 0..20 {
+            state.transcript.push(Entry::Assistant {
+                text: format!("first reply {i}"),
+                model: None,
+                summary: None,
+                ts: None,
+            });
+        }
+        state.transcript.push(Entry::User("second question".to_string()));
         state.transcript.push(Entry::Assistant {
-            text: "only line".to_string(),
+            text: "second reply".to_string(),
+            model: None,
+            summary: None,
+            ts: None,
+        });
+        state.transcript.push(Entry::User("third question".to_string()));
+        state.transcript.push(Entry::Assistant {
+            text: "third reply".to_string(),
             model: None,
             summary: None,
             ts: None,
         });
 
-        // 24 rows, one transcript line: nothing to scroll, so no header.
-        let fits = render_text(&state, 60, 24);
-        assert!(
-            !fits.contains(&format!("session {}", agents::short_agent_id(root))),
-            "a transcript that fits on screen must not reserve a header row: {fits}"
-        );
+        state.follow_tail = false;
+        // Scrolled to view the middle of the FIRST turn's long reply --
+        // well before "second question" ever entered the picture.
+        state.scroll = 10;
 
-        // Same viewport, far more content than rows: the header appears.
-        for i in 0..80 {
+        let text = render_text(&state, 60, 8);
+        assert!(
+            text.contains("first question"),
+            "the overlay must name the FIRST turn's prompt, the one \
+             governing the current viewport: {text}"
+        );
+        assert!(
+            !text.contains("third question"),
+            "the overlay must never name the most recent prompt when it is \
+             not the one governing the current viewport: {text}"
+        );
+    }
+
+    /// Verifies the reasoning documented above `governing_prompt` (and
+    /// relied on by `entry_row_starts`'s short-circuit doc): the sticky
+    /// overlay is NOT gated on `!state.follow_tail`. A single turn whose own
+    /// response is taller than the viewport, while auto-following the tail
+    /// (the default, and the common case DURING active streaming), must
+    /// still show the overlay -- the prompt genuinely has scrolled off the
+    /// top even though the reader never manually scrolled. This is the
+    /// concrete evidence that a blanket `follow_tail` skip would have been a
+    /// behavior change, not a safe no-op.
+    #[test]
+    fn sticky_prompt_shows_while_following_the_tail_of_a_response_taller_than_the_viewport() {
+        let mut state = AppState::new(TestAgentId::new());
+        state.transcript.push(Entry::User("what is the plan for today".to_string()));
+        for i in 0..40 {
+            state.transcript.push(Entry::Assistant {
+                text: format!("reply line {i}"),
+                model: None,
+                summary: None,
+                ts: None,
+            });
+        }
+        assert!(state.follow_tail, "AppState::new must default to following");
+
+        let text = render_text(&state, 60, 10);
+        assert!(
+            text.contains("what is the plan for today"),
+            "the overlay must show even while follow_tail is true, once the \
+             current turn's response has grown taller than the viewport: {text}"
+        );
+    }
+
+    /// Acceptance: still works after a focus switch -- `focus_agent` clears
+    /// the transcript, and the newly focused agent's own long turn must
+    /// still get its own sticky prompt, not the previous focus's.
+    #[test]
+    fn sticky_prompt_still_works_after_a_focus_switch() {
+        let root = TestAgentId::new();
+        let mut state = AppState::new(root);
+        state.transcript.push(Entry::User("root prompt".to_string()));
+        for i in 0..10 {
+            state.transcript.push(Entry::Assistant {
+                text: format!("root reply {i}"),
+                model: None,
+                summary: None,
+                ts: None,
+            });
+        }
+
+        let child = TestAgentId::new();
+        state.focus_agent(child);
+        assert!(state.transcript.is_empty(), "focus_agent clears the transcript");
+
+        state.transcript.push(Entry::User("child prompt".to_string()));
+        for i in 0..40 {
+            state.transcript.push(Entry::Assistant {
+                text: format!("child reply {i}"),
+                model: None,
+                summary: None,
+                ts: None,
+            });
+        }
+        state.follow_tail = false;
+        state.scroll = 30;
+
+        let text = render_text(&state, 60, 8);
+        assert!(
+            text.contains("child prompt"),
+            "the overlay must show the NEWLY focused agent's own prompt: {text}"
+        );
+        assert!(
+            !text.contains("root prompt"),
+            "the overlay must never show a stale prompt from before the \
+             focus switch: {text}"
+        );
+    }
+
+    /// Acceptance: a focused spawn child with no user turn of its own draws
+    /// nothing -- never an ancestor's prompt.
+    #[test]
+    fn sticky_prompt_draws_nothing_for_a_focused_child_with_no_user_turn() {
+        let mut state = AppState::new(TestAgentId::new());
+        for i in 0..40 {
             state.transcript.push(Entry::Assistant {
                 text: format!("line {i}"),
                 model: None,
@@ -634,12 +525,158 @@ mod tests {
                 ts: None,
             });
         }
-        let overflows = render_text(&state, 60, 24);
+        state.follow_tail = false;
+        state.scroll = 30;
+
+        let text = render_text(&state, 60, 8);
         assert!(
-            overflows.contains(&format!("session {}", agents::short_agent_id(root))),
-            "an overflowing transcript must show the sticky header: {overflows}"
+            !text.contains('↑'),
+            "with no Entry::User at all, the overlay must draw nothing: {text}"
         );
     }
+
+    /// Acceptance: no layout row is reserved for the overlay in any state --
+    /// the transcript's own viewport height never changes because the
+    /// overlay is showing or not.
+    #[test]
+    fn sticky_prompt_never_reserves_a_layout_row() {
+        use crate::tui::view;
+
+        let mut with_overlay = AppState::new(TestAgentId::new());
+        with_overlay.transcript.push(Entry::User("prompt".to_string()));
+        for i in 0..40 {
+            with_overlay.transcript.push(Entry::Assistant {
+                text: format!("line {i}"),
+                model: None,
+                summary: None,
+                ts: None,
+            });
+        }
+        with_overlay.follow_tail = false;
+        with_overlay.scroll = 30;
+
+        let without_overlay = AppState::new(TestAgentId::new());
+
+        let area = Rect::new(0, 0, 60, 24);
+        assert_eq!(
+            view::transcript_area(&with_overlay, area).height,
+            view::transcript_area(&without_overlay, area).height,
+            "the transcript viewport must be the SAME height whether the \
+             sticky prompt overlay is showing or not -- it is drawn over \
+             the transcript, never reserved as its own layout row"
+        );
+    }
+
+    /// Acceptance: a multi-line prompt renders on ONE overlay row (flattened
+    /// before measuring width), a long prompt truncates by CHARACTER with an
+    /// ellipsis rather than breaking a grapheme mid-way, and raw control
+    /// bytes render inert rather than reaching the terminal as live escapes.
+    #[test]
+    fn sticky_prompt_text_flattens_multiline_truncates_by_char_and_strips_control_bytes() {
+        let multiline = "line one\nline two\nline three";
+        let flattened = sticky_prompt_text(multiline, 200);
+        assert!(!flattened.contains('\n'), "{flattened:?}");
+        assert!(flattened.contains("line one"), "{flattened:?}");
+        assert!(flattened.contains("line two"), "{flattened:?}");
+        assert!(flattened.contains("line three"), "{flattened:?}");
+
+        // A multi-byte emoji prompt, truncated at a narrow width -- must
+        // never panic and must never split a scalar value (which would
+        // render replacement-garbage or crash a strict UTF-8 assertion).
+        let emoji_prompt = "🎉".repeat(50);
+        for width in [0u16, 1, 2, 5, 20, 200] {
+            let text = sticky_prompt_text(&emoji_prompt, width);
+            // Must be valid UTF-8 (guaranteed by `String`, but assert the
+            // call itself never panics across every width, P-10).
+            let _ = text.len();
+        }
+
+        // A pasted control byte (bracketed paste can carry a raw ANSI
+        // escape) must never survive into the rendered text.
+        let with_escape = "hello\x1b[31mworld";
+        let cleaned = sticky_prompt_text(with_escape, 200);
+        assert!(
+            !cleaned.contains('\u{1b}'),
+            "the raw ESC control byte must never reach the rendered Span: {cleaned:?}"
+        );
+        assert!(cleaned.contains("hello"), "{cleaned:?}");
+        assert!(cleaned.contains("world"), "{cleaned:?}");
+
+        // A 100KB prompt must degrade to a fitting width, never panic.
+        let huge = "x".repeat(100_000);
+        let text = sticky_prompt_text(&huge, 40);
+        assert!(text.chars().count() <= 40, "{}", text.chars().count());
+    }
+
+    /// P-10: a zero-width/zero-height terminal never panics.
+    #[test]
+    fn sticky_prompt_never_panics_on_a_zero_size_viewport() {
+        let mut state = AppState::new(TestAgentId::new());
+        state.transcript.push(Entry::User("prompt".to_string()));
+        for i in 0..20 {
+            state.transcript.push(Entry::Assistant {
+                text: format!("line {i}"),
+                model: None,
+                summary: None,
+                ts: None,
+            });
+        }
+        state.follow_tail = false;
+        state.scroll = 10;
+
+        let backend = ratatui::backend::TestBackend::new(1, 1);
+        let mut terminal = ratatui::Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|f| {
+                draw_sticky_prompt(f, Rect::new(0, 0, 0, 0), &state, &Theme::default(), 5);
+            })
+            .expect("draw must not panic on a zero-size rect");
+    }
+
+    /// Clean-copy invariant companion: the overlay's OWN row (the
+    /// transcript viewport's top row, where [`draw_sticky_prompt`] draws --
+    /// the rest of the rendered buffer legitimately contains box-drawing
+    /// glyphs, e.g. the always-bordered input box) never contains a
+    /// box-drawing glyph.
+    #[test]
+    fn sticky_prompt_overlay_adds_no_box_drawing_glyph() {
+        use crate::tui::view;
+
+        const BOX_DRAWING_CHARS: &[char] = &[
+            '│', '─', '┌', '┐', '└', '┘', '├', '┤', '┬', '┴', '┼', '║', '═', '╔', '╗', '╚', '╝',
+            '╠', '╣', '╦', '╩', '╬',
+        ];
+        let mut state = AppState::new(TestAgentId::new());
+        state.transcript.push(Entry::User("prompt".to_string()));
+        for i in 0..40 {
+            state.transcript.push(Entry::Assistant {
+                text: format!("line {i}"),
+                model: None,
+                summary: None,
+                ts: None,
+            });
+        }
+        state.follow_tail = false;
+        state.scroll = 30;
+
+        let width = 60;
+        let height = 10;
+        let rect = Rect::new(0, 0, width, height);
+        let overlay_row = view::transcript_area(&state, rect).y as usize;
+
+        let rows = render(&state, width, height);
+        let row = &rows[overlay_row];
+        assert!(
+            row.contains('↑'),
+            "sanity: the overlay must actually be showing on its own row: {row:?}"
+        );
+        assert!(
+            !row.chars().any(|c| BOX_DRAWING_CHARS.contains(&c)),
+            "the sticky prompt overlay must never add a box-drawing glyph: {row:?}"
+        );
+    }
+
+    // ---- draw_scroll_footer (unchanged from T6) ----
 
     #[test]
     fn footer_is_absent_while_following() {
@@ -727,8 +764,6 @@ mod tests {
         // itself never emits it -- proven by the fact that scrolling back
         // to the tail makes it disappear again with no state change to the
         // transcript's own entries (only `follow_tail` changed).
-        use crate::tui::test_support::render_text;
-
         let mut state = thirty_lines_state();
         state.follow_tail = false;
         state.scroll = 0;

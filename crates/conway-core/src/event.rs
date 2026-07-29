@@ -69,6 +69,30 @@ pub enum Event {
     AgentProgress {
         note: String,
     },
+    /// A user's own turn text -- the typed counterpart the doc comment on
+    /// `conway`'s `record_to_event` used to say did not exist for
+    /// `LogRecord::UserTurn` (that gap is what this variant closes). Carries
+    /// `prov` (mirroring `LogRecord::UserTurn::prov` byte-for-byte) so a
+    /// consumer can tell a genuine typed-in prompt (`Provenance::UserPrompt`)
+    /// apart from a merged `/ask` question folded back in by `Conway::
+    /// pull_in` (`Provenance::MergedAsk`) without any string-matching
+    /// (GP-10, P-2) -- the envelope's own `agent`/`seq`/`ts` already say
+    /// which agent and which position in that agent's log this turn is, so
+    /// no separate turn-number field is needed here.
+    ///
+    /// Emitted live by `conway-runtime`'s `Runtime::prompt` (every
+    /// `SessionHandle::prompt`/`prompt_agent` call), `Runtime::start_root`
+    /// (a root created with an initial prompt), and `subagent.rs`'s `start`
+    /// for a `Spawn` whose `SubagentSpec::prompt` is non-empty -- always
+    /// AFTER the owning agent's own `Event::AgentSpawned` (see this item's
+    /// completion notes on why the `Spawn`-with-prompt case needs its
+    /// emission moved past `attach`, unlike `Runtime::prompt`'s already-
+    /// attached target). Replayed faithfully (no more `AgentProgress`
+    /// fallback) by `record_to_event`'s `LogRecord::UserTurn` arm.
+    UserTurn {
+        text: String,
+        prov: Provenance,
+    },
     AgentFinished {
         result: AgentResult,
         /// See [`Event::AgentSpawned::ephemeral`]: stamped from the child
@@ -244,6 +268,13 @@ mod tests {
                 "agent_progress",
             ),
             (
+                Event::UserTurn {
+                    text: "hi".into(),
+                    prov: Provenance::UserPrompt,
+                },
+                "user_turn",
+            ),
+            (
                 Event::AgentFinished {
                     result: AgentResult::new(
                         AgentId::new(),
@@ -379,12 +410,14 @@ mod tests {
     #[test]
     fn every_variant_constructs_and_round_trips_with_exact_tag() {
         let variants = all_variants();
-        // Twenty-three variants: the twenty from architecture §6.5 (Envelope's
+        // Twenty-four variants: the twenty from architecture §6.5 (Envelope's
         // inline `event` field dropped from the count) plus `Lagged`,
-        // `SteerDropped`, the extra `SteerQueued` field, and the B3
-        // `AgentPromoted` addition — i.e. every variant currently defined on
-        // `Event`.
-        assert_eq!(variants.len(), 23);
+        // `SteerDropped`, the extra `SteerQueued` field, the B3
+        // `AgentPromoted` addition, and this item's `UserTurn` addition —
+        // i.e. every variant currently defined on `Event`. This assertion
+        // exists precisely so nobody adds a variant without updating it
+        // (see this file's module doc and the item that added `UserTurn`).
+        assert_eq!(variants.len(), 24);
         for (event, expected_tag) in variants {
             let value = serde_json::to_value(&event).unwrap();
             assert_eq!(value["event"], expected_tag, "tag for {event:?}");

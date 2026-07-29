@@ -122,8 +122,22 @@ const DEDUP_TTL: chrono::Duration = chrono::Duration::seconds(30);
 /// `is_error`, and `tool_result_preview`, which mirrors
 /// `conway-runtime::tools::runner`'s live `preview_text` derivation
 /// logic-for-logic) byte-identical to the live `ToolCallFinished` built from
-/// the same `ToolOutcome`. Every other record kind
-/// (`UserTurn`/`ForkDirective`/`ParentSteer`/`SystemNote`/
+/// the same `ToolOutcome`.
+///
+/// **`UserTurn` joined this list (this item):** `record_to_event`'s
+/// `LogRecord::UserTurn` arm now maps to `Event::UserTurn{text, prov}`
+/// byte-for-byte from the persisted record, and `conway-runtime` (`Runtime::
+/// prompt`/`start_root`, `subagent.rs`'s `start` for a `Spawn` with a
+/// non-empty prompt) emits the SAME `Event::UserTurn{text, prov}` live, at
+/// the same occurrence the record persists — a genuine 1:1 twin, exactly
+/// like `AgentFinished`/`ToolCallFinished` above. Without this, the
+/// subscribe-before-read race `events_from`/`agent_events` already accept
+/// for those two kinds (see `replay_then_live`'s own doc) could duplicate a
+/// prompt: a `UserTurn` persisted (and broadcast live) in the gap between
+/// this stream's live subscribe and its persisted-store read would
+/// otherwise land in *both* the replay batch and on `live`.
+///
+/// Every remaining record kind (`ForkDirective`/`ParentSteer`/`SystemNote`/
 /// `ContextReportRecord` -> `AgentProgress`, and `ToolCallRecord` ->
 /// `ToolCallProposed`, whose *persisted* side is dead -- `ToolCallRecord` is
 /// never constructed in production, so no replay envelope of this kind can
@@ -160,7 +174,7 @@ const DEDUP_TTL: chrono::Duration = chrono::Duration::seconds(30);
 fn has_live_twin(event: &Event) -> bool {
     matches!(
         event,
-        Event::AgentFinished { .. } | Event::ToolCallFinished { .. }
+        Event::AgentFinished { .. } | Event::ToolCallFinished { .. } | Event::UserTurn { .. }
     )
 }
 
@@ -907,6 +921,13 @@ mod tests {
         }
     }
 
+    fn fixture_user_turn() -> Event {
+        Event::UserTurn {
+            text: "race prompt".into(),
+            prov: conway_core::provenance::Provenance::UserPrompt,
+        }
+    }
+
     /// A fixed, pre-built sequence of envelopes played back as a
     /// `conway_runtime::events::EventStream` -- lets tests pin exact `ts`
     /// values on "live" envelopes (`EventBus::emit` always stamps its own
@@ -1000,6 +1021,137 @@ mod tests {
         assert_eq!(
             second.seq, 1,
             "seq must stay monotonic and gap-free across the dropped duplicate"
+        );
+    }
+
+    /// The `UserTurn` twin (this item): `Runtime::prompt` persists the
+    /// `LogRecord::UserTurn` and then emits the content-identical live
+    /// `Event::UserTurn` for the same occurrence, exactly like
+    /// `AgentFinished` above -- so the same subscribe-before-read race can
+    /// duplicate a prompt across the replay/live junction unless
+    /// `has_live_twin` catches it. This is the acceptance test for "a prompt
+    /// appears exactly once" at the `EventStream` layer (see also
+    /// `conway`'s `crates/conway/tests/session_handle.rs` for the full,
+    /// real-runtime version of this same property).
+    #[tokio::test]
+    async fn replay_then_live_dedups_user_turn_race_duplicate_exactly_once() {
+        let bus = EventBus::new(64);
+        let session = SessionId::new();
+        let agent = AgentId::new();
+
+        let subscribed_at = chrono::Utc::now();
+        let raced_event = fixture_user_turn();
+
+        let record_ts = chrono::Utc::now();
+        let replay = vec![Envelope {
+            seq: 999,
+            ts: record_ts,
+            session,
+            agent,
+            event: raced_event.clone(),
+        }];
+
+        let mut stream =
+            EventStream::replay_then_live(session, None, replay, subscribed_at, bus.subscribe());
+
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        bus.emit(session, agent, raced_event.clone());
+        bus.emit(
+            session,
+            agent,
+            Event::AgentProgress {
+                note: "after".into(),
+            },
+        );
+
+        let first = next(&mut stream).await.expect("replay envelope");
+        assert_eq!(first.event, raced_event, "replay copy must be yielded");
+        assert_eq!(first.seq, 0);
+
+        let second = next(&mut stream).await.expect("stream ended early");
+        assert!(
+            matches!(&second.event, Event::AgentProgress { note } if note == "after"),
+            "the live duplicate UserTurn must be dropped, not this later distinct event; got {:?}",
+            second.event
+        );
+        assert_eq!(
+            second.seq, 1,
+            "seq must stay monotonic and gap-free across the dropped duplicate"
+        );
+    }
+
+    /// The other half of the `UserTurn` dedup contract, and the one that
+    /// actually constrains the implementation: dedup must suppress a
+    /// duplicate, never a REPETITION.
+    ///
+    /// Sending the same text twice in a row is ordinary user behavior
+    /// ("retry", "again"), and two `Event::UserTurn`s with identical `text`
+    /// and `prov` are byte-identical -- there is no id or nonce
+    /// distinguishing a genuine second prompt from the live echo of the
+    /// first. So the ONLY thing keeping the second one alive is that
+    /// `is_live_duplicate` consumes its match (`Vec::position` +
+    /// `Vec::remove`) rather than merely testing membership. A `contains`-
+    /// style check would pass the sibling test above and silently swallow
+    /// every repeat of an already-replayed prompt -- a user's turn vanishing
+    /// from their own transcript.
+    ///
+    /// One replayed prompt + two identical live ones => exactly two
+    /// occurrences survive: the replay copy, and the second live one.
+    #[tokio::test]
+    async fn replay_then_live_suppresses_the_echo_but_never_a_genuine_repeat() {
+        let bus = EventBus::new(64);
+        let session = SessionId::new();
+        let agent = AgentId::new();
+
+        let subscribed_at = chrono::Utc::now();
+        let prompt = fixture_user_turn();
+
+        // One occurrence already persisted and replayed.
+        let replay = vec![Envelope {
+            seq: 999,
+            ts: chrono::Utc::now(),
+            session,
+            agent,
+            event: prompt.clone(),
+        }];
+
+        let mut stream =
+            EventStream::replay_then_live(session, None, replay, subscribed_at, bus.subscribe());
+
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        // The first live copy is the race echo of the replayed one; the
+        // second is the user genuinely sending the same text again.
+        bus.emit(session, agent, prompt.clone());
+        bus.emit(session, agent, prompt.clone());
+        bus.emit(
+            session,
+            agent,
+            Event::AgentProgress {
+                note: "after".into(),
+            },
+        );
+
+        let first = next(&mut stream).await.expect("replay envelope");
+        assert_eq!(first.event, prompt, "replay copy must be yielded");
+
+        let second = next(&mut stream).await.expect("stream ended early");
+        assert_eq!(
+            second.event, prompt,
+            "the SECOND live UserTurn is a genuine repeat, not an echo -- \
+             dedup consumed its one pending entry on the first and must not \
+             suppress this one; got {:?}",
+            second.event
+        );
+
+        let third = next(&mut stream).await.expect("stream ended early");
+        assert!(
+            matches!(&third.event, Event::AgentProgress { note } if note == "after"),
+            "exactly one live UserTurn should have been dropped; got {:?}",
+            third.event
+        );
+        assert_eq!(
+            third.seq, 2,
+            "seq stays monotonic and gap-free across the single dropped echo"
         );
     }
 

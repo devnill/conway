@@ -5,6 +5,107 @@ All notable changes to **conway** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **A typed `Event::UserTurn` for the event stream.** A user's own prompt
+  had no typed representation on the flat `Event` enum: replay fell back to
+  `Event::AgentProgress { note: format!("user turn: {text}") }`, so the only
+  way to recognize a prompt was matching a literal `"user turn: "` string
+  prefix — fragile (a genuine notice could start with it too), and it meant
+  a library consumer watching the bare `EventStream` could not tell "the
+  user said this" from "the runtime noted this" the way the TUI could,
+  because the TUI's transcript prompt bubble came from its own local push,
+  not from the event stream at all. That was a real mode divergence: the
+  TUI only *looked* correct because it kept its own copy alongside the
+  facade, exactly the kind of renderer bug the interactive-first principle
+  calls out.
+
+  `Event::UserTurn { text, prov }` closes this, and is emitted **live**
+  (`conway-runtime`'s `Runtime::prompt`/`start_root`, and `subagent.rs`'s
+  `start` for a `Spawn` with a non-empty prompt — ordering-checked so it
+  never precedes that agent's own `Event::AgentSpawned`), not only
+  synthesized on replay. The TUI's `submit`/`deliver_first_message` no
+  longer push `Entry::User` into the transcript locally; `AppState::apply`
+  now builds it from this same event, so a prompt appears exactly once
+  whether the TUI is live, replaying a focus switch, or a library embedder
+  is watching the raw event stream — one path, every mode.
+  `ForkDirective`/`ParentSteer` remain on the `AgentProgress` fallback for
+  now, a disclosed scope decision, not an oversight.
+
+### Fixed
+
+- **The TUI's sticky scroll header showed the wrong thing.** T6's own
+  problem statement was scroll-shaped — "you scroll and lose track of where
+  you are" — but its binding decision put `session <id> · agent <id>[ via
+  lineage] · model · ctx%` on it: application chrome answering "what
+  session/agent/model am I in", not "what am I looking at". The tell was
+  T6's own gating, which showed that line only while the transcript
+  overflowed the viewport — nobody gates session/model/ctx on scroll
+  position if they actually mean it as persistent chrome.
+
+  The overlay now shows **only** the current turn's own prompt, and only
+  while it has scrolled out of view — triggered by whether the nearest
+  `Entry::User` at or before the viewport's topmost visible row is itself
+  still (at least partly) on screen, never by "the transcript overflows"
+  (T6's original test) or `!follow_tail` (the floating footer's own test,
+  which would also wrongly fire for a short turn scrolled back only
+  slightly). It no longer reserves a layout row either: T6's header used to
+  claim a real `Constraint::Length` row whenever content overflowed,
+  reflowing the transcript out from under the reader as that row
+  appeared/disappeared; the overlay is now drawn straight onto the frame
+  after the transcript, the same way the floating "jump to bottom" footer
+  already was.
+
+  `session`/`model`/`ctx%` were never removed — they always belonged in the
+  persistent status line and stay there. The one field that genuinely
+  needed a new home was V5's lineage breadcrumb, which T6 had misfiled onto
+  the scroll overlay in the first place: it moved to two new
+  `[tui.status_line]` fields, `session` and `lineage` (added to the default
+  Lean line), carrying V5's width-degrade machinery and its
+  fork/spawn-content trap with it unchanged. The status line's own `hint`
+  field, which used to append `focused: <id>` off-root, now suppresses that
+  note whenever `lineage` is part of the resolved field list, so the two
+  never say the same thing twice — it survives only as a fallback for a
+  pinned `fields` config from before this change, which will not
+  automatically gain either new field.
+
+- **The sticky prompt overlay re-wrapped the entire transcript, every
+  entry, on every render.** `entry_row_starts` (used to find which entry
+  governs the row currently at the top of the transcript viewport) built a
+  fresh `Vec<Line>` + `Paragraph` and re-ran `line_count` for every
+  transcript entry unconditionally, with no early exit — and it ran on
+  every dirty render, which includes a 125ms animation tick throughout
+  active streaming, exactly when the transcript is also growing. It now
+  short-circuits at the row the caller actually asked about: entries whose
+  own start row already exceeds that point are never turned into `Line`s or
+  measured at all. A `state.follow_tail` skip was considered and explicitly
+  rejected — the overlay legitimately shows while auto-following the tail
+  of a single turn whose own response is taller than the viewport (a long
+  streaming answer, the most common time this runs), so that gate would
+  have silently hidden a correct overlay rather than been a safe no-op.
+
+- **The status line could silently clip `hint` off narrow terminals.**
+  Adding `session`/`lineage` to the default field order (see above) grew
+  the line's full length to ~106 characters; every field but `lineage`
+  rendered its full text unconditionally with no `.wrap()`, so anything
+  past the render width was clipped by the terminal with no visible sign —
+  at 80 columns `hint` lost roughly 26 characters versus ~18 before, and
+  below ~40 columns it vanished entirely, along with the line's only
+  pointer to `/help` and the `/agents` toggle. The status line now budgets
+  its own width: each field degrades through a small ladder of
+  shorter-but-still-complete phrasings (the same shape the floating scroll
+  footer and `lineage`'s own Full → Compact → Bare degrade already used),
+  giving up space in a fixed priority order (ambient chrome and telemetry
+  first, then `session`/`lineage`, then `activity`, then `hint`, with
+  `mode` never dropped) until the line fits or nothing more can be shrunk.
+  `AUTO-ALLOW` — a genuine safety signal, not decoration — is the one
+  thing on the line guaranteed to survive as long as anything does, down
+  to the narrowest terminal that shows anything at all. See
+  `docs/crates/conway-cli.md`'s `[tui.status_line]` section for the full
+  give-up order and reasoning.
+
 ## [0.3.0] — 2026-07-28
 
 ### Added

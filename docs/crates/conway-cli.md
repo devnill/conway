@@ -130,7 +130,32 @@ the render model unit-testable with no terminal at all: construct an
 transcript/tree. `run` itself is not unit-tested directly (it owns a real
 terminal and a live `SessionHandle`); every piece it composes
 (`state::apply`, `input::handle_key`, `view::draw`, `gate::TuiGate`) is
-unit-tested independently instead.
+unit-tested independently instead. `App::submit` is the one exception worth
+calling out narrowly: it needs only a live `SessionHandle`, no terminal, so
+its own test builds a fully in-memory `Conway` and drives it directly (see
+the `Entry::User` note just below).
+
+**`Entry::User` is built from the event stream, not pushed locally
+(P-8 fix).** `submit`/`deliver_first_message` used to push `Entry::User`
+into the transcript themselves, synchronously, before ever calling the
+facade — so the TUI showed a user's prompt but a library embedder watching
+the bare `EventStream` for the same session never did, exactly the kind of
+mode divergence P-8 calls a renderer bug. `conway-runtime` now emits a
+typed `Event::UserTurn` live for every prompt (`Runtime::prompt`, reached
+by both call sites), and `AppState::apply` builds `Entry::User` from that
+envelope — the one path the TUI and any other `EventStream` consumer now
+share. `submit`/`deliver_first_message` push nothing locally anymore; doing
+so would double the prompt, which is exactly what `tui/app.rs`'s own
+`submit_renders_the_prompt_exactly_once_not_zero_not_twice` test guards
+against (built the same way `App::submit` needs — an in-memory `Conway`,
+not the state-only `test_support` harness, since `Action::Submit` needs a
+live facade call that harness deliberately does not make). Replaying a
+session (a focus switch, or a fresh `agent_events`/`events_from` subscribe)
+reconstructs the same `Entry::User` from `session_handle.rs`'s
+`record_to_event`, which now maps `LogRecord::UserTurn` to `Event::UserTurn`
+faithfully instead of a stringly-typed `AgentProgress` fallback — see
+[`conway-core`](conway-core.md) and [`conway`](conway.md) for the full
+`Event`/`EventStream` side of this change.
 
 **`TuiGate`** (`tui/gate.rs`) is the TUI's in-process `PermissionGate`: its
 `check` never decides anything itself — it forwards every
@@ -392,7 +417,7 @@ to consume):
 | `status_mode` | reversed modifier | the bottom status line |
 | `status_dim` | dim modifier | status-line dim accent (T2: the `elapsed · +tokens` tail of the working indicator) |
 | `spinner` | yellow | activity spinner accent (steady; V6 removed T2's pulse palette) |
-| `header` | reversed modifier | (T6) sticky context header above an overflowing transcript |
+| `header` | reversed modifier | (T6, corrected) sticky prompt overlay above the transcript while the current turn's prompt is scrolled out of view |
 | `scroll_footer` | dim modifier | (T6) floating "jump to bottom" footer pill |
 | `help_border` | blue + bold | (T7) `/help` overlay border, and the `/settings` menu border |
 | `help_key` | bold modifier | (T7) `/help` overlay's key/chord column (V7: was green + bold) |
@@ -418,17 +443,29 @@ The whole line uses `theme.status_mode` (reversed) as its base style; the
 `activity` field overlays its spinner style and dim
 elapsed/tokens tail, and the `hint` field overlays `theme.status_dim`.
 
-**Default Lean line:** `mode | model | ctx | tokens | activity | hint`
-(`model` is omitted until the first turn routes, so a brand-new session
-shows `mode | ctx | tokens | activity | hint`).
+**Default Lean line:** `session | lineage | mode | model | ctx | tokens |
+activity | hint` (`lineage` is omitted while root-focused and `model` is
+omitted until the first turn routes, so a brand-new root-focused session
+shows `session | mode | ctx | tokens | activity | hint`).
+
+`session` and `lineage` were added by the item that corrected a requirement
+miss in T6's scroll-triggered sticky overlay: T6 put this same content on a
+header that appeared and disappeared with scroll position, which is the
+tell that it was misfiled — session/model/ctx/lineage are application
+chrome, not scroll-position-dependent information, so they belong in the
+persistent status line. See "Sticky prompt overlay..." below for the full
+story.
 
 **Configuration** — `[tui.status_line]` has one key, `fields`: an ordered
 list of field names to render. A field absent from the list is hidden; the
 list order is the render order. Unknown names are dropped at render time
 (P-10: config is untrusted input, never a panic). An empty/empty-after-
 validation list falls back to the default Lean order rather than rendering
-a blank line. `CONWAY_TUI__STATUS_LINE__FIELDS=mode,model,ctx,tokens,activity,hint`
-overrides the order via env (comma-split).
+a blank line. `CONWAY_TUI__STATUS_LINE__FIELDS=session,lineage,mode,model,ctx,tokens,activity,hint`
+overrides the order via env (comma-split). **A `fields` list pinned before
+`session`/`lineage` existed keeps working unchanged, but will not gain
+either new field** — an omitted name is never an error, so an older config
+simply renders without them.
 
 ```toml
 [tui.status_line]
@@ -439,14 +476,51 @@ fields = ["mode", "model", "ctx", "tokens", "git", "activity", "hint"]
 
 | Field | Renders | Source |
 | --- | --- | --- |
+| `session` | `session <id>` (the session's own root agent's short id) — unconditional, always renders | `AppState::root_agent` |
+| `lineage` | off-root only: `agent <id>[ via root → fork @seq N → @def]` — see "Sticky prompt overlay..." below for the full breadcrumb/degrade behavior | `AppState::tree` (`TreeNode::parent`/`kind`/`inherited_upto`) |
 | `mode` | `ready` / `awaiting permission` / `ask` / `intent` | `AppState::mode` |
 | `model` | the serving model display name, e.g. `anthropic/claude-sonnet-4-6`; omitted before the first turn routes | `Event::ModelDecision { chosen }` |
 | `ctx` | `ctx 42%` when the focused model's max context is known, else `ctx 12.3k` (raw tokens, compact-suffixed; capped at `ctx 100%`) | cumulative `Event::ContextSegmentAdded { tokens_est }` ÷ the focused model's `max_context_tokens` from `[models.metadata_path]` |
 | `tokens` | `<total> tok (<n%> cached)` when cache data is present, else `<total> tok` | cumulative `Event::TurnFinished { usage }` (`Usage`'s input + output + both cache dimensions + reasoning); `n%` = `cache_read / (input + cache_read + cache_write)`, omitted when the denominator is 0 or `cache_read` is 0 |
 | `activity` | the working indicator: `⠋ thinking… 12s · +45 tok` while active, `idle` while idle (steady `theme.spinner` style; `+{n} tok` is session-deduped new-segment tokens added this turn) | `AppState::activity` + T2 counters |
-| `hint` | a persistent keybinding hint, dim: `Enter submit · Ctrl-E expand · /help · /agents to {view\|hide}`, plus `focused: <id>` when the transcript is focused on a non-root agent. V6 trimmed the slash-command enumeration — `/help` is the single pointer to the rest | static + `AppState::agent_view_open`/`focused_agent` |
+| `hint` | a persistent keybinding hint, dim: `Enter submit · Ctrl-E expand · /help · /agents to {view\|hide}`, plus `focused: <id>` when the transcript is focused on a non-root agent AND `lineage` is not part of the resolved field list (reconciled against `lineage` naming the same thing — see below). V6 trimmed the slash-command enumeration — `/help` is the single pointer to the rest | static + `AppState::agent_view_open`/`focused_agent` |
 | `git` | the current branch (e.g. `main`); omitted when not a git repo, git is absent, or the command fails | one-shot `git rev-parse --abbrev-ref HEAD` at startup, no polling |
 | `cwd` | the session's working directory; omitted when unset | `Cli --cwd` or `config.cwd` |
+
+**Width-aware degradation (review finding).** Adding `session`/`lineage`
+grew the default line's full length to ~106 characters — wide enough that,
+on anything narrower, a plain "render every field's full text and let the
+terminal clip the overflow" approach silently ate `hint` (the line's only
+pointer to `/help` and the `/agents` toggle), and below ~40 columns ate it
+*entirely*, with no visible sign anything had been cut. The status line now
+treats itself as one width budget: each field has its own small ladder of
+shorter-but-still-complete phrasings (the same "shorter complete form,
+never a mid-word clip" rule the floating scroll footer and `lineage`'s own
+Full → Compact → Bare degrade already used), and when the full line does
+not fit the render width, fields give up space one at a time in a fixed
+priority order — never a mid-character clip.
+
+Give-up order, weakest claim on the line first:
+
+1. `cwd`, `git` — ambient chrome, already conditionally omitted.
+2. `model`, `ctx`, `tokens` — point-in-time telemetry, reconstructable from
+   the transcript/turn-end summary if briefly absent.
+3. `session`, then `lineage` (degrades Full → Compact → Bare first, then
+   drops entirely) — orientation ("which session/agent am I in").
+4. `activity` — degrades to spinner + phrase (drops the elapsed/token
+   tail), then is omitted entirely; this happens before `hint`/`mode` give
+   up anything, so a tiny terminal sacrifices "is it working" rather than
+   have it compete with discoverability/safety for the last few columns.
+5. `hint` — discoverability. Degrades full → `/help · /agents to
+   {view|hide}` → bare `/help`, dropped entirely only as the very last
+   resort before `mode`.
+6. `mode` — **never dropped.** Its one degrade step removes the
+   `ready`/`awaiting permission` UI word and keeps the non-default
+   permission-mode label alone, so `AUTO-ALLOW` — a genuine safety signal;
+   an operator who forgets they're in it is the exact failure this guards
+   against — is the one thing on the line guaranteed to survive as long as
+   *anything* does, right down to the narrowest terminal that shows
+   anything at all.
 
 **`tokens (n% cached)` format.** The `tokens` field is a single combined
 field: the cumulative token total followed by a cache-hit-rate
@@ -667,37 +741,94 @@ never reached `commands::parse` and were never sent to the model. **V4
 removes both entirely** (not aliased) in favor of a single `/settings`
 menu — see "The `/settings` menu (V4)" below.
 
-### Sticky header, jump keys, and the scrolled-back indicator (T6)
+### Sticky prompt overlay, jump keys, and the scrolled-back indicator (T6, corrected)
 
 Scrolling back through a long conversation used to lose you: nothing said
-where you were, and nothing but paging brought you home. T6 adds three
-affordances, all keyboard-only.
+where you were, and nothing but paging brought you home. T6 added three
+affordances, all keyboard-only; a later item corrected what the first of
+the three actually showed.
 
-**The sticky header** is a single plain row above the transcript showing
-`session <id> · agent <id> · <model> · ctx%`. It is reserved **only while
-the transcript overflows the viewport** — a conversation that fits on
-screen never gives up a row for it. `agent <id>` appears only when the
-transcript is focused off-root, and `<model>` only once the first
-`Event::ModelDecision` has routed, so the common single-agent case stays
-uncluttered. The `ctx%` figure reuses `view/status.rs::ctx_label`
-directly rather than recomputing the percentage, so the header and the
-status line's `ctx` field cannot drift apart.
+**T6's original mistake, and the fix.** T6's own problem statement was
+scroll-shaped ("you scroll and lose track of where you are"), but its
+binding decision put `session <id> · agent <id>[ via lineage] · model ·
+ctx%` on a header reserved above the transcript **only while it overflowed
+the viewport**. That gating was the tell: nobody gates session/model/ctx on
+scroll position if they actually mean it as persistent chrome — chrome that
+flickers with scroll position is noise, not information. The user's own
+correction: *"the sticky header isn't a full app header. its just for
+scrolling, it was a requirement miss... We want a sticky header showing the
+prompt (or a preview of the prompt)."*
 
-**V5 — lineage breadcrumb.** Off-root, `agent <id>` grows a `via` clause
-naming how the focused agent came to be: `agent <id> via root → fork @seq
-3 → @reviewer`. This answers the "clicking into a subagent doesn't show the
-parents" report: `focus_agent` clears the transcript down to the focused
-agent's *own* log (unchanged), but the tree itself — `parent`/`kind`/
-`inherited_upto` on each `TreeNode` — is always available, so the
-breadcrumb reads it fresh on every render rather than seeding anything into
-the transcript. Each hop's text is built by `view/agents.rs::hop_label`,
-which reuses the exact same `recipe_parts` provenance string the `/agents`
-panel row already shows for that node — `fork @seq N` for a fork, `@def`/
-`(inherit)` for a spawn — so the breadcrumb and the panel can never
-disagree about how a given agent was created. A node with no recorded
-`kind` (the root, or one seeded out-of-band via `ensure_agent_tracked`,
-which never saw a spawn event) falls back to its own short id rather than
-being mislabeled as a fork or a spawn it never was.
+So the overlay now shows **exactly one thing**: the current turn's own
+prompt, and only while it has scrolled out of view. `session`/`model`/
+`ctx%` were never removed — they always belonged in the persistent status
+line and stay there (see the `[tui.status_line]` section above). The
+lineage breadcrumb (V5) is the one field that genuinely needed a new home,
+since T6 misfiled it onto the scroll overlay in the first place: it moved
+to the status line's new `lineage` field, taking its width-degrade
+machinery and its fork/spawn-content trap with it unchanged (see below).
+
+**The sticky prompt overlay** is a single plain row pinned to the TOP of
+the transcript pane, shown only while the CURRENT TURN'S OWN prompt has
+scrolled above the viewport. The trigger is neither "the transcript
+overflows" (T6's original, wrong test) nor `!follow_tail` (the floating
+footer's own trigger, also wrong here — a short turn scrolled back only
+slightly still has its own prompt genuinely on screen, and the overlay must
+stay away in exactly that case). The actual rule: find the entry governing
+the viewport's topmost visible row; walk backward from it to the nearest
+`Entry::User`; if that IS the governing entry (some part of the prompt is
+already on screen), show nothing; otherwise show that prompt.
+
+This also decides *which* prompt to show when several turns are on-screen
+at once: the **nearest** `Entry::User` at or before the viewport's top —
+"sticky" in the editor sense — never simply the most recent prompt anywhere
+in the transcript, which would name an unrelated question several turns
+back the moment the reader scrolls up into an earlier one.
+
+Mapping a scroll offset (counted in WRAPPED rows) to a transcript entry
+needs a wrapped-row breakdown per entry, not just per-entry logical line
+counts — `view/transcript.rs::entry_row_starts` provides it, reusing the
+exact same `Paragraph::line_count` wrapping `wrapped_line_count`/`draw`
+already use (computed per entry rather than for the whole transcript at
+once, since ratatui's `Wrap` reflows each stored `Line` independently and
+never merges across entry boundaries) rather than a second, hand-rolled
+wrap model that could silently put the overlay one turn off.
+
+A focused agent with no `Entry::User` of its own yet (a freshly focused
+spawn child — `focus_agent` clears the transcript down to that agent's OWN
+log with no lineage content mixed in) draws nothing. It never falls back to
+an ancestor's prompt: a spawn child inherited nothing from its parent, so
+showing parent content would display context the agent itself never saw.
+
+**Overlay text handling.** A pasted prompt can be multi-line (`Alt`/
+`Shift-Enter` insert literal `\n`s) — flattened to one line before
+measuring width. It can carry raw control bytes (bracketed paste can
+include an actual ANSI escape) — every control character is stripped
+before the text ever reaches the rendered `Span`, so a pasted escape can
+never inject styling. And unlike every other degrading string in this
+crate (the floating footer below, the lineage breadcrumb's width-fit
+search), a prompt has no shorter *complete* rewrite to fall back through —
+so once it doesn't fit, the overlay truncates it for real, by character
+(never by byte, which can split a multi-byte UTF-8 sequence and render as
+garbage), with a trailing `…`.
+
+**V5 — lineage breadcrumb**, now a `[tui.status_line]` field
+(`lineage`) rather than part of the scroll overlay. Off-root, `agent <id>`
+grows a `via` clause naming how the focused agent came to be: `agent <id>
+via root → fork @seq 3 → @reviewer`. This answers the "clicking into a
+subagent doesn't show the parents" report: `focus_agent` clears the
+transcript down to the focused agent's *own* log (unchanged), but the tree
+itself — `parent`/`kind`/`inherited_upto` on each `TreeNode` — is always
+available, so the breadcrumb reads it fresh on every render rather than
+seeding anything into the transcript. Each hop's text is built by
+`view/agents.rs::hop_label`, which reuses the exact same `recipe_parts`
+provenance string the `/agents` panel row already shows for that node —
+`fork @seq N` for a fork, `@def`/`(inherit)` for a spawn — so the breadcrumb
+and the panel can never disagree about how a given agent was created. A
+node with no recorded `kind` (the root, or one seeded out-of-band via
+`ensure_agent_tracked`, which never saw a spawn event) falls back to its
+own short id rather than being mislabeled as a fork or a spawn it never
+was.
 
 This is **metadata only** — never the ancestor's actual transcript
 content — and that is deliberate, not a shortcut. A fork child's inherited
@@ -721,6 +852,14 @@ even that does not fit. The ancestry walk itself
 instant it revisits an id already in the chain, so a cycle in `parent`
 (should be impossible) ends the walk rather than hanging.
 
+**Reconciling with `hint`'s own note.** Before `lineage` existed, the
+status line's `hint` field appended `focused: <id>` off-root as its only
+way to name the focused agent. Now that `lineage` says the same thing (and
+more), `hint` suppresses its own note whenever `lineage` is part of the
+resolved field list — it survives only as a fallback for an older pinned
+`[tui.status_line] fields` config that predates `lineage` and so never
+gained it.
+
 **End and Home** jump the transcript when the input box is empty: `End`
 snaps to the tail and re-engages auto-follow, `Home` jumps to the top and
 disengages it. When the input box has text, both keep their ordinary
@@ -736,13 +875,18 @@ re-engages. On a narrow terminal it degrades to a shorter *complete* form
 mid-word — a hard truncation would cut off the `End` hint first, which is
 the half that tells you what to do about it.
 
-Neither the header nor the footer is part of the transcript's own
-`Paragraph`. The header draws into its own reserved `Rect`; the footer is
-a `Clear` + `Paragraph` overlay on top of the transcript's last row, the
-same pattern the permission and `/ask` modals already use. The clean-copy
-guarantee is untouched — `entry_lines` never emits either one, so
-selecting and copying the transcript still yields exactly the conversation
-text.
+**Neither the sticky prompt overlay nor the footer reserves a layout row,
+or is part of the transcript's own `Paragraph`.** Both are `Clear` +
+`Paragraph` overlays drawn straight onto the frame after
+`transcript::draw` — the overlay over the transcript's own top row, the
+footer over its bottom row — the same pattern the permission and `/ask`
+modals already use. This is a correction from T6's original shape, which
+reserved the header a real `Constraint::Length` row whenever the
+transcript overflowed; an overlay needs no such reservation, and removing
+it also ends the reflow-under-the-reader problem an appearing/disappearing
+reserved row caused. The clean-copy guarantee is untouched — `entry_lines`
+never emits either overlay, so selecting and copying the transcript still
+yields exactly the conversation text.
 
 **Mouse capture stays off, but the wheel still scrolls.** Conway does not
 enable crossterm mouse capture: a captured terminal routes every mouse
@@ -762,8 +906,9 @@ information that would distinguish them is exactly what mouse capture
 would provide), so the arrows go to the more frequent interaction.
 `PageUp`/`PageDown` scroll a full page; `Home`/`End` jump to top/tail.
 
-New theme slots: `header` (reversed) and `scroll_footer` (dim), both
-configurable under `[tui.theme]`.
+Theme slots: `header` (reversed) — now the sticky PROMPT overlay's style,
+carried over unchanged from T6's original header slot — and `scroll_footer`
+(dim), both configurable under `[tui.theme]`.
 
 ### Input ergonomics: multi-line, history, paste, wrap-fix (T8)
 
@@ -782,10 +927,9 @@ plain Enter, so relying on Shift alone would silently lose multi-line entry
 on those terminals. The input box's own height grows with the draft: one
 row per `\n`-separated line plus the two border rows, capped at
 `area.height / 3` so a long paste or draft can never crowd the
-transcript/status out entirely. `view/mod.rs::layout`'s chrome math (which
-also decides whether the sticky header from T6 gets a reserved row) reads
-this same grown height, so the two can never disagree about how much room
-the transcript actually has.
+transcript/status out entirely. `view/mod.rs::layout`'s constraint list
+reads this same grown height, so the input box and the transcript area can
+never disagree about how much room each actually has.
 
 **History: `Up`/`Down`, persisted.** Every submitted line (a prompt or a
 slash command) is pushed onto a bounded FIFO

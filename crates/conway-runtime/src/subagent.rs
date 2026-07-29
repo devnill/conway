@@ -420,6 +420,37 @@ impl SubagentHost for Runtime {
         };
 
         self.launch_agent(node, agent_loop, last_report, mailbox_tx)?;
+
+        // The live `Event::UserTurn` twin (this item) of the `LogRecord::
+        // UserTurn` head record appended above for a `Spawn` with a
+        // non-empty initial prompt (a library caller's own `SpawnSpec`, or
+        // -- the common production case -- the model-invoked
+        // `conway_subagent`/`conway_spawn` tool, which always supplies a
+        // real prompt and never sets `keep_alive`). Emitted AFTER
+        // `launch_agent` (which calls `AgentTree::attach`, and thus, since
+        // `node.kind` is `Some(spec.mode)` here, already emitted
+        // `Event::AgentSpawned` for `agent_id` above) rather than inline
+        // with the append a few lines up: that append happens BEFORE this
+        // child is attached to the tree, so emitting the live event at the
+        // append site (mirroring `Runtime::prompt`'s own placement, which
+        // is always ordering-safe because ITS target is already attached)
+        // would invert the "`AgentSpawned` precedes every event for its
+        // agent" guarantee for exactly this one path -- this is the
+        // pre-spawn-ordering hazard this item's completion notes disclose.
+        // A `Fork`'s own head record (`ForkDirective`) has no `Event`
+        // counterpart yet (see `record_to_event`'s doc for why that's this
+        // item's own deliberate, disclosed decision) so nothing is emitted
+        // here for that branch.
+        if !starts_idle && spec.mode == SubagentMode::Spawn {
+            self.loop_deps().bus.emit(
+                session_id,
+                agent_id,
+                Event::UserTurn {
+                    text: spec.prompt.clone(),
+                    prov: Provenance::UserPrompt,
+                },
+            );
+        }
         Ok(agent_id)
     }
 

@@ -301,6 +301,23 @@ activity populate. Consumers that treat "an `AgentFinished` reached me" as
 "my own agent finished" (e.g. `TurnHandle::text`/`result`) therefore check
 the finished `AgentResult`'s `agent_id` themselves rather than assuming it.
 
+**`record_to_event` and the `UserTurn` live twin.** `SessionHandle::
+events_from`/`agent_events`'s replay batch is built by `session_handle.rs`'s
+`record_to_event`, which maps each persisted `LogRecord` to the `Event` its
+live counterpart would have produced. Most record kinds still fall back to
+`Event::AgentProgress { note }` (free text, no faithful `Event` shape), but
+`LogRecord::UserTurn` now maps faithfully to `Event::UserTurn { text, prov
+}` — the exact event `conway-runtime` emits live for the same occurrence
+(`Runtime::prompt`, `Runtime::start_root` with an initial prompt, and a
+`Spawn` subagent with a non-empty prompt). Because the replay batch and the
+live bus can now both carry the identical `Event::UserTurn` for the same
+occurrence (the same subscribe-before-read race `AgentFinished`/
+`ToolCallFinished` already had to handle), `EventStream`'s junction-dedup
+(`has_live_twin`) treats `UserTurn` exactly like those two: a race duplicate
+is dropped by content match, not by chance. `ForkDirective`/`ParentSteer`
+remain on the `AgentProgress` fallback — see [`conway-core`](conway-core.md)'s
+own note on why that's a disclosed scope decision, not an oversight.
+
 ## How it fits the whole
 
 `conway` depends on every other workspace crate. It is the sole integration

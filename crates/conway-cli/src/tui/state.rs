@@ -1026,11 +1026,11 @@ impl AppState {
     /// V5: this clears the transcript down to `agent`'s OWN log with no
     /// lineage content mixed in, deliberately -- a spawn child's transcript
     /// must never show text from a parent it never actually saw (the
-    /// fork/spawn trap; see `view/header.rs`'s module doc). What lineage
-    /// this DOES surface -- who created `agent` and how (fork/spawn,
+    /// fork/spawn trap; see `view/status.rs::agent_field`'s own doc). What
+    /// lineage this DOES surface -- who created `agent` and how (fork/spawn,
     /// fork point, `agent_def`) -- is read straight from `self.tree` by the
-    /// sticky header's breadcrumb (`view/header.rs::agent_field`) on every
-    /// render, so nothing needs to be seeded into the transcript here.
+    /// status line's `lineage` field (`view/status.rs::agent_field`) on
+    /// every render, so nothing needs to be seeded into the transcript here.
     pub fn focus_agent(&mut self, agent: AgentId) {
         self.focused_agent = agent;
         self.transcript.clear();
@@ -1781,6 +1781,23 @@ impl AppState {
                     // `turn_transcript_start`).
                     self.turn_transcript_start = self.transcript.len();
                 }
+            }
+            // This item: the SINGLE path that renders a prompt bubble now --
+            // `app.rs`'s `submit`/`deliver_first_message` used to push
+            // `Entry::User` locally, synchronously, before ever calling the
+            // facade; they no longer do (P-8: a behavioral difference
+            // between the TUI and a library consumer watching the same
+            // `EventStream` is a renderer bug, and pushing locally was
+            // exactly that -- a library embedder never saw the prompt at
+            // all). Every prompt -- live submit, a replayed `LogRecord::
+            // UserTurn` (`record_to_event`), or a focus-switch's replay
+            // batch -- now reaches the transcript through this ONE arm.
+            // Unconditional, matching `TextDelta`'s own convention just
+            // below: `apply` is only ever fed the currently subscribed
+            // agent's own stream (`SessionHandle::agent_events`/`events()`),
+            // so `env.agent` is already the right agent by construction.
+            Event::UserTurn { text, .. } => {
+                self.transcript.push(Entry::User(text.clone()));
             }
             Event::ThinkingDelta { text } => {
                 // T4: feed the reasoning-trace delta into the transcript
@@ -3360,12 +3377,18 @@ mod tests {
     // show BOTH sides of the conversation, not just tool/lifecycle
     // activity. This is the regression guard: it feeds `apply` the exact
     // envelope shape `record_to_event`'s replay batch now produces for a
-    // `UserTurn` followed by an `Assistant` record (`AgentProgress{note:
-    // "user turn: ..."}` then `TextDelta{..}`, per that function's own
-    // mapping) and asserts both land as real, visible transcript content. ----
+    // `UserTurn` followed by an `Assistant` record (`Event::UserTurn{text,
+    // prov}` then `TextDelta{..}`, per that function's own mapping -- see
+    // this item's own doc for why `UserTurn` is no longer a stringly-typed
+    // `AgentProgress` fallback) and asserts both land as real, visible
+    // transcript content. ----
 
     #[test]
     fn agent_progress_pushes_a_visible_notice() {
+        // A genuine free-text `AgentProgress` (e.g. a `SystemNote`/
+        // `ContextReportRecord` replay, or a live runtime-authored note) --
+        // NOT a user turn, which now has its own typed `Event::UserTurn`
+        // variant and its own arm/tests below.
         let session = SessionId::new();
         let agent = AgentId::new();
         let mut state = AppState::new(agent);
@@ -3374,14 +3397,73 @@ mod tests {
             session,
             agent,
             Event::AgentProgress {
-                note: "user turn: hi".to_string(),
+                note: "repeated step detected".to_string(),
             },
         ));
 
         assert!(matches!(
             state.transcript.last(),
-            Some(Entry::Notice { text }) if text == "user turn: hi"
+            Some(Entry::Notice { text }) if text == "repeated step detected"
         ));
+    }
+
+    #[test]
+    fn user_turn_event_pushes_entry_user_not_a_notice() {
+        // This item's acceptance test: a consumer (here, the TUI's own
+        // `apply`) can identify a user turn from the typed `Event::UserTurn`
+        // variant alone -- no `"user turn: "` string-matching -- and it
+        // renders as a real `Entry::User`, not `Entry::Notice`.
+        let session = SessionId::new();
+        let agent = AgentId::new();
+        let mut state = AppState::new(agent);
+
+        state.apply(&envelope(
+            session,
+            agent,
+            Event::UserTurn {
+                text: "hi".to_string(),
+                prov: conway::Provenance::UserPrompt,
+            },
+        ));
+
+        assert!(
+            matches!(state.transcript.last(), Some(Entry::User(text)) if text == "hi"),
+            "expected exactly one Entry::User(\"hi\"), got {:?}",
+            state.transcript
+        );
+    }
+
+    #[test]
+    fn a_single_user_turn_event_appears_in_the_transcript_exactly_once() {
+        // The regression the local-push removal (`app.rs`'s `submit`/
+        // `deliver_first_message`) risks: not zero, not twice.
+        let session = SessionId::new();
+        let agent = AgentId::new();
+        let mut state = AppState::new(agent);
+
+        state.apply(&envelope(
+            session,
+            agent,
+            Event::UserTurn {
+                text: "only once".to_string(),
+                prov: conway::Provenance::UserPrompt,
+            },
+        ));
+
+        let user_entries: Vec<&str> = state
+            .transcript
+            .iter()
+            .filter_map(|e| match e {
+                Entry::User(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            user_entries,
+            vec!["only once"],
+            "the prompt must appear exactly once, got {:?}",
+            state.transcript
+        );
     }
 
     #[test]
@@ -3393,13 +3475,14 @@ mod tests {
         // Exactly the envelope sequence `record_to_event` now synthesizes
         // for one `UserTurn` record followed by one `Assistant` record on
         // replay (`SessionHandle::agent_events`/`events_from`'s replay
-        // batch): `AgentProgress{note: "user turn: {text}"}`, then
-        // `TextDelta{text}` carrying the assistant's full reply.
+        // batch): `Event::UserTurn{text, prov}`, then `TextDelta{text}`
+        // carrying the assistant's full reply.
         state.apply(&envelope(
             session,
             agent,
-            Event::AgentProgress {
-                note: "user turn: hi".to_string(),
+            Event::UserTurn {
+                text: "hi".to_string(),
+                prov: conway::Provenance::UserPrompt,
             },
         ));
         state.apply(&envelope(
@@ -3413,9 +3496,10 @@ mod tests {
         assert!(
             state.transcript.iter().any(|e| matches!(
                 e,
-                Entry::Notice { text } if text.contains("hi")
+                Entry::User(text) if text == "hi"
             )),
-            "the replayed user prompt must be visible somewhere in the transcript: {:?}",
+            "the replayed user prompt must render as a real Entry::User, not be dropped or \
+             turned into a Notice: {:?}",
             state.transcript
         );
         assert!(
@@ -3432,7 +3516,7 @@ mod tests {
     #[test]
     fn a_notice_between_two_replayed_assistant_turns_keeps_them_as_separate_entries() {
         // The consecutive-turns concern from the review: since each
-        // replayed user turn now pushes a non-`Assistant` `Entry::Notice`
+        // replayed user turn now pushes a non-`Assistant` `Entry::User`
         // first, `append_assistant_text`'s existing "start fresh unless the
         // last entry is already an Assistant" check keeps two different
         // assistant replies from coalescing into one bubble.
@@ -3444,8 +3528,9 @@ mod tests {
             state.apply(&envelope(
                 session,
                 agent,
-                Event::AgentProgress {
-                    note: format!("user turn: {prompt}"),
+                Event::UserTurn {
+                    text: prompt.to_string(),
+                    prov: conway::Provenance::UserPrompt,
                 },
             ));
             state.apply(&envelope(

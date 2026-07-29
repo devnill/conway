@@ -187,6 +187,97 @@ pub(super) fn wrapped_line_count(state: &AppState, width: u16) -> usize {
     build_paragraph(state, &Theme::default()).line_count(width)
 }
 
+/// Maps each transcript entry to the WRAPPED row (not logical line -- a
+/// long entry can wrap across several rows at a narrow `width`) its own
+/// first rendered line starts at -- the piece `header.rs`'s
+/// `governing_prompt` needs to find which entry owns the row currently at
+/// the top of the viewport. Each entry's row count is measured through the
+/// SAME `entry_lines` -> `Paragraph` -> `Wrap` path `build_paragraph`/`draw`
+/// actually render with (including the `show_reasoning` hide-check
+/// `build_lines` applies), so this mapping can never disagree with what is
+/// actually on screen.
+///
+/// **Short-circuits at `scroll_row`.** `governing_prompt` only ever needs
+/// the start row of the entry whose range contains `scroll_row` -- nothing
+/// past it. Row starts are non-decreasing, so once an entry's own start
+/// already exceeds `scroll_row`, every later entry's start does too, and no
+/// further entry can possibly be the answer. The loop below pushes each
+/// entry's start FIRST, then checks that against `scroll_row` -- so the
+/// entry that finally crosses the threshold contributes its start (needed,
+/// in case IT turns out to be the answer) but is never itself turned into
+/// `Line`s/measured, and nothing after it is even visited. This is the fix
+/// for the review finding that this function (previously) rebuilt a fresh
+/// `Vec<Line>` + `Paragraph` and re-ran `line_count` for literally every
+/// entry in the transcript, unconditionally, on every dirty render --
+/// including the (common, expanded-JSON-pretty-printing) entries far below
+/// whatever `scroll_row` the caller actually asked about.
+///
+/// Returns a full-length `Vec` only when no entry's start ever exceeds
+/// `scroll_row` (e.g. `scroll_row` sits at/past the transcript's true
+/// bottom while following the tail of a transcript no taller than the
+/// viewport, or -- see `header.rs`'s own doc on why a `follow_tail` gate was
+/// deliberately NOT added here -- while following the tail of a single turn
+/// whose own response is itself taller than the viewport, in which case the
+/// row governing the viewport's top is still genuinely somewhere inside the
+/// transcript and must be found the same way).
+pub(super) fn entry_row_starts(state: &AppState, width: u16, scroll_row: u16) -> Vec<u16> {
+    let theme = Theme::default();
+    // Mirror `build_lines`'s streaming-cursor attachment exactly. The cursor
+    // is a single character appended to the LAST line of the last
+    // assistant/reasoning entry while that entry is streaming -- it adds no
+    // `Line`, so it is tempting to ignore here. But `Paragraph` wraps AFTER
+    // the span is appended, so a last line sitting exactly on the width
+    // boundary gains a row from that one character. Omitting it would make
+    // this function and `build_lines` disagree by one row for every entry
+    // after the streaming one, precisely while streaming -- i.e. while the
+    // user is reading. The two must measure the same thing or the overlay
+    // names the wrong prompt; keeping the mirror explicit is cheaper than
+    // rediscovering the drift later.
+    let streaming_assistant = matches!(state.activity, Activity::Responding);
+    let streaming_reasoning = matches!(state.activity, Activity::Thinking);
+    let last_assistant_idx = state
+        .transcript
+        .iter()
+        .rposition(|e| matches!(e, Entry::Assistant { .. }));
+    let last_reasoning_idx = state
+        .transcript
+        .iter()
+        .rposition(|e| matches!(e, Entry::Reasoning { .. }));
+
+    let mut starts = Vec::with_capacity(state.transcript.len());
+    let mut row: u16 = 0;
+    for (i, entry) in state.transcript.iter().enumerate() {
+        starts.push(row);
+        if row > scroll_row {
+            break;
+        }
+        if matches!(entry, Entry::Reasoning { .. }) && !state.show_reasoning {
+            // Hidden -- zero rendered rows (mirrors `build_lines`'s
+            // identical hide-check), so `row` does not advance.
+            continue;
+        }
+        let mut lines =
+            entry_lines(entry, state.tool_preview_lines, state.show_timestamps, &theme);
+        if (streaming_assistant && Some(i) == last_assistant_idx)
+            || (streaming_reasoning && Some(i) == last_reasoning_idx)
+        {
+            if let Some(last) = lines.last_mut() {
+                // Width is all that matters here -- this measures rows, it
+                // never renders -- so the style slot is irrelevant and only
+                // the character's presence counts.
+                last.spans
+                    .push(Span::styled(STREAMING_CURSOR.to_string(), theme.assistant));
+            }
+        }
+        let count = Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .line_count(width)
+            .min(u16::MAX as usize) as u16;
+        row = row.saturating_add(count);
+    }
+    starts
+}
+
 /// Renders one transcript [`Entry`] into its plain-text line(s) -- every
 /// entry kind is exactly one line except multi-line text bodies, which
 /// split into one [`Line`] per physical line (see [`split_lines`]). A free
@@ -1686,5 +1777,147 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ---- entry_row_starts: short-circuit past `scroll_row` (review finding) ----
+
+    /// The direct pin for the short-circuit: a 500-entry transcript, one row
+    /// per entry at this width, asking for only the first handful of rows
+    /// (`scroll_row = 5`). If the old, unconditional every-entry loop were
+    /// still in place, the returned `Vec` would have exactly 500 elements
+    /// (one per entry, matching `state.transcript.len()`) -- proving the
+    /// short-circuit actually fires is exactly the fact that it does NOT:
+    /// the loop must stop and return far fewer than 500 once an entry's own
+    /// start row has already passed `scroll_row`.
+    #[test]
+    fn entry_row_starts_short_circuits_past_the_requested_scroll_row() {
+        let state = numbered_lines_state(500);
+        let starts = entry_row_starts(&state, 80, 5);
+
+        assert!(
+            starts.len() < state.transcript.len(),
+            "must short-circuit long before mapping the full {}-entry \
+             transcript when scroll_row is only 5; got {} starts",
+            state.transcript.len(),
+            starts.len()
+        );
+        // A handful past the crossover, not hundreds -- pins the loop to
+        // "stop at the entry whose start first exceeds scroll_row", not some
+        // looser bound.
+        assert!(
+            starts.len() < 20,
+            "short-circuit should stop within a few entries of scroll_row=5, \
+             not merely somewhere short of 500: got {} starts",
+            starts.len()
+        );
+    }
+
+    /// The short-circuit must never change WHICH entry the caller identifies
+    /// as governing a given row -- only how much work it costs to find it.
+    /// Each of these 500 entries is exactly one row at this width, so entry
+    /// `i`'s start row is `i`; this is checked directly for every entry the
+    /// (short-circuited) call actually returns, pinning correctness for a
+    /// transcript far longer than the requested scroll offset.
+    #[test]
+    fn entry_row_starts_mapping_is_correct_for_a_transcript_much_longer_than_the_scroll_offset() {
+        let state = numbered_lines_state(500);
+        let starts = entry_row_starts(&state, 80, 5);
+        for (i, &s) in starts.iter().enumerate() {
+            assert_eq!(
+                s, i as u16,
+                "entry {i}'s start row must be {i} (one row/entry): {starts:?}"
+            );
+        }
+    }
+
+    /// A large `scroll_row` (e.g. following the tail of a transcript no
+    /// taller than the viewport, or scrolled deep into a very long history)
+    /// must still walk through to the true governing entry -- the
+    /// short-circuit must never stop EARLY when the answer genuinely lies
+    /// further in.
+    #[test]
+    fn entry_row_starts_still_finds_a_governing_entry_deep_in_a_long_transcript() {
+        let state = numbered_lines_state(500);
+        let starts = entry_row_starts(&state, 80, 450);
+        assert_eq!(
+            starts.len(),
+            452,
+            "scroll_row=450 needs entries 0..=451 (451 is the first whose \
+             start exceeds 450) to find the crossover: got {} starts",
+            starts.len()
+        );
+        assert_eq!(starts[450], 450, "entry 450's start row is 450: {starts:?}");
+    }
+
+    /// Hidden `Entry::Reasoning` entries (show_reasoning off) contribute
+    /// ZERO rows -- mirroring `build_lines`'s identical hide-check -- so the
+    /// short-circuit's row bookkeeping must not advance past them, or the
+    /// mapping would disagree with what actually renders.
+    #[test]
+    fn entry_row_starts_gives_hidden_reasoning_entries_zero_rows() {
+        let mut state = AppState::new(AgentId::new());
+        state.show_reasoning = false;
+        state.transcript.push(Entry::Assistant {
+            text: "before".to_string(),
+            model: None,
+            summary: None,
+            ts: None,
+        });
+        state.transcript.push(Entry::Reasoning {
+            text: "hidden thought".to_string(),
+            model: None,
+            summary: None,
+            ts: None,
+        });
+        state.transcript.push(Entry::Assistant {
+            text: "after".to_string(),
+            model: None,
+            summary: None,
+            ts: None,
+        });
+
+        let starts = entry_row_starts(&state, 80, 10);
+        assert_eq!(starts, vec![0, 1, 1], "the hidden reasoning entry (index 1) must not advance the row counter: {starts:?}");
+    }
+
+    /// `entry_row_starts` and `build_lines` must measure the SAME thing, or
+    /// the sticky overlay names the wrong prompt. The subtle way they can
+    /// drift: `build_lines` appends a one-character streaming cursor to the
+    /// last line of the streaming entry, which adds no `Line` but can add a
+    /// wrapped ROW when that line already sits exactly on the width
+    /// boundary.
+    ///
+    /// Here the assistant body is exactly `WIDTH` characters, so it occupies
+    /// one row idle and two while streaming. Any entry after it must shift
+    /// down by that row. Asserting the delta rather than absolute rows keeps
+    /// this honest if `entry_lines` ever changes its own decoration.
+    #[test]
+    fn entry_row_starts_accounts_for_the_streaming_cursors_extra_wrapped_row() {
+        const WIDTH: u16 = 20;
+        let build = |activity: Activity| {
+            let mut state = AppState::new(AgentId::new());
+            state.activity = activity;
+            state.transcript.push(Entry::Assistant {
+                text: "x".repeat(WIDTH as usize),
+                model: None,
+                summary: None,
+                ts: None,
+            });
+            state.transcript.push(Entry::Notice {
+                text: "after".to_string(),
+            });
+            state
+        };
+
+        let idle = entry_row_starts(&build(Activity::Idle), WIDTH, u16::MAX);
+        let streaming = entry_row_starts(&build(Activity::Responding), WIDTH, u16::MAX);
+
+        assert_eq!(
+            streaming[1],
+            idle[1] + 1,
+            "the streaming cursor pushes a boundary-width assistant line onto a \
+             second wrapped row, so the following entry must start one row lower; \
+             idle={idle:?} streaming={streaming:?}"
+        );
     }
 }

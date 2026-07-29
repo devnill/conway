@@ -48,8 +48,16 @@ chrono = { workspace = true }
 # Test-only: used exclusively to construct `conway_core::{error,agent,event}`
 # fixture values for `exit.rs`/`oneshot.rs`/`render/*.rs`'s unit tests (see
 # `exit.rs`'s doc comment for why this cannot be a production dependency).
-# Never referenced outside `#[cfg(test)]` code.
-conway-core = { path = "../conway-core" }
+# Never referenced outside `#[cfg(test)]` code. `features = ["fakes"]`
+# (this item, typed `Event::UserTurn`): `tui/app.rs`'s own test module
+# builds a fully in-memory `Conway` (`conway_core::fakes::{FakeBackend,
+# FakeGate, FakeRouter, FakeStore}`) to drive a real `App::submit` end to
+# end and assert a prompt appears in the transcript exactly once -- the
+# same fake port set `conway`'s own `tests/session_handle.rs` uses, just
+# reached as a dev-dependency here instead of a regular one (`no_forbidden_
+# deps`, `cli_surface.rs`, only inspects `[dependencies]`, never `[dev-
+# dependencies]`, so this stays within that boundary).
+conway-core = { path = "../conway-core", features = ["fakes"] }
 assert_cmd = { workspace = true }
 predicates = { workspace = true }
 tempfile = { workspace = true }
