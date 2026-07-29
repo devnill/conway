@@ -64,11 +64,20 @@ dyn-compatible.
   merge, or drop — order is load-bearing for implicit-prefix caching.
 - **`Plugin` / `Tool`** (`ports::plugin`) — a `Plugin` declares the `Tool`s
   it provides plus an optional `on_init`; a `Tool` declares its `ToolSpec`
-  (JSON schema, `ToolCategory`, `PermissionClass`) and an async `invoke`.
-  This is the **only** extension mechanism — the built-in filesystem/shell/
-  subagent/report tools in `conway-tools` implement the exact same traits a
-  third party would. See [`conway-tools`](conway-tools.md) for the full
-  extensibility story.
+  (JSON schema, `ToolCategory`, `PermissionClass`), an async `invoke`, and
+  `render(&self, args: &Value) -> String`, a human-readable one-liner for a
+  proposed call — the text behind the permission prompt,
+  `Event::PermissionRequested`, and pattern-grant prefix matching (see
+  [`conway-cli`](conway-cli.md)'s "Permission modes and pattern grants"
+  section). `render` has a default (a generic `name(args)` one-liner,
+  correct for a tool with no natural single-command shape) so existing
+  third-party `Tool` implementations keep compiling unmodified; a tool whose
+  call genuinely IS a single command (`bash`) overrides it. `args` is
+  model-supplied and therefore untrusted — an implementation must not panic
+  on any shape. This is the **only** extension mechanism — the built-in
+  filesystem/shell/subagent/report tools in `conway-tools` implement the
+  exact same traits a third party would. See
+  [`conway-tools`](conway-tools.md) for the full extensibility story.
 - **`PermissionGate`** (`ports::permission`) — `async fn check(&self, req:
   PermissionRequest) -> PermissionDecision`. Always implemented by the
   consumer; conway ships no privileged bypass.

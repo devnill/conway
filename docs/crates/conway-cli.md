@@ -1089,6 +1089,23 @@ so it would authorize `git status; <anything>`. A prefix is predictable by
 reading, and matching token-wise means `git status` covers
 `git status --short` without covering `git statusfoo`.
 
+**What a pattern actually matches against: `Tool::render`, not a JSON
+dump.** A prefix like `git status` is only legible because the text it is
+compared against is the same text a person would type — `bash`'s
+`conway_core::ports::Tool::render` override returns the bare `command`
+argument, exactly what the model sent to `bash -c`. `Tool::render`'s
+*default* implementation (used by every builtin/plugin tool that has no
+single-command shape — `read`, `edit`, the subagent tools, ...) instead
+renders a generic `name(args)` one-liner, which the metacharacter gate
+below always rejects (its own `(`/`)`/`{`/`}` trip the gate) — so a pattern
+grant is only ever offered or honored for a tool whose rendering is
+genuinely a command string. This is the single seam every consumer of a
+call's rendered text shares — the permission prompt display, the
+`PermissionRequested` event, and pattern matching all read the exact same
+string, sanitized once (control bytes, e.g. a model-supplied ANSI escape
+sequence, are replaced before that string reaches the terminal or is
+matched against anything).
+
 **The rule that makes prefixes safe.** `git status && <anything>` starts
 with `git status`. So a pattern grant applies **only when the command
 contains no shell metacharacters** — `;`, `&`, `|`, backtick, `$`, `<`,

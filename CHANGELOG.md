@@ -9,6 +9,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **CRITICAL: pattern grants were completely inert.** No persisted
+  `permissions.json` rule could ever match a tool call, for any tool, with
+  any arguments, and `[p]` never appeared on a permission prompt.
+  `PermissionRequest::rendered` was always synthesized as a generic
+  `name(args)` one-liner — for `bash`, `bash({"command":"git status"})` —
+  and `PatternRule`'s metacharacter gate (a hard, deliberate safety check
+  that rejects `(){}` among other shell metacharacters) rejected that JSON
+  syntax on sight, before any prefix comparison. The failure direction was
+  safe (over-conservative, never over-granting) but the feature did
+  nothing. `conway_core::ports::Tool` now has a `render(&self, args:
+  &Value) -> String` method — defaulting to the old generic rendering (so
+  every existing third-party `Tool` implementation, via
+  `ConwayBuilder::with_plugin`, keeps compiling unmodified) and overridden
+  by the built-in `bash` tool to return the bare command string instead.
+  `conway-runtime`'s tool runner now calls the resolved tool's own
+  `render` (rather than synthesizing a generic form itself) and sanitizes
+  the result — untrusted, model-supplied arguments are replaced
+  character-for-character wherever they carry a Unicode control byte (e.g.
+  an ANSI escape sequence), so a rendered call can never smuggle terminal
+  control codes into the permission prompt. A chained or substituted
+  command (`git status && rm -rf /`) still re-prompts every time, now
+  proven against the real production rendering path rather than a
+  hand-written test fixture.
+
+- **CRITICAL: the metacharacter gate could be laundered by the display
+  sanitizer.** Found while reviewing the fix above, and fixed with it —
+  it was never released. That sanitizer runs *before* the gate, and `\n`
+  and `\r` are simultaneously Unicode control characters *and* two of the
+  gate's own shell metacharacters. Sanitizing therefore destroyed the very
+  evidence the gate looks for: `git status \n rm -rf /` arrived as
+  `git status <U+FFFD> rm -rf /`, the gate saw nothing wrong, and the
+  replacement character was consumed as its own whitespace-delimited token
+  by the token-wise prefix comparison — so an existing `bash:git status`
+  grant would have **silently auto-approved a newline-chained command**,
+  while the shell executed the raw, unsanitized newline for real. Note the
+  failure direction: unlike the inert-grants bug above, this one was
+  fail-*open*. `contains_shell_metacharacters` is now hardened at the
+  security boundary itself rather than at the sanitizer, so it holds
+  regardless of what any caller did to the string upstream: it rejects the
+  shell metacharacters, *any* control character (catching an unsanitized
+  string), and the sanitizer's `U+FFFD` placeholder (catching a sanitized
+  one). Covered by a unit test pinning both the raw and sanitized forms
+  across six spacing variants, and by an end-to-end test driving the real
+  `BashTool` → tool-runner → permission-broker pipeline, which cannot
+  drift from the real sanitizer because it runs it.
+
+- **`SubagentHost::ask`'s fork-only invariant (P-1) was only a
+  `debug_assert!`, which compiles to nothing in release builds** —
+  every binary a user runs. In today's tree the only callers
+  (`conway_ask`, `conway::SessionHandle::ask`) always construct a `Fork`
+  spec, so this was a latent gap, not a live one, but a `SubagentHost`
+  is a trait boundary any caller can reach, and an out-of-process
+  plugin supplying JSON is not a trusted in-process Rust type. `ask`
+  now returns a typed `RuntimeError::AskRequiresFork { mode }` for any
+  non-`Fork` spec, enforced in every build, not just debug — matching
+  P-1's requirement that mode restrictions on a primitive are enforced
+  at the trait boundary, and P-10's requirement that a malformed
+  request is a typed error, never a panic. Fork-mode `ask` behavior is
+  unchanged.
+
 - **The status line's `AUTO-ALLOW` indicator could be silently disabled by
   config.** The width-degradation ladder guaranteed `mode` survives WIDTH
   pressure, but nothing required `mode` to be in the resolved `[tui.

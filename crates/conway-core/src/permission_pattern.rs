@@ -47,11 +47,35 @@ const SHELL_METACHARACTERS: &[char] = &[
     ';', '&', '|', '`', '$', '\n', '\r', '<', '>', '(', ')', '{', '}',
 ];
 
+/// The character a sanitized `rendered` string carries in place of a
+/// control byte (see `conway-runtime`'s `sanitize_rendered`).
+///
+/// The gate MUST treat this as disqualifying. `rendered` is sanitized for
+/// display safety BEFORE it reaches [`PatternRule::matches`], and that
+/// sanitization rewrites `\n`/`\r` -- two of the [`SHELL_METACHARACTERS`]
+/// above -- into this placeholder. Without this, `git status \n rm -rf /`
+/// would arrive as `git status <U+FFFD> rm -rf /`: the newline evidence
+/// destroyed, the gate satisfied, and the replacement char consumed as its
+/// own whitespace-delimited token by [`prefix_matches`] -- silently
+/// auto-approving a chained command under a `bash:git status` grant.
+const SANITIZED_CONTROL_PLACEHOLDER: char = '\u{FFFD}';
+
 /// Whether `command` contains anything that could extend it past a matched
 /// prefix. See this module's doc for why this is a hard gate rather than a
 /// heuristic.
+///
+/// Disqualifies three classes, all in the "re-prompt too often" direction:
+/// the [`SHELL_METACHARACTERS`] themselves; any control character (so an
+/// UNSANITIZED string carrying a raw `\n`/`\x1b` is caught here even if it
+/// never passed through a sanitizer); and [`SANITIZED_CONTROL_PLACEHOLDER`]
+/// (so a SANITIZED string whose control char was already rewritten is
+/// caught too). The gate must not depend on where in the pipeline it is
+/// called from -- it is the security boundary, so it assumes nothing about
+/// what upstream did or did not do to the string.
 pub fn contains_shell_metacharacters(command: &str) -> bool {
-    command.chars().any(|c| SHELL_METACHARACTERS.contains(&c))
+    command.chars().any(|c| {
+        SHELL_METACHARACTERS.contains(&c) || c.is_control() || c == SANITIZED_CONTROL_PLACEHOLDER
+    })
 }
 
 /// One persisted grant: a tool name plus a command prefix.
@@ -184,6 +208,69 @@ mod tests {
                  satisfied by a pattern grant: {chained:?}"
             );
         }
+    }
+
+    /// Regression: a SANITIZED chained command must still be gated.
+    ///
+    /// `rendered` is sanitized for display safety (control chars -> U+FFFD)
+    /// BEFORE it reaches `matches`. That rewrite destroys `\n`/`\r` -- two
+    /// of the gate's own metacharacters -- so a gate that only looked for
+    /// the literal characters would see nothing wrong, and `prefix_matches`
+    /// would consume the replacement char as its own whitespace-delimited
+    /// token. `git status \n rm -rf /` would then be silently auto-approved
+    /// under a `bash:git status` grant.
+    ///
+    /// Both forms are pinned here: the raw string (as an unsanitized caller
+    /// would pass it) and the sanitized string (as the production
+    /// `ToolRunner` seam actually produces).
+    #[test]
+    fn a_sanitized_chained_command_is_still_gated() {
+        let rule = PatternRule::parse("bash:git status").expect("valid rule");
+
+        // The spacing variants matter: a U+FFFD flanked by spaces becomes
+        // its own token, which is the case that slipped past prefix_matches.
+        for raw in [
+            "git status\nrm -rf /tmp/x",
+            "git status \nrm -rf /tmp/x",
+            "git status\n rm -rf /tmp/x",
+            "git status \n rm -rf /tmp/x",
+            "git status\rrm -rf /tmp/x",
+            "git status \r\n rm -rf /tmp/x",
+        ] {
+            assert!(
+                !rule.matches("bash", raw),
+                "raw chained command must be gated: {raw:?}"
+            );
+
+            // KEEP IN SYNC with `conway_runtime::tools::runner::
+            // sanitize_rendered`. This is a hand-copy, not a call: crate
+            // layering forbids `conway-core` from depending on
+            // `conway-runtime`, so the real function is unreachable here.
+            // If its replacement character or its predicate ever changes,
+            // update `SANITIZED_CONTROL_PLACEHOLDER` above and this copy
+            // together, or the gate silently stops covering the real
+            // sanitizer's output. The end-to-end test that CANNOT drift is
+            // `a_newline_chained_command_still_reaches_the_operator_through_
+            // the_real_render_seam` in `conway/tests/permission_pattern_seam.rs`,
+            // which runs the genuine sanitizer in the genuine pipeline.
+            let sanitized: String = raw
+                .chars()
+                .map(|c| if c.is_control() { '\u{FFFD}' } else { c })
+                .collect();
+            assert!(
+                !rule.matches("bash", &sanitized),
+                "SANITIZED chained command must be gated too -- the control \
+                 char was rewritten, but the command is no less chained: \
+                 {raw:?} -> {sanitized:?}"
+            );
+        }
+
+        // The benign command still matches, so the hardening did not simply
+        // break pattern grants outright.
+        assert!(
+            rule.matches("bash", "git status --short"),
+            "an ordinary granted command must still match"
+        );
     }
 
     /// The gate applies to the wildcard rule too -- "any bash call" must

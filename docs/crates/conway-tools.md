@@ -167,6 +167,19 @@ incrementally via `ToolCtx::events`; cancelling the tool's
 child, so a shell pipeline or backgrounded subprocess can't outlive
 cancellation.
 
+`BashTool` overrides `Tool::render` to return the bare `command` string
+(falling back to the trait's generic `bash(args)` rendering if `command` is
+missing or not a string — untrusted, model-supplied arguments must never
+panic a render) rather than accepting the trait's default `name(args)`
+one-liner. This is load-bearing, not cosmetic: `conway-runtime`'s
+`PermissionRequest::rendered` (permission prompt text, the
+`PermissionRequested` event, and `conway_core::permission_pattern::
+PatternRule` prefix matching) is built from whatever `Tool::render`
+returns, and a rule like `bash:git status` is only checkable-by-reading —
+the entire reason V2 pattern grants use prefixes over regex — when the
+rendered text IS the command a person would type, not a JSON dump of the
+call's arguments.
+
 ### `SubagentPlugin` — `conway_subagent`, `conway_ask`, `conway_steer`, `conway_await`, `conway_cancel`
 
 A pure, zero-delegation-logic wrapper over `ToolCtx::subagents`: every tool

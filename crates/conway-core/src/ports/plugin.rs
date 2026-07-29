@@ -54,6 +54,35 @@ pub trait Tool: Send + Sync + 'static {
     /// a `TruncationPolicy` on the returned `ToolOutput`; the runtime applies
     /// it and records the truncation in the log (architecture §8).
     async fn invoke(&self, call: ToolCall, ctx: ToolCtx) -> Result<ToolOutput, ToolError>;
+
+    /// Renders this proposed call as a single human-readable line: the text
+    /// behind `PermissionRequest::rendered` (permission prompt display,
+    /// `Event::PermissionRequested`, and any future audit log), and --
+    /// for a tool whose rendering is a shell-command-shaped string -- the
+    /// text `conway_core::permission_pattern::PatternRule` prefix-matches
+    /// against.
+    ///
+    /// PRE: `args` has already been validated against `self.spec().schema`
+    /// by the caller. It is nonetheless UNTRUSTED, model-supplied content
+    /// (P-10): an implementation MUST NOT panic on any `serde_json::Value`
+    /// shape (no `unwrap`/`expect`/indexing into `args`), since a caller
+    /// that skips validation, or a future validator bug, must not turn a
+    /// bad render into a crash. Callers additionally sanitize the returned
+    /// string for control bytes before display -- see
+    /// `conway_runtime::tools::runner`'s render seam -- so an implementation
+    /// need not do that itself, only avoid panicking.
+    ///
+    /// The default reproduces this trait's original, pre-per-tool-render
+    /// behavior: a generic `name(args)` one-liner. It is correct for any
+    /// tool whose call has no natural single command-string representation
+    /// (`read`, `edit`, the subagent tools, ...). A tool whose call IS
+    /// meaningfully a shell command -- `bash` -- overrides this to return
+    /// that bare command string instead, so `PatternRule`'s prefix matching
+    /// (designed against a shell command, not a JSON debug dump) has
+    /// something legible to operate on.
+    fn render(&self, args: &serde_json::Value) -> String {
+        format!("{}({})", self.spec().name, args)
+    }
 }
 
 /// A plugin's static identity.
@@ -493,5 +522,46 @@ mod tests {
         fn assert_object_safe(_: &dyn ContextHook) {}
         let hook = BeforeRequestOnlyHook;
         assert_object_safe(&hook);
+    }
+
+    // ---- Tool::render's default implementation ----
+
+    /// A tool that accepts the trait's default `render` untouched -- proves
+    /// a third-party `Tool` implementor (`ConwayBuilder::with_plugin`, GP-03)
+    /// keeps compiling without implementing the new method (the widening
+    /// this trait underwent to fix the "pattern grants are inert" bug).
+    struct DefaultRenderTool;
+
+    #[async_trait]
+    impl Tool for DefaultRenderTool {
+        fn spec(&self) -> ToolSpec {
+            ToolSpec {
+                name: crate::ids::ToolName::new("probe"),
+                description: "test".into(),
+                schema: schemars::schema_for!(serde_json::Value),
+                category: crate::content::ToolCategory::Read,
+                permission: crate::content::PermissionClass::Safe,
+            }
+        }
+
+        async fn invoke(&self, _call: ToolCall, _ctx: ToolCtx) -> Result<ToolOutput, ToolError> {
+            unreachable!("not exercised by this test")
+        }
+    }
+
+    #[test]
+    fn default_render_reproduces_the_pre_widening_name_args_shape() {
+        let tool = DefaultRenderTool;
+        let rendered = tool.render(&serde_json::json!({"a": 1}));
+        assert_eq!(rendered, "probe({\"a\":1})");
+    }
+
+    /// `Tool` must remain object-safe: `PluginRegistry`/third-party plugin
+    /// consumers hold it as `Arc<dyn Tool>`.
+    #[test]
+    fn tool_is_object_safe() {
+        fn assert_object_safe(_: &dyn Tool) {}
+        let tool = DefaultRenderTool;
+        assert_object_safe(&tool);
     }
 }

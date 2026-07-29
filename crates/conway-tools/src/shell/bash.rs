@@ -85,6 +85,21 @@ impl Tool for BashTool {
             return Ok(error_text("bash tool requires a unix host".into()));
         }
     }
+
+    /// The bare shell command, not the generic `bash({"command":...})`
+    /// default: `PatternRule` prefix-matches this text against a granted
+    /// command prefix (`conway_core::permission_pattern`), which is only
+    /// legible when `rendered` IS the command a person would type.
+    ///
+    /// `args` is untrusted, model-supplied JSON (P-10): a missing or
+    /// non-string `command` falls back to the trait's default rendering
+    /// rather than panicking (no `unwrap`/`expect`/indexing).
+    fn render(&self, args: &serde_json::Value) -> String {
+        match args.get("command").and_then(serde_json::Value::as_str) {
+            Some(command) => command.to_string(),
+            None => format!("{}({})", self.spec().name, args),
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -309,5 +324,46 @@ mod tests {
         assert!(props.contains_key("timeout_ms"));
         assert!(props.contains_key("cwd"));
         assert_eq!(json["additionalProperties"], false);
+    }
+
+    // ---- render: the fix for "pattern grants are inert" ----
+
+    /// The whole point of the override: `PatternRule` prefix-matches
+    /// `rendered` against a granted command prefix, which only works when
+    /// `rendered` IS the bare command -- not `bash({"command":"git status"})`
+    /// (the generic default's shape, which the metacharacter gate rejects
+    /// outright because of the JSON's own `{`/`}`/`"`).
+    #[test]
+    fn render_returns_the_bare_command_not_a_json_dump() {
+        let rendered = BashTool::new().render(&serde_json::json!({"command": "git status"}));
+        assert_eq!(rendered, "git status");
+    }
+
+    #[test]
+    fn render_ignores_extra_fields_like_timeout_and_cwd() {
+        let rendered = BashTool::new().render(&serde_json::json!({
+            "command": "ls -la",
+            "timeout_ms": 5000,
+            "cwd": "/tmp",
+        }));
+        assert_eq!(rendered, "ls -la");
+    }
+
+    /// P-10: `args` is untrusted and may not even have a string `command`
+    /// (a caller invoking `render` ahead of/without schema validation, or a
+    /// future validator bug) -- this must degrade to the generic rendering,
+    /// never panic.
+    #[test]
+    fn render_falls_back_without_panicking_on_a_missing_or_malformed_command() {
+        for bad in [
+            serde_json::json!({}),
+            serde_json::json!({"command": 5}),
+            serde_json::json!(null),
+            serde_json::json!("not an object"),
+            serde_json::json!([1, 2, 3]),
+        ] {
+            let rendered = BashTool::new().render(&bad);
+            assert!(rendered.starts_with("bash("), "{rendered:?}");
+        }
     }
 }
