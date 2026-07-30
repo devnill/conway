@@ -17,7 +17,7 @@ use conway_core::error::ToolError;
 use conway_core::ids::{AgentId, SessionId, ToolName};
 use conway_core::ports::{SubagentHost, Tool, ToolCtx, ToolOutput};
 use conway_tools::builtin_plugins;
-use conway_tools::fs::{EditTool, GlobTool, GrepTool, ReadTool, WriteTool};
+use conway_tools::fs::{CdTool, EditTool, GlobTool, GrepTool, ReadTool, WriteTool};
 use conway_tools::report::ReportTool;
 use conway_tools::shell::BashTool;
 use conway_tools::subagent::{AskTool, AwaitTool, CancelTool, SteerTool, SubagentTool};
@@ -44,6 +44,10 @@ fn text_of(out: &ToolOutput) -> &str {
 /// schema/description sweeps below.
 fn all_tools_with_minimal_args() -> Vec<(Arc<dyn Tool>, serde_json::Value)> {
     vec![
+        (
+            Arc::new(CdTool::new()) as Arc<dyn Tool>,
+            serde_json::json!({"path": "."}),
+        ),
         (
             Arc::new(ReadTool::new()) as Arc<dyn Tool>,
             serde_json::json!({"path": "f.txt"}),
@@ -222,7 +226,7 @@ fn builtin_plugins_returns_exactly_four_with_expected_ids() {
 }
 
 #[test]
-fn union_of_tools_is_exactly_the_documented_twelve() {
+fn union_of_tools_is_exactly_the_documented_thirteen() {
     let mut names: Vec<String> = builtin_plugins()
         .iter()
         .flat_map(|p| p.tools())
@@ -233,6 +237,7 @@ fn union_of_tools_is_exactly_the_documented_twelve() {
         names,
         vec![
             "bash",
+            "cd",
             "conway_ask",
             "conway_await",
             "conway_cancel",
@@ -328,6 +333,14 @@ async fn truncation_matches_the_documented_table_per_tool() {
     std::fs::write(dir.path().join("g.rs"), "fn foo() {}").unwrap();
 
     let mut actual: HashMap<&'static str, TruncationPolicy> = HashMap::new();
+
+    let (ctx, _h) = test_ctx(dir.path().to_path_buf());
+    let out = CdTool::new()
+        .invoke(call("cd", serde_json::json!({"path": "."})), ctx)
+        .await
+        .unwrap();
+    assert!(!out.is_error, "cd: {}", text_of(&out));
+    actual.insert("cd", out.truncation);
 
     let (ctx, _h) = test_ctx(dir.path().to_path_buf());
     let out = ReadTool::new()
@@ -499,6 +512,7 @@ async fn truncation_matches_the_documented_table_per_tool() {
     // conway-core does not have; `bash.rs` splits its 30_000-byte budget
     // evenly across the two real fields).
     let expected: Vec<(&str, TruncationPolicy)> = vec![
+        ("cd", TruncationPolicy::None),
         ("read", TruncationPolicy::Head { max_bytes: 65_536 }),
         ("write", TruncationPolicy::None),
         ("edit", TruncationPolicy::None),

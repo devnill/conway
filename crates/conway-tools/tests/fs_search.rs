@@ -52,7 +52,7 @@ fn fs_plugin_manifest_and_tools() {
         .map(|t| t.spec().name.as_str().to_string())
         .collect();
     names.sort();
-    assert_eq!(names, vec!["edit", "glob", "grep", "read", "write"]);
+    assert_eq!(names, vec!["cd", "edit", "glob", "grep", "read", "write"]);
 }
 
 #[test]

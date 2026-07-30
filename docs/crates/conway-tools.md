@@ -20,7 +20,7 @@ what proves a tool cannot reach outside the sandboxed interface `ToolCtx`
 defines.
 
 ```
-fs        read, write, edit, glob, grep     (FsPlugin)
+fs        cd, read, write, edit, glob, grep (FsPlugin)
 shell     bash                              (ShellPlugin)
 subagent  conway_subagent, conway_ask,
           conway_steer, conway_await,
@@ -155,20 +155,61 @@ TUI's interactive prompting gate).
 
 ## The built-in plugins
 
-### `FsPlugin` — `read`, `write`, `edit`, `glob`, `grep`
+### `FsPlugin` — `cd`, `read`, `write`, `edit`, `glob`, `grep`
 
 | tool | category | permission | behavior |
 |---|---|---|---|
+| `cd` | `Move` | `Safe` | Changes the working directory subsequent tool calls resolve relative paths against. |
 | `read` | `Read` | `Safe` | `cat -n`-style file reading with binary sniffing and offset/limit windowing. |
 | `write` | `Edit` | `RequiresApproval` | Atomic whole-file replacement via a sibling temp file plus rename. |
 | `edit` | `Edit` | `RequiresApproval` | Literal, byte-exact substring replacement (no regex, no fuzzy match — ambiguous matches are a model-recoverable error). |
 | `glob` | `Search` | `Safe` | Gitignore-aware glob pattern matching over a directory tree, results ordered mtime-descending. |
 | `grep` | `Search` | `Safe` | Regex content search over a directory tree, gitignore-aware. |
 
-All five respect `.gitignore` where applicable and operate relative to
-`ToolCtx::cwd` — there is no sandbox/worktree logic anywhere in the
-harness (a general conway design principle); path confinement, if wanted,
-is the `PermissionGate` implementation's job, not this plugin's.
+The five file tools respect `.gitignore` where applicable and operate
+relative to `ToolCtx::cwd` — there is no sandbox/worktree logic anywhere in
+the harness (a general conway design principle); path confinement, if
+wanted, is the `PermissionGate` implementation's job, not this plugin's.
+
+**`cd`** is the exception worth its own paragraph, because its effect is
+not immediate the way every other tool's is. It resolves its one `path`
+argument the same way every other file tool does (relative joins onto
+`ToolCtx::cwd`, absolute as-is), verifies the target exists and is a
+directory (a nonexistent path or a file target is a model-recoverable
+error, cwd left unchanged — `Tool::invoke` never calls `CwdHandle::set`
+without that check passing first), and then calls
+`ToolCtx::chdir.set(path)`. Because `ToolRunner::run_batch` snapshots the
+`chdir` cell into `ToolCtx::cwd` exactly once, before dispatching any call
+in a batch (`conway-runtime`, S1), **a `cd` takes effect starting the next
+batch of tool calls, never the one it was issued in** — a `cd` alongside a
+`read` in the same batch does not redirect that `read`. For a one-off
+("run this one command somewhere else, then come back") use the per-call
+`cwd` argument `bash`/`glob`/`grep` already accept instead — the `(cd X &&
+cmd)` subshell idiom, which applies immediately because it's a fresh
+`ToolCtx` field read, not a persistent move. `cd` also never changes where
+a session started (`SessionMeta::cwd`): a resumed session always returns to
+its original spawn directory. Deliberately out of scope: `cd -`,
+`pushd`/`popd`, a directory stack, `PATH`-style search, and a `pwd` tool —
+shell affordances the model doesn't need (`ToolCtx::cwd` is already handed
+to every tool, and the current directory is already visible in the TUI
+status line).
+
+`cd` itself performs no containment check, and deliberately so — but that
+does **not** mean its target is unchecked. `CdTool` declares
+`PathArgs::Named(&["path"])`, and `conway-runtime`'s permission broker
+checks every declared path argument of every tool against the agent's
+confinement root before any allow path is consulted. So a `cd` to a path
+outside a confined agent's root is **denied by the broker**, exactly like a
+`read` or a `write` would be, without `cd` containing a line of
+root-specific code. That is the design working as intended: confinement is
+enforced at the one chokepoint every tool call passes through, not
+re-implemented per tool (GP-08 — the harness's responsibility ends at the
+permission model).
+
+Two things follow. A `cd` inside the root is still just a `cd` — cwd is not
+the security boundary, so moving around within the root is unremarkable. And
+an unconfined agent (no root) is unaffected: the broker's check is a no-op
+there, and `cd` behaves exactly as it did before confinement existed.
 
 ### `ShellPlugin` — `bash`
 

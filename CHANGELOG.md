@@ -43,6 +43,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   embedder-only for this slice, exactly as `cwd` already is). See
   `docs/crates/conway.md`'s `SpawnSpec` section for the full semantics.
 
+- **`cd` — a built-in tool that changes the model's working directory
+  (S2: the `cd` tool).** `conway-tools`' `FsPlugin` gains a sixth tool,
+  `cd` (category `Move`, permission `Safe`), the first caller of S1's
+  `ToolCtx::chdir: CwdHandle` capability. It resolves its `path` argument
+  the same way every other file tool does, verifies the target exists and
+  is a directory *before* calling `chdir.set` (a nonexistent path or a
+  file target is a model-recoverable error, cwd left unchanged), and
+  names the new cwd in its output (the model's only confirmation the move
+  happened, given the next-batch semantics below). Built entirely on the
+  public `ToolCtx` surface, so it demonstrates P-6 by construction rather
+  than by assertion. Because `ToolRunner::run_batch` snapshots `chdir`
+  into `ToolCtx::cwd` once per batch (S1), **a `cd` takes effect starting
+  the next batch, not the one it was issued in** — documented in the
+  tool's own description (the model reads that, not crate docs), along
+  with the per-call `cwd` argument on `bash`/`glob`/`grep` as the
+  immediate one-off alternative. `cd -`, `pushd`/`popd`, a directory
+  stack, `PATH`-style search, and a `pwd` tool are deliberately out of
+  scope — shell affordances a model with absolute paths doesn't need.
+  `cd` contains no root-specific code, but its target **is** nonetheless
+  confined: it declares `PathArgs::Named(&["path"])`, and the broker's root
+  check (below) evaluates every declared path argument of every tool, so a
+  `cd` outside a confined agent's root is denied before any allow path is
+  consulted — the same treatment `read`/`write` get, from the same generic
+  mechanism. Moving around *within* the root is unremarkable, since cwd was
+  never the boundary; an unconfined agent is unaffected. See
+  `docs/crates/conway-tools.md`'s `FsPlugin` section for the full semantics.
+
+- **`PermissionBroker` now enforces an agent's confinement root against
+  every tool call (S5: the broker root check).** S3 landed the plumbing
+  (`SessionMeta.root`/`SubagentSpec.root`) with no enforcement yet; this
+  slice is the enforcement. The check runs FIRST in `PermissionBroker::
+  decide` — above the plan-mode gate, the `AllowAlways` cache, pattern
+  grants, and `AutoAllow` mode alike — so none of them can widen, satisfy,
+  or bypass a confined agent's root; a repository-shipped
+  `.conway/permissions.json` pattern grant cannot defeat it either. It
+  reads each call's raw `arguments` (never the display-sanitized
+  `rendered` string — reading `rendered` here would reintroduce the exact
+  fail-open bug class 0.5.0 fixed) against the tool's own declared
+  `Tool::path_args`: a `Named` path resolved outside the root (via
+  `conway_core::containment::CanonicalRoot`, so a symlink escape or `..`
+  is caught, not just a lexical prefix) is denied outright; an
+  `Unconfinable` call (e.g. `bash`'s free-form command) is never
+  auto-allowed under a root — it always reaches the operator's gate
+  instead, though any of its own `checkable` arguments (`bash`'s `cwd`)
+  are still enforced the same way `Named` paths are. An agent with no
+  root is entirely unaffected (this remains the default: only a spawned
+  child with an explicit `SpawnSpec::root` is ever confined). A root that
+  no longer canonicalizes when reconstructed (e.g. its directory was
+  removed) fails closed — every root-relevant call is denied, never
+  silently unconfined. (`crates/conway-runtime/src/permission.rs`,
+  `crates/conway-runtime/src/tools/runner.rs`,
+  `crates/conway-runtime/src/agent_loop.rs`)
+
 ### Fixed
 
 - **`PermissionBroker::decide`'s plan-mode guarantee was not honored by the
