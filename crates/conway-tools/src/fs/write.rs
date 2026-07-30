@@ -11,7 +11,7 @@ use tokio::io::AsyncWriteExt;
 use conway_core::content::{PermissionClass, ToolCall, ToolCategory, ToolSpec, TruncationPolicy};
 use conway_core::error::ToolError;
 use conway_core::ids::ToolName;
-use conway_core::ports::{Tool, ToolCtx, ToolOutput};
+use conway_core::ports::{PathArgs, Tool, ToolCtx, ToolOutput};
 
 use crate::common::{check_cancel, parse_args, resolve_path, text_output};
 
@@ -35,6 +35,14 @@ impl WriteTool {
 
 #[async_trait]
 impl Tool for WriteTool {
+    /// `WriteArgs::path` is the only path argument (`content` is file data,
+    /// not a path). Note this is the case that forbids a plain
+    /// `fs::canonicalize` containment check: a write target legitimately
+    /// does not exist yet.
+    fn path_args(&self) -> PathArgs {
+        PathArgs::Named(&["path"])
+    }
+
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: ToolName::new("write"),

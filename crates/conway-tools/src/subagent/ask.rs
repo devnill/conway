@@ -21,7 +21,7 @@ use conway_core::content::{
 use conway_core::error::ToolError;
 use conway_core::ids::ToolName;
 use conway_core::log::SubagentMode;
-use conway_core::ports::{PluginConfig, Tool, ToolCtx, ToolOutput};
+use conway_core::ports::{PathArgs, PluginConfig, Tool, ToolCtx, ToolOutput};
 
 use crate::common::{check_cancel, parse_args};
 use super::tools::{config_u32, config_u64, deadline_from_secs, host_error, BudgetArg, TRUNCATION};
@@ -92,6 +92,13 @@ impl AskTool {
 
 #[async_trait]
 impl Tool for AskTool {
+    /// No path arguments: `AskArgs` is a prompt, an optional budget, and an
+    /// optional tool selection. The forked child inherits the parent's cwd
+    /// (`cwd: None` in `invoke`), so no path crosses this tool's boundary.
+    fn path_args(&self) -> PathArgs {
+        PathArgs::None
+    }
+
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: ToolName::new("conway_ask"),

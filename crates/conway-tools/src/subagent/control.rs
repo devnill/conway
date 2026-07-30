@@ -9,7 +9,7 @@ use serde::Deserialize;
 use conway_core::content::{PermissionClass, ToolCall, ToolCategory, ToolSpec};
 use conway_core::error::ToolError;
 use conway_core::ids::ToolName;
-use conway_core::ports::{Tool, ToolCtx, ToolOutput};
+use conway_core::ports::{PathArgs, Tool, ToolCtx, ToolOutput};
 
 use crate::common::{check_cancel, parse_args, text_output};
 use super::tools::{host_error, parse_agent_id, wait_for_result, TRUNCATION};
@@ -47,6 +47,11 @@ impl SteerTool {
 
 #[async_trait]
 impl Tool for SteerTool {
+    /// No path arguments: steering carries an agent id and a message.
+    fn path_args(&self) -> PathArgs {
+        PathArgs::None
+    }
+
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: ToolName::new("conway_steer"),
@@ -81,6 +86,11 @@ impl AwaitTool {
 
 #[async_trait]
 impl Tool for AwaitTool {
+    /// No path arguments: awaiting carries an agent id (and timing only).
+    fn path_args(&self) -> PathArgs {
+        PathArgs::None
+    }
+
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: ToolName::new("conway_await"),
@@ -111,6 +121,11 @@ impl CancelTool {
 
 #[async_trait]
 impl Tool for CancelTool {
+    /// No path arguments: cancelling carries an agent id and a mode.
+    fn path_args(&self) -> PathArgs {
+        PathArgs::None
+    }
+
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: ToolName::new("conway_cancel"),

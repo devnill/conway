@@ -22,7 +22,7 @@ use conway_core::content::{
 use conway_core::error::{RuntimeError, ToolError};
 use conway_core::ids::{AgentId, RoleAlias, ToolName};
 use conway_core::log::SubagentMode;
-use conway_core::ports::{PluginConfig, Tool, ToolCtx, ToolOutput};
+use conway_core::ports::{PathArgs, PluginConfig, Tool, ToolCtx, ToolOutput};
 
 use crate::common::{check_cancel, parse_args, text_output};
 
@@ -216,6 +216,15 @@ impl SubagentTool {
 
 #[async_trait]
 impl Tool for SubagentTool {
+    /// No path arguments: `SubagentArgs` carries a mode, prompt, agent_def,
+    /// role, budget, tool selection, and result contract -- no filesystem
+    /// path. The model-invoked tool deliberately has no `cwd` argument (see
+    /// `cwd: None` in `invoke`; only the facade's `SpawnSpec` takes one), so
+    /// there is genuinely nothing here for a root check to evaluate.
+    fn path_args(&self) -> PathArgs {
+        PathArgs::None
+    }
+
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: ToolName::new("conway_subagent"),

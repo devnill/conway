@@ -83,6 +83,77 @@ pub trait Tool: Send + Sync + 'static {
     fn render(&self, args: &serde_json::Value) -> String {
         format!("{}({})", self.spec().name, args)
     }
+
+    /// Declares which top-level fields of a call's `arguments` (the same
+    /// shape `self.spec().schema` validates) carry filesystem paths, for a
+    /// later permission-broker root-containment check. **This slice ships
+    /// only the declaration** -- no `PermissionCtx`/broker reads this yet.
+    ///
+    /// PRE (mirrors `render`'s own PRE, P-10): a caller MUST NOT rely on
+    /// this to be internally consistent with untrusted `args` at runtime --
+    /// it is static, call-independent metadata about the tool's *schema*,
+    /// not a computation over one call's actual JSON. (A method that
+    /// inspected `args` to compute paths would need an extra RPC round trip
+    /// for an out-of-process plugin; a field-name list survives the wire
+    /// intact — GP-03/GP-11's "core ships mechanism + declarative config".)
+    ///
+    /// The default is [`PathArgs::Unconfinable`], **not** "no declared
+    /// paths": "no paths" defaulting to "nothing to check, therefore allow"
+    /// would silently unconfine every tool that doesn't override this
+    /// method, including every third-party [`Tool`] impl (a known hazard in
+    /// this feature's inventory). `Unconfinable` does not mean "deny" --
+    /// see the type's own doc for what it does mean, and why that keeps the
+    /// default from being a brick wall.
+    fn path_args(&self) -> PathArgs {
+        PathArgs::default()
+    }
+}
+
+/// Declarative metadata: which of a [`Tool`]'s call argument names carry
+/// filesystem paths. Consumed (in a later slice) by the permission broker to
+/// decide whether a call can be auto-allowed under an operator-configured
+/// root, or must always fall through to the gate.
+///
+/// **`Unconfinable` is the safe default, and it does NOT mean "deny."** It
+/// means "this tool's arguments cannot be statically confined to a root, so
+/// a root-containment check must always fall through to the operator's
+/// gate" -- the same asymmetry `conway_core::permission_pattern`'s
+/// metacharacter gate is built on (an unnecessary prompt costs a keystroke;
+/// a missed one costs arbitrary execution). A tool that never overrides
+/// [`Tool::path_args`] is exactly as gated as it is today -- nothing is
+/// silently auto-allowed by adding this trait method.
+///
+/// `bash` needs BOTH of these facts about itself at once: its `command`
+/// string is unconfinable (a shell command can reach any path via
+/// redirection, substitution, `cd`, subprocess invocation, ...) AND its
+/// optional `cwd` argument, when present, IS a path a root check could
+/// usefully confine. `Unconfinable`'s `checkable` field carries that second
+/// fact *alongside* the first, in the same variant, rather than needing a
+/// second top-level enum variant or a struct-of-two-independent-flags
+/// shape — so an enforcing call site never special-cases `bash`: it always
+/// asks "is this call unconfinable, and if so, is there anything checkable
+/// anyway", one match, no `if name == "bash"`.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PathArgs {
+    /// This tool takes no path arguments at all.
+    None,
+    /// These top-level argument names (fields of `ToolCall::arguments`)
+    /// carry filesystem paths a root-containment check can evaluate.
+    Named(&'static [&'static str]),
+    /// This tool's call cannot be statically confined to a root (e.g. a
+    /// free-form shell command) -- a root-containment check must always
+    /// fall through to the operator's gate for this call. `checkable`
+    /// names any argument that nonetheless IS a checkable path (e.g.
+    /// `bash`'s `cwd`); empty when nothing about the call is checkable.
+    Unconfinable { checkable: &'static [&'static str] },
+}
+
+impl Default for PathArgs {
+    /// Fails closed: see this type's own doc and [`Tool::path_args`]'s.
+    fn default() -> Self {
+        PathArgs::Unconfinable { checkable: &[] }
+    }
 }
 
 /// A plugin's static identity.
@@ -563,5 +634,19 @@ mod tests {
         fn assert_object_safe(_: &dyn Tool) {}
         let tool = DefaultRenderTool;
         assert_object_safe(&tool);
+    }
+
+    // ---- Tool::path_args' default ----
+
+    /// A third-party `Tool` implementor that accepts the trait's default
+    /// `path_args` untouched (same proof shape as
+    /// `default_render_reproduces_...` above): the default must be
+    /// `Unconfinable` with nothing checkable, never `None` -- "no declared
+    /// paths" silently read as "nothing to check, therefore allow" would
+    /// unconfine every tool that doesn't override this method.
+    #[test]
+    fn default_path_args_is_unconfinable_with_nothing_checkable() {
+        let tool = DefaultRenderTool;
+        assert_eq!(tool.path_args(), PathArgs::Unconfinable { checkable: &[] });
     }
 }

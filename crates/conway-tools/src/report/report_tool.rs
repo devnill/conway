@@ -19,7 +19,7 @@ use conway_core::content::{
 };
 use conway_core::error::ToolError;
 use conway_core::ids::ToolName;
-use conway_core::ports::{Tool, ToolCtx, ToolOutput};
+use conway_core::ports::{PathArgs, Tool, ToolCtx, ToolOutput};
 
 use crate::common::{check_cancel, error_text, parse_args, text_output};
 
@@ -84,6 +84,27 @@ impl ReportTool {
 
 #[async_trait]
 impl Tool for ReportTool {
+    /// NOT `None`, despite `report` taking no top-level path: each
+    /// `ReportArgs::artifacts` entry carries an optional `path` (see
+    /// `ArtifactArg::path`, converted to a `PathBuf` in `invoke`). That is a
+    /// real filesystem path, so declaring `None` would let it escape
+    /// declaration entirely -- but it is NESTED inside an array, and
+    /// `PathArgs::Named` names *top-level* argument keys, so `Named` cannot
+    /// express it either (a root check handed `"artifacts"` would receive a
+    /// JSON array, not a path, and could not canonicalize it).
+    ///
+    /// `Unconfinable` with nothing checkable is the honest answer: a
+    /// `report` call is never auto-allowed under a root and always falls
+    /// through to the operator's gate. If nested path declarations are ever
+    /// wanted, that is a deliberate extension of `PathArgs` (a path *within*
+    /// a collection), not something to fake with the current vocabulary.
+    ///
+    /// Note the artifact path is metadata the agent asserts about its own
+    /// output; `report` does not read or write it.
+    fn path_args(&self) -> PathArgs {
+        PathArgs::Unconfinable { checkable: &[] }
+    }
+
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: ToolName::new("report"),
