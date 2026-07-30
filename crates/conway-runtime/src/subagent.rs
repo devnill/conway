@@ -103,6 +103,7 @@
 //! reason: inventing a selection policy here, with no criterion pinning its
 //! shape, would be scope creep this crate has no mandate for yet.
 
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, Weak};
 
 use async_trait::async_trait;
@@ -113,6 +114,7 @@ use conway_core::agent::{
 };
 use conway_core::capabilities::CacheMode;
 use conway_core::config::DEFAULT_MAX_PARALLEL_TOOLS;
+use conway_core::containment::{CanonicalRoot, Containment};
 use conway_core::content::Usage;
 use conway_core::error::{ConwayError, RuntimeError, ToolError};
 use conway_core::event::Event;
@@ -195,6 +197,136 @@ impl SubagentHost for Runtime {
             }));
         }
 
+        // S3: the child's confinement root, resolved and validated ONCE
+        // here (mirroring `child_cwd` immediately above), then persisted
+        // verbatim onto `SessionMeta.root` -- the one and only inheritance
+        // site this slice wires (see `conway_core::agent::SubagentSpec::
+        // root`'s own doc: `AgentLoop` gains no root field yet, since
+        // nothing enforces it against a tool call until a later slice).
+        //
+        // `spec.root: None` (still what `SubagentSpec::fork`/`::spawn`
+        // produce, and the ONLY shape the facade's `ForkSpec` can express --
+        // P-1: fork always inherits, never overrides) means "inherit the
+        // parent's root, unchanged", including an unconfined parent, which
+        // stays unconfined. `Some(requested)` resolves relative paths
+        // against the PARENT's cwd (same base `child_cwd` above uses) and
+        // canonicalizes the result; a root that does not canonicalize fails
+        // the spawn, the same "fail fast" shape as the cwd check above.
+        //
+        // The inheritance algebra (spawn only reaches this branch, since a
+        // fork's `SubagentSpec.root` is always `None` by construction on
+        // every reachable path -- see the module doc's cwd precedent for why
+        // this is enforced by facade encapsulation, not a mode branch here):
+        // a `requested` root contained in the parent's own root (or a parent
+        // with no root at all, i.e. nothing to narrow against yet) narrows
+        // the child and is accepted; a `requested` root that is WIDER than,
+        // or disjoint (sideways) from, the parent's own root FAILS the spawn
+        // with a typed error naming both roots -- never silently clamped to
+        // the parent's root (silent narrowing would turn an operator's
+        // mistake into a working-but-not-what-was-asked-for configuration,
+        // the same bug shape 0.5.0 fixed for pattern grants).
+        // `Containment::Undecidable` ("can't check") is treated identically
+        // to `Outside` at every decision point below -- see that type's own
+        // doc for why "can't check" must never mean "allow".
+        let effective_root: Option<CanonicalRoot> = match spec.root.clone() {
+            None => match parent_meta.root.as_deref() {
+                Some(parent_root_path) => Some(CanonicalRoot::new(parent_root_path).map_err(
+                    |err| {
+                        invalid_spec(ConwayError::Config {
+                            detail: format!(
+                                "inherited root {} does not canonicalize: {err}",
+                                parent_root_path.display()
+                            ),
+                        })
+                    },
+                )?),
+                None => None,
+            },
+            Some(requested) => {
+                let resolved = if requested.is_absolute() {
+                    requested
+                } else {
+                    parent_meta.cwd.join(requested)
+                };
+                let canonical_requested = CanonicalRoot::new(&resolved).map_err(|err| {
+                    invalid_spec(ConwayError::Config {
+                        detail: format!(
+                            "subagent root {} does not canonicalize: {err}",
+                            resolved.display()
+                        ),
+                    })
+                })?;
+                if let Some(parent_root_path) = parent_meta.root.as_deref() {
+                    let parent_root = CanonicalRoot::new(parent_root_path).map_err(|err| {
+                        invalid_spec(ConwayError::Config {
+                            detail: format!(
+                                "parent root {} does not canonicalize: {err}",
+                                parent_root_path.display()
+                            ),
+                        })
+                    })?;
+                    match parent_root.contains(canonical_requested.as_path()) {
+                        Containment::Inside => {}
+                        Containment::Outside | Containment::Undecidable => {
+                            return Err(invalid_spec(ConwayError::Config {
+                                detail: format!(
+                                    "subagent root {} is not contained within parent root {} \
+                                     (a spawn's root may only narrow, never widen or move \
+                                     sideways relative to its parent's)",
+                                    canonical_requested.as_path().display(),
+                                    parent_root.as_path().display(),
+                                ),
+                            }));
+                        }
+                    }
+                }
+                Some(canonical_requested)
+            }
+        };
+
+        // C1+S3: cwd subset-of root, always. `child_cwd` above may have been
+        // inherited from the parent OR overridden by `spec.cwd`; either way,
+        // if this spawn ends up confined (`effective_root: Some`), the
+        // child's cwd must not already fall outside it -- most concretely, a
+        // spawn that narrows `root` without also narrowing `cwd` would
+        // otherwise start a child whose own working directory sits outside
+        // its own confinement before a single tool call ever runs.
+        if let Some(root) = &effective_root {
+            match root.contains(&child_cwd) {
+                Containment::Inside => {}
+                Containment::Outside | Containment::Undecidable => {
+                    // Report the cwd in canonical form when it HAS one, so
+                    // both operands of this comparison are displayed on the
+                    // same footing -- a symlinked cwd rendered raw next to a
+                    // canonical root reads as a mismatch between unrelated
+                    // paths, which is exactly the wrong hint when the root
+                    // check is what rejected it. The raw path is kept
+                    // alongside when it differs, since that is the string the
+                    // caller actually passed and has to correct. A cwd that
+                    // does not canonicalize (the `Undecidable` arm can be
+                    // reached that way) falls back to the raw path -- there is
+                    // nothing better to show, and failing here to produce a
+                    // prettier error would be absurd.
+                    let canonical_cwd = child_cwd.canonicalize().ok();
+                    let shown = match &canonical_cwd {
+                        Some(c) if c != &child_cwd => {
+                            format!("{} (resolved: {})", child_cwd.display(), c.display())
+                        }
+                        _ => child_cwd.display().to_string(),
+                    };
+                    return Err(invalid_spec(ConwayError::Config {
+                        detail: format!(
+                            "subagent cwd {} is outside its own root {}",
+                            shown,
+                            root.as_path().display()
+                        ),
+                    }));
+                }
+            }
+        }
+        let effective_root: Option<PathBuf> =
+            effective_root.map(|root| root.as_path().to_path_buf());
+
         let agent_id = AgentId::new();
         let mut agent_path = self.tree_ref().path(parent);
         agent_path.push(agent_id);
@@ -263,6 +395,12 @@ impl SubagentHost for Runtime {
             // leftovers -- a `ToolAsk` child's `EphemeralSessionRef`
             // artifact would dangle (see `conway_core::log::AskOrigin`).
             ask_origin: spec.ask_origin,
+            // S3: the resolved-once `effective_root` computed above, always
+            // already canonical -- see `SessionMeta::root`'s own doc for why
+            // persisting the canonical form (rather than the raw, possibly
+            // relative `spec.root`) is what lets a resumed session's
+            // confinement survive a store round-trip unchanged.
+            root: effective_root,
         };
 
         // Capture before `meta` is moved into `store.fork`/`store.create` below
@@ -682,8 +820,10 @@ impl SubagentHost for Runtime {
 /// `SubagentSpec::validate()`'s own error type is `ConwayError::Config`;
 /// this maps it to `RuntimeError::Tool(ToolError::Internal{..})`, the same
 /// "closest fit" fallback already established elsewhere in this crate for
-/// gaps shaped like this one.
-fn invalid_spec(err: ConwayError) -> RuntimeError {
+/// gaps shaped like this one. `pub(crate)` (not private) so `runtime.rs`'s
+/// `resume_root` (S3: the resumed-`cwd` × persisted-`root` check) reuses
+/// this exact error surface too, rather than inventing a parallel one.
+pub(crate) fn invalid_spec(err: ConwayError) -> RuntimeError {
     RuntimeError::Tool(ToolError::Internal {
         detail: format!("invalid SubagentSpec: {err}"),
     })

@@ -433,6 +433,7 @@ async fn seed_prompt(store: &dyn SessionStore, role: &str, prompt: &str) -> (Ses
             status: SessionStatus::Active,
             ephemeral: false,
             ask_origin: None,
+            root: None,
         })
         .await
         .unwrap();

@@ -35,6 +35,7 @@ fn meta(id: SessionId, ephemeral: bool) -> SessionMeta {
         status: SessionStatus::Active,
         ephemeral,
         ask_origin: None,
+        root: None,
     }
 }
 

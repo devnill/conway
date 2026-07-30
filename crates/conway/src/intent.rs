@@ -264,6 +264,9 @@ pub(crate) async fn classify(
         // Intent classification has no cwd-scoping need of its own (C1) --
         // inherit the parent's, unchanged.
         cwd: None,
+        // (S3) Likewise, no confinement-scoping need of its own -- inherit
+        // the parent's root, unchanged.
+        root: None,
     };
 
     // Subscribe BEFORE `start` so the child's first `TextDelta` cannot race

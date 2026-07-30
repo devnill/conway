@@ -77,6 +77,7 @@ fn header_round_trips_through_the_5_1_shaped_example_verbatim() {
         status: SessionStatus::Active,
         ephemeral: false,
         ask_origin: None,
+        root: None,
     };
     assert_eq!(meta, expected);
 

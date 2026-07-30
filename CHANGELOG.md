@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`SpawnSpec::root` — a spawned child's confinement root is now first-class
+  plumbing, carried and validated end-to-end (S3: root plumbing).** This
+  slice adds the `root` field and enforces the inheritance algebra at spawn
+  time; it does **not** yet check any tool call against it (a later slice
+  wires that enforcement). `conway_core::agent::SubagentSpec` gains
+  `root: Option<PathBuf>` beside `cwd` (`#[serde(default)]`, so a persisted
+  spec written before this field existed still deserializes to `None`);
+  `conway_core::log::SessionMeta` gains the matching `root: Option<PathBuf>`
+  (also `#[serde(default)]`) so a resumed session's confinement survives a
+  store round-trip — persisting it only in memory would make a resumed
+  session silently unconfined. `conway-runtime`'s `SubagentHost::start`
+  resolves the effective root ONCE, alongside `child_cwd`, using
+  `conway_core::containment::CanonicalRoot`: `root: None` inherits the
+  parent's root unchanged (including staying unconfined); `Some(requested)`
+  is canonicalized and checked against the parent's own root — a narrower
+  (or equal) requested root is accepted, but a root that is WIDER than, or
+  disjoint (sideways) from, the parent's own root FAILS THE SPAWN with a
+  typed error naming both roots, never silently clamped to the parent's
+  root (the same bug shape 0.5.0 fixed for pattern grants). The child's
+  `cwd` (inherited or overridden) must also resolve inside its own `root`,
+  or the spawn fails; a root that does not canonicalize also fails the
+  spawn. A grandchild spawned with `root: None` inherits its IMMEDIATE
+  parent's (possibly-narrowed) root, not the root agent's own. `resume_root`
+  carries no `root` override at all (so it can neither widen nor null a
+  session's persisted root), but its `cwd` override IS checked against the
+  persisted root.
+
+  Exposed on the facade as `SpawnSpec::root(path)` (`conway/subagent_spec.rs`)
+  only — deliberately not on `ForkSpec`, for the same reason `cwd` isn't: a
+  fork inherits the forker's ENTIRE context (GP-02). The model-invoked
+  `conway_subagent`/`conway_ask` tools gain no equivalent argument (GP-04:
+  embedder-only for this slice, exactly as `cwd` already is). See
+  `docs/crates/conway.md`'s `SpawnSpec` section for the full semantics.
+
 ### Fixed
 
 - **`PermissionBroker::decide`'s plan-mode guarantee was not honored by the

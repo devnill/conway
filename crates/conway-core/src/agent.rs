@@ -232,6 +232,46 @@ pub struct SubagentSpec {
     /// inherit-the-parent's-cwd behavior for every such spec.
     #[serde(default)]
     pub cwd: Option<PathBuf>,
+    /// (S3) The child's confinement root, independent of (but validated
+    /// against) `cwd` above -- placed beside it for the same reason `cwd`
+    /// itself was: this crate performs no I/O (`SubagentSpec::validate`
+    /// stays a pure consistency check), so resolution, canonicalization, and
+    /// containment enforcement all happen at `conway_runtime`'s
+    /// `SubagentHost::start` instead. See that method's own doc for the
+    /// full "inheritance algebra" this implements.
+    ///
+    /// `None` (the `fork`/`spawn` constructors' default, and the ONLY shape
+    /// the facade's `ForkSpec` can express -- a fork inherits the forker's
+    /// ENTIRE context, GP-02, so a root override there would be incoherent
+    /// with the context the child actually sees) means "inherit the
+    /// parent's root, unchanged" -- including when the parent itself is
+    /// unconfined (`root: None`), which stays `None` all the way down until
+    /// something narrows it.
+    ///
+    /// `Some(requested)` scopes the child to `requested` instead, subject to
+    /// the inheritance algebra `SubagentHost::start` enforces: a `requested`
+    /// that resolves inside the parent's own root (or the parent is
+    /// unconfined) narrows the child and is accepted; a `requested` that is
+    /// wider than, or disjoint (sideways) from, the parent's root FAILS the
+    /// spawn outright with a typed error naming both roots -- this is never
+    /// silently clamped to the parent's root, because a silent narrowing
+    /// would turn an operator's mistake into a working-but-not-what-was-
+    /// asked-for configuration. A `requested` (or inherited) root that does
+    /// not canonicalize, or whose child `cwd` (inherited or overridden)
+    /// would fall outside it, also fails the spawn.
+    ///
+    /// This field is **not itself enforcement** (P-10/out of scope for this
+    /// item): nothing yet checks a tool call's arguments against it. It is
+    /// carried and validated end-to-end -- resolved once, persisted onto the
+    /// child's own `crate::log::SessionMeta::root` -- so a later slice can
+    /// wire the actual confinement check without this plumbing changing
+    /// shape.
+    ///
+    /// `#[serde(default)]` (C-04): a `SubagentSpec` serialized before this
+    /// field existed still deserializes, as `None` -- the pre-existing
+    /// unconfined behavior for every such spec.
+    #[serde(default)]
+    pub root: Option<PathBuf>,
 }
 
 impl SubagentSpec {
@@ -265,6 +305,7 @@ impl SubagentSpec {
             ephemeral: false,
             ask_origin: None,
             cwd: None,
+            root: None,
         }
     }
 
@@ -285,6 +326,7 @@ impl SubagentSpec {
             ephemeral: false,
             ask_origin: None,
             cwd: None,
+            root: None,
         }
     }
 }
@@ -604,6 +646,7 @@ mod tests {
             ephemeral: false,
             ask_origin: None,
             cwd: None,
+            root: None,
         };
         assert!(spec.validate().is_ok());
     }
@@ -667,6 +710,44 @@ mod tests {
         );
         // Every other field round-trips untouched -- this isn't a partial
         // legacy shape, just today's shape minus the one new key.
+        assert_eq!(legacy.mode, spec.mode);
+        assert_eq!(legacy.prompt, spec.prompt);
+        assert_eq!(legacy.agent_def, spec.agent_def);
+        assert_eq!(legacy.budget, spec.budget);
+    }
+
+    #[test]
+    fn fork_and_spawn_constructors_default_root_none() {
+        // S3: `root` didn't exist before this item; both constructors
+        // default it to `None` ("inherit the parent's root, unconfined
+        // stays unconfined"), preserving pre-existing fork/spawn behavior
+        // unchanged -- mirrors `fork_and_spawn_constructors_default_cwd_none`.
+        let fork = SubagentSpec::fork("x", Budget::default());
+        assert_eq!(fork.root, None);
+        let spawn = SubagentSpec::spawn("x", AgentDefRef("r".into()), Budget::default());
+        assert_eq!(spawn.root, None);
+    }
+
+    /// S3's own acceptance test, mirroring
+    /// `legacy_subagent_spec_json_without_cwd_deserializes_to_none`: a
+    /// `SubagentSpec` in the shape it had before this item -- no `root` key
+    /// at all -- still deserializes, with `root` landing on its `None`
+    /// default rather than failing or requiring the key.
+    #[test]
+    fn legacy_subagent_spec_json_without_root_deserializes_to_none() {
+        let spec = SubagentSpec::spawn("do it", AgentDefRef("reviewer".into()), Budget::default());
+        let mut value = serde_json::to_value(&spec).unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("root")
+            .expect("root is a real key in the current shape, or this test proves nothing");
+
+        let legacy: SubagentSpec = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            legacy.root, None,
+            "a root-less legacy SubagentSpec must deserialize with root: None"
+        );
         assert_eq!(legacy.mode, spec.mode);
         assert_eq!(legacy.prompt, spec.prompt);
         assert_eq!(legacy.agent_def, spec.agent_def);

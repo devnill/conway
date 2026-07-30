@@ -162,6 +162,14 @@ impl From<ForkSpec> for SubagentSpec {
             // `cwd` is a `SpawnSpec`-only concept; see that struct's `cwd`
             // field and `From<SpawnSpec>` below.
             cwd: None,
+            // (S3) Deliberately NOT exposed on `ForkSpec` either, for the
+            // exact same reason as `cwd` immediately above: a fork inherits
+            // the forker's entire context, so a confinement override here
+            // would be incoherent with what the child's own inherited
+            // transcript already describes. `root` is a `SpawnSpec`-only
+            // concept; see that struct's `root` field and
+            // `From<SpawnSpec>` below.
+            root: None,
         }
     }
 }
@@ -216,6 +224,32 @@ pub struct SpawnSpec {
     /// `From` impl for why a fork's inherited-context semantics make a cwd
     /// override incoherent there.
     pub cwd: Option<std::path::PathBuf>,
+    /// (S3) Scopes the spawned child's confinement root, independent of (but
+    /// validated against) `cwd` above -- the embedder-only surface for the
+    /// "root plumbing" slice: `conway_subagent`/`conway_spawn` (the
+    /// model-invoked tools) gain no equivalent argument (GP-04), exactly as
+    /// they have none for `cwd` today. `None` (the [`SpawnSpec::new`]
+    /// default) preserves the pre-existing "inherit the parent's root"
+    /// behavior unchanged -- including staying unconfined when the parent
+    /// itself is.
+    ///
+    /// `Some(requested)` is validated by `conway_runtime::SubagentHost::
+    /// start` against the parent's own root per the inheritance algebra: a
+    /// `requested` that narrows (or the parent has no root to narrow
+    /// against) is accepted; a `requested` that is wider than, or disjoint
+    /// from, the parent's root FAILS THE SPAWN with a typed error --
+    /// silent clamping to the parent's root is deliberately never done (a
+    /// silent narrowing would turn an operator's mistake into a working-
+    /// but-not-what-was-asked-for configuration). See
+    /// [`conway_core::agent::SubagentSpec::root`]'s own doc for the full
+    /// semantics, including the explicit "not itself enforcement yet"
+    /// caveat -- nothing checks a tool call's arguments against this root
+    /// until a later slice wires the actual confinement check.
+    ///
+    /// Deliberately NOT a field on [`ForkSpec`] -- see that struct's own
+    /// `From` impl for why a fork's inherited-context semantics make a root
+    /// override incoherent there.
+    pub root: Option<std::path::PathBuf>,
 }
 
 impl SpawnSpec {
@@ -238,6 +272,7 @@ impl SpawnSpec {
             result_contract: None,
             keep_alive: false,
             cwd: None,
+            root: None,
         }
     }
 
@@ -277,6 +312,12 @@ impl SpawnSpec {
         self.cwd = Some(cwd.into());
         self
     }
+
+    /// See [`SpawnSpec::root`]'s own field doc.
+    pub fn root(mut self, root: impl Into<std::path::PathBuf>) -> Self {
+        self.root = Some(root.into());
+        self
+    }
 }
 
 impl From<SpawnSpec> for SubagentSpec {
@@ -296,6 +337,7 @@ impl From<SpawnSpec> for SubagentSpec {
             ephemeral: false,
             ask_origin: None,
             cwd: spec.cwd,
+            root: spec.root,
         }
     }
 }
@@ -335,6 +377,10 @@ mod tests {
         assert_eq!(
             converted.cwd, None,
             "ForkSpec has no cwd field at all -- a fork always inherits the forker's cwd"
+        );
+        assert_eq!(
+            converted.root, None,
+            "ForkSpec has no root field at all -- a fork always inherits the forker's root"
         );
     }
 
@@ -387,6 +433,7 @@ mod tests {
         );
         assert!(converted.await_result);
         assert_eq!(converted.cwd, None, "cwd defaults to None (inherit)");
+        assert_eq!(converted.root, None, "root defaults to None (inherit)");
     }
 
     /// (a) C1's own acceptance test: `SpawnSpec::cwd` maps through
@@ -408,6 +455,28 @@ mod tests {
         assert_eq!(
             converted.cwd,
             Some(std::path::PathBuf::from("/some/scoped/dir"))
+        );
+    }
+
+    /// (S3) `SpawnSpec::root` maps through `From<SpawnSpec> for
+    /// SubagentSpec` unchanged, both when set and when left at its default
+    /// `None` -- mirrors `spawn_spec_cwd_maps_through_from_spawn_spec`.
+    #[test]
+    fn spawn_spec_root_maps_through_from_spawn_spec() {
+        let default_spec = SpawnSpec::new("x");
+        assert_eq!(default_spec.root, None);
+        let default_converted: SubagentSpec = default_spec.into();
+        assert_eq!(default_converted.root, None);
+
+        let scoped = SpawnSpec::new("x").root("/some/scoped/root");
+        assert_eq!(
+            scoped.root,
+            Some(std::path::PathBuf::from("/some/scoped/root"))
+        );
+        let converted: SubagentSpec = scoped.into();
+        assert_eq!(
+            converted.root,
+            Some(std::path::PathBuf::from("/some/scoped/root"))
         );
     }
 

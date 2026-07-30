@@ -282,6 +282,10 @@ impl Tool for SubagentTool {
             // (C1 only adds `cwd` to the facade's `SpawnSpec`, not this
             // tool's own args schema) -- inherit the parent's, unchanged.
             cwd: None,
+            // (S3) Likewise, `conway_subagent` has no `root` argument (GP-04:
+            // embedder-only for this first slice) -- inherit the parent's
+            // root, unchanged, for both fork and spawn.
+            root: None,
         };
 
         let child = ctx

@@ -395,6 +395,7 @@ async fn pull_in_refuses_when_the_child_has_children() {
         status: SessionStatus::Active,
         ephemeral: false,
         ask_origin: None,
+        root: None,
     };
     store
         .fork(&child_session, child_head, grandchild_meta)

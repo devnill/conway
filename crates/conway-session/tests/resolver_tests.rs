@@ -38,6 +38,7 @@ fn meta_for(id: SessionId) -> SessionMeta {
         status: SessionStatus::Active,
         ephemeral: false,
         ask_origin: None,
+        root: None,
     }
 }
 

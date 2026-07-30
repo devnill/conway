@@ -271,6 +271,8 @@ impl SessionHandle {
             // A fork inherits the asker's entire context (C1's rationale for
             // never exposing cwd on `ForkSpec`) -- inherit its cwd too.
             cwd: None,
+            // (S3) Same rationale -- inherit its root too.
+            root: None,
         };
         // Subscribe BEFORE `start` so the child's first events cannot race
         // past this handle's stream (see the doc above).

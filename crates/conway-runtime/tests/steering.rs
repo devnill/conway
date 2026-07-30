@@ -175,6 +175,7 @@ async fn seed_prompt(store: &dyn SessionStore, agent: AgentId, session: SessionI
             status: SessionStatus::Active,
             ephemeral: false,
             ask_origin: None,
+            root: None,
         })
         .await
         .unwrap();

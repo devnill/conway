@@ -81,6 +81,27 @@ struct IndexLine {
     /// worse, misclassify one) until the next rebuild.
     #[serde(default)]
     ask_origin: Option<conway_core::log::AskOrigin>,
+    /// Projects `SessionMeta::root` (S3) -- required for the same reason as
+    /// `ephemeral`/`ask_origin` above: a `list`/`children` result served
+    /// from a *loaded* (not rebuilt) index must not silently drop a
+    /// session's confinement root.
+    ///
+    /// **NOT authoritative for any confinement decision.** `#[serde(default)]`
+    /// means an `index.jsonl` written before this field existed decodes to
+    /// `None` for every session until the next rebuild -- indistinguishable,
+    /// here, from a genuinely unconfined session. That staleness window is
+    /// the same one `cwd`/`ephemeral`/`ask_origin` already have, but `root`
+    /// is security-relevant in a way those are not, so it is called out:
+    /// "the index says `None`" must never be read as "this session is
+    /// unconfined."
+    ///
+    /// This is not a live hole. The only places that act on a root --
+    /// `SubagentHost::start`'s inheritance algebra and `Runtime::resume_root`
+    /// -- read the session's own header via `SessionStore::meta`, never this
+    /// projection. A future consumer of `list`/`children` metadata must do
+    /// the same rather than trusting this field.
+    #[serde(default)]
+    root: Option<PathBuf>,
 }
 
 impl IndexLine {
@@ -103,6 +124,7 @@ impl IndexLine {
             status: meta.status,
             ephemeral: meta.ephemeral,
             ask_origin: meta.ask_origin,
+            root: meta.root.clone(),
         }
     }
 
@@ -127,6 +149,7 @@ impl IndexLine {
             status: self.status,
             ephemeral: self.ephemeral,
             ask_origin: self.ask_origin,
+            root: self.root,
         }
     }
 }

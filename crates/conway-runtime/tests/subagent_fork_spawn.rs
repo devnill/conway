@@ -30,7 +30,7 @@ use conway_core::ports::{Backend, LiveOwner, Router, SessionStore, SubagentHost}
 use conway_core::provenance::Provenance;
 use conway_routing::config::HeadroomPolicy;
 use conway_runtime::events::EventBus;
-use conway_runtime::runtime::{RootSpec, Runtime, RuntimeDeps};
+use conway_runtime::runtime::{ResumeSpec, RootSpec, Runtime, RuntimeDeps};
 use futures::StreamExt;
 
 // ---------------------------------------------------------------------
@@ -476,6 +476,7 @@ async fn spawn_without_agent_def_inherits_the_parents_role() {
         ephemeral: false,
         ask_origin: None,
         cwd: None,
+        root: None,
     };
     let mut stream = runtime.subscribe();
     let child = SubagentHost::start(&*runtime, root, spec).await.unwrap();
@@ -1284,6 +1285,35 @@ fn build_probe_runtime(
     (runtime, store, probe)
 }
 
+/// A second, independent `Runtime` over an ALREADY-populated store -- the
+/// same "fresh process, same store" shape `resume_root.rs`'s own harness
+/// uses (`build_runtime_over`), needed because `resume_root` re-attaches a
+/// session's ORIGINAL `agent_id` into the tree: calling it against the very
+/// `Runtime` that already has that agent live (even finished) would collide
+/// with "already attached".
+fn build_runtime_over(store: Arc<dyn SessionStore>, script: Vec<ScriptedTurn>) -> Arc<Runtime> {
+    let backend = Arc::new(ScriptedBackend::new(script).with_id(BackendId::new("b2")));
+    let model = ModelRef {
+        backend: backend.id(),
+        model: ModelId::new("m"),
+    };
+    let router: Arc<dyn Router> = Arc::new(FakeRouter::single(model));
+    let mut backends: HashMap<BackendId, Arc<dyn Backend>> = HashMap::new();
+    backends.insert(backend.id(), backend);
+
+    Runtime::new(RuntimeDeps {
+        store,
+        router,
+        health: Arc::new(FakeHealth::new()),
+        backends,
+        plugins: vec![],
+        gate: Arc::new(FakeGate::new(PermissionDecision::AllowOnce)),
+        agent_defs: HashMap::new(),
+        event_bus: EventBus::with_default_capacity(),
+        headroom: Arc::new(HeadroomPolicy::default()),
+    })
+}
+
 fn root_spec_with_cwd(prompt: &str, cwd: PathBuf) -> RootSpec {
     RootSpec {
         cwd,
@@ -1306,6 +1336,7 @@ fn spawn_spec_with_cwd(prompt: &str, cwd: Option<PathBuf>) -> SubagentSpec {
         ephemeral: false,
         ask_origin: None,
         cwd,
+        root: None,
     }
 }
 
@@ -1512,4 +1543,432 @@ async fn spawn_with_relative_cwd_resolves_against_the_parents_cwd() {
         child_meta.cwd, sub_dir,
         "a relative cwd override must resolve against the PARENT's cwd, not be stored bare"
     );
+}
+
+// ---------------------------------------------------------------------
+// S3: root plumbing -- the inheritance algebra (SubagentSpec.root,
+// SessionMeta.root, cwd subset-of root, spawn-only narrowing).
+// ---------------------------------------------------------------------
+
+fn spawn_spec_with_cwd_and_root(
+    prompt: &str,
+    cwd: Option<PathBuf>,
+    root: Option<PathBuf>,
+) -> SubagentSpec {
+    SubagentSpec {
+        cwd,
+        root,
+        ..spawn_spec_with_cwd(prompt, None)
+    }
+}
+
+/// (a) Spawn with a `root` narrower than the parent's own root: accepted,
+/// and the child's `SessionMeta.root` equals the (canonicalized) narrower
+/// value.
+#[tokio::test]
+async fn spawn_with_narrower_root_is_accepted_and_child_inherits_it() {
+    let root_dir = tempfile::tempdir().unwrap();
+    let sub_dir = root_dir.path().join("sub");
+    std::fs::create_dir(&sub_dir).unwrap();
+
+    let (runtime, store, _probe) = build_probe_runtime(vec![
+        ScriptedTurn::Respond(text_response("root turn")),
+        ScriptedTurn::Respond(text_response("child turn")),
+    ]);
+    let mut stream = runtime.subscribe();
+    let root = runtime
+        .start_root(root_spec_with_cwd("hi", root_dir.path().to_path_buf()))
+        .await
+        .unwrap();
+    wait_for_agent_finished(&mut stream, root).await;
+
+    let mut stream = runtime.subscribe();
+    let child = SubagentHost::start(
+        &*runtime,
+        root,
+        spawn_spec_with_cwd_and_root(
+            "narrower",
+            Some(sub_dir.clone()),
+            Some(sub_dir.clone()),
+        ),
+    )
+    .await
+    .unwrap();
+    wait_for_agent_finished(&mut stream, child).await;
+
+    let child_session = session_of(&runtime, child);
+    let child_meta = store.meta(&child_session).await.unwrap();
+    assert_eq!(
+        child_meta.root,
+        Some(sub_dir.canonicalize().unwrap()),
+        "a narrower requested root (the root agent itself is unconfined) must be accepted"
+    );
+}
+
+/// (b) Spawn with a `root` WIDER than the parent's own (already-confined)
+/// root: the spawn FAILS with a typed error naming both roots -- never
+/// silently clamped to the parent's root.
+#[tokio::test]
+async fn spawn_with_wider_root_than_the_parents_fails_naming_both_roots() {
+    let root_dir = tempfile::tempdir().unwrap();
+    let sub_dir = root_dir.path().join("sub");
+    std::fs::create_dir(&sub_dir).unwrap();
+
+    let (runtime, _store, _probe) = build_probe_runtime(vec![
+        ScriptedTurn::Respond(text_response("root turn")),
+        ScriptedTurn::Respond(text_response("confined child turn")),
+    ]);
+    let mut stream = runtime.subscribe();
+    let root = runtime
+        .start_root(root_spec_with_cwd("hi", root_dir.path().to_path_buf()))
+        .await
+        .unwrap();
+    wait_for_agent_finished(&mut stream, root).await;
+
+    // Confine a first child to `sub_dir`.
+    let mut stream = runtime.subscribe();
+    let confined = SubagentHost::start(
+        &*runtime,
+        root,
+        spawn_spec_with_cwd_and_root("confined", Some(sub_dir.clone()), Some(sub_dir.clone())),
+    )
+    .await
+    .unwrap();
+    wait_for_agent_finished(&mut stream, confined).await;
+
+    // A grandchild requesting the WIDER `root_dir` (the confined child's
+    // own parent's root, but wider than the confined child's own) must
+    // fail -- never silently clamped back to `sub_dir`.
+    let err = SubagentHost::start(
+        &*runtime,
+        confined,
+        spawn_spec_with_cwd_and_root(
+            "wider",
+            Some(root_dir.path().to_path_buf()),
+            Some(root_dir.path().to_path_buf()),
+        ),
+    )
+    .await
+    .unwrap_err();
+
+    match &err {
+        RuntimeError::Tool(ToolError::Internal { detail }) => {
+            assert!(
+                detail.contains(&root_dir.path().canonicalize().unwrap().display().to_string()),
+                "error must name the requested (wider) root; got {detail:?}"
+            );
+            assert!(
+                detail.contains(&sub_dir.canonicalize().unwrap().display().to_string()),
+                "error must name the parent's (narrower) root; got {detail:?}"
+            );
+        }
+        other => panic!("expected RuntimeError::Tool(ToolError::Internal {{ .. }}), got {other:?}"),
+    }
+}
+
+/// (c) Spawn with a `root` disjoint (sideways) from the parent's own
+/// (already-confined) root: the spawn FAILS the same way a wider root does.
+#[tokio::test]
+async fn spawn_with_sideways_root_fails() {
+    let root_dir = tempfile::tempdir().unwrap();
+    let sub_a = root_dir.path().join("sub_a");
+    let sub_b = root_dir.path().join("sub_b");
+    std::fs::create_dir(&sub_a).unwrap();
+    std::fs::create_dir(&sub_b).unwrap();
+
+    let (runtime, _store, _probe) = build_probe_runtime(vec![
+        ScriptedTurn::Respond(text_response("root turn")),
+        ScriptedTurn::Respond(text_response("confined child turn")),
+    ]);
+    let mut stream = runtime.subscribe();
+    let root = runtime
+        .start_root(root_spec_with_cwd("hi", root_dir.path().to_path_buf()))
+        .await
+        .unwrap();
+    wait_for_agent_finished(&mut stream, root).await;
+
+    let mut stream = runtime.subscribe();
+    let confined = SubagentHost::start(
+        &*runtime,
+        root,
+        spawn_spec_with_cwd_and_root("confined", Some(sub_a.clone()), Some(sub_a.clone())),
+    )
+    .await
+    .unwrap();
+    wait_for_agent_finished(&mut stream, confined).await;
+
+    let err = SubagentHost::start(
+        &*runtime,
+        confined,
+        spawn_spec_with_cwd_and_root("sideways", Some(sub_b.clone()), Some(sub_b.clone())),
+    )
+    .await
+    .unwrap_err();
+
+    match &err {
+        RuntimeError::Tool(ToolError::Internal { .. }) => {}
+        other => panic!("expected RuntimeError::Tool(ToolError::Internal {{ .. }}), got {other:?}"),
+    }
+}
+
+/// (d) A spawn whose (inherited or overridden) `cwd` would fall OUTSIDE a
+/// newly-narrowed `root` fails the spawn -- "cwd subset of root, always".
+#[tokio::test]
+async fn spawn_whose_cwd_escapes_a_newly_narrowed_root_fails() {
+    let root_dir = tempfile::tempdir().unwrap();
+    let sub_dir = root_dir.path().join("sub");
+    std::fs::create_dir(&sub_dir).unwrap();
+
+    let (runtime, _store, _probe) = build_probe_runtime(vec![ScriptedTurn::Respond(
+        text_response("root turn"),
+    )]);
+    let mut stream = runtime.subscribe();
+    let root = runtime
+        .start_root(root_spec_with_cwd("hi", root_dir.path().to_path_buf()))
+        .await
+        .unwrap();
+    wait_for_agent_finished(&mut stream, root).await;
+
+    // `cwd` is left at `None` (inherits the parent's `root_dir`), but
+    // `root` narrows to `sub_dir` -- the inherited cwd now falls outside
+    // the child's own confinement.
+    let err = SubagentHost::start(
+        &*runtime,
+        root,
+        spawn_spec_with_cwd_and_root("escaping cwd", None, Some(sub_dir.clone())),
+    )
+    .await
+    .unwrap_err();
+
+    match &err {
+        RuntimeError::Tool(ToolError::Internal { detail }) => {
+            // The error names the escaping cwd. It is reported raw, and
+            // ALSO in canonical form as `(resolved: ...)` when the two
+            // differ, so both operands of the containment comparison are
+            // displayed on the same footing -- a symlinked cwd shown raw
+            // beside an always-canonical root reads as a mismatch between
+            // unrelated paths. Asserting on the raw form alone keeps this
+            // test agnostic to whether the tempdir path happens to be
+            // symlinked (on macOS `/var` -> `/private/var`, so it usually
+            // is), which is why it checks `contains` rather than equality.
+            assert!(
+                detail.contains(&root_dir.path().display().to_string()),
+                "error must name the escaping cwd; got {detail:?}"
+            );
+        }
+        other => panic!("expected RuntimeError::Tool(ToolError::Internal {{ .. }}), got {other:?}"),
+    }
+}
+
+/// (e) A grandchild spawned with `root: None` inherits its IMMEDIATE
+/// parent's (possibly-narrowed) root, not the root agent's own (unconfined)
+/// one -- mirrors `grandchild_with_cwd_none_inherits_immediate_parents_cwd_not_roots`.
+#[tokio::test]
+async fn grandchild_with_root_none_inherits_immediate_parents_root_not_roots() {
+    let root_dir = tempfile::tempdir().unwrap();
+    let child_dir = root_dir.path().join("child_scope");
+    std::fs::create_dir(&child_dir).unwrap();
+
+    let (runtime, store, _probe) = build_probe_runtime(vec![
+        ScriptedTurn::Respond(text_response("root turn")),
+        ScriptedTurn::Respond(text_response("child turn")),
+        ScriptedTurn::Respond(text_response("grandchild turn")),
+    ]);
+    let mut stream = runtime.subscribe();
+    let root = runtime
+        .start_root(root_spec_with_cwd("hi", root_dir.path().to_path_buf()))
+        .await
+        .unwrap();
+    wait_for_agent_finished(&mut stream, root).await;
+
+    let mut stream = runtime.subscribe();
+    let child = SubagentHost::start(
+        &*runtime,
+        root,
+        spawn_spec_with_cwd_and_root(
+            "scoped child",
+            Some(child_dir.clone()),
+            Some(child_dir.clone()),
+        ),
+    )
+    .await
+    .unwrap();
+    wait_for_agent_finished(&mut stream, child).await;
+
+    let mut stream = runtime.subscribe();
+    let grandchild = SubagentHost::start(
+        &*runtime,
+        child,
+        spawn_spec_with_cwd_and_root("grandchild, no override", None, None),
+    )
+    .await
+    .unwrap();
+    wait_for_agent_finished(&mut stream, grandchild).await;
+
+    let grandchild_session = session_of(&runtime, grandchild);
+    let grandchild_meta = store.meta(&grandchild_session).await.unwrap();
+    assert_eq!(
+        grandchild_meta.root,
+        Some(child_dir.canonicalize().unwrap()),
+        "a grandchild with root: None must inherit the CHILD's (immediate parent's) root"
+    );
+    assert_ne!(
+        grandchild_meta.root, None,
+        "the grandchild must NOT fall back to the root agent's own unconfined root"
+    );
+}
+
+/// (f) A root that does not canonicalize fails the spawn fast, with a clear
+/// error -- mirrors `spawn_with_nonexistent_cwd_fails_fast_with_a_clear_error`.
+#[tokio::test]
+async fn spawn_with_nonexistent_root_fails_fast_with_a_clear_error() {
+    let (runtime, _store) = build_runtime(1, HashMap::new());
+    let root = start_and_finish_root(&runtime, "hi").await;
+
+    let missing = tempfile::tempdir().unwrap();
+    let missing_path = missing.path().join("does-not-exist");
+    drop(missing);
+
+    let err = SubagentHost::start(
+        &*runtime,
+        root,
+        spawn_spec_with_cwd_and_root("doomed", None, Some(missing_path.clone())),
+    )
+    .await
+    .unwrap_err();
+
+    match &err {
+        RuntimeError::Tool(ToolError::Internal { detail }) => {
+            assert!(
+                detail.contains(&missing_path.display().to_string()),
+                "error must name the offending root path; got {detail:?}"
+            );
+        }
+        other => panic!("expected RuntimeError::Tool(ToolError::Internal {{ .. }}), got {other:?}"),
+    }
+}
+
+/// (g) `resume_root` preserves a session's persisted `root` unchanged --
+/// `ResumeSpec` has no `root` override field at all, so there is no code
+/// path that could widen or null it; this proves the header is untouched
+/// by resume, not merely that no override was requested.
+#[tokio::test]
+async fn resume_root_preserves_persisted_root_unchanged() {
+    let root_dir = tempfile::tempdir().unwrap();
+    let sub_dir = root_dir.path().join("sub");
+    std::fs::create_dir(&sub_dir).unwrap();
+
+    let (runtime, store, _probe) = build_probe_runtime(vec![
+        ScriptedTurn::Respond(text_response("root turn")),
+        ScriptedTurn::Respond(text_response("confined child turn")),
+    ]);
+    let mut stream = runtime.subscribe();
+    let root = runtime
+        .start_root(root_spec_with_cwd("hi", root_dir.path().to_path_buf()))
+        .await
+        .unwrap();
+    wait_for_agent_finished(&mut stream, root).await;
+
+    let mut stream = runtime.subscribe();
+    let confined = SubagentHost::start(
+        &*runtime,
+        root,
+        spawn_spec_with_cwd_and_root("confined", Some(sub_dir.clone()), Some(sub_dir.clone())),
+    )
+    .await
+    .unwrap();
+    wait_for_agent_finished(&mut stream, confined).await;
+
+    let confined_session = session_of(&runtime, confined);
+    let before = store.meta(&confined_session).await.unwrap();
+    assert_eq!(before.root, Some(sub_dir.canonicalize().unwrap()));
+    drop(runtime);
+
+    // A fresh `Runtime` over the same store (see `build_runtime_over`'s own
+    // doc): `resume_root` re-attaches the ORIGINAL `agent_id`, which the
+    // first runtime still has live.
+    let runtime2 = build_runtime_over(
+        store.clone(),
+        vec![ScriptedTurn::Respond(text_response("unused"))],
+    );
+    runtime2
+        .resume_root(ResumeSpec {
+            session: confined_session,
+            agent_def: None,
+            role: None,
+            tools: None,
+            budget: Budget::default(),
+            cwd: None,
+        })
+        .await
+        .unwrap();
+
+    let after = store.meta(&confined_session).await.unwrap();
+    assert_eq!(
+        after.root, before.root,
+        "resume_root must never widen or null a session's persisted root"
+    );
+}
+
+/// (h) `resume_root`'s `cwd` override is checked against the session's
+/// persisted `root`: an override that escapes it fails, mirroring the
+/// cwd-subset-of-root invariant `SubagentHost::start` enforces at spawn
+/// time.
+#[tokio::test]
+async fn resume_root_cwd_override_outside_persisted_root_fails() {
+    let root_dir = tempfile::tempdir().unwrap();
+    let sub_dir = root_dir.path().join("sub");
+    let outside_dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(&sub_dir).unwrap();
+
+    let (runtime, store, _probe) = build_probe_runtime(vec![
+        ScriptedTurn::Respond(text_response("root turn")),
+        ScriptedTurn::Respond(text_response("confined child turn")),
+    ]);
+    let mut stream = runtime.subscribe();
+    let root = runtime
+        .start_root(root_spec_with_cwd("hi", root_dir.path().to_path_buf()))
+        .await
+        .unwrap();
+    wait_for_agent_finished(&mut stream, root).await;
+
+    let mut stream = runtime.subscribe();
+    let confined = SubagentHost::start(
+        &*runtime,
+        root,
+        spawn_spec_with_cwd_and_root("confined", Some(sub_dir.clone()), Some(sub_dir.clone())),
+    )
+    .await
+    .unwrap();
+    wait_for_agent_finished(&mut stream, confined).await;
+
+    let confined_session = session_of(&runtime, confined);
+    let _ = store.meta(&confined_session).await.unwrap();
+    drop(runtime);
+
+    let runtime2 = build_runtime_over(
+        store.clone(),
+        vec![ScriptedTurn::Respond(text_response("unused"))],
+    );
+    let err = runtime2
+        .resume_root(ResumeSpec {
+            session: confined_session,
+            agent_def: None,
+            role: None,
+            tools: None,
+            budget: Budget::default(),
+            cwd: Some(outside_dir.path().to_path_buf()),
+        })
+        .await
+        .unwrap_err();
+
+    match &err {
+        RuntimeError::Tool(ToolError::Internal { detail }) => {
+            assert!(
+                detail.contains(&sub_dir.canonicalize().unwrap().display().to_string()),
+                "error must name the session's own root; got {detail:?}"
+            );
+        }
+        other => panic!("expected RuntimeError::Tool(ToolError::Internal {{ .. }}), got {other:?}"),
+    }
 }

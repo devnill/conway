@@ -345,6 +345,7 @@ async fn sweep_reaps_modal_ask_residue_but_never_tool_ask_or_untagged_sessions()
         status: SessionStatus::Active,
         ephemeral: true,
         ask_origin: Some(AskOrigin::ToolAsk),
+        root: None,
     };
     let tool_ask_session = store
         .fork(&root_session, root_head, tool_ask_meta)
@@ -365,6 +366,7 @@ async fn sweep_reaps_modal_ask_residue_but_never_tool_ask_or_untagged_sessions()
         status: SessionStatus::Active,
         ephemeral: true,
         ask_origin: None,
+        root: None,
     };
     let untagged_session = store
         .fork(&root_session, root_head, untagged_meta)
