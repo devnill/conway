@@ -185,6 +185,15 @@ RPC form is six **requests** (all need replies), all plugin→host, all carrying
 | `tree()` | `subagent/tree` | — | `{ "tree": WireAgentTree }` (subtree only) |
 | `ask(parent, spec)` | `subagent/ask` | `spec: WireAskSpec` | `{ "outcome": AskOutcome }` |
 
+> **Status (2026-07-30), `674bb65`.** The Rust column for `steer`/
+> `await_result`/`cancel` is now stale: all three take `caller: AgentId` as
+> their first parameter (`crates/conway-core/src/ports/subagent.rs`), not
+> just `target`. This table's `Params` column is unaffected — `caller` is
+> exactly the identity rule (a) below already says the wire never carries
+> for `start`/`ask`, and the host supplies it from the `ctx_token` table the
+> same way. See (b)'s status note for the consequence that does affect this
+> document.
+
 Five rules govern all six.
 
 **(a) `parent` is never on the wire.** `start` and `ask` take `parent: AgentId`
@@ -207,6 +216,35 @@ runtime, with no descendant check — `steer` even walks
 expects arbitrary targets. In-process that is ambient authority; across a
 boundary it is exactly the kind of thing the boundary exists to make
 expressible. (See §6 for the in-process finding this exposes.)
+
+> **Status (2026-07-30), `674bb65` — the design's mitigation and the code's
+> mitigation now cover disjoint halves of the same surface, and each assumes
+> the other half is handled. This is a genuine gap, not a doc nit.**
+> `674bb65` did not build the per-token set this paragraph proposes; it moved
+> a descendant check **into the in-process port itself** —
+> `Runtime::ensure_own_subtree(caller, target)`, called at the top of
+> `steer`/`await_result`/`cancel` before anything else runs, returning the
+> typed `RuntimeError::AgentNotInSubtree` on failure
+> (`crates/conway-runtime/src/subagent.rs:634-698,857-867`). Each of those
+> three methods now takes `caller: AgentId` as an explicit first parameter
+> for exactly this check — see the signature-table note above.
+>
+> The result: `steer`, `await_result`, and `cancel` are confined **in-process**
+> today, independent of any transport. `start`, `ask`, and `tree` are not —
+> they still accept whatever `parent`/target their caller hands them, and
+> this document's mitigation for *those* three is rule (a) above plus this
+> section's per-token set, both of which are transport (`ctx_token`)
+> mechanisms that do not exist yet. So of the six methods: three are
+> confined by a mechanism the design never described (the port-level check),
+> and three are confined by a mechanism the design described but the code
+> has not built (the `ctx_token` table). Neither side currently assumes the
+> in-process check exists when reasoning about `start`/`ask`/`tree`, and
+> neither side's coverage overlaps the other's. Whoever builds D1's
+> transport must not assume `steer`/`await_result`/`cancel` need the
+> per-token set the same way `start`/`ask`/`tree` do — they already have an
+> equivalent guarantee one layer down — but must also not assume the
+> port-level check is a substitute for confining `start`/`ask`/`tree`, which
+> it does not touch at all.
 
 **(c) `WireSubagentSpec` is the projection, and it is *the built-in tool's own
 argument set*.** See §2.4 — this is the most consequential single decision in
@@ -864,6 +902,13 @@ was actually on the table:
   `ensure_agent_in_session` exist for the *facade's* paths, not this one. Worth
   a separate item: a model that can name a sibling's id (they appear in tool
   output and on the event stream) can cancel or steer it.
+
+  > **Status (2026-07-30), `674bb65`.** Fixed at the port: all three now
+  > check `Runtime::ensure_own_subtree(caller, target)` before acting. See
+  > §1.3(b)'s status note for what this fix does and does not cover relative
+  > to this document's own `ctx_token`-based mitigation for `start`/`ask`/
+  > `tree` — the two are disjoint, and that gap is the part still worth
+  > tracking here.
 - **`PluginManifest.version` is a free-form `String`** never parsed or
   validated (`plugin.rs:163`). Independent of plugins-over-RPC: nothing today
   would notice `version: "banana"`.

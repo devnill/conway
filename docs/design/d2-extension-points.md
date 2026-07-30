@@ -13,6 +13,12 @@ D4, UI template language D5.
 >   design here that leans on it needs a different hook.
 > - **§6's single verdict enum plus `may_allow: bool` is rejected** in favour
 >   of a type split, `NarrowingPolicy` / `DecidingPolicy` (D6 §5.2).
+> - **§10 and §13's "pattern grants are structurally inert for every tool
+>   except `bash`" is false as of `68ea9b1`** (2026-07-30), which gave every
+>   tool a `RenderKind` declaration and taught the matcher to apply the
+>   metacharacter gate only to `ShellCommand` renders. See the local status
+>   notes at §10 and §13 for what changed and why the finding mattered more
+>   than its own wording suggested.
 >
 > Kept unedited as the record of the reasoning, not as current guidance.
 
@@ -516,6 +522,20 @@ satisfy any rule — and because the gate is applied to the wildcard case too
 language today is a prefix on a rendered string, and for non-`bash` tools that
 string is a JSON dump the gate rejects by construction.
 
+> **Status (2026-07-30), `68ea9b1`.** This finding no longer holds, and D4 §1
+> carries the fuller note: the fix landed the same day as, and hours before,
+> a permission-consent fix (`d917ba2`) that D4 §1's own threat model cited
+> this finding to bound. That made the pre-fix threat *larger* than stated,
+> not merely stale — the dangerous direction for a threat model to be wrong
+> in. `Tool::render_kind() -> RenderKind`
+> (`ShellCommand` | `Structured`) is now consulted by
+> `PatternRule::matches_render`, and the metacharacter gate applies only to
+> `ShellCommand`. `read:*` now matches. The "different predicate" this
+> section goes on to propose (`paths_under`, `command_prefix` scoped by
+> render kind) is still unbuilt — F12 in `extension-architecture.md` §12 —
+> but the premise that the *existing* prefix language could not reach
+> non-`bash` tools at all is gone.
+
 So "all reads under `./src` are fine, writes prompt" is not expressible today
 and cannot be made expressible by extending the prefix language. It needs a
 different predicate — and v0.6.0 shipped the machinery for it:
@@ -674,6 +694,10 @@ a status line cannot show cwd, mode, or grants.
 - **Pattern grants are inert for every tool but `bash`** — including `read:*`.
   §10, verified against `permission_pattern.rs:47`/`:126` and
   `ports/plugin.rs:83`.
+
+  > **Status (2026-07-30), `68ea9b1`.** Fixed. See §10's status note for
+  > what changed and why this one mattered more than a typical stale
+  > finding.
 - **`Tool` is re-exported from the facade but cannot be implemented through
   it** — its parameter types are not exported. §5.
 - **`ConwayBuilder::with_context_hook` accepts a type no external caller can
