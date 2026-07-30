@@ -9,7 +9,7 @@
 //! `input_json_delta` fragments in subsequent `content_block_delta` events,
 //! keyed by the block's top-level `index` rather than embedded per-delta.
 //! This module synthesizes the `{"index":..,"id":..,"function":{"name":..,
-//! "arguments":..}}` shape `Dialect::OpenAi`'s parser expects (`synth_*`
+//! "arguments":..}}` shape `ToolCallStyle::Structured`'s parser expects (`synth_*`
 //! below), so the shared accumulator needs no Anthropic-specific parser and
 //! `src/tool_calls/*` (owned by WI-018/WI-022) is untouched.
 //!
@@ -55,7 +55,7 @@ impl Stream for ChunkStream {
     }
 }
 
-/// Synthesizes the delta shape `Dialect::OpenAi`'s parser expects for a
+/// Synthesizes the delta shape `ToolCallStyle::Structured`'s parser expects for a
 /// `content_block_start` (`type:"tool_use"`) event: seeds a slot with `id`
 /// and `name`, no argument content yet.
 fn synth_tool_use_start(index: u32, id: &str, name: &str) -> String {

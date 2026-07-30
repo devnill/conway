@@ -54,75 +54,36 @@ pub struct DialectDefaults {
     pub reliability_tier: ReliabilityTier,
 }
 
-/// `Dialect::OpenAi` defaults.
+/// `Dialect::OpenAi` defaults, profile-derived (declarative provider
+/// profiles item: reads `Dialect::OpenAi.profile()`, the same `"openai"`
+/// built-in `profile.rs` embeds — this function and `Dialect::defaults()`
+/// can never diverge).
 pub fn openai_defaults() -> DialectDefaults {
-    DialectDefaults {
-        cache: CacheMode::ImplicitPrefix {
-            min_prefix_tokens: 1024,
-        },
-        tool_calling: ToolCallSupport::Streaming { validated: true },
-        max_context_tokens: 128_000,
-        structured_output: StructuredOutput::JsonSchema,
-        parallel_tool_calls: true,
-        reliability_tier: ReliabilityTier::Verified,
-    }
+    Dialect::OpenAi.defaults()
 }
 
-/// `Dialect::Ollama` defaults. `NonStreamingOnly` is deliberate — see the
-/// module-level research-backends note on ollama#12557.
+/// `Dialect::Ollama` defaults, profile-derived. `NonStreamingOnly` is
+/// deliberate — see the module-level research-backends note on
+/// ollama#12557.
 pub fn ollama_defaults() -> DialectDefaults {
-    DialectDefaults {
-        cache: CacheMode::ImplicitPrefix {
-            min_prefix_tokens: 0,
-        },
-        tool_calling: ToolCallSupport::NonStreamingOnly,
-        max_context_tokens: 32_768,
-        structured_output: StructuredOutput::JsonSchema,
-        parallel_tool_calls: false,
-        reliability_tier: ReliabilityTier::Unknown,
-    }
+    Dialect::Ollama.defaults()
 }
 
-/// `Dialect::VllmHermes` defaults. `NonStreamingOnly` is deliberate — see
-/// the module-level research-backends note on vllm#31871.
+/// `Dialect::VllmHermes` defaults, profile-derived. `NonStreamingOnly` is
+/// deliberate — see the module-level research-backends note on vllm#31871.
 pub fn vllm_hermes_defaults() -> DialectDefaults {
-    DialectDefaults {
-        cache: CacheMode::ImplicitPrefix {
-            min_prefix_tokens: 0,
-        },
-        tool_calling: ToolCallSupport::NonStreamingOnly,
-        max_context_tokens: 32_768,
-        structured_output: StructuredOutput::JsonSchema,
-        parallel_tool_calls: true,
-        reliability_tier: ReliabilityTier::Community,
-    }
+    Dialect::VllmHermes.defaults()
 }
 
-/// `Dialect::LmStudio` defaults. `NonStreamingOnly` is deliberate — see the
-/// module-level research-backends note on codex#7517.
+/// `Dialect::LmStudio` defaults, profile-derived. `NonStreamingOnly` is
+/// deliberate — see the module-level research-backends note on codex#7517.
 pub fn lm_studio_defaults() -> DialectDefaults {
-    DialectDefaults {
-        cache: CacheMode::None,
-        tool_calling: ToolCallSupport::NonStreamingOnly,
-        max_context_tokens: 32_768,
-        structured_output: StructuredOutput::None,
-        parallel_tool_calls: false,
-        reliability_tier: ReliabilityTier::Unknown,
-    }
+    Dialect::LmStudio.defaults()
 }
 
-/// `Dialect::LlamaCppServer` defaults.
+/// `Dialect::LlamaCppServer` defaults, profile-derived.
 pub fn llama_cpp_server_defaults() -> DialectDefaults {
-    DialectDefaults {
-        cache: CacheMode::ImplicitPrefix {
-            min_prefix_tokens: 0,
-        },
-        tool_calling: ToolCallSupport::NonStreamingOnly,
-        max_context_tokens: 32_768,
-        structured_output: StructuredOutput::Grammar,
-        parallel_tool_calls: false,
-        reliability_tier: ReliabilityTier::Community,
-    }
+    Dialect::LlamaCppServer.defaults()
 }
 
 /// Anthropic's baseline defaults (not part of the [`Dialect`] enum — the
@@ -142,16 +103,11 @@ pub fn anthropic_defaults() -> DialectDefaults {
     }
 }
 
-/// Dispatches to the matching `*_defaults()` function for one of the five
-/// `openai-compat` dialects.
+/// `dialect`'s baseline `DialectDefaults`, profile-derived
+/// (`dialect.defaults()`). Kept as a free function for source
+/// compatibility with existing callers.
 pub fn dialect_defaults(dialect: Dialect) -> DialectDefaults {
-    match dialect {
-        Dialect::OpenAi => openai_defaults(),
-        Dialect::Ollama => ollama_defaults(),
-        Dialect::VllmHermes => vllm_hermes_defaults(),
-        Dialect::LmStudio => lm_studio_defaults(),
-        Dialect::LlamaCppServer => llama_cpp_server_defaults(),
-    }
+    dialect.defaults()
 }
 
 /// The three composable inputs to [`build_capabilities`] for a single

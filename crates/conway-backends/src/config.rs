@@ -26,6 +26,8 @@ use url::Url;
 
 pub use conway_core::routing::ModelOverrides;
 
+pub use crate::profile::Profile;
+
 fn default_anthropic_base() -> Url {
     Url::parse("https://api.anthropic.com").expect("default Anthropic base URL must be valid")
 }
@@ -95,6 +97,13 @@ pub enum ConfigError {
     /// treats "file does not exist" as `Ok(ModelMetadataStore::empty())`.
     #[error("failed to load model metadata from {path}: {detail}")]
     Metadata { path: String, detail: String },
+    /// Declarative provider profiles: `ProfileStore::merge_file` failed to
+    /// parse/validate a profile file at `path` (syntactically invalid TOML,
+    /// an unrecognized field, or an empty `id` — see `profile.rs`'s module
+    /// doc). A missing file is never this variant — `merge_file` treats
+    /// "file does not exist" as `Ok(self)` unchanged.
+    #[error("failed to load provider profiles from {path}: {detail}")]
+    Profile { path: String, detail: String },
 }
 
 /// Raw wire shape for [`AnthropicConfig`]. Exists so deserialization routes
@@ -181,14 +190,19 @@ impl TryFrom<AnthropicConfigRaw> for AnthropicConfig {
 }
 
 /// Configuration for `OpenAiCompatBackend` (feature `openai-compat`; adapter
-/// itself is WI-019/WI-022). One adapter, dialect-selected behavior.
+/// itself is WI-019/WI-022). One adapter, profile-selected behavior
+/// (declarative provider profiles item): `profile` is a fully resolved
+/// [`Profile`] value, not a file path or a name — resolving a name (built-in
+/// `Dialect`, or a user-supplied profile id) against a `ProfileStore` is the
+/// facade's job (`conway::builder`), matching this module's own boundary
+/// note ("file discovery... live in the conway facade").
 #[derive(Debug, Clone, Deserialize)]
 pub struct OpenAiCompatConfig {
     pub id: BackendId,
     pub base_url: Url,
     #[serde(default)]
     pub api_key: Option<SecretString>,
-    pub dialect: Dialect,
+    pub profile: Profile,
     #[serde(default, with = "humantime_serde::option")]
     pub timeout: Option<Duration>,
     #[serde(default)]
@@ -197,9 +211,15 @@ pub struct OpenAiCompatConfig {
     pub models: BTreeMap<String, ModelOverrides>,
 }
 
-/// The dialect family an `OpenAiCompatBackend` instance speaks. Selects the
-/// `ToolCallAccumulator` variant and known-quirk workarounds (WI-018,
-/// WI-022) so one adapter covers five servers instead of five adapters.
+/// A small, `Copy`, source-compatible name for one of the five dialects
+/// this crate shipped before declarative provider profiles. Kept (not
+/// deprecated) because every existing call site that names one of these
+/// five providers by Rust identifier continues to compile unchanged;
+/// `Dialect::profile()` resolves it to the equivalent [`Profile`] value
+/// (`profile.rs`), which is the actual source of truth every one of
+/// `Dialect`'s own predicate methods now reads. A *new* provider is never
+/// added as a sixth `Dialect` variant — see `profile.rs`'s module doc for
+/// why, and for how a new provider is added as data instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Dialect {

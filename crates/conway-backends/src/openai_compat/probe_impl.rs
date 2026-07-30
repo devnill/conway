@@ -4,11 +4,16 @@
 //! Deliberately bypasses `HttpClient::send_with_retry` — a probe is one
 //! observation, never retried (architecture §4.5: `BreakerKind::Probe` is
 //! independent of `BreakerKind::Transport`, which owns the bounded
-//! transport-retry policy). `GET {base}/models`, falling back for
-//! `Dialect::Ollama` only (when `/models` reports `404`) to
+//! transport-retry policy). `GET {base}/models`, falling back for the
+//! `"ollama"` built-in profile only (when `/models` reports `404`) to
 //! `GET {base_origin}/api/tags` and then, if that is also unsupported, to
 //! `GET {base_origin}/api/version` — each request capped at
-//! [`PROBE_TIMEOUT`].
+//! [`PROBE_TIMEOUT`]. This Ollama-specific fallback chain is matched by
+//! `profile.id`, not by a declarative field: probe endpoint selection is
+//! out of the declarative-provider-profiles item's scope (a fundamentally
+//! different concern from the four wire-behavior fields/path that item
+//! covers), so a user-supplied or newly-added profile simply gets the
+//! generic `/models`-only probe every other built-in profile already has.
 //!
 //! The three-tier Ollama fallback is ordered richest-to-plainest: `/models`
 //! and `/api/tags` both carry a model list, `/api/version` carries none but
@@ -33,7 +38,6 @@ use conway_core::ids::ModelId;
 use serde::Deserialize;
 use url::Url;
 
-use crate::config::Dialect;
 use crate::error::classify;
 use crate::probe::{join_base, join_origin};
 
@@ -87,8 +91,8 @@ impl OpenAiCompatBackend {
 
     /// `GET {base}/models`, 2s timeout, no retries. A connection failure is
     /// `Err(BackendError::Transport{..})` after exactly this one request —
-    /// the `Dialect::Ollama` `/api/tags`/`/api/version` fallbacks below only
-    /// ever fire on a classified `404` response, never on a transport
+    /// the `"ollama"` profile's `/api/tags`/`/api/version` fallbacks below
+    /// only ever fire on a classified `404` response, never on a transport
     /// failure.
     pub(crate) async fn run_probe(&self) -> Result<ProbeReport, BackendError> {
         let url = join_base(&self.base, "/models");
@@ -114,7 +118,7 @@ impl OpenAiCompatBackend {
             });
         }
 
-        if matches!(self.dialect, Dialect::Ollama) && status.as_u16() == 404 {
+        if self.profile.id == "ollama" && status.as_u16() == 404 {
             if let Some(report) = self.probe_ollama_tags().await {
                 return Ok(report);
             }
@@ -181,14 +185,14 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
-    use crate::config::OpenAiCompatConfig;
+    use crate::config::{Dialect, OpenAiCompatConfig};
 
     fn backend_config(base_url: &str, dialect: Dialect) -> OpenAiCompatConfig {
         OpenAiCompatConfig {
             id: BackendId::new("test"),
             base_url: base_url.parse().unwrap(),
             api_key: None,
-            dialect,
+            profile: dialect.profile(),
             timeout: None,
             metadata_path: None,
             models: Default::default(),

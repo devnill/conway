@@ -3,14 +3,13 @@
 //! §"Module: conway-backends", WI-019).
 //!
 //! `wire.rs` owns the segment↔message and response↔`GenerateResponse`
-//! mapping, `stream.rs` owns SSE streaming, `dialect.rs` owns the small
-//! per-dialect wire differences. This item wires and tests only the
-//! `OpenAi` and `Ollama` dialects; `VllmHermes`, `LmStudio`, and
-//! `LlamaCppServer` already compile through the same code paths (every
-//! `Dialect::defaults()`/`chat_path()`/etc. arm is total) and are exercised
-//! by WI-020/WI-022.
+//! mapping, `stream.rs` owns SSE streaming, [`crate::profile::Profile`]
+//! (declarative provider profiles item) owns the small per-provider wire
+//! differences that used to live in a private `dialect.rs`. Every built-in
+//! profile — `openai`, `ollama`, `vllm_hermes`, `lm_studio`,
+//! `llama_cpp_server`, `kimi` — and any user-supplied profile compile
+//! through the same code paths (every field this module reads is total).
 
-mod dialect;
 mod probe_impl;
 mod stream;
 mod wire;
@@ -27,10 +26,11 @@ use tokio_util::sync::CancellationToken;
 use url::Url;
 
 use crate::capabilities::{build_capabilities, CapabilityInputs};
-use crate::config::{ConfigError, Dialect, ModelOverrides, OpenAiCompatConfig, SecretString};
+use crate::config::{ConfigError, ModelOverrides, OpenAiCompatConfig, SecretString};
 use crate::error::classify_malformed_body;
 use crate::http::HttpClient;
 use crate::model_metadata::ModelMetadataStore;
+use crate::profile::Profile;
 
 /// Applied when `OpenAiCompatConfig::timeout` is `None`. Shorter than
 /// `DEFAULT_ANTHROPIC_TIMEOUT` (600s): OpenAI-compatible endpoints in this
@@ -39,12 +39,12 @@ use crate::model_metadata::ModelMetadataStore;
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// One adapter for every OpenAI-compatible chat-completions server;
-/// `dialect` selects wire quirks (`dialect.rs`) and default capabilities
-/// (WI-017's `dialect_defaults`).
+/// `profile` selects wire quirks and default capabilities (declarative
+/// provider profiles item; `crate::profile::Profile`).
 pub struct OpenAiCompatBackend {
     id: BackendId,
     base: Url,
-    dialect: Dialect,
+    profile: Profile,
     http: HttpClient,
     auth: Option<SecretString>,
     models: ModelMetadataStore,
@@ -61,13 +61,30 @@ impl OpenAiCompatBackend {
         if let Some(path) = &config.metadata_path {
             models = models.merge(ModelMetadataStore::load(path)?);
         }
+        // P-10: `profile.chat_path` is untrusted (a user-supplied profile
+        // file can set it to anything), so this validates it composes to a
+        // real URL *now* — a typed, named error at construction — rather
+        // than deferring to a panic the first time a request is sent.
+        let base = config.base_url.as_str().trim_end_matches('/');
+        if format!("{base}{}", config.profile.chat_path)
+            .parse::<Url>()
+            .is_err()
+        {
+            return Err(ConfigError::Profile {
+                path: format!("profile '{}'", config.profile.id),
+                detail: format!(
+                    "chat_path '{}' does not form a valid URL when joined with base_url '{base}'",
+                    config.profile.chat_path
+                ),
+            });
+        }
         let timeout = config.timeout.unwrap_or(DEFAULT_TIMEOUT);
         let http =
             HttpClient::with_timeout(timeout).expect("reqwest client with rustls TLS must build");
         Ok(Self {
             id: config.id,
             base: config.base_url,
-            dialect: config.dialect,
+            profile: config.profile,
             http,
             auth: config.api_key,
             models,
@@ -75,14 +92,13 @@ impl OpenAiCompatBackend {
         })
     }
 
-    /// `{base_url}/chat/completions`. `base_url` is already a validated
-    /// `Url` (parsed at config-deserialize time), and `chat_path()` is a
-    /// fixed, valid-URL-safe suffix, so this cannot fail in practice.
+    /// `{base_url}{profile.chat_path}`. Never fails: `new` already validated
+    /// this exact join parses as a URL.
     fn chat_url(&self) -> Url {
         let base = self.base.as_str().trim_end_matches('/');
-        format!("{base}{}", self.dialect.chat_path())
+        format!("{base}{}", self.profile.chat_path)
             .parse()
-            .expect("base_url + chat_path must form a valid URL")
+            .expect("validated in OpenAiCompatBackend::new")
     }
 
     fn request_builder(&self, url: Url, body: &serde_json::Value) -> reqwest::RequestBuilder {
@@ -102,7 +118,7 @@ impl Backend for OpenAiCompatBackend {
 
     fn capabilities(&self, model: &ModelId) -> Capabilities {
         build_capabilities(CapabilityInputs {
-            dialect_defaults: self.dialect.defaults(),
+            dialect_defaults: self.profile.dialect_defaults(),
             metadata: self.models.get(model),
             overrides: self.overrides.get(model.as_str()),
         })
@@ -110,7 +126,7 @@ impl Backend for OpenAiCompatBackend {
 
     async fn generate(&self, req: GenerateRequest) -> Result<GenerateResponse, BackendError> {
         let caps = self.capabilities(&req.model);
-        let body = wire::build_request_body(&req, self.dialect, caps.parallel_tool_calls, false);
+        let body = wire::build_request_body(&req, &self.profile, caps.parallel_tool_calls, false);
         let url = self.chat_url();
         let cancel = CancellationToken::new();
         let make = || self.request_builder(url.clone(), &body);
@@ -123,7 +139,7 @@ impl Backend for OpenAiCompatBackend {
             })?;
         let parsed: wire::ChatCompletionResponse =
             serde_json::from_str(&text).map_err(|_| classify_malformed_body(&text))?;
-        wire::to_generate_response(parsed, self.dialect, &req.tools)
+        wire::to_generate_response(parsed, &self.profile, &req.tools)
     }
 
     async fn stream(
@@ -131,7 +147,7 @@ impl Backend for OpenAiCompatBackend {
         req: GenerateRequest,
     ) -> Result<BoxStream<'static, Result<StreamChunk, BackendError>>, BackendError> {
         let caps = self.capabilities(&req.model);
-        let body = wire::build_request_body(&req, self.dialect, caps.parallel_tool_calls, true);
+        let body = wire::build_request_body(&req, &self.profile, caps.parallel_tool_calls, true);
         let url = self.chat_url();
         let cancel = CancellationToken::new();
         let make = || self.request_builder(url.clone(), &body);
@@ -139,7 +155,7 @@ impl Backend for OpenAiCompatBackend {
         // (module boundary rule): once the body starts streaming, `spawn`
         // owns it and nothing further is retried.
         let response = self.http.send_with_retry(make, &cancel).await?;
-        Ok(stream::spawn(response, self.dialect, req.tools))
+        Ok(stream::spawn(response, self.profile.clone(), req.tools))
     }
 
     async fn probe(&self) -> Result<ProbeReport, BackendError> {

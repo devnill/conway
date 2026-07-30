@@ -8,9 +8,9 @@
 //! This module is a pure text scanner; it never decides *whether* it is in
 //! scope for a given stream (that's [`super::ToolCallAccumulator`]'s job —
 //! see `push_content_delta`, which only routes through this scanner while
-//! `Dialect::VllmHermes` has not yet seen a structured `delta.tool_calls`
-//! entry, per the WI-022 "OpenAI-path passthrough when structured
-//! tool_calls appear" handoff).
+//! `ToolCallStyle::HermesTextFallback` has not yet seen a structured
+//! `delta.tool_calls` entry, per the WI-022 "structured-path passthrough
+//! when structured tool_calls appear" handoff).
 //!
 //! # Suppression algorithm
 //!

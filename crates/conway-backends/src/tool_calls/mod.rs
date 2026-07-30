@@ -45,37 +45,44 @@
 //! in [`ToolCallAccumulator::finish`], never per-delta — partial JSON is
 //! the expected, normal state of a slot mid-stream.
 //!
-//! # Dialect dispatch
+//! # Style dispatch
 //!
-//! `push_delta` dispatches to a dialect-specific parser that turns one raw
-//! provider delta object into dialect-independent [`DeltaParts`]:
+//! `push_delta` dispatches to a style-specific parser that turns one raw
+//! provider delta object into style-independent [`DeltaParts`]:
 //! [`openai::parse_delta`] for the OpenAI-canonical shape, reused unchanged
-//! for `VllmHermes`'s structured (non-text) tool-call path; and
-//! [`ollama::parse_delta`], a tolerant superset parser, for `Ollama` and
-//! (per the WI-022 handoff below) `LmStudio`/`LlamaCppServer`.
+//! for `ToolCallStyle::HermesTextFallback`'s structured (non-text) tool-call
+//! path; and [`ollama::parse_delta`], a tolerant superset parser, for
+//! `ToolCallStyle::Tolerant`.
 //!
-//! `Dialect` itself is **not** defined in this module. It already exists as
-//! `crate::config::Dialect` (added by WI-016, the crate skeleton item) with
-//! exactly the five variants this work item's spec called for
-//! (`OpenAi | Ollama | VllmHermes | LmStudio | LlamaCppServer`), so no
-//! second definition is introduced here — see this work item's completion
-//! report for the resolved ambiguity.
+//! # Declarative provider profiles: `ToolCallStyle`
 //!
-//! # WI-022: the `VllmHermes` inline-text fallback
+//! This module used to dispatch directly on `crate::config::Dialect` (added
+//! by WI-016). The declarative-provider-profiles item replaced that
+//! five-variant match with [`ToolCallStyle`], a three-value enum that names
+//! *which parsing strategy* a provider needs rather than which of five
+//! fixed dialects it is — the same accumulator now serves any
+//! `crate::profile::Profile`, built-in or user-supplied, with no recompile.
+//! `crate::profile::Profile::tool_call_style` is the field a caller reads to
+//! obtain one; `Dialect`'s own predicate methods (kept for source
+//! compatibility) resolve to the same built-in profile data.
 //!
-//! `VllmHermes` structured deltas (a well-formed `delta.tool_calls` entry)
-//! go through the same `push_delta`/`openai::parse_delta` path as `OpenAi`
-//! — no text scanning involved. But some vLLM/Hermes servers (vllm#31871)
-//! instead emit a tool call as raw text inside `delta.content`:
+//! # The `VllmHermes` inline-text fallback (originally WI-022)
+//!
+//! `ToolCallStyle::HermesTextFallback` structured deltas (a well-formed
+//! `delta.tool_calls` entry) go through the same `push_delta`/
+//! `openai::parse_delta` path as `ToolCallStyle::Structured` — no text
+//! scanning involved. But some vLLM/Hermes servers (vllm#31871) instead
+//! emit a tool call as raw text inside `delta.content`:
 //! `<tool_call>{"name":...,"arguments":{...}}</tool_call>`, with no
 //! `tool_calls` field on the delta at all. [`ToolCallAccumulator::push_content_delta`]
 //! is the entry point for that path: it routes `delta.content` text
-//! through [`hermes::HermesTextScanner`] while `dialect` is `VllmHermes`
-//! and no structured `delta.tool_calls` entry has arrived yet
-//! (`structured_seen`) — the "OpenAI-path passthrough when structured
-//! tool_calls appear" rule. Every other dialect (and `VllmHermes` once a
-//! structured call has appeared) is a pure passthrough: the text is
-//! returned unchanged for the caller to emit as a `TextDelta`.
+//! through [`hermes::HermesTextScanner`] while `style` is
+//! `HermesTextFallback` and no structured `delta.tool_calls` entry has
+//! arrived yet (`structured_seen`) — the "structured-path passthrough when
+//! structured tool_calls appear" rule. Every other style (and
+//! `HermesTextFallback` once a structured call has appeared) is a pure
+//! passthrough: the text is returned unchanged for the caller to emit as a
+//! `TextDelta`.
 //!
 //! [`ToolCallAccumulator::stop_override`] exposes whether the Hermes
 //! scanner parsed at least one inline block, so a caller can force
@@ -93,11 +100,47 @@ use std::collections::{BTreeMap, HashMap};
 use conway_core::content::{StopReason, ToolCall, ToolSpec};
 use conway_core::error::BackendError;
 use conway_core::ids::ToolName;
+use serde::Deserialize;
 use serde_json::Value;
 
-use crate::config::Dialect;
 use hermes::HermesTextScanner;
 use validate::SchemaValidator;
+
+/// Which streamed tool-call parsing strategy a provider needs — the
+/// declarative-provider-profiles replacement for the old
+/// `matches!(dialect, Dialect::X)` dispatch in this module. Carried by
+/// `crate::profile::Profile::tool_call_style`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolCallStyle {
+    /// OpenAI-canonical structured `delta.tool_calls` parsing
+    /// ([`openai::parse_delta`]); no inline-text fallback. Also the right
+    /// choice for a server whose structured tool-calls otherwise follow the
+    /// canonical shape but whose provider is otherwise undocumented (e.g. a
+    /// new provider profile with no observed quirks yet).
+    Structured,
+    /// A tolerant superset parser ([`ollama::parse_delta`]) that
+    /// additionally accepts a complete-object `arguments` value instead of
+    /// only a string fragment (ollama#12557, codex#7517); no inline-text
+    /// fallback. The conservative default for an unfamiliar server.
+    Tolerant,
+    /// Structured deltas (parsed the same way as `Structured`) PLUS the
+    /// Hermes inline `<tool_call>...</tool_call>` text-content fallback
+    /// (vllm#31871) for servers that sometimes emit a tool call as raw text
+    /// instead of a structured `delta.tool_calls` entry.
+    HermesTextFallback,
+}
+
+impl Default for ToolCallStyle {
+    /// The most permissive parser and no inline-text scanning — the safe
+    /// choice for a profile that does not name a style explicitly (P-10: a
+    /// missing field must never silently enable behavior a provider didn't
+    /// ask for, and `Tolerant` is a superset of `Structured`'s accepted
+    /// shapes).
+    fn default() -> Self {
+        ToolCallStyle::Tolerant
+    }
+}
 
 /// The dialect-independent parse of one raw provider tool-call delta
 /// object — the output of [`openai::parse_delta`]/[`ollama::parse_delta`]
@@ -144,7 +187,7 @@ struct Slot {
 /// `validate.rs`) is satisfied by compiling eagerly inside `new` and
 /// storing the `Result`, rather than by making `new` itself fallible.
 pub struct ToolCallAccumulator {
-    dialect: Dialect,
+    style: ToolCallStyle,
     specs: HashMap<ToolName, ToolSpec>,
     validator: Result<SchemaValidator, BackendError>,
     slots: BTreeMap<u32, Slot>,
@@ -157,27 +200,29 @@ pub struct ToolCallAccumulator {
     /// `id`.
     last_key: Option<u32>,
     /// The Hermes inline-text scanner (WI-022), `Some` only for
-    /// `Dialect::VllmHermes`.
+    /// `ToolCallStyle::HermesTextFallback`.
     hermes: Option<HermesTextScanner>,
-    /// Whether a structured `delta.tool_calls` entry has been seen for
-    /// `Dialect::VllmHermes` — once true, `push_content_delta` stops
-    /// routing through `hermes` (the "OpenAI-path passthrough" rule).
+    /// Whether a structured `delta.tool_calls` entry has been seen while
+    /// `style` is `ToolCallStyle::HermesTextFallback` — once true,
+    /// `push_content_delta` stops routing through `hermes` (the
+    /// "structured-path passthrough" rule).
     structured_seen: bool,
 }
 
 impl ToolCallAccumulator {
-    /// Builds an accumulator for `dialect`, compiling every `spec.schema`
+    /// Builds an accumulator for `style`, compiling every `spec.schema`
     /// once up front (see the struct docs for why compile errors are
     /// deferred rather than returned here).
-    pub fn new(dialect: Dialect, specs: &[ToolSpec]) -> Self {
+    pub fn new(style: ToolCallStyle, specs: &[ToolSpec]) -> Self {
         let validator = SchemaValidator::compile(specs);
         let specs = specs
             .iter()
             .map(|spec| (spec.name.clone(), spec.clone()))
             .collect();
-        let hermes = matches!(dialect, Dialect::VllmHermes).then(HermesTextScanner::new);
+        let hermes =
+            matches!(style, ToolCallStyle::HermesTextFallback).then(HermesTextScanner::new);
         Self {
-            dialect,
+            style,
             specs,
             validator,
             slots: BTreeMap::new(),
@@ -190,27 +235,27 @@ impl ToolCallAccumulator {
     }
 
     /// Feeds one raw provider delta object (the element of
-    /// `choices[0].delta.tool_calls`). For `Dialect::VllmHermes`, this also
-    /// marks `structured_seen`, disabling the Hermes inline-text fallback
-    /// for the remainder of the stream (the "OpenAI-path passthrough when
-    /// structured tool_calls appear" rule).
+    /// `choices[0].delta.tool_calls`). For `ToolCallStyle::HermesTextFallback`,
+    /// this also marks `structured_seen`, disabling the Hermes inline-text
+    /// fallback for the remainder of the stream (the "structured-path
+    /// passthrough when structured tool_calls appear" rule).
     pub fn push_delta(&mut self, raw: &str) -> Result<(), BackendError> {
         let parts = self.parse(raw)?;
-        if matches!(self.dialect, Dialect::VllmHermes) {
+        if matches!(self.style, ToolCallStyle::HermesTextFallback) {
             self.structured_seen = true;
         }
         self.apply(parts)
     }
 
-    /// Feeds one `delta.content` text fragment (WI-022). While `dialect`
-    /// is `Dialect::VllmHermes` and no structured `delta.tool_calls` entry
-    /// has arrived yet, this routes `text` through the Hermes inline
-    /// `<tool_call>...</tool_call>` scanner: plain text is returned for the
-    /// caller to emit as a `TextDelta` (`None`/empty when everything fed
-    /// was suppressed), and any completed `<tool_call>` block is fed to
-    /// [`Self::push_complete`] with a synthesized `call_{n}` id. Every
-    /// other dialect (and `VllmHermes` once a structured call has
-    /// appeared) is a pure passthrough.
+    /// Feeds one `delta.content` text fragment (WI-022). While `style` is
+    /// `ToolCallStyle::HermesTextFallback` and no structured
+    /// `delta.tool_calls` entry has arrived yet, this routes `text` through
+    /// the Hermes inline `<tool_call>...</tool_call>` scanner: plain text is
+    /// returned for the caller to emit as a `TextDelta` (`None`/empty when
+    /// everything fed was suppressed), and any completed `<tool_call>`
+    /// block is fed to [`Self::push_complete`] with a synthesized
+    /// `call_{n}` id. Every other style (and `HermesTextFallback` once a
+    /// structured call has appeared) is a pure passthrough.
     pub fn push_content_delta(&mut self, text: &str) -> Result<Option<String>, BackendError> {
         if self.structured_seen {
             return Ok(Some(text.to_string()));
@@ -336,14 +381,13 @@ impl ToolCallAccumulator {
         self.slots.is_empty()
     }
 
-    /// Dialect-dispatched delta parse. See the module-level "WI-022
-    /// handoff" docs for the three arms this item does not exercise.
+    /// Style-dispatched delta parse.
     fn parse(&self, raw: &str) -> Result<DeltaParts, BackendError> {
-        match self.dialect {
-            Dialect::OpenAi | Dialect::VllmHermes => openai::parse_delta(raw),
-            Dialect::Ollama | Dialect::LmStudio | Dialect::LlamaCppServer => {
-                ollama::parse_delta(raw)
+        match self.style {
+            ToolCallStyle::Structured | ToolCallStyle::HermesTextFallback => {
+                openai::parse_delta(raw)
             }
+            ToolCallStyle::Tolerant => ollama::parse_delta(raw),
         }
     }
 

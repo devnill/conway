@@ -4,8 +4,7 @@
 //! fixtures are reusable by later work items' SSE-level integration tests
 //! (WI-019, WI-022).
 
-use conway_backends::config::Dialect;
-use conway_backends::tool_calls::ToolCallAccumulator;
+use conway_backends::tool_calls::{ToolCallAccumulator, ToolCallStyle};
 use conway_core::content::{PermissionClass, StopReason, ToolCategory, ToolSpec};
 use conway_core::ids::ToolName;
 
@@ -73,14 +72,14 @@ fn feed(accumulator: &mut ToolCallAccumulator, lines: &[String]) {
 
 #[test]
 fn new_is_public_and_starts_empty() {
-    let accumulator = ToolCallAccumulator::new(Dialect::OpenAi, &[]);
+    let accumulator = ToolCallAccumulator::new(ToolCallStyle::Structured, &[]);
     assert!(accumulator.is_empty());
 }
 
 #[test]
 fn openai_basic_two_chunk_delta_accumulates_to_one_call() {
     let specs = [read_tool()];
-    let mut accumulator = ToolCallAccumulator::new(Dialect::OpenAi, &specs);
+    let mut accumulator = ToolCallAccumulator::new(ToolCallStyle::Structured, &specs);
     feed(
         &mut accumulator,
         &fixture_lines("openai_basic_two_chunks.txt"),
@@ -95,7 +94,7 @@ fn openai_basic_two_chunk_delta_accumulates_to_one_call() {
 #[test]
 fn interleaved_indices_produce_two_calls_in_ascending_index_order_with_separated_buffers() {
     let specs = [read_tool(), write_tool()];
-    let mut accumulator = ToolCallAccumulator::new(Dialect::OpenAi, &specs);
+    let mut accumulator = ToolCallAccumulator::new(ToolCallStyle::Structured, &specs);
     feed(
         &mut accumulator,
         &fixture_lines("openai_interleaved_indices.txt"),
@@ -116,7 +115,7 @@ fn interleaved_indices_produce_two_calls_in_ascending_index_order_with_separated
 #[test]
 fn codex_7517_repeated_id_and_name_produces_one_call_not_n() {
     let specs = [read_tool()];
-    let mut accumulator = ToolCallAccumulator::new(Dialect::Ollama, &specs);
+    let mut accumulator = ToolCallAccumulator::new(ToolCallStyle::Tolerant, &specs);
     feed(
         &mut accumulator,
         &fixture_lines("codex_7517_repeated_id_and_name.txt"),
@@ -130,7 +129,7 @@ fn codex_7517_repeated_id_and_name_produces_one_call_not_n() {
 #[test]
 fn ollama_12557_object_then_empty_string_arguments_produces_one_valid_call() {
     let specs = [read_tool()];
-    let mut accumulator = ToolCallAccumulator::new(Dialect::Ollama, &specs);
+    let mut accumulator = ToolCallAccumulator::new(ToolCallStyle::Tolerant, &specs);
     feed(
         &mut accumulator,
         &fixture_lines("ollama_12557_object_then_empty_string.txt"),
@@ -143,7 +142,7 @@ fn ollama_12557_object_then_empty_string_arguments_produces_one_valid_call() {
 #[test]
 fn finish_tool_use_with_unterminated_json_is_tool_parse_naming_tool_and_bounded_excerpt() {
     let specs = [read_tool()];
-    let mut accumulator = ToolCallAccumulator::new(Dialect::OpenAi, &specs);
+    let mut accumulator = ToolCallAccumulator::new(ToolCallStyle::Structured, &specs);
     feed(
         &mut accumulator,
         &fixture_lines("unterminated_arguments.txt"),
@@ -164,7 +163,7 @@ fn finish_tool_use_with_unterminated_json_is_tool_parse_naming_tool_and_bounded_
 #[test]
 fn finish_with_schema_invalid_arguments_names_the_failing_schema_path() {
     let specs = [read_tool()];
-    let mut accumulator = ToolCallAccumulator::new(Dialect::OpenAi, &specs);
+    let mut accumulator = ToolCallAccumulator::new(ToolCallStyle::Structured, &specs);
     feed(
         &mut accumulator,
         &fixture_lines("schema_validation_failure.txt"),
@@ -185,7 +184,7 @@ fn finish_with_schema_invalid_arguments_names_the_failing_schema_path() {
 #[test]
 fn finish_with_unknown_tool_name_contains_unknown_tool() {
     let specs = [read_tool()];
-    let mut accumulator = ToolCallAccumulator::new(Dialect::OpenAi, &specs);
+    let mut accumulator = ToolCallAccumulator::new(ToolCallStyle::Structured, &specs);
     feed(&mut accumulator, &fixture_lines("unknown_tool.txt"));
     let err = accumulator.finish(StopReason::ToolUse).unwrap_err();
     match err {
@@ -198,7 +197,7 @@ fn finish_with_unknown_tool_name_contains_unknown_tool() {
 
 #[test]
 fn finish_end_turn_with_zero_calls_is_ok_empty() {
-    let accumulator = ToolCallAccumulator::new(Dialect::OpenAi, &[]);
+    let accumulator = ToolCallAccumulator::new(ToolCallStyle::Structured, &[]);
     let calls = accumulator.finish(StopReason::EndTurn).unwrap();
     assert!(calls.is_empty());
 }
@@ -207,7 +206,7 @@ fn finish_end_turn_with_zero_calls_is_ok_empty() {
 fn empty_string_or_empty_object_arguments_for_no_required_schema_yields_empty_object() {
     let specs = [ping_tool()];
 
-    let mut accumulator = ToolCallAccumulator::new(Dialect::OpenAi, &specs);
+    let mut accumulator = ToolCallAccumulator::new(ToolCallStyle::Structured, &specs);
     feed(
         &mut accumulator,
         &fixture_lines("empty_string_arguments.txt"),
@@ -216,7 +215,7 @@ fn empty_string_or_empty_object_arguments_for_no_required_schema_yields_empty_ob
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].arguments, serde_json::json!({}));
 
-    let mut accumulator = ToolCallAccumulator::new(Dialect::OpenAi, &specs);
+    let mut accumulator = ToolCallAccumulator::new(ToolCallStyle::Structured, &specs);
     feed(
         &mut accumulator,
         &fixture_lines("empty_object_arguments.txt"),
@@ -229,7 +228,7 @@ fn empty_string_or_empty_object_arguments_for_no_required_schema_yields_empty_ob
 #[test]
 fn push_complete_shares_the_same_finish_validation_path() {
     let specs = [read_tool()];
-    let mut accumulator = ToolCallAccumulator::new(Dialect::OpenAi, &specs);
+    let mut accumulator = ToolCallAccumulator::new(ToolCallStyle::Structured, &specs);
     accumulator
         .push_complete(
             Some("call_9".to_string()),
@@ -246,7 +245,7 @@ fn push_complete_shares_the_same_finish_validation_path() {
 #[test]
 fn synthesizes_call_id_when_absent_at_finish() {
     let specs = [ping_tool()];
-    let mut accumulator = ToolCallAccumulator::new(Dialect::OpenAi, &specs);
+    let mut accumulator = ToolCallAccumulator::new(ToolCallStyle::Structured, &specs);
     accumulator
         .push_delta(r#"{"index":0,"function":{"name":"ping","arguments":"{}"}}"#)
         .unwrap();
