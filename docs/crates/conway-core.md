@@ -63,7 +63,9 @@ dyn-compatible.
   carries an ordered `Vec<PromptSegment>` that adapters must not reorder,
   merge, or drop — order is load-bearing for implicit-prefix caching.
 - **`Plugin` / `Tool`** (`ports::plugin`) — a `Plugin` declares the `Tool`s
-  it provides plus an optional `on_init`; a `Tool` declares its `ToolSpec`
+  it provides (there is deliberately no init hook: setup belongs in the
+  plugin's own constructor, before `with_plugin`, where a failure reaches
+  the embedder — see the trait's own doc); a `Tool` declares its `ToolSpec`
   (JSON schema, `ToolCategory`, `PermissionClass`), an async `invoke`, and
   `render(&self, args: &Value) -> String`, a human-readable one-liner for a
   proposed call — the text behind the permission prompt,
