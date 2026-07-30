@@ -381,6 +381,18 @@ pub fn entry_lines(
             .split('\n')
             .map(|line| Line::from(Span::styled(line.to_string(), theme.notice)))
             .collect(),
+        // board item 01KYND6GCCKYSYD0VDGJD1ZCXG: the one place the
+        // fatal-vs-notice severity decision is made. `fatal_error`
+        // (Red+Bold) for `Event::Error { fatal: true }` -- the loudest thing
+        // the harness can say; `error` (Red, no bold) for `fatal: false` --
+        // still a real failure, distinct from `theme.notice`'s routine cyan,
+        // just one step down from the bold escalation.
+        Entry::Error { text, fatal } => {
+            let style = if *fatal { theme.fatal_error } else { theme.error };
+            text.split('\n')
+                .map(|line| Line::from(Span::styled(line.to_string(), style)))
+                .collect()
+        }
     }
 }
 
@@ -700,6 +712,10 @@ mod tests {
             Entry::Notice {
                 text: "a notice".to_string(),
             },
+            Entry::Error {
+                text: "fatal error: boom".to_string(),
+                fatal: true,
+            },
         ];
 
         for entry in &entries {
@@ -977,6 +993,85 @@ mod tests {
         assert_eq!(lines.len(), 2, "expected 2 `Line`s: {lines:?}");
         assert_eq!(plain_text(&lines[0]), "notice one");
         assert_eq!(plain_text(&lines[1]), "notice two");
+    }
+
+    // ---- board item 01KYND6GCCKYSYD0VDGJD1ZCXG: `Entry::Error` severity ----
+
+    /// A fatal error (`Entry::Error { fatal: true }`) renders in
+    /// `theme.fatal_error` -- distinct from `theme.notice`'s cyan, and from
+    /// the non-fatal `theme.error` slot. Asserted against the theme SLOT,
+    /// not a literal `Color`, so a `[tui.theme]` override does not break
+    /// this test.
+    #[test]
+    fn fatal_error_entry_renders_in_fatal_error_style() {
+        let theme = Theme::default();
+        let lines = entry_lines(
+            &Entry::Error {
+                text: "fatal error: boom".to_string(),
+                fatal: true,
+            },
+            3,
+            false,
+            &theme,
+        );
+
+        assert_eq!(lines.len(), 1);
+        assert_eq!(plain_text(&lines[0]), "fatal error: boom");
+        assert_eq!(lines[0].spans[0].style, theme.fatal_error);
+        assert_ne!(
+            lines[0].spans[0].style, theme.notice,
+            "a fatal error must not render indistinguishably from a routine notice"
+        );
+    }
+
+    /// A recoverable, non-fatal `Event::Error` (`fatal: false`) is still a
+    /// real error -- it does not fall back to `theme.notice`'s routine cyan.
+    /// It gets the plain (non-bold) `theme.error` slot instead: one severity
+    /// step down from `fatal_error`, but still unambiguously red, matching
+    /// the palette's "red is failure" rule.
+    #[test]
+    fn non_fatal_error_entry_renders_in_error_style_not_notice() {
+        let theme = Theme::default();
+        let lines = entry_lines(
+            &Entry::Error {
+                text: "error: retrying".to_string(),
+                fatal: false,
+            },
+            3,
+            false,
+            &theme,
+        );
+
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].spans[0].style, theme.error);
+        assert_ne!(
+            lines[0].spans[0].style, theme.notice,
+            "a non-fatal error is still a real error, not routine chatter"
+        );
+        assert_ne!(
+            lines[0].spans[0].style, theme.fatal_error,
+            "non-fatal must stay one severity step below the loudest accent"
+        );
+    }
+
+    /// Multi-line `Entry::Error` text splits into separate `Line`s, matching
+    /// `Entry::Notice`'s behavior above -- same underlying bug class, same
+    /// fix shape.
+    #[test]
+    fn error_entry_splits_embedded_newlines_into_separate_lines() {
+        let lines = entry_lines(
+            &Entry::Error {
+                text: "fatal error: one\ntwo".to_string(),
+                fatal: true,
+            },
+            3,
+            false,
+            &Theme::default(),
+        );
+
+        assert_eq!(lines.len(), 2, "expected 2 `Line`s: {lines:?}");
+        assert_eq!(plain_text(&lines[0]), "fatal error: one");
+        assert_eq!(plain_text(&lines[1]), "two");
     }
 
     /// End-to-end companion, through the REAL render pass into an actual

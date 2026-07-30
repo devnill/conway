@@ -1092,6 +1092,52 @@ impl Runtime {
         crate::context::report::persisted_at_turn(self.store.as_ref(), agent, &session, turn).await
     }
 
+    /// T3 follow-up: [`Self::context_report`], but closes its documented
+    /// gap for an agent this `Runtime` instance attached to (so it is not
+    /// `AgentNotFound`) yet has never itself driven a completed turn for --
+    /// most commonly a session RESUMED from a prior process, whose
+    /// `last_report` slot starts `None` here even though its durable log
+    /// already holds turns with real `ContextReportRecord`s. Where
+    /// `context_report` would silently return `empty_report` in that case,
+    /// this method instead falls back to the most recently PERSISTED report
+    /// (`conway_session::provenance::load_all_context_reports`, ascending
+    /// seq order, so the last element is the newest) -- one store read, only
+    /// on the cold path, never on the hot "already has a live report" one.
+    ///
+    /// Still returns an empty report for an agent that is genuinely fresh
+    /// (started, never completed a turn anywhere) -- there is nothing to
+    /// fall back to in that case, and that is not a bug this method exists
+    /// to paper over.
+    ///
+    /// Deliberately additive, not a change to [`Self::context_report`]
+    /// itself: that method is synchronous (an in-memory-only read several
+    /// existing callers rely on staying `.await`-free — see its own tests),
+    /// while the durable fallback here needs `SessionStore::read`.
+    pub async fn context_report_current(
+        &self,
+        agent: AgentId,
+    ) -> Result<ContextReport, RuntimeError> {
+        let live = {
+            let agents = self.agents.read().expect("agents lock poisoned");
+            let handle = agents
+                .get(&agent)
+                .ok_or(RuntimeError::AgentNotFound { agent })?;
+            let report = handle.last_report.lock().expect("report lock poisoned").clone();
+            report
+        };
+        if let Some(report) = live {
+            return Ok(report);
+        }
+        let session = self.resolve_session(agent).await?;
+        let reports = conway_session::provenance::load_all_context_reports(
+            self.store.as_ref(),
+            &session,
+        )
+        .await
+        .map_err(RuntimeError::Store)?;
+        Ok(reports.into_iter().last().unwrap_or_else(|| empty_report(agent)))
+    }
+
     /// Resolves `agent`'s `SessionId`: first from this instance's
     /// in-memory `agents` map (cheap, the common case), then -- only if
     /// this `Runtime` has no record of `agent` at all -- via a linear scan

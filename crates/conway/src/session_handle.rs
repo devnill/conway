@@ -467,6 +467,59 @@ impl SessionHandle {
         Ok(self.rt.context_report_at(agent, turn).await?)
     }
 
+    /// T3 follow-up: [`Self::context_report`], with the resumed-session gap
+    /// closed -- a thin delegation to `Runtime::context_report_current`,
+    /// which falls back to the most recently PERSISTED report when this
+    /// process has no live one for `agent` yet (most commonly: a session
+    /// resumed from a prior process, focused before it has run any turn in
+    /// THIS one). Prefer this over `context_report` for any caller that
+    /// wants "the true current total, freshest available" rather than
+    /// specifically "only what this process has itself observed live" --
+    /// see `Runtime::context_report_current`'s own doc for the exact
+    /// fallback rule and why it is additive rather than a change to
+    /// `context_report` itself.
+    pub async fn context_report_current(&self, agent: AgentId) -> Result<ContextReport> {
+        Ok(self.rt.context_report_current(agent).await?)
+    }
+
+    /// The `ModelRef` that served `agent`'s most recently completed turn
+    /// (T3 follow-up: the TUI status line's `focused_model`, re-fetchable
+    /// on a focus switch instead of staying blank until the newly focused
+    /// agent's own next LIVE turn). `None` if `agent` has not yet completed
+    /// any turn.
+    ///
+    /// Reads `agent`'s own session log directly and returns the `model` of
+    /// the LAST `LogRecord::Assistant` record found -- the same
+    /// resolve-session-then-scan-the-log shape [`Self::session_usage`]
+    /// already uses, rather than any live in-memory routing state. That
+    /// makes it durable across a process restart the same way
+    /// `session_usage` already is: a resumed session's last assistant
+    /// record is exactly as available as a live one's.
+    ///
+    /// **Why an explicit accessor, not a synthesized `Event::ModelDecision`
+    /// out of `record_to_event` below:** `LogRecord::Assistant::route_reason`
+    /// is deliberately loosely-typed (`serde_json::Value` -- see
+    /// `conway_core::log`'s own module doc: "the reason as data; typed
+    /// access is via `Event::ModelDecision`"). Synthesizing a replay-time
+    /// `ModelDecision` event would need to reconstruct a `RoleAlias` and a
+    /// `RoutingReason` from that untyped value -- a decoder for a shape the
+    /// writer never committed to keeping stable, maintained only for this
+    /// one call site. This accessor needs none of that: it reads the one
+    /// field (`model`) the caller actually wants, directly off the same
+    /// record.
+    pub async fn last_model(&self, agent: AgentId) -> Result<Option<ModelRef>> {
+        let session = self.resolve_agent_session(agent).await?;
+        let head = self.store.head(&session).await?;
+        let records = self
+            .store
+            .read(&session, SeqRange::new(LogSeq::ZERO, Some(head)))
+            .await?;
+        Ok(records.iter().rev().find_map(|record| match record {
+            LogRecord::Assistant { model, .. } => Some(model.clone()),
+            _ => None,
+        }))
+    }
+
     /// Cumulative token spend for `agent`'s OWN turns (board item
     /// 01KYAGP11FF9YC3G60TWHHKKST -- the TUI status line's per-agent
     /// counter): sums the `usage` of every `LogRecord::Assistant` record in

@@ -336,3 +336,60 @@ async fn resume_root_registers_into_tree_and_supports_cancel_and_context_report(
         .context_report(resumed_agent)
         .expect("context_report must resolve the resumed agent, not AgentNotFound");
 }
+
+/// T3 follow-up: `context_report` (live, in-memory only) returns an EMPTY
+/// report for a just-resumed agent -- `runtime2` has never itself driven a
+/// completed turn for it, so its `last_report` slot starts `None`, even
+/// though the store it was resumed from already holds a real, non-empty
+/// report from the FIRST process. `context_report_current` closes that gap:
+/// it must fall back to the most recently PERSISTED report rather than
+/// silently agreeing with `context_report`'s empty one.
+#[tokio::test]
+async fn context_report_current_falls_back_to_the_durable_report_after_a_resume() {
+    let store: std::sync::Arc<dyn SessionStore> = std::sync::Arc::new(FakeStore::new());
+    let backend1 = std::sync::Arc::new(ScriptedBackend::new(vec![ScriptedTurn::Respond(
+        text_response("ack"),
+    )]));
+    let runtime1 = build_runtime_over(store.clone(), backend1);
+    let mut stream1 = runtime1.subscribe();
+    let agent1 = runtime1.start_root(root_spec("hello")).await.unwrap();
+    let session = session_of(&runtime1, agent1);
+    wait_for_agent_finished(&mut stream1, agent1).await;
+
+    let live_report_before_resume = runtime1
+        .context_report(agent1)
+        .expect("context_report must resolve the agent that just ran a turn");
+    assert!(
+        live_report_before_resume.total_tokens_est > 0,
+        "the completed turn must have assembled a non-empty context"
+    );
+    drop(runtime1);
+
+    let backend2 = std::sync::Arc::new(ScriptedBackend::new(vec![]));
+    let runtime2 = build_runtime_over(store.clone(), backend2);
+    let resumed_agent = runtime2.resume_root(resume_spec(session)).await.unwrap();
+
+    // Confirms the gap this method closes: the plain, live-only accessor
+    // is empty immediately after a resume, in a fresh `Runtime` instance
+    // that has not itself driven any turn for this agent.
+    let live_after_resume = runtime2
+        .context_report(resumed_agent)
+        .expect("context_report must resolve the resumed agent, not AgentNotFound");
+    assert_eq!(
+        live_after_resume.total_tokens_est, 0,
+        "context_report must still be empty right after a resume -- this is the \
+         documented gap context_report_current exists to close, not something this \
+         plain accessor is expected to solve"
+    );
+
+    let current = runtime2
+        .context_report_current(resumed_agent)
+        .await
+        .expect("context_report_current must resolve the resumed agent");
+    assert_eq!(
+        current.total_tokens_est, live_report_before_resume.total_tokens_est,
+        "context_report_current must fall back to the durably persisted report \
+         from the prior process, not stay at the live-only empty report"
+    );
+    assert_eq!(current.turn, live_report_before_resume.turn);
+}

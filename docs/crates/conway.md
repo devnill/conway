@@ -51,14 +51,21 @@ duplicating it would fork the type.
   -> ExplainReport` (the `conway routes explain` data source), the three
   ephemeral-`/ask` lifecycle ops `promote`/`pull_in`/`purge` (see `/ask`
   below), `sweep_stale_modal_asks` (the TUI's crash-residue reaper, same
-  section), plus `config()`/`warnings()` for introspecting the merged
-  config.
+  section), plus `config()`/`warnings()`/`model_metadata()` (T3 follow-up:
+  the local model-metadata map `ConwayBuilder::build` already loaded from
+  `[models.metadata_path]`, kept on `Conway` so consumers like the TUI's
+  `App::new` reuse that one parse instead of re-reading the file
+  themselves) for introspecting the merged config.
 - **`SessionHandle`** (`session_handle.rs`) is the consumer-facing surface
   over one running session: `prompt`, `ask` (see below), `events`/
   `events_from(seq)`/`agent_events(agent)` (the last replays and then live-
   tails one specific agent's own transcript — what the TUI uses to switch
   the shown conversation when the focused agent changes), `tree`,
-  `context_report`/`context_report_at`, `transcript`, `fork`/`spawn`
+  `context_report`/`context_report_at`/`context_report_current` (T3
+  follow-up: the last one falls back to the most recently persisted report
+  when the live one is unpopulated, e.g. right after a resume), `last_model`
+  (T3 follow-up: the model that served an agent's most recent completed
+  turn, read directly off its own log), `transcript`, `fork`/`spawn`
   (taking `ForkSpec`/`SpawnSpec`), `steer`, `await_agent`, `cancel`. Every
   method is a thin delegation to `Runtime` —
   no method takes `&mut self`; every state change routes through the

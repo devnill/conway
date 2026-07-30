@@ -290,13 +290,15 @@ added here has something to follow instead of a nearest-neighbor guess:
 
 - **Red is failure or active danger, never decoration.** `error`,
   `tool_failed`, `agent_failed`, `border_danger` are all red. `fatal_error`
-  (red + bold) is the palette's one *highest*-alert accent — V7 gave it a
-  real call site: the status line's `AUTO-ALLOW` indicator (every tool call
+  (red + bold) is the palette's one *highest*-alert accent — V7 gave it its
+  first call site: the status line's `AUTO-ALLOW` indicator (every tool call
   auto-approved with no prompt is a genuine safety-relevant state, previously
-  rendered with no color at all via `theme.emphasized`). It stays reserved
-  for a genuinely fatal runtime error too, once `Event::Error { fatal: true }`
-  is wired to carry a style through `Entry::Notice` (not done by V7 — see
-  Deferred, below).
+  rendered with no color at all via `theme.emphasized`). A later item wired
+  its second call site: `Event::Error` renders as its own transcript entry,
+  `Entry::Error { text, fatal }`, not the routine `Entry::Notice` — `fatal:
+  true` gets `fatal_error` (the loudest thing conway can say), `fatal: false`
+  gets the plain (non-bold) `error` slot, one severity step down but still
+  unambiguously red, never `notice`'s cyan.
 - **Yellow is in-progress.** `tool_running`, `agent_running`, `spinner`,
   `border_warning` (the `/ask` modal is "waiting on you," in-progress from
   the operator's side).
@@ -369,18 +371,6 @@ precedence-ordering risk — for a problem that is presently invisible on
 screen. Left as-is; this doc section is the fix for the "ten slots, five
 meanings" finding instead of a schema change.
 
-**Deferred: a fatal `Entry::Notice` still renders in `theme.notice`
-(cyan).** `Event::Error { error, fatal }` already distinguishes a fatal
-error in its *text* (`"fatal error: …"` vs. `"error: …"`) but both map to
-the same `Entry::Notice { text }` variant, which always renders cyan — the
-same color as an ordinary informational notice like `"backend degraded"`.
-`theme.fatal_error` (red + bold) exists and is now wired up (see the AUTO-
-ALLOW note above) but this second call site is not: giving `Entry::Notice`
-a `fatal: bool` so the two render distinctly touches roughly four dozen
-existing construction/match sites in `tui/state.rs` and its tests, which is
-real state-machine work, not a color-table pass — filed as a follow-up
-rather than done under this item's scope.
-
 **Named styles** (each defaults to the pre-theme inline style; new accent
 styles have no pre-theme call site and are defined for later v0.3.0 items
 to consume):
@@ -404,8 +394,8 @@ to consume):
 | `agent_failed` | red | agent-tree/transcript marker, `Failed` |
 | `agent_cancelled` | dim | agent-tree/transcript marker, `Cancelled` (V7: was dark_gray) |
 | `notice` | cyan | transcript `Entry::Notice` |
-| `error` | red | `/ask` modal error line |
-| `fatal_error` | red + bold | the status line's `AUTO-ALLOW` indicator (V7; reserved before that) |
+| `error` | red | `/ask` modal error line; transcript `Entry::Error { fatal: false }` |
+| `fatal_error` | red + bold | the status line's `AUTO-ALLOW` indicator (V7); transcript `Entry::Error { fatal: true }` |
 | `dim` | dim modifier | agent-tree recipe labels, input-box placeholder |
 | `focused` | bold modifier | agent-tree `(focused)` tag |
 | `selected` | reversed modifier | agent-tree arrow-selected row highlight |
@@ -589,15 +579,23 @@ capped at `ctx 100%` — a deliberate lossy clamp: a context estimate that
 exceeds the declared max (headroom, rounding, an under-declaring metadata
 file) is shown as `ctx 100%` rather than `ctx 137%` so the line never
 looks like a bug; this CAN hide a genuine overshoot, accepted as a
-tradeoff (the authoritative total lands via the turn-end summary, and a
-proper runtime re-fetch on focus is a separate follow-up).
+tradeoff (the authoritative total lands via the turn-end summary).
 
-A freshly focused agent shows `ctx 0%` / no model until its own next LIVE
-`ContextSegmentAdded`/`ModelDecision` arrives — replay does NOT synthesize
-these events (`record_to_event` maps a replayed `Assistant` record to
-`TextDelta`, never to `ContextSegmentAdded` or `ModelDecision`). A proper
-re-fetch of the true context total from the runtime on focus is tracked as
-a separate follow-up board item.
+Replay itself still does NOT synthesize these events (`record_to_event`
+maps a replayed `Assistant` record to `TextDelta`, never to
+`ContextSegmentAdded` or `ModelDecision`) — but a focus switch no longer
+waits on them. `App::try_focus_agent` (T3 follow-up) re-fetches both
+authoritatively right after switching focus: the context total via
+`SessionHandle::context_report_current` (`ContextReport.total_tokens_est`,
+which also falls back to the most recently *persisted* report when the
+runtime has no live one yet for this process — e.g. a session resumed from
+a prior process — closing that gap too), and `focused_seen_segments` is
+re-seeded from that report's own segment ids so the next LIVE
+`ContextSegmentAdded` dedupes correctly against what the fetch already
+counted. A freshly focused agent that has already run a turn (anywhere,
+including in a prior process) now shows its real `ctx%` immediately, with
+no live turn required; only a genuinely fresh agent (no turn run anywhere
+yet) still shows `ctx 0%`, pending its own first turn.
 
 **Git branch read.** `App::new` runs `git rev-parse --abbrev-ref HEAD`
 once via `std::process::Command` on the blocking pool (best-effort: `None`
@@ -609,10 +607,19 @@ deps.
 **Model display name.** `AppState::apply`'s `ModelDecision` arm (which
 the spec called out as previously dropped by the wildcard arm) captures
 `chosen.to_string()` into `AppState::focused_model` and looks up the max
-context in `AppState::model_max_context` (populated once at `App::new`
-from `[models.metadata_path]`). Both reset on `focus_agent`; the new
-focus's own first LIVE `ModelDecision` repopulates them (replay does NOT
-synthesize `ModelDecision` — see the `ctx%` computation note above).
+context in `AppState::model_max_context` (derived once at `App::new` from
+`Conway::model_metadata()` — the SAME parse of `[models.metadata_path]`
+`ConwayBuilder::build` already loaded, not a second independent read of
+the file). Both reset on `focus_agent`; the new focus's own next LIVE
+`ModelDecision` repopulates them, same as before, but (T3 follow-up)
+`App::try_focus_agent` no longer waits for it: it also re-fetches the
+serving model right after switching focus, via
+`SessionHandle::last_model` (the `model` of the last `LogRecord::Assistant`
+in the agent's own log, so it works identically whether that turn ran live
+in this process or was persisted by a prior one), applying the same
+metadata lookup (with the same bare-model-id fallback) `apply`'s own arm
+uses. See the `ctx%` computation note above for the matching context-total
+re-fetch this pairs with.
 
 ### Activity spinner + animation tick (T2)
 
