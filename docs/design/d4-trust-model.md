@@ -48,6 +48,16 @@ every rule in it is installed at `PermissionScope::Session`, which
 ships pattern grants into the operator's live session before the operator has
 typed anything.
 
+> **Status (2026-07-30), `d917ba2`.** Both premises here are gone. `PermissionFile`
+> now has two fields, `allow` and `deny` (`crates/conway-core/src/
+> permission_pattern.rs:697-710`) — §3 below asked for exactly this shape and
+> got it. And a project file's `allow` rules no longer install unconditionally:
+> they require a recorded trust decision first (`crates/conway/src/conway.rs`,
+> `crates/conway/src/config/trust.rs`, wired at
+> `crates/conway-cli/src/tui/app.rs`). §11's item 3 (stop defaulting to
+> `Session` scope) is the one piece of this section's fix that is **still
+> open** — everything else this paragraph describes has shipped.
+
 The realistic blast radius is bounded but real: `PatternRule::matches` refuses
 any command containing shell metacharacters
 (`permission_pattern.rs:126-131`), and D2 §10 established that this makes
@@ -57,6 +67,26 @@ achievable attack is a metacharacter-free `bash:` prefix grant —
 `package.json`, or `bash:make`, or `bash:cargo test` in a repo with a
 `build.rs`. That is arbitrary code execution with no prompt, from a clone, on
 current `main`.
+
+> **Status (2026-07-30), `68ea9b1` — this understated the threat, in the
+> permissive direction, and that is the one direction a threat model must
+> never get wrong.** "Structurally inert for every tool except `bash`" was
+> true when written and false by the time this section's own fix (`d917ba2`)
+> landed: `68ea9b1`, earlier the same day, gave every tool a `RenderKind`
+> (`ShellCommand` | `Structured`) and taught `PatternRule::matches_render` to
+> apply the metacharacter gate only to `ShellCommand` renders
+> (`crates/conway-core/src/permission_pattern.rs:214-221`). A `Structured`
+> tool's rendering is never a shell string, so gating it on shell
+> metacharacters was rejecting `read:*` for the wrong reason and calling the
+> rejection a security property. The pre-fix blast radius this paragraph
+> describes was not "a `bash:`-shaped prefix in a repo that also controls
+> `package.json`" — it was **every built-in tool's full grant surface**,
+> `bash` included; the eleven non-`bash` tools were unreachable by *accident*
+> (a rendering format that happened to trip the gate), not by design. A repo
+> could not yet exploit that accident through `PermissionFile` before
+> `d917ba2` closed the consent gap the same day, so the two bugs' windows did
+> not overlap in a shipped release — but the document that was supposed to
+> bound the blast radius bounded it to the narrower, wrong figure.
 
 **This is the worked example of the threat model, it exists now, and §11
 answers it.** Everything else in this document is the same problem with a
@@ -155,6 +185,12 @@ field — it requires adding one:
 `deny` is additive and `#[serde(default)]`, so every existing file keeps
 parsing unchanged.
 
+> **Status (2026-07-30), `d917ba2`.** Implemented faithfully to this sketch.
+> `PermissionFile` now carries `deny: Vec<String>`, `#[serde(default)]`
+> (`crates/conway-core/src/permission_pattern.rs:704-709`), and project
+> `allow` rules require a recorded trust decision while `deny` applies
+> immediately regardless of trust, exactly as proposed above.
+
 ### The deny half's matching rule, and its honest limit
 
 An allow rule refuses any command containing shell metacharacters
@@ -167,6 +203,14 @@ adding a metacharacter would defeat the rule. So:
   in the command disqualifies an *allow* and does not disqualify a *deny*.
 - **Composition is D2 §7's most-restrictive-wins**: any deny beats every allow,
   independent of order or authorship scope.
+
+> **Status (2026-07-30), `d917ba2`.** Implemented exactly as specified:
+> `PatternRule::matches_deny` takes no `RenderKind` parameter at all and does
+> not consult `contains_shell_metacharacters`
+> (`crates/conway-core/src/permission_pattern.rs:232-233`), and
+> `PermissionBroker::decide` short-circuits on the first matching deny rule
+> immediately after the root check, ahead of every allow path
+> (`crates/conway-runtime/src/permission.rs:649-654`).
 
 The limit, said plainly rather than papered over: `deny bash:git push` does not
 catch `foo; git push`. Prefix matching is not a containment boundary in either
@@ -831,6 +875,18 @@ Changes, in order of value:
 4. **Origin tracking on `active_patterns()`** (§9), without which none of the
    above is inspectable.
 
+> **Status (2026-07-30), `d917ba2`.** Items 1, 2, and 4 shipped, all three
+> the same day this document's HEAD banner names. Item 1: project `allow`
+> rules now require a recorded trust decision (`crates/conway/src/conway.rs`,
+> `crates/conway/src/config/trust.rs`). Item 2: the `deny` half exists, see
+> §3's status note above. Item 4: origin tracking landed as `PatternOrigin`
+> (`crates/conway-core/src/permission_pattern.rs:778-801`), and — not
+> anticipated here — turned out to be F12's stated prerequisite in
+> `extension-architecture.md` §9.5, and enabled per-rule revocation as a
+> side effect. **Item 3 is the one piece still open** — project rules still
+> install at `PermissionScope::Session` by default; tracked as F13 in
+> `extension-architecture.md` §12.
+
 The current loader's silence is correct where it is silent and wrong where it
 is not: `app.rs:195-199` argues that every failure is "silent and narrowing,"
 and that is right, because a corrupt file yields *fewer* grants. **Skipping an
@@ -858,6 +914,22 @@ is a state the operator can resolve.
 5. **Multi-operator / shared-home hosts.** `granted_by` is recorded but nothing
    enforces it. Is a trust record granted by another user on a shared machine
    honored, ignored, or a warning?
+
+   > **Status (2026-07-30), `d917ba2`.** This question is malformed as
+   > written — the premise doesn't hold. The landed record,
+   > `TrustedRecord { content_digest, trusted_at }`
+   > (`crates/conway/src/config/trust.rs:99-101`), has **no author
+   > attribution field at all**; `granted_by` does not exist in the shipped
+   > shape, so "recorded but nothing enforces it" is not the state of the
+   > code. The `"granted_by"` sketches elsewhere in this document (e.g. §9's
+   > table, `Trusted{since,by}`) describe a shape that did not land either.
+   > The real open question this item should have been: **on a shared-home
+   > host, `~/.conway`'s trust store has no notion of which user recorded a
+   > given entry, so any user able to write that store can silently vouch
+   > for content on behalf of every user who reads it.** Whether to add
+   > `granted_by` at all — and if so, whether it is enforced or advisory —
+   > is still undecided; this is now a "does the field need to exist"
+   > question, not a "does the existing field need enforcement" one.
 6. **Digesting an artifact that is not a single file** (a `node`/`python`
    entrypoint whose real code is an adjacent tree). The `artifact_digest`
    covers the named file only, and a script that `import`s the rest of the repo
@@ -877,6 +949,11 @@ is a state the operator can resolve.
   grants. Bounded to `bash`-shaped, metacharacter-free prefixes by
   `PatternRule::matches` — which still leaves `bash:npm run build` in a repo
   that owns `package.json`. §1, §11.
+
+  > **Status (2026-07-30), `d917ba2`.** Fixed. Project `allow` rules now
+  > require a recorded trust decision before they install; see §1's and
+  > §11's status notes above. (The "bounded to `bash`-shaped" clause was
+  > also wrong independent of this fix — see §1's status note on `68ea9b1`.)
 - **Denial reason text reaches the model's context unsanitized.**
   `PermissionOutcome::Deny { rendered_error }` → `ToolOutcome::error` →
   `ContentBlock::Text` (`runner.rs:307-309`, `:98-109`). `sanitize_rendered`

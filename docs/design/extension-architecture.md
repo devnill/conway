@@ -1015,6 +1015,17 @@ metacharacter-free `bash:` prefix — which still leaves `{"allow":
 is arbitrary code execution with no prompt, from a clone, on current main**,
 and §7.4 is the shippable answer that depends on no plugin work at all.
 
+> **Status (2026-07-30), `d917ba2`.** No longer true — this also **contradicts
+> this same document's own §12 F10/F11 rows**, marked `✅ DONE` against the
+> same commit, and its own HEAD banner. Project `allow` rules now require a
+> recorded trust decision before install (F10), and the bound this paragraph
+> used to size the "no plugins involved" attack — "metacharacter-free `bash:`
+> prefix" — was itself wrong by the time it was written: `68ea9b1`, earlier
+> the same day, made pattern grants work for every tool via `RenderKind`, not
+> just `bash`. Left in place as the record of what the threat looked like
+> before either fix; see D4 §1's parallel note, which states this more fully
+> and flags it as an understatement in the permissive direction.
+
 **What plugins add** is an inversion: until now, trusting a plugin and
 trusting the binary were the same act. A plugin declared in a file makes
 *cloning a repo* the act that decides what code runs.
@@ -1186,6 +1197,10 @@ the in-process call and by the RPC bridge.
 Everything above applies to a mechanism that does not exist yet. §7.1
 established the same threat is live on main today. **This half depends on no
 plugin work at all**, in order of value:
+
+> **Status (2026-07-30), `d917ba2`.** Items 1, 2, and 4 below shipped this
+> commit — see §12's status block for detail and the two residuals it left
+> behind. **Item 3 (scope narrowing) is the one still open**, tracked as F13.
 
 1. **A project-scoped `permissions.json` is a trust subject.** Its `allow`
    list installs only if the digest matches a record; otherwise it is skipped
@@ -2320,6 +2335,25 @@ its parent; `required_host_caps` inert; `SubagentHost::steer`/`await_result`/
 `cancel` accepting any `AgentId` with no descendant check. (`Plugin::on_init`
 having zero call sites is being fixed as this is written.)
 
+> **Status (2026-07-30) — this list is stale, and it is the list a reader
+> trusts to say what is actually broken, which makes its staleness the most
+> dangerous single thing in this document.** Four of the entries above are
+> fixed:
+> - **A cloned repo installing pattern grants at `Session` scope with no
+>   consent** — fixed, `d917ba2`. See §7.1's and §7.4's status notes.
+> - **`SubagentHost::steer`/`await_result`/`cancel` accepting any `AgentId`
+>   with no descendant check** — fixed, `674bb65`. `Runtime::ensure_own_subtree`
+>   now runs before all three, and each takes `caller: AgentId` as its first
+>   parameter so it has something to check against
+>   (`crates/conway-core/src/ports/subagent.rs`). D3 §1.3(b) and §6 carry the
+>   fuller note, including a gap this fix's shape exposes on the wire side.
+> - **`Plugin::on_init` having zero call sites** — the parenthetical undersold
+>   this even at the time; it did not get "fixed" in the sense of wired up, it
+>   was **removed**, `b17cab7`, the same reasoning D6 §11.6 already gives.
+> - **`EventBus.seqs` is never pruned** (item 2 below) — partially fixed,
+>   `b00b18f`. See that item's own note; the fix covers `conway_ask` modal
+>   children only.
+
 **Surfaced by this synthesis and not previously filed:**
 
 1. **The three control-character sanitizers are not three copies of one rule
@@ -2339,6 +2373,16 @@ having zero call sites is being fixed as this is written.)
    without bound — and it is the one mutex an entire agent tree serializes
    through, so it is also the map you least want to grow. Small, real, and
    unrelated to plugins.
+
+   > **Status (2026-07-30), `b00b18f` — PARTIAL.** Reclaims one case: a
+   > session reaching its terminal `AgentFinished` while still flagged
+   > `ephemeral` (safe because `promote_agent` flips that flag before
+   > emitting, per that commit's own reasoning about `resume_root` reusing
+   > `SessionId` on resume). This covers `conway_ask` modal children. It does
+   > **not** cover `conway_subagent` spawn or fork, which build with
+   > `ephemeral: false`, so those counters still leak — recorded as a
+   > residual in §12's status block and tracked at board item
+   > `01KYTJFV0ZCP8E03Z4AZ8SGPA7`.
 
 3. **The grant the UI *offers* and the grant the evaluator *honors* are now
    governed by different gates.** `suggested_rule`

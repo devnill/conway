@@ -10,10 +10,10 @@ All file:line references are against HEAD `9a8d882` (v0.6.0).
 > **Partly superseded by D6** (`extension-architecture.md`), the synthesis.
 > Where this document and D6 disagree, **D6 wins**.
 >
-> - **`Plugin::on_init` as the handshake hook (§203) is void.** §645 raised
->   its zero call sites as an open question; the answer was to *remove* the
->   method rather than wire it (D6 §11.6). A plugin does its connect work in
->   its own constructor, before `with_plugin`.
+> - **`Plugin::on_init` as the handshake hook (line 213) is void.** Line 655
+>   raised its zero call sites as an open question; the answer was to *remove*
+>   the method rather than wire it (D6 §11.6). A plugin does its connect work
+>   in its own constructor, before `with_plugin`.
 >
 > Kept unedited as the record of the reasoning, not as current guidance.
 
