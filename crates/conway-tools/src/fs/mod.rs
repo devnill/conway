@@ -1,16 +1,18 @@
-//! `FsPlugin`: the file tools (`read`, `write`, `edit`, `glob`, `grep`).
+//! `FsPlugin`: the file tools (`cd`, `read`, `write`, `edit`, `glob`, `grep`).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use conway_core::ports::{CancellationToken, Plugin, PluginManifest, Tool};
 
+pub mod cd;
 pub mod edit;
 pub mod glob;
 pub mod grep;
 pub mod read;
 pub mod write;
 
+pub use cd::CdTool;
 pub use edit::EditTool;
 pub use glob::GlobTool;
 pub use grep::GrepTool;
@@ -71,7 +73,7 @@ pub(crate) fn walk_files(
     Ok(entries)
 }
 
-/// The `fs` plugin: `read`, `write`, `edit`, `glob`, `grep`.
+/// The `fs` plugin: `cd`, `read`, `write`, `edit`, `glob`, `grep`.
 pub struct FsPlugin {
     tools: Vec<Arc<dyn Tool>>,
 }
@@ -79,6 +81,7 @@ pub struct FsPlugin {
 impl FsPlugin {
     pub fn new() -> Self {
         let tools: Vec<Arc<dyn Tool>> = vec![
+            Arc::new(CdTool::new()),
             Arc::new(EditTool::new()),
             Arc::new(GlobTool::new()),
             Arc::new(GrepTool::new()),
@@ -127,6 +130,6 @@ mod tests {
             .map(|t| t.spec().name.as_str().to_string())
             .collect();
         names.sort();
-        assert_eq!(names, vec!["edit", "glob", "grep", "read", "write"]);
+        assert_eq!(names, vec!["cd", "edit", "glob", "grep", "read", "write"]);
     }
 }

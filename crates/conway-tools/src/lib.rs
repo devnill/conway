@@ -9,7 +9,7 @@
 //! or `conway-backends` (architecture boundary rule).
 //!
 //! Four built-in plugins, one per submodule:
-//! - [`fs`] — `read`, `write`, `edit`, `glob`, `grep` (`FsPlugin`)
+//! - [`fs`] — `cd`, `read`, `write`, `edit`, `glob`, `grep` (`FsPlugin`)
 //! - [`shell`] — `bash` (`ShellPlugin`)
 //! - [`subagent`] — `conway_subagent`, `conway_ask`, `conway_steer`,
 //!   `conway_await`, `conway_cancel` (`SubagentPlugin`)
