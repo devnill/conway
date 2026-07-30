@@ -14,27 +14,41 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use crate::content::{Artifact, ContentBlock, ToolCall, ToolSpec, TruncationPolicy};
-use crate::error::{CwdError, PluginError, ToolError};
+use crate::error::{CwdError, ToolError};
 use crate::ids::{AgentId, ModelRef, SessionId, ToolName};
 use crate::ports::{EventSinkHandle, SubagentHost};
 use crate::segment::PromptSegment;
 
-/// A source of tools: a plugin declares its identity, the tools it provides,
-/// and an optional one-time initialization hook.
+/// A source of tools: a plugin declares its identity and the tools it
+/// provides.
+///
+/// **There is no initialization hook, deliberately.** This trait carried an
+/// `on_init(&PluginInitCtx)` method documented as "called once at startup"
+/// that **nothing ever called** — no call site existed anywhere in the
+/// workspace, and no implementor, built-in or otherwise, overrode it. A hook
+/// that silently never runs is worse than an absent one: an absent hook is a
+/// known limitation, an unwired one is a trap that costs an implementer a
+/// debugging session to discover.
+///
+/// It is not merely unwired but hard to wire, which is why it was removed
+/// rather than connected. `PluginRegistry::from_plugins` is synchronous and
+/// eager — it calls `tools()` and compiles every schema at construction — and
+/// `Runtime::new` builds it, so there is no natural point at which a fallible,
+/// I/O-performing hook could run and have its failure mean anything useful.
+/// A plugin needing setup does it in its own constructor, before
+/// `ConwayBuilder::with_plugin`, where errors surface to the embedder
+/// directly.
+///
+/// If a genuine lifecycle hook is wanted later, the out-of-process plugin
+/// design (`docs/design/d1-transport.md`) specifies a real handshake with a
+/// defined failure mode — that, not a resurrected no-op, is the shape to
+/// build.
 pub trait Plugin: Send + Sync + 'static {
     /// This plugin's static identity: id, semver, provided tools, required
     /// host capabilities.
     fn manifest(&self) -> PluginManifest;
 
     fn tools(&self) -> Vec<Arc<dyn Tool>>;
-
-    /// Called once at startup. The default no-op is correct for plugins that
-    /// need no setup. No default method on this trait may perform I/O; a
-    /// concrete `on_init` implementation may, but that is the implementer's
-    /// responsibility, not this trait's contract.
-    fn on_init(&self, _ctx: &PluginInitCtx) -> Result<(), PluginError> {
-        Ok(())
-    }
 }
 
 /// One invocable tool: aligned with ACP's tool-call categories (`ToolCategory`
@@ -240,13 +254,6 @@ pub struct PluginManifest {
     pub version: String,
     pub tools: Vec<ToolName>,
     pub required_host_caps: Vec<String>,
-}
-
-/// Context passed to `Plugin::on_init`.
-#[derive(Clone, Debug)]
-pub struct PluginInitCtx {
-    pub config: Arc<PluginConfig>,
-    pub cwd: PathBuf,
 }
 
 /// A plugin's untyped configuration values, as loaded and handed down by the

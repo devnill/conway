@@ -4,6 +4,18 @@ Status: design spec (board item 01KYNN8SKK10WKQAKBTRYXWY9J). Written against
 HEAD `9a8d882` (v0.6.0). Transport/framing is D1, wire vocabulary D3, trust
 D4, UI template language D5.
 
+> **Partly superseded by D6** (`extension-architecture.md`), the synthesis.
+> Where this document and D6 disagree, **D6 wins** — it reconciled the five
+> specs against each other and revised two of this document's proposals.
+>
+> - **§4's `Plugin::on_init` as "the connect" is void.** `on_init` had zero
+>   call sites and has since been *removed* from the trait (D6 §11.6). Any
+>   design here that leans on it needs a different hook.
+> - **§6's single verdict enum plus `may_allow: bool` is rejected** in favour
+>   of a type split, `NarrowingPolicy` / `DecidingPolicy` (D6 §5.2).
+>
+> Kept unedited as the record of the reasoning, not as current guidance.
+
 ---
 
 ## 1. The organizing principle
