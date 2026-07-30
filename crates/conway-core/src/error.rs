@@ -239,6 +239,21 @@ pub enum RuntimeError {
     /// panic.
     #[error("ask requires SubagentMode::Fork (P-1: ask is fork+await-text, not a third primitive); got {mode:?}")]
     AskRequiresFork { mode: SubagentMode },
+    /// P-1 (board item 01KYT8TS0EBKJHYNJRF6S88NRH): `steer`/`await_result`/
+    /// `cancel` may act only on an agent within the CALLER's own subtree
+    /// (itself, or any descendant) -- enforced HERE, at the `SubagentHost`
+    /// trait boundary (see that trait's own doc), not only at the
+    /// `conway_steer`/`conway_await`/`conway_cancel` tool callsites, so no
+    /// other caller can bypass it (mirrors `AskRequiresFork`'s shape). A
+    /// sibling (or any non-ancestor, non-self) `AgentId` a caller merely
+    /// SAW -- in tool output, on the event stream, or in
+    /// `conway_subagent`'s own return value -- is not enough to act on it.
+    /// `target` is known to this runtime (an unknown `target` is
+    /// [`RuntimeError::AgentNotFound`] instead); `caller` is who attempted
+    /// the operation. P-10: a typed error, never a panic -- both ids may be
+    /// model-supplied.
+    #[error("agent {caller} may not steer/await/cancel agent {target}: it is outside {caller}'s own subtree")]
+    AgentNotInSubtree { caller: AgentId, target: AgentId },
 }
 
 /// Errors produced by plugin registration and initialization.
@@ -419,6 +434,20 @@ mod tests {
         let json = serde_json::to_string(&err).unwrap();
         let back: RuntimeError = serde_json::from_str(&json).unwrap();
         assert_eq!(err, back);
+    }
+
+    #[test]
+    fn agent_not_in_subtree_exists_roundtrips_and_names_both_ids() {
+        let caller = AgentId::new();
+        let target = AgentId::new();
+        let err = RuntimeError::AgentNotInSubtree { caller, target };
+        let json = serde_json::to_string(&err).unwrap();
+        let back: RuntimeError = serde_json::from_str(&json).unwrap();
+        assert_eq!(err, back);
+
+        let rendered = err.to_string();
+        assert!(rendered.contains(&caller.to_string()));
+        assert!(rendered.contains(&target.to_string()));
     }
 
     #[test]

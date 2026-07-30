@@ -51,7 +51,6 @@ signatures):
 pub trait Plugin: Send + Sync + 'static {
     fn manifest(&self) -> PluginManifest;   // id, semver, tools, required_host_caps
     fn tools(&self) -> Vec<Arc<dyn Tool>>;
-    fn on_init(&self, _ctx: &PluginInitCtx) -> Result<(), PluginError> { Ok(()) }
 }
 
 #[async_trait]
@@ -306,6 +305,17 @@ privileged access the public API lacks.
   a result on budget exhaustion, cancellation, or panic), so a parent's
   pending call can never hang indefinitely.
 - **`conway_cancel`** — cancels a running child by id, with a reason.
+
+  All three take a model-supplied `agent_id` naming the target, but that id
+  is not, by itself, authorization to act on it: `control.rs` always passes
+  `ctx.agent_id` — the runtime-assigned identity of the agent actually
+  dispatching the call — as the `caller` half of `SubagentHost::steer`/
+  `await_result`/`cancel`'s signature, and `conway-runtime`'s
+  `impl SubagentHost for Runtime` rejects with `RuntimeError::
+  AgentNotInSubtree` unless `agent_id` names `ctx.agent_id` itself or one of
+  its descendants — see that trait's own doc and
+  [`conway-runtime`](conway-runtime.md)'s "descendancy-checked at this trait
+  boundary" note for why this cannot be bypassed by any other caller.
 
 ### `ReportPlugin` — `report`
 

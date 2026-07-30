@@ -754,10 +754,20 @@ impl SessionHandle {
     /// could steer another session's agent. See
     /// `SessionHandle::ensure_agent_in_session`'s doc for exactly what error
     /// that produces (`RuntimeError::AgentNotFound` vs. `AgentNotInSession`).
+    ///
+    /// **Root/operator exemption (board item 01KYT8TS0EBKJHYNJRF6S88NRH):**
+    /// `self.root` is passed as `caller` to the trait's own descendancy
+    /// check (`SubagentHost`'s own doc). This is not a bypass -- `target`
+    /// was already proven to be in `self.root`'s subtree by
+    /// `ensure_agent_in_session` above, so the trait's check always
+    /// succeeds for a call that reaches this point; it exists so this
+    /// operator/embedder path (never reachable from model-supplied tool
+    /// arguments) and the model-invoked `conway_steer` tool are enforced by
+    /// the exact same mechanism, not two different ones.
     pub async fn steer(&self, target: AgentId, text: impl Into<String>) -> Result<()> {
         self.ensure_agent_in_session(target)?;
         self.rt
-            .steer(target, text.into())
+            .steer(self.root, target, text.into())
             .await
             .map_err(ConwayError::Runtime)
     }
@@ -773,10 +783,13 @@ impl SessionHandle {
     /// session's data, and reading it across the session boundary is an
     /// isolation violation just as steering/cancelling it would be. See
     /// `SessionHandle::ensure_agent_in_session`'s doc.
+    ///
+    /// Passes `self.root` as `caller` -- see `steer`'s own doc for the
+    /// root/operator-exemption mechanism this mirrors exactly.
     pub async fn await_agent(&self, target: AgentId) -> Result<AgentResult> {
         self.ensure_agent_in_session(target)?;
         self.rt
-            .await_result(target)
+            .await_result(self.root, target)
             .await
             .map_err(ConwayError::Runtime)
     }
@@ -790,6 +803,9 @@ impl SessionHandle {
     /// mutating control-plane op reached through the same runtime-wide
     /// `Arc<Runtime>` every `SessionHandle` shares. See
     /// `SessionHandle::ensure_agent_in_session`'s doc.
+    ///
+    /// Passes `self.root` as `caller` -- see `steer`'s own doc for the
+    /// root/operator-exemption mechanism this mirrors exactly.
     ///
     /// Called through the `SubagentHost` trait explicitly (`SubagentHost::
     /// cancel(...)`, not `self.rt.cancel(...)`): `Runtime` also has its own
@@ -806,7 +822,7 @@ impl SessionHandle {
     /// isn't left to an incidental method-resolution tie-break.
     pub async fn cancel(&self, target: AgentId, reason: &str) -> Result<()> {
         self.ensure_agent_in_session(target)?;
-        SubagentHost::cancel(self.rt.as_ref(), target, reason.to_string())
+        SubagentHost::cancel(self.rt.as_ref(), self.root, target, reason.to_string())
             .await
             .map_err(ConwayError::Runtime)
     }

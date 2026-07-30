@@ -88,9 +88,10 @@
 //!
 //! ## `steer` (WI-085 supersedes this item's stub)
 //!
-//! Real mailbox delivery now backs `steer` -- see that method's own doc for
-//! the `from`/`at_parent_seq` derivation the committed `SubagentHost::steer`
-//! signature's missing caller-identity parameter forces.
+//! Real mailbox delivery now backs `steer`. Board item
+//! 01KYT8TS0EBKJHYNJRF6S88NRH added the trait's `caller` parameter and
+//! changed `from`/`at_parent_seq` to derive from it directly -- see that
+//! method's own doc.
 //!
 //! ## `CacheMode` is not wired from `SubagentSpec::cache_hint`
 //!
@@ -629,13 +630,16 @@ impl SubagentHost for Runtime {
 
     /// Delivers `text` into `target`'s mailbox as an `AgentMessage::Steer`,
     /// landing at `target`'s next turn boundary (WI-085, architecture
-    /// §6.2). This trait method carries no caller identity (the committed
-    /// `SubagentHost::steer(&self, target, text)` signature has no `from`
-    /// parameter -- out of this crate's scope to add one), so `from` is
-    /// derived structurally as "`target`'s own parent, if it has one" --
-    /// correct for this method's conventional use (an embedder or the
-    /// `conway_subagent` tool steering a specific child on the parent's
-    /// behalf). A child steering ITS OWN parent (the other direction
+    /// §6.2). P-1 (board item 01KYT8TS0EBKJHYNJRF6S88NRH): `caller` must be
+    /// `target` itself or one of its ancestors (`ensure_own_subtree`,
+    /// below) -- a sibling (or any other unrelated agent) is rejected with
+    /// `RuntimeError::AgentNotInSubtree` before the mailbox is even
+    /// resolved. `from`/`at_parent_seq` are now derived from `caller`
+    /// DIRECTLY (never from `target`'s own tree parent, the pre-fix
+    /// behavior this item replaces): deriving attribution from `target`
+    /// side-stepped the very check above and made a forged steer
+    /// indistinguishable, from the recipient's side, from a genuine parent
+    /// instruction. A child steering ITS OWN parent (the other direction
     /// bidirectionality requires) does not go through this method at all:
     /// it already holds its own `agent_id` and its `parent_mailbox` sender
     /// directly (`AgentLoop`), and can send correctly-attributed messages
@@ -643,30 +647,21 @@ impl SubagentHost for Runtime {
     /// both directions exercised at the mailbox level, and this module's
     /// own doc's "`steer` (WI-085 supersedes this item's stub)" section for
     /// the prior gap this replaces.
-    async fn steer(&self, target: AgentId, text: String) -> Result<(), RuntimeError> {
+    async fn steer(
+        &self,
+        caller: AgentId,
+        target: AgentId,
+        text: String,
+    ) -> Result<(), RuntimeError> {
+        self.ensure_own_subtree(caller, target)?;
         let mailbox = self.agent_mailbox(target)?;
-        let parent = self.tree_ref().path(target).into_iter().rev().nth(1);
-        let (from, at_parent_seq) = match parent {
-            Some(parent) => (
-                parent,
-                self.loop_deps()
-                    .store
-                    .head(&self.agent_session(parent)?)
-                    .await?,
-            ),
-            // No parent to attribute this to (e.g. `target` is a root) --
-            // fall back to the target's own id/head as the least-wrong
-            // available marker.
-            None => (
-                target,
-                self.loop_deps()
-                    .store
-                    .head(&self.agent_session(target)?)
-                    .await?,
-            ),
-        };
+        let at_parent_seq = self
+            .loop_deps()
+            .store
+            .head(&self.agent_session(caller)?)
+            .await?;
         mailbox.send(AgentMessage::Steer {
-            from,
+            from: caller,
             text,
             at_parent_seq,
         });
@@ -676,14 +671,31 @@ impl SubagentHost for Runtime {
     /// Delegates to [`crate::tree::AgentTree::await_result`], which already
     /// provides every guarantee this method needs (unknown agent ->
     /// `AgentNotFound`; a finished agent's result returned immediately; no
-    /// tree lock held across the await).
-    async fn await_result(&self, target: AgentId) -> Result<AgentResult, RuntimeError> {
+    /// tree lock held across the await). P-1: `caller` must own `target`
+    /// (`ensure_own_subtree`, below) -- checked BEFORE delegating, so a
+    /// sibling can never block on, or read the result of, another branch's
+    /// run.
+    async fn await_result(
+        &self,
+        caller: AgentId,
+        target: AgentId,
+    ) -> Result<AgentResult, RuntimeError> {
+        self.ensure_own_subtree(caller, target)?;
         self.tree_ref().await_result(target).await
     }
 
     /// Delegates to the existing `Runtime::cancel` (WI-082/083), whose
-    /// signature already matches this trait method exactly.
-    async fn cancel(&self, target: AgentId, reason: String) -> Result<(), RuntimeError> {
+    /// signature (beyond the added `caller`) already matches this trait
+    /// method exactly. P-1: `caller` must own `target` (`ensure_own_subtree`,
+    /// below) -- checked BEFORE cancelling, so a sibling can never destroy
+    /// another branch's work.
+    async fn cancel(
+        &self,
+        caller: AgentId,
+        target: AgentId,
+        reason: String,
+    ) -> Result<(), RuntimeError> {
+        self.ensure_own_subtree(caller, target)?;
         Runtime::cancel(self, target, reason)
     }
 
@@ -821,6 +833,41 @@ impl SubagentHost for Runtime {
     }
 }
 
+impl Runtime {
+    /// P-1 (board item 01KYT8TS0EBKJHYNJRF6S88NRH): the descendancy check
+    /// `steer`/`await_result`/`cancel` share -- see `SubagentHost`'s own
+    /// doc for the root/operator-exemption mechanism (there is none; the
+    /// check below is uniform for every caller, and a root-originated call
+    /// passes it because a root's subtree is its whole session by
+    /// construction). Checked structurally against the live tree, via the
+    /// same `tree_ref().path(..)` walk `start` (above) already uses to
+    /// build a new child's `agent_path`: `path(target)` is `[root, ...,
+    /// target]` when `target` is known (`caller` passes when it appears
+    /// anywhere in that chain -- itself included, so acting on one's own
+    /// id is always allowed), and `[]` when `target` is not known to this
+    /// runtime at all (`AgentTree::path`'s own doc).
+    ///
+    /// `target` unknown entirely -> `RuntimeError::AgentNotFound`, matching
+    /// what every one of these three methods already returned for an
+    /// unknown `target` before this check existed (`steer` via
+    /// `agent_mailbox`, `await_result` via `AgentTree::await_result`,
+    /// `cancel` via `Runtime::cancel`, all resolve the same lookup this
+    /// check performs first, so an unknown id is diagnosed identically
+    /// either way). `target` known but outside `caller`'s subtree ->
+    /// `RuntimeError::AgentNotInSubtree`, never a panic (P-10: both ids may
+    /// be model-supplied).
+    fn ensure_own_subtree(&self, caller: AgentId, target: AgentId) -> Result<(), RuntimeError> {
+        let path = self.tree_ref().path(target);
+        if path.is_empty() {
+            return Err(RuntimeError::AgentNotFound { agent: target });
+        }
+        if path.contains(&caller) {
+            return Ok(());
+        }
+        Err(RuntimeError::AgentNotInSubtree { caller, target })
+    }
+}
+
 /// `RuntimeError` has no `InvalidSpec` variant — see the module doc.
 /// `SubagentSpec::validate()`'s own error type is `ConwayError::Config`;
 /// this maps it to `RuntimeError::Tool(ToolError::Internal{..})`, the same
@@ -876,19 +923,33 @@ impl SubagentHost for WeakRuntimeHost {
         self.upgrade()?.start(parent, spec).await
     }
 
-    async fn steer(&self, target: AgentId, text: String) -> Result<(), RuntimeError> {
-        self.upgrade()?.steer(target, text).await
+    async fn steer(
+        &self,
+        caller: AgentId,
+        target: AgentId,
+        text: String,
+    ) -> Result<(), RuntimeError> {
+        self.upgrade()?.steer(caller, target, text).await
     }
 
-    async fn await_result(&self, target: AgentId) -> Result<AgentResult, RuntimeError> {
-        self.upgrade()?.await_result(target).await
+    async fn await_result(
+        &self,
+        caller: AgentId,
+        target: AgentId,
+    ) -> Result<AgentResult, RuntimeError> {
+        self.upgrade()?.await_result(caller, target).await
     }
 
-    async fn cancel(&self, target: AgentId, reason: String) -> Result<(), RuntimeError> {
+    async fn cancel(
+        &self,
+        caller: AgentId,
+        target: AgentId,
+        reason: String,
+    ) -> Result<(), RuntimeError> {
         // `Runtime` has its own inherent, sync `cancel` method (WI-082/083)
         // that method resolution prefers over this trait method of the
         // same name -- fully qualified syntax forces the trait impl above.
-        SubagentHost::cancel(&*self.upgrade()?, target, reason).await
+        SubagentHost::cancel(&*self.upgrade()?, caller, target, reason).await
     }
 
     /// Delegates to the real `Runtime` impl (which a later item adds). The

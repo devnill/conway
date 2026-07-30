@@ -672,6 +672,7 @@ async fn config_key_overrides_default_max_steps() {
 #[tokio::test]
 async fn steer_calls_host_with_exact_agent_id_and_text() {
     let (ctx, handles) = test_ctx(PathBuf::from("/tmp/x"));
+    let caller = ctx.agent_id;
     let target = AgentId::new();
     let out = SteerTool::new()
         .invoke(
@@ -686,13 +687,15 @@ async fn steer_calls_host_with_exact_agent_id_and_text() {
     assert!(!out.is_error);
     assert_eq!(
         handles.subagents.steers(),
-        vec![(target, "keep going".to_string())]
+        vec![(caller, target, "keep going".to_string())],
+        "the tool must thread ctx.agent_id through as `caller` (P-1, 01KYT8TS0EBKJHYNJRF6S88NRH)"
     );
 }
 
 #[tokio::test]
 async fn cancel_uses_supplied_reason_or_default() {
     let (ctx, handles) = test_ctx(PathBuf::from("/tmp/x"));
+    let caller = ctx.agent_id;
     let target = AgentId::new();
     CancelTool::new()
         .invoke(
@@ -706,10 +709,11 @@ async fn cancel_uses_supplied_reason_or_default() {
         .unwrap();
     assert_eq!(
         handles.subagents.cancels(),
-        vec![(target, "cancelled by parent agent".to_string())]
+        vec![(caller, target, "cancelled by parent agent".to_string())]
     );
 
     let (ctx, handles) = test_ctx(PathBuf::from("/tmp/x"));
+    let caller = ctx.agent_id;
     let target = AgentId::new();
     CancelTool::new()
         .invoke(
@@ -723,7 +727,7 @@ async fn cancel_uses_supplied_reason_or_default() {
         .unwrap();
     assert_eq!(
         handles.subagents.cancels(),
-        vec![(target, "no longer needed".to_string())]
+        vec![(caller, target, "no longer needed".to_string())]
     );
 }
 
@@ -858,15 +862,29 @@ impl SubagentHost for BlockingAwaitHost {
     async fn start(&self, parent: AgentId, spec: SubagentSpec) -> Result<AgentId, RuntimeError> {
         self.inner.start(parent, spec).await
     }
-    async fn steer(&self, target: AgentId, text: String) -> Result<(), RuntimeError> {
-        self.inner.steer(target, text).await
+    async fn steer(
+        &self,
+        caller: AgentId,
+        target: AgentId,
+        text: String,
+    ) -> Result<(), RuntimeError> {
+        self.inner.steer(caller, target, text).await
     }
-    async fn await_result(&self, target: AgentId) -> Result<AgentResult, RuntimeError> {
+    async fn await_result(
+        &self,
+        caller: AgentId,
+        target: AgentId,
+    ) -> Result<AgentResult, RuntimeError> {
         self.gate.notified().await;
-        self.inner.await_result(target).await
+        self.inner.await_result(caller, target).await
     }
-    async fn cancel(&self, target: AgentId, reason: String) -> Result<(), RuntimeError> {
-        self.inner.cancel(target, reason).await
+    async fn cancel(
+        &self,
+        caller: AgentId,
+        target: AgentId,
+        reason: String,
+    ) -> Result<(), RuntimeError> {
+        self.inner.cancel(caller, target, reason).await
     }
     fn tree(&self) -> AgentTreeSnapshot {
         self.inner.tree()
@@ -885,8 +903,9 @@ async fn cancel_during_blocked_await_cancels_child_and_returns_cancelled() {
         gate: Arc::new(tokio::sync::Notify::new()),
     });
     let cancel = CancellationToken::new();
+    let caller = AgentId::new();
     let ctx = ToolCtx {
-        agent_id: AgentId::new(),
+        agent_id: caller,
         session_id: SessionId::new(),
         cwd: PathBuf::from("/tmp/x"),
         chdir: CwdHandle::new(PathBuf::from("/tmp/x")),
@@ -920,6 +939,6 @@ async fn cancel_during_blocked_await_cancels_child_and_returns_cancelled() {
     assert!(matches!(result, Err(ToolError::Cancelled)));
     assert_eq!(
         inner.cancels(),
-        vec![(scripted_id, "parent tool cancelled".to_string())]
+        vec![(caller, scripted_id, "parent tool cancelled".to_string())]
     );
 }

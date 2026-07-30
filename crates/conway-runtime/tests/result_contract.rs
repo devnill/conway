@@ -904,7 +904,9 @@ async fn a_spawned_childs_result_contract_is_enforced_through_subagent_host() {
     spec.result_contract = Some(schema_requiring("ok"));
 
     let child = SubagentHost::start(&*runtime, parent, spec).await.unwrap();
-    let result = SubagentHost::await_result(&*runtime, child).await.unwrap();
+    let result = SubagentHost::await_result(&*runtime, parent, child)
+        .await
+        .unwrap();
 
     match &result.status {
         ResultStatus::Rejected { missing } => assert!(!missing.is_empty()),

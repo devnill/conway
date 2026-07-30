@@ -500,9 +500,14 @@ async fn fork_and_steer_scenario_covers_every_named_provenance_variant() {
     .await
     .unwrap();
     wait_for_tool_call_started(&mut stream, child).await;
-    SubagentHost::steer(&*runtime, child, "focus on the auth module".to_string())
-        .await
-        .unwrap();
+    SubagentHost::steer(
+        &*runtime,
+        root,
+        child,
+        "focus on the auth module".to_string(),
+    )
+    .await
+    .unwrap();
     wait_for_agent_finished(&mut stream, child).await;
 
     let root_report = runtime.context_report_at(root, 0).await.unwrap();
