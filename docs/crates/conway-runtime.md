@@ -240,6 +240,57 @@ delegated to `PermissionGate`: three of the broker's four `Allow` paths
 never reach a gate implementation at all, so a check living there would
 fail open silently for each of them.
 
+### The honest boundary: what a root does and does not confine
+
+A confinement root confines **the path arguments of path-taking tools** —
+the arguments each tool declares via `Tool::path_args`, checked against
+`conway_core::containment::CanonicalRoot` before any allow path runs. It
+does **not** confine what a shell command does. `bash`'s `cwd` argument is
+root-checked like any other path, but its `command` string is **declared
+unconfinable, not enforced** — the string goes to `/bin/bash -c` verbatim,
+and the broker cannot parse shell to find the paths it touches. **An agent
+holding `bash` is not confined by root alone.**
+
+Do not "fix" this by extracting paths out of the command string and
+allowing when none are found outside the root. `cd ..`, `$HOME/x`,
+`$(echo /etc)/passwd`, `exec 3</etc/passwd`, a shell function, and a
+heredoc all defeat any such scan — the input language is a full shell,
+not a finite list of shapes. That is the metacharacter-gate lesson
+repeated: a transformation of untrusted input whose *failure to find*
+something becomes an authorization. See
+[`conway-tools`](conway-tools.md)'s `ShellPlugin` section and
+`BashTool::path_args`'s own doc comment (`crates/conway-tools/src/shell/
+bash.rs`) for the same reasoning recorded at the source.
+
+**The composition that IS a real guarantee.** A confined child is a
+child spawned *without* `bash`. `SubagentSpec.tools` already scopes a
+child's tool set — `subagent.rs`'s tool-selection block (`let tools =
+spec.tools.clone().or_else(|| agent_def.map(|d| d.tools.clone()));`)
+resolves the effective tool set once, at spawn, from the caller's request
+or the named `AgentDef`; `ToolSelector::Only(vec![])` is already used this
+way at `conway/src/intent.rs` (an intent classifier spawned with zero
+tools at all). Pairing a confinement root with a `ToolSelector` that
+excludes `bash` composes into an actual jail — the child can only touch
+paths inside the root, through tools whose arguments the broker can
+actually check. Root alone does not do this; root is a path-argument
+check, not a capability boundary, and `bash` is the tool whose one
+argument that matters most (the command) is outside what any
+argument-level check can reach.
+
+**The TOCTOU limit.** The root check happens once, in the permission
+broker, before the call is dispatched; the file a tool actually opens is
+opened later, inside the tool, across a task boundary (the gate may also
+hold the call open indefinitely waiting on a human decision in between).
+Anyone able to create a symlink inside the root between those two moments
+— including the very agent whose call is being checked, if it also holds
+`bash` — defeats the check: the path that resolved inside the root at
+check time can resolve outside it by the time the tool opens it. Closing
+that gap requires `openat`/`O_NOFOLLOW`-style resolution inside the tools
+themselves, which is tool-layer sandboxing and is out of scope for this
+design (GP-08: the harness's responsibility ends at the permission model,
+not the filesystem). **Root protects against mistaken and
+prompt-injected paths, not against an adversarial agent holding `bash`.**
+
 ## Tool dispatch
 
 `tools::registry::PluginRegistry` compiles the injected `Arc<dyn Plugin>`

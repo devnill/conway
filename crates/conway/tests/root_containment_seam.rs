@@ -735,6 +735,52 @@ async fn bash_cwd_outside_root_is_denied() {
 }
 
 // ---------------------------------------------------------------------
+// 9b. `bash` with a `cwd` argument INSIDE the root -> allowed as normal,
+//     same as any other in-root, fully-confinable call. `cwd` was never
+//     the security boundary here either -- this pins that the `checkable`
+//     enforcement above (test 9) is not collateral-damaging an ordinary
+//     in-root `cwd` (board item 01KYR2TK16200461FY6BG42KQZ, S6, part 1).
+// ---------------------------------------------------------------------
+#[tokio::test]
+async fn bash_cwd_inside_root_is_allowed() {
+    let root_dir = TempDir::new().unwrap();
+    let sub = root_dir.path().join("sub");
+    std::fs::create_dir(&sub).unwrap();
+
+    let gate = RecordingGate::new(PermissionDecision::AllowOnce);
+    let conway = build_conway(
+        vec![
+            ScriptedTurn::Respond(bash_call("echo hi", Some(&sub))),
+            ScriptedTurn::Respond(text_response("done")),
+        ],
+        gate.clone() as Arc<dyn PermissionGate>,
+    );
+
+    let handle = conway
+        .new_session(SessionSpec::default())
+        .await
+        .expect("new_session");
+    let spec = SpawnSpec::new("run the command")
+        .root(root_dir.path())
+        .cwd(root_dir.path());
+    let records = spawn_and_await(&handle, spec).await;
+
+    let result = tool_result(&records);
+    assert!(
+        !result.is_error,
+        "bash's own `cwd` argument, when inside the root, must succeed exactly as it did \
+         before root confinement existed: {:?}",
+        blocks_text(&result.blocks)
+    );
+    assert!(blocks_text(&result.blocks).contains("hi"));
+    assert_eq!(
+        gate.requests().len(),
+        1,
+        "an in-root `cwd` still reaches the gate exactly once, as any Unconfinable call does"
+    );
+}
+
+// ---------------------------------------------------------------------
 // 10. No root set (`None`) -> byte-for-byte unchanged: a call reaching a
 //     path outside the child's own `cwd` (but with no root confining it)
 //     is allowed exactly as it always was.
