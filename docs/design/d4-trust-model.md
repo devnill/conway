@@ -296,6 +296,39 @@ Both open the review surface described in §9. First trust and re-trust are the
 same act with the same surface; the only difference is that a re-trust shows a
 diff and a first trust shows the whole thing.
 
+### When the digest is checked — and the TOCTOU limit, stated
+
+**The digest is verified at load, not per invocation.** A plugin is digested
+when it is about to be loaded; permission rules are digested when the file is
+read at session start. Neither is re-verified on every subsequent call.
+
+That leaves a **time-of-check/time-of-use gap**, and it is worth naming
+precisely rather than leaving a reader to assume it away — this is the same
+shape as the confinement-root TOCTOU already stated honestly in
+`ARCHITECTURE.md:206`, and the same shape as the self-modifying-hooks problem
+found in other harnesses.
+
+What the gap does and does not cover:
+
+- **Permission rules: benign.** Rules are parsed and installed at load. An
+  attacker editing the file mid-session cannot install *new* rules into the
+  running session — there is no reload path — and the rules still active are
+  the ones the operator actually consented to at that digest. The next start
+  re-digests and de-trusts.
+- **Plugin artifacts: a real gap.** The artifact is digested, then executed.
+  An attacker who can replace the file in that window runs untrusted code
+  under a trust record for different content. Closing it properly means
+  digesting a held file descriptor and executing *that* descriptor, so check
+  and use refer to the same inode — worth doing when the transport lands
+  (F19/F20), not before, since there is no plugin process to protect yet.
+
+Per-invocation re-digesting is deliberately **not** the fix: it would put a
+filesystem read and a hash on every tool call's hot path to close a window an
+attacker who already has write access to your plugin binary has better ways to
+exploit. Note the related and larger limit in §12 open question 6 — an
+interpreter entrypoint whose real code is an adjacent tree defeats
+`artifact_digest` regardless of when it is computed.
+
 ### What is digested — the granularity that makes this workable
 
 Three candidates were on the table:

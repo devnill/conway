@@ -2173,12 +2173,34 @@ An honest boundary beats an optimistic one.
 
 **13.1 WASM / the Component Model is deferred, not rejected.** The blocker is
 specific and checkable: conway *requires* async host callbacks, which
-stabilized only with WASI 0.3 in Feb 2026, and **WASI 1.0 is not final**. The
-researched trigger is WASI 1.0 shipping final. Two secondary costs would also
-have to move: `wasmtime` is a very large dependency against a
-zero-new-dependency posture, and the ecosystem signal is negative right now
-(one major editor declined it this year on maturity grounds; another ships it
-only behind a deliberately narrow API). **The subprocess design does not
+stabilized only with WASI 0.3 in Feb 2026, and **WASI 1.0 is not final**.
+`wasmtime` is also a very large dependency against a zero-new-dependency
+posture (C-04).
+
+**The trigger is empirical, not a version number.** Revisit when all of these
+hold, rather than when a spec body publishes a "1.0":
+
+1. stable async host-function support in `wasmtime`,
+2. working resource limiting (memory, fuel/epoch) for untrusted guests,
+3. at least one production Rust host demonstrating the async-callback pattern
+   conway needs.
+
+Stated this way deliberately: a milestone-name trigger can fail to fire on a
+technicality if "1.0" slips or ships with caveats, and WASI's timelines have
+slipped before. A capability trigger cannot.
+
+> **Correction (2026-07-30).** An earlier draft of this section claimed "one
+> major editor declined it this year on maturity grounds; another ships it
+> only behind a deliberately narrow API," and used that as ecosystem evidence
+> for the deferral. **The first half was uncited and could not be
+> corroborated** on review; the one editor found using WASM for plugins (Zed)
+> *ships* it, behind a versioned WIT-defined API — which is the second clause,
+> not the first. The claim is withdrawn. The deferral stands on the three
+> checkable conditions above, which do not depend on it. Recorded rather than
+> silently deleted, because an unsourced external claim used as evidence for a
+> decision is exactly the kind of thing that should leave a scar.
+
+**The subprocess design does not
 foreclose it** — the wire vocabulary (§6) is transport-independent, and the
 `wire::` projections would become the component interface almost unchanged.
 Revisit when WASI 1.0 is final; do not revisit sooner on enthusiasm.
