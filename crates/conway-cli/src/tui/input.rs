@@ -53,6 +53,12 @@ pub enum Action {
     CyclePermissionMode,
     /// V2b: drop every pattern grant and cached allow-always.
     RevokePermissionGrants,
+    /// Board item 01KYND4WGHSZXW5YQ6ZWHCDDNN: revoke exactly ONE pattern
+    /// grant, carrying the same `(rule, origin)` identity the settings row
+    /// itself rendered -- never a bare index, so the app loop's call into
+    /// `Conway::revoke_permission_pattern` can never address a different
+    /// grant than the one the operator actually selected.
+    RevokePermissionPattern(conway::PatternRule, conway::PatternOrigin),
     /// `End` (T6): snap the transcript straight to its own tail --
     /// re-engages `follow_tail`. Fires only while the input line is empty
     /// (mirroring the dual-meaning precedent `Enter`'s empty-input arm
@@ -247,6 +253,23 @@ fn activate_settings_selection(state: &mut AppState) -> Option<Action> {
                 return Some(Action::CyclePermissionMode);
             } else if id == super::view::settings::LEAF_REVOKE_GRANTS {
                 return Some(Action::RevokePermissionGrants);
+            } else if let Some(idx) = id
+                .strip_prefix(super::view::settings::LEAF_REVOKE_GRANT_PREFIX)
+                .and_then(|rest| rest.parse::<usize>().ok())
+            {
+                // Board item 01KYND4WGHSZXW5YQ6ZWHCDDNN: resolved against
+                // `state.permission_grants` right here, in the SAME call
+                // that just built the tree this row came from -- so the
+                // index cannot have drifted (nothing mutates
+                // `permission_grants` between the two). The `Action`
+                // itself carries the resolved `(rule, origin)` value, not
+                // the index, so nothing downstream needs to re-derive it.
+                if let Some((rule, origin)) = state.permission_grants.get(idx) {
+                    return Some(Action::RevokePermissionPattern(
+                        rule.clone(),
+                        origin.clone(),
+                    ));
+                }
             }
             // `LEAF_TOOL_PREVIEW_LINES`: Enter has nothing to activate on
             // the numeric leaf -- it is adjusted with Left/Right instead
@@ -2781,6 +2804,48 @@ mod tests {
              exactly as it did before the menu ever opened"
         );
         assert!(state.scroll > 0);
+    }
+
+    /// Board item 01KYND4WGHSZXW5YQ6ZWHCDDNN: `Enter` on a grant row must
+    /// resolve to THAT row's own `(rule, origin)` -- not the first grant,
+    /// not a bare index the app loop would have to re-resolve (and could
+    /// re-resolve against a since-changed list).
+    #[test]
+    fn enter_on_a_grant_row_resolves_to_the_exact_rule_and_origin_selected() {
+        let mut state = AppState::new(AgentId::new());
+        state.open_settings();
+        state.permission_grants = vec![
+            (
+                conway::PatternRule::parse("bash:git status").expect("valid rule"),
+                conway::PatternOrigin::Interactive,
+            ),
+            (
+                conway::PatternRule::parse("read:*").expect("valid rule"),
+                conway::PatternOrigin::File(std::path::PathBuf::from(
+                    "/repo/.conway/permissions.json",
+                )),
+            ),
+        ];
+
+        let rows = crate::tui::view::settings::build_tree(&state).rows();
+        let second_grant_row = rows
+            .iter()
+            .position(|r| r.label.contains("read"))
+            .expect("the second grant row must be present");
+        state.settings_selected = second_grant_row;
+
+        let action = handle_key(&mut state, key(KeyCode::Enter));
+        assert_eq!(
+            action,
+            Action::RevokePermissionPattern(
+                conway::PatternRule::parse("read:*").expect("valid rule"),
+                conway::PatternOrigin::File(std::path::PathBuf::from(
+                    "/repo/.conway/permissions.json"
+                )),
+            ),
+            "Enter on the second grant row must resolve to THAT grant's own \
+             (rule, origin), not the first"
+        );
     }
 
     /// The settings menu must not steal keys meant for an active permission

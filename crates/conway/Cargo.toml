@@ -39,6 +39,13 @@ globset = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true }
 chrono = { workspace = true }
+# `config::trust` (board item 01KYT8SGX32CP56PRJNG72V2W5) digests a
+# project's `permissions.json` for its content-scoped trust record.
+# Already a workspace dependency used by `conway-core` and by
+# `conway-runtime::permission::PermissionBroker`'s own `CacheKey` -- this
+# is a THIRD consumer of the same pinned crate, not a new dependency
+# (C-04).
+blake3 = { workspace = true }
 
 [dev-dependencies]
 conway-core = { path = "../conway-core", features = ["fakes"] }

@@ -34,7 +34,7 @@ mod session_handle;
 mod subagent_spec;
 
 pub use builder::ConwayBuilder;
-pub use conway::Conway;
+pub use conway::{Conway, PermissionLoadReport, RevokeOutcome};
 pub use error::{ConwayError, Result};
 pub use event_stream::EventStream;
 pub use intent::AgentIntent;
@@ -47,7 +47,7 @@ pub use conway_core::agent::{
 };
 pub use conway_core::config::AgentDef;
 pub use conway_core::permission_mode::PermissionMode;
-pub use conway_core::permission_pattern::{PatternRule, PermissionFile};
+pub use conway_core::permission_pattern::{PatternOrigin, PatternRule, PermissionFile};
 /// V2b: `conway-cli` reaches `parse_rules` through here (it cannot depend
 /// on `conway-core` directly -- `no_forbidden_deps`).
 pub mod permission_pattern {

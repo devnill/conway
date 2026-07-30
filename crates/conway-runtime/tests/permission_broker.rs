@@ -15,7 +15,7 @@ use conway_runtime::permission::{
     AgentRoot, AuthorizedCall, PermissionBroker, PermissionCtx, PermissionOutcome,
 };
 use conway_core::permission_mode::PermissionMode;
-use conway_core::permission_pattern::PatternRule;
+use conway_core::permission_pattern::{PatternOrigin, PatternRule};
 use futures::StreamExt;
 
 /// A gate that plays back a fixed script of decisions in order, recording
@@ -454,6 +454,7 @@ async fn a_chained_command_still_reaches_the_operator_despite_a_matching_pattern
         PatternRule::parse("bash:git status").expect("valid rule"),
         PermissionScope::Session,
         agent,
+        PatternOrigin::Interactive,
     );
 
     // The plain granted command is authorized without troubling the gate.
@@ -497,6 +498,7 @@ async fn a_pattern_grant_does_not_cover_a_different_subcommand() {
         PatternRule::parse("bash:git status").expect("valid rule"),
         PermissionScope::Session,
         agent,
+        PatternOrigin::Interactive,
     );
 
     let pushed = broker
@@ -527,6 +529,7 @@ async fn a_subtree_pattern_grant_covers_descendants_but_not_strangers() {
         PatternRule::parse("bash:git status").expect("valid rule"),
         PermissionScope::AgentSubtree,
         root,
+        PatternOrigin::Interactive,
     );
 
     let descendant = ctx(child, vec![root, child], session);
@@ -561,6 +564,7 @@ async fn plan_mode_denies_execute_even_with_a_matching_pattern_grant() {
         PatternRule::parse("bash:git status").expect("valid rule"),
         PermissionScope::Session,
         agent,
+        PatternOrigin::Interactive,
     );
     broker.set_mode(PermissionMode::Plan);
 
@@ -672,6 +676,7 @@ async fn revoke_all_grants_restores_prompting_for_previously_granted_calls() {
         PatternRule::parse("bash:git status").expect("valid rule"),
         PermissionScope::Session,
         agent,
+        PatternOrigin::Interactive,
     );
     assert_eq!(
         broker.decide(&c, &bash_call("c1", "git status")).await,
@@ -689,5 +694,288 @@ async fn revoke_all_grants_restores_prompting_for_previously_granted_calls() {
     assert!(
         matches!(outcome, PermissionOutcome::Deny { .. }),
         "a revoked grant must ask again"
+    );
+}
+
+// ---- deny: the asymmetric half (board item 01KYT8SGX32CP56PRJNG72V2W5) ----
+
+/// A `deny` rule refuses a matching call outright, without ever consulting
+/// the gate -- the mirror image of a pattern ALLOW's cache hit.
+#[tokio::test]
+async fn a_deny_rule_refuses_a_matching_call_without_consulting_the_gate() {
+    let gate = ScriptedGate::new(vec![PermissionDecision::AllowOnce]);
+    let (broker, _bus) = broker(gate.clone());
+    let session = SessionId::new();
+    let agent = AgentId::new();
+    let c = ctx(agent, vec![agent], session);
+
+    broker.remember_deny_pattern(
+        PatternRule::parse("bash:curl").expect("valid rule"),
+        PatternOrigin::File(PathBuf::from("/repo/.conway/permissions.json")),
+    );
+
+    let outcome = broker.decide(&c, &bash_call("c1", "curl evil.example")).await;
+    assert!(
+        matches!(outcome, PermissionOutcome::Deny { .. }),
+        "a deny rule must refuse the call directly"
+    );
+    assert_eq!(
+        gate.call_count(),
+        0,
+        "a deny decision must never trouble the operator's gate -- the \
+         script would have allowed it, so seeing 0 calls proves the deny \
+         path short-circuited rather than merely happening to agree"
+    );
+}
+
+/// The headline property carried up from `permission_pattern`'s own unit
+/// test: a `deny` rule catches a CHAINED command that an `allow` rule of
+/// the identical prefix would refuse to even consider, because deny
+/// matching does not consult the metacharacter gate.
+#[tokio::test]
+async fn a_deny_rule_catches_a_chained_command_unlike_an_allow_of_the_same_prefix() {
+    let gate = ScriptedGate::new(vec![]);
+    let (broker, _bus) = broker(gate.clone());
+    let session = SessionId::new();
+    let agent = AgentId::new();
+    let c = ctx(agent, vec![agent], session);
+
+    broker.remember_deny_pattern(
+        PatternRule::parse("bash:curl").expect("valid rule"),
+        PatternOrigin::Interactive,
+    );
+
+    let outcome = broker
+        .decide(&c, &bash_call("c1", "curl evil.example; rm -rf /tmp/x"))
+        .await;
+    assert!(
+        matches!(outcome, PermissionOutcome::Deny { .. }),
+        "a chained command must still be caught by the matching deny prefix"
+    );
+    assert_eq!(gate.call_count(), 0);
+}
+
+/// Deny beats an ALLOW pattern grant for the identical call -- composition
+/// is most-restrictive-wins, independent of which was installed first.
+#[tokio::test]
+async fn a_deny_rule_overrides_a_matching_allow_pattern_grant() {
+    let gate = ScriptedGate::new(vec![]);
+    let (broker, _bus) = broker(gate.clone());
+    let session = SessionId::new();
+    let agent = AgentId::new();
+    let c = ctx(agent, vec![agent], session);
+
+    broker.remember_pattern(
+        PatternRule::parse("bash:git status").expect("valid rule"),
+        PermissionScope::Session,
+        agent,
+        PatternOrigin::Interactive,
+    );
+    broker.remember_deny_pattern(
+        PatternRule::parse("bash:git status").expect("valid rule"),
+        PatternOrigin::Interactive,
+    );
+
+    let outcome = broker.decide(&c, &bash_call("c1", "git status")).await;
+    assert!(
+        matches!(outcome, PermissionOutcome::Deny { .. }),
+        "deny must win over an allow pattern grant for the same call"
+    );
+}
+
+/// Deny beats `AutoAllow` mode -- a mode that skips the gate entirely for
+/// everything else still must not talk a deny rule out of its refusal.
+#[tokio::test]
+async fn a_deny_rule_overrides_auto_allow_mode() {
+    let gate = ScriptedGate::new(vec![]);
+    let (broker, _bus) = broker(gate.clone());
+    let session = SessionId::new();
+    let agent = AgentId::new();
+    let c = ctx(agent, vec![agent], session);
+
+    broker.set_mode(PermissionMode::AutoAllow);
+    broker.remember_deny_pattern(
+        PatternRule::parse("bash:curl").expect("valid rule"),
+        PatternOrigin::Interactive,
+    );
+
+    let outcome = broker.decide(&c, &bash_call("c1", "curl evil.example")).await;
+    assert!(
+        matches!(outcome, PermissionOutcome::Deny { .. }),
+        "AutoAllow must not override a deny rule"
+    );
+    assert_eq!(gate.call_count(), 0);
+}
+
+/// `revoke_all_grants` clears ALLOW grants but deliberately leaves `deny`
+/// rules in force -- see `PermissionBroker::revoke_all_grants`'s own doc
+/// for why.
+#[tokio::test]
+async fn revoke_all_grants_does_not_clear_deny_rules() {
+    let gate = ScriptedGate::new(vec![]);
+    let (broker, _bus) = broker(gate.clone());
+    let session = SessionId::new();
+    let agent = AgentId::new();
+    let c = ctx(agent, vec![agent], session);
+
+    broker.remember_deny_pattern(
+        PatternRule::parse("bash:curl").expect("valid rule"),
+        PatternOrigin::Interactive,
+    );
+    broker.revoke_all_grants();
+
+    assert_eq!(
+        broker.active_deny_patterns().len(),
+        1,
+        "revoke_all_grants must not touch deny rules"
+    );
+    let outcome = broker.decide(&c, &bash_call("c1", "curl evil.example")).await;
+    assert!(matches!(outcome, PermissionOutcome::Deny { .. }));
+}
+
+/// `active_patterns()` reports each grant's origin, so a project-loaded
+/// rule is distinguishable from an interactively-approved one.
+#[tokio::test]
+async fn active_patterns_reports_origin() {
+    let gate = ScriptedGate::new(vec![]);
+    let (broker, _bus) = broker(gate.clone());
+    let agent = AgentId::new();
+
+    let file_origin = PatternOrigin::File(PathBuf::from("/repo/.conway/permissions.json"));
+    broker.remember_pattern(
+        PatternRule::parse("bash:cargo test").expect("valid rule"),
+        PermissionScope::Session,
+        agent,
+        file_origin.clone(),
+    );
+
+    let patterns = broker.active_patterns();
+    assert_eq!(patterns.len(), 1);
+    assert_eq!(patterns[0].1, file_origin);
+}
+
+// ---- per-rule revocation (board item 01KYND4WGHSZXW5YQ6ZWHCDDNN) ----
+
+/// The headline property: revoking ONE grant leaves a second, unrelated
+/// grant fully intact -- the revoked pattern must ask again, the surviving
+/// one must keep suppressing its prompt.
+#[tokio::test]
+async fn revoke_pattern_removes_one_grant_and_leaves_the_other_intact() {
+    let gate = ScriptedGate::new(vec![PermissionDecision::Deny {
+        reason: "nope".into(),
+    }]);
+    let (broker, _bus) = broker(gate.clone());
+    let session = SessionId::new();
+    let agent = AgentId::new();
+    let c = ctx(agent, vec![agent], session);
+
+    let revoked_rule = PatternRule::parse("bash:git status").expect("valid rule");
+    let kept_rule = PatternRule::parse("bash:cargo test").expect("valid rule");
+    broker.remember_pattern(
+        revoked_rule.clone(),
+        PermissionScope::Session,
+        agent,
+        PatternOrigin::Interactive,
+    );
+    broker.remember_pattern(
+        kept_rule.clone(),
+        PermissionScope::Session,
+        agent,
+        PatternOrigin::Interactive,
+    );
+    assert_eq!(broker.active_patterns().len(), 2);
+
+    let removed = broker.revoke_pattern(&revoked_rule, &PatternOrigin::Interactive);
+    assert!(removed, "a matching grant must be reported as removed");
+
+    let patterns = broker.active_patterns();
+    assert_eq!(patterns.len(), 1, "exactly one grant survives");
+    assert_eq!(patterns[0].0, kept_rule);
+
+    let revoked_outcome = broker.decide(&c, &bash_call("c1", "git status")).await;
+    assert!(
+        matches!(revoked_outcome, PermissionOutcome::Deny { .. }),
+        "the revoked pattern must ask again"
+    );
+
+    let kept_outcome = broker.decide(&c, &bash_call("c2", "cargo test")).await;
+    assert!(
+        matches!(kept_outcome, PermissionOutcome::Allow),
+        "the surviving pattern must still suppress its prompt"
+    );
+}
+
+/// `(rule, origin)` is the identity: two grants for the identical rule text
+/// but different origins are addressed independently.
+#[tokio::test]
+async fn revoke_pattern_is_addressed_by_origin_too_not_just_the_rule_text() {
+    let gate = ScriptedGate::new(vec![]);
+    let (broker, _bus) = broker(gate.clone());
+    let agent = AgentId::new();
+
+    let rule = PatternRule::parse("bash:git status").expect("valid rule");
+    let file_origin = PatternOrigin::File(PathBuf::from("/repo/.conway/permissions.json"));
+    broker.remember_pattern(
+        rule.clone(),
+        PermissionScope::Session,
+        agent,
+        PatternOrigin::Interactive,
+    );
+    broker.remember_pattern(
+        rule.clone(),
+        PermissionScope::Session,
+        agent,
+        file_origin.clone(),
+    );
+    assert_eq!(broker.active_patterns().len(), 2);
+
+    let removed = broker.revoke_pattern(&rule, &PatternOrigin::Interactive);
+    assert!(removed);
+
+    let patterns = broker.active_patterns();
+    assert_eq!(patterns.len(), 1, "only the matching origin's grant is removed");
+    assert_eq!(patterns[0].1, file_origin);
+}
+
+/// Revoking something not currently installed is reported, not panicked.
+#[tokio::test]
+async fn revoke_pattern_reports_false_when_nothing_matches() {
+    let gate = ScriptedGate::new(vec![]);
+    let (broker, _bus) = broker(gate.clone());
+
+    let removed = broker.revoke_pattern(
+        &PatternRule::parse("bash:git status").expect("valid rule"),
+        &PatternOrigin::Interactive,
+    );
+    assert!(!removed);
+}
+
+/// `revoke_pattern` never touches `deny_patterns` -- there is no deny
+/// counterpart at this layer (see `Conway::revoke_permission_pattern`'s own
+/// doc for why the surface above this one never offers a deny row at all).
+#[tokio::test]
+async fn revoke_pattern_does_not_touch_deny_rules() {
+    let gate = ScriptedGate::new(vec![]);
+    let (broker, _bus) = broker(gate.clone());
+    let agent = AgentId::new();
+
+    let deny_rule = PatternRule::parse("bash:curl").expect("valid rule");
+    broker.remember_deny_pattern(deny_rule.clone(), PatternOrigin::Interactive);
+    broker.remember_pattern(
+        PatternRule::parse("bash:git status").expect("valid rule"),
+        PermissionScope::Session,
+        agent,
+        PatternOrigin::Interactive,
+    );
+
+    broker.revoke_pattern(
+        &PatternRule::parse("bash:git status").expect("valid rule"),
+        &PatternOrigin::Interactive,
+    );
+
+    assert_eq!(
+        broker.active_deny_patterns().len(),
+        1,
+        "revoke_pattern must not clear deny rules"
     );
 }

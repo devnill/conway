@@ -22,6 +22,57 @@ use crate::intent::AgentIntent;
 use crate::session_handle::{SessionHandle, SessionSpec};
 use crate::subagent_spec::ForkSpec;
 
+/// The result of [`Conway::load_permission_files`] (board item
+/// 01KYT8SGX32CP56PRJNG72V2W5) -- what `conway-cli`'s startup loader needs
+/// to update `AppState` with.
+#[derive(Debug, Clone, Default)]
+pub struct PermissionLoadReport {
+    /// Every candidate path considered, project-first then global, in the
+    /// same precedence `crate::config::discovery::permission_file_paths`
+    /// establishes -- present or not, so a caller wanting to trust a
+    /// project file (`/trust permissions`) knows which path that is.
+    pub paths: Vec<std::path::PathBuf>,
+    /// Human-readable notices for anything the caller should surface
+    /// (currently: a project file's allow rules skipped for lack of
+    /// trust). Never an error -- see [`Conway::load_permission_files`]'s
+    /// own doc for why every condition here is a silent, narrowing
+    /// degrade by design.
+    pub notices: Vec<String>,
+}
+
+/// The result of [`Conway::revoke_permission_pattern`] (board item
+/// 01KYND4WGHSZXW5YQ6ZWHCDDNN): what happened to the in-session grant AND to
+/// whatever file it came from, so the caller can tell the operator the
+/// whole truth rather than folding a failed persist into a blanket "done".
+#[derive(Debug, Clone)]
+pub enum RevokeOutcome {
+    /// No installed grant matched `(rule, origin)` -- nothing to revoke
+    /// (already gone, e.g. a stale row left over from an earlier action in
+    /// the same session).
+    NotFound,
+    /// Revoked for this session. `origin` was
+    /// [`conway_core::permission_pattern::PatternOrigin::Interactive`] --
+    /// there was never a file backing this grant, so none was touched.
+    RevokedNoFile,
+    /// Revoked for this session AND removed from the file it came from.
+    /// `retrust_warning`, when present, means the file was a TRUSTED
+    /// project-scoped file whose bytes the rewrite just changed (which
+    /// changes its content digest) and re-recording trust for the new
+    /// bytes failed -- the revoke itself still fully succeeded, but the
+    /// file's OTHER allow rules will require `/trust permissions` again
+    /// until this is fixed. See [`Conway::revoke_permission_pattern`]'s own
+    /// doc for why re-trusting here is the correct call, not a loophole.
+    RevokedAndPersisted { retrust_warning: Option<String> },
+    /// Revoked for this session, but the file it came from could not be
+    /// rewritten. The rule no longer applies THIS session -- nothing on
+    /// disk changed, so it returns at the next restart unless the file is
+    /// fixed by hand. Revocation never fails open: the in-session grant is
+    /// gone either way; only the DURABILITY of that removal failed, and
+    /// this variant exists so the caller can say so rather than reporting
+    /// a plain success that the next launch would quietly contradict.
+    RevokedButPersistFailed { error: String },
+}
+
 /// The live, assembled facade: one `Runtime`, its resolved config, and (when
 /// the builder compiled its own router rather than receiving an injected
 /// one) the concrete router `explain_routing` projects through.
@@ -97,35 +148,365 @@ impl Conway {
         self.rt.permission_broker().set_mode(mode);
     }
 
-    /// Installs a pattern grant (V2b).
+    /// Installs a pattern ALLOW grant approved through the interactive
+    /// gate (V2b) -- origin `Interactive`. Use
+    /// [`Self::grant_permission_pattern_from_file`] for a rule loaded from
+    /// a permissions file, so the review surface can tell the two apart
+    /// (board item 01KYT8SGX32CP56PRJNG72V2W5).
     ///
     /// Note the metacharacter gate is NOT applied here: it lives in
-    /// `PatternRule::matches` and is evaluated against each incoming
-    /// command at decision time. Gating at install time instead would let
-    /// a rule loaded from a file bypass it.
+    /// `PatternRule::matches_render` and is evaluated against each
+    /// incoming command at decision time. Gating at install time instead
+    /// would let a rule loaded from a file bypass it.
     pub fn grant_permission_pattern(
         &self,
         rule: conway_core::permission_pattern::PatternRule,
         scope: conway_core::agent::PermissionScope,
         granting_agent: conway_core::ids::AgentId,
     ) {
-        self.rt
-            .permission_broker()
-            .remember_pattern(rule, scope, granting_agent);
+        self.rt.permission_broker().remember_pattern(
+            rule,
+            scope,
+            granting_agent,
+            conway_core::permission_pattern::PatternOrigin::Interactive,
+        );
     }
 
-    /// Every active pattern grant, for a review list. A rule set nobody
-    /// can inspect is a trap.
+    /// Installs a pattern ALLOW grant loaded from a permissions file at
+    /// `origin_path` (board item 01KYT8SGX32CP56PRJNG72V2W5).
+    ///
+    /// **This method trusts its caller completely.** It installs whatever
+    /// it is given. The TRUST DECISION for a project-scoped file --
+    /// whether its content matches a recorded, explicit trust record --
+    /// belongs entirely to the caller (`conway-cli`'s startup loader,
+    /// `crate::config::trust::TrustStore`), made ONCE before this is ever
+    /// invoked. This method must never be the enforcement point, or there
+    /// would be two places that decision could drift apart.
+    pub fn grant_permission_pattern_from_file(
+        &self,
+        rule: conway_core::permission_pattern::PatternRule,
+        scope: conway_core::agent::PermissionScope,
+        granting_agent: conway_core::ids::AgentId,
+        origin_path: std::path::PathBuf,
+    ) {
+        self.rt.permission_broker().remember_pattern(
+            rule,
+            scope,
+            granting_agent,
+            conway_core::permission_pattern::PatternOrigin::File(origin_path),
+        );
+    }
+
+    /// Installs a DENY rule loaded from a permissions file at
+    /// `origin_path`. Unlike the allow-side methods above, there is no
+    /// trust precondition here at all -- `deny` applies immediately,
+    /// trusted or not, from any file (D4 §3, board item
+    /// 01KYT8SGX32CP56PRJNG72V2W5).
+    pub fn grant_deny_pattern(
+        &self,
+        rule: conway_core::permission_pattern::PatternRule,
+        origin_path: std::path::PathBuf,
+    ) {
+        self.rt.permission_broker().remember_deny_pattern(
+            rule,
+            conway_core::permission_pattern::PatternOrigin::File(origin_path),
+        );
+    }
+
+    /// Every active pattern ALLOW grant, paired with its origin, for a
+    /// review list. A rule set nobody can inspect -- or whose provenance
+    /// nobody can tell -- is a trap.
     pub fn active_permission_patterns(
         &self,
-    ) -> Vec<conway_core::permission_pattern::PatternRule> {
+    ) -> Vec<(
+        conway_core::permission_pattern::PatternRule,
+        conway_core::permission_pattern::PatternOrigin,
+    )> {
         self.rt.permission_broker().active_patterns()
     }
 
-    /// Drops every pattern grant and cached `AllowAlways`, returning the
-    /// session to asking (V2b).
+    /// Every active DENY rule, paired with its origin -- the deny half's
+    /// own review list.
+    pub fn active_deny_permission_patterns(
+        &self,
+    ) -> Vec<(
+        conway_core::permission_pattern::PatternRule,
+        conway_core::permission_pattern::PatternOrigin,
+    )> {
+        self.rt.permission_broker().active_deny_patterns()
+    }
+
+    /// Drops every pattern ALLOW grant and cached `AllowAlways`, returning
+    /// the session to asking (V2b). Deliberately leaves `deny` rules in
+    /// force -- see `PermissionBroker::revoke_all_grants`'s own doc.
     pub fn revoke_permission_grants(&self) {
         self.rt.permission_broker().revoke_all_grants();
+    }
+
+    /// Revokes exactly ONE pattern ALLOW grant (board item
+    /// 01KYND4WGHSZXW5YQ6ZWHCDDNN), addressed by the same `(rule, origin)`
+    /// pair [`Self::active_permission_patterns`] already hands the review
+    /// surface -- see `PermissionBroker::revoke_pattern`'s own doc for why
+    /// that pair, not a position, is the identity.
+    ///
+    /// **Revocation never fails open.** The broker's in-memory grant is
+    /// dropped FIRST, unconditionally, before any file I/O is attempted --
+    /// so even if persistence below fails, this session has already
+    /// stopped honoring the rule. [`RevokeOutcome`] reports the
+    /// persistence half honestly instead of folding a failed write into a
+    /// blanket "done" -- the failure mode this constraint exists to
+    /// forbid is the REVERSE: claiming success while the rule survives on
+    /// disk.
+    ///
+    /// `origin`'s two shapes get different treatment entirely:
+    /// - [`conway_core::permission_pattern::PatternOrigin::Interactive`][]:
+    ///   no file exists for this grant (an operator's "always allow", or a
+    ///   rule installed with no permissions file behind it at all --
+    ///   a test harness, an embedder's own code). Revoking it must not
+    ///   CREATE one, so nothing is written; see
+    ///   [`RevokeOutcome::RevokedNoFile`].
+    /// - [`conway_core::permission_pattern::PatternOrigin::File`][]: the
+    ///   rule's wire form is removed from THAT EXACT file's `allow` list --
+    ///   never a different file (guessing via, say, "the first configured
+    ///   project path" is exactly the project-vs-global mixup this method
+    ///   exists to avoid) -- by read-modify-write, tmp-then-rename
+    ///   (`tui/history.rs`'s T8 precedent: chosen over `config/trust.rs`'s
+    ///   tmp-then-rename-PLUS-chmod-0600 precedent because a permissions
+    ///   file is not a new secrets-adjacent file needing that extra
+    ///   hardening -- it is the operator's own existing rules list,
+    ///   already created at ordinary permissions by whatever wrote the
+    ///   grant into it in the first place).
+    ///
+    ///   A file that cannot be READ or PARSED is a hard PERSIST FAILURE,
+    ///   not treated as empty the way loading tolerates a corrupt file:
+    ///   unlike *appending* a new rule (safe to treat corrupt content as
+    ///   blank, since a corrupt file was already authorizing nothing per
+    ///   [`conway_core::permission_pattern::parse_rules`]'s fail-closed
+    ///   posture), blindly overwriting content this method could not
+    ///   actually parse would silently discard whatever real rules --
+    ///   allow OR deny -- that file held. If the rule's wire form is
+    ///   simply absent from an otherwise-valid file (removed by hand
+    ///   already, or a stale row), nothing is written at all -- the goal
+    ///   state ("this file no longer grants this rule") is already true.
+    ///
+    ///   If that file is a TRUSTED PROJECT file (never the global file,
+    ///   which is trusted by authorship and never gated on a digest at
+    ///   all -- `Self::load_permission_files`'s own doc), the rewrite
+    ///   changes its bytes, which changes its content digest --
+    ///   SILENTLY DE-TRUSTING it per `crate::config::trust`'s own design,
+    ///   and taking every OTHER allow rule in that file down with it at
+    ///   the next restart. Because this rewrite is itself the direct
+    ///   result of an explicit operator action (selecting "revoke" in
+    ///   `/settings`) narrowing authority they already trusted -- never
+    ///   automatic, never a side effect of anything else -- re-recording
+    ///   trust for the new, strictly narrower bytes is the correct call,
+    ///   not a loophole: it is exactly the "explicit, on-purpose"
+    ///   trust-write D4 §5/§9 requires, just triggered from a different
+    ///   command than `/trust permissions`. A failure to re-trust does
+    ///   NOT undo the revoke -- the rule is still gone either way -- it
+    ///   only means the file's OTHER rules degrade until `/trust
+    ///   permissions` is run again, surfaced via
+    ///   [`RevokeOutcome::RevokedAndPersisted`]'s `retrust_warning`.
+    ///
+    /// `deny` rules have no counterpart to this method at all: they are
+    /// not addressable through `active_permission_patterns()` (only
+    /// `active_deny_permission_patterns()` lists them), and `/settings`
+    /// never renders one as a selectable row -- so there is no path that
+    /// reaches here with a deny rule's identity in the first place. This
+    /// mirrors `PermissionBroker::revoke_all_grants`'s own deliberate
+    /// choice to leave `deny` untouched: a `deny` rule narrows rather than
+    /// grants, most come from a file the operator does not control (or
+    /// reviewed less carefully than their own `allow` list), and it is a
+    /// safety rule -- offering a one-keystroke way to remove one would be
+    /// the wrong shape for a rule whose entire job is to be hard to evade,
+    /// even by the operator's own accidental keypress.
+    pub fn revoke_permission_pattern(
+        &self,
+        env: &std::collections::HashMap<String, String>,
+        rule: &conway_core::permission_pattern::PatternRule,
+        origin: &conway_core::permission_pattern::PatternOrigin,
+    ) -> RevokeOutcome {
+        if !self.rt.permission_broker().revoke_pattern(rule, origin) {
+            return RevokeOutcome::NotFound;
+        }
+
+        let path = match origin {
+            conway_core::permission_pattern::PatternOrigin::Interactive => {
+                return RevokeOutcome::RevokedNoFile;
+            }
+            conway_core::permission_pattern::PatternOrigin::File(path) => path,
+        };
+
+        match Self::rewrite_permission_file_removing(path, rule) {
+            Err(e) => RevokeOutcome::RevokedButPersistFailed {
+                error: e.to_string(),
+            },
+            Ok(()) => {
+                let global_path = crate::config::discovery::xdg_config_path(env).and_then(
+                    |settings| settings.parent().map(|dir| dir.join("permissions.json")),
+                );
+                let is_global = global_path.as_deref() == Some(path.as_path());
+                let retrust_warning = if is_global {
+                    None
+                } else {
+                    match crate::config::trust::TrustStore::trust(env, path) {
+                        Ok(()) => None,
+                        Err(e) => Some(format!(
+                            "could not re-trust {} after removing a rule from it -- \
+                             its other allow rules will need `/trust permissions` \
+                             again ({e})",
+                            path.display()
+                        )),
+                    }
+                };
+                RevokeOutcome::RevokedAndPersisted { retrust_warning }
+            }
+        }
+    }
+
+    /// Removes `rule`'s wire form from `path`'s `allow` list, tmp-then-
+    /// rename -- see [`Self::revoke_permission_pattern`]'s own doc for the
+    /// full reasoning (why a parse failure is a hard error here, unlike the
+    /// append path; why no chmod hardening).
+    fn rewrite_permission_file_removing(
+        path: &std::path::Path,
+        rule: &conway_core::permission_pattern::PatternRule,
+    ) -> std::io::Result<()> {
+        let contents = std::fs::read_to_string(path)?;
+        let mut file: conway_core::permission_pattern::PermissionFile =
+            serde_json::from_str(&contents).map_err(|e| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "{} is not valid JSON, refusing to rewrite it blindly: {e}",
+                        path.display()
+                    ),
+                )
+            })?;
+
+        let wire = rule.to_wire();
+        let before = file.allow.len();
+        file.allow.retain(|w| w != &wire);
+        if file.allow.len() == before {
+            // Nothing to remove -- the goal state already holds. No write,
+            // so there is nothing that could de-trust the file either.
+            return Ok(());
+        }
+
+        let serialized = serde_json::to_string_pretty(&file)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let tmp = path.with_extension("json.tmp");
+        std::fs::write(&tmp, serialized)?;
+        std::fs::rename(&tmp, path)?;
+        Ok(())
+    }
+
+    /// Loads permissions files project-first then global
+    /// (`crate::config::discovery::permission_file_paths`) and installs
+    /// their rules -- **the real production startup seam**, board item
+    /// 01KYT8SGX32CP56PRJNG72V2W5. `conway-cli`'s TUI (`tui::app::App::new`)
+    /// calls this directly; so does
+    /// `crates/conway/tests/permission_trust_seam.rs`, which is how that
+    /// item's acceptance test drives the actual code path rather than a
+    /// hand-written fixture.
+    ///
+    /// The asymmetry (see `conway_core::permission_pattern`'s module doc
+    /// and `crate::config::trust`'s own doc for the full reasoning):
+    /// - `deny` rules install from EVERY file, unconditionally.
+    /// - `allow` rules from the GLOBAL file install unconditionally too --
+    ///   trusted by authorship, the operator's own file.
+    /// - `allow` rules from a PROJECT file install ONLY when
+    ///   `crate::config::trust::TrustStore::is_trusted` confirms an
+    ///   explicit, recorded trust decision matching the file's CURRENT
+    ///   bytes; otherwise they are skipped and a human-readable notice is
+    ///   returned (never an error -- see this codebase's existing
+    ///   "every permissions-file failure is silent and narrowing" posture).
+    pub fn load_permission_files(
+        &self,
+        cwd: &std::path::Path,
+        env: &std::collections::HashMap<String, String>,
+        granting_agent: conway_core::ids::AgentId,
+    ) -> PermissionLoadReport {
+        let paths = crate::config::discovery::permission_file_paths(cwd, env);
+        let global_path = crate::config::discovery::xdg_config_path(env)
+            .and_then(|settings| settings.parent().map(|dir| dir.join("permissions.json")));
+        let trust_store = crate::config::trust::TrustStore::load(env);
+        let mut notices = Vec::new();
+
+        for path in &paths {
+            let Ok(contents) = std::fs::read_to_string(path) else {
+                continue;
+            };
+
+            // Deny applies unconditionally, from every scope, regardless
+            // of trust -- D4 §3.
+            for rule in conway_core::permission_pattern::parse_deny_rules(&contents) {
+                self.grant_deny_pattern(rule, path.clone());
+            }
+
+            let is_global = global_path.as_deref() == Some(path.as_path());
+            let trusted = is_global || trust_store.is_trusted(path, &contents);
+            let allow_rules = conway_core::permission_pattern::parse_rules(&contents);
+            if !trusted {
+                if !allow_rules.is_empty() {
+                    notices.push(format!(
+                        "project permissions file {} has {} allow rule(s) that \
+                         require an explicit trust decision before they take \
+                         effect -- run `/trust permissions` to review and \
+                         trust it (its `deny` rules, if any, already apply)",
+                        path.display(),
+                        allow_rules.len()
+                    ));
+                }
+                continue;
+            }
+            for rule in allow_rules {
+                self.grant_permission_pattern_from_file(
+                    rule,
+                    conway_core::agent::PermissionScope::Session,
+                    granting_agent,
+                    path.clone(),
+                );
+            }
+        }
+
+        PermissionLoadReport { paths, notices }
+    }
+
+    /// Records an explicit trust decision for `path`'s CURRENT bytes on
+    /// disk (`crate::config::trust::TrustStore::trust`) and immediately
+    /// installs its `allow` rules for this running session -- so trusting
+    /// takes effect now, not only on the next restart. Returns the number
+    /// of allow rules installed.
+    ///
+    /// This is the ONLY path that writes a trust record, and it is only
+    /// ever invoked by an explicit operator action (the TUI's `/trust
+    /// permissions`) -- never automatically, never as a side effect of
+    /// [`Self::load_permission_files`] (board item
+    /// 01KYT8SGX32CP56PRJNG72V2W5, D4 §5/§9: no startup prompt, no silent
+    /// self-trust).
+    pub fn trust_permission_file(
+        &self,
+        env: &std::collections::HashMap<String, String>,
+        path: &std::path::Path,
+        granting_agent: conway_core::ids::AgentId,
+    ) -> std::io::Result<usize> {
+        crate::config::trust::TrustStore::trust(env, path)?;
+        let contents = std::fs::read_to_string(path)?;
+        let rules = conway_core::permission_pattern::parse_rules(&contents);
+        let count = rules.len();
+        for rule in rules {
+            self.grant_permission_pattern_from_file(
+                rule,
+                conway_core::agent::PermissionScope::Session,
+                granting_agent,
+                path.to_path_buf(),
+            );
+        }
+        Ok(count)
     }
 
     pub fn config(&self) -> &ConwayConfig {

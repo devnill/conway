@@ -492,11 +492,17 @@ pub struct AppState {
     /// Empty when neither scope resolves, in which case a grant applies
     /// to the session but is not written anywhere.
     pub permission_paths: Vec<std::path::PathBuf>,
-    /// V2b: human-readable descriptions of the active pattern grants, for
-    /// the settings review list. A mirror of the broker's
-    /// `active_patterns()`, refreshed when `/settings` opens — the broker
-    /// remains the authority.
-    pub permission_grants: Vec<String>,
+    /// V2b: the active pattern ALLOW grants, for the settings review list.
+    /// A mirror of the broker's `active_patterns()`, refreshed when
+    /// `/settings` opens and after any revoke action — the broker remains
+    /// the authority. Board item 01KYND4WGHSZXW5YQ6ZWHCDDNN: kept as the
+    /// structured `(rule, origin)` pair rather than a pre-formatted string
+    /// so `view/settings.rs::build_tree` can both LABEL a row (via
+    /// `rule.describe()`/`origin.describe()`) and ADDRESS it for per-rule
+    /// revocation — a formatted string alone could show a grant but never
+    /// name it to `Conway::revoke_permission_pattern`.
+    pub permission_grants:
+        Vec<(conway::PatternRule, conway::PatternOrigin)>,
     /// The transcript's scroll offset (wrapped lines from the top), only
     /// meaningful while `follow_tail` is `false` -- see that field's own
     /// doc. Mutated by [`Self::scroll_page_up`]/[`Self::scroll_page_down`]

@@ -102,7 +102,8 @@ pub(crate) fn press(state: &mut AppState, event: KeyEvent, area: Rect) -> Action
         // half is covered where the facade lives.
         Action::GrantPermissionPattern(_)
         | Action::CyclePermissionMode
-        | Action::RevokePermissionGrants => {}
+        | Action::RevokePermissionGrants
+        | Action::RevokePermissionPattern(_, _) => {}
         Action::ScrollLineUp => apply_line_scroll(state, area, true),
         Action::ScrollLineDown => apply_line_scroll(state, area, false),
         Action::JumpToTop => {

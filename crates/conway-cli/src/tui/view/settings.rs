@@ -91,6 +91,14 @@ pub(crate) const LEAF_TOOL_PREVIEW_LINES: &str = "tool_preview_lines";
 pub(crate) const LEAF_PERMISSION_MODE: &str = "permission_mode";
 /// V2b: drops every pattern grant and cached allow-always.
 pub(crate) const LEAF_REVOKE_GRANTS: &str = "revoke_grants";
+/// Board item 01KYND4WGHSZXW5YQ6ZWHCDDNN: prefix for one grant row's own
+/// leaf id, `"{LEAF_REVOKE_GRANT_PREFIX}{index}"` where `index` is the
+/// row's position in `state.permission_grants` at the moment this tree was
+/// built. `input::activate_settings_selection` resolves that index back
+/// into `state.permission_grants` in the SAME call that built this tree, so
+/// there is no window in which the index could point at a different grant
+/// than the one rendered — see that function's own doc.
+pub(crate) const LEAF_REVOKE_GRANT_PREFIX: &str = "revoke_grant:";
 
 /// The two top-level group labels (see this module's own doc, "Grouping").
 /// `pub(crate)` for the same reason the leaf ids are -- `input.rs` and this
@@ -140,10 +148,16 @@ pub(crate) fn build_tree(state: &AppState) -> MenuState {
                 LEAF_TOOL_PREVIEW_LINES,
             )],
         ),
-        // V2b. The grant list is rendered as non-selectable label text
-        // rather than as leaves: per-rule revocation is not implemented,
-        // so a selectable row that did nothing on Enter would be a worse
-        // lie than a plainly inert one. Revoke-all is the shipped floor.
+        // Board item 01KYND4WGHSZXW5YQ6ZWHCDDNN: each active grant is now a
+        // real, selectable leaf row with a destructive action (revoke)
+        // rather than inert label text -- the reasoning that made a
+        // selectable-but-inert row "a worse lie than an obviously static
+        // one" held only until per-rule revocation existed to back it; it
+        // now does (`Conway::revoke_permission_pattern`). The row's label
+        // is unchanged (`[origin] description`, `describe()`) plus an
+        // explicit "(Enter to revoke)" hint, so the destructive action is
+        // named before it happens, not just implied by the row becoming
+        // selectable.
         group_node(PERMISSIONS_GROUP, state, {
             let mut rows = vec![MenuNode::leaf(
                 format!(
@@ -155,8 +169,15 @@ pub(crate) fn build_tree(state: &AppState) -> MenuState {
             if state.permission_grants.is_empty() {
                 rows.push(MenuNode::leaf("no active grants".to_string(), ""));
             } else {
-                for grant in &state.permission_grants {
-                    rows.push(MenuNode::leaf(format!("granted: {grant}"), ""));
+                for (i, (rule, origin)) in state.permission_grants.iter().enumerate() {
+                    rows.push(MenuNode::leaf(
+                        format!(
+                            "granted: [{}] {} (Enter to revoke)",
+                            origin.describe(),
+                            rule.describe()
+                        ),
+                        format!("{LEAF_REVOKE_GRANT_PREFIX}{i}"),
+                    ));
                 }
                 rows.push(MenuNode::leaf(
                     "revoke all grants (Enter)".to_string(),
@@ -377,14 +398,63 @@ mod tests {
             "an empty grant list says so rather than rendering nothing: {text}"
         );
 
-        state.permission_grants =
-            vec!["`bash` commands starting with `git status`".to_string()];
+        state.permission_grants = vec![(
+            conway::PatternRule::parse("bash:git status").expect("valid rule"),
+            conway::PatternOrigin::Interactive,
+        )];
         let text = plain_rows(&state);
-        assert!(text.contains("granted: `bash` commands starting with `git status`"), "{text}");
+        assert!(
+            text.contains("granted: [interactive] `bash` commands starting with `git status` (Enter to revoke)"),
+            "{text}"
+        );
         assert!(
             text.contains("revoke all grants"),
             "revoke-all appears only once there is something to revoke: {text}"
         );
+    }
+
+    /// Board item 01KYND4WGHSZXW5YQ6ZWHCDDNN: each grant row is now a real
+    /// selectable leaf, addressed by its position in `state.
+    /// permission_grants` at build time -- not the inert `""` id the
+    /// pre-revocation shape used.
+    #[test]
+    fn each_grant_row_is_a_selectable_leaf_addressed_by_its_index() {
+        let mut state = AppState::new(AgentId::new());
+        state.open_settings();
+        state.permission_grants = vec![
+            (
+                conway::PatternRule::parse("bash:git status").expect("valid rule"),
+                conway::PatternOrigin::Interactive,
+            ),
+            (
+                conway::PatternRule::parse("read:*").expect("valid rule"),
+                conway::PatternOrigin::File(std::path::PathBuf::from(
+                    "/repo/.conway/permissions.json",
+                )),
+            ),
+        ];
+
+        let rows = build_tree(&state).rows();
+        let grant_rows: Vec<_> = rows
+            .iter()
+            .filter(|r| r.label.starts_with("granted:"))
+            .collect();
+        assert_eq!(grant_rows.len(), 2);
+        assert_eq!(
+            grant_rows[0].kind,
+            menu::MenuRowKind::Leaf {
+                id: format!("{LEAF_REVOKE_GRANT_PREFIX}0")
+            }
+        );
+        assert_eq!(
+            grant_rows[1].kind,
+            menu::MenuRowKind::Leaf {
+                id: format!("{LEAF_REVOKE_GRANT_PREFIX}1")
+            }
+        );
+        assert!(grant_rows[1]
+            .label
+            .contains("/repo/.conway/permissions.json"));
     }
 
     /// The mode label in the menu tracks `AppState`, so it cannot show a
