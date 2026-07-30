@@ -9,6 +9,7 @@
 pub mod agent;
 pub mod capabilities;
 pub mod config;
+pub mod containment;
 pub mod content;
 pub mod error;
 pub mod event;
