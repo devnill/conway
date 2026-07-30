@@ -157,6 +157,29 @@ pub enum Entry {
     Notice {
         text: String,
     },
+    /// A runtime error surfaced via `Event::Error` (board item
+    /// 01KYND6GCCKYSYD0VDGJD1ZCXG). Kept as its OWN variant rather than a
+    /// field bolted onto [`Entry::Notice`]: a field would still let severity
+    /// leak into an existing cyan-styled call site by accident, and (more
+    /// concretely) a recon on this item found a field/constructor approach
+    /// touches every one of `Entry::Notice`'s ~50 construction sites while a
+    /// separate variant touches exactly three (this apply arm,
+    /// `view/transcript.rs::entry_lines`, and the variant-enumerating
+    /// clean-copy test). `fatal: true` renders in `theme.fatal_error`
+    /// (Red+Bold) -- conway's loudest possible message, previously
+    /// indistinguishable from a routine cyan notice save for the word
+    /// "fatal" inside the string. `fatal: false` is a real, non-recoverable-
+    /// looking-but-actually-recoverable error too, so it does not fall back
+    /// to `theme.notice` either: it renders in `theme.error` (plain Red, the
+    /// same slot the `/ask` modal's failed-fate line already uses), one step
+    /// down from `fatal_error`'s bold. Red still means failure at both
+    /// severities; only the loudest one gets the bold escalation. See
+    /// `entry_lines`'s `Entry::Error` arm for the one place this severity
+    /// decision is made.
+    Error {
+        text: String,
+        fatal: bool,
+    },
 }
 
 /// A tool call's lifecycle, as reflected in one [`Entry::Tool`].
@@ -649,19 +672,28 @@ pub struct AppState {
     pub turn_transcript_start: usize,
     /// T3: the focused agent's serving model display name, from
     /// `Event::ModelDecision { chosen }` (`ModelRef::to_string()`). `None`
-    /// until the first `ModelDecision` arrives on the focused agent's
-    /// stream (a brand-new session has not yet routed a turn). Reset to
-    /// `None` on [`Self::focus_agent`]; repopulated when the new focus's
-    /// own first `ModelDecision` arrives. The status line's `model` field
-    /// renders this and is omitted while it is `None`.
+    /// until a `ModelDecision` is known for the focused agent. Reset to
+    /// `None` on [`Self::focus_agent`], but -- T3 follow-up -- not left
+    /// there: `app.rs`'s `try_focus_agent` immediately re-fetches the
+    /// serving model via `SessionHandle::last_model` (reads the last
+    /// `LogRecord::Assistant` directly, so this works for an agent that has
+    /// already run a turn with no LIVE `ModelDecision` required) and also
+    /// repopulated whenever the focused agent's own next live
+    /// `ModelDecision` arrives. The status line's `model` field renders
+    /// this and is omitted while it is `None` (genuinely no turn yet, on
+    /// either path).
     pub focused_model: Option<String>,
     /// T3: the focused model's max context window in tokens, looked up from
-    /// the local model-metadata file (`[models.metadata_path]`) by the
-    /// focused model's `"backend/model"` string at the time a
-    /// `ModelDecision` arrives. `None` when the metadata file has no entry
-    /// for the chosen model (or no metadata file exists) -- the status line
-    /// then renders the raw `focused_ctx_tokens` figure (e.g. `ctx 12.3k`)
-    /// instead of a percentage. Reset to `None` on [`Self::focus_agent`].
+    /// the local model-metadata map (`Conway::model_metadata`, T3
+    /// follow-up: no longer re-read from disk here -- see
+    /// [`Self::model_max_context`]'s own doc) by the focused model's
+    /// `"backend/model"` string at the time a `ModelDecision` arrives OR
+    /// `try_focus_agent`'s re-fetch resolves one (same lookup, same
+    /// fallback-to-bare-model-id rule, in both places). `None` when the
+    /// metadata map has no entry for the chosen model (or is empty) -- the
+    /// status line then renders the raw `focused_ctx_tokens` figure (e.g.
+    /// `ctx 12.3k`) instead of a percentage. Reset to `None` on
+    /// [`Self::focus_agent`].
     pub focused_model_max_context: Option<u32>,
     /// T3: the focused agent's cumulative context-occupancy estimate, the
     /// deduped-by-`SegmentId` sum of every
@@ -669,7 +701,13 @@ pub struct AppState {
     /// agent's own stream since the focus began. The status line's `ctx`
     /// field renders `focused_ctx_tokens / focused_model_max_context` as a
     /// percentage when the max is known, else the raw token count. Reset to
-    /// 0 on [`Self::focus_agent`].
+    /// 0 on [`Self::focus_agent`], then -- T3 follow-up -- immediately
+    /// re-seeded by `app.rs`'s `try_focus_agent` from
+    /// `SessionHandle::context_report_current`'s `total_tokens_est` (and
+    /// [`Self::focused_seen_segments`] from that same report's segment
+    /// ids, so the very next live `ContextSegmentAdded` dedupes correctly
+    /// against what this fetch already counted) -- see that method's own
+    /// doc for why a fresh focus no longer needs to wait on a live turn.
     ///
     /// Dedup rationale (T3 code-review fix 1): the runtime's
     /// `seen_segments` is a LOCAL `HashSet` constructed fresh at the top of
@@ -682,20 +720,24 @@ pub struct AppState {
     /// `ctx 100%` and never comes back down. [`Self::focused_seen_segments`]
     /// is the dedup set; accumulation is gated on its `insert(segment)`
     /// returning true (genuinely new segment id for this focused session).
-    /// A proper re-fetch of the true total from the runtime on focus is
-    /// tracked as a separate follow-up board item; until that lands a
-    /// freshly focused agent shows `ctx 0%` until its own next LIVE
-    /// `ContextSegmentAdded` arrives (replay does NOT synthesize these
-    /// events -- `record_to_event` maps a replayed `Assistant` record to
-    /// `TextDelta`, never to `ContextSegmentAdded`).
+    /// Replay itself still does NOT synthesize `ContextSegmentAdded`
+    /// (`record_to_event` maps a replayed `Assistant` record to `TextDelta`,
+    /// never to `ContextSegmentAdded`) -- but as of the T3 follow-up above,
+    /// nothing depends on replay for this figure any more: `try_focus_agent`
+    /// re-fetches the true total directly, so a freshly focused agent shows
+    /// its real `ctx%` immediately, not `ctx 0%` pending its own next live
+    /// turn.
     pub focused_ctx_tokens: u64,
     /// T3 code-review fix 1: per-focused-agent session-scoped dedup set for
     /// `ContextSegmentAdded` segment ids. Accumulation into
     /// [`Self::focused_ctx_tokens`] only happens when
     /// `focused_seen_segments.insert(segment)` returns true. Reset on
     /// [`Self::focus_agent`] -- a freshly focused agent starts with an
-    /// empty seen-set and dedup accumulates correctly for its session from
-    /// there.
+    /// empty seen-set -- then (T3 follow-up) immediately re-seeded by
+    /// `app.rs`'s `try_focus_agent` with the segment ids already counted in
+    /// the re-fetched [`Self::focused_ctx_tokens`] total, so dedup stays
+    /// correct against a live agent's next `ContextSegmentAdded` instead of
+    /// double-counting a segment that fetch already included.
     pub focused_seen_segments: HashSet<SegmentId>,
     /// T3: the current git branch, read once at startup via
     /// `git rev-parse --abbrev-ref HEAD` (best-effort: `None` when not a
@@ -724,11 +766,17 @@ pub struct AppState {
     /// never a panic).
     pub tool_preview_lines: u32,
     /// T3: the local model-metadata map (`"backend/model"` -> max context
-    /// tokens), loaded once at `App::new` from `[models.metadata_path]`.
-    /// `apply`'s `ModelDecision` arm looks up the chosen model here to set
-    /// `focused_model_max_context`. Empty when no metadata file exists or
-    /// it names no models -- the status line then renders raw context
-    /// tokens instead of a percentage.
+    /// tokens), derived once at `App::new` from `Conway::model_metadata()`
+    /// (T3 follow-up: no longer a second, independent read of
+    /// `[models.metadata_path]` -- `ConwayBuilder::build` already loaded and
+    /// parsed that file once; `App::new` now reuses that SAME parse instead
+    /// of re-reading the file itself, so there is exactly one code path
+    /// that can drift from the file's actual contents). `apply`'s
+    /// `ModelDecision` arm, and `app.rs`'s `try_focus_agent` re-fetch alike,
+    /// look up the chosen model here to set `focused_model_max_context`.
+    /// Empty when the builder found no metadata file or it named no models
+    /// -- the status line then renders raw context tokens instead of a
+    /// percentage.
     pub model_max_context: HashMap<String, u32>,
     /// T4: whether reasoning-trace entries ([`Entry::Reasoning`]) are
     /// rendered in the transcript. Defaults `true` (reasoning EXPANDED by
@@ -1060,17 +1108,24 @@ impl AppState {
         // T3: the model display name, max-context, and cumulative context
         // tokens are per focused-agent -- a freshly focused agent has no
         // routing decision yet and no accumulated context figure until its
-        // own events arrive. `app.rs` re-fetches the true cumulative total
-        // via `SessionHandle::session_usage` immediately after calling this
-        // (see `focused_agent_usage`'s own doc). The context-token estimate
-        // does NOT repopulate from replay: `record_to_event` (WI-140) maps a
-        // replayed `Assistant` record to `TextDelta`, never to
-        // `ContextSegmentAdded` or `ModelDecision`, so a freshly focused
-        // agent shows `ctx 0%` / no model until its own next LIVE
-        // `ContextSegmentAdded`/`ModelDecision` arrives. The proper
-        // re-fetch of the true context total from the runtime on focus is
-        // tracked as a separate follow-up board item; until that lands the
-        // zeroing below is what the renderer honestly reflects.
+        // own events arrive, so this zeroing is correct for the instant
+        // `focus_agent` itself runs. It does NOT stick, though: replay
+        // still does not repopulate these (`record_to_event` (WI-140) maps
+        // a replayed `Assistant` record to `TextDelta`, never to
+        // `ContextSegmentAdded` or `ModelDecision`), but T3 follow-up's
+        // `app.rs::try_focus_agent` re-fetches all three authoritatively
+        // right after calling this -- `SessionHandle::last_model` for the
+        // serving model (reads the last `LogRecord::Assistant` directly,
+        // not a live `ModelDecision`) and
+        // `SessionHandle::context_report_current` for the cumulative
+        // context total (falling back to the durable store when this
+        // process has no live report yet -- see that method's own doc for
+        // the resumed-session case) -- alongside the pre-existing
+        // `session_usage` re-fetch (see `focused_agent_usage`'s own doc).
+        // A freshly focused agent that has already run a turn therefore
+        // shows its real model and `ctx%` immediately; only a GENUINELY
+        // fresh agent (no turn anywhere yet) legitimately still shows
+        // `ctx 0%` / no model, pending its own first live turn.
         self.focused_model = None;
         self.focused_model_max_context = None;
         self.focused_ctx_tokens = 0;
@@ -1967,9 +2022,20 @@ impl AppState {
                     text: "backend degraded".to_string(),
                 });
             }
+            // board item 01KYND6GCCKYSYD0VDGJD1ZCXG: was pushed as an
+            // `Entry::Notice`, rendering `theme.notice`'s cyan regardless of
+            // `fatal` -- a genuine fatal runtime error looked identical to
+            // "backend degraded". Now a dedicated `Entry::Error`, styled by
+            // severity in `entry_lines` (see that variant's doc). The
+            // `"fatal "` text prefix is kept even though severity is now
+            // carried structurally by the `fatal` field: `entry_lines`'s
+            // clean-copy guarantee means a copied transcript carries no
+            // style/color at all, so the word is the only trace of severity
+            // that survives a copy-paste.
             Event::Error { error, fatal } => {
-                self.transcript.push(Entry::Notice {
+                self.transcript.push(Entry::Error {
                     text: format!("{}error: {error}", if *fatal { "fatal " } else { "" }),
+                    fatal: *fatal,
                 });
             }
             // WI-140 review fix (finding 1, CRITICAL): this used to fall
@@ -2461,6 +2527,76 @@ mod tests {
             agent_def: None,
             inherited_upto: None,
             ephemeral: false,
+        }
+    }
+
+    // ---- board item 01KYND6GCCKYSYD0VDGJD1ZCXG: `Event::Error` -> `Entry::Error` ----
+
+    /// `Event::Error { fatal: true }` pushes a dedicated `Entry::Error`
+    /// (never `Entry::Notice`), carrying `fatal: true` and the `"fatal "`
+    /// text prefix through to the entry -- the prefix is kept even though
+    /// severity is now structural, because a clean-copied transcript carries
+    /// no style at all, so the word is the only surviving trace.
+    #[test]
+    fn fatal_error_event_pushes_dedicated_error_entry() {
+        let session = SessionId::new();
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+
+        state.apply(&envelope(
+            session,
+            root,
+            Event::Error {
+                error: conway_core::error::ConwayError::Config {
+                    detail: "boom".to_string(),
+                },
+                fatal: true,
+            },
+        ));
+
+        assert_eq!(state.transcript.len(), 1);
+        match &state.transcript[0] {
+            Entry::Error { text, fatal } => {
+                assert!(*fatal);
+                assert!(
+                    text.starts_with("fatal error:"),
+                    "expected the 'fatal ' prefix to survive into the entry text: {text:?}"
+                );
+            }
+            other => panic!("expected Entry::Error, got {other:?}"),
+        }
+    }
+
+    /// `Event::Error { fatal: false }` is a real, recoverable error -- it
+    /// also gets `Entry::Error`, not `Entry::Notice`, just with `fatal:
+    /// false` and no `"fatal "` prefix in the text.
+    #[test]
+    fn non_fatal_error_event_pushes_dedicated_error_entry() {
+        let session = SessionId::new();
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+
+        state.apply(&envelope(
+            session,
+            root,
+            Event::Error {
+                error: conway_core::error::ConwayError::Config {
+                    detail: "retrying".to_string(),
+                },
+                fatal: false,
+            },
+        ));
+
+        assert_eq!(state.transcript.len(), 1);
+        match &state.transcript[0] {
+            Entry::Error { text, fatal } => {
+                assert!(!*fatal);
+                assert!(
+                    text.starts_with("error:") && !text.starts_with("fatal error:"),
+                    "non-fatal must not carry the 'fatal ' prefix: {text:?}"
+                );
+            }
+            other => panic!("expected Entry::Error, got {other:?}"),
         }
     }
 

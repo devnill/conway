@@ -359,6 +359,68 @@ async fn context_report_segments_are_ordered_with_provenance() {
 }
 
 // ---------------------------------------------------------------------
+// context_report_current() / last_model() (T3 follow-up)
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn context_report_current_matches_the_live_report_for_an_agent_this_process_ran() {
+    let store = Arc::new(FakeStore::new());
+    let conway = build_conway_with_echo_backend(store);
+    let handle = new_handle(&conway).await;
+
+    let turn = handle.prompt("hi").await.expect("prompt should succeed");
+    let _ = tokio::time::timeout(Duration::from_secs(5), turn.result())
+        .await
+        .expect("result() must not hang")
+        .expect("result() should succeed");
+
+    let live = handle
+        .context_report(handle.root())
+        .await
+        .expect("context_report should succeed");
+    let current = handle
+        .context_report_current(handle.root())
+        .await
+        .expect("context_report_current should succeed");
+    assert_eq!(
+        current, live,
+        "for an agent this process itself drove a turn for, context_report_current \
+         must agree with the plain live context_report -- the durable fallback is \
+         only for the case where the live slot is empty"
+    );
+}
+
+#[tokio::test]
+async fn last_model_is_none_before_any_turn_and_the_served_model_after() {
+    let store = Arc::new(FakeStore::new());
+    let conway = build_conway_with_echo_backend(store);
+    let handle = new_handle(&conway).await;
+
+    assert_eq!(
+        handle
+            .last_model(handle.root())
+            .await
+            .expect("last_model should succeed"),
+        None,
+        "a brand-new agent has completed no turn, so there is no served model yet"
+    );
+
+    let turn = handle.prompt("hi").await.expect("prompt should succeed");
+    let _ = tokio::time::timeout(Duration::from_secs(5), turn.result())
+        .await
+        .expect("result() must not hang")
+        .expect("result() should succeed");
+
+    let model = handle
+        .last_model(handle.root())
+        .await
+        .expect("last_model should succeed")
+        .expect("a completed turn must have a served model");
+    assert_eq!(model.backend, BackendId::new("fake"));
+    assert_eq!(model.model, conway_core::ids::ModelId::new("echo-model"));
+}
+
+// ---------------------------------------------------------------------
 // transcript()
 // ---------------------------------------------------------------------
 

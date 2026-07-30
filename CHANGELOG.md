@@ -5,6 +5,79 @@ All notable changes to **conway** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Declarative provider profiles.** Per-provider wire behavior (chat path,
+  `stream_options`, multi-block user content, `parallel_tool_calls`,
+  `max_completion_tokens` vs `max_tokens`, `reasoning_effort`, tool-call
+  parsing strategy) and baseline capabilities are now data
+  (`conway_backends::profile::Profile`), not a fixed `Dialect` match arm.
+  The five existing dialects (`openai`, `ollama`, `vllm_hermes`,
+  `lm_studio`, `llama_cpp_server`) are embedded as built-in profiles with
+  byte-identical behavior to before; `Dialect` itself is unchanged and
+  still works everywhere it did. A new provider — including the **Moonshot
+  Kimi platform API** (`kimi`, distinct from the already-shipped Kimi Code
+  Anthropic-compatible path) — is added as profile data, no code change or
+  recompile required. A user can add their own profile via
+  `.conway/profiles.toml` (project-scoped, then global — the same
+  discovery layering as permission rules) and list every loaded profile
+  with its origin (`ProfileStore::list`); an override is always visible,
+  never silent. `docs/crates/conway-backends.md` documents the format, the
+  built-ins, and how to add one. (`crates/conway-backends/src/profile.rs`,
+  `crates/conway-backends/src/tool_calls/mod.rs`, `crates/conway/src/builder.rs`,
+  `crates/conway/src/config/discovery.rs`)
+
+- **`cached_tokens` now reads either wire shape a provider sends.** OpenAI
+  nests it under `usage.prompt_tokens_details.cached_tokens`; Kimi's
+  Moonshot platform API reports it at the top level, `usage.cached_tokens`.
+  `openai_compat::wire::map_usage` now reads whichever is present (nested
+  wins if a server sends both), so prompt-cache accounting is correct for
+  both shapes with no per-provider flag.
+  (`crates/conway-backends/src/openai_compat/wire.rs`)
+
+### Fixed
+
+- **A fatal runtime error rendered as an ordinary cyan notice in the TUI,
+  indistinguishable from routine chatter like "backend degraded" save for
+  the word "fatal" inside the text.** `Event::Error` now pushes its own
+  `Entry::Error { text, fatal }` transcript entry instead of `Entry::Notice`:
+  `fatal: true` renders in `theme.fatal_error` (red + bold), `fatal: false`
+  renders in `theme.error` (red, one severity step down) — both visibly
+  distinct from `theme.notice`'s cyan, matching the palette's "red means
+  failure" rule. (`crates/conway-cli/src/tui/state.rs`,
+  `crates/conway-cli/src/tui/view/transcript.rs`)
+
+- **Focusing an agent mid-conversation showed a lie: `ctx 0%` and no model,
+  even when that agent had already run a turn.** `focus_agent` zeroed
+  `focused_model`/`focused_model_max_context`/`focused_ctx_tokens` on every
+  switch, and replay never repopulated them (`record_to_event` maps a
+  replayed `Assistant` record to `TextDelta`, never to `ModelDecision` or
+  `ContextSegmentAdded`) — the true figures only reappeared once the newly
+  focused agent produced its own next *live* turn. `App::try_focus_agent`
+  now re-fetches both authoritatively right after switching focus, the same
+  way it already did for `focused_agent_usage`: the serving model via the
+  new `SessionHandle::last_model` (the last `LogRecord::Assistant` in the
+  agent's own log), and the context total via the new
+  `SessionHandle::context_report_current`, which also closes a second,
+  related gap — a session resumed from a prior process has an empty live
+  context report in this one, so this method falls back to the most
+  recently *persisted* report rather than silently showing 0.
+  (`crates/conway/src/session_handle.rs`, `crates/conway-runtime/src/runtime.rs`,
+  `crates/conway-cli/src/tui/app.rs`, `crates/conway-cli/src/tui/commands.rs`,
+  `crates/conway-cli/src/tui/state.rs`)
+
+- **The TUI re-read and re-parsed `[models.metadata_path]` from disk a
+  second time at startup, independently of the facade's own load** — two
+  code paths that agreed only because both happened to implement the
+  identical "missing file → empty map" fallback. `App::new` now reads the
+  new `Conway::model_metadata()` accessor instead, which exposes the exact
+  map `ConwayBuilder::build` already loaded to construct the
+  `CapabilityIndex` — one load, one source of truth.
+  (`crates/conway/src/conway.rs`, `crates/conway/src/builder.rs`,
+  `crates/conway-cli/src/tui/app.rs`)
+
 ## [0.6.0] — 2026-07-30
 
 ### Overview

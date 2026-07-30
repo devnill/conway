@@ -15,6 +15,7 @@ use conway_core::routing::RouteRequest;
 use conway_routing::{DeclarativeRouter, ExplainReport, RoutingExplain};
 use conway_runtime::runtime::{ResumeSpec, RootSpec, Runtime};
 
+use crate::config::model_metadata::ModelMetadata;
 use crate::config::{ConfigWarning, ConwayConfig};
 use crate::error::{ConwayError, Result};
 use crate::intent::AgentIntent;
@@ -36,6 +37,14 @@ pub struct Conway {
     store: Arc<dyn SessionStore>,
     router_explain: Option<Arc<DeclarativeRouter>>,
     warnings: Arc<Vec<ConfigWarning>>,
+    // T3 follow-up: the local model-metadata map `ConwayBuilder::build`
+    // already loads (`[models.metadata_path]`, step 2) to construct the
+    // `CapabilityIndex` -- kept here too so `Self::model_metadata` can hand
+    // the SAME loaded map back out. Before this field existed, every
+    // consumer of that file (the TUI's `App::new`, ~app.rs) re-read and
+    // re-parsed it from disk on its own, a second code path that agreed
+    // with the builder's only by coincidence.
+    model_metadata: Arc<ModelMetadata>,
 }
 
 /// How fresh a store liveness marker must be for `sweep_stale_modal_asks` to
@@ -53,6 +62,7 @@ impl Conway {
         store: Arc<dyn SessionStore>,
         router_explain: Option<Arc<DeclarativeRouter>>,
         warnings: Vec<ConfigWarning>,
+        model_metadata: ModelMetadata,
     ) -> Self {
         Self {
             rt,
@@ -60,6 +70,7 @@ impl Conway {
             store,
             router_explain,
             warnings: Arc::new(warnings),
+            model_metadata: Arc::new(model_metadata),
         }
     }
 
@@ -119,6 +130,21 @@ impl Conway {
 
     pub fn config(&self) -> &ConwayConfig {
         &self.config
+    }
+
+    /// The local model-metadata map (`[models.metadata_path]`), loaded ONCE
+    /// by `ConwayBuilder::build` and kept here so every consumer reads the
+    /// SAME parse of the SAME file instead of each re-reading it from disk
+    /// on its own (T3 follow-up: `conway-cli`'s `App::new` previously
+    /// re-read `[models.metadata_path]` itself, a second code path that
+    /// happened to agree with the builder's only because both implement the
+    /// identical "missing file -> empty map" fallback -- a duplication that
+    /// could silently drift if either side's load logic ever changed alone).
+    /// Empty (never an error) when the builder found no metadata file, or
+    /// found one that named no models -- mirrors
+    /// `config::model_metadata::load`'s own "missing is expected" contract.
+    pub fn model_metadata(&self) -> &ModelMetadata {
+        &self.model_metadata
     }
 
     /// Creates a new session and starts its root agent.

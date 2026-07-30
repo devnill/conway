@@ -26,8 +26,8 @@
 //! `/timestamps` now, the same as any other retired command name.
 
 use conway::{
-    AgentId, AgentIntent, ContextReport, Conway, Event, ForkSpec, Provenance, RoutingReason,
-    SessionHandle, SessionId, SpawnSpec, SubagentMode, ToolSelector, Usage,
+    AgentId, AgentIntent, ContextReport, Conway, Event, ForkSpec, ModelRef, Provenance,
+    RoutingReason, SessionHandle, SessionId, SpawnSpec, SubagentMode, ToolSelector, Usage,
 };
 
 use super::state::{AppState, AskFate, Entry, IntentChoice, IntentConfirm, Mode};
@@ -355,6 +355,14 @@ pub enum Effect {
 #[async_trait::async_trait]
 pub trait Host {
     fn root(&self) -> AgentId;
+    /// A thin passthrough to `SessionHandle::context_report_current` (T3
+    /// follow-up) -- NOT the plain `SessionHandle::context_report`: the
+    /// `_current` variant closes that method's documented resumed-session
+    /// gap (falls back to the most recently PERSISTED report when this
+    /// process has no live one yet for `agent`), so every caller reached
+    /// through this trait -- `/context` and `try_focus_agent`'s re-fetch
+    /// alike -- gets the fallback for free rather than each needing to know
+    /// to ask for it.
     async fn context_report(&self, agent: AgentId) -> conway::Result<ContextReport>;
     /// The focused agent's cumulative token spend (board item
     /// 01KYAGP11FF9YC3G60TWHHKKST): a thin passthrough to
@@ -362,6 +370,12 @@ pub trait Host {
     /// every other method here -- so `app.rs`'s status-line refresh logic
     /// stays unit-testable against a fake, with no live `Runtime`.
     async fn session_usage(&self, agent: AgentId) -> conway::Result<Usage>;
+    /// T3 follow-up: a thin passthrough to `SessionHandle::last_model` --
+    /// the model that served `agent`'s most recent completed turn, `None`
+    /// if it has not completed one. `try_focus_agent`'s re-fetch is this
+    /// trait's only caller today; routed through `Host` like every other
+    /// method here so that re-fetch stays unit-testable against a fake.
+    async fn last_model(&self, agent: AgentId) -> conway::Result<Option<ModelRef>>;
     async fn fork(&self, from: AgentId, spec: ForkSpec) -> conway::Result<AgentId>;
     async fn spawn(&self, from: AgentId, spec: SpawnSpec) -> conway::Result<AgentId>;
     async fn steer(&self, target: AgentId, text: String) -> conway::Result<()>;
@@ -411,11 +425,15 @@ impl Host for LiveHost<'_> {
     }
 
     async fn context_report(&self, agent: AgentId) -> conway::Result<ContextReport> {
-        self.handle.context_report(agent).await
+        self.handle.context_report_current(agent).await
     }
 
     async fn session_usage(&self, agent: AgentId) -> conway::Result<Usage> {
         self.handle.session_usage(agent).await
+    }
+
+    async fn last_model(&self, agent: AgentId) -> conway::Result<Option<ModelRef>> {
+        self.handle.last_model(agent).await
     }
 
     async fn fork(&self, from: AgentId, spec: ForkSpec) -> conway::Result<AgentId> {
@@ -1403,6 +1421,11 @@ mod tests {
 
         async fn session_usage(&self, _agent: AgentId) -> conway::Result<Usage> {
             self.calls.lock().unwrap().push("session_usage");
+            Err(fake_error())
+        }
+
+        async fn last_model(&self, _agent: AgentId) -> conway::Result<Option<ModelRef>> {
+            self.calls.lock().unwrap().push("last_model");
             Err(fake_error())
         }
 

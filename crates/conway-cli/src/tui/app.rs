@@ -224,23 +224,25 @@ impl App {
             .as_ref()
             .or(Some(&conway.config().cwd))
             .map(|p| p.display().to_string());
-        // T3: load the local model-metadata map (`[models.metadata_path]`)
-        // once at startup so the status line's `ctx%` field can look up
-        // the focused model's max context window by `"backend/model"`
-        // string. Best-effort: a missing/unreadable file yields an empty
-        // map, which makes the renderer fall back to raw tokens (no
-        // percentage) -- never an error, never blocks startup.
-        let metadata_path = conway
-            .config()
-            .cwd
-            .join(&conway.config().models.metadata_path);
-        if let Ok(metadata) = conway::config::model_metadata::load(&metadata_path) {
-            state.model_max_context = metadata
-                .models
-                .iter()
-                .map(|(k, v)| (k.clone(), v.max_context_tokens))
-                .collect();
-        }
+        // T3 follow-up: read the local model-metadata map
+        // (`[models.metadata_path]`) from `Conway::model_metadata` --
+        // `ConwayBuilder::build` already loaded and parsed this file once to
+        // construct the `CapabilityIndex`; this used to re-read and
+        // re-parse the SAME file itself, a second code path that agreed
+        // with the builder's only because both happen to implement the
+        // identical "missing file -> empty map" fallback. One load, one
+        // source of truth: the status line's `ctx%` field looks up the
+        // focused model's max context window by `"backend/model"` string
+        // from whatever `model_max_context` ends up holding here. Empty
+        // when the builder found no metadata (or it named no models) --
+        // the renderer then falls back to raw tokens (no percentage), same
+        // as before; never an error, never blocks startup.
+        state.model_max_context = conway
+            .model_metadata()
+            .models
+            .iter()
+            .map(|(k, v)| (k.clone(), v.max_context_tokens))
+            .collect();
         // T3: read the current git branch once at startup (best-effort,
         // no polling). On any failure (not a repo, git absent, non-UTF8
         // output) -> `None`, and the status line's `git` field is omitted.
@@ -892,6 +894,23 @@ impl App {
     /// otherwise stick). Best-effort: a failed fetch just leaves it at zero
     /// rather than failing the whole focus switch.
     ///
+    /// T3 follow-up (this item): `focus_agent` also zeroes
+    /// `focused_ctx_tokens`/`focused_model`/`focused_model_max_context` --
+    /// same problem, same fix shape. `host.context_report`/`host.last_model`
+    /// below are the authoritative re-fetches for those, run alongside the
+    /// `session_usage` one. Each is independently best-effort: a failed
+    /// fetch just leaves that one field at its post-`focus_agent` reset
+    /// rather than failing the whole switch, matching `session_usage`'s own
+    /// convention.
+    ///
+    /// `focused_seen_segments` is seeded from the fetched report's own
+    /// segment ids (not left empty) -- without this, the very next LIVE
+    /// `Event::ContextSegmentAdded` for a segment this fetch already
+    /// counted (e.g. a non-keep-alive child's fresh `AgentLoop` re-emitting
+    /// its whole existing context on the first turn of a new run --
+    /// `focused_seen_segments`'s own doc) would double-count it on top of
+    /// the total this fetch just established.
+    ///
     /// `on_fail_extra` (Fix 3, minor review finding): appended verbatim to
     /// the failure `Notice` when `agent_events` errors -- lets
     /// `SubmitOutcome::FocusNewSession`'s call site disclose that a pending
@@ -912,6 +931,22 @@ impl App {
                 };
                 if let Ok(usage) = host.session_usage(agent).await {
                     self.state.focused_agent_usage = usage;
+                }
+                if let Ok(report) = host.context_report(agent).await {
+                    self.state.focused_ctx_tokens = u64::from(report.total_tokens_est);
+                    self.state.focused_seen_segments =
+                        report.segments.iter().map(|entry| entry.segment).collect();
+                }
+                if let Ok(Some(model)) = host.last_model(agent).await {
+                    let name = model.to_string();
+                    let max = self
+                        .state
+                        .model_max_context
+                        .get(&name)
+                        .copied()
+                        .or_else(|| self.state.model_max_context.get(model.model.as_str()).copied());
+                    self.state.focused_model = Some(name);
+                    self.state.focused_model_max_context = max;
                 }
                 Some(stream)
             }
@@ -1398,6 +1433,55 @@ mod tests {
                 .any(|e| matches!(e, Entry::Notice { text } if text.contains("child's own prompt"))),
             "the child's replayed prompt must NOT fall back to a Notice, got {:?}",
             app.state.transcript
+        );
+    }
+
+    /// T3 follow-up acceptance test: focusing an agent that has already run
+    /// a turn shows its real serving model and a non-zero `ctx` total
+    /// IMMEDIATELY -- straight out of `try_focus_agent`, with nothing
+    /// drained from the freshly-subscribed stream yet (`AppState::apply`
+    /// never sees this stream at all in this test) and no live turn
+    /// required. Before this item, `focus_agent` zeroed both and nothing
+    /// repopulated them until the focused agent's own next LIVE
+    /// `ModelDecision`/`ContextSegmentAdded` -- this asserts the fix, not
+    /// just its absence of a crash.
+    #[tokio::test]
+    async fn focus_switch_shows_real_model_and_ctx_total_with_no_live_turn_required() {
+        let conway = build_conway_with_echo_backend();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway).await.expect("App::new should succeed");
+
+        let child = app
+            .handle
+            .spawn(app.handle.root(), conway::SpawnSpec::new("hi from the child"))
+            .await
+            .expect("spawn should succeed");
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            app.handle.await_agent(child),
+        )
+        .await;
+
+        let _events = app
+            .try_focus_agent(child, None)
+            .await
+            .expect("focusing a known child must succeed");
+
+        assert_eq!(
+            app.state.focused_model.as_deref(),
+            Some("fake/echo-model"),
+            "the serving model must be re-fetched from the child's own log, \
+             not left at try_focus_agent's `None` reset"
+        );
+        assert!(
+            app.state.focused_ctx_tokens > 0,
+            "the cumulative context total must be re-fetched non-zero for an \
+             agent that already ran a turn, not left at try_focus_agent's `0` reset"
+        );
+        assert!(
+            !app.state.focused_seen_segments.is_empty(),
+            "the re-fetch must also seed the dedup set from the report's own \
+             segments, or the child's next live turn would double-count them"
         );
     }
 }
