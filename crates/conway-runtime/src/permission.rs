@@ -241,12 +241,12 @@ impl PermissionBroker {
     /// Authorize one tool call, consulting the cache first and the gate on a
     /// miss.
     ///
-    /// Emission sequence, strictly: `PermissionRequested` → (cache hit, or
-    /// await the gate and insert a cache entry on `AllowAlways`) →
-    /// `PermissionResolved`. The cache's `RwLock` is never held across the
-    /// `await` on `self.gate.check` — every lock acquisition in this method
-    /// is a short, synchronous read or write that completes before any
-    /// `await` point.
+    /// Emission sequence, strictly: `PermissionRequested` → (plan-mode
+    /// denial, or cache hit, or await the gate and insert a cache entry on
+    /// `AllowAlways`) → `PermissionResolved`. The cache's `RwLock` is never
+    /// held across the `await` on `self.gate.check` — every lock
+    /// acquisition in this method is a short, synchronous read or write
+    /// that completes before any `await` point.
     pub async fn decide(&self, ctx: &PermissionCtx, call: &AuthorizedCall) -> PermissionOutcome {
         let key = CacheKey::for_call(call);
 
@@ -258,22 +258,13 @@ impl PermissionBroker {
             },
         );
 
-        if self.cached_grant_covers(&key, ctx) {
-            self.emit(
-                ctx,
-                Event::PermissionResolved {
-                    call_id: call.call_id.clone(),
-                    decision: PermissionDecisionKind::Cached,
-                },
-            );
-            return PermissionOutcome::Allow;
-        }
-
         // V2 mode gate. Ordered deliberately: PLAN's denial is checked
-        // before any allow path, so a plan-mode session cannot be talked
-        // out of its denial by a pattern grant or an auto-allow left over
-        // from earlier. Plan mode is the mode an operator selects when
-        // they want a guarantee, so it behaves like one.
+        // before EVERY allow path -- the cache, pattern grants, and
+        // AutoAllow alike -- so a plan-mode session cannot be talked out of
+        // its denial by a cached `AllowAlways`, a pattern grant, or an
+        // auto-allow left over from earlier. Plan mode is the mode an
+        // operator selects when they want a guarantee, so it behaves like
+        // one.
         let mode = self.mode();
         if mode == PermissionMode::Plan && !mode.allows_category(call.category) {
             self.emit(
@@ -290,6 +281,17 @@ impl PermissionBroker {
                     call.category
                 ),
             };
+        }
+
+        if self.cached_grant_covers(&key, ctx) {
+            self.emit(
+                ctx,
+                Event::PermissionResolved {
+                    call_id: call.call_id.clone(),
+                    decision: PermissionDecisionKind::Cached,
+                },
+            );
+            return PermissionOutcome::Allow;
         }
 
         // A pattern grant spares the operator a prompt -- but only for a
