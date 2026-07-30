@@ -138,6 +138,33 @@ additionally owns structural `agent_path` resolution (the precondition
 `PermissionRequest::agent_path` needs) and cancellation propagation down
 the tree.
 
+**`steer`/`await_result`/`cancel` are descendancy-checked at this trait
+boundary, not only at the `conway_steer`/`conway_await`/`conway_cancel`
+tool callsites** (P-1, mirroring `AskRequiresFork`'s fork-only-invariant
+shape): each takes a `caller: AgentId` alongside `target`, and
+`Runtime::ensure_own_subtree` (`subagent.rs`) rejects with
+`RuntimeError::AgentNotInSubtree` unless `target` is `caller` itself or one
+of its descendants (walking the live tree, the same `AgentTree::path`
+lookup `start` uses to build a new child's `agent_path`) — an unknown
+`target` still reports `AgentNotFound`, unchanged. Before this, all three
+methods took only `target`, so any agent that had merely seen a sibling's
+id (tool output, the event stream, `conway_subagent`'s own return value)
+could cancel that sibling's work or inject a `steer` message; `steer` made
+this worse by attributing the injected message to `target`'s own tree
+parent rather than the real sender, so a forged steer was indistinguishable
+from a genuine one on the receiving end. `steer`'s attribution
+(`AgentMessage::Steer::from`, and the persisted `LogRecord::
+ParentSteer::from`) now derives from `caller` directly. There is no
+separate "operator" bypass: `conway::SessionHandle`'s `steer`/
+`await_agent`/`cancel` (the TUI/embedder path) pass the session's own root
+agent as `caller`, and a root's subtree already covers its whole session by
+construction, so an operator-originated call is authorized by the exact
+same check every other caller is held to. The model-invoked
+`conway_steer`/`conway_await`/`conway_cancel` tools (`conway-tools`'
+`subagent/control.rs`) always pass `ToolCtx::agent_id` — the
+runtime-assigned identity of the agent actually dispatching the call, never
+model-supplied — as `caller`.
+
 **Live `Event::UserTurn`, and the one attach-ordering hazard it has to
 respect.** `Runtime::prompt` (the target of `SessionHandle::prompt`/
 `prompt_agent`, every plain TUI chat message) and `Runtime::start_root`

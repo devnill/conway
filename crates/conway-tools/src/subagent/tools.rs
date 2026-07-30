@@ -181,12 +181,21 @@ fn agent_result_output(result: &AgentResult) -> ToolOutput {
 /// Waits for `child`'s result, honoring `ctx.cancel` cooperatively. On
 /// cancellation, best-effort cancels the child (its own error is ignored)
 /// and returns `Err(ToolError::Cancelled)`.
-pub(super) async fn wait_for_result(ctx: &ToolCtx, child: AgentId) -> Result<ToolOutput, ToolError> {
+///
+/// P-1 (board item 01KYT8TS0EBKJHYNJRF6S88NRH): both host calls pass
+/// `ctx.agent_id` -- the runtime-assigned identity of the agent that
+/// actually dispatched this tool call, never model-supplied -- as `caller`,
+/// so the trait boundary can enforce that this agent may only await/cancel
+/// its own subtree.
+pub(super) async fn wait_for_result(
+    ctx: &ToolCtx,
+    child: AgentId,
+) -> Result<ToolOutput, ToolError> {
     // One pinned future, re-polled across iterations: selecting on a fresh
     // `await_result` call each loop would drop and re-issue the in-flight
     // wait every poll tick — ~30k redundant host calls over a default
     // 10-minute await (cycle-1 review S1).
-    let result_fut = ctx.subagents.await_result(child);
+    let result_fut = ctx.subagents.await_result(ctx.agent_id, child);
     tokio::pin!(result_fut);
     loop {
         tokio::select! {
@@ -195,7 +204,7 @@ pub(super) async fn wait_for_result(ctx: &ToolCtx, child: AgentId) -> Result<Too
             }
             _ = tokio::time::sleep(CANCEL_POLL_INTERVAL) => {
                 if ctx.cancel.is_cancelled() {
-                    let _ = ctx.subagents.cancel(child, "parent tool cancelled".to_string()).await;
+                    let _ = ctx.subagents.cancel(ctx.agent_id, child, "parent tool cancelled".to_string()).await;
                     return Err(ToolError::Cancelled);
                 }
             }

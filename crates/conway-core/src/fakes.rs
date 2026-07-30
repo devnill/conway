@@ -857,18 +857,39 @@ impl SubagentHost for FakeSubagentHost {
         Ok(child)
     }
 
-    async fn steer(&self, _target: AgentId, _text: String) -> Result<(), RuntimeError> {
+    // Board item 01KYT8TS0EBKJHYNJRF6S88NRH added a `caller` parameter to
+    // this trio on the trait; this fake stays a pure recorder/no-op and
+    // does not enforce descendancy itself (see this crate's own module
+    // doc, item 1: it is explicitly a lightweight "no fork/spawn logic"
+    // double) -- `caller` is accepted (so it type-checks against the real
+    // trait) and otherwise ignored, exactly as `_target`/`_text` already
+    // were.
+    async fn steer(
+        &self,
+        _caller: AgentId,
+        _target: AgentId,
+        _text: String,
+    ) -> Result<(), RuntimeError> {
         Ok(())
     }
 
-    async fn await_result(&self, target: AgentId) -> Result<AgentResult, RuntimeError> {
+    async fn await_result(
+        &self,
+        _caller: AgentId,
+        target: AgentId,
+    ) -> Result<AgentResult, RuntimeError> {
         let preconfigured = self.results.lock().unwrap().get(&target).cloned();
         Ok(preconfigured.unwrap_or_else(|| {
             AgentResult::new(target, SessionId::new(), ResultStatus::Completed, "fake")
         }))
     }
 
-    async fn cancel(&self, _target: AgentId, _reason: String) -> Result<(), RuntimeError> {
+    async fn cancel(
+        &self,
+        _caller: AgentId,
+        _target: AgentId,
+        _reason: String,
+    ) -> Result<(), RuntimeError> {
         Ok(())
     }
 

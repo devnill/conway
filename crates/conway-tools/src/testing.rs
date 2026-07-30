@@ -40,8 +40,14 @@ pub struct FakeSubagentHost {
     /// [`Self::with_next_agent_id`].
     next_agent_id: AgentId,
     started: Mutex<Vec<(AgentId, SubagentSpec)>>,
-    steers: Mutex<Vec<(AgentId, String)>>,
-    cancels: Mutex<Vec<(AgentId, String)>>,
+    /// `(caller, target, text)`, in call order. Board item
+    /// 01KYT8TS0EBKJHYNJRF6S88NRH added `caller` to `SubagentHost::steer`;
+    /// recording it here lets a test confirm the tool layer (`conway_steer`)
+    /// actually threads `ToolCtx::agent_id` through as `caller`, not just
+    /// that `target`/`text` arrived intact.
+    steers: Mutex<Vec<(AgentId, AgentId, String)>>,
+    /// `(caller, target, reason)`, in call order -- see `steers`' own doc.
+    cancels: Mutex<Vec<(AgentId, AgentId, String)>>,
     results: Mutex<HashMap<AgentId, AgentResult>>,
     asks: Mutex<Vec<(AgentId, SubagentSpec)>>,
     ask_outcomes: Mutex<HashMap<AgentId, AskOutcome>>,
@@ -108,13 +114,15 @@ impl FakeSubagentHost {
         self.started.lock().unwrap().clone()
     }
 
-    /// Every `(target, text)` pair recorded by `steer`, in call order.
-    pub fn steers(&self) -> Vec<(AgentId, String)> {
+    /// Every `(caller, target, text)` triple recorded by `steer`, in call
+    /// order.
+    pub fn steers(&self) -> Vec<(AgentId, AgentId, String)> {
         self.steers.lock().unwrap().clone()
     }
 
-    /// Every `(target, reason)` pair recorded by `cancel`, in call order.
-    pub fn cancels(&self) -> Vec<(AgentId, String)> {
+    /// Every `(caller, target, reason)` triple recorded by `cancel`, in
+    /// call order.
+    pub fn cancels(&self) -> Vec<(AgentId, AgentId, String)> {
         self.cancels.lock().unwrap().clone()
     }
 
@@ -138,15 +146,29 @@ impl SubagentHost for FakeSubagentHost {
         Ok(child)
     }
 
-    async fn steer(&self, target: AgentId, text: String) -> Result<(), RuntimeError> {
-        self.steers.lock().unwrap().push((target, text));
+    async fn steer(
+        &self,
+        caller: AgentId,
+        target: AgentId,
+        text: String,
+    ) -> Result<(), RuntimeError> {
+        self.steers.lock().unwrap().push((caller, target, text));
         Ok(())
     }
 
     /// Terminates immediately (never blocks): returns the scripted result
     /// for `target`, or `Err(RuntimeError::AgentNotFound)` if none was
-    /// configured via [`Self::with_result`].
-    async fn await_result(&self, target: AgentId) -> Result<AgentResult, RuntimeError> {
+    /// configured via [`Self::with_result`]. This fake is a pure
+    /// recorder/no-op (module doc, item 1) and does not itself enforce the
+    /// `caller`-owns-`target` invariant board item 01KYT8TS0EBKJHYNJRF6S88NRH
+    /// added to the real `Runtime` impl -- see that item's own tests for
+    /// coverage driven against the real trait boundary instead of this
+    /// fixture.
+    async fn await_result(
+        &self,
+        _caller: AgentId,
+        target: AgentId,
+    ) -> Result<AgentResult, RuntimeError> {
         self.results
             .lock()
             .unwrap()
@@ -155,8 +177,13 @@ impl SubagentHost for FakeSubagentHost {
             .ok_or(RuntimeError::AgentNotFound { agent: target })
     }
 
-    async fn cancel(&self, target: AgentId, reason: String) -> Result<(), RuntimeError> {
-        self.cancels.lock().unwrap().push((target, reason));
+    async fn cancel(
+        &self,
+        caller: AgentId,
+        target: AgentId,
+        reason: String,
+    ) -> Result<(), RuntimeError> {
+        self.cancels.lock().unwrap().push((caller, target, reason));
         Ok(())
     }
 
@@ -274,27 +301,36 @@ mod tests {
             AgentResult::new(agent_id, SessionId::new(), ResultStatus::Completed, "done");
         let host = FakeSubagentHost::new().with_result(agent_id, scripted.clone());
 
-        let result = host.await_result(agent_id).await.unwrap();
+        let result = host.await_result(AgentId::new(), agent_id).await.unwrap();
         assert_eq!(result, scripted);
     }
 
     #[tokio::test]
     async fn fake_subagent_host_await_result_unknown_id_errs() {
         let host = FakeSubagentHost::new();
-        let err = host.await_result(AgentId::new()).await.unwrap_err();
+        let err = host
+            .await_result(AgentId::new(), AgentId::new())
+            .await
+            .unwrap_err();
         assert!(matches!(err, RuntimeError::AgentNotFound { .. }));
     }
 
     #[tokio::test]
     async fn fake_subagent_host_records_steer_and_cancel() {
         let host = FakeSubagentHost::new();
+        let caller = AgentId::new();
         let target = AgentId::new();
 
-        host.steer(target, "keep going".into()).await.unwrap();
-        host.cancel(target, "stop".into()).await.unwrap();
+        host.steer(caller, target, "keep going".into())
+            .await
+            .unwrap();
+        host.cancel(caller, target, "stop".into()).await.unwrap();
 
-        assert_eq!(host.steers(), vec![(target, "keep going".to_string())]);
-        assert_eq!(host.cancels(), vec![(target, "stop".to_string())]);
+        assert_eq!(
+            host.steers(),
+            vec![(caller, target, "keep going".to_string())]
+        );
+        assert_eq!(host.cancels(), vec![(caller, target, "stop".to_string())]);
     }
 
     #[tokio::test]

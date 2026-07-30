@@ -851,7 +851,7 @@ async fn await_result_unknown_agent_errors_finished_agent_returns_immediately() 
     let root = start_and_finish_root(&runtime, "hi").await;
 
     let unknown = AgentId::new();
-    let err = SubagentHost::await_result(&*runtime, unknown)
+    let err = SubagentHost::await_result(&*runtime, root, unknown)
         .await
         .unwrap_err();
     assert!(matches!(err, RuntimeError::AgentNotFound { agent } if agent == unknown));
@@ -862,7 +862,9 @@ async fn await_result_unknown_agent_errors_finished_agent_returns_immediately() 
         .unwrap();
     wait_for_agent_finished(&mut stream, child).await;
 
-    let result = SubagentHost::await_result(&*runtime, child).await.unwrap();
+    let result = SubagentHost::await_result(&*runtime, root, child)
+        .await
+        .unwrap();
     assert_eq!(result.status, ResultStatus::Completed);
 }
 
@@ -990,11 +992,19 @@ async fn await_result_blocks_until_the_child_actually_finishes_then_resolves_eve
     // well before the child's 150ms tool call has any chance to finish.
     let r1 = tokio::spawn({
         let runtime = runtime.clone();
-        async move { SubagentHost::await_result(&*runtime, child).await.unwrap() }
+        async move {
+            SubagentHost::await_result(&*runtime, root, child)
+                .await
+                .unwrap()
+        }
     });
     let r2 = tokio::spawn({
         let runtime = runtime.clone();
-        async move { SubagentHost::await_result(&*runtime, child).await.unwrap() }
+        async move {
+            SubagentHost::await_result(&*runtime, root, child)
+                .await
+                .unwrap()
+        }
     });
 
     tokio::time::sleep(Duration::from_millis(20)).await;
@@ -1017,6 +1027,259 @@ async fn await_result_blocks_until_the_child_actually_finishes_then_resolves_eve
     assert_eq!(
         result1, result2,
         "both concurrent awaiters must observe the identical terminal result"
+    );
+}
+
+// ---------------------------------------------------------------------
+// P-1 (board item 01KYT8TS0EBKJHYNJRF6S88NRH): `steer`/`await_result`/
+// `cancel` enforce that `caller` may act only within its OWN subtree
+// (itself, or any descendant). Driven against the REAL `Runtime`'s tree --
+// real `SubagentHost::start`-produced siblings, not a hand-written
+// `FakeSubagentHost` fixture (that fake is an intentional pure recorder/
+// no-op, see its own module doc) -- because a fixture that does not itself
+// enforce the invariant would prove nothing about whether the real trait
+// boundary does. This is the same "seam" concern that let two 0.5.0
+// security bugs survive: see `crates/conway/tests/root_containment_seam.rs`
+// and `permission_pattern_seam.rs`.
+// ---------------------------------------------------------------------
+
+/// Forks two children of a fresh root and waits for both to finish,
+/// returning `(root, sibling_a, sibling_b)`. Consumes 3 scripted turns
+/// (root, `sibling_a`, `sibling_b`), so callers must build their runtime
+/// with `build_runtime(3, ..)` (or more, if they also drive further turns).
+async fn build_two_siblings(runtime: &Runtime) -> (AgentId, AgentId, AgentId) {
+    let root = start_and_finish_root(runtime, "hi").await;
+    let mut stream = runtime.subscribe();
+    let sibling_a = SubagentHost::start(runtime, root, fork_spec("branch a"))
+        .await
+        .unwrap();
+    wait_for_agent_finished(&mut stream, sibling_a).await;
+    let sibling_b = SubagentHost::start(runtime, root, fork_spec("branch b"))
+        .await
+        .unwrap();
+    wait_for_agent_finished(&mut stream, sibling_b).await;
+    (root, sibling_a, sibling_b)
+}
+
+#[tokio::test]
+async fn steer_rejects_a_sibling_but_the_owning_root_still_succeeds() {
+    let (runtime, _store) = build_runtime(3, HashMap::new());
+    let (root, sibling_a, sibling_b) = build_two_siblings(&runtime).await;
+
+    // The vulnerability this item fixes: `sibling_a` has seen `sibling_b`'s
+    // id (e.g. from tool output/the event stream/`conway_subagent`'s own
+    // return value) and tries to inject a steering message into it --
+    // context-injection with forged parent authority, per this item's own
+    // spec.
+    let err = SubagentHost::steer(&*runtime, sibling_a, sibling_b, "forged steer".to_string())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            &err,
+            RuntimeError::AgentNotInSubtree { caller, target }
+                if *caller == sibling_a && *target == sibling_b
+        ),
+        "expected AgentNotInSubtree{{caller: sibling_a, target: sibling_b}}, got {err:?}"
+    );
+
+    // The legitimate operator/root path is unaffected: root is an ancestor
+    // of `sibling_b` (its own subtree), so this succeeds.
+    SubagentHost::steer(&*runtime, root, sibling_b, "legitimate steer".to_string())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn await_result_rejects_a_sibling_but_the_owning_root_still_succeeds() {
+    let (runtime, _store) = build_runtime(3, HashMap::new());
+    let (root, sibling_a, sibling_b) = build_two_siblings(&runtime).await;
+
+    let err = SubagentHost::await_result(&*runtime, sibling_a, sibling_b)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            &err,
+            RuntimeError::AgentNotInSubtree { caller, target }
+                if *caller == sibling_a && *target == sibling_b
+        ),
+        "expected AgentNotInSubtree{{caller: sibling_a, target: sibling_b}}, got {err:?}"
+    );
+
+    let result = SubagentHost::await_result(&*runtime, root, sibling_b)
+        .await
+        .unwrap();
+    assert_eq!(result.status, ResultStatus::Completed);
+}
+
+#[tokio::test]
+async fn cancel_rejects_a_sibling_but_the_owning_root_still_succeeds() {
+    let (runtime, _store) = build_runtime(3, HashMap::new());
+    let (root, sibling_a, sibling_b) = build_two_siblings(&runtime).await;
+
+    let err = SubagentHost::cancel(
+        &*runtime,
+        sibling_a,
+        sibling_b,
+        "destroy their work".to_string(),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(
+            &err,
+            RuntimeError::AgentNotInSubtree { caller, target }
+                if *caller == sibling_a && *target == sibling_b
+        ),
+        "expected AgentNotInSubtree{{caller: sibling_a, target: sibling_b}}, got {err:?}"
+    );
+
+    // The legitimate operator/root path is unaffected -- `sibling_b` has
+    // already finished, so this is a benign no-op cancel, but the point
+    // here is specifically that the subtree check does not also reject the
+    // legitimate caller.
+    SubagentHost::cancel(&*runtime, root, sibling_b, "cleanup".to_string())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn steer_allows_any_ancestor_not_only_a_direct_parent() {
+    // root -> a -> grandchild: root (a GRANDparent, not `grandchild`'s
+    // direct parent) must still be able to steer `grandchild` directly --
+    // the check walks the whole ancestor chain, not just one hop.
+    let (runtime, _store) = build_runtime(3, HashMap::new());
+    let root = start_and_finish_root(&runtime, "hi").await;
+    let mut stream = runtime.subscribe();
+    let a = SubagentHost::start(&*runtime, root, fork_spec("a"))
+        .await
+        .unwrap();
+    wait_for_agent_finished(&mut stream, a).await;
+    let grandchild = SubagentHost::start(&*runtime, a, fork_spec("gc"))
+        .await
+        .unwrap();
+    wait_for_agent_finished(&mut stream, grandchild).await;
+
+    SubagentHost::steer(
+        &*runtime,
+        root,
+        grandchild,
+        "hello from the top".to_string(),
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn steer_from_a_sibling_of_an_ancestor_is_still_rejected() {
+    // root -> a -> grandchild, and root -> b (a sibling of `a`, not of
+    // `grandchild`). `b` is a legitimate member of root's own subtree, but
+    // `grandchild` is not in ITS subtree -- being "somewhere in the same
+    // tree" must not be conflated with "in the caller's own subtree".
+    let (runtime, _store) = build_runtime(4, HashMap::new());
+    let root = start_and_finish_root(&runtime, "hi").await;
+    let mut stream = runtime.subscribe();
+    let a = SubagentHost::start(&*runtime, root, fork_spec("a"))
+        .await
+        .unwrap();
+    wait_for_agent_finished(&mut stream, a).await;
+    let grandchild = SubagentHost::start(&*runtime, a, fork_spec("gc"))
+        .await
+        .unwrap();
+    wait_for_agent_finished(&mut stream, grandchild).await;
+    let b = SubagentHost::start(&*runtime, root, fork_spec("b"))
+        .await
+        .unwrap();
+    wait_for_agent_finished(&mut stream, b).await;
+
+    let err = SubagentHost::steer(&*runtime, b, grandchild, "forged".to_string())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            &err,
+            RuntimeError::AgentNotInSubtree { caller, target }
+                if *caller == b && *target == grandchild
+        ),
+        "expected AgentNotInSubtree{{caller: b, target: grandchild}}, got {err:?}"
+    );
+}
+
+/// Criterion: `steer`'s attribution (`LogRecord::ParentSteer::from`) derives
+/// from the CALLER, never from `target`'s own tree parent -- the pre-fix
+/// behavior this item replaces, which is exactly what let a forged steer
+/// look authentic to its recipient (a steer carries parent authority by
+/// convention). Proven with a caller that is deliberately NOT `target`'s
+/// direct parent (root steers a grandchild whose direct parent is `a`), so
+/// a test that accidentally left the old "derive from target's own parent"
+/// logic in place would fail here (it would record `from: a`, not `from:
+/// root`).
+///
+/// The grandchild is built `keep_alive: true` with an empty prompt, so it
+/// starts IDLE rather than running its own turn (see `SubagentSpec::
+/// keep_alive`'s own doc) -- unlike a plain one-shot fork/spawn child,
+/// whose task exits for good the instant its own single turn naturally
+/// completes (`AgentSpec::keep_alive: false`'s documented behavior,
+/// `agent_loop.rs`), an idling `keep_alive` agent's task stays alive to
+/// actually drain a queued steer once `Runtime::prompt` wakes it -- the
+/// only way this test can observe a persisted `LogRecord::ParentSteer` at
+/// all.
+#[tokio::test]
+async fn steer_attribution_derives_from_the_caller_not_the_targets_own_parent() {
+    let (runtime, store) = build_runtime(3, HashMap::new());
+    let root = start_and_finish_root(&runtime, "hi").await;
+    let mut stream = runtime.subscribe();
+    let a = SubagentHost::start(&*runtime, root, fork_spec("a"))
+        .await
+        .unwrap();
+    wait_for_agent_finished(&mut stream, a).await;
+
+    let mut keep_alive_spec = SubagentSpec::fork("", Budget::default());
+    keep_alive_spec.keep_alive = true;
+    let grandchild = SubagentHost::start(&*runtime, a, keep_alive_spec)
+        .await
+        .unwrap();
+
+    // root -- the grandchild's GRANDparent, not its direct parent `a` --
+    // steers the grandchild directly, while it is still idling (queued,
+    // not yet drained).
+    SubagentHost::steer(&*runtime, root, grandchild, "from the top".to_string())
+        .await
+        .unwrap();
+
+    // Wakes the idling grandchild so it drains its inbox at the top of its
+    // first real turn, persisting the queued steer as `LogRecord::
+    // ParentSteer` before assembling context for the new prompt.
+    runtime
+        .prompt(grandchild, "continue".to_string())
+        .await
+        .unwrap();
+
+    let grandchild_session = session_of(&runtime, grandchild);
+    let from = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let records = store
+                .read(&grandchild_session, conway_core::ids::SeqRange::full())
+                .await
+                .unwrap();
+            if let Some(from) = records.iter().find_map(|r| match r {
+                conway_core::log::LogRecord::ParentSteer { from, .. } => Some(*from),
+                _ => None,
+            }) {
+                return from;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("ParentSteer record never appeared");
+
+    assert_eq!(
+        from, root,
+        "steer attribution must derive from the CALLER (root), never target's own tree \
+         parent (`a`) -- deriving it from the target is what let a forged steer look \
+         authentic"
     );
 }
 
