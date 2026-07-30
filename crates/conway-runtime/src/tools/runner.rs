@@ -42,8 +42,8 @@ use conway_core::error::ToolError;
 use conway_core::event::Event;
 use conway_core::ids::{AgentId, SessionId, ToolName};
 use conway_core::ports::{
-    CancellationToken as CoreCancellationToken, EventSinkHandle, PluginConfig, SubagentHost, Tool,
-    ToolCtx, ToolOutput,
+    CancellationToken as CoreCancellationToken, CwdHandle, EventSinkHandle, PluginConfig,
+    SubagentHost, Tool, ToolCtx, ToolOutput,
 };
 use futures::FutureExt;
 use tokio::sync::Semaphore;
@@ -61,7 +61,14 @@ pub struct ToolBatchCtx {
     pub agent_id: AgentId,
     pub agent_path: Vec<AgentId>,
     pub session_id: SessionId,
-    pub cwd: PathBuf,
+    /// S1: the durable "cd" cell, owned by `AgentLoop` and cloned into every
+    /// turn's batch. `run_batch` reads [`CwdHandle::current`] exactly once,
+    /// at its own top, before spawning anything -- see that function's own
+    /// doc for why the snapshot is taken there rather than here (the caller
+    /// building this struct) even though both are synchronous and therefore
+    /// equivalent in practice: the snapshot's home is documented at the one
+    /// place that actually matters for the no-race guarantee.
+    pub chdir: CwdHandle,
     pub cancel: TokioCancellationToken,
     pub subagents: Arc<dyn SubagentHost>,
     pub plugin_config: Arc<PluginConfig>,
@@ -126,6 +133,17 @@ impl ToolRunner {
         let semaphore = Arc::new(Semaphore::new(ctx.max_parallel_tools.max(1)));
         let mut set = tokio::task::JoinSet::new();
 
+        // S1: the no-race guarantee. Snapshot the cwd cell exactly ONCE,
+        // here, before any call in this batch is spawned -- every task
+        // below shares this same `PathBuf`, so a `cd` proposed by one call
+        // in this batch can never be observed by another call in the SAME
+        // batch, regardless of dispatch/completion order. It takes effect
+        // starting the next `run_batch` invocation, which reads
+        // `ctx.chdir.current()` fresh. Unix has the identical constraint
+        // (threads share one process cwd); this mirrors it deliberately
+        // rather than emulating a per-task cwd around it.
+        let cwd_snapshot = ctx.chdir.current();
+
         for (index, call) in calls.into_iter().enumerate() {
             let registry = self.registry.clone();
             let broker = self.broker.clone();
@@ -136,7 +154,8 @@ impl ToolRunner {
             let agent_id = ctx.agent_id;
             let agent_path = ctx.agent_path.clone();
             let session_id = ctx.session_id;
-            let cwd = ctx.cwd.clone();
+            let cwd = cwd_snapshot.clone();
+            let chdir = ctx.chdir.clone();
             let subagents = ctx.subagents.clone();
             let plugin_config = ctx.plugin_config.clone();
             let call_id_for_panic = call.call_id.clone();
@@ -159,6 +178,7 @@ impl ToolRunner {
                     agent_path,
                     session_id,
                     cwd,
+                    chdir,
                     subagents,
                     plugin_config,
                     call,
@@ -215,6 +235,7 @@ async fn execute_one(
     agent_path: Vec<AgentId>,
     session_id: SessionId,
     cwd: PathBuf,
+    chdir: CwdHandle,
     subagents: Arc<dyn SubagentHost>,
     plugin_config: Arc<PluginConfig>,
     call: ToolCall,
@@ -311,6 +332,7 @@ async fn execute_one(
                 agent_id,
                 session_id,
                 cwd: cwd.clone(),
+                chdir: chdir.clone(),
                 cancel: core_cancel,
                 events: Arc::new(BusSink::new(bus.clone(), session_id, agent_id)) as EventSinkHandle,
                 subagents: subagents.clone(),

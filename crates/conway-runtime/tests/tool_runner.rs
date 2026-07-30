@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -14,7 +14,7 @@ use conway_core::event::Event;
 use conway_core::fakes::{FakeGate, FakeSubagentHost};
 use conway_core::ids::{AgentId, SessionId, ToolName};
 use conway_core::ports::{
-    Plugin, PluginConfig, PluginManifest, SubagentHost, Tool, ToolCtx, ToolOutput,
+    CwdHandle, Plugin, PluginConfig, PluginManifest, SubagentHost, Tool, ToolCtx, ToolOutput,
 };
 use conway_runtime::events::EventBus;
 use conway_runtime::permission::PermissionBroker;
@@ -172,6 +172,79 @@ impl Tool for BigOutputTool {
     }
 }
 
+/// S1 (`CwdHandle`): records the `ctx.cwd` snapshot it observed and,
+/// optionally, calls `ctx.chdir.set(..)` partway through -- the fixture
+/// every S1 acceptance test below is built from. A shared `delay` before
+/// recording forces genuine overlap between multiple concurrently-dispatched
+/// instances (rather than incidental sequential ordering); `current`/`peak`
+/// mirror `ConcurrencyTool`'s own proof-of-overlap shape.
+struct RacingCwdTool {
+    name: ToolName,
+    /// If `Some`, this invocation calls `ctx.chdir.set(new_cwd)` after
+    /// recording its own observed `ctx.cwd` -- exercising exactly the
+    /// same-batch "cd race" S1 must resolve deterministically (nobody else
+    /// in the same batch may observe it).
+    set_to: Option<PathBuf>,
+    observed: Arc<Mutex<Vec<PathBuf>>>,
+    current: Arc<AtomicUsize>,
+    peak: Arc<AtomicUsize>,
+    delay: Duration,
+}
+
+#[async_trait]
+impl Tool for RacingCwdTool {
+    fn spec(&self) -> conway_core::content::ToolSpec {
+        simple_spec(self.name.clone())
+    }
+
+    async fn invoke(&self, _call: ToolCall, ctx: ToolCtx) -> Result<ToolOutput, ToolError> {
+        let now = self.current.fetch_add(1, Ordering::SeqCst) + 1;
+        self.peak.fetch_max(now, Ordering::SeqCst);
+        // `set` (when configured) fires as early as possible in this call's
+        // own execution -- immediately on acquiring its semaphore permit,
+        // before the delay below. Combined with a bounded semaphore in the
+        // no-race test (permits < call count), this guarantees any call
+        // dispatched in a LATER wave (queued behind this one for a permit)
+        // starts only after this `set` has already landed in the shared
+        // cell -- exactly the scenario a per-task-fresh-read implementation
+        // (rather than one upfront snapshot) would leak across.
+        if let Some(new_cwd) = &self.set_to {
+            ctx.chdir
+                .set(new_cwd.clone())
+                .expect("chdir handle is not poisoned in this fixture");
+        }
+        self.observed.lock().unwrap().push(ctx.cwd.clone());
+        tokio::time::sleep(self.delay).await;
+        self.current.fetch_sub(1, Ordering::SeqCst);
+        Ok(text_output("done"))
+    }
+}
+
+/// Mimics `bash`/`glob`/`grep`'s optional per-call `cwd`/`path` argument: a
+/// one-shot override the tool applies LOCALLY, layered on `ctx.cwd`, never
+/// through `ctx.chdir`. This crate has no dependency on `conway-tools`, so
+/// this fixture proves the documented invariant -- a per-call override must
+/// never mutate the persistent cwd cell -- for any tool built this way,
+/// rather than by exercising the real built-in tools directly.
+struct PerCallCwdOverrideTool;
+
+#[async_trait]
+impl Tool for PerCallCwdOverrideTool {
+    fn spec(&self) -> conway_core::content::ToolSpec {
+        simple_spec(ToolName::new("bashlike"))
+    }
+
+    async fn invoke(&self, call: ToolCall, ctx: ToolCtx) -> Result<ToolOutput, ToolError> {
+        let effective_cwd = call
+            .arguments
+            .get("cwd")
+            .and_then(|v| v.as_str())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| ctx.cwd.clone());
+        Ok(text_output(effective_cwd.display().to_string()))
+    }
+}
+
 struct FakePlugin {
     id: String,
     tools: Vec<Arc<dyn Tool>>,
@@ -222,11 +295,15 @@ fn runner_with_gate(
 }
 
 fn batch_ctx(max_parallel_tools: usize) -> ToolBatchCtx {
+    batch_ctx_with_chdir(max_parallel_tools, CwdHandle::new(PathBuf::from("/tmp")))
+}
+
+fn batch_ctx_with_chdir(max_parallel_tools: usize, chdir: CwdHandle) -> ToolBatchCtx {
     ToolBatchCtx {
         agent_id: AgentId::new(),
         agent_path: vec![],
         session_id: SessionId::new(),
-        cwd: PathBuf::from("/tmp"),
+        chdir,
         cancel: CancellationToken::new(),
         subagents: Arc::new(FakeSubagentHost::new(AgentId::new())) as Arc<dyn SubagentHost>,
         plugin_config: Arc::new(PluginConfig::default()),
@@ -592,4 +669,163 @@ async fn small_output_under_limit_is_not_truncated() {
 
     assert!(outcomes[0].truncation.is_none());
     assert_eq!(text_of(&outcomes[0]), "hi");
+}
+
+// ---------------------------------------------------------------------
+// ToolRunner: S1 -- the `cd` capability (`ToolCtx::chdir: CwdHandle`)
+// ---------------------------------------------------------------------
+
+/// A tool that calls `ctx.chdir.set(..)` sees its OWN `ctx.cwd` unchanged
+/// (the batch's pre-computed snapshot); the new value only shows up in a
+/// LATER `run_batch` call sharing the same `CwdHandle`.
+#[tokio::test]
+async fn chdir_set_takes_effect_next_batch_not_this_one() {
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let reg = registry(vec![
+        Arc::new(RacingCwdTool {
+            name: ToolName::new("cd"),
+            set_to: Some(PathBuf::from("/new")),
+            observed: observed.clone(),
+            current: Arc::new(AtomicUsize::new(0)),
+            peak: Arc::new(AtomicUsize::new(0)),
+            delay: Duration::from_millis(1),
+        }),
+        Arc::new(RacingCwdTool {
+            name: ToolName::new("probe"),
+            set_to: None,
+            observed: observed.clone(),
+            current: Arc::new(AtomicUsize::new(0)),
+            peak: Arc::new(AtomicUsize::new(0)),
+            delay: Duration::from_millis(1),
+        }),
+    ]);
+    let (runner, _bus) = runner_with_gate(reg, PermissionDecision::AllowOnce);
+    let chdir = CwdHandle::new(PathBuf::from("/orig"));
+    let ctx = batch_ctx_with_chdir(4, chdir.clone());
+
+    // Batch 1: the "cd" tool sets a new cwd partway through its own call.
+    let outcomes = runner
+        .run_batch(&ctx, vec![call("c1", "cd", serde_json::json!({}))])
+        .await;
+    assert!(!outcomes[0].is_error, "{outcomes:?}");
+    assert_eq!(
+        observed.lock().unwrap()[0],
+        PathBuf::from("/orig"),
+        "a tool that itself calls chdir.set must still see the batch's OLD \
+         snapshot on its own ctx.cwd"
+    );
+    assert_eq!(
+        chdir.current(),
+        PathBuf::from("/new"),
+        "the handle's cell is updated as soon as `set` returns"
+    );
+
+    // Batch 2, same `ToolBatchCtx` (same shared `CwdHandle`): a plain probe
+    // now observes the value the previous batch set.
+    let outcomes = runner
+        .run_batch(&ctx, vec![call("c2", "probe", serde_json::json!({}))])
+        .await;
+    assert!(!outcomes[0].is_error, "{outcomes:?}");
+    assert_eq!(observed.lock().unwrap()[1], PathBuf::from("/new"));
+}
+
+/// Every call dispatched in the SAME batch must observe the identical
+/// `ctx.cwd` snapshot regardless of dispatch/completion order, even though
+/// every one of them races to call `chdir.set` as early as possible in its
+/// own execution.
+///
+/// This deliberately bounds concurrency BELOW the call count (2 permits, 4
+/// calls) rather than giving every call its own permit: with an unbounded
+/// semaphore every call's `ToolCtx` would be constructed at essentially the
+/// same instant regardless of whether the implementation snapshots once or
+/// re-reads the cell per call, so that shape can't actually distinguish the
+/// two. Here, the second wave of 2 calls can only start once the first wave
+/// releases its permits -- by which point, in a "read the cell fresh per
+/// call" implementation, the first wave's `set`s would already be visible.
+/// `peak == 2` proves the two calls in each wave still ran genuinely
+/// concurrently with each other (not one-at-a-time serialized dispatch).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_calls_in_one_batch_see_the_identical_snapshot_despite_a_racing_set() {
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let current = Arc::new(AtomicUsize::new(0));
+    let peak = Arc::new(AtomicUsize::new(0));
+
+    let tools: Vec<Arc<dyn Tool>> = (0..4)
+        .map(|i| {
+            Arc::new(RacingCwdTool {
+                name: ToolName::new(format!("racer{i}")),
+                set_to: Some(PathBuf::from(format!("/new-{i}"))),
+                observed: observed.clone(),
+                current: current.clone(),
+                peak: peak.clone(),
+                delay: Duration::from_millis(30),
+            }) as Arc<dyn Tool>
+        })
+        .collect();
+    let reg = registry(tools);
+    let (runner, _bus) = runner_with_gate(reg, PermissionDecision::AllowOnce);
+    let chdir = CwdHandle::new(PathBuf::from("/orig"));
+    let ctx = batch_ctx_with_chdir(2, chdir.clone());
+
+    let calls = (0..4)
+        .map(|i| call(&format!("c{i}"), &format!("racer{i}"), serde_json::json!({})))
+        .collect();
+    let outcomes = runner.run_batch(&ctx, calls).await;
+
+    assert!(outcomes.iter().all(|o| !o.is_error), "{outcomes:?}");
+    // Proof each wave actually overlapped (real concurrency), not four
+    // sequential calls: two permits, held for the full delay, must show two
+    // simultaneously in-flight at some point.
+    assert_eq!(
+        peak.load(Ordering::SeqCst),
+        2,
+        "the two permits' calls never actually overlapped"
+    );
+    assert_eq!(current.load(Ordering::SeqCst), 0);
+
+    let seen = observed.lock().unwrap();
+    assert_eq!(seen.len(), 4);
+    for cwd in seen.iter() {
+        assert_eq!(
+            *cwd,
+            PathBuf::from("/orig"),
+            "every call in one batch must see the identical pre-batch \
+             snapshot, regardless of a same-batch chdir.set race between \
+             waves: {seen:?}"
+        );
+    }
+}
+
+/// A per-call `cwd` argument (the shape `bash`/`glob`/`grep` already accept)
+/// is a one-shot override layered on the snapshot -- it must never mutate
+/// the persistent `CwdHandle` cell.
+#[tokio::test]
+async fn per_call_cwd_override_does_not_mutate_the_persistent_cwd() {
+    let reg = registry(vec![Arc::new(PerCallCwdOverrideTool)]);
+    let (runner, _bus) = runner_with_gate(reg, PermissionDecision::AllowOnce);
+    let chdir = CwdHandle::new(PathBuf::from("/orig"));
+    let ctx = batch_ctx_with_chdir(4, chdir.clone());
+
+    let outcomes = runner
+        .run_batch(
+            &ctx,
+            vec![call(
+                "c1",
+                "bashlike",
+                serde_json::json!({"cwd": "/one-shot"}),
+            )],
+        )
+        .await;
+
+    assert!(!outcomes[0].is_error, "{outcomes:?}");
+    assert_eq!(
+        text_of(&outcomes[0]),
+        "/one-shot",
+        "the per-call override took effect for THIS call"
+    );
+    assert_eq!(
+        chdir.current(),
+        PathBuf::from("/orig"),
+        "a per-call cwd argument must never mutate the persistent cwd cell"
+    );
 }

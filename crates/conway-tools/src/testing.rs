@@ -29,7 +29,7 @@ use conway_core::error::RuntimeError;
 use conway_core::event::Event;
 use conway_core::ids::{AgentId, SessionId};
 use conway_core::ports::{
-    CancellationToken, EventSink, EventSinkHandle, PluginConfig, SubagentHost, ToolCtx,
+    CancellationToken, CwdHandle, EventSink, EventSinkHandle, PluginConfig, SubagentHost, ToolCtx,
 };
 
 /// An in-memory [`SubagentHost`] that only records calls and plays back
@@ -226,6 +226,7 @@ pub fn test_ctx(cwd: PathBuf) -> (ToolCtx, TestHandles) {
     let ctx = ToolCtx {
         agent_id: AgentId::new(),
         session_id: SessionId::new(),
+        chdir: CwdHandle::new(cwd.clone()),
         cwd,
         cancel: cancel.clone(),
         events: events.clone() as EventSinkHandle,
