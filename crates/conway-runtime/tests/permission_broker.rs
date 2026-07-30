@@ -606,6 +606,39 @@ async fn auto_allow_allows_without_prompting_and_can_be_revoked_mid_session() {
     assert_eq!(gate.call_count(), 1);
 }
 
+/// A cached `AllowAlways` grant earned under `Prompt` must not survive a
+/// later switch to `Plan` mode for the exact same call: plan mode's denial
+/// is checked ahead of every allow path, including the cache, so plan mode
+/// keeps its guarantee even against a grant left over from earlier.
+#[tokio::test]
+async fn plan_mode_denies_a_call_even_when_allow_always_was_cached_under_prompt() {
+    let gate = ScriptedGate::new(vec![PermissionDecision::AllowAlways {
+        scope: PermissionScope::Session,
+    }]);
+    let (broker, _bus) = broker(gate.clone());
+    let session = SessionId::new();
+    let agent = AgentId::new();
+    let c = ctx(agent, vec![agent], session);
+
+    // Under Prompt, the gate grants AllowAlways and the broker caches it.
+    let granted = broker.decide(&c, &bash_call("c1", "rm -rf /tmp/x")).await;
+    assert_eq!(granted, PermissionOutcome::Allow);
+    assert_eq!(gate.call_count(), 1);
+
+    // Switching to Plan must deny the byte-identical call despite the cache.
+    broker.set_mode(PermissionMode::Plan);
+    let outcome = broker.decide(&c, &bash_call("c2", "rm -rf /tmp/x")).await;
+    assert!(
+        matches!(outcome, PermissionOutcome::Deny { .. }),
+        "plan mode must not be talked out of its denial by a cached AllowAlways"
+    );
+    assert_eq!(
+        gate.call_count(),
+        1,
+        "plan mode decides without troubling the gate"
+    );
+}
+
 /// Revocation clears pattern grants AND the `AllowAlways` cache, so a
 /// previously-granted call asks again.
 #[tokio::test]

@@ -5,6 +5,20 @@ All notable changes to **conway** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **`PermissionBroker::decide`'s plan-mode guarantee was not honored by the
+  `AllowAlways` cache.** The mode-gate comment claimed plan mode's denial was
+  checked "before any allow path", but the cached-grant check returned
+  `Allow` sixteen lines above it, so a call granted `AllowAlways` under
+  `Prompt` (or any other mode) was still silently allowed after switching to
+  `Plan` — for that exact byte-identical call. The plan-mode denial check now
+  runs first, ahead of the cache, pattern grants, and `AutoAllow` alike, so
+  plan mode's guarantee holds against every allow path, not just two of the
+  three. (`crates/conway-runtime/src/permission.rs`)
+
 ## [0.5.0] — 2026-07-29
 
 ### Security
