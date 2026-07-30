@@ -11,6 +11,7 @@ pub mod discovery;
 pub mod merge;
 pub mod model_metadata;
 pub mod schema;
+pub mod trust;
 
 pub use discovery::discover;
 pub use merge::{apply_cli, load, validate, CliOverrides, LoadOptions};

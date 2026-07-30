@@ -65,6 +65,42 @@
 //! unchanged.** What changed is only whether it is CONSULTED for a given
 //! tool, decided by a declaration the tool makes about itself, never by
 //! this module inspecting a tool's name.
+//!
+//! ## The `allow`/`deny` asymmetry (board item 01KYT8SGX32CP56PRJNG72V2W5)
+//!
+//! [`PermissionFile`] has two halves, and they are deliberately NOT
+//! symmetric. `allow` is authority: granting it to a project file that a
+//! cloned repository controls, with no consent, is a live fail-open
+//! security gap (`docs/design/d4-trust-model.md` §1, §11) -- so an
+//! `allow` rule loaded from a project file only takes effect once the
+//! CALLER (`conway`'s facade, `conway-cli`'s startup loader) has confirmed
+//! an explicit, recorded trust decision for that exact file's bytes. This
+//! module has no idea whether the caller did that -- it is not this
+//! module's job to gate on trust, only to make the vocabulary expressive
+//! enough that a caller CAN.
+//!
+//! `deny` is the opposite: a rule that only ever narrows what is
+//! authorized has no failure mode worth gating (the worst case is an extra
+//! prompt), so it applies immediately, from any file, trusted or not.
+//! [`PatternRule::matches_deny`] is the deliberately UNGATED sibling of
+//! [`PatternRule::matches_render`] -- it does not consult
+//! [`contains_shell_metacharacters`] at all, for any [`RenderKind`],
+//! because inverted the gate would defeat the very rule it is supposed to
+//! protect: `deny bash:curl` gated the same way `allow` is would let
+//! `curl x; y` slip past simply for carrying a `;`. Composition is
+//! most-restrictive-wins: a deny beats every allow, independent of
+//! authorship or order.
+//!
+//! **The honest limit, stated rather than papered over:** prefix matching
+//! is not a containment boundary in either direction. `deny bash:git push`
+//! does not catch `foo; git push`. What makes the composition sound anyway
+//! is `allow`'s OWN gate: a command carrying a metacharacter can never be
+//! auto-allowed regardless of what patterns exist, so the chained form
+//! always reaches the human operator -- `deny` is a seatbelt for the
+//! obvious case, not a boundary. Anything that must never happen belongs
+//! in the confinement root, not in a `deny` prefix.
+
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
@@ -183,6 +219,23 @@ impl PatternRule {
         // the wildcard case as well -- but only when this tool's own
         // rendering could ever reach a shell.
         if render_kind == RenderKind::ShellCommand && contains_shell_metacharacters(rendered) {
+            return false;
+        }
+        if self.command_prefix == "*" {
+            return true;
+        }
+        prefix_matches(&self.command_prefix, rendered)
+    }
+
+    /// Whether this rule, used as a `deny` rule, refuses `tool` running
+    /// `rendered` -- prefix comparison only, deliberately WITHOUT
+    /// [`Self::matches_render`]'s metacharacter gate, and deliberately
+    /// with no [`RenderKind`] parameter at all: a deny rule's whole job is
+    /// to be hard to evade, so it must match identically regardless of
+    /// what the matched tool's rendering happens to look like. See this
+    /// module's own doc for why gating a `deny` prefix would defeat it.
+    pub fn matches_deny(&self, tool: &str, rendered: &str) -> bool {
+        if self.tool != tool {
             return false;
         }
         if self.command_prefix == "*" {
@@ -533,6 +586,68 @@ mod tests {
         let wildcard = PatternRule::parse("read:*").expect("valid");
         assert_eq!(wildcard.describe(), "any `read` call");
     }
+
+    // ---- deny: the asymmetric half (board item 01KYT8SGX32CP56PRJNG72V2W5) ----
+
+    /// The headline property: a `deny` prefix rule still matches a chained
+    /// command that carries a metacharacter -- unlike `matches`/
+    /// `matches_render`, which would refuse to consider it at all. If deny
+    /// gated the same way allow does, appending `;` to a command would
+    /// DEFEAT the deny rule, which is backwards for a rule whose entire job
+    /// is to be hard to evade.
+    #[test]
+    fn deny_matches_a_chained_command_that_allow_would_refuse_to_even_consider() {
+        let rule = PatternRule::parse("bash:curl").expect("valid rule");
+
+        assert!(rule.matches_deny("bash", "curl https://example.com"));
+        assert!(
+            rule.matches_deny("bash", "curl x; rm -rf /"),
+            "a deny prefix must still catch a chained command carrying it"
+        );
+        // Contrast: the ALLOW-side gate refuses to authorize this at all --
+        // proving the asymmetry is real, not just documented.
+        assert!(!rule.matches("bash", "curl x; rm -rf /"));
+    }
+
+    /// Deny is independent of `RenderKind` entirely -- `matches_deny` takes
+    /// no such parameter, so a `Structured` tool's JSON-dump rendering
+    /// (whose own `(){}`s would trip the ALLOW-side gate on sight, exactly
+    /// as `a_structured_tools_wildcard_matches_its_own_json_dump_rendering`
+    /// pins for the allow side) is denied without hesitation.
+    #[test]
+    fn deny_matching_does_not_depend_on_render_kind() {
+        let rule = PatternRule::parse("write:*").expect("valid rule");
+        let rendered = r#"write({"path":"/etc/passwd"})"#;
+
+        assert!(
+            rule.matches_deny("write", rendered),
+            "deny must refuse a Structured tool's own JSON-dump rendering, \
+             with no RenderKind gate in the way at all"
+        );
+        // Contrast: the conservative ALLOW-side `matches` refuses to even
+        // consider this rendering, because its own JSON syntax trips the
+        // metacharacter gate `matches` always applies -- proving the
+        // asymmetry is real, not just documented.
+        assert!(!rule.matches("write", rendered));
+    }
+
+    /// The wildcard form works for deny the same way it does for allow.
+    #[test]
+    fn a_deny_wildcard_matches_any_call_to_the_tool() {
+        let rule = PatternRule::parse("bash:*").expect("valid rule");
+        assert!(rule.matches_deny("bash", "ls -la && rm -rf /"));
+        assert!(!rule.matches_deny("edit", "anything"));
+    }
+
+    /// Deny still respects a token boundary and tool identity -- it is
+    /// UNGATED, not unconstrained.
+    #[test]
+    fn deny_still_requires_an_actual_prefix_and_tool_match() {
+        let rule = PatternRule::parse("bash:git status").expect("valid rule");
+        assert!(!rule.matches_deny("bash", "git statusfoo"));
+        assert!(!rule.matches_deny("bash", "git push --force"));
+        assert!(!rule.matches_deny("edit", "git status"));
+    }
 }
 
 /// The pattern Conway OFFERS an operator for a given command (V2b).
@@ -580,13 +695,21 @@ pub fn suggested_rule(tool: &str, rendered: &str) -> Option<PatternRule> {
 /// undercut that.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PermissionFile {
-    /// Wire-form rules. Malformed entries are dropped on load, not
-    /// guessed at.
+    /// Wire-form rules that AUTHORIZE. Malformed entries are dropped on
+    /// load, not guessed at. From a project-scoped file, a caller MUST
+    /// confirm a recorded trust decision before installing these -- see
+    /// this module's own doc, and `docs/design/d4-trust-model.md` §3/§11.
     #[serde(default)]
     pub allow: Vec<String>,
+    /// Wire-form rules that REFUSE, applied immediately regardless of
+    /// trust -- board item 01KYT8SGX32CP56PRJNG72V2W5. `#[serde(default)]`
+    /// so every file written before this field existed keeps parsing
+    /// unchanged.
+    #[serde(default)]
+    pub deny: Vec<String>,
 }
 
-/// Parses a rules file's contents into rules, **failing closed**.
+/// Parses a rules file's `allow` list into rules, **failing closed**.
 ///
 /// Every failure mode returns fewer rules, never more:
 /// - unparseable JSON → no rules at all (the operator is asked about
@@ -597,15 +720,87 @@ pub struct PermissionFile {
 /// never be able to *widen* what is authorized — the worst outcome of a
 /// bad file is extra prompting, never a missed one.
 pub fn parse_rules(contents: &str) -> Vec<PatternRule> {
+    parse_permission_file(contents).allow
+}
+
+/// Parses a rules file's `deny` list into rules, with the identical
+/// fail-closed posture as [`parse_rules`]: a corrupt file yields NO deny
+/// rules either -- fewer rules is always the safe failure here too, even
+/// though `deny` narrows. A `deny` rule that silently vanished because its
+/// file went corrupt would be a false sense of safety, but a `deny` rule
+/// GUESSED AT from unparseable content would be worse: a half-understood
+/// safety rule inspires false confidence.
+pub fn parse_deny_rules(contents: &str) -> Vec<PatternRule> {
+    parse_permission_file(contents).deny
+}
+
+/// Shared parse used by both [`parse_rules`] and [`parse_deny_rules`], so
+/// the two halves can never read the JSON differently.
+struct ParsedPermissionFile {
+    allow: Vec<PatternRule>,
+    deny: Vec<PatternRule>,
+}
+
+fn parse_permission_file(contents: &str) -> ParsedPermissionFile {
     let file: PermissionFile = match serde_json::from_str(contents) {
         Ok(file) => file,
-        // Fail closed: an unreadable file authorizes nothing.
-        Err(_) => return Vec::new(),
+        // Fail closed: an unreadable file authorizes AND denies nothing.
+        Err(_) => {
+            return ParsedPermissionFile {
+                allow: Vec::new(),
+                deny: Vec::new(),
+            }
+        }
     };
-    file.allow
-        .iter()
-        .filter_map(|raw| PatternRule::parse(raw))
-        .collect()
+    ParsedPermissionFile {
+        allow: file
+            .allow
+            .iter()
+            .filter_map(|raw| PatternRule::parse(raw))
+            .collect(),
+        deny: file
+            .deny
+            .iter()
+            .filter_map(|raw| PatternRule::parse(raw))
+            .collect(),
+    }
+}
+
+/// Where an installed [`PatternRule`] grant came from. Required so a rule
+/// set is inspectable — `PermissionBroker::active_patterns()`'s own doc
+/// already states the principle: "a rule set nobody can inspect is a
+/// trap." Board item 01KYT8SGX32CP56PRJNG72V2W5.
+///
+/// Lives here (not in `conway-runtime`) so `conway`'s facade can re-export
+/// it alongside [`PatternRule`]/[`PermissionFile`] without re-exporting a
+/// `conway-runtime` type — `crate::lib`'s own stated invariant.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PatternOrigin {
+    /// Approved through the interactive permission gate (an operator's
+    /// "always allow"), or installed directly with no file behind it at
+    /// all (a test harness, an embedder's own code).
+    Interactive,
+    /// Loaded from a permissions file at this path.
+    ///
+    /// Carries no trust flag of its own — an ALLOW rule with this origin
+    /// was only ever installed because the CALLER already confirmed it may
+    /// load (the operator's own global file, trusted by authorship; or a
+    /// project file with a matching recorded trust decision — see
+    /// `docs/design/d4-trust-model.md` §4 and this module's own doc). A
+    /// DENY rule with this origin may have come from an UNTRUSTED file:
+    /// deny applies regardless (§3).
+    File(PathBuf),
+}
+
+impl PatternOrigin {
+    /// A short label for a review surface (`/settings`'s grant list is the
+    /// only consumer today).
+    pub fn describe(&self) -> String {
+        match self {
+            PatternOrigin::Interactive => "interactive".to_string(),
+            PatternOrigin::File(path) => path.display().to_string(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -655,6 +850,45 @@ mod store_tests {
     fn a_missing_allow_key_is_an_empty_rule_set_not_an_error() {
         assert!(parse_rules("{}").is_empty());
     }
+
+    // ---- deny: the asymmetric half ----
+
+    #[test]
+    fn deny_parses_independently_of_allow() {
+        let contents = r#"{"allow": ["bash:cargo test"], "deny": ["bash:curl", "bash:ssh"]}"#;
+        assert_eq!(parse_rules(contents).len(), 1);
+        let deny = parse_deny_rules(contents);
+        assert_eq!(deny.len(), 2);
+        assert_eq!(deny[0].to_wire(), "bash:curl");
+        assert_eq!(deny[1].to_wire(), "bash:ssh");
+    }
+
+    /// A file written before `deny` existed keeps parsing unchanged --
+    /// `#[serde(default)]` earns its keep.
+    #[test]
+    fn a_file_with_no_deny_key_parses_as_an_empty_deny_list() {
+        let contents = r#"{"allow": ["bash:git status"]}"#;
+        assert!(parse_deny_rules(contents).is_empty());
+        assert_eq!(parse_rules(contents).len(), 1);
+    }
+
+    /// Fail-closed applies to `deny` too: a corrupt file authorizes nothing
+    /// AND denies nothing, never guessed at.
+    #[test]
+    fn a_corrupt_file_denies_nothing_either() {
+        for corrupt in ["", "not json", "{", r#"{"deny": "not-an-array"}"#] {
+            assert!(parse_deny_rules(corrupt).is_empty(), "{corrupt:?}");
+        }
+    }
+
+    #[test]
+    fn a_malformed_deny_entry_is_dropped_and_the_rest_kept() {
+        let contents = r#"{"deny": ["bash:curl", "malformed-no-colon", "bash:ssh"]}"#;
+        let deny = parse_deny_rules(contents);
+        assert_eq!(deny.len(), 2);
+        assert!(deny.iter().all(|r| r.to_wire() != "malformed-no-colon"));
+    }
+
     // ---- V2b: the offered rule ----
 
     /// The offer is two tokens: enough for `<command> <subcommand>`, not

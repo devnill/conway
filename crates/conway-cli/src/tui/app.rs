@@ -193,29 +193,34 @@ impl App {
         // applies to every rule regardless of where it came from.
         //
         // Every failure here is silent and narrowing: a missing file is
-        // normal, and `parse_rules` already fails closed on a corrupt one
-        // (returning no rules rather than erroring). Deliberately NOT
-        // surfaced as a startup error — a broken rules file should cost
-        // extra prompting, never a refusal to start.
-        let permission_paths = conway::config::discovery::permission_file_paths(
-            cli.cwd.as_deref().unwrap_or(&conway.config().cwd),
-            &std::env::vars().collect::<std::collections::HashMap<_, _>>(),
-        );
+        // normal, and `parse_rules`/`parse_deny_rules` already fail closed
+        // on a corrupt one (returning no rules rather than erroring).
+        // Deliberately NOT surfaced as a startup error — a broken rules
+        // file should cost extra prompting, never a refusal to start.
+        //
+        // Board item 01KYT8SGX32CP56PRJNG72V2W5: `Conway::load_permission_files`
+        // is the real production seam -- it decides trust (global files are
+        // trusted by authorship; a project file's `allow` half installs
+        // only with a matching recorded trust decision; its `deny` half
+        // applies from ANY file, trusted or not) and is the SAME method
+        // `crates/conway/tests/permission_trust_seam.rs` drives directly,
+        // so this loader can never silently diverge from what that test
+        // proves. See `conway::config::trust`'s own doc for the full
+        // reasoning.
+        let env_vars: std::collections::HashMap<String, String> = std::env::vars().collect();
         let root_agent = state.root_agent();
-        for path in &permission_paths {
-            let Ok(contents) = std::fs::read_to_string(path) else {
-                continue;
-            };
-            for rule in conway::permission_pattern::parse_rules(&contents) {
-                conway.grant_permission_pattern(
-                    rule,
-                    conway::PermissionScope::Session,
-                    root_agent,
-                );
-            }
+        let report = conway.load_permission_files(
+            cli.cwd.as_deref().unwrap_or(&conway.config().cwd),
+            &env_vars,
+            root_agent,
+        );
+        for notice in report.notices {
+            state
+                .transcript
+                .push(super::state::Entry::Notice { text: notice });
         }
         state.permission_mode = conway.permission_mode();
-        state.permission_paths = permission_paths;
+        state.permission_paths = report.paths;
         // T3: cwd display -- prefer the CLI `--cwd` override, fall back to
         // the config's `cwd`. Both are `PathBuf`; render the display string
         // via `display()` (lossy for non-UTF8).
@@ -506,6 +511,60 @@ impl App {
                                     self.conway.revoke_permission_grants();
                                     self.state.permission_grants.clear();
                                 }
+                                // Board item 01KYND4WGHSZXW5YQ6ZWHCDDNN:
+                                // revoke exactly the one grant the operator
+                                // selected. The broker's in-memory grant is
+                                // dropped unconditionally before any file
+                                // I/O is attempted (`Conway::
+                                // revoke_permission_pattern`'s own doc) --
+                                // revocation never fails open, so the
+                                // mirror is refreshed from the broker
+                                // (the authority) regardless of how
+                                // persistence went, and the operator is
+                                // told the whole truth via a transcript
+                                // notice rather than a silent no-op.
+                                Action::RevokePermissionPattern(rule, origin) => {
+                                    let env_vars: std::collections::HashMap<String, String> =
+                                        std::env::vars().collect();
+                                    let outcome = self.conway.revoke_permission_pattern(
+                                        &env_vars, &rule, &origin,
+                                    );
+                                    self.state.permission_grants =
+                                        self.conway.active_permission_patterns();
+                                    let text = match outcome {
+                                        conway::RevokeOutcome::NotFound => {
+                                            "that grant was already gone".to_string()
+                                        }
+                                        conway::RevokeOutcome::RevokedNoFile => {
+                                            format!("revoked: {}", rule.describe())
+                                        }
+                                        conway::RevokeOutcome::RevokedAndPersisted {
+                                            retrust_warning: None,
+                                        } => format!(
+                                            "revoked and removed from {}: {}",
+                                            origin.describe(),
+                                            rule.describe()
+                                        ),
+                                        conway::RevokeOutcome::RevokedAndPersisted {
+                                            retrust_warning: Some(warning),
+                                        } => format!(
+                                            "revoked and removed from {}: {} -- {warning}",
+                                            origin.describe(),
+                                            rule.describe()
+                                        ),
+                                        conway::RevokeOutcome::RevokedButPersistFailed {
+                                            error,
+                                        } => format!(
+                                            "revoked for this session, but could not update \
+                                             {} ({error}) -- it may come back at the next \
+                                             restart",
+                                            origin.describe()
+                                        ),
+                                    };
+                                    self.state
+                                        .transcript
+                                        .push(super::state::Entry::Notice { text });
+                                }
                                 Action::GrantPermissionPattern(rule) => {
                                     let agent = self.state.focused_agent;
                                     self.conway.grant_permission_pattern(
@@ -697,14 +756,67 @@ impl App {
         // review list. The broker is the authority; this copy exists so
         // the menu builder stays a pure function of `AppState`, and it
         // would be stale (or empty) if refreshed anywhere else.
+        //
+        // Board item 01KYT8SGX32CP56PRJNG72V2W5: kept as `(rule, origin)`
+        // pairs rather than pre-formatted strings -- `view/settings.rs::
+        // build_tree` both labels each row (`[interactive]`/the
+        // originating file's path, via `origin.describe()`) AND addresses
+        // it for per-rule revocation (board item 01KYND4WGHSZXW5YQ6ZWHCDDNN),
+        // which a bare formatted string could never do.
         if text.trim() == "/settings" {
-            self.state.permission_grants = self
-                .conway
-                .active_permission_patterns()
-                .iter()
-                .map(|rule| rule.describe())
-                .collect();
+            self.state.permission_grants = self.conway.active_permission_patterns();
             self.state.permission_mode = self.conway.permission_mode();
+        }
+        // Board item 01KYT8SGX32CP56PRJNG72V2W5: the ONLY path that writes
+        // a trust record -- an explicit operator action, never automatic,
+        // never a side effect of starting a session (D4 §5/§9). Trusts the
+        // project-scoped candidate (`state.permission_paths`' first entry,
+        // the same file `persist_permission_rule` already writes an
+        // interactively-approved grant into) and installs its CURRENT
+        // allow rules immediately, so the effect is visible in this
+        // session rather than only on the next restart.
+        if text.trim() == "/trust" || text.starts_with("/trust ") {
+            let arg = text.strip_prefix("/trust").unwrap_or(&text).trim();
+            if !arg.is_empty() && arg != "permissions" {
+                self.state.transcript.push(super::state::Entry::Notice {
+                    text: "usage: /trust permissions".to_string(),
+                });
+                return Ok(SubmitOutcome::Continue);
+            }
+            match self.state.permission_paths.first() {
+                None => {
+                    self.state.transcript.push(super::state::Entry::Notice {
+                        text: "no project permissions file is configured to trust".to_string(),
+                    });
+                }
+                Some(path) => {
+                    let env_vars: std::collections::HashMap<String, String> =
+                        std::env::vars().collect();
+                    let root_agent = self.state.root_agent();
+                    match self
+                        .conway
+                        .trust_permission_file(&env_vars, path, root_agent)
+                    {
+                        Ok(installed) => {
+                            self.state.transcript.push(super::state::Entry::Notice {
+                                text: format!(
+                                    "trusted {} -- {} allow rule(s) installed for this \
+                                     session, and will load automatically until its \
+                                     content next changes",
+                                    path.display(),
+                                    installed
+                                ),
+                            });
+                        }
+                        Err(e) => {
+                            self.state.transcript.push(super::state::Entry::Notice {
+                                text: format!("could not trust {}: {e}", path.display()),
+                            });
+                        }
+                    }
+                }
+            }
+            return Ok(SubmitOutcome::Continue);
         }
         if text.trim() == "/agents" || text.starts_with("/agents ") {
             if text.trim() == "/agents" {

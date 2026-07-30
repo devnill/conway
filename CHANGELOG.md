@@ -37,6 +37,114 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   both shapes with no per-provider flag.
   (`crates/conway-backends/src/openai_compat/wire.rs`)
 
+- **Per-rule permission revocation in `/settings`.** Every active pattern
+  grant is now a real, selectable menu row (`Conway::revoke_permission_pattern`)
+  instead of inert label text — `Enter` on a row revokes exactly that grant,
+  addressed by the same `(PatternRule, PatternOrigin)` pair the row
+  displays (never a positional index, which could shift under a concurrent
+  grant). Revocation never fails open: the broker drops the in-memory grant
+  first, unconditionally, before any file write is attempted. An
+  `Interactive`-origin grant (no backing file) writes nothing on revoke; a
+  file-origin grant is removed from **that exact file** via
+  read-modify-write, tmp-then-rename, and — if the file is a trusted
+  project file — its trust is **re-recorded for the rewritten content**
+  immediately after, so revoking one rule never silently de-trusts the
+  file's other rules. A write that fails is reported honestly
+  (`RevokeOutcome::RevokedButPersistFailed`) rather than folded into a
+  false "done"; the rule still stops applying for the session either way.
+  `deny` rules are not revocable through this surface at all — `/settings`
+  never lists them, mirroring `revoke_all_grants`'s existing choice to
+  leave `deny` untouched. Revoke-all remains available alongside per-rule
+  revoke. (`crates/conway-runtime/src/permission.rs`,
+  `crates/conway/src/conway.rs`, `crates/conway-cli/src/tui/`)
+
+### Security
+
+- **CRITICAL: a cloned repository's `.conway/permissions.json` auto-granted
+  pattern permissions at startup with no consent.** The file's `allow` list
+  was installed at `PermissionScope::Session` — covering every requester —
+  the moment the TUI started, with no prompt, no diff, and no record of
+  where a rule came from. A repository shipping
+  `{"allow": ["bash:npm run build"]}` (or `bash:make`, or `bash:cargo test`)
+  therefore auto-approved that command on first launch, in a repo that also
+  controls the file the command runs (`package.json`, `Makefile`,
+  `build.rs`) — arbitrary code execution from a `git clone`, no keystroke
+  required. **Anyone who has cloned and opened untrusted repositories in
+  conway should upgrade and review `~/.conway/permissions.json` /
+  `<project>/.conway/permissions.json` for rules they did not knowingly
+  add.**
+
+  Fixed by requiring an explicit, content-scoped trust decision before a
+  PROJECT-scoped file's `allow` rules install at all:
+
+  - `PermissionFile` gains a `deny` half (`#[serde(default)]`, so every
+    existing file keeps parsing). `deny` rules apply **immediately, from
+    any file, trusted or not** — narrowing what is authorized has no
+    failure mode worth gating, so a safety rule works the moment it is
+    written. `allow` rules from a project file install **only** once
+    `conway::config::trust::TrustStore` confirms a recorded trust decision
+    matching the file's exact current bytes; the operator's own global
+    file (`<xdg>/permissions.json`) is unaffected — trusted by authorship,
+    no new friction.
+  - Trust is per-`(absolute path, blake3 content digest)`, never a
+    directory: editing a trusted file's content **silently de-trusts it**
+    (no modal, ever — a prompt firing on every `git pull` would train an
+    operator to press "yes" without reading it, which is worse than no
+    prompt at all). The only path that writes a trust record is the new
+    `/trust permissions` TUI command, an explicit operator action that also
+    installs the file's rules immediately for the running session.
+    `trust.json` (global-only — a project-scoped trust file would let
+    untrusted content trust itself) is refused if group- or
+    world-writable on unix (the same posture `ssh` takes with a loose
+    private key), and every failure mode (missing, corrupt, unreadable,
+    a digest mismatch) fails closed to "untrusted," never "trusted."
+  - `deny` matching (`PatternRule::matches_deny`) deliberately does **not**
+    consult the shell-metacharacter gate `allow` matching still applies
+    (`PatternRule::matches_render`) — inverted, that gate would let adding
+    a `;` to a command defeat the very deny rule meant to catch it. Stated
+    honestly: **`deny bash:git push` does not catch `foo; git push`** —
+    prefix matching is not a containment boundary in either direction, and
+    a `deny` rule is a seatbelt for the obvious case, not one. What keeps
+    the composition sound is `allow`'s own gate: a command carrying a
+    metacharacter can never be auto-allowed regardless of what patterns
+    exist, so a chained command always reaches the operator either way.
+  - Every installed pattern grant now carries its origin
+    (`PatternOrigin::Interactive` or `PatternOrigin::File(path)`), shown in
+    `/settings`'s grant list (`[interactive] ...` / `[/path/to/file] ...`)
+    — a rule set nobody can attribute to its source is a trap.
+
+  Design: `docs/design/d4-trust-model.md` §3–5, §11. This ships the
+  narrower, non-plugin half of that design (one trust subject kind,
+  `permission_file`, keyed directly on absolute path rather than nested
+  under a `projects` map with a `kind` tag) — the two load-bearing
+  properties (per-file granularity, digest-not-directory) are already
+  exactly what the full design specifies, and a `plugin` kind can be added
+  to `trust.json` later without redesigning this. Root confinement (v0.6.0)
+  is unaffected — it is checked above every allow path, including this one.
+  (`crates/conway-core/src/permission_pattern.rs`,
+  `crates/conway-runtime/src/permission.rs`,
+  `crates/conway/src/conway.rs`, `crates/conway/src/config/trust.rs`,
+  `crates/conway-cli/src/tui/app.rs`)
+
+- **Any agent could steer, await, or cancel any other agent, with no check
+  that the caller was even related to the target.** `SubagentHost::steer`/
+  `await_result`/`cancel` took only a `target` id — reachable via `conway_steer`/
+  `conway_await`/`conway_cancel` with a MODEL-supplied `agent_id` string, no
+  ownership check at either the tool or the trait layer — so a sibling agent
+  (or anyone who had merely seen an id, e.g. in tool output or the event
+  stream) could cancel another branch's work or inject a `steer` message
+  that landed with forged parent authority (`steer` attributed the message
+  to `target`'s own tree parent, never the actual caller). Fixed by adding a
+  `caller: AgentId` parameter to all three trait methods and enforcing, AT
+  THE TRAIT BOUNDARY, that `caller` must be `target` itself or one of its
+  ancestors (`RuntimeError::AgentNotInSubtree` otherwise); `steer`'s
+  attribution now derives from `caller` directly. No separate "operator"
+  bypass exists — `conway::SessionHandle` (the TUI/embedder path) passes its
+  own session root as `caller`, which already covers its whole session by
+  construction. (`crates/conway-core/src/ports/subagent.rs`,
+  `crates/conway-core/src/error.rs`, `crates/conway-runtime/src/subagent.rs`,
+  `crates/conway-tools/src/subagent/`, `crates/conway/src/session_handle.rs`)
+
 ### Fixed
 
 - **Pattern grants were still inert for every tool except `bash`.** v0.5.0
@@ -106,6 +214,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `CapabilityIndex` — one load, one source of truth.
   (`crates/conway/src/conway.rs`, `crates/conway/src/builder.rs`,
   `crates/conway-cli/src/tui/app.rs`)
+
+### Removed
+
+- **`Plugin::on_init` and `PluginInitCtx` are gone** — an API narrowing. The
+  trait documented `on_init` as "called once at startup"; nothing ever called
+  it. A third-party plugin implementing it to open a connection, load config,
+  or validate credentials got silently skipped code, with no error and no
+  warning. An absent hook is a known limitation; an unwired one is a trap,
+  which is why this was removed rather than left in place.
+
+  Removal over wiring it up, deliberately: `PluginRegistry::from_plugins` is
+  synchronous and eager and `Plugin::manifest()`/`tools()` are sync and
+  infallible, so there is no coherent point at which an async or fallible
+  `on_init` could run without reshaping plugin construction. No built-in
+  implemented it, and under GP-03 built-ins use the same surface third
+  parties do — a hook with no customer is surface without a purpose.
+  Anything a plugin needs at construction it does in its own constructor
+  before `with_plugin`. The method was defaulted, so no in-tree implementor
+  breaks. (`crates/conway-core/src/ports/plugin.rs`)
 
 ## [0.6.0] — 2026-07-30
 

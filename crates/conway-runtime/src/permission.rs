@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 
 use conway_core::permission_mode::PermissionMode;
-use conway_core::permission_pattern::PatternRule;
+use conway_core::permission_pattern::{PatternOrigin, PatternRule};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
@@ -279,12 +279,26 @@ pub struct PermissionBroker {
     /// [`PermissionBroker::set_mode`] so `/settings` can switch out of an
     /// over-broad mode mid-session without a restart.
     mode: RwLock<PermissionMode>,
-    /// V2: prefix-pattern grants, paired with the scope they were granted
-    /// at. Checked BEFORE the gate, so a matching pattern spares the
-    /// operator a prompt -- but only for commands that clear
-    /// `PatternRule::matches_render`'s metacharacter gate (a shell command,
-    /// per the call's `RenderKind`).
-    patterns: RwLock<Vec<(PatternRule, GrantScope)>>,
+    /// V2: prefix-pattern ALLOW grants, paired with the scope they were
+    /// granted at and where they came from. Checked BEFORE the gate, so a
+    /// matching pattern spares the operator a prompt -- but only for
+    /// commands that clear `PatternRule::matches_render`'s metacharacter
+    /// gate (a shell command, per the call's `RenderKind`). Board item
+    /// 01KYT8SGX32CP56PRJNG72V2W5: the CALLER (`conway`'s facade,
+    /// `conway-cli`'s startup loader) is responsible for confirming trust
+    /// before an allow rule loaded from a project file ever reaches
+    /// `remember_pattern` -- this broker has no file-trust concept of its
+    /// own and does not need one; it only stores what it is told to.
+    patterns: RwLock<Vec<(PatternRule, GrantScope, PatternOrigin)>>,
+    /// Board item 01KYT8SGX32CP56PRJNG72V2W5: prefix-pattern DENY rules.
+    /// Unlike `patterns` above, these carry no `GrantScope` -- a `deny`
+    /// rule is D4 §3's asymmetric half, "applies immediately, trusted or
+    /// not, from any file, to any requester," so it is checked in
+    /// `Self::decide` for EVERY call regardless of who is asking. Matched
+    /// via `PatternRule::matches_deny`, which deliberately does not consult
+    /// the metacharacter gate `patterns` above is gated by -- see that
+    /// method's own doc.
+    deny_patterns: RwLock<Vec<(PatternRule, PatternOrigin)>>,
 }
 
 impl PermissionBroker {
@@ -295,6 +309,7 @@ impl PermissionBroker {
             cache: RwLock::new(HashMap::new()),
             mode: RwLock::new(PermissionMode::default()),
             patterns: RwLock::new(Vec::new()),
+            deny_patterns: RwLock::new(Vec::new()),
         }
     }
 
@@ -312,19 +327,46 @@ impl PermissionBroker {
         *self.mode.write().expect("permission mode poisoned") = mode;
     }
 
-    /// Installs a pattern grant at `scope`.
+    /// Installs a pattern ALLOW grant at `scope`, attributed to `origin`
+    /// for the review surface (board item 01KYT8SGX32CP56PRJNG72V2W5).
     ///
     /// Note this does NOT pre-validate the rule against metacharacters:
     /// the gate lives in `PatternRule::matches_render`, applied to the
     /// incoming COMMAND at decision time. Filtering at creation time
     /// instead would be the wrong shape -- it would let a rule created
     /// before the gate existed, or loaded from a file, slip past.
-    pub fn remember_pattern(&self, rule: PatternRule, scope: PermissionScope, granting_agent: AgentId) {
+    ///
+    /// This method trusts its caller completely: it installs whatever it
+    /// is given, from whatever `origin` it is told. The trust DECISION for
+    /// an `origin: PatternOrigin::File(path)` rule loaded from a
+    /// project-scoped file belongs to the caller (`conway-cli`'s startup
+    /// loader), made once, before this is ever called -- this broker is
+    /// not the enforcement point and must not become one, or there would
+    /// be two places a future change to that logic would need to agree.
+    pub fn remember_pattern(
+        &self,
+        rule: PatternRule,
+        scope: PermissionScope,
+        granting_agent: AgentId,
+        origin: PatternOrigin,
+    ) {
         let grant = grant_scope_for(scope, granting_agent);
         self.patterns
             .write()
             .expect("permission patterns poisoned")
-            .push((rule, grant));
+            .push((rule, grant, origin));
+    }
+
+    /// Installs a DENY rule, attributed to `origin`. Unlike
+    /// [`Self::remember_pattern`], there is no `scope` parameter: a deny
+    /// rule applies to every requester in the session, unconditionally --
+    /// narrowing what is authorized has no failure mode worth scoping
+    /// (board item 01KYT8SGX32CP56PRJNG72V2W5, D4 §3).
+    pub fn remember_deny_pattern(&self, rule: PatternRule, origin: PatternOrigin) {
+        self.deny_patterns
+            .write()
+            .expect("permission deny patterns poisoned")
+            .push((rule, origin));
     }
 
     /// S5: the root-containment check. Evaluated before anything else in
@@ -421,20 +463,45 @@ impl PermissionBroker {
         }
     }
 
-    /// Every active pattern grant, for the settings menu's review list. An
-    /// operator must be able to see what they have granted; a rule set
-    /// nobody can inspect is a trap.
-    pub fn active_patterns(&self) -> Vec<PatternRule> {
+    /// Every active pattern ALLOW grant, paired with its origin, for the
+    /// settings menu's review list. An operator must be able to see what
+    /// they have granted, AND where it came from; a rule set nobody can
+    /// inspect -- or whose provenance nobody can tell -- is a trap (board
+    /// item 01KYT8SGX32CP56PRJNG72V2W5).
+    pub fn active_patterns(&self) -> Vec<(PatternRule, PatternOrigin)> {
         self.patterns
             .read()
             .expect("permission patterns poisoned")
             .iter()
-            .map(|(rule, _)| rule.clone())
+            .map(|(rule, _, origin)| (rule.clone(), origin.clone()))
             .collect()
     }
 
-    /// Drops every pattern grant and every cached `AllowAlways`, returning
-    /// the session to asking. The revocation half of the escape hatch.
+    /// Every active DENY rule, paired with its origin -- the deny half's
+    /// own review list, so a `deny` an operator did not expect (or forgot
+    /// they wrote) is discoverable the same way an `allow` grant is.
+    pub fn active_deny_patterns(&self) -> Vec<(PatternRule, PatternOrigin)> {
+        self.deny_patterns
+            .read()
+            .expect("permission deny patterns poisoned")
+            .iter()
+            .cloned()
+            .collect()
+    }
+
+    /// Drops every pattern ALLOW grant and every cached `AllowAlways`,
+    /// returning the session to asking. The revocation half of the escape
+    /// hatch.
+    ///
+    /// Deliberately leaves `deny_patterns` untouched: revocation exists so
+    /// an operator can back out of authority they granted (interactively,
+    /// or via a trusted file) that turned out to be too broad. A `deny`
+    /// rule narrows rather than grants, so there is nothing here for an
+    /// operator to need an escape hatch FROM -- and most `deny` rules come
+    /// from a file the operator does not control (or has not reviewed as
+    /// carefully), so silently dropping them as a side effect of an
+    /// unrelated "revoke my own grants" action would be a surprise in the
+    /// unsafe direction.
     pub fn revoke_all_grants(&self) {
         self.patterns
             .write()
@@ -444,6 +511,54 @@ impl PermissionBroker {
             .write()
             .expect("permission cache poisoned")
             .clear();
+    }
+
+    /// Revokes exactly ONE installed pattern ALLOW grant, addressed by the
+    /// value it renders as -- `(rule, origin)` -- rather than by position
+    /// in `active_patterns()`. Board item 01KYND4WGHSZXW5YQ6ZWHCDDNN.
+    ///
+    /// ## Why `(PatternRule, PatternOrigin)` identity, not an index
+    ///
+    /// An index into `active_patterns()` is the identity that is easiest to
+    /// wire up -- the settings menu already renders one row per entry, in
+    /// order -- but it is also the most fragile: a concurrent
+    /// `remember_pattern` call (a permission prompt answered on another
+    /// agent's turn, or a permissions file reloaded mid-session) can insert
+    /// before the row the operator is looking at, so by the time the
+    /// revoke reaches this method the index could address a DIFFERENT
+    /// grant than the one the operator actually selected -- silently
+    /// revoking the wrong rule. `(PatternRule, PatternOrigin)` is exactly
+    /// the pair the review row already displays (`rule.describe()`,
+    /// `origin.describe()`), so what the operator SAW is the identity
+    /// ADDRESSED, and it stays correct regardless of what else is
+    /// inserted or removed elsewhere in the vector between render and
+    /// revoke.
+    ///
+    /// Removes the FIRST entry whose rule and origin both compare equal
+    /// (both types are `Eq`) -- not every match. Two entries with
+    /// byte-identical `(rule, origin)` would render as two
+    /// indistinguishable rows; revoking "this row" removes exactly one
+    /// grant instance and leaves the other in place (still shown, still
+    /// revocable the same way on a second selection) rather than guessing
+    /// the operator meant to clear both at once.
+    ///
+    /// Returns whether anything was removed. Deliberately narrower than
+    /// [`Self::revoke_all_grants`]: it never touches `deny_patterns` (no
+    /// deny counterpart exists here at all -- see `conway::Conway::
+    /// revoke_permission_pattern`'s own doc for why per-rule deny
+    /// revocation through this surface was decided against) and never
+    /// touches `cache` (an `AllowAlways` cache entry is a *different*
+    /// mechanism -- a gate's own per-call decision, not a pattern grant --
+    /// so revoking a pattern must not reach into it).
+    pub fn revoke_pattern(&self, rule: &PatternRule, origin: &PatternOrigin) -> bool {
+        let mut patterns = self.patterns.write().expect("permission patterns poisoned");
+        match patterns.iter().position(|(r, _, o)| r == rule && o == origin) {
+            Some(idx) => {
+                patterns.remove(idx);
+                true
+            }
+            None => false,
+        }
     }
 
     /// Whether any installed pattern authorizes this call.
@@ -461,10 +576,27 @@ impl PermissionBroker {
             .read()
             .expect("permission patterns poisoned")
             .iter()
-            .any(|(rule, grant)| {
+            .any(|(rule, grant, _origin)| {
                 grant.covers(ctx)
                     && rule.matches_render(call.tool.as_str(), &call.rendered, call.render_kind)
             })
+    }
+
+    /// The first installed `deny` rule that refuses this call, if any.
+    /// Board item 01KYT8SGX32CP56PRJNG72V2W5, D4 §3: checked for EVERY
+    /// requester (no `GrantScope`), via `PatternRule::matches_deny` --
+    /// deliberately NOT `matches_render`, so a deny rule cannot be evaded
+    /// by adding a shell metacharacter the way an allow rule is refused by
+    /// one. See that method's own doc for the reasoning and its honest
+    /// limit.
+    fn deny_matches(&self, call: &AuthorizedCall) -> Option<PatternRule> {
+        self.deny_patterns
+            .read()
+            .expect("permission deny patterns poisoned")
+            .iter()
+            .map(|(rule, _origin)| rule)
+            .find(|rule| rule.matches_deny(call.tool.as_str(), &call.rendered))
+            .cloned()
     }
 
     /// Authorize one tool call, consulting the cache first and the gate on a
@@ -513,6 +645,33 @@ impl PermissionBroker {
             RootDecision::MustReachGate => true,
             RootDecision::Proceed => false,
         };
+
+        // Board item 01KYT8SGX32CP56PRJNG72V2W5, D4 §3: the `deny` half of
+        // the allow/deny asymmetry. Checked immediately after the root
+        // floor and BEFORE the mode gate, the cache, pattern allows, and
+        // AutoAllow -- a deny rule beats every one of those, regardless of
+        // mode, regardless of whether its origin file was ever trusted
+        // (deny applies unconditionally), and regardless of `must_reach_gate`
+        // (a call that would otherwise be forced to the operator's gate is
+        // denied outright instead, which is strictly MORE restrictive, not
+        // less). This is "most-restrictive-wins, independent of order or
+        // authorship" made concrete.
+        if let Some(rule) = self.deny_matches(call) {
+            self.emit(
+                ctx,
+                Event::PermissionResolved {
+                    call_id: call.call_id.clone(),
+                    decision: PermissionDecisionKind::Denied,
+                },
+            );
+            return PermissionOutcome::Deny {
+                rendered_error: format!(
+                    "`{}` is denied by a `deny` rule (`{}`)",
+                    call.tool.as_str(),
+                    rule.to_wire()
+                ),
+            };
+        }
 
         // V2 mode gate. Ordered deliberately: PLAN's denial is checked
         // before EVERY allow path -- the cache, pattern grants, and

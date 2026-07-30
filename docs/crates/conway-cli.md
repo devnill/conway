@@ -1145,12 +1145,53 @@ project-first then global, as a flat list of wire-form strings so the file
 can be read and diffed by a human:
 
 ```json
-{ "allow": ["bash:git status", "read:*"] }
+{ "allow": ["bash:git status", "read:*"], "deny": ["bash:curl", "bash:ssh"] }
 ```
 
 A corrupt or unreadable file **fails closed** — it authorizes nothing, and
 the worst outcome is extra prompting. A malformed individual entry is
 dropped rather than guessed at; the rest of the file still loads.
+
+**`allow`/`deny` is asymmetric, and a project file requires trust
+(board item 01KYT8SGX32CP56PRJNG72V2W5).** A project's `.conway/permissions.json`
+is authored by whoever controls the checkout — for a cloned repository,
+that is not you. Before this item, its `allow` rules installed at startup
+with no consent at all: a repo shipping `{"allow": ["bash:npm run build"]}`
+auto-approved that command on first launch, in a repo that also controls
+`package.json`. Now:
+
+- **`allow` requires trust; `deny` does not.** A project file's `allow`
+  rules install only once you have run `/trust permissions` (below) against
+  that file's exact current bytes. Its `deny` rules apply **immediately**,
+  trusted or not — narrowing what is authorized has no failure mode worth
+  gating. Your own **global** file (`~/.conway/permissions.json` or
+  `$XDG_CONFIG_HOME/conway/permissions.json`) needs no trust ceremony at
+  all — it is trusted by authorship, so there is no new friction for the
+  file only you write.
+- **`deny` is a seatbelt, not a boundary — said plainly.** `deny` matching
+  deliberately does **not** apply the shell-metacharacter gate `allow`
+  matching does (inverted, that gate would let `curl x; y` slip past a
+  `deny bash:curl` rule just for carrying a `;`). But prefix matching still
+  is not a containment boundary in either direction: **`deny bash:git push`
+  does not catch `foo; git push`.** What keeps this sound anyway is
+  `allow`'s own gate — a command carrying a metacharacter can never be
+  auto-allowed regardless of what patterns exist, so a chained command
+  always reaches you either way. Put anything that must never run under any
+  circumstance in the confinement root, not in a `deny` prefix.
+- **`/trust permissions`** records an explicit trust decision — a blake3
+  digest of the project file's exact bytes, saved to the global,
+  user-only `trust.json` — and immediately installs that file's `allow`
+  rules for the running session (no restart needed). Editing the file
+  afterward (a `git pull`, a hand edit, anything) **silently de-trusts
+  it** — no modal, ever: a prompt firing on every pull would just train you
+  to press "yes" without reading it. You will see one notice in the
+  transcript the next time a trusted file's content no longer matches, and
+  `/trust permissions` again to re-review. There is no "trust this
+  directory" — trust is per exact file content, so an edit never rides a
+  decision you made about different bytes.
+- Every entry in `/settings`' grant list now shows **where it came from**:
+  `[interactive]` for a grant you approved at a prompt, or the originating
+  file's path for one loaded from disk.
 
 **Granting from the prompt.** When a command is proposed, the permission
 prompt offers `[p]` alongside allow-once and deny — and states in words
@@ -1179,17 +1220,63 @@ the point — granting more should take deliberate effort, granting less
 should be the default. You can always grant again; you cannot un-authorize
 what already ran.
 
-**Loading and scope.** Rules load at startup from both files and **merge**.
-They answer different questions: a global rule is "I always allow this,
-everywhere" (`read:*`), a project rule is "this checkout's build command is
-fine" (`bash:cargo test`). Having the project file silently discard a global
-grant would surprise an operator who set one deliberately. New grants are
-written to the project file by default, so they can be reviewed in a diff
-alongside the code they authorize.
+**Loading and scope.** Rules load at startup from both files and **merge**
+— subject to the trust gate above: a project file's `deny` rules always
+join the merge; its `allow` rules join only once trusted. They answer
+different questions: a global rule is "I always allow this, everywhere"
+(`read:*`), a project rule is "this checkout's build command is fine"
+(`bash:cargo test`). Having the project file silently discard a global
+grant would surprise an operator who set one deliberately. New grants
+approved interactively (the `[p]` prompt) are written to the project file
+by default, so they can be reviewed in a diff alongside the code they
+authorize — and, being written by you, are exactly the case `/trust
+permissions` exists to confirm once so they keep loading automatically.
 
-Review the active grants, switch modes, and revoke everything from
-`/settings`. Per-rule revocation is not implemented yet — revoke-all is
-the current floor.
+**Per-rule revocation (board item 01KYND4WGHSZXW5YQ6ZWHCDDNN).** Every grant
+row in `/settings` is now a real, selectable menu row — `Enter` revokes
+*that one grant* and nothing else, alongside the pre-existing "revoke all
+grants" row for clearing everything at once:
+
+```
+permissions
+  mode -- prompt (Enter to cycle)
+  granted: [interactive] `bash` commands starting with `git status` (Enter to revoke)
+  granted: [.conway/permissions.json] any `read` call (Enter to revoke)
+  revoke all grants (Enter)
+```
+
+A grant is addressed by the same `(rule, origin)` pair its row displays —
+never a bare position — so a concurrent grant elsewhere in the session can
+never cause the wrong row to be revoked.
+
+Revocation **never fails open**: the in-session grant is dropped
+immediately, before any file is touched, so it stops applying to this
+session even if the write below fails. What happens next depends on where
+the rule came from:
+
+- **`[interactive]`** (approved at a prompt, or granted with no permissions
+  file behind it at all) — there is nothing to write. Revoking it never
+  creates a file.
+- **A file origin** — the rule's wire form is removed from *that exact
+  file*, never a different one, via the same tmp-then-rename write
+  `/settings`'s own persisted grants and `/trust permissions`'s trust
+  record use. If that file is a **trusted project file**, the rewrite
+  changes its bytes and therefore its trust digest — so revocation
+  **re-records trust for the new content** immediately afterward, rather
+  than silently de-trusting the file's other rules out from under you. (The
+  global file needs no such step — it was never gated on a digest.) If the
+  re-trust step itself fails, the revoke still fully succeeded; you are
+  told the file's other rules will need `/trust permissions` again.
+- If the file cannot be read or parsed at all, the removal is reported as a
+  **failed** persist — the rule still stops applying this session, but you
+  are told it may come back at the next restart, rather than the file being
+  blindly rewritten (and possibly losing content this could not parse).
+
+`deny` rules have no revoke row at all: `/settings` never lists them (only
+`allow` grants are shown), mirroring `revoke_all_grants`'s own long-standing
+choice to leave `deny` untouched — a `deny` rule only narrows, most come
+from a file you do not control, and a safety rule should not be one
+keystroke from silently gone.
 
 ### The `/` command palette, with arrow-select
 
@@ -1201,7 +1288,11 @@ dispatch is testable without a live `Runtime`). `tui/view/palette.rs`
 holds a second, independent command table specifically so the palette can
 also list `/ask` and `/agents` (handled directly in `app.rs`, never
 reaching `commands.rs`'s parser) — a disclosed, intentional duplication
-rather than an oversight.
+rather than an oversight. `/trust permissions` (board item
+01KYT8SGX32CP56PRJNG72V2W5) follows the identical interception pattern —
+handled in `App::submit` before `commands::parse` ever sees it — but is not
+yet added to the palette's own table, so it does not autocomplete there
+today; typing it in full still works.
 
 Typing `/` shows every command; each further character narrows the list
 live, since the palette's `matches` filter runs fresh on every render
