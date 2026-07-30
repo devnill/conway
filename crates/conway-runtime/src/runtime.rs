@@ -631,6 +631,9 @@ impl Runtime {
             parent: None,
             agent_path: vec![agent_id],
             cwd: spec.cwd.clone(),
+            // (S3) `RootSpec` has no `root` field yet -- every root agent
+            // starts unconfined, matching `meta.root: None` above.
+            root: None,
             deps: self.loop_deps.clone(),
             spec: agent_spec,
             cancel: cancel.clone(),
@@ -911,6 +914,13 @@ impl Runtime {
             parent: None,
             agent_path: vec![agent_id],
             cwd: cwd.clone(),
+            // (S3/S5) `meta.root` was already validated against `cwd` just
+            // above (the `Containment` check this method's own doc
+            // describes) -- passed straight through unchanged, exactly as
+            // the module doc for `ResumeSpec` promises ("no code path here
+            // could turn a persisted `Some(root)` into `None`, or replace
+            // it with something wider").
+            root: meta.root.clone(),
             deps: self.loop_deps.clone(),
             spec: agent_spec,
             cancel: cancel.clone(),

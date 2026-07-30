@@ -407,6 +407,10 @@ impl SubagentHost for Runtime {
         // -- the child's `ephemeral` flag is stamped into `AgentNode` (and thus
         // `Event::AgentSpawned`/`Event::AgentFinished`) verbatim from it.
         let ephemeral = meta.ephemeral;
+        // S5: likewise captured before the move, so `AgentLoop::root` below
+        // gets the exact same already-canonical (or `None`) value just
+        // persisted onto `meta.root` -- no independent recomputation.
+        let agent_loop_root = meta.root.clone();
 
         let (session_id, inherited, inherited_upto) = match spec.mode {
             SubagentMode::Fork => {
@@ -542,6 +546,7 @@ impl SubagentHost for Runtime {
             parent: Some(parent),
             agent_path,
             cwd: child_cwd,
+            root: agent_loop_root,
             deps: self.loop_deps().clone(),
             spec: agent_spec,
             cancel: cancel.clone(),
