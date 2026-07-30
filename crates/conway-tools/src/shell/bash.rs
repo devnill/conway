@@ -8,7 +8,7 @@ use serde::Deserialize;
 use conway_core::content::{PermissionClass, ToolCall, ToolCategory, ToolSpec, TruncationPolicy};
 use conway_core::error::ToolError;
 use conway_core::ids::ToolName;
-use conway_core::ports::{Tool, ToolCtx, ToolOutput};
+use conway_core::ports::{PathArgs, Tool, ToolCtx, ToolOutput};
 
 #[cfg(not(unix))]
 use crate::common::error_text;
@@ -62,6 +62,26 @@ impl BashTool {
 
 #[async_trait]
 impl Tool for BashTool {
+    /// Both facts about `bash` at once, which is why `Unconfinable` carries
+    /// `checkable` rather than there being two variants:
+    ///
+    /// - `BashArgs::command` is **unconfinable**. It goes to `/bin/bash -c`
+    ///   verbatim, and a shell command reaches any path it likes via
+    ///   redirection, substitution, `cd`, or a subprocess. Extracting paths
+    ///   from it and concluding "none outside the root, therefore allow"
+    ///   would be a transformation of untrusted input whose *failure to
+    ///   find* something becomes an authorization -- the same shape as the
+    ///   metacharacter-gate bug fixed in 0.5.0. So: never auto-allowed under
+    ///   a root; always falls through to the operator's gate.
+    /// - `BashArgs::cwd` **is** checkable. It is resolved through
+    ///   `resolve_path` and handed to `Command::current_dir`, so a root check
+    ///   can evaluate it exactly like any other path argument.
+    fn path_args(&self) -> PathArgs {
+        PathArgs::Unconfinable {
+            checkable: &["cwd"],
+        }
+    }
+
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: ToolName::new("bash"),

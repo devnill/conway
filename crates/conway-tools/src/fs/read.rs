@@ -8,7 +8,7 @@ use serde::Deserialize;
 use conway_core::content::{PermissionClass, ToolCall, ToolCategory, ToolSpec, TruncationPolicy};
 use conway_core::error::ToolError;
 use conway_core::ids::ToolName;
-use conway_core::ports::{Tool, ToolCtx, ToolOutput};
+use conway_core::ports::{PathArgs, Tool, ToolCtx, ToolOutput};
 
 use crate::common::{check_cancel, error_text, parse_args, resolve_path, text_output};
 
@@ -45,6 +45,12 @@ impl ReadTool {
 
 #[async_trait]
 impl Tool for ReadTool {
+    /// `ReadArgs::path` is the only path argument (`offset`/`limit` are
+    /// numeric). Confinable: a root check can evaluate it statically.
+    fn path_args(&self) -> PathArgs {
+        PathArgs::Named(&["path"])
+    }
+
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: ToolName::new("read"),

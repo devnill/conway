@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use conway_core::agent::{AgentResult, ResultStatus};
 use conway_core::content::{ContentBlock, ToolCall, TruncationPolicy};
 use conway_core::error::ToolError;
@@ -92,6 +93,115 @@ fn all_tools_with_minimal_args() -> Vec<(Arc<dyn Tool>, serde_json::Value)> {
             serde_json::json!({"agent_id": AgentId::new().to_string()}),
         ),
     ]
+}
+
+// ------------------------------------------------------------ path_args ---
+
+/// The declaration-matches-reality guard (S4). Every path name a tool
+/// declares via `Tool::path_args` MUST be a real top-level property of that
+/// tool's own JSON schema.
+///
+/// This is the test that makes the declaration trustworthy rather than
+/// aspirational. A declaration naming a field the args struct does not have
+/// is a silent hole: the later root-containment check would look up that key,
+/// find nothing, and confine nothing -- while appearing to be configured.
+/// That "a lookup that finds nothing becomes an authorization" shape is
+/// exactly the class of bug fixed in 0.5.0, so it is pinned generically here,
+/// across every built-in at once, rather than tool-by-tool where a newly
+/// added tool could be forgotten.
+#[test]
+fn every_declared_path_arg_is_a_real_property_of_the_tools_schema() {
+    for (tool, _) in all_tools_with_minimal_args() {
+        let spec = tool.spec();
+        let name = spec.name.as_str().to_string();
+
+        let declared: &[&str] = match tool.path_args() {
+            conway_core::ports::PathArgs::None => &[],
+            conway_core::ports::PathArgs::Named(names) => names,
+            conway_core::ports::PathArgs::Unconfinable { checkable } => checkable,
+            // `PathArgs` is `#[non_exhaustive]`: a future variant must be
+            // taught to this guard deliberately, not silently skipped.
+            other => panic!("tool `{name}` declared an unhandled PathArgs variant: {other:?}"),
+        };
+
+        if declared.is_empty() {
+            continue;
+        }
+
+        let schema = serde_json::to_value(&spec.schema)
+            .unwrap_or_else(|e| panic!("tool `{name}`'s schema must serialize: {e}"));
+        let properties = schema
+            .get("properties")
+            .and_then(|p| p.as_object())
+            .unwrap_or_else(|| {
+                panic!(
+                    "tool `{name}` declares path args {declared:?} but its schema has no \
+                     `properties` object to validate them against"
+                )
+            });
+
+        for arg in declared {
+            assert!(
+                properties.contains_key(*arg),
+                "tool `{name}` declares path arg `{arg}`, which is NOT a property of its own \
+                 schema (properties: {:?}). A declared name that does not exist confines \
+                 nothing while looking configured.",
+                properties.keys().collect::<Vec<_>>()
+            );
+        }
+    }
+}
+
+/// `bash` is the reason `Unconfinable` carries `checkable`: its `command` is
+/// unconfinable while its `cwd` is a genuinely checkable path. Pinned
+/// explicitly because an enforcing call site must be able to rely on both
+/// facts arriving together, from one match, with no `if name == "bash"`.
+#[test]
+fn bash_declares_itself_unconfinable_yet_offers_cwd_as_checkable() {
+    let tool = BashTool::new();
+    match tool.path_args() {
+        conway_core::ports::PathArgs::Unconfinable { checkable } => {
+            assert_eq!(
+                checkable, &["cwd"],
+                "bash's cwd is resolved and handed to Command::current_dir, so it is checkable"
+            );
+        }
+        other => panic!(
+            "bash's free-form command string can reach any path, so it must never be \
+             statically confinable; got {other:?}"
+        ),
+    }
+}
+
+/// The fail-closed default. A tool that does not override `path_args` must
+/// NOT be treated as "no paths, therefore nothing to check" -- it must be
+/// unconfinable, so adding this trait method silently auto-allows nothing.
+#[test]
+fn a_tool_that_does_not_override_path_args_is_unconfinable_not_pathless() {
+    struct UndeclaredTool;
+
+    #[async_trait]
+    impl Tool for UndeclaredTool {
+        fn spec(&self) -> conway_core::content::ToolSpec {
+            conway_core::content::ToolSpec {
+                name: ToolName::new("undeclared"),
+                description: "a third-party tool that never heard of path_args".into(),
+                schema: schemars::schema_for!(()),
+                category: conway_core::content::ToolCategory::Read,
+                permission: conway_core::content::PermissionClass::Safe,
+            }
+        }
+
+        async fn invoke(&self, _call: ToolCall, _ctx: ToolCtx) -> Result<ToolOutput, ToolError> {
+            unreachable!("this tool exists only to observe the path_args default")
+        }
+    }
+
+    assert_eq!(
+        UndeclaredTool.path_args(),
+        conway_core::ports::PathArgs::Unconfinable { checkable: &[] },
+        "the default must fail closed: 'no declared paths' must never mean 'allow'"
+    );
 }
 
 // ------------------------------------------------------------- registry ---
