@@ -190,6 +190,27 @@ failing silently). The gate is always implemented by the consumer; conway
 ships an allow-list gate (used by `-p`), a deny-all gate, and an interactive
 prompting gate (the TUI).
 
+A spawned child may additionally carry a **confinement root**
+(`SubagentSpec::root`). `PermissionBroker` checks a root against every
+call's declared `Tool::path_args` before the gate, the `AllowAlways` cache,
+pattern grants, or `AutoAllow` mode are ever consulted — a path outside the
+root is denied outright, before any of those can widen or bypass it. Stated
+plainly, not reassuringly: a root confines **the path arguments of
+path-taking tools**. It does not confine what a shell command does — `bash`'s
+`cwd` argument is root-checked, but its command string is declared
+unconfinable, not enforced (the string runs verbatim via `/bin/bash -c`, and
+the broker cannot parse shell), so **an agent holding `bash` is not confined
+by root alone.** The composition that IS a real guarantee is root *plus* a
+tool set that excludes `bash` (`SubagentSpec::tools`/`ToolSelector`,
+narrowing a child's announced tools at spawn) — a confined child is a child
+spawned without `bash`. And the check itself has a TOCTOU limit: it runs
+once in the broker, before dispatch; the tool opens the file later, across a
+task boundary, so a symlink created inside the root in between defeats it.
+Closing that requires `openat`/`O_NOFOLLOW` inside the tools, which is
+tool-layer sandboxing and out of scope here. See
+[`conway-runtime`](docs/crates/conway-runtime.md)'s "Permission brokering"
+section for the full mechanism and these limits stated in full.
+
 ### 3.5 `ContextHook` — pluggable context and tool curation
 
 `ContextHook` is a port trait (`conway-core`) invoked once per assembled

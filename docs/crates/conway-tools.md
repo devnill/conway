@@ -168,8 +168,13 @@ TUI's interactive prompting gate).
 
 The five file tools respect `.gitignore` where applicable and operate
 relative to `ToolCtx::cwd` — there is no sandbox/worktree logic anywhere in
-the harness (a general conway design principle); path confinement, if
-wanted, is the `PermissionGate` implementation's job, not this plugin's.
+this crate (a general conway design principle). Path confinement, when an
+agent has a confinement root, is enforced once by `conway-runtime`'s
+`PermissionBroker` against every tool's declared `Tool::path_args` — not by
+this plugin, and not by the `PermissionGate` implementation either (a gate
+still governs execution as always, but the root check runs *before* any
+gate is consulted; see [`conway-runtime`](conway-runtime.md)'s "Permission
+brokering" section for the full mechanism and its limits).
 
 **`cd`** is the exception worth its own paragraph, because its effect is
 not immediate the way every other tool's is. It resolves its one `path`
@@ -232,6 +237,24 @@ returns, and a rule like `bash:git status` is only checkable-by-reading —
 the entire reason V2 pattern grants use prefixes over regex — when the
 rendered text IS the command a person would type, not a JSON dump of the
 call's arguments.
+
+**What confinement gives you here, stated plainly, not reassuringly.**
+`BashTool` declares `Tool::path_args() -> PathArgs::Unconfinable { checkable:
+&["cwd"] }`: its `cwd` argument is resolved and checked against a
+confinement root exactly like any other tool's path argument, but its
+`command` string is **declared unconfinable, not enforced** — it is handed
+to `/bin/bash -c` verbatim, and the broker cannot parse shell. `cd ..`,
+`$HOME/x`, `$(echo /etc)/passwd`, `exec 3</etc/passwd`, a shell function, and
+a heredoc all reach paths a root-check-on-the-string could never rule out;
+extracting paths from the command text and concluding "none outside the
+root, therefore allow" would be the same shape of bug as the metacharacter
+gate fixed in 0.5.0 — a transformation of untrusted input whose *failure to
+find* something becomes an authorization. So it is never attempted: a
+root never auto-allows `bash`'s command, and **an agent holding `bash` is
+not confined by root alone.** See
+[`conway-runtime`](conway-runtime.md)'s "Permission brokering" section for
+what root does and does not guarantee, and the composition (root plus a
+tool set that excludes `bash`) that actually is a jail.
 
 ### `SubagentPlugin` — `conway_subagent`, `conway_ask`, `conway_steer`, `conway_await`, `conway_cancel`
 

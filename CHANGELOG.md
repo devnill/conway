@@ -96,6 +96,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `crates/conway-runtime/src/tools/runner.rs`,
   `crates/conway-runtime/src/agent_loop.rs`)
 
+- **Documented the confinement root's honest enforcement boundary, and
+  pinned bash's `cwd` acceptance cases with a seam test (S6: the final
+  slice of the cwd/root confinement cycle).** Part 1 (root-checking
+  `bash`'s `cwd`) landed with S5; this slice adds the missing
+  in-root-is-allowed case (`bash_cwd_inside_root_is_allowed`,
+  `crates/conway/tests/root_containment_seam.rs`) alongside the
+  already-passing outside-is-denied and no-`cwd`-reaches-the-gate cases, so
+  all three of the item's acceptance shapes are pinned by a real
+  `ToolRunner`/`PermissionBroker` seam test, not just asserted. The rest of
+  the slice is documentation, stated as limits rather than reassurance: a
+  root confines the path arguments of path-taking tools, not what a shell
+  command does (`bash`'s `command` string is declared unconfinable, not
+  enforced — an agent holding `bash` is not confined by root alone); the
+  composition that IS a real guarantee is root plus a tool set that
+  excludes `bash` (`SubagentSpec.tools`/`ToolSelector`, already-existing
+  machinery — no new mechanism); and the check has a TOCTOU limit (checked
+  in the broker, opened later inside the tool, across a task boundary — a
+  symlink created inside the root in between defeats it, closeable only by
+  tool-layer `openat`/`O_NOFOLLOW` sandboxing, out of scope here). Recorded
+  in `docs/crates/conway-tools.md` (`ShellPlugin` section), `docs/crates/
+  conway-runtime.md` (a new "The honest boundary" subsection under
+  "Permission brokering"), `ARCHITECTURE.md` §3.4, and `BashTool::
+  path_args`'s own doc comment plus its `ToolSpec::description` (`crates/
+  conway-tools/src/shell/bash.rs`) — including the explicit "do not parse
+  the command string" reasoning (`cd ..`, `$HOME/x`, `$(echo /etc)/passwd`,
+  `exec 3</etc/passwd`, a shell function, a heredoc all defeat any such
+  scan) at the one place a future contributor is most likely to consider
+  "improving" this. Also fixed two now-stale doc claims found while writing
+  this: `docs/crates/conway-tools.md` said path confinement was "the
+  `PermissionGate` implementation's job", predating S5's broker-level
+  enforcement; `docs/crates/conway.md`'s `SpawnSpec.root` section still said
+  "nothing checks a tool call's arguments against `root`" — true when S3
+  landed the plumbing, false since S5 wired the actual check. Both
+  corrected to describe current behavior.
+
 ### Fixed
 
 - **`PermissionBroker::decide`'s plan-mode guarantee was not honored by the

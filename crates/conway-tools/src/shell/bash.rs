@@ -76,6 +76,18 @@ impl Tool for BashTool {
     /// - `BashArgs::cwd` **is** checkable. It is resolved through
     ///   `resolve_path` and handed to `Command::current_dir`, so a root check
     ///   can evaluate it exactly like any other path argument.
+    ///
+    /// **Do not "improve" this by parsing `command` for paths.** `cd ..`,
+    /// `$HOME/x`, `$(echo /etc)/passwd`, `exec 3</etc/passwd`, a shell
+    /// function, and a heredoc all defeat any such scan -- there is no
+    /// finite list of shapes to special-case, because the input language is
+    /// a full shell. A root confines path *arguments*; it does not, and
+    /// cannot, confine what a shell command does. An agent holding `bash`
+    /// is not confined by root alone (see `docs/crates/conway-tools.md`'s
+    /// `ShellPlugin` section and `docs/crates/conway-runtime.md`'s
+    /// "Permission brokering" section for the full boundary, including the
+    /// composition -- root plus a tool set excluding `bash` -- that IS a
+    /// real guarantee).
     fn path_args(&self) -> PathArgs {
         PathArgs::Unconfinable {
             checkable: &["cwd"],
@@ -85,7 +97,10 @@ impl Tool for BashTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: ToolName::new("bash"),
-            description: "Execute a shell command with bash -c".into(),
+            description: "Execute a shell command with bash -c. If a confinement root is \
+                active, the cwd argument is checked against it, but the command string is \
+                not -- it runs verbatim, so a root does not confine what this command does."
+                .into(),
             schema: schemars::schema_for!(BashArgs),
             category: ToolCategory::Execute,
             permission: PermissionClass::Dangerous,

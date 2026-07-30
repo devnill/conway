@@ -159,10 +159,16 @@ including staying unconfined when the parent itself is.
   override field at all, so resume can neither widen nor null a session's
   persisted root; its `cwd` override IS checked against the persisted root
   (fails if it would escape).
-- **Not itself enforcement (yet):** as of this slice, nothing checks a tool
-  call's arguments against `root` — it is carried and validated end-to-end
-  (spec → runtime → `SessionMeta`) so a later slice can wire the actual
-  confinement check without this plumbing changing shape.
+- **Enforcement:** `conway-runtime`'s `PermissionBroker` checks every tool
+  call's declared path arguments (`Tool::path_args`) against `root` before
+  any allow path — the cache, pattern grants, `AutoAllow` mode, or the gate
+  itself — is consulted; a path outside `root` is denied outright. This is
+  stated plainly, not reassuringly: a root confines path *arguments*, not
+  what a shell command run via `bash` does — see
+  [`conway-runtime`](conway-runtime.md)'s "Permission brokering" section for
+  the full boundary, including the composition (root plus a tool set
+  excluding `bash`) that is a real confinement guarantee, and the TOCTOU
+  limit inherent to a check-then-open design.
 - **Model-facing surface: none.** `conway_subagent`/`conway_ask` (the
   model-invoked tools) gain no equivalent argument — this is an
   embedder-only surface for now, exactly as `cwd` already is.
