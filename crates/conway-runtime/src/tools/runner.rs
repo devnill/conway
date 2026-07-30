@@ -50,7 +50,7 @@ use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken as TokioCancellationToken;
 
 use crate::events::{BusSink, EventBus};
-use crate::permission::{AuthorizedCall, PermissionBroker, PermissionCtx, PermissionOutcome};
+use crate::permission::{AgentRoot, AuthorizedCall, PermissionBroker, PermissionCtx, PermissionOutcome};
 
 use super::registry::PluginRegistry;
 
@@ -73,6 +73,14 @@ pub struct ToolBatchCtx {
     pub subagents: Arc<dyn SubagentHost>,
     pub plugin_config: Arc<PluginConfig>,
     pub max_parallel_tools: usize,
+    /// S5: this agent's confinement root, reconstructed exactly once per
+    /// agent (`AgentLoop::run_inner`, alongside `chdir`'s own cell) and
+    /// cloned in unchanged here for every call in this batch -- see
+    /// `AgentRoot`'s own doc for why cloning it is cheap and why
+    /// reconstructing it more often than once per agent would be wrong
+    /// (hazard #8 in this slice's own inventory: a TOCTOU widening, and
+    /// slow).
+    pub root: AgentRoot,
 }
 
 /// The outcome of one dispatched tool call.
@@ -158,6 +166,7 @@ impl ToolRunner {
             let chdir = ctx.chdir.clone();
             let subagents = ctx.subagents.clone();
             let plugin_config = ctx.plugin_config.clone();
+            let root = ctx.root.clone();
             let call_id_for_panic = call.call_id.clone();
             let tool_for_panic = call.name.clone();
 
@@ -181,6 +190,7 @@ impl ToolRunner {
                     chdir,
                     subagents,
                     plugin_config,
+                    root,
                     call,
                 ))
                 .catch_unwind()
@@ -238,6 +248,7 @@ async fn execute_one(
     chdir: CwdHandle,
     subagents: Arc<dyn SubagentHost>,
     plugin_config: Arc<PluginConfig>,
+    root: AgentRoot,
     call: ToolCall,
 ) -> ToolOutcome {
     let call_id = call.call_id.clone();
@@ -274,12 +285,19 @@ async fn execute_one(
         category: resolved.spec.category,
         arguments: call.arguments.clone(),
         rendered: render_call(resolved.tool.as_ref(), &call.arguments),
+        // S5: a cheap, static, call-independent property of the resolved
+        // tool -- this is the seam that gets the broker's root check
+        // `Tool::path_args` without duplicating tool resolution at the
+        // broker's own decision point (which has no `PluginRegistry`
+        // access, and must not gain one just for this).
+        path_args: resolved.tool.path_args(),
     };
     let perm_ctx = PermissionCtx {
         agent_id,
         agent_path,
         session: session_id,
         cwd: cwd.clone(),
+        root,
     };
 
     match broker.decide(&perm_ctx, &authorized).await {

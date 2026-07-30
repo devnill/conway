@@ -12,16 +12,17 @@ use std::collections::HashMap;
 
 use conway_core::permission_mode::PermissionMode;
 use conway_core::permission_pattern::PatternRule;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use conway_core::agent::{
     PermissionDecision, PermissionDecisionKind, PermissionRequest, PermissionScope,
 };
+use conway_core::containment::{CanonicalRoot, Containment};
 use conway_core::content::ToolCategory;
 use conway_core::event::Event;
 use conway_core::ids::{AgentId, SessionId, ToolName};
-use conway_core::ports::PermissionGate;
+use conway_core::ports::{PathArgs, PermissionGate};
 
 use crate::context::prefix::canonical_json_bytes;
 use crate::events::EventBus;
@@ -37,6 +38,12 @@ pub struct PermissionCtx {
     pub agent_path: Vec<AgentId>,
     pub session: SessionId,
     pub cwd: PathBuf,
+    /// S5: this agent's confinement root, reconstructed once per agent (see
+    /// [`AgentRoot::reconstruct`]) and cloned in unchanged for every call in
+    /// every batch. `AgentRoot::Unconfined` — every existing caller before
+    /// this field existed — makes [`PermissionBroker::decide`]'s root check
+    /// a byte-for-byte no-op.
+    pub root: AgentRoot,
 }
 
 /// The minimal, already-resolved slice of a proposed tool call the broker
@@ -51,6 +58,120 @@ pub struct AuthorizedCall {
     pub category: ToolCategory,
     pub arguments: serde_json::Value,
     pub rendered: String,
+    /// S5: the resolved tool's own [`Tool::path_args`](conway_core::ports::Tool::path_args)
+    /// declaration, read straight from the resolved tool instance at the
+    /// same call site that already produces `rendered` (`ToolRunner::
+    /// execute_one`) — a plain, static, `'static`-lifetime enum copy, no
+    /// I/O and no re-resolution of the tool by name. This is how the
+    /// broker's decision point (which has no `PluginRegistry` access, and
+    /// must not gain one just for this) learns which of `arguments`' fields
+    /// carry filesystem paths without duplicating tool resolution.
+    pub path_args: PathArgs,
+}
+
+/// This agent's confinement root (S3's `SessionMeta.root`/`SubagentSpec.
+/// root`), as seen by the permission broker's root-containment check (S5).
+///
+/// Reconstructed exactly ONCE per agent — by
+/// [`AgentRoot::reconstruct`], called once in `AgentLoop::run_inner`
+/// (mirroring the `CwdHandle` cell built alongside it) — and cloned
+/// unchanged into every turn's `ToolBatchCtx`/`PermissionCtx` after that.
+/// Cloning is cheap (a `PathBuf` clone at most): the one filesystem
+/// `canonicalize` call this type ever performs happens inside
+/// `reconstruct`, never inside `PermissionBroker::decide` and never per
+/// path argument.
+#[derive(Clone, Debug)]
+pub enum AgentRoot {
+    /// This agent has no confinement root. The root check is a no-op:
+    /// every call proceeds exactly as it did before this slice existed.
+    Unconfined,
+    /// This agent's root, already canonicalized.
+    Confined(CanonicalRoot),
+    /// This agent HAS a persisted root (`Some(path)`), but `path` no longer
+    /// canonicalizes (e.g. its directory was removed, or became
+    /// unreadable, after the agent was spawned). FAILS CLOSED: every
+    /// root-relevant call this agent makes for the rest of its run is
+    /// denied — this is never silently downgraded to `Unconfined`, which
+    /// would treat "can't tell where the root is" as "no root at all" and
+    /// unconfine the agent by accident.
+    Broken,
+}
+
+impl AgentRoot {
+    /// Reconstructs an agent's confinement root from the persisted,
+    /// already-canonical `PathBuf` carried on `AgentLoop`/`SessionMeta`
+    /// (only the raw path survives a store round trip — the `CanonicalRoot`
+    /// object itself does not). Call this exactly once per agent's run; see
+    /// this type's own doc for why cloning the result afterward is cheap
+    /// and safe.
+    pub fn reconstruct(persisted: &Option<PathBuf>) -> Self {
+        match persisted {
+            None => AgentRoot::Unconfined,
+            Some(path) => match CanonicalRoot::new(path) {
+                Ok(root) => AgentRoot::Confined(root),
+                Err(err) => {
+                    tracing::error!(
+                        root = %path.display(),
+                        error = %err,
+                        "agent's persisted confinement root no longer canonicalizes; \
+                         failing closed -- every root-relevant tool call this agent \
+                         makes is denied until the session's root is valid again"
+                    );
+                    AgentRoot::Broken
+                }
+            },
+        }
+    }
+}
+
+/// [`PermissionBroker::check_root`]'s result: whether the call is denied
+/// outright, must skip straight to the operator's gate, or is unaffected
+/// (proceeds through the ordinary allow paths exactly as before this
+/// slice).
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum RootDecision {
+    /// No confinement applies, or every declared path argument checked out
+    /// -- proceed through the ordinary allow paths unchanged.
+    Proceed,
+    /// At least part of this call cannot be statically confined
+    /// (`PathArgs::Unconfinable`) and a root IS in effect: this call must
+    /// always reach `gate.check`, bypassing the cache/pattern grants/
+    /// `AutoAllow`. Not a denial.
+    MustReachGate,
+    /// A declared path argument resolved outside the root (or couldn't be
+    /// resolved/parsed at all) -- denied before any other allow path is
+    /// consulted.
+    Denied(String),
+}
+
+/// Resolves a tool-supplied path argument exactly the way the call will
+/// actually be resolved once it reaches the tool: relative inputs join onto
+/// `cwd`, absolute inputs pass through unchanged. Returns `None` for a path
+/// containing a NUL byte (the OS path APIs cannot represent it, so the tool
+/// itself would fail to resolve it too).
+///
+/// **DUPLICATED, DELIBERATELY.** This mirrors `conway_tools::common::
+/// resolve_path` byte-for-byte, but cannot call it: crate layering runs
+/// `conway-tools -> conway-core` only, and `conway-runtime` (this crate)
+/// must not gain a dependency on `conway-tools` just for this. If
+/// `resolve_path`'s resolution rule ever changes, THIS copy must change
+/// with it in the same commit, or a path could resolve one way at
+/// permission-check time and a different way when the tool actually runs it
+/// -- exactly the kind of bypass this slice exists to prevent. (Precedent:
+/// `conway_core::permission_pattern`'s own test suite keeps a hand-copy of
+/// `crate::tools::runner::sanitize_rendered`'s body for the identical
+/// layering reason -- `conway-core` cannot depend on `conway-runtime`
+/// either.)
+fn resolve_like_the_tool_will(cwd: &Path, raw: &str) -> Option<PathBuf> {
+    if raw.contains('\0') {
+        return None;
+    }
+    let candidate = Path::new(raw);
+    if candidate.is_absolute() {
+        Some(candidate.to_path_buf())
+    } else {
+        Some(cwd.join(candidate))
+    }
 }
 
 /// The normalized result of [`PermissionBroker::decide`]. There is no
@@ -198,6 +319,100 @@ impl PermissionBroker {
             .push((rule, grant));
     }
 
+    /// S5: the root-containment check. Evaluated before anything else in
+    /// [`Self::decide`] — see that method's own doc for exactly why
+    /// (structurally, this must precede every one of the four allow paths,
+    /// not live inside `PermissionGate`).
+    ///
+    /// Reads `call.arguments` — **never** `call.rendered`, which has
+    /// already passed through `runner.rs`'s `sanitize_rendered` and would
+    /// reintroduce the exact fail-open bug class (a safe-looking
+    /// transformation silently laundering evidence a security check
+    /// depends on) that shipped in 0.5.0.
+    fn check_root(ctx: &PermissionCtx, call: &AuthorizedCall) -> RootDecision {
+        let root = match &ctx.root {
+            AgentRoot::Unconfined => return RootDecision::Proceed,
+            AgentRoot::Broken => {
+                return RootDecision::Denied(format!(
+                    "`{}` is denied: this agent's confinement root could not be \
+                     re-established (it no longer resolves on disk)",
+                    call.tool.as_str()
+                ));
+            }
+            AgentRoot::Confined(root) => root,
+        };
+
+        // `Named` never forces the gate: a fully-confined tool whose every
+        // declared path checks out proceeds through the ordinary allow
+        // paths (cache/pattern/AutoAllow/gate) exactly as it did before
+        // this slice. `Unconfinable` ALWAYS forces the gate under a root —
+        // regardless of whether `checkable` is empty — because the part of
+        // the call this broker cannot statically confine (e.g. `bash`'s
+        // `command`) can still reach outside the root; `checkable` is
+        // checked here in addition, not instead.
+        let (names, must_reach_gate): (&[&str], bool) = match call.path_args {
+            PathArgs::None => return RootDecision::Proceed,
+            PathArgs::Named(names) => (names, false),
+            PathArgs::Unconfinable { checkable } => (checkable, true),
+            // `PathArgs` is `#[non_exhaustive]`: fail closed on any future
+            // variant exactly like `PathArgs::Unconfinable { checkable: &[] }`
+            // -- never `None`'s "nothing to check" shape.
+            _ => (&[], true),
+        };
+
+        for name in names {
+            match call.arguments.get(*name) {
+                // Absent or explicitly `null`: this call simply doesn't use
+                // this declared argument (e.g. `bash`'s optional `cwd`) —
+                // not an error, and never silently skipped in the sense the
+                // hazard inventory warns about (there is nothing here TO
+                // check).
+                None | Some(serde_json::Value::Null) => continue,
+                Some(serde_json::Value::String(raw)) => {
+                    let Some(resolved) = resolve_like_the_tool_will(&ctx.cwd, raw) else {
+                        return RootDecision::Denied(format!(
+                            "`{}` argument `{name}` ({raw:?}) cannot be resolved to a \
+                             filesystem path",
+                            call.tool.as_str()
+                        ));
+                    };
+                    match root.contains(&resolved) {
+                        Containment::Inside => {}
+                        // `Undecidable` is fused with `Outside` here, same
+                        // as everywhere else in this codebase that consults
+                        // `Containment` — "can't check" is never "allow".
+                        Containment::Outside | Containment::Undecidable => {
+                            return RootDecision::Denied(format!(
+                                "`{}` argument `{name}` resolves to {}, which is outside \
+                                 this agent's confinement root ({})",
+                                call.tool.as_str(),
+                                resolved.display(),
+                                root.as_path().display(),
+                            ));
+                        }
+                    }
+                }
+                // A declared path argument present with a non-string,
+                // non-null JSON value is suspicious, not merely
+                // unparseable: silently skipping it (hazard #6) would let a
+                // malformed or adversarial call slip past the check
+                // entirely. Deny, fail closed.
+                Some(other) => {
+                    return RootDecision::Denied(format!(
+                        "`{}` argument `{name}` must be a string path, found {other}",
+                        call.tool.as_str()
+                    ));
+                }
+            }
+        }
+
+        if must_reach_gate {
+            RootDecision::MustReachGate
+        } else {
+            RootDecision::Proceed
+        }
+    }
+
     /// Every active pattern grant, for the settings menu's review list. An
     /// operator must be able to see what they have granted; a rule set
     /// nobody can inspect is a trap.
@@ -241,10 +456,10 @@ impl PermissionBroker {
     /// Authorize one tool call, consulting the cache first and the gate on a
     /// miss.
     ///
-    /// Emission sequence, strictly: `PermissionRequested` → (plan-mode
-    /// denial, or cache hit, or await the gate and insert a cache entry on
-    /// `AllowAlways`) → `PermissionResolved`. The cache's `RwLock` is never
-    /// held across the `await` on `self.gate.check` — every lock
+    /// Emission sequence, strictly: `PermissionRequested` → (root denial, or
+    /// plan-mode denial, or cache hit, or await the gate and insert a cache
+    /// entry on `AllowAlways`) → `PermissionResolved`. The cache's `RwLock`
+    /// is never held across the `await` on `self.gate.check` — every lock
     /// acquisition in this method is a short, synchronous read or write
     /// that completes before any `await` point.
     pub async fn decide(&self, ctx: &PermissionCtx, call: &AuthorizedCall) -> PermissionOutcome {
@@ -257,6 +472,33 @@ impl PermissionBroker {
                 rendered: call.rendered.clone(),
             },
         );
+
+        // S5: the root-containment check goes FIRST -- above every allow
+        // path in this method, including the plan-mode gate immediately
+        // below. A confined agent's root can never be widened, satisfied,
+        // or bypassed by a pattern grant, a cached `AllowAlways`, or
+        // `AutoAllow` mode: `must_reach_gate` (set when the call is
+        // `PathArgs::Unconfinable` under a root) skips straight past all
+        // three of those, forcing this call to the operator's gate instead
+        // of auto-allowing it -- but it is not itself a denial. A `Denied`
+        // root decision returns immediately, before the cache/pattern/
+        // AutoAllow/gate are ever consulted.
+        let must_reach_gate = match Self::check_root(ctx, call) {
+            RootDecision::Denied(reason) => {
+                self.emit(
+                    ctx,
+                    Event::PermissionResolved {
+                        call_id: call.call_id.clone(),
+                        decision: PermissionDecisionKind::Denied,
+                    },
+                );
+                return PermissionOutcome::Deny {
+                    rendered_error: reason,
+                };
+            }
+            RootDecision::MustReachGate => true,
+            RootDecision::Proceed => false,
+        };
 
         // V2 mode gate. Ordered deliberately: PLAN's denial is checked
         // before EVERY allow path -- the cache, pattern grants, and
@@ -283,41 +525,43 @@ impl PermissionBroker {
             };
         }
 
-        if self.cached_grant_covers(&key, ctx) {
-            self.emit(
-                ctx,
-                Event::PermissionResolved {
-                    call_id: call.call_id.clone(),
-                    decision: PermissionDecisionKind::Cached,
-                },
-            );
-            return PermissionOutcome::Allow;
-        }
+        if !must_reach_gate {
+            if self.cached_grant_covers(&key, ctx) {
+                self.emit(
+                    ctx,
+                    Event::PermissionResolved {
+                        call_id: call.call_id.clone(),
+                        decision: PermissionDecisionKind::Cached,
+                    },
+                );
+                return PermissionOutcome::Allow;
+            }
 
-        // A pattern grant spares the operator a prompt -- but only for a
-        // command that clears the metacharacter gate inside
-        // `PatternRule::matches`. A chained command falls through to the
-        // gate below no matter what patterns exist.
-        if self.pattern_allows(ctx, call) {
-            self.emit(
-                ctx,
-                Event::PermissionResolved {
-                    call_id: call.call_id.clone(),
-                    decision: PermissionDecisionKind::Cached,
-                },
-            );
-            return PermissionOutcome::Allow;
-        }
+            // A pattern grant spares the operator a prompt -- but only for a
+            // command that clears the metacharacter gate inside
+            // `PatternRule::matches`. A chained command falls through to the
+            // gate below no matter what patterns exist.
+            if self.pattern_allows(ctx, call) {
+                self.emit(
+                    ctx,
+                    Event::PermissionResolved {
+                        call_id: call.call_id.clone(),
+                        decision: PermissionDecisionKind::Cached,
+                    },
+                );
+                return PermissionOutcome::Allow;
+            }
 
-        if mode == PermissionMode::AutoAllow {
-            self.emit(
-                ctx,
-                Event::PermissionResolved {
-                    call_id: call.call_id.clone(),
-                    decision: PermissionDecisionKind::Cached,
-                },
-            );
-            return PermissionOutcome::Allow;
+            if mode == PermissionMode::AutoAllow {
+                self.emit(
+                    ctx,
+                    Event::PermissionResolved {
+                        call_id: call.call_id.clone(),
+                        decision: PermissionDecisionKind::Cached,
+                    },
+                );
+                return PermissionOutcome::Allow;
+            }
         }
 
         let request = PermissionRequest {

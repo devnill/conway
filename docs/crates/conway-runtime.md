@@ -222,6 +222,24 @@ the rest of the session/agent/subtree. It never imposes its own timeout on
 the gate — a pending call is held open for as long as the gate takes to
 decide.
 
+**The root-containment check runs first in `decide`, above every allow
+path.** An agent with a confinement root (`AgentRoot`, reconstructed once
+per agent from `SessionMeta.root`/`SubagentSpec.root` — see
+`conway_core::containment::CanonicalRoot`) has each call's declared path
+arguments (`Tool::path_args`) checked against it before the cache, pattern
+grants, `AutoAllow` mode, or the gate itself are ever consulted, reading the
+call's raw `arguments` (never the display-sanitized `rendered` string). A
+path outside the root is denied outright; a tool whose call cannot be
+statically confined (`PathArgs::Unconfinable`, e.g. `bash`'s command) is
+never auto-allowed under a root — it always reaches the gate, though any of
+its own `checkable` arguments are enforced the same as a `Named` path. No
+root (`AgentRoot::Unconfined`, the default) makes this a complete no-op. A
+root that fails to reconstruct fails closed (`AgentRoot::Broken`), denying
+every root-relevant call for that agent's run. This is deliberately NOT
+delegated to `PermissionGate`: three of the broker's four `Allow` paths
+never reach a gate implementation at all, so a check living there would
+fail open silently for each of them.
+
 ## Tool dispatch
 
 `tools::registry::PluginRegistry` compiles the injected `Arc<dyn Plugin>`

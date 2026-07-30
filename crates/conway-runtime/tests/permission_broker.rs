@@ -12,7 +12,7 @@ use conway_core::ids::{AgentId, SessionId, ToolName};
 use conway_core::ports::PermissionGate;
 use conway_runtime::events::EventBus;
 use conway_runtime::permission::{
-    AuthorizedCall, PermissionBroker, PermissionCtx, PermissionOutcome,
+    AgentRoot, AuthorizedCall, PermissionBroker, PermissionCtx, PermissionOutcome,
 };
 use conway_core::permission_mode::PermissionMode;
 use conway_core::permission_pattern::PatternRule;
@@ -67,6 +67,12 @@ fn ctx(agent_id: AgentId, agent_path: Vec<AgentId>, session: SessionId) -> Permi
         agent_path,
         session,
         cwd: PathBuf::from("/tmp"),
+        // S5: this file's tests are all about the cache/pattern/mode
+        // machinery, not the root check -- `Unconfined` keeps every one of
+        // them byte-for-byte unchanged from before this field existed.
+        // `crates/conway/tests/root_containment_seam.rs` is the root check's
+        // own dedicated (real end-to-end) test file.
+        root: AgentRoot::Unconfined,
     }
 }
 
@@ -77,6 +83,7 @@ fn call(call_id: &str) -> AuthorizedCall {
         category: ToolCategory::Read,
         arguments: serde_json::json!({"path": "a.txt"}),
         rendered: "read a.txt".into(),
+        path_args: conway_core::ports::PathArgs::Named(&["path"]),
     }
 }
 
@@ -411,6 +418,9 @@ fn bash_call(call_id: &str, rendered: &str) -> AuthorizedCall {
         category: ToolCategory::Execute,
         arguments: serde_json::json!({ "command": rendered }),
         rendered: rendered.into(),
+        path_args: conway_core::ports::PathArgs::Unconfinable {
+            checkable: &["cwd"],
+        },
     }
 }
 

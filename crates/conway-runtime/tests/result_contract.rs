@@ -308,6 +308,7 @@ fn build_loop_with_contract(
         parent: None,
         agent_path: vec![agent],
         cwd: PathBuf::from("/tmp"),
+        root: None,
         deps,
         spec,
         cancel,

@@ -43,3 +43,8 @@ chrono = { workspace = true }
 [dev-dependencies]
 conway-core = { path = "../conway-core", features = ["fakes"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+# S5's root-containment seam test needs real tempdirs/symlinks (a real
+# filesystem is the only honest way to prove a symlink escape is denied) --
+# already a pinned workspace dependency (conway-core/conway-runtime dev-deps
+# use it for the same reason), not a new one (C-04).
+tempfile = { workspace = true }

@@ -610,6 +610,7 @@ fn build_loop_inner(
         parent: None,
         agent_path: vec![agent],
         cwd: PathBuf::from("/tmp"),
+        root: None,
         deps,
         spec,
         cancel: cancel.clone(),

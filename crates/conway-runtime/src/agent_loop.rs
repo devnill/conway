@@ -251,6 +251,17 @@ pub struct AgentLoop {
     /// agent's path is `vec![agent_id]`.
     pub agent_path: Vec<AgentId>,
     pub cwd: PathBuf,
+    /// S5: this agent's confinement root (S3's `SessionMeta.root`), already
+    /// canonical when `Some` -- every construction site sources this
+    /// straight from the same already-validated `PathBuf` persisted onto
+    /// `SessionMeta.root` (`subagent.rs`'s `effective_root`, or `meta.root`
+    /// on a resumed session; a freshly `start_root`ed agent always has
+    /// `None`, since `RootSpec` has no root-setting field -- S3's own
+    /// disclosed scope limit). `run_inner` reconstructs the real
+    /// `conway_core::containment::CanonicalRoot` from this exactly once, at
+    /// the top of the loop (mirroring the `CwdHandle` cell built alongside
+    /// it) -- see `crate::permission::AgentRoot::reconstruct`.
+    pub root: Option<PathBuf>,
     pub deps: Arc<LoopDeps>,
     pub spec: AgentSpec,
     pub cancel: CancellationToken,
@@ -673,6 +684,14 @@ impl AgentLoop {
         // `ctx.chdir.set(..)` (a future slice) is visible to this loop, and
         // to every subsequent turn's snapshot, without any write-back step.
         let chdir = CwdHandle::new(self.cwd.clone());
+        // S5: this agent's confinement root, reconstructed exactly ONCE
+        // here (not a struct field -- same reasoning as `chdir` immediately
+        // above) from the persisted, already-canonical `PathBuf` this loop
+        // was constructed with. Cloned into every turn's `ToolBatchCtx`
+        // below; cloning is cheap (see `AgentRoot`'s own doc) so the one
+        // filesystem `canonicalize` call this performs happens once per
+        // agent's whole run, never once per batch or per tool call.
+        let root = crate::permission::AgentRoot::reconstruct(&self.root);
 
         loop {
             try_rt!(state, self.drain_inbox().await);
@@ -1042,6 +1061,7 @@ impl AgentLoop {
                 subagents: self.deps.subagents.clone(),
                 plugin_config: self.deps.plugin_config.clone(),
                 max_parallel_tools: self.spec.max_parallel_tools.max(1),
+                root: root.clone(),
             };
             let outcomes = self
                 .deps

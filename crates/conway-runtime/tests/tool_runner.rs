@@ -17,7 +17,7 @@ use conway_core::ports::{
     CwdHandle, Plugin, PluginConfig, PluginManifest, SubagentHost, Tool, ToolCtx, ToolOutput,
 };
 use conway_runtime::events::EventBus;
-use conway_runtime::permission::PermissionBroker;
+use conway_runtime::permission::{AgentRoot, PermissionBroker};
 use conway_runtime::tools::{PluginRegistry, ToolBatchCtx, ToolRunner};
 use tokio_util::sync::CancellationToken;
 
@@ -308,6 +308,10 @@ fn batch_ctx_with_chdir(max_parallel_tools: usize, chdir: CwdHandle) -> ToolBatc
         subagents: Arc::new(FakeSubagentHost::new(AgentId::new())) as Arc<dyn SubagentHost>,
         plugin_config: Arc::new(PluginConfig::default()),
         max_parallel_tools,
+        // S5: this file exercises `ToolRunner` dispatch mechanics, not the
+        // root check -- `Unconfined` keeps every existing test here
+        // byte-for-byte unchanged.
+        root: AgentRoot::Unconfined,
     }
 }
 
