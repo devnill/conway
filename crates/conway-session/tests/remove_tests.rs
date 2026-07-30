@@ -36,6 +36,7 @@ fn meta(id: SessionId, origin: Option<ForkOrigin>, ephemeral: bool) -> SessionMe
         status: SessionStatus::Active,
         ephemeral,
         ask_origin: None,
+        root: None,
     }
 }
 

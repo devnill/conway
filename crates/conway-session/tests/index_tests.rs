@@ -41,6 +41,7 @@ fn meta_full(id: SessionId, created: DateTime<Utc>, origin: Option<ForkOrigin>) 
         status: SessionStatus::Active,
         ephemeral: false,
         ask_origin: None,
+        root: None,
     }
 }
 

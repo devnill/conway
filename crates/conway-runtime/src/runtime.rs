@@ -115,7 +115,8 @@ use chrono::Utc;
 use conway_core::agent::{AgentDefRef, AgentResult, AgentTreeSnapshot, Budget, ToolSelector};
 use conway_core::capabilities::CacheMode;
 use conway_core::config::{AgentDef, DEFAULT_MAX_PARALLEL_TOOLS};
-use conway_core::error::RuntimeError;
+use conway_core::containment::{CanonicalRoot, Containment};
+use conway_core::error::{ConwayError, RuntimeError};
 use conway_core::event::Event;
 use conway_core::ids::{AgentId, BackendId, LogSeq, ModelRef, RoleAlias, SeqRange, SessionId};
 use conway_core::log::{
@@ -555,6 +556,12 @@ impl Runtime {
             // exists on ephemeral ask children (stamped from the spec in
             // `subagent.rs`'s `SubagentHost::start`).
             ask_origin: None,
+            // (S3) `RootSpec` has no `root` field (out of this item's scope
+            // -- see `conway_core::agent::SubagentSpec::root`'s own doc):
+            // every root agent starts unconfined, exactly as before this
+            // field existed. Only a fork/spawn child (`subagent.rs`'s
+            // `SubagentHost::start`) can ever be confined.
+            root: None,
         };
         self.store.create(meta).await?;
 
@@ -820,6 +827,55 @@ impl Runtime {
             .or_else(|| agent_def.map(|d| d.tools.clone()));
         let pin = agent_def.and_then(|d| d.model.clone());
         let cwd = spec.cwd.clone().unwrap_or_else(|| meta.cwd.clone());
+
+        // (S3) `ResumeSpec` carries no `root` override field at all -- this
+        // session's `root` is therefore always whatever `meta.root` already
+        // says (this method never rewrites the header), which by
+        // construction can neither widen nor null it: there is no code path
+        // here that could turn a persisted `Some(root)` into `None`, or
+        // replace it with something wider. What CAN change on resume is
+        // `cwd` (`spec.cwd` may override the persisted `meta.cwd` above),
+        // and an overridden `cwd` must still satisfy "cwd subset of root,
+        // always" (the same invariant `subagent.rs`'s `SubagentHost::start`
+        // enforces at spawn time) -- a resumed root confined to `meta.root`
+        // whose caller-supplied `cwd` override has drifted outside it (e.g.
+        // the root directory itself moved, or the caller passed the wrong
+        // path) must fail loudly here rather than resume into an incoherent
+        // state. `Containment::Undecidable` is treated identically to
+        // `Outside` -- "can't check" is never "allow" (see
+        // `conway_core::containment::Containment`'s own doc).
+        if let Some(root_path) = meta.root.as_deref() {
+            let canonical_root = CanonicalRoot::new(root_path).map_err(|err| {
+                crate::subagent::invalid_spec(ConwayError::Config {
+                    detail: format!(
+                        "resumed session's root {} does not canonicalize: {err}",
+                        root_path.display()
+                    ),
+                })
+            })?;
+            match canonical_root.contains(&cwd) {
+                Containment::Inside => {}
+                Containment::Outside | Containment::Undecidable => {
+                    // Both operands on the same footing -- see the identical
+                    // treatment in `subagent.rs`'s cwd-outside-root error for
+                    // why a raw cwd beside a canonical root misleads.
+                    let canonical_cwd = cwd.canonicalize().ok();
+                    let shown = match &canonical_cwd {
+                        Some(c) if c != &cwd => {
+                            format!("{} (resolved: {})", cwd.display(), c.display())
+                        }
+                        _ => cwd.display().to_string(),
+                    };
+                    return Err(crate::subagent::invalid_spec(ConwayError::Config {
+                        detail: format!(
+                            "resumed cwd {} is outside the session's own root {}",
+                            shown,
+                            canonical_root.as_path().display()
+                        ),
+                    }));
+                }
+            }
+        }
 
         let last_report = Arc::new(Mutex::new(None));
         let agent_spec = AgentSpec {

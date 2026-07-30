@@ -88,6 +88,11 @@ pub(crate) async fn fork_child(
         // ask children (stamped from `SubagentSpec::ask_origin` in
         // `conway-runtime`'s `SubagentHost::start`).
         ask_origin: None,
+        // (S3) A fork always inherits the parent's root unchanged, never
+        // overrides it (mirrors `cwd` immediately above) -- this is a fork,
+        // not a spawn, so there is no narrowing/widening decision to make
+        // here at all.
+        root: parent_meta.root,
     };
     let child = store.fork(&parent, at, child_meta).await?;
 

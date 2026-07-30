@@ -102,6 +102,7 @@ fn sample_session_meta(id: SessionId, origin: Option<ForkOrigin>) -> SessionMeta
         status: SessionStatus::Active,
         ephemeral: false,
         ask_origin: None,
+        root: None,
     }
 }
 

@@ -125,6 +125,53 @@ convert into) does carry the field regardless of mode — `ForkSpec`'s own
 `From` impl simply always maps it to `None` — but only `SpawnSpec` exposes
 it as a request-shape option.
 
+**`SpawnSpec.root: Option<PathBuf>` (S3)** scopes the spawned child's
+confinement root, independent of (but validated against) `cwd` above. Set it
+via `SpawnSpec::root(path)`; `None` (the `SpawnSpec::new` default) preserves
+the pre-existing "child inherits the parent's root" behavior unchanged,
+including staying unconfined when the parent itself is.
+
+- **Inheritance algebra:** `Some(requested)` is checked against the parent's
+  own root (`conway_core::containment::CanonicalRoot::contains`): a
+  `requested` root contained within the parent's own (or a parent with no
+  root at all, i.e. nothing to narrow against yet) narrows the child and is
+  accepted; a `requested` root that is WIDER than, or disjoint (sideways)
+  from, the parent's own root FAILS THE SPAWN with a typed error naming
+  both roots — never silently clamped to the parent's root. Silent
+  narrowing would turn an operator's mistake into a working-but-not-what-
+  was-asked-for configuration, the same bug shape 0.5.0 fixed for pattern
+  grants.
+- **`cwd` ⊆ `root`, always:** the child's `cwd` (inherited or overridden,
+  per the section above) must resolve inside its own `root` once resolved —
+  a spawn that narrows `root` without also narrowing `cwd` to fit fails the
+  same way.
+- **Canonicalization:** a `root` (requested or inherited) that does not
+  canonicalize fails the spawn — the same "fail fast" shape the nonexistent-
+  `cwd` case above uses.
+- **Grandchildren:** a child spawned with `root: None` inherits its
+  IMMEDIATE parent's (possibly-narrowed) root, not the root agent's own
+  (typically unconfined) one — mirrors the "immediate parent, not root"
+  rule `cwd` already follows.
+- **Persistence:** the resolved (canonical) root is persisted onto the
+  child's own `SessionMeta::root`, so a resumed session comes back with the
+  same boundary it was spawned under — persisting it only in memory would
+  make a resumed session silently unconfined. `ResumeSpec` carries no `root`
+  override field at all, so resume can neither widen nor null a session's
+  persisted root; its `cwd` override IS checked against the persisted root
+  (fails if it would escape).
+- **Not itself enforcement (yet):** as of this slice, nothing checks a tool
+  call's arguments against `root` — it is carried and validated end-to-end
+  (spec → runtime → `SessionMeta`) so a later slice can wire the actual
+  confinement check without this plumbing changing shape.
+- **Model-facing surface: none.** `conway_subagent`/`conway_ask` (the
+  model-invoked tools) gain no equivalent argument — this is an
+  embedder-only surface for now, exactly as `cwd` already is.
+
+Deliberately **not** a field on `ForkSpec` either, for the same reason as
+`cwd`: a fork inherits the forker's entire context, so a confinement
+override would be incoherent with what the child's own inherited transcript
+already describes.
+
 ## The `/ask` ephemeral fork
 
 `SessionHandle::ask(text) -> TurnHandle` is the ephemeral side-question

@@ -141,6 +141,9 @@ impl Tool for AskTool {
             // A fork inherits the caller's entire context (C1's rationale) --
             // inherit its cwd too.
             cwd: None,
+            // (S3) A fork always inherits the forker's root, never overrides
+            // it -- same rationale as `cwd` above.
+            root: None,
         };
 
         let outcome = ctx

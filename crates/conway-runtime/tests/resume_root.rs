@@ -279,6 +279,7 @@ async fn resume_root_does_not_create_or_append_initial_turn() {
             status: conway_core::log::SessionStatus::Active,
             ephemeral: false,
             ask_origin: None,
+            root: None,
         })
         .await
         .unwrap_err();

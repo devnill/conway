@@ -126,6 +126,39 @@ pub struct SessionMeta {
     /// later mutation.
     #[serde(default)]
     pub ask_origin: Option<AskOrigin>,
+    /// (S3) This session's confinement root, canonicalized once by
+    /// `conway_runtime`'s `SubagentHost::start` and persisted here verbatim
+    /// so a resumed session comes back with the SAME boundary it was
+    /// spawned under -- persisting only in `AgentLoop` (an in-memory-only
+    /// value) would make a resumed session silently unconfined, the exact
+    /// fail-open this field exists to prevent. `None` for a root agent
+    /// (`Runtime::start_root` never sets this -- out of this item's scope)
+    /// and for any fork/spawn child whose effective root resolved to
+    /// unconfined (inherited `None` all the way from an unconfined
+    /// ancestor).
+    ///
+    /// Represented as a plain `PathBuf` on the wire (matching `cwd` above):
+    /// `conway_core::containment::CanonicalRoot` is deliberately an
+    /// in-memory-only type (its constructor performs I/O, which this
+    /// crate's own no-I/O contract forbids reconstructing implicitly on
+    /// every deserialize) -- callers that need containment checks against a
+    /// persisted `root` reconstruct a `CanonicalRoot` from it explicitly
+    /// (`CanonicalRoot::new`), the same one-canonicalization-per-use
+    /// discipline `SubagentHost::start` itself follows. The `PathBuf` here
+    /// is always already the *canonical* form at the moment it was written
+    /// (never a raw, unresolved caller-supplied path) -- `SubagentHost::
+    /// start` canonicalizes before persisting, precisely so a later
+    /// reconstruction cannot silently drift from what was actually
+    /// enforced/intended at spawn time.
+    ///
+    /// This field is **not itself enforcement** -- nothing yet checks a tool
+    /// call against it (a later slice adds that); it is carried and
+    /// validated end-to-end so that slice does not have to touch this
+    /// plumbing. `#[serde(default)]` (C-04): a header written before this
+    /// field existed still decodes, as `None` -- the pre-existing unconfined
+    /// behavior for every such session.
+    #[serde(default)]
+    pub root: Option<PathBuf>,
 }
 
 /// Filter for session listing.
@@ -295,6 +328,7 @@ mod tests {
             status: SessionStatus::Active,
             ephemeral: false,
             ask_origin: None,
+            root: None,
         };
         let records: Vec<(LogRecord, &str)> = vec![
             (LogRecord::Header(meta.clone()), "header"),
@@ -435,6 +469,7 @@ mod tests {
             status: SessionStatus::Active,
             ephemeral: false,
             ask_origin: None,
+            root: None,
         };
         let record = LogRecord::Header(meta.clone());
         assert_eq!(record.seq(), None);
@@ -516,6 +551,7 @@ mod tests {
             status: SessionStatus::Active,
             ephemeral: true,
             ask_origin: None,
+            root: None,
         };
         let value = serde_json::to_value(LogRecord::Header(meta.clone())).unwrap();
         assert_eq!(value["ephemeral"], true);
@@ -561,6 +597,7 @@ mod tests {
                 status: SessionStatus::Active,
                 ephemeral: true,
                 ask_origin: Some(origin),
+                root: None,
             };
             let value = serde_json::to_value(LogRecord::Header(meta.clone())).unwrap();
             let back: LogRecord = serde_json::from_value(value).unwrap();
@@ -588,6 +625,54 @@ mod tests {
                 assert_eq!(meta.ask_origin, None);
                 assert!(meta.ephemeral);
             }
+            other => panic!("expected Header, got {other:?}"),
+        }
+    }
+
+    /// (S3) `SessionMeta::root` round-trips through the header line -- the
+    /// property a resumed session's confinement depends on: persisting the
+    /// resolved root only in memory (never on the header) would make a
+    /// resumed session come back unconfined, mirrors `session_meta_
+    /// ephemeral_round_trips`.
+    #[test]
+    fn session_meta_root_round_trips() {
+        let meta = SessionMeta {
+            id: SessionId::new(),
+            agent_id: AgentId::new(),
+            origin: None,
+            agent_def: None,
+            role: None,
+            created: ts(),
+            cwd: PathBuf::from("/tmp/scoped"),
+            labels: vec![],
+            status: SessionStatus::Active,
+            ephemeral: false,
+            ask_origin: None,
+            root: Some(PathBuf::from("/tmp/scoped")),
+        };
+        let value = serde_json::to_value(LogRecord::Header(meta.clone())).unwrap();
+        assert_eq!(value["root"], "/tmp/scoped");
+        let back: LogRecord = serde_json::from_value(value).unwrap();
+        match back {
+            LogRecord::Header(decoded) => assert_eq!(decoded, meta),
+            other => panic!("expected Header, got {other:?}"),
+        }
+    }
+
+    /// (S3) C-04: a header written before `root` existed (no `root` key at
+    /// all) must still decode -- as `None`, matching pre-existing (unconfined)
+    /// behavior -- not fail. Mirrors `session_meta_ephemeral_defaults_false_
+    /// when_absent_from_wire`.
+    #[test]
+    fn session_meta_root_defaults_none_when_absent_from_wire() {
+        let sid = SessionId::new();
+        let agent = AgentId::new();
+        let header = format!(
+            r#"{{"kind":"header","session":"{sid}","agent":"{agent}","created":"2026-07-20T00:00:00Z","origin":null,"agent_def":null,"role":null,"cwd":"/tmp/p","status":"active"}}"#
+        );
+        let record: LogRecord = serde_json::from_str(&header).unwrap();
+        match record {
+            LogRecord::Header(meta) => assert_eq!(meta.root, None),
             other => panic!("expected Header, got {other:?}"),
         }
     }
