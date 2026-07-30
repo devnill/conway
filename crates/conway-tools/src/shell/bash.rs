@@ -8,7 +8,7 @@ use serde::Deserialize;
 use conway_core::content::{PermissionClass, ToolCall, ToolCategory, ToolSpec, TruncationPolicy};
 use conway_core::error::ToolError;
 use conway_core::ids::ToolName;
-use conway_core::ports::{PathArgs, Tool, ToolCtx, ToolOutput};
+use conway_core::ports::{PathArgs, RenderKind, Tool, ToolCtx, ToolOutput};
 
 #[cfg(not(unix))]
 use crate::common::error_text;
@@ -92,6 +92,19 @@ impl Tool for BashTool {
         PathArgs::Unconfinable {
             checkable: &["cwd"],
         }
+    }
+
+    /// `bash` overrides `render` (below) to return the bare `command`
+    /// string -- exactly what gets handed to a shell. This is the ONE
+    /// built-in tool for which the metacharacter gate is meaningful, so it
+    /// is the one built-in that MUST declare `ShellCommand` explicitly --
+    /// this is also [`RenderKind`]'s own default, restated here (mirroring
+    /// `path_args` above, which restates `PathArgs`'s own default too) for
+    /// the same reason: a reader should never have to go check what the
+    /// default is to know what `bash` does. Board item
+    /// 01KYT3NSWRHMPEAXVXRJ73KDYR.
+    fn render_kind(&self) -> RenderKind {
+        RenderKind::ShellCommand
     }
 
     fn spec(&self) -> ToolSpec {

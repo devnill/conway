@@ -22,7 +22,7 @@ use conway_core::containment::{CanonicalRoot, Containment};
 use conway_core::content::ToolCategory;
 use conway_core::event::Event;
 use conway_core::ids::{AgentId, SessionId, ToolName};
-use conway_core::ports::{PathArgs, PermissionGate};
+use conway_core::ports::{PathArgs, PermissionGate, RenderKind};
 
 use crate::context::prefix::canonical_json_bytes;
 use crate::events::EventBus;
@@ -67,6 +67,13 @@ pub struct AuthorizedCall {
     /// must not gain one just for this) learns which of `arguments`' fields
     /// carry filesystem paths without duplicating tool resolution.
     pub path_args: PathArgs,
+    /// Board item 01KYT3NSWRHMPEAXVXRJ73KDYR: the resolved tool's own
+    /// [`Tool::render_kind`](conway_core::ports::Tool::render_kind)
+    /// declaration, read at the identical call site and for the identical
+    /// reason as `path_args` above -- fed to [`PatternRule::matches_render`]
+    /// so the metacharacter gate applies only when `rendered` could
+    /// actually reach a shell.
+    pub render_kind: RenderKind,
 }
 
 /// This agent's confinement root (S3's `SessionMeta.root`/`SubagentSpec.
@@ -275,7 +282,8 @@ pub struct PermissionBroker {
     /// V2: prefix-pattern grants, paired with the scope they were granted
     /// at. Checked BEFORE the gate, so a matching pattern spares the
     /// operator a prompt -- but only for commands that clear
-    /// `PatternRule::matches`'s metacharacter gate.
+    /// `PatternRule::matches_render`'s metacharacter gate (a shell command,
+    /// per the call's `RenderKind`).
     patterns: RwLock<Vec<(PatternRule, GrantScope)>>,
 }
 
@@ -307,10 +315,10 @@ impl PermissionBroker {
     /// Installs a pattern grant at `scope`.
     ///
     /// Note this does NOT pre-validate the rule against metacharacters:
-    /// the gate lives in `PatternRule::matches`, applied to the incoming
-    /// COMMAND at decision time. Filtering at creation time instead would
-    /// be the wrong shape -- it would let a rule created before the gate
-    /// existed, or loaded from a file, slip past.
+    /// the gate lives in `PatternRule::matches_render`, applied to the
+    /// incoming COMMAND at decision time. Filtering at creation time
+    /// instead would be the wrong shape -- it would let a rule created
+    /// before the gate existed, or loaded from a file, slip past.
     pub fn remember_pattern(&self, rule: PatternRule, scope: PermissionScope, granting_agent: AgentId) {
         let grant = grant_scope_for(scope, granting_agent);
         self.patterns
@@ -440,16 +448,22 @@ impl PermissionBroker {
 
     /// Whether any installed pattern authorizes this call.
     ///
-    /// The metacharacter gate is inside `PatternRule::matches`, so a
-    /// chained command can never satisfy a pattern here regardless of what
-    /// is installed.
+    /// The metacharacter gate is inside `PatternRule::matches_render`, so a
+    /// chained SHELL command can never satisfy a pattern here regardless of
+    /// what is installed. `call.render_kind` -- the resolved tool's own
+    /// declaration -- decides whether that gate is even consulted at all
+    /// (board item 01KYT3NSWRHMPEAXVXRJ73KDYR): `RenderKind::ShellCommand`
+    /// gates exactly as before; `RenderKind::Structured` skips a gate that,
+    /// for that tool's rendering, could only ever reject harmless JSON
+    /// syntax.
     fn pattern_allows(&self, ctx: &PermissionCtx, call: &AuthorizedCall) -> bool {
         self.patterns
             .read()
             .expect("permission patterns poisoned")
             .iter()
             .any(|(rule, grant)| {
-                grant.covers(ctx) && rule.matches(call.tool.as_str(), &call.rendered)
+                grant.covers(ctx)
+                    && rule.matches_render(call.tool.as_str(), &call.rendered, call.render_kind)
             })
     }
 
@@ -539,8 +553,10 @@ impl PermissionBroker {
 
             // A pattern grant spares the operator a prompt -- but only for a
             // command that clears the metacharacter gate inside
-            // `PatternRule::matches`. A chained command falls through to the
-            // gate below no matter what patterns exist.
+            // `PatternRule::matches_render` (consulted only when the call's
+            // own `RenderKind` says it could reach a shell). A chained
+            // shell command falls through to the gate below no matter what
+            // patterns exist.
             if self.pattern_allows(ctx, call) {
                 self.emit(
                     ctx,

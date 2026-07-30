@@ -15,7 +15,8 @@ use conway_core::agent::{AgentResult, ResultStatus};
 use conway_core::content::{ContentBlock, ToolCall, TruncationPolicy};
 use conway_core::error::ToolError;
 use conway_core::ids::{AgentId, SessionId, ToolName};
-use conway_core::ports::{SubagentHost, Tool, ToolCtx, ToolOutput};
+use conway_core::permission_pattern::PatternRule;
+use conway_core::ports::{RenderKind, SubagentHost, Tool, ToolCtx, ToolOutput};
 use conway_tools::builtin_plugins;
 use conway_tools::fs::{CdTool, EditTool, GlobTool, GrepTool, ReadTool, WriteTool};
 use conway_tools::report::ReportTool;
@@ -206,6 +207,161 @@ fn a_tool_that_does_not_override_path_args_is_unconfinable_not_pathless() {
         conway_core::ports::PathArgs::Unconfinable { checkable: &[] },
         "the default must fail closed: 'no declared paths' must never mean 'allow'"
     );
+}
+
+// ---------------------------------------------------------- render_kind ---
+//
+// Board item 01KYT3NSWRHMPEAXVXRJ73KDYR: "pattern grants are still inert for
+// every tool except bash". `read:*`/`write:*`/... never matched anything,
+// because `PatternRule::matches`'s metacharacter gate ran unconditionally
+// against every tool's `render` output -- and every built-in but `bash`
+// renders a JSON dump (`name({...})`) whose own `(`/`)`/`{`/`}` trip that
+// gate on sight. `Tool::render_kind` is the fix: a tool's own declaration of
+// whether its `render` output can reach a shell, consulted by
+// `PatternRule::matches_render` to decide whether the gate applies AT ALL.
+//
+// The two tests below are this item's most important acceptance item, in
+// its own words: "A newly added tool must not be able to silently join the
+// broken set." Both iterate `all_tools_with_minimal_args()` -- the SAME
+// registry-wide sweep `every_declared_path_arg_is_a_real_property_of_the_
+// tools_schema` above uses -- so a future built-in is automatically swept in
+// without anyone remembering to add a case for it.
+
+/// **The consistency guard.** `render_kind() == Structured` is only ever a
+/// TRUTHFUL claim when a tool's `render` is untouched from the trait's own
+/// default (`name(args)`, provably never shell-interpreted, for ANY `args`
+/// shape, by construction). This test proves that relationship generically,
+/// without knowing anything about any particular tool:
+///
+/// - A tool whose `render(&args)` output is byte-identical to the trait's
+///   default formula MUST declare `Structured` (it is safe to, and stops
+///   its wildcard/prefix grants from being needlessly inert).
+/// - A tool whose `render` output DIFFERS from that formula -- i.e. one
+///   that overrides `render`, exactly what `bash` does to expose a bare
+///   shell command -- MUST declare `ShellCommand`. This is the actual
+///   security-relevant half: a future tool that overrides `render` to
+///   produce something shell-interpretable and forgets to also declare
+///   `ShellCommand` would silently defeat the metacharacter gate the
+///   moment it is pattern-matched. This test fails the build the instant
+///   that happens, generically, for ANY tool -- not just the ones
+///   enumerated here today.
+#[test]
+fn render_kind_is_consistent_with_whether_render_is_overridden() {
+    for (tool, args) in all_tools_with_minimal_args() {
+        let name = tool.spec().name.as_str().to_string();
+        let default_rendered = format!("{name}({args})");
+        let actual_rendered = tool.render(&args);
+        let overrides_render = actual_rendered != default_rendered;
+
+        match tool.render_kind() {
+            RenderKind::Structured => {
+                assert!(
+                    !overrides_render,
+                    "tool `{name}` declares RenderKind::Structured (the metacharacter gate \
+                     is SKIPPED for its pattern grants) but its `render` output \
+                     ({actual_rendered:?}) differs from the trait's own default JSON dump \
+                     ({default_rendered:?}) -- it overrides `render`. If that override could \
+                     ever be shell-interpreted, `Structured` silently defeats the chaining \
+                     gate. Declare `RenderKind::ShellCommand` instead."
+                );
+            }
+            RenderKind::ShellCommand => {
+                // The conservative declaration is always a safe answer,
+                // whether or not `render` is actually overridden.
+            }
+            other => panic!(
+                "tool `{name}` declared an unhandled RenderKind variant: {other:?} -- a new \
+                 variant must be taught to this guard deliberately, not silently skipped"
+            ),
+        }
+    }
+}
+
+/// **The functional guard: the headline fix, proven per tool.** `tool:*`
+/// must actually grant `tool`'s own benign rendering -- for every built-in,
+/// not just `bash`. Before this fix, this assertion failed for 12 of the 13
+/// built-ins (every one but `bash`).
+#[test]
+fn a_wildcard_pattern_grant_matches_every_builtin_tools_own_benign_rendering() {
+    for (tool, args) in all_tools_with_minimal_args() {
+        let spec = tool.spec();
+        let name = spec.name.as_str();
+        let rendered = tool.render(&args);
+        let rule = PatternRule::parse(&format!("{name}:*"))
+            .unwrap_or_else(|| panic!("`{name}:*` must parse as a valid pattern rule"));
+
+        assert!(
+            rule.matches_render(name, &rendered, tool.render_kind()),
+            "`{name}:*` must grant `{name}`'s own benign rendering ({rendered:?}) -- if this \
+             fails for a tool other than one declaring RenderKind::ShellCommand, the \
+             metacharacter gate is (again) treating that tool's own rendering syntax as \
+             command-injection risk"
+        );
+    }
+}
+
+/// The mirror image: a tool that declares `RenderKind::ShellCommand`
+/// (chaining risk genuinely applies) must still have its CHAINED rendering
+/// rejected by the very same wildcard -- generically, for any current or
+/// future tool that makes that declaration, not just `bash` by name.
+#[test]
+fn shell_command_declared_tools_still_gate_a_chained_rendering_under_a_wildcard() {
+    let mut exercised = 0;
+    for (tool, args) in all_tools_with_minimal_args() {
+        if tool.render_kind() != RenderKind::ShellCommand {
+            continue;
+        }
+        exercised += 1;
+
+        let spec = tool.spec();
+        let name = spec.name.as_str();
+        let benign = tool.render(&args);
+        let chained = format!("{benign} && rm -rf /tmp/should-never-run");
+        let rule = PatternRule::parse(&format!("{name}:*"))
+            .unwrap_or_else(|| panic!("`{name}:*` must parse as a valid pattern rule"));
+
+        assert!(
+            rule.matches_render(name, &benign, tool.render_kind()),
+            "sanity: `{name}`'s own benign rendering ({benign:?}) must still match its wildcard"
+        );
+        assert!(
+            !rule.matches_render(name, &chained, tool.render_kind()),
+            "tool `{name}` declares RenderKind::ShellCommand -- a wildcard grant must NEVER \
+             match a chained rendering of it ({chained:?}), or the chaining protection this \
+             declaration exists to preserve is defeated"
+        );
+    }
+    assert!(
+        exercised > 0,
+        "no built-in declares RenderKind::ShellCommand -- this test is not exercising \
+         anything; if `bash` stopped declaring it, that is itself a regression"
+    );
+}
+
+/// `bash` is the reason `RenderKind` exists as a declaration separate from
+/// `Tool::render`'s own default: it is the one built-in whose rendering
+/// genuinely reaches a shell. Pinned explicitly, mirroring
+/// `bash_declares_itself_unconfinable_yet_offers_cwd_as_checkable` below.
+#[test]
+fn bash_declares_itself_a_shell_command_render() {
+    assert_eq!(BashTool::new().render_kind(), RenderKind::ShellCommand);
+}
+
+/// `report` is the case that forces `RenderKind` to be a SEPARATE
+/// declaration from `PathArgs` rather than a reuse of it: `report` declares
+/// `PathArgs::Unconfinable` (a nested artifact path `PathArgs::Named` can't
+/// express) but its `render` is the ordinary default JSON dump, never a
+/// shell command -- so its pattern grants must not be gated. Pinned
+/// explicitly so a future refactor that tries to derive `render_kind` from
+/// `path_args` breaks a named test, not just the generic sweep above.
+#[test]
+fn report_is_unconfinable_for_root_purposes_but_structured_for_render_purposes() {
+    let tool = ReportTool::new();
+    assert_eq!(
+        tool.path_args(),
+        conway_core::ports::PathArgs::Unconfinable { checkable: &[] }
+    );
+    assert_eq!(tool.render_kind(), RenderKind::Structured);
 }
 
 // ------------------------------------------------------------- registry ---

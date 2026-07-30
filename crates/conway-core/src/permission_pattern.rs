@@ -25,16 +25,50 @@
 //! [`contains_shell_metacharacters`] is therefore a **hard gate**: a
 //! command carrying any shell metacharacter can never be satisfied by a
 //! pattern, no matter what patterns exist. It always falls through to the
-//! operator. This is checked in [`PatternRule::matches`] itself -- not at
-//! rule-creation time, and not at a call site that could be forgotten --
-//! so there is no path from a pattern to an allow decision that skips it.
+//! operator. This is checked in [`PatternRule::matches_render`] itself --
+//! not at rule-creation time, and not at a call site that could be
+//! forgotten -- so there is no path from a pattern to an allow decision
+//! that skips it.
 //!
 //! The gate is deliberately conservative in the "re-prompt too often"
 //! direction. A command with a `|` in it re-prompts even when that pipe is
 //! completely benign, because the cost of an unnecessary prompt is a
 //! keystroke and the cost of a missed one is arbitrary execution.
+//!
+//! ## The gate only means something for a SHELL command (board item
+//! 01KYT3NSWRHMPEAXVXRJ73KDYR)
+//!
+//! The gate exists to stop a chained/substituted *shell command* from
+//! riding a matched prefix past what was granted. That reasoning has
+//! nothing to say about a tool like `read`, whose `Tool::render` is a JSON
+//! debug dump (`read({"path":"src/main.rs"})`) that is never handed to a
+//! shell -- yet that dump's own `(`, `)`, `{` trip the SAME gate, on sight,
+//! for every call. Applying a shell-injection gate to a string no shell
+//! will ever see is a category error, and it is what made every pattern
+//! grant except `bash`'s inert: `read:*`, `write:*`, `edit:*`, `grep:*`, and
+//! every third-party tool's wildcard matched nothing, ever.
+//!
+//! [`PatternRule::matches_render`] therefore takes the tool's own
+//! [`conway_core::ports::RenderKind`] declaration (`conway_core::ports::
+//! Tool::render_kind`) and applies the metacharacter gate only when that
+//! declaration says the rendered text IS a shell command. [`PatternRule::
+//! matches`] (no `RenderKind` parameter) is the conservative convenience
+//! this module's own tests and any caller without a tool's declaration in
+//! hand can still reach -- it always gates, exactly as this module behaved
+//! before this distinction existed. Every production caller
+//! (`conway_runtime::permission::PermissionBroker`) uses
+//! [`Self::matches_render`], fed the real tool's real declaration, so a
+//! chained shell command is gated exactly as before while a `read`/`write`/
+//! `edit`/... wildcard now actually grants.
+//!
+//! **The gate itself -- the code path that rejects a chained command -- is
+//! unchanged.** What changed is only whether it is CONSULTED for a given
+//! tool, decided by a declaration the tool makes about itself, never by
+//! this module inspecting a tool's name.
 
 use serde::{Deserialize, Serialize};
+
+use crate::ports::RenderKind;
 
 /// Shell metacharacters that disqualify a command from *ever* being
 /// satisfied by a pattern grant.
@@ -111,19 +145,44 @@ impl PatternRule {
         })
     }
 
-    /// Whether this rule authorizes `tool` running `rendered`.
+    /// Whether this rule authorizes `tool` running `rendered`, assuming the
+    /// CONSERVATIVE [`RenderKind::ShellCommand`] -- i.e. the metacharacter
+    /// gate always applies, exactly as this module behaved before
+    /// [`RenderKind`] existed.
+    ///
+    /// This is the right call when the caller has no tool declaration in
+    /// hand (this module's own tests; any consumer that only has a bare
+    /// string). A caller that DOES have the real tool's declaration --
+    /// every production caller does -- should use [`Self::matches_render`]
+    /// instead, so a `Structured`-rendering tool's wildcard/prefix grants
+    /// are not held gated for no reason. See this module's own doc for why
+    /// that distinction exists at all.
+    pub fn matches(&self, tool: &str, rendered: &str) -> bool {
+        self.matches_render(tool, rendered, RenderKind::ShellCommand)
+    }
+
+    /// Whether this rule authorizes `tool` running `rendered`, given that
+    /// tool's own [`RenderKind`] declaration.
     ///
     /// The metacharacter gate is checked HERE, before any prefix
     /// comparison, so every path to a pattern-based allow passes through
-    /// it. A `*` rule is gated too: "any invocation of this tool" still
-    /// must not mean "any invocation, including chained ones".
-    pub fn matches(&self, tool: &str, rendered: &str) -> bool {
+    /// it -- but ONLY when `render_kind` is [`RenderKind::ShellCommand`].
+    /// For [`RenderKind::Structured`], `rendered` is never handed to a
+    /// shell, so a metacharacter in it (JSON's own `(){}`) is not
+    /// command-injection risk, and gating on it would only ever produce a
+    /// false rejection -- see this module's own doc for the full
+    /// reasoning. A `*` rule is gated too whenever the check applies at
+    /// all: "any invocation of this tool" still must not mean "any
+    /// invocation, including chained ones" for a tool whose rendering
+    /// genuinely is a shell command.
+    pub fn matches_render(&self, tool: &str, rendered: &str, render_kind: RenderKind) -> bool {
         if self.tool != tool {
             return false;
         }
         // The hard gate. Deliberately first, and deliberately applied to
-        // the wildcard case as well.
-        if contains_shell_metacharacters(rendered) {
+        // the wildcard case as well -- but only when this tool's own
+        // rendering could ever reach a shell.
+        if render_kind == RenderKind::ShellCommand && contains_shell_metacharacters(rendered) {
             return false;
         }
         if self.command_prefix == "*" {
@@ -295,6 +354,101 @@ mod tests {
         }
         assert!(contains_shell_metacharacters("echo hi\nrm -rf /"));
         assert!(!contains_shell_metacharacters("git status --short"));
+    }
+
+    // ---- RenderKind (board item 01KYT3NSWRHMPEAXVXRJ73KDYR) ----
+
+    /// **The headline fix.** A `Structured` tool's JSON-dump rendering
+    /// (the trait's own default `render`) carries `(){}`s that would trip
+    /// the metacharacter gate on sight -- but for a `Structured` tool that
+    /// text is never handed to a shell, so the gate must not apply, and a
+    /// `read:*`-shaped wildcard must actually grant.
+    #[test]
+    fn a_structured_tools_wildcard_matches_its_own_json_dump_rendering() {
+        let rule = PatternRule::parse("read:*").expect("valid rule");
+        let rendered = r#"read({"path":"src/main.rs"})"#;
+
+        assert!(
+            !rule.matches(rule.tool.as_str(), rendered),
+            "sanity: the CONSERVATIVE `matches` (no RenderKind) must still gate this -- \
+             proves the fix is specifically about `matches_render`, not a weakening of \
+             `matches` itself"
+        );
+        assert!(
+            rule.matches_render(rule.tool.as_str(), rendered, RenderKind::Structured),
+            "a `Structured` tool's own JSON-dump rendering must be granted by its wildcard -- \
+             its parens and braces are JSON syntax here, not shell metacharacters"
+        );
+    }
+
+    /// The prefix form (not just `*`) also grants for a `Structured` tool
+    /// once its metacharacter-carrying rendering is no longer gated --
+    /// still token-wise, exactly as it is for `bash`. A string ARGUMENT
+    /// containing a literal space (e.g. `report`'s free-form `summary`)
+    /// gives the JSON dump real whitespace token boundaries to prefix
+    /// against, even though the surrounding `{}`/`:`/`,` never split a
+    /// token by themselves.
+    #[test]
+    fn a_structured_tools_prefix_rule_matches_token_wise_despite_json_syntax() {
+        let rule =
+            PatternRule::parse(r#"report:report({"summary":"build"#).expect("valid rule");
+
+        assert!(
+            rule.matches_render(
+                "report",
+                r#"report({"summary":"build finished ok"})"#,
+                RenderKind::Structured,
+            ),
+            "a summary that starts with the granted prefix must match"
+        );
+        assert!(
+            !rule.matches_render(
+                "report",
+                r#"report({"summary":"tests failed"})"#,
+                RenderKind::Structured,
+            ),
+            "a summary starting differently must not match -- prefix matching still \
+             requires an actual token-wise prefix, RenderKind only changed whether the \
+             metacharacter gate runs first"
+        );
+    }
+
+    /// `ShellCommand` is the behavior every existing gate test above already
+    /// pins via the conservative `matches` -- this test only makes explicit
+    /// that `matches_render(.., ShellCommand)` agrees with `matches` (which
+    /// is defined IN TERMS OF `matches_render(.., ShellCommand)`), so the
+    /// two can never silently drift.
+    #[test]
+    fn shell_command_render_kind_behaves_identically_to_the_conservative_matches() {
+        let rule = PatternRule::parse("bash:git status").expect("valid rule");
+        for rendered in ["git status", "git status --short", "git status && rm -rf /"] {
+            assert_eq!(
+                rule.matches("bash", rendered),
+                rule.matches_render("bash", rendered, RenderKind::ShellCommand),
+                "matches() and matches_render(.., ShellCommand) must never disagree: {rendered:?}"
+            );
+        }
+    }
+
+    /// `Structured` does NOT disable prefix matching itself -- only the
+    /// metacharacter gate. A `Structured` tool's wildcard still only
+    /// matches ITS OWN tool name, and a non-wildcard prefix still requires
+    /// an actual token-wise prefix match.
+    #[test]
+    fn structured_render_kind_only_widens_the_gate_not_the_matching_rules() {
+        let rule = PatternRule::parse("read:*").expect("valid rule");
+        assert!(!rule.matches_render(
+            "write",
+            r#"write({"path":"a"})"#,
+            RenderKind::Structured,
+        ));
+
+        let prefix_rule = PatternRule::parse("read:read(specific)").expect("valid rule");
+        assert!(!prefix_rule.matches_render(
+            "read",
+            r#"read({"path":"other.rs"})"#,
+            RenderKind::Structured,
+        ));
     }
 
     // ---- adversarial prefix cases ----

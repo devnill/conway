@@ -279,3 +279,77 @@ async fn a_granted_command_never_reaches_the_operator_through_the_real_render_se
          reach the operator: {requests:?}"
     );
 }
+
+// ---------------------------------------------------------------------
+// Board item 01KYT3NSWRHMPEAXVXRJ73KDYR: "pattern grants are still inert
+// for every tool except bash". The tests above are all `bash` -- the ONE
+// tool `Tool::render` was overridden for, which is exactly what hid the
+// follow-on bug: `read:*` (the broadest non-`bash` grant the language can
+// express) matched nothing, because `read`'s rendering is `Tool::render`'s
+// UNCHANGED default JSON dump (`read({"path":"..."})`), whose own `(`/`)`/
+// `{`/`}` tripped `PatternRule::matches`'s metacharacter gate exactly as
+// unconditionally as a `bash` command's did before that fix. The test below
+// drives `read` through the identical real seam
+// (`ReadTool::render` -> `render_call` -> `AuthorizedCall::rendered` ->
+// `PatternRule::matches_render`), proving `read:*` now actually grants.
+// ---------------------------------------------------------------------
+
+fn read_call_response(path: &str) -> GenerateResponse {
+    GenerateResponse {
+        content: vec![],
+        tool_calls: vec![conway_core::content::ToolCall {
+            call_id: "call_1".to_string(),
+            name: conway_core::ids::ToolName::new("read"),
+            arguments: serde_json::json!({ "path": path }),
+        }],
+        stop: conway_core::content::StopReason::ToolUse,
+        usage: conway_core::content::Usage::default(),
+    }
+}
+
+/// **The headline non-`bash` regression proof.** `read:*` must grant a real
+/// `read` call end to end -- the gate must never even be consulted -- using
+/// the real `ReadTool::render` (the trait's untouched default JSON dump),
+/// not a hand-typed fixture.
+#[tokio::test]
+async fn a_read_wildcard_grant_actually_grants_through_the_real_render_seam() {
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let file_path = dir.path().join("f.txt");
+    std::fs::write(&file_path, "hello from the real seam").expect("write fixture file");
+
+    let gate = RecordingGate::new(PermissionDecision::Deny {
+        reason: "must not be consulted -- read:* must grant this on its own".into(),
+    });
+    let backend = Arc::new(
+        ScriptedBackend::new(vec![
+            ScriptedTurn::Respond(read_call_response(&file_path.display().to_string())),
+            ScriptedTurn::Respond(text_response("done")),
+        ])
+        .with_id(BackendId::new("fake")),
+    );
+    let conway = build_conway(backend, gate.clone() as Arc<dyn PermissionGate>);
+
+    conway.grant_permission_pattern(
+        PatternRule::parse("read:*").expect("valid rule"),
+        PermissionScope::Session,
+        AgentId::new(),
+    );
+
+    let handle = conway
+        .new_session(SessionSpec::default())
+        .await
+        .expect("new_session should succeed");
+    let turn = handle.prompt("read the file").await.expect("prompt");
+    let _ = tokio::time::timeout(Duration::from_secs(10), turn.result())
+        .await
+        .expect("turn must not hang");
+
+    assert!(
+        gate.requests().is_empty(),
+        "a `read:*` grant must authorize a real `read` call without ever consulting the \
+         operator -- before this fix, EVERY non-`bash` wildcard was inert because \
+         `ReadTool`'s untouched default JSON-dump rendering always tripped the \
+         metacharacter gate: {:?}",
+        gate.requests()
+    );
+}

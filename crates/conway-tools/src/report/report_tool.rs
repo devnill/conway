@@ -19,7 +19,7 @@ use conway_core::content::{
 };
 use conway_core::error::ToolError;
 use conway_core::ids::ToolName;
-use conway_core::ports::{PathArgs, Tool, ToolCtx, ToolOutput};
+use conway_core::ports::{PathArgs, RenderKind, Tool, ToolCtx, ToolOutput};
 
 use crate::common::{check_cancel, error_text, parse_args, text_output};
 
@@ -103,6 +103,19 @@ impl Tool for ReportTool {
     /// output; `report` does not read or write it.
     fn path_args(&self) -> PathArgs {
         PathArgs::Unconfinable { checkable: &[] }
+    }
+
+    /// `Unconfinable` above is about root confinement (a nested artifact
+    /// path this vocabulary can't express), NOT about shell interpretation
+    /// -- `report` never overrides `render`, so its rendering is always the
+    /// trait's own default JSON dump, never a shell command. This is the
+    /// case that motivates `RenderKind` being a declaration SEPARATE from
+    /// `PathArgs` rather than a reuse of it: `report` is `Unconfinable`
+    /// (root check must always fall through to the gate) while its
+    /// pattern-grant rendering is `Structured` (the metacharacter gate does
+    /// not apply). Board item 01KYT3NSWRHMPEAXVXRJ73KDYR.
+    fn render_kind(&self) -> RenderKind {
+        RenderKind::Structured
     }
 
     fn spec(&self) -> ToolSpec {
