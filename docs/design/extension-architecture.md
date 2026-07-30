@@ -2093,6 +2093,24 @@ rules, the deny half, and the policy port need no plugin host. The transport
 is the expensive part and it is not on the critical path for §9.5, the want
 that matters most.
 
+> **Status, 2026-07-30.** F10 and F11 shipped the same day this plan was
+> written (`d917ba2`), along with three other spike-discovered bugs
+> (`b17cab7`, `b00b18f`, `674bb65`). **F12 — the §9.5 deliverable — is now
+> unblocked**, since F11 was its stated prerequisite. Phase 1's remainder is
+> F12, F13, F14.
+>
+> Two residuals from that batch are not items below and are recorded here so
+> they are not lost:
+> - **`EventBus.seqs` reclaims only `conway_ask` modal children.**
+>   `conway_subagent` builds spawn *and* fork with `ephemeral: false`, so
+>   those counters still leak. The fix is to have `resume_root` reseed the
+>   counter from the persisted transcript's last `seq`, which makes any
+>   finished session prunable.
+> - **`deny` rules are not listed in `/settings`.** An operator can audit
+>   what a repo *granted* them but not what it *denied* them.
+>   `active_deny_permission_patterns()` exists and is tested but is unwired
+>   to the view. Same shape as the trap F11 closed, smaller blast radius.
+
 ### Phase 0 — enabling changes and bugs, each shippable alone
 
 | # | Item | Size |
@@ -2111,8 +2129,8 @@ that matters most.
 
 | # | Item | Size |
 |---|---|---|
-| F10 | *(landing)* `permissions.json` `deny` half + trust gate on project `allow` (§7.4 items 1–2). | — |
-| F11 | Origin tracking on `active_patterns()` — every rule knows its author. Prerequisite for F12 and for the review surface. | M |
+| F10 | ✅ **DONE** (`d917ba2`) — `permissions.json` `deny` half + trust gate on project `allow` (§7.4 items 1–2). Trust is keyed on (path, blake3 digest), so editing a file de-trusts it. | — |
+| F11 | ✅ **DONE** (`d917ba2`) — origin tracking on `active_patterns()` via `PatternOrigin`. **This unblocks F12.** Also enabled per-rule revocation, which was not in this plan and turned out to depend on it. | M |
 | F12 | **The structured rule form** (§5.4): flat strings become sugar; `paths_under` via `resolve_like_the_tool_will`; `command_prefix` a registration error for `Structured` tools. **This is the §9.5 deliverable.** | L |
 | F13 | Project rule scope narrowing (§7.4 item 3). Behavior change; needs a call. | S |
 | F14 | Widen `suggested_rule` / the `[p]` offer to consult `render_kind`, so the UI's offer surface matches the evaluation surface (§13, bug 3). | S |
