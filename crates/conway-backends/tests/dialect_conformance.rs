@@ -15,7 +15,7 @@ use conway_backends::capabilities::{
 };
 use conway_backends::config::{Dialect, OpenAiCompatConfig};
 use conway_backends::openai_compat::OpenAiCompatBackend;
-use conway_backends::tool_calls::ToolCallAccumulator;
+use conway_backends::tool_calls::{ToolCallAccumulator, ToolCallStyle};
 use conway_core::content::{
     ContentBlock, PermissionClass, SamplingParams, StopReason, ToolCategory, ToolSpec,
 };
@@ -34,7 +34,7 @@ fn config(base_url: &str, dialect: Dialect) -> OpenAiCompatConfig {
         id: BackendId::new("test"),
         base_url: base_url.parse().unwrap(),
         api_key: None,
-        dialect,
+        profile: dialect.profile(),
         timeout: None,
         metadata_path: None,
         models: BTreeMap::new(),
@@ -140,7 +140,7 @@ fn the_three_new_dialects_are_pairwise_distinct() {
 #[test]
 fn vllm_hermes_inline_text_tool_call_is_suppressed_and_produces_one_validated_call() {
     let specs = [read_tool()];
-    let mut accumulator = ToolCallAccumulator::new(Dialect::VllmHermes, &specs);
+    let mut accumulator = ToolCallAccumulator::new(ToolCallStyle::HermesTextFallback, &specs);
 
     let mut emitted = String::new();
     for chunk in [
@@ -174,13 +174,13 @@ fn vllm_hermes_with_structured_tool_calls_matches_openai_on_the_same_fixture() {
     let specs = [read_tool()];
     let lines = fixture_lines("openai_basic_two_chunks.txt");
 
-    let mut openai_acc = ToolCallAccumulator::new(Dialect::OpenAi, &specs);
+    let mut openai_acc = ToolCallAccumulator::new(ToolCallStyle::Structured, &specs);
     for line in &lines {
         openai_acc.push_delta(line).unwrap();
     }
     let openai_calls = openai_acc.finish(StopReason::ToolUse).unwrap();
 
-    let mut vllm_acc = ToolCallAccumulator::new(Dialect::VllmHermes, &specs);
+    let mut vllm_acc = ToolCallAccumulator::new(ToolCallStyle::HermesTextFallback, &specs);
     for line in &lines {
         vllm_acc.push_delta(line).unwrap();
     }
@@ -195,7 +195,7 @@ fn vllm_hermes_with_structured_tool_calls_matches_openai_on_the_same_fixture() {
 #[test]
 fn vllm_hermes_unterminated_inline_tag_at_stream_end_is_tool_parse() {
     let specs = [read_tool()];
-    let mut accumulator = ToolCallAccumulator::new(Dialect::VllmHermes, &specs);
+    let mut accumulator = ToolCallAccumulator::new(ToolCallStyle::HermesTextFallback, &specs);
     accumulator
         .push_content_delta(r#"<tool_call>{"name":"read","argum"#)
         .unwrap();
@@ -211,7 +211,7 @@ fn vllm_hermes_unterminated_inline_tag_at_stream_end_is_tool_parse() {
 #[test]
 fn codex_7517_lm_studio_repeated_full_chunks_produce_one_call() {
     let specs = [read_tool()];
-    let mut accumulator = ToolCallAccumulator::new(Dialect::LmStudio, &specs);
+    let mut accumulator = ToolCallAccumulator::new(ToolCallStyle::Tolerant, &specs);
     let delta = r#"{"id":"call_1","function":{"name":"read","arguments":{"path":"a.txt"}}}"#;
     for _ in 0..3 {
         accumulator.push_delta(delta).unwrap();
@@ -225,7 +225,7 @@ fn codex_7517_lm_studio_repeated_full_chunks_produce_one_call() {
 #[test]
 fn codex_7517_lm_studio_shares_the_ollama_fixture_regression() {
     let specs = [read_tool()];
-    let mut accumulator = ToolCallAccumulator::new(Dialect::LmStudio, &specs);
+    let mut accumulator = ToolCallAccumulator::new(ToolCallStyle::Tolerant, &specs);
     for line in fixture_lines("codex_7517_repeated_id_and_name.txt") {
         accumulator.push_delta(&line).unwrap();
     }

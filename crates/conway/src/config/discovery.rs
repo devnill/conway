@@ -74,7 +74,45 @@ pub fn permission_file_paths(cwd: &std::path::Path, env: &HashMap<String, String
         paths.push(cwd.join(".conway").join("permissions.json"));
     }
     // Global scope, alongside the resolved global settings.
-    if let Some(global) = xdg_config_path(env).and_then(|s| s.parent().map(|d| d.join("permissions.json"))) {
+    if let Some(global) =
+        xdg_config_path(env).and_then(|s| s.parent().map(|d| d.join("permissions.json")))
+    {
+        if !paths.contains(&global) {
+            paths.push(global);
+        }
+    }
+    paths
+}
+
+/// Declarative provider profiles: the user-supplied `.conway/profiles.toml`
+/// file path(s), resolved project-first then global — the identical
+/// layering [`permission_file_paths`] already establishes, reused here
+/// rather than invented anew (this module's own precedent). Both candidates
+/// are returned in precedence order; `conway_backends::profile::ProfileStore::merge_file`
+/// treats a missing file at either level as a no-op, not an error, so the
+/// caller can always attempt both without checking existence first.
+///
+/// Project-first mirrors `permission_file_paths`'s own reasoning: a
+/// provider profile override (a local llama.cpp build's actual behavior, a
+/// vendor's tweaked dialect) is usually about *this* checkout's toolchain,
+/// and a project-scoped file can be reviewed in a diff alongside the code
+/// it configures. The global file is the fallback for a profile that
+/// genuinely follows the operator across projects.
+pub fn provider_profile_file_paths(
+    cwd: &std::path::Path,
+    env: &HashMap<String, String>,
+) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Some(project) = discover(cwd) {
+        if let Some(dir) = project.parent() {
+            paths.push(dir.join("profiles.toml"));
+        }
+    } else {
+        paths.push(cwd.join(".conway").join("profiles.toml"));
+    }
+    if let Some(global) =
+        xdg_config_path(env).and_then(|s| s.parent().map(|d| d.join("profiles.toml")))
+    {
         if !paths.contains(&global) {
             paths.push(global);
         }
@@ -110,6 +148,30 @@ mod tests {
         let nested = tmp.join("x").join("y");
         fs::create_dir_all(&nested).unwrap();
         assert!(discover(&nested).is_none());
+    }
+
+    #[test]
+    fn provider_profile_file_paths_is_project_scoped_alongside_discovered_settings() {
+        let tmp = tempfile_dir();
+        let conf_dir = tmp.join(".conway");
+        fs::create_dir_all(&conf_dir).unwrap();
+        fs::write(conf_dir.join("settings.json"), "").unwrap();
+
+        let mut env = HashMap::new();
+        env.insert("XDG_CONFIG_HOME".to_string(), "/custom/xdg".to_string());
+        let paths = provider_profile_file_paths(&tmp, &env);
+        assert_eq!(paths[0], conf_dir.join("profiles.toml"));
+        assert_eq!(paths[1], PathBuf::from("/custom/xdg/conway/profiles.toml"));
+    }
+
+    #[test]
+    fn provider_profile_file_paths_falls_back_to_cwd_dot_conway_when_undiscovered() {
+        let tmp = tempfile_dir();
+        let nested = tmp.join("x").join("y");
+        fs::create_dir_all(&nested).unwrap();
+        let env = HashMap::new();
+        let paths = provider_profile_file_paths(&nested, &env);
+        assert_eq!(paths[0], nested.join(".conway").join("profiles.toml"));
     }
 
     #[test]

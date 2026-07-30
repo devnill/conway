@@ -18,7 +18,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 fn probe(base_url: &str, dialect: Dialect) -> CapabilityProbe {
     CapabilityProbe::new(
         base_url.parse().unwrap(),
-        dialect,
+        dialect.profile(),
         None,
         Duration::from_secs(5),
         ModelMetadataStore::empty(),
@@ -34,7 +34,7 @@ fn probe_with(
 ) -> CapabilityProbe {
     CapabilityProbe::new(
         base_url.parse().unwrap(),
-        dialect,
+        dialect.profile(),
         None,
         Duration::from_secs(5),
         metadata,
@@ -47,7 +47,7 @@ fn backend_config(base_url: &str, dialect: Dialect) -> OpenAiCompatConfig {
         id: conway_core::ids::BackendId::new("test"),
         base_url: base_url.parse().unwrap(),
         api_key: None,
-        dialect,
+        profile: dialect.profile(),
         timeout: None,
         metadata_path: None,
         models: BTreeMap::new(),

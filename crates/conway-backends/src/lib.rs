@@ -9,12 +9,13 @@
 //! transport-retry policy in [`http`] retries at most twice against that
 //! same endpoint (module boundary rule).
 //!
-//! [`config`] and [`error`] are feature-independent: the configuration types
-//! and the HTTP-status → `BackendError` classification table have no HTTP
-//! client of their own and compile under `--no-default-features`. The HTTP
-//! transport wrapper in `http` is only compiled when at least one adapter
-//! feature (`anthropic` or `openai-compat`) is enabled, since it is the only
-//! module in this crate that depends on `reqwest`.
+//! [`config`], [`error`], and [`profile`] are feature-independent: the
+//! configuration types, the HTTP-status → `BackendError` classification
+//! table, and declarative provider profiles have no HTTP client of their
+//! own and compile under `--no-default-features`. The HTTP transport
+//! wrapper in `http` is only compiled when at least one adapter feature
+//! (`anthropic` or `openai-compat`) is enabled, since it is the only module
+//! in this crate that depends on `reqwest`.
 //!
 //! [`openai_compat`] (WI-019) was the first adapter; [`anthropic`] (WI-021)
 //! is the second. The remaining `openai_compat` dialects are added by a
@@ -28,6 +29,7 @@ pub mod capabilities;
 pub mod config;
 pub mod error;
 pub mod model_metadata;
+pub mod profile;
 pub mod tool_calls;
 
 #[cfg(any(feature = "anthropic", feature = "openai-compat"))]

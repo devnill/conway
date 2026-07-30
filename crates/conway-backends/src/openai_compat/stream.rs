@@ -25,7 +25,7 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 
 use super::wire::{map_finish_reason, map_usage, UsageWire};
-use crate::config::Dialect;
+use crate::profile::Profile;
 use crate::tool_calls::ToolCallAccumulator;
 
 const DONE_MARKER: &str = "[DONE]";
@@ -33,14 +33,15 @@ const DONE_MARKER: &str = "[DONE]";
 /// Sends the response body's SSE stream into a spawned driver task and
 /// returns a `Stream` reading the task's output. `stream()` itself only
 /// ever awaits the initial `send_with_retry`; everything from here on runs
-/// off that task, decoupled from the caller's poll loop.
+/// off that task, decoupled from the caller's poll loop. `profile` is
+/// owned (not borrowed): the spawned task outlives this call's stack frame.
 pub(crate) fn spawn(
     response: reqwest::Response,
-    dialect: Dialect,
+    profile: Profile,
     tools: Vec<ToolSpec>,
 ) -> BoxStream<'static, Result<StreamChunk, BackendError>> {
     let (tx, rx) = mpsc::unbounded_channel();
-    tokio::spawn(drive(response, dialect, tools, tx));
+    tokio::spawn(drive(response, profile, tools, tx));
     Box::pin(ChunkStream(rx))
 }
 
@@ -66,12 +67,12 @@ impl Stream for ChunkStream {
 /// connection.
 async fn drive(
     response: reqwest::Response,
-    dialect: Dialect,
+    profile: Profile,
     tools: Vec<ToolSpec>,
     tx: mpsc::UnboundedSender<Result<StreamChunk, BackendError>>,
 ) {
     let mut events = Box::pin(response.bytes_stream().eventsource());
-    let mut accumulator = ToolCallAccumulator::new(dialect, &tools);
+    let mut accumulator = ToolCallAccumulator::new(profile.tool_call_style, &tools);
     let mut text_buffer = String::new();
     let mut stop = None;
     let mut usage = Usage::default();

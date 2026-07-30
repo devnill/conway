@@ -16,9 +16,15 @@
 //! when no explicit value exists; it never raises `tool_calling` above the
 //! metadata/dialect value and never sets `reliability_tier` to `Verified` —
 //! both of those fields are untouched by the probed layer here, which only
-//! ever adjusts `max_context_tokens` and (for `Dialect::LlamaCppServer` with
-//! a missing/empty `chat_template`) downgrades `reliability_tier` to
-//! `Unknown`.
+//! ever adjusts `max_context_tokens` and (for the `"llama_cpp_server"`
+//! built-in profile with a missing/empty `chat_template`) downgrades
+//! `reliability_tier` to `Unknown`. The extra probing steps below (`/api/tags`,
+//! `/api/version`, `/props`) are matched by `profile.id`, not by a
+//! declarative field — endpoint selection for discovery is a different
+//! concern from the wire-behavior/capability fields `Profile` declares (see
+//! `openai_compat/probe_impl.rs`'s module doc), so a user-supplied or
+//! newly-added profile gets the generic `/models`-only step every other
+//! built-in profile without a named extra step already has.
 //!
 //! `discover` never fabricates a `Capabilities` entry for a model that was
 //! neither observed from an endpoint nor listed in the configured `models`
@@ -34,9 +40,10 @@ use serde::Deserialize;
 use url::Url;
 
 use crate::capabilities::{build_capabilities, CapabilityInputs};
-use crate::config::{Dialect, ModelOverrides, SecretString};
+use crate::config::{ModelOverrides, SecretString};
 use crate::http::HttpClient;
 use crate::model_metadata::ModelMetadataStore;
+use crate::profile::Profile;
 
 /// Per-step timeout for discovery requests. Deliberately short and
 /// independent of the adapter's configured request timeout — discovery is a
@@ -76,7 +83,7 @@ struct ModelsResponse {
 struct ModelEntry {
     id: String,
     /// vLLM-specific: the model's configured context length. Populated only
-    /// when `dialect == Dialect::VllmHermes` consults it.
+    /// when `profile.id == "vllm_hermes"` consults it.
     #[serde(default)]
     max_model_len: Option<u32>,
 }
@@ -132,7 +139,7 @@ pub struct DiscoveryResult {
 pub struct CapabilityProbe {
     http: HttpClient,
     base: Url,
-    dialect: Dialect,
+    profile: Profile,
     auth: Option<SecretString>,
     metadata: ModelMetadataStore,
     overrides: BTreeMap<String, ModelOverrides>,
@@ -144,7 +151,7 @@ impl CapabilityProbe {
     /// [`DISCOVERY_TIMEOUT`] regardless of this value.
     pub fn new(
         base: Url,
-        dialect: Dialect,
+        profile: Profile,
         auth: Option<SecretString>,
         timeout: Duration,
         metadata: ModelMetadataStore,
@@ -155,7 +162,7 @@ impl CapabilityProbe {
         Self {
             http,
             base,
-            dialect,
+            profile,
             auth,
             metadata,
             overrides,
@@ -188,7 +195,7 @@ impl CapabilityProbe {
         }
     }
 
-    /// Step 2 (`Dialect::Ollama` fallback): `GET {base_origin}/api/tags`.
+    /// Step 2 (`"ollama"` profile fallback): `GET {base_origin}/api/tags`.
     async fn fetch_ollama_tags(&self) -> Option<Vec<String>> {
         let response = self
             .request(join_origin(&self.base, "/api/tags"))
@@ -206,7 +213,7 @@ impl CapabilityProbe {
         }
     }
 
-    /// Step 3 (`Dialect::LlamaCppServer`): `GET {base_origin}/props`.
+    /// Step 3 (`"llama_cpp_server"` profile): `GET {base_origin}/props`.
     async fn fetch_llama_cpp_props(&self) -> Option<LlamaCppProps> {
         let response = self
             .request(join_origin(&self.base, "/props"))
@@ -230,7 +237,7 @@ impl CapabilityProbe {
         if let Some(entries) = self.fetch_models().await {
             for entry in entries {
                 let hints = observed.entry(entry.id).or_default();
-                if matches!(self.dialect, Dialect::VllmHermes) {
+                if self.profile.id == "vllm_hermes" {
                     if let Some(max_model_len) = entry.max_model_len {
                         hints.max_context_tokens = Some(max_model_len);
                     }
@@ -238,7 +245,7 @@ impl CapabilityProbe {
             }
         }
 
-        if matches!(self.dialect, Dialect::Ollama) && observed.is_empty() {
+        if self.profile.id == "ollama" && observed.is_empty() {
             if let Some(names) = self.fetch_ollama_tags().await {
                 for name in names {
                     observed.entry(name).or_default();
@@ -246,7 +253,7 @@ impl CapabilityProbe {
             }
         }
 
-        if matches!(self.dialect, Dialect::LlamaCppServer) {
+        if self.profile.id == "llama_cpp_server" {
             if let Some(props) = self.fetch_llama_cpp_props().await {
                 let n_ctx = props.default_generation_settings.and_then(|s| s.n_ctx);
                 let template_missing = props
@@ -269,7 +276,7 @@ impl CapabilityProbe {
         let degraded = observed.is_empty();
         if degraded {
             tracing::warn!(
-                dialect = ?self.dialect,
+                profile = %self.profile.id,
                 "capability discovery observed no models; falling back to metadata-derived capabilities"
             );
         }
@@ -281,7 +288,7 @@ impl CapabilityProbe {
         let mut capabilities = BTreeMap::new();
         for (id, hints) in &observed {
             let model_id = ModelId::new(id.clone());
-            let mut dialect_defaults = self.dialect.defaults();
+            let mut dialect_defaults = self.profile.dialect_defaults();
             if let Some(max_context_tokens) = hints.max_context_tokens {
                 dialect_defaults.max_context_tokens = max_context_tokens;
             }

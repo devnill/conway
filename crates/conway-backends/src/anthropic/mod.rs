@@ -30,11 +30,11 @@ use tokio_util::sync::CancellationToken;
 use url::Url;
 
 use crate::capabilities::{anthropic_defaults, build_capabilities, CapabilityInputs};
-use crate::config::{AnthropicConfig, ConfigError, Dialect, ModelOverrides, SecretString};
+use crate::config::{AnthropicConfig, ConfigError, ModelOverrides, SecretString};
 use crate::error::{classify, classify_malformed_body};
 use crate::http::HttpClient;
 use crate::model_metadata::ModelMetadataStore;
-use crate::tool_calls::ToolCallAccumulator;
+use crate::tool_calls::{ToolCallAccumulator, ToolCallStyle};
 use wire::BreakpointTarget;
 
 /// Applied when `req.params.max_tokens` is unset — Anthropic's `max_tokens`
@@ -48,12 +48,16 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 /// Constructs a `ToolCallAccumulator` for the Anthropic adapter. Anthropic's
 /// `content_block_start`/`content_block_delta` events are translated
 /// (`stream.rs`) into the `{"index":..,"id":..,"function":{"name":..,
-/// "arguments":..}}` shape `Dialect::OpenAi`'s parser expects, so this
-/// reuses `push_delta`/`push_complete` unmodified rather than adding a
-/// sixth `Dialect` variant or touching `src/tool_calls/*` (owned by
-/// WI-018/WI-022).
+/// "arguments":..}}` shape [`ToolCallStyle::Structured`]'s parser expects,
+/// so this reuses `push_delta`/`push_complete` unmodified rather than
+/// touching `src/tool_calls/*` (owned by WI-018/WI-022). Previously spelled
+/// as `ToolCallAccumulator::new(Dialect::OpenAi, tools)` — the declarative
+/// provider profiles item decoupled `ToolCallAccumulator` from `Dialect`
+/// entirely, which incidentally resolves this function's own prior doc
+/// caveat about "not wanting to add a sixth `Dialect` variant" just to name
+/// this parsing strategy.
 pub(crate) fn new_tool_call_accumulator(tools: &[ToolSpec]) -> ToolCallAccumulator {
-    ToolCallAccumulator::new(Dialect::OpenAi, tools)
+    ToolCallAccumulator::new(ToolCallStyle::Structured, tools)
 }
 
 /// Native Anthropic Messages API adapter (feature `anthropic`).

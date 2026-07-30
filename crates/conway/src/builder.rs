@@ -39,13 +39,21 @@
 //!   is resolved from the live process environment at `build()` time, a
 //!   value the earlier `config::load` never saw (it only inspected
 //!   `LoadOptions.env`).
-//! - **`OpenAiCompatConfig.dialect` is parsed by hand** ([`parse_dialect`]),
-//!   not via that type's own `serde(rename_all = "snake_case")`
-//!   `Deserialize` impl: the facade's documented dialect values
-//!   (`"vllm-hermes"`, `"lm-studio"`, `"llamacpp-server"`) are kebab-case,
-//!   but `Dialect`'s derived wire form is snake_case (`"vllm_hermes"`, ...),
-//!   so a real config file following the documented schema would fail to
-//!   deserialize `Dialect` directly.
+//! - **`OpenAiCompatConfig.profile` is resolved by hand**
+//!   ([`resolve_profile`]), not via `Profile`'s own `Deserialize` impl: a
+//!   backend entry's `dialect` string names a *profile id* (built-in or
+//!   loaded from `.conway/profiles.toml` — declarative provider profiles
+//!   item), resolved against a `conway_backends::profile::ProfileStore`
+//!   this module assembles once per `build()` call
+//!   ([`load_provider_profiles`]). The facade's three historically
+//!   kebab-case dialect strings (`"vllm-hermes"`, `"lm-studio"`,
+//!   `"llamacpp-server"`) are translated to their snake_case built-in
+//!   profile ids (`"vllm_hermes"`, `"lm_studio"`, `"llama_cpp_server"`)
+//!   before the `ProfileStore` lookup, preserving every existing config
+//!   file unchanged; every other string (`"openai"`, `"ollama"`, `"kimi"`,
+//!   or any id a user-supplied profile file declares) is looked up
+//!   verbatim — this is what makes a new provider selectable with no
+//!   recompile.
 //! - **The backend map is keyed by each constructed backend's own
 //!   `Backend::id()`, which both adapters set from the `backends.<id>` JSON
 //!   key.** `config::merge::validate` checks chain refs
@@ -263,11 +271,18 @@ impl ConwayBuilder {
         let metadata_path = resolve_path(&cwd, &config.models.metadata_path);
         let metadata = config::model_metadata::load(&metadata_path)?;
 
+        // 2b. Declarative provider profiles: built-ins layered under any
+        //     discovered `.conway/profiles.toml` (project then global —
+        //     `config::discovery::provider_profile_file_paths`). Resolved
+        //     once here so every `openai-compat` backend entry (and startup
+        //     probing, step 5) sees the same loaded set.
+        let profiles = load_provider_profiles(&cwd)?;
+
         // 3+4. Construct config-derived backends, then merge injected ones
         //      over them, keyed by each backend's own `id()`.
         let mut backend_map: HashMap<BackendId, Arc<dyn Backend>> = HashMap::new();
         for (id, entry) in &config.backends {
-            let backend = construct_backend(id, entry, &metadata)?;
+            let backend = construct_backend(id, entry, &metadata, &profiles)?;
             backend_map.insert(backend.id(), backend);
         }
         for backend in backends {
@@ -307,7 +322,7 @@ impl ConwayBuilder {
         if config.models.probe_on_startup {
             #[cfg(feature = "openai-compat")]
             {
-                index_builder = probe_openai_compat_backends(&config, index_builder);
+                index_builder = probe_openai_compat_backends(&config, &profiles, index_builder);
             }
             #[cfg(not(feature = "openai-compat"))]
             {
@@ -408,7 +423,14 @@ impl ConwayBuilder {
         // calling this method at all.
         rt.set_context_hook(context_hook);
 
-        Ok(Conway::new(rt, config, store, router_explain, warnings))
+        Ok(Conway::new(
+            rt,
+            config,
+            store,
+            router_explain,
+            warnings,
+            metadata,
+        ))
     }
 }
 
@@ -455,11 +477,36 @@ fn construct_backend(
     id: &str,
     entry: &BackendEntry,
     metadata: &config::model_metadata::ModelMetadata,
+    profiles: &conway_backends::profile::ProfileStore,
 ) -> Result<Arc<dyn Backend>> {
     match entry.kind {
         BackendKind::Anthropic => build_anthropic(id, entry, metadata),
-        BackendKind::OpenaiCompat => build_openai_compat(id, entry, metadata),
+        BackendKind::OpenaiCompat => build_openai_compat(id, entry, metadata, profiles),
     }
+}
+
+/// Declarative provider profiles: built-ins ([`conway_backends::profile::ProfileStore::built_ins`])
+/// layered under any discovered `.conway/profiles.toml` file(s) — project
+/// then global (`config::discovery::provider_profile_file_paths`). Reads
+/// the live process environment directly (`std::env::vars()`), matching
+/// [`resolve_api_key`]'s own precedent of touching real env for exactly
+/// this kind of build()-time resolution rather than threading an injected
+/// map through every caller.
+fn load_provider_profiles(cwd: &Path) -> Result<conway_backends::profile::ProfileStore> {
+    use conway_backends::profile::ProfileStore;
+
+    let env: HashMap<String, String> = std::env::vars().collect();
+    let mut store = ProfileStore::built_ins();
+    for path in config::discovery::provider_profile_file_paths(cwd, &env) {
+        store = store.merge_file(&path).map_err(|e| ConwayError::Config {
+            path: Some(path.clone()),
+            message: format!(
+                "failed to load provider profiles from {}: {e}",
+                path.display()
+            ),
+        })?;
+    }
+    Ok(store)
 }
 
 /// Per-model capability overrides for backend `id`, projected from the
@@ -571,6 +618,7 @@ fn build_openai_compat(
     id: &str,
     entry: &BackendEntry,
     metadata: &config::model_metadata::ModelMetadata,
+    profiles: &conway_backends::profile::ProfileStore,
 ) -> Result<Arc<dyn Backend>> {
     use conway_backends::config::{OpenAiCompatConfig, SecretString};
     use conway_backends::openai_compat::OpenAiCompatBackend;
@@ -582,7 +630,7 @@ fn build_openai_compat(
             path: None,
             message: format!("backend '{id}': kind 'openai-compat' requires 'dialect'"),
         })?;
-    let dialect = parse_dialect(id, dialect_raw)?;
+    let profile = resolve_profile(id, dialect_raw, profiles)?;
     let api_key = resolve_api_key(id, entry)?;
     let base_url = url::Url::parse(&entry.base_url).map_err(|e| ConwayError::Config {
         path: None,
@@ -597,7 +645,7 @@ fn build_openai_compat(
         } else {
             Some(SecretString::new(api_key))
         },
-        dialect,
+        profile,
         timeout: None,
         metadata_path: None,
         models: models_overrides_for(id, metadata),
@@ -615,6 +663,7 @@ fn build_openai_compat(
     _id: &str,
     _entry: &BackendEntry,
     _metadata: &config::model_metadata::ModelMetadata,
+    _profiles: &conway_backends::profile::ProfileStore,
 ) -> Result<Arc<dyn Backend>> {
     Err(ConwayError::UnsupportedFeature {
         feature: "openai-compat",
@@ -624,23 +673,39 @@ fn build_openai_compat(
     })
 }
 
-/// Maps the facade's documented kebab-case dialect strings to
-/// `conway_backends::config::Dialect`. Not delegated to that type's own
-/// `Deserialize` impl — see the module doc's reconciliation note.
+/// Resolves the facade's `backends.<id>.dialect` string to a
+/// [`conway_backends::profile::Profile`] against `profiles` (declarative
+/// provider profiles item). The three dialects whose documented facade
+/// spelling is kebab-case (`"vllm-hermes"`, `"lm-studio"`,
+/// `"llamacpp-server"`) are translated to their snake_case built-in profile
+/// ids first — preserving every existing config file unchanged — then
+/// looked up verbatim; every other string (`"openai"`, `"ollama"`,
+/// `"kimi"`, or any id a `.conway/profiles.toml` file declares) is looked
+/// up as-is. This is what lets a new provider be selected by name with no
+/// recompile: adding it to `profiles` is enough, no change to this
+/// function is ever required.
 #[cfg(feature = "openai-compat")]
-fn parse_dialect(id: &str, raw: &str) -> Result<conway_backends::config::Dialect> {
-    use conway_backends::config::Dialect;
-    match raw {
-        "openai" => Ok(Dialect::OpenAi),
-        "ollama" => Ok(Dialect::Ollama),
-        "vllm-hermes" => Ok(Dialect::VllmHermes),
-        "lm-studio" => Ok(Dialect::LmStudio),
-        "llamacpp-server" => Ok(Dialect::LlamaCppServer),
-        other => Err(ConwayError::Config {
+fn resolve_profile(
+    id: &str,
+    raw: &str,
+    profiles: &conway_backends::profile::ProfileStore,
+) -> Result<conway_backends::profile::Profile> {
+    let canonical = match raw {
+        "vllm-hermes" => "vllm_hermes",
+        "lm-studio" => "lm_studio",
+        "llamacpp-server" => "llama_cpp_server",
+        other => other,
+    };
+    profiles
+        .get(canonical)
+        .cloned()
+        .ok_or_else(|| ConwayError::Config {
             path: None,
-            message: format!("backend '{id}': unknown dialect '{other}'"),
-        }),
-    }
+            message: format!(
+                "backend '{id}': unknown dialect/profile '{raw}' (no built-in or loaded profile \
+                 named '{canonical}')"
+            ),
+        })
 }
 
 /// Runs a startup `CapabilityProbe` for every `openai-compat` backend entry,
@@ -652,6 +717,7 @@ fn parse_dialect(id: &str, raw: &str) -> Result<conway_backends::config::Dialect
 #[cfg(feature = "openai-compat")]
 fn probe_openai_compat_backends(
     config: &ConwayConfig,
+    profiles: &conway_backends::profile::ProfileStore,
     mut index_builder: conway_routing::CapabilityIndexBuilder,
 ) -> conway_routing::CapabilityIndexBuilder {
     use conway_backends::config::SecretString;
@@ -666,8 +732,8 @@ fn probe_openai_compat_backends(
             tracing::warn!(backend = %id, "probe_on_startup: skipping backend with no 'dialect'");
             continue;
         };
-        let Ok(dialect) = parse_dialect(id, dialect_raw) else {
-            tracing::warn!(backend = %id, dialect = %dialect_raw, "probe_on_startup: skipping backend with unknown dialect");
+        let Ok(profile) = resolve_profile(id, dialect_raw, profiles) else {
+            tracing::warn!(backend = %id, dialect = %dialect_raw, "probe_on_startup: skipping backend with unknown dialect/profile");
             continue;
         };
         let Ok(base_url) = url::Url::parse(&entry.base_url) else {
@@ -681,7 +747,7 @@ fn probe_openai_compat_backends(
 
         let probe = CapabilityProbe::new(
             base_url,
-            dialect,
+            profile,
             auth,
             PROBE_TIMEOUT,
             ModelMetadataStore::defaults(),
@@ -815,6 +881,77 @@ mod models_overrides_tests {
         );
     }
 
+    /// Declarative provider profiles: `resolve_profile` accepts every
+    /// existing documented dialect string (both plain and the three
+    /// kebab-case spellings), resolves a brand-new built-in profile
+    /// (`kimi`) by name with no special-casing, resolves a user-supplied
+    /// profile id with no recompile, and rejects an unknown name with a
+    /// named, typed error rather than a panic.
+    #[cfg(feature = "openai-compat")]
+    #[test]
+    fn resolve_profile_accepts_every_documented_dialect_string_and_new_built_ins() {
+        use conway_backends::profile::ProfileStore;
+
+        let profiles = ProfileStore::built_ins();
+        for (raw, expected_id) in [
+            ("openai", "openai"),
+            ("ollama", "ollama"),
+            ("vllm-hermes", "vllm_hermes"),
+            ("lm-studio", "lm_studio"),
+            ("llamacpp-server", "llama_cpp_server"),
+            ("kimi", "kimi"),
+        ] {
+            let profile = resolve_profile("test", raw, &profiles)
+                .unwrap_or_else(|e| panic!("'{raw}' must resolve: {e}"));
+            assert_eq!(profile.id, expected_id);
+        }
+    }
+
+    #[cfg(feature = "openai-compat")]
+    #[test]
+    fn resolve_profile_resolves_a_user_supplied_profile_with_no_recompile() {
+        use conway_backends::profile::ProfileStore;
+
+        let dir = std::env::temp_dir().join(format!(
+            "conway-builder-resolve-profile-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("profiles.toml");
+        std::fs::write(
+            &path,
+            r#"
+            [[profile]]
+            id = "my-vendor"
+            chat_path = "/chat/completions"
+            "#,
+        )
+        .unwrap();
+
+        let profiles = ProfileStore::built_ins().merge_file(&path).unwrap();
+        let profile = resolve_profile("test", "my-vendor", &profiles).unwrap();
+        assert_eq!(profile.id, "my-vendor");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(feature = "openai-compat")]
+    #[test]
+    fn resolve_profile_names_the_unknown_dialect_in_a_typed_error() {
+        use conway_backends::profile::ProfileStore;
+
+        let profiles = ProfileStore::built_ins();
+        let err = resolve_profile("mybackend", "totally-unknown", &profiles)
+            .expect_err("an unknown dialect/profile must be rejected");
+        match err {
+            ConwayError::Config { message, .. } => {
+                assert!(message.contains("mybackend"), "{message}");
+                assert!(message.contains("totally-unknown"), "{message}");
+            }
+            other => panic!("expected ConwayError::Config, got {other:?}"),
+        }
+    }
+
     /// WI-123's core proof: `models.json` has exactly one predictable
     /// routing effect. The value `Backend::capabilities()` returns (what
     /// `conway_runtime::attempt::AttemptEngine`'s T-1 gate reads directly)
@@ -844,7 +981,7 @@ mod models_overrides_tests {
             id: BackendId::new("ollama_cloud"),
             base_url: url::Url::parse("http://localhost:11434").unwrap(),
             api_key: None,
-            dialect: Dialect::Ollama,
+            profile: Dialect::Ollama.profile(),
             timeout: None,
             metadata_path: None,
             models: models_overrides_for("ollama_cloud", &m),

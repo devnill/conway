@@ -27,7 +27,7 @@ fn config(base_url: &str, dialect: Dialect) -> OpenAiCompatConfig {
         id: BackendId::new("test"),
         base_url: base_url.parse().unwrap(),
         api_key: None,
-        dialect,
+        profile: dialect.profile(),
         timeout: None,
         metadata_path: None,
         models: BTreeMap::new(),

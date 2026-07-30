@@ -14,17 +14,17 @@ use conway_core::segment::PromptSegment;
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
-use crate::config::Dialect;
+use crate::profile::Profile;
 use crate::tool_calls::{truncate_chars, ToolCallAccumulator};
 
-/// Builds the JSON request body for `POST {base}/chat/completions`.
+/// Builds the JSON request body for `POST {base}{profile.chat_path}`.
 /// `parallel_tool_calls` is the resolved `Capabilities::parallel_tool_calls`
 /// for `req.model` — the field is only emitted when it is `true` **and**
-/// `dialect` is `Dialect::OpenAi` (Implementation Notes: "other servers 400
-/// on the unknown field").
+/// `profile.sends_parallel_tool_calls` (Implementation Notes: "other
+/// servers 400 on the unknown field").
 pub(crate) fn build_request_body(
     req: &GenerateRequest,
-    dialect: Dialect,
+    profile: &Profile,
     parallel_tool_calls: bool,
     stream: bool,
 ) -> Value {
@@ -32,7 +32,7 @@ pub(crate) fn build_request_body(
     body.insert("model".into(), json!(req.model.as_str()));
     body.insert(
         "messages".into(),
-        Value::Array(segments_to_messages(&req.segments, dialect)),
+        Value::Array(segments_to_messages(&req.segments, profile)),
     );
 
     if !req.tools.is_empty() {
@@ -52,7 +52,7 @@ pub(crate) fn build_request_body(
             .collect();
         body.insert("tools".into(), Value::Array(tools));
         body.insert("tool_choice".into(), json!("auto"));
-        if parallel_tool_calls && dialect.sends_parallel_tool_calls() {
+        if parallel_tool_calls && profile.sends_parallel_tool_calls {
             body.insert("parallel_tool_calls".into(), json!(true));
         }
     }
@@ -64,7 +64,7 @@ pub(crate) fn build_request_body(
         body.insert("top_p".into(), json!(top_p));
     }
     if let Some(max_tokens) = req.params.max_tokens {
-        let key = if matches!(dialect, Dialect::OpenAi) {
+        let key = if profile.uses_max_completion_tokens {
             "max_completion_tokens"
         } else {
             "max_tokens"
@@ -74,13 +74,13 @@ pub(crate) fn build_request_body(
     if !req.params.stop.is_empty() {
         body.insert("stop".into(), json!(req.params.stop));
     }
-    if let Some(effort) = reasoning_effort(req, dialect) {
+    if let Some(effort) = reasoning_effort(req, profile) {
         body.insert("reasoning_effort".into(), json!(effort));
     }
 
     if stream {
         body.insert("stream".into(), json!(true));
-        if dialect.supports_stream_options() {
+        if profile.supports_stream_options {
             body.insert("stream_options".into(), json!({ "include_usage": true }));
         }
     }
@@ -96,11 +96,12 @@ pub(crate) fn build_request_body(
 /// `GenerateRequest` has no dedicated reasoning-effort field yet — that
 /// caller-facing knob and its plumbing into `params.extra` is a
 /// WI-126/WI-128 concern, outside this module's scope; `extra` is the only
-/// existing field that reaches this wire layer. Emitted only for
-/// `Dialect::OpenAi`, mirroring the `parallel_tool_calls` gating above:
-/// other OpenAI-compatible servers 400 on a field they don't recognize.
-fn reasoning_effort(req: &GenerateRequest, dialect: Dialect) -> Option<String> {
-    if !matches!(dialect, Dialect::OpenAi) {
+/// existing field that reaches this wire layer. Emitted only when
+/// `profile.sends_reasoning_effort`, mirroring the `parallel_tool_calls`
+/// gating above: other OpenAI-compatible servers 400 on a field they don't
+/// recognize.
+fn reasoning_effort(req: &GenerateRequest, profile: &Profile) -> Option<String> {
+    if !profile.sends_reasoning_effort {
         return None;
     }
     req.params
@@ -114,17 +115,17 @@ fn reasoning_effort(req: &GenerateRequest, dialect: Dialect) -> Option<String> {
 /// order is load-bearing (§5.3) and is preserved exactly; segments are
 /// never merged or reordered (§8), and this function reads nothing from
 /// `segment.cache_hint`.
-fn segments_to_messages(segments: &[PromptSegment], dialect: Dialect) -> Vec<Value> {
+fn segments_to_messages(segments: &[PromptSegment], profile: &Profile) -> Vec<Value> {
     segments
         .iter()
-        .flat_map(|segment| segment_to_messages(segment, dialect))
+        .flat_map(|segment| segment_to_messages(segment, profile))
         .collect()
 }
 
-fn segment_to_messages(segment: &PromptSegment, dialect: Dialect) -> Vec<Value> {
+fn segment_to_messages(segment: &PromptSegment, profile: &Profile) -> Vec<Value> {
     match segment.role {
         Role::System => vec![system_message(&segment.content)],
-        Role::User => vec![user_message(&segment.content, dialect)],
+        Role::User => vec![user_message(&segment.content, profile)],
         Role::Assistant => vec![assistant_message(&segment.content)],
         Role::ToolResult => tool_result_messages(&segment.content),
         // `Role` is `#[non_exhaustive]`; no fifth variant exists today.
@@ -149,7 +150,7 @@ fn system_message(content: &[ContentBlock]) -> Value {
     json!({ "role": "system", "content": concat_text(content) })
 }
 
-fn user_message(content: &[ContentBlock], dialect: Dialect) -> Value {
+fn user_message(content: &[ContentBlock], profile: &Profile) -> Value {
     let blocks: Vec<&str> = content
         .iter()
         .filter_map(|block| match block {
@@ -160,7 +161,7 @@ fn user_message(content: &[ContentBlock], dialect: Dialect) -> Value {
     let content_value = match blocks.as_slice() {
         [] => Value::String(String::new()),
         [single] => Value::String((*single).to_string()),
-        multiple if dialect.flatten_multiblock_user() => Value::String(multiple.join("\n\n")),
+        multiple if profile.flatten_multiblock_user => Value::String(multiple.join("\n\n")),
         multiple => Value::Array(
             multiple
                 .iter()
@@ -277,6 +278,15 @@ pub(crate) struct UsageWire {
     pub(crate) completion_tokens: u32,
     #[serde(default)]
     pub(crate) prompt_tokens_details: Option<PromptTokensDetails>,
+    /// Kimi's Moonshot platform API reports `cached_tokens` at the TOP
+    /// LEVEL of `usage`, not nested under `prompt_tokens_details` like
+    /// OpenAI. `map_usage` reads either shape (nested wins when both are
+    /// present) rather than gating this field on a provider profile: it is
+    /// strictly permissive — a server that never sends it simply never
+    /// populates this field, so accepting it costs nothing and needs no
+    /// per-provider knowledge.
+    #[serde(default)]
+    pub(crate) cached_tokens: Option<u32>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -298,21 +308,29 @@ pub(crate) fn map_finish_reason(reason: Option<&str>) -> StopReason {
 }
 
 /// `usage.prompt_tokens`/`completion_tokens` → `input_tokens`/
-/// `output_tokens`; `usage.prompt_tokens_details.cached_tokens` (when
-/// present) → `cache_read_tokens`, else `0` (`Usage`'s fields are `u32`,
-/// not `Option<u32>`).
+/// `output_tokens`; cached-token count → `cache_read_tokens`, read from
+/// EITHER shape a server might send: OpenAI's nested
+/// `usage.prompt_tokens_details.cached_tokens`, or Kimi's top-level
+/// `usage.cached_tokens` — nested wins when a (hypothetical) server sends
+/// both, else whichever is present, else `0` (`Usage`'s fields are `u32`,
+/// not `Option<u32>`). Either-shape rather than a per-profile flag: this is
+/// strictly more permissive (a server that only ever sends one shape is
+/// unaffected either way) and needs no per-provider knowledge to get right.
 pub(crate) fn map_usage(usage: Option<UsageWire>) -> Usage {
     match usage {
-        Some(usage) => Usage {
-            input_tokens: usage.prompt_tokens,
-            output_tokens: usage.completion_tokens,
-            cache_read_tokens: usage
+        Some(usage) => {
+            let nested = usage
                 .prompt_tokens_details
-                .and_then(|details| details.cached_tokens)
-                .unwrap_or(0),
-            cache_write_tokens: 0,
-            reasoning_tokens: 0,
-        },
+                .as_ref()
+                .and_then(|details| details.cached_tokens);
+            Usage {
+                input_tokens: usage.prompt_tokens,
+                output_tokens: usage.completion_tokens,
+                cache_read_tokens: nested.or(usage.cached_tokens).unwrap_or(0),
+                cache_write_tokens: 0,
+                reasoning_tokens: 0,
+            }
+        }
         None => Usage::default(),
     }
 }
@@ -323,7 +341,7 @@ pub(crate) fn map_usage(usage: Option<UsageWire>) -> Usage {
 /// the same validation path `stream.rs` uses.
 pub(crate) fn to_generate_response(
     response: ChatCompletionResponse,
-    dialect: Dialect,
+    profile: &Profile,
     tools: &[ToolSpec],
 ) -> Result<GenerateResponse, BackendError> {
     let choice = response
@@ -357,7 +375,7 @@ pub(crate) fn to_generate_response(
         content.push(ContentBlock::Text { text });
     }
 
-    let mut accumulator = ToolCallAccumulator::new(dialect, tools);
+    let mut accumulator = ToolCallAccumulator::new(profile.tool_call_style, tools);
     for tool_call in choice.message.tool_calls {
         let arguments = if tool_call.function.arguments.trim().is_empty() {
             Value::Object(Map::new())
@@ -390,6 +408,8 @@ mod tests {
     use conway_core::ids::{ModelId, PrefixKey, ToolName};
     use conway_core::provenance::Provenance;
     use conway_core::segment::{strip_cache_hints, CacheHint, CacheTtl};
+
+    use crate::config::Dialect;
 
     use super::*;
 
@@ -442,7 +462,7 @@ mod tests {
     #[test]
     fn segment_to_message_mapping_matches_golden_json_for_the_four_segment_fixture() {
         let segments = fixture_segments();
-        let messages = segments_to_messages(&segments, Dialect::OpenAi);
+        let messages = segments_to_messages(&segments, &Dialect::OpenAi.profile());
         let golden = json!([
             {"role": "system", "content": "You are a helpful assistant."},
             {"role": "user", "content": "What's the weather in Paris?"},
@@ -493,8 +513,10 @@ mod tests {
             ..req_with_hint.clone()
         };
 
-        let with_hint_body = build_request_body(&req_with_hint, Dialect::OpenAi, true, false);
-        let without_hint_body = build_request_body(&req_without_hint, Dialect::OpenAi, true, false);
+        let with_hint_body =
+            build_request_body(&req_with_hint, &Dialect::OpenAi.profile(), true, false);
+        let without_hint_body =
+            build_request_body(&req_without_hint, &Dialect::OpenAi.profile(), true, false);
         assert_eq!(
             serde_json::to_vec(&with_hint_body).unwrap(),
             serde_json::to_vec(&without_hint_body).unwrap()
@@ -513,11 +535,11 @@ mod tests {
             },
             prefix_key: None,
         };
-        let openai_body = build_request_body(&req, Dialect::OpenAi, false, false);
+        let openai_body = build_request_body(&req, &Dialect::OpenAi.profile(), false, false);
         assert_eq!(openai_body["max_completion_tokens"], 256);
         assert!(openai_body.get("max_tokens").is_none());
 
-        let ollama_body = build_request_body(&req, Dialect::Ollama, false, false);
+        let ollama_body = build_request_body(&req, &Dialect::Ollama.profile(), false, false);
         assert_eq!(ollama_body["max_tokens"], 256);
         assert!(ollama_body.get("max_completion_tokens").is_none());
     }
@@ -539,13 +561,14 @@ mod tests {
             prefix_key: None,
         };
 
-        let openai_body = build_request_body(&req, Dialect::OpenAi, true, false);
+        let openai_body = build_request_body(&req, &Dialect::OpenAi.profile(), true, false);
         assert_eq!(openai_body["parallel_tool_calls"], true);
 
-        let ollama_body = build_request_body(&req, Dialect::Ollama, true, false);
+        let ollama_body = build_request_body(&req, &Dialect::Ollama.profile(), true, false);
         assert!(ollama_body.get("parallel_tool_calls").is_none());
 
-        let openai_body_false_cap = build_request_body(&req, Dialect::OpenAi, false, false);
+        let openai_body_false_cap =
+            build_request_body(&req, &Dialect::OpenAi.profile(), false, false);
         assert!(openai_body_false_cap.get("parallel_tool_calls").is_none());
     }
 
@@ -558,11 +581,11 @@ mod tests {
             params: SamplingParams::default(),
             prefix_key: None,
         };
-        let openai_body = build_request_body(&req, Dialect::OpenAi, false, true);
+        let openai_body = build_request_body(&req, &Dialect::OpenAi.profile(), false, true);
         assert_eq!(openai_body["stream"], true);
         assert_eq!(openai_body["stream_options"]["include_usage"], true);
 
-        let vllm_body = build_request_body(&req, Dialect::VllmHermes, false, true);
+        let vllm_body = build_request_body(&req, &Dialect::VllmHermes.profile(), false, true);
         assert_eq!(vllm_body["stream"], true);
         assert!(vllm_body.get("stream_options").is_none());
     }
@@ -576,16 +599,16 @@ mod tests {
             params: SamplingParams::default(),
             prefix_key: None,
         };
-        let openai_body = build_request_body(&req, Dialect::OpenAi, false, false);
+        let openai_body = build_request_body(&req, &Dialect::OpenAi.profile(), false, false);
         assert!(openai_body.get("reasoning_effort").is_none());
 
         req.params
             .extra
             .insert("reasoning_effort".into(), json!("high"));
-        let openai_body = build_request_body(&req, Dialect::OpenAi, false, false);
+        let openai_body = build_request_body(&req, &Dialect::OpenAi.profile(), false, false);
         assert_eq!(openai_body["reasoning_effort"], "high");
 
-        let ollama_body = build_request_body(&req, Dialect::Ollama, false, false);
+        let ollama_body = build_request_body(&req, &Dialect::Ollama.profile(), false, false);
         assert!(ollama_body.get("reasoning_effort").is_none());
     }
 
@@ -601,7 +624,7 @@ mod tests {
             }]
         }))
         .unwrap();
-        let generated = to_generate_response(response, Dialect::OpenAi, &[]).unwrap();
+        let generated = to_generate_response(response, &Dialect::OpenAi.profile(), &[]).unwrap();
         assert_eq!(
             generated.content,
             vec![
@@ -625,7 +648,7 @@ mod tests {
                     reason: "turn".into(),
                 },
             )],
-            Dialect::OpenAi,
+            &Dialect::OpenAi.profile(),
         );
         assert_eq!(
             messages,
@@ -645,7 +668,7 @@ mod tests {
             }]
         }))
         .unwrap();
-        let generated = to_generate_response(response, Dialect::OpenAi, &[]).unwrap();
+        let generated = to_generate_response(response, &Dialect::OpenAi.profile(), &[]).unwrap();
         assert_eq!(
             generated.content[0],
             ContentBlock::Thinking {
@@ -683,6 +706,7 @@ mod tests {
             prompt_tokens_details: Some(PromptTokensDetails {
                 cached_tokens: Some(4),
             }),
+            cached_tokens: None,
         }));
         assert_eq!(usage.input_tokens, 10);
         assert_eq!(usage.output_tokens, 5);
@@ -692,9 +716,59 @@ mod tests {
             prompt_tokens: 1,
             completion_tokens: 1,
             prompt_tokens_details: None,
+            cached_tokens: None,
         }));
         assert_eq!(usage_no_details.cache_read_tokens, 0);
 
         assert_eq!(map_usage(None), Usage::default());
+    }
+
+    /// The `cached_tokens` either-shape fix: OpenAI nests it under
+    /// `usage.prompt_tokens_details.cached_tokens`; Kimi's Moonshot
+    /// platform API reports it at the top level, `usage.cached_tokens`.
+    /// `map_usage` must read either shape, and if a (hypothetical) server
+    /// sends both, the nested (OpenAI-canonical) value wins.
+    #[test]
+    fn map_usage_reads_cached_tokens_from_either_shape_nested_or_top_level() {
+        // Nested only (OpenAI's shape) — the pre-existing behavior, must
+        // still work unchanged.
+        let nested_only = map_usage(Some(UsageWire {
+            prompt_tokens: 100,
+            completion_tokens: 10,
+            prompt_tokens_details: Some(PromptTokensDetails {
+                cached_tokens: Some(64),
+            }),
+            cached_tokens: None,
+        }));
+        assert_eq!(nested_only.cache_read_tokens, 64);
+
+        // Top-level only (Kimi's shape).
+        let top_level_only = map_usage(Some(UsageWire {
+            prompt_tokens: 100,
+            completion_tokens: 10,
+            prompt_tokens_details: None,
+            cached_tokens: Some(32),
+        }));
+        assert_eq!(top_level_only.cache_read_tokens, 32);
+
+        // Neither shape present.
+        let neither = map_usage(Some(UsageWire {
+            prompt_tokens: 100,
+            completion_tokens: 10,
+            prompt_tokens_details: None,
+            cached_tokens: None,
+        }));
+        assert_eq!(neither.cache_read_tokens, 0);
+
+        // Both present (hypothetical server): nested wins.
+        let both = map_usage(Some(UsageWire {
+            prompt_tokens: 100,
+            completion_tokens: 10,
+            prompt_tokens_details: Some(PromptTokensDetails {
+                cached_tokens: Some(64),
+            }),
+            cached_tokens: Some(32),
+        }));
+        assert_eq!(both.cache_read_tokens, 64, "nested must win over top-level");
     }
 }

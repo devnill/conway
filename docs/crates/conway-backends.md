@@ -13,12 +13,16 @@ mapping, and capability declaration for two feature-gated adapters:
 - **`AnthropicBackend`** (`feature = "anthropic"`) — the native Anthropic
   Messages API.
 - **`OpenAiCompatBackend`** (`feature = "openai-compat"`) — one adapter that
-  speaks to any of five OpenAI-compatible dialects: **OpenAI**, **Ollama**,
-  **vLLM/Hermes**, **LM Studio**, and **llama.cpp server**. These are not
-  five separate backend types; `Dialect` is a small enum that parameterizes
-  a single adapter's request/response shaping (`dialect.rs`), because all
-  five speak the same `/chat/completions`-shaped protocol with small,
-  well-characterized deviations.
+  speaks to any OpenAI-compatible provider: **OpenAI**, **Ollama**,
+  **vLLM/Hermes**, **LM Studio**, **llama.cpp server**, **Kimi** (Moonshot
+  platform API), and any provider a user describes as a
+  [declarative provider profile](#declarative-provider-profiles). These are
+  not separate backend types; `conway_backends::profile::Profile` is a
+  small data value that parameterizes a single adapter's request/response
+  shaping, because every OpenAI-compatible provider speaks the same
+  `/chat/completions`-shaped protocol with small, well-characterized
+  deviations — see "Declarative provider profiles" below for the full
+  story and how a new provider is added with no recompile.
 
 It performs **no routing or policy decisions** and **no cross-backend
 retry**: a single `generate`/`stream` call targets one endpoint, and the
@@ -190,11 +194,9 @@ template change tool-call reliability independent of the server. Precedence
 is fixed and the same for every field: **config `ModelOverrides` >
 `ModelMetadata` entry (`model_metadata.rs`) > probed server value ("dialect
 defaults" plus live discovery) > `DialectDefaults`** (`capabilities.rs`,
-`dialect_defaults(Dialect) -> DialectDefaults`, one function per dialect:
-`openai_defaults`, `ollama_defaults`, `vllm_hermes_defaults`,
-`lm_studio_defaults`, `llama_cpp_server_defaults`, `anthropic_defaults`).
-`build_capabilities` and `resolve_model` in `capabilities.rs` implement
-that merge.
+`dialect_defaults(Dialect) -> DialectDefaults`, profile-derived — see
+"Declarative provider profiles" below). `build_capabilities` and
+`resolve_model` in `capabilities.rs` implement that merge.
 
 `CapabilityProbe` (`probe.rs`, `openai-compat`-gated) does best-effort
 startup discovery against an OpenAI-compatible endpoint's model list and
@@ -206,25 +208,250 @@ config overrides alone if every endpoint is unreachable. Discovery may only
 *narrow* `max_context_tokens` (never raise it above the metadata/dialect
 value) and never raises `tool_calling` or `reliability_tier` above their
 configured/metadata values — it can only downgrade `reliability_tier` to
-`Unknown` for `Dialect::LlamaCppServer` when a chat template is missing.
-This probe is the dialect-aware building block `conway-routing`'s health
-prober composes into breaker-state observations — see
-[`conway-routing`](conway-routing.md).
+`Unknown` for the `llama_cpp_server` built-in profile when a chat template
+is missing. The handful of extra discovery/probe steps (Ollama's
+`/api/tags`/`/api/version` fallback, vLLM's `max_model_len`, llama.cpp's
+`/props`) are matched by profile id, not by a declarative field — endpoint
+selection for discovery is a different concern from the wire-behavior
+fields a `Profile` declares, so a new or user-supplied profile simply gets
+the generic `/models`-only probe every other built-in profile without a
+named extra step already has. This probe is the profile-aware building
+block `conway-routing`'s health prober composes into breaker-state
+observations — see [`conway-routing`](conway-routing.md).
+
+## Declarative provider profiles
+
+`OpenAiCompatBackend` covers every OpenAI-compatible provider through one
+adapter parameterized by a `conway_backends::profile::Profile` — a plain
+data value, not a fixed Rust match arm. This is what lets a new provider be
+added (and a user's own local server variant be described) without a code
+change or recompile.
+
+### The `Profile` type
+
+```rust
+pub struct Profile {
+    pub id: String,
+    pub chat_path: String,                  // default "/chat/completions"
+    pub supports_stream_options: bool,       // send stream_options on a streamed request
+    pub flatten_multiblock_user: bool,       // default true (conservative)
+    pub sends_parallel_tool_calls: bool,     // emit the parallel_tool_calls request field
+    pub uses_max_completion_tokens: bool,    // "max_completion_tokens" vs "max_tokens"
+    pub sends_reasoning_effort: bool,        // emit the reasoning_effort request field
+    pub tool_call_style: ToolCallStyle,      // Structured | Tolerant | HermesTextFallback
+    pub cache: CacheMode,                    // baseline caching behavior (informational)
+    pub tool_calling: ToolCallSupport,       // baseline capability
+    pub max_context_tokens: u32,             // baseline capability
+    pub structured_output: StructuredOutput, // baseline capability
+    pub parallel_tool_calls: bool,           // baseline capability default
+    pub reliability_tier: ReliabilityTier,   // baseline capability
+}
+```
+
+`ToolCallStyle` is an enum, not a boolean, because "does this provider use
+the Hermes inline-text fallback" is really "which parsing strategy does
+this provider need" — a question with more than two answers once a third
+provider needs a third strategy:
+
+- `Structured` — canonical OpenAI-shaped `delta.tool_calls`, no inline-text
+  scanning. Also the right choice for a well-behaved but otherwise
+  undocumented provider.
+- `Tolerant` — a superset parser that additionally accepts a complete
+  JSON-object `arguments` value instead of only a string fragment
+  (ollama#12557, codex#7517). The conservative default for an unfamiliar
+  server.
+- `HermesTextFallback` — structured parsing (as above) *plus* scanning
+  `delta.content` for an inline `<tool_call>...</tool_call>` block some
+  vLLM/Hermes servers emit instead of a structured delta (vllm#31871).
+
+Every field is `#[serde(default)]`, and every default is the most
+conservative behavior a completely undescribed provider could have: no
+`stream_options`, flattened (not array) multi-block content, no
+`parallel_tool_calls`, `max_tokens` (not `max_completion_tokens`), no
+`reasoning_effort`, the `Tolerant` parser, `NonStreamingOnly` tool support,
+no structured output, `Unknown` reliability. A profile with only `id` set
+still loads and behaves this way. `ProfileRaw` (the wire shape `Profile`
+deserializes through) sets `deny_unknown_fields`: an unrecognized field in
+a hand-authored profile is far more likely to be a typo than a
+forward-compatible new field, and a typo that silently keeps its default
+changes what conway sends to a real provider — a loud, named parse error is
+the safer failure mode. This does mean a profile written for a *future*
+conway version's new field will fail to load on an older build rather than
+degrading gracefully; a profile written today, with fewer fields than a
+later version recognizes, always loads unchanged (every missing field
+takes its documented default).
+
+A malformed profile — a bad TOML file, an unrecognized field, an empty
+`id` — is always a typed `ConfigError::Profile { path, detail }` naming the
+offending field, never a panic.
+
+### Built-in profiles
+
+Six profiles are embedded at compile time
+(`conway_backends::profile::BUILT_IN_PROFILES`), reproducing this crate's
+five original dialects' behavior exactly, plus Kimi:
+
+| id | stream_options | multi-block | parallel_tool_calls (wire) | max tokens field | tool-call style | reliability |
+|---|---|---|---|---|---|---|
+| `openai` | yes | array | yes | `max_completion_tokens` | Structured | verified |
+| `ollama` | yes | flattened | no | `max_tokens` | Tolerant | unknown |
+| `vllm_hermes` | no | flattened | no | `max_tokens` | HermesTextFallback | community |
+| `lm_studio` | no | flattened | no | `max_tokens` | Tolerant | unknown |
+| `llama_cpp_server` | no | flattened | no | `max_tokens` | Tolerant | community |
+| `kimi` | yes | array | no | `max_tokens` | Structured | community |
+
+`crate::config::Dialect` — the five-variant enum this crate shipped before
+declarative provider profiles — is **kept, not deprecated**, as a small
+`Copy` convenience name for the first five rows: `Dialect::Ollama.profile()`
+resolves it to the equivalent `Profile` value, which is the actual source
+of truth every one of `Dialect`'s own predicate methods (`chat_path()`,
+`supports_stream_options()`, ...) now reads. Every existing call site that
+names one of these five dialects by Rust identifier continues to compile
+and behave identically. A **new** provider, however, is never added as a
+sixth `Dialect` variant — see the next section.
+
+### Adding a provider: `.conway/profiles.toml`
+
+A user-supplied provider needs no recompile. Add a `[[profile]]` table to
+`.conway/profiles.toml` (project-scoped, next to `.conway/settings.json`)
+or the global `~/.conway/profiles.toml` (or `$XDG_CONFIG_HOME/conway/`) —
+the same project-then-global discovery layering
+`conway::config::discovery::permission_file_paths` already establishes for
+permission rules, reused here as
+`conway::config::discovery::provider_profile_file_paths`:
+
+```toml
+[[profile]]
+id = "my-local-server"
+supports_stream_options = true
+tool_call_style = "tolerant"
+max_context_tokens = 65536
+reliability_tier = "community"
+
+[profile.cache]
+kind = "implicit_prefix"
+min_prefix_tokens = 0
+```
+
+A backend entry selects a profile the same way it already selects one of
+the five built-in dialects — `backends.<id>.dialect` names it by id:
+
+```json
+{
+  "backends": {
+    "local": {
+      "kind": "openai-compat",
+      "base_url": "http://localhost:8000/v1",
+      "dialect": "my-local-server"
+    }
+  }
+}
+```
+
+A project or global file's profile **shadows** a built-in (or another
+file's) profile with the same id — this is a deliberate override
+mechanism, not a collision error, but it is never silent:
+`ProfileStore::merge_file` records the previous origin in
+`LoadedProfile::shadows`, and `ProfileStore::list()` is the "what is
+loaded" inspection surface — every loaded profile, its origin
+(`ProfileOrigin::BuiltIn` or `ProfileOrigin::File(path)`), and what it
+shadowed, if anything. The same principle `conway_runtime::permission`'s
+`active_patterns()` establishes for permission rules applies here: a rule
+set nobody can inspect is a trap.
+
+### Kimi (Moonshot platform API)
+
+`kimi` names Moonshot's platform API (`https://api.moonshot.ai/v1`) — a
+different product from the already-shipped **Kimi Code** path (`kind =
+"anthropic"`, `base_url = "https://api.kimi.com/coding/"`, see "Kimi coding
+plan" above). Configure it as an `openai-compat` backend:
+
+```json
+{
+  "backends": {
+    "kimi": {
+      "kind": "openai-compat",
+      "base_url": "https://api.moonshot.ai/v1",
+      "dialect": "kimi",
+      "api_key_env": "MOONSHOT_API_KEY"
+    }
+  }
+}
+```
+
+The `kimi` profile sends structured tool calls (not the Hermes text
+fallback), keeps multi-block user content as an array (does not flatten
+it), and never sends `parallel_tool_calls` — undocumented on Kimi's
+platform API, so conway assumes an unrecognized-field `400` rather than
+guessing. `max_context_tokens` defaults conservatively to 32,768; override
+per model via `models.json`/`metadata_path` for a specific Moonshot model
+known to support more.
+
+Three additional Kimi quirks are documented here, deliberately
+**undocumented as capability flags and not worked around** (a standing
+decision for this crate: pass values through and let the provider's own
+error, or behavior, be loud rather than conway silently rewriting a
+request):
+
+- **Temperature range is `[0, 1]`, not the `[0, 2]` most OpenAI-compatible
+  servers accept.** A caller-supplied `temperature` outside that range is
+  sent as-is; Kimi's own validation error is what a caller sees.
+- **`tool_choice: "required"` is rejected by Kimi's k2.5/k2.6 models but
+  accepted by k3.** This is per-model, not per-provider, so it cannot be a
+  `Profile` field — the provider profile is the same regardless of which
+  Kimi model a request targets.
+- **Prompt caching is automatic** and only engages above a 256-token
+  prompt — `kimi`'s `Profile::cache` documents this
+  (`ImplicitPrefix { min_prefix_tokens: 256 }`), informational only (cache
+  hints are never wire-gating in this crate; see "Segment to wire message
+  mapping" below).
+
+### llama.cpp server
+
+The `llama_cpp_server` built-in profile predates this item (it already
+existed as `Dialect::LlamaCppServer`); this item's job included verifying
+its settings are actually right for a real `llama-server`, not just
+assumed. They are: `llama-server`'s OpenAI-compatible endpoint does not
+reliably emit `stream_options`-driven usage on every build/template
+combination (`supports_stream_options = false`), does not document
+`parallel_tool_calls` support, and its structured-output support is
+grammar-constrained (GBNF) rather than JSON-schema in the OpenAI sense
+(`structured_output = "grammar"`). Its tool-call streaming shape varies
+across chat templates in ways the tolerant parser already accommodates
+(`tool_call_style = "tolerant"`), and `reliability_tier = "community"` with
+`NonStreamingOnly` tool support matches the same "unverified until proven"
+posture every other self-hosted/community server in this crate gets. This
+is a **no-op**: the existing settings were already correct, and this
+section exists to document that judgment rather than leave it unstated.
+
+### `cached_tokens`: reading either wire shape
+
+Kimi's Moonshot platform API reports `usage.cached_tokens` at the **top
+level**, while OpenAI nests it under
+`usage.prompt_tokens_details.cached_tokens`. `openai_compat::wire::map_usage`
+reads either shape unconditionally — nested wins if a (hypothetical)
+server sends both, otherwise whichever is present, else `0` — rather than
+gating this on a `Profile` field. This is deliberately *not* per-provider
+knowledge: accepting an optional top-level field is strictly more
+permissive (a server that only ever sends the nested shape, like today's
+OpenAI, is completely unaffected), so there is no provider-specific
+behavior to declare and no reason to make the profile schema carry it.
 
 ## Streaming tool calls
 
 `tool_calls::ToolCallAccumulator` (`tool_calls/mod.rs`) is a
-dialect-parameterized state machine that reconstructs complete tool calls
-from streamed deltas — isolated here specifically because it is the most
-bug-prone surface of the OpenAI-compatible streaming format. Providers
-stream a tool call as a sequence of partial deltas (an `index`/`id` seen
-once or repeatedly, `arguments` arriving as JSON fragments only valid once
-concatenated), and real-world servers deviate from the OpenAI-canonical
-shape in observed, reproducible ways. The accumulator holds one `Slot` per
-in-flight call keyed by `resolve_key`, with dialect-specific quirk handling
-for Hermes-style tool calls (`tool_calls/hermes.rs`), Ollama
-(`tool_calls/ollama.rs`), and canonical OpenAI (`tool_calls/openai.rs`),
-plus shared argument-JSON validation (`tool_calls/validate.rs`).
+`ToolCallStyle`-parameterized state machine that reconstructs complete
+tool calls from streamed deltas — isolated here specifically because it is
+the most bug-prone surface of the OpenAI-compatible streaming format.
+Providers stream a tool call as a sequence of partial deltas (an
+`index`/`id` seen once or repeatedly, `arguments` arriving as JSON
+fragments only valid once concatenated), and real-world servers deviate
+from the OpenAI-canonical shape in observed, reproducible ways. The
+accumulator holds one `Slot` per in-flight call keyed by `resolve_key`,
+with style-specific quirk handling for Hermes-style tool calls
+(`tool_calls/hermes.rs`), the tolerant parser (`tool_calls/ollama.rs`), and
+canonical structured deltas (`tool_calls/openai.rs`), plus shared
+argument-JSON validation (`tool_calls/validate.rs`).
 
 ## How it fits the whole
 
