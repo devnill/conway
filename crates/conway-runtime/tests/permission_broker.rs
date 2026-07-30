@@ -84,6 +84,12 @@ fn call(call_id: &str) -> AuthorizedCall {
         arguments: serde_json::json!({"path": "a.txt"}),
         rendered: "read a.txt".into(),
         path_args: conway_core::ports::PathArgs::Named(&["path"]),
+        // `read` genuinely declares `Structured` in production (its render
+        // is never a shell command); this fixture's `rendered` is a
+        // hand-typed legible string anyway, not the real JSON dump, so
+        // either `RenderKind` would pass every test in this file -- this
+        // is the honest, production-matching declaration.
+        render_kind: conway_core::ports::RenderKind::Structured,
     }
 }
 
@@ -421,6 +427,7 @@ fn bash_call(call_id: &str, rendered: &str) -> AuthorizedCall {
         path_args: conway_core::ports::PathArgs::Unconfinable {
             checkable: &["cwd"],
         },
+        render_kind: conway_core::ports::RenderKind::ShellCommand,
     }
 }
 

@@ -39,6 +39,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Pattern grants were still inert for every tool except `bash`.** v0.5.0
+  fixed `Tool::render` for `bash` alone (`PatternRule::matches`'s
+  metacharacter gate rejects `(`/`)`/`{`/`}` on sight, and every OTHER
+  built-in's rendering is still the trait's default JSON dump, which always
+  carries them) — so `read:*`, `write:*`, `edit:*`, `grep:*`, `glob:*`,
+  `cd:*`, `report:*`, and every subagent tool's wildcard matched nothing,
+  ever. The gate is meaningful only for a rendering a shell would actually
+  interpret; a JSON dump is never handed to one. Tools now declare that
+  distinction themselves via a new `conway_core::ports::Tool::render_kind`
+  (`RenderKind::ShellCommand` vs. `RenderKind::Structured`), deliberately
+  SEPARATE from the existing `Tool::path_args` (`report` needs both
+  answered independently: `PathArgs::Unconfinable` for root-confinement
+  purposes, `RenderKind::Structured` for pattern-grant purposes — reusing
+  `path_args` would have left `report:*` permanently inert for a reason
+  unrelated to why the gate exists). `PatternRule::matches_render` consults
+  it; only `bash` declares `ShellCommand`, so `git status && rm -rf /`
+  still re-prompts exactly as before, while `read:*` and the other eleven
+  non-`bash` wildcards now actually grant. The default is the conservative
+  `ShellCommand`, so an undeclared third-party tool stays exactly as gated
+  as it was before this method existed — never silently exempted. A
+  registry-wide test (`conway-tools/tests/builtins.rs`) enforces that a
+  tool may only claim `Structured` while its rendering is byte-identical to
+  the trait's own default, so a future tool that overrides `render` to
+  emit something shell-interpretable cannot silently defeat the gate by
+  omission. (`crates/conway-core/src/permission_pattern.rs`,
+  `crates/conway-core/src/ports/plugin.rs`,
+  `crates/conway-runtime/src/permission.rs`,
+  `crates/conway-runtime/src/tools/runner.rs`, `crates/conway-tools/src/`)
+
 - **A fatal runtime error rendered as an ordinary cyan notice in the TUI,
   indistinguishable from routine chatter like "backend degraded" save for
   the word "fatal" inside the text.** `Event::Error` now pushes its own

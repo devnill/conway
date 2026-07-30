@@ -291,6 +291,10 @@ async fn execute_one(
         // broker's own decision point (which has no `PluginRegistry`
         // access, and must not gain one just for this).
         path_args: resolved.tool.path_args(),
+        // Board item 01KYT3NSWRHMPEAXVXRJ73KDYR: same seam, same reasoning,
+        // for the metacharacter gate's applicability rather than the root
+        // check's.
+        render_kind: resolved.tool.render_kind(),
     };
     let perm_ctx = PermissionCtx {
         agent_id,

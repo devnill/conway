@@ -107,6 +107,83 @@ pub trait Tool: Send + Sync + 'static {
     fn path_args(&self) -> PathArgs {
         PathArgs::default()
     }
+
+    /// Declares whether [`Self::render`]'s OUTPUT can be interpreted by a
+    /// shell, for `conway_core::permission_pattern::PatternRule`'s
+    /// metacharacter gate (board item 01KYT3NSWRHMPEAXVXRJ73KDYR).
+    ///
+    /// **Orthogonal to [`Self::path_args`].** `path_args` asks "which
+    /// arguments are filesystem paths a root-containment check can
+    /// confine"; this asks "is `render`'s OUTPUT itself something a shell
+    /// would interpret". They diverge for real, shipped tools: `report`
+    /// declares `PathArgs::Unconfinable` (its `artifacts[].path` is nested
+    /// inside an array, which `PathArgs::Named`'s top-level-only vocabulary
+    /// cannot express), but its `render` output is `report`'s own JSON
+    /// dump, never handed to a shell -- reusing `path_args` as this gate's
+    /// signal would leave `report:*` permanently inert for a reason that
+    /// has nothing to do with why the gate exists. `bash` needs both
+    /// answered independently too, just the other way: its `command` is
+    /// unconfinable (a shell command reaches any path) AND
+    /// shell-interpretable (it genuinely IS the string handed to a shell).
+    ///
+    /// **The default is [`RenderKind::ShellCommand`] -- the conservative
+    /// choice, matching the metacharacter gate's behavior before this
+    /// method existed** (every `rendered` string was gated, unconditionally,
+    /// for every tool). A tool that does not override this method is
+    /// exactly as gated as it was before this method existed: its pattern
+    /// grants may stay inert if its `render` output happens to contain a
+    /// shell metacharacter (as the trait's default JSON-dump `render` does,
+    /// via `(`, `)`, `{`, `}`), but that is a missed convenience, never a
+    /// missed prompt. Deliberately asymmetric with `path_args`'s
+    /// `Unconfinable` default: there, "no declared paths" defaulting to
+    /// "allow" was the hazard; here, the hazard runs the other way -- a
+    /// tool that overrides [`Self::render`] to emit something
+    /// shell-interpretable (as `bash` does) and does NOT also flip this to
+    /// `ShellCommand` would silently defeat the chaining gate the moment it
+    /// is pattern-matched. Declaring [`RenderKind::Structured`] is
+    /// therefore an explicit, deliberate claim a tool author makes about
+    /// their own `render` output -- see `conway_tools`' generic test
+    /// (`render_kind_is_consistent_with_whether_render_is_overridden` in
+    /// `conway-tools/tests/builtins.rs`) for the guard that makes this claim
+    /// checkable, not merely aspirational: it can only ever be made
+    /// truthfully by a tool that keeps this trait's own default `render`
+    /// untouched.
+    fn render_kind(&self) -> RenderKind {
+        RenderKind::default()
+    }
+}
+
+/// Declarative metadata: whether a [`Tool`]'s [`Tool::render`] output can be
+/// interpreted by a shell, consumed by
+/// `conway_core::permission_pattern::PatternRule`'s metacharacter gate to
+/// decide whether that gate applies to this tool's pattern grants at all.
+/// See [`Tool::render_kind`]'s own doc for the full rationale, including why
+/// this is a SEPARATE declaration from [`PathArgs`] rather than a reuse of
+/// it.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RenderKind {
+    /// `render`'s output is NOT interpreted by a shell -- a debug-shaped
+    /// dump (the trait's own default `name(args)`), or any other rendering
+    /// that is never handed to a shell for execution. Shell
+    /// metacharacters appearing in it (JSON's `{`/`}`, a path's `(`, ...)
+    /// are incidental syntax, not command-injection risk, so
+    /// `PatternRule`'s metacharacter gate does not apply to this tool's
+    /// pattern grants.
+    Structured,
+    /// `render`'s output IS (or could be) the string a shell interprets --
+    /// shell metacharacters within it can genuinely extend the effective
+    /// command past whatever prefix a pattern matched. `PatternRule`'s
+    /// metacharacter gate MUST apply.
+    ShellCommand,
+}
+
+impl Default for RenderKind {
+    /// Fails closed: see [`Tool::render_kind`]'s own doc for why this is
+    /// the conservative choice, not [`RenderKind::Structured`].
+    fn default() -> Self {
+        RenderKind::ShellCommand
+    }
 }
 
 /// Declarative metadata: which of a [`Tool`]'s call argument names carry
@@ -753,6 +830,26 @@ mod tests {
     fn default_path_args_is_unconfinable_with_nothing_checkable() {
         let tool = DefaultRenderTool;
         assert_eq!(tool.path_args(), PathArgs::Unconfinable { checkable: &[] });
+    }
+
+    // ---- Tool::render_kind's default ----
+
+    /// A third-party `Tool` implementor that accepts the trait's default
+    /// `render_kind` untouched must get `ShellCommand`, the CONSERVATIVE
+    /// choice -- never `Structured`. `Structured` skips the metacharacter
+    /// gate entirely; defaulting to it would let a third-party tool that
+    /// overrides `render` to emit something shell-interpretable (mirroring
+    /// `bash`) silently defeat the chaining gate the moment a pattern is
+    /// matched against it, with no explicit opt-in from the tool author.
+    #[test]
+    fn default_render_kind_is_shell_command_not_structured() {
+        let tool = DefaultRenderTool;
+        assert_eq!(
+            tool.render_kind(),
+            RenderKind::ShellCommand,
+            "the default must fail closed: an undeclared render_kind must never silently \
+             skip the metacharacter gate"
+        );
     }
 
     // ---- CwdHandle (S1: the `cd` capability) ----

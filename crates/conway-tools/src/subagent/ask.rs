@@ -21,7 +21,7 @@ use conway_core::content::{
 use conway_core::error::ToolError;
 use conway_core::ids::ToolName;
 use conway_core::log::SubagentMode;
-use conway_core::ports::{PathArgs, PluginConfig, Tool, ToolCtx, ToolOutput};
+use conway_core::ports::{PathArgs, PluginConfig, RenderKind, Tool, ToolCtx, ToolOutput};
 
 use crate::common::{check_cancel, parse_args};
 use super::tools::{config_u32, config_u64, deadline_from_secs, host_error, BudgetArg, TRUNCATION};
@@ -97,6 +97,13 @@ impl Tool for AskTool {
     /// (`cwd: None` in `invoke`), so no path crosses this tool's boundary.
     fn path_args(&self) -> PathArgs {
         PathArgs::None
+    }
+
+    /// `conway_ask` never overrides `render`, so its rendering is always
+    /// the trait's own default JSON dump -- never a shell command. Board
+    /// item 01KYT3NSWRHMPEAXVXRJ73KDYR.
+    fn render_kind(&self) -> RenderKind {
+        RenderKind::Structured
     }
 
     fn spec(&self) -> ToolSpec {

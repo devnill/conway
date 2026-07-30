@@ -22,7 +22,7 @@ use conway_core::content::{
 use conway_core::error::{RuntimeError, ToolError};
 use conway_core::ids::{AgentId, RoleAlias, ToolName};
 use conway_core::log::SubagentMode;
-use conway_core::ports::{PathArgs, PluginConfig, Tool, ToolCtx, ToolOutput};
+use conway_core::ports::{PathArgs, PluginConfig, RenderKind, Tool, ToolCtx, ToolOutput};
 
 use crate::common::{check_cancel, parse_args, text_output};
 
@@ -223,6 +223,13 @@ impl Tool for SubagentTool {
     /// there is genuinely nothing here for a root check to evaluate.
     fn path_args(&self) -> PathArgs {
         PathArgs::None
+    }
+
+    /// `conway_subagent` never overrides `render`, so its rendering is
+    /// always the trait's own default JSON dump -- never a shell command.
+    /// Board item 01KYT3NSWRHMPEAXVXRJ73KDYR.
+    fn render_kind(&self) -> RenderKind {
+        RenderKind::Structured
     }
 
     fn spec(&self) -> ToolSpec {

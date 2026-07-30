@@ -7,7 +7,7 @@ use serde::Deserialize;
 use conway_core::content::{PermissionClass, ToolCall, ToolCategory, ToolSpec, TruncationPolicy};
 use conway_core::error::ToolError;
 use conway_core::ids::ToolName;
-use conway_core::ports::{PathArgs, Tool, ToolCtx, ToolOutput};
+use conway_core::ports::{PathArgs, RenderKind, Tool, ToolCtx, ToolOutput};
 
 use crate::common::{check_cancel, error_text, parse_args, resolve_path, text_output};
 use crate::fs::write::atomic_write;
@@ -40,6 +40,13 @@ impl Tool for EditTool {
     /// `new_string` are file content and `replace_all` is a flag.
     fn path_args(&self) -> PathArgs {
         PathArgs::Named(&["path"])
+    }
+
+    /// `edit` never overrides `render`, so its rendering is always the
+    /// trait's own default JSON dump -- never a shell command. Board item
+    /// 01KYT3NSWRHMPEAXVXRJ73KDYR.
+    fn render_kind(&self) -> RenderKind {
+        RenderKind::Structured
     }
 
     fn spec(&self) -> ToolSpec {

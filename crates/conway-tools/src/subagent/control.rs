@@ -9,7 +9,7 @@ use serde::Deserialize;
 use conway_core::content::{PermissionClass, ToolCall, ToolCategory, ToolSpec};
 use conway_core::error::ToolError;
 use conway_core::ids::ToolName;
-use conway_core::ports::{PathArgs, Tool, ToolCtx, ToolOutput};
+use conway_core::ports::{PathArgs, RenderKind, Tool, ToolCtx, ToolOutput};
 
 use crate::common::{check_cancel, parse_args, text_output};
 use super::tools::{host_error, parse_agent_id, wait_for_result, TRUNCATION};
@@ -52,6 +52,13 @@ impl Tool for SteerTool {
         PathArgs::None
     }
 
+    /// `conway_steer` never overrides `render`, so its rendering is always
+    /// the trait's own default JSON dump -- never a shell command. Board
+    /// item 01KYT3NSWRHMPEAXVXRJ73KDYR.
+    fn render_kind(&self) -> RenderKind {
+        RenderKind::Structured
+    }
+
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: ToolName::new("conway_steer"),
@@ -91,6 +98,13 @@ impl Tool for AwaitTool {
         PathArgs::None
     }
 
+    /// `conway_await` never overrides `render`, so its rendering is always
+    /// the trait's own default JSON dump -- never a shell command. Board
+    /// item 01KYT3NSWRHMPEAXVXRJ73KDYR.
+    fn render_kind(&self) -> RenderKind {
+        RenderKind::Structured
+    }
+
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: ToolName::new("conway_await"),
@@ -124,6 +138,13 @@ impl Tool for CancelTool {
     /// No path arguments: cancelling carries an agent id and a mode.
     fn path_args(&self) -> PathArgs {
         PathArgs::None
+    }
+
+    /// `conway_cancel` never overrides `render`, so its rendering is always
+    /// the trait's own default JSON dump -- never a shell command. Board
+    /// item 01KYT3NSWRHMPEAXVXRJ73KDYR.
+    fn render_kind(&self) -> RenderKind {
+        RenderKind::Structured
     }
 
     fn spec(&self) -> ToolSpec {

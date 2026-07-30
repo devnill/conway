@@ -1096,30 +1096,41 @@ so it would authorize `git status; <anything>`. A prefix is predictable by
 reading, and matching token-wise means `git status` covers
 `git status --short` without covering `git statusfoo`.
 
-**What a pattern actually matches against: `Tool::render`, not a JSON
-dump.** A prefix like `git status` is only legible because the text it is
-compared against is the same text a person would type — `bash`'s
-`conway_core::ports::Tool::render` override returns the bare `command`
-argument, exactly what the model sent to `bash -c`. `Tool::render`'s
-*default* implementation (used by every builtin/plugin tool that has no
-single-command shape — `read`, `edit`, the subagent tools, ...) instead
-renders a generic `name(args)` one-liner, which the metacharacter gate
-below always rejects (its own `(`/`)`/`{`/`}` trip the gate) — so a pattern
-grant is only ever offered or honored for a tool whose rendering is
-genuinely a command string. This is the single seam every consumer of a
-call's rendered text shares — the permission prompt display, the
-`PermissionRequested` event, and pattern matching all read the exact same
-string, sanitized once (control bytes, e.g. a model-supplied ANSI escape
-sequence, are replaced before that string reaches the terminal or is
-matched against anything).
+**What a pattern actually matches against: `Tool::render`.** A prefix like
+`git status` is only legible because the text it is compared against is the
+same text a person would type — `bash`'s `conway_core::ports::Tool::render`
+override returns the bare `command` argument, exactly what the model sent
+to `bash -c`. `Tool::render`'s *default* implementation (used by every
+builtin/plugin tool that has no single-command shape — `read`, `edit`, the
+subagent tools, ...) instead renders a generic `name(args)` one-liner. This
+is the single seam every consumer of a call's rendered text shares — the
+permission prompt display, the `PermissionRequested` event, and pattern
+matching all read the exact same string, sanitized once (control bytes,
+e.g. a model-supplied ANSI escape sequence, are replaced before that string
+reaches the terminal or is matched against anything).
 
-**The rule that makes prefixes safe.** `git status && <anything>` starts
-with `git status`. So a pattern grant applies **only when the command
-contains no shell metacharacters** — `;`, `&`, `|`, backtick, `$`, `<`,
-`>`, parentheses, braces, or a newline. A chained or substituted command
-always re-prompts, no matter what patterns exist. This is checked before
-any prefix comparison, so there is no path from a pattern to an allow that
+**The rule that makes prefixes safe — and only for a SHELL command.**
+`git status && <anything>` starts with `git status`. So a pattern grant
+applies to `bash` **only when the command contains no shell
+metacharacters** — `;`, `&`, `|`, backtick, `$`, `<`, `>`, parentheses,
+braces, or a newline. A chained or substituted `bash` command always
+re-prompts, no matter what patterns exist. This is checked before any
+prefix comparison, so there is no path from a pattern to an allow that
 skips it.
+
+That gate exists to stop a chained *shell* command from riding a matched
+prefix past what was granted — reasoning that says nothing about a tool
+like `read`, whose rendering is a JSON debug dump (`read({"path":
+"src/main.rs"})`) that is never handed to a shell. Every built-in tool
+therefore declares its own `conway_core::ports::Tool::render_kind`:
+`ShellCommand` for `bash` (the ONE built-in whose rendering genuinely
+reaches a shell) applies the gate exactly as above; `Structured` — every
+other built-in (`read`, `write`, `edit`, `glob`, `grep`, `cd`, `report`, and
+the subagent tools) — skips it, because a `(`/`)`/`{`/`}` in that tool's own
+JSON dump is not command-injection risk. `read:*` and every other non-`bash`
+wildcard therefore actually grant. `render_kind`'s default is the
+conservative `ShellCommand`, so a third-party tool that never declares it is
+gated exactly as strictly as `bash` — never silently exempted.
 
 The gate is deliberately over-eager: a command with a harmless pipe still
 re-prompts. An unnecessary prompt costs a keystroke; a missed one costs
@@ -1155,9 +1166,13 @@ deliberate: `git` alone would silently include `git push --force`, and an
 operator skimming a prompt could accept the broad grant believing they got
 the narrow one. A single-token command (`pwd`) offers just that token.
 
-`[p]` does not appear at all for a command carrying shell metacharacters,
-since the gate would refuse to honor such a grant anyway and offering one
-would be confusing.
+`[p]` does not appear at all for a `bash` command carrying shell
+metacharacters, since the gate would refuse to honor such a grant anyway and
+offering one would be confusing. (`[p]`'s two-token offer is unaffected by
+`render_kind` — it still declines for any rendering with a metacharacter in
+it, `bash` or not, since a two-token slice of a non-`bash` tool's JSON dump
+would rarely be a useful grant on its own; the wildcard form above, hand-added
+to `permissions.json`, is the intended path to a broad non-`bash` grant.)
 
 Want something broader? Edit `permissions.json` by hand. That asymmetry is
 the point — granting more should take deliberate effort, granting less
