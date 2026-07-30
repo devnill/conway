@@ -5,7 +5,33 @@ All notable changes to **conway** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.6.0] — 2026-07-30
+
+### Overview
+
+Agents are now cwd-aware, along two deliberately separate axes — the split
+Unix draws between `chdir` (where a process *is*) and `chroot` (what it can
+*reach*). An agent can move itself with the new `cd` tool; a parent can
+confine a spawned child to a filesystem **root** it can narrow but never
+widen. Conflating the two is the mistake this design exists to avoid: cwd
+was never the security boundary, which is exactly why moving around freely
+is safe once confinement lives somewhere else.
+
+Confinement is enforced in the permission broker, above every path that can
+return an allow — the grant cache, pattern grants, and `AutoAllow` alike —
+so nothing in the grant vocabulary can express or widen a root. That
+matters because `.conway/permissions.json` is discovered from the project
+directory, which means **a repository you clone ships one**.
+
+**Read the limits before relying on this.** A root confines the path
+*arguments* of path-taking tools. It does not confine what a shell command
+does: `bash`'s `cwd` argument is checked, but its command string runs
+verbatim and the broker cannot parse shell. **An agent holding `bash` is not
+confined by root alone** — the composition that is a real guarantee is a
+root *plus* a tool set excluding `bash`. There is also an unclosed TOCTOU
+window between the broker's check and the tool's open. Both limits are
+documented in full in `docs/crates/conway-runtime.md` and `ARCHITECTURE.md`
+§3.4, and neither is softened there.
 
 ### Added
 
