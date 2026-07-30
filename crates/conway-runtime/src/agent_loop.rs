@@ -130,8 +130,8 @@ use conway_core::event::Event;
 use conway_core::ids::{AgentId, ModelId, ModelRef, RoleAlias, SeqRange, SessionId};
 use conway_core::log::LogRecord;
 use conway_core::ports::{
-    ContextHook, ContextHookCtx, ContextPayload, OverflowInfo, PluginConfig, Router, SessionStore,
-    SubagentHost,
+    ContextHook, ContextHookCtx, ContextPayload, CwdHandle, OverflowInfo, PluginConfig, Router,
+    SessionStore, SubagentHost,
 };
 use conway_core::provenance::{ContextReport, Provenance};
 use conway_core::routing::RouteRequest;
@@ -661,6 +661,18 @@ impl AgentLoop {
         // "retried exactly once" rule) -- a second failure after this is
         // `true` is terminal (`Rejected`), never another retry.
         let mut contract_retried = false;
+        // S1: the "cd" cell for this agent, constructed exactly once here
+        // (not a struct field -- `run_inner` already runs exactly once per
+        // agent, so a loop-local is the cell's whole lifetime) and cloned
+        // into every turn's `ToolBatchCtx`/`ToolCtx` below. Seeded from
+        // `self.cwd`, the agent's spawn-time cwd (unchanged in meaning: see
+        // `SessionMeta.cwd`'s own doc for why a `cd` does not rewrite that
+        // header -- this cell is the ephemeral, in-memory analogue, not a
+        // second persisted copy of it). Cloning `CwdHandle` is an `Arc`
+        // refcount bump: every clone shares the same cell, so a tool's
+        // `ctx.chdir.set(..)` (a future slice) is visible to this loop, and
+        // to every subsequent turn's snapshot, without any write-back step.
+        let chdir = CwdHandle::new(self.cwd.clone());
 
         loop {
             try_rt!(state, self.drain_inbox().await);
@@ -1025,7 +1037,7 @@ impl AgentLoop {
                 agent_id: self.agent_id,
                 agent_path: self.agent_path.clone(),
                 session_id: self.session,
-                cwd: self.cwd.clone(),
+                chdir: chdir.clone(),
                 cancel: self.cancel.clone(),
                 subagents: self.deps.subagents.clone(),
                 plugin_config: self.deps.plugin_config.clone(),

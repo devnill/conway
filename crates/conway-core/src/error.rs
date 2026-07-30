@@ -81,6 +81,20 @@ pub enum ToolError {
     Internal { detail: String },
 }
 
+/// Errors produced by [`crate::ports::CwdHandle::set`] (S1: the `cd`
+/// capability lands on `ToolCtx` as `chdir: CwdHandle`). `CwdHandle::current`
+/// deliberately has no error type at all -- see its own doc for why only the
+/// mutating operation can fail.
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
+pub enum CwdError {
+    /// Some other clone of the same [`crate::ports::CwdHandle`] panicked
+    /// while holding the write lock inside a prior `set` call (P-10: this is
+    /// reported, never allowed to propagate as a panic here).
+    #[error("cwd handle's lock was poisoned by a panic in a prior `set` call")]
+    Poisoned,
+}
+
 /// Errors produced by a `SessionStore` implementation.
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
@@ -385,6 +399,15 @@ mod tests {
         assert!(rendered
             .contains("local/qwen3-coder:30b: server error (status 503): upstream unavailable"));
         assert!(rendered.contains("openai/gpt-5: rate limited (retry after Some(30) seconds)"));
+    }
+
+    #[test]
+    fn cwd_error_poisoned_exists_and_roundtrips() {
+        let err = CwdError::Poisoned;
+        let json = serde_json::to_string(&err).unwrap();
+        let back: CwdError = serde_json::from_str(&json).unwrap();
+        assert_eq!(err, back);
+        assert!(err.to_string().contains("poisoned"));
     }
 
     #[test]

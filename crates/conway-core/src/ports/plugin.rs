@@ -8,13 +8,13 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use crate::content::{Artifact, ContentBlock, ToolCall, ToolSpec, TruncationPolicy};
-use crate::error::{PluginError, ToolError};
+use crate::error::{CwdError, PluginError, ToolError};
 use crate::ids::{AgentId, ModelRef, SessionId, ToolName};
 use crate::ports::{EventSinkHandle, SubagentHost};
 use crate::segment::PromptSegment;
@@ -179,6 +179,77 @@ pub struct PluginConfig {
     pub values: serde_json::Map<String, serde_json::Value>,
 }
 
+/// A shared, mutable "current working directory" cell -- the capability
+/// underlying a future `cd` tool (S1 ships only the capability itself; no
+/// built-in tool calls [`Self::set`] yet).
+///
+/// **Modeled directly on Unix's `getcwd()`/`chdir()` split, not a single
+/// mutable variable.** [`Self::current`] is `getcwd()`: a snapshot, never
+/// fails, always returns *some* path. [`Self::set`] is `chdir()`: a
+/// distinct, separately-fallible operation. [`ToolCtx::cwd`] stays exactly
+/// the snapshot `PathBuf` it always was -- this handle is the mutable cell a
+/// tool can `chdir()` through, cheaply cloned (an `Arc` refcount bump) into
+/// every [`ToolCtx`] that shares it.
+///
+/// **No per-batch race, by construction of the call site, not this type.**
+/// `conway_runtime::tools::runner::ToolRunner::run_batch` reads
+/// [`Self::current`] exactly once, before spawning any concurrent tool
+/// invocation for that batch, so every tool dispatched together observes the
+/// identical snapshot regardless of completion order -- a `set` from
+/// another tool in the same batch becomes visible starting the NEXT batch,
+/// never the one it ran in. See that function's own doc for why this is
+/// deliberate (Unix threads share one process `cwd` under the identical
+/// constraint; this mirrors, rather than emulates around, that fact).
+///
+/// **Internal representation: `Arc<RwLock<PathBuf>>`, not a channel.** A
+/// channel would still need a receiver task somewhere applying updates to a
+/// value readers can see -- more moving parts for the same
+/// single-writer(-at-a-time)/many-readers shape a lock expresses directly.
+/// `set`'s critical section is one pointer-sized assignment with no `.await`
+/// inside the guard, so the usual "never hold a `std` lock across an await
+/// point" hazard does not apply here.
+#[derive(Clone, Debug)]
+pub struct CwdHandle {
+    inner: Arc<RwLock<PathBuf>>,
+}
+
+impl CwdHandle {
+    /// A fresh cell seeded with `initial`.
+    pub fn new(initial: PathBuf) -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(initial)),
+        }
+    }
+
+    /// A snapshot of the cell's current value. Mirrors `getcwd()`: never
+    /// fails. If some other clone of this handle poisoned the lock (a panic
+    /// while holding [`Self::set`]'s write guard), the last successfully
+    /// written value is recovered rather than the poison being propagated
+    /// (P-10): a read has no natural failure mode, and inventing one here
+    /// would force every caller -- including the runtime's per-batch
+    /// snapshot -- to handle an error this operation should never surface.
+    pub fn current(&self) -> PathBuf {
+        match self.inner.read() {
+            Ok(guard) => guard.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
+    }
+
+    /// Sets the cell to `path`, unconditionally. This slice performs no
+    /// root/containment check on `path` (see the item's "out of scope":
+    /// confinement does not exist yet, and cwd was never the boundary).
+    ///
+    /// P-10: `path` is model-influenced. This never panics on any input --
+    /// `path` is stored, never inspected or parsed -- and the one failure
+    /// mode this can hit (a poisoned lock) is reported as a typed error
+    /// rather than propagated as a panic or silently swallowed.
+    pub fn set(&self, path: PathBuf) -> Result<(), CwdError> {
+        let mut guard = self.inner.write().map_err(|_| CwdError::Poisoned)?;
+        *guard = path;
+        Ok(())
+    }
+}
+
 /// Per-invocation context handed to `Tool::invoke`.
 ///
 /// `Clone` (every field is an `Arc`, `Copy`, or otherwise cheap to clone).
@@ -186,11 +257,44 @@ pub struct PluginConfig {
 /// This is the known T-8 limitation: `ToolCall` and `ToolOutput` are fully
 /// serializable, so a future subprocess/RPC plugin transport only needs an
 /// RPC-shaped form of `ToolCtx`, not this one.
+///
+/// **Deliberately NOT `#[non_exhaustive]`, and that is a decision, not an
+/// oversight.** Adding a field here is a breaking change for any external
+/// struct-literal construction, so the question comes up every time one is
+/// added (`chdir` was the most recent). The reasons to leave it off:
+///
+/// - `#[non_exhaustive]` would not merely warn about literal construction,
+///   it would *forbid* it outside this crate even with every field named,
+///   which forces a constructor or builder. That is disproportionate for a
+///   type built by hand in dozens of test fixtures.
+/// - `ToolSpec` faced the same question and resolved it the same way; the
+///   escape hatch there was a defaulted trait method (`Tool::path_args`),
+///   which is not available for a capability that must arrive as a field.
+/// - This type is already flagged above as due for a wholesale reshape for
+///   the T-8 RPC-transport case. Hardening its literal-construction surface
+///   now would be work spent on a shape that is expected to change.
+///
+/// If the project later wants that protection, the move is a builder plus
+/// `#[non_exhaustive]` in one deliberate breaking change — not to add the
+/// attribute alone.
 #[derive(Clone)]
 pub struct ToolCtx {
     pub agent_id: AgentId,
     pub session_id: SessionId,
+    /// A snapshot of the agent's working directory as of the top of the
+    /// batch this call was dispatched in -- see [`CwdHandle`]'s doc for the
+    /// snapshot-once-per-batch guarantee. Unchanged by this slice: every
+    /// existing consumer (`read`/`write`/`edit`/`glob`/`grep`/`bash`, every
+    /// third-party tool) keeps reading this exactly as before.
     pub cwd: PathBuf,
+    /// S1: the `cd` capability. Calling `chdir.set(path)` changes the
+    /// working directory the NEXT batch snapshots into `cwd` -- never this
+    /// call's own `cwd`, and never any other call already dispatched in the
+    /// same batch (see [`CwdHandle`]'s doc). No built-in tool calls this
+    /// yet; it lands on every [`Tool`] implementation uniformly (P-6), so a
+    /// future `cd` tool needs no privileged access this type doesn't already
+    /// expose to every plugin.
+    pub chdir: CwdHandle,
     pub cancel: CancellationToken,
     /// Progress reporting; see [`EventSinkHandle`].
     pub events: EventSinkHandle,
@@ -206,6 +310,7 @@ impl std::fmt::Debug for ToolCtx {
             .field("agent_id", &self.agent_id)
             .field("session_id", &self.session_id)
             .field("cwd", &self.cwd)
+            .field("chdir", &self.chdir)
             .field("cancel", &self.cancel)
             .field("events", &"<dyn EventSink>")
             .field("subagents", &"<dyn SubagentHost>")
@@ -648,5 +753,80 @@ mod tests {
     fn default_path_args_is_unconfinable_with_nothing_checkable() {
         let tool = DefaultRenderTool;
         assert_eq!(tool.path_args(), PathArgs::Unconfinable { checkable: &[] });
+    }
+
+    // ---- CwdHandle (S1: the `cd` capability) ----
+
+    #[test]
+    fn fresh_handle_reports_its_seed() {
+        let handle = CwdHandle::new(PathBuf::from("/a/b"));
+        assert_eq!(handle.current(), PathBuf::from("/a/b"));
+    }
+
+    #[test]
+    fn set_then_current_round_trips() {
+        let handle = CwdHandle::new(PathBuf::from("/a/b"));
+        handle.set(PathBuf::from("/c/d")).unwrap();
+        assert_eq!(handle.current(), PathBuf::from("/c/d"));
+    }
+
+    /// A clone of a `CwdHandle` shares the same underlying cell (`Arc`) --
+    /// this is what lets `AgentLoop` construct the cell once and clone it
+    /// into every turn's `ToolBatchCtx`/`ToolCtx` and still observe writes
+    /// a spawned tool task made through its own clone.
+    #[test]
+    fn clones_share_the_same_cell() {
+        let handle = CwdHandle::new(PathBuf::from("/a"));
+        let clone = handle.clone();
+        clone.set(PathBuf::from("/b")).unwrap();
+        assert_eq!(handle.current(), PathBuf::from("/b"));
+    }
+
+    /// P-10 adversarial case: a poisoned lock must not panic. Poisons the
+    /// cell by panicking (via `catch_unwind`, so the test process itself
+    /// survives) while holding the write guard directly -- reaching the
+    /// private `inner` field is legitimate here since this test lives in
+    /// the same module that defines it.
+    fn poison(handle: &CwdHandle) {
+        let inner = handle.inner.clone();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = inner.write().unwrap();
+            panic!("deliberately poisoning the lock");
+        }));
+        assert!(result.is_err(), "the injected panic should have unwound");
+    }
+
+    #[test]
+    fn set_after_poisoning_returns_a_typed_error_not_a_panic() {
+        let handle = CwdHandle::new(PathBuf::from("/a"));
+        poison(&handle);
+        let result = handle.set(PathBuf::from("/b"));
+        assert_eq!(result, Err(CwdError::Poisoned));
+    }
+
+    /// `current` recovers rather than propagating the poison (see its own
+    /// doc): it must keep returning the last successfully written value,
+    /// never panic.
+    #[test]
+    fn current_after_poisoning_still_returns_the_last_value_without_panicking() {
+        let handle = CwdHandle::new(PathBuf::from("/a"));
+        handle.set(PathBuf::from("/b")).unwrap();
+        poison(&handle);
+        assert_eq!(handle.current(), PathBuf::from("/b"));
+    }
+
+    /// A weird-but-legal `PathBuf` (non-UTF8 on Unix) must not panic `set`
+    /// -- it is stored, never parsed (P-10: no `unwrap`/`expect` on the
+    /// supplied path).
+    #[test]
+    #[cfg(unix)]
+    fn set_accepts_non_utf8_paths_without_panicking() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let handle = CwdHandle::new(PathBuf::from("/a"));
+        let weird = PathBuf::from(OsStr::from_bytes(b"/not/\xFFutf8"));
+        handle.set(weird.clone()).unwrap();
+        assert_eq!(handle.current(), weird);
     }
 }
