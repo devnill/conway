@@ -227,6 +227,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `crates/conway/src/intent.rs`, `crates/conway-runtime/tests/subagent_fork_spawn.rs`,
   `crates/conway/tests/subagent_exfiltration_seam.rs`)
 
+- **A plugin-contributed `prompt` rule — the extension design's own flagship
+  worked example (`docs/design/extension-architecture.md`'s
+  `{"categories":["edit","delete"],"then":"prompt"}`) — was inert in EVERY
+  mode.** `must_reach_gate` (the mechanism that forces a call past the
+  cache/pattern-grant/`AutoAllow` shortcuts to the operator's real gate) was
+  set exclusively by `PermissionBroker::check_root`; nothing else could
+  raise it, so a guardrail plugin's `prompt` rule had no effect no matter
+  what matched. Concretely: under `AutoAllow`, nothing could force the gate
+  at all, so the mode where a guardrail matters most is the one it did
+  nothing in; under `Prompt` mode, an operator's own pattern ALLOW grant
+  resolved a matching call before any `prompt` rule could be consulted,
+  silently defeating a plugin's narrower rule for the identical call.
+  `must_reach_gate` is now a broker-level accumulator any narrowing source
+  can raise, never lower: `check_root`'s own root-forced case is unaffected
+  (still pinned by
+  `unconfinable_bash_command_always_reaches_the_gate_for_a_confined_root_agent`),
+  and a new `prompt_patterns` set (structurally identical to the existing
+  `deny_patterns` — no `GrantScope`, matched via `PatternRule::matches_deny`
+  so a chained command cannot evade the extra scrutiny the way it evades an
+  `allow`) ORs onto it. The step is checked above the cache, so it beats a
+  cached `AllowAlways`, a matching pattern grant, and `AutoAllow` alike —
+  deliberately: a plugin's `prompt` rule is a claim that a class of call
+  deserves a human look every time, and letting a `deny`-adjacent narrowing
+  rule sit below any allow path would repeat the exact bug class this fix
+  closes. `deny` still beats `prompt` beats `allow` (a call matching both a
+  `deny` rule and a `prompt` rule is refused outright, never merely
+  escalated to an ask), and registration order remains unobservable.
+  Attribution is a deliberate non-goal of this fix: the operator sees the
+  forced ask through the ordinary `gate.check` path, with no marker
+  distinguishing "a rule forced this" from an ordinary first-time ask —
+  `PermissionDecisionKind` is not extended, because the forced path always
+  resolves through the REAL gate and reports its REAL decision, never
+  `Cached`, so there is no risk of a new cause being mislabeled the way this
+  item's own acceptance criteria warn against; surfacing WHICH rule forced
+  the ask in the prompt UI needs a wire-visible field on `PermissionRequest`
+  and is left as a follow-up. (`crates/conway-runtime/src/permission.rs`,
+  `crates/conway-runtime/tests/permission_broker.rs`,
+  `crates/conway/src/conway.rs`, `crates/conway/tests/permission_prompt_seam.rs`)
+
 ### Fixed
 
 - **conway never emitted `cache_control` — Anthropic prompt caching was off

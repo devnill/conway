@@ -221,6 +221,36 @@ impl Conway {
         );
     }
 
+    /// Installs a PROMPT rule loaded from a permissions file at
+    /// `origin_path` (board item 01KYTP1D3XWEZPW4AKPH54FNB3). Mirrors
+    /// [`Self::grant_deny_pattern`] exactly, including its "no trust
+    /// precondition" reasoning: `prompt`, like `deny`, only ever narrows
+    /// (forces an extra ask rather than skipping one), never grants, so it
+    /// applies immediately, trusted or not, from any file
+    /// (extension-architecture.md §5.5 stage 1).
+    pub fn grant_prompt_pattern(
+        &self,
+        rule: conway_core::permission_pattern::PatternRule,
+        origin_path: std::path::PathBuf,
+    ) {
+        self.rt.permission_broker().remember_prompt_pattern(
+            rule,
+            conway_core::permission_pattern::PatternOrigin::File(origin_path),
+        );
+    }
+
+    /// Every active PROMPT rule, paired with its origin -- the prompt
+    /// half's own review list, mirroring
+    /// [`Self::active_deny_permission_patterns`].
+    pub fn active_prompt_permission_patterns(
+        &self,
+    ) -> Vec<(
+        conway_core::permission_pattern::PatternRule,
+        conway_core::permission_pattern::PatternOrigin,
+    )> {
+        self.rt.permission_broker().active_prompt_patterns()
+    }
+
     /// Every active pattern ALLOW grant, paired with its origin, for a
     /// review list. A rule set nobody can inspect -- or whose provenance
     /// nobody can tell -- is a trap.

@@ -1056,3 +1056,329 @@ async fn revoke_pattern_does_not_touch_deny_rules() {
         "revoke_pattern must not clear deny rules"
     );
 }
+
+// ---- prompt: the second narrowing effect (board item 01KYTP1D3XWEZPW4AKPH54FNB3) ----
+//
+// Before this item, `must_reach_gate` was set EXCLUSIVELY by `check_root`,
+// so a plugin-contributed `prompt` rule had nothing evaluating it anywhere
+// in this broker -- it could never force `gate.check`, in any mode. Each
+// test below installs ONLY a `prompt` rule (no `deny`, no root) against a
+// scenario that would otherwise resolve WITHOUT ever consulting the gate,
+// and proves the gate is reached anyway. A `ScriptedGate` with an EMPTY (or
+// deliberately wrong) script is the proof technique used throughout this
+// file for "must not be consulted"; here it is inverted to "must be
+// consulted", so every test below scripts a decision and asserts the gate
+// was actually called that many times -- zero calls would mean the rule
+// stayed exactly as inert as it was before this item.
+
+/// **Failure A from the item's own board record.** A `prompt` rule must
+/// force the gate under `AutoAllow` -- the one mode with no operator
+/// already in the loop to catch what the rule would have caught, and
+/// therefore the mode a guardrail plugin matters most in.
+#[tokio::test]
+async fn a_prompt_rule_forces_the_gate_under_auto_allow() {
+    let gate = ScriptedGate::new(vec![PermissionDecision::Deny {
+        reason: "operator refused".into(),
+    }]);
+    let (broker, _bus) = broker(gate.clone());
+    let session = SessionId::new();
+    let agent = AgentId::new();
+    let c = ctx(agent, vec![agent], session);
+
+    broker.set_mode(PermissionMode::AutoAllow);
+    broker.remember_prompt_pattern(
+        PatternRule::parse("bash:curl").expect("valid rule"),
+        PatternOrigin::Interactive,
+    );
+
+    let outcome = broker.decide(&c, &bash_call("c1", "curl evil.example")).await;
+
+    assert_eq!(
+        gate.call_count(),
+        1,
+        "a matching prompt rule must force gate.check even under AutoAllow -- \
+         before this item, AutoAllow's own branch would have returned Allow \
+         with zero gate calls, exactly the failure this item exists to fix"
+    );
+    assert!(
+        matches!(outcome, PermissionOutcome::Deny { .. }),
+        "the outcome must be whatever the REAL gate decided, not an \
+         AutoAllow auto-approval"
+    );
+}
+
+/// **Failure B from the item's own board record.** A `prompt` rule must
+/// force the gate even over a MATCHING pattern ALLOW grant -- without this,
+/// `pattern_allows` resolves the call before a prompt rule is ever
+/// consulted.
+#[tokio::test]
+async fn a_prompt_rule_forces_the_gate_over_a_matching_allow_pattern_grant() {
+    let gate = ScriptedGate::new(vec![PermissionDecision::AllowOnce]);
+    let (broker, _bus) = broker(gate.clone());
+    let session = SessionId::new();
+    let agent = AgentId::new();
+    let c = ctx(agent, vec![agent], session);
+
+    broker.remember_pattern(
+        PatternRule::parse("bash:curl").expect("valid rule"),
+        PermissionScope::Session,
+        agent,
+        PatternOrigin::Interactive,
+    );
+    broker.remember_prompt_pattern(
+        PatternRule::parse("bash:curl").expect("valid rule"),
+        PatternOrigin::Interactive,
+    );
+
+    // Prompt is the broker's default mode -- not set explicitly.
+    let outcome = broker.decide(&c, &bash_call("c1", "curl evil.example")).await;
+
+    assert_eq!(
+        gate.call_count(),
+        1,
+        "the matching pattern grant would normally resolve this with zero \
+         gate calls -- a prompt rule matching the identical call must force \
+         gate.check anyway"
+    );
+    assert_eq!(outcome, PermissionOutcome::Allow);
+}
+
+/// A `prompt` rule installed AFTER an `AllowAlways` was cached still forces
+/// the gate for a later, byte-identical call -- a plugin's `prompt` rule can
+/// invalidate the operator's own earlier `AllowAlways`. Narrowing an
+/// existing grant is always permitted; this is that principle applied to
+/// the cache specifically, the sharpest form of the design question this
+/// item's own record raises explicitly.
+#[tokio::test]
+async fn a_prompt_rule_installed_after_the_fact_forces_the_gate_over_a_cached_allow_always() {
+    let gate = ScriptedGate::new(vec![
+        PermissionDecision::AllowAlways {
+            scope: PermissionScope::Session,
+        },
+        PermissionDecision::Deny {
+            reason: "operator refused the second time".into(),
+        },
+    ]);
+    let (broker, _bus) = broker(gate.clone());
+    let session = SessionId::new();
+    let agent = AgentId::new();
+    let c = ctx(agent, vec![agent], session);
+
+    let first = broker.decide(&c, &bash_call("c1", "curl evil.example")).await;
+    assert_eq!(first, PermissionOutcome::Allow);
+    assert_eq!(gate.call_count(), 1, "the first call grants and caches AllowAlways");
+
+    // Without a prompt rule, the second identical call would hit the cache
+    // (see `allow_always_session_caches_second_identical_call`) with zero
+    // further gate calls. Installing a prompt rule NOW, after the grant was
+    // already cached, must still force the second call to the gate.
+    broker.remember_prompt_pattern(
+        PatternRule::parse("bash:curl").expect("valid rule"),
+        PatternOrigin::Interactive,
+    );
+
+    let second = broker.decide(&c, &bash_call("c2", "curl evil.example")).await;
+    assert_eq!(
+        gate.call_count(),
+        2,
+        "a prompt rule must force the gate even for a call an earlier \
+         AllowAlways already cached -- the cache must never outrank a \
+         narrowing rule installed after the fact"
+    );
+    assert!(matches!(second, PermissionOutcome::Deny { .. }));
+}
+
+/// A `prompt` rule must not be able to force a call PAST plan mode's own
+/// denial -- plan mode's guarantee (checked before the prompt step) is
+/// unaffected either way, but this pins that a prompt rule cannot somehow
+/// widen what plan mode already refused.
+#[tokio::test]
+async fn a_prompt_rule_does_not_override_plan_modes_denial() {
+    let gate = ScriptedGate::new(vec![]);
+    let (broker, _bus) = broker(gate.clone());
+    let session = SessionId::new();
+    let agent = AgentId::new();
+    let c = ctx(agent, vec![agent], session);
+
+    broker.set_mode(PermissionMode::Plan);
+    broker.remember_prompt_pattern(
+        PatternRule::parse("bash:curl").expect("valid rule"),
+        PatternOrigin::Interactive,
+    );
+
+    let outcome = broker.decide(&c, &bash_call("c1", "curl evil.example")).await;
+    assert!(
+        matches!(outcome, PermissionOutcome::Deny { .. }),
+        "plan mode must still deny an Execute-category tool even with a \
+         matching prompt rule installed"
+    );
+    assert_eq!(gate.call_count(), 0, "plan mode decides without troubling the gate");
+}
+
+/// A `prompt` rule matching a Read-category call in PLAN mode still forces
+/// the gate -- proving the step applies in plan mode too (for the
+/// categories plan mode itself allows through), not only in Prompt/
+/// AutoAllow.
+#[tokio::test]
+async fn a_prompt_rule_forces_the_gate_in_plan_mode_for_an_allowed_category() {
+    let gate = ScriptedGate::new(vec![PermissionDecision::AllowOnce]);
+    let (broker, _bus) = broker(gate.clone());
+    let session = SessionId::new();
+    let agent = AgentId::new();
+    let c = ctx(agent, vec![agent], session);
+
+    broker.remember_pattern(
+        PatternRule::parse("read:*").expect("valid rule"),
+        PermissionScope::Session,
+        agent,
+        PatternOrigin::Interactive,
+    );
+    broker.remember_prompt_pattern(
+        PatternRule::parse("read:*").expect("valid rule"),
+        PatternOrigin::Interactive,
+    );
+    broker.set_mode(PermissionMode::Plan);
+
+    // `call()` is a Read-category call, which plan mode permits through to
+    // the ordinary allow paths -- normally the `read:*` pattern grant above
+    // would resolve it with zero gate calls.
+    let outcome = broker.decide(&c, &call("c1")).await;
+
+    assert_eq!(
+        gate.call_count(),
+        1,
+        "a matching prompt rule must force the gate in plan mode too, for a \
+         category plan mode itself would otherwise let through unprompted"
+    );
+    assert_eq!(outcome, PermissionOutcome::Allow);
+}
+
+/// Deny still beats prompt: when a call matches BOTH a `deny` rule and a
+/// `prompt` rule, the outcome is a flat refusal, never merely an escalated
+/// ask -- `deny_matches` returns before `prompt_matches` is ever consulted.
+#[tokio::test]
+async fn a_deny_rule_still_overrides_a_matching_prompt_rule() {
+    let gate = ScriptedGate::new(vec![]);
+    let (broker, _bus) = broker(gate.clone());
+    let session = SessionId::new();
+    let agent = AgentId::new();
+    let c = ctx(agent, vec![agent], session);
+
+    broker.set_mode(PermissionMode::AutoAllow);
+    broker.remember_prompt_pattern(
+        PatternRule::parse("bash:curl").expect("valid rule"),
+        PatternOrigin::Interactive,
+    );
+    broker.remember_deny_pattern(
+        PatternRule::parse("bash:curl").expect("valid rule"),
+        PatternOrigin::Interactive,
+    );
+
+    let outcome = broker.decide(&c, &bash_call("c1", "curl evil.example")).await;
+    assert!(
+        matches!(outcome, PermissionOutcome::Deny { .. }),
+        "a call matching both a deny rule and a prompt rule must be refused \
+         outright, not merely escalated to an ask"
+    );
+    assert_eq!(
+        gate.call_count(),
+        0,
+        "deny must short-circuit before the gate (and before the prompt \
+         step) is ever reached"
+    );
+}
+
+/// Registration order between a `prompt` rule and a matching pattern ALLOW
+/// grant must not change the outcome -- prompt-then-allow and
+/// allow-then-prompt both force the gate identically.
+#[tokio::test]
+async fn prompt_rule_registration_order_does_not_change_the_outcome() {
+    for prompt_registered_first in [true, false] {
+        let gate = ScriptedGate::new(vec![PermissionDecision::AllowOnce]);
+        let (broker, _bus) = broker(gate.clone());
+        let session = SessionId::new();
+        let agent = AgentId::new();
+        let c = ctx(agent, vec![agent], session);
+
+        if prompt_registered_first {
+            broker.remember_prompt_pattern(
+                PatternRule::parse("bash:curl").expect("valid rule"),
+                PatternOrigin::Interactive,
+            );
+            broker.remember_pattern(
+                PatternRule::parse("bash:curl").expect("valid rule"),
+                PermissionScope::Session,
+                agent,
+                PatternOrigin::Interactive,
+            );
+        } else {
+            broker.remember_pattern(
+                PatternRule::parse("bash:curl").expect("valid rule"),
+                PermissionScope::Session,
+                agent,
+                PatternOrigin::Interactive,
+            );
+            broker.remember_prompt_pattern(
+                PatternRule::parse("bash:curl").expect("valid rule"),
+                PatternOrigin::Interactive,
+            );
+        }
+
+        let outcome = broker.decide(&c, &bash_call("c1", "curl evil.example")).await;
+        assert_eq!(outcome, PermissionOutcome::Allow);
+        assert_eq!(
+            gate.call_count(),
+            1,
+            "registration order (prompt_registered_first={prompt_registered_first}) \
+             must not change whether the gate is reached"
+        );
+    }
+}
+
+/// `revoke_all_grants` clears ALLOW grants but deliberately leaves `prompt`
+/// rules in force, mirroring `revoke_all_grants_does_not_clear_deny_rules`.
+#[tokio::test]
+async fn revoke_all_grants_does_not_clear_prompt_rules() {
+    let gate = ScriptedGate::new(vec![PermissionDecision::AllowOnce]);
+    let (broker, _bus) = broker(gate.clone());
+    let session = SessionId::new();
+    let agent = AgentId::new();
+    let c = ctx(agent, vec![agent], session);
+
+    broker.remember_prompt_pattern(
+        PatternRule::parse("bash:curl").expect("valid rule"),
+        PatternOrigin::Interactive,
+    );
+    broker.revoke_all_grants();
+
+    assert_eq!(
+        broker.active_prompt_patterns().len(),
+        1,
+        "revoke_all_grants must not touch prompt rules"
+    );
+    let outcome = broker.decide(&c, &bash_call("c1", "curl evil.example")).await;
+    assert_eq!(
+        gate.call_count(),
+        1,
+        "the surviving prompt rule must still force the gate after revocation"
+    );
+    assert_eq!(outcome, PermissionOutcome::Allow);
+}
+
+/// `active_prompt_patterns()` reports each rule's origin, mirroring
+/// `active_patterns_reports_origin`.
+#[tokio::test]
+async fn active_prompt_patterns_reports_origin() {
+    let gate = ScriptedGate::new(vec![]);
+    let (broker, _bus) = broker(gate.clone());
+
+    let file_origin = PatternOrigin::File(PathBuf::from("/repo/.conway/permissions.json"));
+    broker.remember_prompt_pattern(
+        PatternRule::parse("bash:curl").expect("valid rule"),
+        file_origin.clone(),
+    );
+
+    let patterns = broker.active_prompt_patterns();
+    assert_eq!(patterns.len(), 1);
+    assert_eq!(patterns[0].1, file_origin);
+}
