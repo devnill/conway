@@ -19,6 +19,16 @@ D4, UI template language D5.
 >   metacharacter gate only to `ShellCommand` renders. See the local status
 >   notes at §10 and §13 for what changed and why the finding mattered more
 >   than its own wording suggested.
+> - **§1's R1 ("one authority per value: veto or narrow, never rewrite") is
+>   scoped, not widened, by the 2026-07-30 hooks/scripts redirect.** Read in
+>   isolation R1 sounds like it binds every value a participant touches,
+>   including context — and D6 §9 (`updatedInput`) reads the same way. It
+>   does not: R1 governs `ToolCall::arguments` and permission verdicts.
+>   **Context is not an authority grant**, and `ContextHook::before_request`
+>   has permitted editing/dropping a segment since it was written; R1 was
+>   never meant to forbid that, only argument rewriting and verdict
+>   widening. D6 §5.9 states the three-value-class boundary this bullet is
+>   the pointer to, and D6 §16 is the fuller redirect record.
 >
 > Kept unedited as the record of the reasoning, not as current guidance.
 

@@ -26,6 +26,24 @@ from scratch by the next person who reads only one of the five documents.
 This is the same job the note at `crates/conway-core/src/ports/plugin.rs`
 does for `ToolCtx`'s T-8 limitation, at a larger scale.
 
+> **Status (2026-07-30) — a project-level redirect.** The operator redirected
+> the extension architecture on four axes: hooks as the primary authoring
+> surface, scripts as a user-chosen language layered on the plugin core,
+> inference-evaluated hooks running as subagents (fork or spawn), and a wider
+> context-manipulation surface for plugins. **The headline finding is that the
+> fourth axis is not a relaxation of this document's rules** —
+> `ContextHook::before_request` already permits a hook to edit or drop a
+> segment, and is already `async` so an inference-driven hook can issue its
+> own LLM call. §4's `context.append/1` (append-only, for *remote* plugins)
+> had fallen behind that in-process capability, which is the exact
+> built-in/third-party inversion GP-03 and P-6 forbid. **Read the new §16
+> before re-opening**: `context.append/1` (§4, §5.8, §7.3, §7.6, §12), §5.8's
+> scope, §13.6, or §8.3's shell-command-status closure — all five are marked
+> superseded in place, and §16 also settles four questions the redirect left
+> open (hook fork/spawn declaration, cost and attribution for
+> inference-evaluated hooks, determinism across two context-editing plugins,
+> and where `ContextMask` gets produced).
+
 ### Where this document lives, and why it is not in `ARCHITECTURE.md`
 
 `ARCHITECTURE.md` opens by stating that it describes the system **as
@@ -208,6 +226,16 @@ Two structurally different kinds, and the difference is not one of degree:
 Every row is a `Tool`, an `EventSink` consumer, or a decision fed into
 `PermissionBroker` / context assembly — four of the ten existing ports,
 reached through their existing call sites.
+
+> **Status (2026-07-30) — `context.append/1` superseded, not modified in
+> place.** It gave a remote plugin strictly less than `ContextHook` already
+> gives an in-process one (edit/drop, not just append), which is the
+> built-in/third-party inversion §4's own "no point a built-in can reach that
+> a third-party cannot" claim exists to forbid. Replaced by `context.hook/1`,
+> specified in §16.5, which reaches wire parity with `ContextHook` and
+> composes multiple hooks' proposals under §16.3's order-independent rule
+> rather than leaving open, as this row's original wording did, what happens
+> when more than one hook contributes in the same turn.
 
 ### Ports deliberately not reachable
 
@@ -432,6 +460,13 @@ The only place order is observable is `context.append/1` segment order, and
 there it is **declaration order**, deterministic and stated. `context.tools/1`
 hides are a set union. Observers are independent by construction.
 
+> **Status (2026-07-30).** `context.append/1`'s successor, `context.hook/1`
+> (§16.5), keeps declaration order as the tie-break for **append** ordering
+> among non-conflicting contributions only. It is never a semantic tie-break:
+> exclusion composes by set union (order-independent, §16.3), and a
+> same-target content-replacement collision between two hooks fails to
+> exclusion rather than to whichever hook was declared last.
+
 ### 5.6 The deny half's matching rule, and its honest limit
 
 An `allow` rule refuses any command containing shell metacharacters, because
@@ -502,6 +537,42 @@ Generalized: **a participant may veto or monotonically narrow; it may never
 rewrite a value another check has already read.** The same rule forbids a
 participant that edits the user's prompt text; the sanctioned point for
 adding context is `context.append/1`, which is additive and attributable.
+
+> **Status (2026-07-30) — this section's scope narrowed, not its content.**
+> Read literally, "no participant may mutate" and the "generalized" paragraph
+> above sound like they cover every value a participant sees, including
+> context — and `context.append/1`'s "additive... closed direction" framing
+> reads the same way. **They do not, and never should have read that way.**
+> This section governs exactly two value classes: `ToolCall::arguments` and
+> permission verdicts (`PermissionOutcome`/`PolicyVerdict`). `ContextHook::
+> before_request` has permitted editing and dropping a segment since it was
+> written, and the redirect widens that to remote plugins (§16.4, §16.5). See
+> §5.9 for the three-row boundary and the reasoning for each row, and §16.3
+> for what changes when more than one plugin edits context in the same turn.
+
+### 5.9 The value-class boundary
+
+> **Status (2026-07-30) — new subsection**, written because §5.8's "never
+> rewrite" and D2 §1's R1 ("one authority per value") both read, out of
+> context, as if they bound *everything* a participant touches. They do not.
+> Three value classes appear across this document and they behave under
+> three different rules; conflating them is the exact misreading this
+> subsection forecloses. Nothing above is edited by adding this — see the
+> status note directly above and D2's own top-of-file banner for the two
+> places that misreading is now corrected in place.
+
+| Value class | May a participant... | Why |
+|---|---|---|
+| **Tool call arguments** (`ToolCall::arguments`) | Never rewritten, by anything, at any point. Veto (`Deny`) only. | §5.8's four reasons stand unchanged: `CacheKey::for_call` digests them, so a rewrite desynchronizes authorized bytes from executed bytes in either direction; `check_root` and schema validation both read `arguments` specifically, before `Event::ToolCallProposed`, so a rewrite would need re-validation, re-render, re-root-check, and with two rewriting plugins there is no guarantee of convergence — no fixed point under two rewriters, and none is needed: `Deny{reason}` plus a model re-proposal gets a caller a different call with one clean authorship. |
+| **Permission verdicts** (`PermissionOutcome`, `PolicyVerdict`) | Narrow only (`Deny`/`Abstain`), never widen. Exactly one allow path exists (§5.2 step 7, a `DecidingPolicy` only), below every floor, per call, never cached, always attributed. | A verdict is an authority grant, and an authority grant composed from more than one source needs order-independent composition (§5.5) with a trust act gating any widening (§5.5 stage 1). This is what D2 §1's R1 ("one authority per value") actually describes. |
+| **Context** (`ContextPayload`'s segments and tool announcements, and — new — the persisted `ContextMask`, §16.4) | May be edited, dropped, replaced, or masked, by a hook — and always could be, in-process, since `ContextHook::before_request` was written. **Not an authority grant, so R1 does not bind it.** | **The security line was crossed by `context.append/1`'s original *append*, not by edit/drop.** A participant that can already inject arbitrary text into an agent's context can already say anything an editor of that context could say; deleting or replacing a line can only make an agent see *less* of what actually happened, never make it believe something invented. What still binds context, and is a *different* property than R1, is **provenance** (P-2, GP-10): every edit must be attributable and inspectable, and the persisted form must be reversible — which is why `ContextMask` is append-only and un-masking is a second record, never a mutation. Safety here comes from visibility, not from veto-or-narrow. |
+
+**What this table does not relax.** Arguments and verdicts keep every rule
+§5.2–§5.5 and §5.8 state; nothing about context's flexibility licenses
+touching either. A hook is never handed a `ToolCall` to edit under cover of
+"context manipulation" — arguments are not part of `ContextPayload`, and no
+port hands a context hook one. The boundary is drawn on **type**, not on
+**intent**, which is what keeps it checkable rather than aspirational.
 
 ---
 
@@ -822,6 +893,22 @@ could be gates; that design lost, and what remains is:
   tool invocation) prevents a plugin holding a call forever by spamming
   progress.
 
+> **Status (2026-07-30) — scoped, not changed, for a call class that did not
+> exist to worry about when this was written.** "A call's deadline resets on
+> progress notifications" as stated applies to every host-to-plugin call,
+> which on inspection includes a **decision-bearing** one
+> (`permission.policy/1`, and the redirect's inference-evaluated context
+> hooks, §16.2). A hook that emits progress every 2 s while never deciding is
+> judged healthy by this rule forever, `on_failure` never fires, and every
+> tool call in the session stalls at that hook. §16.2d decides this: **a
+> decision-bearing call is excluded from the progress-reset rule entirely**
+> — its deadline is `timeout_ms` (clamped), flat, never extended by progress
+> on that call's token. `max_total` stays exactly as stated above, scoped to
+> tool invocation, because a decision call never needed one: excluding it
+> from progress-reset already makes its effective `max_total` equal to
+> `timeout_ms`, which is the correct number for a call class with no
+> legitimate reason to run long.
+
 **Fail closed, without exception.** A timed-out `tool/invoke` yields
 `ToolError::Timeout` — an error, never a success, never an allow. A
 decision-bearing call that times out yields `Deny`, the identical shape gate
@@ -1113,6 +1200,14 @@ content across a change.**
 | `subagent.spawn` | `start`/`ask`/`steer`/`await`/`cancel` | the guarded handle (below) |
 | `subagent.tree` | the subtree snapshot | the guarded handle |
 
+> **Status (2026-07-30) — new capability, `hook.fork`.** The redirect's
+> inference-evaluated hooks run as subagents and must declare `Fork` or
+> `Spawn` (§16.1). `hook.fork` follows `subagent.spawn`'s exact shape here:
+> default off, never implied by trust, requested in the manifest and
+> separately granted. `context.append` above is superseded (§16.5) by
+> `context.hook/1`; its capability name and row are retired with it, not
+> repurposed.
+
 **Deliberately absent: `fs.read`, `fs.write`, `net`, `exec`.** A plugin is a
 separate OS process with the operator's privileges. Conway has no mechanism
 by which `"net": "none"` could be made true. Putting those words in a
@@ -1309,6 +1404,12 @@ Rules for every plugin-supplied string that can reach the model:
 4. **`context.append/1` provenance must be rendered, not merely recorded.** A
    segment attributed only in the log is attributed to the auditor, not to
    the reader who is about to act on it.
+
+   > **Status (2026-07-30).** `context.append/1` is superseded by
+   > `context.hook/1` (§16.5); this rule carries over unchanged to the
+   > successor and now applies additionally to a durable `ContextMask`'s
+   > reason string (§16.4) — a mask a reader cannot see the reason for is the
+   > same attribution failure one step removed.
 5. **`StatusContribution` never reaches the model.** Screen only. Stated so
    it cannot drift into the context assembly later.
 
@@ -1470,6 +1571,25 @@ being registered, named, versioned, TTL-bounded, trust-gated, and supervised
 with restart counts and a stderr ring buffer. A config string that execs has
 none of that. Re-adding it would be strictly redundant *and* strictly less
 safe.
+
+> **Status (2026-07-30) — the *closure*'s reasoning is superseded; the
+> permanent "no" above is not reopened.** The v0.3.0 record's original
+> objection to a shell-command status variable was that arbitrary command
+> exec from config is too large a trust surface for a bare config string —
+> and that objection is now directly answered, for the general case, by
+> `d917ba2`'s trust model: a project file's authority requires a recorded,
+> digest-keyed trust decision before it runs anything. The redirect's
+> "scripts as a platform" axis reconciles with this cleanly rather than
+> reopening it: **the script runner is itself a plugin** — it implements
+> `status.declare/1`/`status/1` (or `context.hook/1`, or `tool/1`) like any
+> other out-of-process plugin, and its own implementation happens to dispatch
+> to a configured script per event. The script surface therefore layers ON
+> TOP of the Rust port (GP-03's own sanctioned shape for lower-barrier
+> surfaces), not beside it, and there is still exactly one extension
+> mechanism and one trust ceremony. What stays permanently closed is a raw
+> shell-command *string* accepted straight out of `settings.json` with no
+> registration, no digest, and no supervision — that is the thing this
+> section actually forbids, and the redirect gives no reason to reopen it.
 
 **`status/1` gains a registration half, `status.declare/1`** — a plugin
 declares its keys with `max_len` and default `ttl_ms` at handshake. D2 gave
@@ -1661,6 +1781,19 @@ own model call is not cut off, while a dead one is. The operator can set
 **Verdict: works. One revision** (the Narrowing/Deciding type split, §5.2 —
 D2's single-enum-plus-boolean lost) **and one new invariant** (no policy
 evaluation inside a policy's own subtree).
+
+> **Status (2026-07-30).** This walkthrough's `mode: Spawn` choice, read
+> alongside `crates/conway/src/intent.rs:250`'s identical choice for its own
+> zero-tool judge, is not incidental — it is now the *decided* default for
+> every inference-evaluated hook, not just this one (§16.1), on the same
+> security-asymmetry argument this walkthrough already makes for why the
+> classifier gets zero tools. The no-recursion invariant generalizes the same
+> way: "no hook evaluation inside a hook's own subtree," checked once,
+> generically, on `PermissionCtx.agent_path` (§16.2c) — not reimplemented per
+> hook kind. And the 60 s `timeout_ms` clamp this section's "Timeout or
+> error" paragraph describes is, as of the redirect, non-extendable: a
+> decision-bearing call does not get the progress-reset §6.8 grants a tool
+> invocation (§16.2d).
 
 ### 9.2 MCP shims
 
@@ -2180,6 +2313,13 @@ that matters most.
 | F28 | `context.append/1`, with rendered provenance. | M |
 | F29 | An MCP shim in-tree as the reference implementation, written against the public surface like a third party would. | M |
 
+> **Status (2026-07-30).** F28 (`context.append/1`) is superseded by
+> `context.hook/1` (§16.5) — the item is the same shape (a new point over the
+> transport) but a wider contract: edit/drop parity with `ContextHook`,
+> composed per §16.3, plus the durable-mask producer work §16.4 names as its
+> own real gap (a `target_seq` per segment, and `Provenance` on
+> `LogRecord::ContextMask`). Sizing moves from M to L.
+
 ---
 
 ## 13. What this architecture does **not** do
@@ -2239,6 +2379,12 @@ of that door are closing, for related reasons.)
 
 **13.4 No argument rewriting**, ever, by anything (§5.8).
 
+> **Status (2026-07-30) — scope stated explicitly.** This sentence and §5.8
+> govern `ToolCall::arguments` and permission verdicts only (§5.9's
+> value-class boundary). It does not extend to context, which `ContextHook`
+> already permitted to be edited/dropped when this was written, and which the
+> redirect widens to remote plugins (§16.4, §16.5).
+
 **13.5 No plugin implementations of `SessionStore`, `Router`,
 `HealthRegistry`, `Backend`, `SubagentHost`, or `EventSink`** (§4). Two of
 those are structural (synchronous ports cannot be crossed by async RPC); the
@@ -2248,6 +2394,15 @@ rest are decisions with stated reasons.
 conway has no compaction, no "prevent the agent from stopping" concept, and
 config is load-time. **A hook naming a feature that does not exist documents
 a feature that does not exist.**
+
+> **Status (2026-07-30) — the compaction clause is superseded; the other two
+> stand.** conway still ships no compaction *policy* — no built-in decides
+> what to drop. What it now has is a stated *path* to one: §16.4 gives
+> `LogRecord::ContextMask` a producer (a hook proposing a durable exclusion,
+> composed per §16.3, persisted by the runtime as the delta), which is the
+> mechanism a compaction plugin would need and previously had nowhere to
+> attach. No blocking `Stop` point and no `ConfigChange` remain exactly as
+> stated — the redirect did not touch either.
 
 **13.7 Unix only, in v1.** Process-group kill has no direct Windows
 equivalent (job objects are the analogue). `bash.rs` already ships a
@@ -2407,3 +2562,391 @@ having zero call sites is being fixed as this is written.)
 duplicate diagnostic and looks dead-ish. **It is the reason §7.3's guarded
 handle needs no new `ToolCtx` field and no name check.** Do not remove it;
 build on it.
+
+---
+
+## 16. The 2026-07-30 redirect — hooks, scripts, and a wider context surface
+
+**Status: design, not implemented — same status as the rest of this
+document.** This section settles four questions the redirect left open and
+indexes the five places elsewhere in this document, D2, and D5's synthesis
+that its decisions supersede. Written in the same voice as §11: a ledger, not
+a rewrite. Nothing above §16 is edited by anything below it; every claim here
+either adds a status note at its own site (already placed) or is new content
+that did not exist to contradict before.
+
+### 16.0 The four axes, and the headline finding
+
+The operator redirected this architecture on four axes, verbatim:
+
+1. "i want to have this primarily driven by hooks"
+2. "language choice should be a user option. like in claude code, hooks can
+   fire scripts which can be used as a platform"
+3. "i'd like a convention for hooks to be handled by inference via subagent,
+   or potentially in the calling agent (subagents could be for[k] or spawn)"
+4. "We should have a wide surface of configuration that can be set via plugin
+   to allow different functionality, including context manipulation. While we
+   have strict rules, we should be somewhat flexible to allow plugins to
+   bypass them (e.g. compaction could be implemented)."
+
+**Axis 4 is not what it reads as.** Read alone, "allow plugins to bypass
+[strict rules]" sounds like a relaxation. It is not: `ContextHook::
+before_request` (`crates/conway-core/src/ports/plugin.rs`) has permitted a
+hook to "edit/drop a segment ... to apply an ad hoc exclusion mirroring
+WI-125's persisted `ContextMask`" since its own doc comment was written, and
+is explicitly `async` "so an inference-driven hook can issue its own LLM call
+to decide." **Both halves of axis 4 — context manipulation and
+inference-evaluated hooks — already existed for an in-process `ContextHook`
+implementor.** What axis 4 actually corrects is that `context.append/1`
+(§4), the point a *remote* plugin reaches, is append-only — strictly weaker
+than what an in-process implementation already holds. **A built-in (or any
+in-process plugin) holding a capability a third-party remote plugin cannot
+reach is the exact inversion GP-03 and P-6 forbid**, and it is this
+document's own §4/§7 that drifted into it, not the shipped code. §16.5's
+supersession 1 is the fix; §5.9 states the boundary that drift crossed, and
+the one it did not.
+
+Axes 1–3 are new surface, not corrections. "Primarily driven by hooks" and
+"scripts as a platform" describe a lower-barrier authoring surface (a script
+invoked by a small, well-known set of hook events) that GP-03 already
+anticipates: "lower-barrier surfaces (declarative skills/hooks) may be
+layered ON TOP of the plugin core; they are additions over the stable
+interface, never replacements." The layering is literal: **a script runner is
+itself a plugin** — one that implements `tool/1`/`context.hook/1`/
+`permission.policy/1` like any other out-of-process plugin, whose own
+implementation happens to dispatch to a configured script per event rather
+than embed logic directly. §16.5 supersession 5 works through the specific
+case (statusLine) this reconciles; the same shape generalizes to every hook
+point without adding a second extension mechanism.
+
+### 16.1 Q1 — How a hook declares fork vs spawn
+
+**Decision.** A **per-hook-registration field**, not a manifest-wide flag:
+`subagent_mode: Fork | Spawn`, alongside the existing per-hook `timeout_ms`/
+`on_failure` (§5.2's registration shape). **Default `Spawn`.** `Fork` is a
+request the plugin makes in its registration and is gated by a new
+capability, `hook.fork`, following `subagent.spawn`'s exact shape (§7.3,
+§11.5(b)): default off, never implied by trust, requested
+(`required_host_caps`/`optional_host_caps`) and separately granted. An
+operator may always refuse a requested `hook.fork` (the hook fails to
+register if declared required, or is skipped with `PluginStatusChanged` if
+optional — the existing capability-absence shape, §7.7) but **may never force
+`Fork` on a hook that declared `Spawn`.**
+
+**Why `Spawn` defaults.** The security asymmetry is exactly what a fork
+primitive implies: a forked child inherits the *entire* ancestry context, and
+an inference-evaluated hook is already reading attacker-reachable text (§9.1
+— indirect injection can ride in on the segments themselves). Forking
+multiplies that exposure twice: the hook's classifier sees strictly more
+attacker-reachable text, and its own output (a deny or mask reason, §7.6) is
+itself a channel back into the model's context, so a wider input widens what
+an attacker can try to launder back out through it. This is also not a new
+pattern invented for this decision — it is the shape every zero-tool judge in
+this codebase already uses: `crates/conway/src/intent.rs:250`
+(`mode: SubagentMode::Spawn`) and §9.1's own walkthrough. Matching the
+shipped precedent for "classify from text, no ancestry needed" is not the
+novelty; `Fork` as a default would have been, and it is the choice that
+needed the argument.
+
+**Why per-registration, not per-plugin.** One plugin may register more than
+one hook — a `permission.policy/1` classifier needing no ancestry, and a
+compaction-decision hook plausibly wanting the whole conversation to decide
+what to condense. A manifest-wide flag forces the safer hook up to the
+riskier default, or the legitimately-needing-context hook down to `Spawn`,
+producing silently wrong compaction decisions. Scoping the field to the
+registration keeps each hook's endowment exactly what its own job needs — the
+narrowing self-declaration, checked, shape §3 already requires of `path_args`
+and `render_kind`.
+
+**Enforcement point.** Per P-1 ("mode restrictions on a primitive are
+enforced at the trait boundary... not only at a tool callsite — a tool-layer
+guard leaves the trait impl bypassable from any other caller"), the check
+belongs in the **guarded handle** (§7.3, §11.2) that already gates
+`subagent.spawn`: it refuses (typed `CapabilityDenied`, never a silent
+coercion) a `Fork`-mode spawn from a registration lacking `hook.fork`.
+
+**Rejected alternatives.**
+- **`Fork` as the default.** Rejected on the security asymmetry above;
+  nothing in the redirect's own wording asks for it either — "subagents could
+  be fork or spawn" states that the primitive choice exists, not which one
+  should default.
+- **A single manifest-wide flag.** Rejected: forces one endowment on hooks
+  that legitimately need different ones (above).
+- **Enforce only at the hook's own inference call site.** Rejected per P-1,
+  verbatim: a callsite-only guard is bypassable by any other caller,
+  including a future remote-plugin SDK that never goes through whatever
+  library enforced it client-side.
+- **Let an operator widen `Spawn` → `Fork` by grant.** Rejected: the same
+  shape as "never widenable, under any grant" (§7.5's list — the confinement
+  root, plan mode, argument rewriting, `AllowAlways`). Forcing more context
+  into a hook the author's own code never accounted for is not authority an
+  operator can consent to on the plugin's behalf — the plugin's inference
+  call and its output channel (§7.6) were written against a specific
+  endowment, and changing that endowment out from under it makes its
+  behavior on the new input unaudited by anyone, the opacity GP-10 exists to
+  prevent.
+- **Silent coercion (refuse `Fork`, downgrade to `Spawn`, run anyway).**
+  Rejected: matches "never guessed at" (§4's failure table for
+  `permission.rules/1`). A hook that structurally needs the full conversation
+  to reason correctly, given only a spawned view instead, will not fail
+  loudly — it will answer a different question with apparent confidence. A
+  typed refusal, applying the hook's own declared `on_failure`, is the
+  failure that cannot be mistaken for success.
+
+**Consequence for existing sections.** §7.3 gains a `hook.fork` capability
+row (placed). §5.2's registration fields gain `subagent_mode`. §9.1's
+`mode: Spawn` choice is now stated as this decision, not merely an example
+(placed).
+
+### 16.2 Q2 — Cost and attribution for inference-evaluated hooks
+
+**a) Bounding — confirmed, generalized.** §5.2's 60 s default `timeout_ms`
+clamp, operator-raisable to a configured maximum, applies uniformly to every
+inference-evaluated hook registration, not only `permission.policy/1`. The
+reasoning was never permission-specific ("generous because an
+inference-evaluated policy issues its own LLM call") — it is a property of
+issuing an LLM call from inside a hook, which the redirect now permits for
+context hooks too.
+
+**b) Attribution — mostly already correct; one real gap.** For an in-process
+hook using `SubagentHost::start` (the §9.1 shape), the spend already lands
+under the ephemeral child's own `SessionId`, never folded into the calling
+agent's `session_usage` — confirmed against `crates/conway/src/
+session_handle.rs`: that accessor sums only `[0, head)` of the resolved
+agent's *own* session records, and a spawned/forked child is a distinct
+session by construction, the same reason it excludes an inherited prefix
+("the PARENT's own prior conversation, not this agent's" — one level up, a
+hook's own inference call is not the calling agent's conversation either).
+**The gap is not double-counting; it is that a hook's ephemeral spend is
+currently indistinguishable, in any rollup, from ordinary agent-tree work.**
+§9.1 already tags its classifier `role: Some("guard")`; the fix is to require
+every inference-evaluated hook's spawn to carry a stable role tag, and to
+make cost rollups group by role, so "what did my guardrails cost me" is
+answerable separately from "what did my agents cost me" without new plumbing
+beyond the tag that already exists. For a **remote** hook (§13.3: no host
+inference callback, ever), there is and will be no conway-side accounting at
+all — the plugin spends its own credentials, exactly as §13.3 already
+establishes for permission policies, generalized here to every
+inference-evaluated hook kind rather than left implicit.
+
+**c) Recursion — composes, with the mechanism named generically.** §9.1's
+invariant ("policies are not consulted for a call made by an agent that a
+policy spawned," checked on `PermissionCtx.agent_path`) is not actually
+permission-specific in its mechanism — it holds because every
+inference-evaluated hook uses the identical zero-tool judge shape
+(`ephemeral: true`, `tools: Only(vec![])`, `keep_alive: false`), so the same
+check, generalized from "no policy inside a policy's own subtree" to **"no
+hook of any kind is invoked for a call made by an agent that hook's own
+machinery spawned,"** composes without new mechanism. It should be
+*implemented* once, generically, keyed on `agent_path` the same way, rather
+than duplicated per hook kind — duplication is how two copies drift, the same
+failure category §11.10 found in the sanitizers.
+
+**d) The §6.8 interaction — closed by exclusion, not by a smaller
+`max_total`.** The hole is real: §6.8 states "a call's deadline resets on
+progress notifications" for every host-to-plugin call, and separately names
+`max_total` (10 min) as a backstop scoped to tool invocation only. A
+decision-bearing hook emitting progress every 2 s while never deciding is
+judged *healthy* by that rule forever; `on_failure` never fires; every tool
+call in the session stalls at the policy (or context-hook) step.
+
+**Decision: exclude decision-bearing calls from the progress-reset rule
+entirely.** A decision call's deadline is `timeout_ms` (clamped, §16.2a),
+flat, never extended by a progress notification on that call's token. `$/
+ping` connection-liveness probing still runs and still distinguishes a
+wedged connection from a dead one; it is orthogonal and unaffected. A
+decision-bearing hook may still emit progress (useful for `/plugins`
+liveness display) — it simply carries no deadline-reset semantics for that
+call.
+
+**Rejected alternative — a separate, smaller `max_total` for decision
+calls.** Considered and rejected on inspection: a `max_total` only *delays*
+the same failure to a later, arbitrarily-chosen wall clock — a hook spamming
+empty progress is still treated as healthy for the entire `max_total` window,
+so it does not detect "never decides" any earlier or more reliably than the
+flat `timeout_ms` already does. The smallest `max_total` that is actually
+correct for this call class is `max_total == timeout_ms`, which is exactly
+what excluding progress-reset produces, without inventing and defending a
+second number an operator has to reason about alongside the first. The only
+case a `max_total` genuinely earns its keep — `bash`, and remote `tool/
+invoke` generally — is one where legitimate multi-minute progress is common
+and expected; a permission or context decision has no such case, per the
+prompt's own framing: a permission decision has no legitimate reason to take
+ten minutes.
+
+**Consequence for existing sections.** §6.8's progress-reset sentence is
+scoped by a status note (placed). §9.1's "Timeout or error" paragraph gains
+one sentence (placed): the clamped timeout is non-extendable, not merely a
+ceiling.
+
+### 16.3 Q3 — Determinism when two plugins edit context
+
+§5.8's "no fixed point under two rewriters" is exactly the hazard here,
+restated for a case whose conclusion is not "forbid it": **sequential
+chaining** — each hook seeing the previous hook's already-edited output — is
+not order-independent in general. Two hooks that both touch overlapping
+content (one summarizing a segment, one dropping it) produce a different
+result depending on which runs first, exactly the property §5.5 protects for
+permission composition ("registration order cannot change the outcome...
+priorities invite an arms race between config authored by different
+parties").
+
+**Decision: every hook is evaluated independently against the same pre-hook
+payload — never against another hook's output — and their proposals are
+composed by the runtime under one fixed, order-independent rule per proposal
+kind.**
+
+- **Exclusion (drop/mask) is a set union.** Each hook returns the set of
+  segments/`target_seq`s it wants excluded, computed from the original
+  assembly. The applied result is the union of every hook's exclusion set —
+  commutative and associative by construction, the shape §5.5 already uses
+  for `deny` composition. This directly answers the two named
+  sub-questions: **two hooks masking the same record is not a conflict** —
+  union is idempotent, `{X} ∪ {X} = {X}` — and **every hook sees the
+  original payload, never an earlier hook's output**; chaining is exactly
+  what is rejected below.
+- **Addition (append) is unchanged**: independent, attributed
+  (`Provenance::Plugin { id }`), and — restated, not changed, from §5.5 —
+  declaration order is observable only here, as presentation order among
+  non-conflicting appends. It was never a semantic tie-break and stays
+  exactly that.
+- **Content replacement of the same target by two different hooks has no
+  principled order-independent merge, and none is invented.** A generic
+  merge algorithm in core to reconcile two plugins' conflicting rewrites of
+  one segment is precisely the "sophisticated policy" GP-11 says core must
+  not own. **Decision: a same-target replace collision fails to exclusion**
+  — the segment is masked rather than either party's replacement winning by
+  an unstated tie-break — with both hooks named in a `PluginStatusChanged`-
+  shaped diagnostic. This reuses §5.5's own shape (`deny` beats `allow`)
+  translated to context: the less-informative outcome wins a genuine
+  disagreement, not an arbitrary one, and it degrades toward the direction
+  that is always safe to reverse (masking already is — §16.4).
+
+**Rejected alternatives.**
+- **Sequential chaining, declaration order.** Rejected as the direct source
+  of order-dependence — chaining is precisely what "no fixed point under two
+  rewriters" describes, restated for *n* > 1 hooks rather than resolved by
+  adding more of them.
+- **Priority numbers.** Rejected on §5.5's own stated reason, unchanged: they
+  invite an arms race between config authored by different parties and make
+  the outcome depend on who edited last.
+- **Last-write-wins on a same-target collision.** Rejected: depends on an
+  unstated, effectively arbitrary iteration order, and silently discards one
+  party's edit with no record — the unattributed loss P-2/GP-10 exist to
+  prevent.
+- **A generic *n*-way content merge.** Rejected per GP-11: a merge algorithm
+  is exactly the cross-cutting policy machinery core is not supposed to own;
+  if two plugins need to cooperate on the same segment, that cooperation is
+  the plugin authors' problem to solve, not core's to solve for them.
+
+**Consequence for existing sections.** §5.5's order-observability sentence
+and §4's `context.append/1` row both carry status notes (placed). The
+successor point (§16.5) specifies this composition rule from the start
+rather than retrofitting it.
+
+### 16.4 Q4 — Where `ContextMask` gets produced
+
+`LogRecord::ContextMask { seq, ts, target_seq, excluded }`
+(`crates/conway-core/src/log.rs`) is real, persisted, append-only, and
+reversible (a second record with `excluded: false` un-masks). It is consumed
+by `apply_context_mask` (`crates/conway-session/src/resolver.rs`) and has
+**no producer anywhere** in `conway-runtime`, `conway-tools`, or the facade —
+confirmed by search across the workspace; the only other references are the
+type's own definition and its mention inside `ContextHook::before_request`'s
+doc comment.
+
+**Decision: `before_request` gains the producer; no new method. Its return
+contract splits into two tiers, and the runtime — never the hook — is the
+sole writer to `SessionStore`.**
+
+1. **Ephemeral exclusion** — the existing, already-shipped contract: a hook
+   edits/drops a segment in its returned `ContextPayload` for *this request
+   only*. Unchanged.
+2. **Durable exclusion** (new) — a hook may additionally return a set of
+   `target_seq`s (§16.3's union composition applies) it wants durably masked,
+   with a reason string. The runtime computes the **delta** against what
+   `apply_context_mask` already shows as excluded for that session and
+   appends `ContextMask` records only for genuinely new exclusions or
+   un-exclusions. This is what answers "every turn re-computes the same
+   exclusion": the fix is diffing, once, at the site that already owns the
+   write path — not a new call site.
+
+**Why not a new method or a new wire point.** The inputs a mask decision
+needs — the assembled payload, `ContextHookCtx` — are exactly `before_
+request`'s existing inputs; a second point needs the same handshake, pays the
+same wire promise a second time (§6's epigraph: "every type admitted to the
+wire is a promise... paid by conway forever"), and reopens "which points,
+when" (§1) for no new information. `SessionStore` stays off-limits to plugins
+(§4 — audit-trail integrity, IPC on the hot path, a plugin crash becoming
+data loss): a hook **returns a proposal**, the shape `permission.policy/1`
+and `context.append/1` already use; the host is what writes.
+
+**A concrete gap this decision surfaces, not solved by it.**
+`PromptSegment.id` is a `SegmentId`, generated fresh per assembly
+(`PromptSegment::new`) — **not** the `LogSeq` `ContextMask::target_seq`
+needs. Checking `Provenance`'s ten variants (`crates/conway-core/src/
+provenance.rs`): only `Inherited { seq_range }` and `ParentSteer
+{ parent_seq }` carry any `LogSeq` at all; `UserPrompt`, `AgentDef`, `Skill`,
+`ToolRegistry`, `ForkDirective`, `ToolResult`, `SystemNote`, `MergedAsk` do
+not. **A hook cannot express "durably mask this segment" today, because the
+payload handed to it does not reliably carry the log-seq identity a mask
+needs to target.** This is implementation work the decision *requires*:
+`PromptSegment` (or a host-side companion map handed alongside
+`ContextPayload`) needs to expose the originating `target_seq` per segment
+where one exists — most `Volatile`-tier, log-derived segments have one; a
+handful of synthetic segments may not, and "no `target_seq` available" must
+be a distinct, representable state, not an error. Named as a follow-on in the
+report, not solved here.
+
+**Also worth naming: `LogRecord::ContextMask` has no `Provenance`/
+attribution field.** Every other meaningful `LogRecord` variant (`UserTurn`,
+`Assistant`, `ToolCallRecord`, `ParentSteer`, `SystemNote`) carries `prov:
+Provenance`; `ContextMask` does not. That was consistent while the only
+producer was a human/operator action (WI-125's original design); it stops
+being consistent the moment a plugin can propose one — "who masked what, and
+when" (the record's own doc comment) needs "and *by what*," per P-2/GP-10,
+once the answer can be a third party's code rather than the harness itself.
+
+**Rejected alternatives.**
+- **A distinct RPC point / trait method for mask proposals.** Rejected above
+  — no new information, doubles the wire promise, reopens the surface-area
+  question.
+- **Give hooks direct `SessionStore` access.** Rejected outright, per §4,
+  verbatim.
+- **No dedup — persist a mask every turn regardless of change.** Rejected:
+  this *is* the named failure ("every turn re-computes the same
+  exclusion"), and it works against GP-10's actual goal — an inspectable
+  log, not a noisy one. A hook returning the same answer every turn was never
+  non-deterministic; the missing piece was diffing, not determinism.
+- **Single-tier (always durable, no ephemeral option).** Rejected: forces
+  every existing, already-shipped ad hoc `before_request` edit into a
+  permanent log entry, a strictly larger behavior change than the redirect
+  asks for — and the existing doc comment ("an ad hoc exclusion mirroring
+  WI-125's persisted `ContextMask`") already treats the ad hoc form as a
+  deliberate lightweight mirror of the persisted one, implying both were
+  always meant to coexist, not merge into one.
+
+### 16.5 The five supersessions — index
+
+Each is marked additively at its own location; this table is a map, not a
+duplicate of the reasoning it points at.
+
+| # | What's superseded | Where marked | Replacement / correction |
+|---|---|---|---|
+| 1 | `context.append/1`, append-only | §4 (table), §5.8, §7.3, §7.6 rule 4, §12 F28, §5.5 | `context.hook/1`, specified below |
+| 2 | §5.8/§13.4's "no rewriting, ever, by anything" read as covering context | §5.8, §13.4 | Scoped explicitly to arguments and permission verdicts; context is a third value class (§5.9) |
+| 3 | D2 §1's R1 ("one authority per value") read as binding context | `d2-extension-points.md` top banner | Context is not an authority; R1 governs arguments and verdicts (§5.9) |
+| 4 | §13.6 "no compaction events" | §13.6 | No compaction *policy* still ships; a producer path for the persisted exclusion now does (§16.4) |
+| 5 | §8.3's shell-command status-variable closure, and the v0.3.0 deferral it closed | §8.3 | The scripts axis answers the original trust objection (`d917ba2`'s digest-keyed trust decisions); the script runner is itself a plugin (GP-03), so the surface layers on top of, not beside, the one extension mechanism |
+
+**`context.hook/1` — the named replacement for supersession 1, specified.**
+Mirrors `ContextHook::before_request`'s shape at the wire (§6.1's projection
+discipline): receives the projected `ContextHookCtx` + `ContextPayload`;
+returns `{ appends: [...], excludes: [segment identifiers], durable_excludes:
+[{ target_seq, reason }] }`, composed across every hook — in-process and
+remote alike, per GP-03/P-6, no point a built-in reaches that a third party
+cannot — under §16.3's union rule and §16.4's ephemeral/durable split.
+`context.append/1` is retired the way `Plugin::on_init` was (§11.6): not
+wired up differently, removed, because a point strictly weaker than the
+in-process capability it was supposed to give parity with is worse than
+absent — it is a promise of parity the design did not keep.
