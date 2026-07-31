@@ -34,6 +34,53 @@
 //! model-supplied -- see `conway-tools`' `subagent/control.rs`) as
 //! `caller`, so a model can never forge a wider `caller` than its own true
 //! identity.
+//!
+//! ## `caller` on `start`/`ask`/`tree` (board item 01KYTP0PGKJ4VCJP5TD39A1WHF)
+//!
+//! `674bb65` (the item above) closed `steer`/`await_result`/`cancel` but
+//! left `start`, `ask`, and `tree` unguarded: `start`/`ask` took only
+//! `parent` and acted on it directly, with nothing checking that the caller
+//! was entitled to attach a child there, and `tree` took no caller at all
+//! and returned the WHOLE runtime-wide tree to anyone holding a
+//! `ToolCtx::subagents` handle -- i.e. every tool. Composed, this was
+//! cross-tree exfiltration in one call: `tree()` to discover a sibling's
+//! `AgentId` (an ordinary, unprivileged read every tool already had), then
+//! `ask(sibling, SubagentSpec { mode: Fork, .. })` to fork that sibling's
+//! ENTIRE context (GP-02: a fork inherits everything up to the fork point)
+//! and read the reply back as plain model output.
+//!
+//! This item closes all three with the SAME mechanism `674bb65` already
+//! established, not a second one (P-1, GP-02 -- no third subagent
+//! primitive, no bypass flag):
+//!
+//! - `start`/`ask` gain a `caller: AgentId` parameter, checked against
+//!   `parent` with the identical `ensure_own_subtree` rule `steer`/
+//!   `await_result`/`cancel` already use -- `parent` outside `caller`'s own
+//!   subtree is [`RuntimeError::AgentNotInSubtree`], an unknown `parent` is
+//!   [`RuntimeError::AgentNotFound`]. `ask` performs no separate check of
+//!   its own: it composes `start` (P-1's own "ask is fork+await-text, not a
+//!   third primitive" rule), so passing `caller` straight through to its
+//!   internal `start(caller, parent, spec)` call is what enforces this for
+//!   `ask` too -- exactly the same "one check, reused" shape `674bb65`
+//!   itself used for the trio it fixed. A `caller` and `parent` that are
+//!   the SAME agent (the ordinary case: an agent starting/asking a child of
+//!   ITSELF) always passes trivially, since an agent's own subtree always
+//!   contains itself.
+//! - `tree` gains a `caller: AgentId` parameter and returns `caller`'s own
+//!   subtree (itself, plus every descendant), never a foreign branch. For
+//!   the session's root agent this is, correctly, the WHOLE tree -- the
+//!   root's subtree IS the tree, by construction, same as the trio's
+//!   root/operator exemption above.
+//!
+//! The SAME root/operator-exemption mechanism applies: `conway::
+//! SessionHandle::fork`/`spawn` pass `self.root` as `caller` (having
+//! already confirmed `parent` belongs to the session via
+//! `ensure_agent_in_session`, so the check always succeeds for that path,
+//! with no bypass needed), and the model-invoked `conway_subagent`/
+//! `conway_ask` tools always pass `ToolCtx::agent_id` as BOTH `caller` and
+//! `parent` (a tool call always starts/asks a child of the CALLING agent
+//! itself -- there is no model-facing argument that names a different
+//! parent, so nothing here removes any existing capability).
 
 use async_trait::async_trait;
 
@@ -43,7 +90,18 @@ use crate::ids::AgentId;
 
 #[async_trait]
 pub trait SubagentHost: Send + Sync + 'static {
-    async fn start(&self, parent: AgentId, spec: SubagentSpec) -> Result<AgentId, RuntimeError>;
+    /// `caller` must own `parent` (`parent` is `caller` itself, or a
+    /// descendant of `caller` -- see this module's own doc, "`caller` on
+    /// `start`/`ask`/`tree`"). A `parent` outside `caller`'s own subtree is
+    /// [`RuntimeError::AgentNotInSubtree`]; an unknown `parent` is
+    /// [`RuntimeError::AgentNotFound`]. Never a panic (P-10: both ids may be
+    /// model-supplied).
+    async fn start(
+        &self,
+        caller: AgentId,
+        parent: AgentId,
+        spec: SubagentSpec,
+    ) -> Result<AgentId, RuntimeError>;
 
     /// `text`'s attribution (`AgentMessage::Steer::from`) MUST derive from
     /// `caller` -- deriving it from `target`'s own tree parent (the
@@ -72,7 +130,11 @@ pub trait SubagentHost: Send + Sync + 'static {
         reason: String,
     ) -> Result<(), RuntimeError>;
 
-    fn tree(&self) -> AgentTreeSnapshot;
+    /// `caller`'s own subtree (itself, plus every descendant) -- never a
+    /// foreign branch. See this module's own doc, "`caller` on
+    /// `start`/`ask`/`tree`". For the session's root agent this is the
+    /// whole tree, correctly: the root's subtree IS the tree.
+    fn tree(&self, caller: AgentId) -> AgentTreeSnapshot;
 
     /// Runs `spec` (fork-only by convention) as an ephemeral child of
     /// `parent` and returns the child's FULL concatenated `TextDelta` reply
@@ -83,6 +145,12 @@ pub trait SubagentHost: Send + Sync + 'static {
     /// `launch_agent` so the first `TextDelta` is not missed, and MUST
     /// agent-id-check the child's `AgentFinished` so a sibling finishing
     /// does not resolve the drain. `ask` is fork+await-text, NOT a third
-    /// subagent primitive (P-1): no mode parameter.
-    async fn ask(&self, parent: AgentId, spec: SubagentSpec) -> Result<AskOutcome, RuntimeError>;
+    /// subagent primitive (P-1): no mode parameter. `caller` must own
+    /// `parent`, exactly as `start` requires -- see this module's own doc.
+    async fn ask(
+        &self,
+        caller: AgentId,
+        parent: AgentId,
+        spec: SubagentSpec,
+    ) -> Result<AskOutcome, RuntimeError>;
 }

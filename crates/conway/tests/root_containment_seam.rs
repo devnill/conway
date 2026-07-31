@@ -17,10 +17,20 @@
 //! actually says.
 //!
 //! A confined child is always produced via [`SessionHandle::spawn`] with
-//! [`SpawnSpec::root`] -- `RootSpec` (a session's root agent) has no root
-//! field at all (S3's own disclosed scope limit: every root agent starts
-//! unconfined), so only a spawned child can be confined in this codebase
-//! today.
+//! [`SpawnSpec::root`].
+//!
+//! **Board item 01KYTMH9JX21CGSE2Y6E2KP8SJ.** `RootSpec` (a session's ROOT
+//! agent -- the one an operator actually talks to) used to have no `root`
+//! field at all, so every root agent started unconfined regardless of what
+//! `PermissionBroker::check_root` could do, and `must_reach_gate` was
+//! therefore always false for it. `ConwayBuilder::with_root` closes that gap
+//! (see [`build_conway_with_root`] below); the tests in the final section of
+//! this file ("root agent confinement") drive that surface end to end,
+//! through the same real stack every other test here does, and additionally
+//! cover the one composition this codebase could never previously exercise:
+//! a spawned child's root narrowing against a parent that is ITSELF
+//! confined (every earlier test here confines only the child, against an
+//! always-`Unconfined` parent).
 #![cfg(feature = "builtin-tools")]
 
 use std::collections::BTreeMap;
@@ -165,6 +175,27 @@ fn build_conway(script: Vec<ScriptedTurn>, gate: Arc<dyn PermissionGate>) -> Con
         .with_session_store(store)
         .with_permission_gate(gate)
         .with_router(fake_router())
+        .build()
+        .expect("build should succeed with the real builtin fs/bash tools registered")
+}
+
+/// Identical to [`build_conway`], plus `ConwayBuilder::with_root(root)` --
+/// board item 01KYTMH9JX21CGSE2Y6E2KP8SJ's own operator surface. Every
+/// session this `Conway` starts (`conway.new_session`) is therefore a
+/// CONFINED root agent, not only a spawned child.
+fn build_conway_with_root(
+    script: Vec<ScriptedTurn>,
+    gate: Arc<dyn PermissionGate>,
+    root: &Path,
+) -> Conway {
+    let backend = Arc::new(ScriptedBackend::new(script).with_id(BackendId::new("fake")));
+    let store = Arc::new(FakeStore::new());
+    ConwayBuilder::from_parts(base_config())
+        .with_backend(backend as Arc<dyn Backend>)
+        .with_session_store(store)
+        .with_permission_gate(gate)
+        .with_router(fake_router())
+        .with_root(root)
         .build()
         .expect("build should succeed with the real builtin fs/bash tools registered")
 }
@@ -825,5 +856,357 @@ async fn no_root_leaves_behavior_unchanged() {
         gate.requests().len(),
         1,
         "the root check must be a complete no-op when the agent has no root"
+    );
+}
+
+// =======================================================================
+// Root agent confinement (board item 01KYTMH9JX21CGSE2Y6E2KP8SJ).
+//
+// Every test above confines only a SPAWNED CHILD -- the parent it spawns
+// from is always `Unconfined` (`build_conway` never calls `with_root`).
+// These tests instead confine the ROOT agent itself, via
+// `build_conway_with_root`/`ConwayBuilder::with_root`, driven through the
+// exact same real stack: `Conway::new_session` -> `Runtime::start_root` ->
+// real `ReadTool`/`BashTool` -> real `ToolRunner`/`PermissionBroker`.
+// =======================================================================
+
+// ---------------------------------------------------------------------
+// 11. A configured root confines the ROOT agent's own tool calls, not only
+//     a spawned child's -- the central claim this item exists to make true.
+// ---------------------------------------------------------------------
+#[tokio::test]
+async fn a_configured_root_confines_the_root_agent_itself() {
+    let tmp = TempDir::new().unwrap();
+    let root_dir = tmp.path().join("root");
+    let outside_dir = tmp.path().join("outside");
+    std::fs::create_dir(&root_dir).unwrap();
+    std::fs::create_dir(&outside_dir).unwrap();
+    std::fs::write(outside_dir.join("secret.txt"), b"TOP SECRET").unwrap();
+
+    let gate = RecordingGate::new(PermissionDecision::AllowOnce);
+    let secret_path = outside_dir.join("secret.txt");
+    let conway = build_conway_with_root(
+        vec![
+            ScriptedTurn::Respond(read_call(&secret_path.display().to_string())),
+            ScriptedTurn::Respond(text_response("done")),
+        ],
+        gate.clone() as Arc<dyn PermissionGate>,
+        &root_dir,
+    );
+
+    let handle = conway
+        .new_session(SessionSpec {
+            cwd: Some(root_dir.clone()),
+            ..SessionSpec::default()
+        })
+        .await
+        .expect("new_session");
+    run_root_turn(&handle, "read the secret").await;
+
+    let records = handle
+        .transcript(handle.root())
+        .await
+        .expect("transcript should resolve");
+    let result = tool_result(&records);
+    assert!(
+        result.is_error,
+        "the ROOT agent's own out-of-root read must be denied, not just a spawned child's"
+    );
+    assert!(
+        gate.requests().is_empty(),
+        "an out-of-root call from the root agent must never reach the operator's gate: {:?}",
+        gate.requests()
+    );
+}
+
+// ---------------------------------------------------------------------
+// 11b. `cd` out of a CONFINED ROOT AGENT's own root -> denied, by the same
+//      generic `PathArgs::Named` mechanism as test 2b -- explicitly
+//      confirmed for a root-agent root, per this item's own "Interaction
+//      with `cd`" requirement, not merely inferred from `read`'s behavior
+//      above.
+// ---------------------------------------------------------------------
+#[tokio::test]
+async fn cd_out_of_a_confined_root_agents_own_root_is_denied() {
+    let tmp = TempDir::new().unwrap();
+    let root_dir = tmp.path().join("root");
+    let outside_dir = tmp.path().join("outside");
+    std::fs::create_dir(&root_dir).unwrap();
+    std::fs::create_dir(&outside_dir).unwrap();
+
+    let gate = RecordingGate::new(PermissionDecision::AllowOnce);
+    let conway = build_conway_with_root(
+        vec![
+            ScriptedTurn::Respond(cd_call(&outside_dir.display().to_string())),
+            ScriptedTurn::Respond(text_response("done")),
+        ],
+        gate.clone() as Arc<dyn PermissionGate>,
+        &root_dir,
+    );
+
+    let handle = conway
+        .new_session(SessionSpec {
+            cwd: Some(root_dir.clone()),
+            ..SessionSpec::default()
+        })
+        .await
+        .expect("new_session");
+    run_root_turn(&handle, "leave the root").await;
+
+    let records = handle
+        .transcript(handle.root())
+        .await
+        .expect("transcript should resolve");
+    let result = tool_result(&records);
+    assert!(
+        result.is_error,
+        "a `cd` to a directory outside a CONFINED ROOT AGENT's own root must be denied, even \
+         though `CdTool` itself performs no root check"
+    );
+    assert!(
+        gate.requests().is_empty(),
+        "an out-of-root `cd` from the root agent must never reach the operator's gate: {:?}",
+        gate.requests()
+    );
+}
+
+// ---------------------------------------------------------------------
+// 11c. `cd` WITHIN a confined root agent's own root -> allowed. Pairs with
+//      11b the same way test 2c pairs with 2b: cwd was never the security
+//      boundary, so moving around inside the root is unremarkable and must
+//      not be collateral damage of 11b's check.
+// ---------------------------------------------------------------------
+#[tokio::test]
+async fn cd_within_a_confined_root_agents_own_root_is_allowed() {
+    let tmp = TempDir::new().unwrap();
+    let root_dir = tmp.path().join("root");
+    let sub = root_dir.join("sub");
+    std::fs::create_dir_all(&sub).unwrap();
+
+    let gate = RecordingGate::new(PermissionDecision::AllowOnce);
+    let conway = build_conway_with_root(
+        vec![
+            ScriptedTurn::Respond(cd_call(&sub.display().to_string())),
+            ScriptedTurn::Respond(text_response("done")),
+        ],
+        gate.clone() as Arc<dyn PermissionGate>,
+        &root_dir,
+    );
+
+    let handle = conway
+        .new_session(SessionSpec {
+            cwd: Some(root_dir.clone()),
+            ..SessionSpec::default()
+        })
+        .await
+        .expect("new_session");
+    run_root_turn(&handle, "move within the root").await;
+
+    let records = handle
+        .transcript(handle.root())
+        .await
+        .expect("transcript should resolve");
+    let result = tool_result(&records);
+    assert!(
+        !result.is_error,
+        "a `cd` inside a confined root agent's own root must succeed; got {:?}",
+        blocks_text(&result.blocks)
+    );
+}
+
+// ---------------------------------------------------------------------
+// 12. `must_reach_gate` is reachable for the ROOT agent: bash's own
+//     Unconfinable `command` always reaches the gate under a configured
+//     root, even with AutoAllow mode AND a matching pattern grant both in
+//     play -- the exact property `docs/design/extension-architecture.md`
+//     §5.1/§7.5 depend on, and which was vacuous for a root agent before
+//     this item (no `RootSpec::root` meant `AgentRoot::reconstruct` always
+//     produced `Unconfined` for it, so `must_reach_gate` was always false).
+// ---------------------------------------------------------------------
+#[tokio::test]
+async fn unconfinable_bash_command_always_reaches_the_gate_for_a_confined_root_agent() {
+    let root_dir = TempDir::new().unwrap();
+
+    let gate = RecordingGate::new(PermissionDecision::AllowOnce);
+    let conway = build_conway_with_root(
+        vec![
+            ScriptedTurn::Respond(bash_call("echo hi", None)),
+            ScriptedTurn::Respond(text_response("done")),
+        ],
+        gate.clone() as Arc<dyn PermissionGate>,
+        root_dir.path(),
+    );
+    conway.set_permission_mode(PermissionMode::AutoAllow);
+    conway.grant_permission_pattern(
+        PatternRule::parse("bash:echo hi").expect("valid rule"),
+        PermissionScope::Session,
+        AgentId::new(),
+    );
+
+    let handle = conway
+        .new_session(SessionSpec {
+            cwd: Some(root_dir.path().to_path_buf()),
+            ..SessionSpec::default()
+        })
+        .await
+        .expect("new_session");
+    run_root_turn(&handle, "run a harmless command").await;
+
+    let records = handle
+        .transcript(handle.root())
+        .await
+        .expect("transcript should resolve");
+    let result = tool_result(&records);
+    assert!(
+        !result.is_error,
+        "the gate's own AllowOnce must still let the call through: {:?}",
+        blocks_text(&result.blocks)
+    );
+    assert_eq!(
+        gate.requests().len(),
+        1,
+        "an Unconfinable call from a CONFINED ROOT agent must reach the gate even with \
+         AutoAllow mode AND a matching pattern grant both in play: {:?}",
+        gate.requests()
+    );
+}
+
+// ---------------------------------------------------------------------
+// 13. No configured root (the default) -> the root agent stays unconfined,
+//     byte-for-byte, exactly as every invocation before this item.
+// ---------------------------------------------------------------------
+#[tokio::test]
+async fn no_configured_root_leaves_the_root_agent_unconfined() {
+    let tmp = TempDir::new().unwrap();
+    let cwd_dir = tmp.path().join("cwd");
+    let other_dir = tmp.path().join("other");
+    std::fs::create_dir(&cwd_dir).unwrap();
+    std::fs::create_dir(&other_dir).unwrap();
+    std::fs::write(other_dir.join("other.txt"), b"unconfined").unwrap();
+
+    let gate = RecordingGate::new(PermissionDecision::AllowOnce);
+    let other_path = other_dir.join("other.txt");
+    // Deliberately `build_conway`, not `build_conway_with_root`: no
+    // `ConwayBuilder::with_root` call at all.
+    let conway = build_conway(
+        vec![
+            ScriptedTurn::Respond(read_call(&other_path.display().to_string())),
+            ScriptedTurn::Respond(text_response("done")),
+        ],
+        gate.clone() as Arc<dyn PermissionGate>,
+    );
+
+    let handle = conway
+        .new_session(SessionSpec {
+            cwd: Some(cwd_dir.clone()),
+            ..SessionSpec::default()
+        })
+        .await
+        .expect("new_session");
+    run_root_turn(&handle, "read the other file").await;
+
+    let records = handle
+        .transcript(handle.root())
+        .await
+        .expect("transcript should resolve");
+    let result = tool_result(&records);
+    assert!(
+        !result.is_error,
+        "with no configured root, the ROOT agent itself reads outside its own cwd exactly as \
+         before this item: {:?}",
+        blocks_text(&result.blocks)
+    );
+    assert!(blocks_text(&result.blocks).contains("unconfined"));
+    assert_eq!(gate.requests().len(), 1);
+}
+
+// ---------------------------------------------------------------------
+// 14. A spawned child's root can never WIDEN a confined root agent's own
+//     root -- the composition this codebase could never previously
+//     exercise (every earlier "narrow-only" test confines only the child,
+//     against an always-`Unconfined` parent). The spawn itself must fail.
+// ---------------------------------------------------------------------
+#[tokio::test]
+async fn a_spawned_childs_root_cannot_widen_a_confined_root_agents_own_root() {
+    let tmp = TempDir::new().unwrap();
+    let parent_root = tmp.path().join("parent_root");
+    let sideways_root = tmp.path().join("sideways");
+    std::fs::create_dir(&parent_root).unwrap();
+    std::fs::create_dir(&sideways_root).unwrap();
+
+    let gate = RecordingGate::new(PermissionDecision::AllowOnce);
+    let conway = build_conway_with_root(vec![], gate.clone() as Arc<dyn PermissionGate>, &parent_root);
+
+    let handle = conway
+        .new_session(SessionSpec {
+            cwd: Some(parent_root.clone()),
+            ..SessionSpec::default()
+        })
+        .await
+        .expect("new_session");
+
+    let spec = SpawnSpec::new("try to widen the root")
+        .root(&sideways_root)
+        .cwd(&sideways_root);
+    let err = handle
+        .spawn(handle.root(), spec)
+        .await
+        .expect_err("a spawn root disjoint from the parent's own confined root must fail");
+    let message = err.to_string();
+    assert!(
+        message.contains("root"),
+        "the spawn failure should name the root mismatch: {message}"
+    );
+}
+
+// ---------------------------------------------------------------------
+// 15. A spawned child that sets NO root override inherits the confined root
+//     agent's own root unchanged -- it does not start unconfined just
+//     because the parent's confinement is new.
+// ---------------------------------------------------------------------
+#[tokio::test]
+async fn a_spawned_child_with_no_override_inherits_a_confined_root_agents_own_root() {
+    let tmp = TempDir::new().unwrap();
+    let parent_root = tmp.path().join("parent_root");
+    let outside_dir = tmp.path().join("outside");
+    std::fs::create_dir(&parent_root).unwrap();
+    std::fs::create_dir(&outside_dir).unwrap();
+    std::fs::write(outside_dir.join("secret.txt"), b"TOP SECRET").unwrap();
+
+    let gate = RecordingGate::new(PermissionDecision::AllowOnce);
+    let secret_path = outside_dir.join("secret.txt");
+    let conway = build_conway_with_root(
+        vec![
+            ScriptedTurn::Respond(read_call(&secret_path.display().to_string())),
+            ScriptedTurn::Respond(text_response("done")),
+        ],
+        gate.clone() as Arc<dyn PermissionGate>,
+        &parent_root,
+    );
+
+    let handle = conway
+        .new_session(SessionSpec {
+            cwd: Some(parent_root.clone()),
+            ..SessionSpec::default()
+        })
+        .await
+        .expect("new_session");
+
+    // Deliberately no `.root(..)`/`.cwd(..)` override: the child inherits
+    // the parent's cwd AND its now-confined root, unchanged.
+    let spec = SpawnSpec::new("read the secret");
+    let records = spawn_and_await(&handle, spec).await;
+
+    let result = tool_result(&records);
+    assert!(
+        result.is_error,
+        "a spawned child with no root override must inherit the parent's now-confined root, \
+         not start unconfined: {:?}",
+        blocks_text(&result.blocks)
+    );
+    assert!(
+        gate.requests().is_empty(),
+        "the inherited-root denial must never reach the operator's gate: {:?}",
+        gate.requests()
     );
 }

@@ -24,7 +24,9 @@ use conway_core::ports::{
     CancellationToken, CwdHandle, EventSinkHandle, Plugin, PluginConfig, SubagentHost, Tool,
     ToolCtx, ToolOutput,
 };
-use conway_tools::subagent::{AskTool, AwaitTool, CancelTool, SteerTool, SubagentPlugin, SubagentTool};
+use conway_tools::subagent::{
+    AskTool, AwaitTool, CancelTool, SteerTool, SubagentPlugin, SubagentTool,
+};
 use conway_tools::testing::{test_ctx, FakeSubagentHost, RecordingEventSink};
 
 fn call(name: &str, arguments: serde_json::Value) -> ToolCall {
@@ -267,10 +269,7 @@ async fn ask_tool_calls_subagent_host_ask_with_ephemeral_fork_spec() {
 
     // GP-01: the model sees the full, clean reply text.
     assert_eq!(text_of(&out), "curated brief");
-    assert_eq!(
-        out.truncation,
-        TruncationPolicy::Tail { max_bytes: 16_384 }
-    );
+    assert_eq!(out.truncation, TruncationPolicy::Tail { max_bytes: 16_384 });
     // P-2: an `EphemeralSessionRef` artifact carrying the child's
     // `transcript_ref`.
     assert_eq!(out.artifacts.len(), 1);
@@ -810,10 +809,7 @@ async fn pre_cancelled_ctx_short_circuits_every_tool() {
             "conway_subagent",
             serde_json::json!({"mode": "fork", "prompt": "p"}),
         ),
-        (
-            "conway_ask",
-            serde_json::json!({"prompt": "p"}),
-        ),
+        ("conway_ask", serde_json::json!({"prompt": "p"})),
         (
             "conway_steer",
             serde_json::json!({"agent_id": AgentId::new().to_string(), "text": "x"}),
@@ -859,8 +855,13 @@ struct BlockingAwaitHost {
 
 #[async_trait]
 impl SubagentHost for BlockingAwaitHost {
-    async fn start(&self, parent: AgentId, spec: SubagentSpec) -> Result<AgentId, RuntimeError> {
-        self.inner.start(parent, spec).await
+    async fn start(
+        &self,
+        caller: AgentId,
+        parent: AgentId,
+        spec: SubagentSpec,
+    ) -> Result<AgentId, RuntimeError> {
+        self.inner.start(caller, parent, spec).await
     }
     async fn steer(
         &self,
@@ -886,11 +887,16 @@ impl SubagentHost for BlockingAwaitHost {
     ) -> Result<(), RuntimeError> {
         self.inner.cancel(caller, target, reason).await
     }
-    fn tree(&self) -> AgentTreeSnapshot {
-        self.inner.tree()
+    fn tree(&self, caller: AgentId) -> AgentTreeSnapshot {
+        self.inner.tree(caller)
     }
-    async fn ask(&self, parent: AgentId, spec: SubagentSpec) -> Result<AskOutcome, RuntimeError> {
-        self.inner.ask(parent, spec).await
+    async fn ask(
+        &self,
+        caller: AgentId,
+        parent: AgentId,
+        spec: SubagentSpec,
+    ) -> Result<AskOutcome, RuntimeError> {
+        self.inner.ask(caller, parent, spec).await
     }
 }
 

@@ -272,7 +272,12 @@ pub(crate) async fn classify(
     // Subscribe BEFORE `start` so the child's first `TextDelta` cannot race
     // past the drain (the same ordering `SessionHandle::ask` documents).
     let live = rt.subscribe();
-    let child = SubagentHost::start(rt.as_ref(), parent, spec)
+    // P-1 (board item 01KYTP0PGKJ4VCJP5TD39A1WHF): `caller` and `parent` are
+    // both `parent` -- classification always spawns a child of the caller's
+    // OWN focused agent (this function's `parent` argument), never a
+    // different one, so there is no separate caller identity to thread
+    // through here.
+    let child = SubagentHost::start(rt.as_ref(), parent, parent, spec)
         .await
         .map_err(ConwayError::Runtime)?;
     // Disclosed residual (shared with B2's ask path): if `start` fails
@@ -288,7 +293,9 @@ pub(crate) async fn classify(
         .map(|n| n.session)
         // Tree nodes are never detached, so a just-attached child cannot be
         // absent; this arm exists only to keep the function total.
-        .ok_or(ConwayError::Runtime(RuntimeError::AgentNotFound { agent: child }))?;
+        .ok_or(ConwayError::Runtime(RuntimeError::AgentNotFound {
+            agent: child,
+        }))?;
 
     // Drive the child's single turn to its terminal event. `keep_alive:
     // false` guarantees exactly one `AgentFinished` follows the turn
@@ -366,7 +373,10 @@ fn classification_prompt(text: &str, defs: &HashMap<String, AgentDef>) -> String
         names
             .iter()
             .map(|name| {
-                let description = defs[*name].description.as_deref().unwrap_or("no description");
+                let description = defs[*name]
+                    .description
+                    .as_deref()
+                    .unwrap_or("no description");
                 format!("- {name}: {description}")
             })
             .collect::<Vec<_>>()
@@ -404,7 +414,12 @@ fn parse_reply(
         Err(_) => return passthrough(default_recipe, raw_text),
     };
 
-    let recipe_raw = raw.recipe.as_deref().unwrap_or("").trim().to_ascii_lowercase();
+    let recipe_raw = raw
+        .recipe
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
     let recipe = match recipe_raw.as_str() {
         "fork" => SubagentMode::Fork,
         "spawn" => SubagentMode::Spawn,

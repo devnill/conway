@@ -24,12 +24,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use conway_core::agent::{
-    Budget, PermissionDecision, ResultStatus, SubagentMode, SubagentSpec,
-};
+use conway_core::agent::{Budget, PermissionDecision, ResultStatus, SubagentMode, SubagentSpec};
 use conway_core::content::{ContentBlock, StopReason, Usage};
 use conway_core::event::Event;
-use conway_core::fakes::{FakeGate, FakeHealth, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
+use conway_core::fakes::{
+    FakeGate, FakeHealth, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn,
+};
 use conway_core::ids::{AgentId, BackendId, LogSeq, ModelId, ModelRef, RoleAlias, SessionId};
 use conway_core::log::SessionMeta;
 use conway_core::ports::{Backend, Router, SessionStore, SubagentHost};
@@ -106,7 +106,10 @@ async fn attach_stamps_agent_spawned_ephemeral_from_node_and_ephemeral_of_reads_
     // `ephemeral_of` reads the field back for the `AgentFinished` stamp.
     assert!(tree.ephemeral_of(ephemeral_child), "ephemeral child");
     assert!(!tree.ephemeral_of(normal_child), "normal child");
-    assert!(!tree.ephemeral_of(AgentId::new()), "unknown agent defaults false");
+    assert!(
+        !tree.ephemeral_of(AgentId::new()),
+        "unknown agent defaults false"
+    );
 
     // Drain the two `AgentSpawned` events in emission order and assert the
     // `ephemeral` flag is stamped verbatim from each node.
@@ -119,11 +122,17 @@ async fn attach_stamps_agent_spawned_ephemeral_from_node_and_ephemeral_of_reads_
             .expect("envelope");
         match envelope.event {
             Event::AgentSpawned { ephemeral, .. } if envelope.agent == ephemeral_child => {
-                assert!(ephemeral, "ephemeral child's AgentSpawned carries ephemeral: true");
+                assert!(
+                    ephemeral,
+                    "ephemeral child's AgentSpawned carries ephemeral: true"
+                );
                 seen_ephemeral = Some(ephemeral);
             }
             Event::AgentSpawned { ephemeral, .. } if envelope.agent == normal_child => {
-                assert!(!ephemeral, "normal child's AgentSpawned carries ephemeral: false");
+                assert!(
+                    !ephemeral,
+                    "normal child's AgentSpawned carries ephemeral: false"
+                );
                 seen_normal = true;
             }
             other => panic!("unexpected event: {other:?}"),
@@ -191,7 +200,11 @@ async fn snapshot_projects_ephemeral_flag_per_node() {
     let snapshot = tree.snapshot();
     // Both children stay IN the snapshot (P-2: adding a marker, never
     // filtering).
-    assert_eq!(snapshot.nodes.len(), 3, "snapshot keeps every attached node");
+    assert_eq!(
+        snapshot.nodes.len(),
+        3,
+        "snapshot keeps every attached node"
+    );
     let flag_of = |id: AgentId| {
         snapshot
             .nodes
@@ -201,7 +214,10 @@ async fn snapshot_projects_ephemeral_flag_per_node() {
             .ephemeral
     };
     assert!(flag_of(ephemeral_child), "ephemeral child projects true");
-    assert!(!flag_of(persistent_child), "persistent child projects false");
+    assert!(
+        !flag_of(persistent_child),
+        "persistent child projects false"
+    );
     assert!(!flag_of(parent), "root projects false");
 }
 
@@ -262,6 +278,7 @@ fn root_spec(prompt: &str) -> RootSpec {
         tools: None,
         budget: Budget::default(),
         cwd: PathBuf::from("/tmp"),
+        root: None,
         prompt: Some(prompt.to_string()),
         keep_alive: false,
         model: None,
@@ -292,7 +309,7 @@ async fn conway_subagent_fork_emits_ephemeral_false_on_spawn_and_finish() {
         }
     }
 
-    let child = SubagentHost::start(&*runtime, root, fork_spec("look closer"))
+    let child = SubagentHost::start(&*runtime, root, root, fork_spec("look closer"))
         .await
         .unwrap();
 
@@ -319,7 +336,9 @@ async fn conway_subagent_fork_emits_ephemeral_false_on_spawn_and_finish() {
                 );
                 seen_spawn = true;
             }
-            Event::AgentFinished { ephemeral, result, .. } => {
+            Event::AgentFinished {
+                ephemeral, result, ..
+            } => {
                 assert!(
                     !ephemeral,
                     "conway_subagent fork's AgentFinished must carry ephemeral: false"
@@ -332,9 +351,7 @@ async fn conway_subagent_fork_emits_ephemeral_false_on_spawn_and_finish() {
         }
     }
     assert!(seen_spawn, "child AgentSpawned observed");
-    assert!(
-        seen_finish, "child AgentFinished observed",
-    );
+    assert!(seen_finish, "child AgentFinished observed",);
 }
 
 // ---------------------------------------------------------------------
@@ -453,6 +470,7 @@ async fn promote_agent_flips_tree_and_emits_agent_promoted_under_the_child() {
 
     let child = SubagentHost::start(
         &*runtime,
+        root,
         root,
         SubagentSpec {
             ephemeral: true,

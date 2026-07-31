@@ -434,6 +434,7 @@ mod tests {
             fork_from: None,
             config: None,
             cwd: None,
+            root: None,
             verbose: 0,
             command: None,
         }

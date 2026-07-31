@@ -892,6 +892,7 @@ async fn a_spawned_childs_result_contract_is_enforced_through_subagent_host() {
             tools: None,
             budget: Budget::default(),
             cwd: PathBuf::from("/tmp"),
+            root: None,
             prompt: Some("go".to_string()),
             keep_alive: false,
             model: None,
@@ -903,7 +904,9 @@ async fn a_spawned_childs_result_contract_is_enforced_through_subagent_host() {
     spec.role = Some(RoleAlias::new("child"));
     spec.result_contract = Some(schema_requiring("ok"));
 
-    let child = SubagentHost::start(&*runtime, parent, spec).await.unwrap();
+    let child = SubagentHost::start(&*runtime, parent, parent, spec)
+        .await
+        .unwrap();
     let result = SubagentHost::await_result(&*runtime, parent, child)
         .await
         .unwrap();

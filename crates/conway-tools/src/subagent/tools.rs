@@ -15,7 +15,9 @@ use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use conway_core::agent::{AgentDefRef, AgentResult, Budget, ResultStatus, SubagentSpec, ToolSelector};
+use conway_core::agent::{
+    AgentDefRef, AgentResult, Budget, ResultStatus, SubagentSpec, ToolSelector,
+};
 use conway_core::content::{
     ContentBlock, PermissionClass, ToolCall, ToolCategory, ToolSpec, TruncationPolicy,
 };
@@ -304,9 +306,16 @@ impl Tool for SubagentTool {
             root: None,
         };
 
+        // P-1 (board item 01KYTP0PGKJ4VCJP5TD39A1WHF): `caller` and `parent`
+        // are BOTH `ctx.agent_id` -- a model-invoked `conway_subagent` call
+        // always starts a child of the CALLING agent itself; there is no
+        // `SubagentArgs` field that names a different parent. Passing the
+        // runtime-assigned `ctx.agent_id` (never model-supplied) as `caller`
+        // is what lets the trait boundary enforce this even for a future
+        // tool that DID expose a model-chosen parent.
         let child = ctx
             .subagents
-            .start(ctx.agent_id, spec)
+            .start(ctx.agent_id, ctx.agent_id, spec)
             .await
             .map_err(host_error)?;
 

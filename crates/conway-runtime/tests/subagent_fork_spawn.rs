@@ -193,6 +193,7 @@ fn root_spec(prompt: &str) -> RootSpec {
         tools: None,
         budget: Budget::default(),
         cwd: PathBuf::from("/tmp"),
+        root: None,
         prompt: Some(prompt.to_string()),
         keep_alive: false,
         model: None,
@@ -267,7 +268,7 @@ async fn fork_calls_store_fork_exactly_once_and_copies_zero_records() {
     let fake_before = fake_total_records(&store).await;
 
     let mut stream = runtime.subscribe();
-    let child = SubagentHost::start(&*runtime, root, fork_spec("look closer"))
+    let child = SubagentHost::start(&*runtime, root, root, fork_spec("look closer"))
         .await
         .unwrap();
     wait_for_agent_finished(&mut stream, child).await;
@@ -337,7 +338,7 @@ async fn fork_context_contains_inherited_prefix_then_fork_directive() {
     let at_seq = store.head(&parent_session).await.unwrap();
 
     let mut stream = runtime.subscribe();
-    let child = SubagentHost::start(&*runtime, root, fork_spec("look closer"))
+    let child = SubagentHost::start(&*runtime, root, root, fork_spec("look closer"))
         .await
         .unwrap();
     wait_for_agent_finished(&mut stream, child).await;
@@ -431,7 +432,9 @@ async fn spawn_context_has_no_inherited_segment_and_uses_agent_def_system_prompt
         AgentDefRef("reviewer".to_string()),
         Budget::default(),
     );
-    let child = SubagentHost::start(&*runtime, root, spec).await.unwrap();
+    let child = SubagentHost::start(&*runtime, root, root, spec)
+        .await
+        .unwrap();
     wait_for_agent_finished(&mut stream, child).await;
 
     let report = runtime.context_report(child).unwrap();
@@ -479,7 +482,9 @@ async fn spawn_without_agent_def_inherits_the_parents_role() {
         root: None,
     };
     let mut stream = runtime.subscribe();
-    let child = SubagentHost::start(&*runtime, root, spec).await.unwrap();
+    let child = SubagentHost::start(&*runtime, root, root, spec)
+        .await
+        .unwrap();
     wait_for_agent_finished(&mut stream, child).await;
 
     let node = runtime
@@ -514,11 +519,12 @@ async fn agent_spawned_carries_inherited_upto_and_precedes_other_events() {
 
     let mut stream = runtime.subscribe();
 
-    let fork_child = SubagentHost::start(&*runtime, root, fork_spec("dig in"))
+    let fork_child = SubagentHost::start(&*runtime, root, root, fork_spec("dig in"))
         .await
         .unwrap();
     let spawn_child = SubagentHost::start(
         &*runtime,
+        root,
         root,
         SubagentSpec::spawn(
             "review",
@@ -590,7 +596,7 @@ async fn parent_appends_after_fork_do_not_change_the_childs_inherited_context() 
     let parent_session = session_of(&runtime, root);
 
     let mut stream = runtime.subscribe();
-    let child = SubagentHost::start(&*runtime, root, fork_spec("dig in"))
+    let child = SubagentHost::start(&*runtime, root, root, fork_spec("dig in"))
         .await
         .unwrap();
     wait_for_agent_finished(&mut stream, child).await;
@@ -671,7 +677,7 @@ async fn siblings_forked_at_the_same_point_share_one_inherited_arc() {
     let mut ptrs = Vec::new();
     for i in 0..3 {
         let mut stream = runtime.subscribe();
-        let child = SubagentHost::start(&*runtime, root, fork_spec(&format!("sibling {i}")))
+        let child = SubagentHost::start(&*runtime, root, root, fork_spec(&format!("sibling {i}")))
             .await
             .unwrap();
         wait_for_agent_finished(&mut stream, child).await;
@@ -708,7 +714,7 @@ async fn grandchild_fork_inherits_immediate_parents_full_effective_transcript() 
 
     // Fork A from root.
     let mut stream = runtime.subscribe();
-    let a = SubagentHost::start(&*runtime, root, fork_spec("dig in"))
+    let a = SubagentHost::start(&*runtime, root, root, fork_spec("dig in"))
         .await
         .unwrap();
     wait_for_agent_finished(&mut stream, a).await;
@@ -756,7 +762,7 @@ async fn grandchild_fork_inherits_immediate_parents_full_effective_transcript() 
 
     // Fork grandchild B from A.
     let mut stream = runtime.subscribe();
-    let b = SubagentHost::start(&*runtime, a, fork_spec("grandchild look closer"))
+    let b = SubagentHost::start(&*runtime, a, a, fork_spec("grandchild look closer"))
         .await
         .unwrap();
     wait_for_agent_finished(&mut stream, b).await;
@@ -805,7 +811,7 @@ async fn grandchild_fork_inherits_immediate_parents_full_effective_transcript() 
     // shares the identical backing allocation -- sibling sharing holds at
     // fork depth >= 2 too, not just depth 1.
     let mut stream = runtime.subscribe();
-    let c = SubagentHost::start(&*runtime, a, fork_spec("second grandchild"))
+    let c = SubagentHost::start(&*runtime, a, a, fork_spec("second grandchild"))
         .await
         .unwrap();
     wait_for_agent_finished(&mut stream, c).await;
@@ -835,7 +841,9 @@ async fn start_succeeds_with_default_budget_every_child_has_a_budget_by_construc
     let spec = SubagentSpec::fork("go", Budget::default());
     assert_eq!(spec.budget, Budget::default());
     let mut stream = runtime.subscribe();
-    let child = SubagentHost::start(&*runtime, root, spec).await.unwrap();
+    let child = SubagentHost::start(&*runtime, root, root, spec)
+        .await
+        .unwrap();
     let result = wait_for_agent_finished(&mut stream, child).await;
     assert_eq!(result.status, ResultStatus::Completed);
 }
@@ -857,7 +865,7 @@ async fn await_result_unknown_agent_errors_finished_agent_returns_immediately() 
     assert!(matches!(err, RuntimeError::AgentNotFound { agent } if agent == unknown));
 
     let mut stream = runtime.subscribe();
-    let child = SubagentHost::start(&*runtime, root, fork_spec("go"))
+    let child = SubagentHost::start(&*runtime, root, root, fork_spec("go"))
         .await
         .unwrap();
     wait_for_agent_finished(&mut stream, child).await;
@@ -984,7 +992,7 @@ async fn await_result_blocks_until_the_child_actually_finishes_then_resolves_eve
     });
 
     let root = start_and_finish_root(&runtime, "hi").await;
-    let child = SubagentHost::start(&*runtime, root, fork_spec("go slow"))
+    let child = SubagentHost::start(&*runtime, root, root, fork_spec("go slow"))
         .await
         .unwrap();
 
@@ -1050,11 +1058,11 @@ async fn await_result_blocks_until_the_child_actually_finishes_then_resolves_eve
 async fn build_two_siblings(runtime: &Runtime) -> (AgentId, AgentId, AgentId) {
     let root = start_and_finish_root(runtime, "hi").await;
     let mut stream = runtime.subscribe();
-    let sibling_a = SubagentHost::start(runtime, root, fork_spec("branch a"))
+    let sibling_a = SubagentHost::start(runtime, root, root, fork_spec("branch a"))
         .await
         .unwrap();
     wait_for_agent_finished(&mut stream, sibling_a).await;
-    let sibling_b = SubagentHost::start(runtime, root, fork_spec("branch b"))
+    let sibling_b = SubagentHost::start(runtime, root, root, fork_spec("branch b"))
         .await
         .unwrap();
     wait_for_agent_finished(&mut stream, sibling_b).await;
@@ -1152,11 +1160,11 @@ async fn steer_allows_any_ancestor_not_only_a_direct_parent() {
     let (runtime, _store) = build_runtime(3, HashMap::new());
     let root = start_and_finish_root(&runtime, "hi").await;
     let mut stream = runtime.subscribe();
-    let a = SubagentHost::start(&*runtime, root, fork_spec("a"))
+    let a = SubagentHost::start(&*runtime, root, root, fork_spec("a"))
         .await
         .unwrap();
     wait_for_agent_finished(&mut stream, a).await;
-    let grandchild = SubagentHost::start(&*runtime, a, fork_spec("gc"))
+    let grandchild = SubagentHost::start(&*runtime, a, a, fork_spec("gc"))
         .await
         .unwrap();
     wait_for_agent_finished(&mut stream, grandchild).await;
@@ -1180,15 +1188,15 @@ async fn steer_from_a_sibling_of_an_ancestor_is_still_rejected() {
     let (runtime, _store) = build_runtime(4, HashMap::new());
     let root = start_and_finish_root(&runtime, "hi").await;
     let mut stream = runtime.subscribe();
-    let a = SubagentHost::start(&*runtime, root, fork_spec("a"))
+    let a = SubagentHost::start(&*runtime, root, root, fork_spec("a"))
         .await
         .unwrap();
     wait_for_agent_finished(&mut stream, a).await;
-    let grandchild = SubagentHost::start(&*runtime, a, fork_spec("gc"))
+    let grandchild = SubagentHost::start(&*runtime, a, a, fork_spec("gc"))
         .await
         .unwrap();
     wait_for_agent_finished(&mut stream, grandchild).await;
-    let b = SubagentHost::start(&*runtime, root, fork_spec("b"))
+    let b = SubagentHost::start(&*runtime, root, root, fork_spec("b"))
         .await
         .unwrap();
     wait_for_agent_finished(&mut stream, b).await;
@@ -1230,14 +1238,14 @@ async fn steer_attribution_derives_from_the_caller_not_the_targets_own_parent() 
     let (runtime, store) = build_runtime(3, HashMap::new());
     let root = start_and_finish_root(&runtime, "hi").await;
     let mut stream = runtime.subscribe();
-    let a = SubagentHost::start(&*runtime, root, fork_spec("a"))
+    let a = SubagentHost::start(&*runtime, root, root, fork_spec("a"))
         .await
         .unwrap();
     wait_for_agent_finished(&mut stream, a).await;
 
     let mut keep_alive_spec = SubagentSpec::fork("", Budget::default());
     keep_alive_spec.keep_alive = true;
-    let grandchild = SubagentHost::start(&*runtime, a, keep_alive_spec)
+    let grandchild = SubagentHost::start(&*runtime, a, a, keep_alive_spec)
         .await
         .unwrap();
 
@@ -1284,6 +1292,171 @@ async fn steer_attribution_derives_from_the_caller_not_the_targets_own_parent() 
 }
 
 // ---------------------------------------------------------------------
+// Board item 01KYTP0PGKJ4VCJP5TD39A1WHF: `674bb65` (immediately above) left
+// `start`/`ask`/`tree` unguarded -- `start`/`ask` took only `parent` and
+// acted on it directly, and `tree` took no caller at all and returned the
+// WHOLE runtime-wide tree. Composed, this was cross-tree exfiltration in one
+// call: `tree()` to find a sibling's `AgentId`, then `ask(sibling, ..)` to
+// fork the sibling's ENTIRE context and read the reply back as plain model
+// output. These tests drive the SAME REAL `Runtime` the trio above does --
+// see that section's own doc for why a `FakeSubagentHost` fixture proves
+// nothing about the real trait boundary.
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn start_rejects_a_sibling_as_parent_but_the_owning_root_still_succeeds() {
+    let (runtime, _store) = build_runtime(4, HashMap::new());
+    let (root, sibling_a, sibling_b) = build_two_siblings(&runtime).await;
+
+    // `sibling_a` has seen `sibling_b`'s id and tries to attach a NEW child
+    // under it directly -- `caller` (`sibling_a`, correctly its own true
+    // identity) does not own `parent` (`sibling_b`), so this must be
+    // rejected before any store I/O or child attach happens.
+    let err = SubagentHost::start(&*runtime, sibling_a, sibling_b, fork_spec("attach under b"))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            &err,
+            RuntimeError::AgentNotInSubtree { caller, target }
+                if *caller == sibling_a && *target == sibling_b
+        ),
+        "expected AgentNotInSubtree{{caller: sibling_a, target: sibling_b}}, got {err:?}"
+    );
+    // No child was attached under `sibling_b` for the rejected attempt.
+    assert!(
+        runtime
+            .tree()
+            .nodes
+            .iter()
+            .all(|n| n.parent != Some(sibling_b)),
+        "no child should have been started under sibling_b for a rejected start"
+    );
+
+    // The legitimate operator/root path is unaffected: root owns
+    // `sibling_b`'s subtree, so starting a new child under it succeeds.
+    SubagentHost::start(&*runtime, root, sibling_b, fork_spec("legitimate attach"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn ask_rejects_a_sibling_as_parent_and_the_victims_context_never_comes_back() {
+    let (runtime, _store) = build_runtime(4, HashMap::new());
+    let (_root, sibling_a, sibling_b) = build_two_siblings(&runtime).await;
+
+    // The exfiltration attack this item closes, verbatim: `sibling_a` (an
+    // ordinary, non-privileged agent) has seen `sibling_b`'s id and calls
+    // `ask` with itself as the correct, non-forgeable `caller` but
+    // `sibling_b` as `parent` -- attempting to fork `sibling_b`'s ENTIRE
+    // context (GP-02: a fork inherits everything up to the fork point) and
+    // read the reply back as plain model output.
+    let err = SubagentHost::ask(
+        &*runtime,
+        sibling_a,
+        sibling_b,
+        SubagentSpec::fork("summarize everything above", Budget::default()),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(
+            &err,
+            RuntimeError::AgentNotInSubtree { caller, target }
+                if *caller == sibling_a && *target == sibling_b
+        ),
+        "expected AgentNotInSubtree{{caller: sibling_a, target: sibling_b}}, got {err:?}"
+    );
+    // The victim's context never comes back: no child was ever attached
+    // under `sibling_b`, so there is no forked session for its context to
+    // have leaked into in the first place.
+    assert!(
+        runtime
+            .tree()
+            .nodes
+            .iter()
+            .all(|n| n.parent != Some(sibling_b)),
+        "no ephemeral ask child should have been started under sibling_b for a rejected ask"
+    );
+}
+
+#[tokio::test]
+async fn ask_still_works_when_caller_and_parent_are_the_same_agent() {
+    // The ordinary, model-invoked shape (`conway_ask` always passes
+    // `ctx.agent_id` as both `caller` and `parent`): an agent asking a fork
+    // of ITSELF always succeeds, since an agent's own subtree always
+    // contains itself.
+    let (runtime, _store) = build_runtime(2, HashMap::new());
+    let root = start_and_finish_root(&runtime, "hi").await;
+
+    let outcome = SubagentHost::ask(
+        &*runtime,
+        root,
+        root,
+        SubagentSpec::fork("say hi", Budget::default()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(outcome.status, ResultStatus::Completed);
+}
+
+#[tokio::test]
+async fn tree_scopes_to_the_callers_own_subtree_not_the_whole_runtime() {
+    // root -> a -> grandchild, and root -> b (a's sibling). `a` calling
+    // `tree()` must see ONLY itself and its own descendant (`grandchild`) --
+    // never `root` (its own ancestor) or `b` (an unrelated branch) --
+    // otherwise `tree()` remains the reconnaissance half of the
+    // exfiltration attack this item closes, even after `ask`/`start` are
+    // fixed.
+    let (runtime, _store) = build_runtime(4, HashMap::new());
+    let root = start_and_finish_root(&runtime, "hi").await;
+    let mut stream = runtime.subscribe();
+    let a = SubagentHost::start(&*runtime, root, root, fork_spec("a"))
+        .await
+        .unwrap();
+    wait_for_agent_finished(&mut stream, a).await;
+    let grandchild = SubagentHost::start(&*runtime, a, a, fork_spec("gc"))
+        .await
+        .unwrap();
+    wait_for_agent_finished(&mut stream, grandchild).await;
+    let b = SubagentHost::start(&*runtime, root, root, fork_spec("b"))
+        .await
+        .unwrap();
+    wait_for_agent_finished(&mut stream, b).await;
+
+    let a_view = SubagentHost::tree(&*runtime, a);
+    let a_view_ids: std::collections::HashSet<AgentId> =
+        a_view.nodes.iter().map(|n| n.agent_id).collect();
+    assert_eq!(a_view.root, a, "the scoped snapshot's root is the caller");
+    assert_eq!(
+        a_view_ids,
+        std::collections::HashSet::from([a, grandchild]),
+        "`a`'s own subtree is exactly itself plus its descendant `grandchild` -- never \
+         root (an ancestor) or b (an unrelated sibling branch)"
+    );
+
+    // The root's own subtree IS the whole tree, correctly -- no scoping
+    // regression for the legitimate operator/root path.
+    let root_view = SubagentHost::tree(&*runtime, root);
+    let root_view_ids: std::collections::HashSet<AgentId> =
+        root_view.nodes.iter().map(|n| n.agent_id).collect();
+    assert_eq!(root_view.root, root);
+    assert_eq!(
+        root_view_ids,
+        std::collections::HashSet::from([root, a, grandchild, b]),
+        "the root's own subtree is the whole tree"
+    );
+
+    // An unrelated third party (a fresh, never-attached id) sees an empty
+    // subtree, not an error and not a panic (P-10) -- mirrors
+    // `AgentTree::path`'s own "empty for unknown" convention.
+    let unknown = AgentId::new();
+    let unknown_view = SubagentHost::tree(&*runtime, unknown);
+    assert_eq!(unknown_view.root, unknown);
+    assert!(unknown_view.nodes.is_empty());
+}
+
+// ---------------------------------------------------------------------
 // ToolCtx::subagents IS the Runtime: a tool that forks through it produces
 // a child visible in this same runtime's tree.
 // ---------------------------------------------------------------------
@@ -1314,6 +1487,7 @@ impl conway_core::ports::Tool for ForkingTool {
         let child = ctx
             .subagents
             .start(
+                ctx.agent_id,
                 ctx.agent_id,
                 SubagentSpec::fork("nested", Budget::default()),
             )
@@ -1635,6 +1809,7 @@ async fn spawn_cwd_scopes_child_session_meta_and_tool_ctx_sibling_inherits_paren
     let child_a = SubagentHost::start(
         &*runtime,
         root,
+        root,
         spawn_spec_with_cwd("scoped child", Some(sub_dir.clone())),
     )
     .await
@@ -1657,6 +1832,7 @@ async fn spawn_cwd_scopes_child_session_meta_and_tool_ctx_sibling_inherits_paren
     let mut stream = runtime.subscribe();
     let child_b = SubagentHost::start(
         &*runtime,
+        root,
         root,
         spawn_spec_with_cwd("unscoped sibling", None),
     )
@@ -1704,6 +1880,7 @@ async fn grandchild_with_cwd_none_inherits_immediate_parents_cwd_not_roots() {
     let child = SubagentHost::start(
         &*runtime,
         root,
+        root,
         spawn_spec_with_cwd("scoped child", Some(child_dir.clone())),
     )
     .await
@@ -1713,6 +1890,7 @@ async fn grandchild_with_cwd_none_inherits_immediate_parents_cwd_not_roots() {
     let mut stream = runtime.subscribe();
     let grandchild = SubagentHost::start(
         &*runtime,
+        child,
         child,
         spawn_spec_with_cwd("grandchild, no override", None),
     )
@@ -1751,6 +1929,7 @@ async fn spawn_with_nonexistent_cwd_fails_fast_with_a_clear_error() {
 
     let err = SubagentHost::start(
         &*runtime,
+        root,
         root,
         spawn_spec_with_cwd("doomed", Some(missing_path.clone())),
     )
@@ -1793,6 +1972,7 @@ async fn spawn_with_relative_cwd_resolves_against_the_parents_cwd() {
     let mut stream = runtime.subscribe();
     let child = SubagentHost::start(
         &*runtime,
+        root,
         root,
         spawn_spec_with_cwd("relatively scoped", Some(PathBuf::from("relative_sub"))),
     )
@@ -1849,11 +2029,8 @@ async fn spawn_with_narrower_root_is_accepted_and_child_inherits_it() {
     let child = SubagentHost::start(
         &*runtime,
         root,
-        spawn_spec_with_cwd_and_root(
-            "narrower",
-            Some(sub_dir.clone()),
-            Some(sub_dir.clone()),
-        ),
+        root,
+        spawn_spec_with_cwd_and_root("narrower", Some(sub_dir.clone()), Some(sub_dir.clone())),
     )
     .await
     .unwrap();
@@ -1893,6 +2070,7 @@ async fn spawn_with_wider_root_than_the_parents_fails_naming_both_roots() {
     let confined = SubagentHost::start(
         &*runtime,
         root,
+        root,
         spawn_spec_with_cwd_and_root("confined", Some(sub_dir.clone()), Some(sub_dir.clone())),
     )
     .await
@@ -1904,6 +2082,7 @@ async fn spawn_with_wider_root_than_the_parents_fails_naming_both_roots() {
     // fail -- never silently clamped back to `sub_dir`.
     let err = SubagentHost::start(
         &*runtime,
+        confined,
         confined,
         spawn_spec_with_cwd_and_root(
             "wider",
@@ -1917,7 +2096,14 @@ async fn spawn_with_wider_root_than_the_parents_fails_naming_both_roots() {
     match &err {
         RuntimeError::Tool(ToolError::Internal { detail }) => {
             assert!(
-                detail.contains(&root_dir.path().canonicalize().unwrap().display().to_string()),
+                detail.contains(
+                    &root_dir
+                        .path()
+                        .canonicalize()
+                        .unwrap()
+                        .display()
+                        .to_string()
+                ),
                 "error must name the requested (wider) root; got {detail:?}"
             );
             assert!(
@@ -1954,6 +2140,7 @@ async fn spawn_with_sideways_root_fails() {
     let confined = SubagentHost::start(
         &*runtime,
         root,
+        root,
         spawn_spec_with_cwd_and_root("confined", Some(sub_a.clone()), Some(sub_a.clone())),
     )
     .await
@@ -1962,6 +2149,7 @@ async fn spawn_with_sideways_root_fails() {
 
     let err = SubagentHost::start(
         &*runtime,
+        confined,
         confined,
         spawn_spec_with_cwd_and_root("sideways", Some(sub_b.clone()), Some(sub_b.clone())),
     )
@@ -1982,9 +2170,8 @@ async fn spawn_whose_cwd_escapes_a_newly_narrowed_root_fails() {
     let sub_dir = root_dir.path().join("sub");
     std::fs::create_dir(&sub_dir).unwrap();
 
-    let (runtime, _store, _probe) = build_probe_runtime(vec![ScriptedTurn::Respond(
-        text_response("root turn"),
-    )]);
+    let (runtime, _store, _probe) =
+        build_probe_runtime(vec![ScriptedTurn::Respond(text_response("root turn"))]);
     let mut stream = runtime.subscribe();
     let root = runtime
         .start_root(root_spec_with_cwd("hi", root_dir.path().to_path_buf()))
@@ -1997,6 +2184,7 @@ async fn spawn_whose_cwd_escapes_a_newly_narrowed_root_fails() {
     // the child's own confinement.
     let err = SubagentHost::start(
         &*runtime,
+        root,
         root,
         spawn_spec_with_cwd_and_root("escaping cwd", None, Some(sub_dir.clone())),
     )
@@ -2048,6 +2236,7 @@ async fn grandchild_with_root_none_inherits_immediate_parents_root_not_roots() {
     let child = SubagentHost::start(
         &*runtime,
         root,
+        root,
         spawn_spec_with_cwd_and_root(
             "scoped child",
             Some(child_dir.clone()),
@@ -2061,6 +2250,7 @@ async fn grandchild_with_root_none_inherits_immediate_parents_root_not_roots() {
     let mut stream = runtime.subscribe();
     let grandchild = SubagentHost::start(
         &*runtime,
+        child,
         child,
         spawn_spec_with_cwd_and_root("grandchild, no override", None, None),
     )
@@ -2094,6 +2284,7 @@ async fn spawn_with_nonexistent_root_fails_fast_with_a_clear_error() {
 
     let err = SubagentHost::start(
         &*runtime,
+        root,
         root,
         spawn_spec_with_cwd_and_root("doomed", None, Some(missing_path.clone())),
     )
@@ -2135,6 +2326,7 @@ async fn resume_root_preserves_persisted_root_unchanged() {
     let mut stream = runtime.subscribe();
     let confined = SubagentHost::start(
         &*runtime,
+        root,
         root,
         spawn_spec_with_cwd_and_root("confined", Some(sub_dir.clone()), Some(sub_dir.clone())),
     )
@@ -2198,6 +2390,7 @@ async fn resume_root_cwd_override_outside_persisted_root_fails() {
     let mut stream = runtime.subscribe();
     let confined = SubagentHost::start(
         &*runtime,
+        root,
         root,
         spawn_spec_with_cwd_and_root("confined", Some(sub_dir.clone()), Some(sub_dir.clone())),
     )

@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A root agent can now be confined to a filesystem root — `--root`
+  (`ConwayBuilder::with_root`).** The chroot-analogue primitive
+  (`AgentRoot`/`CanonicalRoot`/`PermissionBroker::check_root`) already
+  existed and was already checked first, above every allow path — but
+  `RootSpec` had no `root` field, so `AgentRoot::reconstruct` always
+  produced `Unconfined` for the ROOT agent of every session (only a
+  spawned/forked child could ever be confined). The agent an operator
+  actually talks to could not be confined. `--root <DIR>` (paired with, and
+  deliberately distinct from, `--cwd` — cwd is where the agent works, root
+  is what it may reach; see each flag's own `--help` text) closes that gap:
+  `Runtime::start_root` now resolves and validates the requested root
+  exactly like a spawned child's (must canonicalize, `cwd` must already fall
+  inside it), and a spawned/forked child's own root still narrows only,
+  never widens, against its now-possibly-confined parent. Default
+  (`--root` absent) is unchanged: `Unconfined`, byte-for-byte, for every
+  existing invocation. Consequently, `must_reach_gate` is now reachable for
+  a root agent too: an `Unconfinable` tool (e.g. `bash`'s own `command`)
+  under a configured root always reaches the operator's gate, never
+  auto-allowed — the property `docs/design/extension-architecture.md`
+  §5.1/§7.5 count on, previously true only vacuously for a root agent.
+  (`crates/conway-runtime/src/runtime.rs`, `crates/conway/src/builder.rs`,
+  `crates/conway/src/conway.rs`, `crates/conway-cli/src/cli.rs`,
+  `crates/conway-cli/src/main.rs`, `crates/conway/tests/root_containment_seam.rs`)
+
 - **Declarative provider profiles.** Per-provider wire behavior (chat path,
   `stream_options`, multi-block user content, `parallel_tool_calls`,
   `max_completion_tokens` vs `max_tokens`, `reasoning_effort`, tool-call
@@ -173,6 +197,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   construction. (`crates/conway-core/src/ports/subagent.rs`,
   `crates/conway-core/src/error.rs`, `crates/conway-runtime/src/subagent.rs`,
   `crates/conway-tools/src/subagent/`, `crates/conway/src/session_handle.rs`)
+
+- **Cross-tree exfiltration in one call: the fix above covered three of six
+  `SubagentHost` methods, leaving `start`, `ask`, and `tree` unguarded.**
+  `tree()` took no caller at all and returned the WHOLE runtime tree to any
+  tool holding `ToolCtx::subagents` (built-in or third-party); `start`/`ask`
+  took only `parent` and acted on it directly, with no check that the caller
+  was entitled to attach or fork there. Composed, any tool could call
+  `tree()` to discover a sibling's `AgentId`, then `ask(sibling,
+  SubagentSpec { mode: Fork, .. })` to fork that sibling's ENTIRE context
+  (a fork inherits everything up to the fork point) and read the reply back
+  as plain model output — the design's own named worst case, executable via
+  a single tool call. Fixed with the SAME mechanism as above, not a second
+  one: `start`/`ask` gain a `caller: AgentId` parameter and enforce, AT THE
+  TRAIT BOUNDARY, that `caller` must own `parent` (`ensure_own_subtree`,
+  reused verbatim — `ask` composes `start`, so it performs no separate check
+  of its own); `tree` gains `caller: AgentId` and returns exactly that
+  caller's own subtree, never a foreign branch (for the session root this is
+  the whole tree, correctly — the root's subtree IS the tree). No new bypass
+  flag: `conway::SessionHandle::fork`/`spawn` pass `self.root` as `caller`,
+  mirroring the existing root/operator exemption exactly, and the
+  model-invoked `conway_subagent`/`conway_ask` tools pass `ToolCtx::agent_id`
+  as both `caller` and `parent` (a tool call always starts/asks a child of
+  the calling agent itself; neither tool's JSON schema names a different
+  parent). (`crates/conway-core/src/ports/subagent.rs`,
+  `crates/conway-core/src/error.rs`, `crates/conway-core/src/fakes.rs`,
+  `crates/conway-runtime/src/subagent.rs`, `crates/conway-tools/src/subagent/`,
+  `crates/conway-tools/src/testing.rs`, `crates/conway/src/session_handle.rs`,
+  `crates/conway/src/intent.rs`, `crates/conway-runtime/tests/subagent_fork_spawn.rs`,
+  `crates/conway/tests/subagent_exfiltration_seam.rs`)
 
 ### Fixed
 

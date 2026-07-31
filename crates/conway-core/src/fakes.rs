@@ -32,8 +32,8 @@ use crate::ids::{
 };
 use crate::log::{ForkOrigin, LogRecord, SessionFilter, SessionMeta, SubagentMode};
 use crate::ports::{
-    Backend, BoxStream, EventSink, GenerateRequest, GenerateResponse, HealthRegistry,
-    LiveOwner, PermissionGate, Router, SessionStore, StreamChunk, SubagentHost,
+    Backend, BoxStream, EventSink, GenerateRequest, GenerateResponse, HealthRegistry, LiveOwner,
+    PermissionGate, Router, SessionStore, StreamChunk, SubagentHost,
 };
 use crate::routing::{BreakerState, Observation, Route, RouteRequest, RoutingReason};
 
@@ -851,7 +851,17 @@ impl FakeSubagentHost {
 
 #[async_trait]
 impl SubagentHost for FakeSubagentHost {
-    async fn start(&self, _parent: AgentId, spec: SubagentSpec) -> Result<AgentId, RuntimeError> {
+    // Board item 01KYTP0PGKJ4VCJP5TD39A1WHF added a `caller` parameter to
+    // `start`/`ask` (mirroring the trio below); this fake stays a pure
+    // recorder/no-op and does not enforce descendancy itself (see this
+    // crate's own module doc, item 1) -- `_caller` is accepted (so it
+    // type-checks against the real trait) and otherwise ignored.
+    async fn start(
+        &self,
+        _caller: AgentId,
+        _parent: AgentId,
+        spec: SubagentSpec,
+    ) -> Result<AgentId, RuntimeError> {
         let child = AgentId::new();
         self.started.lock().unwrap().push((child, spec));
         Ok(child)
@@ -893,11 +903,20 @@ impl SubagentHost for FakeSubagentHost {
         Ok(())
     }
 
-    fn tree(&self) -> AgentTreeSnapshot {
+    // `caller` accepted and ignored, same rationale as `start` above --
+    // this fake's preconfigured `tree` snapshot is returned unscoped
+    // regardless of caller (it is a pure recorder, not a descendancy
+    // enforcer).
+    fn tree(&self, _caller: AgentId) -> AgentTreeSnapshot {
         self.tree.read().unwrap().clone()
     }
 
-    async fn ask(&self, parent: AgentId, spec: SubagentSpec) -> Result<AskOutcome, RuntimeError> {
+    async fn ask(
+        &self,
+        _caller: AgentId,
+        parent: AgentId,
+        spec: SubagentSpec,
+    ) -> Result<AskOutcome, RuntimeError> {
         self.asks.lock().unwrap().push((parent, spec));
         let outcome = self.ask_outcomes.lock().unwrap().get(&parent).cloned();
         Ok(outcome.unwrap_or_else(|| AskOutcome {

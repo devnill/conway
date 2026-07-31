@@ -64,8 +64,22 @@ pub struct Cli {
     #[arg(long, value_name = "PATH")]
     pub config: Option<PathBuf>,
 
+    /// Where the agent WORKS -- the process's (and the root agent's own)
+    /// working directory. This is NOT a security boundary: it never limits
+    /// what a tool call can reach, only where a relative path starts from.
+    /// See `--root` for the setting that actually confines the agent.
     #[arg(long, value_name = "DIR")]
     pub cwd: Option<PathBuf>,
+
+    /// Where the agent is ALLOWED TO REACH -- confines the root agent (and,
+    /// by inheritance, every subagent it forks or spawns) to this directory:
+    /// any tool call whose path argument resolves outside it is denied
+    /// before the operator's permission gate is ever consulted. This IS the
+    /// security boundary; `--cwd` is not one (see that flag's own help).
+    /// Omitted (the default): the root agent is unconfined, exactly as
+    /// every invocation before this flag existed.
+    #[arg(long, value_name = "DIR")]
+    pub root: Option<PathBuf>,
 
     #[arg(short, long, action = ArgAction::Count)]
     pub verbose: u8,
