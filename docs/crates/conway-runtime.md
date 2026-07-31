@@ -53,6 +53,57 @@ health observations using `conway-routing`'s failure classification. See
 [`conway-routing`](conway-routing.md) for that classification and the
 breaker model this engine reports into.
 
+### Prompt caching: a post-routing, capability-keyed pass
+
+`ContextBuilder::build` runs *before* routing resolves a concrete model
+(`AgentLoop::run_inner` builds context, then calls `route_and_attempt`), so
+`ContextInput::cache_mode` can only ever be a pre-routing placeholder —
+every production caller (`runtime.rs`'s `start_root`/resume-root,
+`subagent.rs`'s fork/spawn) sets it to `CacheMode::None`, deliberately, not
+as a gap. Selecting a real `CacheMode` there would mean guessing at a model
+that has not been chosen yet; for an unpinned agent (most of them) it
+cannot be guessed at all.
+
+The real cache-hint attachment happens one layer down, in `AttemptEngine::
+execute`, once per candidate `Route` in the fallback chain — right where
+`caps = backend.capabilities(&route.model)` is already resolved for the
+T-1 headroom gate and the stream-vs-generate strategy choice.
+`attach_route_cache_hints` (private to `attempt.rs`) re-derives the A/B
+breakpoint indices from the FINAL segment list's *provenance* — the last
+`Provenance::ToolRegistry` segment (A) and the last `Provenance::Inherited`
+segment (B), via `context::builder::breakpoint_indices` — rather than
+threading indices computed at `build` time, because a registered
+`ContextHook::before_request` (WI-126) may have added, dropped, or
+reordered segments since `build` ran; re-deriving from provenance on the
+list actually being sent is what keeps this correct regardless. It then
+calls `context::builder::attach_cache_hints` (the same function
+`ContextBuilder::build` itself calls, now exposed `pub(crate)`) with
+`caps.cache` — the ACTUALLY resolved model's capability, never the
+placeholder — marking `PromptSegment::cache_hint` on a fresh per-route
+clone of the segments before `build_request` turns them into a
+`GenerateRequest`.
+
+This is deliberately keyed on *capability*, not backend identity or a
+per-agent opt-in setting: every Anthropic model declares
+`CacheMode::ExplicitBreakpoints { max_breakpoints: 4, .. }`
+(`conway-backends`'s `anthropic_defaults()`), so every turn against one —
+root, fork, or spawn, pinned or routed — gets breakpoints attached with no
+caller action, matching the "caching is a sane default" design decision.
+Fork and spawn children get identical treatment to a root turn (same code
+path); a fork child's inherited-prefix segment additionally lets it mark
+breakpoint B, which is where caching compounds most (GP-02: a child
+inherits the whole ancestry transcript, and every sibling forked at the
+same point shares an identical B-bounded prefix). A route whose resolved
+capability is `CacheMode::ImplicitPrefix` (e.g. Ollama, Kimi) or `None`
+gets no hints at all — `attach_cache_hints`'s own match decides that, so
+this pass is a true no-op for every non-explicit-breakpoint candidate, and
+`PromptSegment::cache_hint` remains read by exactly one module in the
+whole workspace ([`conway-backends`](conway-backends.md)'s
+`anthropic::cache`). See that crate's doc for how a hint becomes
+`cache_control` on the wire, and `conway-core`'s `segment.rs` for why a
+hint is never correctness-bearing (GP-06): the request the model actually
+sees is byte-identical whether or not any hint survives.
+
 ## Context assembly: `ContextBuilder`
 
 `ContextBuilder` (`context/builder.rs`) assembles one agent's request

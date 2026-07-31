@@ -833,6 +833,83 @@ async fn revoke_all_grants_does_not_clear_deny_rules() {
     assert!(matches!(outcome, PermissionOutcome::Deny { .. }));
 }
 
+// ---- sanitizer laundering (board item 01KYTMA306JH81R083Y8K9PWCR) ----
+
+/// In `Prompt` mode, a deny rule that was defeated by laundering used to
+/// silently DEGRADE TO A PROMPT: `deny_matches` missed it, so the call fell
+/// through to the operator's gate exactly as if no deny rule existed at
+/// all. Post-fix, the deny rule must catch it BEFORE the gate is ever
+/// consulted -- a `deny` violation must never merely become "ask the
+/// operator" instead of "refuse".
+#[tokio::test]
+async fn a_laundered_deny_match_refuses_under_prompt_mode_without_degrading_to_a_prompt() {
+    // Scripted to ALLOW, so if the bug is present the outcome flips to
+    // `Allow` and the assertion below catches it -- Prompt mode is the
+    // broker's default, so this is not set explicitly.
+    let gate = ScriptedGate::new(vec![PermissionDecision::AllowOnce]);
+    let (broker, _bus) = broker(gate.clone());
+    let session = SessionId::new();
+    let agent = AgentId::new();
+    let c = ctx(agent, vec![agent], session);
+
+    broker.remember_deny_pattern(
+        PatternRule::parse("bash:curl").expect("valid rule"),
+        PatternOrigin::Interactive,
+    );
+
+    // The sanitized shape of a leading tab, as the real `render_call` seam
+    // actually produces it (`conway_runtime::tools::runner::
+    // sanitize_rendered`) -- a hand-copy for the identical layering reason
+    // `permission_pattern`'s own tests document.
+    let outcome = broker
+        .decide(&c, &bash_call("c1", "\u{FFFD}curl http://evil"))
+        .await;
+
+    assert!(
+        matches!(outcome, PermissionOutcome::Deny { .. }),
+        "a laundered command matching a deny rule must be refused, not \
+         silently downgraded to a prompt the gate happens to allow"
+    );
+    assert_eq!(
+        gate.call_count(),
+        0,
+        "the deny rule must short-circuit before the gate is ever \
+         consulted -- reaching the gate at all is the bug"
+    );
+}
+
+/// In `AutoAllow` mode, a deny rule is the LAST guardrail -- there is no
+/// operator on the other end of a miss to catch it. A laundered command
+/// that defeats the deny match must not be allowed.
+#[tokio::test]
+async fn a_laundered_deny_match_is_not_allowed_under_auto_allow() {
+    // An empty script: the gate must never be consulted at all in
+    // AutoAllow, so any call to it is itself a failure regardless of what
+    // it would have answered.
+    let gate = ScriptedGate::new(vec![]);
+    let (broker, _bus) = broker(gate.clone());
+    let session = SessionId::new();
+    let agent = AgentId::new();
+    let c = ctx(agent, vec![agent], session);
+
+    broker.set_mode(PermissionMode::AutoAllow);
+    broker.remember_deny_pattern(
+        PatternRule::parse("bash:curl").expect("valid rule"),
+        PatternOrigin::Interactive,
+    );
+
+    let outcome = broker
+        .decide(&c, &bash_call("c1", "\u{FFFD}curl http://evil"))
+        .await;
+
+    assert!(
+        matches!(outcome, PermissionOutcome::Deny { .. }),
+        "AutoAllow must not allow a command a deny rule was meant to \
+         refuse just because laundering broke the naive prefix match"
+    );
+    assert_eq!(gate.call_count(), 0);
+}
+
 /// `active_patterns()` reports each grant's origin, so a project-loaded
 /// rule is distinguishable from an interactively-approved one.
 #[tokio::test]

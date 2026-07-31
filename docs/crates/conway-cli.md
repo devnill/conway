@@ -1178,6 +1178,15 @@ auto-approved that command on first launch, in a repo that also controls
   auto-allowed regardless of what patterns exist, so a chained command
   always reaches you either way. Put anything that must never run under any
   circumstance in the confinement root, not in a `deny` prefix.
+  Separately, a `deny` rule is **not** evadable by a leading control
+  character: a command's `rendered` text has already had every control
+  byte (tab, newline, CR, an escape sequence) rewritten to a display-safe
+  placeholder before `deny` ever sees it, and a `deny` rule treats that
+  placeholder — or a raw control character, for the rare caller that hands
+  it one directly — as matching any of its rules for that tool rather than
+  as evidence to trust a naive comparison against. `\tcurl http://evil`
+  still hits `deny bash:curl` for exactly this reason (board item
+  01KYTMA306JH81R083Y8K9PWCR).
 - **`/trust permissions`** records an explicit trust decision — a blake3
   digest of the project file's exact bytes, saved to the global,
   user-only `trust.json` — and immediately installs that file's `allow`

@@ -99,6 +99,55 @@
 //! always reaches the human operator -- `deny` is a seatbelt for the
 //! obvious case, not a boundary. Anything that must never happen belongs
 //! in the confinement root, not in a `deny` prefix.
+//!
+//! ## Sanitizer laundering was a second, DIFFERENT hole (board item
+//! 01KYTMA306JH81R083Y8K9PWCR)
+//!
+//! "Ungated" was correctly not the same thing as "immune to the sanitizer
+//! that runs upstream of it." `rendered` reaches `matches_deny` already
+//! passed through `conway_runtime::tools::runner::sanitize_rendered`,
+//! which rewrites every control character to
+//! [`SANITIZED_CONTROL_PLACEHOLDER`] -- and a leading tab (also a control
+//! character) is invisible to every POSIX shell, so `\tcurl http://evil`
+//! runs identically to `curl http://evil` while its SANITIZED form,
+//! `\u{FFFD}curl http://evil`, tokenizes as one fused token that a bare
+//! `prefix_matches` cannot align with a `curl` prefix. This is not the
+//! documented chaining limit above (the command is not being EXTENDED past
+//! what the rule names) -- it is evidence a correct comparison depends on
+//! being destroyed before the comparison runs. [`PatternRule::
+//! matches_deny`]'s own doc has the fix and the reasoning for why it does
+//! not also widen to the documented limit.
+//!
+//! **Two decisions made explicit, per this item's own instruction to state
+//! them rather than leave them implicit:**
+//!
+//! - **`rendered`, not `arguments`.** `docs/design/extension-architecture.md`
+//!   §5.3 warns that `rendered` is sanitized and lossy and must not be the
+//!   basis of a security decision -- which is exactly what motivated
+//!   [`crate::containment`]'s root check (`conway_runtime::permission::
+//!   PermissionBroker::check_root`) to read `arguments` instead. `deny`
+//!   stays on `rendered` anyway: `arguments` is an opaque
+//!   tool-specific JSON value, and "the command string" is only
+//!   extractable from it via per-tool knowledge `matches_deny` has no
+//!   access to (unlike `check_root`, which is handed a declared, named
+//!   list of path arguments via `PathArgs`). `rendered` is the one place
+//!   every tool already agrees on producing a single comparable string --
+//!   it is what makes `deny bash:curl` meaningful and tool-agnostic at
+//!   all. The fix above is the alternative to abandoning `rendered`:
+//!   instead of trusting it blindly, `matches_deny` now recognizes the ONE
+//!   way it lies (control-character laundering) and fails toward the deny
+//!   when it sees that evidence, rather than trusting the string's
+//!   tokenization at face value.
+//! - **`AutoAllow` already consults `deny` (`PermissionBroker::decide`
+//!   checks it before the mode branch), and that is correct as designed --
+//!   not an oversight this item needed to add.** The gap this item closes
+//!   is narrower: a deny rule that was MISSED (via laundering) had nothing
+//!   behind it in `AutoAllow`, because that mode's entire point is to skip
+//!   the operator's gate. `AutoAllow` is the mode where a `deny` rule is
+//!   the LAST remaining guardrail -- there is no human on the other end of
+//!   a miss to catch it -- which is precisely why closing the laundering
+//!   gap matters most there, even though the fix itself lives in
+//!   `matches_deny` and benefits every mode equally.
 
 use std::path::PathBuf;
 
@@ -146,6 +195,27 @@ pub fn contains_shell_metacharacters(command: &str) -> bool {
     command.chars().any(|c| {
         SHELL_METACHARACTERS.contains(&c) || c.is_control() || c == SANITIZED_CONTROL_PLACEHOLDER
     })
+}
+
+/// Whether `command` carries evidence that its own tokenization cannot be
+/// trusted: a raw control character, or [`SANITIZED_CONTROL_PLACEHOLDER`]
+/// (what a control character becomes once the real sanitizer has run).
+///
+/// This is the narrower half of [`contains_shell_metacharacters`] --
+/// deliberately excluding [`SHELL_METACHARACTERS`] itself. See
+/// [`PatternRule::matches_deny`]'s own doc for why: the two callers of this
+/// predicate need different things from it. `matches_deny` needs "was
+/// something erased that would have changed where the tokens fall", which
+/// is exactly what a control character (raw or laundered into the
+/// placeholder) means; it must NOT mean "does this contain `;`", because
+/// `;` doesn't erase anything -- `prefix_matches` sees it exactly as
+/// written, and a command it doesn't align with (`foo; git push` against a
+/// `git push` prefix) is the module's own documented, accepted
+/// prefix-match limit, not a bug this predicate exists to paper over.
+fn rendered_evidence_is_untrustworthy(command: &str) -> bool {
+    command
+        .chars()
+        .any(|c| c.is_control() || c == SANITIZED_CONTROL_PLACEHOLDER)
 }
 
 /// One persisted grant: a tool name plus a command prefix.
@@ -234,11 +304,48 @@ impl PatternRule {
     /// to be hard to evade, so it must match identically regardless of
     /// what the matched tool's rendering happens to look like. See this
     /// module's own doc for why gating a `deny` prefix would defeat it.
+    ///
+    /// ## Sanitizer laundering (board item 01KYTMA306JH81R083Y8K9PWCR)
+    ///
+    /// Omitting the metacharacter gate is not the same as trusting
+    /// `prefix_matches` to tokenize `rendered` correctly no matter what is
+    /// in it. A leading tab/newline/CR/escape is invisible to every POSIX
+    /// shell -- `\tcurl http://evil` runs exactly like `curl http://evil`
+    /// -- but by the time `rendered` reaches this method it has already
+    /// been through `conway_runtime::tools::runner::sanitize_rendered`,
+    /// which rewrites every control character to
+    /// [`SANITIZED_CONTROL_PLACEHOLDER`]. That placeholder is not Unicode
+    /// whitespace, so it fuses onto (`\tcurl` -> `\u{FFFD}curl`, one
+    /// token) or displaces (a leading escape's printable remainder, e.g.
+    /// `[0m`, becomes its OWN leading token) the very token
+    /// `prefix_matches` compares first -- silently defeating a deny rule
+    /// that would otherwise have matched. This is not a chaining
+    /// evasion (the command is not extended past what the rule names);
+    /// it is the evidence a correct comparison needs being destroyed
+    /// upstream, so a naive prefix comparison sees nothing wrong.
+    ///
+    /// [`rendered_evidence_is_untrustworthy`] catches this: `rendered`
+    /// carrying a raw control character (in case a caller ever hands this
+    /// method an unsanitized string directly) or the sanitizer's
+    /// placeholder is treated as MATCHING any deny rule for this tool,
+    /// rather than as failing to match -- fail TOWARD the deny, never
+    /// away from it. This is deliberately narrower than
+    /// [`contains_shell_metacharacters`]: it does NOT fire on
+    /// [`SHELL_METACHARACTERS`] (`;`, `&`, `|`, ...), which are real,
+    /// visible shell syntax `prefix_matches` already reads correctly.
+    /// Firing on those too would silently "fix" -- i.e. narrow away --
+    /// this module's own DOCUMENTED prefix-match limit (`deny bash:git
+    /// push` not catching `foo; git push`, this module's own doc, "a
+    /// seatbelt, not a boundary"), which this item deliberately leaves
+    /// alone.
     pub fn matches_deny(&self, tool: &str, rendered: &str) -> bool {
         if self.tool != tool {
             return false;
         }
         if self.command_prefix == "*" {
+            return true;
+        }
+        if rendered_evidence_is_untrustworthy(rendered) {
             return true;
         }
         prefix_matches(&self.command_prefix, rendered)
@@ -647,6 +754,71 @@ mod tests {
         assert!(!rule.matches_deny("bash", "git statusfoo"));
         assert!(!rule.matches_deny("bash", "git push --force"));
         assert!(!rule.matches_deny("edit", "git status"));
+    }
+
+    // ---- sanitizer laundering (board item 01KYTMA306JH81R083Y8K9PWCR) ----
+
+    /// **The headline regression.** A leading tab is invisible to every
+    /// POSIX shell, but by the time `rendered` reaches `matches_deny` it
+    /// has been laundered into `SANITIZED_CONTROL_PLACEHOLDER`, which fuses
+    /// onto the token a naive `prefix_matches` would otherwise compare.
+    /// Both the RAW form (a caller that, unlike every production caller,
+    /// hands this method an unsanitized string) and the SANITIZED form (as
+    /// the real `render_call` seam actually produces) must be caught.
+    #[test]
+    fn deny_catches_a_leading_control_character_laundered_past_a_naive_prefix_match() {
+        let rule = PatternRule::parse("bash:curl").expect("valid rule");
+
+        for raw in [
+            "\tcurl http://evil",
+            "\ncurl http://evil",
+            "\rcurl http://evil",
+            "\x1b[0m curl http://evil",
+        ] {
+            assert!(
+                rule.matches_deny("bash", raw),
+                "the RAW laundering vector must be caught: {raw:?}"
+            );
+
+            // KEEP IN SYNC with `conway_runtime::tools::runner::
+            // sanitize_rendered` -- see `a_sanitized_chained_command_is_
+            // still_gated`'s own comment above for why this is a
+            // hand-copy rather than a call.
+            let sanitized: String = raw
+                .chars()
+                .map(|c| if c.is_control() { '\u{FFFD}' } else { c })
+                .collect();
+            assert!(
+                rule.matches_deny("bash", &sanitized),
+                "the SANITIZED form (what the real pipeline actually \
+                 produces) must be caught too: {raw:?} -> {sanitized:?}"
+            );
+        }
+    }
+
+    /// The fallback is scoped by tool identity exactly like every other
+    /// branch of `matches_deny` -- laundering noise in a DIFFERENT tool's
+    /// rendering must not trip a `bash` deny rule.
+    #[test]
+    fn the_laundering_fallback_still_requires_the_tool_to_match() {
+        let rule = PatternRule::parse("bash:curl").expect("valid rule");
+        assert!(!rule.matches_deny("edit", "\u{FFFD}curl http://evil"));
+    }
+
+    /// The DOCUMENTED chaining limit (this module's own doc, "a seatbelt,
+    /// not a boundary") must not be accidentally narrowed away by this fix.
+    /// `;` is real, visible shell syntax -- not laundered noise -- so it
+    /// must NOT trip the laundering fallback the way a control character
+    /// does.
+    #[test]
+    fn the_laundering_fallback_does_not_widen_the_documented_chaining_limit() {
+        let rule = PatternRule::parse("bash:git push").expect("valid rule");
+        assert!(
+            !rule.matches_deny("bash", "foo; git push"),
+            "a bare `;` must not trigger the laundering fallback -- that is \
+             the module's own documented prefix-match limit, which this \
+             item narrows LAUNDERING around, not the chaining limit itself"
+        );
     }
 }
 
