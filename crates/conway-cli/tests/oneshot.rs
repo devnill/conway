@@ -1,7 +1,8 @@
 //! WI-113: one-shot (`-p`) integration tests against the real, compiled
 //! `conway` binary -- exit codes, stdout purity, streaming shape, and
-//! SIGINT behavior. See `docs/crates/conway-cli.md` (WI-113) for
-//! the binding spec this suite locks in as executable acceptance evidence.
+//! SIGINT behavior. See `docs/scripting.md` (WI-113) for the exit-code and
+//! output-format contract this suite locks in as executable acceptance
+//! evidence.
 //!
 //! ## Reconciliations (disclosed against the currently-committed runtime)
 //!

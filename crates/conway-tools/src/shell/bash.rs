@@ -83,9 +83,8 @@ impl Tool for BashTool {
     /// finite list of shapes to special-case, because the input language is
     /// a full shell. A root confines path *arguments*; it does not, and
     /// cannot, confine what a shell command does. An agent holding `bash`
-    /// is not confined by root alone (see `docs/crates/conway-tools.md`'s
-    /// `ShellPlugin` section and `docs/crates/conway-runtime.md`'s
-    /// "Permission brokering" section for the full boundary, including the
+    /// is not confined by root alone (see `docs/permissions.md`'s
+    /// "Confinement" section for the full boundary, including the
     /// composition -- root plus a tool set excluding `bash` -- that IS a
     /// real guarantee).
     fn path_args(&self) -> PathArgs {

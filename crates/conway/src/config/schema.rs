@@ -46,7 +46,7 @@ use serde::{Deserialize, Serialize};
 /// `default_role` has no sensible built-in default (the binding config always
 /// sets it explicitly), so it is the one field with no `#[serde(default)]`.
 /// Every other field defaults per the documented schema in
-/// `docs/crates/conway.md` (WI-097).
+/// `docs/embedding.md` (WI-097).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConwayConfig {
@@ -399,7 +399,7 @@ pub struct TuiSection {
     /// (P-10: config is untrusted input, never a panic). Default = the
     /// Lean line
     /// `["session","lineage","mode","model","ctx","tokens","activity","hint"]`.
-    /// See `docs/crates/conway-cli.md`'s `[tui.status_line]` section for the
+    /// See `docs/interactive.md`'s "The status line" section for the
     /// full field list.
     #[serde(default)]
     pub status_line: StatusLineConfig,
@@ -446,7 +446,7 @@ pub struct TuiSection {
 /// missing names are never an error, so an older config simply renders
 /// without them.
 ///
-/// Available field names (see `docs/crates/conway-cli.md`): `session`,
+/// Available field names (see `docs/interactive.md`): `session`,
 /// `lineage`, `mode`, `model`, `ctx`, `tokens`, `activity`, `hint`, `git`,
 /// `cwd`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -483,9 +483,7 @@ impl Default for StatusLineConfig {
 /// can override just one named style without restating the rest.
 ///
 /// Field names match the `Theme` slot names in
-/// `crates/conway-cli/src/tui/view/theme.rs` one-for-one. See
-/// `docs/crates/conway-cli.md`'s `[tui.theme]` section for the full list
-/// and the accepted color/modifier spellings.
+/// `crates/conway-cli/src/tui/view/theme.rs` one-for-one.
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct ThemeConfig {

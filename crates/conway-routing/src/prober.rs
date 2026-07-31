@@ -46,8 +46,8 @@ impl ProberHandle {
     }
 }
 
-/// Owns the periodic probe loop. See module docs and
-/// `docs/crates/conway-routing.md` (WI-035) for the binding spec.
+/// Owns the periodic probe loop. See the module docs above (WI-035) for
+/// the binding spec.
 ///
 /// Signature deviation from the module spec's
 /// `HealthProber::spawn(Vec<Arc<dyn Backend>>, HealthConfig)`: recording an

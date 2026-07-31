@@ -64,7 +64,7 @@ fn api_key_and_api_key_env_both_set_is_rejected() {
 }
 
 /// The Kimi coding-plan config block published in
-/// `docs/crates/conway-backends.md` must actually load. A copy-pasteable
+/// `docs/providers.md` must actually load. A copy-pasteable
 /// example that does not parse is worse than no example, and this is the
 /// documented "easy setup" path, so it is pinned against schema drift.
 ///

@@ -12,7 +12,7 @@
 //! implemented (session metadata re-exports and the header/record line
 //! codec); [`store`], [`fork`], [`resolver`], [`index`], and [`provenance`]
 //! are stubs with signatures fixed here, filled in by WI-047 through
-//! WI-051 respectively (see `docs/crates/conway-session.md`).
+//! WI-051 respectively.
 
 pub mod codec;
 pub mod fork;

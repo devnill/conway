@@ -23,9 +23,7 @@
 //! unparseable color name, an unknown modifier, or an out-of-range hex code
 //! is mapped back to the default for that slot (the named style's built-in
 //! `Color`/`Modifier`), not the whole theme -- a single typo'd `fg` on one
-//! slot does not silently wipe another slot's override. See
-//! `docs/crates/conway-cli.md`'s `[tui.theme]` section for the accepted
-//! color/modifier spellings.
+//! slot does not silently wipe another slot's override.
 //!
 //! ## New accent styles
 //!
@@ -39,9 +37,7 @@
 //!
 //! T1 assembled the named-style table; V7 is the pass that asks *why* each
 //! slot is the color it is, and writes the answer down so the next slot
-//! added here has a rule to follow instead of a nearest-neighbor guess. The
-//! full rationale (with examples) lives in `docs/crates/conway-cli.md`'s
-//! `[tui.theme]` section; the compressed version:
+//! added here has a rule to follow instead of a nearest-neighbor guess:
 //!
 //! - **Red is failure or active danger, never decoration.** `error`,
 //!   `tool_failed`, `agent_failed`, `border_danger`, and `fatal_error` are
@@ -89,9 +85,6 @@
 //! anywhere in `view/*.rs` since the day T4 defined it (grep-verified), so
 //! it was a config key that could be set and would silently do nothing --
 //! the exact failure mode V6 already ruled out for `spinner_b`/`spinner_c`.
-//! See `docs/crates/conway-cli.md` for the full before/after and the
-//! `tool_*`/`agent_*` status-family duplication finding V7 chose NOT to act
-//! on (and why).
 
 use ratatui::style::{Color, Modifier, Style};
 
@@ -174,7 +167,7 @@ pub struct Theme {
     /// doc's red rule). Still available for a genuine fatal runtime error
     /// (`Event::Error { fatal: true }`) once that path is wired to carry a
     /// style through `Entry::Notice` -- tracked as a follow-up, not done
-    /// here (see `docs/crates/conway-cli.md`).
+    /// here.
     pub fatal_error: Style,
     /// Dimmed annotation text (agent-tree recipe labels, input-box
     /// placeholder). Pre-T1: `Modifier::DIM` (no fg).
