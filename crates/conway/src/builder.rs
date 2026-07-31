@@ -149,6 +149,18 @@ pub struct ConwayBuilder {
     /// i.e. today's behavior, unchanged.
     context_hook: Option<Arc<dyn ContextHook>>,
     warnings: Vec<ConfigWarning>,
+    /// Board item 01KYTMH9JX21CGSE2Y6E2KP8SJ: an operator-set confinement
+    /// root, applied to every root agent this `Conway` starts (see
+    /// [`Self::with_root`]'s own doc). Deliberately NOT a `ConwayConfig`
+    /// field: `ConwayConfig` has no `#[derive(Default)]` (`default_role` has
+    /// no sensible built-in value), so every one of its existing struct-
+    /// literal call sites across the workspace would have to name a new
+    /// field the moment one was added -- a blast radius with no relationship
+    /// to this item's own scope. `Conway`/`ConwayBuilder` are constructed
+    /// exclusively through this builder's own methods (never struct-
+    /// literaled by a caller), so a field here costs nothing outside this
+    /// file and `conway.rs`.
+    root: Option<PathBuf>,
 }
 
 impl ConwayBuilder {
@@ -184,6 +196,7 @@ impl ConwayBuilder {
             router: None,
             context_hook: None,
             warnings: Vec::new(),
+            root: None,
         }
     }
 
@@ -246,6 +259,32 @@ impl ConwayBuilder {
         self
     }
 
+    /// Sets this `Conway`'s confinement root (board item
+    /// 01KYTMH9JX21CGSE2Y6E2KP8SJ): every root agent
+    /// [`crate::Conway::new_session`] starts afterward is confined to it,
+    /// via `conway_runtime::runtime::RootSpec::root` -- the same S3/S5
+    /// primitive (`AgentRoot`, `PermissionBroker::check_root`) that already
+    /// confines a spawned child, now finally reachable for the agent an
+    /// operator actually talks to.
+    ///
+    /// **Not called at all (the default)** means every root agent this
+    /// `Conway` starts stays `Unconfined`, byte-for-byte identical to every
+    /// invocation before this method existed -- this is deliberately NOT the
+    /// default `build()` picks on its own; an operator opts in explicitly
+    /// (`conway-cli`'s `--root`).
+    ///
+    /// **`cwd` was never the security boundary** (S0's own charter) -- this
+    /// is a distinct setting from `ConwayConfig::cwd`/`SessionSpec::cwd`, not
+    /// an inference from either. A relative `root` resolves against the
+    /// SESSION's own `cwd` at `new_session` time (`RootSpec::root`'s own
+    /// doc), which must itself already fall inside it -- `new_session`
+    /// returns a typed error rather than starting an agent whose own working
+    /// directory sits outside its own confinement.
+    pub fn with_root(mut self, root: impl Into<PathBuf>) -> Self {
+        self.root = Some(root.into());
+        self
+    }
+
     /// Assembles the `Conway`. See the module doc for the full
     /// construction-order rationale and disclosed reconciliations.
     pub fn build(self) -> Result<Conway> {
@@ -259,6 +298,7 @@ impl ConwayBuilder {
             router,
             context_hook,
             warnings,
+            root,
         } = self;
 
         // 1. Apply CLI overrides; re-validate. This is what catches an
@@ -430,6 +470,7 @@ impl ConwayBuilder {
             router_explain,
             warnings,
             metadata,
+            root,
         ))
     }
 }

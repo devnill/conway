@@ -168,7 +168,23 @@ impl SubagentHost for Runtime {
     ///    emits `Event::AgentSpawned` for us — see the module doc's carried
     ///    note on why this code must not emit it a second time) and launch
     ///    the child's `AgentLoop` under the supervisor.
-    async fn start(&self, parent: AgentId, spec: SubagentSpec) -> Result<AgentId, RuntimeError> {
+    async fn start(
+        &self,
+        caller: AgentId,
+        parent: AgentId,
+        spec: SubagentSpec,
+    ) -> Result<AgentId, RuntimeError> {
+        // P-1 (board item 01KYTP0PGKJ4VCJP5TD39A1WHF): `caller` must own
+        // `parent` -- checked BEFORE anything else runs, exactly like
+        // `steer`/`await_result`/`cancel`'s own `ensure_own_subtree` call --
+        // so no cwd/root resolution, store I/O, or child attach happens for
+        // a caller attempting to start a child under an agent outside its
+        // own subtree. `caller == parent` (an agent starting a child of
+        // itself, the ordinary case for every model-invoked tool call and
+        // for a fresh root's own first fork/spawn) always passes trivially:
+        // `ensure_own_subtree`'s `path(target).contains(caller)` includes
+        // `target` itself.
+        self.ensure_own_subtree(caller, parent)?;
         spec.validate().map_err(invalid_spec)?;
 
         let parent_session = self.agent_session(parent)?;
@@ -238,16 +254,16 @@ impl SubagentHost for Runtime {
         // doc for why "can't check" must never mean "allow".
         let effective_root: Option<CanonicalRoot> = match spec.root.clone() {
             None => match parent_meta.root.as_deref() {
-                Some(parent_root_path) => Some(CanonicalRoot::new(parent_root_path).map_err(
-                    |err| {
+                Some(parent_root_path) => {
+                    Some(CanonicalRoot::new(parent_root_path).map_err(|err| {
                         invalid_spec(ConwayError::Config {
                             detail: format!(
                                 "inherited root {} does not canonicalize: {err}",
                                 parent_root_path.display()
                             ),
                         })
-                    },
-                )?),
+                    })?)
+                }
                 None => None,
             },
             Some(requested) => {
@@ -708,9 +724,46 @@ impl SubagentHost for Runtime {
         Runtime::cancel(self, target, reason)
     }
 
-    /// Delegates to the existing `Runtime::tree` (WI-082/083).
-    fn tree(&self) -> AgentTreeSnapshot {
-        Runtime::tree(self)
+    /// `caller`'s own subtree, projected from `Runtime::tree`'s whole
+    /// snapshot (WI-082/083; board item 01KYTP0PGKJ4VCJP5TD39A1WHF adds the
+    /// scoping). Deliberately built from the FULL snapshot rather than
+    /// walking `tree_ref().path(..)` once per node: `path` and `snapshot`
+    /// both take the same tree read lock, and a single `snapshot()` plus an
+    /// in-memory parent-chain walk over its own (already-collected) nodes
+    /// avoids re-acquiring that lock per node. Unknown `caller` (not
+    /// attached to this runtime at all) yields an empty subtree with `root:
+    /// caller` -- mirrors `AgentTree::path`'s own "empty for unknown"
+    /// convention rather than erroring, since this method returns no
+    /// `Result` (unchanged trait shape).
+    fn tree(&self, caller: AgentId) -> AgentTreeSnapshot {
+        let full = Runtime::tree(self);
+        let parent_of: std::collections::HashMap<AgentId, Option<AgentId>> = full
+            .nodes
+            .iter()
+            .map(|node| (node.agent_id, node.parent))
+            .collect();
+        let in_callers_subtree = |agent: AgentId| -> bool {
+            let mut cursor = agent;
+            loop {
+                if cursor == caller {
+                    return true;
+                }
+                match parent_of.get(&cursor) {
+                    Some(Some(parent)) => cursor = *parent,
+                    _ => return false,
+                }
+            }
+        };
+        let nodes = full
+            .nodes
+            .into_iter()
+            .filter(|node| in_callers_subtree(node.agent_id))
+            .collect();
+        AgentTreeSnapshot {
+            root: caller,
+            nodes,
+            at: full.at,
+        }
     }
 
     /// The real `Runtime::ask` impl: fork+await-text (P-1 -- `ask` is exactly
@@ -764,7 +817,26 @@ impl SubagentHost for Runtime {
     /// populated by `launch_agent`). P-2: carried in `AskOutcome` so the
     /// orchestrator's `ToolResultRecord` can name the ephemeral child
     /// session.
-    async fn ask(&self, parent: AgentId, spec: SubagentSpec) -> Result<AskOutcome, RuntimeError> {
+    ///
+    /// ## `caller` (board item 01KYTP0PGKJ4VCJP5TD39A1WHF)
+    ///
+    /// `ask` performs no subtree check of its own -- it composes `start`
+    /// (P-1: "`ask` is fork+await-text, not a third primitive"), so passing
+    /// `caller` straight through to `self.start(caller, parent, spec)` below
+    /// is what enforces "`caller` must own `parent`" here too, reusing
+    /// `start`'s own `ensure_own_subtree` call rather than duplicating it.
+    /// Before this item, `ask` took only `parent` and forked THAT agent's
+    /// context directly with no ownership check at all -- the cross-tree
+    /// exfiltration this item's own module doc names: `tree()` (itself
+    /// unguarded pre-fix) to find a sibling's `AgentId`, then
+    /// `ask(sibling, ..)` to fork the sibling's entire context and read the
+    /// reply back as plain model output.
+    async fn ask(
+        &self,
+        caller: AgentId,
+        parent: AgentId,
+        spec: SubagentSpec,
+    ) -> Result<AskOutcome, RuntimeError> {
         // P-1: `ask` is fork+await-text -- the fork-only invariant is
         // enforced here at the trait boundary (not only at the `conway_ask`
         // tool callsite, which happens to always construct `Fork` itself),
@@ -780,8 +852,11 @@ impl SubagentHost for Runtime {
         }
         // 1. Subscribe BEFORE launch so the first TextDelta is not missed.
         let mut stream = Runtime::subscribe(self);
-        // 2. Launch the child (fork per `spec.mode`; `ask` is fork-only -- P-1).
-        let child_agent = self.start(parent, spec).await?;
+        // 2. Launch the child (fork per `spec.mode`; `ask` is fork-only --
+        //    P-1). `caller` flows straight through: `start`'s own
+        //    `ensure_own_subtree(caller, parent)` is this method's ONLY
+        //    ownership check -- see this method's own doc.
+        let child_agent = self.start(caller, parent, spec).await?;
         // 3. Resolve the child's SessionId for `transcript_ref` (P-2). The
         //    child is already attached (start -> launch_agent -> tree.attach
         //    -> agents map populated), so this lookup cannot miss.
@@ -828,9 +903,7 @@ impl SubagentHost for Runtime {
             // The bus stream ended without the child's `AgentFinished`: only
             // happens once the runtime itself is dropped. Mirror
             // `TurnHandle::result`'s terminal-error shape.
-            return Err(RuntimeError::AgentNotFound {
-                agent: child_agent,
-            });
+            return Err(RuntimeError::AgentNotFound { agent: child_agent });
         }
 
         Ok(AskOutcome {
@@ -928,8 +1001,13 @@ impl WeakRuntimeHost {
 
 #[async_trait]
 impl SubagentHost for WeakRuntimeHost {
-    async fn start(&self, parent: AgentId, spec: SubagentSpec) -> Result<AgentId, RuntimeError> {
-        self.upgrade()?.start(parent, spec).await
+    async fn start(
+        &self,
+        caller: AgentId,
+        parent: AgentId,
+        spec: SubagentSpec,
+    ) -> Result<AgentId, RuntimeError> {
+        self.upgrade()?.start(caller, parent, spec).await
     }
 
     async fn steer(
@@ -961,22 +1039,30 @@ impl SubagentHost for WeakRuntimeHost {
         SubagentHost::cancel(&*self.upgrade()?, caller, target, reason).await
     }
 
-    /// Delegates to the real `Runtime` impl (which a later item adds). The
-    /// `ask` primitive is fork+await-text (P-1), surfaced on the same
-    /// `SubagentHost` trait every consumer uses (P-6: built-ins have no
-    /// privileged API).
-    async fn ask(&self, parent: AgentId, spec: SubagentSpec) -> Result<AskOutcome, RuntimeError> {
-        self.upgrade()?.ask(parent, spec).await
+    /// Delegates to the real `Runtime` impl. The `ask` primitive is
+    /// fork+await-text (P-1), surfaced on the same `SubagentHost` trait
+    /// every consumer uses (P-6: built-ins have no privileged API).
+    async fn ask(
+        &self,
+        caller: AgentId,
+        parent: AgentId,
+        spec: SubagentSpec,
+    ) -> Result<AskOutcome, RuntimeError> {
+        self.upgrade()?.ask(caller, parent, spec).await
     }
 
-    fn tree(&self) -> AgentTreeSnapshot {
+    fn tree(&self, caller: AgentId) -> AgentTreeSnapshot {
         match self.upgrade() {
-            Ok(runtime) => SubagentHost::tree(&*runtime),
+            Ok(runtime) => SubagentHost::tree(&*runtime, caller),
             // Mirrors `runtime.rs`'s (now-removed) `NoSubagentHost::tree`
             // fallback shape for the one case where there is genuinely no
-            // runtime left to ask.
+            // runtime left to ask. `root: caller` (not `AgentId::default()`)
+            // -- board item 01KYTP0PGKJ4VCJP5TD39A1WHF makes `tree()`'s
+            // `root` mean "the caller's own subtree root" everywhere else;
+            // this one remaining fallback stays consistent with that rather
+            // than reverting to a placeholder default.
             Err(_) => AgentTreeSnapshot {
-                root: AgentId::default(),
+                root: caller,
                 nodes: Vec::new(),
                 at: Utc::now(),
             },

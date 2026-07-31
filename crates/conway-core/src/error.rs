@@ -239,20 +239,23 @@ pub enum RuntimeError {
     /// panic.
     #[error("ask requires SubagentMode::Fork (P-1: ask is fork+await-text, not a third primitive); got {mode:?}")]
     AskRequiresFork { mode: SubagentMode },
-    /// P-1 (board item 01KYT8TS0EBKJHYNJRF6S88NRH): `steer`/`await_result`/
-    /// `cancel` may act only on an agent within the CALLER's own subtree
+    /// P-1 (board item 01KYT8TS0EBKJHYNJRF6S88NRH, extended by board item
+    /// 01KYTP0PGKJ4VCJP5TD39A1WHF): `steer`/`await_result`/`cancel`/`start`/
+    /// `ask` may act only on an agent within the CALLER's own subtree
     /// (itself, or any descendant) -- enforced HERE, at the `SubagentHost`
     /// trait boundary (see that trait's own doc), not only at the
-    /// `conway_steer`/`conway_await`/`conway_cancel` tool callsites, so no
-    /// other caller can bypass it (mirrors `AskRequiresFork`'s shape). A
-    /// sibling (or any non-ancestor, non-self) `AgentId` a caller merely
-    /// SAW -- in tool output, on the event stream, or in
-    /// `conway_subagent`'s own return value -- is not enough to act on it.
-    /// `target` is known to this runtime (an unknown `target` is
-    /// [`RuntimeError::AgentNotFound`] instead); `caller` is who attempted
-    /// the operation. P-10: a typed error, never a panic -- both ids may be
-    /// model-supplied.
-    #[error("agent {caller} may not steer/await/cancel agent {target}: it is outside {caller}'s own subtree")]
+    /// `conway_steer`/`conway_await`/`conway_cancel`/`conway_subagent`/
+    /// `conway_ask` tool callsites, so no other caller can bypass it
+    /// (mirrors `AskRequiresFork`'s shape). A sibling (or any non-ancestor,
+    /// non-self) `AgentId` a caller merely SAW -- in tool output, on the
+    /// event stream, in `conway_subagent`'s own return value, or via
+    /// `tree()` (which, post-01KYTP0PGKJ4VCJP5TD39A1WHF, only ever shows the
+    /// caller's own subtree in the first place) -- is not enough to act on
+    /// it. `target` (named `parent` on `start`/`ask`) is known to this
+    /// runtime (an unknown one is [`RuntimeError::AgentNotFound`] instead);
+    /// `caller` is who attempted the operation. P-10: a typed error, never a
+    /// panic -- both ids may be model-supplied.
+    #[error("agent {caller} may not act on agent {target}: it is outside {caller}'s own subtree")]
     AgentNotInSubtree { caller: AgentId, target: AgentId },
 }
 

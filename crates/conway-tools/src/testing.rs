@@ -140,7 +140,20 @@ impl Default for FakeSubagentHost {
 
 #[async_trait]
 impl SubagentHost for FakeSubagentHost {
-    async fn start(&self, _parent: AgentId, spec: SubagentSpec) -> Result<AgentId, RuntimeError> {
+    // Board item 01KYTP0PGKJ4VCJP5TD39A1WHF added `caller` to `start`/`ask`
+    // (mirroring the `steer`/`await_result`/`cancel` trio below, board item
+    // 01KYT8TS0EBKJHYNJRF6S88NRH); this fake stays a pure recorder/no-op
+    // (module doc) and does not itself enforce the `caller`-owns-`parent`
+    // invariant -- see the real `Runtime` impl's own tests
+    // (`crates/conway-runtime/tests/subagent_fork_spawn.rs`) and
+    // `crates/conway/tests/subagent_control_seam.rs` for coverage driven
+    // against the real trait boundary instead of this fixture.
+    async fn start(
+        &self,
+        _caller: AgentId,
+        _parent: AgentId,
+        spec: SubagentSpec,
+    ) -> Result<AgentId, RuntimeError> {
         let child = self.next_agent_id;
         self.started.lock().unwrap().push((child, spec));
         Ok(child)
@@ -187,15 +200,22 @@ impl SubagentHost for FakeSubagentHost {
         Ok(())
     }
 
-    fn tree(&self) -> AgentTreeSnapshot {
+    // `caller` accepted and ignored -- this fake's `tree` is a fixed stub
+    // (`root: self.next_agent_id`, no nodes), not a live scoped snapshot.
+    fn tree(&self, caller: AgentId) -> AgentTreeSnapshot {
         AgentTreeSnapshot {
-            root: self.next_agent_id,
+            root: caller,
             nodes: Vec::new(),
             at: Utc::now(),
         }
     }
 
-    async fn ask(&self, parent: AgentId, spec: SubagentSpec) -> Result<AskOutcome, RuntimeError> {
+    async fn ask(
+        &self,
+        _caller: AgentId,
+        parent: AgentId,
+        spec: SubagentSpec,
+    ) -> Result<AskOutcome, RuntimeError> {
         self.asks.lock().unwrap().push((parent, spec));
         if let Some(error) = &self.ask_error {
             return Err(error.clone());
@@ -284,7 +304,10 @@ mod tests {
         let host = FakeSubagentHost::new().with_next_agent_id(scripted_id);
         let parent = AgentId::new();
 
-        let returned = host.start(parent, fork_spec("do it")).await.unwrap();
+        let returned = host
+            .start(parent, parent, fork_spec("do it"))
+            .await
+            .unwrap();
         assert_eq!(returned, scripted_id);
 
         let started = host.started();
@@ -336,10 +359,13 @@ mod tests {
     #[tokio::test]
     async fn fake_subagent_host_ask_errors_when_scripted_and_still_records() {
         let parent = AgentId::new();
-        let host = FakeSubagentHost::new()
-            .with_ask_error(RuntimeError::AgentNotFound { agent: parent });
+        let host =
+            FakeSubagentHost::new().with_ask_error(RuntimeError::AgentNotFound { agent: parent });
 
-        let err = host.ask(parent, fork_spec("do it")).await.unwrap_err();
+        let err = host
+            .ask(parent, parent, fork_spec("do it"))
+            .await
+            .unwrap_err();
         assert!(matches!(err, RuntimeError::AgentNotFound { agent } if agent == parent));
         assert_eq!(host.asks().len(), 1, "the failed call is still recorded");
     }

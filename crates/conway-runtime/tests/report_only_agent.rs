@@ -703,6 +703,7 @@ fn root_spec_no_tools(prompt: &str) -> RootSpec {
         tools: Some(ToolSelector::Only(vec![])),
         budget: Budget::default(),
         cwd: PathBuf::from("/tmp"),
+        root: None,
         prompt: Some(prompt.to_string()),
         keep_alive: false,
         model: None,
@@ -762,7 +763,7 @@ async fn report_only_proposer_spawned_via_subagent_host_runs_end_to_end() {
     spec.tools = Some(ToolSelector::Only(vec!["report".into()]));
     spec.result_contract = Some(schema_requiring("ok"));
 
-    let child = conway_core::ports::SubagentHost::start(&*runtime, root, spec)
+    let child = conway_core::ports::SubagentHost::start(&*runtime, root, root, spec)
         .await
         .unwrap();
     let result = wait_for_agent_finished(&mut stream, child).await;

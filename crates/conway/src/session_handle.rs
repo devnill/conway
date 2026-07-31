@@ -277,7 +277,11 @@ impl SessionHandle {
         // Subscribe BEFORE `start` so the child's first events cannot race
         // past this handle's stream (see the doc above).
         let live = self.rt.subscribe();
-        let child = SubagentHost::start(self.rt.as_ref(), self.root, spec)
+        // P-1 (board item 01KYTP0PGKJ4VCJP5TD39A1WHF): `caller` and `parent`
+        // are both `self.root` -- a modal `/ask` always forks the SESSION's
+        // own root, mirroring `steer`/`await_agent`/`cancel`'s own
+        // root/operator-exemption doc below.
+        let child = SubagentHost::start(self.rt.as_ref(), self.root, self.root, spec)
             .await
             .map_err(ConwayError::Runtime)?;
         // The child is already attached (start -> launch_agent -> attach),
@@ -286,7 +290,12 @@ impl SessionHandle {
         // caller legitimately holds" case its own doc describes.
         let child_session = self.resolve_agent_session(child).await?;
         let stream = EventStream::live(child_session, Some(child), live);
-        Ok(TurnHandle::new(self.rt.clone(), child_session, child, stream))
+        Ok(TurnHandle::new(
+            self.rt.clone(),
+            child_session,
+            child,
+            stream,
+        ))
     }
 
     /// Every envelope emitted for this session (no agent filter beyond
@@ -709,10 +718,17 @@ impl SessionHandle {
     /// belong to this session's agent tree -- see
     /// `SessionHandle::ensure_agent_in_session`'s doc for exactly what error
     /// that produces (`RuntimeError::AgentNotFound` vs. `AgentNotInSession`).
+    ///
+    /// **`caller` (board item 01KYTP0PGKJ4VCJP5TD39A1WHF):** `self.root` is
+    /// passed as `caller` to the trait's own `caller`-owns-`parent` check --
+    /// see `steer`'s own doc for the root/operator-exemption mechanism this
+    /// mirrors exactly. Not a bypass: `from` was already proven to be in
+    /// `self.root`'s subtree by `ensure_agent_in_session` above, so the
+    /// trait's check always succeeds for a call that reaches this point.
     pub async fn fork(&self, from: AgentId, spec: ForkSpec) -> Result<AgentId> {
         self.ensure_agent_in_session(from)?;
         self.rt
-            .start(from, spec.into())
+            .start(self.root, from, spec.into())
             .await
             .map_err(ConwayError::Runtime)
     }
@@ -724,6 +740,10 @@ impl SessionHandle {
     /// Rejects `from` with `Err(ConwayError::Runtime)` when it does not
     /// belong to this session's agent tree -- see
     /// `SessionHandle::ensure_agent_in_session`'s doc.
+    ///
+    /// **`caller` (board item 01KYTP0PGKJ4VCJP5TD39A1WHF):** `self.root` is
+    /// passed as `caller`, exactly like [`Self::fork`] above -- see that
+    /// method's own doc for why this is not a bypass.
     ///
     /// **Transcript quirk (disclosed):** "clean-slate" describes the
     /// spawned child's *context* only -- `inherited` stays `None`, so
@@ -738,7 +758,7 @@ impl SessionHandle {
     pub async fn spawn(&self, from: AgentId, spec: SpawnSpec) -> Result<AgentId> {
         self.ensure_agent_in_session(from)?;
         self.rt
-            .start(from, spec.into())
+            .start(self.root, from, spec.into())
             .await
             .map_err(ConwayError::Runtime)
     }
@@ -936,7 +956,10 @@ fn record_to_event(record: &LogRecord) -> Option<(LogSeq, DateTime<Utc>, Event)>
         // prompt`/`start_root`, `subagent.rs::start` for a non-empty-prompt
         // `Spawn`) -- see `Event::UserTurn`'s own doc.
         LogRecord::UserTurn {
-            seq, ts, text, prov,
+            seq,
+            ts,
+            text,
+            prov,
         } => Some((
             *seq,
             *ts,

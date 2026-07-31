@@ -77,6 +77,7 @@ fn root_spec(prompt: &str) -> RootSpec {
         tools: None,
         budget: Budget::default(),
         cwd: PathBuf::from("/tmp"),
+        root: None,
         prompt: Some(prompt.to_string()),
         keep_alive: false,
         model: None,

@@ -193,6 +193,15 @@ RPC form is six **requests** (all need replies), all plugin→host, all carrying
 > for `start`/`ask`, and the host supplies it from the `ctx_token` table the
 > same way. See (b)'s status note for the consequence that does affect this
 > document.
+>
+> **Further status (2026-07-30), board item 01KYTP0PGKJ4VCJP5TD39A1WHF.** The
+> Rust column for `start`, `ask`, and `tree` is now ALSO stale, closing the
+> gap the note above (and (b)'s own status note) named: `start(parent,
+> spec)` is now `start(caller, parent, spec)`, `ask(parent, spec)` is now
+> `ask(caller, parent, spec)`, and `tree()` is now `tree(caller)`. Same
+> non-effect on this table's `Params` column, for the same reason: `caller`
+> is never wire-carried, the host supplies it from `ctx_token` exactly like
+> `parent` already was.
 
 Five rules govern all six.
 
@@ -246,6 +255,33 @@ expressible. (See §6 for the in-process finding this exposes.)
 > port-level check is a substitute for confining `start`/`ask`/`tree`, which
 > it does not touch at all.
 
+> **Status (2026-07-30), board item 01KYTP0PGKJ4VCJP5TD39A1WHF — the gap the
+> paragraph above named is closed.** `start`, `ask`, and `tree` now carry the
+> SAME in-process, port-level confinement `674bb65` gave `steer`/
+> `await_result`/`cancel`, not a fourth mechanism: `start`/`ask` gained a
+> `caller: AgentId` parameter (distinct from `parent`, which keeps its
+> existing meaning — "attach under this agent") and call the identical
+> `Runtime::ensure_own_subtree(caller, parent)` before anything else runs;
+> `ask` performs no separate check of its own — it composes `start` (P-1:
+> "`ask` is fork+await-text, not a third primitive"), so passing `caller`
+> straight through to its internal `start(caller, parent, spec)` call is
+> what enforces this for `ask` too. `tree` gained a `caller: AgentId`
+> parameter and now returns exactly that caller's own subtree, never the
+> whole runtime. **The sentence "this is a new constraint the boundary
+> introduces" (opening this subsection) is accordingly out of date: subtree
+> confinement is no longer something a FUTURE transport boundary would need
+> to introduce — it is the existing in-process contract for all SIX methods,
+> today, independent of any transport.** This does not retire rule (a)
+> above or this section's per-token `ctx_token` set: the wire-level
+> transport this document specifies (D1, not yet built) still needs its own
+> mechanism for the reasons already stated (the wire must not let a plugin
+> NAME a `caller`/`parent` at all — the host supplies both from the
+> `ctx_token` table, exactly as rule (a) already says for `parent`) — but
+> that transport-level mechanism now sits ABOVE an in-process port that
+> already refuses a mismatched pair on its own, rather than being the only
+> thing standing between a plugin and cross-tree exfiltration for half of
+> these six methods, as the finding above described.
+
 **(c) `WireSubagentSpec` is the projection, and it is *the built-in tool's own
 argument set*.** See §2.4 — this is the most consequential single decision in
 this document.
@@ -296,6 +332,20 @@ on by default would give remote plugins a surface no built-in has, which is the
 *inverse* of a P-6 violation but still an unnecessary promise. A plugin that
 genuinely wants tree-wide visibility asks for `observe/1`, which is declared,
 operator-visible, and already the sanctioned whole-tree surface.
+
+> **Status (2026-07-30), board item 01KYTP0PGKJ4VCJP5TD39A1WHF.** "No
+> built-in tool calls `tree()` at all" was, and remains, true about what the
+> built-ins DO — it was never true about what any tool COULD do, and that
+> gap was live: `conway_core::ports::SubagentHost::tree()` took no caller at
+> all and returned the runtime-WIDE tree to any tool holding
+> `ToolCtx::subagents` (built-in or third-party), independent of this
+> capability-gating decision, which governs only the OUT-of-process wire.
+> `tree()` now takes `caller: AgentId` and returns exactly that caller's own
+> subtree in-process, unconditionally — this rule's first sentence ("the
+> calling agent's subtree, not the tree") is accordingly no longer a
+> WIRE-level projection layered onto an unguarded in-process read; it is now
+> true of the in-process port itself, which the wire-level projection this
+> rule describes sits on top of.
 
 **`ask`'s fork-only invariant needs nothing from the wire.** As of v0.5.0 it is
 a typed `RuntimeError::AskRequiresFork { mode }` enforced at the trait boundary

@@ -96,6 +96,12 @@ pub struct Conway {
     // re-parsed it from disk on its own, a second code path that agreed
     // with the builder's only by coincidence.
     model_metadata: Arc<ModelMetadata>,
+    /// Board item 01KYTMH9JX21CGSE2Y6E2KP8SJ: set via
+    /// `ConwayBuilder::with_root` -- see that method's own doc for the
+    /// default (`None`, unconfined, unchanged) and the operator-facing
+    /// contract. Consulted once per [`Self::new_session`] call, exactly like
+    /// `self.config.cwd`.
+    root: Option<std::path::PathBuf>,
 }
 
 /// How fresh a store liveness marker must be for `sweep_stale_modal_asks` to
@@ -114,6 +120,7 @@ impl Conway {
         router_explain: Option<Arc<DeclarativeRouter>>,
         warnings: Vec<ConfigWarning>,
         model_metadata: ModelMetadata,
+        root: Option<std::path::PathBuf>,
     ) -> Self {
         Self {
             rt,
@@ -122,6 +129,7 @@ impl Conway {
             router_explain,
             warnings: Arc::new(warnings),
             model_metadata: Arc::new(model_metadata),
+            root,
         }
     }
 
@@ -579,6 +587,13 @@ impl Conway {
             tools: spec.tools,
             budget,
             cwd,
+            // Board item 01KYTMH9JX21CGSE2Y6E2KP8SJ: this `Conway`'s own
+            // confinement root (`ConwayBuilder::with_root`), if the operator
+            // set one -- `None` (unconfined) otherwise. `SessionSpec` has no
+            // per-session override for this: unlike `cwd`/`role`/`model`,
+            // root confinement is a whole-invocation setting an operator
+            // opts into once, not something a caller varies per session.
+            root: self.root.clone(),
             prompt: None,
             keep_alive: spec.keep_alive,
             model: spec.model,

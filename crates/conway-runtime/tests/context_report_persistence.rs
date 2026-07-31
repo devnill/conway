@@ -193,6 +193,7 @@ fn root_spec(prompt: &str, agent_def: Option<AgentDefRef>) -> RootSpec {
         tools: None,
         budget: Budget::default(),
         cwd: PathBuf::from("/tmp"),
+        root: None,
         prompt: Some(prompt.to_string()),
         keep_alive: false,
         model: None,
@@ -494,6 +495,7 @@ async fn fork_and_steer_scenario_covers_every_named_provenance_variant() {
     // the tool's own `Provenance::ToolResult` on the next turn).
     let child = SubagentHost::start(
         &*runtime,
+        root,
         root,
         SubagentSpec::fork("go slow", Budget::default()),
     )

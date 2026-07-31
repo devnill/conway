@@ -101,6 +101,34 @@ which depends only on `conway`'s own re-exported `SessionId`/`LogSeq`
 types, honoring the same facade-only dependency restriction as the rest of
 the crate).
 
+### `--cwd` and `--root`: where the agent works vs. what it may reach (board item 01KYTMH9JX21CGSE2Y6E2KP8SJ)
+
+Two deliberately distinct flags, applying to both one-shot mode and the
+TUI:
+
+- **`--cwd <DIR>`** sets the process's (and the root agent's own) working
+  directory. This is where the agent *works* — where a relative tool
+  argument starts from. It is **not** a security boundary and never limits
+  what a tool call can reach; `main.rs` sets it via
+  `std::env::set_current_dir` before `Conway` is even built.
+- **`--root <DIR>`** sets the confinement root every root agent this
+  invocation starts is confined to (`ConwayBuilder::with_root` ->
+  `conway_runtime::runtime::RootSpec::root`): any tool call whose path
+  argument resolves outside it is denied before the operator's permission
+  gate is ever consulted, and a subagent the root forks or spawns can only
+  ever narrow that root further, never widen it. This **is** the security
+  boundary; `--cwd` is not one. Omitted (the default): the root agent is
+  `Unconfined`, byte-for-byte identical to every invocation before this
+  flag existed. See [`conway-runtime`](conway-runtime.md)'s "Confining the
+  ROOT agent" section for the full resolution/validation rules (relative
+  paths resolve against `--cwd`; `--cwd` itself must already fall inside
+  `--root` when both are set, or the invocation fails fast rather than
+  starting an agent whose own working directory sits outside its own
+  confinement).
+
+Each flag's own `--help` text states this distinction explicitly, so an
+operator cannot mistake one for the other.
+
 ## Subcommands
 
 `commands/` implements `conway sessions` (list/inspect persisted sessions,

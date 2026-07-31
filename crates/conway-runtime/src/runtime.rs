@@ -170,6 +170,32 @@ pub struct RootSpec {
     pub tools: Option<ToolSelector>,
     pub budget: Budget,
     pub cwd: PathBuf,
+    /// Board item 01KYTMH9JX21CGSE2Y6E2KP8SJ: this root agent's own
+    /// confinement root -- the S3/S5 primitive (`SubagentSpec::root`,
+    /// `AgentRoot`, `PermissionBroker::check_root`), finally reachable for
+    /// the agent an operator actually talks to. Before this field existed,
+    /// `start_root` always passed `SessionMeta.root: None` and
+    /// `AgentLoop.root: None`, so `AgentRoot::reconstruct` always produced
+    /// `Unconfined` for a root agent and `check_root` returned `Proceed`
+    /// without ever inspecting `path_args` -- the root check was real, but
+    /// entirely unreachable from the top of the tree.
+    ///
+    /// `None` (every caller before this field existed, and still the
+    /// default for every caller that does not set it) preserves that exact
+    /// behavior: unconfined, byte-for-byte. `Some(path)` is resolved exactly
+    /// like a spawned child's `SubagentSpec::root` (`subagent.rs`'s
+    /// `SubagentHost::start`): relative paths resolve against `cwd` above
+    /// (a root agent has no parent cwd to resolve against), the result must
+    /// canonicalize, and `cwd` itself must already fall inside it --
+    /// `start_root` returns `RuntimeError::Tool(ToolError::Internal { .. })`
+    /// (via the same `subagent::invalid_spec` helper `resume_root` already
+    /// uses) rather than starting an agent whose own working directory sits
+    /// outside its own confinement before a single tool call ever runs.
+    /// Cwd is never itself a security boundary (S0's own charter) -- root is
+    /// -- so this is a distinct field, not an inference from `cwd`; the two
+    /// are configured as a pair (see `conway-cli`'s `--root`) precisely so
+    /// an operator cannot confuse them.
+    pub root: Option<PathBuf>,
     pub prompt: Option<String>,
     /// Opt-in multi-turn keep-alive (see `agent_loop::AgentSpec::keep_alive`'s
     /// own doc for the bug this fixes and why it must stay opt-in). `false`
@@ -538,6 +564,60 @@ impl Runtime {
             .clone()
             .or_else(|| agent_def.and_then(|d| d.model.clone()));
 
+        // Board item 01KYTMH9JX21CGSE2Y6E2KP8SJ: resolve and validate this
+        // root agent's own confinement root ONCE, mirroring `subagent.rs`'s
+        // `SubagentHost::start` spawn-time validation for a spawned child's
+        // `Some(requested)` root (see that method's own doc for the full
+        // shape this repeats). A root agent has no parent root to narrow
+        // against -- it IS the top of the tree -- so only two checks apply
+        // here: the requested root itself must canonicalize, and `spec.cwd`
+        // must already fall inside it. A relative `spec.root` resolves
+        // against `spec.cwd` (there is no parent cwd to resolve against, and
+        // `cwd`/`root` are configured as a pair -- see `RootSpec::root`'s
+        // own doc).
+        let root: Option<PathBuf> = match &spec.root {
+            None => None,
+            Some(requested) => {
+                let resolved = if requested.is_absolute() {
+                    requested.clone()
+                } else {
+                    spec.cwd.join(requested)
+                };
+                let canonical_root = CanonicalRoot::new(&resolved).map_err(|err| {
+                    crate::subagent::invalid_spec(ConwayError::Config {
+                        detail: format!(
+                            "root agent's root {} does not canonicalize: {err}",
+                            resolved.display()
+                        ),
+                    })
+                })?;
+                match canonical_root.contains(&spec.cwd) {
+                    Containment::Inside => {}
+                    Containment::Outside | Containment::Undecidable => {
+                        // Same "show both operands on the same footing"
+                        // treatment as `resume_root`'s identical check
+                        // below, and `subagent.rs`'s own cwd-outside-root
+                        // error -- see either's comment for why.
+                        let canonical_cwd = spec.cwd.canonicalize().ok();
+                        let shown = match &canonical_cwd {
+                            Some(c) if c != &spec.cwd => {
+                                format!("{} (resolved: {})", spec.cwd.display(), c.display())
+                            }
+                            _ => spec.cwd.display().to_string(),
+                        };
+                        return Err(crate::subagent::invalid_spec(ConwayError::Config {
+                            detail: format!(
+                                "root agent's cwd {} is outside its own root {}",
+                                shown,
+                                canonical_root.as_path().display(),
+                            ),
+                        }));
+                    }
+                }
+                Some(canonical_root.as_path().to_path_buf())
+            }
+        };
+
         let meta = SessionMeta {
             id: session_id,
             agent_id,
@@ -556,12 +636,10 @@ impl Runtime {
             // exists on ephemeral ask children (stamped from the spec in
             // `subagent.rs`'s `SubagentHost::start`).
             ask_origin: None,
-            // (S3) `RootSpec` has no `root` field (out of this item's scope
-            // -- see `conway_core::agent::SubagentSpec::root`'s own doc):
-            // every root agent starts unconfined, exactly as before this
-            // field existed. Only a fork/spawn child (`subagent.rs`'s
-            // `SubagentHost::start`) can ever be confined.
-            root: None,
+            // Board item 01KYTMH9JX21CGSE2Y6E2KP8SJ: the resolved, canonical
+            // root computed above -- `None` (unconfined) exactly as before
+            // this field existed unless `spec.root` was set.
+            root: root.clone(),
         };
         self.store.create(meta).await?;
 
@@ -639,9 +717,10 @@ impl Runtime {
             parent: None,
             agent_path: vec![agent_id],
             cwd: spec.cwd.clone(),
-            // (S3) `RootSpec` has no `root` field yet -- every root agent
-            // starts unconfined, matching `meta.root: None` above.
-            root: None,
+            // Board item 01KYTMH9JX21CGSE2Y6E2KP8SJ: matches `meta.root`
+            // above -- the same resolved, canonical root (or `None`,
+            // unconfined, unchanged from before this field existed).
+            root: root.clone(),
             deps: self.loop_deps.clone(),
             spec: agent_spec,
             cancel: cancel.clone(),

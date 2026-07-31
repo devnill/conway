@@ -326,6 +326,21 @@ Two invariants a test can pin:
   cache, pattern grants, and `AutoAllow` alike — the same treatment plan mode
   already gets.
 
+> **Status (2026-07-31), board item 01KYTMH9JX21CGSE2Y6E2KP8SJ.** The first
+> invariant above was **true only vacuously** for the agent an operator
+> actually talks to. `Runtime::start_root`'s `RootSpec` had no `root` field
+> at all until this item, so `AgentRoot::reconstruct` always produced
+> `Unconfined` for a session's root agent, `check_root` never returned
+> `MustReachGate` for it, and "a policy can never widen the root" held only
+> because there was no root to widen — the same emptiness §7.5 disclosed for
+> its own containment count. `RootSpec::root` (`--root` /
+> `ConwayBuilder::with_root`) makes a root agent confinable, which makes this
+> invariant **actually enforced**, not just unfalsified, whenever an operator
+> sets one. The default remains `Unconfined` — deliberately not changed by
+> this item — so the invariant is still vacuous for every invocation that
+> does not opt in. See `docs/crates/conway-runtime.md`'s "Confining the ROOT
+> agent" section for the mechanism.
+
 **Implementation constraint, stated because getting it wrong deadlocks:**
 the chain lives in `RwLock<Vec<RegisteredPolicy>>` and must be **cloned with
 the guard dropped before any `.await`**, exactly as `LoopDeps::context_hook`
@@ -1349,6 +1364,24 @@ two operator acts; it sits below both floors and is skipped outright when
 `must_reach_gate`; it is per call, never cached, never a grant; it is
 attributed.
 
+> **Status (2026-07-31), board item 01KYTMH9JX21CGSE2Y6E2KP8SJ.** Two of
+> those four ("it sits below both floors" and "skipped outright when
+> `must_reach_gate`") were, for the agent an operator actually talks to,
+> **vacuously true, not enforced**: `RootSpec` (`Runtime::start_root`'s
+> parameter) had no `root` field, so a root agent's own `AgentRoot` was
+> always `Unconfined`, the root floor never applied to it, and
+> `must_reach_gate` could never fire for it either — those two containments
+> held only because there was nothing for a `DecidingPolicy`'s allow to
+> escape past — a different failure shape from a check that runs but answers
+> wrong: this was a check that never reached the agent in question at all.
+> `RootSpec::root` (`--root` / `ConwayBuilder::with_root`)
+> makes both containments real whenever an operator configures a root — the
+> default remains `Unconfined`, so they stay vacuous for every invocation
+> that does not opt in. The count in this section's own justification ("four
+> independent containments") is therefore now conditionally true rather than
+> unconditionally true; read "it sits below both floors" as "it sits below
+> both floors, when a floor exists to sit below."
+
 **Self-declared classification may only tighten.** A remote plugin's declared
 `category`/`permission` is a claim about itself. Honoring a claim of `Read`
 on a tool that executes is a direct plan-mode bypass, and plan mode is the
@@ -2145,6 +2178,26 @@ built-in tool calls `tree()` at all**, so shipping it on would give plugins a
 surface no built-in has. D4's naming convention wins. **Lost:** D3's six-name
 split and D4's single name.
 
+> **Status (2026-07-30), board item 01KYTP0PGKJ4VCJP5TD39A1WHF.** "No built-in
+> tool calls `tree()` at all" is a true, and still-accurate, statement about
+> what the built-in tools DO — but it is not a statement about what any tool
+> (built-in or third-party) COULD do, and that gap was live: `tree()` sat on
+> the `SubagentHost` trait object every tool holds via `ToolCtx::subagents`
+> unconditionally, took no caller, and returned the runtime-wide tree to
+> whichever tool called it. Composed with `start`/`ask` (also unguarded —
+> `start`/`ask` took only `parent` and acted on it directly, with nothing
+> checking the caller was entitled to act there), this was cross-tree
+> exfiltration in one call, reachable in-process regardless of this
+> section's wire-level capability gating (which governs only OUT-of-process
+> plugins, not the in-process trait boundary every built-in tool already
+> crosses). All three now enforce "caller may act only within its own
+> subtree" at the trait boundary itself (`ensure_own_subtree`, the same
+> mechanism board item 01KYT8TS0EBKJHYNJRF6S88NRH already added for
+> `steer`/`await`/`cancel`), so the reasoning above about the WIRE-level
+> `subagent.tree` capability being unnecessary now rests on a port that
+> itself enforces subtree confinement, not on "no built-in happens to call
+> it."
+
 **Decided (b): D4. Default off, never implied by trust.** Trust answers "may
 this code run as me"; "may this code spend my tokens and start agents that
 run tools" is a different question with a different answer for most plugins.
@@ -2442,6 +2495,23 @@ the plugin docs rather than discovered:
 - `subagent/tree` returns the calling agent's subtree, not the tree, and is
   off by default — because no built-in has whole-tree visibility either
   (§11.5).
+
+> **Status (2026-07-30), board item 01KYTP0PGKJ4VCJP5TD39A1WHF.** The first
+> half of this bullet was aspirational until now, not yet implemented: the
+> in-process `SubagentHost::tree()` (`conway-core`'s port every built-in AND
+> third-party tool calls through `ToolCtx::subagents`, distinct from this
+> wire-level `subagent/tree` capability D3/D4 describe) took no caller at
+> all and returned the WHOLE runtime tree to anyone holding the trait
+> object — reachable from any tool, not gated on the `subagent.tree`
+> capability this section describes. Composed with `start`/`ask` (also
+> unguarded — see §11.5's own status note), this was cross-tree
+> exfiltration in one call. `SubagentHost::tree` now takes a `caller:
+> AgentId` and returns exactly that caller's own subtree (itself, plus every
+> descendant), making this bullet's first clause true in-process for the
+> first time. The wire-level default-off gating this section decides is
+> unaffected — that remains a separate, not-yet-implemented decision about
+> the OUT-of-process capability grant, layered on top of an in-process
+> contract that now actually holds.
 
 ---
 

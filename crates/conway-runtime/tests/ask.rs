@@ -19,9 +19,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use conway_core::agent::{
-    Budget, PermissionDecision, ResultStatus, SubagentMode, SubagentSpec,
-};
+use conway_core::agent::{Budget, PermissionDecision, ResultStatus, SubagentMode, SubagentSpec};
 use conway_core::capabilities::ProbeReport;
 use conway_core::content::{ContentBlock, StopReason, Usage};
 use conway_core::error::BackendError;
@@ -35,7 +33,7 @@ use conway_core::ports::{
 use conway_routing::config::HeadroomPolicy;
 use conway_runtime::events::EventBus;
 use conway_runtime::runtime::{RootSpec, Runtime, RuntimeDeps};
-use futures::{StreamExt, stream};
+use futures::{stream, StreamExt};
 use tokio::time::sleep;
 
 // ---------------------------------------------------------------------
@@ -56,9 +54,7 @@ impl AskTurn {
     /// A turn that responds with a single text block after `delay`.
     fn text(text: impl Into<String>, delay: Duration) -> Self {
         Self {
-            content: vec![ContentBlock::Text {
-                text: text.into(),
-            }],
+            content: vec![ContentBlock::Text { text: text.into() }],
             delay,
             usage: Usage {
                 input_tokens: 10,
@@ -74,7 +70,9 @@ impl AskTurn {
         Self {
             content: blocks
                 .iter()
-                .map(|s| ContentBlock::Text { text: s.to_string() })
+                .map(|s| ContentBlock::Text {
+                    text: s.to_string(),
+                })
                 .collect(),
             delay,
             usage: Usage {
@@ -140,14 +138,14 @@ impl Backend for AskBackend {
 
     async fn generate(&self, req: GenerateRequest) -> Result<GenerateResponse, BackendError> {
         let _ = req;
-        let turn = self
-            .script
-            .lock()
-            .unwrap()
-            .pop_front()
-            .ok_or_else(|| BackendError::BadRequest {
-                detail: "ask backend script exhausted".into(),
-            })?;
+        let turn =
+            self.script
+                .lock()
+                .unwrap()
+                .pop_front()
+                .ok_or_else(|| BackendError::BadRequest {
+                    detail: "ask backend script exhausted".into(),
+                })?;
         sleep(turn.delay).await;
         Ok(turn.response())
     }
@@ -189,10 +187,7 @@ impl Backend for AskBackend {
 // Fixtures
 // ---------------------------------------------------------------------
 
-fn build_runtime_with_backend(
-    backend: Arc<dyn Backend>,
-    bus: Arc<EventBus>,
-) -> Arc<Runtime> {
+fn build_runtime_with_backend(backend: Arc<dyn Backend>, bus: Arc<EventBus>) -> Arc<Runtime> {
     let model = ModelRef {
         backend: backend.id(),
         model: ModelId::new("m"),
@@ -223,6 +218,7 @@ fn root_spec(prompt: &str) -> RootSpec {
         tools: None,
         budget: Budget::default(),
         cwd: PathBuf::from("/tmp"),
+        root: None,
         prompt: Some(prompt.to_string()),
         keep_alive: false,
         model: None,
@@ -294,7 +290,7 @@ async fn ask_returns_full_text_status_completed_and_transcript_ref() {
 
     let outcome = tokio::time::timeout(
         Duration::from_secs(5),
-        runtime.ask(parent, ask_fork_spec("say hi")),
+        runtime.ask(parent, parent, ask_fork_spec("say hi")),
     )
     .await
     .expect("ask did not resolve")
@@ -351,7 +347,7 @@ async fn ask_with_spawn_mode_returns_typed_error_not_panic() {
     spawn_spec.mode = SubagentMode::Spawn;
 
     let err = runtime
-        .ask(parent, spawn_spec)
+        .ask(parent, parent, spawn_spec)
         .await
         .expect_err("ask must reject a non-fork mode with a typed error");
 
@@ -410,7 +406,11 @@ async fn ask_drain_ignores_sibling_agent_finished() {
     // finish -- it runs concurrently with the child `ask` launches below.
     let mut sibling_stream = runtime.subscribe();
     let sibling = runtime
-        .start(parent, SubagentSpec::fork("sibling prompt", Budget::default()))
+        .start(
+            parent,
+            parent,
+            SubagentSpec::fork("sibling prompt", Budget::default()),
+        )
         .await
         .expect("sibling start");
 
@@ -418,7 +418,7 @@ async fn ask_drain_ignores_sibling_agent_finished() {
     // child, so the sibling's `AgentFinished` (which arrives ~10ms after
     // `start(sibling)` returned, well within the child's 200ms turn) is
     // observed by the child's drain and MUST be ignored.
-    let ask_fut = runtime.ask(parent, ask_fork_spec("child prompt"));
+    let ask_fut = runtime.ask(parent, parent, ask_fork_spec("child prompt"));
     let outcome = tokio::time::timeout(Duration::from_secs(10), ask_fut)
         .await
         .expect("ask did not resolve")
@@ -481,7 +481,7 @@ async fn ask_subscribes_before_launch_so_first_text_delta_is_not_missed() {
 
     let outcome = tokio::time::timeout(
         Duration::from_secs(5),
-        runtime.ask(parent, ask_fork_spec("say hi")),
+        runtime.ask(parent, parent, ask_fork_spec("say hi")),
     )
     .await
     .expect("ask did not resolve")
@@ -516,7 +516,7 @@ async fn ask_child_emits_agent_finished_with_ephemeral_true() {
     let mut stream = runtime.subscribe();
     let outcome = tokio::time::timeout(
         Duration::from_secs(5),
-        runtime.ask(parent, ask_fork_spec("say hi")),
+        runtime.ask(parent, parent, ask_fork_spec("say hi")),
     )
     .await
     .expect("ask did not resolve")
@@ -577,7 +577,7 @@ async fn ask_drain_resolves_with_cancelled_status_when_parent_is_cancelled() {
 
     let outcome = tokio::time::timeout(
         Duration::from_secs(5),
-        runtime.ask(parent, ask_fork_spec("say hi")),
+        runtime.ask(parent, parent, ask_fork_spec("say hi")),
     )
     .await
     .expect("ask hung on a cancelled child")

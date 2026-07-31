@@ -45,7 +45,9 @@ use conway_core::capabilities::{
 };
 use conway_core::content::{ContentBlock, StopReason, Usage};
 use conway_core::event::Event;
-use conway_core::fakes::{FakeGate, FakeHealth, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
+use conway_core::fakes::{
+    FakeGate, FakeHealth, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn,
+};
 use conway_core::ids::{AgentId, BackendId, ModelId, ModelRef, RoleAlias};
 use conway_core::ports::{Backend, GenerateRequest, Router, SessionStore, SubagentHost};
 use conway_core::provenance::Provenance;
@@ -135,6 +137,7 @@ fn root_spec(prompt: &str) -> RootSpec {
         tools: None,
         budget: Budget::default(),
         cwd: PathBuf::from("/tmp"),
+        root: None,
         prompt: Some(prompt.to_string()),
         keep_alive: false,
         model: None,
@@ -186,7 +189,11 @@ async fn a_root_turn_against_an_anthropic_capability_model_emits_a_cache_breakpo
     start_and_finish_root(&runtime, "investigate the bug").await;
 
     let calls = backend.calls();
-    assert_eq!(calls.len(), 1, "the root's one turn must reach the backend exactly once");
+    assert_eq!(
+        calls.len(),
+        1,
+        "the root's one turn must reach the backend exactly once"
+    );
     let req = &calls[0];
 
     let marked = breakpointed_indices(req);
@@ -205,13 +212,21 @@ async fn a_root_turn_against_an_anthropic_capability_model_emits_a_cache_breakpo
         .iter()
         .rposition(|s| matches!(s.provenance, Provenance::ToolRegistry { .. }))
         .expect("ToolSchemas segment is unconditional");
-    assert_eq!(marked, vec![a], "a root turn must breakpoint exactly A, no B");
+    assert_eq!(
+        marked,
+        vec![a],
+        "a root turn must breakpoint exactly A, no B"
+    );
 
     let hint = req.segments[a]
         .cache_hint
         .as_ref()
         .expect("index came from the breakpointed-indices filter");
-    assert_eq!(hint.ttl, CacheTtl::FiveMinutes, "AgentSpec::cache_ttl's default");
+    assert_eq!(
+        hint.ttl,
+        CacheTtl::FiveMinutes,
+        "AgentSpec::cache_ttl's default"
+    );
 }
 
 // ---------------------------------------------------------------------
@@ -226,6 +241,7 @@ async fn a_forked_childs_turn_breakpoints_both_a_and_b() {
     let mut stream = runtime.subscribe();
     let child = SubagentHost::start(
         &*runtime,
+        root,
         root,
         conway_core::agent::SubagentSpec::fork("look closer", Budget::default()),
     )
@@ -325,7 +341,10 @@ async fn gp06_stripping_cache_hint_makes_a_cached_and_uncached_route_identical()
     };
     let router: Arc<dyn Router> = Arc::new(FakeRouter::single(model));
     let mut backends: HashMap<BackendId, Arc<dyn Backend>> = HashMap::new();
-    backends.insert(uncached_backend.id(), uncached_backend.clone() as Arc<dyn Backend>);
+    backends.insert(
+        uncached_backend.id(),
+        uncached_backend.clone() as Arc<dyn Backend>,
+    );
     let uncached_runtime = Runtime::new(RuntimeDeps {
         store,
         router,

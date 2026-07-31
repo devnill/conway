@@ -23,8 +23,8 @@ use conway_core::ids::ToolName;
 use conway_core::log::SubagentMode;
 use conway_core::ports::{PathArgs, PluginConfig, RenderKind, Tool, ToolCtx, ToolOutput};
 
-use crate::common::{check_cancel, parse_args};
 use super::tools::{config_u32, config_u64, deadline_from_secs, host_error, BudgetArg, TRUNCATION};
+use crate::common::{check_cancel, parse_args};
 
 /// `conway_ask` defaults: tighter than `conway_subagent` — curation is a
 /// bounded drafting step, not an open-ended delegation.
@@ -153,9 +153,13 @@ impl Tool for AskTool {
             root: None,
         };
 
+        // P-1 (board item 01KYTP0PGKJ4VCJP5TD39A1WHF): `caller` and `parent`
+        // are BOTH `ctx.agent_id`, same rationale as `conway_subagent`'s
+        // `start` call -- `conway_ask` always forks the CALLING agent's own
+        // context; `AskArgs` has no field naming a different parent.
         let outcome = ctx
             .subagents
-            .ask(ctx.agent_id, spec)
+            .ask(ctx.agent_id, ctx.agent_id, spec)
             .await
             .map_err(host_error)?;
 

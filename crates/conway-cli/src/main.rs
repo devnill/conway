@@ -101,6 +101,16 @@ async fn main() -> std::process::ExitCode {
 /// `Some`, overrides `permissions`-derived gate selection via
 /// `ConwayBuilder::with_permission_gate` -- see this file's `main` for why
 /// (WI-114 reconciliation) and which dispatch targets ever pass one.
+///
+/// `--root` (board item 01KYTMH9JX21CGSE2Y6E2KP8SJ) is applied here, via
+/// `ConwayBuilder::with_root`, whenever `cli.root` is `Some` -- absent, this
+/// `Conway`'s root agent (and every session it starts) stays `Unconfined`,
+/// exactly as before this flag existed. Resolved relative to the process's
+/// OWN working directory, same as `--cwd` immediately above in `main`
+/// (`std::env::set_current_dir` has already run by the time this is
+/// called), NOT re-resolved against `--cwd`'s value again here -- clap
+/// itself never joins two path flags together, and neither does this
+/// function.
 fn build_conway(cli: &Cli, gate: Option<Arc<dyn PermissionGate>>) -> conway::Result<Conway> {
     let builder = match &cli.config {
         Some(path) => ConwayBuilder::from_config(path)?,
@@ -108,6 +118,10 @@ fn build_conway(cli: &Cli, gate: Option<Arc<dyn PermissionGate>>) -> conway::Res
     };
     let builder = match gate {
         Some(gate) => builder.with_permission_gate(gate),
+        None => builder,
+    };
+    let builder = match &cli.root {
+        Some(root) => builder.with_root(root.clone()),
         None => builder,
     };
     builder.build()

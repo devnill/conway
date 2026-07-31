@@ -216,6 +216,56 @@ same check every other caller is held to. The model-invoked
 runtime-assigned identity of the agent actually dispatching the call, never
 model-supplied — as `caller`.
 
+**`start`/`ask`/`tree` are now confined by the SAME mechanism, closing the
+half of `SubagentHost` the paragraph above left open.** The trio's own fix
+covered `steer`/`await_result`/`cancel`; `start`, `ask`, and `tree` still
+took only `parent` (or, for `tree`, nothing at all) and acted on it
+directly, with no check that the caller was entitled to. Composed with
+`tree()`'s unrestricted whole-runtime read, this was cross-tree
+exfiltration in one call: discover a sibling's `AgentId` via `tree()`, then
+`ask(sibling, SubagentSpec { mode: Fork, .. })` to fork that sibling's
+ENTIRE context and read the reply back as plain model output. Fixed,
+reusing `ensure_own_subtree` rather than inventing a second mechanism:
+
+- `start` and `ask` gain a `caller: AgentId` parameter, distinct from
+  `parent` (which keeps its existing meaning: "attach the new child under
+  this agent"), and `start` calls `self.ensure_own_subtree(caller, parent)`
+  first, before any cwd/root resolution or store I/O. `ask` performs no
+  separate check of its own — it composes `start` (P-1: "`ask` is
+  fork+await-text, not a third primitive"), so threading `caller` straight
+  through to its internal `self.start(caller, parent, spec)` call is what
+  enforces this for `ask` too.
+- `tree` gains a `caller: AgentId` parameter and returns exactly that
+  caller's own subtree (itself, plus every descendant) — never a foreign
+  branch. Built from `Runtime::tree`'s (unchanged, still-unscoped) full
+  snapshot, filtered to the nodes whose parent-chain passes through
+  `caller`. For the session's root agent this is, correctly, the whole
+  tree: the root's subtree IS the tree, by construction, same as the
+  steer/await/cancel trio's own root/operator exemption. An unknown
+  `caller` (not attached to this runtime) returns an empty subtree rather
+  than an error — this method returns no `Result`, so it mirrors
+  `AgentTree::path`'s own "empty for unknown" convention instead.
+
+No new bypass flag: `conway::SessionHandle::fork`/`spawn` pass `self.root`
+as `caller` (mirroring `steer`'s own root/operator exemption exactly, since
+`ensure_agent_in_session` already proved `parent` belongs to that session),
+and the model-invoked `conway_subagent`/`conway_ask` tools
+(`conway-tools`' `subagent/{tools,ask}.rs`) pass `ToolCtx::agent_id` as
+BOTH `caller` and `parent` — a tool call always starts/asks a child of the
+CALLING agent itself; neither tool's JSON schema exposes a field naming a
+different parent. `WeakRuntimeHost` (the cycle-breaking delegate every
+agent task's `LoopDeps::subagents` actually holds) threads the new
+parameters through unchanged.
+
+`Runtime::tree()` itself (the plain, inherent, sync method `conway::
+Conway`/`SessionHandle` call directly, e.g. `Conway::promote`/`pull_in`,
+and `SessionHandle::tree`) is UNCHANGED and stays unscoped by design — it
+has no caller concept at all, and neither `SessionHandle` nor `Conway`
+attempts to narrow it (each already documents this as a disclosed,
+deliberate non-filtering). Only the `SubagentHost::tree` TRAIT method
+(`ctx.subagents.tree(caller)`, what every tool call actually reaches) is
+scoped by this fix.
+
 **Live `Event::UserTurn`, and the one attach-ordering hazard it has to
 respect.** `Runtime::prompt` (the target of `SessionHandle::prompt`/
 `prompt_agent`, every plain TUI chat message) and `Runtime::start_root`
@@ -368,6 +418,53 @@ themselves, which is tool-layer sandboxing and is out of scope for this
 design (GP-08: the harness's responsibility ends at the permission model,
 not the filesystem). **Root protects against mistaken and
 prompt-injected paths, not against an adversarial agent holding `bash`.**
+
+### Confining the ROOT agent (board item 01KYTMH9JX21CGSE2Y6E2KP8SJ)
+
+Everything above ("Permission brokering") was already true and already
+checked first, above every allow path — but until this item, `RootSpec`
+(`Runtime::start_root`'s parameter — the entry point for the agent an
+operator actually talks to) had no `root` field at all. `SessionMeta.root`
+was therefore always `None` for a session's root agent, `AgentRoot::
+reconstruct` always produced `Unconfined` for it, and `check_root` returned
+`Proceed` without ever inspecting `path_args`. Only a spawned or forked
+child (`SubagentSpec.root`) could ever be confined. `must_reach_gate` was
+consequently always `false` for a root agent — vacuously true, not
+enforced — which matters because `docs/design/extension-architecture.md`
+§5.1/§7.5 count on it as one of the containments justifying a `Deciding
+Policy` extension point.
+
+`RootSpec::root: Option<PathBuf>` closes that gap. `None` (the default,
+unchanged for every caller that doesn't set it) is `Unconfined`,
+byte-for-byte identical to every invocation before this field existed.
+`Some(path)` is resolved and validated exactly like a spawned child's own
+`Some(requested)` root (`subagent.rs`'s `SubagentHost::start`): a relative
+path resolves against `RootSpec::cwd` (a root agent has no parent cwd to
+resolve against), the result must canonicalize, and `cwd` itself must
+already fall inside it — `start_root` returns a typed error (the same
+`subagent::invalid_spec` helper `resume_root` already uses) rather than
+starting an agent whose own working directory sits outside its own
+confinement before a single tool call ever runs. A resumed root
+(`Runtime::resume_root`) needs no equivalent field: it already reuses
+whatever `SessionMeta.root` `start_root` persisted, validated against any
+`cwd` override the same way.
+
+**Inheritance composes unchanged.** `subagent.rs`'s narrow-only algebra
+(a spawn/fork's root may only narrow relative to its parent's, never widen
+or move sideways — see `SubagentSpec.root`'s own doc) was already written
+against `parent_meta.root: Option<PathBuf>` generically; it never assumed
+the parent was a root agent specifically, or that a root agent's own root
+was always `None`. Giving a root agent a real, non-`None` root therefore
+required no change to that logic at all — a spawned child now genuinely
+narrows against it (or fails the spawn if it tries to widen), exactly as it
+already did against a confined intermediate ancestor.
+
+The facade (`conway`) exposes this as `ConwayBuilder::with_root`, and
+`conway-cli` as `--root` — deliberately a distinct, whole-invocation
+setting from `--cwd`/`ConwayConfig.cwd`, not an inference from either: cwd
+is where the agent works and is never a security boundary; root is what it
+may reach and is the only one of the two that is. See
+[`conway-cli`](conway-cli.md) for the flag's own help text.
 
 ## Tool dispatch
 
