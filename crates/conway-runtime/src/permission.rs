@@ -299,6 +299,28 @@ pub struct PermissionBroker {
     /// the metacharacter gate `patterns` above is gated by -- see that
     /// method's own doc.
     deny_patterns: RwLock<Vec<(PatternRule, PatternOrigin)>>,
+    /// Board item 01KYTP1D3XWEZPW4AKPH54FNB3: prefix-pattern PROMPT rules --
+    /// the second narrowing effect `docs/design/extension-architecture.md`
+    /// §5.4 grants a plugin-contributed rule (`then: prompt`, alongside
+    /// `deny`), which had NOTHING evaluating it anywhere in this broker
+    /// before this item: `must_reach_gate` was set exclusively by
+    /// `check_root`, so a `prompt` rule could never force `gate.check` and
+    /// was inert in every mode (see this item's own board record for the
+    /// two concrete failures this caused).
+    ///
+    /// Structurally identical to `deny_patterns` -- no `GrantScope` (a
+    /// narrowing rule applies to every requester, D4 §3's asymmetry extends
+    /// unchanged to `prompt`: extension-architecture.md §5.5 stage 1 admits
+    /// `deny` AND `prompt` unconditionally, `allow` only when trusted), and
+    /// matched with `PatternRule::matches_deny` for the identical
+    /// anti-evasion reason (see `Self::prompt_matches`'s own doc). What
+    /// differs is the EFFECT: a matched deny rule returns `Deny` immediately
+    /// from `Self::decide`; a matched prompt rule does not deny anything --
+    /// it sets the broker-level `must_reach_gate` accumulator, forcing this
+    /// call past the cache/pattern/`AutoAllow` shortcuts and into
+    /// `gate.check` exactly as `check_root`'s own `MustReachGate` already
+    /// does for an unconfinable call under a root.
+    prompt_patterns: RwLock<Vec<(PatternRule, PatternOrigin)>>,
 }
 
 impl PermissionBroker {
@@ -310,6 +332,7 @@ impl PermissionBroker {
             mode: RwLock::new(PermissionMode::default()),
             patterns: RwLock::new(Vec::new()),
             deny_patterns: RwLock::new(Vec::new()),
+            prompt_patterns: RwLock::new(Vec::new()),
         }
     }
 
@@ -366,6 +389,21 @@ impl PermissionBroker {
         self.deny_patterns
             .write()
             .expect("permission deny patterns poisoned")
+            .push((rule, origin));
+    }
+
+    /// Installs a PROMPT rule, attributed to `origin`. Board item
+    /// 01KYTP1D3XWEZPW4AKPH54FNB3: the second narrowing effect
+    /// `docs/design/extension-architecture.md` §5.4 grants a
+    /// plugin-contributed rule. Like [`Self::remember_deny_pattern`], there
+    /// is no `scope` parameter -- a `prompt` rule applies to every
+    /// requester, unconditionally: forcing an EXTRA ask has no failure mode
+    /// worth scoping, the same reasoning `remember_deny_pattern`'s own doc
+    /// gives for `deny`.
+    pub fn remember_prompt_pattern(&self, rule: PatternRule, origin: PatternOrigin) {
+        self.prompt_patterns
+            .write()
+            .expect("permission prompt patterns poisoned")
             .push((rule, origin));
     }
 
@@ -489,19 +527,32 @@ impl PermissionBroker {
             .collect()
     }
 
+    /// Every active PROMPT rule, paired with its origin -- the prompt half's
+    /// own review list, mirroring [`Self::active_deny_patterns`]: a `prompt`
+    /// an operator did not expect (or forgot they trusted) must be
+    /// discoverable the same way a `deny` is.
+    pub fn active_prompt_patterns(&self) -> Vec<(PatternRule, PatternOrigin)> {
+        self.prompt_patterns
+            .read()
+            .expect("permission prompt patterns poisoned")
+            .iter()
+            .cloned()
+            .collect()
+    }
+
     /// Drops every pattern ALLOW grant and every cached `AllowAlways`,
     /// returning the session to asking. The revocation half of the escape
     /// hatch.
     ///
-    /// Deliberately leaves `deny_patterns` untouched: revocation exists so
-    /// an operator can back out of authority they granted (interactively,
-    /// or via a trusted file) that turned out to be too broad. A `deny`
-    /// rule narrows rather than grants, so there is nothing here for an
-    /// operator to need an escape hatch FROM -- and most `deny` rules come
-    /// from a file the operator does not control (or has not reviewed as
-    /// carefully), so silently dropping them as a side effect of an
-    /// unrelated "revoke my own grants" action would be a surprise in the
-    /// unsafe direction.
+    /// Deliberately leaves `deny_patterns` AND `prompt_patterns` untouched:
+    /// revocation exists so an operator can back out of authority they
+    /// granted (interactively, or via a trusted file) that turned out to be
+    /// too broad. Neither `deny` nor `prompt` grants anything -- both
+    /// narrow -- so there is nothing here for an operator to need an escape
+    /// hatch FROM -- and most `deny`/`prompt` rules come from a file the
+    /// operator does not control (or has not reviewed as carefully), so
+    /// silently dropping them as a side effect of an unrelated "revoke my
+    /// own grants" action would be a surprise in the unsafe direction.
     pub fn revoke_all_grants(&self) {
         self.patterns
             .write()
@@ -599,8 +650,49 @@ impl PermissionBroker {
             .cloned()
     }
 
+    /// The first installed `prompt` rule that matches this call, if any.
+    /// Board item 01KYTP1D3XWEZPW4AKPH54FNB3.
+    ///
+    /// **Deliberately reuses `PatternRule::matches_deny`, not
+    /// `matches_render`.** `matches_render`'s metacharacter gate exists to
+    /// keep an ALLOW from being satisfied by a chained command riding a
+    /// matched prefix -- a concern that only applies to a rule that GRANTS
+    /// something. A `prompt` rule grants nothing; its only effect is "ask
+    /// the operator instead of skipping the ask", which is safe (indeed
+    /// MORE conservative) to fire on a chained command too. Gating it the
+    /// allow way would have the opposite of the intended effect: adding a
+    /// shell metacharacter would EVADE the extra scrutiny a `prompt` rule
+    /// exists to add, exactly the inversion `matches_deny`'s own doc
+    /// describes for `deny`. `prompt` and `deny` are both admitted
+    /// unconditionally at extension-architecture.md §5.5's stage 1 (they
+    /// narrow; only `allow` needs trust) precisely because neither can be
+    /// evaded this way.
+    fn prompt_matches(&self, call: &AuthorizedCall) -> Option<PatternRule> {
+        self.prompt_patterns
+            .read()
+            .expect("permission prompt patterns poisoned")
+            .iter()
+            .map(|(rule, _origin)| rule)
+            .find(|rule| rule.matches_deny(call.tool.as_str(), &call.rendered))
+            .cloned()
+    }
+
     /// Authorize one tool call, consulting the cache first and the gate on a
     /// miss.
+    ///
+    /// Full ordering (board item 01KYTP1D3XWEZPW4AKPH54FNB3 added the
+    /// `prompt` step; every step before it is unchanged): root →
+    /// deny-pattern → plan-mode → **prompt-pattern** → cache →
+    /// pattern-allow → `AutoAllow` → gate. Each step before `gate` either
+    /// returns a decision outright (root denial, deny-pattern, plan-mode) or
+    /// narrows what the LATER steps in this list are even allowed to do
+    /// (root's `MustReachGate`, and now `prompt`, both set the
+    /// `must_reach_gate` accumulator, which skips cache/pattern-allow/
+    /// `AutoAllow` entirely and forces `gate.check`). Composition is
+    /// most-restrictive-wins and registration order within a step (which
+    /// `deny`/`prompt` rule matched first, which pattern grant was installed
+    /// first) never changes the outcome, only which single value is picked
+    /// to report.
     ///
     /// Emission sequence, strictly: `PermissionRequested` → (root denial, or
     /// plan-mode denial, or cache hit, or await the gate and insert a cache
@@ -629,7 +721,18 @@ impl PermissionBroker {
         // of auto-allowing it -- but it is not itself a denial. A `Denied`
         // root decision returns immediately, before the cache/pattern/
         // AutoAllow/gate are ever consulted.
-        let must_reach_gate = match Self::check_root(ctx, call) {
+        //
+        // Board item 01KYTP1D3XWEZPW4AKPH54FNB3: `must_reach_gate` is now a
+        // BROKER-LEVEL ACCUMULATOR, not `check_root`'s exclusive output --
+        // `mut` below, OR'd with the prompt-rule check further down. It is
+        // never cleared once set: every source that can set it (`check_root`
+        // here, `Self::prompt_matches` below, and any future narrowing
+        // source) may only ADD a reason to reach the gate, never remove one,
+        // so this does not, and structurally cannot, weaken the root-forced
+        // case a confined agent depends on (pinned by
+        // `unconfinable_bash_command_always_reaches_the_gate_for_a_confined_root_agent`
+        // in `crates/conway/tests/root_containment_seam.rs`).
+        let mut must_reach_gate = match Self::check_root(ctx, call) {
             RootDecision::Denied(reason) => {
                 self.emit(
                     ctx,
@@ -696,6 +799,65 @@ impl PermissionBroker {
                     call.category
                 ),
             };
+        }
+
+        // Board item 01KYTP1D3XWEZPW4AKPH54FNB3: the PROMPT step.
+        // Deliberately placed HERE -- after the deny check and the plan-mode
+        // gate (both of which already returned a `Deny` and can never be
+        // reached by a call this step would only ask about; "deny beats
+        // prompt" therefore holds by construction, not by an ordering this
+        // step has to get right), and BEFORE the cache/pattern/`AutoAllow`
+        // block immediately below.
+        //
+        // **Why above the cache, specifically.** A plugin's `prompt` rule
+        // existing at all is a claim that this class of call deserves a
+        // human look EVERY time, not the first time. Checking it below the
+        // cache would let the very first `AllowAlways` answer -- possibly
+        // granted before the rule was ever installed, e.g. a plugin loaded
+        // mid-session -- permanently suppress every future ask the rule was
+        // meant to force. That is a real transfer of authority away from an
+        // operator's own explicit "always allow" (see this method's own
+        // history for that point being raised explicitly), but it is the
+        // correct direction: `AllowAlways` is `PermissionScope`-bounded
+        // consent to a class of call, not a promise that the class can never
+        // later be flagged by a narrower rule -- exactly the same relationship
+        // `deny` already has with the cache two branches above. Narrowing an
+        // existing grant is always permitted (extension-architecture.md
+        // §5.5 stage 1); WIDENING one never is, and this step only ever
+        // narrows.
+        //
+        // **Why it must also beat `AutoAllow`, not just the cache/pattern
+        // steps.** `AutoAllow` is the mode a guardrail plugin matters most
+        // in: it is the one mode with no human already in the loop to catch
+        // what the plugin's rule would have caught. A `prompt` effect that
+        // worked in every mode except the one where it is load-bearing would
+        // not be a partial fix, it would be the SAME bug restated -- so this
+        // step sits above the whole `if !must_reach_gate` block, which is
+        // what makes it structurally impossible for `AutoAllow`'s own branch
+        // inside that block to ever run for a call this matched.
+        //
+        // **Attribution, decided rather than left implicit.** The operator
+        // sees this ask through the ordinary `gate.check` path below, with
+        // no marker distinguishing "a rule forced this" from an ordinary
+        // first-time ask -- `PermissionDecisionKind` (`#[non_exhaustive]`,
+        // so additive) is NOT extended by this item. That is deliberately
+        // narrower than it could be, not an oversight: the hazard this
+        // item's own acceptance criteria warn against is a NEW cause
+        // silently reported as `Cached` (the cache/pattern/`AutoAllow` steps'
+        // own label for "resolved without asking"), and this step cannot
+        // produce that mislabeling BY CONSTRUCTION -- setting
+        // `must_reach_gate` only ever routes a call INTO `gate.check`, whose
+        // real `PermissionDecision` (`AllowOnce`/`AllowAlways`/`Denied`/
+        // `DeniedWithFeedback`) is reported exactly as it already is for any
+        // other first-time ask. What is genuinely missing is WHY the operator
+        // is being asked -- surfacing "matched plugin rule `bash:curl`" in
+        // the prompt UI needs a wire-visible field on `PermissionRequest`/
+        // `Event::PermissionRequested`, a persisted-log-compatible change
+        // (`#[serde(default)]`, mirroring `Event::AgentSpawned`'s `ephemeral`
+        // field) this item leaves as a follow-up rather than bundling into
+        // the mechanism fix.
+        if self.prompt_matches(call).is_some() {
+            must_reach_gate = true;
         }
 
         if !must_reach_gate {

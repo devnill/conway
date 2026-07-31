@@ -341,6 +341,38 @@ Two invariants a test can pin:
 > does not opt in. See `docs/crates/conway-runtime.md`'s "Confining the ROOT
 > agent" section for the mechanism.
 
+> **Status (2026-07-31), board item 01KYTP1D3XWEZPW4AKPH54FNB3.** Steps 3 and
+> 7 above (`policy chain`, `NarrowingPolicy`/`DecidingPolicy`) remain
+> aspirational — no such trait exists in the workspace yet. What DOES now
+> exist, shipped by this item, is the narrower slice of step 3 this section's
+> own §5.4 called "the single most important reconciliation": a
+> `prompt`-effect rule, expressed in TODAY's `PatternRule` vocabulary (not
+> the future `{select, when, then}` structured form), that actually forces
+> `gate.check`. Before this item, `must_reach_gate` was set EXCLUSIVELY by
+> `check_root` (step 1) — nothing else in `decide` could raise it, so this
+> section's own §2020 worked example (`{"categories":["edit","delete"],
+> "then":"prompt"}`) was inert in every mode, including `AutoAllow`, the one
+> mode it matters most in. `must_reach_gate` is now the broker-level
+> accumulator this document already implied it should be: `PermissionBroker`
+> gained a `prompt_patterns` set, structurally identical to the existing
+> `deny_patterns` (no `GrantScope`, matched via `PatternRule::matches_deny`
+> for the identical anti-evasion reason §5.6 gives for `deny`), checked as a
+> new step **between plan-mode denial and the cache** — i.e. exactly where
+> step 3's "policy chain - DENY half" sits above, minus the general `Policy`
+> trait. A match ORs onto `must_reach_gate` (never clears it), so it forces
+> the call past steps 4–6 exactly as `check_root`'s own `MustReachGate`
+> already did, and the two invariants above are unaffected: `check_root`'s
+> root-forced case cannot be weakened by an OR-only accumulator, and this
+> pinned by the existing
+> `unconfinable_bash_command_always_reaches_the_gate_for_a_confined_root_agent`
+> test. `deny` still beats `prompt` beats `allow` (a `deny_patterns` match
+> returns before `prompt_patterns` is ever consulted), and registration
+> order among rules within a step remains unobservable. Attribution — which
+> rule forced a given ask — is a deliberate non-goal of this slice; see
+> `CHANGELOG.md`'s entry for this item for why that gap is safe to leave
+> open for now. (`crates/conway-runtime/src/permission.rs`,
+> `crates/conway/src/conway.rs`)
+
 **Implementation constraint, stated because getting it wrong deadlocks:**
 the chain lives in `RwLock<Vec<RegisteredPolicy>>` and must be **cloned with
 the guard dropped before any `.await`**, exactly as `LoopDeps::context_hook`
