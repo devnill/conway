@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-07-31
+
+Five security fixes and one cost fix, all found by reading the code against the
+documentation that described it rather than by anything failing in use.
+
+The recurring shape: a capability declared, documented, and never reached. Four
+of the six were mechanisms that existed in full and were simply never called —
+pattern grants inert for twelve of thirteen tools, `cache_control` never
+emitted, a startup hook with no call sites, and a rule effect with no step in
+the decision pipeline. Each had passing unit tests; none had a test asserting
+the mechanism was live.
+
+Every fix in this release ships with a test that drives a production entry point
+and was verified to fail when the guard is removed.
+
 ### Added
 
 - **A root agent can now be confined to a filesystem root — `--root`
