@@ -12,7 +12,7 @@
 //! `lm_studio`, `llama_cpp_server`) are now [`Profile`] values embedded as
 //! data ([`BUILT_IN_PROFILES`]) rather than Rust match arms, plus a sixth,
 //! `kimi` (the Moonshot platform API — distinct from the already-shipped
-//! Kimi Code Anthropic-compatible path, see `docs/crates/conway-backends.md`).
+//! Kimi Code Anthropic-compatible path, see `docs/providers.md`).
 //! `crate::config::Dialect` is kept as a small, `Copy`, five-variant
 //! convenience enum resolving to one of these built-ins ([`Dialect::profile`])
 //! for source compatibility with every existing call site; it is not
@@ -320,7 +320,7 @@ pub struct LoadedProfile {
 /// The five dialects this crate shipped before declarative provider
 /// profiles, plus `kimi` (the Moonshot platform API — distinct from the
 /// already-shipped Kimi Code Anthropic-compatible path; see
-/// `docs/crates/conway-backends.md`), embedded at compile time. Every value
+/// `docs/providers.md`), embedded at compile time. Every value
 /// here must reproduce this crate's pre-existing per-dialect behavior
 /// exactly — the regression net for that is `tests/dialect_conformance.rs`
 /// and `openai_compat/wire.rs`'s/`capabilities.rs`'s own unit tests, which
@@ -431,7 +431,7 @@ min_prefix_tokens = 0
 # threshold (informational only -- see `Profile::cache`'s doc); conway
 # implements no cache-hint workaround for it (decided: pass values through,
 # let the server's own behavior/errors be loud). See
-# `docs/crates/conway-backends.md` for the temperature-range and
+# `docs/providers.md` for the temperature-range and
 # `tool_choice: "required"` quirks this profile deliberately does not
 # encode -- conway passes values through rather than rewriting them.
 [[profile]]

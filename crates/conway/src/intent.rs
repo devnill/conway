@@ -11,8 +11,8 @@
 //!
 //! The classifier routes through the ordinary role machinery under the
 //! alias `intent`. The repo has no bundled/default config file
-//! (`config::schema`'s `roles` map defaults to empty, and `docs/crates/
-//! conway.md` only documents the `settings.json` schema), so — per this
+//! (`config::schema`'s `roles` map defaults to empty, and `docs/embedding.md`
+//! only documents the `settings.json` schema), so — per this
 //! item's own fallback — the snippet is documented here instead of added
 //! to a defaults file. In `settings.json`:
 //!

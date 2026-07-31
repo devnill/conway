@@ -187,7 +187,7 @@ reliability_tier = "community"
 tool_calling = "non_streaming"
 
 # Kimi K3 coding-plan models, served over an Anthropic-compatible endpoint
-# (see `docs/crates/conway-backends.md`). Two context variants ship as
+# (see `docs/providers.md`). Two context variants ship as
 # separate ids because the window is selected by the model id itself, not by
 # a parameter. The `[1m]` suffix is literal — it is part of the id the
 # provider expects, not TOML syntax, which is why the id is quoted.
