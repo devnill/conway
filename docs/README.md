@@ -1,34 +1,33 @@
-# conway docs
+# conway documentation
 
-Start at [`/ARCHITECTURE.md`](../ARCHITECTURE.md) — the current, maintained
-architectural overview: what conway is, the 8-crate workspace and its
-dependency direction, the core primitives (fork/spawn, the append-only
-session log and context assembly, capability-based routing, tools-as-plugins
-behind a permission gate, `ContextHook`, keep-alive sessions, `/ask`,
-wire-layer reasoning support), and the data flow of one turn.
+Task-oriented documentation for using conway — installing it, driving it
+interactively or from a script, and embedding it as a library. Start with
+[`getting-started.md`](getting-started.md) if you haven't run conway yet;
+everything else assumes that page's setup.
 
-## Per-crate docs
+## Start here
 
-`docs/crates/` holds one design doc per workspace crate, each covering that
-crate's scope, the ports it provides or consumes, and implementation notes
-that don't belong at the architecture-overview level:
+| Page | Answers | Read if |
+| --- | --- | --- |
+| [`getting-started.md`](getting-started.md) | How do I install conway, configure a model provider, and run my first prompt? | You're setting conway up for the first time. |
 
-- [`docs/crates/conway-core.md`](crates/conway-core.md) — domain types and
-  port traits.
-- [`docs/crates/conway-backends.md`](crates/conway-backends.md) — Anthropic
-  and OpenAI-compatible backend adapters.
-- [`docs/crates/conway-routing.md`](crates/conway-routing.md) — capability
-  routing, circuit breakers, health probes.
-- [`docs/crates/conway-session.md`](crates/conway-session.md) — the
-  append-only session log and transcript/prefix resolution.
-- [`docs/crates/conway-tools.md`](crates/conway-tools.md) — the plugin/tool
-  registry and built-in tools.
-- [`docs/crates/conway-runtime.md`](crates/conway-runtime.md) — the agent
-  loop, context assembly, fork/spawn orchestration.
-- [`docs/crates/conway.md`](crates/conway.md) — the public facade.
-- [`docs/crates/conway-cli.md`](crates/conway-cli.md) — the `conway` binary
-  (one-shot mode and the TUI).
+## Driving conway
 
-All eight are written; each covers that crate's responsibility and
-boundary, its public interfaces, key types and invariants, and links back
-up to `/ARCHITECTURE.md` and across to sibling crate docs.
+| Page | Answers | Read if |
+| --- | --- | --- |
+| [`interactive.md`](interactive.md) | How do I use the TUI — keys, slash commands, the permission prompt, the status line? | You're running `conway` with no `-p` flag, as a human at a terminal. |
+| [`scripting.md`](scripting.md) | How does `-p`/`--print` behave — exit codes, output formats, permissions with nobody there to answer a prompt? | You're calling conway from a script or another program as a subprocess. |
+| [`embedding.md`](embedding.md) | How do I depend on the `conway` crate directly — the builder chain, a minimal example, what's actually reachable from outside the workspace? | You're linking conway into a host application (an IDE, a service) instead of running it as a subprocess. |
+
+## Concepts
+
+| Page | Answers | Read if |
+| --- | --- | --- |
+| [`agents.md`](agents.md) | What's the difference between fork and spawn, and how do I create, steer, and inspect a child agent? | You want more than one agent working on a problem. |
+| [`sessions.md`](sessions.md) | What gets persisted, how do resume and fork-from-disk work, and what's the full `conway sessions` command reference? | You need to resume, branch from, or inspect a session's history. |
+| [`providers.md`](providers.md) | How do I point conway at Anthropic, an OpenAI-compatible server, or a provider conway doesn't already know about? | You're configuring a backend beyond the minimal example in `getting-started.md`. |
+| [`routing.md`](routing.md) | How does conway pick which configured model actually serves a request, and how do I see why? | You have more than one model configured and need to control or debug which one runs. |
+| [`permissions.md`](permissions.md) | What do the permission modes, the prompt, pattern grants, project trust, and `--root` confinement actually guarantee — and not guarantee? | You're deciding what an agent is allowed to touch. |
+
+For the system-level picture — the crate layout, the core primitives, and
+the data flow of one turn — see [`/ARCHITECTURE.md`](../ARCHITECTURE.md).

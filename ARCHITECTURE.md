@@ -1,16 +1,11 @@
 # Architecture: conway
 
-This is the living design overview for conway. It describes the system as
-committed at **0.5.0** — for the release-by-release history of what changed
-and why, see [CHANGELOG.md](CHANGELOG.md); for the inception-era planning
-rationale that predates the current shape (why decisions were made, not
-just what they are), see this project's ideate decision/journal records —
-the design content of the original planning set has been folded into this
-file and `docs/crates/*.md`, and the planning documents themselves have
-been retired.
-
-For a narrower, implementation-level treatment of each crate, see
-[`docs/README.md`](docs/README.md) and `docs/crates/*.md`.
+This is the system overview for conway: what it is, how the workspace is
+laid out, the primitives it's built from, and the data flow of one turn.
+For task-oriented documentation on using conway, see
+[`docs/README.md`](docs/README.md); this page is the level below that —
+how the pieces fit together, for a reader who wants the whole-system
+picture before diving into a specific crate's source.
 
 ---
 
@@ -208,8 +203,8 @@ once in the broker, before dispatch; the tool opens the file later, across a
 task boundary, so a symlink created inside the root in between defeats it.
 Closing that requires `openat`/`O_NOFOLLOW` inside the tools, which is
 tool-layer sandboxing and out of scope here. See
-[`conway-runtime`](docs/crates/conway-runtime.md)'s "Permission brokering"
-section for the full mechanism and these limits stated in full.
+[`docs/permissions.md`](docs/permissions.md) for the full mechanism and
+these limits stated in full.
 
 ### 3.5 `ContextHook` — pluggable context and tool curation
 
@@ -230,10 +225,17 @@ system-prompt instrumentation, tool-announcement narrowing, or
 overflow-time summarization supplies its own hook — which may be a pure
 script or may itself issue an LLM call, since `before_request` is async.
 
-A related, independent mechanism is the **out-of-context record mask**:
-individual log records can be marked to exclude from future LLM calls while
-remaining in the append-only log — reversible, and orthogonal to
-`ContextHook`.
+A related, narrower mechanism is the **out-of-context record mask**
+(`LogRecord::ContextMask`): a persisted, reversible overlay naming another
+record in the same session as excluded. Its only effect is on
+**fork-prefix resolution** — `conway-session`'s `TranscriptResolver`
+applies it when computing what a *new* fork child inherits. It does not
+touch the owning session's own future turns: a session's own context
+assembly reads its own records directly, unfiltered by any mask on them.
+No code in the workspace today constructs a `ContextMask` record outside
+of tests, so this mechanism is not currently reachable through any
+built-in surface — a consumer wanting it would need to append the record
+itself via `SessionStore`.
 
 ### 3.6 Keep-alive sessions and `/ask`
 
@@ -338,9 +340,8 @@ context mid-generation.
 
 ## 5. Where to go next
 
-- [`docs/README.md`](docs/README.md) indexes the per-crate design docs.
-- [CHANGELOG.md](CHANGELOG.md) is the authoritative feature history,
-  release by release.
-- This project's ideate decision/journal records hold the inception-era
-  planning rationale — the "why" behind choices this file and
-  `docs/crates/*.md` describe as the current "what" and "how".
+- [`docs/README.md`](docs/README.md) indexes conway's task-oriented
+  documentation — installing conway, driving it interactively or from a
+  script, and embedding it as a library.
+- Each crate's own source carries its implementation-level documentation;
+  `cargo doc --workspace --no-deps --open` builds it.

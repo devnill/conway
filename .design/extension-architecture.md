@@ -338,8 +338,8 @@ Two invariants a test can pin:
 > invariant **actually enforced**, not just unfalsified, whenever an operator
 > sets one. The default remains `Unconfined` — deliberately not changed by
 > this item — so the invariant is still vacuous for every invocation that
-> does not opt in. See `docs/crates/conway-runtime.md`'s "Confining the ROOT
-> agent" section for the mechanism.
+> does not opt in. See `docs/permissions.md`'s "Confinement" section for the
+> mechanism.
 
 > **Status (2026-07-31), board item 01KYTP1D3XWEZPW4AKPH54FNB3.** Steps 3 and
 > 7 above (`policy chain`, `NarrowingPolicy`/`DecidingPolicy`) remain

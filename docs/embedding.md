@@ -248,10 +248,9 @@ re-exported types, which is exactly why the permissions section above can
 show it end to end.
 
 **Do not treat plugin (`Tool`/`Plugin`) or context-hook authoring as a
-working path for a crate that depends on `conway` alone** — as of this
-writing they are not (board item `01KYTJC4S3Q7ZMH4EDRKNNN5G5` tracks
-closing this). A crate willing to also take a direct, workspace-internal
-path dependency on `conway-core` (as `crates/conway/examples/
+working path for a crate that depends on `conway` alone** — they are not. A
+crate willing to also take a direct, workspace-internal path dependency on
+`conway-core` (as `crates/conway/examples/
 minimal_session.rs` itself does, for its fakes) can still implement any of
 these — the gap is specifically for a consumer that wants the facade to be
 the *only* thing it depends on, which is the point of a facade.

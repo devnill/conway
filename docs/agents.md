@@ -28,7 +28,7 @@ restructure the hierarchy — fork it, then narrow what you tell it to focus
 on via the directive; or spawn it and hand it exactly what it needs in the
 prompt — not to look for a third primitive that sits between fork and spawn.
 This is a deliberate design position, not a gap: see
-[`whitepaper.md`](whitepaper.md) §4.1 for the reasoning.
+[`.design/whitepaper.md`](../.design/whitepaper.md) §4.1 for the reasoning.
 
 ## Why the hierarchy exists
 

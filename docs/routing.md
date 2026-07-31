@@ -146,8 +146,8 @@ neither. Two env vars reach the same knobs without touching the file:
 `CONWAY_ROUTING__DEFAULT_HEADROOM_TOKENS=16000` and
 `CONWAY_ROLES__<ALIAS>__HEADROOM_TOKENS=32768` (the latter only applies
 to a role that already exists in the merged config; an unknown alias is
-ignored, not an error). There's no `--headroom-tokens` CLI flag as of
-this writing — only `settings.json` and these two env vars reach it.
+ignored, not an error). There's no `--headroom-tokens` CLI flag — only
+`settings.json` and these two env vars reach it.
 
 ### Estimated, not exact
 

@@ -137,7 +137,7 @@ at those instead. `api_key` is optional for a server that doesn't require
 one. If your server needs behavior none of the five built-in dialects
 capture — a custom `chat_path`, a different tool-call style — declare a
 named profile in `.conway/profiles.toml` and reference its id as the
-`dialect`; see [`docs/crates/conway-backends.md`](crates/conway-backends.md)
+`dialect`; see [`providers.md`](providers.md#declarative-provider-profiles)
 for the full profile schema.
 
 ## `--cwd` and `--root`
