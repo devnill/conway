@@ -96,13 +96,20 @@
 //! ## `CacheMode` is not wired from `SubagentSpec::cache_hint`
 //!
 //! `SubagentSpec::cache_hint` is documented as "never correctness-bearing"
-//! and meaningful only as a *hint*. No criterion in this item requires a
-//! particular `CacheMode` selection, and no mechanism anywhere in this
-//! crate yet selects a concrete `CacheMode` from caller intent — even
-//! `runtime.rs`'s `start_root` hardcodes `CacheMode::None` for every root
-//! agent. This item does the same for fork/spawn children, for the same
-//! reason: inventing a selection policy here, with no criterion pinning its
-//! shape, would be scope creep this crate has no mandate for yet.
+//! and meaningful only as a *hint*. Below, `AgentSpec::cache_mode` is still
+//! hardcoded `CacheMode::None` for every fork/spawn child, same as
+//! `runtime.rs`'s `start_root`/resume-root — this is deliberate, not a gap:
+//! see the prompt-caching item's resolution (`attempt.rs`'s
+//! `attach_route_cache_hints`) for why. `ContextBuilder::build` runs
+//! *before* routing resolves a concrete model, so `AgentSpec::cache_mode`
+//! can only ever be a pre-routing placeholder here — the REAL cache-hint
+//! attachment for every turn (root, fork, and spawn alike, unconditionally,
+//! not gated on any caller-supplied `cache_mode`/`cache_hint`) happens as a
+//! post-pass in `AttemptEngine::execute`, keyed on the ACTUALLY resolved
+//! model's declared `Capabilities::cache` for each candidate in the
+//! fallback chain. `SubagentSpec::cache_hint` therefore still has no
+//! consumer anywhere in this crate; it remains a caller-intent hint with no
+//! selection policy attached to it, exactly as before this item.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, Weak};
@@ -506,6 +513,8 @@ impl SubagentHost for Runtime {
             role: role.clone(),
             pin,
             budget: spec.budget.clone(),
+            // Pre-routing placeholder -- see this module's doc, "`CacheMode`
+            // is not wired from `SubagentSpec::cache_hint`".
             cache_mode: CacheMode::None,
             cache_ttl: CacheTtl::FiveMinutes,
             headroom_override: None,

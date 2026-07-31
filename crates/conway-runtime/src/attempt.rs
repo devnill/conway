@@ -24,14 +24,18 @@ use conway_core::capabilities::{Capabilities, ToolCallSupport};
 use conway_core::content::{ContentBlock, ToolSpec};
 use conway_core::error::{BackendError, RoutingError, RuntimeError};
 use conway_core::event::Event;
-use conway_core::ids::{AgentId, BackendId, EndpointId, ModelRef, PrefixKey, RoleAlias, SessionId};
+use conway_core::ids::{
+    AgentId, BackendId, EndpointId, ModelId, ModelRef, PrefixKey, RoleAlias, SessionId,
+};
 use conway_core::ports::{Backend, GenerateRequest, GenerateResponse, HealthRegistry, StreamChunk};
 use conway_core::routing::{BreakerState, Observation, Route, RoutingReason};
-use conway_core::segment::PromptSegment;
+use conway_core::segment::{CacheTtl, PromptSegment};
 use conway_routing::failure::{classify, observation_for, FailureClass};
 use futures::StreamExt;
 use tokio_util::sync::CancellationToken;
 
+use crate::context::builder::{attach_cache_hints, breakpoint_indices};
+use crate::context::prefix_key;
 use crate::events::EventBus;
 
 /// One call to [`AttemptEngine::execute`]: an ordered fallback chain plus
@@ -49,6 +53,12 @@ pub struct AttemptRequest<'a> {
     /// The engine never reads config; it only performs the arithmetic.
     pub headroom: u32,
     pub max_tokens_override: Option<u32>,
+    /// TTL applied to any cache breakpoint this engine attaches (see
+    /// `execute`'s cache-hint post-pass). Threaded straight from
+    /// `AgentSpec::cache_ttl` — every production caller sets
+    /// `CacheTtl::FiveMinutes` today (`runtime.rs`, `subagent.rs`), so this
+    /// is a plain value handoff, not a new policy decision.
+    pub cache_ttl: CacheTtl,
     pub cancel: CancellationToken,
 }
 
@@ -106,6 +116,44 @@ fn full_text(blocks: &[ContentBlock]) -> String {
 /// identity is 1:1 with backend identity for MVP.
 fn endpoint_of(backend: &BackendId) -> EndpointId {
     EndpointId::new(backend.as_str())
+}
+
+/// Attaches cache breakpoint hints to `segments` in place, keyed on `caps`
+/// — the capability actually resolved for `model` (`Backend::capabilities`,
+/// called by `execute` right before this), never a pre-routing placeholder.
+/// This is `conway-backends`' own "additive post-pass" framing
+/// (`anthropic::wire`'s module doc) applied one layer up: by the time this
+/// runs, `segments` is the FINAL list a `ContextHook` may already have
+/// added to, dropped from, or reordered (WI-126), so the A/B breakpoint
+/// indices are re-derived from provenance here (`breakpoint_indices`)
+/// rather than threaded from `ContextBuilder::build` time, where they could
+/// have gone stale.
+///
+/// A no-op whenever `caps.cache` is `ImplicitPrefix`/`None`/any other mode
+/// `context::builder::attach_cache_hints` does not recognize (that
+/// function's own match decides this) — which is what keeps every
+/// OpenAI-compatible backend's request byte-identical to before this
+/// existed: `PromptSegment::cache_hint` is read by exactly one module in
+/// the whole workspace, `conway_backends::anthropic::cache`
+/// (`openai_compat::wire`'s own module doc; `GenerateRequest::cache_hint`
+/// does not exist — the field lives per-segment, not per-request).
+///
+/// Also a no-op if `segments` carries no `Provenance::ToolRegistry` segment
+/// at all (a hook dropped the normally-unconditional `ToolSchemas`
+/// segment) — there is no A to breakpoint on in that case, so nothing is
+/// marked rather than guessing.
+fn attach_route_cache_hints(
+    segments: &mut [PromptSegment],
+    model: &ModelId,
+    caps: &Capabilities,
+    ttl: CacheTtl,
+) {
+    let (a_index, b_index) = breakpoint_indices(segments);
+    let Some(a_index) = a_index else {
+        return;
+    };
+    let key = prefix_key(model, segments);
+    attach_cache_hints(segments, &caps.cache, ttl, a_index, b_index, &key);
 }
 
 /// Turns an ordered candidate list plus assembled segments into one
@@ -207,6 +255,19 @@ impl AttemptEngine {
             };
             let endpoint = endpoint_of(&route.backend);
 
+            // Cache-hint post-pass (WI: prompt caching), keyed on THIS
+            // route's resolved `caps.cache` — not `ContextInput.cache_mode`,
+            // which every production caller sets to a pre-routing
+            // placeholder (`CacheMode::None`) since `ContextBuilder::build`
+            // runs before a model is known. Computed once per candidate
+            // route (not once per whole `execute` call) so a fallback chain
+            // that crosses dialects (e.g. Anthropic -> a local
+            // `ImplicitPrefix` model) gets each candidate's OWN correct
+            // treatment rather than the first route's. See
+            // `attach_route_cache_hints`'s own doc.
+            let mut route_segments = req.segments.to_vec();
+            attach_route_cache_hints(&mut route_segments, &route.model, &caps, req.cache_ttl);
+
             let mut strategy = strategy_for(&caps, has_tools);
             let mut toolparse_retried = false;
 
@@ -224,7 +285,7 @@ impl AttemptEngine {
                 attempt += 1;
 
                 let gen_req = self.build_request(
-                    req.segments,
+                    &route_segments,
                     req.tools,
                     req.prefix_key.clone(),
                     req.max_tokens_override,

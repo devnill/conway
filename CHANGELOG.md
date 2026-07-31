@@ -60,6 +60,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **`deny` rules were evadable with a single leading tab (or newline/CR/
+  escape) — the v0.5.0 sanitizer-laundering bug class, reintroduced on the
+  `deny` side.** `deny bash:curl` was meant to refuse any `curl` invocation
+  regardless of chaining, but `rendered` reaches `PatternRule::matches_deny`
+  already passed through `sanitize_rendered` (every control character
+  rewritten to `U+FFFD`), and that placeholder is not Unicode whitespace —
+  so `\tcurl http://evil` sanitized to `\u{FFFD}curl http://evil`, one
+  fused token that a bare prefix comparison could not align with the rule's
+  `curl` prefix. In Prompt mode this silently DEGRADED a hard deny into a
+  prompt the operator could accept; in `AutoAllow` mode (which never
+  consults the gate) it was a FULL, SILENT BYPASS. Fixed by having
+  `matches_deny` treat a `rendered` string carrying a raw control character
+  or the sanitizer's placeholder as matching any deny rule for that tool —
+  failing TOWARD the deny rather than trusting a tokenization that string
+  cannot be trusted to produce — deliberately narrower than the
+  metacharacter set itself, so the module's own documented prefix-match
+  limit (`deny bash:git push` still does not catch `foo; git push`) is
+  untouched. `deny` continues to match against `rendered`, not `arguments`
+  (`docs/design/extension-architecture.md` §5.3's "not the basis of a
+  security decision" caution is about trusting `rendered` blindly, which
+  this fix specifically stops doing, not about reading it at all —
+  `arguments` has no tool-agnostic way to extract "the command string" the
+  way `rendered` does); `AutoAllow` already consulted `deny` before this
+  fix and continues to (that mode has no gate behind a miss, which is by
+  design). (`crates/conway-core/src/permission_pattern.rs`,
+  `crates/conway-runtime/src/permission.rs`,
+  `crates/conway-runtime/tests/permission_broker.rs`,
+  `crates/conway/tests/permission_deny_laundering_seam.rs`)
+
 - **CRITICAL: a cloned repository's `.conway/permissions.json` auto-granted
   pattern permissions at startup with no consent.** The file's `allow` list
   was installed at `PermissionScope::Session` — covering every requester —
@@ -146,6 +175,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `crates/conway-tools/src/subagent/`, `crates/conway/src/session_handle.rs`)
 
 ### Fixed
+
+- **conway never emitted `cache_control` — Anthropic prompt caching was off
+  in production.** `ContextBuilder::build` runs before routing resolves a
+  model, so every root/fork/spawn call site hardcoded `CacheMode::None`
+  (a pre-routing placeholder) and no `PromptSegment` ever carried a
+  `cache_hint`, so `apply_cache_hints` (the only writer of `cache_control`
+  in the workspace) always had an empty candidate list — every Anthropic
+  turn paid full input price for the whole (never-compacted) transcript.
+  `AttemptEngine::execute` now attaches cache hints as a post-routing pass,
+  once per candidate route, keyed on that route's ACTUALLY resolved
+  `Backend::capabilities(&route.model).cache` — never a caller-supplied
+  setting, so this is on by default for every Anthropic model without any
+  opt-in, root or forked/spawned child alike. Breakpoint indices are
+  re-derived from the final segment list's provenance
+  (`context::builder::breakpoint_indices`), not threaded from `build` time,
+  so a `ContextHook`-transformed request still gets correct placement.
+  OpenAI-compatible/implicit-prefix backends are unaffected: `cache_hint` is
+  read by exactly one module in the workspace
+  (`conway_backends::anthropic::cache`); everything else ignores it, proven
+  by an existing test. GP-06 (a hint is never correctness-bearing) holds
+  and is tested; a new end-to-end test drives a real `Runtime::start_root`
+  and a forked child through an Anthropic-capability route and asserts the
+  `GenerateRequest` actually handed to `Backend::generate` carries a
+  breakpoint — the class of test whose absence let this, `read:*` pattern
+  grants, and `Plugin::on_init` all ship inert.
+  (`crates/conway-runtime/src/attempt.rs`,
+  `crates/conway-runtime/src/context/builder.rs`,
+  `crates/conway-runtime/src/runtime.rs`,
+  `crates/conway-runtime/src/subagent.rs`,
+  `crates/conway-runtime/tests/prompt_cache_e2e.rs`)
 
 - **Pattern grants were still inert for every tool except `bash`.** v0.5.0
   fixed `Tool::render` for `bash` alone (`PatternRule::matches`'s

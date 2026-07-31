@@ -610,6 +610,14 @@ impl Runtime {
             role: role.clone(),
             pin,
             budget: spec.budget.clone(),
+            // Deliberately `None`, not a gap: `ContextBuilder::build` runs
+            // before routing resolves a concrete model, so this can only
+            // ever be a pre-routing placeholder. The prompt-caching item's
+            // real, capability-keyed cache-hint attachment happens as a
+            // POST-routing pass in `attempt.rs`'s `attach_route_cache_hints`
+            // -- see `subagent.rs`'s module doc ("`CacheMode` is not wired
+            // from `SubagentSpec::cache_hint`") for the full rationale,
+            // which applies identically to a root.
             cache_mode: CacheMode::None,
             cache_ttl: CacheTtl::FiveMinutes,
             headroom_override: None,
@@ -888,6 +896,8 @@ impl Runtime {
             role: role.clone(),
             pin,
             budget: spec.budget.clone(),
+            // Pre-routing placeholder, same as `start_root` above -- see
+            // that field's comment there for the full rationale.
             cache_mode: CacheMode::None,
             cache_ttl: CacheTtl::FiveMinutes,
             headroom_override: None,

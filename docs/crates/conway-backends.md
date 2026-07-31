@@ -127,6 +127,43 @@ Segment order is preserved verbatim — per the `Backend` port's contract,
 adapters must not reorder, merge, or drop segments, since order is what
 makes implicit-prefix caching hit.
 
+## Prompt caching: from resolved capability to `cache_control`
+
+`PromptSegment::cache_hint` is set by `conway-runtime` (`attempt.rs`'s
+`attach_route_cache_hints`), not by this crate — but only THIS crate ever
+turns a hint into a wire-visible effect, and only for one adapter:
+
+- **`AnthropicBackend`** (`anthropic::cache::apply_cache_hints`, called from
+  `apply_cache` in `anthropic/mod.rs`) is the ONLY place in the whole
+  workspace that writes `cache_control`. It is a strictly additive
+  post-pass over the body `anthropic::wire::build_request_body` produces —
+  that function never reads `cache_hint` at all, so stripping every hint
+  from a request's segments cannot change a single byte of the body (the
+  byte-identity invariant `conway_core::segment::strip_cache_hints`
+  exists to test). It attaches `cache_control` to every segment whose
+  `cache_hint.breakpoint` is `true`, capped at
+  `Capabilities::cache`'s `ExplicitBreakpoints { max_breakpoints, .. }` —
+  the SAME resolved capability `conway-runtime` used to decide whether to
+  mark hints in the first place, so this cap is a redundant safety net,
+  never a source of divergence.
+- **`OpenAiCompatBackend`** never reads `cache_hint` anywhere in its `wire`
+  module (`openai_compat::wire`'s own module doc, backed by a test) — a
+  cache hint reaching this adapter is always a no-op. This is deliberate:
+  every OpenAI-compatible dialect either caches automatically on prefix
+  match (`CacheMode::ImplicitPrefix`, e.g. Ollama, Kimi) or declares
+  `CacheMode::None`, and `conway-runtime`'s attachment pass itself marks no
+  hints for either mode — so in practice this adapter is never even handed
+  a marked segment, but the module-level guarantee holds regardless of what
+  a future caller might do.
+
+Anthropic declares `CacheMode::ExplicitBreakpoints { max_breakpoints: 4, .. }`
+via `anthropic_defaults()` (`capabilities.rs`) — that `Capabilities::cache`
+value, resolved per `(backend, model)` exactly as every other capability
+field is (see "Capability declaration" below), is what `conway-runtime`
+reads, per candidate in a fallback chain, to decide both WHETHER to mark
+hints and how many breakpoints to keep (trim priority B > A, architecture
+§5.3) — never a caller-supplied setting, and never decided in this crate.
+
 ## The 0.2.0 tool-call *and* tool-result fix
 
 0.2.0 closed two related, sequential bugs in getting a tool round-trip to
@@ -239,7 +276,7 @@ pub struct Profile {
     pub uses_max_completion_tokens: bool,    // "max_completion_tokens" vs "max_tokens"
     pub sends_reasoning_effort: bool,        // emit the reasoning_effort request field
     pub tool_call_style: ToolCallStyle,      // Structured | Tolerant | HermesTextFallback
-    pub cache: CacheMode,                    // baseline caching behavior (informational)
+    pub cache: CacheMode,                    // baseline caching behavior (consumed by conway-runtime, not this crate)
     pub tool_calling: ToolCallSupport,       // baseline capability
     pub max_context_tokens: u32,             // baseline capability
     pub structured_output: StructuredOutput, // baseline capability
@@ -402,9 +439,11 @@ request):
   Kimi model a request targets.
 - **Prompt caching is automatic** and only engages above a 256-token
   prompt — `kimi`'s `Profile::cache` documents this
-  (`ImplicitPrefix { min_prefix_tokens: 256 }`), informational only (cache
-  hints are never wire-gating in this crate; see "Segment to wire message
-  mapping" below).
+  (`ImplicitPrefix { min_prefix_tokens: 256 }`). This crate's own wire
+  mapping never gates on it (`openai_compat::wire` never reads
+  `cache_hint`), but `conway-runtime` does read it, to decide NOT to mark
+  any hint at all for this dialect — see "Prompt caching: from resolved
+  capability to `cache_control`" above.
 
 ### llama.cpp server
 

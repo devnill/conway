@@ -550,11 +550,46 @@ fn desired_breakpoints(a_index: usize, b_index: Option<usize>) -> Vec<usize> {
     }
 }
 
+/// Re-derives the A/B breakpoint indices from segment PROVENANCE alone,
+/// rather than from positions tracked during assembly: A is the last
+/// `Provenance::ToolRegistry` segment, B is the last `Provenance::Inherited`
+/// segment — the same rule `build` applies inline while it still has the
+/// positions on hand (see `breakpoint_indices_tests` for direct coverage of
+/// this function against `build`'s own output).
+///
+/// This is what makes the model-aware cache-hint post-pass in
+/// `attempt.rs` (run AFTER routing resolves a concrete model, and after any
+/// `ContextHook::before_request` has had a chance to add, drop, or reorder
+/// segments — WI-126) correct even when the hook has changed segment
+/// positions since `build` ran: re-deriving from provenance on the FINAL
+/// segment list is safe against staleness in a way that threading `build`-
+/// time indices through would not be. `a_index` is `None` only if a hook
+/// dropped the (normally unconditional) `ToolSchemas` segment — in that
+/// case there is no A to breakpoint on, so the caller attaches no hints at
+/// all rather than guessing.
+pub(crate) fn breakpoint_indices(segments: &[PromptSegment]) -> (Option<usize>, Option<usize>) {
+    let a_index = segments
+        .iter()
+        .rposition(|segment| matches!(segment.provenance, Provenance::ToolRegistry { .. }));
+    let b_index = segments
+        .iter()
+        .rposition(|segment| matches!(segment.provenance, Provenance::Inherited { .. }));
+    (a_index, b_index)
+}
+
 /// Attach cache hints per architecture §5.3. `ExplicitBreakpoints` and
 /// `SlotKv` get hints (trimmed to `max_breakpoints` for the former, on
 /// priority order B > A); `ImplicitPrefix` and `None` get none, since
 /// ordering alone produces hits for those backends.
-fn attach_cache_hints(
+///
+/// `pub(crate)`: also called from `attempt.rs`'s post-routing cache-hint
+/// post-pass, keyed on the ACTUALLY resolved model's capability (see that
+/// module's doc) — this builder's own call, inside [`ContextBuilder::build`],
+/// only ever sees a placeholder pre-routing `CacheMode` (`CacheMode::None`
+/// at every production call site today) and so never marks anything itself
+/// in practice; the post-pass is where a live turn's hints actually get
+/// attached.
+pub(crate) fn attach_cache_hints(
     segments: &mut [PromptSegment],
     cache_mode: &CacheMode,
     ttl: CacheTtl,
@@ -793,5 +828,88 @@ mod own_segment_provenance_tests {
             HeadSegment::Prompt { text } => text_block(text),
             _ => unreachable!("this test's head is always a Prompt"),
         }
+    }
+}
+
+#[cfg(test)]
+mod breakpoint_indices_tests {
+    use super::*;
+    use chrono::Utc;
+    use conway_core::ids::{LogSeq, SessionId};
+
+    fn input_with_inherited() -> ContextInput {
+        let from = SessionId::new();
+        ContextInput {
+            agent_id: AgentId::new(),
+            turn: 0,
+            model: ModelId::new("m"),
+            cache_mode: CacheMode::None,
+            system_prompt: None,
+            skills: vec![],
+            tools: vec![],
+            inherited: Some(InheritedPrefix {
+                from,
+                seq_range: SeqRange::new(LogSeq(0), Some(LogSeq(0).succ())),
+                records: Arc::from(vec![LogRecord::UserTurn {
+                    seq: LogSeq(0),
+                    ts: Utc::now(),
+                    text: "inherited turn".into(),
+                    prov: Provenance::UserPrompt,
+                }]),
+            }),
+            head: HeadSegment::Prompt {
+                text: "head".into(),
+            },
+            own: Arc::from(vec![]),
+            cache_ttl: CacheTtl::FiveMinutes,
+        }
+    }
+
+    /// A = the sole `ToolSchemas` segment (index 0: no system prompt/skills
+    /// in this fixture), B = the sole inherited segment (index 1) — exactly
+    /// what `build` itself tracks inline while assembling this same input.
+    #[test]
+    fn finds_a_and_b_when_an_inherited_prefix_exists() {
+        let input = input_with_inherited();
+        let (segments, _) = ContextBuilder::new().build(&input).unwrap();
+
+        let (a, b) = breakpoint_indices(&segments);
+        assert_eq!(a, Some(0));
+        assert!(matches!(
+            segments[0].provenance,
+            Provenance::ToolRegistry { .. }
+        ));
+        assert_eq!(b, Some(1));
+        assert!(matches!(
+            segments[1].provenance,
+            Provenance::Inherited { .. }
+        ));
+    }
+
+    /// No `InheritedPrefix` at all -> B is `None`, A still resolves to the
+    /// unconditional `ToolSchemas` segment.
+    #[test]
+    fn b_is_none_without_an_inherited_prefix() {
+        let mut input = input_with_inherited();
+        input.inherited = None;
+        let (segments, _) = ContextBuilder::new().build(&input).unwrap();
+
+        let (a, b) = breakpoint_indices(&segments);
+        assert_eq!(a, Some(0));
+        assert!(b.is_none());
+    }
+
+    /// A hook (WI-126) can drop the `ToolSchemas` segment entirely from the
+    /// FINAL list this function is actually run against in `attempt.rs`'s
+    /// post-pass -- in that case there is no A, so this returns `None`
+    /// rather than a stale/wrong index.
+    #[test]
+    fn a_is_none_when_the_tool_schemas_segment_is_absent() {
+        let input = input_with_inherited();
+        let (mut segments, _) = ContextBuilder::new().build(&input).unwrap();
+        segments.retain(|s| !matches!(s.provenance, Provenance::ToolRegistry { .. }));
+
+        let (a, _b) = breakpoint_indices(&segments);
+        assert!(a.is_none());
     }
 }

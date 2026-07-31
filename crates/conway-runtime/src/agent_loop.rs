@@ -571,6 +571,7 @@ impl AgentLoop {
                         est_tokens,
                         headroom,
                         max_tokens_override: None,
+                        cache_ttl: self.spec.cache_ttl,
                         cancel: self.cancel.clone(),
                     };
                     match self.deps.attempt.execute(attempt_req).await {

@@ -23,7 +23,7 @@ use conway_core::ports::{
 };
 use conway_core::provenance::Provenance;
 use conway_core::routing::{BreakerKind, BreakerState, Route, RoutingReason};
-use conway_core::segment::PromptSegment;
+use conway_core::segment::{CacheTtl, PromptSegment};
 use conway_runtime::attempt::{AttemptEngine, AttemptRequest};
 use conway_runtime::events::EventBus;
 use futures::future::FutureExt;
@@ -281,6 +281,7 @@ fn base_request<'a>(
         est_tokens,
         headroom,
         max_tokens_override: None,
+        cache_ttl: CacheTtl::FiveMinutes,
         cancel: CancellationToken::new(),
     }
 }
