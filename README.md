@@ -9,8 +9,6 @@ library (the `conway` facade crate) and a CLI/TUI (`conway`).
 
 License: **AGPL-3.0-only** (see [Licensing](#licensing)).
 
-> Status: `0.2.0` is the current release. See [CHANGELOG.md](CHANGELOG.md).
-
 ---
 
 ## What it does
@@ -21,8 +19,9 @@ License: **AGPL-3.0-only** (see [Licensing](#licensing)).
   parent; cross-agent communication is explicit (steer / report envelopes).
 - **Capability-based routing.** Requests route to a model by role and by the
   model's declared capabilities (context window, tool-calling, reasoning),
-  with per-transport and per-probe **circuit breakers** and an ordered
-  fallback chain.
+  with a per-endpoint **circuit breaker** and an ordered fallback chain; a
+  failed candidate degrades to the next one in the chain rather than
+  failing the request.
 - **Pluggable tools behind a permission gate.** Tools are plugins; every call
   passes an explicit `PermissionGate` (allow once / allow always / deny /
   deny-with-feedback). Tool *announcement* (what the model is told about) is
@@ -57,6 +56,13 @@ ask    -> (ephemeral) just checking something
 ```
 
 See [`crates/conway/examples/minimal_session.rs`](crates/conway/examples/minimal_session.rs).
+
+For a real session — installing the binary, configuring a model provider,
+and running your first prompt against it — see
+[`docs/getting-started.md`](docs/getting-started.md), and
+[`docs/README.md`](docs/README.md) for the rest of the documentation:
+driving the TUI, scripting one-shot mode, and embedding conway as a
+library.
 
 **Build the CLI:**
 
@@ -95,9 +101,9 @@ permissions, and limits. The library equivalent is
 
 ## Architecture
 
-**[`ARCHITECTURE.md`](ARCHITECTURE.md)** is the full system overview, and
-**[`docs/crates/`](docs/crates/)** has a detailed doc for each crate. The table
-below is the quick reference.
+**[`ARCHITECTURE.md`](ARCHITECTURE.md)** is the full system overview: the
+core primitives, the workspace layout, and the data flow of one turn. The
+table below is the quick reference.
 
 conway is a Cargo workspace of eight crates in a ports-and-adapters layout —
 the core defines traits (ports), and backends/session/tools are adapters.

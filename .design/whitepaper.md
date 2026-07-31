@@ -223,9 +223,10 @@ prompt, or narrow the tool set the model is told about; `on_overflow` gives
 it a second pass when the payload still doesn't fit. Hooks are async, so a
 policy can call a model of its own to decide. The permission gate is
 supplied by the consumer, so the rule a tool call has to satisfy is your
-code, and a denial can carry a reason the model reads and adapts to. Record
-masking drops a record out of future calls while leaving it in the log, and
-it's reversible.
+code, and a denial can carry a reason the model reads and adapts to. A
+record can also be marked excluded, reversibly, without touching the log —
+today that mask reaches only what a *new* fork inherits, not a session's
+own later turns.
 
 All of that goes through the published API, at whatever granularity you
 need. A harness you can program beats one that guessed right about your

@@ -25,7 +25,7 @@ kinds you'll see:
 | `system_note` | A runtime-authored note (e.g. repeated-step detection) — never something you or the model wrote. |
 | `agent_result` | The agent's terminal result: status, summary, facts, artifacts. |
 | `context_report` | What was actually sent to the model that turn: every segment, its provenance, and its estimated token count. |
-| `context_mask` | Marks an earlier record (by its seq) excluded from — or re-included in — future context assembly, without touching that record. |
+| `context_mask` | Marks an earlier record (by its seq) excluded from — or re-included in — a *future fork's inherited prefix*, without touching that record. It has no effect on the owning session's own later turns; nothing in conway today writes one. |
 
 The one qualification to "never rewritten": a session's header line has
 exactly one sanctioned later mutation, the one-way promotion of an
@@ -217,8 +217,8 @@ does not summarize, truncate, or otherwise compact your session's history
 on your behalf, ever, as a built-in behavior. This is deliberate: what's
 safe to forget is a judgment call, and it's yours to make, not a policy the
 harness applies silently on your session because the harness guessed the
-window was getting full. See [`whitepaper.md`](whitepaper.md) §3 and §4.5
-for the reasoning.
+window was getting full. See [`.design/whitepaper.md`](../.design/whitepaper.md)
+§3 and §4.5 for the reasoning.
 
 The consequence is direct: a long-running session's context keeps growing,
 turn over turn, and so does what every turn costs. conway doesn't apologize
@@ -226,8 +226,9 @@ for this or try to talk you out of noticing it — plan for it. Your actual
 levers, all covered above: fork at a clean point instead of continuing to
 pile onto one session indefinitely; spawn a child with no inherited history
 for a task that doesn't need the accumulated context; and, if you're
-embedding conway, the `ContextHook` extension point lets a host mask
-individual records out of future assembly programmatically (reversible, and
-visible in the log via `context_mask` records) — but that's a Rust
-extension point for a host application to program, not a slash command or
-CLI flag available in this build today.
+embedding conway, the `ContextHook` extension point lets a host drop
+individual segments before each request is sent, programmatically — but
+that exclusion applies fresh to that one request, is not itself persisted
+as a `context_mask` record, and is a Rust extension point for a host
+application to program, not a slash command or CLI flag available in this
+build today.
