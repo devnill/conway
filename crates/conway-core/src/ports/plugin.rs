@@ -40,7 +40,7 @@ use crate::segment::PromptSegment;
 /// directly.
 ///
 /// If a genuine lifecycle hook is wanted later, the out-of-process plugin
-/// design (`docs/design/d1-transport.md`) specifies a real handshake with a
+/// design (`.design/d1-transport.md`) specifies a real handshake with a
 /// defined failure mode — that, not a resurrected no-op, is the shape to
 /// build.
 pub trait Plugin: Send + Sync + 'static {

@@ -430,7 +430,7 @@ reconstruct` always produced `Unconfined` for it, and `check_root` returned
 `Proceed` without ever inspecting `path_args`. Only a spawned or forked
 child (`SubagentSpec.root`) could ever be confined. `must_reach_gate` was
 consequently always `false` for a root agent — vacuously true, not
-enforced — which matters because `docs/design/extension-architecture.md`
+enforced — which matters because `.design/extension-architecture.md`
 §5.1/§7.5 count on it as one of the containments justifying a `Deciding
 Policy` extension point.
 

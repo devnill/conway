@@ -300,7 +300,7 @@ pub struct PermissionBroker {
     /// method's own doc.
     deny_patterns: RwLock<Vec<(PatternRule, PatternOrigin)>>,
     /// Board item 01KYTP1D3XWEZPW4AKPH54FNB3: prefix-pattern PROMPT rules --
-    /// the second narrowing effect `docs/design/extension-architecture.md`
+    /// the second narrowing effect `.design/extension-architecture.md`
     /// §5.4 grants a plugin-contributed rule (`then: prompt`, alongside
     /// `deny`), which had NOTHING evaluating it anywhere in this broker
     /// before this item: `must_reach_gate` was set exclusively by
@@ -394,7 +394,7 @@ impl PermissionBroker {
 
     /// Installs a PROMPT rule, attributed to `origin`. Board item
     /// 01KYTP1D3XWEZPW4AKPH54FNB3: the second narrowing effect
-    /// `docs/design/extension-architecture.md` §5.4 grants a
+    /// `.design/extension-architecture.md` §5.4 grants a
     /// plugin-contributed rule. Like [`Self::remember_deny_pattern`], there
     /// is no `scope` parameter -- a `prompt` rule applies to every
     /// requester, unconditionally: forcing an EXTRA ask has no failure mode

@@ -42,7 +42,7 @@ and was verified to fail when the guard is removed.
   existing invocation. Consequently, `must_reach_gate` is now reachable for
   a root agent too: an `Unconfinable` tool (e.g. `bash`'s own `command`)
   under a configured root always reaches the operator's gate, never
-  auto-allowed — the property `docs/design/extension-architecture.md`
+  auto-allowed — the property `.design/extension-architecture.md`
   §5.1/§7.5 count on, previously true only vacuously for a root agent.
   (`crates/conway-runtime/src/runtime.rs`, `crates/conway/src/builder.rs`,
   `crates/conway/src/conway.rs`, `crates/conway-cli/src/cli.rs`,
@@ -117,7 +117,7 @@ and was verified to fail when the guard is removed.
   metacharacter set itself, so the module's own documented prefix-match
   limit (`deny bash:git push` still does not catch `foo; git push`) is
   untouched. `deny` continues to match against `rendered`, not `arguments`
-  (`docs/design/extension-architecture.md` §5.3's "not the basis of a
+  (`.design/extension-architecture.md` §5.3's "not the basis of a
   security decision" caution is about trusting `rendered` blindly, which
   this fix specifically stops doing, not about reading it at all —
   `arguments` has no tool-agnostic way to extract "the command string" the
@@ -181,7 +181,7 @@ and was verified to fail when the guard is removed.
     `/settings`'s grant list (`[interactive] ...` / `[/path/to/file] ...`)
     — a rule set nobody can attribute to its source is a trap.
 
-  Design: `docs/design/d4-trust-model.md` §3–5, §11. This ships the
+  Design: `.design/d4-trust-model.md` §3–5, §11. This ships the
   narrower, non-plugin half of that design (one trust subject kind,
   `permission_file`, keyed directly on absolute path rather than nested
   under a `projects` map with a `kind` tag) — the two load-bearing
@@ -243,7 +243,7 @@ and was verified to fail when the guard is removed.
   `crates/conway/tests/subagent_exfiltration_seam.rs`)
 
 - **A plugin-contributed `prompt` rule — the extension design's own flagship
-  worked example (`docs/design/extension-architecture.md`'s
+  worked example (`.design/extension-architecture.md`'s
   `{"categories":["edit","delete"],"then":"prompt"}`) — was inert in EVERY
   mode.** `must_reach_gate` (the mechanism that forces a call past the
   cache/pattern-grant/`AutoAllow` shortcuts to the operator's real gate) was

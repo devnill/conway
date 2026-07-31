@@ -1,6 +1,6 @@
 //! Recording an explicit, content-scoped trust decision for a
 //! project-scoped `.conway/permissions.json`, per D4
-//! (`docs/design/d4-trust-model.md` §4-5, §11) and board item
+//! (`.design/d4-trust-model.md` §4-5, §11) and board item
 //! 01KYT8SGX32CP56PRJNG72V2W5.
 //!
 //! ## Why this exists

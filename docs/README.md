@@ -32,11 +32,3 @@ that don't belong at the architecture-overview level:
 All eight are written; each covers that crate's responsibility and
 boundary, its public interfaces, key types and invariants, and links back
 up to `/ARCHITECTURE.md` and across to sibling crate docs.
-
-## Historical planning material
-
-conway's inception-era planning documents (frozen at 0.1.0) have been
-retired: their durable design content — types, interfaces, invariants,
-data flow — was audited and migrated into `/ARCHITECTURE.md` and
-`docs/crates/*.md`, and their planning-era rationale ("why we chose X")
-lives in this project's ideate decision/journal records instead.

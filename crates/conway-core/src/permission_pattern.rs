@@ -71,7 +71,7 @@
 //! [`PermissionFile`] has two halves, and they are deliberately NOT
 //! symmetric. `allow` is authority: granting it to a project file that a
 //! cloned repository controls, with no consent, is a live fail-open
-//! security gap (`docs/design/d4-trust-model.md` §1, §11) -- so an
+//! security gap (`.design/d4-trust-model.md` §1, §11) -- so an
 //! `allow` rule loaded from a project file only takes effect once the
 //! CALLER (`conway`'s facade, `conway-cli`'s startup loader) has confirmed
 //! an explicit, recorded trust decision for that exact file's bytes. This
@@ -121,7 +121,7 @@
 //! **Two decisions made explicit, per this item's own instruction to state
 //! them rather than leave them implicit:**
 //!
-//! - **`rendered`, not `arguments`.** `docs/design/extension-architecture.md`
+//! - **`rendered`, not `arguments`.** `.design/extension-architecture.md`
 //!   §5.3 warns that `rendered` is sanitized and lossy and must not be the
 //!   basis of a security decision -- which is exactly what motivated
 //!   [`crate::containment`]'s root check (`conway_runtime::permission::
@@ -870,7 +870,7 @@ pub struct PermissionFile {
     /// Wire-form rules that AUTHORIZE. Malformed entries are dropped on
     /// load, not guessed at. From a project-scoped file, a caller MUST
     /// confirm a recorded trust decision before installing these -- see
-    /// this module's own doc, and `docs/design/d4-trust-model.md` §3/§11.
+    /// this module's own doc, and `.design/d4-trust-model.md` §3/§11.
     #[serde(default)]
     pub allow: Vec<String>,
     /// Wire-form rules that REFUSE, applied immediately regardless of
@@ -958,7 +958,7 @@ pub enum PatternOrigin {
     /// was only ever installed because the CALLER already confirmed it may
     /// load (the operator's own global file, trusted by authorship; or a
     /// project file with a matching recorded trust decision — see
-    /// `docs/design/d4-trust-model.md` §4 and this module's own doc). A
+    /// `.design/d4-trust-model.md` §4 and this module's own doc). A
     /// DENY rule with this origin may have come from an UNTRUSTED file:
     /// deny applies regardless (§3).
     File(PathBuf),
