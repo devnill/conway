@@ -15,7 +15,7 @@
 //! `PermissionBroker::check_root`, so a `prompt` rule -- the extension
 //! design's OWN flagship worked example
 //! (`{"categories":["edit","delete"],"then":"prompt"}`,
-//! `docs/design/extension-architecture.md` §2020) -- had nothing evaluating
+//! `.design/extension-architecture.md` §2020) -- had nothing evaluating
 //! it anywhere. The two tests below are the item's own named failures,
 //! reproduced end to end:
 //!

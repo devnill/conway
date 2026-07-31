@@ -3,7 +3,7 @@
 Status: design spec (board item 01KYNNCFG8HYRN5QRHHHF00WHZ). Written against
 the working tree at `e240a55` + uncommitted containment work. Transport is D1,
 extension points D2, wire vocabulary D3, trust D4. **Read
-`docs/design/d2-extension-points.md` §11 case 4 first** — this document is
+`.design/d2-extension-points.md` §11 case 4 first** — this document is
 consistent with it and extends it; the one place it goes further is stated in
 §5.3.
 

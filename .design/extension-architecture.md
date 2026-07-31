@@ -14,7 +14,7 @@ hypothetical.
 ## 0. How to read this, and why it exists
 
 The five source specs are still worth reading for their argument; they are
-committed at `docs/design/d1-transport.md` through `d5-template-
+committed at `.design/d1-transport.md` through `d5-template-
 instrumentation.md`. This document is the one that is *true* where they
 conflict.
 
@@ -52,7 +52,7 @@ architecture into the file whose contract is "this is what is here" would
 manufacture exactly the doc/code drift this project keeps finding and fixing,
 and it would do it in the one file a new reader is told to start from.
 
-So this lives in `docs/design/`, as a sibling to the five slices it
+So this lives in `.design/`, as a sibling to the five slices it
 reconciles. **The correct time to move content into `ARCHITECTURE.md` is
 per-phase, as each phase of §12 lands** — a `## Extensions` section in
 `ARCHITECTURE.md` describing what actually exists, plus a pointer here for

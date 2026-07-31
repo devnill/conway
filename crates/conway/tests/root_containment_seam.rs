@@ -1018,7 +1018,7 @@ async fn cd_within_a_confined_root_agents_own_root_is_allowed() {
 // 12. `must_reach_gate` is reachable for the ROOT agent: bash's own
 //     Unconfinable `command` always reaches the gate under a configured
 //     root, even with AutoAllow mode AND a matching pattern grant both in
-//     play -- the exact property `docs/design/extension-architecture.md`
+//     play -- the exact property `.design/extension-architecture.md`
 //     §5.1/§7.5 depend on, and which was vacuous for a root agent before
 //     this item (no `RootSpec::root` meant `AgentRoot::reconstruct` always
 //     produced `Unconfined` for it, so `must_reach_gate` was always false).
