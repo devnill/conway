@@ -1399,13 +1399,20 @@ impl AgentLoop {
 
         if is_first {
             let ephemeral = self.deps.tree.ephemeral_of(self.agent_id);
-            self.deps.bus.emit(
+            // Board item: `EventBus.seqs` still leaks for spawned and
+            // forked agents. `is_prunable_on_finish` is read here, before
+            // `emit_pruning`'s own lock is ever taken -- see that method's
+            // doc for why this adds no new contention to the bus's
+            // critical section.
+            let prune = self.deps.tree.is_prunable_on_finish(self.agent_id);
+            self.deps.bus.emit_pruning(
                 self.session,
                 self.agent_id,
                 Event::AgentFinished {
                     result: result.clone(),
                     ephemeral,
                 },
+                prune,
             );
             if let Some(parent_mailbox) = &self.parent_mailbox {
                 parent_mailbox.send(AgentMessage::Result {

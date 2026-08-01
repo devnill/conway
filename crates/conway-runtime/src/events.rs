@@ -11,34 +11,50 @@
 //! ## What `seq` guarantees (restated from [`Envelope`]'s own doc)
 //!
 //! `seq` is strictly increasing per [`SessionId`], starting at 0, with no
-//! gaps and no repeats, for as long as that id is live -- including across
-//! a [`Runtime::resume_root`](crate::runtime::Runtime::resume_root), which
-//! reuses the SAME `SessionId` (and `AgentId`) rather than minting fresh
-//! ones. That is why `seqs` cannot simply be pruned whenever an agent
-//! finishes: a finished, non-ephemeral session is exactly the case
-//! `resume_root` exists to reactivate, and a pruned counter would restart
-//! at 0 on that reactivation, colliding with `seq`s a subscriber already
-//! saw before the resume -- silently breaking the guarantee this module
-//! exists to uphold.
+//! gaps and no repeats, for as long as that id's counter is live in THIS
+//! process. That is the whole of the guarantee: `seqs` is an in-memory
+//! `HashMap` that nothing reseeds, so it was never actually gap-free or
+//! non-repeating ACROSS a resume in a fresh process even before this
+//! module's reclamation existed -- no `(session, seq)` dedup set, no
+//! persisted cursor, and no consumer anywhere in this workspace reads
+//! `Envelope::seq` for anything other than display (a read-only sweep
+//! establishing this is this module's own reclamation item's record). An
+//! earlier revision of this doc claimed no-repeats held "including across a
+//! `resume_root`" and used that claim as the reason `seqs` could not be
+//! pruned; that claim was aspirational, not delivered, and is retracted
+//! here rather than repeated.
 //!
-//! ## Reclamation (WI item: `EventBus.seqs` grows unboundedly)
+//! ## Reclamation (board item: `EventBus.seqs` still leaks for spawned and
+//! forked agents)
 //!
-//! One case IS safe to reclaim without weakening the guarantee above: a
-//! session that finishes still flagged [`Event::AgentFinished::ephemeral`]
-//! (i.e. an `/ask`-style child -- modal or tool-invoked, `conway_core::
-//! log::AskOrigin` -- that ran to completion without ever being promoted).
-//! `SessionMeta::ephemeral`'s own contract (`conway-core`) frames such a
-//! session as a disposable scratchpad meant to be discarded, and the one
-//! sanctioned way to keep one alive past its finish --
-//! `Runtime::promote_agent` -- always flips the flag to `false` in the
-//! live tree strictly before any subsequent finish can observe it, so an
-//! `AgentFinished { ephemeral: true, .. }` can only ever be seen for a
-//! child that was NEVER promoted. Nothing else in this codebase resumes
-//! an ephemeral child (a `conway_ask` caller's kept `EphemeralSessionRef`
-//! artifact is read straight off the session store, never through a live
-//! resume) -- so `emit` reclaims that session's counter, in place, the
-//! moment it observes that event. See `emit`'s own doc for why this adds
-//! no new contention.
+//! Two cases are safe to reclaim -- neither weakens the guarantee above,
+//! since nothing depends on a pruned counter's identity surviving past its
+//! own agent's finish:
+//! - A session that finishes still flagged
+//!   [`Event::AgentFinished::ephemeral`] (i.e. an `/ask`-style child --
+//!   modal or tool-invoked, `conway_core::log::AskOrigin` -- that ran to
+//!   completion without ever being promoted). `SessionMeta::ephemeral`'s
+//!   own contract (`conway-core`) frames such a session as a disposable
+//!   scratchpad meant to be discarded, and the one sanctioned way to keep
+//!   one alive past its finish -- `Runtime::promote_agent` -- always flips
+//!   the flag to `false` in the live tree strictly before any subsequent
+//!   finish can observe it, so an `AgentFinished { ephemeral: true, .. }`
+//!   can only ever be seen for a child that was NEVER promoted. `emit`
+//!   reclaims that session's counter, in place, the moment it observes
+//!   that event.
+//! - A spawn/fork child (`AgentTree::is_prunable_on_finish`, `tree.rs`)
+//!   that was never ephemeral in the first place -- an ordinary
+//!   `conway_subagent` fork/spawn -- reclaimed by its caller passing
+//!   `prune: true` to [`EventBus::emit_pruning`] at the same emission site.
+//!   A PROMOTED child is deliberately excluded from this case (it stays
+//!   governed by the first case above, i.e. not reclaimed): see
+//!   `is_prunable_on_finish`'s own doc for why the promotion "keep" fate
+//!   means it should behave like any other lastingly-referenced session,
+//!   not a disposable one.
+//!
+//! A ROOT session's counter is never reclaimed -- one entry per process is
+//! not a leak, and is out of this item's scope. See `emit_pruning`'s own
+//! doc for why this adds no new contention.
 
 use std::collections::HashMap;
 use std::pin::Pin;
@@ -85,7 +101,17 @@ impl EventBus {
     }
 
     /// Assign the next `seq` for `session`, publish the envelope, and
-    /// return the assigned `seq`.
+    /// return the assigned `seq`. Equivalent to
+    /// `self.emit_pruning(session, agent, event, false)` -- see that
+    /// method's doc for the full contract, including the ephemeral-finish
+    /// reclamation this method still performs unconditionally.
+    pub fn emit(&self, session: SessionId, agent: AgentId, event: Event) -> u64 {
+        self.emit_pruning(session, agent, event, false)
+    }
+
+    /// [`Self::emit`], with one addition: if `prune` is `true`, `session`'s
+    /// `seqs` entry is reclaimed regardless of `event`'s own `ephemeral`
+    /// flag (or lack of one).
     ///
     /// Per-session counters start at 0 and are independent across
     /// sessions. The counter mutex is deliberately held ACROSS the
@@ -98,23 +124,42 @@ impl EventBus {
     /// happens under the lock. `send`'s `Err` (no subscribers) is
     /// ignored: having no subscribers is normal.
     ///
-    /// Reclamation (see this module's doc): once an ephemeral session's
-    /// terminal `Event::AgentFinished` is observed, its entry in `seqs` is
-    /// removed before the lock is released. This is a single `O(1)`
-    /// `HashMap::remove` on the exact same map the `entry`/`insert` above
-    /// already touched under this same, already-held lock -- it neither
-    /// adds a new critical section nor changes this method's existing
-    /// "never awaits, never blocks" contract. Any later `emit` for that
-    /// same `session` (which, per the module doc, should not happen for a
-    /// non-promoted ephemeral child) would simply re-seed its counter at
-    /// 0 via the `entry` call above rather than panic -- a benign, typed
-    /// degradation (P-10), not a new failure mode.
-    pub fn emit(&self, session: SessionId, agent: AgentId, event: Event) -> u64 {
+    /// Reclamation (see this module's doc): `session`'s entry in `seqs` is
+    /// removed, before the lock is released, whenever EITHER `event` is
+    /// itself an `AgentFinished { ephemeral: true, .. }` OR the caller
+    /// passes `prune: true` (the latter is how `AgentLoop::finish` and
+    /// `supervisor.rs`'s synthesized finish reclaim an ordinary,
+    /// never-ephemeral spawn/fork child's counter --
+    /// `AgentTree::is_prunable_on_finish` computes that bool for them,
+    /// BEFORE this call, outside any lock this method holds). Either way
+    /// this is a single `O(1)` `HashMap::remove` on the exact same map the
+    /// `entry`/`insert` above already touched under this same,
+    /// already-held lock -- it neither adds a new critical section nor
+    /// changes this method's existing "never awaits, never blocks"
+    /// contract. Any later `emit`/`emit_pruning` for that same `session`
+    /// (which, per the module doc, should not happen for a reclaimed
+    /// session) would simply re-seed its counter at 0 via the `entry` call
+    /// above rather than panic -- a benign, typed degradation (P-10), not a
+    /// new failure mode.
+    pub fn emit_pruning(
+        &self,
+        session: SessionId,
+        agent: AgentId,
+        event: Event,
+        prune: bool,
+    ) -> u64 {
         let mut seqs = self.seqs.lock().expect("event bus seq mutex poisoned");
         let counter = seqs.entry(session).or_insert(0);
         let seq = *counter;
         *counter += 1;
-        if let Event::AgentFinished { ephemeral: true, .. } = &event {
+        let ephemeral_finish = matches!(
+            &event,
+            Event::AgentFinished {
+                ephemeral: true,
+                ..
+            }
+        );
+        if ephemeral_finish || prune {
             seqs.remove(&session);
         }
         let envelope = Envelope {
@@ -238,13 +283,18 @@ mod tests {
         );
     }
 
-    /// A NON-ephemeral session's counter must survive its own
-    /// `AgentFinished`: `Runtime::resume_root` reuses the same `SessionId`,
-    /// and reclaiming here would restart `seq` at 0 on resume, breaking the
-    /// "monotonic per session" guarantee this module's doc restates from
-    /// `Envelope`.
+    /// Renamed and narrowed from this test's pre-item name
+    /// (`non_ephemeral_agent_finished_keeps_its_session_counter`): a
+    /// non-ephemeral session's counter is NO LONGER universally kept after
+    /// this item -- an ordinary spawn/fork child's is now reclaimed too (see
+    /// `spawn_or_fork_child_finished_reclaims_its_session_counter_via_prune`
+    /// below). What survives is specifically the case where nothing ever
+    /// computes a `true` prune signal for this session -- a root's own
+    /// finish always calls plain `emit` (equivalent to
+    /// `emit_pruning(.., false)`), since `AgentTree::is_prunable_on_finish`
+    /// is `false` for a root (`kind.is_none()`) by construction.
     #[tokio::test]
-    async fn non_ephemeral_agent_finished_keeps_its_session_counter() {
+    async fn root_agent_finished_keeps_its_session_counter_when_not_pruned() {
         let bus = EventBus::new(64);
         let session = SessionId::new();
         let agent = AgentId::new();
@@ -258,19 +308,61 @@ mod tests {
         assert_eq!(seq, 3);
         assert!(
             bus.seqs.lock().unwrap().contains_key(&session),
-            "a non-ephemeral session's counter must survive its own AgentFinished"
+            "a session finished via plain `emit` (a root's own path) must keep its counter"
         );
 
-        // Simulate `resume_root` reusing the same `(session, agent)` pair:
-        // `seq` must continue from where it left off, not restart at 0.
-        let seq = bus.emit(session, agent, Event::AgentProgress { note: "resumed".into() });
-        assert_eq!(seq, 4, "seq must stay monotonic across a resume");
+        // Further emits under the same session stay monotonic -- nothing
+        // pruned it, so there is nothing to restart from 0.
+        let seq = bus.emit(
+            session,
+            agent,
+            Event::AgentProgress {
+                note: "later".into(),
+            },
+        );
+        assert_eq!(
+            seq, 4,
+            "seq must stay monotonic when its session was never pruned"
+        );
+    }
+
+    /// Acceptance: a spawn/fork child that was never ephemeral (an ordinary
+    /// `conway_subagent` fork/spawn -- see `AgentTree::is_prunable_on_finish`,
+    /// `tree.rs`) has its `seqs` entry reclaimed too, via `emit_pruning`'s
+    /// explicit `prune` flag -- the item's own motivating case (GP-05: a
+    /// long-lived embedder driving many such children, with no way to
+    /// reclaim this before this item).
+    #[tokio::test]
+    async fn spawn_or_fork_child_finished_reclaims_its_session_counter_via_prune() {
+        let bus = EventBus::new(64);
+        let session = SessionId::new();
+        let agent = AgentId::new();
+
+        for _ in 0..3 {
+            bus.emit(session, agent, Event::AgentProgress { note: "x".into() });
+        }
+        assert!(
+            bus.seqs.lock().unwrap().contains_key(&session),
+            "counter should exist while the child is live"
+        );
+
+        bus.emit_pruning(session, agent, finished(session, agent, false), true);
+
+        assert!(
+            !bus.seqs.lock().unwrap().contains_key(&session),
+            "a spawn/fork child's counter must be reclaimed when its caller passes prune: true"
+        );
     }
 
     /// An ephemeral session promoted to persistent (`Runtime::promote_agent`
     /// flips the tree's flag to `false` before any subsequent finish can
-    /// observe it) reaches `AgentFinished` with `ephemeral: false`, so it is
-    /// governed by the non-ephemeral case above, not reclaimed.
+    /// observe it) reaches `AgentFinished` with `ephemeral: false`. Unlike an
+    /// ordinary spawn/fork child (see the prune test above), a promoted
+    /// child's caller computes `AgentTree::is_prunable_on_finish == false`
+    /// for it (that method's own doc explains why: the promotion "keep"
+    /// fate excludes it), so it is emitted via plain `emit`
+    /// (`prune: false`) and survives -- this test exercises exactly that
+    /// call shape, not `emit_pruning(.., true)`.
     #[tokio::test]
     async fn promoted_then_finished_session_is_not_ephemeral_at_finish_and_survives() {
         let bus = EventBus::new(64);
