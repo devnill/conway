@@ -240,24 +240,17 @@ const ALLOWLIST: &[Allowlisted] = &[
     // -- Newly flagged by THIS guard (board item 01KYTXTXJ6DCE84ZRB06BHRGJW
     // itself), reported in that item's completion rather than fixed --
     // acceptance explicitly says "any newly-flagged variant is reported,
-    // do not fix them in this item". None of these three has its own
+    // do not fix them in this item". None of these two has its own
     // dedicated board item yet; each `board_item` below says so honestly
     // rather than inventing one. Filing dedicated items is a stated
     // follow-up, not silently expanded scope of this item.
-    Allowlisted {
-        enum_name: "LogRecord",
-        variant: "ToolCallRecord",
-        reason: "No production code constructs this variant -- a \
-                 model-proposed tool call is recorded as a \
-                 `ContentBlock::ToolUse` inside the `Assistant` record \
-                 instead, and the codebase already says so in its own \
-                 comments (`conway/src/event_stream.rs`'s `has_live_twin` \
-                 doc: \"ToolCallRecord is never constructed in \
-                 production\"; `conway/tests/conway_ask.rs`'s DEVIATION \
-                 NOTE). New finding from this guard's first run, not yet \
-                 triaged into wire-it-or-remove-it.",
-        board_item: "none filed yet -- reported in 01KYTXTXJ6DCE84ZRB06BHRGJW's completion",
-    },
+    //
+    // `LogRecord::ToolCallRecord`, once allowlisted here, was triaged by
+    // board item 01KYXNCKYWKJR3C5X089WCXJPK (decision 01KYXZ25SS2Y95VPZ1NV4T3D4E):
+    // removed rather than wired, since `ContentBlock::ToolUse` inside the
+    // preceding `Assistant` record is the durable shape and nothing else
+    // consumes a standalone tool-call record. The variant is gone, so its
+    // allowlist entry is gone too.
     Allowlisted {
         enum_name: "PermissionScope",
         variant: "Agent",

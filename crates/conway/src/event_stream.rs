@@ -138,13 +138,15 @@ const DEDUP_TTL: chrono::Duration = chrono::Duration::seconds(30);
 /// otherwise land in *both* the replay batch and on `live`.
 ///
 /// Every remaining record kind (`ForkDirective`/`ParentSteer`/`SystemNote`/
-/// `ContextReportRecord` -> `AgentProgress`, and `ToolCallRecord` ->
-/// `ToolCallProposed`, whose *persisted* side is dead -- `ToolCallRecord` is
-/// never constructed in production, so no replay envelope of this kind can
-/// arise to collide with the live `ToolCallProposed`, which is itself
-/// emitted on every tool call) has no replayed counterpart that could ever
-/// content-equal a live event, so there is nothing to dedup for those and
-/// including them would only waste `pending` slots.
+/// `ContextReportRecord` -> `AgentProgress`) has no replayed counterpart that
+/// could ever content-equal a live event, so there is nothing to dedup for
+/// those and including them would only waste `pending` slots. The live
+/// `Event::ToolCallProposed` (emitted on every tool call) has no replayed
+/// counterpart at all -- `record_to_event` has no arm that produces it, since
+/// no `LogRecord` variant persists a standalone tool-call proposal (a
+/// model-proposed tool call is recorded as a `ContentBlock::ToolUse` inside
+/// the preceding `Assistant` record instead) -- so it cannot collide with a
+/// replay envelope either.
 ///
 /// **`Assistant` (-> `Event::TextDelta`, WI-140 review fix) is deliberately
 /// NOT included here, and `Event::TurnFinished` no longer needs to be

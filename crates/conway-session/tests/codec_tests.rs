@@ -6,7 +6,7 @@
 
 use chrono::{DateTime, Utc};
 use conway_core::agent::{AgentResult, ResultStatus};
-use conway_core::content::{ContentBlock, StopReason, ToolCall, ToolResult, Usage};
+use conway_core::content::{ContentBlock, StopReason, ToolResult, Usage};
 use conway_core::ids::{AgentId, LogSeq, ModelRef, SegmentId, SessionId, ToolName};
 use conway_core::log::{ForkOrigin, LogRecord, SessionStatus, SubagentMode};
 use conway_core::provenance::{ContextReport, ContextReportEntry, Provenance};
@@ -190,18 +190,6 @@ fn arb_assistant() -> impl Strategy<Value = LogRecord> {
     )
 }
 
-fn arb_tool_call_record() -> impl Strategy<Value = LogRecord> {
-    (arb_seq(), arb_text()).prop_map(|(seq, call_id)| LogRecord::ToolCallRecord {
-        seq,
-        ts: ts(),
-        call: ToolCall {
-            call_id,
-            name: ToolName::new("read"),
-            arguments: serde_json::json!({"path": "a.txt"}),
-        },
-    })
-}
-
 fn arb_tool_result_record() -> impl Strategy<Value = LogRecord> {
     (arb_seq(), arb_text(), any::<bool>()).prop_map(|(seq, call_id, is_error)| {
         LogRecord::ToolResultRecord {
@@ -293,7 +281,6 @@ fn arb_log_record() -> impl Strategy<Value = LogRecord> {
     prop_oneof![
         arb_user_turn(),
         arb_assistant(),
-        arb_tool_call_record(),
         arb_tool_result_record(),
         arb_fork_directive(),
         arb_parent_steer(),

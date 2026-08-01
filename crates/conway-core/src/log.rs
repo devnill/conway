@@ -14,7 +14,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::agent::AgentResult;
-use crate::content::{ContentBlock, StopReason, ToolCall, ToolResult, Usage};
+use crate::content::{ContentBlock, StopReason, ToolResult, Usage};
 use crate::ids::{AgentId, LogSeq, ModelRef, RoleAlias, SessionId};
 use crate::provenance::{ContextReport, Provenance};
 
@@ -198,24 +198,6 @@ pub enum LogRecord {
         usage: Usage,
         stop: StopReason,
     },
-    /// **Not yet implemented**: no production code constructs this
-    /// variant. A model-proposed tool call is recorded as a
-    /// `ContentBlock::ToolUse` INSIDE the preceding `Assistant` record
-    /// instead (the current `agent_loop`/`AttemptEngine` path never emits
-    /// a standalone `ToolCallRecord`) -- see `event_stream.rs`'s
-    /// `has_live_twin` doc, which already notes "`ToolCallRecord` is never
-    /// constructed in production", and `conway/tests/conway_ask.rs`'s
-    /// "DEVIATION NOTE" at the assertion that would otherwise expect one.
-    /// Flagged by the enum-variant construction guard added in board item
-    /// `01KYTXTXJ6DCE84ZRB06BHRGJW`; allowlisted there pending triage (wire
-    /// a real producer, or remove the variant if the `ContentBlock::ToolUse`
-    /// shape is the durable one) rather than fixed in that item's scope.
-    #[serde(rename = "tool_call")]
-    ToolCallRecord {
-        seq: LogSeq,
-        ts: DateTime<Utc>,
-        call: ToolCall,
-    },
     #[serde(rename = "tool_result")]
     ToolResultRecord {
         seq: LogSeq,
@@ -296,7 +278,6 @@ impl LogRecord {
             LogRecord::Header(_) => None,
             LogRecord::UserTurn { seq, .. }
             | LogRecord::Assistant { seq, .. }
-            | LogRecord::ToolCallRecord { seq, .. }
             | LogRecord::ToolResultRecord { seq, .. }
             | LogRecord::ForkDirective { seq, .. }
             | LogRecord::ParentSteer { seq, .. }
@@ -313,7 +294,6 @@ impl LogRecord {
             LogRecord::Header(_) => "header",
             LogRecord::UserTurn { .. } => "user_turn",
             LogRecord::Assistant { .. } => "assistant",
-            LogRecord::ToolCallRecord { .. } => "tool_call",
             LogRecord::ToolResultRecord { .. } => "tool_result",
             LogRecord::ForkDirective { .. } => "fork_directive",
             LogRecord::ParentSteer { .. } => "parent_steer",
@@ -327,7 +307,7 @@ impl LogRecord {
 
 #[cfg(test)]
 mod tests {
-    use super::test_support::{tool_call, tool_result};
+    use super::test_support::tool_result;
     use super::*;
 
     fn ts() -> DateTime<Utc> {
@@ -374,14 +354,6 @@ mod tests {
                     stop: StopReason::EndTurn,
                 },
                 "assistant",
-            ),
-            (
-                LogRecord::ToolCallRecord {
-                    seq: LogSeq(2),
-                    ts: ts(),
-                    call: tool_call("tc_1"),
-                },
-                "tool_call",
             ),
             (
                 LogRecord::ToolResultRecord {
@@ -750,14 +722,6 @@ mod tests {
 pub(crate) mod test_support {
     use super::*;
     use crate::ids::ToolName;
-
-    pub fn tool_call(id: &str) -> ToolCall {
-        ToolCall {
-            call_id: id.into(),
-            name: ToolName::new("read"),
-            arguments: serde_json::json!({"path": "a.txt"}),
-        }
-    }
 
     pub fn tool_result(id: &str) -> ToolResult {
         ToolResult {

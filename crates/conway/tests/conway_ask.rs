@@ -319,16 +319,11 @@ async fn conway_ask_end_to_end_slice_through_the_real_runtime() {
     );
 
     // ------------------------------------------------------------------
-    // Assertion 4a: the parent's log records the `conway_ask` invocation.
-    // DEVIATION NOTE: the spec calls this a "ToolCallRecord", but the real
-    // runtime records a model-proposed tool call as a `ContentBlock::ToolUse`
-    // INSIDE the `Assistant` record (not a separate `LogRecord::ToolCallRecord`
-    // -- that variant exists in the enum but is not emitted by the
-    // `agent_loop`/`AttemptEngine` path this slice exercises; the assistant
-    // turn's content blocks carry the `ToolUse`). The `ToolResultRecord` for
-    // the reply IS a separate record (asserted below). This matches the
-    // actual persisted-transcript shape -- using the real API rather than
-    // forcing a fictional `ToolCallRecord`.
+    // Assertion 4a: the parent's log records the `conway_ask` invocation, as
+    // a `ContentBlock::ToolUse` INSIDE the `Assistant` record -- the durable
+    // shape for a model-proposed tool call (`LogRecord::ToolCallRecord` was
+    // removed; see decision 01KYXZ25SS2Y95VPZ1NV4T3D4E). The `ToolResultRecord`
+    // for the reply IS a separate record (asserted below).
     // ------------------------------------------------------------------
     let ask_call = parent_records
         .iter()
@@ -438,10 +433,11 @@ async fn conway_ask_end_to_end_slice_through_the_real_runtime() {
 
     // ------------------------------------------------------------------
     // Assertion 6 (P-1 composition): `conway_ask` -> `conway_subagent` spawn.
-    // The parent's log has the spawn `ToolCallRecord`; the spawn child's own
-    // first `UserTurn` is the curated brief, verbatim (the text `conway_ask`
-    // returned was passed verbatim as the spawn's prompt); and the parent
-    // awaited the spawn (the spawn child completed, so the tool returned).
+    // The parent's log has the spawn call as a `ContentBlock::ToolUse` inside
+    // its `Assistant` record; the spawn child's own first `UserTurn` is the
+    // curated brief, verbatim (the text `conway_ask` returned was passed
+    // verbatim as the spawn's prompt); and the parent awaited the spawn (the
+    // spawn child completed, so the tool returned).
     // ------------------------------------------------------------------
     let spawn_call = parent_records
         .iter()
