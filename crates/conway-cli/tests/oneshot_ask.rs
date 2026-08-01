@@ -223,8 +223,7 @@ async fn conway_p_drives_conway_ask_then_conway_subagent_spawn() {
     // ------------------------------------------------------------------
     // Assertion: the orchestrator's transcript records the `conway_ask` tool
     // call (as a `ContentBlock::ToolUse` inside an `Assistant` record -- the
-    // real persisted shape; see `conway_ask.rs`'s own deviation note for why
-    // this is not a separate `LogRecord::ToolCallRecord`) AND its
+    // durable persisted shape for a model-proposed tool call) AND its
     // `ToolResultRecord` carrying the FULL brief, plus the `conway_subagent`
     // spawn tool call.
     // ------------------------------------------------------------------

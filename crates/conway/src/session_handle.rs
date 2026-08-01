@@ -993,15 +993,6 @@ fn record_to_event(record: &LogRecord) -> Option<(LogSeq, DateTime<Utc>, Event)>
                 text: assistant_text(content),
             },
         )),
-        LogRecord::ToolCallRecord { seq, ts, call } => Some((
-            *seq,
-            *ts,
-            Event::ToolCallProposed {
-                call_id: call.call_id.clone(),
-                tool: call.name.clone(),
-                args: call.arguments.clone(),
-            },
-        )),
         LogRecord::ToolResultRecord { seq, ts, result } => Some((
             *seq,
             *ts,

@@ -127,9 +127,9 @@ fn corrupt_ancestry(session: SessionId, detail: impl Into<String>) -> StoreError
 /// Later records win when a `target_seq` is masked more than once (`own` is
 /// already in seq order, so a linear scan suffices). `ContextMask` records
 /// themselves are left in place -- same precedent as `Header`-adjacent kinds
-/// like `ToolCallRecord`/`ContextReportRecord`, which already flow through
-/// `resolve_prefix` unfiltered and are dropped downstream (context/builder.rs,
-/// WI-126) by kind rather than by the resolver.
+/// like `ContextReportRecord`, which already flows through `resolve_prefix`
+/// unfiltered and is dropped downstream (context/builder.rs, WI-126) by kind
+/// rather than by the resolver.
 fn apply_context_mask(own: Vec<LogRecord>) -> Vec<LogRecord> {
     let mut excluded: HashSet<LogSeq> = HashSet::new();
     for rec in &own {

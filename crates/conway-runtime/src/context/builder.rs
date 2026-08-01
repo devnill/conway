@@ -364,7 +364,6 @@ fn record_role_and_content(record: &LogRecord) -> Option<(Role, Vec<ContentBlock
         LogRecord::ParentSteer { text, .. } => Some((Role::User, text_block(text))),
         LogRecord::SystemNote { text, .. } => Some((Role::System, text_block(text))),
         LogRecord::Header(_)
-        | LogRecord::ToolCallRecord { .. }
         | LogRecord::AgentResultRecord { .. }
         | LogRecord::ContextReportRecord { .. } => None,
         // `LogRecord` is `#[non_exhaustive]`; an unrecognized future kind
@@ -430,7 +429,6 @@ fn own_segment(record: &LogRecord) -> Option<(Role, Vec<ContentBlock>, Provenanc
             },
         )),
         LogRecord::Header(_)
-        | LogRecord::ToolCallRecord { .. }
         | LogRecord::AgentResultRecord { .. }
         | LogRecord::ContextReportRecord { .. } => None,
         _ => None,

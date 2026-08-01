@@ -17,9 +17,8 @@ kinds you'll see:
 | --- | --- |
 | `header` | The session's metadata: id, owning agent, origin (if forked), agent def, role, cwd, status, labels. Always the first line. |
 | `user_turn` | A prompt delivered to the agent — from you, or from a parent's steer/fork directive folded in as a turn. |
-| `assistant` | One model turn: content blocks (text, thinking, tool calls), the model that served it, the routing reason, token usage, stop reason. |
-| `tool_call` | One tool invocation the model requested. |
-| `tool_result` | That tool call's result. |
+| `assistant` | One model turn: content blocks (text, thinking, tool calls the model requested), the model that served it, the routing reason, token usage, stop reason. |
+| `tool_result` | A tool call's result. |
 | `fork_directive` | The instruction a forking parent attached on top of the inherited prefix — a forked child's first record. |
 | `parent_steer` | A steer message drained from the mailbox at a turn boundary. |
 | `system_note` | A runtime-authored note (e.g. repeated-step detection) — never something you or the model wrote. |

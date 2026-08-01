@@ -62,8 +62,8 @@ fn context_mask(target_seq: LogSeq, excluded: bool) -> LogRecord {
 
 /// Appends a `ContextMask` and returns it with the seq the store actually
 /// assigned (mirrors `append_n`'s pattern) -- the mask record itself is
-/// left in `resolve_prefix`'s output (same precedent as `ToolCallRecord`/
-/// `ContextReportRecord`, which already flow through unfiltered and are
+/// left in `resolve_prefix`'s output (same precedent as
+/// `ContextReportRecord`, which already flows through unfiltered and is
 /// dropped downstream by kind, not by the resolver), so tests need the
 /// exact record to build their expected transcript.
 async fn append_mask(
