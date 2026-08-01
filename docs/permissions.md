@@ -93,8 +93,10 @@ so a chained command can never slip past a prefix grant. For every other
 built-in tool the rendered form is a structured JSON dump
 (`read({"path":"…"})`) that is never handed to a shell, so the gate does
 not apply to it and a wildcard like `read:*` above is the practical grant
-shape there. (Before 0.7.0 only `bash` grants could match at all — every
-other tool's rendering tripped the gate and its rules were inert.)
+shape there. (From 0.5.0 until 0.7.0 only `bash` grants could match at
+all — every other tool's rendering tripped the gate and its rules were
+inert; before 0.5.0 even `bash` rendered as a structured dump, so no
+pattern grant matched anything.)
 
 Both files are loaded, project first, at session start, and their rules are
 **merged**, not overridden — a global "I always allow this, everywhere" rule
@@ -294,7 +296,10 @@ does:
   shell metacharacter (`;`, `&`,
   `|`, backtick, `$(`, a redirect, a brace) can never be satisfied by a
   pattern grant regardless of what patterns exist, so a chained command
-  always falls through to a human, even under `AutoAllow`. (The gate is
+  falls through to whatever the mode does without a grant — a prompt in
+  `Prompt` mode, silent execution in `AutoAllow`. (`Plan` mode never gets
+  this far: it denies a `bash` call outright, before any grant or mode
+  fallback is consulted.) (The gate is
   scoped to shell renderings on purpose: a structured tool's JSON rendering
   always carries `(){}`, and no shell ever parses it — see the rules-file
   section above.) But a `deny`
