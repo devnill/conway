@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`conway::plugin`: the facade's curated extension surface — `Tool`,
+  `Plugin`, and `ContextHook` are now implementable by a crate that depends
+  on `conway` alone.** The port traits were re-exported at the crate root
+  from the start, but the types their method signatures name (`ToolCtx`,
+  `ToolCall`, `ToolOutput`, `ToolSpec`, `ToolError`, `PathArgs`,
+  `RenderKind`, `PluginManifest`, `ContextPayload`, `ContextHookCtx`,
+  `OverflowInfo`, …) were not, so an external crate could name `Tool` and
+  could not write `fn invoke(&self, call: ToolCall, ctx: ToolCtx) -> …` —
+  and `ContextHook` was not exported at all, leaving the public
+  `ConwayBuilder::with_context_hook` accepting a type no external caller
+  could name. `pub mod plugin` re-exports exactly the authoring surface
+  (the three traits, their signature types, the field types of the structs
+  an implementor constructs, the `PluginConfig`/`CancellationToken` handles
+  the built-in tools themselves name, and the `async_trait` macro);
+  `ContextHook` also joins the crate-root port re-exports. `CwdHandle`,
+  `EventSinkHandle`, `SubagentHost`, and `EventSink` stay unexported on
+  purpose — they are `ToolCtx` fields an implementor reads but never names,
+  and the extension design rejects plugin implementations of the latter two
+  (`.design/extension-architecture.md` §13.5). Liveness is proven by
+  `crates/conway/tests/plugin_surface.rs`, which implements a trivial
+  `Tool`/`Plugin`/`ContextHook` with no `conway_core` import, registers
+  them through `ConwayBuilder`, and fails to *compile* if the export set
+  ever shrinks. (`crates/conway/src/lib.rs`,
+  `crates/conway/tests/plugin_surface.rs`, `docs/embedding.md`)
+
 ### Removed
 
 - **Exit code 3 (`PermissionDenied`) is gone from the `conway -p`

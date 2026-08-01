@@ -1,0 +1,332 @@
+//! F8's liveness test (GP-14): the facade's `conway::plugin` surface is
+//! *implementable* from outside the workspace, not merely nameable.
+//!
+//! Everything below is written the way a third-party Rust plugin author
+//! would write it: `use conway::plugin::...` for the extension surface,
+//! `use conway::...` for the builder/config types, and the author's own
+//! `schemars`/`serde`/`serde_json` dependencies for the data types those
+//! public signatures name (`ToolSpec::schema`, `ToolCall::arguments`).
+//!
+//! **This file must never import `conway_core`.** That is the break-the-
+//! guard property, built in: if the curated export set in
+//! `crates/conway/src/lib.rs`'s `pub mod plugin` is missing anything an
+//! implementor of `Tool`/`Plugin`/`ContextHook` needs, this file fails to
+//! COMPILE — the test cannot silently pass against a shrunken surface. The
+//! negative direction is verified by hand each time this surface changes:
+//! remove one re-export from `pub mod plugin` and confirm this file stops
+//! compiling.
+//!
+//! `serde`/`serde_json`/`schemars` are the facade's own declared
+//! dependencies (available to every integration test in this crate), which
+//! mirrors the third-party shape honestly: those crates are part of the
+//! public signatures, and a real plugin crate names them in its own
+//! `Cargo.toml` — they are not what F8 curates.
+
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+use conway::config::schema::{
+    AgentsConfig, BackendEntry, BackendKind, ConwayConfig, HealthSection, LimitsConfig,
+    ModelsConfig, PermissionMode, PermissionsConfig, RoleEntry, RoutingSection, SessionConfig,
+    TuiSection,
+};
+use conway::plugin::{
+    async_trait, Artifact, ArtifactKind, CancellationToken, ContentBlock, ContextHook,
+    ContextHookCtx, ContextPayload, OverflowInfo, PathArgs, PermissionClass, Plugin, PluginConfig,
+    PluginManifest, PromptSegment, Provenance, RenderKind, Role, Tool, ToolCall, ToolCategory,
+    ToolCtx, ToolError, ToolName, ToolOutput, ToolSpec, TruncationPolicy,
+};
+use conway::{AgentId, ConwayBuilder, RoleAlias, SessionId};
+
+// ---------------------------------------------------------------------------
+// A trivial third-party tool, written against `conway::plugin` alone.
+// ---------------------------------------------------------------------------
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct EchoArgs {
+    text: String,
+}
+
+struct EchoTool;
+
+#[async_trait]
+impl Tool for EchoTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: ToolName::new("echo"),
+            description: "Echoes its 'text' argument back.".to_string(),
+            schema: schemars::schema_for!(EchoArgs),
+            category: ToolCategory::Read,
+            permission: PermissionClass::Safe,
+        }
+    }
+
+    async fn invoke(&self, call: ToolCall, ctx: ToolCtx) -> Result<ToolOutput, ToolError> {
+        // `ctx`'s fields are exercised the way a real tool uses them:
+        // method calls on the capability handles never name their types
+        // (`CwdHandle`/`EventSinkHandle`/`SubagentHost` stay unexported on
+        // purpose -- see `lib.rs`'s `pub mod plugin` doc). `PluginConfig`
+        // and `CancellationToken` ARE exported, and are named here on
+        // purpose: every re-export must appear in this file's text, or
+        // dropping it from `pub mod plugin` would keep this file compiling
+        // and the compile guard would be false for it.
+        let _config: &Arc<PluginConfig> = &ctx.config;
+        let _cancel: &CancellationToken = &ctx.cancel;
+        if ctx.cancel.is_cancelled() {
+            return Err(ToolError::Cancelled);
+        }
+        let _cwd = &ctx.cwd;
+        let args: EchoArgs = serde_json::from_value(call.arguments)
+            .map_err(|e| ToolError::InvalidArguments {
+                detail: e.to_string(),
+            })?;
+        Ok(ToolOutput {
+            blocks: vec![ContentBlock::Text { text: args.text }],
+            is_error: false,
+            truncation: TruncationPolicy::None,
+            artifacts: vec![],
+        })
+    }
+
+    fn path_args(&self) -> PathArgs {
+        PathArgs::None
+    }
+
+    fn render_kind(&self) -> RenderKind {
+        // Truthful because `render` keeps the trait's default debug-dump
+        // shape -- the same claim `conway-tools`' own generic guard checks.
+        RenderKind::Structured
+    }
+}
+
+// ---------------------------------------------------------------------------
+// A trivial third-party plugin providing that tool.
+// ---------------------------------------------------------------------------
+
+struct EchoPlugin;
+
+impl Plugin for EchoPlugin {
+    fn manifest(&self) -> PluginManifest {
+        PluginManifest {
+            id: "test.echo".to_string(),
+            version: "0.1.0".to_string(),
+            tools: vec![ToolName::new("echo")],
+            required_host_caps: vec![],
+        }
+    }
+
+    fn tools(&self) -> Vec<Arc<dyn Tool>> {
+        vec![Arc::new(EchoTool)]
+    }
+}
+
+// ---------------------------------------------------------------------------
+// A third-party context hook (WI-126's extension point): masks segments
+// carrying a marker and appends a hook-authored segment -- exercising
+// `PromptSegment`/`Role`/`Provenance` construction, the thing a masking or
+// system-prompt-instrumenting hook actually does.
+// ---------------------------------------------------------------------------
+
+struct MarkerHook;
+
+#[async_trait]
+impl ContextHook for MarkerHook {
+    async fn before_request(&self, ctx: &ContextHookCtx, mut payload: ContextPayload) -> ContextPayload {
+        let _ = (ctx.turn, ctx.estimated_tokens);
+        payload.segments.retain(|segment| {
+            !segment.content.iter().any(|block| match block {
+                ContentBlock::Text { text } => text.contains("MASK-ME"),
+                _ => false,
+            })
+        });
+        payload.segments.push(PromptSegment::new(
+            Role::System,
+            vec![ContentBlock::Text {
+                text: "hook was here".to_string(),
+            }],
+            Provenance::SystemNote {
+                reason: "test hook instrumentation".to_string(),
+            },
+        ));
+        payload
+    }
+
+    async fn on_overflow(
+        &self,
+        _ctx: &ContextHookCtx,
+        payload: ContextPayload,
+        overflow: OverflowInfo,
+    ) -> Option<ContextPayload> {
+        let _ = overflow.shortfall_tokens;
+        Some(payload)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Registration through `ConwayBuilder`, end to end, with no `conway_core`
+// test double anywhere: a real config-file backend (never contacted --
+// `build()` does no network I/O), the default JSONL store pointed at a
+// tempdir, the built-in deny gate, and the facade-compiled router.
+// ---------------------------------------------------------------------------
+
+fn facade_only_config(session_root: std::path::PathBuf, metadata_path: std::path::PathBuf) -> ConwayConfig {
+    let mut roles = BTreeMap::new();
+    roles.insert(
+        "coder".to_string(),
+        RoleEntry {
+            chain: vec!["anthropic/claude-sonnet-4-6".to_string()],
+            headroom_tokens: None,
+        },
+    );
+    let mut backends = BTreeMap::new();
+    backends.insert(
+        "anthropic".to_string(),
+        BackendEntry {
+            kind: BackendKind::Anthropic,
+            api_key: "sk-ant-api03-not-a-real-key".to_string(),
+            ..BackendEntry::default()
+        },
+    );
+    let permissions = PermissionsConfig {
+        mode: PermissionMode::Deny,
+        ..PermissionsConfig::default()
+    };
+    ConwayConfig {
+        default_role: RoleAlias::new("coder"),
+        cwd: std::path::PathBuf::from("."),
+        session: SessionConfig {
+            root: session_root,
+            ..SessionConfig::default()
+        },
+        limits: LimitsConfig::default(),
+        permissions,
+        backends,
+        routing: RoutingSection::default(),
+        roles,
+        health: HealthSection::default(),
+        agents: AgentsConfig::default(),
+        models: ModelsConfig {
+            metadata_path,
+            probe_on_startup: false,
+        },
+        tui: TuiSection::default(),
+    }
+}
+
+/// The acceptance criterion: a `Tool`, a `Plugin`, and a `ContextHook`
+/// implemented with no `conway_core` import, registered through
+/// `ConwayBuilder::with_plugin`/`with_context_hook`, and `build()` --
+/// which runs the plugin-registration and duplicate-manifest-id paths for
+/// real -- succeeds.
+#[cfg(feature = "anthropic")]
+#[test]
+fn plugin_tool_and_hook_register_through_the_builder() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let metadata_path = dir.path().join("models.json");
+    std::fs::write(
+        &metadata_path,
+        r#"{"models":{"anthropic/claude-sonnet-4-6":{"max_context_tokens":200000,"tool_calling":"streaming","reasoning":false,"reliability_tier":"verified"}}}"#,
+    )
+    .expect("write models.json fixture");
+    let config = facade_only_config(dir.path().join("sessions"), metadata_path);
+
+    ConwayBuilder::from_parts(config)
+        .with_plugin(Arc::new(EchoPlugin))
+        .with_context_hook(Arc::new(MarkerHook))
+        .build()
+        .expect("a facade-only plugin/tool/hook must register and build");
+}
+
+/// The authored objects behave as declared, exercised directly: the
+/// plugin's manifest agrees with its tool's spec, and the tool's static
+/// declarations are the ones a permission broker would read.
+#[test]
+fn authored_plugin_and_tool_are_self_consistent() {
+    let plugin = EchoPlugin;
+    let manifest = plugin.manifest();
+    let tools = plugin.tools();
+    assert_eq!(tools.len(), 1);
+    let spec = tools[0].spec();
+    assert_eq!(manifest.tools, vec![spec.name.clone()]);
+    assert_eq!(spec.category, ToolCategory::Read);
+    assert_eq!(spec.permission, PermissionClass::Safe);
+    assert_eq!(tools[0].path_args(), PathArgs::None);
+    assert_eq!(tools[0].render_kind(), RenderKind::Structured);
+    // The trait's default `render` is available through the facade surface.
+    assert_eq!(
+        tools[0].render(&serde_json::json!({"text": "hi"})),
+        "echo({\"text\":\"hi\"})"
+    );
+    // `Artifact`/`ArtifactKind` are part of the authoring surface (a tool
+    // emitting a file artifact constructs them into `ToolOutput.artifacts`)
+    // and must be NAMED here, for the same reason as the handle types in
+    // `invoke`: an export this file never names is an export the compile
+    // guard does not cover.
+    let output = ToolOutput {
+        blocks: vec![],
+        is_error: false,
+        truncation: TruncationPolicy::None,
+        artifacts: vec![Artifact {
+            id: "out-1".to_string(),
+            kind: ArtifactKind::File,
+            path: None,
+            media_type: None,
+            bytes: None,
+            label: "example".to_string(),
+        }],
+    };
+    assert_eq!(output.artifacts.len(), 1);
+    assert_eq!(output.artifacts[0].kind, ArtifactKind::File);
+}
+
+/// The hook surface is drivable, not just nameable: `ContextPayload`,
+/// `ContextHookCtx`, and `OverflowInfo` are all constructible from facade
+/// paths, and both hook methods run their transforms for real.
+#[tokio::test]
+async fn authored_hook_transforms_payloads() {
+    let hook = MarkerHook;
+    let ctx = ContextHookCtx {
+        agent_id: AgentId::new(),
+        session_id: SessionId::new(),
+        turn: 0,
+        model: None,
+        estimated_tokens: 42,
+    };
+    let payload = ContextPayload {
+        segments: vec![
+            PromptSegment::new(
+                Role::User,
+                vec![ContentBlock::Text {
+                    text: "keep me".to_string(),
+                }],
+                Provenance::UserPrompt,
+            ),
+            PromptSegment::new(
+                Role::User,
+                vec![ContentBlock::Text {
+                    text: "MASK-ME".to_string(),
+                }],
+                Provenance::UserPrompt,
+            ),
+        ],
+        tools: vec![],
+    };
+
+    let out = hook.before_request(&ctx, payload).await;
+    assert_eq!(out.segments.len(), 2, "masked segment dropped, hook segment appended");
+    assert!(matches!(out.segments[1].provenance, Provenance::SystemNote { .. }));
+
+    let retry = hook
+        .on_overflow(
+            &ctx,
+            ContextPayload::default(),
+            OverflowInfo {
+                max_context_tokens: 100,
+                headroom_tokens: 10,
+                required_tokens: 200,
+                shortfall_tokens: 100,
+            },
+        )
+        .await;
+    assert!(retry.is_some());
+}
