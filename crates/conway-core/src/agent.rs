@@ -491,7 +491,19 @@ pub enum PermissionDecision {
 #[serde(rename_all = "snake_case")]
 pub enum PermissionScope {
     Session,
+    /// **Not yet implemented**: nothing in this tree constructs
+    /// `PermissionScope::Agent`. Every `AllowAlways` decision the CLI/TUI
+    /// can currently produce hardcodes `PermissionScope::Session`
+    /// (`tui/gate.rs`, `tui/input.rs`, `conway.rs`) -- there is no UI path
+    /// to grant a narrower per-agent scope, even though
+    /// `conway-runtime::permission`'s scope-to-`GrantScope` mapping is
+    /// wired to HONOR this variant if a caller ever produced one. Flagged
+    /// by the enum-variant construction guard added in board item
+    /// `01KYTXTXJ6DCE84ZRB06BHRGJW`; allowlisted there pending triage.
     Agent,
+    /// **Not yet implemented**: same gap as `Agent` above, one level
+    /// broader (a whole agent subtree rather than a single agent) -- also
+    /// never constructed.
     AgentSubtree,
 }
 

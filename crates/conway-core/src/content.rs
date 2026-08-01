@@ -103,6 +103,15 @@ pub enum TruncationPolicy {
         tail_bytes: u64,
     },
     /// Spill the full output to an [`Artifact`], keep a pointer in context.
+    ///
+    /// **Not yet implemented**: no tool constructs this variant. Declaring
+    /// it today gets NO truncation at all -- `TruncationPolicy::None` and
+    /// `TruncationPolicy::Artifact` are currently handled identically
+    /// (`crates/conway-runtime/src/tools/runner.rs`), the inverse of the
+    /// promise above. Tracked by board item `01KYTN3A9SPDMRG610YSB5QQXX`;
+    /// allowlisted with a reason in
+    /// `crates/conway/tests/enum_variant_construction_guard.rs` until a
+    /// producer exists.
     Artifact,
 }
 
