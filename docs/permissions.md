@@ -86,6 +86,16 @@ wire-form strings, meant to be read and diffed like any other config file:
 }
 ```
 
+A rule is `<tool>:<prefix>`, matched against the call's *rendered* form.
+For `bash` that form is the bare command string, so `bash:cargo test` means
+what it reads as — and the shell-metacharacter gate (see Limits) guards it,
+so a chained command can never slip past a prefix grant. For every other
+built-in tool the rendered form is a structured JSON dump
+(`read({"path":"…"})`) that is never handed to a shell, so the gate does
+not apply to it and a wildcard like `read:*` above is the practical grant
+shape there. (Before 0.7.0 only `bash` grants could match at all — every
+other tool's rendering tripped the gate and its rules were inert.)
+
 Both files are loaded, project first, at session start, and their rules are
 **merged**, not overridden — a global "I always allow this, everywhere" rule
 and a project "this checkout's build command is fine" rule answer different
@@ -279,10 +289,15 @@ does:
   catch `foo; git push` — the rule never claimed to parse shell, and a
   semicolon is real, visible shell syntax the rule simply wasn't asked to
   look past. What keeps the composition sound anyway is the *allow* side's
-  own, separate gate: a command carrying a shell metacharacter (`;`, `&`,
+  own, separate gate: for a tool whose rendered form a shell would actually
+  interpret (`bash`, the only built-in of that kind), a command carrying a
+  shell metacharacter (`;`, `&`,
   `|`, backtick, `$(`, a redirect, a brace) can never be satisfied by a
   pattern grant regardless of what patterns exist, so a chained command
-  always falls through to a human, even under `AutoAllow`. But a `deny`
+  always falls through to a human, even under `AutoAllow`. (The gate is
+  scoped to shell renderings on purpose: a structured tool's JSON rendering
+  always carries `(){}`, and no shell ever parses it — see the rules-file
+  section above.) But a `deny`
   rule you were counting on to block something outright can still be walked
   around by chaining it onto something else. Anything that must never
   happen at all belongs in the confinement root, not in a `deny` prefix.
