@@ -55,3 +55,11 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 # already a pinned workspace dependency (conway-core/conway-runtime dev-deps
 # use it for the same reason), not a new one (C-04).
 tempfile = { workspace = true }
+# context_probe_overlay_seam.rs drives `config.models.probe_on_startup`'s
+# real `CapabilityProbe` HTTP round trip through `ConwayBuilder::build`
+# end-to-end (board item 01KYXNBKWK2DZ7JE3VRKC5FRJB) -- already a pinned
+# workspace dependency (`conway-backends/tests/capability_probe.rs` uses it
+# for the identical mechanism, loopback-only, never a live/external
+# endpoint), not a new one (C-04); this is the third consumer of the same
+# pinned crate, same reasoning as the `blake3` addition above.
+wiremock = { workspace = true }
