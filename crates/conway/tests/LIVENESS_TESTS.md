@@ -115,8 +115,18 @@ all.
 `crates/conway/tests/*_seam.rs` (`permission_pattern_seam.rs`,
 `permission_trust_seam.rs`, `permission_revoke_seam.rs`,
 `permission_deny_laundering_seam.rs`, `root_containment_seam.rs`,
-`subagent_control_seam.rs`, `subagent_exfiltration_seam.rs`) and
-`crates/conway-runtime/tests/prompt_cache_e2e.rs`, `agent_loop_e2e.rs`,
-`ask.rs` are the reference examples — each file's own header comment states
-which seam it drives and why a unit test on the mechanism alone would have
-missed the bug it regression-tests.
+`subagent_control_seam.rs`, `subagent_exfiltration_seam.rs`,
+`context_admission_seam.rs`) and `crates/conway-runtime/tests/prompt_cache_e2e.rs`,
+`agent_loop_e2e.rs`, `ask.rs` are the reference examples — each file's own
+header comment states which seam it drives and why a unit test on the
+mechanism alone would have missed the bug it regression-tests.
+
+`context_admission_seam.rs` (board item `01KYXNB5TBJM2G8ZTJF85K1N09`) is the
+"two components, each tested, the connection isn't" failure shape applied
+to context admission: a real `ContextBuilder`'s `est_tokens`, through a real
+`DeclarativeRouter` compiled from real config via `ConwayBuilder::build`
+(no `.with_router` override), into a real `AttemptEngine` — with only the
+`Backend` faked. Its primary assertion is the fake backend's own call count
+(never called for an oversized context); its negative control (committed,
+not run by hand) widens the model's window on an otherwise identical
+fixture and asserts the flip: the backend IS called, exactly once.
