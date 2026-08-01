@@ -596,6 +596,12 @@ them, in the two `CRITICAL` entries under **Fixed** below.
   every existing third-party `Tool` implementation, via
   `ConwayBuilder::with_plugin`, keeps compiling unmodified) and overridden
   by the built-in `bash` tool to return the bare command string instead.
+  **In this release that is the only override:** pattern grants become live
+  for `bash` alone, and every other built-in tool keeps the default
+  JSON-dump rendering, trips the same metacharacter gate, and stays inert
+  (`read:*` and the other non-`bash` wildcards matched nothing until 0.7.0,
+  which introduced `Tool::render_kind` and lifted the gate for
+  structured renderings).
   `conway-runtime`'s tool runner now calls the resolved tool's own
   `render` (rather than synthesizing a generic form itself) and sanitizes
   the result — untrusted, model-supplied arguments are replaced
@@ -608,7 +614,11 @@ them, in the two `CRITICAL` entries under **Fixed** below.
 
 - **CRITICAL: the metacharacter gate could be laundered by the display
   sanitizer.** Found while reviewing the fix above, and fixed with it —
-  it was never released. That sanitizer runs *before* the gate, and `\n`
+  **it was never released.** The sanitizer it exploits entered the tree in
+  the same commit as this hardening (`d3ba8ec`), so the vulnerable ordering
+  existed only inside that one unreleased commit: at 0.4.0 there was no
+  sanitizer in the rendered path, and grants were inert anyway. That
+  sanitizer runs *before* the gate, and `\n`
   and `\r` are simultaneously Unicode control characters *and* two of the
   gate's own shell metacharacters. Sanitizing therefore destroyed the very
   evidence the gate looks for: `git status \n rm -rf /` arrived as
