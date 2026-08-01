@@ -222,38 +222,68 @@ A few things worth knowing before you build a host UI on this:
 
 Every extension point below is a `conway_core::ports` trait, and every one
 of those *traits* is re-exported at the facade's crate root
-(`conway::{Backend, HealthRegistry, PermissionGate, Plugin, Router,
-SessionStore, Tool}`). That is not the same as being implementable from
-outside this workspace: most of these traits' own method signatures name
-types that are declared in `conway-core` but never re-exported by
-`crates/conway/src/lib.rs` — checked directly against that file's re-export
-list, not inferred. Without those types you cannot even write the method
-signature, so you cannot implement the trait, regardless of how you'd fill
-the body in.
+(`conway::{Backend, ContextHook, HealthRegistry, PermissionGate, Plugin,
+Router, SessionStore, Tool}`). A re-exported trait is only implementable
+if every type its methods name is also reachable; the authoring surface
+for the three traits plugin authors implement lives in the curated
+`conway::plugin` module (below), so that `use conway::plugin::...` plus
+the facade root is the whole surface — no `conway-core` dependency.
 
 | Extension point | Trait itself re-exported | Every type its methods need, also re-exported | Implementable from a facade-only crate |
 | --- | --- | --- | --- |
 | `PermissionGate` | Yes | Yes (`PermissionRequest`, `PermissionDecision`) | **Yes** |
-| `Tool` | Yes | No (`ToolSpec`, `ToolCall`, `ToolCtx`, `ToolOutput`, `ToolError`) | No |
-| `Plugin` | Yes | No (`PluginManifest`, plus `Tool`'s own missing types) | No |
-| `ContextHook` (`with_context_hook`) | **No** — imported privately into `builder.rs`, never re-exported | No (`ContextPayload`, `ContextHookCtx`, `OverflowInfo`) | No — you cannot even name the trait to write `impl ContextHook for …` |
+| `Tool` | Yes | Yes, via `conway::plugin` (`ToolSpec`, `ToolCall`, `ToolCtx`, `ToolOutput`, `ToolError`, `PathArgs`, `RenderKind`, plus the `ToolSpec`/`ToolOutput` field types) | **Yes** |
+| `Plugin` | Yes | Yes, via `conway::plugin` (`PluginManifest`, plus `Tool`'s own types) | **Yes** |
+| `ContextHook` (`with_context_hook`) | Yes | Yes, via `conway::plugin` (`ContextPayload`, `ContextHookCtx`, `OverflowInfo`, `PromptSegment`, `Role`, `Provenance`) | **Yes** |
 | `Backend` | Yes | No (`GenerateRequest`, `GenerateResponse`, `BackendError`, `StreamChunk`, `ProbeReport`, `ModelId`, `Capabilities`, …) | No |
 | `SessionStore` | Yes | No (`SeqRange`, `StoreError`) | No |
 | `Router` | Yes | No (`RouteRequest`, `Route`, `RoutingError`) | No |
 
-**`PermissionGate` is the one extension point that genuinely works today**
-without depending on `conway-core` yourself: its `check(&self, req:
-PermissionRequest) -> PermissionDecision` signature is built entirely from
-re-exported types, which is exactly why the permissions section above can
-show it end to end.
+The last three rows are deliberate, not gaps: the extension architecture
+rejects plugin implementations of `Backend`, `SessionStore`, `Router`,
+`HealthRegistry`, `SubagentHost`, and `EventSink` with stated reasons
+(`.design/extension-architecture.md` §13.5 — two of those ports are
+structurally uncrossable by an async RPC boundary; the rest are policy).
+Those traits are re-exported so you can *inject* the workspace's own
+implementations or a test double written inside this workspace, not so
+third parties write new ones against the facade.
 
-**Do not treat plugin (`Tool`/`Plugin`) or context-hook authoring as a
-working path for a crate that depends on `conway` alone** — they are not. A
-crate willing to also take a direct, workspace-internal path dependency on
-`conway-core` (as `crates/conway/examples/
-minimal_session.rs` itself does, for its fakes) can still implement any of
-these — the gap is specifically for a consumer that wants the facade to be
-the *only* thing it depends on, which is the point of a facade.
+### Writing a plugin
+
+`conway::plugin` re-exports everything needed to implement `Tool`,
+`Plugin`, and `ContextHook`: the three traits, their method-argument and
+return types, the field types of the structs you construct (`ToolSpec`,
+`ToolOutput`, `PluginManifest`, `PromptSegment`), the two capability
+handle types the built-in tools themselves name in helper signatures
+(`PluginConfig`, `CancellationToken`), and the `async_trait` attribute
+macro all three traits are transformed with. Two data-type crates are
+part of the public signatures but are *not* re-exported — name them in
+your own `Cargo.toml`, at the same version conway uses, so the types line
+up: `schemars` (`ToolSpec::schema`) and `serde_json`
+(`ToolCall::arguments`, `Tool::render`'s argument).
+
+`ToolCtx`'s remaining fields (`chdir`, `events`, `subagents`)
+are handles you call methods on but never need to name — their types are
+deliberately not exported, and constructing a `ToolCtx` by hand is
+test-fixture work, served by `conway-core`'s `fakes` feature inside this
+workspace rather than by the authoring surface. (`cancel` is the
+exception: its `CancellationToken` type IS exported, so a helper can take
+`&CancellationToken`.)
+
+Register what you write through the builder:
+
+```rust,ignore
+let conway = ConwayBuilder::from_parts(config)
+    .with_plugin(Arc::new(MyPlugin))
+    .with_context_hook(Arc::new(MyHook))
+    .build()?;
+```
+
+`crates/conway/tests/plugin_surface.rs` is a complete worked example —
+a trivial `Tool`, `Plugin`, and `ContextHook` written against
+`conway::plugin` alone (it imports no `conway-core` path, and fails to
+compile if the export set ever shrinks), registered through
+`ConwayBuilder` exactly as above.
 
 ## Next steps
 

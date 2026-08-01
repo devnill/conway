@@ -6,12 +6,12 @@
 
 use conway::{
     AgentDef, AgentId, AgentResult, AgentTreeSnapshot, AttemptFailure, Backend, BreakerKind,
-    BreakerSnapshot, BreakerState, Budget, CapabilitySummary, ContextReport, ConwayError,
-    EntryOutcome, Envelope, Event, ExplainEntry, ExplainReport, HealthRegistry, LogRecord, LogSeq,
-    ModelRef, PermissionDecision, PermissionDecisionKind, PermissionGate, PermissionRequest,
-    PermissionScope, Plugin, Provenance, Result, ResultStatus, RoleAlias, Router, RoutingReason,
-    SessionFilter, SessionId, SessionMeta, SessionStore, SubagentMode, Tool, ToolCategory,
-    ToolName,
+    BreakerSnapshot, BreakerState, Budget, CapabilitySummary, ContextHook, ContextReport,
+    ConwayError, EntryOutcome, Envelope, Event, ExplainEntry, ExplainReport, HealthRegistry,
+    LogRecord, LogSeq, ModelRef, PermissionDecision, PermissionDecisionKind, PermissionGate,
+    PermissionRequest, PermissionScope, Plugin, Provenance, Result, ResultStatus, RoleAlias,
+    Router, RoutingReason, SessionFilter, SessionId, SessionMeta, SessionStore, SubagentMode,
+    Tool, ToolCategory, ToolName,
 };
 
 /// Every re-exported *type* must be nameable at this path. The function is
@@ -57,7 +57,7 @@ fn assert_types_nameable(
 
 /// Every re-exported port *trait* must be nameable and usable as a trait
 /// object at this path.
-#[allow(dead_code)]
+#[allow(dead_code, clippy::too_many_arguments)]
 fn assert_traits_object_safe(
     _: &dyn Backend,
     _: &dyn Plugin,
@@ -66,6 +66,7 @@ fn assert_traits_object_safe(
     _: &dyn SessionStore,
     _: &dyn Router,
     _: &dyn HealthRegistry,
+    _: &dyn ContextHook,
 ) {
 }
 

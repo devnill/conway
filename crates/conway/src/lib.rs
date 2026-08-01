@@ -58,8 +58,83 @@ pub use conway_core::event::{Envelope, Event};
 pub use conway_core::ids::{AgentId, LogSeq, ModelRef, RoleAlias, SegmentId, SessionId, ToolName};
 pub use conway_core::log::{AskOrigin, LogRecord, SessionFilter, SessionMeta, SubagentMode};
 pub use conway_core::ports::{
-    Backend, HealthRegistry, PermissionGate, Plugin, Router, SessionStore, Tool,
+    Backend, ContextHook, HealthRegistry, PermissionGate, Plugin, Router, SessionStore, Tool,
 };
+
+/// The GP-03 extension surface: every type a crate depending only on
+/// `conway` needs to implement [`Plugin`], [`Tool`], and [`ContextHook`]
+/// against the public API.
+///
+/// WHY A MODULE, NOT FLAT ROOT RE-EXPORTS (F8 decide-and-state): the root
+/// is already a flat collection of session/config/routing domain types,
+/// and twenty-odd extension-authoring names there would bury the signal
+/// that this set is the one GP-03 makes a commitment about.
+/// `use conway::plugin::...` reads as intent, and the facade already has
+/// the curated-submodule precedent (`pub mod permission_pattern` above).
+/// The port traits stay flat at the root where they always were; this
+/// module is an additional grouped home, not a second location for
+/// anything that moved.
+///
+/// WHY `ContextHook` IS EXPORTED rather than `with_context_hook` made
+/// private (F8 decide-and-state): the method is shipped public API on the
+/// builder and the capability behind it (masking, tool narrowing,
+/// overflow retry) is real and documented; deleting it to avoid exporting
+/// one type would remove functionality. Exporting the trait completes the
+/// port list instead.
+///
+/// KNOWN GAP, stated rather than asserted away (GP-14): this surface does
+/// NOT yet suffice to re-author every in-tree built-in facade-only. The
+/// built-ins that drive capability handles with typed arguments name types
+/// no `conway::` path reaches — `conway_ask`/`conway_subagent` construct
+/// `SubagentSpec` and match host errors as `RuntimeError`, the report tool
+/// constructs `Fact`, the cd tool matches `CwdError`. Widening the surface
+/// (or deciding parity is not the goal) is board item
+/// 01KYYB2T8AHB4SJFHNG4ZETYN8.
+///
+/// This is a *curated* re-export, deliberately narrower than
+/// `conway_core::ports` (board item F8, `.design/extension-architecture.md`
+/// §12 phase 0): the traits above were always re-exported at the crate
+/// root, but their method signatures named types this facade never
+/// re-exported, so an external crate could name `Tool` and could not write
+/// `fn invoke(&self, call: ToolCall, ctx: ToolCtx) -> ...`. Every name here
+/// is justified by appearing in one of the three traits' signatures, in a
+/// field of a type an implementor must construct (`ToolSpec`, `ToolOutput`,
+/// `PluginManifest`, `PromptSegment`), or in a helper signature the
+/// built-ins themselves use (`PluginConfig`, `CancellationToken` — see
+/// `conway-tools`' `fs/mod.rs` and `subagent/ask.rs`).
+///
+/// Deliberately NOT here:
+///
+/// - `CwdHandle`, `EventSinkHandle`, `SubagentHost`, `EventSink` — they
+///   appear only as `ToolCtx` *fields* an implementor reads (method calls
+///   on `ctx.chdir`/`ctx.events`/`ctx.subagents` never name the type), and
+///   the extension design (§13.5) rejects plugin *implementations* of
+///   `SubagentHost`/`EventSink` outright. Constructing a `ToolCtx` by hand
+///   (what those names are needed for) is test-fixture work, served by
+///   `conway-core`'s `fakes` feature, not the authoring surface.
+/// - The `SubagentHost`/`EventSink`/`SessionStore`/`Router`/
+///   `HealthRegistry`/`Backend` implementation surfaces — §13.5 rejects
+///   plugin implementations of those with stated reasons.
+/// - `schemars`/`serde_json` — plain data-type crates a plugin author names
+///   in their own `Cargo.toml` (version-matched to conway's; the compiler
+///   enforces the match loudly). `async_trait` IS re-exported: the three
+///   traits are `#[async_trait]`-transformed, and re-exporting the macro is
+///   what makes `use conway::plugin::*` sufficient to write an impl.
+pub mod plugin {
+    pub use async_trait::async_trait;
+    pub use conway_core::content::{
+        Artifact, ArtifactKind, ContentBlock, PermissionClass, Role, ToolCall, ToolCategory,
+        ToolSpec, TruncationPolicy,
+    };
+    pub use conway_core::error::ToolError;
+    pub use conway_core::ids::ToolName;
+    pub use conway_core::ports::{
+        CancellationToken, ContextHook, ContextHookCtx, ContextPayload, OverflowInfo, PathArgs,
+        Plugin, PluginConfig, PluginManifest, RenderKind, Tool, ToolCtx, ToolOutput,
+    };
+    pub use conway_core::provenance::Provenance;
+    pub use conway_core::segment::PromptSegment;
+}
 pub use conway_core::provenance::{ContextReport, Provenance};
 pub use conway_core::routing::{AttemptFailure, BreakerKind, BreakerState, RoutingReason};
 
