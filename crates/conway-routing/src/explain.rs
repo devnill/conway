@@ -244,7 +244,16 @@ impl<'a> RoutingExplain<'a> {
                         };
                         let outcome = match entry.outcome {
                             EvalOutcome::Selected(reason) => EntryOutcome::Selected { reason },
-                            EvalOutcome::Skipped(reason) => EntryOutcome::Skipped { reason },
+                            // The headroom-only window (used by `resolve`'s
+                            // T-1 aggregate decision, see `router.rs`) isn't
+                            // part of the explain surface -- it already has
+                            // the full `RoutingReason::CapabilitySkip`
+                            // detail, and `explain` never re-derives
+                            // `ContextTooLarge` (see this file's "Third
+                            // note").
+                            EvalOutcome::Skipped(reason, _headroom_only_window) => {
+                                EntryOutcome::Skipped { reason }
+                            }
                         };
                         ExplainEntry {
                             model_ref,

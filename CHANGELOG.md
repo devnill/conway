@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **An oversized request could be rejected with an error that named none of
+  the numbers P-9 requires — no input token count, no headroom, no
+  window.** `conway_core::ports::Router::resolve`'s own doc contract says
+  the headroom gate (T-1) returns `RoutingError::ContextTooLarge` (which
+  carries `est_tokens`/`headroom_tokens`/`required_tokens`/
+  `max_context_tokens`/`shortfall_tokens` as structured fields), but the
+  only committed implementation, `DeclarativeRouter`, folded every
+  all-rejected outcome — headroom included — into `RoutingError::NoCandidate`
+  instead, whose shortfall detail survived only as unstructured prose buried
+  in a `String`. Since the headroom gate runs on every route T-0 already
+  admitted, `NoCandidate` was the error an operator actually saw for an
+  oversized context with a correctly configured chain. `resolve` now
+  returns `ContextTooLarge` — naming the largest window among every
+  candidate considered — exactly when every candidate was rejected and each
+  one *solely* on headroom; a candidate that also fails some other
+  requirement (a missing capability, a health-open breaker) is a mixed
+  failure not attributable to context size alone, so that case still falls
+  back to `NoCandidate` unchanged. This also revives a dead code path:
+  `AgentLoop::route_and_attempt`'s `ContextHook::on_overflow` retry was
+  reachable only via `AttemptEngine`'s own backstop gate before this change,
+  since a bare `NoCandidate` from the router short-circuited past it —
+  a registered overflow hook now actually gets a chance on the router path
+  too. (`crates/conway-routing/src/router.rs`,
+  `crates/conway-routing/src/explain.rs`,
+  `crates/conway-runtime/src/agent_loop.rs`,
+  `crates/conway-runtime/src/attempt.rs`,
+  `crates/conway-routing/tests/router_resolution.rs`,
+  `crates/conway-routing/tests/explain_report.rs`, `docs/routing.md`)
+
 ## [0.7.0] — 2026-07-31
 
 Five security fixes and one cost fix, all found by reading the code against the

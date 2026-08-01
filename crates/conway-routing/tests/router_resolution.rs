@@ -1,9 +1,23 @@
 //! Integration matrix for `DeclarativeRouter::resolve` (WI-034, amended for
-//! the headroom gate): pin hit / pin capability-miss / pin health-open /
+//! the headroom gate; further amended per decision 01KYXS3PTYVATWR58JR95AZJYN
+//! / board item 01KYXNAHN64YMADZPQDQC0CPTJ to implement the T-1 port
+//! contract literally): pin hit / pin capability-miss / pin health-open /
 //! all-healthy chain / head-skipped chain / all-rejected / unknown role /
 //! half-open retained, plus the headroom-specific scenarios the amendment
 //! adds (headroom-only rejection, per-role override, global-default
 //! inheritance, headroom flipping the outcome, pin rejected by headroom).
+//!
+//! **T-1 amendment (this file's own history):** the scenarios below whose
+//! *every* candidate is rejected solely on headroom now assert
+//! `RoutingError::ContextTooLarge`, not `RoutingError::NoCandidate` --
+//! `headroom_skip_reports_capability_skip_with_shortfall` (renamed
+//! `headroom_only_rejection_returns_context_too_large`) is the test this
+//! item's spec named explicitly as pinning the old, superseded behavior.
+//! Scenarios where at least one candidate fails for a *different* reason
+//! (an unindexed model, a health skip, or a candidate that fails headroom
+//! *and* something else) are deliberately left asserting `NoCandidate` --
+//! see `mixed_headroom_and_capability_failure_stays_no_candidate` below for
+//! that discrimination's own dedicated coverage.
 //!
 //! Uses `conway_core::fakes::FakeHealth` rather than `BreakerRegistry` +
 //! `TestClock`: the amendment's notes suggest the latter, but `TestClock` is
@@ -366,7 +380,11 @@ fn transport_open_and_probe_open_report_the_expected_breaker_kind() {
 // ---------------------------------------------------------------------
 
 #[test]
-fn headroom_skip_reports_capability_skip_with_shortfall() {
+fn headroom_only_rejection_returns_context_too_large() {
+    // Single candidate, rejected *solely* on headroom (nothing else about
+    // it is wrong) -- T-1's port contract: `RoutingError::ContextTooLarge`,
+    // naming est_tokens, resolved headroom, and this candidate's own window
+    // (also the largest -- and only -- one considered).
     let m = model_ref("ollama-cloud", "glm-5.2");
     let config = routing_config(vec![("planner", vec![m.clone()], Some(16_000))], 4_096);
     let index = index_with(&[(m.clone(), caps(40_000))]);
@@ -374,15 +392,24 @@ fn headroom_skip_reports_capability_skip_with_shortfall() {
 
     let err = router.resolve(&request("planner", 34_000)).unwrap_err();
     match err {
-        RoutingError::NoCandidate { considered, .. } => {
-            assert_eq!(considered.len(), 1);
-            assert_eq!(
-                considered[0].1,
-                "capability: context: needs 34000 input + 16000 headroom = 50000, \
-                 model max_context_tokens is 40000"
-            );
+        RoutingError::ContextTooLarge {
+            role,
+            model,
+            est_tokens,
+            headroom_tokens,
+            required_tokens,
+            max_context_tokens,
+            shortfall_tokens,
+        } => {
+            assert_eq!(role, RoleAlias::new("planner"));
+            assert_eq!(model, m);
+            assert_eq!(est_tokens, 34_000);
+            assert_eq!(headroom_tokens, 16_000);
+            assert_eq!(required_tokens, 50_000);
+            assert_eq!(max_context_tokens, 40_000);
+            assert_eq!(shortfall_tokens, 10_000);
         }
-        other => panic!("expected NoCandidate, got {other:?}"),
+        other => panic!("expected ContextTooLarge, got {other:?}"),
     }
 }
 
@@ -403,7 +430,7 @@ fn headroom_changes_the_outcome_not_just_the_message() {
     let router_16k = router_from(sixteen_k_config, Arc::new(FakeHealth::new()), index_of());
     assert!(matches!(
         router_16k.resolve(&request("planner", 34_000)),
-        Err(RoutingError::NoCandidate { .. })
+        Err(RoutingError::ContextTooLarge { .. })
     ));
 }
 
@@ -452,13 +479,16 @@ fn per_role_headroom_override_is_honored_end_to_end() {
     // fast's inherited 4096 default fits.
     assert!(matches!(
         router.resolve(&request("planner", 34_000)),
-        Err(RoutingError::NoCandidate { .. })
+        Err(RoutingError::ContextTooLarge { .. })
     ));
     assert!(router.resolve(&request("fast", 34_000)).is_ok());
 }
 
 #[test]
-fn all_rejected_by_headroom_no_candidate_lists_every_entry() {
+fn all_rejected_by_headroom_reports_context_too_large_with_largest_window() {
+    // Both candidates rejected solely on headroom -> ContextTooLarge, naming
+    // the *largest* considered window (b's 45000, not a's 40000) as the
+    // best case that still didn't fit.
     let a = model_ref("anthropic", "claude-sonnet-4-6");
     let b = model_ref("local", "qwen3-coder-80b");
     let config = routing_config(
@@ -470,13 +500,19 @@ fn all_rejected_by_headroom_no_candidate_lists_every_entry() {
 
     let err = router.resolve(&request("planner", 34_000)).unwrap_err();
     match err {
-        RoutingError::NoCandidate { considered, .. } => {
-            assert_eq!(considered.len(), 2);
-            for (_, reason) in &considered {
-                assert!(reason.contains("headroom"));
-            }
+        RoutingError::ContextTooLarge {
+            model,
+            max_context_tokens,
+            required_tokens,
+            shortfall_tokens,
+            ..
+        } => {
+            assert_eq!(model, b, "the larger of the two rejected windows");
+            assert_eq!(max_context_tokens, 45_000);
+            assert_eq!(required_tokens, 50_000);
+            assert_eq!(shortfall_tokens, 5_000);
         }
-        other => panic!("expected NoCandidate, got {other:?}"),
+        other => panic!("expected ContextTooLarge, got {other:?}"),
     }
 }
 
@@ -495,7 +531,7 @@ fn pin_uses_the_headroom_of_req_role_not_the_policy_default() {
     // headroom rather than the policy's bare default.
     assert!(matches!(
         router.resolve(&req),
-        Err(RoutingError::NoCandidate { .. })
+        Err(RoutingError::ContextTooLarge { .. })
     ));
 }
 
@@ -509,6 +545,81 @@ fn global_default_headroom_applies_when_role_has_no_override() {
     // 34000 + 8000 = 42000 > 40000: rejected under the global default.
     assert!(matches!(
         router.resolve(&request("fast", 34_000)),
-        Err(RoutingError::NoCandidate { .. })
+        Err(RoutingError::ContextTooLarge { .. })
     ));
+}
+
+// ---------------------------------------------------------------------
+// Mixed failure discrimination (this item's own addition): a candidate
+// rejected on headroom *and* something else is not attributable to context
+// size alone, so it must not turn the request into `ContextTooLarge`.
+// ---------------------------------------------------------------------
+
+/// Weak capabilities: fails `tool_calling` outright, independent of context.
+fn weak_caps(max_context_tokens: u32) -> Capabilities {
+    Capabilities {
+        tool_calling: ToolCallSupport::None,
+        cache: CacheMode::None,
+        parallel_tool_calls: true,
+        structured_output: StructuredOutput::Grammar,
+        max_context_tokens,
+        reasoning: true,
+        reliability_tier: ReliabilityTier::Verified,
+    }
+}
+
+#[test]
+fn single_candidate_failing_headroom_and_capability_stays_no_candidate() {
+    // One candidate, but it fails BOTH the headroom gate and a required
+    // capability -- a mixed failure for that single candidate. Per this
+    // item's spec, a mixed failure is not a `ContextTooLarge`: the missing
+    // list has more than one entry, so `check_candidate` must not report it
+    // as headroom-only.
+    let m = model_ref("ollama-cloud", "glm-5.2");
+    let config = routing_config(vec![("planner", vec![m.clone()], Some(16_000))], 4_096);
+    let index = index_with(&[(m.clone(), weak_caps(40_000))]);
+    let router = router_from(config, Arc::new(FakeHealth::new()), index);
+
+    let mut req = request("planner", 34_000);
+    req.required.tool_calling = Some(ToolCallSupport::NonStreamingOnly);
+
+    let err = router.resolve(&req).unwrap_err();
+    match err {
+        RoutingError::NoCandidate { considered, .. } => {
+            assert_eq!(considered.len(), 1);
+            assert!(considered[0].1.contains("tool_calling"));
+            assert!(considered[0].1.contains("context"));
+        }
+        other => panic!("expected NoCandidate (mixed failure), got {other:?}"),
+    }
+}
+
+#[test]
+fn one_headroom_only_candidate_plus_one_capability_only_candidate_stays_no_candidate() {
+    // `a` fails solely on headroom; `b` fails solely on a missing
+    // capability (its window is plenty large). Not every rejection in the
+    // chain reduces to context size, so the aggregate must stay
+    // `NoCandidate`, not `ContextTooLarge` -- even though `a` alone would
+    // have qualified.
+    let a = model_ref("anthropic", "claude-sonnet-4-6");
+    let b = model_ref("local", "qwen3-coder-80b");
+    let config = routing_config(
+        vec![("planner", vec![a.clone(), b.clone()], Some(16_000))],
+        4_096,
+    );
+    let index = index_with(&[(a.clone(), caps(40_000)), (b.clone(), weak_caps(200_000))]);
+    let router = router_from(config, Arc::new(FakeHealth::new()), index);
+
+    let mut req = request("planner", 34_000);
+    req.required.tool_calling = Some(ToolCallSupport::NonStreamingOnly);
+
+    let err = router.resolve(&req).unwrap_err();
+    match err {
+        RoutingError::NoCandidate { considered, .. } => {
+            assert_eq!(considered.len(), 2);
+            assert!(considered[0].1.contains("context"));
+            assert!(considered[1].1.contains("tool_calling"));
+        }
+        other => panic!("expected NoCandidate (mixed across chain), got {other:?}"),
+    }
 }

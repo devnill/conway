@@ -164,6 +164,27 @@ full:
 context: needs 34000 input + 16000 headroom = 50000, model max_context_tokens is 40000
 ```
 
+That's the per-candidate detail you'll see inside a `routing error: no
+candidate for role ...` message (as in the `getting-started.md` example
+above) whenever at least one *other* candidate, or this same candidate,
+was also disqualified for a non-context reason (an unindexed model, a
+health-open breaker, or a missing capability). When context is the
+*only* thing wrong — every candidate in the chain would otherwise have
+been selected, and each one's window alone is too small — conway raises
+a distinct, terminal error instead of `NoCandidate`:
+
+```
+context rejected: 34000 prompt + 16000 reserved output = 50000 tokens, but ollama-cloud/glm-5.2 accepts at most 40000 (short by 10000); no truncation or escalation is performed
+```
+
+This is `RoutingError::ContextTooLarge`: it names the input size, the
+resolved headroom, and the *largest* window among the candidates that
+still didn't fit (so a chain with several too-small models reports its
+best case, not an arbitrary one). No truncation or escalation ever
+happens on your behalf — this is terminal by design; shrink the turn's
+content, raise the role's headroom budget, or add a larger-window
+candidate to the chain.
+
 ## Health and failover
 
 Two independent circuit breakers exist per backend (its `EndpointId`,
