@@ -116,10 +116,11 @@ all.
 `permission_trust_seam.rs`, `permission_revoke_seam.rs`,
 `permission_deny_laundering_seam.rs`, `root_containment_seam.rs`,
 `subagent_control_seam.rs`, `subagent_exfiltration_seam.rs`,
-`context_admission_seam.rs`) and `crates/conway-runtime/tests/prompt_cache_e2e.rs`,
-`agent_loop_e2e.rs`, `ask.rs` are the reference examples — each file's own
-header comment states which seam it drives and why a unit test on the
-mechanism alone would have missed the bug it regression-tests.
+`context_admission_seam.rs`, `context_probe_overlay_seam.rs`) and
+`crates/conway-runtime/tests/prompt_cache_e2e.rs`, `agent_loop_e2e.rs`,
+`ask.rs` are the reference examples — each file's own header comment states
+which seam it drives and why a unit test on the mechanism alone would have
+missed the bug it regression-tests.
 
 `context_admission_seam.rs` (board item `01KYXNB5TBJM2G8ZTJF85K1N09`) is the
 "two components, each tested, the connection isn't" failure shape applied
@@ -130,3 +131,26 @@ to context admission: a real `ContextBuilder`'s `est_tokens`, through a real
 (never called for an oversized context); its negative control (committed,
 not run by hand) widens the model's window on an otherwise identical
 fixture and asserts the flip: the backend IS called, exactly once.
+
+`context_probe_overlay_seam.rs` (board item `01KYXNBKWK2DZ7JE3VRKC5FRJB`) is
+the reachable divergence T-1's backstop actually exists to catch: not the
+router-reads-config-vs-`AttemptEngine`-reads-live premise the item was
+originally filed with (that one is architecturally precluded by
+`CapabilityIndex::from_backends`'s own design — see that file's module doc
+for the correction), but `builder.rs`'s optional `probe_on_startup` overlay,
+which composes a model's capabilities from a *different* input set
+(`ModelMetadataStore::defaults()` plus an empty override table) than
+`Backend::capabilities()` does (the facade's own `models.json`-projected
+override, which wins on precedence). A real `openai-compat`/`vllm_hermes`
+backend, wired through the real `ConwayBuilder::build` against a loopback-only
+`wiremock::MockServer` (the same already-in-tree technique
+`conway-backends/tests/capability_probe.rs` uses for this identical
+mechanism), lets the probe report an inflated window while `models.json`
+pins a real, small one the backend's own `capabilities()` still honors. The
+primary assertion is the mock server's own request log: no `POST
+/chat/completions` was ever recorded. The committed negative control widens
+only `models.json`'s override to match the probed value and asserts the
+flip: the backend IS called, exactly once. Break-the-guard (T-1's
+`caps.max_context_tokens >= required` check stubbed to always admit)
+confirmed the backend is then actually invoked with the full oversized
+request — the literal P-9 violation — before the stub was reverted.
