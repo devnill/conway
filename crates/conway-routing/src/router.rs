@@ -1,24 +1,34 @@
 //! `DeclarativeRouter`: pure, synchronous resolution of a `RoleAlias` to an
 //! ordered, capability- and health-filtered candidate list (WI-034, amended
-//! for the headroom gate).
+//! for the headroom gate; further amended to implement
+//! `conway_core::ports::Router`'s T-1 contract literally, see below).
 //!
 //! Filter order is binding and fixed: pin -> capability (headroom-aware) ->
 //! health -> chain order. See `docs/routing.md` for how this order shows up
 //! in `conway routes explain` output.
 //!
-//! Divergence note (flagged, not worked around): `conway_core::ports::Router`'s
-//! doc comment on `resolve` states that T-1 (no candidate's headroom-adjusted
+//! **T-1 error selection (decision 01KYXS3PTYVATWR58JR95AZJYN, closing board
+//! item 01KYXNAHN64YMADZPQDQC0CPTJ):** `conway_core::ports::Router`'s doc
+//! comment on `resolve` states that T-1 (no candidate's headroom-adjusted
 //! window covers `req.est_tokens`) returns `RoutingError::ContextTooLarge`.
-//! This crate's own binding WI-034 spec (the amendment, matching the
-//! already-implemented WI-032 `capability::satisfies`) instead folds the
-//! headroom gate into `RoutingReason::CapabilitySkip` and returns
-//! `RoutingError::NoCandidate` uniformly for every all-rejected outcome --
-//! matching the crate's other capability-driven rejections and the specific,
-//! named test criteria in WI-034's machine-checked spec (e.g.
-//! `headroom_skip_reports_capability_skip_with_shortfall`, which names
-//! `NoCandidate`/`CapabilitySkip` explicitly). `DeclarativeRouter` therefore
-//! never constructs `RoutingError::ContextTooLarge`; flagged to the
-//! coordinator to reconcile with the core `Router`-trait doc comment.
+//! `DeclarativeRouter` now implements that literally: `resolve` returns
+//! `ContextTooLarge` -- naming `req.est_tokens`, the resolved
+//! `headroom_tokens`, and the largest `max_context_tokens` among every
+//! candidate considered -- exactly when every candidate in the chain was
+//! rejected, and each one *solely* on the headroom gate (its
+//! `RoutingReason::CapabilitySkip` carries no other missing requirement,
+//! per `check_candidate` below). A candidate that fails on headroom *and*
+//! something else (a missing tool-calling capability, say) is a mixed
+//! failure that is not attributable to context size alone; it still counts
+//! as an ordinary `CapabilitySkip` and disqualifies the whole request from
+//! `ContextTooLarge` -- resolution falls back to `RoutingError::NoCandidate`,
+//! same as every other all-rejected outcome (an unindexed model, a health
+//! skip, or a mix of these with headroom). `DeclarativeRouter` was the last
+//! place folding T-1 into `NoCandidate`; the divergence this superseded was
+//! recorded against WI-034's machine-checked spec (the tests named below
+//! were amended in the same change that added this note) and against
+//! `conway-runtime`'s `agent_loop.rs`, whose own note is retired alongside
+//! this one.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -29,7 +39,7 @@ use conway_core::ports::{HealthRegistry, Router};
 use conway_core::prelude::SamplingParams;
 use conway_core::routing::{BreakerState, Route, RouteRequest, RoutingConfig, RoutingReason};
 
-use crate::capability::{satisfies, CapabilityIndex};
+use crate::capability::{context_shortfall, satisfies, CapabilityIndex};
 use crate::config::{ConfigIssue, ConfigIssueKind, HeadroomPolicy};
 
 /// One role's compiled routing data: its fallback chain, sampling defaults,
@@ -63,10 +73,14 @@ impl std::fmt::Debug for DeclarativeRouter {
 }
 
 /// One candidate's place in a routed request's evaluation: chosen, or
-/// skipped with the reason.
+/// skipped with the reason. A skip additionally carries `Some(window)` --
+/// the candidate's own `max_context_tokens` -- exactly when the skip was
+/// *solely* the headroom gate (see `check_candidate`); `resolve` uses this
+/// to decide `ContextTooLarge` vs `NoCandidate`, and `explain.rs` ignores it
+/// (it only ever needs the `RoutingReason`).
 pub(crate) enum EvalOutcome {
     Selected(RoutingReason),
-    Skipped(RoutingReason),
+    Skipped(RoutingReason, Option<u32>),
 }
 
 /// One evaluated candidate. `chain_position` is `None` for a pinned
@@ -177,38 +191,64 @@ impl DeclarativeRouter {
     }
 
     /// Capability (headroom-aware) then health, in that fixed order. `Ok`
-    /// means the candidate survives; `Err` carries the skip reason.
+    /// means the candidate survives; `Err` carries the skip reason plus,
+    /// when (and only when) the *sole* reason this candidate was rejected is
+    /// the headroom gate, `Some(max_context_tokens)` -- the candidate's own
+    /// window, which `resolve` uses to decide `ContextTooLarge` vs
+    /// `NoCandidate` (see the module-level T-1 note). A candidate unknown to
+    /// the capability index never qualifies (there is no window to report),
+    /// and neither does a candidate that fails headroom *and* some other
+    /// requirement.
+    ///
+    /// "Failed the headroom gate" is decided by [`context_shortfall`], the
+    /// same predicate [`satisfies`] itself uses -- NOT by restating the
+    /// arithmetic here, and not by parsing `missing`'s strings. `missing.len()
+    /// == 1` then means "no OTHER requirement failed", since a failing
+    /// headroom gate contributes exactly one entry.
     fn check_candidate(
         &self,
         model_ref: &ModelRef,
         req: &RouteRequest,
         headroom_tokens: u32,
-    ) -> Result<(), RoutingReason> {
+    ) -> Result<(), (RoutingReason, Option<u32>)> {
         match self.capability_index.get(model_ref) {
             None => {
-                return Err(RoutingReason::CapabilitySkip {
-                    skipped: model_ref.clone(),
-                    missing: vec!["capabilities: unknown (backend, model) pair".to_string()],
-                });
+                return Err((
+                    RoutingReason::CapabilitySkip {
+                        skipped: model_ref.clone(),
+                        missing: vec!["capabilities: unknown (backend, model) pair".to_string()],
+                    },
+                    None,
+                ));
             }
             Some(caps) => {
                 if let Err(missing) =
                     satisfies(caps, &req.required, req.est_tokens, headroom_tokens)
                 {
-                    return Err(RoutingReason::CapabilitySkip {
-                        skipped: model_ref.clone(),
-                        missing,
-                    });
+                    let failed_headroom =
+                        context_shortfall(caps, req.est_tokens, headroom_tokens).is_some();
+                    let headroom_only = missing.len() == 1 && failed_headroom;
+                    let window = headroom_only.then_some(caps.max_context_tokens);
+                    return Err((
+                        RoutingReason::CapabilitySkip {
+                            skipped: model_ref.clone(),
+                            missing,
+                        },
+                        window,
+                    ));
                 }
             }
         }
 
         let endpoint = endpoint_of(model_ref);
         match self.health.state(&endpoint) {
-            BreakerState::Open { kind, .. } => Err(RoutingReason::HealthSkip {
-                skipped: model_ref.clone(),
-                breaker: kind,
-            }),
+            BreakerState::Open { kind, .. } => Err((
+                RoutingReason::HealthSkip {
+                    skipped: model_ref.clone(),
+                    breaker: kind,
+                },
+                None,
+            )),
             BreakerState::HalfOpen | BreakerState::Closed => Ok(()),
             _ => Ok(()),
         }
@@ -240,7 +280,9 @@ impl DeclarativeRouter {
         let mut entries = Vec::with_capacity(chain.len());
         for (position, model_ref) in chain.iter().enumerate() {
             let outcome = match self.check_candidate(model_ref, req, headroom_tokens) {
-                Err(reason) => EvalOutcome::Skipped(reason),
+                Err((reason, headroom_only_window)) => {
+                    EvalOutcome::Skipped(reason, headroom_only_window)
+                }
                 Ok(()) => {
                     let reason = if is_pin {
                         RoutingReason::PinnedByApi
@@ -307,12 +349,52 @@ impl Router for DeclarativeRouter {
             return Ok(routes);
         }
 
+        // T-1 (port contract): every candidate rejected, and every rejection
+        // attributable *solely* to the headroom gate -> `ContextTooLarge`,
+        // naming the largest window among them (the best case that still
+        // didn't fit). Any other skip reason present anywhere in the chain
+        // -- an unindexed model, a health skip, or a candidate that failed
+        // headroom *and* something else -- makes this a mixed outcome, which
+        // falls through to `NoCandidate` below (see the module-level note).
+        let mut all_headroom_only = !evaluation.entries.is_empty();
+        let mut largest_window: Option<(&ModelRef, u32)> = None;
+        for entry in &evaluation.entries {
+            let EvalOutcome::Skipped(_, headroom_window) = &entry.outcome else {
+                continue;
+            };
+            match headroom_window {
+                Some(window) => {
+                    if largest_window.is_none_or(|(_, best)| *window > best) {
+                        largest_window = Some((entry.model_ref, *window));
+                    }
+                }
+                None => all_headroom_only = false,
+            }
+        }
+
+        if all_headroom_only {
+            if let Some((model_ref, max_context_tokens)) = largest_window {
+                let est_tokens = req.est_tokens;
+                let headroom_tokens = evaluation.headroom_tokens;
+                let required_tokens = est_tokens.saturating_add(headroom_tokens);
+                return Err(RoutingError::ContextTooLarge {
+                    role: req.role.clone(),
+                    model: model_ref.clone(),
+                    est_tokens,
+                    headroom_tokens,
+                    required_tokens,
+                    max_context_tokens,
+                    shortfall_tokens: required_tokens.saturating_sub(max_context_tokens),
+                });
+            }
+        }
+
         let considered = evaluation
             .entries
             .into_iter()
             .map(|entry| {
                 let reason = match entry.outcome {
-                    EvalOutcome::Selected(reason) | EvalOutcome::Skipped(reason) => reason,
+                    EvalOutcome::Selected(reason) | EvalOutcome::Skipped(reason, _) => reason,
                 };
                 (entry.model_ref.clone(), render_reason(&reason))
             })
@@ -588,6 +670,114 @@ mod tests {
             "measured allocation count drifted from the documented floor (7); \
              re-examine whether the WI-034 budget criterion is achievable, got {measured}"
         );
+    }
+
+    // ---------------------------------------------------------------------
+    // `check_candidate`'s headroom-only discrimination (board item
+    // 01KYXNAHN64YMADZPQDQC0CPTJ): unit-level coverage of the `Option<u32>`
+    // half of its return value, directly, rather than only through
+    // `resolve`'s aggregate `ContextTooLarge`/`NoCandidate` choice.
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn check_candidate_reports_window_when_the_sole_failure_is_headroom() {
+        let m = model_ref("ollama-cloud", "glm-5.2");
+        let config = routing_config(
+            vec![("planner", role(vec![m.clone()]))],
+            HeadroomPolicy::default().default_headroom_tokens,
+        );
+        let index = CapabilityIndex::builder()
+            .insert(m.backend.clone(), m.model.clone(), caps(40_000))
+            .build();
+        let health: Arc<dyn HealthRegistry> = Arc::new(FakeHealth::new());
+        let router = router_with(config, HeadroomPolicy::default(), health, index);
+
+        let req = request("planner", 34_000);
+        let err = router
+            .check_candidate(&m, &req, 16_000)
+            .expect_err("40000 window can't hold 34000 + 16000");
+        assert_eq!(
+            err.1,
+            Some(40_000),
+            "sole failure is headroom -> Some(the candidate's own window)"
+        );
+    }
+
+    #[test]
+    fn check_candidate_reports_none_when_capability_index_is_missing() {
+        // Unknown to the index at all -- there is no window to report, so
+        // this can never be classified headroom-only however the numbers
+        // line up.
+        let m = model_ref("ollama-cloud", "glm-5.2");
+        let config = routing_config(
+            vec![("planner", role(vec![m.clone()]))],
+            HeadroomPolicy::default().default_headroom_tokens,
+        );
+        let index = CapabilityIndex::builder().build();
+        let health: Arc<dyn HealthRegistry> = Arc::new(FakeHealth::new());
+        let router = router_with(config, HeadroomPolicy::default(), health, index);
+
+        let req = request("planner", 34_000);
+        let err = router
+            .check_candidate(&m, &req, 16_000)
+            .expect_err("unindexed model is always rejected");
+        assert_eq!(err.1, None);
+    }
+
+    #[test]
+    fn check_candidate_reports_none_for_a_mixed_headroom_and_capability_failure() {
+        // Fails headroom AND `tool_calling` for the same candidate -- a
+        // mixed failure, not attributable to context size alone.
+        let m = model_ref("ollama-cloud", "glm-5.2");
+        let config = routing_config(
+            vec![("planner", role(vec![m.clone()]))],
+            HeadroomPolicy::default().default_headroom_tokens,
+        );
+        let weak = Capabilities {
+            tool_calling: ToolCallSupport::None,
+            ..caps(40_000)
+        };
+        let index = CapabilityIndex::builder()
+            .insert(m.backend.clone(), m.model.clone(), weak)
+            .build();
+        let health: Arc<dyn HealthRegistry> = Arc::new(FakeHealth::new());
+        let router = router_with(config, HeadroomPolicy::default(), health, index);
+
+        let mut req = request("planner", 34_000);
+        req.required.tool_calling = Some(ToolCallSupport::NonStreamingOnly);
+
+        let err = router
+            .check_candidate(&m, &req, 16_000)
+            .expect_err("fails both tool_calling and headroom");
+        assert_eq!(err.1, None, "mixed failure must not report a window");
+    }
+
+    #[test]
+    fn check_candidate_reports_none_when_only_a_capability_is_missing() {
+        // Window is plenty large; only `tool_calling` is missing. Headroom
+        // was never the problem, so no window is reported.
+        let m = model_ref("ollama-cloud", "glm-5.2");
+        let config = routing_config(
+            vec![("planner", role(vec![m.clone()]))],
+            HeadroomPolicy::default().default_headroom_tokens,
+        );
+        let weak = Capabilities {
+            tool_calling: ToolCallSupport::None,
+            ..caps(200_000)
+        };
+        let index = CapabilityIndex::builder()
+            .insert(m.backend.clone(), m.model.clone(), weak)
+            .build();
+        let health: Arc<dyn HealthRegistry> = Arc::new(FakeHealth::new());
+        let router = router_with(config, HeadroomPolicy::default(), health, index);
+
+        let mut req = request("planner", 34_000);
+        req.required.tool_calling = Some(ToolCallSupport::NonStreamingOnly);
+
+        let err = router
+            .check_candidate(&m, &req, 16_000)
+            .expect_err("tool_calling missing");
+        assert_eq!(err.1, None);
     }
 
     #[test]

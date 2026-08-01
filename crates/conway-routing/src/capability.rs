@@ -153,6 +153,35 @@ fn reliability_name(t: &ReliabilityTier) -> &'static str {
     }
 }
 
+/// THE headroom gate, in one place. `Some(shortfall)` when the request does
+/// not fit this model's window; `None` when it fits.
+///
+/// Both consumers of the gate call this rather than restating the formula:
+/// [`satisfies`] (to decide whether to push its `"context: ..."` entry) and
+/// `router::DeclarativeRouter::check_candidate` (to decide whether a
+/// rejection is attributable to context size alone, and therefore whether
+/// `resolve` may return `RoutingError::ContextTooLarge`).
+///
+/// Keeping it here is load-bearing, not tidiness. Board item
+/// `01KYXNAHN64YMADZPQDQC0CPTJ` originally landed with this arithmetic
+/// duplicated in `router.rs`. Nothing tied the two copies together, so a
+/// later edit to one -- `>=` instead of `>`, a safety margin, different
+/// rounding -- would have silently desynchronized them, and the failure is
+/// quiet in both directions: a genuinely headroom-only rejection
+/// misclassified as mixed (regressing P-9 back to `NoCandidate`, the exact
+/// bug that item existed to fix), or a non-context failure misreported as
+/// `ContextTooLarge`, which blames the window for an unrelated defect.
+///
+/// Saturating: `u32::MAX` inputs produce a rejection, never a wrap or panic.
+pub(crate) fn context_shortfall(
+    caps: &Capabilities,
+    est_tokens: u32,
+    headroom_tokens: u32,
+) -> Option<u32> {
+    let needed = est_tokens.saturating_add(headroom_tokens);
+    (needed > caps.max_context_tokens).then(|| needed.saturating_sub(caps.max_context_tokens))
+}
+
 /// Pure, synchronous admission predicate over four scalars: no `&self`, no
 /// clock, no registry. Returns `Ok(())` (allocation-free) when every
 /// requirement holds, else `Err` listing **every** unmet requirement in the
@@ -216,10 +245,11 @@ pub fn satisfies(
         }
     }
 
-    // The headroom gate, last (amendment ordering). Saturating: u32::MAX
-    // inputs produce a rejection reason, never a wrap or panic.
-    let needed = est_tokens.saturating_add(headroom_tokens);
-    if needed > caps.max_context_tokens {
+    // The headroom gate, last (amendment ordering). The predicate itself
+    // lives in `context_shortfall` so the router's headroom-only
+    // classification cannot drift from it.
+    if context_shortfall(caps, est_tokens, headroom_tokens).is_some() {
+        let needed = est_tokens.saturating_add(headroom_tokens);
         missing.push(format!(
             "context: needs {est_tokens} input + {headroom_tokens} headroom = {needed}, \
              model max_context_tokens is {}",
@@ -242,6 +272,66 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     static_assertions::assert_impl_all!(CapabilityIndex: Send, Sync, Clone);
+
+    /// Pins the invariant `DeclarativeRouter::check_candidate` depends on to
+    /// classify a rejection as headroom-only: a failing headroom gate
+    /// contributes EXACTLY ONE entry to `missing`, so `missing.len() == 1`
+    /// combined with `context_shortfall(..).is_some()` means "the headroom
+    /// gate failed and nothing else did".
+    ///
+    /// Without this, the router's classification rests on an unstated
+    /// property of this function. If someone splits the context entry into
+    /// two strings, this test fails here rather than silently turning every
+    /// headroom-only rejection back into a `NoCandidate` (board item
+    /// `01KYXNAHN64YMADZPQDQC0CPTJ`, P-9).
+    #[test]
+    fn a_headroom_only_failure_contributes_exactly_one_missing_entry() {
+        let fits_everything_but_context = caps(40_000);
+        let required = RequiredCaps::default();
+
+        let missing = satisfies(&fits_everything_but_context, &required, 34_000, 16_000)
+            .expect_err("50000 needed against a 40000 window must be rejected");
+
+        assert_eq!(
+            missing.len(),
+            1,
+            "a headroom-only failure must contribute exactly one entry, got: {missing:?}"
+        );
+        assert!(
+            missing[0].starts_with("context:"),
+            "the sole entry must be the context one, got: {}",
+            missing[0]
+        );
+        assert!(
+            context_shortfall(&fits_everything_but_context, 34_000, 16_000).is_some(),
+            "context_shortfall must agree that this is a headroom failure"
+        );
+    }
+
+    /// The complement: when the headroom gate passes, `context_shortfall`
+    /// reports nothing and no `context:` entry appears — so a single-entry
+    /// `missing` caused by some OTHER requirement can never be mistaken for
+    /// a headroom-only rejection.
+    #[test]
+    fn a_non_context_failure_is_never_classified_as_headroom() {
+        let roomy_but_weak = weak_caps();
+        let required = RequiredCaps {
+            reasoning: Some(true),
+            ..RequiredCaps::default()
+        };
+
+        let missing = satisfies(&roomy_but_weak, &required, 10, 10)
+            .expect_err("weak_caps has reasoning=false, so this must be rejected");
+
+        assert!(
+            !missing.iter().any(|m| m.starts_with("context:")),
+            "the window is ample here; no context entry expected, got: {missing:?}"
+        );
+        assert!(
+            context_shortfall(&roomy_but_weak, 10, 10).is_none(),
+            "context_shortfall must not report a shortfall when the window is ample"
+        );
+    }
 
     fn caps(max_context_tokens: u32) -> Capabilities {
         Capabilities {

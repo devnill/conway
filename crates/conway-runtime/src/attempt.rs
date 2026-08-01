@@ -6,15 +6,20 @@
 //! headroom-aware T-1 context gate as a backstop covering the pin path, and
 //! record health observations with the T-2 classification.
 //!
-//! T-1 error-shape reconciliation (coordinator ruling): the router
-//! (conway-routing `DeclarativeRouter`, WI-034) returns
-//! `RoutingError::NoCandidate` uniformly for headroom rejections it makes
-//! declaratively. `RoutingError::ContextTooLarge` is unused by the router
-//! and is instead this engine's own per-route backstop gate result — it
-//! fires only when every route *this engine* was handed fails the
-//! `est_tokens + headroom <= max_context_tokens` check, independent of
-//! whatever filtering the caller already did upstream (this matters for the
-//! pin path, which can bypass the router's chain filtering entirely).
+//! T-1 error-shape reconciliation (decision 01KYXS3PTYVATWR58JR95AZJYN,
+//! closing board item 01KYXNAHN64YMADZPQDQC0CPTJ): the router (conway-routing
+//! `DeclarativeRouter`, WI-034) now also constructs
+//! `RoutingError::ContextTooLarge` -- but only when every candidate it
+//! rejected failed *solely* on headroom (see that crate's `router.rs` module
+//! doc); a mixed rejection, or one this engine reaches at all, still surfaces
+//! as `NoCandidate` from the router side. This engine's own T-1 check below
+//! is a second, independent construction site for `ContextTooLarge` -- its
+//! per-route backstop gate, which fires only when every route *this engine*
+//! was handed fails the `est_tokens + headroom <= max_context_tokens` check,
+//! independent of whatever filtering the caller already did upstream (this
+//! matters for the pin path, which can bypass the router's chain filtering
+//! entirely, and as a backstop against a router capability index that has
+//! drifted from what the backend actually reports).
 
 use std::collections::HashMap;
 use std::sync::Arc;

@@ -505,10 +505,20 @@ impl AgentLoop {
     /// `ContextHook::on_overflow` when the T-1 gate rejects the assembled
     /// request as too large for the routed model's window
     /// (`RoutingError::ContextTooLarge`) -- from either `Router::resolve`
-    /// (the port's own doc contract allows a `Router` impl to reject this
-    /// way, though the committed `DeclarativeRouter` never does, folding the
-    /// headroom gate into `NoCandidate` instead) or `AttemptEngine::execute`
-    /// (the actual T-1 backstop gate today).
+    /// (the committed `conway_routing::DeclarativeRouter` now does construct
+    /// this variant, exactly when every candidate's rejection is
+    /// attributable solely to the headroom gate; decision
+    /// 01KYXS3PTYVATWR58JR95AZJYN, closing board item
+    /// 01KYXNAHN64YMADZPQDQC0CPTJ -- see that crate's `router.rs` module
+    /// doc) or `AttemptEngine::execute` (the T-1 backstop gate for the
+    /// remaining case: a route the router admitted but whose real backend
+    /// still rejects on context size, e.g. a stale/incorrect capability
+    /// entry). Before that decision, `DeclarativeRouter` folded every
+    /// all-rejected outcome into `RoutingError::NoCandidate`, which meant
+    /// this destructure's `else` branch below always fired for a
+    /// router-side rejection and `ContextHook::on_overflow` was reachable
+    /// only via the `AttemptEngine` backstop path -- that gap is closed now
+    /// that the router path can reach this method's `Ok` arm too.
     ///
     /// **No hook, or a hook whose `on_overflow` returns `None`, or
     /// [`MAX_OVERFLOW_ATTEMPTS`] exhausted:** the last `ContextTooLarge`

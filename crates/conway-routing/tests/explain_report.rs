@@ -332,9 +332,12 @@ fn render_text_matches_golden_file_byte_for_byte() {
 
 /// Asserts `explain` and `resolve` agree by construction: the `Selected`
 /// entries' `(backend, model)` pairs and `RoutingReason`s, in order, equal
-/// `resolve`'s `Route`s; and when `resolve` returns `Err(NoCandidate)`,
-/// `explain` has zero `Selected` entries and the same candidate order as
-/// `considered`.
+/// `resolve`'s `Route`s; when `resolve` returns `Err(NoCandidate)`, `explain`
+/// has zero `Selected` entries and the same candidate order as
+/// `considered`; and when `resolve` returns `Err(ContextTooLarge)` (T-1,
+/// board item 01KYXNAHN64YMADZPQDQC0CPTJ), `explain` likewise has zero
+/// `Selected` entries and its named model appears among the (necessarily
+/// all-`Skipped`) entries.
 fn assert_explain_agrees_with_resolve(router: &DeclarativeRouter, req: &RouteRequest) {
     let resolved = router.resolve(req);
     let report = RoutingExplain::new(router).explain(req);
@@ -379,6 +382,20 @@ fn assert_explain_agrees_with_resolve(router: &DeclarativeRouter, req: &RouteReq
             assert_eq!(
                 considered_refs, entry_refs,
                 "skipped entries must appear in the same order as NoCandidate.considered"
+            );
+        }
+        Err(RoutingError::ContextTooLarge { model, .. }) => {
+            assert!(
+                selected.is_empty(),
+                "ContextTooLarge must imply zero Selected entries"
+            );
+            assert!(
+                report
+                    .entries
+                    .iter()
+                    .any(|e| e.model_ref == model
+                        && matches!(e.outcome, EntryOutcome::Skipped { .. })),
+                "ContextTooLarge's named model must appear as a Skipped explain entry"
             );
         }
         Err(other) => panic!("unexpected resolve error in agreement scenario: {other:?}"),
@@ -540,7 +557,8 @@ fn explain_and_resolve_agree_across_scenarios() {
         assert_explain_agrees_with_resolve(&router, &request("fast", 34_000));
     }
 
-    // 12. All-rejected-by-headroom -> NoCandidate with every entry considered.
+    // 12. All-rejected-by-headroom -> ContextTooLarge naming the largest
+    // considered window.
     {
         let a = model_ref("anthropic", "claude-sonnet-4-6");
         let b = model_ref("local", "qwen3-coder-80b");
