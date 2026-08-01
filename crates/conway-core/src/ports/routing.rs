@@ -38,13 +38,24 @@ pub trait Router: Send + Sync {
     /// `NoCandidate` instead, with the per-candidate shortfall carried as
     /// prose inside `considered`.
     ///
-    /// NOTE, and it is a real gap rather than a simplification: this means
-    /// a chain in which every candidate's window is too small, but at least
-    /// one ALSO fails another requirement, yields `NoCandidate` -- so the
-    /// structured context fields are absent for a request that genuinely
-    /// could not fit anywhere. Whether that case should widen to
-    /// `ContextTooLarge` is an open question tracked on the board; do not
-    /// read the current split as settled design.
+    /// This split is SETTLED DESIGN, not a simplification awaiting a fix
+    /// (P-9 as amended 2026-08-01; decision `01KYY4D6R5KH1S02XWAJKP7531`).
+    /// A chain in which every candidate's window is too small, but at least
+    /// one ALSO fails another requirement, deliberately yields
+    /// `NoCandidate`. Reporting it as `ContextTooLarge` would attribute the
+    /// failure purely to size and hand the operator remediation advice --
+    /// shrink the turn, raise the headroom -- that cannot work when a
+    /// capability was also missing. `considered` names every reason, which
+    /// is the honest answer when size was not the whole story.
+    ///
+    /// Known consequence, recorded so it is not rediscovered as a surprise:
+    /// `AgentLoop` invokes `ContextHook::on_overflow` only on
+    /// `ContextTooLarge`, so a hook cannot intervene in the mixed case even
+    /// though shrinking the context might bring the request under the window
+    /// of a candidate that failed only on headroom. Widening that hook's
+    /// trigger -- not widening this error -- is the change to consider if it
+    /// ever matters; it exposes the seam without moving routing policy into
+    /// core (GP-11).
     fn resolve(&self, req: &RouteRequest) -> Result<Vec<Route>, RoutingError>;
 }
 
