@@ -198,6 +198,18 @@ pub enum LogRecord {
         usage: Usage,
         stop: StopReason,
     },
+    /// **Not yet implemented**: no production code constructs this
+    /// variant. A model-proposed tool call is recorded as a
+    /// `ContentBlock::ToolUse` INSIDE the preceding `Assistant` record
+    /// instead (the current `agent_loop`/`AttemptEngine` path never emits
+    /// a standalone `ToolCallRecord`) -- see `event_stream.rs`'s
+    /// `has_live_twin` doc, which already notes "`ToolCallRecord` is never
+    /// constructed in production", and `conway/tests/conway_ask.rs`'s
+    /// "DEVIATION NOTE" at the assertion that would otherwise expect one.
+    /// Flagged by the enum-variant construction guard added in board item
+    /// `01KYTXTXJ6DCE84ZRB06BHRGJW`; allowlisted there pending triage (wire
+    /// a real producer, or remove the variant if the `ContentBlock::ToolUse`
+    /// shape is the durable one) rather than fixed in that item's scope.
     #[serde(rename = "tool_call")]
     ToolCallRecord {
         seq: LogSeq,
@@ -259,6 +271,16 @@ pub enum LogRecord {
     /// per-record flag on the target would mutate a record already written,
     /// which the append-only log never does elsewhere; an overlay record
     /// keeps that invariant intact.
+    ///
+    /// **Not yet implemented**: nothing in this tree constructs this
+    /// variant yet. `conway-session`'s fork-ancestry resolver
+    /// (`apply_context_mask`) is wired to READ and honor one if it
+    /// existed, but no tool or operator surface can append one -- so no
+    /// record is ever actually excluded from an outgoing LLM payload
+    /// today, despite the doc above. Tracked by board item
+    /// `01KYTQWD2SBW33YPNGY0YBN9WY`; allowlisted with a reason in
+    /// `crates/conway/tests/enum_variant_construction_guard.rs` until a
+    /// producer exists.
     ContextMask {
         seq: LogSeq,
         ts: DateTime<Utc>,
