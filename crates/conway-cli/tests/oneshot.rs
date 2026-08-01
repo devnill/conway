@@ -4,52 +4,30 @@
 //! output-format contract this suite locks in as executable acceptance
 //! evidence.
 //!
-//! ## Reconciliations (disclosed against the currently-committed runtime)
+//! ## Exit-code liveness
 //!
-//! Two of the plan doc's named scenarios describe an exit code this
-//! module's own tests prove is **not reachable** from `-p` one-shot mode
-//! today, given already-committed `conway-runtime` behavior (not a gap in
-//! this test suite -- a gap in the runtime, already partially flagged by
-//! `exit.rs`'s own module doc for the identical reason):
+//! Every exit code `docs/scripting.md` declares has a test in this file
+//! that drives the real binary and asserts the observed process exit
+//! status -- a unit test of `exit.rs`'s mapping functions is NOT evidence
+//! a code is reachable (GP-14): the exit-4 classifier's unit tests passed
+//! for its entire unreachable lifetime, because they constructed a
+//! `ConwayError::Routing` by hand and never drove the path
+//! (`AgentLoop::finish_error` folding the routing failure into
+//! `ResultStatus::Failed`) that a live turn actually takes. The exit-4
+//! tests below (`exit_4_no_backend`, `exit_4_unregistered_model`,
+//! `exit_4_unknown_role_override`, `exit_4_context_too_large`) each drive a
+//! distinct live routing rejection through the real one-shot path.
 //!
-//! - **`exit_4_no_backend`** ("mock refuses connections" -> exit 4). Every
-//!   error `AttemptEngine::execute` can produce -- including
-//!   `RoutingError::NoCandidate` after every candidate in the chain fails
-//!   with a transport error -- is caught by `AgentLoop::run_inner`'s
-//!   generic `Err` propagation and turned into `ResultStatus::Failed` by
-//!   `finish_error` (`crates/conway-runtime/src/agent_loop.rs`'s
-//!   `finish_error`: "`RuntimeError::Cancelled` maps to `Cancelled`;
-//!   everything else maps to `Failed`" -- no special case for a routing
-//!   cause). `ResultStatus::Failed` maps to `ExitCode::AgentFailed` (1) via
-//!   `ExitCode::from_result`, never `ExitCode::from_error`'s
-//!   `NoHealthyBackend` (4) -- that classifier is only ever reached by
-//!   `exit.rs`'s own unit tests, which construct a `ConwayError::Runtime`
-//!   value directly; no live call path from `oneshot::run` ever produces
-//!   one (its own fallible steps -- `read_prompt`, `new_session`,
-//!   `handle.prompt` -- surface only usage errors or `RuntimeError` shapes
-//!   `rt.prompt` itself can raise, none of which is routing). This test
-//!   therefore asserts the real, observed code (1), not 4.
-//! - **`exit_3_permission_termination`** (deny-mode + tool-only script ->
-//!   exit 3). Per `exit.rs`'s own module doc, reconciliation #2: every
-//!   `PermissionOutcome::Deny` (either `PermissionDecision` variant)
-//!   becomes a model-visible `ToolOutcome::error` fed back into the
-//!   agent's own turn (`conway-runtime/src/tools/runner.rs`'s
-//!   `execute_one`) -- never a terminal `ConwayError`, so there is no
-//!   mechanism to end a run specifically *because* a tool call was denied.
-//!   A script that only ever proposes tool calls under `--permission-mode
-//!   deny` therefore keeps taking turns (every denial re-prompts the
-//!   model) until `budget.max_steps` is exhausted, terminating as
-//!   `BudgetExceeded` (exit 5) -- not `PermissionDenied` (3). This test
-//!   pins `max_steps` low enough to reach that termination quickly and
-//!   asserts the real code (5), while still verifying the part of the
-//!   criterion that *is* live today: a `PermissionResolved` denial
-//!   envelope is visible in the `jsonl` stream.
-//!
-//! Both deviations are load-bearing findings for the module owner (a
-//! terminal-permission-escalation path and a `NoCandidate`-aware
-//! `ExitCode::from_result` classifier would each need runtime changes
-//! outside a test-suite item's scope), not something this file works
-//! around.
+//! There is deliberately no exit-3 test: code 3 (`PermissionDenied`) was
+//! removed from the contract rather than wired -- a permission denial is a
+//! tool result fed back into the agent's own turn, not a terminal
+//! condition (see `exit.rs`'s module doc, entry 1, and
+//! `docs/scripting.md`). `denied_calls_stay_in_turn_until_budget` below
+//! pins the behavior that decision describes: under `--permission-mode
+//! deny`, a script that only ever proposes tool calls keeps taking turns
+//! (every denial re-prompts the model) until `budget.max_steps` is
+//! exhausted, terminating as `BudgetExceeded` (exit 5), with the denial
+//! visible as a `PermissionResolved` envelope in the `jsonl` stream.
 
 mod common;
 
@@ -314,28 +292,38 @@ async fn exit_0_completed() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn exit_1_failed() {
-    // Two `ToolCall` deltas at the same (hardcoded) stream index with
-    // different tool names: the accumulator latches "bash" on the first,
-    // then hard-errors with `BackendError::ToolParse` ("conflicting tool
-    // name") on the second (`conway-backends/src/tool_calls/mod.rs`'s own
-    // documented rule). `ToolParse` classifies as `FailureClass::Fatal`
-    // (`conway-routing/src/failure.rs`), aborting the whole attempt chain
-    // immediately -> `ResultStatus::Failed` -> exit 1.
-    let mock = MockBackend::start(Script(vec![vec![
-        tool_call_chunk("bash", "echo one"),
-        tool_call_chunk("read", "echo two"),
-    ]]))
+    // A 401 from the backend is `BackendError::Auth`, which T-2 classifies
+    // as `FailureClass::Fatal` -- `AttemptEngine` aborts the whole chain
+    // with `RuntimeError::Backend` (an auth failure is NOT a routing
+    // rejection: retrying another candidate against the same bad key is
+    // pointless, so it never becomes `NoCandidate`). `finish_error` folds
+    // it into `ResultStatus::Failed`, whose text carries no routing
+    // rejection wording, so the exit classifier lands on `AgentFailed` (1)
+    // -- distinct from every `exit_4_*` driver, where the backend either
+    // could not be reached or could not serve the request at all.
+    let mock = MockBackend::start(Script(vec![vec![Chunk::HttpError {
+        status: 401,
+        body: r#"{"error":{"message":"invalid api key"}}"#,
+    }]]))
     .await;
     let fixture = write_fixture(&mock, 10);
 
     let out = run_conway(&["-p", "hi"], &fixture);
 
-    assert_eq!(
-        out.status.code(),
-        Some(1),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
+    // Contact + wording assertions, not just the code: exit 1 is the
+    // classifier's fallback, so ANY non-routing failure (including one that
+    // never reaches the backend) also exits 1. Without these the test passes
+    // vacuously while the 401 -> Auth -> Fatal path goes unexercised.
+    assert!(
+        !mock.requests().is_empty(),
+        "the run never contacted the backend -- the 401 path was not exercised"
     );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("authentication failed"),
+        "expected the auth failure in stderr, got: {stderr}"
+    );
+    assert_eq!(out.status.code(), Some(1), "stderr: {stderr}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -382,12 +370,11 @@ async fn exit_2_bad_config() {
 /// chain. The fixture's `default` role is rewritten to chain a model
 /// nothing registers in `models.json` (`mock/unregistered-model`) -- with
 /// no pin, that leaves the router with `NoCandidate` (`CapabilityIndex` has
-/// no entry for it, `check_candidate` skips it), which `AgentLoop::
-/// finish_error` turns into `ResultStatus::Failed` (exit 1, same
-/// reconciliation `exit_4_no_backend` below locks in). Passing `--model
-/// mock/<real model>` must override that broken chain and route to the
-/// mock successfully instead (exit 0) -- proving the pin, not the chain,
-/// decided the outcome.
+/// no entry for it, `check_candidate` skips it), a routing rejection that
+/// exits 4 (`exit_4_unregistered_model` below locks that in). Passing
+/// `--model mock/<real model>` must override that broken chain and route
+/// to the mock successfully instead (exit 0) -- proving the pin, not the
+/// chain, decided the outcome.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn model_flag_pins_and_overrides_role_chain() {
     let mock =
@@ -431,14 +418,13 @@ async fn exit_2_bad_model_ref() {
     assert!(mock.requests().is_empty());
 }
 
-/// See this file's module doc: exit 4 (`NoHealthyBackend`) is not
-/// reachable from `-p` one-shot mode under the currently-committed
-/// `conway-runtime` -- every routing/backend failure that reaches
-/// `AgentLoop::finish_error` becomes `ResultStatus::Failed`, which maps to
-/// exit 1. This test locks in that real, observed behavior for a "mock
-/// refuses connections" scenario, disclosing the deviation from the plan
-/// doc's literal "-> 4" rather than asserting a code the binary can never
-/// produce.
+/// Exit 4 (`NoHealthyBackend`), driver 1 of 4: every candidate in the
+/// chain fails live (the mock is dropped, so every connection is refused).
+/// `AttemptEngine` exhausts the chain and surfaces
+/// `RoutingError::NoCandidate`, which `AgentLoop::finish_error` folds into
+/// `ResultStatus::Failed` -- and `ExitCode::from_result`'s `Failed` arm
+/// classifies that as the routing rejection it is (see `exit.rs`'s module
+/// doc, entry 2, for why the wiring lives there and not in `from_error`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn exit_4_no_backend() {
     let mock = MockBackend::start(Script(vec![])).await;
@@ -451,11 +437,99 @@ async fn exit_4_no_backend() {
 
     assert_eq!(
         out.status.code(),
-        Some(1),
-        "disclosed reconciliation: NoCandidate always surfaces as ResultStatus::Failed (exit 1), \
-         never a terminal ConwayError (exit 4), under the currently-committed runtime -- see this \
-         file's module doc. stderr: {}",
+        Some(4),
+        "stderr: {}",
         String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// Exit 4, driver 2 of 4: the role's chain names a `backend/model` pair
+/// `models.json` does not register, so the router rejects the only
+/// candidate on capabilities (`CapabilitySkip`) before ever dialing a
+/// backend -- `NoCandidate` with zero backend contact. (Same broken-chain
+/// setup `model_flag_pins_and_overrides_role_chain` rescues with `--model`;
+/// here nothing rescues it.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn exit_4_unregistered_model() {
+    let mock = MockBackend::start(Script(vec![])).await;
+    let fixture = write_fixture(&mock, 10);
+    let broken = std::fs::read_to_string(&fixture.config_path)
+        .unwrap()
+        .replace(&format!("mock/{}", mock.model), "mock/unregistered-model");
+    std::fs::write(&fixture.config_path, broken).unwrap();
+
+    let out = run_conway(&["-p", "hi"], &fixture);
+
+    assert_eq!(
+        out.status.code(),
+        Some(4),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        mock.requests().is_empty(),
+        "an unindexed candidate must be rejected before any backend request"
+    );
+}
+
+/// Exit 4, driver 3 of 4: `--role-override` names a role the config does
+/// not define -- `RoutingError::UnknownRole`, a routing rejection like
+/// `NoCandidate` (routing could not supply any model for the turn).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn exit_4_unknown_role_override() {
+    let mock = MockBackend::start(Script(vec![])).await;
+    let fixture = write_fixture(&mock, 10);
+
+    let out = run_conway(&["-p", "hi", "--role-override", "doesnotexist"], &fixture);
+
+    assert_eq!(
+        out.status.code(),
+        Some(4),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("unknown role alias"),
+        "the routing rejection should be named on stderr: {stderr}"
+    );
+}
+
+/// Exit 4, driver 4 of 4: every candidate's context window is too small for
+/// the assembled prompt plus reserved headroom, and headroom is the ONLY
+/// rejection reason -- amended P-9 makes the router return
+/// `RoutingError::ContextTooLarge` (not `NoCandidate`) for exactly this
+/// case, and the exit classifier treats it coherently with every other
+/// routing rejection. With no `ContextHook` registered in one-shot mode,
+/// there is no truncation or escalation: the turn is terminally rejected.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn exit_4_context_too_large() {
+    let mock = MockBackend::start(Script(vec![])).await;
+    let fixture = write_fixture(&mock, 10);
+    // Shrink the mock model's declared window to one token: the sole
+    // candidate then fails ONLY the headroom gate.
+    let models_path = fixture.dir.path().join(".conway/models.json");
+    let shrunk = std::fs::read_to_string(&models_path)
+        .unwrap()
+        .replace("128000", "1");
+    std::fs::write(&models_path, shrunk).unwrap();
+
+    let out = run_conway(&["-p", "hi"], &fixture);
+
+    assert_eq!(
+        out.status.code(),
+        Some(4),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("context rejected:"),
+        "the T-1 rejection should be named on stderr: {stderr}"
+    );
+    assert!(
+        mock.requests().is_empty(),
+        "a headroom-rejected candidate must never be dialed"
     );
 }
 
@@ -485,13 +559,15 @@ async fn exit_5_budget() {
     );
 }
 
-/// See this file's module doc for why the real, observed exit code here is
-/// 5 (`BudgetExceeded`), not the plan doc's literal 3 (`PermissionDenied`).
-/// What this test *does* still lock in, because it is live today: a
-/// `PermissionResolved` denial envelope is visible in the `jsonl` stream
-/// for every denied tool call.
+/// There is no permission-denied exit code (see this file's module doc and
+/// `exit.rs`'s, entry 1): a denied tool call is fed back into the agent's
+/// own turn, never a terminal condition, so a deny-mode script that only
+/// ever proposes tool calls keeps taking turns until `budget.max_steps` is
+/// exhausted -- exit 5 (`BudgetExceeded`). What this test also locks in,
+/// because it is live: a `PermissionResolved` denial envelope is visible
+/// in the `jsonl` stream for every denied tool call.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn exit_3_permission_termination() {
+async fn denied_calls_stay_in_turn_until_budget() {
     let mock = MockBackend::start(Script(vec![
         vec![
             tool_call_chunk("bash", "echo one"),

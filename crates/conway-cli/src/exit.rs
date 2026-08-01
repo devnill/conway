@@ -5,96 +5,82 @@
 //! call for anything reachable from a live run, it always produces one of
 //! these variants and converts it to a process exit status in one place.
 //!
-//! **Reconciliation, disclosed:** the binding implementation notes' exit
-//! code table has two rows this module cannot classify precisely against
-//! the currently-committed `conway`/`conway-core` types, and a third that
-//! this module's *pure functions* cannot resolve alone. All three are
-//! explained here rather than worked around with a silent approximation:
+//! Every declared variant is reachable from a live `conway -p` invocation,
+//! and `tests/oneshot.rs` proves it by driving the real compiled binary and
+//! asserting the observed process exit status -- a unit test of the mapping
+//! functions below is not evidence a code is live (GP-14). Two entries in
+//! that contract history are worth recording here because they shaped this
+//! module:
 //!
-//! 1. **"`RoutingError::NoCandidate{..}` or fallback chain exhausted... ->
-//!    4."** The `conway` facade re-exports `ConwayError` but not the
-//!    `conway_core::error::{RoutingError, RuntimeError}` types nested
-//!    inside its `Routing`/`Runtime` variants (see `crates/conway/src/lib.rs`'s
-//!    re-export list) -- and this crate's manifest is machine-checked to
-//!    depend on no other workspace crate (`tests/cli_surface.rs::no_forbidden_deps`),
-//!    so `from_error` cannot name those inner types to match on them
-//!    directly. Both live construction sites for this row
-//!    (`conway-routing/src/router.rs`'s direct `NoCandidate`, and
-//!    `conway-runtime/src/attempt.rs:324`'s fallback-exhaustion path, which
-//!    wraps the same `RoutingError::NoCandidate` in `RuntimeError::Routing`)
-//!    preserve the `Display` substring `"no candidate for role"` through
-//!    every wrapping layer (some layers add a prefix -- e.g.
-//!    `RuntimeError::Routing` is `#[error("routing error: {0}")]` -- but the
-//!    inner wording is always carried through intact).
-//!    `classify_runtime_or_routing` below matches on that substring (a
-//!    `contains`, not an exact match) rather than the type, which is the
-//!    only classification
-//!    mechanism available without adding a new dependency or reaching
-//!    outside this item's file scope into `crates/conway/src/error.rs`. A
-//!    future facade change adding classifier methods on `ConwayError`
-//!    itself (e.g. `is_no_candidate()`) would let this module drop the
-//!    string match; flagged as a follow-up, not fixed here (out of scope).
-//! 2. **"`ConwayError` whose terminal cause is a permission denial (hard
-//!    `Deny`, not `DenyWithFeedback`) -> 3."** Traced through
-//!    `conway-runtime/src/permission.rs`'s `PermissionOutcome::from` (both
-//!    `PermissionDecision::Deny` and `::DenyWithFeedback` collapse to the
-//!    same `PermissionOutcome::Deny`) and `conway-runtime/src/tools/runner.rs:263-264`
-//!    (every `PermissionOutcome::Deny` becomes a model-visible
-//!    `ToolOutcome::error`, fed back into the agent's own turn -- never a
-//!    terminal `ConwayError`): under the currently-committed runtime, a
-//!    permission denial of either kind cannot reach `from_error` at all.
-//!    `ToolError::Denied` (the one variant whose name suggests this case)
-//!    is declared in `conway-core` but constructed nowhere in the workspace.
-//!    This row is therefore unreachable from any live code path today, not
-//!    merely hard to classify; `from_error`'s `ConwayError::Runtime(_)`
-//!    default (`AgentFailed`) is what every actually-reachable `Runtime`
-//!    cause maps to. Producing `PermissionDenied` requires either the
-//!    runtime to add a terminal permission-escalation path or the table to
-//!    be reconciled against what the architecture actually does -- an
-//!    architectural decision outside a CLI work item's remit, flagged for
-//!    the module owner rather than papered over with a speculative,
-//!    untestable string match.
-//! 3. **"`ResultStatus::Cancelled{..}` and a SIGINT was observed -> 130."**
-//!    `AgentResult` carries no SIGINT flag -- that state lives in the
-//!    caller's `signal::SigintWatch` (WI-112, not yet built). `from_result`
-//!    alone (its signature fixed by this item's own criteria to take only
-//!    `&AgentResult`) cannot see it, so it always reports `AgentFailed` for
-//!    a bare `Cancelled`. [`ExitCode::from_result_with_sigint`] is one
-//!    small addition beyond the three criterion-listed methods, added
-//!    specifically so (a) WI-112's `oneshot::run` has one call that already
-//!    implements the "SIGINT outranks a status the runtime produced
-//!    *because of* the interrupt" precedence rule instead of reimplementing
-//!    it inline, and (b) this row has something unit-testable to assert
-//!    against, per this item's own "one assertion per row" criterion.
+//! 1. **There is no permission-denied code, deliberately.** Exit code 3
+//!    (`PermissionDenied`) was declared for "a `ConwayError` whose terminal
+//!    cause is a permission denial" and removed rather than wired, because
+//!    the premise is wrong for one-shot mode: a permission denial (either
+//!    `PermissionDecision::Deny` or `::DenyWithFeedback`) collapses to a
+//!    model-visible `ToolOutcome::error` fed back into the agent's own turn
+//!    (`conway-runtime/src/permission.rs`'s `PermissionOutcome::from`,
+//!    `conway-runtime/src/tools/runner.rs`'s `execute_one`) -- it is a tool
+//!    result, not a terminal condition. The agent may recover (pick another
+//!    tool, or finish without it) and the run legitimately continues, so
+//!    terminating the process over it would kill runs that complete
+//!    successfully. `ToolError::Denied`, the one core variant whose name
+//!    suggests a terminal denial, is constructed nowhere in the workspace;
+//!    inventing a terminal path for it would change agent *behavior*, not
+//!    classification, which no exit-code item may do. Code 3 is simply
+//!    unassigned.
+//! 2. **`NoHealthyBackend` (4) is wired through `from_result`, not
+//!    `from_error`.** A routing failure mid-turn never propagates out of
+//!    `oneshot::run` as a `ConwayError`: `AgentLoop::run_inner`'s generic
+//!    `Err` path folds every `RuntimeError` -- `RuntimeError::Routing`
+//!    included -- into `ResultStatus::Failed { error: err.to_string() }`
+//!    (`conway-runtime/src/agent_loop.rs`'s `finish_error`: "everything
+//!    else maps to `Failed`"). That is why 4 was unreachable while only
+//!    `from_error` classified it, and why the fix lives in `from_result`'s
+//!    `Failed` arm below rather than in any runtime change: the `Failed`
+//!    string still carries the `RoutingError`'s `Display` wording verbatim
+//!    through every wrapping layer (`RuntimeError::Routing` only prepends
+//!    `"routing error: "`), so the same classifier serves both entry
+//!    points.
 //!
-//! Row "(non-permission cause)" on `ResultStatus::Failed{error}` is
-//! similarly disclosed as vacuous under the committed type: `error` is a
-//! bare `String` with no structured cause, so there is no mechanism to
-//! split out a permission sub-cause here either -- every `Failed` maps to
-//! `AgentFailed`.
+//! **The classification mechanism itself (disclosed):** the `conway`
+//! facade re-exports `ConwayError` but not the
+//! `conway_core::error::{RoutingError, RuntimeError}` types nested inside
+//! its `Routing`/`Runtime` variants (see `crates/conway/src/lib.rs`'s
+//! re-export list) -- and this crate's manifest is machine-checked to
+//! depend on no other workspace crate (`tests/cli_surface.rs::no_forbidden_deps`),
+//! so neither `from_error` nor `from_result` can name those inner types to
+//! match on them directly. [`classify_runtime_or_routing`] therefore
+//! matches on `Display` substrings rather than types. Every substring it
+//! looks for is pinned by a `conway-core/src/error.rs` test (named at the
+//! match site), so a wording change upstream fails a test upstream instead
+//! of silently reclassifying here. A future facade change adding
+//! classifier methods on `ConwayError` itself (e.g. `is_routing_rejection()`)
+//! would let this module drop the string match; flagged as a follow-up,
+//! not fixed here (out of scope).
+//!
+//! **SIGINT precedence (130):** `AgentResult` carries no SIGINT flag --
+//! that state lives in the caller's `signal::SigintWatch`. `from_result`
+//! alone (its signature takes only `&AgentResult`) cannot see it, so it
+//! always reports `AgentFailed` for a bare `Cancelled`.
+//! [`ExitCode::from_result_with_sigint`] is the one call that already
+//! implements the "SIGINT outranks a status the runtime produced *because
+//! of* the interrupt" precedence rule, and `oneshot::run` is the one place
+//! that knows both facts at once.
 
 use conway::{AgentResult, ConwayError, ResultStatus};
 
 /// The CLI's process exit status vocabulary. Discriminants are the
 /// contract: `code()` casts `self` directly to `i32`, so these values are
-/// load-bearing, not incidental.
+/// load-bearing, not incidental. Every variant is constructed by production
+/// code on a live path (see the module doc); code 3 is deliberately
+/// unassigned.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExitCode {
-    // Only `AgentFailed` and `Usage` are constructed by production code
-    // today (every WI-111 stub returns `Usage`; `main`'s `from_error`
-    // fallback is `AgentFailed`). The rest are consumed by WI-112's
-    // streaming renderers and SIGINT handling and WI-113's per-code
-    // integration tests, not yet landed.
-    #[allow(dead_code)]
     Completed = 0,
     AgentFailed = 1,
     Usage = 2,
-    #[allow(dead_code)]
-    PermissionDenied = 3,
     NoHealthyBackend = 4,
-    #[allow(dead_code)]
     BudgetExceeded = 5,
-    #[allow(dead_code)]
     Interrupted = 130,
 }
 
@@ -108,18 +94,16 @@ impl ExitCode {
     /// (cannot) know whether a `Cancelled` status was caused by an observed
     /// SIGINT -- see [`Self::from_result_with_sigint`] for the caller that
     /// does.
-    ///
-    /// Not yet called from production code: every WI-111 stub returns
-    /// `ExitCode::Usage` directly rather than driving a real `AgentResult`.
-    /// WI-112's `oneshot::run` is the first real caller.
-    #[allow(dead_code)]
     pub fn from_result(r: &AgentResult) -> ExitCode {
         match &r.status {
             ResultStatus::Completed => ExitCode::Completed,
             ResultStatus::BudgetExceeded { .. } => ExitCode::BudgetExceeded,
-            ResultStatus::Failed { .. }
-            | ResultStatus::Rejected { .. }
-            | ResultStatus::Cancelled { .. } => ExitCode::AgentFailed,
+            // A routing rejection surfaces HERE, not via `from_error` --
+            // `finish_error` folded it into this bare string (module doc,
+            // entry 2), which still carries the `RoutingError`'s `Display`
+            // wording verbatim.
+            ResultStatus::Failed { error } => classify_runtime_or_routing(error),
+            ResultStatus::Rejected { .. } | ResultStatus::Cancelled { .. } => ExitCode::AgentFailed,
             // `ResultStatus` is `#[non_exhaustive]`: fail into the same
             // bucket as every other unclassified terminal cause rather than
             // refusing to compile on a future variant.
@@ -131,9 +115,8 @@ impl ExitCode {
     /// combined with `sigint_seen == true` reports `Interrupted` (130)
     /// rather than the default `AgentFailed` (1) -- "SIGINT outranks a
     /// status the runtime produced because of the interrupt" (module
-    /// notes). The caller (WI-112's `oneshot::run`) is the one place that
-    /// knows both facts at once.
-    #[allow(dead_code)]
+    /// notes). The caller (`oneshot::run`) is the one place that knows both
+    /// facts at once.
     pub fn from_result_with_sigint(r: &AgentResult, sigint_seen: bool) -> ExitCode {
         if sigint_seen && matches!(r.status, ResultStatus::Cancelled { .. }) {
             ExitCode::Interrupted
@@ -142,9 +125,11 @@ impl ExitCode {
         }
     }
 
-    /// Maps a terminal `ConwayError` to an exit code. See the module doc
-    /// comment for the two rows this cannot classify precisely given the
-    /// facade's current re-export surface, and why.
+    /// Maps a terminal `ConwayError` to an exit code. Routing failures a
+    /// live `-p` run can trigger do not reach this function (they arrive as
+    /// `ResultStatus::Failed` -- module doc, entry 2); this arm still
+    /// classifies them correctly for any caller that does produce one, so
+    /// both entry points agree.
     pub fn from_error(e: &ConwayError) -> ExitCode {
         match e {
             ConwayError::Config { .. }
@@ -163,14 +148,40 @@ impl ExitCode {
     }
 }
 
-/// Substring classification over a `ConwayError::{Routing,Runtime}`'s
-/// `Display` text -- see this module's doc comment, reconciliation (1), for
-/// why this is the only mechanism available without a new dependency.
-/// Depends on `RoutingError::NoCandidate`'s `Display` wording
-/// (`conway-core/src/error.rs`) never dropping the phrase `"no candidate
-/// for role"`.
+/// Substring classification over a `ConwayError::{Routing,Runtime}`'s or a
+/// `ResultStatus::Failed`'s `Display` text -- see this module's doc comment
+/// for why a string match is the only mechanism available without a new
+/// dependency, and for the wiring that makes routing failures reach it.
+///
+/// All three `RoutingError` variants share [`ExitCode::NoHealthyBackend`]:
+/// an unknown role, no admissible candidate, and a context too large for
+/// every candidate's window are the same outcome from a script's side --
+/// routing could not supply any model for the turn, so nothing could
+/// proceed. (`DeclarativeRouter` distinguishes `ContextTooLarge` from
+/// `NoCandidate` only for mixed rejections, per amended P-9; that split is
+/// about error *detail*, and both remain routing rejections here.)
+/// `RuntimeError::ForkContextOverflow` shares `ContextTooLarge`'s exact
+/// `Display` wording and is the same outcome at the fork boundary, so it
+/// classifies the same way for free.
+///
+/// Each needle is pinned by a `conway-core/src/error.rs` test so an
+/// upstream wording change fails there instead of silently reclassifying
+/// here:
+///
+/// - `"no candidate for role"` -- `no_candidate_display_names_role_count_and_zero_reasons`
+/// - `"unknown role alias"` -- `routing_rejection_display_wordings_pin_the_cli_exit_classifier`
+/// - `"context rejected:"` -- same test (`ContextTooLarge` and
+///   `ForkContextOverflow` share this prefix)
 fn classify_runtime_or_routing(display: &str) -> ExitCode {
-    if display.contains("no candidate for role") {
+    const ROUTING_REJECTIONS: &[&str] = &[
+        "no candidate for role",
+        "unknown role alias",
+        "context rejected:",
+    ];
+    if ROUTING_REJECTIONS
+        .iter()
+        .any(|needle| display.contains(needle))
+    {
         ExitCode::NoHealthyBackend
     } else {
         ExitCode::AgentFailed
@@ -198,11 +209,60 @@ mod tests {
     }
 
     #[test]
-    fn failed_non_permission_is_one() {
+    fn failed_unclassified_cause_is_one() {
         let r = result(ResultStatus::Failed {
             error: "boom".into(),
         });
         assert_eq!(ExitCode::from_result(&r).code(), 1);
+    }
+
+    /// The `from_result` routing classification (module doc, entry 2):
+    /// these build the REAL `RuntimeError`/`RoutingError` values and feed
+    /// `finish_error`'s exact `err.to_string()` output through as the
+    /// `Failed` string, so the test exercises the same text a live turn
+    /// produces -- the liveness proof that this arm is ever reached at all
+    /// is in `tests/oneshot.rs`, not here.
+    #[test]
+    fn failed_no_candidate_is_four() {
+        let err = RuntimeError::Routing(RoutingError::NoCandidate {
+            role: RoleAlias::new("coder"),
+            considered: Vec::new(),
+        });
+        let r = result(ResultStatus::Failed {
+            error: err.to_string(),
+        });
+        assert_eq!(ExitCode::from_result(&r).code(), 4);
+    }
+
+    #[test]
+    fn failed_unknown_role_is_four() {
+        let err = RuntimeError::Routing(RoutingError::UnknownRole {
+            role: RoleAlias::new("doesnotexist"),
+        });
+        let r = result(ResultStatus::Failed {
+            error: err.to_string(),
+        });
+        assert_eq!(ExitCode::from_result(&r).code(), 4);
+    }
+
+    #[test]
+    fn failed_context_too_large_is_four() {
+        let err = RuntimeError::Routing(RoutingError::ContextTooLarge {
+            role: RoleAlias::new("default"),
+            model: conway_core::ids::ModelRef {
+                backend: conway_core::ids::BackendId::new("mock"),
+                model: conway_core::ids::ModelId::new("tiny"),
+            },
+            est_tokens: 30_000,
+            headroom_tokens: 4_000,
+            required_tokens: 34_000,
+            max_context_tokens: 1_024,
+            shortfall_tokens: 32_976,
+        });
+        let r = result(ResultStatus::Failed {
+            error: err.to_string(),
+        });
+        assert_eq!(ExitCode::from_result(&r).code(), 4);
     }
 
     #[test]
@@ -243,14 +303,22 @@ mod tests {
 
     #[test]
     fn no_candidate_via_fallback_chain_exhaustion_is_four() {
-        // Mirrors `conway-runtime/src/attempt.rs:324`'s wrapping: the
-        // router's `RoutingError::NoCandidate` boxed inside
-        // `RuntimeError::Routing`, then `ConwayError::Runtime`.
+        // Mirrors `conway-runtime/src/attempt.rs`'s wrapping: the router's
+        // `RoutingError::NoCandidate` boxed inside `RuntimeError::Routing`,
+        // then `ConwayError::Runtime`.
         let routing_err = RoutingError::NoCandidate {
             role: RoleAlias::new("coder"),
             considered: Vec::new(),
         };
         let e = ConwayError::Runtime(RuntimeError::Routing(routing_err));
+        assert_eq!(ExitCode::from_error(&e).code(), 4);
+    }
+
+    #[test]
+    fn unknown_role_via_routing_variant_is_four() {
+        let e = ConwayError::Routing(RoutingError::UnknownRole {
+            role: RoleAlias::new("doesnotexist"),
+        });
         assert_eq!(ExitCode::from_error(&e).code(), 4);
     }
 
@@ -284,7 +352,7 @@ mod tests {
         assert_eq!(ExitCode::Completed.code(), 0);
         assert_eq!(ExitCode::AgentFailed.code(), 1);
         assert_eq!(ExitCode::Usage.code(), 2);
-        assert_eq!(ExitCode::PermissionDenied.code(), 3);
+        // 3 is deliberately unassigned -- see the module doc, entry 1.
         assert_eq!(ExitCode::NoHealthyBackend.code(), 4);
         assert_eq!(ExitCode::BudgetExceeded.code(), 5);
         assert_eq!(ExitCode::Interrupted.code(), 130);
