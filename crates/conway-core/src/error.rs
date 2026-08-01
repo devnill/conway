@@ -381,6 +381,60 @@ mod tests {
         }
     }
 
+    /// `conway-cli`'s exit-code classifier (`conway-cli/src/exit.rs`'s
+    /// `classify_runtime_or_routing`, which maps a routing rejection to
+    /// process exit code 4) cannot name these types -- the `conway` facade
+    /// does not re-export them -- so it matches these exact `Display`
+    /// substrings instead. This test is the pin that makes a wording change
+    /// here fail HERE, loudly, rather than silently reclassifying a live
+    /// exit code there. `no_candidate_display_names_role_count_and_zero_reasons`
+    /// above pins the third needle (`"no candidate for role"`) by exact
+    /// equality.
+    #[test]
+    fn routing_rejection_display_wordings_pin_the_cli_exit_classifier() {
+        let unknown_role = RoutingError::UnknownRole {
+            role: RoleAlias::new("doesnotexist"),
+        }
+        .to_string();
+        assert!(
+            unknown_role.contains("unknown role alias"),
+            "conway-cli's exit-4 classifier matches this wording: {unknown_role:?}"
+        );
+
+        let too_large = RoutingError::ContextTooLarge {
+            role: RoleAlias::new("planner"),
+            model: model_ref(),
+            est_tokens: 30_000,
+            headroom_tokens: 4_000,
+            required_tokens: 34_000,
+            max_context_tokens: 32_768,
+            shortfall_tokens: 1_232,
+        }
+        .to_string();
+        assert!(
+            too_large.contains("context rejected:"),
+            "conway-cli's exit-4 classifier matches this wording: {too_large:?}"
+        );
+
+        // Shares `ContextTooLarge`'s prefix deliberately (T-1 at the fork
+        // boundary is the same rejection), so the CLI classifier covers it
+        // with the same needle.
+        let fork_overflow = RuntimeError::ForkContextOverflow {
+            parent: AgentId::new(),
+            model: model_ref(),
+            est_tokens: 100_000,
+            headroom_tokens: 16_000,
+            required_tokens: 116_000,
+            max_context_tokens: 32_768,
+            shortfall_tokens: 83_232,
+        }
+        .to_string();
+        assert!(
+            fork_overflow.contains("context rejected:"),
+            "conway-cli's exit-4 classifier matches this wording: {fork_overflow:?}"
+        );
+    }
+
     #[test]
     fn no_candidate_display_names_role_count_and_zero_reasons() {
         let err = RoutingError::NoCandidate {

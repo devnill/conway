@@ -31,55 +31,41 @@ conway exits once the root agent's turn reaches a terminal state — see
 
 ## Exit codes
 
-Exit codes are the entire contract a script can rely on. Every reachable row
-below was confirmed by running the built binary and observing the actual
-process exit status, not merely read off the source; the two rows marked
-unreachable were confirmed the only way an absence can be — by tracing every
-call site in the workspace and finding none, for row 3, and by reproducing
-the failure live and observing where it actually lands instead, for row 4.
+Exit codes are the entire contract a script can rely on. Every row below
+was confirmed by running the built binary and observing the actual process
+exit status, not merely read off the source — the integration suite in
+`crates/conway-cli/tests/oneshot.rs` drives each one through the real `-p`
+entry point.
 
 | Code | Name | When it's produced |
 | --- | --- | --- |
 | 0 | Completed | The root agent's turn finished with `ResultStatus::Completed`. |
-| 1 | AgentFailed | The catch-all: a `Failed`, `Rejected`, or `Cancelled`-without-SIGINT terminal status, or a `ConwayError::Io`/`Backend`/`Store` (or any other unclassified) error. **A routing failure encountered mid-turn also lands here** — see below. |
+| 1 | AgentFailed | The catch-all: a `Failed` terminal status whose cause is not a routing rejection, a `Rejected` or `Cancelled`-without-SIGINT status, or a `ConwayError::Io`/`Backend`/`Store` (or any other unclassified) error. |
 | 2 | Usage | A malformed or conflicting flag, an empty/unreadable prompt, an unknown `--session`/`--resume` id, a malformed `--model`/`--fork-from` reference, or any `ConwayError::Config`/`AgentDef`/`Build`/`UnsupportedFeature`. |
-| 3 | PermissionDenied | Reserved for a hard permission denial. **Unreachable today** — see below. |
-| 4 | NoHealthyBackend | Reserved for a routing failure (`RoutingError::NoCandidate`, or every fallback-chain entry exhausted) reaching the CLI as a terminal error. **Also unreachable from `-p` today** — see below. |
+| 4 | NoHealthyBackend | Routing could not supply any model for the turn: the role is unknown (e.g. `--role-override` naming a role the config does not define), no candidate in the role's chain was admissible (an unregistered `backend/model` pair, a health-open breaker, every fallback entry exhausted against a live backend), or the assembled context exceeds every candidate's window (`RoutingError::ContextTooLarge` — no truncation or escalation is performed). |
 | 5 | BudgetExceeded | The root agent's turn finished with `ResultStatus::BudgetExceeded` (e.g. `limits.max_steps` reached). |
 | 130 | Interrupted | A SIGINT was observed (once, or twice for an immediate hard exit) and the run's terminal status is `Cancelled`. |
 
-Two of these rows are disclosed gaps, not omissions:
+Code 3 is unassigned. There is no permission-denied exit code, and that is
+a decision, not a gap: a denied tool call becomes a tool result fed back
+into the agent's own turn — the model sees the denial, may recover (pick
+another tool, or finish without it), and the run legitimately continues.
+Terminating the process over a denial would kill runs that complete
+successfully. The denial is still observable while it happens, as a
+`permission_resolved` envelope in the `jsonl` stream (and a `conway:
+warning:` line on stderr in the default `text` format). Under
+`--permission-mode deny`, a prompt whose model only ever proposes tool
+calls therefore runs until `limits.max_steps` and exits 5, not a
+permission-specific code.
 
-**`PermissionDenied` (3) is unreachable.** `ToolError::Denied` — the variant
-whose name suggests this case — is declared in `conway-core` but constructed
-nowhere in the workspace (confirmed by grepping the whole tree). A permission
-denial, of either kind, never reaches the CLI as a terminal error at all: it
-becomes a `ToolOutcome::error` fed back into the agent's own turn, so the
-agent keeps running and (as below) usually still finishes `Completed`.
-
-**`NoHealthyBackend` (4) is also unreachable from `-p`, for a related
-reason — confirmed by running it, not just reading the code.** A routing
-failure (an unroutable role, a `backend/model` pair missing from
-`.conway/models.json`, every candidate in a chain exhausted) that happens
-*during* a turn does not return an `Err` from `handle.prompt()` — it surfaces
-as the turn's own `ResultStatus::Failed`, which maps to exit code 1
-(`AgentFailed`), not 4. This is real, reproducible behavior:
-
-```console
-$ conway -p "hi" --role-override doesnotexist; echo $?
-conway: error: runtime error: routing error: unknown role alias: doesnotexist
-1
-```
-
-`exit::classify_runtime_or_routing`'s "no candidate for role" → 4 mapping is
-real and unit-tested — it fires correctly against a bare, hand-constructed
-`ConwayError`. It just has no live caller in one-shot mode today: every
-routing failure a normal `-p` invocation can trigger either surfaces through
-the turn's terminal status (exit 1, as above) or, for a config-time routing
-problem (an invalid `[routing]`/`[roles]` table), through
-`ConwayError::Build` (exit 2, `Usage`) instead. Treat exit code 1 as covering
-"no healthy backend for this role" until a future change gives routing
-failures a distinct terminal path.
+A routing failure surfaces through the turn's own terminal status, not as
+a separate process-level error: the runtime folds it into
+`ResultStatus::Failed`, and the CLI classifies that failure's text as the
+routing rejection it is. The practical consequence for a script is only
+the table above — branch on 4 for "no model could serve this run," on 1
+for everything else that went wrong mid-run. A *config-time* routing
+problem (an invalid `[routing]`/`[roles]` table) is different: nothing
+ever started, so it is a usage error (2).
 
 ## Output formats
 

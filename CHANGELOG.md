@@ -7,7 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **Exit code 3 (`PermissionDenied`) is gone from the `conway -p`
+  contract.** It was declared from the start but unreachable: a permission
+  denial — of either kind — becomes a tool result fed back into the
+  agent's own turn, never a terminal error, so no live path could ever
+  produce it and a script branching on 3 had written a branch that never
+  executes. The code is removed rather than wired because the premise is
+  wrong for one-shot mode: the model sees the denial, may recover, and the
+  run legitimately continues (a deny-mode script whose model only ever
+  proposes tool calls runs until `limits.max_steps` and exits 5).
+  `ExitCode::PermissionDenied` is deleted and 3 is unassigned; the denial
+  remains observable as a `permission_resolved` envelope in the `jsonl`
+  stream. (`crates/conway-cli/src/exit.rs`, `docs/scripting.md`)
+
 ### Fixed
+
+- **Exit code 4 (`NoHealthyBackend`) was also declared but unreachable —
+  it is now wired, and routing rejections exit 4.** A routing failure
+  mid-turn never reached the CLI's exit classifier: the agent loop folds
+  every terminal `RuntimeError` into `ResultStatus::Failed`
+  (`AgentLoop::finish_error`), and `ExitCode::from_result` mapped every
+  `Failed` to 1 (`AgentFailed`), so `--role-override doesnotexist`, a
+  `models.json` missing the routed pair, and a dead backend all exited 1
+  while the unit-tested `NoCandidate` → 4 mapping sat with no live caller.
+  `from_result`'s `Failed` arm now runs the same classifier `from_error`
+  already used, over the failure text the runtime actually produces —
+  which carries the `RoutingError`'s `Display` wording verbatim (pinned by
+  new `conway-core` tests so an upstream wording change fails loudly
+  there). Every routing rejection is treated coherently as 4: an unknown
+  role, no admissible candidate, and `RoutingError::ContextTooLarge`
+  (which `DeclarativeRouter` now returns when every candidate failed
+  solely on headroom) are the same outcome from a script's side — routing
+  could not supply any model, so nothing could proceed. Each shape has an
+  integration test that drives the real `conway` binary and asserts the
+  observed process exit status. (`crates/conway-cli/src/exit.rs`,
+  `crates/conway-cli/tests/oneshot.rs`,
+  `crates/conway-core/src/error.rs`, `docs/scripting.md`)
 
 - **An oversized request could be rejected with an error that named none of
   the numbers P-9 requires — no input token count, no headroom, no

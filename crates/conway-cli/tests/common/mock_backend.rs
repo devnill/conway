@@ -60,6 +60,13 @@ pub enum Chunk {
     /// far) and never closes the connection -- used by the SIGINT tests,
     /// which need a request that never naturally completes.
     Hang,
+    /// Answers the whole request with this HTTP error status and body
+    /// instead of an SSE stream -- only meaningful as the FIRST (and
+    /// normally only) chunk of an entry, since the 200 SSE head has
+    /// already gone out otherwise. Drives the backend adapters'
+    /// status-to-`BackendError` classification table (401/403 -> `Auth`,
+    /// 429 -> `RateLimit`, 5xx -> `ServerError`, ...).
+    HttpError { status: u16, body: &'static str },
 }
 
 /// One request's whole scripted response is `Vec<Chunk>`; `Script`'s outer
@@ -281,11 +288,32 @@ async fn write_sse_response(
     entry: Option<Vec<Chunk>>,
     call_id_counter: &AtomicU64,
 ) -> std::io::Result<()> {
+    let chunks = entry.unwrap_or_else(|| vec![Chunk::Finish("stop")]);
+    // A leading `HttpError` replaces the whole response: the SSE head must
+    // not go out first (see the variant's doc).
+    if let Some(Chunk::HttpError { status, body }) = chunks.first() {
+        let reason = match status {
+            401 => "Unauthorized",
+            403 => "Forbidden",
+            429 => "Too Many Requests",
+            500 => "Internal Server Error",
+            502 => "Bad Gateway",
+            503 => "Service Unavailable",
+            _ => "Error",
+        };
+        let head = format!(
+            "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        stream.write_all(head.as_bytes()).await?;
+        stream.write_all(body.as_bytes()).await?;
+        stream.flush().await?;
+        return Ok(());
+    }
     let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
     stream.write_all(head.as_bytes()).await?;
     stream.flush().await?;
 
-    let chunks = entry.unwrap_or_else(|| vec![Chunk::Finish("stop")]);
     for chunk in chunks {
         match chunk {
             Chunk::Text(text) => {
@@ -330,6 +358,10 @@ async fn write_sse_response(
             Chunk::Hang => {
                 std::future::pending::<()>().await;
             }
+            // Handled before the SSE head is written (above); mid-stream
+            // the 200 head is already out, so there is no coherent error
+            // response left to send -- treat it as a no-op.
+            Chunk::HttpError { .. } => {}
         }
     }
 
