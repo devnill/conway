@@ -647,33 +647,59 @@ documented in full in `docs/crates/conway-runtime.md` and `ARCHITECTURE.md`
   landed the plumbing, false since S5 wired the actual check. Both
   corrected to describe current behavior.
 
-### Fixed
+### Security
 
-- **`PermissionBroker::decide`'s plan-mode guarantee was not honored by the
-  `AllowAlways` cache.** The mode-gate comment claimed plan mode's denial was
-  checked "before any allow path", but the cached-grant check returned
-  `Allow` sixteen lines above it, so a call granted `AllowAlways` under
-  `Prompt` (or any other mode) was still silently allowed after switching to
-  `Plan` — for that exact byte-identical call. The plan-mode denial check now
-  runs first, ahead of the cache, pattern grants, and `AutoAllow` alike, so
-  plan mode's guarantee holds against every allow path, not just two of the
-  three. (`crates/conway-runtime/src/permission.rs`)
+- **Plan mode could be talked out of its denial by a cached `AllowAlways`
+  grant — a real fail-open that SHIPPED in 0.5.0, and the strongest reason
+  to upgrade from it.** `PermissionBroker::decide`'s mode-gate comment
+  claimed plan mode's denial was checked "before any allow path", but the
+  cached-grant check returned `Allow` sixteen lines above it: a call
+  granted `AllowAlways` under `Prompt` (or any other mode), then re-issued
+  byte-identically after the operator switched to `Plan`, was still
+  silently allowed — in the mode an operator selects precisely to get a
+  guarantee. Bounded, since the cache key is tool plus an arguments digest
+  and only the byte-identical call slipped through, but plan mode's whole
+  value is being trustworthy. The plan-mode denial check now runs first,
+  ahead of the cache, pattern grants, and `AutoAllow` alike, so the
+  guarantee holds against every allow path, not just two of the three.
+  Worth the contrast with 0.5.0's pattern-grant pair: those were
+  fail-*closed* in every release, and the sanitizer-laundering fail-open
+  fixed alongside them was introduced and fixed within a single unreleased
+  commit and never shipped (see the corrected 0.5.0 **Security** note).
+  This one did ship — in 0.5.0 — and is fixed here.
+  (`crates/conway-runtime/src/permission.rs`,
+  `crates/conway-runtime/tests/permission_broker.rs`)
 
 ## [0.5.0] — 2026-07-29
 
 ### Security
 
 Two defects in the permission layer's pattern-grant path are fixed in this
-release. **Anyone on 0.4.0 or earlier who persists `permissions.json`
-pattern grants should upgrade.** In short: a `bash:git status`-style prefix
-grant never matched anything at all (fail-*closed*, so it over-prompted
-rather than over-permitted), and — found while fixing that — the
-shell-metacharacter check protecting those grants could be laundered by the
-display sanitizer that ran ahead of it, so a newline-chained command
-(`git status \n rm -rf /`) would have been **silently auto-approved** by an
-existing `bash:git status` grant while the shell executed the raw newline
-for real (fail-*open*). Full detail on both, including the tests that pin
-them, in the two `CRITICAL` entries under **Fixed** below.
+release. **Correction (2026-08-01):** this note originally described the
+second defect as exposure a 0.4.0 user was carrying, and urged an upgrade
+on that basis. That was wrong, and the accurate statement is:
+
+- **Pattern grants never functioned in any release up to and including
+  0.4.0.** `PermissionRequest::rendered` was always a generic
+  `name({...})` form, which the metacharacter gate rejects on sight, so no
+  persisted rule ever matched and `[p]` never appeared. The failure was
+  fail-*closed* — over-prompting, never over-permitting. **No released
+  version was ever fail-open on this path.**
+- The fail-open half — the display sanitizer laundering the
+  shell-metacharacter gate, so a newline-chained command
+  (`git status \n rm -rf /`) would be auto-approved against an existing
+  `bash:git status` grant while the shell executed the raw newline — was
+  **introduced and fixed within the same unreleased commit** (`d3ba8ec`,
+  which added both the rendered-path sanitizer and the gate hardening
+  against it). At 0.4.0 there was no sanitizer in the rendered path at all,
+  and no commit in the 0.4.0..0.5.0 range made the fail-open reachable.
+  **It never shipped.**
+- What 0.5.0 actually changes: pattern grants now work — **for `bash`
+  only** in this release. Every other tool still renders the gated JSON
+  form, so its grants stay inert (fixed for the remaining tools in 0.7.0).
+
+Full detail on both defects, including the tests that pin them, in the two
+`CRITICAL` entries under **Fixed** below.
 
 ### Fixed
 
