@@ -23,6 +23,7 @@ pub mod ports;
 pub mod provenance;
 pub mod routing;
 pub mod segment;
+pub mod text;
 
 pub mod prelude {
     pub use crate::{

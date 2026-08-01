@@ -34,6 +34,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ever shrinks. (`crates/conway/src/lib.rs`,
   `crates/conway/tests/plugin_surface.rs`, `docs/embedding.md`)
 
+### Changed
+
+- **The three control-character sanitizers are converged to one shared
+  home, and `ToolOutcome::error` now sanitizes at construction.** The
+  replace-semantics sanitizer that the runtime's `rendered` seam
+  (`runner::sanitize_rendered`) and the permission-pattern test fixtures
+  kept as hand-copies of each other (the "KEEP IN SYNC" hazard at
+  `permission_pattern.rs:362`) is now a single function in
+  `conway_core::text::sanitize_control_chars`, with `SANITIZED_CONTROL_
+  PLACEHOLDER` as a single shared constant the gate and the sanitizer
+  literally reference. The gate's behavior is unchanged:
+  `contains_shell_metacharacters` still treats `SANITIZED_CONTROL_
+  PLACEHOLDER` as a metacharacter (so a control char laundered into the
+  placeholder cannot pass the gate), pinned by a new test that fails the
+  moment that property is broken. `ToolOutcome::error` — the construction
+  seam for the runner-synthesized error strings (preflight denies, an
+  `invoke` error, a panic) that flow into model context — now sanitizes its
+  `Text` block at construction, so every synthesized error path is covered
+  by construction rather than by each caller remembering to call it. A
+  tool's own output (including `is_error: true` from a non-zero `bash`
+  exit) is a separate surface, passed through verbatim as data the model
+  reads; sanitizing it would corrupt its legitimate `\n`/`\t` structure.
+  The TUI's `sticky_prompt_text` (`header.rs`) deliberately stays on
+  its `filter` (drop) semantics: that site measures display width to
+  truncate, where replacing a zero-width control char with a width-1
+  `U+FFFD` would inflate the measured width and truncate early; a comment
+  at the site now states why so the next reader does not "deduplicate" it
+  onto the shared replace helper. This is an internal refactor of the
+  v0.5.0 bug class (a safe-looking transformation sitting before a
+  security check); no user-visible behavior change, no docs change.
+  (`crates/conway-core/src/text.rs`,
+  `crates/conway-core/src/permission_pattern.rs`,
+  `crates/conway-runtime/src/tools/runner.rs`,
+  `crates/conway-cli/src/tui/view/header.rs`)
+
 ### Removed
 
 - **Exit code 3 (`PermissionDenied`) is gone from the `conway -p`

