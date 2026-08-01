@@ -165,10 +165,10 @@ enum RootDecision {
 /// with it in the same commit, or a path could resolve one way at
 /// permission-check time and a different way when the tool actually runs it
 /// -- exactly the kind of bypass this slice exists to prevent. (Precedent:
-/// `conway_core::permission_pattern`'s own test suite keeps a hand-copy of
-/// `crate::tools::runner::sanitize_rendered`'s body for the identical
-/// layering reason -- `conway-core` cannot depend on `conway-runtime`
-/// either.)
+/// `conway_core::permission_pattern` and `conway_core::text` share the
+/// replace-semantics sanitizer so the gate and the runtime's `rendered`
+/// seam cannot drift; the path-resolution rule below is duplicated for the
+/// same reason -- `conway-runtime` cannot depend on `conway-tools`.)
 fn resolve_like_the_tool_will(cwd: &Path, raw: &str) -> Option<PathBuf> {
     if raw.contains('\0') {
         return None;

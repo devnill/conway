@@ -223,6 +223,19 @@ fn governing_prompt(state: &AppState, effective_scroll: u16, width: u16) -> Opti
 ///   could inject styling that was never actually part of the message. Every
 ///   `char::is_control` byte is dropped before truncation.
 ///
+///   This FILTERS where the rest of the codebase REPLACES (see
+///   `conway_core::text::sanitize_control_chars`, which rewrites a control
+///   char to `U+FFFD`). The difference is deliberate, and load-bearing here:
+///   this function MEASURES display width to decide where to truncate. A
+///   control char itself renders with zero width, so dropping it yields an
+///   accurate visible width; replacing it with `U+FFFD` (display width 1)
+///   would INFLATE the measured width by one column per control char and
+///   truncate earlier than the text actually warrants. Replacing is correct
+///   everywhere a string feeds token structure or model context (where the
+///   evidence must be preserved); filtering is correct here, where only the
+///   visible width matters. Do not "deduplicate" this site onto the shared
+///   sanitizer without changing the truncation behavior in the same commit.
+///
 /// Truncation itself counts CHARACTERS, not bytes -- slicing a `String` by
 /// byte offset can land mid multi-byte UTF-8 sequence and render as garbage;
 /// `chars().take(n)` can't split a scalar value in two.
@@ -601,6 +614,18 @@ mod tests {
         );
         assert!(cleaned.contains("hello"), "{cleaned:?}");
         assert!(cleaned.contains("world"), "{cleaned:?}");
+        // Pin FILTER (drop) semantics, not just "the byte is gone." The shared
+        // `conway_core::text::sanitize_control_chars` REPLACES a control char
+        // with U+FFFD (one output char per input); this site FILTERS (drops).
+        // A future reader who deduplicates this onto the shared helper would
+        // keep the assertions above green while silently inflating the
+        // measured display width by one column per control char (U+FFFD is
+        // width 1; a control char is width 0). U+FFFD present => replace
+        // slipped in; absent => filter held.
+        assert!(
+            !cleaned.contains('\u{FFFD}'),
+            "filter semantics: ESC must be dropped, not replaced with U+FFFD: {cleaned:?}"
+        );
 
         // A 100KB prompt must degrade to a fitting width, never panic.
         let huge = "x".repeat(100_000);

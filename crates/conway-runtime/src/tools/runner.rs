@@ -96,12 +96,32 @@ pub struct ToolOutcome {
 
 impl ToolOutcome {
     fn error(call_id: String, tool: ToolName, message: impl Into<String>) -> Self {
+        // F3: sanitize at construction. A deny reason or error message can
+        // carry attacker-influenced content (a filename, a tool argument
+        // echoed back), and this `Text` block flows straight into model
+        // context. A raw control character here is an injection surface into
+        // the transcript (an ANSI escape rendered by the TUI, a `\n` that
+        // splits a tool result into what a model parses as two turns), so
+        // every runner-synthesized error path is covered here at construction
+        // rather than by each caller remembering to call the sanitizer. See
+        // `conway_core::text::sanitize_control_chars`.
+        //
+        // Scope -- this is the SYNTHESIZED-string surface only. It covers the
+        // error strings the runner itself builds: preflight denies, an
+        // `invoke` error, a panic. A tool's OWN output (the `Ok(output)` arm
+        // above, including `is_error: true` from e.g. a non-zero `bash` exit)
+        // is a different surface and is passed through verbatim: that is data
+        // the model reads, where `\n`/`\t` are legitimate structure (bash's
+        // `stdout:\n...\nstderr:\n...`), not a harness-authored string.
+        // Replacing control chars there would corrupt the data. Whether
+        // tool-produced output warrants selective handling (e.g. stripping
+        // ANSI escapes while keeping whitespace structure) is a separate
+        // question, out of scope for this item.
+        let text = conway_core::text::sanitize_control_chars(&message.into());
         Self {
             call_id,
             tool,
-            blocks: vec![ContentBlock::Text {
-                text: message.into(),
-            }],
+            blocks: vec![ContentBlock::Text { text }],
             is_error: true,
             truncation: None,
             artifacts: Vec::new(),
@@ -410,11 +430,14 @@ fn render_call(tool: &dyn Tool, args: &serde_json::Value) -> String {
 /// terminal-control bytes. Applied once, here, rather than by each `Tool`
 /// implementation, so the guarantee holds for the default rendering AND
 /// every override without each one needing to know about it.
+///
+/// Delegates to `conway_core::text::sanitize_control_chars` -- the single
+/// shared home for the replace-semantics sanitizer -- so this seam and the
+/// permission gate's laundering-recognition cannot drift apart. See that
+/// module's doc for why a `filter` variant is deliberately NOT provided
+/// there.
 fn sanitize_rendered(rendered: &str) -> String {
-    rendered
-        .chars()
-        .map(|c| if c.is_control() { '\u{FFFD}' } else { c })
-        .collect()
+    conway_core::text::sanitize_control_chars(rendered)
 }
 
 /// The first 200 chars of the first `Text` block, or empty if there is
@@ -627,5 +650,39 @@ mod tests {
         let rendered = render_call(&ProbeTool, &serde_json::json!({"a": "x\x1by"}));
         assert!(rendered.starts_with("probe("), "{rendered:?}");
         assert!(!rendered.contains('\x1b'), "{rendered:?}");
+    }
+
+    /// F3: `ToolOutcome::error` constructs a `Text` block that flows straight
+    /// into model context, and a deny reason / error message can carry
+    /// attacker-influenced content. Every raw control character in the input
+    /// must be rewritten (to `U+FFFD`, the same placeholder the `rendered`
+    /// seam produces), never dropped and never passed through. This is
+    /// applied at construction so callers cannot forget to call it.
+    #[test]
+    fn tool_outcome_error_strips_raw_control_characters_from_model_context() {
+        // Carries a newline, a carriage return, and a full ANSI SGR escape
+        // sequence (`\x1b[31m...\x1b[0m`) -- the three vectors the spec names.
+        let message = "denied: path 'p\x1b[31m/evil\x1b[0m'\nsecond line\rfinal";
+        let outcome = ToolOutcome::error(
+            "call_x".into(),
+            ToolName::new("bash"),
+            message,
+        );
+        let text = match outcome.blocks.as_slice() {
+            [ContentBlock::Text { text }] => text.clone(),
+            other => panic!("expected one Text block, got {other:?}"),
+        };
+        assert!(
+            text.chars().all(|c| !c.is_control()),
+            "error output must contain no raw control characters: {text:?}"
+        );
+        // Replace, not drop: each control char becomes evidence (U+FFFD),
+        // so the gate's laundering-recognition still sees it if this text
+        // is ever fed back through a render/match path.
+        assert!(text.contains('\u{FFFD}'), "must replace, not drop: {text:?}");
+        // No raw ESC, no raw newline, no raw CR survived.
+        assert!(!text.contains('\x1b'), "no raw ESC: {text:?}");
+        assert!(!text.contains('\n'), "no raw newline: {text:?}");
+        assert!(!text.contains('\r'), "no raw CR: {text:?}");
     }
 }

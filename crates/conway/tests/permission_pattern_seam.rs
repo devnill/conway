@@ -215,10 +215,12 @@ async fn a_chained_command_still_reaches_the_operator_through_the_real_render_se
 /// `BashTool::invoke` executed the raw, unsanitized newline for real.
 ///
 /// The unit-level test (`conway-core`'s `a_sanitized_chained_command_is_
-/// still_gated`) has to hand-copy the sanitizer's body, because crate
-/// layering forbids `conway-core` from depending on `conway-runtime`. THIS
-/// test needs no copy: it runs the genuine sanitizer in the genuine
-/// pipeline, so it cannot drift from the real implementation.
+/// still_gated`) now calls the shared `conway_core::text::sanitize_control_chars`
+/// directly -- the sanitizer's home is in `conway-core` itself, so there is no
+/// layering barrier and no hand-copy. THIS test is still load-bearing: it runs
+/// the genuine sanitizer in the genuine pipeline (real render seam, real
+/// broker), so it cannot drift from the real implementation even if a later
+/// refactor moves where the rendering is sanitized.
 #[tokio::test]
 async fn a_newline_chained_command_still_reaches_the_operator_through_the_real_render_seam() {
     let gate = RecordingGate::new(PermissionDecision::Deny {
