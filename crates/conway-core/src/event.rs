@@ -28,7 +28,17 @@ use crate::routing::{BreakerKind, RoutingReason};
 ///
 /// Restates the three architecture §8 delivery guarantees so downstream
 /// implementers see them at the definition site:
-/// - `seq` is monotonic per session across ALL agents in that session's tree.
+/// - `seq` is monotonic per session across ALL agents in that session's
+///   tree, for as long as the emitting process's in-memory counter for that
+///   session stays live. The counter is reclaimed (and, if ever reused,
+///   restarts at 0) once a spawned/forked child's own terminal
+///   `Event::AgentFinished` is observed, or once an `/ask`-style ephemeral
+///   child finishes without being promoted -- see `conway-runtime`'s
+///   `EventBus`'s own doc (`events.rs`) for exactly which sessions this
+///   applies to and why nothing in this workspace depends on `seq` staying
+///   gap-free or non-repeating beyond that. This guarantee makes no claim
+///   across a resume in a fresh process either: the counter is never
+///   persisted or reseeded from stored history.
 /// - an agent's [`Event::AgentSpawned`] precedes every other event bearing
 ///   that agent id.
 /// - every [`Event::AgentSpawned`] is eventually followed by exactly one
@@ -555,11 +565,7 @@ mod tests {
             ephemeral: false,
         };
         let mut value = serde_json::to_value(&finished).unwrap();
-        assert!(value
-            .as_object_mut()
-            .unwrap()
-            .remove("ephemeral")
-            .is_some());
+        assert!(value.as_object_mut().unwrap().remove("ephemeral").is_some());
         let back: Event = serde_json::from_value(value).unwrap();
         match back {
             Event::AgentFinished { ephemeral, .. } => assert!(!ephemeral),

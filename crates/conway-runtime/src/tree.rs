@@ -106,6 +106,17 @@ pub struct AgentNode {
 /// descriptor plus the result-publication state `attach` creates for it.
 struct TreeEntry {
     node: AgentNode,
+    /// `node.ephemeral` AT `attach` TIME, frozen -- unlike `node.ephemeral`
+    /// itself (mutated in place by `set_ephemeral`), this never changes once
+    /// set here. The only way this crate flips `ephemeral` is the one-way
+    /// `Runtime::promote_agent` "keep" fate (ephemeral -> persistent, never
+    /// the reverse), so this field is exactly "was this agent ever an
+    /// ephemeral `/ask`-style aside" -- what
+    /// [`AgentTree::is_prunable_on_finish`] needs to tell a promoted child
+    /// apart from a spawn/fork child that was never ephemeral in the first
+    /// place, since both read `ephemeral_of == false` by the time they
+    /// finish.
+    ephemeral_at_attach: bool,
     result_tx: watch::Sender<Option<AgentResult>>,
     /// `tokio::sync::watch::Sender::send` silently discards the value (and
     /// returns `Err`) when the channel has zero live receivers -- it does
@@ -162,11 +173,13 @@ impl AgentTree {
             ephemeral: node.ephemeral,
         });
         let (session, id) = (node.session, node.id);
+        let ephemeral_at_attach = node.ephemeral;
 
         nodes.insert(
             id,
             TreeEntry {
                 node,
+                ephemeral_at_attach,
                 result_tx,
                 _keepalive_rx: keepalive_rx,
                 resolved: AtomicBool::new(false),
@@ -268,7 +281,42 @@ impl AgentTree {
     /// non-ephemeral default every pre-`/ask` path already had.
     pub fn ephemeral_of(&self, agent: AgentId) -> bool {
         let nodes = self.nodes.read().expect("agent tree lock poisoned");
-        nodes.get(&agent).map(|entry| entry.node.ephemeral).unwrap_or(false)
+        nodes
+            .get(&agent)
+            .map(|entry| entry.node.ephemeral)
+            .unwrap_or(false)
+    }
+
+    /// Whether `agent`'s `EventBus.seqs` counter is safe to reclaim the
+    /// instant `agent`'s own terminal `AgentFinished` is observed (board
+    /// item: `EventBus.seqs` still leaks for spawned and forked agents).
+    ///
+    /// `true` only for a spawn/fork child (`kind.is_some()`) that was NEVER
+    /// an ephemeral `/ask`-style aside (`!ephemeral_at_attach`) -- i.e. an
+    /// ordinary `conway_subagent` fork/spawn child, which nothing resumes or
+    /// revisits once finished, unlike a root. Deliberately `false` for two
+    /// cases that might look eligible at a glance:
+    /// - **A root** (`kind.is_none()`): out of this item's scope (one
+    ///   counter per process is not a leak), and `Runtime::resume_root` can
+    ///   reactivate it.
+    /// - **A promoted child** (`ephemeral_at_attach` is `true` even though
+    ///   `ephemeral_of` now reads `false`, since `Runtime::promote_agent`
+    ///   flips only the live, mutable flag): promotion is the "keep" fate --
+    ///   an explicit signal that a caller wants exactly this session
+    ///   preserved -- so it is treated like any other lastingly-referenced
+    ///   session, not reclaimed.
+    ///
+    /// A currently-ephemeral child that was never promoted is NOT this
+    /// method's concern: `EventBus::emit`'s own `Event::AgentFinished::
+    /// ephemeral` check already reclaims that case unconditionally, before
+    /// this method is ever consulted. Returns `false` for an unknown agent,
+    /// matching [`ephemeral_of`](Self::ephemeral_of)'s same default.
+    pub fn is_prunable_on_finish(&self, agent: AgentId) -> bool {
+        let nodes = self.nodes.read().expect("agent tree lock poisoned");
+        nodes
+            .get(&agent)
+            .map(|entry| entry.node.kind.is_some() && !entry.ephemeral_at_attach)
+            .unwrap_or(false)
     }
 
     /// Flips `agent`'s `ephemeral` flag in place and returns the agent's
@@ -282,7 +330,11 @@ impl AgentTree {
     /// only ever passes `false`, and the store layer refuses the reverse)
     /// but the setter itself is value-agnostic: the tree records what it is
     /// told, it does not adjudicate lifecycle policy.
-    pub fn set_ephemeral(&self, agent: AgentId, ephemeral: bool) -> Result<SessionId, RuntimeError> {
+    pub fn set_ephemeral(
+        &self,
+        agent: AgentId,
+        ephemeral: bool,
+    ) -> Result<SessionId, RuntimeError> {
         let mut nodes = self.nodes.write().expect("agent tree lock poisoned");
         let entry = nodes
             .get_mut(&agent)

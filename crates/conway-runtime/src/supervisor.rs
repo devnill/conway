@@ -153,7 +153,16 @@ pub fn supervise(args: SuperviseArgs) -> JoinHandle<()> {
                 let won = tree.publish_result(agent, result.clone()).unwrap_or(true);
                 if won {
                     let ephemeral = tree.ephemeral_of(agent);
-                    bus.emit(session, agent, Event::AgentFinished { result, ephemeral });
+                    // See `agent_loop.rs`'s `finish` (the other emission
+                    // site) for why this read, and `emit_pruning`'s own
+                    // doc, add no new contention.
+                    let prune = tree.is_prunable_on_finish(agent);
+                    bus.emit_pruning(
+                        session,
+                        agent,
+                        Event::AgentFinished { result, ephemeral },
+                        prune,
+                    );
                 }
             }
         }

@@ -18,6 +18,11 @@
 //! The facade `SessionHandle::ask` path itself lives in the `conway` crate
 //! (it cannot be exercised from `conway-runtime`, which `conway` depends on);
 //! `crates/conway/tests/ask.rs` covers the `/ask`-specific assertions.
+//!
+//! Also covers `AgentTree::is_prunable_on_finish` (board item: `EventBus.
+//! seqs` still leaks for spawned and forked agents) at the bottom of this
+//! file -- it reuses this file's same direct-`attach` harness, since the
+//! decision it tests is a pure function of tree state.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -546,5 +551,105 @@ async fn promote_agent_flips_tree_and_emits_agent_promoted_under_the_child() {
     assert!(
         matches!(err, conway_core::error::RuntimeError::AgentNotFound { .. }),
         "unknown agent must be AgentNotFound, got: {err:?}"
+    );
+}
+
+// ---------------------------------------------------------------------
+// `EventBus.seqs` reclamation (board item: still leaks for spawned and
+// forked agents) -- `AgentTree::is_prunable_on_finish`
+// ---------------------------------------------------------------------
+
+/// `is_prunable_on_finish` is `true` only for a spawn/fork child that was
+/// NEVER ephemeral at attach time (an ordinary `conway_subagent` fork/spawn)
+/// -- `false` for a root, for an ephemeral child that was never promoted
+/// (that case is `EventBus::emit`'s own ephemeral-based reclamation, not
+/// this method's concern), and -- the promotion subtlety this item's own
+/// record flags as the most likely thing to break -- for a child that WAS
+/// ephemeral at attach and was later promoted: `ephemeral_of` reads `false`
+/// after the promote, but the frozen attach-time value keeps this method
+/// returning `false` too, so a promoted child stays excluded from
+/// reclamation exactly like the existing
+/// `promoted_then_finished_session_is_not_ephemeral_at_finish_and_survives`
+/// (`conway-runtime`'s `events.rs`) expects.
+#[tokio::test]
+async fn is_prunable_on_finish_covers_root_plain_child_ephemeral_child_and_promoted_child() {
+    let bus = EventBus::with_default_capacity();
+    let tree = AgentTree::new(bus);
+
+    let root = AgentId::new();
+    let session = SessionId::new();
+    tree.attach(AgentNode {
+        id: root,
+        parent: None,
+        session,
+        kind: None,
+        agent_def: None,
+        role: None,
+        budget: Budget::default(),
+        cancel: CancellationToken::new(),
+        inherited_upto: None,
+        ephemeral: false,
+    })
+    .expect("root attach");
+    assert!(
+        !tree.is_prunable_on_finish(root),
+        "a root must never be prunable -- one counter per process is not a leak"
+    );
+
+    let plain_child = AgentId::new();
+    tree.attach(AgentNode {
+        id: plain_child,
+        parent: Some(root),
+        session: SessionId::new(),
+        kind: Some(SubagentMode::Fork),
+        agent_def: None,
+        role: None,
+        budget: Budget::default(),
+        cancel: CancellationToken::new(),
+        inherited_upto: Some(LogSeq(0)),
+        ephemeral: false,
+    })
+    .expect("plain child attach");
+    assert!(
+        tree.is_prunable_on_finish(plain_child),
+        "an ordinary, never-ephemeral spawn/fork child must be prunable -- the item's own acceptance case"
+    );
+
+    let ephemeral_child = AgentId::new();
+    tree.attach(AgentNode {
+        id: ephemeral_child,
+        parent: Some(root),
+        session: SessionId::new(),
+        kind: Some(SubagentMode::Spawn),
+        agent_def: None,
+        role: None,
+        budget: Budget::default(),
+        cancel: CancellationToken::new(),
+        inherited_upto: None,
+        ephemeral: true,
+    })
+    .expect("ephemeral child attach");
+    assert!(
+        !tree.is_prunable_on_finish(ephemeral_child),
+        "a currently-ephemeral child is `emit`'s own reclamation concern, not this method's"
+    );
+
+    // Promote it: the live `ephemeral` flag flips to `false`, but the
+    // frozen attach-time value must keep this method returning `false`.
+    tree.set_ephemeral(ephemeral_child, false)
+        .expect("promote the ephemeral child");
+    assert!(
+        !tree.ephemeral_of(ephemeral_child),
+        "precondition: promoted child now reads non-ephemeral"
+    );
+    assert!(
+        !tree.is_prunable_on_finish(ephemeral_child),
+        "a promoted child must stay excluded from reclamation, even though it is a \
+         fork/spawn child and no longer reads as ephemeral"
+    );
+
+    assert!(
+        !tree.is_prunable_on_finish(AgentId::new()),
+        "an unknown agent defaults to not prunable, matching ephemeral_of's own default"
     );
 }
