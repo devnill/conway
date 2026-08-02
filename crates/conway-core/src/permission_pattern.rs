@@ -1212,13 +1212,20 @@ mod tests {
     }
 }
 
-/// The pattern Conway OFFERS an operator for a given command (V2b).
+/// The pattern Conway OFFERS an operator for a given call (V2b), given
+/// that tool's own [`RenderKind`] declaration -- the same declaration
+/// [`PatternRule::matches_render`] evaluates against, so the offer surface
+/// and the evaluation surface cannot drift apart: a rule this function
+/// offers is always one the broker would both register and match, for
+/// exactly the rendering the operator is looking at.
+///
+/// ## `ShellCommand`: the two-token prefix
 ///
 /// Returns `None` when no sensible offer exists — an empty command, or one
 /// carrying shell metacharacters (offering a grant that the metacharacter
 /// gate would then refuse to honor would be actively confusing).
 ///
-/// ## Why two tokens
+/// ### Why two tokens
 ///
 /// The offer is deliberately narrow. `git status` is a useful grant;
 /// `git` alone would silently include `git push --force`, and an operator
@@ -1229,12 +1236,48 @@ mod tests {
 /// A single-token command (`ls`, `pwd`) offers just that token, since
 /// there is no subcommand to bound it with.
 ///
+/// ## `Structured`: the wildcard, and why NOT a prefix
+///
+/// A `Structured` tool's rendering is a JSON dump, so it nearly always
+/// contains `()`/`{}` -- shell metacharacters. Before this function took
+/// `render_kind`, the metacharacter check above declined on sight and the
+/// prompt simply never offered `[p]` for any `Structured` tool: a whole
+/// class of tools had no discoverable pattern grants, not by decision but
+/// as a side effect of a check written for shell commands.
+///
+/// Widening the offer to a two-token prefix over the JSON dump would be
+/// the reflexive wrong fix: `when: command_prefix` against a `Structured`
+/// tool is a **registration error**
+/// ([`RuleRegistrationReason::CommandPrefixOnStructuredTool`]) -- the
+/// dump's token boundaries depend on key order, spacing, and escaping the
+/// operator cannot predict, so the rule could never reliably match, and
+/// the loader refuses to install it. The prompt must not offer to create
+/// a rule that cannot be registered.
+///
+/// The rule shape that CAN register and CAN match is the wildcard
+/// `tool:*` ("any invocation of this tool" -- desugars to
+/// [`When::Always`], which the registration check admits and
+/// [`PatternRule::matches_render`] honors for a `Structured` rendering).
+/// It is broader than a prefix -- there is no narrower registerable shape
+/// for these tools -- which is exactly why the prompt states the grant in
+/// words ("any `report` call") before the operator presses anything, and
+/// why `[a]` (this exact call) remains the narrower remembered option.
+///
 /// An operator who wants something broader can add it to
 /// `permissions.json` by hand, having thought about it. That asymmetry is
 /// the point: granting more should take deliberate effort, granting less
 /// should be the default. You can always grant again; you cannot
 /// un-authorize what already ran.
-pub fn suggested_rule(tool: &str, rendered: &str) -> Option<PatternRule> {
+pub fn suggested_rule(tool: &str, rendered: &str, render_kind: RenderKind) -> Option<PatternRule> {
+    if render_kind == RenderKind::Structured {
+        return Some(PatternRule {
+            tool: tool.to_string(),
+            command_prefix: "*".to_string(),
+        });
+    }
+    // `ShellCommand`, and any future `RenderKind` variant (`RenderKind` is
+    // `#[non_exhaustive]`): the conservative shell-shaped offer, exactly as
+    // before -- fail toward offering less, never more.
     if contains_shell_metacharacters(rendered) {
         return None;
     }
@@ -1538,7 +1581,8 @@ mod store_tests {
     /// enough to silently include a sibling subcommand.
     #[test]
     fn the_suggested_rule_is_narrow_by_default() {
-        let rule = suggested_rule("bash", "git status --short").expect("offered");
+        let rule = suggested_rule("bash", "git status --short", RenderKind::ShellCommand)
+            .expect("offered");
         assert_eq!(rule.command_prefix, "git status");
 
         // Crucially: the offered grant does NOT cover a different
@@ -1550,7 +1594,7 @@ mod store_tests {
 
     #[test]
     fn a_single_token_command_offers_just_that_token() {
-        let rule = suggested_rule("bash", "pwd").expect("offered");
+        let rule = suggested_rule("bash", "pwd", RenderKind::ShellCommand).expect("offered");
         assert_eq!(rule.command_prefix, "pwd");
     }
 
@@ -1558,8 +1602,79 @@ mod store_tests {
     /// would be confusing, so no offer is made at all.
     #[test]
     fn no_rule_is_offered_for_a_command_the_gate_would_reject() {
-        assert!(suggested_rule("bash", "git status && rm -rf /").is_none());
-        assert!(suggested_rule("bash", "").is_none());
+        assert!(
+            suggested_rule("bash", "git status && rm -rf /", RenderKind::ShellCommand).is_none()
+        );
+        assert!(suggested_rule("bash", "", RenderKind::ShellCommand).is_none());
+    }
+
+    // ---- the offer surface agrees with the evaluation surface (both
+    // `RenderKind` variants at the offer site) ----
+
+    /// **The headline `Structured` case.** A `Structured` tool's rendering
+    /// is a JSON dump whose own `()`/`{}` are shell metacharacters -- the
+    /// old `render_kind`-less offer declined on sight, so no `Structured`
+    /// tool ever had a pattern offer at all. The offer that CAN register
+    /// (F12 bans `command_prefix` against a `Structured` tool) and CAN
+    /// match is the wildcard: "any invocation of this tool".
+    #[test]
+    fn a_structured_tool_is_offered_the_registrable_wildcard_not_a_prefix() {
+        let rendered = r#"report({"summary":"build finished ok"})"#;
+        let rule = suggested_rule("report", rendered, RenderKind::Structured)
+            .expect("a Structured tool must have SOMETHING honestly offerable");
+        assert_eq!(
+            rule.command_prefix, "*",
+            "the only registerable shape against a Structured tool is the wildcard -- \
+             a prefix over a JSON dump is a registration error, so the prompt must \
+             never offer one"
+        );
+
+        // Offer/evaluation agreement, proven rather than asserted: the
+        // offered rule matches THE VERY RENDERING the operator is looking
+        // at, under the tool's own declaration...
+        assert!(
+            rule.matches_render("report", rendered, RenderKind::Structured),
+            "a rule the prompt offers must be one the broker would match \
+             against this exact call"
+        );
+        // ...and it desugars to `When::Always`, the shape
+        // `Conway::validate_rule_registration` admits for a Structured tool
+        // (a `When::CommandPrefix` here would be refused at install).
+        assert_eq!(
+            rule.to_rule(Then::Allow).when,
+            When::Always,
+            "the offered rule must survive the F12 registration check"
+        );
+    }
+
+    /// The `Structured` offer does not depend on the rendering's content at
+    /// all -- metacharacters in a JSON dump are not shell risk, so they
+    /// must not suppress the offer the way they do for `bash`.
+    #[test]
+    fn the_structured_offer_is_not_suppressed_by_metacharacters() {
+        for rendered in [
+            r#"read({"path":"a"})"#,
+            r#"write({"path":"x","content":"a && b; c | d"})"#,
+        ] {
+            assert!(
+                suggested_rule("read", rendered, RenderKind::Structured).is_some(),
+                "a Structured rendering's metacharacters must not suppress the offer: {rendered:?}"
+            );
+        }
+    }
+
+    /// `RenderKind` is `#[non_exhaustive]`: a future variant must get the
+    // conservative shell-shaped behavior (offer less, never more), which
+    /// is exactly what the `_` arm delivers -- pinned here so the fallback
+    /// is a decision, not an accident.
+    #[test]
+    fn the_offer_falls_back_to_the_conservative_shell_shape_for_unknown_kinds() {
+        // Both non-Structured kinds today agree; if a third kind ever
+        // appears this test keeps compiling via the same arm and keeps
+        // meaning "the conservative offer".
+        let kind = RenderKind::ShellCommand;
+        assert!(suggested_rule("bash", "git status && rm -rf /", kind).is_none());
+        assert!(suggested_rule("bash", "git status --short", kind).is_some());
     }
 
 }

@@ -568,10 +568,21 @@ impl Conway {
     ///   bytes; otherwise they are skipped and a human-readable notice is
     ///   returned (never an error -- see this codebase's existing
     ///   "every permissions-file failure is silent and narrowing" posture).
+    ///
+    /// `scope` is the [`PermissionScope`] every installed ALLOW rule is
+    /// remembered at (`deny`/`prompt` rules are unscoped by design -- they
+    /// only ever narrow, so they apply to every requester). The TUI passes
+    /// `Session`; an embedder that loads a file on behalf of ONE agent (or
+    /// one subtree) passes `Agent`/`AgentSubtree` with the corresponding
+    /// `granting_agent`, so a file's rules never silently cover more of
+    /// the agent tree than the embedder intended -- the same
+    /// least-privilege choice the permission prompt's `s` key offers
+    /// interactively.
     pub fn load_permission_files(
         &self,
         cwd: &std::path::Path,
         env: &std::collections::HashMap<String, String>,
+        scope: conway_core::agent::PermissionScope,
         granting_agent: conway_core::ids::AgentId,
     ) -> PermissionLoadReport {
         let paths = crate::config::discovery::permission_file_paths(cwd, env);
@@ -631,12 +642,7 @@ impl Conway {
                     registration_errors.push(err);
                     continue;
                 }
-                self.install_allow_rule(
-                    rule,
-                    conway_core::agent::PermissionScope::Session,
-                    granting_agent,
-                    path.clone(),
-                );
+                self.install_allow_rule(rule, scope, granting_agent, path.clone());
             }
         }
 
@@ -651,7 +657,9 @@ impl Conway {
     /// disk (`crate::config::trust::TrustStore::trust`) and immediately
     /// installs its `allow` rules for this running session -- so trusting
     /// takes effect now, not only on the next restart. Returns the number
-    /// of allow rules installed.
+    /// of allow rules installed. `scope` is the [`PermissionScope`] the
+    /// rules are remembered at, exactly as in
+    /// [`Self::load_permission_files`].
     ///
     /// This is the ONLY path that writes a trust record, and it is only
     /// ever invoked by an explicit operator action (the TUI's `/trust
@@ -663,6 +671,7 @@ impl Conway {
         &self,
         env: &std::collections::HashMap<String, String>,
         path: &std::path::Path,
+        scope: conway_core::agent::PermissionScope,
         granting_agent: conway_core::ids::AgentId,
     ) -> std::io::Result<usize> {
         crate::config::trust::TrustStore::trust(env, path)?;
@@ -679,12 +688,7 @@ impl Conway {
                 // silently swallow them, it just does not re-report them here.
                 continue;
             }
-            self.install_allow_rule(
-                rule,
-                conway_core::agent::PermissionScope::Session,
-                granting_agent,
-                path.to_path_buf(),
-            );
+            self.install_allow_rule(rule, scope, granting_agent, path.to_path_buf());
             count += 1;
         }
         Ok(count)

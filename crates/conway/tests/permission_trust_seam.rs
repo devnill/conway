@@ -41,7 +41,7 @@ use conway::config::schema::{
     RoleEntry, RoutingSection, SessionConfig, TuiSection,
 };
 use conway::{Conway, ConwayBuilder, SessionSpec};
-use conway_core::agent::{PermissionDecision, PermissionRequest};
+use conway_core::agent::{PermissionDecision, PermissionRequest, PermissionScope};
 use conway_core::content::{ContentBlock, StopReason, ToolCall, Usage};
 use conway_core::fakes::{FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
 use conway_core::ids::{AgentId, BackendId, ModelId, ModelRef, RoleAlias, ToolName};
@@ -210,7 +210,7 @@ async fn an_untrusted_project_allow_rule_does_not_take_effect() {
         gate.clone() as Arc<dyn PermissionGate>,
     );
 
-    let report = conway.load_permission_files(project.path(), &env, AgentId::new());
+    let report = conway.load_permission_files(project.path(), &env, PermissionScope::Session, AgentId::new());
     assert_eq!(
         report.notices.len(),
         1,
@@ -254,12 +254,12 @@ async fn trusting_a_project_file_makes_its_allow_rule_take_effect() {
     );
 
     let agent = AgentId::new();
-    let report = conway.load_permission_files(project.path(), &env, agent);
+    let report = conway.load_permission_files(project.path(), &env, PermissionScope::Session, agent);
     assert_eq!(report.notices.len(), 1, "untrusted before the trust call");
 
     let path = project.path().join(".conway").join("permissions.json");
     let installed = conway
-        .trust_permission_file(&env, &path, agent)
+        .trust_permission_file(&env, &path, PermissionScope::Session, agent)
         .expect("trust succeeds");
     assert_eq!(installed, 1);
 
@@ -290,7 +290,7 @@ async fn an_untrusted_project_deny_rule_still_applies_immediately() {
         gate.clone() as Arc<dyn PermissionGate>,
     );
 
-    let report = conway.load_permission_files(project.path(), &env, AgentId::new());
+    let report = conway.load_permission_files(project.path(), &env, PermissionScope::Session, AgentId::new());
     assert!(
         report.notices.is_empty(),
         "a deny-only file needs no trust decision and must not be flagged: {:?}",
@@ -333,6 +333,7 @@ async fn a_call_matching_neither_rule_still_reaches_the_gate() {
         .trust_permission_file(
             &env,
             &project.path().join(".conway").join("permissions.json"),
+            PermissionScope::Session,
             AgentId::new(),
         )
         .expect("trust succeeds");
@@ -375,7 +376,7 @@ async fn a_global_permissions_file_installs_with_no_trust_decision() {
         gate.clone() as Arc<dyn PermissionGate>,
     );
 
-    let report = conway.load_permission_files(cwd.path(), &env, AgentId::new());
+    let report = conway.load_permission_files(cwd.path(), &env, PermissionScope::Session, AgentId::new());
     assert!(
         report.notices.is_empty(),
         "the operator's own global file must never be flagged as untrusted: {:?}",
@@ -408,7 +409,7 @@ async fn editing_a_trusted_project_files_content_de_trusts_it() {
         let gate = RecordingGate::new();
         let setup = build_conway(project.path(), vec![], gate as Arc<dyn PermissionGate>);
         setup
-            .trust_permission_file(&env, &path, agent)
+            .trust_permission_file(&env, &path, PermissionScope::Session, agent)
             .expect("trust succeeds");
     }
 
@@ -430,7 +431,7 @@ async fn editing_a_trusted_project_files_content_de_trusts_it() {
         gate.clone() as Arc<dyn PermissionGate>,
     );
 
-    let report = conway.load_permission_files(project.path(), &env, agent);
+    let report = conway.load_permission_files(project.path(), &env, PermissionScope::Session, agent);
     assert_eq!(
         report.notices.len(),
         1,

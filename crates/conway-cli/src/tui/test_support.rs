@@ -100,7 +100,7 @@ pub(crate) fn press(state: &mut AppState, event: KeyEvent, area: Rect) -> Action
         // terminal-free harness does not have. `press` returns the action
         // unapplied, so a test asserts on the ACTION -- the install/persist
         // half is covered where the facade lives.
-        Action::GrantPermissionPattern(_)
+        Action::GrantPermissionPattern(_, _)
         | Action::CyclePermissionMode
         | Action::RevokePermissionGrants
         | Action::RevokePermissionPattern(_, _) => {}

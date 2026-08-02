@@ -27,7 +27,7 @@ use conway::config::schema::{
 };
 use conway::permission_pattern::{PatternOrigin, PatternRule};
 use conway::{Conway, ConwayBuilder, RevokeOutcome, SessionSpec};
-use conway_core::agent::{PermissionDecision, PermissionRequest};
+use conway_core::agent::{PermissionDecision, PermissionRequest, PermissionScope};
 use conway_core::content::{ContentBlock, StopReason, ToolCall, Usage};
 use conway_core::fakes::{FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
 use conway_core::ids::{AgentId, BackendId, ModelId, ModelRef, RoleAlias, ToolName};
@@ -252,7 +252,7 @@ async fn revoking_a_trusted_project_rule_persists_and_keeps_the_file_trusted() {
     let gate = RecordingGate::new();
     let conway = build_conway(project.path(), vec![], gate.clone() as Arc<dyn PermissionGate>);
     conway
-        .trust_permission_file(&env, &path, agent)
+        .trust_permission_file(&env, &path, PermissionScope::Session, agent)
         .expect("trust succeeds");
     assert_eq!(conway.active_permission_patterns().len(), 2);
 
@@ -287,7 +287,7 @@ async fn revoking_a_trusted_project_rule_persists_and_keeps_the_file_trusted() {
         ],
         gate2.clone() as Arc<dyn PermissionGate>,
     );
-    let report = restarted.load_permission_files(project.path(), &env, agent);
+    let report = restarted.load_permission_files(project.path(), &env, PermissionScope::Session, agent);
     assert!(
         report.notices.is_empty(),
         "the file must still be trusted after the rewrite -- re-trust must have \
@@ -330,7 +330,7 @@ async fn revoking_a_global_rule_persists_with_no_retrust_ceremony() {
     let gate = RecordingGate::new();
     let conway = build_conway(cwd.path(), vec![], gate.clone() as Arc<dyn PermissionGate>);
     let agent = AgentId::new();
-    let report = conway.load_permission_files(cwd.path(), &env, agent);
+    let report = conway.load_permission_files(cwd.path(), &env, PermissionScope::Session, agent);
     assert!(report.notices.is_empty());
     assert_eq!(conway.active_permission_patterns().len(), 1);
 
@@ -414,7 +414,7 @@ async fn a_persist_failure_still_revokes_for_the_session_and_reports_the_failure
         gate.clone() as Arc<dyn PermissionGate>,
     );
     conway
-        .trust_permission_file(&env, &path, agent)
+        .trust_permission_file(&env, &path, PermissionScope::Session, agent)
         .expect("trust succeeds");
     let (rule, origin) = find_grant(&conway, "bash:git status");
 

@@ -124,6 +124,8 @@ fn sample_permission_request(agent_path: Vec<AgentId>) -> PermissionRequest {
         arguments: serde_json::json!({}),
         rendered: "read a file".into(),
         call_id: "tc_1".into(),
+        // The real `read` tool declares Structured; mirror it honestly.
+        render_kind: conway_core::ports::RenderKind::Structured,
     }
 }
 

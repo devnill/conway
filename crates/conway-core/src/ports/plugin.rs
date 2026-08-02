@@ -175,7 +175,8 @@ pub trait Tool: Send + Sync + 'static {
 /// this is a SEPARATE declaration from [`PathArgs`] rather than a reuse of
 /// it.
 #[non_exhaustive]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum RenderKind {
     /// `render`'s output is NOT interpreted by a shell -- a debug-shaped
     /// dump (the trait's own default `name(args)`), or any other rendering

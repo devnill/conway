@@ -1193,6 +1193,12 @@ impl PermissionBroker {
             arguments: call.arguments.clone(),
             rendered: call.rendered.clone(),
             call_id: call.call_id.clone(),
+            // The gate's prompt needs the SAME declaration `matches_render`
+            // just evaluated above (a second lookup could disagree with the
+            // value that decided the gate check): whether `rendered` is a
+            // shell command decides what a pattern offer may honestly
+            // propose (`suggested_rule`).
+            render_kind: call.render_kind,
         };
         let decision = self.gate.check(request).await;
 

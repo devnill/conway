@@ -20,6 +20,7 @@ fn request(tool: &str, category: ToolCategory, arguments: serde_json::Value) -> 
         arguments,
         rendered: String::new(),
         call_id: "call-1".to_string(),
+        render_kind: conway_core::ports::RenderKind::ShellCommand,
     }
 }
 

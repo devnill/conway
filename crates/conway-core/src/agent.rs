@@ -472,6 +472,19 @@ pub struct PermissionRequest {
     pub arguments: serde_json::Value,
     pub rendered: String,
     pub call_id: String,
+    /// The proposing tool's own [`crate::ports::RenderKind`] declaration,
+    /// copied from the `AuthorizedCall` the broker decided on -- the SAME
+    /// value `PatternRule::matches_render` evaluated, never a second lookup
+    /// that could disagree with it. A gate that renders a prompt needs it:
+    /// whether `rendered` is a shell command or a structured dump decides
+    /// both what a pattern grant would mean (the metacharacter gate's
+    /// reach) and which rule shape the prompt may honestly offer (see
+    /// `permission_pattern::suggested_rule`). `#[serde(default)]` so a
+    /// request serialized before this field existed still deserializes --
+    /// and the default is the conservative `ShellCommand`, never the
+    /// widening one.
+    #[serde(default)]
+    pub render_kind: crate::ports::RenderKind,
 }
 
 /// The human's (or policy's) answer to a [`PermissionRequest`].
@@ -491,19 +504,20 @@ pub enum PermissionDecision {
 #[serde(rename_all = "snake_case")]
 pub enum PermissionScope {
     Session,
-    /// **Not yet implemented**: nothing in this tree constructs
-    /// `PermissionScope::Agent`. Every `AllowAlways` decision the CLI/TUI
-    /// can currently produce hardcodes `PermissionScope::Session`
-    /// (`tui/gate.rs`, `tui/input.rs`, `conway.rs`) -- there is no UI path
-    /// to grant a narrower per-agent scope, even though
-    /// `conway-runtime::permission`'s scope-to-`GrantScope` mapping is
-    /// wired to HONOR this variant if a caller ever produced one. Flagged
-    /// by the enum-variant construction guard added in board item
-    /// `01KYTXTXJ6DCE84ZRB06BHRGJW`; allowlisted there pending triage.
+    /// The grant covers only the exact agent whose call prompted it
+    /// (`conway-runtime`'s `GrantScope::Agent`). Reachable from the TUI
+    /// permission prompt (`tui/input.rs`'s `s` scope key, applied by the
+    /// `a`/`p` grant keys) and from the facade
+    /// (`Conway::grant_permission_pattern`,
+    /// `Conway::load_permission_files`, `Conway::trust_permission_file`
+    /// all take a scope) -- a per-agent grant never authorizes a sibling's
+    /// identical call, which the facade-level seam tests in
+    /// `conway/tests/permission_scope_seam.rs` prove end to end.
     Agent,
-    /// **Not yet implemented**: same gap as `Agent` above, one level
-    /// broader (a whole agent subtree rather than a single agent) -- also
-    /// never constructed.
+    /// The grant covers the prompting agent's whole subtree -- any
+    /// requester whose `agent_path` contains it
+    /// (`conway-runtime`'s `GrantScope::Subtree`). Same reachability as
+    /// `Agent` above.
     AgentSubtree,
 }
 
