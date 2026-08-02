@@ -175,6 +175,17 @@ any tool that declares itself `Unconfinable`) never satisfies a
 `paths_under` rule regardless of what it names — fail closed, the same
 asymmetry the confinement root uses.
 
+**A relative `paths_under` prefix resolves against the project, not wherever
+conway happened to be launched from.** In a project file
+(`<project>/.conway/permissions.json`), a prefix like `"src"` means
+`<project>/src` — the directory containing `.conway/`, derived from the
+file's own location (so a file discovered in an ancestor directory resolves
+against that ancestor, not your launch directory). In the global file
+(`~/.conway/permissions.json`, or `$XDG_CONFIG_HOME/conway/permissions.json`)
+there is no containing project, so a relative prefix resolves against the
+agent's working directory at load time. An absolute prefix is used exactly
+as written in both files.
+
 **`command_prefix` is for shell renderings only.** A `command_prefix` rule
 paired with a tool whose rendering is a structured JSON dump (every built-in
 except `bash`) is rejected at load time and surfaced as a typed registration

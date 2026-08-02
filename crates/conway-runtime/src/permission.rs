@@ -187,9 +187,28 @@ fn resolve_like_the_tool_will(cwd: &Path, raw: &str) -> Option<PathBuf> {
 /// clauses (no canonical root to carry) and for a `PathsUnder` prefix that
 /// does not canonicalize -- the caller drops the latter (fail closed: a
 /// boundary that cannot be established cannot be trusted to confine).
-fn canonicalize_when(when: &When) -> Option<CanonicalRoot> {
+///
+/// B2: a RELATIVE prefix resolves against `base` -- via the SAME
+/// [`resolve_like_the_tool_will`] helper the per-call check resolves path
+/// arguments with (P-14: one resolution rule, not a third copy) -- never
+/// against the process's cwd, which is what a bare `Path::canonicalize`
+/// would use. The process cwd is wherever the operator happened to launch
+/// conway from and has no relationship to the project the rule was written
+/// to protect, so a relative prefix resolved there confers a boundary the
+/// operator did not write (finding S5). `base` is an explicit parameter
+/// supplied by the caller (the facade's permission-file loader passes the
+/// PROJECT root for a project file, the agent cwd for the global file); the
+/// broker deliberately never reads `std::env::current_dir()` here, which
+/// would recreate the bug one level down. An ABSOLUTE prefix is unaffected
+/// by `base` (it passes through `resolve_like_the_tool_will` unchanged),
+/// and a prefix containing a NUL byte fails closed exactly like one that
+/// does not canonicalize.
+fn canonicalize_when(when: &When, base: &Path) -> Option<CanonicalRoot> {
     match when {
-        When::PathsUnder(prefix) => CanonicalRoot::new(Path::new(prefix)).ok(),
+        When::PathsUnder(prefix) => {
+            let resolved = resolve_like_the_tool_will(base, prefix)?;
+            CanonicalRoot::new(&resolved).ok()
+        }
         _ => None,
     }
 }
@@ -548,7 +567,21 @@ impl PermissionBroker {
         granting_agent: AgentId,
         origin: PatternOrigin,
     ) {
-        self.remember_pattern_rule(rule.to_rule(Then::Allow), scope, granting_agent, origin);
+        // A flat rule desugars to `When::Always`/`When::CommandPrefix` only
+        // (`PatternRule::to_rule`) -- never `When::PathsUnder` -- so the
+        // `base` `remember_pattern_rule` takes is never consulted on this
+        // path. The placeholder is therefore not a resolution choice; it
+        // only satisfies the signature. The `debug_assert!` turns that
+        // comment into code (B2 review): if a future flat-form extension
+        // ever desugars to `PathsUnder`, this placeholder would silently
+        // resolve the prefix against `/` -- fail the test build instead.
+        let desugared = rule.to_rule(Then::Allow);
+        debug_assert!(
+            !matches!(desugared.when, When::PathsUnder(_)),
+            "flat rules must never desugar to PathsUnder: the placeholder \
+             base would silently resolve the prefix against `/`"
+        );
+        self.remember_pattern_rule(desugared, scope, granting_agent, origin, Path::new("/"));
     }
 
     /// F12: the structured-form companion to [`Self::remember_pattern`].
@@ -560,12 +593,18 @@ impl PermissionBroker {
     /// is a lie the operator will not notice, the mirror of the
     /// `68ea9b1` `read:*`-matched-nothing bug). The caller surfaces that
     /// failure; the broker itself never panics on untrusted input (P-10).
+    ///
+    /// `base` is the directory a RELATIVE `paths_under` prefix resolves
+    /// against (B2 -- see [`canonicalize_when`]`s own doc for why this is an
+    /// explicit parameter and never an implicit process-cwd read). It is
+    /// ignored for every other `when` clause, and for an absolute prefix.
     pub fn remember_pattern_rule(
         &self,
         rule: Rule,
         scope: PermissionScope,
         granting_agent: AgentId,
         origin: PatternOrigin,
+        base: &Path,
     ) -> bool {
         // An allow rule MUST be `then: allow` -- a deny/prompt rule routed
         // here would silently do the wrong thing at `pattern_allows`. The
@@ -575,7 +614,7 @@ impl PermissionBroker {
         if rule.then != Then::Allow {
             return false;
         }
-        let canonical = canonicalize_when(&rule.when);
+        let canonical = canonicalize_when(&rule.when, base);
         if canonical.is_none() && matches!(rule.when, When::PathsUnder(_)) {
             return false;
         }
@@ -593,18 +632,27 @@ impl PermissionBroker {
     /// narrowing what is authorized has no failure mode worth scoping
     /// (board item 01KYT8SGX32CP56PRJNG72V2W5, D4 §3).
     pub fn remember_deny_pattern(&self, rule: PatternRule, origin: PatternOrigin) {
-        self.remember_deny_rule(rule.to_rule(Then::Deny), origin);
+        // Never-`PathsUnder` desugaring, so `base` is never consulted --
+        // see `remember_pattern`'s own comment and its `debug_assert!`.
+        let desugared = rule.to_rule(Then::Deny);
+        debug_assert!(
+            !matches!(desugared.when, When::PathsUnder(_)),
+            "flat rules must never desugar to PathsUnder: the placeholder \
+             base would silently resolve the prefix against `/`"
+        );
+        self.remember_deny_rule(desugared, origin, Path::new("/"));
     }
 
     /// F12: the structured-form companion to [`Self::remember_deny_pattern`].
     /// Installs a DENY [`Rule`] directly. Same fail-closed posture as
     /// [`Self::remember_pattern_rule`] for a [`When::PathsUnder`] whose
-    /// prefix cannot be canonicalized.
-    pub fn remember_deny_rule(&self, rule: Rule, origin: PatternOrigin) -> bool {
+    /// prefix cannot be canonicalized; `base` has the identical meaning
+    /// (B2) and is likewise ignored for every other `when` clause.
+    pub fn remember_deny_rule(&self, rule: Rule, origin: PatternOrigin, base: &Path) -> bool {
         if rule.then != Then::Deny {
             return false;
         }
-        let canonical = canonicalize_when(&rule.when);
+        let canonical = canonicalize_when(&rule.when, base);
         if canonical.is_none() && matches!(rule.when, When::PathsUnder(_)) {
             return false;
         }
@@ -624,18 +672,27 @@ impl PermissionBroker {
     /// worth scoping, the same reasoning `remember_deny_pattern`'s own doc
     /// gives for `deny`.
     pub fn remember_prompt_pattern(&self, rule: PatternRule, origin: PatternOrigin) {
-        self.remember_prompt_rule(rule.to_rule(Then::Prompt), origin);
+        // Never-`PathsUnder` desugaring, so `base` is never consulted --
+        // see `remember_pattern`'s own comment and its `debug_assert!`.
+        let desugared = rule.to_rule(Then::Prompt);
+        debug_assert!(
+            !matches!(desugared.when, When::PathsUnder(_)),
+            "flat rules must never desugar to PathsUnder: the placeholder \
+             base would silently resolve the prefix against `/`"
+        );
+        self.remember_prompt_rule(desugared, origin, Path::new("/"));
     }
 
     /// F12: the structured-form companion to [`Self::remember_prompt_pattern`].
     /// Installs a PROMPT [`Rule`] directly. Same fail-closed posture as the
     /// other `remember_*_rule` companions for a [`When::PathsUnder`] whose
-    /// prefix cannot be canonicalized.
-    pub fn remember_prompt_rule(&self, rule: Rule, origin: PatternOrigin) -> bool {
+    /// prefix cannot be canonicalized; `base` has the identical meaning
+    /// (B2) and is likewise ignored for every other `when` clause.
+    pub fn remember_prompt_rule(&self, rule: Rule, origin: PatternOrigin, base: &Path) -> bool {
         if rule.then != Then::Prompt {
             return false;
         }
-        let canonical = canonicalize_when(&rule.when);
+        let canonical = canonicalize_when(&rule.when, base);
         if canonical.is_none() && matches!(rule.when, When::PathsUnder(_)) {
             return false;
         }

@@ -218,6 +218,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A relative `paths_under` prefix resolved against the process's cwd, not
+  the project — a rule like `"src"` in a project `permissions.json`
+  silently pointed at `~/src` when conway was launched from your home
+  directory.** `canonicalize_when` canonicalized the prefix with a bare
+  `Path::canonicalize`, whose base for a relative path is the process's
+  current directory at launch — so the operator believed a path was
+  protected when the rule in fact confined (or failed to confine) a tree
+  they never wrote a rule for. Every other relative root in conway
+  (`RootSpec.root`, `SubagentSpec.root`) resolves against the project;
+  `paths_under` was the odd one out. The base is now threaded explicitly
+  from the loader that knows which file the rule came from:
+  `Conway::load_permission_files`/`trust_permission_file` compute it
+  (`<project>/.conway/permissions.json` → the project root; the global file,
+  which has no containing project, → the agent's working directory at load
+  time) and pass it through `install_*_rule` to the broker's
+  `remember_*_rule`, which resolves the prefix via the same
+  `resolve_like_the_tool_will` helper the per-call check uses — no third
+  copy of the resolution rule, and no implicit `current_dir` read inside
+  the broker. Absolute prefixes are byte-for-byte unchanged, and the stored
+  `Rule` keeps its relative prefix verbatim (the review surface shows, and
+  a revoke addresses, exactly what the file says). Pinned by a real-stack
+  seam test that loads a project file with `paths_under: "src"` through the
+  genuine `/trust permissions` path and asserts both halves of the
+  boundary: a read under the project's `src/` is authorized without the
+  gate, and the same-named path under the process cwd reaches it —
+  verified to fail when the base resolution is neutralized.
+  (`crates/conway-runtime/src/permission.rs`,
+  `crates/conway/src/conway.rs`,
+  `crates/conway/tests/structured_rule_seam.rs`, `docs/permissions.md`)
+
 - **Exit code 4 (`NoHealthyBackend`) was also declared but unreachable —
   it is now wired, and routing rejections exit 4.** A routing failure
   mid-turn never reached the CLI's exit classifier: the agent loop folds
