@@ -34,11 +34,14 @@
 //!
 //! ## Grouping
 //!
-//! Two [`MenuNode::Group`]s -- "display" (the two booleans) and "tool
-//! output" (the one numeric setting) -- rather than one flat group or three
-//! separate ones: this is genuinely the shape a THIRD settings category
-//! (say, session history) would extend later, not artificial nesting
-//! invented only to exercise the primitive.
+//! Three top-level [`MenuNode::Group`]s -- "display" (the two booleans),
+//! "tool output" (the one numeric setting), and "permissions" (the mode,
+//! plus allow/deny/prompt rule review as three SUB-groups -- see
+//! [`build_tree`]'s own doc for why they are separate sections and why
+//! deny/prompt rows are read-only [`MenuNode::Static`] rows) -- rather
+//! than one flat group or several separate ones: this is genuinely the
+//! shape a further settings category (say, session history) would extend
+//! later, not artificial nesting invented only to exercise the primitive.
 //!
 //! ## Interaction
 //!
@@ -107,6 +110,14 @@ pub(crate) const LEAF_REVOKE_GRANT_PREFIX: &str = "revoke_grant:";
 const DISPLAY_GROUP: &str = "display";
 const TOOL_OUTPUT_GROUP: &str = "tool output";
 const PERMISSIONS_GROUP: &str = "permissions";
+/// The permissions group's three sub-section labels. Allow, deny, and
+/// prompt compose by DIFFERENT rules (deny beats everything except root
+/// containment; prompt narrows below deny; allow grants), so one
+/// undifferentiated list would misrepresent the model -- each gets its own
+/// collapsible section.
+const ALLOW_GROUP: &str = "allow";
+const DENY_GROUP: &str = "deny";
+const PROMPT_GROUP: &str = "prompt";
 
 /// The footer's session-only disclosure (this item's decision record: no
 /// `settings.json` writer exists, and inventing one raises a "which layer"
@@ -158,32 +169,105 @@ pub(crate) fn build_tree(state: &AppState) -> MenuState {
         // explicit "(Enter to revoke)" hint, so the destructive action is
         // named before it happens, not just implied by the row becoming
         // selectable.
+        //
+        // Deny and prompt rules get their own sections BELOW the allow
+        // section, and their rows are `MenuNode::Static` -- read-only, so
+        // the cursor can never land on one and nothing highlights or
+        // answers `Enter`. That is the same "worse lie" reasoning run in
+        // the OTHER direction: deny/prompt are deliberately NOT revocable
+        // from this menu (a safety rule offering one-keystroke removal is
+        // the wrong shape -- `Conway::revoke_permission_pattern`'s own
+        // doc), so their rows must not LOOK actionable the way a grant row
+        // does. They are shown at all because deny/prompt install from ANY
+        // permissions file, trusted or not -- an untrusted checkout can
+        // ship one -- and a rule set nobody can inspect is a trap. Flat
+        // and structured (F12) rules render alike, `[origin] description`;
+        // the structured ones simply come from `Rule::describe()` instead
+        // of `PatternRule::describe()`.
         group_node(PERMISSIONS_GROUP, state, {
-            let mut rows = vec![MenuNode::leaf(
-                format!(
-                    "mode -- {} (Enter to cycle)",
-                    state.permission_mode.label()
+            let rows = vec![
+                MenuNode::leaf(
+                    format!(
+                        "mode -- {} (Enter to cycle)",
+                        state.permission_mode.label()
+                    ),
+                    LEAF_PERMISSION_MODE,
                 ),
-                LEAF_PERMISSION_MODE,
-            )];
-            if state.permission_grants.is_empty() {
-                rows.push(MenuNode::leaf("no active grants".to_string(), ""));
-            } else {
-                for (i, (rule, origin)) in state.permission_grants.iter().enumerate() {
-                    rows.push(MenuNode::leaf(
-                        format!(
-                            "granted: [{}] {} (Enter to revoke)",
+                group_node(ALLOW_GROUP, state, {
+                    let mut allow = Vec::new();
+                    if state.permission_grants.is_empty() {
+                        allow.push(MenuNode::static_row("no active grants"));
+                    } else {
+                        for (i, (rule, origin)) in
+                            state.permission_grants.iter().enumerate()
+                        {
+                            allow.push(MenuNode::leaf(
+                                format!(
+                                    "granted: [{}] {} (Enter to revoke)",
+                                    origin.describe(),
+                                    rule.describe()
+                                ),
+                                format!("{LEAF_REVOKE_GRANT_PREFIX}{i}"),
+                            ));
+                        }
+                        allow.push(MenuNode::leaf(
+                            "revoke all grants (Enter)".to_string(),
+                            LEAF_REVOKE_GRANTS,
+                        ));
+                    }
+                    allow
+                }),
+                group_node(DENY_GROUP, state, {
+                    let mut deny: Vec<MenuNode> = state
+                        .permission_denies
+                        .iter()
+                        .map(|(rule, origin)| {
+                            MenuNode::static_row(format!(
+                                "[{}] {}",
+                                origin.describe(),
+                                rule.describe()
+                            ))
+                        })
+                        .collect();
+                    deny.extend(state.structured_deny_rules.iter().map(|(rule, origin)| {
+                        MenuNode::static_row(format!(
+                            "[{}] {}",
                             origin.describe(),
                             rule.describe()
-                        ),
-                        format!("{LEAF_REVOKE_GRANT_PREFIX}{i}"),
+                        ))
+                    }));
+                    if deny.is_empty() {
+                        deny.push(MenuNode::static_row("no active deny rules"));
+                    }
+                    deny
+                }),
+                group_node(PROMPT_GROUP, state, {
+                    let mut prompt: Vec<MenuNode> = state
+                        .permission_prompts
+                        .iter()
+                        .map(|(rule, origin)| {
+                            MenuNode::static_row(format!(
+                                "[{}] {}",
+                                origin.describe(),
+                                rule.describe()
+                            ))
+                        })
+                        .collect();
+                    prompt.extend(state.structured_prompt_rules.iter().map(
+                        |(rule, origin)| {
+                            MenuNode::static_row(format!(
+                                "[{}] {}",
+                                origin.describe(),
+                                rule.describe()
+                            ))
+                        },
                     ));
-                }
-                rows.push(MenuNode::leaf(
-                    "revoke all grants (Enter)".to_string(),
-                    LEAF_REVOKE_GRANTS,
-                ));
-            }
+                    if prompt.is_empty() {
+                        prompt.push(MenuNode::static_row("no active prompt rules"));
+                    }
+                    prompt
+                }),
+            ];
             rows
         }),
     ];
@@ -477,6 +561,137 @@ mod tests {
             .map(|r| r.label.clone())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    // ---- Deny/prompt review sections: visible, read-only, with origin ----
+
+    /// One flat deny + one structured deny + one flat prompt + one
+    /// structured prompt, all from the same project file.
+    fn populate_deny_and_prompt(state: &mut AppState) {
+        let file = || {
+            conway::PatternOrigin::File(std::path::PathBuf::from(
+                "/repo/.conway/permissions.json",
+            ))
+        };
+        state.permission_denies = vec![(
+            conway::PatternRule::parse("bash:curl").expect("valid rule"),
+            file(),
+        )];
+        state.structured_deny_rules = vec![(
+            conway::Rule {
+                select: conway::Select::Tools(vec!["bash".to_string(), "read".to_string()]),
+                when: conway::When::Always,
+                then: conway::Then::Deny,
+            },
+            file(),
+        )];
+        state.permission_prompts = vec![(
+            conway::PatternRule::parse("bash:rm").expect("valid rule"),
+            file(),
+        )];
+        state.structured_prompt_rules = vec![(
+            conway::Rule {
+                select: conway::Select::Tools(vec!["bash".to_string(), "read".to_string()]),
+                when: conway::When::Always,
+                then: conway::Then::Prompt,
+            },
+            file(),
+        )];
+    }
+
+    /// Every active deny and prompt rule -- flat AND structured -- renders
+    /// with its origin, in its own section, as a NON-selectable static row
+    /// that promises no `Enter` action.
+    #[test]
+    fn deny_and_prompt_rules_render_with_their_origins_as_static_rows() {
+        let mut state = AppState::new(AgentId::new());
+        state.open_settings();
+        populate_deny_and_prompt(&mut state);
+
+        let rows = build_tree(&state).rows();
+        let text = rows
+            .iter()
+            .map(|r| r.label.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        // The sections exist as their own groups, distinct from allow's.
+        for section in ["allow", "deny", "prompt"] {
+            assert!(
+                rows.iter()
+                    .any(|r| r.label == section
+                        && matches!(r.kind, menu::MenuRowKind::Group { .. })),
+                "the {section} section must be its own group: {text}"
+            );
+        }
+
+        // Flat and structured rules alike, each with its origin's path.
+        let expected = [
+            "[/repo/.conway/permissions.json] `bash` commands starting with `curl`",
+            "[/repo/.conway/permissions.json] [bash, read] (any call)",
+            "[/repo/.conway/permissions.json] `bash` commands starting with `rm`",
+        ];
+        for needle in expected {
+            assert!(text.contains(needle), "missing row: {needle}\n{text}");
+        }
+
+        // Every deny/prompt entry row is a Static row (never selectable,
+        // never highlighted) and names no Enter action -- a read-only row
+        // must not LOOK actionable (see `MenuNode::Static`'s own doc).
+        let deny_prompt_rows: Vec<_> = rows
+            .iter()
+            .filter(|r| r.label.contains("/repo/.conway/permissions.json"))
+            .collect();
+        assert_eq!(deny_prompt_rows.len(), 4, "{text}");
+        for row in deny_prompt_rows {
+            assert_eq!(
+                row.kind,
+                menu::MenuRowKind::Static,
+                "a deny/prompt row must be read-only: {row:?}"
+            );
+            assert!(
+                !row.label.contains("(Enter"),
+                "a read-only row must not promise an action: {}",
+                row.label
+            );
+        }
+    }
+
+    /// Empty sections say so honestly, as static rows (the cursor never
+    /// lands on the placeholder either).
+    #[test]
+    fn deny_and_prompt_sections_have_honest_empty_states() {
+        let mut state = AppState::new(AgentId::new());
+        state.open_settings();
+
+        let rows = build_tree(&state).rows();
+        for needle in ["no active deny rules", "no active prompt rules"] {
+            let row = rows
+                .iter()
+                .find(|r| r.label == needle)
+                .unwrap_or_else(|| panic!("missing empty-state row: {needle}"));
+            assert_eq!(row.kind, menu::MenuRowKind::Static, "{row:?}");
+        }
+    }
+
+    /// Driven through the real navigation primitive: pressing Down across
+    /// the whole tree never rests the cursor on a deny/prompt row.
+    #[test]
+    fn the_cursor_can_never_land_on_a_deny_or_prompt_row() {
+        let mut state = AppState::new(AgentId::new());
+        state.open_settings();
+        populate_deny_and_prompt(&mut state);
+
+        let mut tree = build_tree(&state);
+        let row_count = tree.rows().len();
+        for _ in 0..row_count {
+            let selected = tree.selected_row().expect("nonempty tree");
+            assert!(
+                !matches!(selected.kind, menu::MenuRowKind::Static),
+                "the cursor landed on a read-only row: {selected:?}"
+            );
+            tree.move_selection(1);
+        }
     }
 
 }

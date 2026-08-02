@@ -1465,7 +1465,12 @@ mod tests {
 
     /// V4 acceptance: the settings menu is bottom-anchored and content-sized
     /// too, on the same shared primitive -- ordinary transcript text stays
-    /// visible above its short, 5-row tree.
+    /// visible above its short tree. The viewport is 40 rows tall rather
+    /// than the usual 24 because the default tree is no longer 5 rows: the
+    /// permissions group grew allow/deny/prompt review sections (three
+    /// sub-group headers plus their honest empty-state rows), so "short"
+    /// now means ~15 content rows -- still far from claiming a 40-row
+    /// transcript area, which is what this test actually asserts.
     #[test]
     fn settings_menu_is_bottom_anchored_and_content_sized() {
         let mut state = AppState::new(AgentId::new());
@@ -1477,7 +1482,7 @@ mod tests {
         });
         state.open_settings();
 
-        let rows = render(&state, 80, 24);
+        let rows = render(&state, 80, 40);
         let border_row =
             top_border_row(&rows).expect("the settings menu must draw a bordered block");
 

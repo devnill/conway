@@ -187,7 +187,10 @@ active-only); `Esc` (or `/agents` again) closes it. The status markers:
 `/settings` opens a menu of three groups: **display** (show reasoning
 traces, show timestamps), **tool output** (how many lines a folded tool
 call shows before `Ctrl-E` is needed), and **permissions** (cycle the
-permission mode, and review or revoke individual grants). `Up`/`Down`
+permission mode; review or revoke individual grants under **allow**; and
+read-only **deny** and **prompt** sections listing every rule — flat or
+structured — that any permissions file, trusted or not, has put in force,
+each with the file it came from). `Up`/`Down`
 navigate, `Enter` toggles a boolean or expands/collapses a group,
 `Left`/`Right` step the numeric tool-preview setting, `Esc` closes. The
 two display toggles and the permission-mode cycle apply to this session

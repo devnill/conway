@@ -221,6 +221,10 @@ fn activate_settings_selection(state: &mut AppState) -> Option<Action> {
     let mut menu = super::view::settings::build_tree(state);
     let row = menu.selected_row()?;
     match row.kind {
+        // A read-only row (the deny/prompt review lists' entries) is never
+        // the selection -- `MenuState::selected_index` resolves off it --
+        // and has nothing to activate even defensively.
+        super::view::menu::MenuRowKind::Static => {}
         super::view::menu::MenuRowKind::Group { .. } => {
             // Reuses `MenuState::toggle_group_at_selection` itself (the
             // primitive's own flip + re-clamp) rather than recomputing an

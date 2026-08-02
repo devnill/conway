@@ -380,6 +380,37 @@ impl Conway {
         self.rt.permission_broker().active_deny_patterns()
     }
 
+    /// The structured half of the deny review list: every active deny
+    /// [`conway_core::permission_pattern::Rule`] the flat form cannot
+    /// express, paired with its origin. Deny rules install from ANY file,
+    /// trusted or not (D4 §3), so an operator debugging "why does this keep
+    /// refusing" needs to see them -- a rule set nobody can inspect is a
+    /// trap. Read-only: deny rules are deliberately not revocable from the
+    /// review surface (see [`Self::revoke_permission_pattern`]'s own doc).
+    pub fn active_structured_deny_rules(
+        &self,
+    ) -> Vec<(
+        conway_core::permission_pattern::Rule,
+        conway_core::permission_pattern::PatternOrigin,
+    )> {
+        self.rt.permission_broker().active_structured_deny_rules()
+    }
+
+    /// The structured half of the prompt review list: every active prompt
+    /// [`conway_core::permission_pattern::Rule`] the flat form cannot
+    /// express, paired with its origin -- mirroring
+    /// [`Self::active_structured_deny_rules`]. Like deny, prompt rules
+    /// install from any file unconditionally (they only ever narrow), so
+    /// their inspection surface matters for exactly the same reason.
+    pub fn active_structured_prompt_rules(
+        &self,
+    ) -> Vec<(
+        conway_core::permission_pattern::Rule,
+        conway_core::permission_pattern::PatternOrigin,
+    )> {
+        self.rt.permission_broker().active_structured_prompt_rules()
+    }
+
     /// Drops every pattern ALLOW grant and cached `AllowAlways`, returning
     /// the session to asking (V2b). Deliberately leaves `deny` rules in
     /// force -- see `PermissionBroker::revoke_all_grants`'s own doc.

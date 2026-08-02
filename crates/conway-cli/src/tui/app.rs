@@ -807,6 +807,16 @@ impl App {
         if text.trim() == "/settings" {
             self.state.permission_grants = self.conway.active_permission_patterns();
             self.state.permission_mode = self.conway.permission_mode();
+            // The read-only deny/prompt review lists refresh on the same
+            // seam. Unlike grants, these never change in-session (deny and
+            // prompt rules install only at file load, from any file,
+            // trusted or not -- there is no interactive path that adds
+            // one), so this refresh exists to keep the menu builder a pure
+            // function of `AppState`, not to track churn.
+            self.state.permission_denies = self.conway.active_deny_permission_patterns();
+            self.state.permission_prompts = self.conway.active_prompt_permission_patterns();
+            self.state.structured_deny_rules = self.conway.active_structured_deny_rules();
+            self.state.structured_prompt_rules = self.conway.active_structured_prompt_rules();
         }
         // Board item 01KYT8SGX32CP56PRJNG72V2W5: the ONLY path that writes
         // a trust record -- an explicit operator action, never automatic,
@@ -1600,6 +1610,113 @@ mod tests {
             "the registration-error Error entry must render on screen: {text}"
         );
     }
+
+    /// A3 (P-12): a deny or prompt rule shipped by an UNTRUSTED project
+    /// checkout applies immediately (that asymmetry is the sound part of
+    /// the model -- `permission_trust_seam.rs` proves the application
+    /// half) -- and the operator can SEE it in `/settings`, with its
+    /// origin. This drives the real production seam end to end: a real
+    /// `.conway/permissions.json` on a real filesystem, loaded by the real
+    /// `App::new` loader (`Conway::load_permission_files`), `/settings`
+    /// opened through the real `submit` path, and the assertion made on
+    /// the OBSERVABLE rows -- the exact labels `view::draw` renders (via
+    /// `view::settings::build_tree`) plus the rendered screen buffer --
+    /// never on an internal call count. No trust decision and no XDG
+    /// isolation are needed precisely because deny/prompt install from any
+    /// file, trusted or not -- the case this item exists for.
+    #[tokio::test]
+    async fn untrusted_file_deny_and_prompt_rules_are_visible_in_settings() {
+        let project = tempfile::TempDir::new().expect("tempdir");
+        let conway_dir = project.path().join(".conway");
+        std::fs::create_dir_all(&conway_dir).expect("mkdir .conway");
+        // Pin project discovery to the tempdir (an empty `settings.json` is
+        // all `discover` checks for) so no ancestor `.conway/` can
+        // redirect the permissions-file path.
+        std::fs::write(conway_dir.join("settings.json"), "").expect("write settings.json");
+        // One flat deny, one structured-only deny (multiple tools -- the
+        // flat form cannot express it), one prompt that round-trips to the
+        // flat form, one structured-only prompt: both halves of both
+        // review lists, from the same untrusted file.
+        std::fs::write(
+            conway_dir.join("permissions.json"),
+            r#"{
+                "deny": ["bash:curl"],
+                "rules": [
+                    {"select": {"tools": ["bash", "read"]}, "when": "always", "then": "deny"},
+                    {"select": {"tools": ["bash"]}, "when": {"command_prefix": "rm"}, "then": "prompt"},
+                    {"select": {"tools": ["bash", "read"]}, "when": "always", "then": "prompt"}
+                ]
+            }"#,
+        )
+        .expect("write permissions.json");
+
+        let conway = build_conway_with_echo_backend();
+        let mut cli = minimal_cli();
+        cli.cwd = Some(project.path().to_path_buf());
+        let mut app = App::new(&cli, &conway).await.expect("App::new should succeed");
+
+        let outcome = app
+            .submit("/settings".to_string())
+            .await
+            .expect("submit should not error");
+        assert!(matches!(outcome, SubmitOutcome::Continue));
+        assert!(app.state.settings_open, "/settings must open the menu");
+
+        let origin = conway_dir.join("permissions.json").display().to_string();
+        let rows = crate::tui::view::settings::build_tree(&app.state).rows();
+        let labels: Vec<String> = rows.iter().map(|r| r.label.clone()).collect();
+        let joined = labels.join("\n");
+
+        // Every deny/prompt rule from the untrusted file -- flat and
+        // structured -- is a visible row carrying the file's own path.
+        for needle in [
+            format!("[{origin}] `bash` commands starting with `curl`"),
+            format!("[{origin}] [bash, read] (any call)"),
+            format!("[{origin}] `bash` commands starting with `rm`"),
+        ] {
+            assert!(
+                joined.contains(&needle),
+                "missing review row: {needle}\n{joined}"
+            );
+        }
+        // The two `[bash, read] (any call)` rules (one deny, one prompt)
+        // both render -- the count, not just presence, since they share a
+        // description.
+        assert_eq!(
+            joined
+                .matches("[bash, read] (any call)")
+                .count(),
+            2,
+            "the structured deny AND the structured prompt must each appear: {joined}"
+        );
+        // And they are read-only rows, never selectable ones.
+        let deny_prompt_rows: Vec<_> = rows
+            .iter()
+            .filter(|r| r.label.contains(&origin))
+            .collect();
+        assert_eq!(deny_prompt_rows.len(), 4, "{joined}");
+        for row in deny_prompt_rows {
+            assert_eq!(
+                row.kind,
+                crate::tui::view::menu::MenuRowKind::Static,
+                "a deny/prompt row from an untrusted file must be read-only: {row:?}"
+            );
+        }
+
+        // Buffer-asserting half (this crate's binding TUI test convention):
+        // the operator can actually READ the sections on screen.
+        let text = super::super::test_support::render_text(&app.state, 200, 50);
+        for needle in [
+            "deny",
+            "prompt",
+            "commands starting with `curl`",
+            "commands starting with `rm`",
+            "permissions.json",
+        ] {
+            assert!(text.contains(needle), "missing on screen: {needle}\n{text}");
+        }
+    }
+
 
     /// Acceptance test: "focus-switching to an agent with history shows its
     /// prompts as user turns." Spawns a real child with a real prompt,
