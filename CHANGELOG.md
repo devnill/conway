@@ -112,6 +112,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `crates/conway-cli/src/tui/view/mod.rs`, `crates/conway/src/conway.rs`,
   `crates/conway/tests/permission_scope_seam.rs`, `docs/permissions.md`)
 
+- **`/settings` now shows every active deny and prompt rule, with its
+  origin.** Deny and prompt rules install from any permissions file,
+  trusted or not — that asymmetry is the sound part of the model (a cloned
+  repo cannot grant itself allow authority, but a safety rule works the
+  moment it is written) — yet until now no surface listed them: you could
+  audit what a repo *granted* you, but not what it *denied* or *prompted*
+  you. The permissions group now has three sections — **allow** (the
+  existing grant list, unchanged, still per-rule revocable), **deny**, and
+  **prompt** — each deny/prompt row rendered `[origin] description`, flat
+  and structured rules alike. The rows are read-only on purpose: the
+  cursor skips over them (a new `MenuNode::Static` row kind in the menu
+  primitive), because deny/prompt only ever narrow and a safety rule
+  offering one-keystroke removal is the wrong shape. The untrusted-file
+  case — the one this exists for — is proven end to end in
+  `crates/conway-cli/src/tui/app.rs::untrusted_file_deny_and_prompt_rules_are_visible_in_settings`,
+  which drives a real `.conway/permissions.json` through the real
+  `App::new` loader and asserts on the rendered rows. The facade gains
+  `Conway::active_structured_deny_rules` /
+  `active_structured_prompt_rules` (the flat deny/prompt accessors already
+  existed). (`crates/conway/src/conway.rs`,
+  `crates/conway-cli/src/tui/view/menu.rs`,
+  `crates/conway-cli/src/tui/view/settings.rs`,
+  `crates/conway-cli/src/tui/state.rs`,
+  `crates/conway-cli/src/tui/app.rs`, `docs/permissions.md`,
+  `docs/interactive.md`)
+
 ### Changed
 
 - **The three control-character sanitizers are converged to one shared

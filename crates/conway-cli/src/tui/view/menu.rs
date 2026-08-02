@@ -62,6 +62,16 @@ pub enum MenuNode {
     /// however its own settings schema needs (a dotted config path, an enum
     /// tag, ...); [`MenuState`] never inspects it beyond returning it.
     Leaf { label: String, id: String },
+    /// A read-only, NON-selectable row: the cursor skips over it, it can
+    /// never be highlighted, and `Enter` can never reach it. This is the
+    /// honest shape for a row that shows something but offers no action --
+    /// the settings item that introduced per-grant revocation called a
+    /// selectable-but-inert row "a worse lie than an obviously static one"
+    /// (see `view/settings.rs`'s own doc), and this variant is the
+    /// obviously-static one: read-only deny/prompt permission rules render
+    /// as `Static` rows so they never LOOK actionable the way a highlighted
+    /// leaf does.
+    Static { label: String },
     /// A collapsible group of child nodes. `expanded` starts `true` (a
     /// settings tree is more useful to browse fully open than to have to
     /// expand every section first) and is flipped by
@@ -79,6 +89,13 @@ impl MenuNode {
         MenuNode::Leaf {
             label: label.into(),
             id: id.into(),
+        }
+    }
+
+    /// Convenience constructor for a read-only, non-selectable row.
+    pub fn static_row(label: impl Into<String>) -> Self {
+        MenuNode::Static {
+            label: label.into(),
         }
     }
 
@@ -108,6 +125,8 @@ pub struct MenuRow {
 #[derive(Debug, Clone, PartialEq)]
 pub enum MenuRowKind {
     Leaf { id: String },
+    /// A read-only row the cursor never lands on (see [`MenuNode::Static`]).
+    Static,
     Group { expanded: bool },
 }
 
@@ -138,26 +157,60 @@ impl MenuState {
     /// The selected row's index, clamped to the CURRENT flattened row count
     /// (never past the end, even right after a collapse shortened the
     /// list -- mirrors `AppState::clamp_agent_selected`'s own re-clamp
-    /// shape).
+    /// shape). If the clamped index lands on a [`MenuRowKind::Static`] row
+    /// (a restored cursor from before the tree changed), it resolves to the
+    /// NEAREST selectable row instead -- forward first, then backward -- so
+    /// the cursor can never rest on a row that offers no action; a tree with
+    /// no selectable rows at all returns the bare clamp (and [`draw`]
+    /// highlights nothing).
     pub fn selected_index(&self) -> usize {
-        let n = self.rows().len();
-        if n == 0 {
-            0
-        } else {
-            self.selected.min(n - 1)
+        let rows = self.rows();
+        if rows.is_empty() {
+            return 0;
         }
+        let clamped = self.selected.min(rows.len() - 1);
+        if selectable(&rows[clamped]) {
+            return clamped;
+        }
+        for offset in 1..rows.len() {
+            if let Some(i) = clamped.checked_add(offset).filter(|&i| i < rows.len()) {
+                if selectable(&rows[i]) {
+                    return i;
+                }
+            }
+            if let Some(i) = clamped.checked_sub(offset) {
+                if selectable(&rows[i]) {
+                    return i;
+                }
+            }
+        }
+        clamped
     }
 
-    /// Moves the selection by `delta` rows, clamped at both ends (no wrap --
-    /// mirrors `AppState::agent_scroll`'s own browsing-list shape).
+    /// Moves the selection by `delta` SELECTABLE rows, clamped at both ends
+    /// (no wrap -- mirrors `AppState::agent_scroll`'s own browsing-list
+    /// shape). [`MenuRowKind::Static`] rows are skipped entirely: a read-only
+    /// row must never take the cursor, or it would look actionable while
+    /// doing nothing on `Enter`.
     pub fn move_selection(&mut self, delta: isize) {
-        let n = self.rows().len();
-        if n == 0 {
+        let rows = self.rows();
+        let selectable_indices: Vec<usize> = rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| selectable(row))
+            .map(|(i, _)| i)
+            .collect();
+        if selectable_indices.is_empty() {
             return;
         }
-        let max = (n - 1) as isize;
-        let cur = self.selected_index() as isize;
-        self.selected = (cur + delta).clamp(0, max) as usize;
+        let current = self.selected_index();
+        let position = selectable_indices
+            .iter()
+            .position(|&i| i == current)
+            .unwrap_or(0);
+        let max = (selectable_indices.len() - 1) as isize;
+        let next = (position as isize + delta).clamp(0, max) as usize;
+        self.selected = selectable_indices[next];
     }
 
     /// Sets the selected row's RAW index directly (V4:
@@ -211,7 +264,9 @@ impl MenuState {
     pub fn selected_leaf_id(&self) -> Option<String> {
         match self.selected_row()?.kind {
             MenuRowKind::Leaf { id } => Some(id),
-            MenuRowKind::Group { .. } => None,
+            // A static row is never selected (see [`Self::selected_index`]),
+            // and even defensively it has no id to activate.
+            MenuRowKind::Static | MenuRowKind::Group { .. } => None,
         }
     }
 }
@@ -226,6 +281,14 @@ fn flatten(nodes: &[MenuNode], depth: usize, path: &mut Vec<usize>, out: &mut Ve
                     depth,
                     label: label.clone(),
                     kind: MenuRowKind::Leaf { id: id.clone() },
+                });
+            }
+            MenuNode::Static { label } => {
+                out.push(MenuRow {
+                    path: path.clone(),
+                    depth,
+                    label: label.clone(),
+                    kind: MenuRowKind::Static,
                 });
             }
             MenuNode::Group {
@@ -250,6 +313,12 @@ fn flatten(nodes: &[MenuNode], depth: usize, path: &mut Vec<usize>, out: &mut Ve
     }
 }
 
+/// Whether the cursor may rest on `row`: everything except a read-only
+/// [`MenuRowKind::Static`] row.
+fn selectable(row: &MenuRow) -> bool {
+    !matches!(row.kind, MenuRowKind::Static)
+}
+
 /// Looks up the node at `path` (a sequence of child indices from the roots)
 /// for mutation. `None` if the path is stale (should not happen in practice
 /// -- [`MenuState::rows`] and this lookup always walk the SAME `roots`
@@ -265,7 +334,7 @@ fn node_at_mut<'a>(nodes: &'a mut [MenuNode], path: &[usize]) -> Option<&'a mut 
     } else {
         match node {
             MenuNode::Group { children, .. } => node_at_mut(children, rest),
-            MenuNode::Leaf { .. } => None,
+            MenuNode::Leaf { .. } | MenuNode::Static { .. } => None,
         }
     }
 }
@@ -288,10 +357,14 @@ pub fn draw(frame: &mut Frame, area: Rect, menu: &MenuState, theme: &Theme) {
                 MenuRowKind::Group { expanded: true } => "[-] ",
                 MenuRowKind::Group { expanded: false } => "[+] ",
                 MenuRowKind::Leaf { .. } => "    ",
+                // A read-only row gets a bullet, not the selectable leaf's
+                // blank slot: even before navigation proves it unselectable,
+                // it must not LOOK like a row Enter could do something on.
+                MenuRowKind::Static => "  - ",
             };
             let style = match &row.kind {
                 MenuRowKind::Group { .. } => theme.emphasized,
-                MenuRowKind::Leaf { .. } => theme.dim,
+                MenuRowKind::Leaf { .. } | MenuRowKind::Static => theme.dim,
             };
             ListItem::new(Line::from(vec![
                 Span::raw(indent),
@@ -303,8 +376,9 @@ pub fn draw(frame: &mut Frame, area: Rect, menu: &MenuState, theme: &Theme) {
 
     let list = List::new(items).highlight_style(theme.selected);
     let mut list_state = ListState::default();
-    if !rows.is_empty() {
-        list_state.select(Some(menu.selected_index()));
+    let selected = menu.selected_index();
+    if rows.get(selected).is_some_and(selectable) {
+        list_state.select(Some(selected));
     }
     frame.render_stateful_widget(list, area, &mut list_state);
 }
@@ -494,6 +568,112 @@ mod tests {
         assert_eq!(state.selected_index(), 0);
         assert_eq!(state.selected_row(), None);
         assert_eq!(state.selected_leaf_id(), None);
+    }
+
+    // ---- Static rows: visible, but the cursor never lands on one ----
+
+    fn tree_with_static_rows() -> Vec<MenuNode> {
+        vec![
+            MenuNode::group(
+                "section",
+                vec![
+                    MenuNode::leaf("actionable", "do_thing"),
+                    MenuNode::static_row("read-only fact one"),
+                    MenuNode::static_row("read-only fact two"),
+                    MenuNode::leaf("also actionable", "do_other"),
+                ],
+            ),
+            MenuNode::static_row("trailing fact"),
+        ]
+    }
+
+    #[test]
+    fn static_rows_flatten_in_place_with_their_own_kind() {
+        let state = MenuState::new(tree_with_static_rows());
+        let rows = state.rows();
+        let labels_and_kinds: Vec<(String, bool)> = rows
+            .iter()
+            .map(|r| (r.label.clone(), matches!(r.kind, MenuRowKind::Static)))
+            .collect();
+        assert_eq!(
+            labels_and_kinds,
+            vec![
+                ("section".to_string(), false),
+                ("actionable".to_string(), false),
+                ("read-only fact one".to_string(), true),
+                ("read-only fact two".to_string(), true),
+                ("also actionable".to_string(), false),
+                ("trailing fact".to_string(), true),
+            ],
+            "static rows render in document order, marked static"
+        );
+    }
+
+    #[test]
+    fn navigation_skips_static_rows_in_both_directions() {
+        let mut state = MenuState::new(tree_with_static_rows());
+        // Row 0 is the group; Down must land on "actionable" (row 1)...
+        state.move_selection(1);
+        assert_eq!(state.selected_row().unwrap().label, "actionable");
+        // ...and the NEXT Down must jump over BOTH static rows (2, 3) to
+        // "also actionable" (row 4) -- the cursor never rests on a
+        // read-only row, or it would look actionable while doing nothing.
+        state.move_selection(1);
+        assert_eq!(state.selected_row().unwrap().label, "also actionable");
+        // One more Down clamps at the last SELECTABLE row, never sliding
+        // onto the trailing static row (row 5).
+        state.move_selection(1);
+        assert_eq!(state.selected_row().unwrap().label, "also actionable");
+        // Back up: skips the static pair again.
+        state.move_selection(-1);
+        assert_eq!(state.selected_row().unwrap().label, "actionable");
+    }
+
+    #[test]
+    fn a_restored_cursor_landing_on_a_static_row_resolves_to_the_nearest_selectable_one() {
+        let mut state = MenuState::new(tree_with_static_rows());
+        // A persisted cursor from a previous tree shape can point at an
+        // index that is NOW a static row; the read must resolve off it
+        // rather than highlight a row Enter cannot reach.
+        state.set_selected(2);
+        let resolved = state.selected_row().unwrap();
+        assert!(
+            !matches!(resolved.kind, MenuRowKind::Static),
+            "the cursor must never rest on a static row: {resolved:?}"
+        );
+    }
+
+    #[test]
+    fn a_tree_of_only_static_rows_highlights_nothing_and_never_panics() {
+        use ratatui::backend::TestBackend;
+        use ratatui::style::Modifier;
+        use ratatui::Terminal;
+
+        let mut state = MenuState::new(vec![
+            MenuNode::static_row("nothing to do here"),
+            MenuNode::static_row("or here"),
+        ]);
+        state.move_selection(1);
+        state.move_selection(-1);
+        state.toggle_group_at_selection();
+        assert_eq!(state.selected_leaf_id(), None);
+
+        let backend = TestBackend::new(40, 6);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|f| draw(f, f.area(), &state, &Theme::default()))
+            .expect("draw");
+        let buffer = terminal.backend().buffer();
+        let any_reversed = buffer
+            .content()
+            .iter()
+            .any(|c| c.modifier.contains(Modifier::REVERSED));
+        assert!(
+            !any_reversed,
+            "with no selectable rows, nothing may render highlighted"
+        );
+        let text: String = buffer.content().iter().map(|c| c.symbol()).collect();
+        assert!(text.contains("nothing to do here"), "{text}");
     }
 
     // ---- rendering: composes with the shared modal primitive without

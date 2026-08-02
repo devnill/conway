@@ -328,13 +328,34 @@ returned its contents normally.
 
 ## Inspecting and revoking
 
-`/settings`'s permissions group shows the active mode and every active
-*pattern* grant (`allow` rules — from `[p]`, or installed from a permissions
-file), each labeled with its origin: `[interactive]` for one you granted
-through the prompt, or the originating file's path for one loaded from
-`permissions.json`. Selecting one grant's row and pressing `Enter` revokes
-exactly that grant; a separate "revoke all grants" row clears every pattern
-grant *and* every `[a]`-style cached "allow always" decision at once.
+`/settings`'s permissions group shows the active mode and three sections:
+**allow**, **deny**, and **prompt**. They are separate sections because
+they compose by different rules (deny beats everything except root
+containment; prompt narrows below deny; allow grants) — one
+undifferentiated list would misrepresent the model.
+
+The **allow** section lists every active *pattern* grant (`allow` rules —
+from `[p]`, or installed from a permissions file), each labeled with its
+origin: `[interactive]` for one you granted through the prompt, or the
+originating file's path for one loaded from `permissions.json`. Selecting
+one grant's row and pressing `Enter` revokes exactly that grant; a
+separate "revoke all grants" row clears every pattern grant *and* every
+`[a]`-style cached "allow always" decision at once.
+
+The **deny** and **prompt** sections list every active deny and prompt
+rule — flat and structured alike — each labeled with its origin the same
+way. This list matters precisely *because* these rules install from every
+permissions file, trusted or not: a cloned repo can ship a deny or prompt
+rule that takes effect the moment you open the project, and this is the
+surface that shows you which rule — and which file — is gating or refusing
+a call. Their rows are read-only (the cursor skips over them; `Enter`
+does nothing because they are never selected), by design. Both kinds only
+ever narrow what's authorized, most come from a file you don't control
+(or read as carefully as your own `allow` list), and a safety rule
+offering a one-keystroke way to remove it would be the wrong shape for a
+rule whose entire job is to be hard to evade — even by your own accidental
+keypress. To change one, edit (or delete, or untrust-by-editing) the file
+it came from; the change takes effect at the next session start.
 
 A few things worth knowing about what this surface does and doesn't cover:
 
@@ -343,12 +364,8 @@ A few things worth knowing about what this surface does and doesn't cover:
   `active_permission_patterns()` — so you cannot see or revoke it one at a
   time; "revoke all grants" is the only way to clear it, and doing so
   clears every other cached "always" decision along with it.
-- **`deny` and `prompt` rules never appear as revocable rows at all**, by
-  design. Both only ever narrow what's authorized, most come from a file
-  you don't control (or read as carefully as your own `allow` list), and a
-  safety rule offering a one-keystroke way to remove it would be the wrong
-  shape for a rule whose entire job is to be hard to evade — even by your
-  own accidental keypress.
+- **`deny` and `prompt` rules are listed but never revocable from the
+  menu**, by the design above — visible, with origin, but not actionable.
 - **Revocation never fails open.** The in-session grant is dropped first,
   unconditionally; only afterward does conway try to remove the rule's wire
   form from the file it came from (tmp-then-rename). If that file write

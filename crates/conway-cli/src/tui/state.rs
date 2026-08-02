@@ -503,6 +503,35 @@ pub struct AppState {
     /// name it to `Conway::revoke_permission_pattern`.
     pub permission_grants:
         Vec<(conway::PatternRule, conway::PatternOrigin)>,
+    /// The active DENY rules (flat form), mirrored from the broker's
+    /// `active_deny_patterns()` for `/settings`' read-only deny section.
+    /// Deny rules install from ANY permissions file, trusted or not (D4 §3)
+    /// -- an untrusted checkout can ship one -- so the operator must be
+    /// able to see them and where they came from: a rule set nobody can
+    /// inspect is a trap. Read-only by design: they are not revocable from
+    /// the menu (`Conway::revoke_permission_pattern`'s own doc argues why a
+    /// one-keystroke removal is the wrong shape for a safety rule), so
+    /// unlike `permission_grants` these pairs are never used to ADDRESS a
+    /// revocation -- only to label a row. Refreshed alongside
+    /// `permission_grants` when `/settings` opens.
+    pub permission_denies:
+        Vec<(conway::PatternRule, conway::PatternOrigin)>,
+    /// The active PROMPT rules (flat form), mirrored from the broker's
+    /// `active_prompt_patterns()` -- the prompt half of the same read-only
+    /// inspection surface as [`Self::permission_denies`].
+    pub permission_prompts:
+        Vec<(conway::PatternRule, conway::PatternOrigin)>,
+    /// The structured deny rules the flat form cannot express (F12's
+    /// `Rule { select, when, then }`), mirrored from the broker's
+    /// `active_structured_deny_rules()`. Rendered in the same read-only
+    /// deny section as [`Self::permission_denies`] via `Rule::describe()`.
+    pub structured_deny_rules:
+        Vec<(conway::Rule, conway::PatternOrigin)>,
+    /// The structured prompt rules the flat form cannot express, mirrored
+    /// from the broker's `active_structured_prompt_rules()` -- the
+    /// structured half of [`Self::permission_prompts`].
+    pub structured_prompt_rules:
+        Vec<(conway::Rule, conway::PatternOrigin)>,
     /// The scope the permission prompt's remembered-grant keys (`a` and
     /// `p`) grant at: `Session` (the default, and the only scope the prompt
     /// offered before this item), `Agent` (only the agent whose call is
@@ -949,6 +978,10 @@ impl AppState {
             permission_mode: PermissionMode::default(),
             permission_paths: Vec::new(),
             permission_grants: Vec::new(),
+            permission_denies: Vec::new(),
+            permission_prompts: Vec::new(),
+            structured_deny_rules: Vec::new(),
+            structured_prompt_rules: Vec::new(),
             permission_grant_scope: conway::PermissionScope::Session,
             scroll: 0,
             follow_tail: true,
