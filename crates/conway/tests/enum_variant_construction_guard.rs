@@ -251,26 +251,13 @@ const ALLOWLIST: &[Allowlisted] = &[
     // preceding `Assistant` record is the durable shape and nothing else
     // consumes a standalone tool-call record. The variant is gone, so its
     // allowlist entry is gone too.
-    Allowlisted {
-        enum_name: "PermissionScope",
-        variant: "Agent",
-        reason: "No production code constructs this variant -- every \
-                 AllowAlways decision the CLI/TUI can currently produce \
-                 hardcodes `PermissionScope::Session`; there is no UI path \
-                 to grant a narrower per-agent scope, even though \
-                 `conway-runtime::permission`'s scope-to-GrantScope mapping \
-                 already knows how to honor it. New finding from this \
-                 guard's first run, not yet triaged.",
-        board_item: "none filed yet -- reported in 01KYTXTXJ6DCE84ZRB06BHRGJW's completion",
-    },
-    Allowlisted {
-        enum_name: "PermissionScope",
-        variant: "AgentSubtree",
-        reason: "Same gap as `PermissionScope::Agent` above, one level \
-                 broader. New finding from this guard's first run, not yet \
-                 triaged.",
-        board_item: "none filed yet -- reported in 01KYTXTXJ6DCE84ZRB06BHRGJW's completion",
-    },
+    //
+    // `PermissionScope::Agent` and `PermissionScope::AgentSubtree`, also
+    // allowlisted here from this guard's first run, were triaged by the
+    // grant-prompt scope item (decision 01KZ1NAXE0KZRSRFBDDJFCPMK8: WIRE,
+    // do not remove): both are now constructed in production -- the TUI
+    // prompt's `s` scope key (`conway-cli/src/tui/input.rs`) and the
+    // facade's scoped grant methods -- so their entries are gone too.
 ];
 
 fn workspace_root() -> PathBuf {

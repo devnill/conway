@@ -52,7 +52,7 @@ use conway::config::schema::{
     RoleEntry, RoutingSection, SessionConfig, TuiSection,
 };
 use conway::{Conway, ConwayBuilder, RuleRegistrationReason, SessionSpec};
-use conway_core::agent::{PermissionDecision, PermissionRequest};
+use conway_core::agent::{PermissionDecision, PermissionRequest, PermissionScope};
 use conway_core::content::{ContentBlock, StopReason, ToolCall, Usage};
 use conway_core::fakes::{FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
 use conway_core::ids::{AgentId, BackendId, ModelId, ModelRef, RoleAlias, ToolName};
@@ -240,7 +240,7 @@ async fn a_paths_under_allow_rule_authorizes_an_in_root_read_without_the_gate() 
         ],
         gate.clone() as Arc<dyn PermissionGate>,
     );
-    let report = conway.load_permission_files(root_dir.path(), &env, AgentId::new());
+    let report = conway.load_permission_files(root_dir.path(), &env, PermissionScope::Session, AgentId::new());
     assert!(
         report.registration_errors.is_empty(),
         "no registration errors expected: {:?}",
@@ -296,7 +296,7 @@ async fn a_paths_under_allow_rule_lets_an_out_of_root_read_reach_the_gate() {
         ],
         gate.clone() as Arc<dyn PermissionGate>,
     );
-    conway.load_permission_files(root_dir.path(), &env, AgentId::new());
+    conway.load_permission_files(root_dir.path(), &env, PermissionScope::Session, AgentId::new());
 
     let handle = conway
         .new_session(SessionSpec::default())
@@ -366,7 +366,7 @@ async fn a_paths_under_rule_reads_arguments_not_rendered_so_a_traversal_path_rea
         ],
         gate.clone() as Arc<dyn PermissionGate>,
     );
-    conway.load_permission_files(root_dir.as_path(), &env, AgentId::new());
+    conway.load_permission_files(root_dir.as_path(), &env, PermissionScope::Session, AgentId::new());
 
     let handle = conway
         .new_session(SessionSpec::default())
@@ -424,7 +424,7 @@ async fn an_unconfinable_tool_never_satisfies_paths_under_so_bash_reaches_the_ga
         ],
         gate.clone() as Arc<dyn PermissionGate>,
     );
-    let report = conway.load_permission_files(root_dir.path(), &env, AgentId::new());
+    let report = conway.load_permission_files(root_dir.path(), &env, PermissionScope::Session, AgentId::new());
     assert!(
         report.registration_errors.is_empty(),
         "a paths_under bash rule is structurally valid (Unconfinable is not a registration \
@@ -478,7 +478,7 @@ async fn command_prefix_on_a_structured_tool_is_a_registration_error() {
         vec![ScriptedTurn::Respond(text_response("no call needed"))],
         gate.clone() as Arc<dyn PermissionGate>,
     );
-    let report = conway.load_permission_files(project.path(), &env, AgentId::new());
+    let report = conway.load_permission_files(project.path(), &env, PermissionScope::Session, AgentId::new());
 
     assert_eq!(
         report.registration_errors.len(),
@@ -584,7 +584,7 @@ async fn run_bash_and_count_gate(
         ],
         gate.clone() as Arc<dyn PermissionGate>,
     );
-    conway.load_permission_files(cwd.path(), env, AgentId::new());
+    conway.load_permission_files(cwd.path(), env, PermissionScope::Session, AgentId::new());
     let handle = conway
         .new_session(SessionSpec::default())
         .await
@@ -623,7 +623,7 @@ async fn a_structured_deny_rule_from_an_untrusted_project_file_refuses_before_th
         ],
         gate.clone() as Arc<dyn PermissionGate>,
     );
-    let report = conway.load_permission_files(project.path(), &env, AgentId::new());
+    let report = conway.load_permission_files(project.path(), &env, PermissionScope::Session, AgentId::new());
     assert!(
         report.registration_errors.is_empty(),
         "a bash command_prefix deny rule is structurally valid: {:?}",
@@ -682,7 +682,7 @@ async fn a_structured_prompt_rule_from_an_untrusted_project_file_forces_the_gate
         ],
         gate.clone() as Arc<dyn PermissionGate>,
     );
-    conway.load_permission_files(project.path(), &env, AgentId::new());
+    conway.load_permission_files(project.path(), &env, PermissionScope::Session, AgentId::new());
 
     let handle = conway
         .new_session(SessionSpec::default())

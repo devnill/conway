@@ -54,6 +54,7 @@ and the command as it would actually run:
 ┌ PERMISSION REQUIRED ────────────────────────────────────────────┐
 │echo pong                                                        │
 │[y] once  [a] always  [p] pattern  [n] deny  [Esc] deny w/ feedback│
+│  [a]/[p] remember for: this session  ([s] cycles)               │
 │  [p] grants: `bash` commands starting with `echo pong`          │
 └───────────────────────────────────────────────────────────────────┘
 ```
@@ -61,14 +62,21 @@ and the command as it would actually run:
 | Key | Grants | Persistence |
 | --- | --- | --- |
 | `y` | This exact call, once. | Nothing — the identical call asks again next time. |
-| `a` | This exact call — same tool, byte-identical (canonicalized) arguments — for the rest of *this* session. A different argument to the same tool is a different call and asks again. | In memory only. Gone at restart; never written to a file. |
-| `p` | A prefix pattern: `<command> <subcommand>` for a two-token command (`git status`), or the single token for a one-token command (`pwd`) — narrow by design, so accepting the offer never silently covers a sibling subcommand (`git status` does not grant `git push`). The prompt states the exact grant in words (the `[p] grants:` line above) before you press anything. Not offered at all when the command isn't safe to prefix-match — see the metacharacter gate in Limits. | Installed for the session immediately, **and** appended to the project-scoped `permissions.json`'s `allow` list (best-effort — a write failure loses only the file durability, never the in-session grant). That write changes the file's bytes, which changes its trust digest, so a *previously untrusted* file gains a rule that still won't take effect on its own until you `/trust permissions`; a *previously trusted* file needs no further action this session, but the digest change means the file is effectively re-recorded as trusted only by virtue of `/trust permissions` having installed the very rule that changed it. |
+| `a` | This exact call — same tool, byte-identical (canonicalized) arguments — remembered at the current grant scope (see `s` below). A different argument to the same tool is a different call and asks again. | In memory only. Gone at restart; never written to a file. |
+| `p` | A prefix pattern: `<command> <subcommand>` for a two-token command (`git status`), or the single token for a one-token command (`pwd`) — narrow by design, so accepting the offer never silently covers a sibling subcommand (`git status` does not grant `git push`). For a tool whose rendering is a structured JSON dump rather than a shell command (`read`, `report`, …), the offer is the `tool:*` wildcard — "any `report` call" — because a prefix over a JSON dump is a rule the loader refuses to register (its token boundaries depend on key order and escaping you cannot predict), and the prompt never offers a rule that cannot be registered. The prompt states the exact grant in words (the `[p] grants:` line above) before you press anything. Not offered at all when a shell command isn't safe to prefix-match — see the metacharacter gate in Limits. | Installed immediately at the current grant scope, **and** — at session scope only — appended to the project-scoped `permissions.json`'s `allow` list (best-effort — a write failure loses only the file durability, never the in-session grant). That write changes the file's bytes, which changes its trust digest, so a *previously untrusted* file gains a rule that still won't take effect on its own until you `/trust permissions`; a *previously trusted* file needs no further action this session, but the digest change means the file is effectively re-recorded as trusted only by virtue of `/trust permissions` having installed the very rule that changed it. A per-agent or per-subtree grant is never written to a file: it names live agent ids, which are meaningless at the next launch, and persisting it would silently widen it to the load scope on restart. |
+| `s` | Not a decision — cycles the scope the two remembered-grant keys (`a` and `p`) grant at: **this session** (the default; every agent in the session) → **this agent only** → **this agent and its subtree**. The prompt states the current scope in words next to the keys. The choice resets to *this session* for every new prompt, so narrowing is always a deliberate, per-prompt act. | n/a |
 | `n` | Denies this call, once. | Nothing. |
 | `Esc` | Denies this call and tells the model to try a different approach (rather than just failing silently). | Nothing. |
 
 `p` and `a` are the only two ways a call ever bypasses the prompt for a
 *later* call in the same session; `y`/`n`/`Esc` each resolve exactly the one
-call in front of you.
+call in front of you. A narrowed grant only ever covers less than a session
+grant: a per-agent grant never authorizes a sibling agent's identical call,
+and a per-subtree grant covers exactly the agents whose path descends from
+the granting one — both are proven end to end in
+`crates/conway/tests/permission_scope_seam.rs`, and a grant whose scope you
+did not intend is best avoided by reading the scope line before pressing a
+remembered-grant key.
 
 ## Rules in `permissions.json`
 
@@ -172,7 +180,9 @@ paired with a tool whose rendering is a structured JSON dump (every built-in
 except `bash`) is rejected at load time and surfaced as a typed registration
 error rather than installed as a silent inert rule — a JSON dump's token
 boundaries are not something an operator can predict, so the rule can never
-reliably match. Use `when: "always"` or a `paths_under`/`categories`
+reliably match. You see each rejected rule as a transcript error (red) at
+startup, naming the rule and the reason, so a refused rule is never dropped
+silently. Use `when: "always"` or a `paths_under`/`categories`
 condition for those tools instead.
 
 **The `allow`/`deny` asymmetry, explained, not merely stated:**

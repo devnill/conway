@@ -122,6 +122,7 @@ mod tests {
             arguments: serde_json::json!({"command": "ls"}),
             rendered: "bash: ls".to_string(),
             call_id: "tc_1".to_string(),
+            render_kind: conway::RenderKind::ShellCommand,
         }
     }
 

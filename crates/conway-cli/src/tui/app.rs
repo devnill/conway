@@ -212,12 +212,39 @@ impl App {
         let report = conway.load_permission_files(
             cli.cwd.as_deref().unwrap_or(&conway.config().cwd),
             &env_vars,
+            // The interactive TUI's file-loaded rules are session-scoped:
+            // they are the operator's own standing grants, not tied to one
+            // agent of the tree. The scope parameter exists for embedders
+            // loading a file on behalf of a single agent/subtree.
+            conway::PermissionScope::Session,
             root_agent,
         );
         for notice in report.notices {
             state
                 .transcript
                 .push(super::state::Entry::Notice { text: notice });
+        }
+        // P-12: a rule that fails registration (today: `command_prefix`
+        // against a Structured-render tool, a rule that can never match
+        // reliably) is the silent-inert rule these typed errors exist to
+        // flag -- producing the error and then dropping it would recreate
+        // exactly that failure. Surface each as a transcript `Error` with
+        // `fatal: false` (conway keeps running, but a rule the operator
+        // wrote was refused), rendered through the existing `Entry::Error`
+        // path so it renders in `theme.error` and cannot be skimmed past
+        // as a routine cyan notice -- an error camouflaged as a notice is
+        // the defect the `fatal: false` severity exists to close. Every
+        // registration-error variant added later is operator-visible the
+        // moment the loader produces it.
+        for err in report.registration_errors {
+            state.transcript.push(super::state::Entry::Error {
+                text: format!(
+                    "permission rule not installed: {} -- {}",
+                    err.rule.describe(),
+                    err.reason.describe()
+                ),
+                fatal: false,
+            });
         }
         state.permission_mode = conway.permission_mode();
         state.permission_paths = report.paths;
@@ -565,21 +592,35 @@ impl App {
                                         .transcript
                                         .push(super::state::Entry::Notice { text });
                                 }
-                                Action::GrantPermissionPattern(rule) => {
-                                    let agent = self.state.focused_agent;
-                                    self.conway.grant_permission_pattern(
-                                        rule.clone(),
-                                        conway::PermissionScope::Session,
-                                        agent,
-                                    );
+                                Action::GrantPermissionPattern(rule, scope) => {
+                                    // The granting agent is the one whose
+                                    // call is being decided -- NOT
+                                    // `focused_agent`. For a Session grant
+                                    // the identity is ignored, but an
+                                    // Agent/AgentSubtree grant narrows to
+                                    // this id, and the prompt's requester
+                                    // need not be the focused agent.
+                                    let agent = self
+                                        .state
+                                        .pending_permission_agent()
+                                        .unwrap_or(self.state.focused_agent);
+                                    self.conway.grant_permission_pattern(rule.clone(), scope, agent);
                                     // Persistence is best-effort by design:
                                     // a write failure loses the rule's
                                     // durability, never the operator's
-                                    // decision.
-                                    persist_permission_rule(
-                                        self.state.permission_paths.first(),
-                                        &rule,
-                                    );
+                                    // decision. Session scope only: an
+                                    // Agent/AgentSubtree grant names LIVE
+                                    // agent ids, meaningless to a file read
+                                    // at the next launch -- persisting it
+                                    // would silently WIDEN it to the load
+                                    // scope on restart, the opposite of the
+                                    // narrowing the operator asked for.
+                                    if scope == conway::PermissionScope::Session {
+                                        persist_permission_rule(
+                                            self.state.permission_paths.first(),
+                                            &rule,
+                                        );
+                                    }
                                     self.state.resolve_current_prompt(
                                         conway::PermissionDecision::AllowOnce,
                                     );
@@ -793,9 +834,12 @@ impl App {
                     let env_vars: std::collections::HashMap<String, String> =
                         std::env::vars().collect();
                     let root_agent = self.state.root_agent();
-                    match self
-                        .conway
-                        .trust_permission_file(&env_vars, path, root_agent)
+                    match self.conway.trust_permission_file(
+                        &env_vars,
+                        path,
+                        conway::PermissionScope::Session,
+                        root_agent,
+                    )
                     {
                         Ok(installed) => {
                             self.state.transcript.push(super::state::Entry::Notice {
@@ -1494,6 +1538,66 @@ mod tests {
             text.matches("hello from the test").count(),
             1,
             "the prompt must render exactly once on screen: {text}"
+        );
+    }
+
+    /// A1 (P-12, GP-14): a permission rule that fails registration is
+    /// OPERATOR-VISIBLE at load time. The assertion is on the observable
+    /// transcript/rendered screen -- what the operator actually reads --
+    /// NOT on `report.registration_errors` (the field the producer writes;
+    /// a unit test on that field is the liveness trap this item exists to
+    /// close). The fixture is a `command_prefix` rule against `read`
+    /// (Structured render -- can never match reliably) written as a `deny`
+    /// rule, because deny rules are validated and refused BEFORE any trust
+    /// gating (deny applies from every file, trusted or not), so the test
+    /// needs no recorded trust decision and no XDG env isolation.
+    #[tokio::test]
+    async fn registration_error_surfaces_as_a_transcript_error() {
+        let project = tempfile::TempDir::new().expect("tempdir");
+        let conway_dir = project.path().join(".conway");
+        std::fs::create_dir_all(&conway_dir).expect("mkdir .conway");
+        // Pin project discovery to the tempdir (an empty `settings.json` is
+        // all `discover` checks for) so no ancestor `.conway/` can
+        // redirect the permissions-file path.
+        std::fs::write(conway_dir.join("settings.json"), "").expect("write settings.json");
+        std::fs::write(
+            conway_dir.join("permissions.json"),
+            r#"{"rules":[{"select":{"tools":["read"]},"when":{"command_prefix":"read"},"then":"deny"}]}"#,
+        )
+        .expect("write permissions.json");
+
+        let conway = build_conway_with_echo_backend();
+        let mut cli = minimal_cli();
+        cli.cwd = Some(project.path().to_path_buf());
+        let app = App::new(&cli, &conway).await.expect("App::new should succeed");
+
+        let errors: Vec<&str> = app
+            .state
+            .transcript
+            .iter()
+            .filter_map(|e| match e {
+                Entry::Error { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        let surfacing = errors.iter().find(|text| {
+            text.contains("not installed")
+                && text.contains("`read` commands starting with `read`")
+                && text.contains("command_prefix")
+        });
+        assert!(
+            surfacing.is_some(),
+            "the refused rule must surface as a transcript Error carrying the rule and the \
+             reason; transcript errors were: {errors:?}"
+        );
+
+        // Buffer-asserting half (this crate's binding TUI test convention):
+        // render the REAL `AppState` through the REAL `view::draw` and
+        // confirm the operator can actually READ the surfacing on screen.
+        let text = super::super::test_support::render_text(&app.state, 120, 40);
+        assert!(
+            text.contains("not installed") && text.contains("command_prefix"),
+            "the registration-error Error entry must render on screen: {text}"
         );
     }
 

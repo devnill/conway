@@ -417,6 +417,7 @@ mod tests {
             arguments: serde_json::json!({}),
             rendered: format!("{tool}()"),
             call_id: "tc_1".into(),
+            render_kind: conway::RenderKind::ShellCommand,
         }
     }
 

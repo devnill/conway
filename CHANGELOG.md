@@ -69,6 +69,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ever shrinks. (`crates/conway/src/lib.rs`,
   `crates/conway/tests/plugin_surface.rs`, `docs/embedding.md`)
 
+- **Rule registration errors are now operator-visible in the TUI.** A rule
+  that can never match (today: `command_prefix` paired with a
+  `Structured`-rendering tool — every built-in except `bash`) has produced a
+  typed `RuleRegistrationError` in `PermissionLoadReport` since the
+  structured rule form landed, but the TUI consumed only the report's
+  notices and paths and dropped the errors on the floor — the silent-inert
+  failure the errors were created to flag. The TUI now pushes one transcript
+  error per registration error at startup, naming the rejected rule and the
+  reason and rendered in the error severity (`Entry::Error`, red) rather
+  than as a routine cyan notice, so a refused rule cannot be skimmed past —
+  and every registration-error variant added later is operator-visible
+  the moment the loader produces it. The acceptance test asserts on the
+  observable transcript and rendered screen, not on the report field the
+  producer writes (GP-14). (`crates/conway-cli/src/tui/app.rs`,
+  `docs/permissions.md`)
+
+- **The permission prompt's `[p]` offer is render-kind-aware, and remembered
+  grants can be scoped to one agent or one subtree.** Two halves of the same
+  prompt. (1) The offer now consults the proposing tool's `RenderKind`: for
+  a tool whose rendering is a structured JSON dump (every built-in except
+  `bash`), a `command_prefix` rule could never be registered, so the prompt
+  no longer pretends to offer one — it offers the `tool:*` wildcard instead,
+  metacharacters in a JSON dump no longer suppress the offer, and the prompt
+  states the exact grant in words (the `[p] grants:` line) before you press
+  anything. The shell side is unchanged: the metacharacter gate still
+  declines unsafe prefixes for `bash`. (2) A new `[s]` key cycles the scope
+  remembered-grant keys (`[a]`/`[p]`) grant at: this session (the default) →
+  this agent only → this agent and its subtree, resetting to session for
+  every new prompt so narrowing is always deliberate. The broker has honored
+  all three scopes since they were built; every production site hardcoded
+  session until now. Per-agent and per-subtree grants are never written to
+  `permissions.json` (they name live agent ids, meaningless at restart), and
+  the facade exposes the same scoped grants to library embedders. The
+  negative cases are proven end to end in
+  `crates/conway/tests/permission_scope_seam.rs`: a per-agent grant does not
+  authorize a sibling's identical call, and a subtree grant does not
+  authorize an agent outside the subtree. (Operator decision
+  01KZ1NAXE0KZRSRFBDDJFCPMK8: wire the scopes, do not remove them.)
+  (`crates/conway-core/src/permission_pattern.rs`,
+  `crates/conway-cli/src/tui/input.rs`,
+  `crates/conway-cli/src/tui/view/mod.rs`, `crates/conway/src/conway.rs`,
+  `crates/conway/tests/permission_scope_seam.rs`, `docs/permissions.md`)
+
 ### Changed
 
 - **The three control-character sanitizers are converged to one shared

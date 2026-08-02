@@ -46,8 +46,13 @@ pub enum Action {
     ScrollLineDown,
     /// V2b: the operator accepted the offered pattern grant from the
     /// permission prompt. The app loop installs it, persists it
-    /// best-effort, and resolves the pending prompt as an allow.
-    GrantPermissionPattern(conway::PatternRule),
+    /// best-effort (session scope only -- a per-agent/subtree grant names
+    /// live agent ids, meaningless in a file read at the next launch), and
+    /// resolves the pending prompt as an allow. The carried
+    /// [`PermissionScope`] is the one the prompt's `s` key had cycled to --
+    /// never hardcoded, so a narrowed grant the operator asked for is the
+    /// grant the broker records.
+    GrantPermissionPattern(conway::PatternRule, PermissionScope),
     /// V2b: cycle prompt -> plan -> AUTO-ALLOW. The app loop writes the
     /// broker (the authority) and refreshes the display mirror together.
     CyclePermissionMode,
@@ -430,24 +435,69 @@ fn adjust_modal_scroll(state: &mut AppState, direction: i8) {
 }
 
 fn handle_permission_key(state: &mut AppState, key: KeyEvent) -> Action {
+    // Bug fix (01KYB0F7V65QAMZWWYH8K7DWDC): a long command's argument
+    // used to clip the decision keys off-screen with no way to see the
+    // rest of it. `PageUp`/`PageDown` page the overlay's own command
+    // body while the decision keys keep working exactly as below --
+    // mutated directly here (like `handle_normal_key`'s plain-editing
+    // keys) rather than via a new `Action` variant, since nothing here
+    // needs a live facade call. These come before the modifier guard:
+    // a chorded PageUp/PageDown is still a scroll, not a decision.
+    match key.code {
+        KeyCode::PageDown => {
+            adjust_modal_scroll(state, 1);
+            return Action::None;
+        }
+        KeyCode::PageUp => {
+            adjust_modal_scroll(state, -1);
+            return Action::None;
+        }
+        _ => {}
+    }
+    // The decision keys fire only on a BARE keypress -- a modifier held
+    // (Ctrl-A, Ctrl-S, Alt-P, ...) is NOT a decision. Without this guard
+    // the match below inspected `key.code` alone, so Ctrl-A leaked through
+    // as `AllowAlways` and Ctrl-S silently cycled the grant scope (same
+    // shape as B5's M2 fix in `handle_intent_confirm_key`; the scope line
+    // on screen makes a mis-grant visible, but a decision that isn't the
+    // operator's own keystroke is a defect regardless).
+    if !key.modifiers.is_empty() {
+        return Action::None;
+    }
     match key.code {
         KeyCode::Char('y') | KeyCode::Char('Y') => {
             Action::PermissionDecision(PermissionDecision::AllowOnce)
         }
         KeyCode::Char('a') | KeyCode::Char('A') => {
             Action::PermissionDecision(PermissionDecision::AllowAlways {
-                scope: PermissionScope::Session,
+                // The scope the prompt's `s` key cycled to -- `Session`
+                // unless the operator deliberately narrowed it.
+                scope: state.permission_grant_scope,
             })
         }
+        // The remembered-grant scope key: cycles Session -> this agent ->
+        // this agent's subtree, applying to BOTH remembered-grant keys
+        // (`a` and `p`). The overlay states the current scope in words
+        // next to the grant keys, and the choice resets to `Session` for
+        // every new prompt (`AppState::offer_prompt`/
+        // `promote_next_surface`), so a narrowing is always a deliberate,
+        // per-prompt act -- never a sticky hidden mode.
+        KeyCode::Char('s') | KeyCode::Char('S') => {
+            state.cycle_permission_grant_scope();
+            Action::None
+        }
         // V2b: `p` grants the OFFERED pattern -- the narrow two-token
-        // prefix `suggested_rule` derives, whose breadth the prompt states
-        // in words before the operator presses anything. Absent when the
-        // command carries shell metacharacters, in which case no offer is
-        // made and this key does nothing rather than granting something
-        // the gate would refuse to honor anyway.
+        // prefix `suggested_rule` derives for a shell-shaped rendering, or
+        // the registerable `tool:*` wildcard for a `Structured` one (a
+        // prefix over a JSON dump is a registration error, so it is never
+        // offered); either way the prompt states the grant's breadth in
+        // words before the operator presses anything. For a shell command
+        // carrying metacharacters no offer is made and this key does
+        // nothing rather than granting something the gate would refuse to
+        // honor anyway.
         KeyCode::Char('p') | KeyCode::Char('P') => {
             match state.offered_permission_rule() {
-                Some(rule) => Action::GrantPermissionPattern(rule),
+                Some(rule) => Action::GrantPermissionPattern(rule, state.permission_grant_scope),
                 None => Action::None,
             }
         }
@@ -459,21 +509,6 @@ fn handle_permission_key(state: &mut AppState, key: KeyEvent) -> Action {
         KeyCode::Esc => Action::PermissionDecision(PermissionDecision::DenyWithFeedback {
             message: "user declined; try another approach".to_string(),
         }),
-        // Bug fix (01KYB0F7V65QAMZWWYH8K7DWDC): a long command's argument
-        // used to clip the decision keys off-screen with no way to see the
-        // rest of it. `PageUp`/`PageDown` page the overlay's own command
-        // body while the decision keys keep working exactly as above --
-        // mutated directly here (like `handle_normal_key`'s plain-editing
-        // keys) rather than via a new `Action` variant, since nothing here
-        // needs a live facade call.
-        KeyCode::PageDown => {
-            adjust_modal_scroll(state, 1);
-            Action::None
-        }
-        KeyCode::PageUp => {
-            adjust_modal_scroll(state, -1);
-            Action::None
-        }
         _ => Action::None,
     }
 }
@@ -1700,6 +1735,175 @@ mod tests {
         );
     }
 
+    /// Axis B (decision 01KZ1NAXE0KZRSRFBDDJFCPMK8): the prompt can produce
+    /// a per-agent and a per-subtree grant. The `s` key cycles the scope
+    /// and BOTH remembered-grant keys honor it -- `a` through the gate
+    /// decision, `p` through the pattern-grant action.
+    #[test]
+    fn the_scope_key_cycles_and_both_grant_keys_honor_it() {
+        let mut state = AppState::new(AgentId::new());
+        assert_eq!(
+            state.permission_grant_scope,
+            PermissionScope::Session,
+            "the default is the session -- today's behavior, unchanged"
+        );
+
+        // `s` cycles Session -> Agent -> AgentSubtree -> Session.
+        assert_eq!(
+            handle_permission_key(&mut state, key(KeyCode::Char('s'))),
+            Action::None,
+            "cycling the scope is a local state change, never a decision"
+        );
+        assert_eq!(state.permission_grant_scope, PermissionScope::Agent);
+        assert_eq!(
+            handle_permission_key(&mut state, key(KeyCode::Char('s'))),
+            Action::None
+        );
+        assert_eq!(state.permission_grant_scope, PermissionScope::AgentSubtree);
+        assert_eq!(
+            handle_permission_key(&mut state, key(KeyCode::Char('s'))),
+            Action::None
+        );
+        assert_eq!(state.permission_grant_scope, PermissionScope::Session);
+
+        // `a` grants at the cycled scope...
+        handle_permission_key(&mut state, key(KeyCode::Char('s')));
+        assert_eq!(
+            handle_permission_key(&mut state, key(KeyCode::Char('a'))),
+            Action::PermissionDecision(PermissionDecision::AllowAlways {
+                scope: PermissionScope::Agent
+            }),
+            "an `a` pressed after `s` must carry the narrowed scope, not Session"
+        );
+        handle_permission_key(&mut state, key(KeyCode::Char('s')));
+        assert_eq!(
+            handle_permission_key(&mut state, key(KeyCode::Char('a'))),
+            Action::PermissionDecision(PermissionDecision::AllowAlways {
+                scope: PermissionScope::AgentSubtree
+            })
+        );
+    }
+
+    /// The `p` (pattern) grant carries the cycled scope too, so a narrowed
+    /// pattern grant reaches the broker as narrow as the operator asked.
+    #[test]
+    fn the_pattern_grant_action_carries_the_cycled_scope() {
+        let mut state = AppState::new(AgentId::new());
+        let (prompt, _rx) = crate::tui::gate::PendingPrompt::new_for_test(conway::PermissionRequest {
+            agent_id: AgentId::new(),
+            agent_path: Vec::new(),
+            tool: conway::ToolName::new("bash"),
+            category: conway::ToolCategory::Execute,
+            arguments: serde_json::json!({}),
+            rendered: "git status --short".to_string(),
+            call_id: "tc_1".to_string(),
+            render_kind: conway::RenderKind::ShellCommand,
+        });
+        state.mode = Mode::AwaitingPermission(prompt);
+
+        handle_permission_key(&mut state, key(KeyCode::Char('s')));
+        let action = handle_permission_key(&mut state, key(KeyCode::Char('p')));
+        match action {
+            Action::GrantPermissionPattern(rule, scope) => {
+                assert_eq!(rule.command_prefix, "git status");
+                assert_eq!(
+                    scope,
+                    PermissionScope::Agent,
+                    "the pattern grant must carry the scope the operator cycled to"
+                );
+            }
+            other => panic!("expected a pattern grant action, got {other:?}"),
+        }
+    }
+
+    /// The scope choice is per-prompt: a narrowing chosen for one call must
+    /// not silently carry over to the next prompt (the same reason
+    /// `modal_scroll` resets per surface).
+    #[test]
+    fn the_grant_scope_resets_to_session_for_each_new_prompt() {
+        use crate::tui::state::AppState;
+        let mut state = AppState::new(AgentId::new());
+        let (first, _rx1) = crate::tui::gate::PendingPrompt::new_for_test(conway::PermissionRequest {
+            agent_id: AgentId::new(),
+            agent_path: Vec::new(),
+            tool: conway::ToolName::new("bash"),
+            category: conway::ToolCategory::Execute,
+            arguments: serde_json::json!({}),
+            rendered: "git status".to_string(),
+            call_id: "tc_1".to_string(),
+            render_kind: conway::RenderKind::ShellCommand,
+        });
+        state.offer_prompt(first);
+        handle_permission_key(&mut state, key(KeyCode::Char('s')));
+        assert_eq!(state.permission_grant_scope, PermissionScope::Agent);
+
+        // Resolve the first prompt and offer the next: the scope must be
+        // back at the default.
+        state.resolve_current_prompt(PermissionDecision::AllowOnce);
+        let (second, _rx2) =
+            crate::tui::gate::PendingPrompt::new_for_test(conway::PermissionRequest {
+                agent_id: AgentId::new(),
+                agent_path: Vec::new(),
+                tool: conway::ToolName::new("bash"),
+                category: conway::ToolCategory::Execute,
+                arguments: serde_json::json!({}),
+                rendered: "git push".to_string(),
+                call_id: "tc_2".to_string(),
+                render_kind: conway::RenderKind::ShellCommand,
+            });
+        state.offer_prompt(second);
+        assert_eq!(
+            state.permission_grant_scope,
+            PermissionScope::Session,
+            "a new prompt must start at the session default, not inherit a \
+             prior prompt's narrowing"
+        );
+    }
+
+    /// The permission decision keys fire only on a BARE keypress: a chorded
+    /// key (Ctrl-A, Ctrl-S, Alt-P, ...) is the operator reaching for some
+    /// other binding, not a decision -- the same guard B5's M2 added to the
+    /// intent-confirm modal. Ctrl-A silently granting `AllowAlways` is the
+    /// worst case this prevents (code-review, grant-prompt item).
+    #[test]
+    fn permission_decision_keys_ignore_modifier_chords() {
+        use crate::tui::state::AppState;
+        let mut state = AppState::new(AgentId::new());
+        let (prompt, _rx) = crate::tui::gate::PendingPrompt::new_for_test(conway::PermissionRequest {
+            agent_id: AgentId::new(),
+            agent_path: Vec::new(),
+            tool: conway::ToolName::new("bash"),
+            category: conway::ToolCategory::Execute,
+            arguments: serde_json::json!({}),
+            rendered: "git status".to_string(),
+            call_id: "tc_chord".to_string(),
+            render_kind: conway::RenderKind::ShellCommand,
+        });
+        state.offer_prompt(prompt);
+
+        for code in ['y', 'a', 's', 'p', 'n'] {
+            let chord = KeyEvent::new(KeyCode::Char(code), KeyModifiers::CONTROL);
+            assert!(
+                matches!(handle_permission_key(&mut state, chord), Action::None),
+                "Ctrl-{code} must not decide a permission or cycle the grant scope"
+            );
+        }
+        assert_eq!(
+            state.permission_grant_scope,
+            PermissionScope::Session,
+            "a chorded `s` must not have cycled the scope"
+        );
+
+        // The guard must not swallow the REAL keys: bare `s` cycles, bare
+        // `y` decides.
+        handle_permission_key(&mut state, key(KeyCode::Char('s')));
+        assert_eq!(state.permission_grant_scope, PermissionScope::Agent);
+        assert!(matches!(
+            handle_permission_key(&mut state, key(KeyCode::Char('y'))),
+            Action::PermissionDecision(PermissionDecision::AllowOnce)
+        ));
+    }
+
     /// Bug fix companion: `PageDown`/`PageUp` while awaiting a permission
     /// decision must page `AppState::modal_scroll` (for a long command's
     /// overlay, 01KYB0F7V65QAMZWWYH8K7DWDC) instead of falling through to
@@ -2354,6 +2558,7 @@ mod tests {
             arguments: serde_json::json!({}),
             rendered: "bash: ls".to_string(),
             call_id: "tc_1".to_string(),
+            render_kind: conway::RenderKind::ShellCommand,
         });
         state.mode = Mode::AwaitingPermission(prompt);
 
@@ -2573,6 +2778,7 @@ mod tests {
             arguments: serde_json::json!({}),
             rendered: "bash: ls".to_string(),
             call_id: "tc_1".to_string(),
+            render_kind: conway::RenderKind::ShellCommand,
         });
         state.mode = Mode::AwaitingPermission(prompt);
 
@@ -2864,6 +3070,7 @@ mod tests {
             arguments: serde_json::json!({}),
             rendered: "bash: ls".to_string(),
             call_id: "tc_1".to_string(),
+            render_kind: conway::RenderKind::ShellCommand,
         });
         state.mode = Mode::AwaitingPermission(prompt);
 

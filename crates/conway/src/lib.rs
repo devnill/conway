@@ -61,7 +61,8 @@ pub use conway_core::event::{Envelope, Event};
 pub use conway_core::ids::{AgentId, LogSeq, ModelRef, RoleAlias, SegmentId, SessionId, ToolName};
 pub use conway_core::log::{AskOrigin, LogRecord, SessionFilter, SessionMeta, SubagentMode};
 pub use conway_core::ports::{
-    Backend, ContextHook, HealthRegistry, PermissionGate, Plugin, Router, SessionStore, Tool,
+    Backend, ContextHook, HealthRegistry, PermissionGate, Plugin, RenderKind, Router, SessionStore,
+    Tool,
 };
 
 /// The GP-03 extension surface: every type a crate depending only on

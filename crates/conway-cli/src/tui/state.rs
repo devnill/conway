@@ -503,6 +503,17 @@ pub struct AppState {
     /// name it to `Conway::revoke_permission_pattern`.
     pub permission_grants:
         Vec<(conway::PatternRule, conway::PatternOrigin)>,
+    /// The scope the permission prompt's remembered-grant keys (`a` and
+    /// `p`) grant at: `Session` (the default, and the only scope the prompt
+    /// offered before this item), `Agent` (only the agent whose call is
+    /// being asked about), or `AgentSubtree` (that agent's whole subtree).
+    /// Cycled by the prompt's `s` key (`input.rs::handle_permission_key`),
+    /// rendered by `view/mod.rs::draw_permission_overlay`, and reset to
+    /// `Session` every time a NEW prompt becomes the active one (see
+    /// [`Self::offer_prompt`]/[`Self::promote_next_surface`]) -- a scope
+    /// chosen for one call must never silently carry over to the next,
+    /// exactly the same reason `modal_scroll` resets per surface.
+    pub permission_grant_scope: conway::PermissionScope,
     /// The transcript's scroll offset (wrapped lines from the top), only
     /// meaningful while `follow_tail` is `false` -- see that field's own
     /// doc. Mutated by [`Self::scroll_page_up`]/[`Self::scroll_page_down`]
@@ -938,6 +949,7 @@ impl AppState {
             permission_mode: PermissionMode::default(),
             permission_paths: Vec::new(),
             permission_grants: Vec::new(),
+            permission_grant_scope: conway::PermissionScope::Session,
             scroll: 0,
             follow_tail: true,
             queued_prompts: std::collections::VecDeque::new(),
@@ -1595,6 +1607,9 @@ impl AppState {
         if let Some(next) = self.queued_prompts.pop_front() {
             self.mode = Mode::AwaitingPermission(next);
             self.modal_scroll = 0;
+            // A scope chosen for the PREVIOUS prompt must not leak into
+            // this one -- see `Self::permission_grant_scope`'s own doc.
+            self.permission_grant_scope = conway::PermissionScope::Session;
             return;
         }
         if let Some(modal) = self.pending_ask_modal.take() {
@@ -1617,9 +1632,43 @@ impl AppState {
             // own command -- never carries over wherever a PREVIOUS,
             // unrelated prompt's overlay happened to be scrolled.
             self.modal_scroll = 0;
+            // ...and at the DEFAULT grant scope -- a narrower scope chosen
+            // for an earlier, unrelated prompt must not silently apply to
+            // this one (see `Self::permission_grant_scope`'s own doc).
+            self.permission_grant_scope = conway::PermissionScope::Session;
         } else {
             self.queued_prompts.push_back(prompt);
         }
+    }
+
+    /// Cycles the scope the prompt's remembered-grant keys (`a`/`p`) grant
+    /// at: `Session` -> `Agent` -> `AgentSubtree` -> `Session`. Bound to
+    /// the prompt's `s` key in `input.rs`; the overlay states the current
+    /// scope in words next to the grant keys so the operator never grants
+    /// narrower or broader than they can see.
+    pub fn cycle_permission_grant_scope(&mut self) {
+        self.permission_grant_scope = match self.permission_grant_scope {
+            conway::PermissionScope::Session => conway::PermissionScope::Agent,
+            conway::PermissionScope::Agent => conway::PermissionScope::AgentSubtree,
+            // `AgentSubtree`, and any future variant (`PermissionScope` is
+            // `#[non_exhaustive]`): back to the default. A future scope
+            // sorts itself into the cycle only by a deliberate edit here,
+            // never by accident.
+            _ => conway::PermissionScope::Session,
+        };
+    }
+
+    /// The agent whose call the current permission prompt is asking about,
+    /// if one is pending. This -- NOT `focused_agent` -- is the agent a
+    /// per-agent or per-subtree grant must be recorded against: the broker
+    /// narrows such a grant to the GRANTING agent's identity, and the call
+    /// being decided belongs to the requester in the prompt, which need
+    /// not be the agent whose transcript the operator is looking at.
+    pub fn pending_permission_agent(&self) -> Option<conway::AgentId> {
+        let Mode::AwaitingPermission(pending) = &self.mode else {
+            return None;
+        };
+        Some(pending.request.agent_id)
     }
 
     /// Resolves the currently-shown prompt (if any) and promotes the next
@@ -1676,10 +1725,14 @@ impl AppState {
     /// V2b: the pattern grant Conway would offer for the pending
     /// permission prompt, if any.
     ///
-    /// `None` when no prompt is pending, or when the command carries shell
-    /// metacharacters — see `permission_pattern::suggested_rule`, which
-    /// declines to offer a grant the metacharacter gate would then refuse
-    /// to honor.
+    /// Shaped by the pending call's own `render_kind` (carried on the
+    /// request from the broker -- the same declaration the evaluation side
+    /// matched against): a `ShellCommand` tool gets the narrow two-token
+    /// prefix, or no offer at all when the command carries shell
+    /// metacharacters; a `Structured` tool gets the registerable wildcard
+    /// (`tool:*`), the only rule shape F12's registration check admits
+    /// against a JSON-dump rendering. See
+    /// `permission_pattern::suggested_rule` for the full reasoning.
     pub fn offered_permission_rule(&self) -> Option<conway::PatternRule> {
         let Mode::AwaitingPermission(pending) = &self.mode else {
             return None;
@@ -1687,6 +1740,7 @@ impl AppState {
         conway::permission_pattern::suggested_rule(
             pending.request.tool.as_str(),
             &pending.request.rendered,
+            pending.request.render_kind,
         )
     }
 
@@ -4456,6 +4510,7 @@ mod tests {
                 arguments: serde_json::json!({}),
                 rendered: rendered.to_string(),
                 call_id: "tc_1".to_string(),
+                render_kind: conway::RenderKind::ShellCommand,
             },
         );
         prompt

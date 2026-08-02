@@ -139,6 +139,7 @@ pub fn draw(state: &AppState, frame: &mut Frame, theme: &Theme) {
             frame,
             areas.transcript,
             &pending.request,
+            state.permission_grant_scope,
             state.modal_scroll,
             theme,
         );
@@ -285,14 +286,23 @@ pub(crate) fn max_scroll(state: &AppState, area: Rect) -> u16 {
 
 /// Rows the permission overlay's footer ALWAYS reserves, regardless of how
 /// long the command being displayed is: the tool/category line, the agent
-/// path line, the `[y]/[a]/[p]/[n]/[Esc]` decision-key hint, and (V2b) the
-/// one-line statement of what `[p]` would grant. Four rows, not three: the
-/// offer line must be reserved even when no pattern is on offer, because a
-/// footer that changes height as the operator scrolls would shift the
-/// command text under them mid-read. This is the
+/// path line, the `[y]/[a]/[p]/[n]/[Esc]` decision-key hint, the grant-scope
+/// line (which `[a]`/`[p]` remember at, cycled by `[s]`), and (V2b) the
+/// one-line statement of what `[p]` would grant. Five rows, not four: the
+/// offer and scope lines must be reserved even when no pattern is on offer,
+/// because a footer that changes height as the operator scrolls would shift
+/// the command text under them mid-read. This is the
 /// load-bearing invariant behind [`draw_permission_overlay`]'s whole
 /// rework -- see that function's own doc.
-const PERMISSION_FOOTER_ROWS: u16 = 4;
+///
+/// HONEST ACCOUNTING, one conditional line this constant does NOT reserve:
+/// the `[PageUp/PageDown] scroll command` hint appears only when the command
+/// body overflows its cap. With both it and an offer present the footer is
+/// 6 lines against these 5, so the bottom-most line (agent path) clips by
+/// one. Accepted: the clip order keeps every decision-relevant line (keys,
+/// scope, offer) ahead of the informational tool/category and agent-path
+/// lines, so what clips is always the least decision-relevant row.
+const PERMISSION_FOOTER_ROWS: u16 = 5;
 
 /// The permission prompt: bottom-anchored, content-sized, capped, drawn over
 /// the transcript via the shared [`modal`] primitive (V1) -- unmistakably
@@ -336,6 +346,7 @@ fn draw_permission_overlay(
     frame: &mut Frame,
     transcript_area: Rect,
     req: &conway::PermissionRequest,
+    grant_scope: conway::PermissionScope,
     scroll: u16,
     theme: &Theme,
 ) {
@@ -382,11 +393,19 @@ fn draw_permission_overlay(
     // the user actually needs to act on the prompt -- it goes FIRST here,
     // ahead of the purely informational tool/category and agent-path lines,
     // so even a 1-row footer still shows it.
-    // V2b: `[p]` appears only when a pattern grant is actually on offer --
-    // `suggested_rule` declines for a command carrying shell
-    // metacharacters, and advertising a key that would do nothing is worse
-    // than omitting it.
-    let offered = conway::permission_pattern::suggested_rule(req.tool.as_str(), &req.rendered);
+    // V2b: `[p]` appears only when a pattern grant is actually on offer.
+    // What is offered depends on the call's own `render_kind` (carried on
+    // the request from the broker): a shell-shaped rendering gets the
+    // narrow two-token prefix, or nothing when it carries shell
+    // metacharacters (advertising a key that would do nothing is worse
+    // than omitting it); a `Structured` rendering gets the registerable
+    // `tool:*` wildcard -- a prefix over a JSON dump is a registration
+    // error, so it is never offered.
+    let offered = conway::permission_pattern::suggested_rule(
+        req.tool.as_str(),
+        &req.rendered,
+        req.render_kind,
+    );
     // The decision keys must all stay legible on a narrow terminal --
     // losing `[Esc] deny with feedback` off the right edge would hide a
     // decision the operator may want. So the keys go on their own line and
@@ -398,6 +417,25 @@ fn draw_permission_overlay(
         "[y] allow once  [a] allow always  [n] deny  [Esc] deny with feedback"
     };
     let mut footer_lines = vec![Line::from(hint)];
+    // The scope the remembered-grant keys (`a` and `p`) grant at, stated
+    // in words -- the grant's BREADTH along the who-does-it-cover axis,
+    // the same way the `[p] grants:` line below states it along the
+    // which-calls axis. An operator answering the prompt is answering both
+    // at once, so both are on screen before anything is pressed. Second
+    // line, right under the decision keys it modifies: it is
+    // decision-relevant, not informational, so it must outlast the
+    // tool/category and agent-path lines as the footer clips top-down.
+    let scope_words = match grant_scope {
+        conway::PermissionScope::Session => "this session",
+        conway::PermissionScope::Agent => "this agent only",
+        conway::PermissionScope::AgentSubtree => "this agent and its subtree",
+        // `PermissionScope` is `#[non_exhaustive]`: describe an unknown
+        // scope honestly rather than guessing at its breadth.
+        _ => "a custom scope",
+    };
+    footer_lines.push(Line::from(format!(
+        "  [a]/[p] remember for: {scope_words}  ([s] cycles)"
+    )));
     if body_max_scroll > 0 {
         footer_lines.push(Line::from("  [PageUp/PageDown] scroll command"));
     }
@@ -711,6 +749,21 @@ mod tests {
             arguments: serde_json::json!({}),
             rendered: rendered.to_string(),
             call_id: "tc_1".to_string(),
+            // `bash` genuinely declares ShellCommand -- the honest fixture
+            // for a shell tool's prompt.
+            render_kind: conway::RenderKind::ShellCommand,
+        }
+    }
+
+    /// A `Structured`-render tool's prompt fixture (e.g. `report` -- its
+    /// rendering is a JSON dump, never a shell command, and it declares
+    /// `RenderKind::Structured` to say so).
+    fn sample_structured_request(rendered: &str) -> PermissionRequest {
+        PermissionRequest {
+            render_kind: conway::RenderKind::Structured,
+            tool: ToolName::new("report"),
+            category: ToolCategory::Read,
+            ..sample_request(rendered)
         }
     }
 
@@ -1570,8 +1623,12 @@ mod tests {
         let state = awaiting_permission("git status && rm -rf /");
         let text = render_text(&state, 100, 24);
 
+        // The OFFER markers specifically: the hint's `[p] pattern` key and
+        // the `[p] grants:` breadth line. (The scope line's `[a]/[p]`
+        // mention is always present -- it describes what the keys remember
+        // at, not an offer.)
         assert!(
-            !text.contains("[p]"),
+            !text.contains("[p] pattern") && !text.contains("[p] grants:"),
             "a chained command must not be offered a pattern grant: {text}"
         );
         assert!(
@@ -1601,6 +1658,74 @@ mod tests {
         assert!(
             text.contains("git status"),
             "the prompt names the prefix it would grant: {text}"
+        );
+    }
+
+    /// Axis A, end to end at the OFFER site: a `Structured` tool's
+    /// JSON-dump rendering is full of shell metacharacters, but they are
+    /// not shell risk -- the prompt must still offer a pattern grant, and
+    /// the grant it offers must be the one shape F12's registration check
+    /// admits against a `Structured` tool: the `tool:*` wildcard, stated
+    /// in words. (Before `suggested_rule` took `render_kind`, this prompt
+    /// silently showed no `[p]` at all.)
+    #[test]
+    fn a_structured_tools_prompt_offers_the_registrable_wildcard() {
+        let (prompt, _rx) = PendingPrompt::new_for_test(sample_structured_request(
+            r#"report({"summary":"build finished ok"})"#,
+        ));
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        state.mode = Mode::AwaitingPermission(prompt);
+
+        let rule = state
+            .offered_permission_rule()
+            .expect("a Structured tool must have an honest offer");
+        assert_eq!(
+            rule.command_prefix, "*",
+            "the offer must be the wildcard -- a prefix over a JSON dump is \
+             a registration error and must never be offered"
+        );
+
+        let text = render_text(&state, 100, 24);
+        assert!(
+            text.contains("[p] grants: any `report` call"),
+            "the prompt must state the wildcard grant in words: {text}"
+        );
+    }
+
+    /// Axis B at the render site: the prompt states which scope the
+    /// remembered-grant keys (`a`/`p`) will grant at, and the words track
+    /// the `s`-key cycle -- an operator never grants broader or narrower
+    /// than what is on screen.
+    #[test]
+    fn the_prompt_states_the_grant_scope_and_tracks_the_cycle() {
+        let mut state = awaiting_permission("git status --short");
+
+        let session_text = render_text(&state, 100, 24);
+        assert!(
+            session_text.contains("remember for: this session"),
+            "the default scope must be stated: {session_text}"
+        );
+
+        state.cycle_permission_grant_scope();
+        let agent_text = render_text(&state, 100, 24);
+        assert!(
+            agent_text.contains("remember for: this agent only"),
+            "one `s` press narrows to this agent: {agent_text}"
+        );
+
+        state.cycle_permission_grant_scope();
+        let subtree_text = render_text(&state, 100, 24);
+        assert!(
+            subtree_text.contains("remember for: this agent and its subtree"),
+            "a second `s` press widens to the subtree: {subtree_text}"
+        );
+
+        state.cycle_permission_grant_scope();
+        assert_eq!(
+            state.permission_grant_scope,
+            conway::PermissionScope::Session,
+            "a third `s` press wraps back to the session default"
         );
     }
 
