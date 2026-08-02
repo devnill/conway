@@ -12,10 +12,10 @@ use conway_core::ids::{AgentId, SessionId, ToolName};
 use conway_core::ports::PermissionGate;
 use conway_runtime::events::EventBus;
 use conway_runtime::permission::{
-    AgentRoot, AuthorizedCall, PermissionBroker, PermissionCtx, PermissionOutcome,
+    AgentRoot, AuthorizedCall, GrantScope, PermissionBroker, PermissionCtx, PermissionOutcome,
 };
 use conway_core::permission_mode::PermissionMode;
-use conway_core::permission_pattern::{PatternOrigin, PatternRule};
+use conway_core::permission_pattern::{PatternOrigin, PatternRule, Rule, Select, Then, When};
 use futures::StreamExt;
 
 /// A gate that plays back a fixed script of decisions in order, recording
@@ -1383,4 +1383,270 @@ async fn active_prompt_patterns_reports_origin() {
     let patterns = broker.active_prompt_patterns();
     assert_eq!(patterns.len(), 1);
     assert_eq!(patterns[0].1, file_origin);
+}
+
+// ---- structured-allow revocation by Rule identity (board item A2) ----
+//
+// `revoke_pattern` is keyed on the flat `to_pattern_rule()` projection,
+// which collapses every structured allow rule (`paths_under`,
+// `categories`, `category_in`, multi-tool) to `None` -- so before A2 a
+// structured allow rule could never be revoked individually.
+// `revoke_pattern_rule` keys on full `Rule` equality plus origin instead.
+
+/// A structured allow rule (`Tools(["read","write"]) + Always`, a rule the
+/// flat form cannot express) installed alongside a flat grant: revoking the
+/// structured rule by `(Rule, origin)` removes exactly it -- the flat
+/// sibling survives and still suppresses its prompt, and the structured
+/// rule no longer matches.
+#[tokio::test]
+async fn revoke_pattern_rule_removes_only_the_structured_rule_addressed() {
+    let gate = ScriptedGate::new(vec![
+        // After the revoke, a call the structured rule used to cover must
+        // reach the gate again.
+        PermissionDecision::Deny {
+            reason: "operator asked again".into(),
+        },
+    ]);
+    let (broker, _bus) = broker(gate.clone());
+    let session = SessionId::new();
+    let agent = AgentId::new();
+    let c = ctx(agent, vec![agent], session);
+
+    let structured = Rule {
+        select: Select::Tools(vec!["read".to_string(), "write".to_string()]),
+        when: When::Always,
+        then: Then::Allow,
+    };
+    let flat = PatternRule::parse("bash:git status").expect("valid rule");
+    assert!(
+        broker.remember_pattern_rule(
+            structured.clone(),
+            PermissionScope::Session,
+            agent,
+            PatternOrigin::Interactive,
+        ),
+        "a structured allow rule with no paths_under installs"
+    );
+    broker.remember_pattern(
+        flat.clone(),
+        PermissionScope::Session,
+        agent,
+        PatternOrigin::Interactive,
+    );
+    assert_eq!(broker.active_structured_allow_rules().len(), 1);
+    assert_eq!(broker.active_patterns().len(), 1);
+
+    // Before the revoke: the structured rule authorizes a `read` call, and
+    // the flat revoke cannot name the structured rule at all (its key is
+    // the flat projection, which is None for this rule) -- the A2 gap.
+    let before = broker.decide(&c, &call("c1")).await;
+    assert_eq!(before, PermissionOutcome::Allow);
+    assert!(
+        !broker.revoke_pattern(&flat, &PatternOrigin::File(PathBuf::from("/elsewhere"))),
+        "sanity: flat revoke against a non-matching origin removes nothing"
+    );
+    assert_eq!(
+        broker.active_structured_allow_rules().len(),
+        1,
+        "the flat revoke's key cannot address a structured rule"
+    );
+
+    let removed =
+        broker.revoke_pattern_rule(&structured, &PatternOrigin::Interactive, &GrantScope::Session);
+    assert!(removed, "a matching structured rule must be reported removed");
+
+    assert!(
+        broker.active_structured_allow_rules().is_empty(),
+        "the structured rule is gone"
+    );
+    assert_eq!(
+        broker.active_patterns().len(),
+        1,
+        "the flat sibling grant survives"
+    );
+
+    // The observable outcome: a call the structured rule used to authorize
+    // now reaches the gate; the flat sibling still suppresses its own.
+    let after = broker.decide(&c, &call("c2")).await;
+    assert!(
+        matches!(after, PermissionOutcome::Deny { .. }),
+        "the revoked structured rule must ask again"
+    );
+    let flat_outcome = broker.decide(&c, &bash_call("c3", "git status")).await;
+    assert_eq!(
+        flat_outcome,
+        PermissionOutcome::Allow,
+        "the surviving flat grant must still suppress its prompt"
+    );
+    assert_eq!(gate.call_count(), 1, "only the revoked rule's call re-asked");
+}
+
+/// `(Rule, origin)` is the identity: the identical rule text installed from
+/// two origins is addressed independently, exactly as the flat path's
+/// origin test pins.
+#[tokio::test]
+async fn revoke_pattern_rule_is_addressed_by_origin_too_not_just_the_rule() {
+    let gate = ScriptedGate::new(vec![]);
+    let (broker, _bus) = broker(gate.clone());
+    let agent = AgentId::new();
+
+    let rule = Rule {
+        select: Select::Tools(vec!["read".to_string(), "write".to_string()]),
+        when: When::Always,
+        then: Then::Allow,
+    };
+    let file_origin = PatternOrigin::File(PathBuf::from("/repo/.conway/permissions.json"));
+    broker.remember_pattern_rule(
+        rule.clone(),
+        PermissionScope::Session,
+        agent,
+        PatternOrigin::Interactive,
+    );
+    broker.remember_pattern_rule(
+        rule.clone(),
+        PermissionScope::Session,
+        agent,
+        file_origin.clone(),
+    );
+    assert_eq!(broker.active_structured_allow_rules().len(), 2);
+
+    let removed =
+        broker.revoke_pattern_rule(&rule, &PatternOrigin::Interactive, &GrantScope::Session);
+    assert!(removed);
+
+    let remaining = broker.active_structured_allow_rules();
+    assert_eq!(
+        remaining.len(),
+        1,
+        "only the matching origin's rule is removed"
+    );
+    assert_eq!(remaining[0].1, file_origin);
+}
+
+/// Revoking a structured rule that is not installed reports false (the
+/// facade folds this into `RevokeOutcome::NotFound`), and a structured rule
+/// that IS installed is not matched by a DIFFERENT rule's identity.
+#[tokio::test]
+async fn revoke_pattern_rule_reports_false_when_nothing_matches() {
+    let gate = ScriptedGate::new(vec![]);
+    let (broker, _bus) = broker(gate.clone());
+    let agent = AgentId::new();
+
+    let installed = Rule {
+        select: Select::Tools(vec!["read".to_string(), "write".to_string()]),
+        when: When::Always,
+        then: Then::Allow,
+    };
+    broker.remember_pattern_rule(
+        installed,
+        PermissionScope::Session,
+        agent,
+        PatternOrigin::Interactive,
+    );
+
+    let never_installed = Rule {
+        select: Select::Tools(vec!["bash".to_string()]),
+        when: When::CategoryIn(vec![conway_core::content::ToolCategory::Execute]),
+        then: Then::Allow,
+    };
+    assert!(
+        !broker.revoke_pattern_rule(
+            &never_installed,
+            &PatternOrigin::Interactive,
+            &GrantScope::Session
+        ),
+        "a rule that was never installed must not match"
+    );
+    assert_eq!(broker.active_structured_allow_rules().len(), 1);
+}
+
+/// The scope IS part of the revoke key (A2 review fix): two entries equal in
+/// `(rule, origin)` but remembered at different scopes are addressed
+/// independently -- revoking the agent-scoped row removes THAT instance and
+/// leaves the session-scoped one installed, exactly the row the operator
+/// pointed at. A scope-blind first-match could remove the session-scoped
+/// instance instead.
+#[tokio::test]
+async fn revoke_pattern_rule_is_addressed_by_scope_too() {
+    let gate = ScriptedGate::new(vec![]);
+    let (broker, _bus) = broker(gate.clone());
+    let agent = AgentId::new();
+
+    let rule = Rule {
+        select: Select::Tools(vec!["read".to_string(), "write".to_string()]),
+        when: When::Always,
+        then: Then::Allow,
+    };
+    broker.remember_pattern_rule(
+        rule.clone(),
+        PermissionScope::Session,
+        agent,
+        PatternOrigin::Interactive,
+    );
+    broker.remember_pattern_rule(
+        rule.clone(),
+        PermissionScope::Agent,
+        agent,
+        PatternOrigin::Interactive,
+    );
+    assert_eq!(broker.active_structured_allow_rules().len(), 2);
+
+    // A scope-mismatched key matches nothing, even with rule and origin exact.
+    assert!(
+        !broker.revoke_pattern_rule(
+            &rule,
+            &PatternOrigin::Interactive,
+            &GrantScope::Agent(AgentId::new()),
+        ),
+        "a different agent's scope must not match"
+    );
+
+    // Revoke the agent-scoped instance: exactly it goes, the session one stays.
+    let removed = broker.revoke_pattern_rule(
+        &rule,
+        &PatternOrigin::Interactive,
+        &GrantScope::Agent(agent),
+    );
+    assert!(removed);
+
+    let remaining = broker.active_structured_allow_rules();
+    assert_eq!(remaining.len(), 1, "only the agent-scoped instance is removed");
+    assert_eq!(
+        remaining[0].2,
+        GrantScope::Session,
+        "the session-scoped instance survives"
+    );
+}
+
+/// `active_structured_allow_rules` surfaces each rule's grant scope (A2):
+/// an allow rule is the one scoped rule kind, and a review surface that hid
+/// the scope would misrepresent how much of the agent tree a grant covers.
+#[tokio::test]
+async fn active_structured_allow_rules_reports_origin_and_scope() {
+    let gate = ScriptedGate::new(vec![]);
+    let (broker, _bus) = broker(gate.clone());
+    let agent = AgentId::new();
+
+    let rule = Rule {
+        select: Select::Tools(vec!["read".to_string(), "write".to_string()]),
+        when: When::Always,
+        then: Then::Allow,
+    };
+    let file_origin = PatternOrigin::File(PathBuf::from("/repo/.conway/permissions.json"));
+    broker.remember_pattern_rule(
+        rule.clone(),
+        PermissionScope::Agent,
+        agent,
+        file_origin.clone(),
+    );
+
+    let rules = broker.active_structured_allow_rules();
+    assert_eq!(rules.len(), 1);
+    assert_eq!(rules[0].0, rule);
+    assert_eq!(rules[0].1, file_origin);
+    assert_eq!(
+        rules[0].2,
+        conway_runtime::permission::GrantScope::Agent(agent),
+        "the scope the rule was remembered at rides along"
+    );
 }

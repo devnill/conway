@@ -138,6 +138,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `crates/conway-cli/src/tui/app.rs`, `docs/permissions.md`,
   `docs/interactive.md`)
 
+- **Structured allow rules are now visible in `/settings` and individually
+  revocable.** A `rules`-array allow rule (the structured form —
+  `paths_under`, `categories`, `category_in`, multi-tool) was enforced by
+  the broker but invisible to the operator: the review list dropped it
+  (the flat accessor projects every rule through `to_pattern_rule()`, which
+  is `None` for the structured-only forms), and revoking one returned
+  `NotFound` because the flat revoke is keyed on that same projection — the
+  only way to remove one was "revoke all grants" or editing the file by
+  hand. The allow section now renders each structured allow rule alongside
+  the flat grant rows, `[origin] description`, with a `scope:` note when
+  the grant covers less than the whole session; selecting the row and
+  pressing `Enter` revokes exactly that rule — from the session *and* from
+  the `rules` array of the file it came from, with the same
+  never-fails-open ordering and re-trust behavior as flat revocation. The
+  facade gains `Conway::active_structured_allow_rules` (rule + origin +
+  grant scope, via the newly public `GrantScope`) and
+  `Conway::revoke_structured_allow_rule`, backed by the broker's
+  Rule-identity `revoke_pattern_rule`; the existing flat grant list and
+  flat per-rule revocation are unchanged. The observable outcome is proven
+  end to end in
+  `crates/conway/tests/structured_rule_seam.rs::revoking_a_structured_allow_rule_removes_only_it_and_the_call_asks_again`:
+  after the revoke, a call the rule used to authorize reaches the
+  operator's gate again while a sibling flat grant still auto-allows, and
+  the rule's wire form is gone from the file. (`crates/conway-runtime/src/permission.rs`,
+  `crates/conway/src/conway.rs`, `crates/conway-cli/src/tui/view/settings.rs`,
+  `crates/conway-cli/src/tui/input.rs`, `crates/conway-cli/src/tui/state.rs`,
+  `crates/conway-cli/src/tui/app.rs`, `docs/permissions.md`)
+
 ### Changed
 
 - **The three control-character sanitizers are converged to one shared

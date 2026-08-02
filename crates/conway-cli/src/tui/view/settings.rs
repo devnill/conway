@@ -102,6 +102,16 @@ pub(crate) const LEAF_REVOKE_GRANTS: &str = "revoke_grants";
 /// there is no window in which the index could point at a different grant
 /// than the one rendered — see that function's own doc.
 pub(crate) const LEAF_REVOKE_GRANT_PREFIX: &str = "revoke_grant:";
+/// Board item A2: prefix for one STRUCTURED allow rule's own leaf id,
+/// `"{LEAF_REVOKE_STRUCTURED_ALLOW_PREFIX}{index}"` where `index` is the
+/// row's position in `state.structured_allow_rules` at the moment this tree
+/// was built -- a DISTINCT id space from [`LEAF_REVOKE_GRANT_PREFIX`] so a
+/// flat revocation and a structured revocation can never resolve against
+/// each other's mirror (the two lists are indexed independently, and
+/// `input::activate_settings_selection` resolves each prefix against its
+/// OWN mirror in the same call that built this tree, exactly as the flat
+/// path does -- see that function's own doc).
+pub(crate) const LEAF_REVOKE_STRUCTURED_ALLOW_PREFIX: &str = "revoke_structured_allow:";
 
 /// The two top-level group labels (see this module's own doc, "Grouping").
 /// `pub(crate)` for the same reason the leaf ids are -- `input.rs` and this
@@ -195,7 +205,9 @@ pub(crate) fn build_tree(state: &AppState) -> MenuState {
                 ),
                 group_node(ALLOW_GROUP, state, {
                     let mut allow = Vec::new();
-                    if state.permission_grants.is_empty() {
+                    if state.permission_grants.is_empty()
+                        && state.structured_allow_rules.is_empty()
+                    {
                         allow.push(MenuNode::static_row("no active grants"));
                     } else {
                         for (i, (rule, origin)) in
@@ -208,6 +220,37 @@ pub(crate) fn build_tree(state: &AppState) -> MenuState {
                                     rule.describe()
                                 ),
                                 format!("{LEAF_REVOKE_GRANT_PREFIX}{i}"),
+                            ));
+                        }
+                        // Board item A2: the structured allow rules the flat
+                        // form cannot express render in the SAME allow
+                        // section, as the same selectable-leaf shape -- they
+                        // are revocable grants exactly like the flat rows,
+                        // just addressed through the Rule-identity revoke
+                        // (`input::activate_settings_selection`'s
+                        // `LEAF_REVOKE_STRUCTURED_ALLOW_PREFIX` arm) because
+                        // the flat `(PatternRule, origin)` key cannot name
+                        // one. The scope is annotated only when it is NOT
+                        // the whole session: every rule the TUI itself
+                        // installs is session-scoped, so a constant
+                        // "session" annotation would be noise on every row,
+                        // while an Agent/AgentSubtree grant (an embedder's)
+                        // covers LESS than the row otherwise implies and
+                        // must say so.
+                        for (i, (rule, origin, scope)) in
+                            state.structured_allow_rules.iter().enumerate()
+                        {
+                            let scope_note = match scope {
+                                conway::GrantScope::Session => String::new(),
+                                other => format!(" (scope: {})", other.describe()),
+                            };
+                            allow.push(MenuNode::leaf(
+                                format!(
+                                    "granted: [{}] {}{scope_note} (Enter to revoke)",
+                                    origin.describe(),
+                                    rule.describe()
+                                ),
+                                format!("{LEAF_REVOKE_STRUCTURED_ALLOW_PREFIX}{i}"),
                             ));
                         }
                         allow.push(MenuNode::leaf(
@@ -692,6 +735,140 @@ mod tests {
             );
             tree.move_selection(1);
         }
+    }
+
+    // ---- Structured allow rows: visible AND revocable (board item A2) ----
+
+    fn a_structured_allow_rule() -> conway::Rule {
+        // Multi-tool + Always: a rule the flat form cannot express (its
+        // `to_pattern_rule()` is None), the kind A2 makes revocable.
+        conway::Rule {
+            select: conway::Select::Tools(vec!["bash".to_string(), "read".to_string()]),
+            when: conway::When::Always,
+            then: conway::Then::Allow,
+        }
+    }
+
+    /// A structured allow rule renders in the allow section as a SELECTABLE,
+    /// revocable leaf -- `[origin] description (Enter to revoke)`, the same
+    /// shape as a flat grant row -- but keyed by its OWN leaf-id prefix, so
+    /// its index space can never collide with the flat rows'.
+    #[test]
+    fn structured_allow_rules_render_as_revocable_leaves_with_their_origins() {
+        let mut state = AppState::new(AgentId::new());
+        state.open_settings();
+        state.permission_grants = vec![(
+            conway::PatternRule::parse("bash:git status").expect("valid rule"),
+            conway::PatternOrigin::Interactive,
+        )];
+        state.structured_allow_rules = vec![(
+            a_structured_allow_rule(),
+            conway::PatternOrigin::File(std::path::PathBuf::from(
+                "/repo/.conway/permissions.json",
+            )),
+            conway::GrantScope::Session,
+        )];
+
+        let rows = build_tree(&state).rows();
+
+        let structured_row = rows
+            .iter()
+            .find(|r| r.label.contains("[bash, read] (any call)"))
+            .expect("the structured allow row must render");
+        assert!(structured_row.label.starts_with("granted:"));
+        assert!(
+            structured_row
+                .label
+                .contains("/repo/.conway/permissions.json"),
+            "the row must name its origin: {}",
+            structured_row.label
+        );
+        assert!(
+            structured_row.label.contains("(Enter to revoke)"),
+            "a revocable row must name its action: {}",
+            structured_row.label
+        );
+        assert!(
+            !structured_row.label.contains("scope:"),
+            "a session-wide grant is the default -- annotating it would be noise: {}",
+            structured_row.label
+        );
+        assert_eq!(
+            structured_row.kind,
+            menu::MenuRowKind::Leaf {
+                id: format!("{LEAF_REVOKE_STRUCTURED_ALLOW_PREFIX}0")
+            },
+            "keyed by the structured prefix, in its own index space"
+        );
+
+        // The flat sibling keeps its own prefix and index space -- index 0
+        // in EACH list addresses a different row, and the prefixes keep the
+        // two resolves apart.
+        let flat_row = rows
+            .iter()
+            .find(|r| r.label.contains("git status"))
+            .expect("the flat grant row must render");
+        assert_eq!(
+            flat_row.kind,
+            menu::MenuRowKind::Leaf {
+                id: format!("{LEAF_REVOKE_GRANT_PREFIX}0")
+            }
+        );
+
+        // Both are selectable (never Static), and revoke-all is still there.
+        let text = rows
+            .iter()
+            .map(|r| r.label.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("revoke all grants"), "{text}");
+        assert!(!text.contains("no active grants"), "{text}");
+    }
+
+    /// A structured allow rule granted at a NARROWER scope than the session
+    /// must say so -- the row otherwise implies it covers every agent.
+    #[test]
+    fn a_structured_allow_rule_with_a_narrower_scope_is_annotated() {
+        let mut state = AppState::new(AgentId::new());
+        state.open_settings();
+        state.structured_allow_rules = vec![(
+            a_structured_allow_rule(),
+            conway::PatternOrigin::Interactive,
+            conway::GrantScope::Agent(AgentId::new()),
+        )];
+
+        let rows = build_tree(&state).rows();
+        let row = rows
+            .iter()
+            .find(|r| r.label.contains("[bash, read] (any call)"))
+            .expect("the structured allow row must render");
+        assert!(
+            row.label.contains("scope: agent"),
+            "a non-session scope must be visible: {}",
+            row.label
+        );
+    }
+
+    /// An allow section holding ONLY structured rules must not render the
+    /// "no active grants" empty state (that message would be a lie), and
+    /// revoke-all remains available for them.
+    #[test]
+    fn an_allow_section_with_only_structured_rules_has_no_false_empty_state() {
+        let mut state = AppState::new(AgentId::new());
+        state.open_settings();
+        state.structured_allow_rules = vec![(
+            a_structured_allow_rule(),
+            conway::PatternOrigin::Interactive,
+            conway::GrantScope::Session,
+        )];
+
+        let text = plain_rows(&state);
+        assert!(
+            !text.contains("no active grants"),
+            "a structured rule IS an active grant: {text}"
+        );
+        assert!(text.contains("[bash, read] (any call)"), "{text}");
+        assert!(text.contains("revoke all grants"), "{text}");
     }
 
 }

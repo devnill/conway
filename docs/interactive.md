@@ -187,7 +187,8 @@ active-only); `Esc` (or `/agents` again) closes it. The status markers:
 `/settings` opens a menu of three groups: **display** (show reasoning
 traces, show timestamps), **tool output** (how many lines a folded tool
 call shows before `Ctrl-E` is needed), and **permissions** (cycle the
-permission mode; review or revoke individual grants under **allow**; and
+permission mode; review or revoke individual grants under **allow** —
+flat and structured alike; and
 read-only **deny** and **prompt** sections listing every rule — flat or
 structured — that any permissions file, trusted or not, has put in force,
 each with the file it came from). `Up`/`Down`

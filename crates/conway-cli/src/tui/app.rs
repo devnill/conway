@@ -537,6 +537,12 @@ impl App {
                                 Action::RevokePermissionGrants => {
                                     self.conway.revoke_permission_grants();
                                     self.state.permission_grants.clear();
+                                    // The broker's revoke-all drops EVERY
+                                    // allow grant, structured rules
+                                    // included -- both mirrors must clear
+                                    // or the menu would render stale rows
+                                    // for rules that no longer authorize.
+                                    self.state.structured_allow_rules.clear();
                                 }
                                 // Board item 01KYND4WGHSZXW5YQ6ZWHCDDNN:
                                 // revoke exactly the one grant the operator
@@ -558,6 +564,59 @@ impl App {
                                     );
                                     self.state.permission_grants =
                                         self.conway.active_permission_patterns();
+                                    let text = match outcome {
+                                        conway::RevokeOutcome::NotFound => {
+                                            "that grant was already gone".to_string()
+                                        }
+                                        conway::RevokeOutcome::RevokedNoFile => {
+                                            format!("revoked: {}", rule.describe())
+                                        }
+                                        conway::RevokeOutcome::RevokedAndPersisted {
+                                            retrust_warning: None,
+                                        } => format!(
+                                            "revoked and removed from {}: {}",
+                                            origin.describe(),
+                                            rule.describe()
+                                        ),
+                                        conway::RevokeOutcome::RevokedAndPersisted {
+                                            retrust_warning: Some(warning),
+                                        } => format!(
+                                            "revoked and removed from {}: {} -- {warning}",
+                                            origin.describe(),
+                                            rule.describe()
+                                        ),
+                                        conway::RevokeOutcome::RevokedButPersistFailed {
+                                            error,
+                                        } => format!(
+                                            "revoked for this session, but could not update \
+                                             {} ({error}) -- it may come back at the next \
+                                             restart",
+                                            origin.describe()
+                                        ),
+                                    };
+                                    self.state
+                                        .transcript
+                                        .push(super::state::Entry::Notice { text });
+                                }
+                                // Board item A2: the structured-allow
+                                // counterpart of the arm above -- revoke
+                                // exactly the one structured rule the
+                                // operator selected, through the
+                                // Rule-identity facade method (the flat
+                                // revoke cannot name a structured rule).
+                                // Same guarantees: the broker's in-memory
+                                // grant is dropped before any file I/O
+                                // (revocation never fails open), the mirror
+                                // is refreshed from the broker regardless,
+                                // and the outcome is reported whole.
+                                Action::RevokeStructuredAllowRule(rule, origin, scope) => {
+                                    let env_vars: std::collections::HashMap<String, String> =
+                                        std::env::vars().collect();
+                                    let outcome = self.conway.revoke_structured_allow_rule(
+                                        &env_vars, &rule, &origin, &scope,
+                                    );
+                                    self.state.structured_allow_rules =
+                                        self.conway.active_structured_allow_rules();
                                     let text = match outcome {
                                         conway::RevokeOutcome::NotFound => {
                                             "that grant was already gone".to_string()
@@ -806,6 +865,7 @@ impl App {
         // which a bare formatted string could never do.
         if text.trim() == "/settings" {
             self.state.permission_grants = self.conway.active_permission_patterns();
+            self.state.structured_allow_rules = self.conway.active_structured_allow_rules();
             self.state.permission_mode = self.conway.permission_mode();
             // The read-only deny/prompt review lists refresh on the same
             // seam. Unlike grants, these never change in-session (deny and

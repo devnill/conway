@@ -702,3 +702,256 @@ async fn a_structured_prompt_rule_from_an_untrusted_project_file_forces_the_gate
          `bash:rm` allow rule"
     );
 }
+// =====================================================================
+// A2: a structured allow rule is inspectable and individually revocable.
+// =====================================================================
+
+/// **A2's headline acceptance test.** A structured `paths_under` allow rule
+/// installed from a real global `permissions.json` (alongside a sibling
+/// FLAT grant): the facade lists it with its origin and scope; revoking it
+/// through `Conway::revoke_structured_allow_rule` removes ONLY that rule --
+/// the sibling flat grant still auto-allows, the rule's wire form is gone
+/// from the file on disk (the flat entry untouched), and a call the rule
+/// used to authorize reaches the operator's gate again. Every assertion is
+/// on the OBSERVABLE outcome (gate-request counts through the real
+/// `ToolRunner` -> `PermissionBroker::decide` seam, and the file's bytes),
+/// never on an internal call count.
+#[tokio::test]
+async fn revoking_a_structured_allow_rule_removes_only_it_and_the_call_asks_again() {
+    let root_dir = TempDir::new().expect("tempdir");
+    std::fs::write(root_dir.path().join("file.txt"), b"inside the root").expect("write fixture");
+    let root_canon = root_dir.path().canonicalize().expect("canonicalize root");
+
+    let (xdg, env) = isolated_env();
+    write_global_permissions(
+        &xdg,
+        &format!(
+            r#"{{"allow":["bash:git status"],"rules":[{{"select":{{"tools":["read"]}},"when":{{"paths_under":"{}"}},"then":"allow"}}]}}"#,
+            root_canon.display()
+        ),
+    );
+    let global_file = xdg.path().join("conway").join("permissions.json");
+
+    let gate = RecordingGate::new(PermissionDecision::Deny {
+        reason: "operator said no".into(),
+    });
+    let conway = build_conway(
+        root_dir.path(),
+        vec![
+            // Turn 1: the structured rule authorizes this read (gate bypassed).
+            ScriptedTurn::Respond(read_call_response("file.txt")),
+            ScriptedTurn::Respond(text_response("done")),
+            // Turn 2: after the revoke, the SAME read must reach the gate.
+            ScriptedTurn::Respond(read_call_response("file.txt")),
+            ScriptedTurn::Respond(text_response("done")),
+            // Turn 3: the sibling flat grant must still auto-allow.
+            ScriptedTurn::Respond(bash_call_response("git status")),
+            ScriptedTurn::Respond(text_response("done")),
+        ],
+        gate.clone() as Arc<dyn PermissionGate>,
+    );
+    let report =
+        conway.load_permission_files(root_dir.path(), &env, PermissionScope::Session, AgentId::new());
+    assert!(
+        report.registration_errors.is_empty(),
+        "no registration errors expected: {:?}",
+        report.registration_errors
+    );
+
+    // The rule is inspectable through the facade: exactly one structured
+    // allow rule, carrying its origin (the global file) and its grant scope.
+    let listed = conway.active_structured_allow_rules();
+    assert_eq!(
+        listed.len(),
+        1,
+        "the structured allow rule must be listed: {listed:?}"
+    );
+    assert_eq!(
+        listed[0].1,
+        conway::PatternOrigin::File(global_file.clone()),
+        "its origin must name the file it came from"
+    );
+    assert_eq!(
+        listed[0].2,
+        conway::GrantScope::Session,
+        "loaded at Session scope, and the review surface must say so"
+    );
+    assert!(
+        matches!(
+            &listed[0].0.when,
+            conway::When::PathsUnder(p) if p == &root_canon.display().to_string()
+        ),
+        "the listed rule is the paths_under rule from the file: {:?}",
+        listed[0].0
+    );
+    let (rule, origin, scope) = listed.into_iter().next().expect("one rule");
+
+    // Turn 1: the rule authorizes the in-root read -- the gate sees nothing.
+    // (One prompt per session: sequential prompts on a single handle are not
+    // a supported pattern in this harness -- but the broker, and with it
+    // every grant and revoke, is shared across a `Conway`'s sessions, so a
+    // fresh session per turn still exercises the SAME installed rules.)
+    let handle = conway
+        .new_session(SessionSpec::default())
+        .await
+        .expect("new_session");
+    let turn = handle.prompt("read the file").await.expect("prompt");
+    let _ = tokio::time::timeout(Duration::from_secs(10), turn.result())
+        .await
+        .expect("turn must not hang");
+    assert!(
+        gate.requests().is_empty(),
+        "before the revoke, the paths_under rule authorizes the read without the gate: {:?}",
+        gate.requests()
+    );
+
+    // The flat revoke cannot name a structured rule (its PatternRule key
+    // collapses every structured rule to None at the broker): NotFound, and
+    // the rule survives -- the pre-A2 gap, pinned as a regression guard.
+    let flat_outcome = conway.revoke_permission_pattern(
+        &env,
+        &conway::PatternRule::parse("read:*").expect("valid rule"),
+        &origin,
+    );
+    assert!(
+        matches!(flat_outcome, conway::RevokeOutcome::NotFound),
+        "the flat revoke must NOT find a structured rule: {flat_outcome:?}"
+    );
+    assert_eq!(
+        conway.active_structured_allow_rules().len(),
+        1,
+        "the structured rule must survive a flat-revoke attempt"
+    );
+
+    // The real revoke, addressed by exactly what the review list rendered.
+    let outcome = conway.revoke_structured_allow_rule(&env, &rule, &origin, &scope);
+    assert!(
+        matches!(
+            outcome,
+            conway::RevokeOutcome::RevokedAndPersisted {
+                retrust_warning: None
+            }
+        ),
+        "the global file is trusted by authorship (no re-trust needed), so this is a \
+         clean revoke-and-persist: {outcome:?}"
+    );
+    assert!(
+        conway.active_structured_allow_rules().is_empty(),
+        "the rule is gone from the review list"
+    );
+
+    // The file on disk: the structured rule's entry is gone, the flat
+    // sibling's entry is untouched.
+    let on_disk = std::fs::read_to_string(&global_file).expect("read rewritten permissions.json");
+    assert!(
+        !on_disk.contains("paths_under"),
+        "the structured rule's wire form must be removed from the file: {on_disk}"
+    );
+    assert!(
+        on_disk.contains("bash:git status"),
+        "the sibling flat grant's wire form must survive: {on_disk}"
+    );
+
+    // Turn 2 (observable): the SAME read now reaches the operator's gate.
+    let handle = conway
+        .new_session(SessionSpec::default())
+        .await
+        .expect("new_session");
+    let turn = handle.prompt("read the file again").await.expect("prompt");
+    let _ = tokio::time::timeout(Duration::from_secs(10), turn.result())
+        .await
+        .expect("turn must not hang");
+    assert_eq!(
+        gate.requests().len(),
+        1,
+        "after the revoke, the call the rule used to authorize must ask again"
+    );
+
+    // Turn 3 (observable): the sibling flat grant still auto-allows.
+    let handle = conway
+        .new_session(SessionSpec::default())
+        .await
+        .expect("new_session");
+    let turn = handle.prompt("check git status").await.expect("prompt");
+    let _ = tokio::time::timeout(Duration::from_secs(10), turn.result())
+        .await
+        .expect("turn must not hang");
+    assert_eq!(
+        gate.requests().len(),
+        1,
+        "the sibling flat grant must still suppress its prompt -- only the structured \
+         rule was revoked"
+    );
+}
+
+/// Revoking a structured rule that is NOT installed returns
+/// `RevokeOutcome::NotFound` (typed, never a panic -- P-10) and removes
+/// nothing: the installed structured rule still authorizes afterward.
+#[tokio::test]
+async fn revoking_a_structured_allow_rule_that_does_not_exist_returns_not_found() {
+    let root_dir = TempDir::new().expect("tempdir");
+    std::fs::write(root_dir.path().join("file.txt"), b"inside the root").expect("write fixture");
+    let root_canon = root_dir.path().canonicalize().expect("canonicalize root");
+
+    let (xdg, env) = isolated_env();
+    write_global_permissions(
+        &xdg,
+        &format!(
+            r#"{{"rules":[{{"select":{{"tools":["read"]}},"when":{{"paths_under":"{}"}},"then":"allow"}}]}}"#,
+            root_canon.display()
+        ),
+    );
+
+    let gate = RecordingGate::new(PermissionDecision::Deny {
+        reason: "must not be consulted -- the surviving rule must still grant".into(),
+    });
+    let conway = build_conway(
+        root_dir.path(),
+        vec![
+            ScriptedTurn::Respond(read_call_response("file.txt")),
+            ScriptedTurn::Respond(text_response("done")),
+        ],
+        gate.clone() as Arc<dyn PermissionGate>,
+    );
+    conway.load_permission_files(root_dir.path(), &env, PermissionScope::Session, AgentId::new());
+    assert_eq!(conway.active_structured_allow_rules().len(), 1);
+
+    let never_installed = conway::Rule {
+        select: conway::Select::Tools(vec!["bash".to_string()]),
+        when: conway::When::Always,
+        then: conway::Then::Allow,
+    };
+    // A flat-desugarable rule never appears in the structured review list
+    // (it round-trips through `to_pattern_rule`), so this identity can
+    // never match the installed paths_under rule.
+    let outcome = conway.revoke_structured_allow_rule(
+        &env,
+        &never_installed,
+        &conway::PatternOrigin::Interactive,
+        &conway::GrantScope::Session,
+    );
+    assert!(
+        matches!(outcome, conway::RevokeOutcome::NotFound),
+        "a rule that was never installed must report NotFound: {outcome:?}"
+    );
+    assert_eq!(
+        conway.active_structured_allow_rules().len(),
+        1,
+        "nothing was removed"
+    );
+
+    // Observable: the surviving rule still authorizes its call.
+    let handle = conway
+        .new_session(SessionSpec::default())
+        .await
+        .expect("new_session");
+    let turn = handle.prompt("read the file").await.expect("prompt");
+    let _ = tokio::time::timeout(Duration::from_secs(10), turn.result())
+        .await
+        .expect("turn must not hang");
+    assert!(
+        gate.requests().is_empty(),
+        "the installed rule must still authorize after a NotFound revoke: {:?}",
+        gate.requests()
+    );
+}

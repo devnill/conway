@@ -51,6 +51,11 @@ pub use conway_core::permission_pattern::{
     PatternOrigin, PatternRule, PermissionFile, Rule, RuleRegistrationError,
     RuleRegistrationReason, Select, Then, When,
 };
+/// A2: the scope an allow grant covers (`active_structured_allow_rules`
+/// surfaces one per rule) -- re-exported so `conway-cli` can label a
+/// structured-allow review row without depending on `conway-runtime`
+/// (`no_forbidden_deps`).
+pub use conway_runtime::permission::GrantScope;
 /// V2b: `conway-cli` reaches `parse_rules` through here (it cannot depend
 /// on `conway-core` directly -- `no_forbidden_deps`).
 pub mod permission_pattern {
