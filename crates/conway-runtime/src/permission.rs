@@ -357,8 +357,15 @@ impl CacheKey {
 }
 
 /// One remembered `AllowAlways` grant, scoped per architecture §4.3.
+///
+/// `pub` so the structured-allow review surface can hand each rule's scope
+/// back to the operator (`PermissionBroker::active_structured_allow_rules`)
+/// -- an allow rule is the ONE rule kind that is scoped (D4 §3's asymmetry:
+/// `deny`/`prompt` apply to every requester), so an inspection surface that
+/// hid the scope would misrepresent how much of the agent tree a grant
+/// actually covers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum GrantScope {
+pub enum GrantScope {
     Session,
     Agent(AgentId),
     Subtree(AgentId),
@@ -374,6 +381,17 @@ impl GrantScope {
             GrantScope::Session => true,
             GrantScope::Agent(granter) => *granter == ctx.agent_id,
             GrantScope::Subtree(granter) => ctx.agent_path.contains(granter),
+        }
+    }
+
+    /// A human-readable rendering for the review surface, alongside
+    /// `Rule::describe`/`PatternOrigin::describe` -- the third fact about a
+    /// grant row: who it actually covers.
+    pub fn describe(&self) -> String {
+        match self {
+            GrantScope::Session => "session".to_string(),
+            GrantScope::Agent(granter) => format!("agent {granter}"),
+            GrantScope::Subtree(granter) => format!("agent subtree under {granter}"),
         }
     }
 }
@@ -746,18 +764,25 @@ impl PermissionBroker {
     }
 
     /// F12: every active ALLOW [`Rule`] the flat form cannot express, paired
-    /// with its origin -- the structured half of the allow review list, so a
-    /// rule the operator installed via the `rules` array is inspectable the
-    /// same way a flat `allow` grant is (a rule set nobody can inspect is a
-    /// trap). Rules that round-trip to a flat [`PatternRule`] are listed by
-    /// [`Self::active_patterns`] instead, so no rule appears in both.
-    pub fn active_structured_allow_rules(&self) -> Vec<(Rule, PatternOrigin)> {
+    /// with its origin and the [`GrantScope`] it was remembered at -- the
+    /// structured half of the allow review list, so a rule the operator
+    /// installed via the `rules` array is inspectable the same way a flat
+    /// `allow` grant is (a rule set nobody can inspect is a trap). Rules
+    /// that round-trip to a flat [`PatternRule`] are listed by
+    /// [`Self::active_patterns`] instead, so no rule appears in both. The
+    /// scope rides along because an allow rule is the one rule kind that IS
+    /// scoped (see [`GrantScope`]'s own doc): a review row that showed rule
+    /// and origin but not scope would misrepresent how much of the agent
+    /// tree the grant covers. The triple is also exactly the identity
+    /// [`Self::revoke_pattern_rule`] addresses, so what the surface displays
+    /// is what a revoke names.
+    pub fn active_structured_allow_rules(&self) -> Vec<(Rule, PatternOrigin, GrantScope)> {
         self.patterns
             .read()
             .expect("permission patterns poisoned")
             .iter()
             .filter(|(rule, _, _, _)| rule.to_pattern_rule().is_none())
-            .map(|(rule, _, _, origin)| (rule.clone(), origin.clone()))
+            .map(|(rule, _, scope, origin)| (rule.clone(), origin.clone(), *scope))
             .collect()
     }
 
@@ -883,6 +908,61 @@ impl PermissionBroker {
         match patterns
             .iter()
             .position(|(r, _, _, o)| r.to_pattern_rule() == Some(rule.clone()) && o == origin)
+        {
+            Some(idx) => {
+                patterns.remove(idx);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The structured-allow counterpart to [`Self::revoke_pattern`] (board
+    /// item A2): revokes exactly ONE installed ALLOW grant addressed by the
+    /// full [`Rule`] value plus its origin, matched by `Rule` EQUALITY
+    /// rather than by the flat `to_pattern_rule()` projection -- which is
+    /// what makes a structured allow rule (`paths_under`, `categories`,
+    /// `category_in`, multiple tools) individually revocable at all:
+    /// `revoke_pattern` can never name one, because its key collapses every
+    /// structured rule to `None`.
+    ///
+    /// The identity reasoning of [`Self::revoke_pattern`] applies unchanged
+    /// -- `(rule, origin)` is exactly what the review row displays
+    /// (`active_structured_allow_rules`), so what the operator saw is what
+    /// is revoked, and no index can drift between render and revoke. Two
+    /// deliberate choices:
+    ///
+    /// - **The [`GrantScope`] IS part of the key** (unlike `revoke_pattern`'s
+    ///   flat key, which ignores the stored scope). The review row annotates
+    ///   scope, so two entries equal in `(rule, origin)` but differing in
+    ///   scope render as two distinguishable rows, and revoking one removes
+    ///   THAT instance: "what you saw is what you revoke" holds exactly. A
+    ///   scope-blind first-match could remove the session-scoped instance
+    ///   when the operator pointed at the agent-scoped row (code-review
+    ///   finding on this item; the failure direction was safe -- net
+    ///   authority only shrank -- but the mismatch was user-visible).
+    /// - **Any stored allow rule matches, not only structured ones.** A
+    ///   flat-desugarable rule IS a `Rule` in the store, so equality can
+    ///   name it too. That overlap is harmless: the review surface
+    ///   partitions rows (`active_patterns` vs
+    ///   `active_structured_allow_rules`), so each row is revoked through
+    ///   exactly one of the two methods, and both remove one instance of
+    ///   the same store.
+    ///
+    /// Returns whether anything was removed. Like [`Self::revoke_pattern`],
+    /// never touches `deny_patterns`/`prompt_patterns` and never touches
+    /// the `AllowAlways` cache (a different mechanism -- see that method's
+    /// own doc).
+    pub fn revoke_pattern_rule(
+        &self,
+        rule: &Rule,
+        origin: &PatternOrigin,
+        scope: &GrantScope,
+    ) -> bool {
+        let mut patterns = self.patterns.write().expect("permission patterns poisoned");
+        match patterns
+            .iter()
+            .position(|(r, _, s, o)| r == rule && o == origin && s == scope)
         {
             Some(idx) => {
                 patterns.remove(idx);

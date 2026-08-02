@@ -396,6 +396,29 @@ impl Conway {
         self.rt.permission_broker().active_structured_deny_rules()
     }
 
+    /// The structured half of the ALLOW review list (board item A2): every
+    /// active allow [`conway_core::permission_pattern::Rule`] the flat form
+    /// cannot express (`paths_under`, `categories`, `category_in`, multiple
+    /// tools), paired with its origin and the
+    /// [`conway_runtime::permission::GrantScope`] it was granted at --
+    /// mirroring [`Self::active_permission_patterns`], which drops these
+    /// rules by construction (`Rule::to_pattern_rule` returns `None` for
+    /// them). The scope rides along because an allow rule is the one rule
+    /// kind that IS scoped: a review surface that hid it would
+    /// misrepresent how much of the agent tree a grant covers. The
+    /// `(rule, origin)` pair is also exactly the identity
+    /// [`Self::revoke_structured_allow_rule`] addresses, so a row built
+    /// from this list can name itself back for revocation.
+    pub fn active_structured_allow_rules(
+        &self,
+    ) -> Vec<(
+        conway_core::permission_pattern::Rule,
+        conway_core::permission_pattern::PatternOrigin,
+        conway_runtime::permission::GrantScope,
+    )> {
+        self.rt.permission_broker().active_structured_allow_rules()
+    }
+
     /// The structured half of the prompt review list: every active prompt
     /// [`conway_core::permission_pattern::Rule`] the flat form cannot
     /// express, paired with its origin -- mirroring
@@ -512,7 +535,79 @@ impl Conway {
             conway_core::permission_pattern::PatternOrigin::File(path) => path,
         };
 
-        match Self::rewrite_permission_file_removing(path, rule) {
+        Self::persist_revoke_outcome(env, path, Self::rewrite_permission_file_removing(path, rule))
+    }
+
+    /// Revokes exactly ONE STRUCTURED allow rule (board item A2) -- the
+    /// counterpart to [`Self::revoke_permission_pattern`] for the rules the
+    /// flat form cannot express. Addressed by the same `(rule, origin)`
+    /// pair [`Self::active_structured_allow_rules`] hands the review
+    /// surface, matched by full
+    /// [`conway_core::permission_pattern::Rule`] equality
+    /// (`PermissionBroker::revoke_pattern_rule`) rather than the flat
+    /// `to_pattern_rule()` projection -- which is the whole point:
+    /// `revoke_permission_pattern`'s key collapses every structured rule
+    /// to `None`, so it returns [`RevokeOutcome::NotFound`] for one even
+    /// while the rule is installed and authorizing calls.
+    ///
+    /// Every guarantee of [`Self::revoke_permission_pattern`] carries over
+    /// unchanged -- see that method's own doc for the full reasoning:
+    /// revocation never fails open (the broker's in-memory grant is dropped
+    /// FIRST, before any file I/O); an `Interactive` origin touches no file
+    /// ([`RevokeOutcome::RevokedNoFile`]); a `File` origin is rewritten
+    /// read-modify-write, tmp-then-rename, removing the rule from that
+    /// exact file's structured `rules` array (never the flat `allow` list
+    /// -- a structured rule's wire form lives in `rules`; an unparseable
+    /// file is a hard persist failure, never blindly overwritten); and a
+    /// rewritten TRUSTED PROJECT file is re-trusted for its new, strictly
+    /// narrower bytes, the same explicit-action narrowing exception D4
+    /// §5/§9 admits for the flat path.
+    pub fn revoke_structured_allow_rule(
+        &self,
+        env: &std::collections::HashMap<String, String>,
+        rule: &conway_core::permission_pattern::Rule,
+        origin: &conway_core::permission_pattern::PatternOrigin,
+        scope: &conway_runtime::permission::GrantScope,
+    ) -> RevokeOutcome {
+        if !self
+            .rt
+            .permission_broker()
+            .revoke_pattern_rule(rule, origin, scope)
+        {
+            return RevokeOutcome::NotFound;
+        }
+
+        let path = match origin {
+            conway_core::permission_pattern::PatternOrigin::Interactive => {
+                return RevokeOutcome::RevokedNoFile;
+            }
+            conway_core::permission_pattern::PatternOrigin::File(path) => path,
+        };
+
+        Self::persist_revoke_outcome(
+            env,
+            path,
+            Self::rewrite_permission_file_removing_structured(path, rule),
+        )
+    }
+
+    /// The shared persistence tail of [`Self::revoke_permission_pattern`]
+    /// and [`Self::revoke_structured_allow_rule`]: folds the file rewrite's
+    /// result into a [`RevokeOutcome`], re-trusting a rewritten trusted
+    /// project file (never the global file, which is trusted by authorship
+    /// and never gated on a digest at all -- `Self::load_permission_files`'s
+    /// own doc) so the rewrite does not silently de-trust the file's OTHER
+    /// rules. The in-session grant is already gone when this runs -- a
+    /// failure here only means the removal is not durable, reported
+    /// honestly via [`RevokeOutcome::RevokedButPersistFailed`] /
+    /// [`RevokeOutcome::RevokedAndPersisted`]'s `retrust_warning` rather
+    /// than folded into a blanket "done".
+    fn persist_revoke_outcome(
+        env: &std::collections::HashMap<String, String>,
+        path: &std::path::Path,
+        rewrite: std::io::Result<()>,
+    ) -> RevokeOutcome {
+        match rewrite {
             Err(e) => RevokeOutcome::RevokedButPersistFailed {
                 error: e.to_string(),
             },
@@ -520,7 +615,7 @@ impl Conway {
                 let global_path = crate::config::discovery::xdg_config_path(env).and_then(
                     |settings| settings.parent().map(|dir| dir.join("permissions.json")),
                 );
-                let is_global = global_path.as_deref() == Some(path.as_path());
+                let is_global = global_path.as_deref() == Some(path);
                 let retrust_warning = if is_global {
                     None
                 } else {
@@ -567,6 +662,60 @@ impl Conway {
             // so there is nothing that could de-trust the file either.
             return Ok(());
         }
+
+        let serialized = serde_json::to_string_pretty(&file)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let tmp = path.with_extension("json.tmp");
+        std::fs::write(&tmp, serialized)?;
+        std::fs::rename(&tmp, path)?;
+        Ok(())
+    }
+
+    /// Removes `rule` from `path`'s structured `rules` array, tmp-then-
+    /// rename -- the structured counterpart to
+    /// [`Self::rewrite_permission_file_removing`], for
+    /// [`Self::revoke_structured_allow_rule`]. Same posture throughout: an
+    /// unparseable file is a hard error (never blindly overwritten), a rule
+    /// already absent from an otherwise-valid file means the goal state
+    /// already holds so nothing is written, and every OTHER entry -- flat
+    /// `allow`/`deny` lists and the rest of `rules`, including the array's
+    /// `deny`/`prompt` entries -- is preserved verbatim. Matches by `Rule`
+    /// equality, the same identity the broker matched in memory, so the
+    /// row the operator selected is the entry removed from disk.
+    fn rewrite_permission_file_removing_structured(
+        path: &std::path::Path,
+        rule: &conway_core::permission_pattern::Rule,
+    ) -> std::io::Result<()> {
+        let contents = std::fs::read_to_string(path)?;
+        let mut file: conway_core::permission_pattern::PermissionFile =
+            serde_json::from_str(&contents).map_err(|e| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "{} is not valid JSON, refusing to rewrite it blindly: {e}",
+                        path.display()
+                    ),
+                )
+            })?;
+
+        // Remove exactly ONE matching entry -- the broker dropped exactly
+        // one in-memory instance, so the file must lose exactly one too, or
+        // a hand-duplicated entry would diverge durable state from session
+        // state (the operator revokes one row, one instance survives in
+        // memory, but a `retain` here would strip both from disk and the
+        // "surviving" grant would silently vanish at the next restart). The
+        // flat path's `retain` predates this reasoning; matching it is
+        // consistency, fixing it here is the new code keeping its own
+        // one-instance contract.
+        let Some(idx) = file.rules.iter().position(|r| r == rule) else {
+            // Nothing to remove -- the goal state already holds. No write,
+            // so there is nothing that could de-trust the file either.
+            return Ok(());
+        };
+        file.rules.remove(idx);
 
         let serialized = serde_json::to_string_pretty(&file)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;

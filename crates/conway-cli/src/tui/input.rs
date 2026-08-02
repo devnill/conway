@@ -64,6 +64,15 @@ pub enum Action {
     /// `Conway::revoke_permission_pattern` can never address a different
     /// grant than the one the operator actually selected.
     RevokePermissionPattern(conway::PatternRule, conway::PatternOrigin),
+    /// Board item A2: revoke exactly ONE STRUCTURED allow rule, carrying
+    /// the same `(rule, origin)` identity the settings row itself rendered
+    /// (from `state.structured_allow_rules`) -- the Rule-identity
+    /// counterpart to [`Action::RevokePermissionPattern`], which can never
+    /// name a structured rule (its `PatternRule` key collapses every
+    /// structured rule to `None` at the broker). The grant scope rides in
+    /// the mirror for display only; the revoke key is `(rule, origin)`,
+    /// exactly as the flat path's is.
+    RevokeStructuredAllowRule(conway::Rule, conway::PatternOrigin, conway::GrantScope),
     /// `End` (T6): snap the transcript straight to its own tail --
     /// re-engages `follow_tail`. Fires only while the input line is empty
     /// (mirroring the dual-meaning precedent `Enter`'s empty-input arm
@@ -277,6 +286,22 @@ fn activate_settings_selection(state: &mut AppState) -> Option<Action> {
                     return Some(Action::RevokePermissionPattern(
                         rule.clone(),
                         origin.clone(),
+                    ));
+                }
+            } else if let Some(idx) = id
+                .strip_prefix(super::view::settings::LEAF_REVOKE_STRUCTURED_ALLOW_PREFIX)
+                .and_then(|rest| rest.parse::<usize>().ok())
+            {
+                // Board item A2: the structured-allow counterpart of the arm
+                // above, resolved against `state.structured_allow_rules` in
+                // the SAME call that built this tree -- the two prefixes
+                // name disjoint id spaces, so a structured row can never
+                // resolve into the flat mirror (or vice versa).
+                if let Some((rule, origin, scope)) = state.structured_allow_rules.get(idx) {
+                    return Some(Action::RevokeStructuredAllowRule(
+                        rule.clone(),
+                        origin.clone(),
+                        *scope,
                     ));
                 }
             }
@@ -3055,6 +3080,49 @@ mod tests {
             ),
             "Enter on the second grant row must resolve to THAT grant's own \
              (rule, origin), not the first"
+        );
+    }
+
+    /// Board item A2: `Enter` on a STRUCTURED allow row must resolve to THAT
+    /// row's own `(rule, origin)` through the Rule-identity action -- never
+    /// into the flat mirror (the two leaf-id prefixes name disjoint index
+    /// spaces), and never as a bare index the app loop could re-resolve
+    /// against a since-changed list.
+    #[test]
+    fn enter_on_a_structured_allow_row_resolves_to_the_exact_rule_and_origin() {
+        let mut state = AppState::new(AgentId::new());
+        state.open_settings();
+        // A flat grant sits ALONGSIDE the structured rule, so the test also
+        // proves the structured row's index resolves against
+        // `structured_allow_rules`, not `permission_grants`.
+        state.permission_grants = vec![(
+            conway::PatternRule::parse("bash:git status").expect("valid rule"),
+            conway::PatternOrigin::Interactive,
+        )];
+        let rule = conway::Rule {
+            select: conway::Select::Tools(vec!["bash".to_string(), "read".to_string()]),
+            when: conway::When::Always,
+            then: conway::Then::Allow,
+        };
+        let origin = conway::PatternOrigin::File(std::path::PathBuf::from(
+            "/repo/.conway/permissions.json",
+        ));
+        state.structured_allow_rules =
+            vec![(rule.clone(), origin.clone(), conway::GrantScope::Session)];
+
+        let rows = crate::tui::view::settings::build_tree(&state).rows();
+        let structured_row = rows
+            .iter()
+            .position(|r| r.label.contains("[bash, read] (any call)"))
+            .expect("the structured allow row must be present");
+        state.settings_selected = structured_row;
+
+        let action = handle_key(&mut state, key(KeyCode::Enter));
+        assert_eq!(
+            action,
+            Action::RevokeStructuredAllowRule(rule, origin, conway::GrantScope::Session),
+            "Enter on the structured allow row must resolve to THAT rule's own \
+             (rule, origin, scope) via the Rule-identity action"
         );
     }
 

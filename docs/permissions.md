@@ -342,6 +342,17 @@ one grant's row and pressing `Enter` revokes exactly that grant; a
 separate "revoke all grants" row clears every pattern grant *and* every
 `[a]`-style cached "allow always" decision at once.
 
+Structured allow rules — the `rules`-array form, like
+`{"select": {"tools": ["read"]}, "when": {"paths_under": "/repo"}, "then": "allow"}`
+— appear in the same allow section, alongside the flat rows and in the
+same shape, and are individually revocable the same way: select the row,
+press `Enter`, and exactly that rule is removed (from the session *and*
+from the `rules` array of the file it came from — the flat `allow` list in
+the same file is untouched, and vice versa). A structured rule granted at
+a scope narrower than the whole session (an embedding application's
+per-agent or per-subtree grant) says so on its row with a `scope:` note;
+session-wide grants, the only kind the TUI itself creates, carry no note.
+
 The **deny** and **prompt** sections list every active deny and prompt
 rule — flat and structured alike — each labeled with its origin the same
 way. This list matters precisely *because* these rules install from every

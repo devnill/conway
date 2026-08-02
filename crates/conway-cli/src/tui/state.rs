@@ -503,6 +503,19 @@ pub struct AppState {
     /// name it to `Conway::revoke_permission_pattern`.
     pub permission_grants:
         Vec<(conway::PatternRule, conway::PatternOrigin)>,
+    /// The structured ALLOW rules the flat form cannot express (F12's
+    /// `Rule { select, when, then }` -- `paths_under`, `categories`,
+    /// `category_in`, multi-tool), mirrored from the broker's
+    /// `active_structured_allow_rules()` with each rule's grant scope.
+    /// Rendered in the SAME allow section as [`Self::permission_grants`]
+    /// and -- unlike the deny/prompt mirrors below -- REVOCABLE, addressed
+    /// by its own `(rule, origin)` pair through
+    /// `Conway::revoke_structured_allow_rule` (the flat revoke's key
+    /// collapses every structured rule to `None`, which is why these rows
+    /// exist as their own leaf-id space). Refreshed alongside
+    /// `permission_grants` when `/settings` opens and after any revoke.
+    pub structured_allow_rules:
+        Vec<(conway::Rule, conway::PatternOrigin, conway::GrantScope)>,
     /// The active DENY rules (flat form), mirrored from the broker's
     /// `active_deny_patterns()` for `/settings`' read-only deny section.
     /// Deny rules install from ANY permissions file, trusted or not (D4 §3)
@@ -978,6 +991,7 @@ impl AppState {
             permission_mode: PermissionMode::default(),
             permission_paths: Vec::new(),
             permission_grants: Vec::new(),
+            structured_allow_rules: Vec::new(),
             permission_denies: Vec::new(),
             permission_prompts: Vec::new(),
             structured_deny_rules: Vec::new(),
