@@ -38,6 +38,14 @@ pub struct PermissionLoadReport {
     /// own doc for why every condition here is a silent, narrowing
     /// degrade by design.
     pub notices: Vec<String>,
+    /// F12: typed registration errors for rules the loader refused to
+    /// install silently -- currently, a `command_prefix` rule paired with
+    /// a tool whose `render_kind` is `Structured` (a rule that can never
+    /// reliably match). Surfaced as a typed value, not folded into
+    /// `notices`, so the caller can render it distinctly and a test can
+    /// pin it (P-10: untrusted input -> typed errors). The rule is carried
+    /// whole so the operator sees exactly what was rejected.
+    pub registration_errors: Vec<conway_core::permission_pattern::RuleRegistrationError>,
 }
 
 /// The result of [`Conway::revoke_permission_pattern`] (board item
@@ -234,6 +242,104 @@ impl Conway {
         origin_path: std::path::PathBuf,
     ) {
         self.rt.permission_broker().remember_prompt_pattern(
+            rule,
+            conway_core::permission_pattern::PatternOrigin::File(origin_path),
+        );
+    }
+
+    /// F12: the `render_kind` a registered tool declares for itself, by
+    /// name, or `None` if no plugin registered that tool. The structured-rule
+    /// registration check (`validate_rule_registration`) uses this to refuse
+    /// a `command_prefix` rule against a `Structured` tool -- a rule that can
+    /// never reliably match. Reads the already-resolved tool the same way
+    /// `ToolRunner::execute_one` does; no new resolution path.
+    pub fn tool_render_kind(
+        &self,
+        name: &conway_core::ids::ToolName,
+    ) -> Option<conway_core::ports::RenderKind> {
+        self.rt.tool_render_kind(name)
+    }
+
+    /// F12: validates a parsed [`Rule`] against the registered tools, the
+    /// single registration check the structured form needs. Returns a typed
+    /// [`RuleRegistrationError`] for a rule this loader will refuse to
+    /// install silently rather than store inert -- the mirror of the
+    /// `68ea9b1` `read:*`-matched-nothing bug. Today the only check is:
+    /// `when: command_prefix` paired with a `select: tools([t])` whose
+    /// resolved `render_kind` is `Structured` (a JSON dump whose token
+    /// boundaries the operator cannot predict). A `tools` pattern naming an
+    /// UNKNOWN tool is NOT a registration error here -- the broker simply
+    /// never matches it, and an unknown tool can be registered later in the
+    /// same session; refusing it at load time would be a load-order hazard.
+    fn validate_rule_registration(
+        &self,
+        rule: &conway_core::permission_pattern::Rule,
+    ) -> Option<conway_core::permission_pattern::RuleRegistrationError> {
+        use conway_core::permission_pattern::{RuleRegistrationReason, Select, When};
+        let tool = match (&rule.select, &rule.when) {
+            (Select::Tools(ts), When::CommandPrefix(_)) if ts.len() == 1 => ts[0].as_str(),
+            _ => return None,
+        };
+        match self.tool_render_kind(&conway_core::ids::ToolName::new(tool)) {
+            Some(conway_core::ports::RenderKind::Structured) => {
+                Some(conway_core::permission_pattern::RuleRegistrationError {
+                    rule: rule.clone(),
+                    reason: RuleRegistrationReason::CommandPrefixOnStructuredTool,
+                })
+            }
+            // `ShellCommand` is exactly the tool `command_prefix` was
+            // designed for; `None` (unknown tool) is left for the broker to
+            // never match, not a registration error (load-order hazard).
+            _ => None,
+        }
+    }
+
+    /// F12: installs a parsed ALLOW [`Rule`] from a permissions file at
+    /// `origin_path`. The flat form desugars to a `Rule` too, so this is the
+    /// single install path for allow rules from config. Trust was already
+    /// confirmed by the caller (`load_permission_files`); this method does
+    /// not re-check it. A [`When::PathsUnder`] prefix that cannot be
+    /// canonicalized is dropped by the broker (fail closed); the caller
+    /// surfaces that as a notice via the install's `bool` return when it
+    /// matters (today nothing reads it here, since the registration check
+    /// already rejected the structurally-invalid ones).
+    fn install_allow_rule(
+        &self,
+        rule: conway_core::permission_pattern::Rule,
+        scope: conway_core::agent::PermissionScope,
+        granting_agent: conway_core::ids::AgentId,
+        origin_path: std::path::PathBuf,
+    ) {
+        self.rt.permission_broker().remember_pattern_rule(
+            rule,
+            scope,
+            granting_agent,
+            conway_core::permission_pattern::PatternOrigin::File(origin_path),
+        );
+    }
+
+    /// F12: installs a parsed DENY [`Rule`] from a permissions file at
+    /// `origin_path`. No trust precondition (D4 §3).
+    fn install_deny_rule(
+        &self,
+        rule: conway_core::permission_pattern::Rule,
+        origin_path: std::path::PathBuf,
+    ) {
+        self.rt.permission_broker().remember_deny_rule(
+            rule,
+            conway_core::permission_pattern::PatternOrigin::File(origin_path),
+        );
+    }
+
+    /// F12: installs a parsed PROMPT [`Rule`] from a permissions file at
+    /// `origin_path`. No trust precondition (extension-architecture.md §5.5
+    /// stage 1).
+    fn install_prompt_rule(
+        &self,
+        rule: conway_core::permission_pattern::Rule,
+        origin_path: std::path::PathBuf,
+    ) {
+        self.rt.permission_broker().remember_prompt_rule(
             rule,
             conway_core::permission_pattern::PatternOrigin::File(origin_path),
         );
@@ -473,6 +579,7 @@ impl Conway {
             .and_then(|settings| settings.parent().map(|dir| dir.join("permissions.json")));
         let trust_store = crate::config::trust::TrustStore::load(env);
         let mut notices = Vec::new();
+        let mut registration_errors = Vec::new();
 
         for path in &paths {
             let Ok(contents) = std::fs::read_to_string(path) else {
@@ -480,9 +587,27 @@ impl Conway {
             };
 
             // Deny applies unconditionally, from every scope, regardless
-            // of trust -- D4 §3.
+            // of trust -- D4 §3. F12: this now also covers structured
+            // `then: deny` rules from the `rules` array (`parse_deny_rules`
+            // returns the union of flat `deny` and structured `then: deny`).
             for rule in conway_core::permission_pattern::parse_deny_rules(&contents) {
-                self.grant_deny_pattern(rule, path.clone());
+                if let Some(err) = self.validate_rule_registration(&rule) {
+                    registration_errors.push(err);
+                    continue;
+                }
+                self.install_deny_rule(rule, path.clone());
+            }
+
+            // F12: prompt rules apply unconditionally too (narrowing, D4 §3
+            // extended to `prompt` -- extension-architecture.md §5.5 stage
+            // 1). The flat form has no prompt syntax, so these come
+            // entirely from the structured `rules` array.
+            for rule in conway_core::permission_pattern::parse_prompt_rules(&contents) {
+                if let Some(err) = self.validate_rule_registration(&rule) {
+                    registration_errors.push(err);
+                    continue;
+                }
+                self.install_prompt_rule(rule, path.clone());
             }
 
             let is_global = global_path.as_deref() == Some(path.as_path());
@@ -502,7 +627,11 @@ impl Conway {
                 continue;
             }
             for rule in allow_rules {
-                self.grant_permission_pattern_from_file(
+                if let Some(err) = self.validate_rule_registration(&rule) {
+                    registration_errors.push(err);
+                    continue;
+                }
+                self.install_allow_rule(
                     rule,
                     conway_core::agent::PermissionScope::Session,
                     granting_agent,
@@ -511,7 +640,11 @@ impl Conway {
             }
         }
 
-        PermissionLoadReport { paths, notices }
+        PermissionLoadReport {
+            paths,
+            notices,
+            registration_errors,
+        }
     }
 
     /// Records an explicit trust decision for `path`'s CURRENT bytes on
@@ -535,14 +668,24 @@ impl Conway {
         crate::config::trust::TrustStore::trust(env, path)?;
         let contents = std::fs::read_to_string(path)?;
         let rules = conway_core::permission_pattern::parse_rules(&contents);
-        let count = rules.len();
+        let mut count = 0;
         for rule in rules {
-            self.grant_permission_pattern_from_file(
+            if self.validate_rule_registration(&rule).is_some() {
+                // A registration error means the rule was never going to
+                // match; do not count it as installed. `trust_permission_file`
+                // is operator-triggered (`/trust permissions`), so the
+                // operator will have already seen the registration errors from
+                // the prior `load_permission_files` -- re-trusting does not
+                // silently swallow them, it just does not re-report them here.
+                continue;
+            }
+            self.install_allow_rule(
                 rule,
                 conway_core::agent::PermissionScope::Session,
                 granting_agent,
                 path.to_path_buf(),
             );
+            count += 1;
         }
         Ok(count)
     }

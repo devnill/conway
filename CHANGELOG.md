@@ -9,6 +9,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The structured rule form: general rules for tool use.** A
+  `permissions.json` file's flat `allow`/`deny` lists are now the surface
+  syntax for a more general `Rule { select, when, then }` form, added as an
+  optional `rules` array alongside them. The flat form desugars into the
+  same `Rule` (`PatternRule::to_rule`) and is evaluated by the same path, so
+  `bash:git status` and
+  `{ "select": { "tools": ["bash"] }, "when": { "command_prefix": "git status" }, "then": "allow" }`
+  produce byte-identical decisions — proven by a matrix test in
+  `permission_pattern::f12_tests` and a real-stack seam in
+  `crates/conway/tests/structured_rule_seam.rs` that drives the genuine
+  `Conway::load_permission_files` → `PermissionBroker::decide` path. The
+  `rules` array expresses what the flat form cannot: `paths_under(prefix)`
+  authorizes/denies a call whose declared path arguments resolve under a
+  directory (read from `call.arguments` via the same
+  `resolve_like_the_tool_will` + `CanonicalRoot::contains` the confinement
+  root already uses — no new trusted code, never the sanitized rendering);
+  `categories([ToolCategory...])` and `category_in([...])` select by
+  declared category; and a `prompt` effect that forces the gate over a
+  matching `allow` grant. The five security traps are each pinned by a real-path
+  seam test (real tools → real `ToolRunner` → real `PermissionBroker`, asserting
+  on observable gate-reach outcomes): `paths_under` never reads the lossy `rendered`;
+  `PathArgs::Unconfinable` never satisfies `paths_under` (fail closed);
+  `command_prefix` on a `Structured`-rendering tool is a typed
+  `RuleRegistrationError` surfaced in `PermissionLoadReport` rather than a
+  silent inert rule; the allow-side metacharacter gate applies to every
+  `when` unchanged (a chained command never auto-allows); and `deny`/`prompt`
+  rules install from every file unconditionally while `allow` still requires
+  an explicit trust decision for a project file. Composition is two stages
+  (deny/prompt admit unconditionally, allow only when trusted; then
+  most-restrictive-wins: deny beats prompt beats allow, no priority numbers).
+  The flat form stays the ergonomic default; the `rules` array is the
+  additive superset. (`crates/conway-core/src/permission_pattern.rs`,
+  `crates/conway-runtime/src/permission.rs`, `crates/conway/src/conway.rs`,
+  `docs/permissions.md`, `.design/extension-architecture.md` §9.5)
+
 - **`conway::plugin`: the facade's curated extension surface — `Tool`,
   `Plugin`, and `ContextHook` are now implementable by a crate that depends
   on `conway` alone.** The port traits were re-exported at the crate root

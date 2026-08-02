@@ -104,6 +104,77 @@ and a project "this checkout's build command is fine" rule answer different
 questions, and one silently discarding the other would surprise you either
 way.
 
+## The structured `rules` array
+
+The flat `allow`/`deny` lists above are the surface syntax for a more
+general rule form. A `rules` array sits alongside them in the same file and
+expresses everything the flat form can, plus the things it cannot:
+
+```json
+// .conway/permissions.json
+{
+  "allow": ["bash:cargo test"],
+  "rules": [
+    { "select": { "tools": ["bash"] }, "when": { "command_prefix": "cargo test" }, "then": "allow" },
+    { "select": { "categories": ["edit", "delete"] }, "when": { "paths_under": "/home/alice/project" }, "then": "deny" },
+    { "select": { "tools": ["bash"] }, "when": { "command_prefix": "rm" }, "then": "prompt" },
+    { "select": { "tools": ["read", "grep"] }, "when": "always", "then": "allow" }
+  ]
+}
+```
+
+Each rule is `{ select, when, then }`:
+
+- **`select`** — what the rule applies to. `{ "tools": ["bash", "read"] }`
+  matches a tool name (with an optional trailing `*` wildcard, so `"re*"`
+  matches `read` and `report`); `{ "categories": ["Read", "Edit"] }` matches
+  every tool that declares itself in one of those categories.
+- **`when`** — the condition. `"always"` matches every call; `{
+  "command_prefix": "git status" }` matches a shell rendering that starts
+  with that prefix (the same token-wise prefix the flat form uses, with the
+  same metacharacter gate on the allow side); `{ "paths_under": "/dir" }`
+  matches a call whose *declared path arguments* resolve under that
+  directory (read from the call's arguments and resolved the same way the
+  tool itself will resolve them — never from the sanitized display
+  rendering); `{ "category_in": ["Read", "Search"] }` matches a call whose
+  declared category is in the list.
+- **`then`** — the effect: `"allow"`, `"prompt"`, or `"deny"`.
+
+A flat `bash:git status` string and the structured
+`{ "select": { "tools": ["bash"] }, "when": { "command_prefix": "git status" }, "then": "allow" }`
+are the same rule — the flat form is desugared into the structured one and
+evaluated by the same path, so the two produce identical decisions. The
+`rules` array is for rules the flat form has no syntax for: a `paths_under`
+boundary, a `categories` selector, a `prompt` effect, or a multi-tool
+selector. A flat entry and a structured entry can sit in the same file; the
+flat list stays the ergonomic default, the `rules` array the superset.
+
+**The same trust asymmetry applies.** `then: deny` and `then: prompt` rules
+install from every file immediately, trusted or not — narrowing has no
+failure mode worth gating on trust, the same reason a flat `deny` does. A
+`then: allow` rule from a project file installs only after an explicit trust
+decision (see Trust, below), exactly like a flat `allow` entry.
+
+**`paths_under` reads arguments, not the rendering.** The path a rule gates
+on is read from the call's declared path arguments and resolved the way the
+tool will resolve it (relative to the agent's cwd, absolute paths passed
+through, `..` components resolved away by canonicalization). It never looks
+at the sanitized, lossy display rendering — a path like
+`/repo/../outside/secret` whose rendered string *contains* the rule's
+prefix resolves *outside* it, and the rule correctly refuses to match. A
+tool the broker cannot statically confine (`bash`'s free-form command, or
+any tool that declares itself `Unconfinable`) never satisfies a
+`paths_under` rule regardless of what it names — fail closed, the same
+asymmetry the confinement root uses.
+
+**`command_prefix` is for shell renderings only.** A `command_prefix` rule
+paired with a tool whose rendering is a structured JSON dump (every built-in
+except `bash`) is rejected at load time and surfaced as a typed registration
+error rather than installed as a silent inert rule — a JSON dump's token
+boundaries are not something an operator can predict, so the rule can never
+reliably match. Use `when: "always"` or a `paths_under`/`categories`
+condition for those tools instead.
+
 **The `allow`/`deny` asymmetry, explained, not merely stated:**
 
 - **An `allow` rule from a *project* file requires an explicit trust

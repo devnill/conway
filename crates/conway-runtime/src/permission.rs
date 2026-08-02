@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 
 use conway_core::permission_mode::PermissionMode;
-use conway_core::permission_pattern::{PatternOrigin, PatternRule};
+use conway_core::permission_pattern::{PatternOrigin, PatternRule, Rule, Then, When};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
@@ -181,6 +181,131 @@ fn resolve_like_the_tool_will(cwd: &Path, raw: &str) -> Option<PathBuf> {
     }
 }
 
+/// Canonicalizes a [`When::PathsUnder`] prefix once, at install, so the
+/// per-call `paths_under` check is a pure containment comparison (no
+/// filesystem I/O on the decision hot path). Returns `None` for non-`PathsUnder`
+/// clauses (no canonical root to carry) and for a `PathsUnder` prefix that
+/// does not canonicalize -- the caller drops the latter (fail closed: a
+/// boundary that cannot be established cannot be trusted to confine).
+fn canonicalize_when(when: &When) -> Option<CanonicalRoot> {
+    match when {
+        When::PathsUnder(prefix) => CanonicalRoot::new(Path::new(prefix)).ok(),
+        _ => None,
+    }
+}
+
+/// The `paths_under` predicate: every one of the call's DECLARED path
+/// arguments (per `Tool::path_args`, resolved exactly as
+/// [`PermissionBroker::check_root`] resolves them -- via
+/// [`resolve_like_the_tool_will`], from `call.arguments`, NEVER from the
+/// sanitized/lossy `call.rendered`) must be contained under `root`. An
+/// [`PathArgs::Unconfinable`] tool NEVER satisfies this (fail closed, the
+/// same asymmetry root confinement uses -- a tool the broker cannot
+/// statically confine cannot be auto-allowed by a path-scoped rule); a
+/// tool with [`PathArgs::None`] never satisfies it either (no paths to
+/// confine). A missing/null argument is skipped (the call simply does not
+/// use it), matching `check_root`'s "absent is not an error" rule.
+fn paths_under_match(ctx: &PermissionCtx, call: &AuthorizedCall, root: &CanonicalRoot) -> bool {
+    let names: &[&str] = match call.path_args {
+        PathArgs::Named(names) => names,
+        // Unconfinable -- and `#[non_exhaustive]` fallback -- never satisfy
+        // paths_under. A `checkable` cwd does NOT change this: the part of
+        // the call the broker cannot statically confine (e.g. `bash`'s
+        // `command`) can still reach outside `root`, so a `paths_under` rule
+        // must not auto-allow it. This is the SAME asymmetry `check_root`
+        // uses (`Unconfinable` always forces the gate under a root).
+        PathArgs::Unconfinable { .. } => return false,
+        PathArgs::None => return false,
+        _ => return false,
+    };
+    for name in names {
+        match call.arguments.get(*name) {
+            None | Some(serde_json::Value::Null) => continue,
+            Some(serde_json::Value::String(raw)) => {
+                let Some(resolved) = resolve_like_the_tool_will(&ctx.cwd, raw) else {
+                    return false;
+                };
+                match root.contains(&resolved) {
+                    Containment::Inside => {}
+                    // `Undecidable` fuses with `Outside`: "can't check" is
+                    // never "allow" (same posture as `check_root`).
+                    Containment::Outside | Containment::Undecidable => return false,
+                }
+            }
+            // A declared path argument present with a non-string, non-null
+            // value is suspicious, not merely unparseable: deny, fail closed
+            // (same posture as `check_root`).
+            Some(_) => return false,
+        }
+    }
+    true
+}
+
+/// Whether an ALLOW [`Rule`] authorizes `(ctx, call)` -- the single allow
+/// evaluator the flat and structured forms share. Render-based `when`
+/// clauses (`Always`, `CommandPrefix`, `CategoryIn`) delegate to
+/// [`Rule::matches_allow_render`] (the gate + select + when live there, in
+/// `conway-core`, so `PatternRule::matches_render` and this path cannot
+/// drift); [`When::PathsUnder`] is evaluated here, where
+/// [`resolve_like_the_tool_will`] and [`CanonicalRoot`] live -- the SAME
+/// path `check_root` uses, adding no new trusted code.
+fn rule_allows(
+    ctx: &PermissionCtx,
+    call: &AuthorizedCall,
+    rule: &Rule,
+    canonical: Option<&CanonicalRoot>,
+) -> bool {
+    match &rule.when {
+        When::PathsUnder(_) => {
+            if !rule.select_matches(call.tool.as_str(), call.category) {
+                return false;
+            }
+            // The allow-side gate applies to `PathsUnder` too: a
+            // `ShellCommand` tool carrying a metacharacter must not be
+            // auto-allowed even when its `checkable` paths are under the
+            // rule's prefix (trap 4: the gate must not weaken).
+            if !Rule::gate_allows(&call.rendered, call.render_kind) {
+                return false;
+            }
+            let Some(root) = canonical else {
+                return false;
+            };
+            paths_under_match(ctx, call, root)
+        }
+        _ => rule.matches_allow_render(
+            call.tool.as_str(),
+            call.category,
+            &call.rendered,
+            call.render_kind,
+        ),
+    }
+}
+
+/// Whether a DENY (or PROMPT) [`Rule`] matches `(ctx, call)` -- the single
+/// deny/prompt evaluator, UNGATED (the deny/prompt asymmetry: a `;` must
+/// not defeat a deny/prompt the way it defeats an allow). Render-based
+/// `when` clauses delegate to [`Rule::matches_deny_render`]; `PathsUnder`
+/// is evaluated here (no gate, per the asymmetry).
+fn rule_denies_or_prompts(
+    ctx: &PermissionCtx,
+    call: &AuthorizedCall,
+    rule: &Rule,
+    canonical: Option<&CanonicalRoot>,
+) -> bool {
+    match &rule.when {
+        When::PathsUnder(_) => {
+            if !rule.select_matches(call.tool.as_str(), call.category) {
+                return false;
+            }
+            let Some(root) = canonical else {
+                return false;
+            };
+            paths_under_match(ctx, call, root)
+        }
+        _ => rule.matches_deny_render(call.tool.as_str(), call.category, &call.rendered),
+    }
+}
+
 /// The normalized result of [`PermissionBroker::decide`]. There is no
 /// "abort" variant: every denial — whether a plain [`PermissionDecision::Deny`]
 /// or a [`PermissionDecision::DenyWithFeedback`] — collapses to `Deny`, so a
@@ -269,6 +394,25 @@ fn grant_scope_for(scope: PermissionScope, granting_agent: AgentId) -> GrantScop
     }
 }
 
+/// F12: the stored form of an ALLOW rule. A `Rule` plus the `CanonicalRoot`
+/// its `When::PathsUnder` prefix was resolved to once at install (`None` for
+/// every render-based `when`), plus the `GrantScope` the rule was granted at
+/// (an allow rule is scoped -- D4 §3's asymmetric half -- so it is checked
+/// only for requesters that scope `covers`), plus the rule's `PatternOrigin`.
+/// Named so the 4-tuple is not spelled out at every read/write site.
+type AllowRuleStore = Vec<(Rule, Option<CanonicalRoot>, GrantScope, PatternOrigin)>;
+
+/// F12: the stored form of a NARROWING rule (`deny` or `prompt`). A `Rule`
+/// plus the `CanonicalRoot` its `When::PathsUnder` prefix resolved to once at
+/// install (`None` for every render-based `when`), plus the rule's
+/// `PatternOrigin`. Carries NO `GrantScope`: a narrowing rule applies to every
+/// requester regardless of who is asking (D4 §3's asymmetry, extended to
+/// `prompt` by extension-architecture.md §5.5), so the scope dimension the
+/// allow store carries is absent here -- hence the separate 3-tuple type.
+/// `prompt_patterns` is structurally identical and could use this alias too;
+/// it stays inline only because it predates the alias.
+type NarrowingRuleStore = Vec<(Rule, Option<CanonicalRoot>, PatternOrigin)>;
+
 /// A per-session decision cache over the consumer's [`PermissionGate`]
 /// (architecture §4.3). One broker instance is shared across an agent tree.
 pub struct PermissionBroker {
@@ -289,7 +433,7 @@ pub struct PermissionBroker {
     /// before an allow rule loaded from a project file ever reaches
     /// `remember_pattern` -- this broker has no file-trust concept of its
     /// own and does not need one; it only stores what it is told to.
-    patterns: RwLock<Vec<(PatternRule, GrantScope, PatternOrigin)>>,
+    patterns: RwLock<AllowRuleStore>,
     /// Board item 01KYT8SGX32CP56PRJNG72V2W5: prefix-pattern DENY rules.
     /// Unlike `patterns` above, these carry no `GrantScope` -- a `deny`
     /// rule is D4 §3's asymmetric half, "applies immediately, trusted or
@@ -298,7 +442,7 @@ pub struct PermissionBroker {
     /// via `PatternRule::matches_deny`, which deliberately does not consult
     /// the metacharacter gate `patterns` above is gated by -- see that
     /// method's own doc.
-    deny_patterns: RwLock<Vec<(PatternRule, PatternOrigin)>>,
+    deny_patterns: RwLock<NarrowingRuleStore>,
     /// Board item 01KYTP1D3XWEZPW4AKPH54FNB3: prefix-pattern PROMPT rules --
     /// the second narrowing effect `.design/extension-architecture.md`
     /// §5.4 grants a plugin-contributed rule (`then: prompt`, alongside
@@ -320,7 +464,20 @@ pub struct PermissionBroker {
     /// call past the cache/pattern/`AutoAllow` shortcuts and into
     /// `gate.check` exactly as `check_root`'s own `MustReachGate` already
     /// does for an unconfinable call under a root.
-    prompt_patterns: RwLock<Vec<(PatternRule, PatternOrigin)>>,
+    ///
+    /// F12: all three vectors now store [`Rule`]s (the flat form desugars
+    /// via [`PatternRule::to_rule`] at the `remember_*` boundary) plus an
+    /// optional [`CanonicalRoot`] -- `Some` for a [`When::PathsUnder`] rule
+    /// (its prefix canonicalized ONCE at install, the same way
+    /// [`AgentRoot::reconstruct`] canonicalizes a confinement root once),
+    /// `None` for every render-based `when`. The `remember_pattern`/
+    /// `remember_deny_pattern`/`remember_prompt_pattern` signatures stay
+    /// [`PatternRule``]-typed so every existing caller (the
+    /// `conway-runtime` broker tests, the `conway` seam tests, the TUI)
+    /// keeps compiling unchanged; they desugar internally. The
+    /// `remember_*_rule` companions take a [`Rule`] directly, for the
+    /// structured form the flat syntax cannot express.
+    prompt_patterns: RwLock<Vec<(Rule, Option<CanonicalRoot>, PatternOrigin)>>,
 }
 
 impl PermissionBroker {
@@ -373,11 +530,43 @@ impl PermissionBroker {
         granting_agent: AgentId,
         origin: PatternOrigin,
     ) {
+        self.remember_pattern_rule(rule.to_rule(Then::Allow), scope, granting_agent, origin);
+    }
+
+    /// F12: the structured-form companion to [`Self::remember_pattern`].
+    /// Installs an ALLOW [`Rule`] directly -- the form `parse_rules` returns
+    /// and `load_permission_files` installs. Returns `false` (and installs
+    /// nothing) if the rule carries a [`When::PathsUnder`] whose prefix
+    /// cannot be canonicalized (fail closed: an uncanonicalizable path
+    /// boundary is dropped, not stored inert -- a rule that can never match
+    /// is a lie the operator will not notice, the mirror of the
+    /// `68ea9b1` `read:*`-matched-nothing bug). The caller surfaces that
+    /// failure; the broker itself never panics on untrusted input (P-10).
+    pub fn remember_pattern_rule(
+        &self,
+        rule: Rule,
+        scope: PermissionScope,
+        granting_agent: AgentId,
+        origin: PatternOrigin,
+    ) -> bool {
+        // An allow rule MUST be `then: allow` -- a deny/prompt rule routed
+        // here would silently do the wrong thing at `pattern_allows`. The
+        // `load_permission_files` split already separates by `then`, but
+        // encoding the invariant here means a future caller cannot retrofit
+        // a narrowing `then` through the allow path without crossing it.
+        if rule.then != Then::Allow {
+            return false;
+        }
+        let canonical = canonicalize_when(&rule.when);
+        if canonical.is_none() && matches!(rule.when, When::PathsUnder(_)) {
+            return false;
+        }
         let grant = grant_scope_for(scope, granting_agent);
         self.patterns
             .write()
             .expect("permission patterns poisoned")
-            .push((rule, grant, origin));
+            .push((rule, canonical, grant, origin));
+        true
     }
 
     /// Installs a DENY rule, attributed to `origin`. Unlike
@@ -386,10 +575,26 @@ impl PermissionBroker {
     /// narrowing what is authorized has no failure mode worth scoping
     /// (board item 01KYT8SGX32CP56PRJNG72V2W5, D4 §3).
     pub fn remember_deny_pattern(&self, rule: PatternRule, origin: PatternOrigin) {
+        self.remember_deny_rule(rule.to_rule(Then::Deny), origin);
+    }
+
+    /// F12: the structured-form companion to [`Self::remember_deny_pattern`].
+    /// Installs a DENY [`Rule`] directly. Same fail-closed posture as
+    /// [`Self::remember_pattern_rule`] for a [`When::PathsUnder`] whose
+    /// prefix cannot be canonicalized.
+    pub fn remember_deny_rule(&self, rule: Rule, origin: PatternOrigin) -> bool {
+        if rule.then != Then::Deny {
+            return false;
+        }
+        let canonical = canonicalize_when(&rule.when);
+        if canonical.is_none() && matches!(rule.when, When::PathsUnder(_)) {
+            return false;
+        }
         self.deny_patterns
             .write()
             .expect("permission deny patterns poisoned")
-            .push((rule, origin));
+            .push((rule, canonical, origin));
+        true
     }
 
     /// Installs a PROMPT rule, attributed to `origin`. Board item
@@ -401,10 +606,26 @@ impl PermissionBroker {
     /// worth scoping, the same reasoning `remember_deny_pattern`'s own doc
     /// gives for `deny`.
     pub fn remember_prompt_pattern(&self, rule: PatternRule, origin: PatternOrigin) {
+        self.remember_prompt_rule(rule.to_rule(Then::Prompt), origin);
+    }
+
+    /// F12: the structured-form companion to [`Self::remember_prompt_pattern`].
+    /// Installs a PROMPT [`Rule`] directly. Same fail-closed posture as the
+    /// other `remember_*_rule` companions for a [`When::PathsUnder`] whose
+    /// prefix cannot be canonicalized.
+    pub fn remember_prompt_rule(&self, rule: Rule, origin: PatternOrigin) -> bool {
+        if rule.then != Then::Prompt {
+            return false;
+        }
+        let canonical = canonicalize_when(&rule.when);
+        if canonical.is_none() && matches!(rule.when, When::PathsUnder(_)) {
+            return false;
+        }
         self.prompt_patterns
             .write()
             .expect("permission prompt patterns poisoned")
-            .push((rule, origin));
+            .push((rule, canonical, origin));
+        true
     }
 
     /// S5: the root-containment check. Evaluated before anything else in
@@ -511,7 +732,32 @@ impl PermissionBroker {
             .read()
             .expect("permission patterns poisoned")
             .iter()
-            .map(|(rule, _, origin)| (rule.clone(), origin.clone()))
+            // F12: a stored `Rule` rounds back to the flat `PatternRule` it
+            // desugared from when it can -- so the existing `PatternRule`-
+            // shaped review surface keeps working unchanged for flat rules.
+            // A structured rule the flat form cannot express (`paths_under`,
+            // `categories`, `category_in`, multiple tools) is NOT returned
+            // here; it is returned by [`Self::active_structured_allow_rules`]
+            // so the review surface can list it without a type widening.
+            .filter_map(|(rule, _, _, origin)| {
+                rule.to_pattern_rule().map(|p| (p, origin.clone()))
+            })
+            .collect()
+    }
+
+    /// F12: every active ALLOW [`Rule`] the flat form cannot express, paired
+    /// with its origin -- the structured half of the allow review list, so a
+    /// rule the operator installed via the `rules` array is inspectable the
+    /// same way a flat `allow` grant is (a rule set nobody can inspect is a
+    /// trap). Rules that round-trip to a flat [`PatternRule`] are listed by
+    /// [`Self::active_patterns`] instead, so no rule appears in both.
+    pub fn active_structured_allow_rules(&self) -> Vec<(Rule, PatternOrigin)> {
+        self.patterns
+            .read()
+            .expect("permission patterns poisoned")
+            .iter()
+            .filter(|(rule, _, _, _)| rule.to_pattern_rule().is_none())
+            .map(|(rule, _, _, origin)| (rule.clone(), origin.clone()))
             .collect()
     }
 
@@ -523,7 +769,22 @@ impl PermissionBroker {
             .read()
             .expect("permission deny patterns poisoned")
             .iter()
-            .cloned()
+            .filter_map(|(rule, _, origin)| {
+                rule.to_pattern_rule().map(|p| (p, origin.clone()))
+            })
+            .collect()
+    }
+
+    /// F12: the structured half of the deny review list -- mirrors
+    /// [`Self::active_structured_allow_rules`] for deny rules the flat form
+    /// cannot express.
+    pub fn active_structured_deny_rules(&self) -> Vec<(Rule, PatternOrigin)> {
+        self.deny_patterns
+            .read()
+            .expect("permission deny patterns poisoned")
+            .iter()
+            .filter(|(rule, _, _)| rule.to_pattern_rule().is_none())
+            .map(|(rule, _, origin)| (rule.clone(), origin.clone()))
             .collect()
     }
 
@@ -536,7 +797,23 @@ impl PermissionBroker {
             .read()
             .expect("permission prompt patterns poisoned")
             .iter()
-            .cloned()
+            .filter_map(|(rule, _, origin)| {
+                rule.to_pattern_rule().map(|p| (p, origin.clone()))
+            })
+            .collect()
+    }
+
+    /// F12: the structured half of the prompt review list -- mirrors
+    /// [`Self::active_structured_allow_rules`] for prompt rules the flat
+    /// form cannot express (the flat form has no prompt syntax at all, so
+    /// every prompt rule the `rules` array installed lives here).
+    pub fn active_structured_prompt_rules(&self) -> Vec<(Rule, PatternOrigin)> {
+        self.prompt_patterns
+            .read()
+            .expect("permission prompt patterns poisoned")
+            .iter()
+            .filter(|(rule, _, _)| rule.to_pattern_rule().is_none())
+            .map(|(rule, _, origin)| (rule.clone(), origin.clone()))
             .collect()
     }
 
@@ -603,7 +880,10 @@ impl PermissionBroker {
     /// so revoking a pattern must not reach into it).
     pub fn revoke_pattern(&self, rule: &PatternRule, origin: &PatternOrigin) -> bool {
         let mut patterns = self.patterns.write().expect("permission patterns poisoned");
-        match patterns.iter().position(|(r, _, o)| r == rule && o == origin) {
+        match patterns
+            .iter()
+            .position(|(r, _, _, o)| r.to_pattern_rule() == Some(rule.clone()) && o == origin)
+        {
             Some(idx) => {
                 patterns.remove(idx);
                 true
@@ -614,67 +894,71 @@ impl PermissionBroker {
 
     /// Whether any installed pattern authorizes this call.
     ///
-    /// The metacharacter gate is inside `PatternRule::matches_render`, so a
-    /// chained SHELL command can never satisfy a pattern here regardless of
-    /// what is installed. `call.render_kind` -- the resolved tool's own
-    /// declaration -- decides whether that gate is even consulted at all
-    /// (board item 01KYT3NSWRHMPEAXVXRJ73KDYR): `RenderKind::ShellCommand`
-    /// gates exactly as before; `RenderKind::Structured` skips a gate that,
-    /// for that tool's rendering, could only ever reject harmless JSON
-    /// syntax.
+    /// F12: evaluation is now over the stored [`Rule`]s, via the single
+    /// `Rule` evaluator ([`Rule::matches_allow_render`] for render-based
+    /// `when` clauses, plus the broker's own `paths_under` resolution for
+    /// [`When::PathsUnder`] -- the same `resolve_like_the_tool_will` +
+    /// [`CanonicalRoot::contains`] path [`Self::check_root`] uses). The
+    /// metacharacter gate lives in [`Rule::gate_allows`], applied for every
+    /// `when` (not just `command_prefix`), unchanged in behavior from
+    /// `PatternRule::matches_render`: a chained SHELL command can never
+    /// satisfy a pattern here regardless of what is installed.
     fn pattern_allows(&self, ctx: &PermissionCtx, call: &AuthorizedCall) -> bool {
         self.patterns
             .read()
             .expect("permission patterns poisoned")
             .iter()
-            .any(|(rule, grant, _origin)| {
-                grant.covers(ctx)
-                    && rule.matches_render(call.tool.as_str(), &call.rendered, call.render_kind)
+            .any(|(rule, canonical, grant, _origin)| {
+                grant.covers(ctx) && rule_allows(ctx, call, rule, canonical.as_ref())
             })
     }
 
     /// The first installed `deny` rule that refuses this call, if any.
     /// Board item 01KYT8SGX32CP56PRJNG72V2W5, D4 §3: checked for EVERY
-    /// requester (no `GrantScope`), via `PatternRule::matches_deny` --
-    /// deliberately NOT `matches_render`, so a deny rule cannot be evaded
-    /// by adding a shell metacharacter the way an allow rule is refused by
-    /// one. See that method's own doc for the reasoning and its honest
-    /// limit.
-    fn deny_matches(&self, call: &AuthorizedCall) -> Option<PatternRule> {
+    /// requester (no `GrantScope`), via the deny/prompt evaluator
+    /// ([`Rule::matches_deny_render`] for render-based `when` clauses, plus
+    /// the broker's own `paths_under` resolution for [`When::PathsUnder`])
+    /// -- deliberately UNGATED, so a deny rule cannot be evaded by adding a
+    /// shell metacharacter the way an allow rule is refused by one. See
+    /// `PatternRule::matches_deny`'s own doc for the reasoning and its
+    /// honest limit.
+    fn deny_matches(&self, ctx: &PermissionCtx, call: &AuthorizedCall) -> Option<Rule> {
         self.deny_patterns
             .read()
             .expect("permission deny patterns poisoned")
             .iter()
-            .map(|(rule, _origin)| rule)
-            .find(|rule| rule.matches_deny(call.tool.as_str(), &call.rendered))
-            .cloned()
+            .find(|(rule, canonical, _origin)| {
+                rule_denies_or_prompts(ctx, call, rule, canonical.as_ref())
+            })
+            .map(|(rule, _, _)| rule.clone())
     }
 
     /// The first installed `prompt` rule that matches this call, if any.
     /// Board item 01KYTP1D3XWEZPW4AKPH54FNB3.
     ///
-    /// **Deliberately reuses `PatternRule::matches_deny`, not
-    /// `matches_render`.** `matches_render`'s metacharacter gate exists to
-    /// keep an ALLOW from being satisfied by a chained command riding a
-    /// matched prefix -- a concern that only applies to a rule that GRANTS
-    /// something. A `prompt` rule grants nothing; its only effect is "ask
-    /// the operator instead of skipping the ask", which is safe (indeed
-    /// MORE conservative) to fire on a chained command too. Gating it the
-    /// allow way would have the opposite of the intended effect: adding a
-    /// shell metacharacter would EVADE the extra scrutiny a `prompt` rule
-    /// exists to add, exactly the inversion `matches_deny`'s own doc
-    /// describes for `deny`. `prompt` and `deny` are both admitted
-    /// unconditionally at extension-architecture.md §5.5's stage 1 (they
-    /// narrow; only `allow` needs trust) precisely because neither can be
-    /// evaded this way.
-    fn prompt_matches(&self, call: &AuthorizedCall) -> Option<PatternRule> {
+    /// **Deliberately reuses the deny/prompt evaluator (ungated), not
+    /// `Rule::matches_allow_render`.** The allow-side metacharacter gate
+    /// exists to keep an ALLOW from being satisfied by a chained command
+    /// riding a matched prefix -- a concern that only applies to a rule
+    /// that GRANTS something. A `prompt` rule grants nothing; its only
+    /// effect is "ask the operator instead of skipping the ask", which is
+    /// safe (indeed MORE conservative) to fire on a chained command too.
+    /// Gating it the allow way would have the opposite of the intended
+    /// effect: adding a shell metacharacter would EVADE the extra scrutiny
+    /// a `prompt` rule exists to add, exactly the inversion
+    /// `PatternRule::matches_deny`'s own doc describes for `deny`. `prompt`
+    /// and `deny` are both admitted unconditionally at
+    /// extension-architecture.md §5.5's stage 1 (they narrow; only `allow`
+    /// needs trust) precisely because neither can be evaded this way.
+    fn prompt_matches(&self, ctx: &PermissionCtx, call: &AuthorizedCall) -> Option<Rule> {
         self.prompt_patterns
             .read()
             .expect("permission prompt patterns poisoned")
             .iter()
-            .map(|(rule, _origin)| rule)
-            .find(|rule| rule.matches_deny(call.tool.as_str(), &call.rendered))
-            .cloned()
+            .find(|(rule, canonical, _origin)| {
+                rule_denies_or_prompts(ctx, call, rule, canonical.as_ref())
+            })
+            .map(|(rule, _, _)| rule.clone())
     }
 
     /// Authorize one tool call, consulting the cache first and the gate on a
@@ -759,7 +1043,7 @@ impl PermissionBroker {
         // denied outright instead, which is strictly MORE restrictive, not
         // less). This is "most-restrictive-wins, independent of order or
         // authorship" made concrete.
-        if let Some(rule) = self.deny_matches(call) {
+        if let Some(rule) = self.deny_matches(ctx, call) {
             self.emit(
                 ctx,
                 Event::PermissionResolved {
@@ -771,7 +1055,7 @@ impl PermissionBroker {
                 rendered_error: format!(
                     "`{}` is denied by a `deny` rule (`{}`)",
                     call.tool.as_str(),
-                    rule.to_wire()
+                    rule.describe()
                 ),
             };
         }
@@ -856,7 +1140,7 @@ impl PermissionBroker {
         // (`#[serde(default)]`, mirroring `Event::AgentSpawned`'s `ephemeral`
         // field) this item leaves as a follow-up rather than bundling into
         // the mechanism fix.
-        if self.prompt_matches(call).is_some() {
+        if self.prompt_matches(ctx, call).is_some() {
             must_reach_gate = true;
         }
 

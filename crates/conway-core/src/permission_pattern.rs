@@ -154,6 +154,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::content::ToolCategory;
 use crate::ports::RenderKind;
 #[cfg(test)]
 use crate::text::sanitize_control_chars;
@@ -396,6 +397,365 @@ fn prefix_matches(prefix: &str, rendered: &str) -> bool {
             (Some(_), None) => return false,
             (Some(p), Some(c)) if p == c => continue,
             _ => return false,
+        }
+    }
+}
+
+// =====================================================================
+// F12: the structured rule form -- `Rule { select, when, then }`.
+//
+// The flat string form (`"bash:git status"`, parsed by [`PatternRule::parse`])
+// is the SURFACE SYNTAX for this structured form. Both parse into one
+// internal [`Rule`], evaluated by one evaluator: [`PatternRule::to_rule`]
+// desugars a flat rule into a [`Rule`] whose `when` is [`When::Always`] (for
+// the `tool:*` wildcard) or [`When::CommandPrefix`] (for a real prefix), and
+// [`Rule::matches_allow_render`]/[`Rule::matches_deny_render`] below are the
+// single evaluator path every admission takes. See this module's own doc and
+// `.design/extension-architecture.md` §5 for why there is one language, not
+// two.
+//
+// The structured form is an ADDITIVE SUPERSET: it can express what the flat
+// form can (`tools([t]) + command_prefix(p)`), plus what the flat form cannot
+// (`paths_under` for resolved-path containment, `categories` for
+// category-scoped rules, `category_in` for a category condition). The flat
+// form stays the ergonomic default and keeps working forever.
+// =====================================================================
+
+/// What a [`Rule`] selects: which tool calls it can apply to at all.
+///
+/// `Tools` matches by tool name, with one limited wildcard: a single trailing
+/// `*` (`"bash"`, `"re*"`, `"*"`). There is no other wildcard -- the same
+/// "predictable by reading" property [`PatternRule`]'s prefix language has.
+/// `Categories` matches by [`ToolCategory`], so a plugin can scope a rule to
+/// "every Edit/Delete tool" without naming them.
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Select {
+    /// Match calls to any of these tool names. A pattern is either an exact
+    /// name (`"bash"`) or a single trailing `*` (`"re*"`, `"*"`); no other
+    /// wildcard is recognized, so `*` is the only metacharacter and it can
+    /// only appear once, at the end.
+    Tools(Vec<String>),
+    /// Match calls to any tool whose declared [`ToolCategory`] is in this
+    /// list.
+    Categories(Vec<ToolCategory>),
+}
+
+/// The condition under which a selected call matches a [`Rule`]. See
+/// [`Rule`] for how `select` + `when` + `then` compose.
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum When {
+    /// No condition beyond `select`: every call the select matches is
+    /// matched. The flat `tool:*` wildcard desugars to `Tools([tool]) +
+    /// Always`. The allow-side metacharacter gate still applies (see
+    /// [`Rule::matches_allow_render`]), so `Always` on a `ShellCommand` tool
+    /// does NOT authorize a chained command -- it is "any invocation, the
+    /// gate still gating", not "any invocation, including chained ones".
+    Always,
+    /// Today's [`PatternRule`] semantics: a token-wise prefix over the call's
+    /// `rendered` string. A registration error against a tool whose
+    /// `render_kind` is [`RenderKind::Structured`] (see
+    /// [`RuleRegistrationReason::CommandPrefixOnStructuredTool`]) -- matching
+    /// a JSON dump by prefix is fragile (key order, spacing, escaping) and
+    /// the operator will not notice a rule that never matches.
+    CommandPrefix(String),
+    /// Resolved-path containment: the call's declared path arguments (per
+    /// the tool's `Tool::path_args` declaration) are resolved exactly as
+    /// `conway_runtime::permission::PermissionBroker::check_root` resolves
+    /// them -- via `resolve_like_the_tool_will`, from `arguments`, never
+    /// from `rendered` -- and every one must be contained under `prefix`
+    /// (canonicalized once at install). An `Unconfinable` tool NEVER
+    /// satisfies this (fail closed, the same asymmetry root confinement
+    /// uses); a tool with `PathArgs::None` never satisfies it either (no
+    /// paths to confine). The allow-side metacharacter gate still applies
+    /// for a `ShellCommand` tool.
+    PathsUnder(String),
+    /// A category condition: the call's declared [`ToolCategory`] must be
+    /// in this list. Composes with `select`: a `Tools(["bash"]) + CategoryIn
+    /// ([Execute])` rule matches a `bash` call only when bash's category is
+    /// `Execute` (it is), which is redundant for `bash` but useful for
+    /// third-party tools whose name you select but whose category you also
+    /// want to pin.
+    CategoryIn(Vec<ToolCategory>),
+}
+
+/// The effect a [`Rule`] has when its `select` + `when` both match.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Then {
+    /// Authorize the call without consulting the operator's gate (subject to
+    /// the allow-side metacharacter gate and root confinement). An `allow`
+    /// rule is a durable grant; grants belong to the operator, so only
+    /// operator-owned config (the trusted permissions file, or an interactive
+    /// "always allow") may author one. Plugin-contributed rules may only be
+    /// [`Then::Deny`] or [`Then::Prompt`] (narrowing); this invariant is
+    /// encoded at admission -- extension-architecture.md §5.5 stage 1 -- so a
+    /// future plugin transport cannot retrofit an `allow` without crossing
+    /// it.
+    Allow,
+    /// Force the call to the operator's gate even in `AutoAllow` mode and
+    /// even over a matching `allow` grant (most-restrictive-wins). Narrows;
+    /// admits unconditionally.
+    Prompt,
+    /// Refuse the call outright, before any allow path is consulted. Beats
+    /// every `prompt` and every `allow` (most-restrictive-wins). Narrows;
+    /// admits unconditionally.
+    Deny,
+}
+
+/// One structured permission rule: a [`Select`], a [`When`], and a [`Then`].
+///
+/// The flat string `"bash:cargo test"` IS `Rule { select: Tools(["bash"]),
+/// when: CommandPrefix("cargo test"), then: Allow }` -- see
+/// [`PatternRule::to_rule`] for the desugaring. The two forms parse into this
+/// one type and are evaluated by [`Rule::matches_allow_render`] /
+/// [`Rule::matches_deny_render`] (for the render-based `when` clauses) plus
+/// the broker's resolved-path check (for [`When::PathsUnder`], which needs
+/// the call's `arguments` and `cwd` and so lives where `check_root` lives).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Rule {
+    pub select: Select,
+    pub when: When,
+    pub then: Then,
+}
+
+impl Rule {
+    /// Whether `select` matches this call's `(tool, category)`. Shared by the
+    /// allow and deny/prompt evaluators, and by the broker's `paths_under`
+    /// path, so select semantics cannot drift between them.
+    pub fn select_matches(&self, tool: &str, category: ToolCategory) -> bool {
+        match &self.select {
+            Select::Tools(patterns) => patterns.iter().any(|p| tool_pattern_matches(p, tool)),
+            Select::Categories(cats) => cats.contains(&category),
+        }
+    }
+
+    /// The allow-side metacharacter gate, as an associated fn so the broker's
+    /// `paths_under` path applies it identically to the render-based path.
+    /// Unchanged in behavior from [`PatternRule::matches_render`]: a
+    /// `ShellCommand` rendering carrying any metacharacter (or any control
+    /// character, or the sanitizer's placeholder) is refused; a `Structured`
+    /// rendering is never gated here.
+    pub fn gate_allows(rendered: &str, render_kind: RenderKind) -> bool {
+        !(render_kind == RenderKind::ShellCommand && contains_shell_metacharacters(rendered))
+    }
+
+    /// Whether this rule, as an ALLOW rule, would authorize `(tool, category)`
+    /// running `rendered` under `render_kind` -- for the render-based `when`
+    /// clauses (`Always`, `CommandPrefix`, `CategoryIn`). Returns `false` for
+    /// [`When::PathsUnder`]: that clause needs the call's `arguments` and
+    /// `cwd` (resolved exactly as `check_root` resolves them), which only the
+    /// broker has, so the broker evaluates `PathsUnder` itself and reaches
+    /// this method only for the other clauses.
+    ///
+    /// This is the single evaluator the flat and structured forms share:
+    /// `PatternRule::to_rule(Then::Allow).matches_allow_render(...)` is
+    /// byte-identical to `PatternRule::matches_render(...)` (pinned by the
+    /// byte-identical equivalence test in this module).
+    pub fn matches_allow_render(
+        &self,
+        tool: &str,
+        category: ToolCategory,
+        rendered: &str,
+        render_kind: RenderKind,
+    ) -> bool {
+        if !self.select_matches(tool, category) {
+            return false;
+        }
+        // The hard gate, unchanged from `PatternRule::matches_render`: allow
+        // keeps it; deny skips it. Applied before any `when` predicate, and
+        // for every `when` (not just `CommandPrefix`) -- `Always` on a
+        // `ShellCommand` tool must NOT authorize a chained command.
+        if !Self::gate_allows(rendered, render_kind) {
+            return false;
+        }
+        match &self.when {
+            When::Always => true,
+            When::CommandPrefix(p) => prefix_matches(p, rendered),
+            When::CategoryIn(cats) => cats.contains(&category),
+            When::PathsUnder(_) => false,
+        }
+    }
+
+    /// Whether this rule, as a DENY (or PROMPT) rule, matches `(tool,
+    /// category)` running `rendered` -- deliberately WITHOUT the
+    /// metacharacter gate (the deny/prompt asymmetry: a `;` must not defeat a
+    /// deny/prompt the way it would defeat an allow), and with the
+    /// laundering fallback for `CommandPrefix` (see
+    /// [`PatternRule::matches_deny`]'s own doc). Returns `false` for
+    /// [`When::PathsUnder`]: the broker evaluates that clause itself.
+    pub fn matches_deny_render(&self, tool: &str, category: ToolCategory, rendered: &str) -> bool {
+        if !self.select_matches(tool, category) {
+            return false;
+        }
+        match &self.when {
+            When::Always => true,
+            When::CommandPrefix(p) => {
+                if rendered_evidence_is_untrustworthy(rendered) {
+                    return true;
+                }
+                prefix_matches(p, rendered)
+            }
+            When::CategoryIn(cats) => cats.contains(&category),
+            When::PathsUnder(_) => false,
+        }
+    }
+
+    /// The flat wire form, for rules that are the desugarable subset
+    /// (`Tools([t]) + (Always | CommandPrefix(p))`). Returns `None` for
+    /// anything the flat language cannot express (`Categories`,
+    /// `PathsUnder`, `CategoryIn`, multiple tools), so a caller matching
+    /// against the flat `allow`/`deny` lists in a permissions file can tell
+    /// the two apart. This is the bridge that keeps [`PatternRule`]-shaped
+    /// review surfaces working unchanged for flat rules while structured
+    /// rules live alongside them.
+    pub fn to_pattern_rule(&self) -> Option<PatternRule> {
+        let tool = match &self.select {
+            Select::Tools(ts) if ts.len() == 1 => ts[0].as_str(),
+            _ => return None,
+        };
+        match &self.when {
+            When::Always => Some(PatternRule {
+                tool: tool.to_string(),
+                command_prefix: "*".to_string(),
+            }),
+            When::CommandPrefix(p) => Some(PatternRule {
+                tool: tool.to_string(),
+                command_prefix: p.clone(),
+            }),
+            _ => None,
+        }
+    }
+
+    /// A human-readable description of what this rule matches, for the review
+    /// surface. The desugarable subset reproduces [`PatternRule::describe`]
+    /// verbatim, so a flat rule and its structured equivalent render
+    /// identically to the operator.
+    pub fn describe(&self) -> String {
+        let select_label = match &self.select {
+            Select::Tools(ts) if ts.len() == 1 => ts[0].clone(),
+            Select::Tools(ts) => format!("[{}]", ts.join(", ")),
+            Select::Categories(cats) => format!(
+                "categories [{}]",
+                cats.iter()
+                    .map(|c| format!("{c:?}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        };
+        match (&self.select, &self.when) {
+            (Select::Tools(ts), When::Always) if ts.len() == 1 => format!("any `{}` call", ts[0]),
+            (Select::Tools(ts), When::CommandPrefix(p)) if ts.len() == 1 => {
+                format!("`{}` commands starting with `{}`", ts[0], p)
+            }
+            (_, When::Always) => format!("{select_label} (any call)"),
+            (_, When::CommandPrefix(p)) => {
+                format!("{select_label} commands starting with `{p}`")
+            }
+            (_, When::PathsUnder(prefix)) => format!("{select_label} under `{prefix}`"),
+            (_, When::CategoryIn(cats)) => format!(
+                "{select_label} in categories [{}]",
+                cats.iter()
+                    .map(|c| format!("{c:?}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        }
+    }
+
+    /// The flat wire form for desugarable rules, or a structured JSON
+    /// serialization otherwise. Used by review surfaces that need a stable
+    /// string identity for a rule; the flat `allow`/`deny` list
+    /// read-modify-write in `Conway::rewrite_permission_file_removing`
+    /// matches against this (structured rules are not in that flat list, so
+    /// this is only load-bearing for the desugarable subset).
+    pub fn to_wire(&self) -> String {
+        match (&self.select, &self.when) {
+            (Select::Tools(ts), When::Always) if ts.len() == 1 => format!("{}:*", ts[0]),
+            (Select::Tools(ts), When::CommandPrefix(p)) if ts.len() == 1 => {
+                format!("{}:{}", ts[0], p)
+            }
+            _ => serde_json::to_string(self).unwrap_or_else(|_| "<unserializable rule>".into()),
+        }
+    }
+}
+
+/// Whether a `Select::Tools` pattern matches a tool name. A pattern is exact,
+/// or ends with a single `*` (then its prefix must match); no other wildcard.
+fn tool_pattern_matches(pattern: &str, tool: &str) -> bool {
+    if pattern == "*" {
+        return true;
+    }
+    if let Some(prefix) = pattern.strip_suffix('*') {
+        // A trailing `*` is a prefix match. An embedded `*` (not trailing) is
+        // NOT a wildcard -- it is treated literally, so the operator cannot
+        // accidentally grant more than they read.
+        !pattern[..pattern.len() - 1].contains('*') && tool.starts_with(prefix)
+    } else {
+        pattern == tool
+    }
+}
+
+/// A typed registration error for a [`Rule`] loaded from config, surfaced to
+/// the operator (P-10: untrusted input -> typed errors, never panics). A rule
+/// that can never match is a lie the operator will not notice (the mirror of
+/// the `read:*`-matched-nothing bug fixed in `68ea9b1`); this type is how the
+/// loader refuses to install one silently.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RuleRegistrationError {
+    /// The rule as parsed. Carried whole so the operator can see exactly what
+    /// was rejected, not just a reason.
+    pub rule: Rule,
+    /// Why this rule cannot be installed.
+    pub reason: RuleRegistrationReason,
+}
+
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RuleRegistrationReason {
+    /// `when: command_prefix` was paired with a tool whose `render_kind` is
+    /// `Structured`. A `command_prefix` matches the call's `rendered` string
+    /// token-wise; for a `Structured` tool that string is a JSON dump whose
+    /// token boundaries depend on key order, spacing, and escaping the
+    /// operator cannot predict, so the rule is fragile. Use `when: always`
+    /// (the flat `tool:*` form) for "any invocation", or `when: paths_under`
+    /// for path-scoped rules.
+    CommandPrefixOnStructuredTool,
+}
+
+impl RuleRegistrationReason {
+    /// A human-readable explanation for the operator.
+    pub fn describe(&self) -> &'static str {
+        match self {
+            RuleRegistrationReason::CommandPrefixOnStructuredTool => {
+                "`command_prefix` cannot be used against a tool whose rendering is \
+                 structured (a JSON dump); use `always` (the `tool:*` flat form) or \
+                 `paths_under` instead"
+            }
+        }
+    }
+}
+
+impl PatternRule {
+    /// Desugars this flat-form rule into the structured [`Rule`] it IS, with
+    /// the given [`Then`]. `command_prefix == "*"` (the flat wildcard, "any
+    /// invocation") desugars to [`When::Always`]; a real prefix desugars to
+    /// [`When::CommandPrefix`]. This is the single bridge between the two
+    /// syntaxes: both produce a [`Rule`], and one evaluator decides both.
+    pub fn to_rule(&self, then: Then) -> Rule {
+        let when = if self.command_prefix == "*" {
+            When::Always
+        } else {
+            When::CommandPrefix(self.command_prefix.clone())
+        };
+        Rule {
+            select: Select::Tools(vec![self.tool.clone()]),
+            when,
+            then,
         }
     }
 }
@@ -890,11 +1250,15 @@ pub fn suggested_rule(tool: &str, rendered: &str) -> Option<PatternRule> {
 
 /// The on-disk shape of `.conway/permissions.json`.
 ///
-/// Deliberately a flat list of wire-form strings (`"bash:git status"`)
-/// rather than a nested structure: the file is meant to be read and edited
-/// by a human reviewing what they have authorized, and diffed in a pull
-/// request. A structure that needs a schema reference to interpret would
-/// undercut that.
+/// The flat `allow`/`deny` lists of wire-form strings (`"bash:git status"`)
+/// stay the ergonomic default: the file is meant to be read and edited by a
+/// human reviewing what they have authorized, and diffed in a pull request.
+/// F12 adds the optional `rules` array for the structured form -- the
+/// additive superset a flat string is the surface syntax for -- so a rule
+/// the flat form cannot express (`paths_under`, `categories`, `category_in`,
+/// a `prompt` effect) has a home without forcing every existing rule into a
+/// schema reference. A file written before `rules` existed keeps parsing
+/// unchanged (`#[serde(default)]`).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PermissionFile {
     /// Wire-form rules that AUTHORIZE. Malformed entries are dropped on
@@ -909,63 +1273,140 @@ pub struct PermissionFile {
     /// unchanged.
     #[serde(default)]
     pub deny: Vec<String>,
+    /// F12: structured rules, each carrying its own `then` (`allow`/`prompt`/
+    /// `deny`). The flat `allow`/`deny` lists above are the surface syntax
+    /// for the `Tools([t]) + (Always | CommandPrefix) + (Allow | Deny)`
+    /// subset; this array is the superset, expressing `paths_under`,
+    /// `categories`, `category_in`, and the `prompt` effect the flat form
+    /// has no syntax for. `allow` entries from this array are subject to the
+    /// SAME trust decision as the flat `allow` list (a project file's
+    /// `then: allow` rules install only once the caller confirms trust);
+    /// `deny` and `prompt` entries apply immediately, trusted or not, the
+    /// same asymmetry the flat `deny` list has always had. A structurally
+    /// malformed entry is dropped, not guessed at (P-10); a rule whose
+    /// `then` is an unrecognized variant is dropped the same way
+    /// (`#[non_exhaustive]` fail-closed).
+    #[serde(default)]
+    pub rules: Vec<Rule>,
 }
 
-/// Parses a rules file's `allow` list into rules, **failing closed**.
+/// Parses a rules file's ALLOW rules -- flat `allow` strings desugared plus
+/// structured `rules` entries whose `then` is `Allow` -- **failing closed**.
 ///
 /// Every failure mode returns fewer rules, never more:
 /// - unparseable JSON → no rules at all (the operator is asked about
 ///   everything, which is Conway's default behavior anyway)
-/// - a malformed entry → that entry dropped, the rest kept
+/// - a malformed flat entry → that entry dropped, the rest kept
+/// - a structurally malformed `rules` entry → that entry dropped, the rest
+///   kept
 ///
 /// This asymmetry is the whole point. A corrupt permissions file must
 /// never be able to *widen* what is authorized — the worst outcome of a
 /// bad file is extra prompting, never a missed one.
-pub fn parse_rules(contents: &str) -> Vec<PatternRule> {
+///
+/// Returns [`Rule`]s (not [`PatternRule`]s) because the structured form
+/// can express what the flat form cannot; a flat entry is its desugared
+/// [`Rule`] (`PatternRule::to_rule(Then::Allow)`). `Rule::to_wire`
+/// round-trips the flat subset, so a caller that round-trips flat rules
+/// keeps working.
+pub fn parse_rules(contents: &str) -> Vec<Rule> {
     parse_permission_file(contents).allow
 }
 
-/// Parses a rules file's `deny` list into rules, with the identical
+/// Parses a rules file's DENY rules -- flat `deny` strings desugared plus
+/// structured `rules` entries whose `then` is `Deny` -- with the identical
 /// fail-closed posture as [`parse_rules`]: a corrupt file yields NO deny
 /// rules either -- fewer rules is always the safe failure here too, even
 /// though `deny` narrows. A `deny` rule that silently vanished because its
 /// file went corrupt would be a false sense of safety, but a `deny` rule
 /// GUESSED AT from unparseable content would be worse: a half-understood
 /// safety rule inspires false confidence.
-pub fn parse_deny_rules(contents: &str) -> Vec<PatternRule> {
+pub fn parse_deny_rules(contents: &str) -> Vec<Rule> {
     parse_permission_file(contents).deny
 }
 
-/// Shared parse used by both [`parse_rules`] and [`parse_deny_rules`], so
-/// the two halves can never read the JSON differently.
+/// Parses a rules file's PROMPT rules -- structured `rules` entries whose
+/// `then` is `Prompt`. The flat form has no prompt syntax (a flat `deny`
+/// was the only narrowing effect the flat language could express before
+/// F12), so this is drawn entirely from the structured `rules` array. Same
+/// fail-closed posture as [`parse_rules`]/[`parse_deny_rules`].
+pub fn parse_prompt_rules(contents: &str) -> Vec<Rule> {
+    parse_permission_file(contents).prompt
+}
+
+/// Shared parse used by [`parse_rules`], [`parse_deny_rules`], and
+/// [`parse_prompt_rules`], so the three halves can never read the JSON
+/// differently.
 struct ParsedPermissionFile {
-    allow: Vec<PatternRule>,
-    deny: Vec<PatternRule>,
+    allow: Vec<Rule>,
+    deny: Vec<Rule>,
+    prompt: Vec<Rule>,
 }
 
 fn parse_permission_file(contents: &str) -> ParsedPermissionFile {
-    let file: PermissionFile = match serde_json::from_str(contents) {
+    // Parse `rules` as an array of opaque JSON values, then deserialize each
+    // one individually: a single structurally malformed `rules` entry is
+    // DROPPED, not guessed at (P-10), and the rest of the array plus the flat
+    // `allow`/`deny` lists survive. Parsing the whole document as
+    // `PermissionFile` (whose `rules: Vec<Rule>` is all-or-nothing under serde)
+    // would reject the entire file on one bad entry -- a louder but less
+    // useful failure, and one the field's own doc disclaims. The flat
+    // `allow`/`deny` lists are already drop-per-entry by construction
+    // (`PatternRule::parse` returns `Option`); this gives `rules` the same
+    // granular fail-closed posture.
+    #[derive(serde::Deserialize)]
+    struct RawPermissionFile {
+        #[serde(default)]
+        allow: Vec<String>,
+        #[serde(default)]
+        deny: Vec<String>,
+        #[serde(default)]
+        rules: Vec<serde_json::Value>,
+    }
+    let file: RawPermissionFile = match serde_json::from_str(contents) {
         Ok(file) => file,
-        // Fail closed: an unreadable file authorizes AND denies nothing.
+        // Fail closed: an unreadable file authorizes, denies, and prompts
+        // nothing.
         Err(_) => {
             return ParsedPermissionFile {
                 allow: Vec::new(),
                 deny: Vec::new(),
+                prompt: Vec::new(),
             }
         }
     };
-    ParsedPermissionFile {
-        allow: file
-            .allow
-            .iter()
-            .filter_map(|raw| PatternRule::parse(raw))
-            .collect(),
-        deny: file
-            .deny
-            .iter()
-            .filter_map(|raw| PatternRule::parse(raw))
-            .collect(),
+    // Flat `allow`/`deny` desugar into the same `Rule` the structured form
+    // produces -- the second arm of `parse_rules`, not a second home. A
+    // malformed flat entry is dropped (PatternRule::parse returns None).
+    let flat_allow = file
+        .allow
+        .iter()
+        .filter_map(|raw| PatternRule::parse(raw).map(|p| p.to_rule(Then::Allow)));
+    let flat_deny = file
+        .deny
+        .iter()
+        .filter_map(|raw| PatternRule::parse(raw).map(|p| p.to_rule(Then::Deny)));
+    let mut allow: Vec<Rule> = flat_allow.collect();
+    let mut deny: Vec<Rule> = flat_deny.collect();
+    let mut prompt: Vec<Rule> = Vec::new();
+    // Structured `rules` carry their own `then`; sort them into the three
+    // buckets. `Then` is `#[non_exhaustive]`: an unrecognized `then` is
+    // DROPPED (fail closed), never guessed at -- a rule whose effect the
+    // loader does not understand authorizes/prompt/denies nothing. A
+    // structurally malformed entry (bad `select`/`when` shape, unknown
+    // variant) is dropped the same way: `serde_json::from_value::<Rule>`
+    // returns `Err`, and we skip it.
+    for value in file.rules {
+        match serde_json::from_value::<Rule>(value) {
+            Ok(rule) => match rule.then {
+                Then::Allow => allow.push(rule),
+                Then::Deny => deny.push(rule),
+                Then::Prompt => prompt.push(rule),
+            },
+            Err(_) => { /* drop the malformed entry, fail closed */ }
+        }
     }
+    ParsedPermissionFile { allow, deny, prompt }
 }
 
 /// Where an installed [`PatternRule`] grant came from. Required so a rule
@@ -1121,4 +1562,300 @@ mod store_tests {
         assert!(suggested_rule("bash", "").is_none());
     }
 
+}
+
+// =====================================================================
+// F12: the structured rule form -- `Rule { select, when, then }`.
+// =====================================================================
+#[cfg(test)]
+mod f12_tests {
+    use super::*;
+    use crate::content::ToolCategory;
+    use crate::ports::RenderKind;
+
+    // ---- desugaring: the flat form IS the structured form ----
+
+    /// `tool:*` (the flat wildcard, "any invocation") desugars to
+    /// `Tools([tool]) + Always`, NOT `CommandPrefix("*")`. This is what keeps
+    /// `read:*` working under the structured evaluator: `Always` on a
+    /// `Structured` tool is a perfectly sensible rule, while `CommandPrefix`
+    /// on a `Structured` tool is a registration error.
+    #[test]
+    fn wildcard_flat_rule_desugars_to_always() {
+        let r = PatternRule::parse("read:*").expect("valid").to_rule(Then::Allow);
+        assert_eq!(r.select, Select::Tools(vec!["read".to_string()]));
+        assert_eq!(r.when, When::Always);
+        assert_eq!(r.then, Then::Allow);
+    }
+
+    #[test]
+    fn prefix_flat_rule_desugars_to_command_prefix() {
+        let r = PatternRule::parse("bash:git status").expect("valid").to_rule(Then::Deny);
+        assert_eq!(r.select, Select::Tools(vec!["bash".to_string()]));
+        assert_eq!(r.when, When::CommandPrefix("git status".to_string()));
+        assert_eq!(r.then, Then::Deny);
+    }
+
+    /// `to_pattern_rule` is the inverse of `to_rule` for the desugarable
+    /// subset, and `None` for anything the flat form cannot express -- so
+    /// the broker's `PatternRule`-shaped review surface can carry flat
+    /// rules unchanged and defer structured rules to a separate listing.
+    #[test]
+    fn to_pattern_rule_round_trips_the_desugarable_subset() {
+        for (wire, then) in [
+            ("bash:git status", Then::Allow),
+            ("read:*", Then::Allow),
+            ("bash:curl", Then::Deny),
+        ] {
+            let p = PatternRule::parse(wire).expect("valid");
+            let r = p.to_rule(then);
+            assert_eq!(r.to_pattern_rule(), Some(p.clone()), "round-trip: {wire}");
+        }
+    }
+
+    #[test]
+    fn to_pattern_rule_returns_none_for_structured_only_rules() {
+        let paths_under = Rule {
+            select: Select::Tools(vec!["read".into()]),
+            when: When::PathsUnder("/repo".into()),
+            then: Then::Allow,
+        };
+        assert!(paths_under.to_pattern_rule().is_none());
+
+        let categories = Rule {
+            select: Select::Categories(vec![ToolCategory::Read]),
+            when: When::Always,
+            then: Then::Prompt,
+        };
+        assert!(categories.to_pattern_rule().is_none());
+
+        let multi_tool = Rule {
+            select: Select::Tools(vec!["read".into(), "grep".into()]),
+            when: When::Always,
+            then: Then::Allow,
+        };
+        assert!(multi_tool.to_pattern_rule().is_none());
+    }
+
+    /// `Rule::to_wire` round-trips the flat form so the existing flat-list
+    /// read-modify-write and the deny error message keep working.
+    #[test]
+    fn to_wire_round_trips_the_flat_subset() {
+        assert_eq!(
+            PatternRule::parse("bash:git status")
+                .expect("valid")
+                .to_rule(Then::Allow)
+                .to_wire(),
+            "bash:git status"
+        );
+        assert_eq!(
+            PatternRule::parse("read:*")
+                .expect("valid")
+                .to_rule(Then::Allow)
+                .to_wire(),
+            "read:*"
+        );
+        // A structured-only rule serializes to its JSON form (not a flat
+        // wire) -- this is what a review surface shows for a rule the flat
+        // language cannot name.
+        let structured = Rule {
+            select: Select::Tools(vec!["read".into()]),
+            when: When::PathsUnder("/repo".into()),
+            then: Then::Allow,
+        };
+        let wire = structured.to_wire();
+        assert!(wire.contains("paths_under"), "structured wire: {wire}");
+    }
+
+    // ---- one evaluator: byte-identical decisions ----
+
+    /// THE headline proof: a flat `PatternRule` and its desugared `Rule`
+    /// produce byte-identical ALLOW decisions across a matrix of calls and
+    /// render kinds. This is the strongest available evidence there is one
+    /// evaluator and not two -- both reach `Rule::matches_allow_render`
+    /// (the flat form via `PatternRule::matches_render`'s identical
+    /// primitives; the structured form via `to_rule().matches_allow_render`)
+    /// and cannot drift.
+    #[test]
+    fn flat_and_structured_produce_byte_identical_allow_decisions() {
+        // A matrix of (rule, tool, rendered, render_kind): ordinary matches,
+        // subcommand mismatches, chained commands (gated), Structured
+        // wildcards, a non-wildcard prefix on a Structured tool.
+        let cases: &[(&str, &str, &str, RenderKind, ToolCategory)] = &[
+            ("bash:git status", "bash", "git status", RenderKind::ShellCommand, ToolCategory::Execute),
+            ("bash:git status", "bash", "git status --short", RenderKind::ShellCommand, ToolCategory::Execute),
+            ("bash:git status", "bash", "git push --force", RenderKind::ShellCommand, ToolCategory::Execute),
+            ("bash:git status", "bash", "git status && rm -rf /", RenderKind::ShellCommand, ToolCategory::Execute),
+            ("bash:git status", "bash", "git status\nrm -rf /", RenderKind::ShellCommand, ToolCategory::Execute),
+            ("bash:*", "bash", "ls -la", RenderKind::ShellCommand, ToolCategory::Execute),
+            ("bash:*", "bash", "ls -la && rm -rf /", RenderKind::ShellCommand, ToolCategory::Execute),
+            ("read:*", "read", r#"read({"path":"a.rs"})"#, RenderKind::Structured, ToolCategory::Read),
+            ("read:*", "write", r#"write({"path":"a.rs"})"#, RenderKind::Structured, ToolCategory::Edit),
+            (r#"report:report({"summary":"build"#, "report", r#"report({"summary":"build finished"})"#, RenderKind::Structured, ToolCategory::Think),
+        ];
+        for (wire, tool, rendered, rk, cat) in cases {
+            let flat = PatternRule::parse(wire).expect("valid");
+            let structured = flat.to_rule(Then::Allow);
+            assert_eq!(
+                flat.matches_render(tool, rendered, *rk),
+                structured.matches_allow_render(tool, *cat, rendered, *rk),
+                "flat and structured must agree: {wire:?} vs {rendered:?} ({rk:?})"
+            );
+        }
+    }
+
+    /// The deny/prompt side: `PatternRule::matches_deny` and the desugared
+    /// `Rule::matches_deny_render` agree across the same matrix -- the
+    /// ungated, laundering-aware evaluator is one, not two.
+    #[test]
+    fn flat_and_structured_produce_byte_identical_deny_decisions() {
+        let cases: &[(&str, &str, &str, ToolCategory)] = &[
+            ("bash:curl", "bash", "curl https://example.com", ToolCategory::Execute),
+            ("bash:curl", "bash", "curl x; rm -rf /", ToolCategory::Execute),
+            ("bash:curl", "bash", "\tcurl http://evil", ToolCategory::Execute),
+            ("bash:*", "bash", "ls -la && rm -rf /", ToolCategory::Execute),
+            ("write:*", "write", r#"write({"path":"/etc/passwd"})"#, ToolCategory::Edit),
+        ];
+        for (wire, tool, rendered, cat) in cases {
+            let flat = PatternRule::parse(wire).expect("valid");
+            let structured = flat.to_rule(Then::Deny);
+            assert_eq!(
+                flat.matches_deny(tool, rendered),
+                structured.matches_deny_render(tool, *cat, rendered),
+                "flat and structured deny must agree: {wire:?} vs {rendered:?}"
+            );
+        }
+    }
+
+    // ---- structured parsing: the `rules` array ----
+
+    /// A structured `rules` entry parses into the `Rule` it names, and the
+    /// flat `allow`/`deny` lists still parse alongside it.
+    #[test]
+    fn structured_rules_array_parses_into_rules() {
+        let contents = r#"{
+            "allow": ["bash:git status"],
+            "rules": [
+                {"select": {"tools": ["read"]}, "when": "always", "then": "allow"},
+                {"select": {"tools": ["bash"]}, "when": {"command_prefix": "cargo test"}, "then": "allow"},
+                {"select": {"categories": ["edit","delete"]}, "when": {"paths_under": "/repo"}, "then": "deny"},
+                {"select": {"tools": ["bash"]}, "when": "always", "then": "prompt"}
+            ]
+        }"#;
+        let allow = parse_rules(contents);
+        assert_eq!(allow.len(), 3, "flat allow + two structured allow");
+        assert!(allow.iter().any(|r| r.to_wire() == "bash:git status"));
+        assert!(allow.iter().any(|r| matches!(r.when, When::Always) && matches!(r.select, Select::Tools(ref t) if t == &["read".to_string()])));
+        assert!(allow.iter().any(|r| matches!(r.when, When::CommandPrefix(_))));
+
+        let deny = parse_deny_rules(contents);
+        assert_eq!(deny.len(), 1, "one structured deny");
+        assert!(matches!(deny[0].select, Select::Categories(_)));
+        assert!(matches!(deny[0].when, When::PathsUnder(_)));
+
+        let prompt = parse_prompt_rules(contents);
+        assert_eq!(prompt.len(), 1, "one structured prompt");
+        assert!(matches!(prompt[0].then, Then::Prompt));
+    }
+
+    /// A structurally malformed `rules` entry is dropped, not guessed at
+    /// (P-10) -- the rest of the array and the flat lists survive.
+    #[test]
+    fn a_malformed_structured_entry_is_dropped_and_the_rest_kept() {
+        let contents = r#"{
+            "rules": [
+                {"select": {"tools": ["read"]}, "when": "always", "then": "allow"},
+                {"select": "not-an-object", "when": "always"},
+                {"select": {"tools": ["bash"]}, "when": "always", "then": "bogus_effect"}
+            ],
+            "allow": ["bash:git status"]
+        }"#;
+        let allow = parse_rules(contents);
+        // Only the first structured rule (valid, allow) and the flat rule
+        // survive; the malformed entry and the unknown-`then` entry are
+        // both dropped (fail closed).
+        assert_eq!(allow.len(), 2, "two valid allow rules survive");
+    }
+
+    #[test]
+    fn a_file_with_no_rules_key_parses_as_before() {
+        let contents = r#"{"allow": ["bash:git status"], "deny": ["bash:curl"]}"#;
+        assert_eq!(parse_rules(contents).len(), 1);
+        assert_eq!(parse_deny_rules(contents).len(), 1);
+        assert!(parse_prompt_rules(contents).is_empty());
+    }
+
+    // ---- select / when predicates ----
+
+    #[test]
+    fn tools_pattern_matches_exact_and_trailing_wildcard_only() {
+        assert!(tool_pattern_matches("bash", "bash"));
+        assert!(!tool_pattern_matches("bash", "bashfoo"));
+        assert!(tool_pattern_matches("re*", "read"));
+        assert!(tool_pattern_matches("re*", "report"));
+        assert!(!tool_pattern_matches("re*", "grep"), "trailing * is a prefix, not infix");
+        assert!(tool_pattern_matches("*", "anything"));
+        // An embedded `*` (not trailing) is literal, not a wildcard.
+        assert!(!tool_pattern_matches("a*b", "axb"));
+        assert!(tool_pattern_matches("a*b", "a*b"));
+    }
+
+    #[test]
+    fn category_in_predicate_uses_the_calls_category() {
+        let r = Rule {
+            select: Select::Tools(vec!["bash".into()]),
+            when: When::CategoryIn(vec![ToolCategory::Execute]),
+            then: Then::Allow,
+        };
+        // `Always` carries the gate; for a Structured render there is no gate,
+        // so this tests the category condition directly.
+        assert!(r.matches_allow_render(
+            "bash",
+            ToolCategory::Execute,
+            "bash echo",
+            RenderKind::Structured,
+        ));
+        assert!(!r.matches_allow_render(
+            "bash",
+            ToolCategory::Read,
+            "bash echo",
+            RenderKind::Structured,
+        ));
+    }
+
+    #[test]
+    fn paths_under_returns_false_in_the_render_evaluator() {
+        // The render-based evaluator cannot resolve paths (it has no
+        // `arguments`/`cwd`); `paths_under` is the broker's job. Returning
+        // `false` here means a `paths_under` allow rule never fires through
+        // the render path -- the broker is the only place it can match.
+        let r = Rule {
+            select: Select::Tools(vec!["read".into()]),
+            when: When::PathsUnder("/repo".into()),
+            then: Then::Allow,
+        };
+        assert!(!r.matches_allow_render(
+            "read",
+            ToolCategory::Read,
+            r#"read({"path":"/repo/a.rs"})"#,
+            RenderKind::Structured,
+        ));
+    }
+
+    // ---- registration error ----
+
+    #[test]
+    fn registration_error_describes_itself() {
+        let err = RuleRegistrationError {
+            rule: Rule {
+                select: Select::Tools(vec!["read".into()]),
+                when: When::CommandPrefix("read".into()),
+                then: Then::Allow,
+            },
+            reason: RuleRegistrationReason::CommandPrefixOnStructuredTool,
+        };
+        let d = err.reason.describe();
+        assert!(d.contains("command_prefix"), "{d}");
+        assert!(d.contains("structured"), "{d}");
+    }
 }
