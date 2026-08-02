@@ -392,6 +392,327 @@ async fn a_paths_under_rule_reads_arguments_not_rendered_so_a_traversal_path_rea
 }
 
 // =====================================================================
+// (a2) B2: a RELATIVE `paths_under` prefix resolves against the PROJECT,
+//      not the process's cwd (finding S5).
+// =====================================================================
+
+/// **B2's headline acceptance test.** A project `permissions.json` carries
+/// `paths_under: "src"` -- a RELATIVE prefix. It must confine to the
+/// PROJECT's `src/` tree: a read of `<project>/src/file.txt` is authorized
+/// without the gate (turn 1), and a read of the same-named path under the
+/// PROCESS's cwd (`<process cwd>/src/lib.rs` -- which exists, since cargo
+/// runs this test binary with the `conway` crate root as cwd) must NOT
+/// match: it reaches the gate (turn 2). Before B2 the prefix canonicalized
+/// against the process cwd at install, so the rule silently pointed at
+/// `<process cwd>/src` -- both turns would invert (turn 1 asks, turn 2
+/// auto-allows a path the operator never wrote a rule for).
+///
+/// The rule installs through the REAL `/trust permissions` path
+/// (`Conway::trust_permission_file` -- a project file's allow rules require
+/// an explicit trust decision), so the test also proves the trust-time
+/// install resolves the same base as the startup load. And the rule must
+/// be listed with its relative prefix INTACT (`When::PathsUnder("src")`),
+/// not rewritten to an absolute path -- the base is threaded to the
+/// broker's canonicalization, never folded into the stored `Rule`, so the
+/// review surface shows and the revoke addresses exactly what the file
+/// says.
+#[tokio::test]
+async fn a_relative_paths_under_prefix_resolves_against_the_project_not_the_process_cwd() {
+    let project = TempDir::new().expect("tempdir");
+    std::fs::create_dir(project.path().join("src")).expect("mkdir <project>/src");
+    std::fs::write(project.path().join("src").join("file.txt"), b"inside the project src")
+        .expect("write fixture");
+
+    let (_xdg, env) = isolated_env();
+    write_project_permissions(
+        &project,
+        r#"{"rules":[{"select":{"tools":["read"]},"when":{"paths_under":"src"},"then":"allow"}]}"#,
+    );
+
+    let gate = RecordingGate::new(PermissionDecision::Deny {
+        reason: "operator said no".into(),
+    });
+    let conway = build_conway(
+        project.path(),
+        vec![
+            // Turn 1: authorized by the relative-prefix rule (gate bypassed).
+            ScriptedTurn::Respond(read_call_response("src/file.txt")),
+            ScriptedTurn::Respond(text_response("done")),
+            // Turn 2: same-named path under the PROCESS cwd -- must ask.
+            ScriptedTurn::Respond(read_call_response(
+                &std::env::current_dir()
+                    .expect("process cwd")
+                    .join("src")
+                    .join("lib.rs")
+                    .display()
+                    .to_string(),
+            )),
+            ScriptedTurn::Respond(text_response("done")),
+        ],
+        gate.clone() as Arc<dyn PermissionGate>,
+    );
+
+    // The project file's allow rule is held for trust (never silently
+    // installed), then installed by the real trust path.
+    let report =
+        conway.load_permission_files(project.path(), &env, PermissionScope::Session, AgentId::new());
+    assert!(
+        report.registration_errors.is_empty(),
+        "a relative paths_under prefix is structurally valid: {:?}",
+        report.registration_errors
+    );
+    assert_eq!(
+        report.notices.len(),
+        1,
+        "the untrusted project file's allow rule must be held with a notice: {:?}",
+        report.notices
+    );
+    let project_file = project.path().join(".conway").join("permissions.json");
+    let installed = conway
+        .trust_permission_file(&env, &project_file, PermissionScope::Session, AgentId::new())
+        .expect("trust the project file");
+    assert_eq!(installed, 1, "the relative-prefix rule installs once trusted");
+
+    // The stored rule keeps its relative prefix VERBATIM -- the base is a
+    // canonicalization input, never a rewrite of the rule the operator
+    // wrote (what the review surface shows is what a revoke addresses).
+    let listed = conway.active_structured_allow_rules();
+    assert_eq!(listed.len(), 1, "the trusted rule is listed: {listed:?}");
+    assert!(
+        matches!(&listed[0].0.when, conway::When::PathsUnder(p) if p == "src"),
+        "the relative prefix must survive install unrewritten: {:?}",
+        listed[0].0
+    );
+
+    // Turn 1 (observable): a read INSIDE the project's src/ is authorized
+    // without the operator's gate -- the rule confined to the PROJECT tree.
+    // (One prompt per session in this harness; the broker -- and with it
+    // the installed rule -- is shared across a `Conway`'s sessions.)
+    let handle = conway
+        .new_session(SessionSpec::default())
+        .await
+        .expect("new_session");
+    let turn = handle.prompt("read the file").await.expect("prompt");
+    let _ = tokio::time::timeout(Duration::from_secs(10), turn.result())
+        .await
+        .expect("turn must not hang");
+    assert!(
+        gate.requests().is_empty(),
+        "a relative `paths_under` prefix must authorize an in-tree read under the PROJECT: \
+         {:?}",
+        gate.requests()
+    );
+
+    // Turn 2 (observable): the same-named path under the PROCESS cwd is NOT
+    // under the rule's boundary -- it reaches the gate. This is the exact
+    // failure mode B2 fixes: before it, the rule's root WAS the process
+    // cwd's `src/`, and this read would have auto-allowed.
+    let handle = conway
+        .new_session(SessionSpec::default())
+        .await
+        .expect("new_session");
+    let turn = handle.prompt("read the other src file").await.expect("prompt");
+    let _ = tokio::time::timeout(Duration::from_secs(10), turn.result())
+        .await
+        .expect("turn must not hang");
+    assert_eq!(
+        gate.requests().len(),
+        1,
+        "the rule must NOT match a same-named path under the process cwd -- a relative prefix \
+         resolves against the project, not wherever conway was launched from"
+    );
+}
+
+/// The DENY half of the B2 base (code-review coverage gap): a relative
+/// `paths_under` deny rule in an UNTRUSTED project file installs
+/// unconditionally (D4 §3) and must confine to the REPO's tree -- a read of
+/// `<project>/src/secret.txt` is denied WITHOUT the operator's gate (turn 1:
+/// zero gate requests, because a deny match is decided before the gate),
+/// while the same-named path under the PROCESS's cwd is NOT under the
+/// rule's boundary and reaches the gate (turn 2). The gate answers Allow,
+/// so the outcomes are distinguishable: if the rule's base were the process
+/// cwd (the pre-B2 bug), turn 1's read would not match, would reach the
+/// gate, and would be ALLOWED -- the silent fail-open this test pins
+/// against.
+#[tokio::test]
+async fn a_relative_paths_under_deny_confines_to_the_project_not_the_process_cwd() {
+    let project = TempDir::new().expect("tempdir");
+    std::fs::create_dir(project.path().join("src")).expect("mkdir <project>/src");
+    std::fs::write(project.path().join("src").join("secret.txt"), b"repo secret")
+        .expect("write fixture");
+
+    let (_xdg, env) = isolated_env();
+    write_project_permissions(
+        &project,
+        r#"{"rules":[{"select":{"tools":["read"]},"when":{"paths_under":"src"},"then":"deny"}]}"#,
+    );
+
+    // The gate ALLOWS everything it is asked: a read that reaches it is
+    // allowed, so only a deny-rule match can stop the in-project read.
+    let gate = RecordingGate::new(PermissionDecision::AllowOnce);
+    let conway = build_conway(
+        project.path(),
+        vec![
+            // Turn 1: the deny rule fires on the in-project read -- decided
+            // before the gate (zero requests).
+            ScriptedTurn::Respond(read_call_response("src/secret.txt")),
+            ScriptedTurn::Respond(text_response("done")),
+            // Turn 2: same-named path under the PROCESS cwd -- NOT confined,
+            // reaches the gate (which allows it).
+            ScriptedTurn::Respond(read_call_response(
+                &std::env::current_dir()
+                    .expect("process cwd")
+                    .join("src")
+                    .join("lib.rs")
+                    .display()
+                    .to_string(),
+            )),
+            ScriptedTurn::Respond(text_response("done")),
+        ],
+        gate.clone() as Arc<dyn PermissionGate>,
+    );
+
+    // The deny installs unconditionally at load -- no trust decision (D4 §3).
+    let report =
+        conway.load_permission_files(project.path(), &env, PermissionScope::Session, AgentId::new());
+    assert!(
+        report.registration_errors.is_empty(),
+        "a relative paths_under prefix is structurally valid: {:?}",
+        report.registration_errors
+    );
+
+    // Turn 1 (observable): denied by the RULE, before the gate -- if the
+    // base were the process cwd, the rule would not match `src/secret.txt`
+    // under the project and the read would reach the (allowing) gate.
+    let handle = conway
+        .new_session(SessionSpec::default())
+        .await
+        .expect("new_session");
+    let turn = handle.prompt("read the secret").await.expect("prompt");
+    let _ = tokio::time::timeout(Duration::from_secs(10), turn.result())
+        .await
+        .expect("turn must not hang");
+    assert!(
+        gate.requests().is_empty(),
+        "a relative `paths_under` deny must fire on the in-project read -- decided before the \
+         gate, zero requests: {:?}",
+        gate.requests()
+    );
+
+    // Turn 2 (observable): the same-named path under the PROCESS cwd is NOT
+    // under the rule's boundary -- it reaches the gate.
+    let handle = conway
+        .new_session(SessionSpec::default())
+        .await
+        .expect("new_session");
+    let turn = handle.prompt("read the other src file").await.expect("prompt");
+    let _ = tokio::time::timeout(Duration::from_secs(10), turn.result())
+        .await
+        .expect("turn must not hang");
+    assert_eq!(
+        gate.requests().len(),
+        1,
+        "the deny rule must NOT reach outside the project tree"
+    );
+}
+
+/// The base is derived from the FILE's own location (code-review coverage
+/// gap), so a project file discovered in an ANCESTOR directory resolves its
+/// relative prefix against THAT ancestor -- not against the (deeper) launch
+/// cwd. Layout: `ancestor/.conway/{settings.json,permissions.json}` (a
+/// relative `paths_under: "src"` allow), launched from `ancestor/subdir/`.
+/// A read of `ancestor/src/file.txt` is authorized (turn 1, gate bypassed);
+/// a read of `ancestor/subdir/src/file.txt` -- where a cwd-relative base
+/// would point the rule -- is NOT (turn 2, reaches the gate).
+#[tokio::test]
+async fn a_relative_paths_under_prefix_in_an_ancestor_file_resolves_against_the_ancestor() {
+    let ancestor = TempDir::new().expect("tempdir");
+    let subdir = ancestor.path().join("subdir");
+    std::fs::create_dir(&subdir).expect("mkdir subdir");
+    std::fs::create_dir(ancestor.path().join("src")).expect("mkdir ancestor/src");
+    std::fs::create_dir(subdir.join("src")).expect("mkdir subdir/src");
+    std::fs::write(ancestor.path().join("src").join("file.txt"), b"ancestor src").expect("write");
+    std::fs::write(subdir.join("src").join("file.txt"), b"subdir src").expect("write");
+
+    // `discover` finds the project via the nearest `.conway/settings.json`
+    // walking up from the launch cwd.
+    let conway_dir = ancestor.path().join(".conway");
+    std::fs::create_dir_all(&conway_dir).expect("mkdir ancestor/.conway");
+    std::fs::write(conway_dir.join("settings.json"), "").expect("write settings.json");
+    std::fs::write(
+        conway_dir.join("permissions.json"),
+        r#"{"rules":[{"select":{"tools":["read"]},"when":{"paths_under":"src"},"then":"allow"}]}"#,
+    )
+    .expect("write permissions.json");
+
+    let (_xdg, env) = isolated_env();
+    let gate = RecordingGate::new(PermissionDecision::Deny {
+        reason: "operator said no".into(),
+    });
+    let conway = build_conway(
+        &subdir,
+        vec![
+            // Turn 1: ancestor/src -- under the rule's boundary (gate bypassed).
+            ScriptedTurn::Respond(read_call_response(
+                &ancestor.path().join("src").join("file.txt").display().to_string(),
+            )),
+            ScriptedTurn::Respond(text_response("done")),
+            // Turn 2: subdir/src -- where a cwd-relative base would point it; must ask.
+            ScriptedTurn::Respond(read_call_response(
+                &subdir.join("src").join("file.txt").display().to_string(),
+            )),
+            ScriptedTurn::Respond(text_response("done")),
+        ],
+        gate.clone() as Arc<dyn PermissionGate>,
+    );
+
+    let report =
+        conway.load_permission_files(&subdir, &env, PermissionScope::Session, AgentId::new());
+    assert!(
+        report.registration_errors.is_empty(),
+        "no registration errors expected: {:?}",
+        report.registration_errors
+    );
+    let ancestor_file = conway_dir.join("permissions.json");
+    let installed = conway
+        .trust_permission_file(&env, &ancestor_file, PermissionScope::Session, AgentId::new())
+        .expect("trust the ancestor file");
+    assert_eq!(installed, 1, "the ancestor file's rule installs once trusted");
+
+    // Turn 1 (observable): ancestor/src auto-allows -- the base is the
+    // ancestor, not the launch cwd.
+    let handle = conway
+        .new_session(SessionSpec::default())
+        .await
+        .expect("new_session");
+    let turn = handle.prompt("read the ancestor file").await.expect("prompt");
+    let _ = tokio::time::timeout(Duration::from_secs(10), turn.result())
+        .await
+        .expect("turn must not hang");
+    assert!(
+        gate.requests().is_empty(),
+        "a relative prefix in an ancestor-discovered file must confine to the ANCESTOR: {:?}",
+        gate.requests()
+    );
+
+    // Turn 2 (observable): subdir/src -- the path a cwd-relative base would
+    // have confined -- reaches the gate.
+    let handle = conway
+        .new_session(SessionSpec::default())
+        .await
+        .expect("new_session");
+    let turn = handle.prompt("read the subdir file").await.expect("prompt");
+    let _ = tokio::time::timeout(Duration::from_secs(10), turn.result())
+        .await
+        .expect("turn must not hang");
+    assert_eq!(
+        gate.requests().len(),
+        1,
+        "a cwd-relative base would have confined subdir/src -- the ancestor base must not"
+    );
+}
+
+// =====================================================================
 // (b) TRAP 2: `PathArgs::Unconfinable` never satisfies `paths_under`.
 // =====================================================================
 

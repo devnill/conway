@@ -303,45 +303,56 @@ impl Conway {
     /// surfaces that as a notice via the install's `bool` return when it
     /// matters (today nothing reads it here, since the registration check
     /// already rejected the structurally-invalid ones).
+    ///
+    /// `base` is the directory a RELATIVE `paths_under` prefix resolves
+    /// against (B2), computed by the caller, which knows which file the rule
+    /// came from -- see [`Self::permission_rule_base`].
     fn install_allow_rule(
         &self,
         rule: conway_core::permission_pattern::Rule,
         scope: conway_core::agent::PermissionScope,
         granting_agent: conway_core::ids::AgentId,
         origin_path: std::path::PathBuf,
+        base: &std::path::Path,
     ) {
         self.rt.permission_broker().remember_pattern_rule(
             rule,
             scope,
             granting_agent,
             conway_core::permission_pattern::PatternOrigin::File(origin_path),
+            base,
         );
     }
 
     /// F12: installs a parsed DENY [`Rule`] from a permissions file at
-    /// `origin_path`. No trust precondition (D4 §3).
+    /// `origin_path`. No trust precondition (D4 §3). `base` is as in
+    /// [`Self::install_allow_rule`].
     fn install_deny_rule(
         &self,
         rule: conway_core::permission_pattern::Rule,
         origin_path: std::path::PathBuf,
+        base: &std::path::Path,
     ) {
         self.rt.permission_broker().remember_deny_rule(
             rule,
             conway_core::permission_pattern::PatternOrigin::File(origin_path),
+            base,
         );
     }
 
     /// F12: installs a parsed PROMPT [`Rule`] from a permissions file at
     /// `origin_path`. No trust precondition (extension-architecture.md §5.5
-    /// stage 1).
+    /// stage 1). `base` is as in [`Self::install_allow_rule`].
     fn install_prompt_rule(
         &self,
         rule: conway_core::permission_pattern::Rule,
         origin_path: std::path::PathBuf,
+        base: &std::path::Path,
     ) {
         self.rt.permission_broker().remember_prompt_rule(
             rule,
             conway_core::permission_pattern::PatternOrigin::File(origin_path),
+            base,
         );
     }
 
@@ -728,6 +739,47 @@ impl Conway {
         Ok(())
     }
 
+    /// B2: the directory a RELATIVE `paths_under` prefix in the permissions
+    /// file at `path` resolves against before the broker canonicalizes it
+    /// (board item B2, finding S5). Resolving a relative prefix against the
+    /// process's cwd -- what a bare `Path::canonicalize` does -- points the
+    /// rule at wherever the operator happened to launch conway from, so the
+    /// base is derived here, where the file's own location is known:
+    ///
+    /// - For a PROJECT file (`<project>/.conway/permissions.json`): the
+    ///   PROJECT ROOT -- the directory containing `.conway/` -- not the
+    ///   file's own parent (`.conway/` itself), which would point a prefix
+    ///   like `"src"` at `<project>/.conway/src`, a directory no operator
+    ///   means. (Note the base is derived from the FILE's own location, so
+    ///   under ancestor discovery it is the ancestor holding `.conway/`,
+    ///   not the launch cwd: `RootSpec.root`/`SubagentSpec.root` resolve
+    ///   against the agent cwd, which coincides with the project root only
+    ///   in the standard launch.)
+    /// - For the GLOBAL file (`~/.conway/permissions.json`, or
+    ///   `$XDG_CONFIG_HOME/conway/permissions.json`): there is no containing
+    ///   project, so the base is the AGENT CWD the load was initiated with --
+    ///   the one directory a global rule can meaningfully be relative to at
+    ///   load time. (Resolving against the config directory would make
+    ///   `"src"` mean `~/.conway/src`, which protects nothing.)
+    ///
+    /// An ABSOLUTE prefix is unaffected by this choice in both cases.
+    fn permission_rule_base(
+        path: &std::path::Path,
+        global_path: Option<&std::path::Path>,
+        cwd: &std::path::Path,
+    ) -> std::path::PathBuf {
+        if global_path == Some(path) {
+            return cwd.to_path_buf();
+        }
+        // `<project>/.conway/permissions.json` -> `<project>`. The fallback
+        // (a permissions file somehow not two components deep) is the agent
+        // cwd, the same uniform choice the global file makes.
+        path.parent()
+            .and_then(std::path::Path::parent)
+            .unwrap_or(cwd)
+            .to_path_buf()
+    }
+
     /// Loads permissions files project-first then global
     /// (`crate::config::discovery::permission_file_paths`) and installs
     /// their rules -- **the real production startup seam**, board item
@@ -777,6 +829,12 @@ impl Conway {
                 continue;
             };
 
+            let is_global = global_path.as_deref() == Some(path.as_path());
+            // B2: the base a relative `paths_under` prefix in THIS file
+            // resolves against -- the project root for a project file, the
+            // agent cwd for the global file (see `Self::permission_rule_base`).
+            let base = Self::permission_rule_base(path, global_path.as_deref(), cwd);
+
             // Deny applies unconditionally, from every scope, regardless
             // of trust -- D4 §3. F12: this now also covers structured
             // `then: deny` rules from the `rules` array (`parse_deny_rules`
@@ -786,7 +844,7 @@ impl Conway {
                     registration_errors.push(err);
                     continue;
                 }
-                self.install_deny_rule(rule, path.clone());
+                self.install_deny_rule(rule, path.clone(), &base);
             }
 
             // F12: prompt rules apply unconditionally too (narrowing, D4 §3
@@ -798,10 +856,9 @@ impl Conway {
                     registration_errors.push(err);
                     continue;
                 }
-                self.install_prompt_rule(rule, path.clone());
+                self.install_prompt_rule(rule, path.clone(), &base);
             }
 
-            let is_global = global_path.as_deref() == Some(path.as_path());
             let trusted = is_global || trust_store.is_trusted(path, &contents);
             let allow_rules = conway_core::permission_pattern::parse_rules(&contents);
             if !trusted {
@@ -822,7 +879,7 @@ impl Conway {
                     registration_errors.push(err);
                     continue;
                 }
-                self.install_allow_rule(rule, scope, granting_agent, path.clone());
+                self.install_allow_rule(rule, scope, granting_agent, path.clone(), &base);
             }
         }
 
@@ -857,6 +914,18 @@ impl Conway {
         crate::config::trust::TrustStore::trust(env, path)?;
         let contents = std::fs::read_to_string(path)?;
         let rules = conway_core::permission_pattern::parse_rules(&contents);
+        // B2: the same relative-`paths_under` base `load_permission_files`
+        // computes, so a rule installs with the SAME boundary whether it
+        // took effect at startup (already-trusted file) or here (`/trust
+        // permissions` mid-session). For the project file -- the only file
+        // the TUI's `/trust permissions` ever targets -- the base is the
+        // project root derived from the path itself, identical either way.
+        // For the global file (no containing project) the base is this
+        // `Conway`'s configured agent cwd, the same choice
+        // `load_permission_files` makes with its explicit `cwd`.
+        let global_path = crate::config::discovery::xdg_config_path(env)
+            .and_then(|settings| settings.parent().map(|dir| dir.join("permissions.json")));
+        let base = Self::permission_rule_base(path, global_path.as_deref(), &self.config.cwd);
         let mut count = 0;
         for rule in rules {
             if self.validate_rule_registration(&rule).is_some() {
@@ -868,7 +937,7 @@ impl Conway {
                 // silently swallow them, it just does not re-report them here.
                 continue;
             }
-            self.install_allow_rule(rule, scope, granting_agent, path.to_path_buf());
+            self.install_allow_rule(rule, scope, granting_agent, path.to_path_buf(), &base);
             count += 1;
         }
         Ok(count)

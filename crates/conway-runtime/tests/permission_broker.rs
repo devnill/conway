@@ -1,7 +1,7 @@
 //! Acceptance tests for `PermissionBroker` (WI-078, architecture §4.3).
 
 use std::collections::VecDeque;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -1424,6 +1424,9 @@ async fn revoke_pattern_rule_removes_only_the_structured_rule_addressed() {
             PermissionScope::Session,
             agent,
             PatternOrigin::Interactive,
+            // B2: no `paths_under` on this rule, so the base is never
+            // consulted -- a placeholder, not a resolution choice.
+            Path::new("/"),
         ),
         "a structured allow rule with no paths_under installs"
     );
@@ -1501,12 +1504,14 @@ async fn revoke_pattern_rule_is_addressed_by_origin_too_not_just_the_rule() {
         PermissionScope::Session,
         agent,
         PatternOrigin::Interactive,
+        Path::new("/"),
     );
     broker.remember_pattern_rule(
         rule.clone(),
         PermissionScope::Session,
         agent,
         file_origin.clone(),
+        Path::new("/"),
     );
     assert_eq!(broker.active_structured_allow_rules().len(), 2);
 
@@ -1542,6 +1547,7 @@ async fn revoke_pattern_rule_reports_false_when_nothing_matches() {
         PermissionScope::Session,
         agent,
         PatternOrigin::Interactive,
+        Path::new("/"),
     );
 
     let never_installed = Rule {
@@ -1582,12 +1588,14 @@ async fn revoke_pattern_rule_is_addressed_by_scope_too() {
         PermissionScope::Session,
         agent,
         PatternOrigin::Interactive,
+        Path::new("/"),
     );
     broker.remember_pattern_rule(
         rule.clone(),
         PermissionScope::Agent,
         agent,
         PatternOrigin::Interactive,
+        Path::new("/"),
     );
     assert_eq!(broker.active_structured_allow_rules().len(), 2);
 
@@ -1638,6 +1646,7 @@ async fn active_structured_allow_rules_reports_origin_and_scope() {
         PermissionScope::Agent,
         agent,
         file_origin.clone(),
+        Path::new("/"),
     );
 
     let rules = broker.active_structured_allow_rules();
