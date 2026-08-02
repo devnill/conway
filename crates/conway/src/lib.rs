@@ -47,7 +47,10 @@ pub use conway_core::agent::{
 };
 pub use conway_core::config::AgentDef;
 pub use conway_core::permission_mode::PermissionMode;
-pub use conway_core::permission_pattern::{PatternOrigin, PatternRule, PermissionFile};
+pub use conway_core::permission_pattern::{
+    PatternOrigin, PatternRule, PermissionFile, Rule, RuleRegistrationError,
+    RuleRegistrationReason, Select, Then, When,
+};
 /// V2b: `conway-cli` reaches `parse_rules` through here (it cannot depend
 /// on `conway-core` directly -- `no_forbidden_deps`).
 pub mod permission_pattern {

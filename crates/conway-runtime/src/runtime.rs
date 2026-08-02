@@ -118,7 +118,7 @@ use conway_core::config::{AgentDef, DEFAULT_MAX_PARALLEL_TOOLS};
 use conway_core::containment::{CanonicalRoot, Containment};
 use conway_core::error::{ConwayError, RuntimeError};
 use conway_core::event::Event;
-use conway_core::ids::{AgentId, BackendId, LogSeq, ModelRef, RoleAlias, SeqRange, SessionId};
+use conway_core::ids::{AgentId, BackendId, LogSeq, ModelRef, RoleAlias, SeqRange, SessionId, ToolName};
 use conway_core::log::{
     ForkOrigin, LogRecord, SessionFilter, SessionMeta, SessionStatus, SubagentMode,
 };
@@ -529,6 +529,19 @@ impl Runtime {
     /// here rather than written independently.
     pub fn permission_broker(&self) -> Arc<PermissionBroker> {
         Arc::clone(&self.broker)
+    }
+
+    /// F12: the `render_kind` a registered tool declares for itself, by
+    /// name, or `None` if no plugin registered that tool. Used by the
+    /// facade's permission-file loader to surface a typed registration
+    /// error when a `command_prefix` rule is paired with a tool whose
+    /// rendering is `Structured` (a JSON dump) -- a rule that can never
+    /// reliably match is a lie the operator will not notice, so the loader
+    /// refuses to install one silently. This is the ONLY new tool-metadata
+    /// surface the structured-rule registration check needs; it reads the
+    /// already-resolved tool the same way `ToolRunner::execute_one` does.
+    pub fn tool_render_kind(&self, name: &ToolName) -> Option<conway_core::ports::RenderKind> {
+        self.registry.resolve(name).map(|r| r.tool.render_kind())
     }
 
     pub async fn start_root(&self, spec: RootSpec) -> Result<AgentId, RuntimeError> {

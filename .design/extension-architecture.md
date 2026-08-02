@@ -2095,6 +2095,39 @@ in-process changes to `conway-core` and `conway-runtime`. Phases 0–2 of §12
 deliver the entire "general rules" want with no plugin host at all. If the
 spike produces one shippable thing, it should be that.
 
+**Shipped form (board item F12).** The `rules` array parses into one
+internal `Rule { select, when, then }`, evaluated by one evaluator — the
+flat form desugars into the same `Rule` (`PatternRule::to_rule`) and is
+byte-identical to its structured equivalent (`matches_render` vs
+`matches_allow_render` are the same primitives; proven by a matrix test in
+`permission_pattern::f12_tests` and a real-stack seam in
+`crates/conway/tests/structured_rule_seam.rs`). The grammar:
+
+- `select ::= tools([pattern...]) | categories([ToolCategory...])` — a
+  tool name with an optional trailing `*` wildcard, or a category set.
+- `when ::= paths_under(prefix) | command_prefix(s) | category_in([...]) | always`
+  — `paths_under` resolves declared path arguments via
+  `resolve_like_the_tool_will` + `CanonicalRoot::contains` (the SAME path
+  `check_root` uses, no new trusted code); `command_prefix` is the shell
+  token-wise prefix the flat form uses; `category_in` matches the call's
+  declared category.
+- `then ::= allow | prompt | deny`.
+
+The five traps, resolved as stated above and pinned by real-path seam tests
+(real tools → real `ToolRunner` → real `PermissionBroker`, asserting on
+observable gate-reach outcomes): (1) `paths_under` reads `call.arguments`, never the sanitized
+`call.rendered`; (2) `PathArgs::Unconfinable` never satisfies `paths_under`
+(fail closed); (3) `command_prefix` on a `Structured`-rendering tool is a
+typed registration error surfaced in `PermissionLoadReport`, not a silent
+inert rule; (4) the allow-side metacharacter gate applies to every `when`
+(unchanged from the flat form — a chained command never auto-allows);
+(5) `deny`/`prompt` install from every file unconditionally (narrowing has
+no trust precondition), `allow` only from operator-owned (trusted/global)
+config. Composition is the two stages §5.5 already states: deny/prompt
+admit unconditionally at stage 1, allow only when trusted; stage 2 is
+most-restrictive-wins (deny beats prompt beats allow), with no priority
+numbers and no order dependence.
+
 ---
 
 ## 10. Failure posture, in one table
