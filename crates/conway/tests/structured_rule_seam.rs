@@ -823,6 +823,162 @@ async fn command_prefix_on_a_structured_tool_is_a_registration_error() {
 }
 
 // =====================================================================
+// (c2) B1: a `paths_under` DENY rule on an Unconfinable tool (`bash`)
+//      is a typed registration error -- never silently fail-open.
+// =====================================================================
+
+/// **B1, pinned.** A structured `paths_under` DENY rule selecting `bash`
+/// (whose `PathArgs::Unconfinable` marks its `command` as something the
+/// broker cannot statically confine) can never match -- `paths_under_match`
+/// returns `false` for `Unconfinable`, so the deny is silently inert and the
+/// bash call the operator expected to be refused instead goes through
+/// (fail-OPEN). The loader refuses to install it silently and surfaces a
+/// typed `PathsUnderOnUnconfinedTool` registration error in the load report
+/// instead (P-12: operator-visible via A1's `registration_errors` channel;
+/// P-10: typed error, never a panic). The rule is NOT installed, so there is
+/// no inert deny pattern lying in wait for a call the operator believed was
+/// refused.
+///
+/// This is the deny-side mirror of the existing allow-side pin
+/// `an_unconfinable_tool_never_satisfies_paths_under_so_bash_reaches_the_gate`:
+/// on the ALLOW side inertness is fail-CLOSED (bash falls through to the
+/// gate) and is NOT a registration error; on the DENY/PROMPT side inertness
+/// is fail-OPEN and IS a registration error. The two tests together pin the
+/// asymmetry.
+#[tokio::test]
+async fn a_paths_under_deny_rule_on_an_unconfinable_tool_is_a_registration_error() {
+    let project = TempDir::new().expect("tempdir");
+    let root_canon = project.path().canonicalize().expect("canonicalize project root");
+    let (xdg, env) = isolated_env();
+    // A GLOBAL file (trusted-by-authorship) so the deny rule's registration
+    // check runs (deny rules install from every file, but the registration
+    // check gates installation regardless of trust).
+    write_global_permissions(
+        &xdg,
+        &format!(
+            r#"{{"rules":[{{"select":{{"tools":["bash"]}},"when":{{"paths_under":"{}"}},"then":"deny"}}]}}"#,
+            root_canon.display()
+        ),
+    );
+
+    let gate = RecordingGate::new(PermissionDecision::AllowOnce);
+    let conway = build_conway(
+        project.path(),
+        vec![
+            ScriptedTurn::Respond(bash_call_response("echo hi")),
+            ScriptedTurn::Respond(text_response("done")),
+        ],
+        gate.clone() as Arc<dyn PermissionGate>,
+    );
+    let report = conway.load_permission_files(project.path(), &env, PermissionScope::Session, AgentId::new());
+
+    assert_eq!(
+        report.registration_errors.len(),
+        1,
+        "a `paths_under` deny rule on `bash` (Unconfinable) must surface exactly one typed \
+         registration error -- it can never match and is fail-open if installed silently: {:?}",
+        report.registration_errors
+    );
+    assert_eq!(
+        report.registration_errors[0].reason,
+        RuleRegistrationReason::PathsUnderOnUnconfinedTool,
+        "the error must name the precise reason B1 introduced"
+    );
+    assert!(
+        matches!(
+            &report.registration_errors[0].rule.select,
+            conway::Select::Tools(t) if t == &["bash".to_string()]
+        ),
+        "the rejected rule is carried whole so the operator sees exactly what was refused"
+    );
+
+    // The rule was NOT installed, so a bash call is not silently denied by an
+    // inert rule -- but it is also not silently ALLOWED by virtue of the
+    // operator's deny being inert. The call reaches the operator's gate
+    // (AutoAllow is off, no allow rule matches), which is the honest outcome:
+    // the operator is informed (registration error) and the call is gated
+    // rather than silently passing the refused-by-rule expectation. The
+    // RecordingGate is set to AllowOnce so the turn completes without hanging.
+    let handle = conway
+        .new_session(SessionSpec::default())
+        .await
+        .expect("new_session");
+    let turn = handle.prompt("run the command").await.expect("prompt");
+    let _ = tokio::time::timeout(Duration::from_secs(10), turn.result())
+        .await
+        .expect("turn must not hang");
+
+    assert_eq!(
+        gate.requests().len(),
+        1,
+        "with the inert deny rule NOT installed, the bash call reaches the operator's gate \
+         (the honest outcome -- the operator was informed, the call was not silently allowed)"
+    );
+}
+
+/// **B1, pinned -- the category fallback.** A `paths_under` DENY rule on a
+/// `Select::Categories` containing an `Unconfinable` tool cannot be rejected
+/// at install time (the category's member tools may register later in the
+/// session -- the same load-order-hazard reasoning that keeps the
+/// `CommandPrefix` check off categories). The decision-time fail-closed in
+/// `rule_denies_or_prompts` is the fallback: a `bash` call (in the
+/// `Execute` category, `Unconfinable`) under a `paths_under` DENY rule
+/// matching the category is REFUSED at decision time -- never silently
+/// allowed. The agent runs UNCONFINED with AutoAllow off, so without the
+/// deny rule the call would reach the gate; the deny rule matching the
+/// category must refuse it BEFORE the gate (zero gate requests), proving the
+/// decision-time guard fired through the real seam.
+#[tokio::test]
+async fn a_paths_under_deny_rule_on_a_category_with_an_unconfinable_tool_refuses_at_decision_time() {
+    let project = TempDir::new().expect("tempdir");
+    let root_canon = project.path().canonicalize().expect("canonicalize project root");
+    let (xdg, env) = isolated_env();
+    write_global_permissions(
+        &xdg,
+        &format!(
+            r#"{{"rules":[{{"select":{{"categories":["execute"]}},"when":{{"paths_under":"{}"}},"then":"deny"}}]}}"#,
+            root_canon.display()
+        ),
+    );
+
+    // AllowOnce so that IF the deny failed to fire the call would be allowed
+    // (gate consulted, one request) -- the break-the-guard observable.
+    let gate = RecordingGate::new(PermissionDecision::AllowOnce);
+    let conway = build_conway(
+        project.path(),
+        vec![
+            ScriptedTurn::Respond(bash_call_response("echo hi")),
+            ScriptedTurn::Respond(text_response("done")),
+        ],
+        gate.clone() as Arc<dyn PermissionGate>,
+    );
+    let report = conway.load_permission_files(project.path(), &env, PermissionScope::Session, AgentId::new());
+    assert!(
+        report.registration_errors.is_empty(),
+        "a category select is not inspectable at install time (load-order hazard); it is NOT a \
+         registration error -- the decision-time fail-closed handles it: {:?}",
+        report.registration_errors
+    );
+
+    let handle = conway
+        .new_session(SessionSpec::default())
+        .await
+        .expect("new_session");
+    let turn = handle.prompt("run the command").await.expect("prompt");
+    let _ = tokio::time::timeout(Duration::from_secs(10), turn.result())
+        .await
+        .expect("turn must not hang");
+
+    assert!(
+        gate.requests().is_empty(),
+        "a `paths_under` deny rule matching a category containing an Unconfinable tool (`bash`) \
+         must REFUSE the call at decision time -- the decision-time fail-closed fired through the \
+         real seam; the call must never be silently allowed: {:?}",
+        gate.requests()
+    );
+}
+
+// =====================================================================
 // (d) byte-identical decisions: one evaluator, not two.
 // =====================================================================
 

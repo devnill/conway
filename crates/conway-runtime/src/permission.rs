@@ -319,7 +319,25 @@ fn rule_denies_or_prompts(
             let Some(root) = canonical else {
                 return false;
             };
-            paths_under_match(ctx, call, root)
+            // B1: decision-time fail-closed for the cases the install-time
+            // registration check CANNOT see -- a `Select::Categories` (whose
+            // member tools may register after the rule is loaded) or a
+            // trailing-`*` wildcard `Select::Tools` (no tool is named `*`).
+            // For an `Unconfinable` tool (e.g. `bash`) `paths_under_match`
+            // returns `false` -- correct for ALLOW (fail-closed: don't
+            // auto-allow) but fail-OPEN for deny/prompt: the operator wrote a
+            // deny rule expecting the call to be refused, and silently NOT
+            // matching it lets the call through. Mirror `check_root`'s
+            // `Unconfinable { checkable }` posture -- a tool the broker
+            // cannot statically confine can never be PROVEN to be outside the
+            // prefix either -- so the deny/prompt rule MATCHES (fail-toward-
+            // deny, P-13). The install-time `PathsUnderOnUnconfinedTool`
+            // error is the primary fix for the common `Select::Tools` case;
+            // this is the fallback for the shapes it cannot inspect.
+            match call.path_args {
+                PathArgs::Unconfinable { .. } => true,
+                _ => paths_under_match(ctx, call, root),
+            }
         }
         _ => rule.matches_deny_render(call.tool.as_str(), call.category, &call.rendered),
     }

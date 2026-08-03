@@ -218,6 +218,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A `paths_under` `deny`/`prompt` rule on an `Unconfinable` tool (e.g.
+  `bash`) was silently inert — fail-OPEN.** `paths_under_match` returns
+  `false` for `PathArgs::Unconfinable` and `PathArgs::None` (correct for
+  `allow`, where inertness fail-closes by falling through to the gate), and
+  `rule_denies_or_prompts` reused that predicate unchanged for the
+  deny/prompt path — so
+  `{ "select": { "tools": ["bash"] }, "when": { "paths_under": "/secret" }, "then": "deny" }`
+  installed with no error and could never match, letting the bash call the
+  operator expected to be refused go through. The loader now refuses to
+  install such a `deny`/`prompt` rule silently and surfaces a typed
+  `RuleRegistrationReason::PathsUnderOnUnconfinedTool` registration error
+  (visible to the operator via the `registration_errors` → transcript-error
+  channel at load time) when a `paths_under` deny/prompt rule's `Select::Tools`
+  contains any exactly-named tool whose resolved `PathArgs` is not `Named`.
+  A `Select::Categories` (whose member tools may register after the rule is
+  loaded) and a trailing-`*` wildcard are not inspectable at load time, so
+  for those the broker fail-closes at decision time: an `Unconfinable` tool
+  matching the select under a `paths_under` `deny`/`prompt` rule is refused,
+  never silently allowed. `then: allow` is unchanged (inertness there is
+  fail-closed, not a registration error). Pinned by two real-stack seam
+  tests in `crates/conway/tests/structured_rule_seam.rs` — one asserting the
+  install-time registration error for `Select::Tools(["bash"])`, one
+  asserting the decision-time refusal for `Select::Categories(["execute"])`
+  — both verified to fail when their guard is neutralized.
+  (`crates/conway-core/src/permission_pattern.rs`,
+  `crates/conway-runtime/src/permission.rs`,
+  `crates/conway-runtime/src/runtime.rs`,
+  `crates/conway/src/conway.rs`,
+  `crates/conway/tests/structured_rule_seam.rs`, `docs/permissions.md`)
+
 - **A relative `paths_under` prefix resolved against the process's cwd, not
   the project — a rule like `"src"` in a project `permissions.json`
   silently pointed at `~/src` when conway was launched from your home

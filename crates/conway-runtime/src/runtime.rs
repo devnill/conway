@@ -544,6 +544,23 @@ impl Runtime {
         self.registry.resolve(name).map(|r| r.tool.render_kind())
     }
 
+    /// B1: the `PathArgs` a registered tool declares for itself, by name, or
+    /// `None` if no plugin registered that tool. The structured-rule
+    /// registration check (`validate_rule_registration`) uses this -- alongside
+    /// [`Self::tool_render_kind`] -- to surface a typed registration error
+    /// when a `paths_under` deny/prompt rule is paired with a tool whose
+    /// `PathArgs` is not `Named` (i.e. `Unconfinable` such as `bash`, or
+    /// `None`). A `paths_under` predicate can never confine such a tool, so a
+    /// `then: deny/prompt` rule selecting it is silently inert -- fail-OPEN,
+    /// the hazard B1 closes. `then: allow` is fail-CLOSED for the same inert
+    /// (the broker simply never matches it and the call falls through to the
+    /// gate), so it is NOT a registration error. Reads the already-resolved
+    /// tool the same way `ToolRunner::execute_one` does; no new resolution
+    /// path, and the same surface `tool_render_kind` already established.
+    pub fn tool_path_args(&self, name: &ToolName) -> Option<conway_core::ports::PathArgs> {
+        self.registry.resolve(name).map(|r| r.tool.path_args())
+    }
+
     pub async fn start_root(&self, spec: RootSpec) -> Result<AgentId, RuntimeError> {
         let agent_id = AgentId::new();
         let session_id = spec.session.unwrap_or_default();
