@@ -169,7 +169,16 @@ enum RootDecision {
 /// replace-semantics sanitizer so the gate and the runtime's `rendered`
 /// seam cannot drift; the path-resolution rule below is duplicated for the
 /// same reason -- `conway-runtime` cannot depend on `conway-tools`.)
-fn resolve_like_the_tool_will(cwd: &Path, raw: &str) -> Option<PathBuf> {
+///
+/// `pub(crate)` so the crate's OTHER path-resolution consumers -- the
+/// spawn-time confinement-root resolution in `subagent.rs` and
+/// `runtime.rs` -- call THIS one rule (Min-1 / P-14, board item
+/// 01KZ00VV3F3EBZ9WQSB292TBJZ) instead of inlining "absolute -> as-is,
+/// relative -> join cwd" and silently dropping the NUL guard, as both did
+/// until that item. Within `conway-runtime` this is the single resolution
+/// rule; the `conway-tools` copy is the deliberate cross-crate mirror the
+/// paragraph above obligates to change in lockstep.
+pub(crate) fn resolve_like_the_tool_will(cwd: &Path, raw: &str) -> Option<PathBuf> {
     if raw.contains('\0') {
         return None;
     }
