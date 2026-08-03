@@ -561,6 +561,28 @@ impl Runtime {
         self.registry.resolve(name).map(|r| r.tool.path_args())
     }
 
+    /// A4: every registered tool's `(name, category, render_kind)` metadata,
+    /// enumerating the whole registry rather than resolving one name. The
+    /// broadened `command_prefix`-on-`Structured` registration check uses this
+    /// to resolve a `Select::Tools` trailing-`*` wildcard or a
+    /// `Select::Categories` select against the tools actually registered at
+    /// load time, so a `command_prefix` rule that would be silently inert
+    /// (every Structured-rendering tool it selects can never match a
+    /// token-wise prefix over a JSON dump) is surfaced to the operator
+    /// rather than installed inert -- the mirror of the single-tool check
+    /// `tool_render_kind` already drove. Reads the same compiled `ToolSpec`s
+    /// and `Tool::render_kind` declarations, just enumerated; no new
+    /// resolution path.
+    pub fn registered_tools_metadata(
+        &self,
+    ) -> Vec<(
+        conway_core::ids::ToolName,
+        conway_core::content::ToolCategory,
+        conway_core::ports::RenderKind,
+    )> {
+        self.registry.tools_metadata()
+    }
+
     pub async fn start_root(&self, spec: RootSpec) -> Result<AgentId, RuntimeError> {
         let agent_id = AgentId::new();
         let session_id = spec.session.unwrap_or_default();

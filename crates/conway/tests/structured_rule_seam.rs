@@ -1489,6 +1489,367 @@ async fn a_structured_prompt_rule_from_an_untrusted_project_file_forces_the_gate
     );
 }
 // =====================================================================
+// A4: a structured `then: allow` rule from an UNTRUSTED project file does
+//      not take effect -- the structured-allow half of the shared allow
+//      trust invariant (GP-14 liveness corollary).
+// =====================================================================
+
+/// A4 / GP-14: an UNTRUSTED project `permissions.json`'s structured
+/// `then: allow` rule must NOT authorize its call. The trust invariant lives
+/// on the shared allow install path -- pinned for the FLAT allow rule by
+/// `an_untrusted_project_allow_rule_does_not_take_effect` in
+/// `crates/conway/tests/permission_trust_seam.rs` -- but no structured-
+/// specific observable-outcome test existed. A structured
+/// `{ "select": { "tools": ["read"] }, "when": "always", "then": "allow" }`
+/// rule from an untrusted project file must be held for trust (not
+/// installed), so a `read` call still reaches the operator's gate through
+/// the real `ReadTool::render` -> `render_call` -> `PermissionBroker::decide`
+/// seam, exactly as if no permissions file existed at all. If the structured
+/// allow path bypassed trust, this call would be auto-allowed (zero gate
+/// requests) -- the silent fail-open this test pins against.
+#[tokio::test]
+async fn an_untrusted_project_structured_allow_rule_does_not_take_effect() {
+    let project = TempDir::new().expect("tempdir");
+    std::fs::write(project.path().join("file.txt"), b"inside the project").expect("write fixture");
+    let (_xdg, env) = isolated_env();
+    write_project_permissions(
+        &project,
+        r#"{"rules":[{"select":{"tools":["read"]},"when":"always","then":"allow"}]}"#,
+    );
+
+    let gate = RecordingGate::new(PermissionDecision::Deny {
+        reason: "operator said no".into(),
+    });
+    let conway = build_conway(
+        project.path(),
+        vec![
+            ScriptedTurn::Respond(read_call_response(
+                &project.path().join("file.txt").display().to_string(),
+            )),
+            ScriptedTurn::Respond(text_response("done")),
+        ],
+        gate.clone() as Arc<dyn PermissionGate>,
+    );
+    let report = conway.load_permission_files(
+        project.path(),
+        &env,
+        PermissionScope::Session,
+        AgentId::new(),
+    );
+    assert_eq!(
+        report.notices.len(),
+        1,
+        "an untrusted project file with a structured allow rule must surface one \
+         trust-held notice: {:?}",
+        report.notices
+    );
+    assert!(
+        report.notices[0].contains("require an explicit trust decision"),
+        "{}",
+        report.notices[0]
+    );
+    assert!(
+        report.registration_errors.is_empty(),
+        "a structured `always` allow on `read` is a valid rule (not a registration \
+         error) -- it is held for trust, not rejected: {:?}",
+        report.registration_errors
+    );
+
+    let handle = conway
+        .new_session(SessionSpec::default())
+        .await
+        .expect("new_session");
+    let turn = handle.prompt("read the file").await.expect("prompt");
+    let _ = tokio::time::timeout(Duration::from_secs(10), turn.result())
+        .await
+        .expect("turn must not hang");
+
+    assert_eq!(
+        gate.requests().len(),
+        1,
+        "a structured `then: allow` rule from an UNTRUSTED project file must NEVER take \
+         effect -- the `read` call must still reach the operator's gate, exactly as if \
+         the file did not exist (the structured allow path shares the trust gate the \
+         flat allow path already honors): {:?}",
+        gate.requests()
+    );
+}
+
+// =====================================================================
+// A4: the broadened `command_prefix`-on-`Structured` registration check
+//      (multi-tool, wildcard, category selects).
+// =====================================================================
+
+/// A4: a `command_prefix` rule selecting a MULTI-TOOL set that resolves to
+/// a MIX of `Structured`- and `ShellCommand`-rendering tools is NOT a
+/// registration error -- the `ShellCommand` member installs and matches, and
+/// the operator is warned via a NOTICE that the `Structured` member is inert.
+/// Pinned through the real load seam: the rule installs (a `bash echo hi`
+/// call is auto-allowed by the `ShellCommand` member), and the load report
+/// carries exactly one notice naming the inert `Structured` member -- never
+/// a silent install, never a hard reject that would also drop the working
+/// `bash` member.
+#[tokio::test]
+async fn a_command_prefix_rule_on_a_mixed_kind_multi_tool_select_installs_with_a_notice() {
+    let project = TempDir::new().expect("tempdir");
+    let (xdg, env) = isolated_env();
+    // A GLOBAL file (trusted-by-authorship) so the allow rule's registration
+    // check runs and the rule installs.
+    write_global_permissions(
+        &xdg,
+        r#"{"rules":[
+            {"select":{"tools":["bash","read"]},"when":{"command_prefix":"echo"},"then":"allow"}
+        ]}"#,
+    );
+
+    let gate = RecordingGate::new(PermissionDecision::Deny {
+        reason: "must not be consulted -- the bash member must grant".into(),
+    });
+    let conway = build_conway(
+        project.path(),
+        vec![
+            ScriptedTurn::Respond(bash_call_response("echo hi")),
+            ScriptedTurn::Respond(text_response("done")),
+        ],
+        gate.clone() as Arc<dyn PermissionGate>,
+    );
+    let report = conway.load_permission_files(
+        project.path(),
+        &env,
+        PermissionScope::Session,
+        AgentId::new(),
+    );
+
+    assert!(
+        report.registration_errors.is_empty(),
+        "a MIXED-kind multi-tool command_prefix rule is NOT a hard registration error \
+         (the ShellCommand member works): {:?}",
+        report.registration_errors
+    );
+    assert_eq!(
+        report.notices.len(),
+        1,
+        "the mixed-kind rule surfaces exactly one notice warning the Structured member is \
+         inert: {:?}",
+        report.notices
+    );
+    assert!(
+        report.notices[0].contains("Structured"),
+        "the notice must name the inert Structured members: {}",
+        report.notices[0]
+    );
+
+    // Observable: the ShellCommand (`bash`) member installs and authorizes
+    // `echo hi` without the gate -- the rule is NOT silently dropped, and the
+    // working member is preserved.
+    let handle = conway
+        .new_session(SessionSpec::default())
+        .await
+        .expect("new_session");
+    let turn = handle.prompt("run the command").await.expect("prompt");
+    let _ = tokio::time::timeout(Duration::from_secs(10), turn.result())
+        .await
+        .expect("turn must not hang");
+    assert!(
+        gate.requests().is_empty(),
+        "the ShellCommand (`bash`) member of a mixed-kind command_prefix rule must still \
+         authorize its call -- the rule installs; the Structured member is inert but the \
+         ShellCommand member is not: {:?}",
+        gate.requests()
+    );
+}
+
+/// A4: a `command_prefix` rule selecting a MULTI-TOOL set where EVERY
+/// resolvable selected tool renders `Structured` is a hard registration
+/// error -- the rule is fully inert, so the loader refuses to install it
+/// silently (the multi-tool generalization of the existing single-tool
+/// `command_prefix_on_a_structured_tool_is_a_registration_error`). Pinned
+/// through the real load seam: the report carries exactly one
+/// `CommandPrefixOnStructuredTool` registration error.
+#[tokio::test]
+async fn a_command_prefix_rule_on_an_all_structured_multi_tool_select_is_a_registration_error() {
+    let project = TempDir::new().expect("tempdir");
+    let (xdg, env) = isolated_env();
+    write_global_permissions(
+        &xdg,
+        r#"{"rules":[
+            {"select":{"tools":["read","write"]},"when":{"command_prefix":"read"},"then":"allow"}
+        ]}"#,
+    );
+
+    let gate = RecordingGate::new(PermissionDecision::Deny { reason: "unused".into() });
+    let conway = build_conway(
+        project.path(),
+        vec![ScriptedTurn::Respond(text_response("no call needed"))],
+        gate.clone() as Arc<dyn PermissionGate>,
+    );
+    let report = conway.load_permission_files(
+        project.path(),
+        &env,
+        PermissionScope::Session,
+        AgentId::new(),
+    );
+
+    assert_eq!(
+        report.registration_errors.len(),
+        1,
+        "a command_prefix rule selecting only Structured-rendering tools must surface \
+         exactly one registration error -- the rule is fully inert: {:?}",
+        report.registration_errors
+    );
+    assert_eq!(
+        report.registration_errors[0].reason,
+        RuleRegistrationReason::CommandPrefixOnStructuredTool,
+        "the error must name the same reason the single-tool case uses"
+    );
+}
+
+/// A4: a `command_prefix` rule selecting a trailing-`*` wildcard that
+/// matches only `Structured`-rendering tools is a hard registration error --
+/// the wildcard is resolved against the registered tools, and every match
+/// is `Structured`, so the rule is fully inert. `re*` matches `read` and
+/// `report` (both `Structured` in the builtin registry). Pinned through the
+/// real load seam.
+#[tokio::test]
+async fn a_command_prefix_rule_on_a_wildcard_selecting_only_structured_tools_is_a_registration_error() {
+    let project = TempDir::new().expect("tempdir");
+    let (xdg, env) = isolated_env();
+    write_global_permissions(
+        &xdg,
+        r#"{"rules":[
+            {"select":{"tools":["re*"]},"when":{"command_prefix":"read"},"then":"allow"}
+        ]}"#,
+    );
+
+    let gate = RecordingGate::new(PermissionDecision::Deny { reason: "unused".into() });
+    let conway = build_conway(
+        project.path(),
+        vec![ScriptedTurn::Respond(text_response("no call needed"))],
+        gate.clone() as Arc<dyn PermissionGate>,
+    );
+    let report = conway.load_permission_files(
+        project.path(),
+        &env,
+        PermissionScope::Session,
+        AgentId::new(),
+    );
+
+    assert_eq!(
+        report.registration_errors.len(),
+        1,
+        "a command_prefix rule whose wildcard resolves to only Structured-rendering tools \
+         must surface a registration error -- the rule is fully inert: {:?}",
+        report.registration_errors
+    );
+    assert_eq!(
+        report.registration_errors[0].reason,
+        RuleRegistrationReason::CommandPrefixOnStructuredTool,
+        "the broadened check resolves the wildcard and names the same reason"
+    );
+}
+
+/// A4: a `command_prefix` rule selecting a `Categories` set whose members
+/// are ALL `Structured`-rendering is a hard registration error -- the
+/// category is resolved against the registered tools, and every member is
+/// `Structured`, so the rule is fully inert. `Read`-category builtins
+/// (`read`) render `Structured`. Pinned through the real load seam.
+#[tokio::test]
+async fn a_command_prefix_rule_on_a_category_of_only_structured_tools_is_a_registration_error() {
+    let project = TempDir::new().expect("tempdir");
+    let (xdg, env) = isolated_env();
+    write_global_permissions(
+        &xdg,
+        r#"{"rules":[
+            {"select":{"categories":["read"]},"when":{"command_prefix":"read"},"then":"allow"}
+        ]}"#,
+    );
+
+    let gate = RecordingGate::new(PermissionDecision::Deny { reason: "unused".into() });
+    let conway = build_conway(
+        project.path(),
+        vec![ScriptedTurn::Respond(text_response("no call needed"))],
+        gate.clone() as Arc<dyn PermissionGate>,
+    );
+    let report = conway.load_permission_files(
+        project.path(),
+        &env,
+        PermissionScope::Session,
+        AgentId::new(),
+    );
+
+    assert_eq!(
+        report.registration_errors.len(),
+        1,
+        "a command_prefix rule selecting a category whose members are all Structured must \
+         surface a registration error: {:?}",
+        report.registration_errors
+    );
+    assert_eq!(
+        report.registration_errors[0].reason,
+        RuleRegistrationReason::CommandPrefixOnStructuredTool,
+        "the broadened check resolves the category and names the same reason"
+    );
+}
+
+/// A4: B1/B3 regression guard. Broadening the `command_prefix` check must
+/// NOT regress the `PathsUnder` arms. A `paths_under` deny on `bash`
+/// (Unconfinable) still surfaces `PathsUnderOnUnconfinedTool`, and a
+/// `paths_under` rule with an uncanonicalizable prefix still surfaces
+/// `PathsUnderPrefixUncanonicalizable` -- both distinct from
+/// `CommandPrefixOnStructuredTool`. Pinned in one combined load to prove the
+/// three reasons do not collide.
+#[tokio::test]
+async fn broadening_command_prefix_check_does_not_regress_paths_under_arms() {
+    let project = TempDir::new().expect("tempdir");
+    let root_canon = project.path().canonicalize().expect("canonicalize project root");
+    let (xdg, env) = isolated_env();
+    write_global_permissions(
+        &xdg,
+        &format!(
+            r#"{{"rules":[
+                {{"select":{{"tools":["bash"]}},"when":{{"paths_under":"{}"}},"then":"deny"}},
+                {{"select":{{"tools":["read"]}},"when":{{"paths_under":"nonexistent-dir"}},"then":"allow"}}
+            ]}}"#,
+            root_canon.display()
+        ),
+    );
+
+    let gate = RecordingGate::new(PermissionDecision::AllowOnce);
+    let conway = build_conway(
+        project.path(),
+        vec![ScriptedTurn::Respond(text_response("no call needed"))],
+        gate.clone() as Arc<dyn PermissionGate>,
+    );
+    let report = conway.load_permission_files(
+        project.path(),
+        &env,
+        PermissionScope::Session,
+        AgentId::new(),
+    );
+
+    let reasons: Vec<_> = report
+        .registration_errors
+        .iter()
+        .map(|e| e.reason.clone())
+        .collect();
+    assert!(
+        reasons.contains(&RuleRegistrationReason::PathsUnderOnUnconfinedTool),
+        "B1's reason must still fire for a paths_under deny on bash: {reasons:?}"
+    );
+    assert!(
+        reasons.contains(&RuleRegistrationReason::PathsUnderPrefixUncanonicalizable),
+        "B3's reason must still fire for an uncanonicalizable prefix: {reasons:?}"
+    );
+    assert_eq!(
+        report.registration_errors.len(),
+        2,
+        "exactly two registration errors (one per paths_under rule), no command_prefix error: \
+         {:?}",
+        report.registration_errors
+    );
+}
+
+// =====================================================================
 // A2: a structured allow rule is inspectable and individually revocable.
 // =====================================================================
 

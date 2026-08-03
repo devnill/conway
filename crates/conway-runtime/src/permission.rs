@@ -632,6 +632,19 @@ impl PermissionBroker {
         if rule.then != Then::Allow {
             return false;
         }
+        // A4: a plugin-contributed rule may only NARROW (`deny`/`prompt`) --
+        // extension-architecture.md §5.5 stage 1, "allow is operator-owned."
+        // Today no plugin transport exists, so this guard is unreachable in
+        // production; it is encoded HERE, at the broker boundary, so a
+        // future transport that reuses `PatternOrigin::Plugin` to call the
+        // allow path with `Then::Allow` hits a STRUCTURAL refusal rather
+        // than silently installing a durable grant the operator never
+        // authorized. The invariant rests on a guard, not on the absence of
+        // a transport. P-10: a typed `false` (the existing rejection shape
+        // the other `remember_*_rule` callers already honor), never a panic.
+        if matches!(origin, PatternOrigin::Plugin) {
+            return false;
+        }
         let canonical = canonicalize_when(&rule.when, base);
         if canonical.is_none() && matches!(rule.when, When::PathsUnder(_)) {
             return false;

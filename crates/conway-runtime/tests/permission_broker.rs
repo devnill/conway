@@ -1659,3 +1659,97 @@ async fn active_structured_allow_rules_reports_origin_and_scope() {
         "the scope the rule was remembered at rides along"
     );
 }
+
+// =====================================================================
+// A4: the plugin-contributed `then: allow` invariant -- "allow is
+//      operator-owned" (extension-architecture.md §5.5 stage 1).
+// =====================================================================
+
+/// **A4 / GP-14.** A plugin-contributed structured allow rule MUST be
+/// refused at the broker boundary. The invariant -- "allow is
+/// operator-owned; a plugin may only NARROW (`deny`/`prompt`)" -- rests on a
+/// structural guard in `PermissionBroker::remember_pattern_rule`, not on
+/// the absence of a plugin transport: a `PatternOrigin::Plugin` rule with
+/// `Then::Allow` is rejected with a typed `false` (P-10: never a panic),
+/// exactly the rejection shape the other `remember_*_rule` callers already
+/// honor, and the rule never enters `active_structured_allow_rules`. Today
+/// no plugin transport exists, so this guard is unreachable in production;
+/// the test pins it so a future transport that reuses
+/// `PatternOrigin::Plugin` to call the allow path with `Then::Allow` hits a
+/// structural refusal rather than silently installing a durable grant the
+/// operator never authorized. The corollary: a plugin `deny`/`prompt` rule
+/// is NOT refused here -- narrowing rules install unconditionally (pinned
+/// in `remember_deny_rule`/`remember_prompt_rule` callers), so this test
+/// isolates the allow refusal to the `PatternOrigin::Plugin` + `Then::Allow`
+/// pair, not a blanket `Plugin` rejection.
+#[tokio::test]
+async fn a_plugin_contributed_allow_rule_is_refused_at_the_broker_boundary() {
+    let gate = ScriptedGate::new(vec![]);
+    let (broker, _bus) = broker(gate.clone());
+    let agent = AgentId::new();
+
+    let rule = Rule {
+        select: Select::Tools(vec!["read".to_string()]),
+        when: When::Always,
+        then: Then::Allow,
+    };
+    let admitted = broker.remember_pattern_rule(
+        rule.clone(),
+        PermissionScope::Session,
+        agent,
+        PatternOrigin::Plugin,
+        Path::new("/"),
+    );
+
+    // P-10: a typed `false`, never a panic. The same rejection shape
+    // `remember_pattern_rule` already uses for `then != Allow` and an
+    // uncanonicalizable `paths_under` prefix.
+    assert!(
+        !admitted,
+        "a plugin-contributed `then: allow` rule must be REFUSED at the broker boundary -- \
+         allow is operator-owned (extension-architecture.md §5.5 stage 1); a plugin may only \
+         NARROW (deny/prompt)"
+    );
+
+    // The rule never entered the allow store -- a future transport cannot
+    // retrofit a durable grant the operator never authorized.
+    let active = broker.active_structured_allow_rules();
+    assert!(
+        active.is_empty(),
+        "a refused plugin allow rule must NOT appear in active_structured_allow_rules -- it \
+         was never installed: {active:?}"
+    );
+
+    // Corollary isolation: the guard is `PatternOrigin::Plugin` + `Then::Allow`,
+    // not a blanket `Plugin` rejection. A plugin DENY rule installs
+    // unconditionally (narrowing rules have no trust gate), so the allow
+    // refusal is specific to the grant shape.
+    let deny_rule = Rule {
+        select: Select::Tools(vec!["read".to_string()]),
+        when: When::Always,
+        then: Then::Deny,
+    };
+    let deny_admitted = broker.remember_deny_rule(
+        deny_rule.clone(),
+        PatternOrigin::Plugin,
+        Path::new("/"),
+    );
+    assert!(
+        deny_admitted,
+        "a plugin-contributed `then: deny` rule must install unconditionally -- narrowing \
+         rules have no trust gate; the refusal is specific to the allow grant shape"
+    );
+    // The deny rule is `Select::Tools(["read"])` + `When::Always`, which IS
+    // expressible as a flat `PatternRule`, so it surfaces in
+    // `active_deny_patterns` (the shared flat+structured deny review list),
+    // not `active_structured_deny_rules` (which filters to non-flat-derivable
+    // rules). Either review list proves the rule installed; this one matches
+    // the rule's shape.
+    let deny_active = broker.active_deny_patterns();
+    assert_eq!(
+        deny_active.len(),
+        1,
+        "the plugin deny rule is installed: {deny_active:?}"
+    );
+    assert_eq!(deny_active[0].1, PatternOrigin::Plugin);
+}

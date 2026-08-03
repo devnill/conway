@@ -66,6 +66,14 @@ pub struct TrustPermissionReport {
     /// surfaced to the operator through the SAME `Entry::Error { fatal: false }`
     /// channel `PermissionLoadReport::registration_errors` uses (P-12).
     pub registration_errors: Vec<conway_core::permission_pattern::RuleRegistrationError>,
+    /// A4: operator-visible notices for rules the broker DID install but
+    /// that are partially inert (today: a `command_prefix` rule selecting a
+    /// MIX of `Structured`- and `ShellCommand`-rendering tools -- the
+    /// `ShellCommand` members install and match, the `Structured` members
+    /// can never match and the operator is warned). Surfaced through the
+    /// SAME `Entry::Notice` channel `PermissionLoadReport::notices` uses,
+    /// so a partially-inert rule is never silently installed.
+    pub notices: Vec<String>,
 }
 
 /// The result of [`Conway::revoke_permission_pattern`] (board item
@@ -139,6 +147,23 @@ pub struct Conway {
 /// threshold shortly after death and the NEXT startup reaps its residue. See
 /// [`Conway::sweep_stale_modal_asks`] (S1 follow-up to B5).
 const SWEEP_LIVE_THRESHOLD: ChronoDuration = ChronoDuration::seconds(60);
+
+/// A4: the outcome of [`Conway::validate_rule_registration`] -- either a
+/// hard reject (the rule is refused installation and surfaced as a typed
+/// `RuleRegistrationError` through `registration_errors`), or a notice (the
+/// rule installs but the operator is warned a part of it is inert, surfaced
+/// through `notices`). `None` means the rule is clean. This split exists so
+/// the broadened `command_prefix`-on-`Structured` check can distinguish the
+/// fully-inert all-`Structured` case (a hard reject -- no working member to
+/// preserve) from the mixed `Structured`+`ShellCommand` case (a notice --
+/// the `ShellCommand` members install and the operator is warned the
+/// `Structured` members are inert). P-10: both arms are typed values, never
+/// panics; P-12: both are operator-visible (one as a transcript error, one
+/// as a transcript notice).
+enum RegistrationCheck {
+    Reject(conway_core::permission_pattern::RuleRegistrationError),
+    Notice(String),
+}
 
 impl Conway {
     pub(crate) fn new(
@@ -315,25 +340,75 @@ impl Conway {
     /// load-order hazard. A `Select::Categories` and a trailing-`*` wildcard
     /// are not inspectable here (members may register later) and are left to
     /// the decision-time fail-closed in `rule_denies_or_prompts`.
+    ///
+    /// A4 broadens check (1) beyond a single-tool `Select::Tools`. A
+    /// `command_prefix` rule is a token-wise prefix over the call's
+    /// `rendered` string; for any tool whose `render_kind` is `Structured`
+    /// that string is a JSON dump whose token boundaries depend on key
+    /// order, spacing, and escaping the operator cannot predict, so the
+    /// rule is inert for that tool -- the same trap the single-tool check
+    /// catches. The broadened check resolves the select (via
+    /// [`Self::registered_tools_metadata`] + [`Rule::select_matches`],
+    /// which handles exact names, trailing-`*` wildcards, and category
+    /// membership uniformly) and counts the resolvable selected tools whose
+    /// `render_kind` is `Structured` vs `ShellCommand` (unknown tools are
+    /// skipped, mirroring the load-order-hazard reasoning of the single-tool
+    /// check):
+    /// - **All resolvable selected tools are `Structured`** (including the
+    ///   single-tool case): the rule is fully inert. The loader REFUSES to
+    ///   install it and surfaces a typed `CommandPrefixOnStructuredTool`
+    ///   registration error -- the same hard error the single-tool case
+    ///   always raised, now covering multi-tool, wildcard, and category
+    ///   selects that resolve to a fully-Structured set.
+    /// - **Mixed (some `Structured` + some `ShellCommand`):** the rule is
+    ///   PARTIALLY inert -- the `ShellCommand` members match exactly as the
+    ///   operator wrote them, the `Structured` members can never match.
+    ///   Rejecting the whole rule would also reject the working
+    ///   `ShellCommand` members (overzealous); installing it silently would
+    ///   hide the inert `Structured` members. The shape that is both
+    ///   fail-closed-safe (the inert `Structured` allow members fail-CLOSED
+    ///   -- the call falls through to the gate; deny/prompt members are
+    ///   fail-open, but the operator is warned) and least-surprise is a
+    ///   NOTICE: the rule installs, and the operator is warned the
+    ///   `Structured` members are inert so they can split the rule. The
+    ///   single-tool all-`Structured` case stays a hard error (no working
+    ///   member to preserve).
+    /// - **No `Structured` members:** the rule is clean, no error/notice.
     fn validate_rule_registration(
         &self,
         rule: &conway_core::permission_pattern::Rule,
-    ) -> Option<conway_core::permission_pattern::RuleRegistrationError> {
+    ) -> Option<RegistrationCheck> {
         use conway_core::permission_pattern::{RuleRegistrationReason, Select, When};
         match (&rule.select, &rule.when) {
-            (Select::Tools(ts), When::CommandPrefix(_)) if ts.len() == 1 => {
-                let tool = ts[0].as_str();
-                match self.tool_render_kind(&conway_core::ids::ToolName::new(tool)) {
-                    Some(conway_core::ports::RenderKind::Structured) => {
-                        Some(conway_core::permission_pattern::RuleRegistrationError {
+            // A4: `command_prefix` on a Structured-rendering tool is inert
+            // for that tool. Resolve the select (exact tools, trailing-`*`
+            // wildcards, and categories -- all via `select_matches` over the
+            // registered-tools metadata) and count Structured vs
+            // ShellCommand members. Unknown tools are skipped (load-order
+            // hazard, mirroring the single-tool check's `None` arm).
+            (Select::Tools(_), When::CommandPrefix(_))
+            | (Select::Categories(_), When::CommandPrefix(_)) => {
+                let (structured, shell) = self.command_prefix_resolved_kinds(rule);
+                if structured > 0 && shell == 0 {
+                    Some(RegistrationCheck::Reject(
+                        conway_core::permission_pattern::RuleRegistrationError {
                             rule: rule.clone(),
                             reason: RuleRegistrationReason::CommandPrefixOnStructuredTool,
-                        })
-                    }
-                    // `ShellCommand` is exactly the tool `command_prefix` was
-                    // designed for; `None` (unknown tool) is left for the broker to
-                    // never match, not a registration error (load-order hazard).
-                    _ => None,
+                        },
+                    ))
+                } else if structured > 0 {
+                    Some(RegistrationCheck::Notice(format!(
+                        "a `command_prefix` rule selecting {} matches no `Structured`-rendering \
+                         tool it selects ({} of its selected tools render a JSON dump whose \
+                         token boundaries the operator cannot predict); the `ShellCommand` \
+                         members install, but the `Structured` members are inert -- split the \
+                         rule if you meant the `Structured` tools to match, or use `always` \
+                         (the `tool:*` flat form)",
+                        rule.describe(),
+                        structured,
+                    )))
+                } else {
+                    None
                 }
             }
             // B1: a `paths_under` rule can never confine a tool whose
@@ -375,15 +450,46 @@ impl Conway {
                         // `Unconfinable` or `None` (or any future
                         // `#[non_exhaustive]` variant): a `paths_under` rule
                         // can never confine this tool -- fail closed.
-                        Some(_) => Some(conway_core::permission_pattern::RuleRegistrationError {
-                            rule: rule.clone(),
-                            reason: RuleRegistrationReason::PathsUnderOnUnconfinedTool,
-                        }),
+                        Some(_) => {
+                            Some(RegistrationCheck::Reject(
+                                conway_core::permission_pattern::RuleRegistrationError {
+                                    rule: rule.clone(),
+                                    reason: RuleRegistrationReason::PathsUnderOnUnconfinedTool,
+                                },
+                            ))
+                        }
                     }
                 })
             }
             _ => None,
         }
+    }
+
+    /// A4: resolves a `command_prefix` rule's `select` against the
+    /// registered tools and returns `(structured_count, shell_count)` -- how
+    /// many resolvable selected tools render `Structured` vs `ShellCommand`.
+    /// Unknown tools are skipped (load-order hazard). Uses
+    /// [`Self::registered_tools_metadata`] (the registry enumeration) plus
+    /// [`Rule::select_matches`], which handles exact `Tools` names,
+    /// trailing-`*` wildcards, and `Categories` membership uniformly -- so
+    /// the broadened check does not reimplement wildcard or category
+    /// resolution, it reuses the SAME `select_matches` the decision-time
+    /// evaluator already uses (no second implementation to drift).
+    fn command_prefix_resolved_kinds(
+        &self,
+        rule: &conway_core::permission_pattern::Rule,
+    ) -> (usize, usize) {
+        let mut structured = 0usize;
+        let mut shell = 0usize;
+        for (name, cat, rk) in self.rt.registered_tools_metadata() {
+            if rule.select_matches(name.as_str(), cat) {
+                match rk {
+                    conway_core::ports::RenderKind::Structured => structured += 1,
+                    _ => shell += 1,
+                }
+            }
+        }
+        (structured, shell)
     }
 
     /// F12: installs a parsed ALLOW [`Rule`] from a permissions file at
@@ -675,6 +781,17 @@ impl Conway {
                 return RevokeOutcome::RevokedNoFile;
             }
             conway_core::permission_pattern::PatternOrigin::File(path) => path,
+            // A4: a plugin-contributed allow rule is refused at admission
+            // (`remember_pattern_rule` rejects `PatternOrigin::Plugin`), so
+            // this arm is unreachable from the review surface -- a
+            // `Plugin`-origin allow rule can never be installed, and a
+            // `Plugin`-origin deny/prompt rule is not revocable through
+            // this surface at all. Treat it like `Interactive` (no file to
+            // rewrite): the broker's in-memory grant was already dropped by
+            // `revoke_pattern` above, so there is nothing left to persist.
+            conway_core::permission_pattern::PatternOrigin::Plugin => {
+                return RevokeOutcome::RevokedNoFile;
+            }
         };
 
         Self::persist_revoke_outcome(env, path, Self::rewrite_permission_file_removing(path, rule))
@@ -724,6 +841,12 @@ impl Conway {
                 return RevokeOutcome::RevokedNoFile;
             }
             conway_core::permission_pattern::PatternOrigin::File(path) => path,
+            // A4: see `revoke_permission_pattern`'s own `Plugin` arm -- a
+            // plugin allow rule is refused at admission, so this arm is
+            // unreachable; treat it like `Interactive` (no file to rewrite).
+            conway_core::permission_pattern::PatternOrigin::Plugin => {
+                return RevokeOutcome::RevokedNoFile;
+            }
         };
 
         Self::persist_revoke_outcome(
@@ -971,9 +1094,15 @@ impl Conway {
             // `then: deny` rules from the `rules` array (`parse_deny_rules`
             // returns the union of flat `deny` and structured `then: deny`).
             for rule in conway_core::permission_pattern::parse_deny_rules(&contents) {
-                if let Some(err) = self.validate_rule_registration(&rule) {
-                    registration_errors.push(err);
-                    continue;
+                match self.validate_rule_registration(&rule) {
+                    Some(RegistrationCheck::Reject(err)) => {
+                        registration_errors.push(err);
+                        continue;
+                    }
+                    Some(RegistrationCheck::Notice(msg)) => {
+                        notices.push(msg);
+                    }
+                    None => {}
                 }
                 // B3: a `paths_under` prefix that fails to canonicalize is
                 // dropped by the broker; surface it instead of silently
@@ -990,9 +1119,15 @@ impl Conway {
             // 1). The flat form has no prompt syntax, so these come
             // entirely from the structured `rules` array.
             for rule in conway_core::permission_pattern::parse_prompt_rules(&contents) {
-                if let Some(err) = self.validate_rule_registration(&rule) {
-                    registration_errors.push(err);
-                    continue;
+                match self.validate_rule_registration(&rule) {
+                    Some(RegistrationCheck::Reject(err)) => {
+                        registration_errors.push(err);
+                        continue;
+                    }
+                    Some(RegistrationCheck::Notice(msg)) => {
+                        notices.push(msg);
+                    }
+                    None => {}
                 }
                 // B3: same surfacing as the deny arm -- a dropped `prompt`
                 // narrowing rule is a trap the operator will not notice.
@@ -1018,9 +1153,15 @@ impl Conway {
                 continue;
             }
             for rule in allow_rules {
-                if let Some(err) = self.validate_rule_registration(&rule) {
-                    registration_errors.push(err);
-                    continue;
+                match self.validate_rule_registration(&rule) {
+                    Some(RegistrationCheck::Reject(err)) => {
+                        registration_errors.push(err);
+                        continue;
+                    }
+                    Some(RegistrationCheck::Notice(msg)) => {
+                        notices.push(msg);
+                    }
+                    None => {}
                 }
                 // B3: same surfacing as the deny/prompt arms -- a dropped
                 // `paths_under` allow rule is fail-CLOSED (the call falls
@@ -1082,24 +1223,31 @@ impl Conway {
         let base = Self::permission_rule_base(path, global_path.as_deref(), &self.config.cwd);
         let mut installed = 0;
         let mut registration_errors = Vec::new();
+        let mut notices = Vec::new();
         for rule in rules {
-            if let Some(err) = self.validate_rule_registration(&rule) {
-                // A registration error means the rule was never going to
-                // match; do not count it as installed. `trust_permission_file`
-                // is operator-triggered (`/trust permissions`), so the
-                // operator will have already seen THIS class of registration
-                // error (e.g. `PathsUnderOnUnconfinedTool`) from the prior
-                // `load_permission_files` -- re-trusting does not silently
-                // swallow it, it just does not re-report the structurally-
-                // invalid cases here. B3's `PathsUnderPrefixUncanonicalizable`
-                // is a DIFFERENT class: it is not caught by
-                // `validate_rule_registration` (the prefix's existence on
-                // disk is not a structural property), so it surfaces below
-                // via the install `bool`, and IS re-reported here -- a
-                // bad-prefix rule trusted mid-session must not silently
-                // inflate the count.
-                registration_errors.push(err);
-                continue;
+            match self.validate_rule_registration(&rule) {
+                Some(RegistrationCheck::Reject(err)) => {
+                    // A registration error means the rule was never going to
+                    // match; do not count it as installed. `trust_permission_file`
+                    // is operator-triggered (`/trust permissions`), so the
+                    // operator will have already seen THIS class of registration
+                    // error (e.g. `PathsUnderOnUnconfinedTool`) from the prior
+                    // `load_permission_files` -- re-trusting does not silently
+                    // swallow it, it just does not re-report the structurally-
+                    // invalid cases here. B3's `PathsUnderPrefixUncanonicalizable`
+                    // is a DIFFERENT class: it is not caught by
+                    // `validate_rule_registration` (the prefix's existence on
+                    // disk is not a structural property), so it surfaces below
+                    // via the install `bool`, and IS re-reported here -- a
+                    // bad-prefix rule trusted mid-session must not silently
+                    // inflate the count.
+                    registration_errors.push(err);
+                    continue;
+                }
+                Some(RegistrationCheck::Notice(msg)) => {
+                    notices.push(msg);
+                }
+                None => {}
             }
             // B3: honor the install `bool` -- a rule the broker dropped
             // (today: a `paths_under` prefix that fails to canonicalize)
@@ -1115,6 +1263,7 @@ impl Conway {
         Ok(TrustPermissionReport {
             installed,
             registration_errors,
+            notices,
         })
     }
 
