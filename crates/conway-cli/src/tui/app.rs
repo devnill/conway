@@ -928,6 +928,19 @@ impl App {
                                     fatal: false,
                                 });
                             }
+                            // A4: surface each partial-inertness notice
+                            // (today: a `command_prefix` rule selecting a
+                            // mix of `Structured`- and `ShellCommand`-render
+                            // tools) through the SAME `Entry::Notice`
+                            // channel `load_permission_files`'s `notices`
+                            // uses -- the rule installs (its `ShellCommand`
+                            // members match), but the operator is warned the
+                            // `Structured` members are inert.
+                            for notice in report.notices {
+                                self.state
+                                    .transcript
+                                    .push(super::state::Entry::Notice { text: notice });
+                            }
                             self.state.transcript.push(super::state::Entry::Notice {
                                 text: format!(
                                     "trusted {} -- {} allow rule(s) installed for this \

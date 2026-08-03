@@ -12,10 +12,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use conway_core::agent::ToolSelector;
-use conway_core::content::ToolSpec;
+use conway_core::content::{ToolCategory, ToolSpec};
 use conway_core::error::{RuntimeError, ToolError};
 use conway_core::ids::ToolName;
-use conway_core::ports::{Plugin, Tool};
+use conway_core::ports::{Plugin, RenderKind, Tool};
 
 /// One registered tool: its owning plugin's id, the `Tool` implementation,
 /// and its compiled schema validator.
@@ -155,5 +155,23 @@ impl PluginRegistry {
             spec: &registered.spec,
             validator: &registered.validator,
         })
+    }
+
+    /// A4: every registered tool's `(name, category, render_kind)` metadata --
+    /// the enumeration surface the facade's broadened `command_prefix`-on-
+    /// `Structured` registration check needs to resolve a wildcard
+    /// (`Select::Tools(["re*"])`) or a `Select::Categories` select against
+    /// the tools actually registered at load time. Each entry reads the
+    /// already-compiled `ToolSpec` (for `name`/`category`) and the `Tool`
+    /// trait's own `render_kind()` -- the SAME declarations
+    /// `Runtime::tool_render_kind`/`tool_path_args` already established as
+    /// the structured-rule registration check's metadata surface, just
+    /// enumerated over the whole registry rather than resolved by one name.
+    /// No new resolution path; no per-call I/O.
+    pub(crate) fn tools_metadata(&self) -> Vec<(ToolName, ToolCategory, RenderKind)> {
+        self.tools
+            .values()
+            .map(|r| (r.spec.name.clone(), r.spec.category, r.tool.render_kind()))
+            .collect()
     }
 }

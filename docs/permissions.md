@@ -235,6 +235,28 @@ startup, naming the rule and the reason, so a refused rule is never dropped
 silently. Use `when: "always"` or a `paths_under`/`categories`
 condition for those tools instead.
 
+The check resolves the `select` against the registered tools and counts
+`Structured`- vs `ShellCommand`-rendering members, so it catches every select
+shape, not just a single named tool:
+
+- **All-Structured** (every selected tool renders `Structured`) — including a
+  single named tool, a multi-tool list, a trailing-`*` wildcard that resolves
+  to only `Structured` tools, and a `Select::Categories` whose members are all
+  `Structured`. The rule is fully inert, so the loader refuses to install it
+  and surfaces a typed `CommandPrefixOnStructuredTool` registration error
+  (operator-visible at startup and on `/trust permissions`). Split the rule
+  or use `when: "always"` for the `Structured` members.
+- **Mixed-kind** (the select resolves to at least one `Structured` and at least
+  one `ShellCommand` member, e.g. `{"tools":["bash","read"]}`) — the
+  `ShellCommand` members install and match as written; the `Structured`
+  members are inert. The rule is NOT refused (rejecting the whole rule would
+  discard the working `ShellCommand` members), and it is NOT installed
+  silently (the inert `Structured` members would hide). The loader installs
+  the rule and surfaces a notice naming the inert `Structured` members, so
+  the operator can split the rule if they meant them to match. Unknown tools
+  (a name no registered tool answers to, e.g. a plugin tool loaded later)
+  are skipped, not errored — a load-order hazard is not a misconfigured rule.
+
 **The `allow`/`deny` asymmetry, explained, not merely stated:**
 
 - **An `allow` rule from a *project* file requires an explicit trust
@@ -255,6 +277,18 @@ condition for those tools instead.
   worth gating on trust — the worst case of installing it unconditionally is
   an extra prompt, never a missed one. So a safety rule works the moment it
   is written to either file, before you have made any trust decision at all.
+- **A plugin may only NARROW (`deny`/`prompt`); an `allow` is operator-owned.**
+  An `allow` rule is a durable grant of authority, and grants belong to the
+  operator, not to code the operator did not write. So a plugin-contributed
+  rule with `then: "allow"` is refused at the broker boundary with a typed
+  `false` — it never enters the active allow store, regardless of which
+  transport contributed it. A plugin `deny`/`prompt` rule installs
+  unconditionally, exactly like one from any other file: narrowing has no
+  failure mode worth gating. The invariant rests on a structural guard at
+  the broker, not on the absence of a plugin transport, so a future transport
+  that reuses the plugin origin to call the allow path hits a structural
+  refusal rather than silently installing a grant the operator never
+  authorized.
 
 ## The `prompt` rule effect
 

@@ -218,6 +218,104 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A `command_prefix` rule on a `Structured`-rendering tool was silently
+  inert for every select shape except a single named tool.** The original
+  `CommandPrefixOnStructuredTool` registration check matched only
+  `Select::Tools` with exactly one tool, so a `command_prefix` rule that
+  selected a `Structured`-rendering tool through a multi-tool list, a
+  trailing-`*` wildcard, or a `Select::Categories` installed silently inert
+  — the `68ea9b1` `read:*`-matched-nothing bug, re-opened for the structured
+  select shapes the original check never reached. The check now resolves the
+  `select` against the registered tools (via the new
+  `PluginRegistry::tools_metadata` enumeration + `Rule::select_matches`, so
+  exact names, trailing-`*` wildcards, and categories are all covered) and
+  counts `Structured`- vs `ShellCommand`-rendering members: an
+  **all-Structured** select (single-tool, multi-tool, wildcard, or category —
+  every resolvable member is `Structured`) is a hard
+  `CommandPrefixOnStructuredTool` registration error surfaced to the
+  operator via `registration_errors` (P-12), exactly as the single-tool case
+  already was; a **mixed-kind** select (at least one `Structured` and at
+  least one `ShellCommand` member, e.g. `{"tools":["bash","read"]}`) installs
+  — the `ShellCommand` members work, and rejecting the whole rule would
+  discard them — and surfaces a NOTICE (the new `TrustPermissionReport::notices`
+  field, surfaced in the TUI trust path) naming the inert `Structured`
+  members so the operator can split the rule; a no-Structured select is
+  clean. Unknown tools (a name no registered tool answers to, e.g. a plugin
+  tool loaded later) are skipped, not errored — a load-order hazard is not a
+  misconfigured rule (mirroring the single-tool check's `None` arm). The
+  `PathsUnder` arms (B1 `PathsUnderOnUnconfinedTool`, B3
+  `PathsUnderPrefixUncanonicalizable`) are unchanged. Liveness is proven by
+  four real-stack break-the-guard cycles (GP-14: every guard's test must be
+  able to fail), one per guard, each neutralized → confirmed FAIL → restored
+  → confirmed green, with the verbatim failing output recorded in the work
+  item:
+
+  - *Guard (i)* — `paths_under_match`'s `PathArgs::Unconfinable { .. } =>
+    return false` arm (`crates/conway-runtime/src/permission.rs`):
+    `an_unconfinable_tool_never_satisfies_paths_under_so_bash_reaches_the_gate`
+    FAILED with `left: 0, right: 1` (a `paths_under` allow rule on `bash`
+    auto-allowed `echo hi` instead of reaching the gate) when the arm was
+    flipped to `return true`.
+  - *Guard (ii)* — the `resolve_like_the_tool_will` + containment path in
+    `paths_under_match` (reads `call.arguments`, never the lossy `rendered`):
+    `a_paths_under_rule_reads_arguments_not_rendered_so_a_traversal_path_reaches_the_gate`
+    FAILED with `left: 0, right: 1` when the resolve+contain logic was
+    replaced with a naive `rendered.contains(root)` substring check (the
+    rendering-bypass the test pins against — the traversal's rendered string
+    contains the prefix, so a rendered-based check falsely matched and
+    auto-allowed an out-of-root read).
+  - *Guard (iii)* — `validate_rule_registration`'s `CommandPrefix` arm
+    (early-returns the typed error for an all-Structured select):
+    `command_prefix_on_a_structured_tool_is_a_registration_error` FAILED
+    with `left: 0, right: 1` (zero registration errors instead of one) when
+    the arm was made to early-`return None` (the B1/B3 arms were kept).
+  - *Guard (iv)* — `Rule::gate_allows` in
+    `crates/conway-core/src/permission_pattern.rs` (the allow-side
+    metacharacter gate):
+    `flat_and_structured_command_prefix_produce_byte_identical_gate_decisions`
+    FAILED with `left: 0, right: 1` on the `chained == 1` assertion (the
+    chained command `git status && rm -rf /tmp/x` auto-allowed under the
+    matching prefix instead of reaching the gate) when `gate_allows` was
+    made to always return `true`.
+
+  No liveness bug was found — every guard's test failed when its guard was
+  neutralized and passed once restored. Pinned by six new real-stack seam
+  tests in `crates/conway/tests/structured_rule_seam.rs` (an untrusted
+  project structured `allow` rule held for trust; the broadened
+  all-Structured hard error for multi-tool, wildcard, and category selects;
+  a mixed-kind select that installs with a notice; and a B1/B3 regression
+  guard proving the broadening does not collide with the `PathsUnder`
+  arms). (`crates/conway/src/conway.rs`,
+  `crates/conway-runtime/src/tools/registry.rs`,
+  `crates/conway-runtime/src/runtime.rs`,
+  `crates/conway-cli/src/tui/app.rs`,
+  `crates/conway/tests/structured_rule_seam.rs`, `docs/permissions.md`)
+
+- **A plugin-contributed `then: "allow"` rule is now refused at the broker
+  boundary.** An `allow` rule is a durable grant of authority, and grants
+  belong to the operator, not to code the operator did not write — but the
+  broker had no structural guard against a plugin-contributed allow rule:
+  the "allow is operator-owned" invariant (`.design/extension-architecture.md`
+  §5.5 stage 1) rested on the absence of a plugin transport, so a future
+  transport that reused the allow path with a plugin origin would silently
+  install a grant the operator never authorized. A new
+  `PatternOrigin::Plugin` variant plus a structural guard in
+  `PermissionBroker::remember_pattern_rule` refuses a `PatternOrigin::Plugin`
+  rule with `Then::Allow` with a typed `false` (P-10: never a panic — the
+  same rejection shape the other `remember_*_rule` callers already honor),
+  so the rule never enters the active allow store regardless of which
+  transport contributed it. Plugin `deny`/`prompt` rules are NOT refused
+  here — narrowing rules install unconditionally (the corollary the
+  invariant depends on) — so the refusal is specific to the
+  `PatternOrigin::Plugin` + `Then::Allow` pair, not a blanket `Plugin`
+  rejection. Liveness is proven by a unit test in
+  `crates/conway-runtime/tests/permission_broker.rs` asserting a plugin
+  allow rule is refused (`remember_pattern_rule` returns `false`,
+  `active_structured_allow_rules` stays empty) and a plugin deny rule
+  installs. (`crates/conway-core/src/permission_pattern.rs`,
+  `crates/conway-runtime/src/permission.rs`,
+  `crates/conway-runtime/tests/permission_broker.rs`, `docs/permissions.md`)
+
 - **A `paths_under` rule whose prefix FAILS to canonicalize (a typo, or a
   repo/subdirectory not yet cloned/checked out) was silently dropped, and
   `/trust permissions` could report a false install count.** The

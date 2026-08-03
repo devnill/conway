@@ -1526,6 +1526,20 @@ pub enum PatternOrigin {
     /// DENY rule with this origin may have come from an UNTRUSTED file:
     /// deny applies regardless (§3).
     File(PathBuf),
+    /// A4: contributed by a plugin. An allow rule is a durable grant, and
+    /// grants belong to the operator, so a plugin may only contribute
+    /// NARROWING rules (`deny`/`prompt`) -- extension-architecture.md §5.5
+    /// stage 1. The broker's `remember_pattern_rule` (the allow admission)
+    /// rejects `Then::Allow` for this origin as a STRUCTURAL guard, so a
+    /// future plugin transport that reuses `PatternOrigin::Plugin` to call
+    /// the allow path with `Then::Allow` is refused at the broker boundary
+    /// rather than silently installing -- the invariant rests on a guard,
+    /// not on the absence of a transport. `deny`/`prompt` rules with this
+    /// origin install unconditionally (they only narrow). Carries no file
+    /// path: a plugin-contributed rule has no on-disk permissions file to
+    /// rewrite on revoke (and revocation is an allow-rule surface anyway,
+    /// which a plugin rule can never be).
+    Plugin,
 }
 
 impl PatternOrigin {
@@ -1535,6 +1549,7 @@ impl PatternOrigin {
         match self {
             PatternOrigin::Interactive => "interactive".to_string(),
             PatternOrigin::File(path) => path.display().to_string(),
+            PatternOrigin::Plugin => "plugin".to_string(),
         }
     }
 }
