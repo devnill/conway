@@ -190,6 +190,27 @@ const WATCHED_ENUMS: &[WatchedEnum] = &[
         why: "each variant is a distinct operator-facing policy for how \
               much the gate asks before a tool runs",
     },
+    WatchedEnum {
+        name: "Select",
+        decl_file: "crates/conway-core/src/permission_pattern.rs",
+        why: "each variant changes WHICH tools a structured rule matches \
+              (named tools, a wildcard, a whole category) -- a \
+              security-relevant behavior, not a data label",
+    },
+    WatchedEnum {
+        name: "When",
+        decl_file: "crates/conway-core/src/permission_pattern.rs",
+        why: "each variant changes WHEN a structured rule applies (always, \
+              a command prefix, a path boundary) -- including the \
+              paths_under confinement semantics",
+    },
+    WatchedEnum {
+        name: "Then",
+        decl_file: "crates/conway-core/src/permission_pattern.rs",
+        why: "each variant changes what a matching rule DOES (grant, \
+              refuse, ask) -- the allow/deny asymmetry and trust gate \
+              hinge on it",
+    },
 ];
 
 /// A watched enum's variant that is deliberately allowlisted: nothing in
