@@ -198,16 +198,20 @@ impl AttemptEngine {
     }
 
     pub async fn execute(&self, req: AttemptRequest<'_>) -> Result<AttemptOutcome, RuntimeError> {
-        let required = req.est_tokens.saturating_add(req.headroom);
-
         // T-1 pre-flight (backstop gate): partition candidates by whether
         // their declared window covers the prompt plus reserved headroom.
-        // Inclusive bound: `required == max_context_tokens` is admissible.
+        // The admissibility predicate is the SHARED one --
+        // `context_shortfall(...).is_none()` (Min-1 / P-14, board item
+        // 01KZ00VV3F3EBZ9WQSB292TBJZ) -- not a local restatement of the
+        // arithmetic, so a future edit to the gate (a `>=` vs `>`, a safety
+        // margin) changes this backstop in lockstep with the router's gate.
+        // Inclusive bound: `est + headroom == max_context_tokens` is
+        // admissible (context_shortfall returns `None` there).
         let mut admissible: Vec<Route> = Vec::new();
         let mut skipped: Vec<(ModelRef, RoutingReason)> = Vec::new();
         for route in req.routes {
             let caps = self.backend_for(&route.backend).capabilities(&route.model);
-            if caps.max_context_tokens >= required {
+            if conway_routing::context_shortfall(&caps, req.est_tokens, req.headroom).is_none() {
                 admissible.push(route);
             } else {
                 let model_ref = ModelRef {
@@ -225,25 +229,32 @@ impl AttemptEngine {
         }
 
         if admissible.is_empty() {
-            let (model, window) = skipped
+            let (model, caps) = skipped
                 .iter()
                 .map(|(model_ref, _)| {
-                    let window = self
-                        .backend_for(&model_ref.backend)
-                        .capabilities(&model_ref.model)
-                        .max_context_tokens;
-                    (model_ref.clone(), window)
+                    (
+                        model_ref.clone(),
+                        self.backend_for(&model_ref.backend).capabilities(&model_ref.model),
+                    )
                 })
-                .max_by_key(|(_, window)| *window)
+                .max_by_key(|(_, caps)| caps.max_context_tokens)
                 .expect("T-1 gate: req.routes is non-empty whenever admissible is empty");
+            // The error payload's arithmetic is sourced from the SAME shared
+            // gate (Min-1 / P-14): `shortfall` is exactly what
+            // `context_shortfall` computes, and `required = window +
+            // shortfall` (== est + headroom) is derived from it rather than
+            // restated. `expect` is an internal invariant, not user input:
+            // `admissible` is empty only because every route shortfell.
+            let shortfall = conway_routing::context_shortfall(&caps, req.est_tokens, req.headroom)
+                .expect("T-1 gate: every skipped route shortfalls against its window");
             return Err(RuntimeError::Routing(RoutingError::ContextTooLarge {
                 role: req.role,
                 model,
                 est_tokens: req.est_tokens,
                 headroom_tokens: req.headroom,
-                required_tokens: required,
-                max_context_tokens: window,
-                shortfall_tokens: required.saturating_sub(window),
+                required_tokens: caps.max_context_tokens.saturating_add(shortfall),
+                max_context_tokens: caps.max_context_tokens,
+                shortfall_tokens: shortfall,
             }));
         }
 

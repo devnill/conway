@@ -156,11 +156,17 @@ fn reliability_name(t: &ReliabilityTier) -> &'static str {
 /// THE headroom gate, in one place. `Some(shortfall)` when the request does
 /// not fit this model's window; `None` when it fits.
 ///
-/// Both consumers of the gate call this rather than restating the formula:
-/// [`satisfies`] (to decide whether to push its `"context: ..."` entry) and
+/// All consumers of the gate call this rather than restating the formula:
+/// [`satisfies`] (to decide whether to push its `"context: ..."` entry),
 /// `router::DeclarativeRouter::check_candidate` (to decide whether a
 /// rejection is attributable to context size alone, and therefore whether
-/// `resolve` may return `RoutingError::ContextTooLarge`).
+/// `resolve` may return `RoutingError::ContextTooLarge`), and
+/// `conway_runtime::attempt::AttemptEngine::execute` (the T-1 pre-flight
+/// backstop that partitions candidate routes by whether the declared
+/// window covers the prompt plus reserved headroom -- board item
+/// 01KZ00VV3F3EBZ9WQSB292TBJZ, the founding case for P-14: a third
+/// consumer was restating the arithmetic until that item). `pub` for the
+/// cross-crate consumer; `pub(crate)` would hide it from `conway-runtime`.
 ///
 /// Keeping it here is load-bearing, not tidiness. Board item
 /// `01KYXNAHN64YMADZPQDQC0CPTJ` originally landed with this arithmetic
@@ -173,7 +179,10 @@ fn reliability_name(t: &ReliabilityTier) -> &'static str {
 /// `ContextTooLarge`, which blames the window for an unrelated defect.
 ///
 /// Saturating: `u32::MAX` inputs produce a rejection, never a wrap or panic.
-pub(crate) fn context_shortfall(
+/// Inclusive bound: `est_tokens + headroom == max_context_tokens` fits
+/// (`None`) -- the same inclusive bound `AttemptEngine::execute` documented
+/// for its own restated copy.
+pub fn context_shortfall(
     caps: &Capabilities,
     est_tokens: u32,
     headroom_tokens: u32,

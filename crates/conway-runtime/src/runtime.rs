@@ -630,11 +630,31 @@ impl Runtime {
         let root: Option<PathBuf> = match &spec.root {
             None => None,
             Some(requested) => {
-                let resolved = if requested.is_absolute() {
-                    requested.clone()
-                } else {
-                    spec.cwd.join(requested)
-                };
+                // Min-1 (P-14): resolve via the SHARED rule (absolute ->
+                // as-is, relative -> join base, NUL -> None) instead of
+                // inlining two-thirds of it and silently dropping the NUL
+                // guard -- the same call `subagent.rs`'s spawn-time root
+                // resolution now makes. A relative root resolves against
+                // `spec.cwd`, exactly as before. A non-UTF-8 or NUL-carrying
+                // root is a typed config rejection (P-10), never a panic.
+                let requested_str = requested.to_str().ok_or_else(|| {
+                    crate::subagent::invalid_spec(ConwayError::Config {
+                        detail: format!(
+                            "root agent's root {} is not valid UTF-8",
+                            requested.display()
+                        ),
+                    })
+                })?;
+                let resolved = crate::permission::resolve_like_the_tool_will(
+                    &spec.cwd,
+                    requested_str,
+                )
+                .ok_or_else(|| {
+                    crate::subagent::invalid_spec(ConwayError::Config {
+                        detail: "root agent's root contains a NUL byte the OS cannot resolve"
+                            .to_string(),
+                    })
+                })?;
                 let canonical_root = CanonicalRoot::new(&resolved).map_err(|err| {
                     crate::subagent::invalid_spec(ConwayError::Config {
                         detail: format!(

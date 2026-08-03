@@ -2302,6 +2302,46 @@ async fn spawn_with_nonexistent_root_fails_fast_with_a_clear_error() {
     }
 }
 
+/// (f2) Min-1 (P-14): a RELATIVE root carrying a NUL byte is rejected
+/// through the SHARED resolution rule (`resolve_like_the_tool_will`) -- the
+/// guard the inlined "absolute -> as-is, relative -> join cwd" copies
+/// silently dropped until Min-1. Before Min-1 this root would have been
+/// joined onto the parent's cwd and handed to `CanonicalRoot::new`, whose
+/// failure mode would have been a generic "does not canonicalize" at best;
+/// now the typed rejection names the NUL itself (P-10: a typed config
+/// error, never a panic).
+#[tokio::test]
+async fn spawn_with_nul_carrying_relative_root_is_rejected_through_the_shared_resolution_rule() {
+    let (runtime, _store) = build_runtime(1, HashMap::new());
+    let root = start_and_finish_root(&runtime, "hi").await;
+
+    let err = SubagentHost::start(
+        &*runtime,
+        root,
+        root,
+        spawn_spec_with_cwd_and_root("doomed", None, Some(PathBuf::from("nul\0dir"))),
+    )
+    .await
+    .unwrap_err();
+
+    match &err {
+        RuntimeError::Tool(ToolError::Internal { detail }) => {
+            // Assert on the EXACT typed rejection the shared guard produces,
+            // not just "NUL": the OS canonicalize error further down ALSO
+            // contains "NUL" ("file name contained an unexpected NUL byte"),
+            // so a looser assertion cannot tell the guard from the
+            // downstream failure -- the liveness bug break-the-guard caught
+            // during Min-1's own verification.
+            assert!(
+                detail.contains("contains a NUL byte the OS cannot resolve"),
+                "the rejection must be the shared rule's typed NUL guard, not the OS \
+                 canonicalize error further down; got {detail:?}"
+            );
+        }
+        other => panic!("expected RuntimeError::Tool(ToolError::Internal {{ .. }}), got {other:?}"),
+    }
+}
+
 /// (g) `resume_root` preserves a session's persisted `root` unchanged --
 /// `ResumeSpec` has no `root` override field at all, so there is no code
 /// path that could widen or null it; this proves the header is untouched

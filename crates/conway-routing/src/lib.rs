@@ -29,7 +29,7 @@ pub use prober::{HealthProber, ProberHandle};
 #[cfg(any(test, feature = "test-clock"))]
 pub use breaker::TestClock;
 pub use breaker::{BreakerRegistry, Clock, SystemClock};
-pub use capability::{satisfies, CapabilityIndex, CapabilityIndexBuilder};
+pub use capability::{context_shortfall, satisfies, CapabilityIndex, CapabilityIndexBuilder};
 pub use explain::{
     BreakerSnapshot, CapabilitySummary, EntryOutcome, ExplainEntry, ExplainReport, RoutingExplain,
 };
