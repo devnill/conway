@@ -166,6 +166,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `crates/conway-cli/src/tui/input.rs`, `crates/conway-cli/src/tui/state.rs`,
   `crates/conway-cli/src/tui/app.rs`, `docs/permissions.md`)
 
+- **The `cd` tool is documented in the operator-facing docs.** `docs/agents.md`
+  gains a "The `cd` tool" section next to `--cwd`/`--root`: what it does
+  (moves the agent's working directory), the next-batch effect (a `cd`
+  alongside a `read` in one batch does not move that `read`), the per-call
+  `cwd` argument as the one-off alternative, the session-start invariant,
+  and that its declared `path` argument is confined by the agent's root
+  (`Move` category, which plan mode does not permit). Previously the tool
+  appeared only in this changelog. (`docs/agents.md`)
+
 ### Changed
 
 - **The three control-character sanitizers are converged to one shared
