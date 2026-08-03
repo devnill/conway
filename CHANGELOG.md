@@ -218,6 +218,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A `paths_under` rule whose prefix FAILS to canonicalize (a typo, or a
+  repo/subdirectory not yet cloned/checked out) was silently dropped, and
+  `/trust permissions` could report a false install count.** The
+  `install_allow_rule`/`install_deny_rule`/`install_prompt_rule` facade
+  helpers discarded the `bool` returned by `PermissionBroker::remember_*_rule`,
+  so when `CanonicalRoot::new(prefix)` failed inside `canonicalize_when`
+  (the prefix does not resolve on disk) the broker returned `false` and the
+  rule was not installed — but nothing reached `registration_errors`, so the
+  operator was never told. For `then: deny`/`prompt` the hazard is sharpest:
+  the operator believed a `paths_under` deny was protecting them when it was
+  never installed (fail-OPEN against the operator's expectation). The
+  `/trust` path had the same lie PLUS a false count: `trust_permission_file`'s
+  `count += 1` was unconditional, so `/trust permissions` reported "1 allow
+  rule(s) installed" for a rule the broker dropped as uncanonicalizable. The
+  loader now honors the install `bool` in every arm (allow/deny/prompt) and
+  surfaces a typed `RuleRegistrationReason::PathsUnderPrefixUncanonicalizable`
+  registration error (visible to the operator via the same
+  `registration_errors` → transcript-error channel the other registration
+  errors use) when a `paths_under` prefix fails to canonicalize.
+  `trust_permission_file` now returns a `TrustPermissionReport` carrying
+  both the count of rules ACTUALLY installed and the same
+  `registration_errors`, so a dropped rule is neither counted nor silent on
+  the trust path. The rule is still fail-closed: a matching call is not
+  auto-allowed/denied by an inert rule — it reaches the operator's gate,
+  the honest outcome. Distinct from the `PathsUnderOnUnconfinedTool` fix
+  above: that fires when the prefix canonicalizes fine but the selected
+  tool's `PathArgs` can never be confined; this fires when the prefix itself
+  cannot be canonicalized, regardless of the tool. Pinned by three real-stack
+  seam tests in `crates/conway/tests/structured_rule_seam.rs` — one for the
+  allow arm (registration error + the call reaches the gate), one for the
+  deny and prompt arms (each surfaces its own error), and one for the
+  `/trust` path (the dropped rule is not counted and the operator is
+  informed) — all verified to fail when the surfacing is neutralized.
+  (`crates/conway-core/src/permission_pattern.rs`,
+  `crates/conway/src/conway.rs`, `crates/conway-cli/src/tui/app.rs`,
+  `crates/conway/tests/structured_rule_seam.rs`, `docs/permissions.md`)
+
 - **A `paths_under` `deny`/`prompt` rule on an `Unconfinable` tool (e.g.
   `bash`) was silently inert — fail-OPEN.** `paths_under_match` returns
   `false` for `PathArgs::Unconfinable` and `PathArgs::None` (correct for

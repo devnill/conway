@@ -258,10 +258,10 @@ async fn trusting_a_project_file_makes_its_allow_rule_take_effect() {
     assert_eq!(report.notices.len(), 1, "untrusted before the trust call");
 
     let path = project.path().join(".conway").join("permissions.json");
-    let installed = conway
+    let report = conway
         .trust_permission_file(&env, &path, PermissionScope::Session, agent)
         .expect("trust succeeds");
-    assert_eq!(installed, 1);
+    assert_eq!(report.installed, 1);
 
     run_one_bash_call(&conway).await;
 

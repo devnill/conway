@@ -911,14 +911,30 @@ impl App {
                         root_agent,
                     )
                     {
-                        Ok(installed) => {
+                        Ok(report) => {
+                            // B3: surface each registration error through the
+                            // SAME `Entry::Error { fatal: false }` channel
+                            // `load_permission_files`'s `registration_errors`
+                            // uses (P-12) -- a `paths_under` rule the broker
+                            // dropped as uncanonicalizable must not be
+                            // camouflaged as a routine notice.
+                            for err in report.registration_errors {
+                                self.state.transcript.push(super::state::Entry::Error {
+                                    text: format!(
+                                        "permission rule not installed: {} -- {}",
+                                        err.rule.describe(),
+                                        err.reason.describe()
+                                    ),
+                                    fatal: false,
+                                });
+                            }
                             self.state.transcript.push(super::state::Entry::Notice {
                                 text: format!(
                                     "trusted {} -- {} allow rule(s) installed for this \
                                      session, and will load automatically until its \
                                      content next changes",
                                     path.display(),
-                                    installed
+                                    report.installed
                                 ),
                             });
                         }

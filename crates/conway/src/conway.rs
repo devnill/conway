@@ -48,6 +48,26 @@ pub struct PermissionLoadReport {
     pub registration_errors: Vec<conway_core::permission_pattern::RuleRegistrationError>,
 }
 
+/// The result of [`Conway::trust_permission_file`] (board item
+/// 01KYZYA4HQAFN6SQ1T08JABYAD) -- the trust-path parallel of
+/// [`PermissionLoadReport`]. Carries the count of allow rules actually
+/// installed AND the typed registration errors for rules the broker refused
+/// to install (today: a `paths_under` prefix that fails to canonicalize, B3).
+/// The count and the errors are surfaced together so `/trust permissions`
+/// can never report "N installed" when fewer than N actually installed --
+/// the trust path's version of the silent-no-op the load path already
+/// surfaces through `PermissionLoadReport::registration_errors`.
+#[derive(Debug, Clone, Default)]
+pub struct TrustPermissionReport {
+    /// The number of allow rules actually installed by the broker (rules the
+    /// broker dropped are NOT counted -- distinct from the raw parse count).
+    pub installed: usize,
+    /// Typed registration errors for rules the broker refused to install --
+    /// surfaced to the operator through the SAME `Entry::Error { fatal: false }`
+    /// channel `PermissionLoadReport::registration_errors` uses (P-12).
+    pub registration_errors: Vec<conway_core::permission_pattern::RuleRegistrationError>,
+}
+
 /// The result of [`Conway::revoke_permission_pattern`] (board item
 /// 01KYND4WGHSZXW5YQ6ZWHCDDNN): what happened to the in-session grant AND to
 /// whatever file it came from, so the caller can tell the operator the
@@ -370,62 +390,101 @@ impl Conway {
     /// `origin_path`. The flat form desugars to a `Rule` too, so this is the
     /// single install path for allow rules from config. Trust was already
     /// confirmed by the caller (`load_permission_files`); this method does
-    /// not re-check it. A [`When::PathsUnder`] prefix that cannot be
-    /// canonicalized is dropped by the broker (fail closed); the caller
-    /// surfaces that as a notice via the install's `bool` return when it
-    /// matters (today nothing reads it here, since the registration check
-    /// already rejected the structurally-invalid ones).
+    /// not re-check it. Returns the `bool` from
+    /// `PermissionBroker::remember_pattern_rule`: `false` means the broker
+    /// dropped the rule -- today, the only reachable cause from the load
+    /// path is a [`When::PathsUnder`] prefix that cannot be canonicalized
+    /// (B3). The caller surfaces that as a typed
+    /// [`RuleRegistrationReason::PathsUnderPrefixUncanonicalizable`]
+    /// registration error rather than silently swallowing the `bool`.
     ///
     /// `base` is the directory a RELATIVE `paths_under` prefix resolves
     /// against (B2), computed by the caller, which knows which file the rule
     /// came from -- see [`Self::permission_rule_base`].
     fn install_allow_rule(
         &self,
-        rule: conway_core::permission_pattern::Rule,
+        rule: &conway_core::permission_pattern::Rule,
         scope: conway_core::agent::PermissionScope,
         granting_agent: conway_core::ids::AgentId,
         origin_path: std::path::PathBuf,
         base: &std::path::Path,
-    ) {
+    ) -> bool {
         self.rt.permission_broker().remember_pattern_rule(
-            rule,
+            rule.clone(),
             scope,
             granting_agent,
             conway_core::permission_pattern::PatternOrigin::File(origin_path),
             base,
-        );
+        )
     }
 
     /// F12: installs a parsed DENY [`Rule`] from a permissions file at
-    /// `origin_path`. No trust precondition (D4 §3). `base` is as in
-    /// [`Self::install_allow_rule`].
+    /// `origin_path`. No trust precondition (D4 §3). Returns the `bool` from
+    /// `PermissionBroker::remember_deny_rule` -- see
+    /// [`Self::install_allow_rule`] for the `false` contract (B3). `base` is
+    /// as in [`Self::install_allow_rule`].
     fn install_deny_rule(
         &self,
-        rule: conway_core::permission_pattern::Rule,
+        rule: &conway_core::permission_pattern::Rule,
         origin_path: std::path::PathBuf,
         base: &std::path::Path,
-    ) {
+    ) -> bool {
         self.rt.permission_broker().remember_deny_rule(
-            rule,
+            rule.clone(),
             conway_core::permission_pattern::PatternOrigin::File(origin_path),
             base,
-        );
+        )
     }
 
     /// F12: installs a parsed PROMPT [`Rule`] from a permissions file at
     /// `origin_path`. No trust precondition (extension-architecture.md §5.5
-    /// stage 1). `base` is as in [`Self::install_allow_rule`].
+    /// stage 1). Returns the `bool` from
+    /// `PermissionBroker::remember_prompt_rule` -- see
+    /// [`Self::install_allow_rule`] for the `false` contract (B3). `base` is
+    /// as in [`Self::install_allow_rule`].
     fn install_prompt_rule(
         &self,
-        rule: conway_core::permission_pattern::Rule,
+        rule: &conway_core::permission_pattern::Rule,
         origin_path: std::path::PathBuf,
         base: &std::path::Path,
-    ) {
+    ) -> bool {
         self.rt.permission_broker().remember_prompt_rule(
-            rule,
+            rule.clone(),
             conway_core::permission_pattern::PatternOrigin::File(origin_path),
             base,
-        );
+        )
+    }
+
+    /// B3: when an `install_*_rule` call returns `false` for a
+    /// [`When::PathsUnder`] rule, the broker dropped it because
+    /// `canonicalize_when` could not resolve the prefix on disk (a typo, or
+    /// a repo/subdirectory not yet cloned/checked out). Surface that as a
+    /// typed [`RuleRegistrationReason::PathsUnderPrefixUncanonicalizable`]
+    /// registration error instead of silently swallowing the `bool` -- the
+    /// mirror of `68ea9b1`'s `read:*`-matched-nothing bug. Returns `None` for
+    /// every other `when` clause: a non-`PathsUnder` rule's
+    /// `remember_*_rule` never returns `false` from the load path (the `then`
+    /// mismatch is an invariant the load split already enforces), so a
+    /// `false` there would be an invariant violation rather than an
+    /// operator-visible condition.
+    fn uncanonicalizable_paths_under_error(
+        rule: &conway_core::permission_pattern::Rule,
+        installed: bool,
+    ) -> Option<conway_core::permission_pattern::RuleRegistrationError> {
+        if !installed
+            && matches!(
+                rule.when,
+                conway_core::permission_pattern::When::PathsUnder(_)
+            )
+        {
+            Some(conway_core::permission_pattern::RuleRegistrationError {
+                rule: rule.clone(),
+                reason: conway_core::permission_pattern::RuleRegistrationReason::
+                    PathsUnderPrefixUncanonicalizable,
+            })
+        } else {
+            None
+        }
     }
 
     /// Every active PROMPT rule, paired with its origin -- the prompt
@@ -916,7 +975,14 @@ impl Conway {
                     registration_errors.push(err);
                     continue;
                 }
-                self.install_deny_rule(rule, path.clone(), &base);
+                // B3: a `paths_under` prefix that fails to canonicalize is
+                // dropped by the broker; surface it instead of silently
+                // swallowing the `bool` (deny rules apply unconditionally,
+                // so the operator believed this was protecting them).
+                let installed = self.install_deny_rule(&rule, path.clone(), &base);
+                if let Some(err) = Self::uncanonicalizable_paths_under_error(&rule, installed) {
+                    registration_errors.push(err);
+                }
             }
 
             // F12: prompt rules apply unconditionally too (narrowing, D4 §3
@@ -928,7 +994,12 @@ impl Conway {
                     registration_errors.push(err);
                     continue;
                 }
-                self.install_prompt_rule(rule, path.clone(), &base);
+                // B3: same surfacing as the deny arm -- a dropped `prompt`
+                // narrowing rule is a trap the operator will not notice.
+                let installed = self.install_prompt_rule(&rule, path.clone(), &base);
+                if let Some(err) = Self::uncanonicalizable_paths_under_error(&rule, installed) {
+                    registration_errors.push(err);
+                }
             }
 
             let trusted = is_global || trust_store.is_trusted(path, &contents);
@@ -951,7 +1022,15 @@ impl Conway {
                     registration_errors.push(err);
                     continue;
                 }
-                self.install_allow_rule(rule, scope, granting_agent, path.clone(), &base);
+                // B3: same surfacing as the deny/prompt arms -- a dropped
+                // `paths_under` allow rule is fail-CLOSED (the call falls
+                // through to the gate), but the operator still deserves to
+                // know their rule did nothing.
+                let installed =
+                    self.install_allow_rule(&rule, scope, granting_agent, path.clone(), &base);
+                if let Some(err) = Self::uncanonicalizable_paths_under_error(&rule, installed) {
+                    registration_errors.push(err);
+                }
             }
         }
 
@@ -965,8 +1044,11 @@ impl Conway {
     /// Records an explicit trust decision for `path`'s CURRENT bytes on
     /// disk (`crate::config::trust::TrustStore::trust`) and immediately
     /// installs its `allow` rules for this running session -- so trusting
-    /// takes effect now, not only on the next restart. Returns the number
-    /// of allow rules installed. `scope` is the [`PermissionScope`] the
+    /// takes effect now, not only on the next restart. Returns a
+    /// [`TrustPermissionReport`] carrying the number of allow rules
+    /// ACTUALLY installed by the broker AND any typed registration errors
+    /// for rules the broker refused to install (B3: a `paths_under` prefix
+    /// that fails to canonicalize). `scope` is the [`PermissionScope`] the
     /// rules are remembered at, exactly as in
     /// [`Self::load_permission_files`].
     ///
@@ -982,7 +1064,7 @@ impl Conway {
         path: &std::path::Path,
         scope: conway_core::agent::PermissionScope,
         granting_agent: conway_core::ids::AgentId,
-    ) -> std::io::Result<usize> {
+    ) -> std::io::Result<TrustPermissionReport> {
         crate::config::trust::TrustStore::trust(env, path)?;
         let contents = std::fs::read_to_string(path)?;
         let rules = conway_core::permission_pattern::parse_rules(&contents);
@@ -998,21 +1080,42 @@ impl Conway {
         let global_path = crate::config::discovery::xdg_config_path(env)
             .and_then(|settings| settings.parent().map(|dir| dir.join("permissions.json")));
         let base = Self::permission_rule_base(path, global_path.as_deref(), &self.config.cwd);
-        let mut count = 0;
+        let mut installed = 0;
+        let mut registration_errors = Vec::new();
         for rule in rules {
-            if self.validate_rule_registration(&rule).is_some() {
+            if let Some(err) = self.validate_rule_registration(&rule) {
                 // A registration error means the rule was never going to
                 // match; do not count it as installed. `trust_permission_file`
                 // is operator-triggered (`/trust permissions`), so the
-                // operator will have already seen the registration errors from
-                // the prior `load_permission_files` -- re-trusting does not
-                // silently swallow them, it just does not re-report them here.
+                // operator will have already seen THIS class of registration
+                // error (e.g. `PathsUnderOnUnconfinedTool`) from the prior
+                // `load_permission_files` -- re-trusting does not silently
+                // swallow it, it just does not re-report the structurally-
+                // invalid cases here. B3's `PathsUnderPrefixUncanonicalizable`
+                // is a DIFFERENT class: it is not caught by
+                // `validate_rule_registration` (the prefix's existence on
+                // disk is not a structural property), so it surfaces below
+                // via the install `bool`, and IS re-reported here -- a
+                // bad-prefix rule trusted mid-session must not silently
+                // inflate the count.
+                registration_errors.push(err);
                 continue;
             }
-            self.install_allow_rule(rule, scope, granting_agent, path.to_path_buf(), &base);
-            count += 1;
+            // B3: honor the install `bool` -- a rule the broker dropped
+            // (today: a `paths_under` prefix that fails to canonicalize)
+            // must NOT count as installed, and the operator must be told.
+            let was_installed =
+                self.install_allow_rule(&rule, scope, granting_agent, path.to_path_buf(), &base);
+            if let Some(err) = Self::uncanonicalizable_paths_under_error(&rule, was_installed) {
+                registration_errors.push(err);
+                continue;
+            }
+            installed += 1;
         }
-        Ok(count)
+        Ok(TrustPermissionReport {
+            installed,
+            registration_errors,
+        })
     }
 
     pub fn config(&self) -> &ConwayConfig {

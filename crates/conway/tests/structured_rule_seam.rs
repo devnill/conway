@@ -471,7 +471,10 @@ async fn a_relative_paths_under_prefix_resolves_against_the_project_not_the_proc
     let installed = conway
         .trust_permission_file(&env, &project_file, PermissionScope::Session, AgentId::new())
         .expect("trust the project file");
-    assert_eq!(installed, 1, "the relative-prefix rule installs once trusted");
+    assert_eq!(
+        installed.installed, 1,
+        "the relative-prefix rule installs once trusted"
+    );
 
     // The stored rule keeps its relative prefix VERBATIM -- the base is a
     // canonicalization input, never a rewrite of the rule the operator
@@ -677,7 +680,10 @@ async fn a_relative_paths_under_prefix_in_an_ancestor_file_resolves_against_the_
     let installed = conway
         .trust_permission_file(&env, &ancestor_file, PermissionScope::Session, AgentId::new())
         .expect("trust the ancestor file");
-    assert_eq!(installed, 1, "the ancestor file's rule installs once trusted");
+    assert_eq!(
+        installed.installed, 1,
+        "the ancestor file's rule installs once trusted"
+    );
 
     // Turn 1 (observable): ancestor/src auto-allows -- the base is the
     // ancestor, not the launch cwd.
@@ -974,6 +980,309 @@ async fn a_paths_under_deny_rule_on_a_category_with_an_unconfinable_tool_refuses
         "a `paths_under` deny rule matching a category containing an Unconfinable tool (`bash`) \
          must REFUSE the call at decision time -- the decision-time fail-closed fired through the \
          real seam; the call must never be silently allowed: {:?}",
+        gate.requests()
+    );
+}
+
+// =====================================================================
+// (c3) B3: a `paths_under` rule whose prefix FAILS to canonicalize is
+//      surfaced as a typed registration error -- never silently dropped.
+//      (Distinct from B1: there the prefix canonicalizes fine but the
+//      tool's PathArgs can never be confined; here the prefix ITSELF does
+//      not resolve on disk.)
+// =====================================================================
+
+/// **B3, pinned -- the allow arm.** A structured `paths_under` ALLOW rule
+/// whose prefix does not exist on disk (`"nonexistent-dir"`, never created)
+/// is dropped by the broker: `canonicalize_when` -> `CanonicalRoot::new`
+/// fails, so `remember_pattern_rule` returns `false`. The loader surfaces
+/// that as a typed `PathsUnderPrefixUncanonicalizable` registration error
+/// (P-12: operator-visible via A1's `registration_errors` channel; P-10:
+/// typed error, never a panic) instead of silently swallowing the `bool`.
+/// The rule is NOT installed, so a `read` call the operator expected to be
+/// auto-authorized instead reaches the operator's gate (fail-CLOSED -- the
+/// honest outcome, the operator informed). This is the mirror of the
+/// `68ea9b1` `read:*`-matched-nothing bug: a rule that can never match is a
+/// lie the operator will not notice.
+#[tokio::test]
+async fn a_paths_under_allow_rule_with_a_prefix_that_cannot_canonicalize_surfaces_a_registration_error() {
+    let project = TempDir::new().expect("tempdir");
+    // A real file to read -- the call is observable through the real
+    // `ReadTool` -> `PermissionBroker::decide` seam.
+    std::fs::write(project.path().join("file.txt"), b"inside the project")
+        .expect("write fixture file");
+    let (xdg, env) = isolated_env();
+    // A GLOBAL file (trusted-by-authorship) so the allow rule's install path
+    // runs unconditionally. The prefix `nonexistent-dir` is never created, so
+    // `CanonicalRoot::new(<project>/nonexistent-dir)` fails.
+    write_global_permissions(
+        &xdg,
+        r#"{"rules":[{"select":{"tools":["read"]},"when":{"paths_under":"nonexistent-dir"},"then":"allow"}]}"#,
+    );
+
+    let gate = RecordingGate::new(PermissionDecision::AllowOnce);
+    let conway = build_conway(
+        project.path(),
+        vec![
+            ScriptedTurn::Respond(read_call_response(
+                &project.path().join("file.txt").display().to_string(),
+            )),
+            ScriptedTurn::Respond(text_response("done")),
+        ],
+        gate.clone() as Arc<dyn PermissionGate>,
+    );
+    let report = conway.load_permission_files(project.path(), &env, PermissionScope::Session, AgentId::new());
+
+    assert_eq!(
+        report.registration_errors.len(),
+        1,
+        "a `paths_under` allow rule whose prefix does not resolve on disk must surface exactly \
+         one typed registration error -- it was silently dropped before B3: {:?}",
+        report.registration_errors
+    );
+    assert_eq!(
+        report.registration_errors[0].reason,
+        RuleRegistrationReason::PathsUnderPrefixUncanonicalizable,
+        "the error must name the precise reason B3 introduced (distinct from B1's \
+         PathsUnderOnUnconfinedTool -- here the prefix itself is bad, not the tool)"
+    );
+    assert!(
+        matches!(
+            &report.registration_errors[0].rule.when,
+            conway::When::PathsUnder(p) if p == "nonexistent-dir"
+        ),
+        "the rejected rule is carried whole so the operator sees exactly what was refused: {:?}",
+        report.registration_errors[0].rule
+    );
+
+    // The rule was NOT installed, so the read is NOT auto-authorized -- it
+    // reaches the operator's gate (fail-CLOSED: the operator was informed,
+    // and the call is gated rather than silently passing).
+    let handle = conway
+        .new_session(SessionSpec::default())
+        .await
+        .expect("new_session");
+    let turn = handle.prompt("read the file").await.expect("prompt");
+    let _ = tokio::time::timeout(Duration::from_secs(10), turn.result())
+        .await
+        .expect("turn must not hang");
+    assert_eq!(
+        gate.requests().len(),
+        1,
+        "with the bad-prefix allow rule NOT installed, the read reaches the operator's gate \
+         (fail-closed -- the operator was informed, the call was not silently allowed): {:?}",
+        gate.requests()
+    );
+}
+
+/// **B3, pinned -- the deny and prompt arms.** A `paths_under` DENY or
+/// PROMPT rule whose prefix does not exist on disk is dropped by the broker
+/// (`remember_deny_rule`/`remember_prompt_rule` return `false`). The hazard
+/// is sharpest on the deny/prompt side: the operator believed a `paths_under`
+/// deny was protecting them when it was never installed (fail-OPEN against
+/// the operator's expectation). The loader surfaces BOTH as typed
+/// `PathsUnderPrefixUncanonicalizable` registration errors so the operator
+/// learns each narrowing rule never installed -- not just the allow variant.
+#[tokio::test]
+async fn paths_under_deny_and_prompt_rules_with_a_bad_prefix_each_surface_a_registration_error() {
+    let project = TempDir::new().expect("tempdir");
+    // A real file to read -- proves the dropped deny/prompt rules are inert
+    // at decision time (the call reaches the gate, not silently denied nor
+    // silently allowed) through the real ReadTool -> PermissionBroker seam.
+    std::fs::write(project.path().join("file.txt"), b"inside the project")
+        .expect("write fixture file");
+    let (xdg, env) = isolated_env();
+    // A GLOBAL file with one deny and one prompt rule, each over a
+    // nonexistent prefix. Deny/prompt install from every file
+    // unconditionally (D4 §3), so both install paths run.
+    write_global_permissions(
+        &xdg,
+        r#"{"rules":[
+            {"select":{"tools":["read"]},"when":{"paths_under":"missing-deny"},"then":"deny"},
+            {"select":{"tools":["read"]},"when":{"paths_under":"missing-prompt"},"then":"prompt"}
+        ]}"#,
+    );
+
+    let gate = RecordingGate::new(PermissionDecision::AllowOnce);
+    let conway = build_conway(
+        project.path(),
+        vec![
+            ScriptedTurn::Respond(read_call_response(
+                &project.path().join("file.txt").display().to_string(),
+            )),
+            ScriptedTurn::Respond(text_response("done")),
+        ],
+        gate.clone() as Arc<dyn PermissionGate>,
+    );
+    let report = conway.load_permission_files(project.path(), &env, PermissionScope::Session, AgentId::new());
+
+    let deny_errs: Vec<_> = report
+        .registration_errors
+        .iter()
+        .filter(|e| {
+            matches!(
+                &e.rule.when,
+                conway::When::PathsUnder(p) if p == "missing-deny"
+            )
+        })
+        .collect();
+    let prompt_errs: Vec<_> = report
+        .registration_errors
+        .iter()
+        .filter(|e| {
+            matches!(
+                &e.rule.when,
+                conway::When::PathsUnder(p) if p == "missing-prompt"
+            )
+        })
+        .collect();
+
+    assert_eq!(
+        deny_errs.len(),
+        1,
+        "the deny rule with a bad prefix surfaces exactly one registration error: {:?}",
+        report.registration_errors
+    );
+    assert_eq!(
+        deny_errs[0].reason,
+        RuleRegistrationReason::PathsUnderPrefixUncanonicalizable,
+        "the deny error must name B3's reason"
+    );
+    assert_eq!(
+        prompt_errs.len(),
+        1,
+        "the prompt rule with a bad prefix surfaces exactly one registration error: {:?}",
+        report.registration_errors
+    );
+    assert_eq!(
+        prompt_errs[0].reason,
+        RuleRegistrationReason::PathsUnderPrefixUncanonicalizable,
+        "the prompt error must name B3's reason -- the operator learns their narrowing rule \
+         never installed, not just the allow variant"
+    );
+    assert_eq!(
+        report.registration_errors.len(),
+        2,
+        "exactly two registration errors total (one per bad-prefix rule), no more: {:?}",
+        report.registration_errors
+    );
+
+    // Fail-closed posture (P-13): the dropped deny/prompt rules were never
+    // installed, so a matching `read` call is neither silently denied (the
+    // deny never fired) nor silently allowed -- it reaches the operator's
+    // gate. Symmetric with the allow-arm and trust tests' gate assertion;
+    // proves the dropped narrowing rules are inert at decision time, not
+    // enforced or bypassed.
+    let handle = conway
+        .new_session(SessionSpec::default())
+        .await
+        .expect("new_session");
+    let turn = handle.prompt("read the file").await.expect("prompt");
+    let _ = tokio::time::timeout(Duration::from_secs(10), turn.result())
+        .await
+        .expect("turn must not hang");
+    assert_eq!(
+        gate.requests().len(),
+        1,
+        "with the bad-prefix deny/prompt rules NOT installed, the read reaches the operator's \
+         gate -- the dropped narrowing rules are inert (neither deny nor forced prompt fires), \
+         so the call is gated rather than silently refused or silently allowed: {:?}",
+        gate.requests()
+    );
+}
+
+/// **B3, pinned -- the `/trust permissions` path.** A project file's
+/// `paths_under` allow rule with a nonexistent prefix is held for trust,
+/// then `trust_permission_file` is invoked. Before B3 the trust path
+/// discarded the install `bool` and counted the dropped rule as installed
+/// (`count += 1` unconditional) -- so `/trust permissions` reported "1
+/// allow rule(s) installed" for a rule the broker dropped as
+/// uncanonicalizable. The fix honors the `bool`: the dropped rule is NOT
+/// counted, and the same `PathsUnderPrefixUncanonicalizable` registration
+/// error is surfaced through the trust report (P-12: operator-visible --
+/// the TUI renders each through the same `Entry::Error { fatal: false }`
+/// channel the load path uses). The rule is NOT installed, so a matching
+/// read still reaches the gate.
+#[tokio::test]
+async fn trusting_a_project_file_with_a_bad_prefix_does_not_count_the_dropped_rule_and_informs_the_operator() {
+    let project = TempDir::new().expect("tempdir");
+    std::fs::write(project.path().join("file.txt"), b"inside the project")
+        .expect("write fixture file");
+    let (_xdg, env) = isolated_env();
+    write_project_permissions(
+        &project,
+        r#"{"rules":[{"select":{"tools":["read"]},"when":{"paths_under":"nonexistent-dir"},"then":"allow"}]}"#,
+    );
+
+    let gate = RecordingGate::new(PermissionDecision::AllowOnce);
+    let conway = build_conway(
+        project.path(),
+        vec![
+            ScriptedTurn::Respond(read_call_response(
+                &project.path().join("file.txt").display().to_string(),
+            )),
+            ScriptedTurn::Respond(text_response("done")),
+        ],
+        gate.clone() as Arc<dyn PermissionGate>,
+    );
+
+    // Load: the project file's allow rule is held for trust (not installed
+    // yet), so no registration error at startup -- the bad prefix is not
+    // even probed until the rule is trusted and installed.
+    let report =
+        conway.load_permission_files(project.path(), &env, PermissionScope::Session, AgentId::new());
+    assert!(
+        report.registration_errors.is_empty(),
+        "an untrusted project file's allow rules are not installed yet, so no bad-prefix \
+         registration error at load: {:?}",
+        report.registration_errors
+    );
+    assert_eq!(
+        report.notices.len(),
+        1,
+        "the untrusted project file's allow rule is held with a notice: {:?}",
+        report.notices
+    );
+
+    // Trust: the bad-prefix rule is probed, dropped by the broker, and
+    // surfaced -- NOT counted as installed.
+    let project_file = project.path().join(".conway").join("permissions.json");
+    let trust_report = conway
+        .trust_permission_file(&env, &project_file, PermissionScope::Session, AgentId::new())
+        .expect("trust the project file");
+    assert_eq!(
+        trust_report.installed, 0,
+        "the bad-prefix rule must NOT be counted as installed -- `/trust permissions` must \
+         never report `1 installed` for a rule the broker dropped as uncanonicalizable"
+    );
+    assert_eq!(
+        trust_report.registration_errors.len(),
+        1,
+        "the trust path surfaces the same typed registration error as the load path: {:?}",
+        trust_report.registration_errors
+    );
+    assert_eq!(
+        trust_report.registration_errors[0].reason,
+        RuleRegistrationReason::PathsUnderPrefixUncanonicalizable,
+        "the trust-path error must name B3's reason"
+    );
+
+    // The rule was NOT installed, so the read is NOT auto-authorized -- it
+    // reaches the operator's gate (fail-CLOSED). The operator was informed
+    // (registration error in the trust report) and the call is gated rather
+    // than silently allowed.
+    let handle = conway
+        .new_session(SessionSpec::default())
+        .await
+        .expect("new_session");
+    let turn = handle.prompt("read the file").await.expect("prompt");
+    let _ = tokio::time::timeout(Duration::from_secs(10), turn.result())
+        .await
+        .expect("turn must not hang");
+    assert_eq!(
+        gate.requests().len(),
+        1,
+        "with the bad-prefix rule NOT installed, the read reaches the operator's gate: {:?}",
         gate.requests()
     );
 }

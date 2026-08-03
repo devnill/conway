@@ -743,6 +743,26 @@ pub enum RuleRegistrationReason {
     /// broker simply never matches it and the call falls through to the
     /// operator's gate), so this is NOT raised for allow rules.
     PathsUnderOnUnconfinedTool,
+    /// `when: paths_under` named a prefix that FAILS to canonicalize -- the
+    /// directory does not exist on disk (a typo, or a repo/subdirectory not
+    /// yet cloned/checked out), or it contains a NUL byte, or
+    /// `resolve_like_the_tool_will` could not resolve it. The broker's
+    /// `remember_*_rule` drops such a rule (fail closed: a rule whose
+    /// boundary cannot be established confers no boundary), returning
+    /// `false` -- and the loader surfaces that here instead of silently
+    /// swallowing the `bool`, so the operator learns the rule was never
+    /// installed. This is the mirror of the `68ea9b1` `read:*`-matched-nothing
+    /// bug: a rule that can never match is a lie the operator will not
+    /// notice. For `then: deny`/`prompt` the hazard is sharpest -- the
+    /// operator believes a `paths_under` deny is protecting them when it was
+    /// never installed (fail-OPEN against the operator's expectation); for
+    /// `then: allow` the call simply falls through to the gate (fail-CLOSED),
+    /// but the operator still deserves to know their rule did nothing.
+    /// Distinct from [`Self::PathsUnderOnUnconfinedTool`]: that fires when
+    /// the prefix canonicalizes FINE but the selected tool's `PathArgs` can
+    /// never be confined; this fires when the prefix ITSELF cannot be
+    /// canonicalized, regardless of the tool.
+    PathsUnderPrefixUncanonicalizable,
 }
 
 impl RuleRegistrationReason {
@@ -760,6 +780,11 @@ impl RuleRegistrationReason {
                  a `deny`/`prompt` rule selecting it would be silently inert -- fail \
                  open. Use `command_prefix` to scope the unconfinable tool, or drop it \
                  from the `select`"
+            }
+            RuleRegistrationReason::PathsUnderPrefixUncanonicalizable => {
+                "`paths_under` names a prefix that does not resolve on disk (a typo, or \
+                 a directory not yet cloned/checked out); the rule was never installed, \
+                 so it protects nothing -- fix the prefix or create the directory"
             }
         }
     }
