@@ -725,6 +725,24 @@ pub enum RuleRegistrationReason {
     /// (the flat `tool:*` form) for "any invocation", or `when: paths_under`
     /// for path-scoped rules.
     CommandPrefixOnStructuredTool,
+    /// `when: paths_under` was paired with a `then: deny` (or `prompt`) rule
+    /// selecting a tool whose `PathArgs` is not `Named` -- i.e.
+    /// `Unconfinable` (such as `bash`: a free-form shell command the broker
+    /// cannot statically confine) or `None` (no path arguments at all). A
+    /// `paths_under` predicate can never be satisfied for such a tool, so the
+    /// rule is silently inert. For `Unconfinable` that inertness is fail-OPEN
+    /// -- the command can still reach the prefix, so the call the operator
+    /// expected to be refused instead goes through (P-13). For `None` the
+    /// rule is a no-op rather than fail-open (the tool takes no paths, so it
+    /// cannot reach the prefix), but the loader still refuses to install it
+    /// silently so the operator learns the rule does nothing -- a no-op deny
+    /// is a trap worth surfacing. In both cases the loader surfaces this
+    /// error so the operator can rewrite the rule (e.g. scope it to the
+    /// tool's `command_prefix`, or drop the unconfinable tool from the
+    /// select). For `then: allow` the same inertness is fail-CLOSED (the
+    /// broker simply never matches it and the call falls through to the
+    /// operator's gate), so this is NOT raised for allow rules.
+    PathsUnderOnUnconfinedTool,
 }
 
 impl RuleRegistrationReason {
@@ -735,6 +753,13 @@ impl RuleRegistrationReason {
                 "`command_prefix` cannot be used against a tool whose rendering is \
                  structured (a JSON dump); use `always` (the `tool:*` flat form) or \
                  `paths_under` instead"
+            }
+            RuleRegistrationReason::PathsUnderOnUnconfinedTool => {
+                "`paths_under` cannot confine a tool whose path arguments are not \
+                 statically declared (e.g. `bash`, whose `command` can reach anywhere); \
+                 a `deny`/`prompt` rule selecting it would be silently inert -- fail \
+                 open. Use `command_prefix` to scope the unconfinable tool, or drop it \
+                 from the `select`"
             }
         }
     }

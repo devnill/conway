@@ -260,36 +260,108 @@ impl Conway {
         self.rt.tool_render_kind(name)
     }
 
+    /// B1: the `PathArgs` a registered tool declares for itself, by name, or
+    /// `None` if no plugin registered that tool. The structured-rule
+    /// registration check (`validate_rule_registration`) uses this to surface
+    /// a typed `PathsUnderOnUnconfinedTool` error when a `paths_under`
+    /// deny/prompt rule is paired with a tool whose `PathArgs` is not `Named`
+    /// (`Unconfinable` such as `bash`, or `None`) -- a `paths_under` predicate
+    /// can never confine such a tool, so a `then: deny/prompt` rule selecting
+    /// it is silently inert (fail-OPEN). Reads the already-resolved tool the
+    /// same way `tool_render_kind` does; no new resolution path.
+    pub fn tool_path_args(
+        &self,
+        name: &conway_core::ids::ToolName,
+    ) -> Option<conway_core::ports::PathArgs> {
+        self.rt.tool_path_args(name)
+    }
+
     /// F12: validates a parsed [`Rule`] against the registered tools, the
     /// single registration check the structured form needs. Returns a typed
     /// [`RuleRegistrationError`] for a rule this loader will refuse to
     /// install silently rather than store inert -- the mirror of the
-    /// `68ea9b1` `read:*`-matched-nothing bug. Today the only check is:
-    /// `when: command_prefix` paired with a `select: tools([t])` whose
+    /// `68ea9b1` `read:*`-matched-nothing bug. Two checks today:
+    /// (1) `when: command_prefix` paired with a `select: tools([t])` whose
     /// resolved `render_kind` is `Structured` (a JSON dump whose token
-    /// boundaries the operator cannot predict). A `tools` pattern naming an
-    /// UNKNOWN tool is NOT a registration error here -- the broker simply
-    /// never matches it, and an unknown tool can be registered later in the
-    /// same session; refusing it at load time would be a load-order hazard.
+    /// boundaries the operator cannot predict);
+    /// (2) B1: `when: paths_under` paired with a `then: deny`/`prompt` rule
+    /// whose `select: tools([t...])` contains any exactly-named tool whose
+    /// resolved `PathArgs` is not `Named` (`Unconfinable` such as `bash`, or
+    /// `None`) -- a `paths_under` predicate can never confine such a tool, so
+    /// the rule is silently inert and fail-OPEN for deny/prompt. A `tools`
+    /// pattern naming an UNKNOWN tool is NOT a registration error here -- the
+    /// broker simply never matches it, and an unknown tool can be registered
+    /// later in the same session; refusing it at load time would be a
+    /// load-order hazard. A `Select::Categories` and a trailing-`*` wildcard
+    /// are not inspectable here (members may register later) and are left to
+    /// the decision-time fail-closed in `rule_denies_or_prompts`.
     fn validate_rule_registration(
         &self,
         rule: &conway_core::permission_pattern::Rule,
     ) -> Option<conway_core::permission_pattern::RuleRegistrationError> {
         use conway_core::permission_pattern::{RuleRegistrationReason, Select, When};
-        let tool = match (&rule.select, &rule.when) {
-            (Select::Tools(ts), When::CommandPrefix(_)) if ts.len() == 1 => ts[0].as_str(),
-            _ => return None,
-        };
-        match self.tool_render_kind(&conway_core::ids::ToolName::new(tool)) {
-            Some(conway_core::ports::RenderKind::Structured) => {
-                Some(conway_core::permission_pattern::RuleRegistrationError {
-                    rule: rule.clone(),
-                    reason: RuleRegistrationReason::CommandPrefixOnStructuredTool,
+        match (&rule.select, &rule.when) {
+            (Select::Tools(ts), When::CommandPrefix(_)) if ts.len() == 1 => {
+                let tool = ts[0].as_str();
+                match self.tool_render_kind(&conway_core::ids::ToolName::new(tool)) {
+                    Some(conway_core::ports::RenderKind::Structured) => {
+                        Some(conway_core::permission_pattern::RuleRegistrationError {
+                            rule: rule.clone(),
+                            reason: RuleRegistrationReason::CommandPrefixOnStructuredTool,
+                        })
+                    }
+                    // `ShellCommand` is exactly the tool `command_prefix` was
+                    // designed for; `None` (unknown tool) is left for the broker to
+                    // never match, not a registration error (load-order hazard).
+                    _ => None,
+                }
+            }
+            // B1: a `paths_under` rule can never confine a tool whose
+            // `PathArgs` is not `Named`. For `then: deny/prompt` selecting an
+            // `Unconfinable` tool (e.g. `bash`) that inertness is fail-OPEN --
+            // the command can still reach the prefix, so the call the operator
+            // expected to be refused instead goes through. For a `None` tool
+            // (no path args) the rule is a no-op rather than fail-open, but a
+            // no-op deny is still a trap worth surfacing. In both cases the
+            // loader refuses to install it silently and surfaces a typed
+            // error. For `then: allow` the same inertness is fail-CLOSED (the
+            // broker simply never matches it and the call falls through to the
+            // gate), so it is NOT raised here.
+            //
+            // Multi-tool / mixed Select: fire when ANY exactly-named selected
+            // tool resolves to a non-`Named` `PathArgs` (P-13: fail closed --
+            // if any tool in the select can't be path-confined, the deny/prompt
+            // rule is silently inert for that tool, which is the hazard; the
+            // operator is informed and can split the rule). A trailing-`*`
+            // wildcard pattern is NOT resolvable to a single tool here (no
+            // tool is named `*`), so it is skipped at install time -- the
+            // decision-time fail-closed in `rule_denies_or_prompts` covers it.
+            // An unknown tool (`path_args == None`) is skipped too, mirroring
+            // the CommandPrefix check's load-order-hazard reasoning. A
+            // `Select::Categories` is not inspectable at install time (its
+            // member tools may register later in the same session), so it is
+            // left to the decision-time fail-closed as well.
+            (Select::Tools(ts), When::PathsUnder(_))
+                if rule.then == conway_core::permission_pattern::Then::Deny
+                    || rule.then == conway_core::permission_pattern::Then::Prompt =>
+            {
+                ts.iter().find_map(|p| {
+                    // A trailing-`*` wildcard cannot be resolved to one tool.
+                    if p == "*" || p.ends_with('*') {
+                        return None;
+                    }
+                    match self.tool_path_args(&conway_core::ids::ToolName::new(p)) {
+                        Some(conway_core::ports::PathArgs::Named(_)) | None => None,
+                        // `Unconfinable` or `None` (or any future
+                        // `#[non_exhaustive]` variant): a `paths_under` rule
+                        // can never confine this tool -- fail closed.
+                        Some(_) => Some(conway_core::permission_pattern::RuleRegistrationError {
+                            rule: rule.clone(),
+                            reason: RuleRegistrationReason::PathsUnderOnUnconfinedTool,
+                        }),
+                    }
                 })
             }
-            // `ShellCommand` is exactly the tool `command_prefix` was
-            // designed for; `None` (unknown tool) is left for the broker to
-            // never match, not a registration error (load-order hazard).
             _ => None,
         }
     }

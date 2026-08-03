@@ -175,6 +175,26 @@ any tool that declares itself `Unconfinable`) never satisfies a
 `paths_under` rule regardless of what it names — fail closed, the same
 asymmetry the confinement root uses.
 
+**`paths_under` cannot confine an `Unconfinable` tool — and on `deny`/`prompt`
+that is a registration error.** A `paths_under` predicate can never be satisfied
+for a tool whose `PathArgs` is not `Named` — `Unconfinable` (e.g. `bash`, whose
+free-form `command` can reach anywhere) or `None` (no path arguments at all).
+For `then: allow` that inertness is fail-CLOSED: the broker simply never matches
+the rule and the call falls through to the operator's gate, so it is NOT a
+registration error. For `then: deny`/`prompt` the same inertness is fail-OPEN:
+the call you expected to be refused instead goes through. The loader refuses to
+install such a `deny`/`prompt` rule silently and surfaces a typed
+`PathsUnderOnUnconfinedTool` registration error (visible as a red transcript
+notice at startup, naming the rule and the reason). Rewrite the rule — scope the
+unconfinable tool with `command_prefix` (e.g.
+`{ "select": { "tools": ["bash"] }, "when": { "command_prefix": "curl" }, "then": "deny" }`),
+or drop the unconfinable tool from the `select`. A `Select::Categories` (whose
+member tools may register after the rule is loaded) and a trailing-`*` wildcard
+`Select::Tools` are not inspectable at load time, so for those the broker
+fail-closes at decision time instead: an `Unconfinable` tool matching the
+select under a `paths_under` `deny`/`prompt` rule is refused, never silently
+allowed.
+
 **A relative `paths_under` prefix resolves against the project, not wherever
 conway happened to be launched from.** In a project file
 (`<project>/.conway/permissions.json`), a prefix like `"src"` means
