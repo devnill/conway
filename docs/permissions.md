@@ -206,6 +206,25 @@ there is no containing project, so a relative prefix resolves against the
 agent's working directory at load time. An absolute prefix is used exactly
 as written in both files.
 
+**A `paths_under` prefix that does not resolve on disk is a registration
+error, not a silent no-op.** A `paths_under` rule names a directory the
+broker must canonicalize into a confinement root; if that directory does not
+exist (a typo, or a repo/subdirectory not yet cloned/checked out) the rule
+confers no boundary and the broker refuses to install it. The loader surfaces
+that as a typed `PathsUnderPrefixUncanonicalizable` registration error
+(visible as a red transcript notice at startup, naming the rule and the
+reason) instead of silently dropping it — the mirror of the
+`read:*`-matched-nothing bug: a rule that can never match is a lie the
+operator will not notice. For `then: deny`/`prompt` the hazard is sharpest:
+you believed a `paths_under` deny was protecting you when it was never
+installed. The same surfacing fires on the `/trust permissions` path, and a
+dropped rule is never counted in the "N allow rule(s) installed" report, so
+`/trust permissions` cannot report `1 installed` for a rule the broker
+dropped. Fix the prefix or create the directory. (Distinct from
+`PathsUnderOnUnconfinedTool`: that fires when the prefix canonicalizes fine
+but the selected tool's path arguments can never be confined; this fires when
+the prefix itself cannot be canonicalized, regardless of the tool.)
+
 **`command_prefix` is for shell renderings only.** A `command_prefix` rule
 paired with a tool whose rendering is a structured JSON dump (every built-in
 except `bash`) is rejected at load time and surfaced as a typed registration

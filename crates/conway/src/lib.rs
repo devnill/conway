@@ -34,7 +34,7 @@ mod session_handle;
 mod subagent_spec;
 
 pub use builder::ConwayBuilder;
-pub use conway::{Conway, PermissionLoadReport, RevokeOutcome};
+pub use conway::{Conway, PermissionLoadReport, RevokeOutcome, TrustPermissionReport};
 pub use error::{ConwayError, Result};
 pub use event_stream::EventStream;
 pub use intent::AgentIntent;
