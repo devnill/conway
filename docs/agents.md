@@ -196,3 +196,33 @@ the full explanation and the danger of confusing the two. Permission
 depth — pattern grants, project trust, how a `Dangerous`-class tool call
 like `conway_subagent` gets approved — is covered in
 [`permissions.md`](permissions.md).
+
+## The `cd` tool: moving the working directory mid-session
+
+Where `--cwd` sets the working directory once at launch, the built-in
+`cd` tool lets the *agent* move it during a session. It takes one `path`
+argument (absolute, or relative to the current working directory) and
+every subsequent tool call that resolves a relative path — `read`,
+`write`, `edit`, `glob`, `grep`, `bash` — starts from the new directory.
+
+Three semantics worth knowing before you (or the model) reach for it:
+
+- **A `cd` takes effect starting the *next* batch of tool calls, not the
+  current one.** A `cd` issued alongside a `read` in the same batch does
+  not affect that `read`. For a one-off move — run this single command
+  somewhere else, then come back — the per-call `cwd` argument on
+  `bash`/`glob`/`grep` applies immediately, like a `(cd X && cmd)`
+  subshell, and leaves the session's working directory untouched. Use
+  `cd` only for a persistent move.
+- **`cd` never changes where the session started.** A resumed session
+  returns to its original spawn directory; the move is live state, not
+  part of the session's identity.
+- **`cd` is confined by the agent's root.** Its `path` argument is a
+  declared path, so the same confinement check that guards `read`/`write`
+  applies: under `--root`, a `cd` to a directory outside the root is
+  denied before the permission gate is consulted — an agent cannot move
+  its working directory somewhere it is not allowed to work. It is in
+  the `Move` category, which matters for [`permissions.md`](permissions.md)
+  rules that select by category (and for plan mode, which does not permit
+  `Move`).
+

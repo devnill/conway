@@ -504,7 +504,8 @@ does:
   supplied by whoever assembles the `Conway` you're running) — filesystem,
   network, credentials, the ability to exec, everything the `conway`
   process itself can do, a plugin can do too, with no sandbox around it and
-  nothing special about the built-in tools (`bash`, `read`, `write`, `edit`)
+  nothing special about the built-in tools (`bash`, `read`, `write`, `edit`,
+  `cd`)
   that would set them apart from a third-party one. There is currently no
   on-disk, digest-checked ceremony for trusting a *plugin* the way one
   exists for a `permissions.json` file — the only trust decision that
