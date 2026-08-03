@@ -1254,10 +1254,14 @@ impl PermissionBroker {
                 },
             );
             return PermissionOutcome::Deny {
+                // Min-4: the gap between the two sentences is `{:>22}` on an
+                // empty string (22 spaces, byte-identical to the literal run
+                // it replaces) -- the source holds no fragile 22-space run.
                 rendered_error: format!(
-                    "plan mode: `{}` is a {:?} tool, which plan mode does not permit.                      Switch modes in /settings to run it.",
+                    "plan mode: `{}` is a {:?} tool, which plan mode does not permit.{:>22}Switch modes in /settings to run it.",
                     call.tool.as_str(),
-                    call.category
+                    call.category,
+                    ""
                 ),
             };
         }
