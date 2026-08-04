@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use crate::content::{Artifact, ContentBlock, ToolCall, ToolSpec, TruncationPolicy};
 use crate::error::{CwdError, ToolError};
 use crate::ids::{AgentId, ModelRef, SessionId, ToolName};
-use crate::ports::{EventSinkHandle, SubagentHost};
+use crate::ports::{EventSinkHandle, SubagentHandle};
 use crate::segment::PromptSegment;
 
 /// A source of tools: a plugin declares its identity and the tools it
@@ -383,9 +383,14 @@ pub struct ToolCtx {
     pub cancel: CancellationToken,
     /// Progress reporting; see [`EventSinkHandle`].
     pub events: EventSinkHandle,
-    /// The cycle-breaker for the fork/spawn tool: the same trait object the
-    /// developer API (`SessionHandle::fork`/`spawn`) calls.
-    pub subagents: Arc<dyn SubagentHost>,
+    /// The cycle-breaker for the fork/spawn tool: a [`SubagentHandle`] bound
+    /// to [`Self::agent_id`] -- the same underlying host the developer API
+    /// (`SessionHandle::fork`/`spawn`) calls, narrowed to a caller-bound
+    /// handle with no way to act as a different agent (P-1, structural --
+    /// see [`SubagentHandle`]'s own doc). Was `Arc<dyn SubagentHost>` until
+    /// this narrowed it: the same widening `chdir` underwent for the cwd
+    /// capability.
+    pub subagents: SubagentHandle,
     pub config: Arc<PluginConfig>,
 }
 
@@ -398,7 +403,7 @@ impl std::fmt::Debug for ToolCtx {
             .field("chdir", &self.chdir)
             .field("cancel", &self.cancel)
             .field("events", &"<dyn EventSink>")
-            .field("subagents", &"<dyn SubagentHost>")
+            .field("subagents", &self.subagents)
             .field("config", &self.config)
             .finish()
     }
