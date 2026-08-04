@@ -1297,6 +1297,14 @@ per-plugin guarded handle. Every method checks the calling plugin's granted
 caps and returns `RuntimeError::CapabilityDenied { plugin, cap }` when
 `subagent.spawn` is absent.
 
+> **Status (2026-08-04), board item 01KZ59SXNQ3BRXP49V4JW10N72 (C1).**
+> `ToolCtx.subagents` is now a `SubagentHandle` rather than a bare
+> `Arc<dyn SubagentHost>` — but keyed on the calling AGENT's identity, not on
+> a plugin's granted capabilities. No grant is consulted and
+> `CapabilityDenied` does not exist. The capability mechanism described here
+> is still unbuilt and would now extend an existing handle rather than
+> introduce one. See `d4-trust-model.md` §7's status note.
+
 **The mechanism costs no new `ToolCtx` field and involves no name check.**
 `RegisteredTool` already carries `plugin_id`
 (`crates/conway-runtime/src/tools/registry.rs:23`, currently used only for
@@ -2186,6 +2194,17 @@ resurrect the carve-out by pointing at D1.
 wire. D4 rejected a reduced `ToolCtx` outright and instead keyed reduction on
 the operator's grant applied identically to built-ins, requiring
 `ToolCtx.subagents` itself to become a guarded handle in Rust.
+
+> **Status (2026-08-04), board item 01KZ59SXNQ3BRXP49V4JW10N72 (C1).** The
+> premise "a compiled-in third-party plugin would hold an unguarded
+> `SubagentHost`" is now partly false: every tool, compiled-in or remote,
+> holds a `SubagentHandle` that confines it to its own subtree by
+> construction. That closes the cross-tree hole independently of any grant
+> mechanism, so the "unguarded" case below is now specifically "unguarded
+> with respect to CAPABILITY GRANTS" — a tool can still spend tokens and
+> spawn freely within its own subtree without any operator grant. The
+> conflict this section resolves is therefore still live for grants, and the
+> resolution still stands; only the severity of the D3-only scenario drops.
 
 **Decided: they are the same answer, and D4's is strictly stronger, so D4's
 mechanism is the enforcement point.** D3's stops at the wire. If only D3

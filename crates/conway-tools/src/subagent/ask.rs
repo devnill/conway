@@ -153,15 +153,12 @@ impl Tool for AskTool {
             root: None,
         };
 
-        // P-1 (board item 01KYTP0PGKJ4VCJP5TD39A1WHF): `caller` and `parent`
-        // are BOTH `ctx.agent_id`, same rationale as `conway_subagent`'s
-        // `start` call -- `conway_ask` always forks the CALLING agent's own
-        // context; `AskArgs` has no field naming a different parent.
-        let outcome = ctx
-            .subagents
-            .ask(ctx.agent_id, ctx.agent_id, spec)
-            .await
-            .map_err(host_error)?;
+        // P-1 (board item 01KYTP0PGKJ4VCJP5TD39A1WHF, structural since
+        // `SubagentHandle`), same rationale as `conway_subagent`'s `start`
+        // call -- `ctx.subagents.ask` has no `caller`/`parent` parameter at
+        // all, so `conway_ask` always forks the CALLING agent's own
+        // context; `AskArgs` has no field naming a different parent either.
+        let outcome = ctx.subagents.ask(spec).await.map_err(host_error)?;
 
         // P-2: the persisted ToolOutput names the child session via an
         // `EphemeralSessionRef` artifact pointing at the child's

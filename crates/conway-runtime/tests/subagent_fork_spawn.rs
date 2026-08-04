@@ -1457,8 +1457,9 @@ async fn tree_scopes_to_the_callers_own_subtree_not_the_whole_runtime() {
 }
 
 // ---------------------------------------------------------------------
-// ToolCtx::subagents IS the Runtime: a tool that forks through it produces
-// a child visible in this same runtime's tree.
+// ToolCtx::subagents is BACKED BY this Runtime (via `SubagentHandle`, board
+// item C1): a tool that forks through it produces a child visible in this
+// same runtime's tree.
 // ---------------------------------------------------------------------
 
 struct ForkingTool;
@@ -1484,13 +1485,12 @@ impl conway_core::ports::Tool for ForkingTool {
         _call: conway_core::content::ToolCall,
         ctx: conway_core::ports::ToolCtx,
     ) -> Result<conway_core::ports::ToolOutput, ToolError> {
+        // Board item C1: `ctx.subagents` is now a `SubagentHandle` with
+        // this agent's own id already baked in -- no `caller`/`parent`
+        // arguments to pass here anymore.
         let child = ctx
             .subagents
-            .start(
-                ctx.agent_id,
-                ctx.agent_id,
-                SubagentSpec::fork("nested", Budget::default()),
-            )
+            .start(SubagentSpec::fork("nested", Budget::default()))
             .await
             .map_err(|e| ToolError::Internal {
                 detail: e.to_string(),
