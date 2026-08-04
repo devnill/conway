@@ -6,8 +6,18 @@
 
 use crate::config::schema::{PermissionMode, PermissionsConfig};
 
-/// The built-in plugin set (`conway-tools`' `fs`, `shell`, `subagent`, and
-/// `report` plugins), unchanged.
+/// The full built-in plugin CANDIDATE set (`conway-tools`' `fs`, `shell`,
+/// `subagent`, and `report` plugins), unchanged.
+///
+/// **Not every candidate returned here necessarily ends up registered.**
+/// `ConwayBuilder::build` filters this list through a `PluginSelection`
+/// (board item: bash ships on by default and cannot be declined) before
+/// installing anything -- by default every candidate except `conway.shell`
+/// (bash), which requires a deliberate opt-in (see
+/// `crate::config::schema::ToolsConfig`'s doc and `ConwayBuilder::
+/// with_builtin_plugins`). This function itself still returns all four,
+/// unfiltered: it is the raw candidate source the builder filters, not the
+/// filtering policy.
 ///
 /// Gated on the `builtin-tools` feature: with it disabled, the crate has no
 /// `conway-tools` dependency and this function does not exist, rather than

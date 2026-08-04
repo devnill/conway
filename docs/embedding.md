@@ -172,6 +172,45 @@ let conway = ConwayBuilder::from_config(".conway/settings.json")?
     .build()?;
 ```
 
+### Built-in plugin selection (bash is opt-in)
+
+`build()` no longer registers all four `conway-tools` built-ins
+unconditionally. `fs`, `subagent`, and `report` are still on by default;
+`conway.shell` (bash — arbitrary shell command execution) is not, and
+getting it requires a deliberate act. This is filtered by manifest id
+through `PluginSelection`, the same mechanism a bundle of your own
+third-party plugins could use for identical selection UX — it is not a
+bash-specific switch:
+
+```rust
+pub enum PluginSelection {
+    All,
+    None,
+    Only(Vec<String>),
+    AllExcept(Vec<String>),
+}
+```
+
+Two ways to opt in, in increasing order of precedence:
+
+- **Config**: `ConwayConfig::tools.builtin_plugins` (`Vec<String>` of
+  manifest ids) defaults to `["conway.fs", "conway.subagent",
+  "conway.report"]`. Add `"conway.shell"` to it — in a loaded
+  `settings.json`, or in a `ConwayConfig` you build by hand for
+  `from_parts()` — to include bash.
+- **Builder**: `ConwayBuilder::with_builtin_plugins(selection)` overrides
+  the config-derived selection outright, e.g.
+  `.with_builtin_plugins(PluginSelection::All)` for "every built-in,
+  exactly like before this default changed."
+
+Not calling `with_builtin_plugins` at all is the common case and reads the
+config-derived selection instead — so a plain `ConwayBuilder::discover()?
+.build()?` on an unmodified config gets `fs`/`subagent`/`report` only.
+**A plugin injected via `with_plugin` is never filtered by this** — calling
+`with_plugin` is already the explicit, per-plugin declaration this
+mechanism exists to require of built-ins too, so an already-explicit call
+gains no new hoop to jump through.
+
 ## Consuming the event stream
 
 `SessionHandle::events()` and `TurnHandle::events()` both return

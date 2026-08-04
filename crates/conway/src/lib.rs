@@ -33,7 +33,7 @@ pub mod presets;
 mod session_handle;
 mod subagent_spec;
 
-pub use builder::ConwayBuilder;
+pub use builder::{ConwayBuilder, PluginSelection};
 pub use conway::{Conway, PermissionLoadReport, RevokeOutcome, TrustPermissionReport};
 pub use error::{ConwayError, Result};
 pub use event_stream::EventStream;
