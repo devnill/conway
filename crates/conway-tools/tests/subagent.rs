@@ -265,7 +265,6 @@ async fn ask_tool_calls_subagent_host_ask_with_ephemeral_fork_spec() {
     assert_eq!(spec.agent_def, None);
     assert_eq!(spec.role, None);
     assert_eq!(spec.tools, None);
-    assert!(spec.await_result);
 
     // GP-01: the model sees the full, clean reply text.
     assert_eq!(text_of(&out), "curated brief");

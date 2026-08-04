@@ -238,7 +238,6 @@ fn ask_fork_spec(prompt: &str) -> SubagentSpec {
         budget: Budget::default(),
         cache_hint: true,
         result_contract: None,
-        await_result: true,
         keep_alive: false,
         ephemeral: true,
         ask_origin: None,

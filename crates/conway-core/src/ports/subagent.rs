@@ -303,6 +303,7 @@ fn translate(err: RuntimeError) -> SubagentError {
             SubagentError::NotInSubtree { caller, target }
         }
         RuntimeError::AskRequiresFork { mode } => SubagentError::AskRequiresFork { mode },
+        RuntimeError::InvalidSpec { detail } => SubagentError::InvalidSpec { detail },
         RuntimeError::AgentNotInSession { .. }
         | RuntimeError::AgentNotLive { .. }
         | RuntimeError::BudgetExceeded { .. }
@@ -578,6 +579,28 @@ mod tests {
 
         let err = block_on(handle.ask(fork_spec())).unwrap_err();
         assert_eq!(err, SubagentError::AskRequiresFork { mode });
+    }
+
+    /// `RuntimeError::InvalidSpec` -- a caller-correctable spec rejection --
+    /// translates to `SubagentError::InvalidSpec`, not `Host`: this is the
+    /// unit-level pin for the mapping; `conway-runtime`'s
+    /// `subagent_fork_spawn.rs` drives the real end-to-end spec rejection
+    /// through a genuine `Runtime`.
+    #[test]
+    fn invalid_spec_translates_to_invalid_spec() {
+        let agent_id = AgentId::new();
+        let host = Arc::new(RecordingHost::with_error(RuntimeError::InvalidSpec {
+            detail: "subagent cwd /nope does not exist".into(),
+        }));
+        let handle = SubagentHandle::new(host, agent_id);
+
+        let err = block_on(handle.start(fork_spec())).unwrap_err();
+        assert_eq!(
+            err,
+            SubagentError::InvalidSpec {
+                detail: "subagent cwd /nope does not exist".into()
+            }
+        );
     }
 
     /// Every other `RuntimeError` variant -- `Store`, the `Tool(Internal)`
