@@ -2,8 +2,9 @@
 
 A session is one agent's durable history: every turn, tool call, and result
 it has ever produced, recorded as it happens. This page covers what's
-persisted, how resuming and forking-from-disk work, keep-alive sessions,
-`/ask`'s ephemeral children, where the data lives, and the full
+persisted, the repeated-step notices conway writes into a transcript on its
+own initiative, how resuming and forking-from-disk work, keep-alive
+sessions, `/ask`'s ephemeral children, where the data lives, and the full
 `conway sessions` command reference.
 
 ## The append-only log
@@ -21,7 +22,7 @@ kinds you'll see:
 | `tool_result` | A tool call's result. |
 | `fork_directive` | The instruction a forking parent attached on top of the inherited prefix — a forked child's first record. |
 | `parent_steer` | A steer message drained from the mailbox at a turn boundary. |
-| `system_note` | A runtime-authored note (e.g. repeated-step detection) — never something you or the model wrote. |
+| `system_note` | A runtime-authored note (e.g. a [repeated-step notice](#repeated-step-notices) or a [result-contract](agents.md#result-contracts) violation) — never something you or the model wrote. |
 | `agent_result` | The agent's terminal result: status, summary, facts, artifacts. |
 | `context_report` | What was actually sent to the model that turn: every segment, its provenance, and its estimated token count. |
 | `context_mask` | Marks an earlier record (by its seq) excluded from — or re-included in — a *future fork's inherited prefix*, without touching that record. It has no effect on the owning session's own later turns; nothing in conway today writes one. |
@@ -36,6 +37,47 @@ cleanly again; every record it recovers is exactly the bytes that were
 durably written. Neither is a "the record can be revised" exception — the
 log recovers to what was durably written and gains a single, explicitly
 one-way lifecycle flip; it does not otherwise get edited.
+
+## Repeated-step notices
+
+conway tracks, per agent, every tool call's name and arguments. If the
+exact same call — same tool, same arguments — comes back a 3rd time, conway
+appends one `system_note` to the transcript and moves on; it does not
+refuse or alter the call itself. This is the other mechanism (besides
+[result contracts](agents.md#result-contracts)) that writes into your
+transcript on conway's own initiative, so if you see one and didn't expect
+it, here's what it means.
+
+"Same call" means the tool name and the canonicalized JSON arguments hash
+identically: object keys are sorted recursively before comparing, so
+`{"a": 1, "b": 2}` and `{"b": 2, "a": 1}` count as the same call, but any
+differing value (including a `null` versus an absent key) makes it a
+different one.
+
+The note fires once per repeated call, on its 3rd occurrence — not the
+4th, 5th, or any later repeat of the same call, and not the 1st or 2nd. It
+reads, verbatim (conway's source format string):
+
+```
+tool `{}` was called with identical arguments 3 times; see the result at seq {}
+```
+
+— the first `{}` is the tool's name and the second is the `seq` of that
+call's *first* result, so the model (or you, reading the transcript) can go
+look at the existing answer instead of running the call again.
+
+This is **advisory only**: nothing about it blocks, retries, or rejects
+the call — the 3rd (and every later) identical call still runs and
+returns a result exactly as if the note weren't there. It fires for every
+agent, including the interactive root agent you're talking to directly,
+not just forked or spawned children. The 3-call threshold and the size of
+the window conway tracks (the most recent 64 distinct calls, oldest
+evicted first) are both fixed — there's no `settings.json` key or facade
+option to change either.
+
+If you see this note, something is stuck in a loop: point it at the cited
+`seq` instead of repeating the call, or steer/cancel the agent if it
+doesn't stop on its own.
 
 ## Where session data lives on disk
 
