@@ -2,7 +2,8 @@
 
 conway organizes work as a tree of agents. This page covers the two ways to
 create a child, how you drive one from each of conway's three surfaces, what
-an agent may act on, and how to inspect the tree once it exists.
+an agent may act on, how to constrain what a child must hand back, and how
+to inspect the tree once it exists.
 
 ## Fork and spawn: the two primitives
 
@@ -126,6 +127,75 @@ carries no side effect. A model-invoked fork/spawn is always autonomous
 (`keep_alive: false`); interactive keep-alive children exist only on the
 TUI and embedder surfaces above.
 
+## Result contracts
+
+A **result contract** is a JSON Schema a subagent's `structured` result
+must satisfy before conway will let the child's run finish as `completed`.
+A child sets `structured` by calling the `report` tool; if it never
+reports one, `structured` is `null` and is validated as such. It's a
+delegation-only mechanism, scoped to what a subagent hands back to whoever
+started it:
+
+| Declared by | How |
+| --- | --- |
+| The model, per call | `conway_subagent`'s `result_contract` argument |
+| An embedder | `ForkSpec::result_contract`/`SpawnSpec::result_contract` on the facade builder |
+
+A root agent never has a result contract — a root has no `SubagentSpec` to
+source one from, on any surface. And a `.conway/agents/*.md` def's
+`result_contract` frontmatter key **parses but is not applied**: spawning a
+child from a def carries over that def's role, system prompt, tools, and
+model pin, but not its `result_contract`. Declaring one there has no effect
+today — use the model argument or the facade builder instead.
+
+Validation runs at the natural end of a turn — one with no tool calls in
+it, not a check after every tool call:
+
+| Outcome | What happens |
+| --- | --- |
+| `structured` satisfies the schema | The agent finishes normally, status `completed`. |
+| First mismatch | conway appends a `system_note` to the transcript quoting the validation errors, and gives the agent one more turn to fix it. |
+| Second consecutive mismatch | The run ends immediately, status `rejected` — no further retries. |
+
+That corrective turn is exactly one, always — not configurable per
+contract, per spec, or via `settings.json`; there is no retry-count knob.
+The corrective turn is free to make tool calls of its own; validation only
+re-runs on the next turn that itself ends with no tool calls, and if that
+turn calls `report` again, the new call's `structured` value is what gets
+checked (it replaces the earlier one). For a
+[keep-alive](sessions.md#keep-alive-sessions) child, the one-retry budget
+resets at the start of each new user turn, so a violation from an earlier
+turn never counts against a later one.
+
+The system note conway appends on the first mismatch reads, verbatim
+(conway's source format string):
+
+```
+the structured result failed its result_contract: {}
+```
+
+— where `{}` is the schema validator's own messages, joined with `; `.
+
+A `rejected` result is not a crash: the child ran to completion, its final
+`structured` output just never satisfied the schema, even after the one
+correction. The terminal `AgentResult` carries `status: "rejected"` and a
+`missing` list — the validator's own failing-path messages (for example
+`` `/summary: is a required property` ``), not necessarily literal field
+names. How a rejection reaches the parent depends on which surface it
+awaited from:
+
+| Awaited via | What the parent gets |
+| --- | --- |
+| `conway_subagent` (with `await` at its default) or `conway_await` | The serialized `AgentResult` as the tool result, flagged `is_error: true` — anything other than `completed` counts as an error result |
+| `SessionHandle::await_agent` (embedding) | The `AgentResult` itself; match on its `status` field — there is no `is_error` on the struct |
+
+Read `missing` to tell whether the delegation itself went wrong or the
+contract doesn't match what the agent can actually produce, then either
+loosen the schema or clarify the prompt.
+
+See [`sessions.md`](sessions.md#repeated-step-notices) for the other
+mechanism that writes into a transcript on conway's own initiative.
+
 ## What an agent may act on
 
 Every one of the five tools above — and their `SessionHandle` counterparts —
@@ -175,7 +245,9 @@ def's system prompt), `skill` (an injected prompt fragment), `tool
 registry` (the schema set the model was told about, identified by hash),
 `inherited` (a verbatim prefix carried over at fork time, naming the parent
 session and range), `fork directive`, `parent steer`, `tool result`,
-`system note` (runtime-authored, e.g. repeated-step detection), and `merged
+`system note` (runtime-authored, e.g.
+[repeated-step detection](sessions.md#repeated-step-notices) or a
+[result-contract](#result-contracts) violation), and `merged
 /ask` (a pulled-in ephemeral question). See
 [`interactive.md`](interactive.md) for the exact `/agents`/`/context` key
 bindings and panel layout, and [`sessions.md`](sessions.md) for
