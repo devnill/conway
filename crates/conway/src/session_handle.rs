@@ -256,7 +256,6 @@ impl SessionHandle {
             budget: Budget::default(),
             cache_hint: true,
             result_contract: None,
-            await_result: true,
             keep_alive: false,
             ephemeral: true,
             // B5: tag this child as MODAL-ask residue (the TUI's `/ask
@@ -709,10 +708,20 @@ impl SessionHandle {
     /// overflow policy -- what happens when the inherited context plus
     /// `spec.directive` already exceeds the target model's window -- has no
     /// settled design. This method does not add an `on_overflow` field or
-    /// otherwise paper over it: whatever typed error the runtime returns
-    /// (today, `RuntimeError::ForkContextOverflow`, terminal, no truncation
-    /// or escalation) surfaces to the caller unchanged, wrapped only in
-    /// `ConwayError::Runtime`.
+    /// otherwise paper over it, but the rejection does NOT surface here:
+    /// `start` (`impl SubagentHost`) launches the child's `AgentLoop` as a
+    /// background task and returns `Ok(AgentId)` as soon as it is attached,
+    /// before the loop's first turn ever runs -- a T-1 overflow is only
+    /// detected once that turn actually attempts routing. So this method
+    /// returns `Ok` even for a fork doomed to overflow; the rejection
+    /// arrives later, as `ResultStatus::Failed { error }` on the child's own
+    /// terminal `AgentResult` (`agent_loop.rs`'s `route_and_attempt`,
+    /// `finish_error`), naming the shortfall in `error`'s text. `RuntimeError::
+    /// ForkContextOverflow` is NOT the live path for this: it is never
+    /// constructed anywhere outside `conway-core`'s own error-taxonomy
+    /// tests -- the real T-1 rejection is always a `RoutingError::
+    /// ContextTooLarge` surfacing through the child's `AgentResult`, not an
+    /// `Err` this method itself returns.
     ///
     /// Rejects `from` with `Err(ConwayError::Runtime)` when it does not
     /// belong to this session's agent tree -- see

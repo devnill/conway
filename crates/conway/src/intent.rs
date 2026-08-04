@@ -255,7 +255,6 @@ pub(crate) async fn classify(
         budget: INTENT_BUDGET,
         cache_hint: false,
         result_contract: None,
-        await_result: true,
         keep_alive: false,
         ephemeral: true,
         // Not an ask of either kind — see the module doc. The sweep only

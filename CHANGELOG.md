@@ -177,6 +177,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A rejected subagent spec (a bad `cwd`/`root` on a spawn, or a resumed
+  root's cwd escaping its persisted root) now reaches the model as
+  `ToolError::InvalidArguments`, not `Internal`.** `conway_core::error::
+  RuntimeError` gains a new `InvalidSpec { detail }` variant, filling the gap
+  `conway-runtime`'s `subagent.rs` module doc previously confessed did not
+  exist; its `invalid_spec` helper (used by both `SubagentHost::start` and
+  `resume_root`) now constructs it instead of smuggling the rejection through
+  `RuntimeError::Tool(ToolError::Internal)`. `conway_core::ports::subagent::
+  translate` (the one place a `RuntimeError` becomes a `SubagentError`) maps
+  it to a new `SubagentError::InvalidSpec`, which `From<SubagentError> for
+  ToolError` in turn maps to `InvalidArguments` alongside the three existing
+  caller-mistake variants — so a spec rejection now reads as a correctable
+  mistake in the caller's own data, not a host bug. Two OTHER "closest fit"
+  `Internal` mappings in the same crate (`tree.rs`'s `already_attached`,
+  `WeakRuntimeHost::upgrade`'s "runtime already dropped") are deliberately
+  UNCHANGED: neither is a rejection of caller-supplied spec data. A confessed
+  gap between the runtime and the tool boundary meant every one of these
+  rejections previously surfaced identically to a genuine infrastructure
+  failure; there is no other behavior change. (`crates/conway-core/src/
+  error.rs`, `crates/conway-core/src/ports/subagent.rs`, `crates/conway-runtime/
+  src/subagent.rs`, `crates/conway-runtime/src/runtime.rs`)
 - **The three control-character sanitizers are converged to one shared
   home, and `ToolOutcome::error` now sanitizes at construction.** The
   replace-semantics sanitizer that the runtime's `rendered` seam
@@ -212,6 +233,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- **`SubagentSpec::await_result` is gone.** The field was write-only: every
+  fork/spawn constructor and call site set it, but nothing in `conway-runtime`
+  ever read it — whether a fork/spawn caller blocks for the child's result is
+  decided entirely by the caller's own control flow (e.g. `conway-tools`'
+  `conway_subagent` tool's local `await` argument, which is unaffected and
+  still decides whether to call `SubagentHost::await_result`). `SubagentSpec`
+  is never durably persisted (only its *derived* fields — `mode`, `agent_def`,
+  `ephemeral`, `ask_origin`, `cwd`/`root`, `result_contract` — are ever
+  projected onto `SessionMeta`/events), so this is a plain field removal, not
+  a legacy-deserialize change. (`crates/conway-core/src/agent.rs`,
+  `crates/conway/src/subagent_spec.rs`, `crates/conway/src/session_handle.rs`,
+  `crates/conway/src/intent.rs`, `crates/conway-tools/src/subagent/tools.rs`,
+  `crates/conway-tools/src/subagent/ask.rs`)
 - **Exit code 3 (`PermissionDenied`) is gone from the `conway -p`
   contract.** It was declared from the start but unreachable: a permission
   denial — of either kind — becomes a tool result fed back into the
