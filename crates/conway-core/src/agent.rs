@@ -173,15 +173,13 @@ pub struct SubagentSpec {
     /// constructors force it `false`.
     pub cache_hint: bool,
     pub result_contract: Option<schemars::schema::RootSchema>,
-    /// `false` enables fan-out: the caller does not block on this child's
-    /// result (§"conway-tools").
-    pub await_result: bool,
     /// Opt-in interactive keep-alive (mirrors `conway_runtime`'s
     /// `agent_loop::AgentSpec::keep_alive`/`runtime::RootSpec::keep_alive`):
     /// the child idles for the caller's next prompt after each turn instead
     /// of finishing on natural completion. Defaults `false` via the `fork`/
     /// `spawn` constructors below, preserving the pre-existing autonomous
-    /// (one-shot, `await_result`-able) fork/spawn behavior unchanged. When
+    /// (one-shot, awaitable via `conway_core::ports::SubagentHost::
+    /// await_result`) fork/spawn behavior unchanged. When
     /// this is `true` AND `prompt` is empty, `conway_runtime`'s
     /// `SubagentHost::start` additionally starts the child IDLE (no
     /// placeholder turn run against blank input) -- the shape a caller
@@ -300,7 +298,6 @@ impl SubagentSpec {
             budget,
             cache_hint: true,
             result_contract: None,
-            await_result: true,
             keep_alive: false,
             ephemeral: false,
             ask_origin: None,
@@ -321,7 +318,6 @@ impl SubagentSpec {
             budget,
             cache_hint: false,
             result_contract: None,
-            await_result: true,
             keep_alive: false,
             ephemeral: false,
             ask_origin: None,
@@ -667,7 +663,6 @@ mod tests {
             budget: Budget::default(),
             cache_hint: false,
             result_contract: None,
-            await_result: true,
             keep_alive: false,
             ephemeral: false,
             ask_origin: None,

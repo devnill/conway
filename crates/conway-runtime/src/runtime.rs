@@ -187,10 +187,10 @@ pub struct RootSpec {
     /// `SubagentHost::start`): relative paths resolve against `cwd` above
     /// (a root agent has no parent cwd to resolve against), the result must
     /// canonicalize, and `cwd` itself must already fall inside it --
-    /// `start_root` returns `RuntimeError::Tool(ToolError::Internal { .. })`
-    /// (via the same `subagent::invalid_spec` helper `resume_root` already
-    /// uses) rather than starting an agent whose own working directory sits
-    /// outside its own confinement before a single tool call ever runs.
+    /// `start_root` returns `RuntimeError::InvalidSpec { .. }` (via the same
+    /// `subagent::invalid_spec` helper `resume_root` already uses) rather
+    /// than starting an agent whose own working directory sits outside its
+    /// own confinement before a single tool call ever runs.
     /// Cwd is never itself a security boundary (S0's own charter) -- root is
     /// -- so this is a distinct field, not an inference from `cwd`; the two
     /// are configured as a pair (see `conway-cli`'s `--root`) precisely so

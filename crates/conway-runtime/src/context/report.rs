@@ -27,13 +27,16 @@
 //! `conway_core::error::RuntimeError` is `#[non_exhaustive]` and has no
 //! dedicated "turn out of range" variant, and `crates/conway-core/src/
 //! error.rs` is out of this item's file scope. Following the same
-//! "closest fit" convention `subagent.rs`'s `invalid_spec` and `tree.rs`'s
-//! `already_attached` already established for the identical situation
-//! (a spec-cited variant that does not exist upstream), [`turn_out_of_range`]
-//! maps to `RuntimeError::Tool(ToolError::Internal { detail })`, with
-//! `detail` naming the valid turn range in text -- satisfying the
-//! criterion's "typed error naming the valid range" without adding a
-//! variant to a crate outside this item's scope.
+//! "closest fit" convention `tree.rs`'s `already_attached` established for
+//! the identical situation (a gap this crate cannot add a variant for),
+//! [`turn_out_of_range`] maps to `RuntimeError::Tool(ToolError::Internal {
+//! detail })`, with `detail` naming the valid turn range in text --
+//! satisfying the criterion's "typed error naming the valid range" without
+//! adding a variant to a crate outside this item's scope. (`subagent.rs`'s
+//! `invalid_spec` was ALSO once this same "closest fit" fallback, but a
+//! later item added `RuntimeError::InvalidSpec` and moved it off `Internal`
+//! -- see that module's own doc; "turn out of range" is a different gap,
+//! not addressed by that variant, and stays on this fallback.)
 
 use conway_core::error::{RuntimeError, ToolError};
 use conway_core::ids::{AgentId, LogSeq, SessionId};

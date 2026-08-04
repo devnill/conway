@@ -68,15 +68,27 @@
 //! construction, and `conway-session`'s memoized cache entries are
 //! themselves immutable once written).
 //!
-//! ## `RuntimeError::InvalidSpec` does not exist
+//! ## `RuntimeError::InvalidSpec` (rejected specs)
 //!
-//! This item's own acceptance notes cite `RuntimeError::InvalidSpec` for
-//! rejected specs. `conway_core::error::RuntimeError` is `#[non_exhaustive]`
-//! and, per its committed definition, has no such variant (out of this
-//! crate's scope to add one) — see [`invalid_spec`] for the mapping this
-//! item uses instead, following the same "closest fit" convention
-//! `runtime.rs`'s (now-removed) `NoSubagentHost` stub and `tree.rs`'s
-//! `already_attached` already established.
+//! `conway_core::error::RuntimeError` carries an `InvalidSpec { detail }`
+//! variant for exactly this: a caller-supplied `SubagentSpec` (or
+//! `ResumeSpec`) that fails a runtime-side consistency check
+//! `SubagentSpec::validate` cannot perform itself (that method does no I/O).
+//! [`invalid_spec`] below is the one place this crate constructs it, reused
+//! by both `start` (this file) and `runtime.rs`'s `resume_root` (the
+//! resumed-`cwd` x persisted-`root` check) so every spec-shaped rejection in
+//! this crate goes through the same helper. `conway_core::ports::subagent::
+//! translate` maps it to `SubagentError::InvalidSpec`, which `conway-tools`
+//! in turn surfaces to the model as `ToolError::InvalidArguments` -- a
+//! mistake in the caller's own spec, not `Internal` infrastructure noise.
+//!
+//! Two OTHER gaps in this file remain "closest fit" `Tool(Internal)`
+//! mappings, deliberately NOT routed through `InvalidSpec`, because neither
+//! is a rejection of caller-supplied spec data: `already_attached`
+//! (`tree.rs`) is a duplicate-`AgentId` invariant violation (a bug
+//! elsewhere, never a normal spec mistake), and `WeakRuntimeHost::upgrade`'s
+//! failure means the runtime itself has already been dropped (nothing about
+//! the spec is wrong at all).
 //!
 //! Relatedly, the spec's "every child has a budget, by construction"
 //! criterion describes a runtime check this item cannot perform: committed
@@ -967,17 +979,16 @@ impl Runtime {
     }
 }
 
-/// `RuntimeError` has no `InvalidSpec` variant — see the module doc.
-/// `SubagentSpec::validate()`'s own error type is `ConwayError::Config`;
-/// this maps it to `RuntimeError::Tool(ToolError::Internal{..})`, the same
-/// "closest fit" fallback already established elsewhere in this crate for
-/// gaps shaped like this one. `pub(crate)` (not private) so `runtime.rs`'s
-/// `resume_root` (S3: the resumed-`cwd` × persisted-`root` check) reuses
-/// this exact error surface too, rather than inventing a parallel one.
+/// See the module doc. `SubagentSpec::validate()`'s own error type is
+/// `ConwayError::Config`; this maps it to `RuntimeError::InvalidSpec`, the
+/// one place this crate constructs that variant. `pub(crate)` (not private)
+/// so `runtime.rs`'s `resume_root` (S3: the resumed-`cwd` × persisted-`root`
+/// check) reuses this exact error surface too, rather than inventing a
+/// parallel one.
 pub(crate) fn invalid_spec(err: ConwayError) -> RuntimeError {
-    RuntimeError::Tool(ToolError::Internal {
+    RuntimeError::InvalidSpec {
         detail: format!("invalid SubagentSpec: {err}"),
-    })
+    }
 }
 
 /// A thin, non-owning delegate to `Runtime`'s real `SubagentHost` impl

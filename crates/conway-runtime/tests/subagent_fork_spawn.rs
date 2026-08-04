@@ -19,14 +19,14 @@ use conway_core::agent::{
 };
 use conway_core::config::AgentDef;
 use conway_core::content::{ContentBlock, StopReason, Usage};
-use conway_core::error::{RuntimeError, ToolError};
+use conway_core::error::{RuntimeError, SubagentError, ToolError};
 use conway_core::event::Event;
 use conway_core::fakes::{
     FakeGate, FakeHealth, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn,
 };
 use conway_core::ids::{AgentId, BackendId, LogSeq, ModelId, ModelRef, RoleAlias, SessionId};
 use conway_core::log::{ForkOrigin, SessionFilter, SessionMeta};
-use conway_core::ports::{Backend, LiveOwner, Router, SessionStore, SubagentHost};
+use conway_core::ports::{Backend, LiveOwner, Router, SessionStore, SubagentHandle, SubagentHost};
 use conway_core::provenance::Provenance;
 use conway_routing::config::HeadroomPolicy;
 use conway_runtime::events::EventBus;
@@ -474,7 +474,6 @@ async fn spawn_without_agent_def_inherits_the_parents_role() {
         budget: Budget::default(),
         cache_hint: false,
         result_contract: None,
-        await_result: true,
         keep_alive: false,
         ephemeral: false,
         ask_origin: None,
@@ -1768,7 +1767,6 @@ fn spawn_spec_with_cwd(prompt: &str, cwd: Option<PathBuf>) -> SubagentSpec {
         budget: Budget::default(),
         cache_hint: false,
         result_contract: None,
-        await_result: true,
         keep_alive: false,
         ephemeral: false,
         ask_origin: None,
@@ -1912,9 +1910,9 @@ async fn grandchild_with_cwd_none_inherits_immediate_parents_cwd_not_roots() {
 }
 
 /// (e) A nonexistent `cwd` fails the spawn fast, with a clear error --
-/// mapped through this crate's established `invalid_spec` "closest fit"
-/// convention (see `subagent.rs`'s own doc), the same surface an invalid
-/// `SubagentSpec` already uses.
+/// mapped through this crate's established `invalid_spec` helper (see
+/// `subagent.rs`'s own doc) to `RuntimeError::InvalidSpec`, the same surface
+/// an invalid `SubagentSpec` already uses.
 #[tokio::test]
 async fn spawn_with_nonexistent_cwd_fails_fast_with_a_clear_error() {
     let (runtime, _store) = build_runtime(1, HashMap::new());
@@ -1937,13 +1935,13 @@ async fn spawn_with_nonexistent_cwd_fails_fast_with_a_clear_error() {
     .unwrap_err();
 
     match &err {
-        RuntimeError::Tool(ToolError::Internal { detail }) => {
+        RuntimeError::InvalidSpec { detail } => {
             assert!(
                 detail.contains(&missing_path.display().to_string()),
                 "error must name the offending path; got {detail:?}"
             );
         }
-        other => panic!("expected RuntimeError::Tool(ToolError::Internal {{ .. }}), got {other:?}"),
+        other => panic!("expected RuntimeError::InvalidSpec {{ .. }}, got {other:?}"),
     }
 }
 
@@ -2094,7 +2092,7 @@ async fn spawn_with_wider_root_than_the_parents_fails_naming_both_roots() {
     .unwrap_err();
 
     match &err {
-        RuntimeError::Tool(ToolError::Internal { detail }) => {
+        RuntimeError::InvalidSpec { detail } => {
             assert!(
                 detail.contains(
                     &root_dir
@@ -2111,7 +2109,7 @@ async fn spawn_with_wider_root_than_the_parents_fails_naming_both_roots() {
                 "error must name the parent's (narrower) root; got {detail:?}"
             );
         }
-        other => panic!("expected RuntimeError::Tool(ToolError::Internal {{ .. }}), got {other:?}"),
+        other => panic!("expected RuntimeError::InvalidSpec {{ .. }}, got {other:?}"),
     }
 }
 
@@ -2157,8 +2155,8 @@ async fn spawn_with_sideways_root_fails() {
     .unwrap_err();
 
     match &err {
-        RuntimeError::Tool(ToolError::Internal { .. }) => {}
-        other => panic!("expected RuntimeError::Tool(ToolError::Internal {{ .. }}), got {other:?}"),
+        RuntimeError::InvalidSpec { .. } => {}
+        other => panic!("expected RuntimeError::InvalidSpec {{ .. }}, got {other:?}"),
     }
 }
 
@@ -2192,7 +2190,7 @@ async fn spawn_whose_cwd_escapes_a_newly_narrowed_root_fails() {
     .unwrap_err();
 
     match &err {
-        RuntimeError::Tool(ToolError::Internal { detail }) => {
+        RuntimeError::InvalidSpec { detail } => {
             // The error names the escaping cwd. It is reported raw, and
             // ALSO in canonical form as `(resolved: ...)` when the two
             // differ, so both operands of the containment comparison are
@@ -2207,7 +2205,7 @@ async fn spawn_whose_cwd_escapes_a_newly_narrowed_root_fails() {
                 "error must name the escaping cwd; got {detail:?}"
             );
         }
-        other => panic!("expected RuntimeError::Tool(ToolError::Internal {{ .. }}), got {other:?}"),
+        other => panic!("expected RuntimeError::InvalidSpec {{ .. }}, got {other:?}"),
     }
 }
 
@@ -2292,13 +2290,13 @@ async fn spawn_with_nonexistent_root_fails_fast_with_a_clear_error() {
     .unwrap_err();
 
     match &err {
-        RuntimeError::Tool(ToolError::Internal { detail }) => {
+        RuntimeError::InvalidSpec { detail } => {
             assert!(
                 detail.contains(&missing_path.display().to_string()),
                 "error must name the offending root path; got {detail:?}"
             );
         }
-        other => panic!("expected RuntimeError::Tool(ToolError::Internal {{ .. }}), got {other:?}"),
+        other => panic!("expected RuntimeError::InvalidSpec {{ .. }}, got {other:?}"),
     }
 }
 
@@ -2325,7 +2323,7 @@ async fn spawn_with_nul_carrying_relative_root_is_rejected_through_the_shared_re
     .unwrap_err();
 
     match &err {
-        RuntimeError::Tool(ToolError::Internal { detail }) => {
+        RuntimeError::InvalidSpec { detail } => {
             // Assert on the EXACT typed rejection the shared guard produces,
             // not just "NUL": the OS canonicalize error further down ALSO
             // contains "NUL" ("file name contained an unexpected NUL byte"),
@@ -2338,7 +2336,7 @@ async fn spawn_with_nul_carrying_relative_root_is_rejected_through_the_shared_re
                  canonicalize error further down; got {detail:?}"
             );
         }
-        other => panic!("expected RuntimeError::Tool(ToolError::Internal {{ .. }}), got {other:?}"),
+        other => panic!("expected RuntimeError::InvalidSpec {{ .. }}, got {other:?}"),
     }
 }
 
@@ -2459,12 +2457,68 @@ async fn resume_root_cwd_override_outside_persisted_root_fails() {
         .unwrap_err();
 
     match &err {
-        RuntimeError::Tool(ToolError::Internal { detail }) => {
+        RuntimeError::InvalidSpec { detail } => {
             assert!(
                 detail.contains(&sub_dir.canonicalize().unwrap().display().to_string()),
                 "error must name the session's own root; got {detail:?}"
             );
         }
-        other => panic!("expected RuntimeError::Tool(ToolError::Internal {{ .. }}), got {other:?}"),
+        other => panic!("expected RuntimeError::InvalidSpec {{ .. }}, got {other:?}"),
+    }
+}
+
+/// End-to-end spec-rejection test (not just a unit test of the
+/// `translate`/`From<SubagentError> for ToolError` mapping in isolation):
+/// a REAL `Runtime` (this file's actual `impl SubagentHost`, exercising the
+/// genuine `tokio::fs::metadata` check in `subagent.rs`'s `start`), wrapped
+/// in the exact `conway_core::ports::SubagentHandle` every `conway-tools`
+/// subagent tool's `ToolCtx.subagents` field actually is, started with a
+/// spec naming a nonexistent `cwd`. Nothing here is scripted: the
+/// `RuntimeError::InvalidSpec` this drives is constructed by the same
+/// production code path `spawn_with_nonexistent_cwd_fails_fast_with_a_clear_error`
+/// above exercises, and the `SubagentError`/`ToolError` it becomes are
+/// produced by `conway_core::ports::subagent::translate` and
+/// `From<SubagentError> for ToolError` -- the exact functions
+/// `conway-tools`' `host_error` helper calls for every subagent tool. This
+/// file deliberately has no `conway-tools` dependency (see the module doc),
+/// so this is as close to "through the tool" as it can get without one;
+/// `conway-tools`' own `subagent.rs` test suite covers the tool-argument
+/// surface (which currently exposes no `cwd`/`root` argument -- GP-04,
+/// embedder-only for this slice -- so no tool call can reach this path
+/// today; this test proves the PLUMBING is live for when one does).
+#[tokio::test]
+async fn a_real_spec_rejection_reaches_the_subagent_handle_as_invalid_arguments() {
+    let (runtime, _store) = build_runtime(1, HashMap::new());
+    let root = start_and_finish_root(&runtime, "hi").await;
+
+    let missing = tempfile::tempdir().unwrap();
+    let missing_path = missing.path().join("does-not-exist");
+    drop(missing);
+
+    let handle: SubagentHandle = SubagentHandle::new(runtime.clone(), root);
+    let spec = spawn_spec_with_cwd("doomed", Some(missing_path.clone()));
+
+    let subagent_err = handle.start(spec).await.unwrap_err();
+    let detail = match &subagent_err {
+        SubagentError::InvalidSpec { detail } => detail.clone(),
+        other => panic!("expected SubagentError::InvalidSpec {{ .. }}, got {other:?}"),
+    };
+    assert!(
+        detail.contains(&missing_path.display().to_string()),
+        "error must name the offending path; got {detail:?}"
+    );
+
+    match ToolError::from(subagent_err) {
+        ToolError::InvalidArguments { detail } => {
+            assert!(
+                detail.contains(&missing_path.display().to_string()),
+                "the InvalidArguments error the model sees must still name the \
+                 offending path; got {detail:?}"
+            );
+        }
+        other => panic!(
+            "a spec rejection is a model-correctable mistake and must reach the tool \
+             boundary as ToolError::InvalidArguments, not {other:?}"
+        ),
     }
 }

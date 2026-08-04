@@ -257,6 +257,21 @@ pub enum RuntimeError {
     /// panic -- both ids may be model-supplied.
     #[error("agent {caller} may not act on agent {target}: it is outside {caller}'s own subtree")]
     AgentNotInSubtree { caller: AgentId, target: AgentId },
+    /// A `SubagentSpec` (or `ResumeSpec`) the caller supplied is internally
+    /// invalid or fails a runtime-side consistency check `conway-core`'s own
+    /// `SubagentSpec::validate` cannot perform (it does no I/O) -- a
+    /// nonexistent `cwd`, a `root` that does not canonicalize, or a `root`/
+    /// `cwd` pair violating the containment algebra (`conway-runtime`'s
+    /// `subagent.rs` `invalid_spec` helper and `runtime.rs`'s `resume_root`
+    /// construct this; see that helper's own doc for the full list of call
+    /// sites). Distinct from every other variant here: this is a rejection
+    /// of the CALLER'S OWN supplied data, not an unknown/out-of-subtree
+    /// agent id or an infrastructure failure -- `conway_core::ports::
+    /// subagent::translate` maps it to `SubagentError::InvalidSpec`, which
+    /// `conway-tools` in turn maps to `ToolError::InvalidArguments` (a
+    /// model-correctable mistake), not `Internal`.
+    #[error("invalid subagent spec: {detail}")]
+    InvalidSpec { detail: String },
 }
 
 /// Errors produced by [`crate::ports::SubagentHandle`]'s five fallible
@@ -270,15 +285,16 @@ pub enum RuntimeError {
 /// [`CwdError`]'s house style: `#[non_exhaustive]`, serde round-trippable,
 /// `Display` via `thiserror`.
 ///
-/// **Three variants are caller mistakes a model can correct**: an unknown or
-/// out-of-subtree `agent_id` it supplied, or a malformed `SubagentMode`
-/// reaching `ask`. `From<SubagentError> for ToolError` (below) maps all
-/// three to `ToolError::InvalidArguments`, distinct from [`Self::Host`]
-/// (genuine infrastructure, `ToolError::Internal`) -- see that `impl`'s own
-/// doc for why the split matters: `conway-tools`' pre-existing `host_error`
-/// helper flattened every `RuntimeError`, including these three, to
-/// `Internal`, which read as a host bug for what is, in each of these three
-/// cases, a mistake in the model's own tool call.
+/// **Four variants are caller mistakes a model can correct**: an unknown or
+/// out-of-subtree `agent_id` it supplied, a malformed `SubagentMode`
+/// reaching `ask`, or a `SubagentSpec` that fails a runtime-side validity
+/// check. `From<SubagentError> for ToolError` (below) maps all four to
+/// `ToolError::InvalidArguments`, distinct from [`Self::Host`] (genuine
+/// infrastructure, `ToolError::Internal`) -- see that `impl`'s own doc for
+/// why the split matters: `conway-tools`' pre-existing `host_error` helper
+/// flattened every `RuntimeError`, including these four, to `Internal`,
+/// which read as a host bug for what is, in each of these four cases, a
+/// mistake in the model's own tool call.
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
 pub enum SubagentError {
@@ -297,22 +313,25 @@ pub enum SubagentError {
     /// is a typed error here, never a panic.
     #[error("ask requires SubagentMode::Fork (ask is fork+await-text, not a third primitive); got {mode:?}")]
     AskRequiresFork { mode: SubagentMode },
+    /// [`RuntimeError::InvalidSpec`]: the caller's own `SubagentSpec` (or
+    /// `ResumeSpec`) failed a runtime-side validity check -- a nonexistent
+    /// `cwd`, a `root` that does not canonicalize, or a `root`/`cwd` pair
+    /// violating the containment algebra. A model-correctable mistake, like
+    /// the three variants above, so it maps to `ToolError::InvalidArguments`
+    /// below rather than `Host`'s `Internal`.
+    #[error("invalid subagent spec: {detail}")]
+    InvalidSpec { detail: String },
     /// Infrastructure: every other `RuntimeError` the wrapped
-    /// `SubagentHost` can return (`RuntimeError::Store`, the
-    /// `RuntimeError::Tool(ToolError::Internal)` smuggle channel
-    /// `conway-runtime` uses for gaps like "no `InvalidSpec` variant
-    /// exists" or "the runtime has already been dropped", ...) -- not a
-    /// model-correctable mistake. Semantics unchanged from today; this
-    /// just gives the existing "closest fit" fallback a name at this
-    /// crate's own tool-facing boundary.
+    /// `SubagentHost` can return (`RuntimeError::Store`, the runtime having
+    /// already been dropped, ...) -- not a model-correctable mistake.
     #[error("subagent host error: {detail}")]
     Host { detail: String },
 }
 
 /// The ONE place [`SubagentError`] becomes a [`ToolError`] (P-14): every
 /// `conway-tools` subagent tool maps through this, never restating the
-/// mapping per call site. `UnknownAgent`/`NotInSubtree`/`AskRequiresFork`
-/// are caller mistakes a model can correct, so they become
+/// mapping per call site. `UnknownAgent`/`NotInSubtree`/`AskRequiresFork`/
+/// `InvalidSpec` are caller mistakes a model can correct, so they become
 /// `ToolError::InvalidArguments` -- not `Internal`, which is how
 /// `conway-tools`' pre-existing `host_error` helper flattened every
 /// `RuntimeError` (see [`SubagentError`]'s own doc). [`SubagentError::Host`]
@@ -322,7 +341,8 @@ impl From<SubagentError> for ToolError {
         match err {
             SubagentError::UnknownAgent { .. }
             | SubagentError::NotInSubtree { .. }
-            | SubagentError::AskRequiresFork { .. } => ToolError::InvalidArguments {
+            | SubagentError::AskRequiresFork { .. }
+            | SubagentError::InvalidSpec { .. } => ToolError::InvalidArguments {
                 detail: err.to_string(),
             },
             SubagentError::Host { detail } => ToolError::Internal { detail },

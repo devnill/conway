@@ -134,7 +134,6 @@ impl Tool for AskTool {
             budget: resolve_ask_budget(args.budget, &ctx.config)?,
             cache_hint: true,
             result_contract: None,
-            await_result: true,
             keep_alive: false,
             ephemeral: true,
             // B5: tag this child as TOOL-ask residue -- DISTINCT from the
