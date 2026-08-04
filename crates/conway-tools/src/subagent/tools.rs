@@ -1,13 +1,20 @@
 //! `conway_subagent`: a pure wrapper over `ToolCtx::subagents` (WI-066).
-//! Zero delegation logic: argument parsing, one `ToolCtx::subagents` call
-//! (the same `SubagentHost` port the developer API's `fork`/`spawn` calls),
-//! and result shaping.
+//! Zero delegation logic: argument parsing, one `ToolCtx::subagents`
+//! (`SubagentHandle`) call -- the exact surface a third-party tool gets,
+//! nothing more -- and result shaping.
 //!
 //! The small delegation tools `conway_steer`/`conway_await`/`conway_cancel`
 //! live in `control.rs`; `conway_ask` lives in `ask.rs`. This file holds the
-//! shared helpers those siblings need (`host_error`, `parse_agent_id`,
-//! `wait_for_result`, `BudgetArg`, the config helpers, `TRUNCATION`) plus
-//! `SubagentTool` itself.
+//! shared helpers those siblings need (`parse_agent_id`, `wait_for_result`,
+//! `BudgetArg`, the config helpers, `TRUNCATION`) plus `SubagentTool` itself.
+//!
+//! Every fallible `ctx.subagents` call site maps its `SubagentError` straight
+//! to `ToolError` via `.map_err(ToolError::from)` -- `conway-core`'s own
+//! `From<SubagentError> for ToolError` (the ONE place that mapping is
+//! implemented, P-14) -- rather than through a crate-local forwarding
+//! function (board item C2 deleted this module's own such function; its
+//! flatten-everything-to-`Internal` policy predates `SubagentError` and is
+//! superseded by that per-variant `From`).
 
 use std::time::Duration;
 
@@ -21,7 +28,7 @@ use conway_core::agent::{
 use conway_core::content::{
     ContentBlock, PermissionClass, ToolCall, ToolCategory, ToolSpec, TruncationPolicy,
 };
-use conway_core::error::{SubagentError, ToolError};
+use conway_core::error::ToolError;
 use conway_core::ids::{AgentId, RoleAlias, ToolName};
 use conway_core::log::SubagentMode;
 use conway_core::ports::{PathArgs, PluginConfig, RenderKind, Tool, ToolCtx, ToolOutput};
@@ -89,25 +96,6 @@ struct SubagentArgs {
     /// false returns the agent_id immediately for fan-out
     #[serde(default = "default_await", rename = "await")]
     await_flag: bool,
-}
-
-/// Maps a `ToolCtx::subagents` (`SubagentHandle`) failure to a `ToolError`
-/// (board item C1). A thin forward to `conway-core`'s own
-/// `From<SubagentError> for ToolError` (the ONE place that mapping is
-/// implemented, P-14) -- kept as a named helper here, rather than inlined
-/// `.into()` at every call site, purely so every sibling in this module
-/// keeps the same `.map_err(host_error)?` shape it already had.
-///
-/// Superseded WI-061-era doc, corrected: `conway-core` DOES have a variant
-/// for genuine host/infrastructure failure now (`SubagentError::Host`,
-/// mapped to `ToolError::Internal` below it); what changed here is that the
-/// three CALLER-mistake variants (`UnknownAgent`/`NotInSubtree`/
-/// `AskRequiresFork`) no longer flatten into `Internal` alongside it --
-/// they map to `ToolError::InvalidArguments`, since an unknown or
-/// out-of-subtree `agent_id`, or a malformed mode reaching `ask`, is a
-/// mistake the model can correct, not a host bug.
-pub(super) fn host_error(err: SubagentError) -> ToolError {
-    err.into()
 }
 
 pub(super) fn parse_agent_id(raw: &str) -> Result<AgentId, ToolError> {
@@ -192,12 +180,6 @@ fn agent_result_output(result: &AgentResult) -> ToolOutput {
 /// Waits for `child`'s result, honoring `ctx.cancel` cooperatively. On
 /// cancellation, best-effort cancels the child (its own error is ignored)
 /// and returns `Err(ToolError::Cancelled)`.
-///
-/// P-1 (board item 01KYT8TS0EBKJHYNJRF6S88NRH, structural since board item
-/// C1): both host calls go through `ctx.subagents`, a `SubagentHandle` with
-/// this agent's own id already baked in -- there is no `caller` parameter
-/// here for either call to supply a different one, so this agent can only
-/// ever await/cancel its own subtree.
 pub(super) async fn wait_for_result(
     ctx: &ToolCtx,
     child: AgentId,
@@ -211,7 +193,7 @@ pub(super) async fn wait_for_result(
     loop {
         tokio::select! {
             result = &mut result_fut => {
-                return Ok(agent_result_output(&result.map_err(host_error)?));
+                return Ok(agent_result_output(&result.map_err(ToolError::from)?));
             }
             _ = tokio::time::sleep(CANCEL_POLL_INTERVAL) => {
                 if ctx.cancel.is_cancelled() {
@@ -315,16 +297,7 @@ impl Tool for SubagentTool {
             root: None,
         };
 
-        // P-1 (board item 01KYTP0PGKJ4VCJP5TD39A1WHF, structural since
-        // `SubagentHandle`): `ctx.subagents` always starts a child of the
-        // CALLING agent itself -- `SubagentHandle::start` has no `caller`
-        // or `parent` parameter at all, so there is no way, here or in any
-        // future tool, to pass a different one. `SubagentArgs` has no field
-        // that names a different parent either, so this was always the
-        // only behavior a model-invoked `conway_subagent` call could
-        // produce; the handle now makes that structural rather than merely
-        // conventional.
-        let child = ctx.subagents.start(spec).await.map_err(host_error)?;
+        let child = ctx.subagents.start(spec).await.map_err(ToolError::from)?;
 
         if !args.await_flag {
             return Ok(text_output(

@@ -1,7 +1,8 @@
 //! `conway_ask`: run a prompt in an ephemeral fork of this agent, returning
 //! the child's full reply text. A pure wrapper over
-//! `ToolCtx::subagents.ask` (P-1: `ask` composes `SubagentHost::ask`, it is
-//! NOT a third primitive — fork+await-text, no mode parameter, GP-02).
+//! `ToolCtx::subagents.ask` (P-1: `ask` composes the underlying `ask`
+//! primitive `SubagentHandle` wraps, it is NOT a third primitive --
+//! fork+await-text, no mode parameter, GP-02).
 //!
 //! Fork-only (v1): the child inherits this agent's full context, agent_def,
 //! role, and tool set (fork semantics), so this tool takes only `prompt`,
@@ -23,7 +24,7 @@ use conway_core::ids::ToolName;
 use conway_core::log::SubagentMode;
 use conway_core::ports::{PathArgs, PluginConfig, RenderKind, Tool, ToolCtx, ToolOutput};
 
-use super::tools::{config_u32, config_u64, deadline_from_secs, host_error, BudgetArg, TRUNCATION};
+use super::tools::{config_u32, config_u64, deadline_from_secs, BudgetArg, TRUNCATION};
 use crate::common::{check_cancel, parse_args};
 
 /// `conway_ask` defaults: tighter than `conway_subagent` — curation is a
@@ -153,12 +154,7 @@ impl Tool for AskTool {
             root: None,
         };
 
-        // P-1 (board item 01KYTP0PGKJ4VCJP5TD39A1WHF, structural since
-        // `SubagentHandle`), same rationale as `conway_subagent`'s `start`
-        // call -- `ctx.subagents.ask` has no `caller`/`parent` parameter at
-        // all, so `conway_ask` always forks the CALLING agent's own
-        // context; `AskArgs` has no field naming a different parent either.
-        let outcome = ctx.subagents.ask(spec).await.map_err(host_error)?;
+        let outcome = ctx.subagents.ask(spec).await.map_err(ToolError::from)?;
 
         // P-2: the persisted ToolOutput names the child session via an
         // `EphemeralSessionRef` artifact pointing at the child's

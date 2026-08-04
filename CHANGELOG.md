@@ -234,6 +234,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `crates/conway-runtime/src/tools/runner.rs`,
   `crates/conway-cli/src/tui/view/header.rs`)
 
+- **A built-in subagent tool naming an unknown/foreign agent id now fails
+  with `InvalidArguments`, not `Internal`.** `conway_steer`/`conway_await`/
+  `conway_cancel`/`conway_subagent`/`conway_ask` all call
+  `ToolCtx::subagents` (`SubagentHandle`), which since board item C1 already
+  narrows every `RuntimeError` a call can produce to `SubagentError`; this
+  item deletes `conway-tools`' own `host_error` helper, which used to flatten
+  every one of those into `ToolError::Internal` regardless of cause. Now
+  `conway-core`'s `From<SubagentError> for ToolError` is called directly at
+  every call site: an unknown `agent_id`, an `agent_id` outside the calling
+  agent's own subtree (e.g. a sibling), or a malformed `SubagentMode`
+  reaching `conway_ask` are all caller mistakes a model can see and correct,
+  so they now surface as `ToolError::InvalidArguments` (naming the offending
+  id(s)) instead of a generic `Internal` failure that misleadingly read as a
+  host bug. Only genuine host/infrastructure failure
+  (`SubagentError::Host`) still maps to `Internal`. No behavior change for
+  the legitimate path (an agent acting on its own subtree). (`crates/
+  conway-tools/src/subagent/{tools,ask,control}.rs`,
+  `crates/conway-tools/tests/subagent.rs`)
+
 ### Removed
 
 - **Exit code 3 (`PermissionDenied`) is gone from the `conway -p`
