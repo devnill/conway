@@ -202,8 +202,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **A rejected subagent spec (a bad `cwd`/`root` on a spawn, or a resumed
-  root's cwd escaping its persisted root) now reaches the model as
-  `ToolError::InvalidArguments`, not `Internal`.** `conway_core::error::
+  root's cwd escaping its persisted root) is now classified as
+  `ToolError::InvalidArguments`, not `Internal`.** Note on today's reach: no
+  model-invoked tool exposes `cwd` or `root` (GP-04 keeps them embedder-only),
+  so this classification is currently observable from the facade/embedder path
+  — `SessionHandle::spawn`/`fork`, or a direct `SubagentHandle` caller — and
+  not yet from a model tool call. The path is wired and proven end to end, so
+  it is correct the day a tool argument does reach it. `conway_core::error::
   RuntimeError` gains a new `InvalidSpec { detail }` variant, filling the gap
   `conway-runtime`'s `subagent.rs` module doc previously confessed did not
   exist; its `invalid_spec` helper (used by both `SubagentHost::start` and
