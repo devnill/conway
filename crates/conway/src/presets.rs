@@ -28,6 +28,25 @@ pub fn builtin_plugins() -> Vec<std::sync::Arc<dyn conway_core::ports::Plugin>> 
     conway_tools::builtin_plugins()
 }
 
+/// Every built-in plugin id an operator may legitimately name in
+/// `tools.builtin_plugins`, derived from the candidates themselves rather
+/// than restated (P-14). A second hand-maintained list would drift the day
+/// a built-in is added or renamed, and the drift would be silent: a valid
+/// id rejected as unknown, or a stale one accepted and then never matched.
+///
+/// Used by config validation to reject a typo instead of letting it
+/// silently disable a tool the operator believes they enabled.
+///
+/// Returns owned `String`s because the ids come from each plugin's own
+/// `PluginManifest`, which is constructed per call.
+#[cfg(feature = "builtin-tools")]
+pub fn builtin_plugin_ids() -> Vec<String> {
+    builtin_plugins()
+        .iter()
+        .map(|p| p.manifest().id.clone())
+        .collect()
+}
+
 /// The recommended `[permissions]` config for one-shot (`-p`) invocations:
 /// allow-list mode with an empty allow list, i.e. every tool call is denied
 /// with feedback unless the embedder populates `allowed_tools` itself.
