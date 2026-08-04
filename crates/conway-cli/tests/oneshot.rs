@@ -130,6 +130,13 @@ async fn stdout_purity() {
     assert_no_esc_byte(&out.stdout);
 }
 
+/// `seq` is only guaranteed strictly increasing WITHIN one session (see
+/// `docs/scripting.md`'s jsonl contract) -- across sessions it can go
+/// backward, because a subagent's lifecycle lines carry the *child's own*
+/// counter, not the root's. This single-agent script spawns nothing, so
+/// every line here shares one session and the per-session grouping below
+/// degenerates to the whole stream -- `jsonl_seq_is_per_session_not_global`
+/// is the test that actually exercises more than one session.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn jsonl_line_by_line() {
     let mock =
@@ -146,21 +153,216 @@ async fn jsonl_line_by_line() {
     assert_no_esc_byte(&out.stdout);
     let lines = jsonl_lines(&out.stdout);
     assert!(!lines.is_empty());
-    let mut last_seq: Option<i64> = None;
+    let mut last_seq_by_session: std::collections::HashMap<String, i64> =
+        std::collections::HashMap::new();
     for value in &lines {
         let obj = value.as_object().expect("each line is a JSON object");
         assert!(obj.contains_key("seq"));
+        assert!(obj.contains_key("session"));
         assert!(obj.contains_key("agent"));
         assert!(obj.contains_key("event"));
+        let session = obj["session"]
+            .as_str()
+            .expect("session is a string")
+            .to_string();
         let seq = obj["seq"].as_i64().expect("seq is a number");
-        if let Some(prev) = last_seq {
+        if let Some(prev) = last_seq_by_session.get(&session) {
             assert!(
-                seq > prev,
-                "seq must be strictly increasing: {prev} then {seq}"
+                seq > *prev,
+                "seq must be strictly increasing within session {session}: {prev} then {seq}"
             );
         }
-        last_seq = Some(seq);
+        last_seq_by_session.insert(session, seq);
     }
+}
+
+/// Pins the four-part jsonl `seq` contract `docs/scripting.md` documents,
+/// against a real multi-agent run (root turn -> `conway_subagent` spawn ->
+/// child text -> root final text), driven through the real compiled
+/// binary. Asserts:
+/// (i) seq is strictly increasing WITHIN each session, grouped/keyed on
+///     session before ordering;
+/// (ii) the root session's own seqs are gap-free, `0..=n` contiguous;
+/// (iii) the child session appears only as a sparse lifecycle slice --
+///      exactly `[agent_spawned, agent_finished]`, non-contiguous;
+/// (iv) exactly one `agent_finished` carries the root agent id, and it is
+///      the LAST line in the stream;
+/// (v) a non-root `agent_finished` (the child's) appears earlier.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn jsonl_seq_is_per_session_not_global() {
+    let mock = MockBackend::start(Script(vec![
+        vec![
+            Chunk::ToolCall {
+                name: "conway_subagent",
+                args: serde_json::json!({ "mode": "spawn", "prompt": "child task" }),
+            },
+            Chunk::Finish("tool_calls"),
+        ],
+        vec![Chunk::Text("child done"), Chunk::Finish("stop")],
+        vec![Chunk::Text("root final"), Chunk::Finish("stop")],
+    ]))
+    .await;
+    let fixture = write_fixture(&mock, 10);
+
+    let out = run_conway(
+        &[
+            "-p",
+            "spawn a subagent to do a task, then answer",
+            "--allowed-tools",
+            "conway_subagent",
+            "--output-format",
+            "jsonl",
+        ],
+        &fixture,
+    );
+
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let lines = jsonl_lines(&out.stdout);
+    assert!(!lines.is_empty());
+
+    let mut by_session: std::collections::BTreeMap<String, Vec<&Value>> =
+        std::collections::BTreeMap::new();
+    for line in &lines {
+        let session = line["session"]
+            .as_str()
+            .expect("session is a string")
+            .to_string();
+        by_session.entry(session).or_default().push(line);
+    }
+    assert_eq!(
+        by_session.len(),
+        2,
+        "expected exactly the root session plus one spawned child session; got: {by_session:#?}"
+    );
+
+    // (i) seq is strictly increasing WITHIN each session.
+    for (session, group) in &by_session {
+        let mut last: Option<i64> = None;
+        for line in group {
+            let seq = line["seq"].as_i64().expect("seq is a number");
+            if let Some(prev) = last {
+                assert!(
+                    seq > prev,
+                    "session {session}: seq must be strictly increasing within a session: \
+                     {prev} then {seq}"
+                );
+            }
+            last = Some(seq);
+        }
+    }
+
+    // The root session is the one that carries every non-lifecycle line
+    // (turn/model/tool/text events); the child appears only as the sparse
+    // two-line lifecycle slice asserted below.
+    let (root_session, root_group) = by_session
+        .iter()
+        .max_by_key(|(_, group)| group.len())
+        .expect("at least one session group");
+    let (child_session, child_group) = by_session
+        .iter()
+        .find(|(session, _)| *session != root_session)
+        .expect("a second, child session group");
+
+    // (ii) the root session's own seqs are gap-free, 0..=n contiguous.
+    let root_seqs: Vec<i64> = root_group
+        .iter()
+        .map(|l| l["seq"].as_i64().unwrap())
+        .collect();
+    let expected: Vec<i64> = (0..root_seqs.len() as i64).collect();
+    assert_eq!(
+        root_seqs, expected,
+        "root session {root_session}'s seq must be gap-free from 0"
+    );
+
+    // Every root-group line shares the same `agent` (the root agent id) --
+    // the passthrough that would otherwise interleave a foreign agent id is
+    // scoped to the child's OWN session, which is why grouping by session
+    // alone is enough to isolate the root's own agent id here.
+    let root_agent_id = root_group[0]["agent"]
+        .as_str()
+        .expect("root agent id is a string");
+    for line in root_group {
+        assert_eq!(
+            line["agent"].as_str().unwrap(),
+            root_agent_id,
+            "every line in the root session's group must be stamped with the root's own agent id"
+        );
+    }
+
+    // (iii) the child session is exactly [agent_spawned, agent_finished],
+    // non-contiguous.
+    let child_events: Vec<&str> = child_group
+        .iter()
+        .map(|l| l["event"].as_str().expect("event is a string"))
+        .collect();
+    assert_eq!(
+        child_events,
+        vec!["agent_spawned", "agent_finished"],
+        "child session {child_session} must appear only as the sparse lifecycle slice"
+    );
+    let child_seqs: Vec<i64> = child_group
+        .iter()
+        .map(|l| l["seq"].as_i64().unwrap())
+        .collect();
+    assert_eq!(
+        child_seqs[0], 0,
+        "the child's own per-session counter starts at 0, at its agent_spawned"
+    );
+    assert!(
+        child_seqs[1] > child_seqs[0] + 1,
+        "the child's agent_finished seq must NOT be contiguous with its agent_spawned -- the \
+         child's own turn content (seqs in between) never crosses the session filter: {child_seqs:?}"
+    );
+
+    // (iv) exactly one agent_finished carries the root agent id, and it is
+    // the LAST line in the whole stream.
+    let finished_lines: Vec<(usize, &Value)> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| l["event"] == "agent_finished")
+        .collect();
+    assert_eq!(
+        finished_lines.len(),
+        2,
+        "root + the one spawned child, each contributing exactly one agent_finished: {finished_lines:#?}"
+    );
+    let root_finished: Vec<&(usize, &Value)> = finished_lines
+        .iter()
+        .filter(|(_, l)| l["result"]["agent_id"].as_str() == Some(root_agent_id))
+        .collect();
+    assert_eq!(
+        root_finished.len(),
+        1,
+        "exactly one agent_finished must carry the root agent id: {finished_lines:#?}"
+    );
+    let (root_finished_index, _) = root_finished[0];
+    assert_eq!(
+        *root_finished_index,
+        lines.len() - 1,
+        "the agent_finished naming the root agent id must be the LAST line in the stream"
+    );
+
+    // (v) a non-root agent_finished (the child's) appears earlier.
+    let non_root_finished: Vec<&(usize, &Value)> = finished_lines
+        .iter()
+        .filter(|(_, l)| l["result"]["agent_id"].as_str() != Some(root_agent_id))
+        .collect();
+    assert_eq!(
+        non_root_finished.len(),
+        1,
+        "expected exactly one non-root agent_finished (the child's): {finished_lines:#?}"
+    );
+    let (non_root_index, _) = non_root_finished[0];
+    assert!(
+        *non_root_index < *root_finished_index,
+        "the child's agent_finished must appear strictly earlier than the root's terminal \
+         agent_finished -- breaking on the first agent_finished would truncate the run and lose \
+         the root's own final answer"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

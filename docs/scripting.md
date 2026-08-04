@@ -139,9 +139,45 @@ $ conway -p "reply with exactly the word pong and nothing else" --output-format 
 Every line is a self-contained JSON object with `seq`, `ts`, `session`,
 `agent`, and `event` (the event's own kind is `event.event` for a
 struct-shaped event, or a bare string like `"turn_started"` for a unit
-variant, as in the excerpt above). A consumer can rely on `seq` being
-monotonically increasing and gap-free within one run, and on exactly one
-`agent_finished` for the root agent marking the stream's end.
+variant, as in the excerpt above).
+
+When a run spawns a subagent (`conway_subagent`/`conway_ask`), the stream
+interleaves that child's own lifecycle lines into the parent's — each
+stamped with the child's *own* session, agent, and `seq` counter, not the
+root's. A trimmed excerpt from a real multi-agent run (root turn →
+`conway_subagent` spawn → child text → root final text) shows the junction:
+
+```json
+{"seq":9,"ts":"2026-07-31T20:44:10.010Z","session":"01KYWY…root","agent":"01KYWY…root","event":"tool_call_started","call_id":"call_1"}
+{"seq":0,"ts":"2026-07-31T20:44:10.011Z","session":"01KYWZ…child","agent":"01KYWZ…child","event":"agent_spawned","kind":"spawn","parent":"01KYWY…root"}
+{"seq":8,"ts":"2026-07-31T20:44:10.400Z","session":"01KYWZ…child","agent":"01KYWZ…child","event":"agent_finished","result":{"agent_id":"01KYWZ…child", "…":"…"},"ephemeral":false}
+{"seq":10,"ts":"2026-07-31T20:44:10.401Z","session":"01KYWY…root","agent":"01KYWY…root","event":"message_sent","to":"01KYWY…root","kind":"tool_result"}
+```
+
+`seq` jumps from 9 down to 0, then up to 8, then to 10 — global order is
+neither monotonic nor gap-free. A consumer must apply this four-part
+contract instead:
+
+1. **`seq` is strictly increasing only WITHIN each session's own value**
+   — across sessions it can go backward. Group/key lines on `session` (and
+   `agent`) before relying on ordering.
+2. **The root session's own lines are gap-free from 0** — the subscribed
+   session's events pass the filter wholesale — UNLESS the run lagged (a
+   `lagged` warning on stderr means envelopes were dropped; gaps can then
+   appear anywhere).
+3. **Other sessions appear only as sparse lifecycle slices**:
+   `agent_spawned`/`agent_finished`/`agent_promoted` lines, stamped with the
+   child's own session/agent id and its own counter. Their `seq` values are
+   not contiguous, and a subagent's own turn content (its text, tool calls,
+   etc.) never appears in this stream — only these lifecycle lines leak
+   through.
+4. **The stream ends at the `agent_finished` whose `agent` (equivalently
+   `result.agent_id`) is the root agent.** Earlier `agent_finished` lines
+   belong to subagents — match the id, don't break on the first one, or
+   you'll truncate the run and lose the root's own final answer.
+
+`seq` here is the live event counter — a different domain from the
+stored-record `seq` shown by `conway sessions show` and `@seq` fork refs.
 
 ## Streaming
 
