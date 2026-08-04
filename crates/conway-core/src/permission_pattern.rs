@@ -95,10 +95,22 @@
 //! is not a containment boundary in either direction. `deny bash:git push`
 //! does not catch `foo; git push`. What makes the composition sound anyway
 //! is `allow`'s OWN gate: a command carrying a metacharacter can never be
-//! auto-allowed regardless of what patterns exist, so the chained form
-//! always reaches the human operator -- `deny` is a seatbelt for the
-//! obvious case, not a boundary. Anything that must never happen belongs
-//! in the confinement root, not in a `deny` prefix.
+//! satisfied by a PATTERN GRANT regardless of what patterns exist, so the
+//! chained form falls through to whatever the mode does unaided -- `deny`
+//! is a seatbelt for the obvious case, not a boundary.
+//!
+//! Be precise about what that fallthrough means, because the earlier
+//! wording here ("so the chained form always reaches the human operator")
+//! was FALSE and is the kind of claim an operator would reasonably rely
+//! on. The gate governs pattern matching only. In `PermissionBroker`, the
+//! `AutoAllow` short-circuit sits AFTER the gated `pattern_allows` check
+//! and BEFORE `gate.check`, and is itself ungated -- so under `AutoAllow`,
+//! a chained command with no `deny`/`prompt` rule and no confinement root
+//! is allowed silently, never reaching a human. What DOES force the gate
+//! regardless of mode is `must_reach_gate`: a `PathArgs::Unconfinable`
+//! call under a root, or a matching `prompt` rule. Anything that must
+//! never happen belongs in the confinement root, not in a `deny` prefix --
+//! and not in this gate either.
 //!
 //! ## Sanitizer laundering was a second, DIFFERENT hole (board item
 //! 01KYTMA306JH81R083Y8K9PWCR)
