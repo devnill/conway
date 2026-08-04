@@ -91,14 +91,32 @@ pub use conway_core::ports::{
 /// one type would remove functionality. Exporting the trait completes the
 /// port list instead.
 ///
-/// KNOWN GAP, stated rather than asserted away (GP-14): this surface does
-/// NOT yet suffice to re-author every in-tree built-in facade-only. The
-/// built-ins that drive capability handles with typed arguments name types
-/// no `conway::` path reaches — `conway_ask`/`conway_subagent` construct
-/// `SubagentSpec` and match host errors as `RuntimeError`, the report tool
-/// constructs `Fact`, the cd tool matches `CwdError`. Widening the surface
-/// (or deciding parity is not the goal) is board item
-/// 01KYYB2T8AHB4SJFHNG4ZETYN8.
+/// RESOLVED (GP-14, board item 01KYYB2T8AHB4SJFHNG4ZETYN8): this surface
+/// used to name a gap here — the report tool's `Fact`, the cd tool's
+/// `CwdError`, and (once `SubagentHandle` landed, C1) `SubagentHandle`'s own
+/// `SubagentError` were constructible/matchable only inside this crate's own
+/// built-ins, not from a `conway`-only dependent. `Fact`, `CwdError`, and
+/// `SubagentError` are exported below and each pinned by name in
+/// `crates/conway/tests/plugin_surface.rs` (that file's own rule: an
+/// unnamed export is an unguarded one). Deliberately NOT widened alongside
+/// them, and this is the closed set (GP-14 cuts both ways — no reach claimed
+/// that isn't real):
+///
+/// - `SubagentSpec` (`conway_core::agent::SubagentSpec`) — a third-party
+///   fork/spawn goes through this crate's own `ForkSpec`/`SpawnSpec`
+///   instead (GP-02's visibly-distinct-types requirement), which convert
+///   into `SubagentSpec` via `From` but are never themselves that type; a
+///   plugin author has no reason to construct or match `SubagentSpec`
+///   directly.
+/// - `RuntimeError` (`conway_core::error::RuntimeError`) — `ToolCtx.
+///   subagents: SubagentHandle`'s five fallible methods return
+///   `SubagentError`, never `RuntimeError` (see that error's own doc for
+///   the translation `SubagentHandle` performs at its boundary), so
+///   `RuntimeError` has no reachable call site from this facade's surface
+///   at all.
+/// - `SubagentHost`/`CwdHandle`/`EventSinkHandle`/`SubagentHandle`/
+///   `EventSink` (the host-capability traits and handle types themselves)
+///   — see "Deliberately NOT here" below; unchanged by this resolution.
 ///
 /// This is a *curated* re-export, deliberately narrower than
 /// `conway_core::ports` (board item F8, `.design/extension-architecture.md`
@@ -114,13 +132,17 @@ pub use conway_core::ports::{
 ///
 /// Deliberately NOT here:
 ///
-/// - `CwdHandle`, `EventSinkHandle`, `SubagentHost`, `EventSink` — they
-///   appear only as `ToolCtx` *fields* an implementor reads (method calls
-///   on `ctx.chdir`/`ctx.events`/`ctx.subagents` never name the type), and
-///   the extension design (§13.5) rejects plugin *implementations* of
+/// - `CwdHandle`, `EventSinkHandle`, `SubagentHandle`, `SubagentHost`,
+///   `EventSink` — they appear only as `ToolCtx` *fields* an implementor
+///   reads (method calls on `ctx.chdir`/`ctx.events`/`ctx.subagents` never
+///   name the type — a tool calls `ctx.subagents.start(spec)` by method
+///   dispatch, exactly like the pre-existing `ctx.chdir.set(..)` precedent),
+///   and the extension design (§13.5) rejects plugin *implementations* of
 ///   `SubagentHost`/`EventSink` outright. Constructing a `ToolCtx` by hand
 ///   (what those names are needed for) is test-fixture work, served by
-///   `conway-core`'s `fakes` feature, not the authoring surface.
+///   `conway-core`'s `fakes` feature, not the authoring surface. Re-checked
+///   for `SubagentHandle` specifically when it landed (C1, board item
+///   01KZ59SXNQ3BRXP49V4JW10N72): no concrete call site names it either.
 /// - The `SubagentHost`/`EventSink`/`SessionStore`/`Router`/
 ///   `HealthRegistry`/`Backend` implementation surfaces — §13.5 rejects
 ///   plugin implementations of those with stated reasons.
@@ -131,11 +153,12 @@ pub use conway_core::ports::{
 ///   what makes `use conway::plugin::*` sufficient to write an impl.
 pub mod plugin {
     pub use async_trait::async_trait;
+    pub use conway_core::agent::Fact;
     pub use conway_core::content::{
         Artifact, ArtifactKind, ContentBlock, PermissionClass, Role, ToolCall, ToolCategory,
         ToolSpec, TruncationPolicy,
     };
-    pub use conway_core::error::ToolError;
+    pub use conway_core::error::{CwdError, SubagentError, ToolError};
     pub use conway_core::ids::ToolName;
     pub use conway_core::ports::{
         CancellationToken, ContextHook, ContextHookCtx, ContextPayload, OverflowInfo, PathArgs,
