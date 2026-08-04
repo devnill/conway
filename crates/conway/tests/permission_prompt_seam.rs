@@ -46,9 +46,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, LimitsConfig, ModelsConfig, PermissionsConfig,
-    RoleEntry, RoutingSection, SessionConfig, TuiSection,
+    RoleEntry, RoutingSection, SessionConfig, ToolsConfig, TuiSection,
 };
-use conway::{Conway, ConwayBuilder, PatternRule, SessionSpec};
+use conway::{Conway, ConwayBuilder, PatternRule, PluginSelection, SessionSpec};
 use conway_core::agent::{PermissionDecision, PermissionRequest, PermissionScope};
 use conway_core::content::{ContentBlock, ToolResult};
 use conway_core::fakes::{FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
@@ -112,6 +112,7 @@ fn base_config() -> ConwayConfig {
         agents: AgentsConfig::default(),
         models: ModelsConfig::default(),
         tui: TuiSection::default(),
+        tools: ToolsConfig::default(),
     }
 }
 
@@ -162,6 +163,10 @@ fn build_conway(backend: Arc<dyn Backend>, gate: Arc<dyn PermissionGate>) -> Con
         .with_session_store(store)
         .with_permission_gate(gate)
         .with_router(fake_router())
+        // Board item (bash ships on by default and cannot be declined):
+        // this file drives the REAL `bash` tool end to end, so it must now
+        // opt in explicitly -- the facade's own default excludes it.
+        .with_builtin_plugins(PluginSelection::All)
         .build()
         .expect("build should succeed with the real builtin `bash` tool registered")
 }

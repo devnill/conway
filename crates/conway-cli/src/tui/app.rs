@@ -1500,7 +1500,7 @@ mod tests {
 
     use conway::config::schema::{
         AgentsConfig, ConwayConfig, HealthSection, LimitsConfig, ModelsConfig,
-        PermissionsConfig, RoleEntry, RoutingSection, SessionConfig, TuiSection,
+        PermissionsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig, TuiSection,
     };
     use conway::{Conway, ConwayBuilder, PermissionGate};
     use conway_core::agent::PermissionDecision;
@@ -1534,6 +1534,7 @@ mod tests {
             agents: AgentsConfig::default(),
             models: ModelsConfig::default(),
             tui: TuiSection::default(),
+            tools: ToolsConfig::default(),
         }
     }
 

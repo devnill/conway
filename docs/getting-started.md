@@ -173,6 +173,35 @@ root and conway refuses to start rather than guess:
 conway --cwd /home/alice/project --root /home/alice/project
 ```
 
+## Enabling bash (shell commands)
+
+**bash is off by default.** conway's `fs` (read/write/edit/glob/grep/cd),
+`subagent`, and `report` built-in tools are registered automatically; bash
+— arbitrary shell command execution — is not, and requires a deliberate
+opt-in. This applies to the interactive TUI and to a library embedder's own
+`ConwayBuilder::build()`; it does *not* apply to `-p`/`--print` one-shot
+mode, which already gated bash behind `--allowed-tools` (see "Running
+non-interactively" below) and is unaffected by this default.
+
+To turn bash on for the TUI (or any run that loads `settings.json`), add
+`"conway.shell"` to `tools.builtin_plugins`:
+
+```json
+// .conway/settings.json
+{
+  "tools": {
+    "builtin_plugins": ["conway.fs", "conway.subagent", "conway.report", "conway.shell"]
+  }
+}
+```
+
+This is the full replacement list, not an append — `builtin_plugins`
+defaults to `["conway.fs", "conway.subagent", "conway.report"]` (every
+built-in except bash), so the snippet above is that default plus
+`"conway.shell"`. A library embedder can do the same thing without a config
+file: `ConwayBuilder::with_builtin_plugins(PluginSelection::All)` (or an
+`Only`/`AllExcept` selection naming `"conway.shell"`) before `.build()`.
+
 ## Your first session
 
 Run `conway` with no arguments to start the interactive TUI:
@@ -189,7 +218,11 @@ in this directory?" — and press `Enter`.
 As the agent works, the status line's activity field shows what's
 happening (`⠋ thinking…`, then the response streaming in), and any tool
 call the model proposes appears in the transcript. If your permission mode
-is the default (`prompt`), a tool call pauses for your decision:
+is the default (`prompt`), a tool call pauses for your decision. The
+example below shows a `bash` call — see "Enabling bash" above if you
+haven't opted in yet and want to follow along with a shell command
+specifically; every other built-in tool (`read`, `write`, `glob`, …) is on
+by default and prompts the same way:
 
 ```
 ┌ PERMISSION REQUIRED ────────────────────────────────────────────┐

@@ -22,7 +22,7 @@ use std::sync::Arc;
 
 use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, LimitsConfig, ModelsConfig, PermissionsConfig,
-    RoleEntry, RoutingSection, SessionConfig, TuiSection,
+    RoleEntry, RoutingSection, SessionConfig, ToolsConfig, TuiSection,
 };
 use conway::{ConwayBuilder, SessionSpec};
 use conway_core::agent::PermissionDecision;
@@ -56,6 +56,7 @@ fn minimal_config() -> ConwayConfig {
         agents: AgentsConfig::default(),
         models: ModelsConfig::default(),
         tui: TuiSection::default(),
+        tools: ToolsConfig::default(),
     }
 }
 

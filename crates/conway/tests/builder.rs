@@ -7,10 +7,10 @@ use std::sync::Arc;
 
 use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, LimitsConfig, ModelsConfig, PermissionMode,
-    PermissionsConfig, RoleEntry, RoutingSection, SessionConfig, TuiSection,
+    PermissionsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig, TuiSection,
 };
 use conway::config::schema::{BackendEntry, BackendKind};
-use conway::{Conway, ConwayBuilder, ConwayError, SessionSpec};
+use conway::{Conway, ConwayBuilder, ConwayError, PluginSelection, SessionSpec};
 use conway_core::agent::PermissionDecision;
 use conway_core::capabilities::{
     CacheMode, Capabilities, ReliabilityTier, StructuredOutput, ToolCallSupport,
@@ -20,7 +20,9 @@ use conway_core::fakes::{FakeBackend, FakeGate, FakeRouter, FakeStore};
 use conway_core::ids::{BackendId, RoleAlias};
 use conway_core::ports::{GenerateResponse, SessionStore};
 #[cfg(feature = "builtin-tools")]
-use conway_core::ports::{Plugin, PluginManifest, Tool};
+use conway_core::ids::ToolName;
+#[cfg(feature = "builtin-tools")]
+use conway_core::ports::{Plugin, PluginManifest, RenderKind, Tool};
 
 /// `Conway` deliberately does not derive `Debug` (it wraps `Arc<Runtime>`,
 /// which does not either), so `Result::expect_err`/`unwrap_err` (which both
@@ -118,6 +120,7 @@ fn base_config() -> ConwayConfig {
         agents: AgentsConfig::default(),
         models: ModelsConfig::default(),
         tui: TuiSection::default(),
+        tools: ToolsConfig::default(),
     }
 }
 
@@ -425,6 +428,287 @@ fn duplicate_injected_plugin_id_is_rejected() {
         }
         other => panic!("expected Build error, got {other:?}"),
     }
+}
+
+// -----------------------------------------------------------------------
+// Board item: bash ships on by default and cannot be declined.
+//
+// GP-14: every assertion below reads `Conway::tool_render_kind` -- the
+// SAME already-existing accessor `structured_rule_seam.rs`'s registration
+// checks use to read the real registry -- never a config flag/selection
+// value. `tool_render_kind(name)` returns `None` iff no plugin registered
+// a tool by that name (see its own doc), so "the registry lacks `bash`" and
+// "the registry has `bash`" are both observed on the RUNTIME'S OWN
+// resolved tool set, not on whether `build()` merely accepted a selection.
+// -----------------------------------------------------------------------
+
+#[cfg(feature = "builtin-tools")]
+fn build_conway_with_selection(selection: Option<PluginSelection>) -> Conway {
+    let cfg = base_config();
+    let backend = fake_backend("fake");
+    let store = Arc::new(FakeStore::new());
+    let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
+    let builder = ConwayBuilder::from_parts(cfg)
+        .with_backend(backend)
+        .with_session_store(store)
+        .with_permission_gate(gate)
+        .with_router(fake_router());
+    let builder = match selection {
+        Some(selection) => builder.with_builtin_plugins(selection),
+        None => builder,
+    };
+    builder
+        .build()
+        .expect("build should succeed with every port injected")
+}
+
+/// The headline acceptance test: a default `ConwayBuilder::build()` (no
+/// `with_builtin_plugins` call, no `[tools]` override) yields a runtime
+/// with NO `bash` tool registered.
+///
+/// The registry-emptiness hazard this test is written to rule out (GP-14):
+/// a build that silently registered NOTHING would also make
+/// `tool_render_kind("bash")` return `None`, passing this assertion for
+/// the WRONG reason. `fs`'s `read` tool is asserted present in the very
+/// same registry to rule that out -- the registry is not empty, `bash`
+/// specifically is absent.
+#[cfg(feature = "builtin-tools")]
+#[test]
+fn default_build_registers_every_builtin_except_bash() {
+    let conway = build_conway_with_selection(None);
+
+    assert!(
+        conway.tool_render_kind(&ToolName::new("bash")).is_none(),
+        "a default build must register no `bash` tool at all"
+    );
+    // Rules out the "build registered nothing" false-pass: `fs`'s `read`
+    // tool (default-on, per this item's own deliberate fs/subagent/report
+    // decision) IS registered in this same runtime.
+    assert!(
+        conway.tool_render_kind(&ToolName::new("read")).is_some(),
+        "fs/subagent/report stay registered by default -- only bash is excluded"
+    );
+}
+
+/// The explicit-opt-in mirror: `with_builtin_plugins(PluginSelection::All)`
+/// yields a runtime that HAS the real `bash` tool, declaring the
+/// `ShellCommand` `RenderKind` only `bash` uses among the built-ins.
+#[cfg(feature = "builtin-tools")]
+#[test]
+fn explicit_opt_in_via_builder_registers_the_bash_tool() {
+    let conway = build_conway_with_selection(Some(PluginSelection::All));
+
+    assert_eq!(
+        conway.tool_render_kind(&ToolName::new("bash")),
+        Some(RenderKind::ShellCommand),
+        "with_builtin_plugins(All) must register the real bash tool"
+    );
+}
+
+/// Same opt-in, expressed as a NAMED selection (`Only(["conway.shell"])`)
+/// rather than the blanket `All` -- proves the mechanism is a real id-keyed
+/// predicate, not merely a two-state All/None switch. The negative half
+/// matters as much as the positive one: naming only shell must also mean
+/// fs's `read` is absent, which a predicate that ignored its argument would
+/// fail.
+#[cfg(feature = "builtin-tools")]
+#[test]
+fn explicit_opt_in_via_only_naming_shell_registers_the_bash_tool() {
+    let conway = build_conway_with_selection(Some(PluginSelection::Only(vec![
+        "conway.shell".to_string(),
+    ])));
+
+    assert_eq!(
+        conway.tool_render_kind(&ToolName::new("bash")),
+        Some(RenderKind::ShellCommand),
+        "Only([\"conway.shell\"]) must register bash"
+    );
+    // And nothing else this selection didn't name.
+    assert!(
+        conway.tool_render_kind(&ToolName::new("read")).is_none(),
+        "Only([\"conway.shell\"]) must NOT also register fs's `read` tool"
+    );
+}
+
+/// A typo in `tools.builtin_plugins` must FAIL THE BUILD, not silently
+/// leave the tool off.
+///
+/// This is the config key an operator uses to turn `bash` back on. If
+/// `"conway.shel"` were accepted and simply never matched, the build would
+/// succeed, bash would stay absent, and the operator would believe they had
+/// enabled it -- silence indistinguishable from success, which GP-14 ranks
+/// as the WORST harm tier ("user-facing configuration that does nothing").
+/// The candidate set is closed and known at compile time, so an
+/// unrecognized id is always a mistake and never a forward reference.
+#[cfg(feature = "builtin-tools")]
+#[test]
+fn a_misspelled_builtin_plugin_id_is_rejected_rather_than_silently_ignored() {
+    let mut cfg = base_config();
+    cfg.tools.builtin_plugins = vec![
+        "conway.fs".to_string(),
+        "conway.shel".to_string(), // typo: missing the final `l`
+    ];
+
+    // `Conway` is not `Debug`, so match rather than `expect_err`.
+    let rendered = match ConwayBuilder::from_parts(cfg)
+        .with_backend(fake_backend("fake"))
+        .with_session_store(Arc::new(FakeStore::new()))
+        .with_permission_gate(Arc::new(FakeGate::new(PermissionDecision::AllowOnce)))
+        .with_router(fake_router())
+        .build()
+    {
+        Ok(_) => panic!("a misspelled built-in plugin id must fail the build, but it succeeded"),
+        Err(e) => e.to_string(),
+    };
+    assert!(
+        rendered.contains("conway.shel"),
+        "the error must name the offending id so the operator can find the typo: {rendered}"
+    );
+    assert!(
+        rendered.contains("conway.shell"),
+        "the error must list the known ids so the operator can see the correction: {rendered}"
+    );
+}
+
+/// The two remaining `PluginSelection` variants, which nothing else drives.
+/// Their `allows()` arms are one-liners today, so this is not chasing a
+/// live bug -- it is so that a future edit to `allows()` cannot regress
+/// them silently. `AllExcept` is the variant an operator reaches for to
+/// drop exactly one built-in, and `None` is the only way to get a runtime
+/// with no built-in tools at all; both deserve a guard.
+#[cfg(feature = "builtin-tools")]
+#[test]
+fn all_except_shell_and_none_select_what_their_names_say() {
+    let all_except_shell = build_conway_with_selection(Some(PluginSelection::AllExcept(vec![
+        "conway.shell".to_string(),
+    ])));
+    assert!(
+        all_except_shell
+            .tool_render_kind(&ToolName::new("bash"))
+            .is_none(),
+        "AllExcept([\"conway.shell\"]) must NOT register bash"
+    );
+    assert!(
+        all_except_shell
+            .tool_render_kind(&ToolName::new("read"))
+            .is_some(),
+        "AllExcept([\"conway.shell\"]) must still register everything it did not name"
+    );
+
+    let nothing = build_conway_with_selection(Some(PluginSelection::None));
+    assert!(
+        nothing.tool_render_kind(&ToolName::new("bash")).is_none(),
+        "None must register no bash"
+    );
+    assert!(
+        nothing.tool_render_kind(&ToolName::new("read")).is_none(),
+        "None must register no built-in tools at all, not merely skip shell"
+    );
+}
+
+/// The `settings.json`-reachable path: no `with_builtin_plugins` call at
+/// all, just `config.tools.builtin_plugins` naming `"conway.shell"` --
+/// proving the config key and the builder method reach the exact same
+/// outcome (GP-03: built-ins and the config surface select the same way).
+#[cfg(feature = "builtin-tools")]
+#[test]
+fn config_tools_builtin_plugins_naming_shell_registers_the_bash_tool() {
+    let mut cfg = base_config();
+    cfg.tools.builtin_plugins.push("conway.shell".to_string());
+    let backend = fake_backend("fake");
+    let store = Arc::new(FakeStore::new());
+    let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
+
+    let conway = ConwayBuilder::from_parts(cfg)
+        .with_backend(backend)
+        .with_session_store(store)
+        .with_permission_gate(gate)
+        .with_router(fake_router())
+        .build()
+        .expect("build should succeed with every port injected");
+
+    assert_eq!(
+        conway.tool_render_kind(&ToolName::new("bash")),
+        Some(RenderKind::ShellCommand),
+        "config.tools.builtin_plugins naming conway.shell must register bash, \
+         with no with_builtin_plugins call at all"
+    );
+}
+
+/// A `with_plugin`-injected third-party plugin is never filtered by the
+/// built-in `PluginSelection` -- including the restrictive DEFAULT one
+/// (`PluginSelection`'s own doc: calling `with_plugin` IS already the
+/// explicit per-plugin declaration GP-03 requires).
+#[cfg(feature = "builtin-tools")]
+#[test]
+fn injected_plugin_is_unaffected_by_the_default_builtin_selection() {
+    let cfg = base_config();
+    let backend = fake_backend("fake");
+    let store = Arc::new(FakeStore::new());
+    let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
+
+    #[derive(serde::Deserialize, schemars::JsonSchema)]
+    struct EchoArgs {}
+
+    struct EchoTool;
+    #[async_trait::async_trait]
+    impl Tool for EchoTool {
+        fn spec(&self) -> conway_core::content::ToolSpec {
+            conway_core::content::ToolSpec {
+                name: ToolName::new("test_echo"),
+                description: "echo".to_string(),
+                schema: schemars::schema_for!(EchoArgs),
+                category: conway_core::content::ToolCategory::Read,
+                permission: conway_core::content::PermissionClass::Safe,
+            }
+        }
+        async fn invoke(
+            &self,
+            _call: conway_core::content::ToolCall,
+            _ctx: conway_core::ports::ToolCtx,
+        ) -> Result<conway_core::ports::ToolOutput, conway_core::error::ToolError> {
+            unreachable!("not invoked by this test")
+        }
+        fn path_args(&self) -> conway_core::ports::PathArgs {
+            conway_core::ports::PathArgs::None
+        }
+        fn render_kind(&self) -> RenderKind {
+            RenderKind::Structured
+        }
+    }
+    struct EchoPlugin;
+    impl Plugin for EchoPlugin {
+        fn manifest(&self) -> PluginManifest {
+            PluginManifest {
+                id: "test.echo".to_string(),
+                version: "0.0.0".to_string(),
+                tools: vec![ToolName::new("test_echo")],
+                required_host_caps: vec![],
+            }
+        }
+        fn tools(&self) -> Vec<Arc<dyn Tool>> {
+            vec![Arc::new(EchoTool)]
+        }
+    }
+
+    let conway = ConwayBuilder::from_parts(cfg)
+        .with_backend(backend)
+        .with_session_store(store)
+        .with_permission_gate(gate)
+        .with_router(fake_router())
+        .with_plugin(Arc::new(EchoPlugin))
+        .build()
+        .expect("build should succeed with every port injected");
+
+    assert_eq!(
+        conway.tool_render_kind(&ToolName::new("test_echo")),
+        Some(RenderKind::Structured),
+        "an injected third-party plugin is registered regardless of the default builtin selection"
+    );
+    assert!(
+        conway.tool_render_kind(&ToolName::new("bash")).is_none(),
+        "the default selection still excludes bash even alongside an injected plugin"
+    );
 }
 
 #[cfg(feature = "openai-compat")]

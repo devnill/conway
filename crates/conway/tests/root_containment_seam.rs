@@ -41,9 +41,11 @@ use std::time::Duration;
 use async_trait::async_trait;
 use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, LimitsConfig, ModelsConfig, PermissionsConfig,
-    RoleEntry, RoutingSection, SessionConfig, TuiSection,
+    RoleEntry, RoutingSection, SessionConfig, ToolsConfig, TuiSection,
 };
-use conway::{Conway, ConwayBuilder, PatternRule, SessionHandle, SessionSpec, SpawnSpec};
+use conway::{
+    Conway, ConwayBuilder, PatternRule, PluginSelection, SessionHandle, SessionSpec, SpawnSpec,
+};
 use conway_core::agent::{PermissionDecision, PermissionRequest, PermissionScope};
 use conway_core::content::{ContentBlock, StopReason, ToolCall, ToolResult, Usage};
 use conway_core::ids::{AgentId, BackendId, ModelId, ModelRef, RoleAlias, ToolName};
@@ -132,6 +134,7 @@ fn base_config() -> ConwayConfig {
         agents: AgentsConfig::default(),
         models: ModelsConfig::default(),
         tui: TuiSection::default(),
+        tools: ToolsConfig::default(),
     }
 }
 
@@ -175,6 +178,10 @@ fn build_conway(script: Vec<ScriptedTurn>, gate: Arc<dyn PermissionGate>) -> Con
         .with_session_store(store)
         .with_permission_gate(gate)
         .with_router(fake_router())
+        // Board item (bash ships on by default and cannot be declined):
+        // this file drives the REAL `bash` tool end to end, so it must now
+        // opt in explicitly -- the facade's own default excludes it.
+        .with_builtin_plugins(PluginSelection::All)
         .build()
         .expect("build should succeed with the real builtin fs/bash tools registered")
 }
@@ -196,6 +203,10 @@ fn build_conway_with_root(
         .with_permission_gate(gate)
         .with_router(fake_router())
         .with_root(root)
+        // Board item (bash ships on by default and cannot be declined):
+        // this file drives the REAL `bash` tool end to end, so it must now
+        // opt in explicitly -- the facade's own default excludes it.
+        .with_builtin_plugins(PluginSelection::All)
         .build()
         .expect("build should succeed with the real builtin fs/bash tools registered")
 }

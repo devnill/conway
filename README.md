@@ -86,6 +86,21 @@ fails safe).
 conway
 ```
 
+**bash is off by default** in the TUI and for a library embedder's own
+`ConwayBuilder::build()` — conway's `fs`/`subagent`/`report` built-ins are
+registered automatically, bash is not, and getting it requires a deliberate
+opt-in. One-shot mode is unaffected (bash was already, and remains, gated by
+`--allowed-tools` above). To enable it for the TUI, add `"conway.shell"` to
+`settings.json`'s `tools.builtin_plugins`:
+
+```json
+{ "tools": { "builtin_plugins": ["conway.fs", "conway.subagent", "conway.report", "conway.shell"] } }
+```
+
+See [`docs/getting-started.md`](docs/getting-started.md#enabling-bash-shell-commands)
+for the full explanation and the library-embedder equivalent
+(`ConwayBuilder::with_builtin_plugins`).
+
 ## Configuration
 
 conway discovers configuration with increasing precedence:
