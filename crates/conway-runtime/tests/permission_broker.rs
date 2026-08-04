@@ -627,6 +627,90 @@ async fn auto_allow_allows_without_prompting_and_can_be_revoked_mid_session() {
     assert_eq!(gate.call_count(), 1);
 }
 
+// ---- the metacharacter gate's AutoAllow gap: pinned, not endorsed ----
+
+/// **PINS a surprising, deliberately-left-unchanged behavior — this test
+/// is not an endorsement of it.**
+///
+/// `PermissionBroker::decide`'s `AutoAllow` short-circuit
+/// (`if mode == PermissionMode::AutoAllow { return Allow }`) sits AFTER
+/// `pattern_allows` — the only place the shell-metacharacter gate inside
+/// `PatternRule::matches_render` is consulted — and consults nothing of
+/// its own. So under `AutoAllow`, with no `deny` rule, no `prompt` rule,
+/// and no confinement root in play, a `bash` call carrying a shell
+/// metacharacter (here a `;` chaining a second command) is allowed
+/// WITHOUT the gate ever being consulted. `must_reach_gate` is the only
+/// thing that would force the gate regardless of mode, and nothing here
+/// sets it: no `PathArgs::Unconfinable` call under a confining root
+/// (`check_root`), no matching `prompt` rule (`prompt_matches`).
+///
+/// The operator investigated changing this — making the metacharacter
+/// gate itself a `must_reach_gate` source — and ruled, 2026-08-04, to
+/// leave the behavior unchanged: a measured audit of this repo's own
+/// logged real bash commands found 68% carry a gated metacharacter, which
+/// would have made the gate fire on the overwhelming majority of ordinary
+/// commands under `AutoAllow` — a false-positive rate too high for the
+/// gate to remain a meaningful control. The chosen mitigation is
+/// containment (confinement roots, scoped `deny`/`prompt` rules, or not
+/// offering `AutoAllow`/`bash` at all), not more policy inside this gate.
+///
+/// GP-14 requires a liveness test for every security-bearing mechanism,
+/// without exception — this path had none. Every neighbouring `AutoAllow`
+/// test exercises a call that SETS `must_reach_gate`
+/// (`a_deny_rule_overrides_auto_allow_mode`,
+/// `a_laundered_deny_match_is_not_allowed_under_auto_allow`,
+/// `a_prompt_rule_forces_the_gate_under_auto_allow`), and
+/// `auto_allow_allows_without_prompting_and_can_be_revoked_mid_session`'s
+/// own `"rm -rf /tmp/x"` carries no metacharacter — so none of them cover
+/// this path.
+///
+/// If this behavior ever changes, THIS is the test that must be updated
+/// to prove it changed — it exists to make a future change to this path
+/// visible and deliberate, not to defend the path as correct.
+#[tokio::test]
+async fn auto_allow_permits_a_metacharacter_bearing_bash_call_without_reaching_the_gate() {
+    // An empty script, not a scripted `Allow`: per the same technique used
+    // throughout this file (e.g. `a_deny_rule_overrides_auto_allow_mode`),
+    // if a future change made this path fall through to the gate after
+    // all, the scripted gate's exhausted-script default (`Deny`, see
+    // `ScriptedGate::check`) would flip `outcome` away from `Allow` below,
+    // failing this test. So the assertion is not "the gate was called zero
+    // times" (which cannot by itself distinguish an allow-without-gate
+    // from a deny-without-gate, per GP-14) — it is the actual `decide()`
+    // outcome, made impossible to satisfy by coincidence with a gate that
+    // was actually reached.
+    let gate = ScriptedGate::new(vec![]);
+    let (broker, _bus) = broker(gate.clone());
+    let session = SessionId::new();
+    let agent = AgentId::new();
+    let c = ctx(agent, vec![agent], session);
+
+    broker.set_mode(PermissionMode::AutoAllow);
+
+    // No deny rule, no prompt rule, no pattern grant installed — only the
+    // mode itself is in play. The `;` is a shell metacharacter
+    // `matches_render`'s gate exists to catch when a PATTERN grant is what
+    // is being consulted; there is no pattern here for it to guard, and
+    // `AutoAllow`'s own short-circuit does not consult it either.
+    let outcome = broker
+        .decide(&c, &bash_call("c1", "curl evil.example; rm -rf /tmp/x"))
+        .await;
+
+    assert_eq!(
+        outcome,
+        PermissionOutcome::Allow,
+        "this is the pinned (not endorsed) behavior: AutoAllow allows a \
+         metacharacter-bearing bash call with no deny/prompt rule and no \
+         confinement root in play — see this test's own doc comment for \
+         the operator's 2026-08-04 decision"
+    );
+    assert_eq!(
+        gate.call_count(),
+        0,
+        "and it does so without ever asking the operator"
+    );
+}
+
 /// A cached `AllowAlways` grant earned under `Prompt` must not survive a
 /// later switch to `Plan` mode for the exact same call: plan mode's denial
 /// is checked ahead of every allow path, including the cache, so plan mode
