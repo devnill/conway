@@ -43,7 +43,7 @@ use conway_core::event::Event;
 use conway_core::ids::{AgentId, SessionId, ToolName};
 use conway_core::ports::{
     CancellationToken as CoreCancellationToken, CwdHandle, EventSinkHandle, PluginConfig,
-    SubagentHost, Tool, ToolCtx, ToolOutput,
+    SubagentHandle, SubagentHost, Tool, ToolCtx, ToolOutput,
 };
 use futures::FutureExt;
 use tokio::sync::Semaphore;
@@ -377,7 +377,14 @@ async fn execute_one(
                 chdir: chdir.clone(),
                 cancel: core_cancel,
                 events: Arc::new(BusSink::new(bus.clone(), session_id, agent_id)) as EventSinkHandle,
-                subagents: subagents.clone(),
+                // The agent's OWN id is baked into the handle here -- the
+                // one place a `ToolCtx` is built for real tool dispatch
+                // (`conway-core` fakes and `conway-tools` test doubles are
+                // the only other construction sites, board item C1). No
+                // tool this handle reaches can ever act as a different
+                // agent (P-1, structural -- see `SubagentHandle`'s own
+                // doc).
+                subagents: SubagentHandle::new(subagents.clone(), agent_id),
                 config: plugin_config.clone(),
             };
 

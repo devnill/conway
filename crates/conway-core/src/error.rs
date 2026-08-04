@@ -259,6 +259,77 @@ pub enum RuntimeError {
     AgentNotInSubtree { caller: AgentId, target: AgentId },
 }
 
+/// Errors produced by [`crate::ports::SubagentHandle`]'s five fallible
+/// methods (`start`, `steer`, `await_result`, `cancel`, `ask`) -- the narrow,
+/// tool-facing counterpart to [`RuntimeError`], which is what
+/// [`crate::ports::SubagentHost`] (the port `SubagentHandle` wraps) actually
+/// returns. `SubagentHandle` translates every `RuntimeError` a call to the
+/// wrapped host can produce into one of these four variants at its own
+/// boundary (see that type's own doc for the translation) -- nothing
+/// downstream of the handle ever sees a raw `RuntimeError` again. Mirrors
+/// [`CwdError`]'s house style: `#[non_exhaustive]`, serde round-trippable,
+/// `Display` via `thiserror`.
+///
+/// **Three variants are caller mistakes a model can correct**: an unknown or
+/// out-of-subtree `agent_id` it supplied, or a malformed `SubagentMode`
+/// reaching `ask`. `From<SubagentError> for ToolError` (below) maps all
+/// three to `ToolError::InvalidArguments`, distinct from [`Self::Host`]
+/// (genuine infrastructure, `ToolError::Internal`) -- see that `impl`'s own
+/// doc for why the split matters: `conway-tools`' pre-existing `host_error`
+/// helper flattened every `RuntimeError`, including these three, to
+/// `Internal`, which read as a host bug for what is, in each of these three
+/// cases, a mistake in the model's own tool call.
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
+pub enum SubagentError {
+    /// [`RuntimeError::AgentNotFound`]: `agent` is unknown to this runtime
+    /// entirely.
+    #[error("unknown agent: {agent}")]
+    UnknownAgent { agent: AgentId },
+    /// [`RuntimeError::AgentNotInSubtree`]: `target` exists but is outside
+    /// `caller`'s own subtree (P-1). `caller` here is always the handle's
+    /// own baked-in agent id -- see [`crate::ports::SubagentHandle`]'s own
+    /// doc for why a tool has no way to supply a different one.
+    #[error("agent {caller} may not act on agent {target}: it is outside {caller}'s own subtree")]
+    NotInSubtree { caller: AgentId, target: AgentId },
+    /// [`RuntimeError::AskRequiresFork`]: P-1 -- `ask` is fork+await-text,
+    /// not a third primitive; a malformed `SubagentSpec::mode` reaching it
+    /// is a typed error here, never a panic.
+    #[error("ask requires SubagentMode::Fork (ask is fork+await-text, not a third primitive); got {mode:?}")]
+    AskRequiresFork { mode: SubagentMode },
+    /// Infrastructure: every other `RuntimeError` the wrapped
+    /// `SubagentHost` can return (`RuntimeError::Store`, the
+    /// `RuntimeError::Tool(ToolError::Internal)` smuggle channel
+    /// `conway-runtime` uses for gaps like "no `InvalidSpec` variant
+    /// exists" or "the runtime has already been dropped", ...) -- not a
+    /// model-correctable mistake. Semantics unchanged from today; this
+    /// just gives the existing "closest fit" fallback a name at this
+    /// crate's own tool-facing boundary.
+    #[error("subagent host error: {detail}")]
+    Host { detail: String },
+}
+
+/// The ONE place [`SubagentError`] becomes a [`ToolError`] (P-14): every
+/// `conway-tools` subagent tool maps through this, never restating the
+/// mapping per call site. `UnknownAgent`/`NotInSubtree`/`AskRequiresFork`
+/// are caller mistakes a model can correct, so they become
+/// `ToolError::InvalidArguments` -- not `Internal`, which is how
+/// `conway-tools`' pre-existing `host_error` helper flattened every
+/// `RuntimeError` (see [`SubagentError`]'s own doc). [`SubagentError::Host`]
+/// -- genuine infrastructure -- maps to `ToolError::Internal`, unchanged.
+impl From<SubagentError> for ToolError {
+    fn from(err: SubagentError) -> Self {
+        match err {
+            SubagentError::UnknownAgent { .. }
+            | SubagentError::NotInSubtree { .. }
+            | SubagentError::AskRequiresFork { .. } => ToolError::InvalidArguments {
+                detail: err.to_string(),
+            },
+            SubagentError::Host { detail } => ToolError::Internal { detail },
+        }
+    }
+}
+
 /// Errors produced by plugin registration and initialization.
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
@@ -505,6 +576,102 @@ mod tests {
         let rendered = err.to_string();
         assert!(rendered.contains(&caller.to_string()));
         assert!(rendered.contains(&target.to_string()));
+    }
+
+    // ---- SubagentError (C1: the SubagentHandle/ToolCtx capability) ----
+
+    #[test]
+    fn subagent_error_unknown_agent_roundtrips_and_names_the_agent() {
+        let agent = AgentId::new();
+        let err = SubagentError::UnknownAgent { agent };
+        let json = serde_json::to_string(&err).unwrap();
+        let back: SubagentError = serde_json::from_str(&json).unwrap();
+        assert_eq!(err, back);
+        assert!(err.to_string().contains(&agent.to_string()));
+    }
+
+    #[test]
+    fn subagent_error_not_in_subtree_roundtrips_and_names_both_ids() {
+        let caller = AgentId::new();
+        let target = AgentId::new();
+        let err = SubagentError::NotInSubtree { caller, target };
+        let json = serde_json::to_string(&err).unwrap();
+        let back: SubagentError = serde_json::from_str(&json).unwrap();
+        assert_eq!(err, back);
+        let rendered = err.to_string();
+        assert!(rendered.contains(&caller.to_string()));
+        assert!(rendered.contains(&target.to_string()));
+    }
+
+    #[test]
+    fn subagent_error_ask_requires_fork_roundtrips_and_names_the_mode() {
+        let err = SubagentError::AskRequiresFork {
+            mode: SubagentMode::Spawn,
+        };
+        let json = serde_json::to_string(&err).unwrap();
+        let back: SubagentError = serde_json::from_str(&json).unwrap();
+        assert_eq!(err, back);
+        assert!(err.to_string().contains("Spawn"));
+    }
+
+    #[test]
+    fn subagent_error_host_roundtrips_and_names_the_detail() {
+        let err = SubagentError::Host {
+            detail: "the runtime has already been dropped".into(),
+        };
+        let json = serde_json::to_string(&err).unwrap();
+        let back: SubagentError = serde_json::from_str(&json).unwrap();
+        assert_eq!(err, back);
+        assert!(err.to_string().contains("the runtime has already been dropped"));
+    }
+
+    /// The From<SubagentError> for ToolError mapping (P-14: the ONE place
+    /// this happens) for the three caller-mistake variants:
+    /// `UnknownAgent`/`NotInSubtree`/`AskRequiresFork` must all become
+    /// `ToolError::InvalidArguments`, carrying the variant's own rendered
+    /// `Display` as `detail` -- not `Internal`, which is how `conway-tools`'
+    /// pre-existing `host_error` helper flattened every `RuntimeError`
+    /// (see `SubagentError`'s own doc). Checking the carried `detail`
+    /// against the source `Display`, not just the outer variant, is what
+    /// makes this able to fail: a stub that maps to the right variant but
+    /// drops/replaces the message would still be caught.
+    #[test]
+    fn unknown_agent_not_in_subtree_and_ask_requires_fork_map_to_invalid_arguments() {
+        let agent = AgentId::new();
+        let caller = AgentId::new();
+        let target = AgentId::new();
+        let mode = SubagentMode::Spawn;
+
+        for subagent_err in [
+            SubagentError::UnknownAgent { agent },
+            SubagentError::NotInSubtree { caller, target },
+            SubagentError::AskRequiresFork { mode },
+        ] {
+            let rendered = subagent_err.to_string();
+            let tool_err: ToolError = subagent_err.into();
+            let ToolError::InvalidArguments { detail } = tool_err else {
+                panic!("expected InvalidArguments, got {tool_err:?}");
+            };
+            assert_eq!(detail, rendered);
+        }
+    }
+
+    /// The other half of the same mapping: `SubagentError::Host`
+    /// (infrastructure, not a caller mistake) must become
+    /// `ToolError::Internal`, carrying its `detail` field through
+    /// unrendered (no `Display` re-wrapping -- `Host { detail } => Internal
+    /// { detail }` is a direct pass-through, unlike the three variants
+    /// above).
+    #[test]
+    fn host_maps_to_internal_with_its_detail_passed_through() {
+        let err = SubagentError::Host {
+            detail: "store io error".into(),
+        };
+        let tool_err: ToolError = err.into();
+        let ToolError::Internal { detail } = tool_err else {
+            panic!("expected Internal, got {tool_err:?}");
+        };
+        assert_eq!(detail, "store io error");
     }
 
     #[test]
