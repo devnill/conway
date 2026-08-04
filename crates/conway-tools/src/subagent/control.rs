@@ -12,7 +12,7 @@ use conway_core::ids::ToolName;
 use conway_core::ports::{PathArgs, RenderKind, Tool, ToolCtx, ToolOutput};
 
 use crate::common::{check_cancel, parse_args, text_output};
-use super::tools::{host_error, parse_agent_id, wait_for_result, TRUNCATION};
+use super::tools::{parse_agent_id, wait_for_result, TRUNCATION};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -73,16 +73,10 @@ impl Tool for SteerTool {
         check_cancel(&ctx)?;
         let args: SteerArgs = parse_args(&call)?;
         let target = parse_agent_id(&args.agent_id)?;
-        // P-1 (board item 01KYT8TS0EBKJHYNJRF6S88NRH, structural since
-        // `SubagentHandle`): `ctx.subagents` is a `SubagentHandle` with this
-        // agent's own id baked in -- `steer` has no `caller` parameter at
-        // all, so this agent can only ever steer its own subtree. A model
-        // that supplies a sibling's `agent_id` as `target` gets a typed
-        // rejection, not a forged steer.
         ctx.subagents
             .steer(target, args.text)
             .await
-            .map_err(host_error)?;
+            .map_err(ToolError::from)?;
         Ok(text_output(format!("steered agent {target}"), TRUNCATION))
     }
 }
@@ -170,12 +164,10 @@ impl Tool for CancelTool {
         let reason = args
             .reason
             .unwrap_or_else(|| "cancelled by parent agent".to_string());
-        // P-1: see `SteerTool::invoke`'s identical note -- `ctx.subagents`
-        // has no `caller` parameter for `cancel` to receive one through.
         ctx.subagents
             .cancel(target, reason.clone())
             .await
-            .map_err(host_error)?;
+            .map_err(ToolError::from)?;
         Ok(text_output(
             format!("cancelled agent {target}: {reason}"),
             TRUNCATION,

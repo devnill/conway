@@ -53,10 +53,18 @@ pub struct FakeSubagentHost {
     asks: Mutex<Vec<(AgentId, SubagentSpec)>>,
     ask_outcomes: Mutex<HashMap<AgentId, AskOutcome>>,
     /// When set (via [`Self::with_ask_error`]), every `ask` call fails with
-    /// this error instead of returning an outcome — drives the host-error
-    /// path (`map_err(host_error)`), which a scripted [`AskOutcome`] cannot
-    /// reach. Read-only after construction, so no `Mutex`.
+    /// this error instead of returning an outcome — drives the
+    /// `SubagentError`/`ToolError::from` translation path, which a scripted
+    /// [`AskOutcome`] cannot reach. Read-only after construction, so no
+    /// `Mutex`.
     ask_error: Option<RuntimeError>,
+    /// When set (via [`Self::with_steer_error`]), every `steer` call fails
+    /// with this error instead of recording the message — the `steer`
+    /// counterpart to `ask_error`, letting a test drive the same
+    /// translation path against a `steer` call site (e.g. a foreign-id steer
+    /// scripted as `RuntimeError::AgentNotInSubtree`). Read-only after
+    /// construction, so no `Mutex`.
+    steer_error: Option<RuntimeError>,
 }
 
 impl FakeSubagentHost {
@@ -72,6 +80,7 @@ impl FakeSubagentHost {
             asks: Mutex::new(Vec::new()),
             ask_outcomes: Mutex::new(HashMap::new()),
             ask_error: None,
+            steer_error: None,
         }
     }
 
@@ -102,6 +111,14 @@ impl FakeSubagentHost {
     /// failure, not a per-parent outcome.
     pub fn with_ask_error(mut self, error: RuntimeError) -> Self {
         self.ask_error = Some(error);
+        self
+    }
+
+    /// Makes every `steer(caller, target, text)` call fail with `error`
+    /// (cloned), the call still being recorded — the `steer` counterpart to
+    /// [`Self::with_ask_error`].
+    pub fn with_steer_error(mut self, error: RuntimeError) -> Self {
+        self.steer_error = Some(error);
         self
     }
 
@@ -167,7 +184,10 @@ impl SubagentHost for FakeSubagentHost {
         text: String,
     ) -> Result<(), RuntimeError> {
         self.steers.lock().unwrap().push((caller, target, text));
-        Ok(())
+        match &self.steer_error {
+            Some(error) => Err(error.clone()),
+            None => Ok(()),
+        }
     }
 
     /// Terminates immediately (never blocks): returns the scripted result
