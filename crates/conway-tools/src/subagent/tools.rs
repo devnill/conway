@@ -274,7 +274,6 @@ impl Tool for SubagentTool {
             tools: args.tools.map(ToolSelector::Only),
             budget: resolve_budget(args.budget, &ctx.config)?,
             result_contract,
-            await_result: args.await_flag,
             // The model-invoked `conway_subagent` tool is always the
             // autonomous, one-shot fork/spawn primitive (P-1: "exactly two
             // subagent primitives") -- `keep_alive` is an opt-in only the

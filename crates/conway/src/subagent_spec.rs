@@ -172,16 +172,6 @@ impl From<ForkSpec> for SubagentSpec {
             budget: spec.budget,
             cache_hint: spec.cache_hint,
             result_contract: spec.result_contract,
-            // `SubagentSpec::await_result` postdates this item's own binding
-            // notes (not named in either spec struct) -- it is what lets an
-            // agent-initiated fork/spawn fan out without blocking
-            // (`conway-tools`' `conway_subagent` tool). A library consumer
-            // going through `SessionHandle::fork`/`::spawn` always gets a
-            // handle back and decides for itself whether to call
-            // `await_agent`, so `true` here matches
-            // `SubagentSpec::fork`/`::spawn`'s own constructor default and
-            // is not a place this facade needs to expose a toggle.
-            await_result: true,
             keep_alive: spec.keep_alive,
             ephemeral: spec.ephemeral,
             ask_origin: spec.ask_origin,
@@ -363,8 +353,6 @@ impl From<SpawnSpec> for SubagentSpec {
             budget: spec.budget,
             cache_hint: false,
             result_contract: spec.result_contract,
-            // See the matching note on `From<ForkSpec>` above.
-            await_result: true,
             keep_alive: spec.keep_alive,
             ephemeral: false,
             ask_origin: None,
@@ -405,7 +393,6 @@ mod tests {
         assert_eq!(converted.budget, budget);
         assert!(!converted.cache_hint);
         assert!(converted.result_contract.is_none());
-        assert!(converted.await_result);
         assert_eq!(
             converted.cwd, None,
             "ForkSpec has no cwd field at all -- a fork always inherits the forker's cwd"
@@ -504,7 +491,6 @@ mod tests {
             !converted.cache_hint,
             "spawn always forces cache_hint false"
         );
-        assert!(converted.await_result);
         assert_eq!(converted.cwd, None, "cwd defaults to None (inherit)");
         assert_eq!(converted.root, None, "root defaults to None (inherit)");
     }
