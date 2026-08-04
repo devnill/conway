@@ -227,6 +227,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`probe_on_startup` no longer overrides a `models.json`-configured
+  `max_context_tokens`/`reliability_tier` in the router's own capability
+  index.** `ConwayBuilder::build`'s startup probe step
+  (`probe_openai_compat_backends`) used to construct each backend's
+  `CapabilityProbe` with an empty overrides table instead of the same
+  `models.json`-derived one the backend itself was built with, so a probed
+  server window could silently overwrite an operator's explicit
+  `models.json` entry in the router's `CapabilityIndex` — in either
+  direction: a wider probed window let the router admit requests the
+  operator's configured window should have rejected, and a narrower one
+  made the router reject candidates the operator had declared adequate,
+  even though `Backend::capabilities()` (and therefore the runtime's T-1
+  gate) still honored the correct, operator-configured value the whole
+  time. `models.json` now wins outright, in both directions, for every
+  model it lists — restoring the precedence `docs/routing.md`'s "Capability
+  matching" section already documented. Oversized-context rejection for a
+  `models.json`-listed model now happens at routing time, with the
+  operator-configured window, not later via the runtime's T-1 backstop.
+  (`crates/conway/src/builder.rs`,
+  `crates/conway/tests/context_probe_overlay_seam.rs`,
+  `docs/providers.md`)
+
 - **A `command_prefix` rule on a `Structured`-rendering tool was silently
   inert for every select shape except a single named tool.** The original
   `CommandPrefixOnStructuredTool` registration check matched only
