@@ -3,6 +3,12 @@
 //! the machine-consumable mirror of the whole stream: everything `text`
 //! suppresses or redirects to stderr (thinking deltas, tool-call activity,
 //! permission resolutions, routing decisions) is a line here.
+//!
+//! See `docs/scripting.md`'s `jsonl` section for the `seq`/multi-agent
+//! contract a consumer of this stream can actually rely on (per-session
+//! monotonic, not global; a subagent appears only as a sparse lifecycle
+//! slice; the stream ends at the ROOT agent's `agent_finished`, not the
+//! first one).
 
 use std::io::{self, Write};
 
