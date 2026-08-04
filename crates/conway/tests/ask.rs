@@ -39,7 +39,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, LimitsConfig, ModelsConfig, PermissionsConfig,
-    RoleEntry, RoutingSection, SessionConfig, TuiSection,
+    RoleEntry, RoutingSection, SessionConfig, ToolsConfig, TuiSection,
 };
 use conway::{Conway, ConwayBuilder, Plugin, SessionSpec, Tool};
 use conway_core::agent::PermissionDecision;
@@ -121,6 +121,7 @@ fn base_config() -> ConwayConfig {
         agents: AgentsConfig::default(),
         models: ModelsConfig::default(),
         tui: TuiSection::default(),
+        tools: ToolsConfig::default(),
     }
 }
 

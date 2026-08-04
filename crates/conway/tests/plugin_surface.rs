@@ -28,7 +28,7 @@ use std::sync::Arc;
 use conway::config::schema::{
     AgentsConfig, BackendEntry, BackendKind, ConwayConfig, HealthSection, LimitsConfig,
     ModelsConfig, PermissionMode, PermissionsConfig, RoleEntry, RoutingSection, SessionConfig,
-    TuiSection,
+    ToolsConfig, TuiSection,
 };
 use conway::plugin::{
     async_trait, Artifact, ArtifactKind, CancellationToken, ContentBlock, ContextHook,
@@ -211,6 +211,7 @@ fn facade_only_config(session_root: std::path::PathBuf, metadata_path: std::path
             probe_on_startup: false,
         },
         tui: TuiSection::default(),
+        tools: ToolsConfig::default(),
     }
 }
 

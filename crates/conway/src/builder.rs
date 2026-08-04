@@ -147,6 +147,62 @@ const EVENT_BUS_CAPACITY: usize = 1024;
 #[cfg(feature = "openai-compat")]
 const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// Which built-in plugins [`ConwayBuilder::build`] auto-registers, filtered
+/// by each candidate's own `PluginManifest::id` (board item: bash ships on
+/// by default and cannot be declined).
+///
+/// **This is a generic, id-keyed predicate over a *bundle* of candidate
+/// plugins -- it is not bash-specific and carries no built-in-vs-third-party
+/// distinction of its own** (GP-03: "a third-party plugin and a built-in
+/// must be selectable the same way"). `build()` applies it to exactly one
+/// bundle today -- `presets::builtin_plugins()`'s four candidates -- but
+/// nothing about the type restricts it to that bundle: an embedder shipping
+/// their own *set* of related third-party plugins (as opposed to one ad hoc
+/// `with_plugin` call) can filter that set through this same enum before
+/// handing survivors to `with_plugin`, one at a time, exactly as `build()`
+/// does internally for built-ins.
+///
+/// **Plugins injected via [`ConwayBuilder::with_plugin`] are never filtered
+/// by this type.** Calling `with_plugin` IS already the explicit,
+/// per-plugin declaration GP-03 requires of a third party -- nothing about
+/// that call is privileged or automatic. What this item corrects is the
+/// other direction: conway's own built-ins were the ONE bundle that
+/// installed itself with no equivalent declaration, `bash` included. This
+/// type extends the SAME "explicit declaration" requirement to built-ins
+/// (letting three of the four opt back in by default, purely as a matter of
+/// today's chosen default -- see [`crate::config::schema::ToolsConfig`]'s
+/// doc), not the reverse: an already-explicit `with_plugin` call gains no
+/// new hoop to jump through.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PluginSelection {
+    /// Every candidate in the bundle.
+    All,
+    /// No candidate in the bundle.
+    None,
+    /// Exactly the named manifest ids.
+    Only(Vec<String>),
+    /// Every candidate EXCEPT the named manifest ids.
+    AllExcept(Vec<String>),
+}
+
+impl PluginSelection {
+    /// With the `builtin-tools` feature disabled there is no candidate
+    /// bundle to filter (`presets::builtin_plugins()` does not exist), so
+    /// this is never called -- `allow(dead_code)` rather than dropping the
+    /// method under that same `cfg`, which would make it unavailable to an
+    /// embedder's own third-party-bundle use of this type (this type's own
+    /// doc) purely as a side effect of THIS crate's built-ins being off.
+    #[cfg_attr(not(feature = "builtin-tools"), allow(dead_code))]
+    fn allows(&self, id: &str) -> bool {
+        match self {
+            Self::All => true,
+            Self::None => false,
+            Self::Only(ids) => ids.iter().any(|i| i == id),
+            Self::AllExcept(ids) => !ids.iter().any(|i| i == id),
+        }
+    }
+}
+
 /// Assembles a [`Conway`] from a [`ConwayConfig`] plus optional injected
 /// ports. See the module doc for disclosed reconciliations.
 pub struct ConwayBuilder {
@@ -162,6 +218,11 @@ pub struct ConwayBuilder {
     /// `context_hook` at the `Runtime`-constructed default of `None` --
     /// i.e. today's behavior, unchanged.
     context_hook: Option<Arc<dyn ContextHook>>,
+    /// Board item (bash ships on by default and cannot be declined).
+    /// `None` (the default) means `build()` derives the effective
+    /// [`PluginSelection`] from `config.tools.builtin_plugins` instead --
+    /// see [`Self::with_builtin_plugins`]'s doc.
+    builtin_selection: Option<PluginSelection>,
     warnings: Vec<ConfigWarning>,
     /// Board item 01KYTMH9JX21CGSE2Y6E2KP8SJ: an operator-set confinement
     /// root, applied to every root agent this `Conway` starts (see
@@ -209,6 +270,7 @@ impl ConwayBuilder {
             store: None,
             router: None,
             context_hook: None,
+            builtin_selection: None,
             warnings: Vec::new(),
             root: None,
         }
@@ -248,6 +310,23 @@ impl ConwayBuilder {
     /// item, with a hard `ContextTooLarge` on overflow.
     pub fn with_context_hook(mut self, hook: Arc<dyn ContextHook>) -> Self {
         self.context_hook = Some(hook);
+        self
+    }
+
+    /// Overrides which built-in plugins `build()` auto-registers (board
+    /// item: bash ships on by default and cannot be declined). See
+    /// [`PluginSelection`]'s own doc for why this is a generic, id-keyed
+    /// mechanism rather than a bash-specific switch.
+    ///
+    /// **Not called at all (the default)** means `build()` derives the
+    /// selection from `config.tools.builtin_plugins`
+    /// ([`crate::config::schema::ToolsConfig`]) instead -- itself defaulting
+    /// to every built-in EXCEPT `conway.shell` (bash). Either way, obtaining
+    /// bash is a deliberate act: call this method with a selection that
+    /// names `"conway.shell"` (or `PluginSelection::All`), or add
+    /// `"conway.shell"` to a loaded config's `tools.builtin_plugins` array.
+    pub fn with_builtin_plugins(mut self, selection: PluginSelection) -> Self {
+        self.builtin_selection = Some(selection);
         self
     }
 
@@ -311,6 +390,7 @@ impl ConwayBuilder {
             store,
             router,
             context_hook,
+            builtin_selection,
             warnings,
             root,
         } = self;
@@ -433,15 +513,34 @@ impl ConwayBuilder {
             None => gates::from_config(&config.permissions, None)?,
         };
 
-        // 10. Plugins: built-ins ++ injected; duplicate manifest ids error.
+        // 10. Plugins: built-ins (filtered by `selection`) ++ injected;
+        //     duplicate manifest ids error. Board item: bash ships on by
+        //     default and cannot be declined -- `selection` is what makes
+        //     `presets::builtin_plugins()`'s four candidates no longer an
+        //     unconditional install; injected `plugins` (below) are never
+        //     filtered by it (`with_plugin` is already an explicit
+        //     declaration -- see `PluginSelection`'s own doc).
+        let selection = builtin_selection
+            .unwrap_or_else(|| PluginSelection::Only(config.tools.builtin_plugins.clone()));
         let mut resolved_plugins: Vec<Arc<dyn Plugin>> = Vec::new();
         let mut seen_plugin_ids: HashSet<String> = HashSet::new();
         #[cfg(feature = "builtin-tools")]
         {
             for plugin in presets::builtin_plugins() {
-                seen_plugin_ids.insert(plugin.manifest().id.clone());
-                resolved_plugins.push(plugin);
+                let id = plugin.manifest().id.clone();
+                if selection.allows(&id) {
+                    seen_plugin_ids.insert(id);
+                    resolved_plugins.push(plugin);
+                }
             }
+        }
+        #[cfg(not(feature = "builtin-tools"))]
+        {
+            // No candidate bundle exists to filter without this feature;
+            // `selection` is still computed above (from `config.tools`, or
+            // an explicit `with_builtin_plugins` call) so it is consumed
+            // either way rather than triggering an unused-variable warning.
+            let _ = &selection;
         }
         for plugin in plugins {
             let id = plugin.manifest().id.clone();

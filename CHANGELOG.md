@@ -199,6 +199,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`Move` category, which plan mode does not permit). Previously the tool
   appeared only in this changelog. (`docs/agents.md`)
 
+### Security
+
+- **BREAKING: bash is no longer registered by default.** `ConwayBuilder::
+  build()` used to unconditionally register all four built-in plugins
+  (`conway.fs`, `conway.shell`/bash, `conway.subagent`, `conway.report`)
+  whenever the `builtin-tools` feature was compiled in, with no runtime way
+  to decline any one of them — conway's most dangerous built-in (arbitrary
+  shell execution) installed itself, and the only escape was compiling out
+  the feature entirely, which also removed `fs`/`subagent`/`report`.
+  Registration is now declarative and selective: `ConwayBuilder::
+  with_builtin_plugins(PluginSelection)` filters the built-in candidate set
+  by manifest id (`All`, `None`, `Only([..])`, `AllExcept([..])`) — the
+  SAME id-keyed mechanism a bundle of third-party plugins would use for
+  identical selection UX (GP-03: no bespoke built-in-only switch). Not
+  calling it defers to the new `[tools]` config section
+  (`ConwayConfig::tools.builtin_plugins`, a plain `Vec<String>` of manifest
+  ids), which **defaults to every built-in EXCEPT `"conway.shell"`.**
+  Obtaining bash now requires a deliberate act: add `"conway.shell"` to a
+  loaded `settings.json`'s `tools.builtin_plugins` array, or call
+  `.with_builtin_plugins(PluginSelection::All)` (or an `Only`/`AllExcept`
+  naming it) before `.build()`.
+
+  **Who is affected, and how:**
+  - **Library embedders and the interactive TUI** now get a `Conway` with
+    NO `bash` tool in the registry by default — a build that used to be
+    able to run shell commands out of the box now cannot, until one of the
+    opt-ins above is taken. The TUI's own opt-in is the `settings.json` key
+    above (`docs/getting-started.md`, `docs/interactive.md`).
+  - **One-shot (`conway -p`) is UNCHANGED.** `conway-cli`'s own
+    `build_conway` always passes `PluginSelection::All` for every
+    non-interactive dispatch target (`-p`, `sessions`, `routes`) — bash was
+    already, and remains, gated purely by `--allowed-tools`/
+    `--permission-mode` (an empty allow-list by default), not by
+    registration; this item did not change that gate.
+  - **Plugins injected via `ConwayBuilder::with_plugin` are unaffected** —
+    that call is already the explicit, per-plugin declaration GP-03
+    requires of a third party, so the built-in selection never filters it,
+    default or not.
+  - **`fs`/`subagent`/`report` stay registered by default**, a deliberate
+    choice, not an oversight: none is a general-purpose arbitrary-code-
+    execution primitive the way bash is, each is load-bearing for conway's
+    own out-of-the-box usability (no filesystem tool means no code
+    editing), and each was already gated by the same invocation-time
+    `permissions.mode`/`--allowed-tools` check bash always was —
+    registration was never the actual gap for those three.
+
+  (`crates/conway/src/builder.rs`, `crates/conway/src/config/schema.rs`,
+  `crates/conway/src/presets.rs`, `crates/conway/src/lib.rs`,
+  `crates/conway-cli/src/main.rs`, `crates/conway/tests/builder.rs`,
+  `docs/getting-started.md`, `docs/interactive.md`, `README.md`)
+
 ### Changed
 
 - **A rejected subagent spec (a bad `cwd`/`root` on a spawn, or a resumed

@@ -27,6 +27,18 @@ A few flags change which session you land in:
 `--session`, `--resume`, and `--fork-from` are mutually exclusive; with
 none of them, conway starts a fresh session.
 
+**bash is off by default.** `fs`/`subagent`/`report` are registered
+automatically; bash (arbitrary shell command execution) is not, and needs a
+deliberate opt-in — add `"conway.shell"` to `tools.builtin_plugins` in
+`settings.json`:
+
+```json
+{ "tools": { "builtin_plugins": ["conway.fs", "conway.subagent", "conway.report", "conway.shell"] } }
+```
+
+See [`getting-started.md`](getting-started.md#enabling-bash-shell-commands)
+for the full explanation.
+
 ## `--cwd` and `--root`
 
 These two flags are easy to conflate, and mixing them up is the mistake
@@ -111,7 +123,9 @@ are shown according to your `/settings` preferences (below).
 ## The permission prompt
 
 Unless your permission mode is `plan` or `AUTO-ALLOW`, every distinct tool
-call pauses for your decision:
+call pauses for your decision. The example below is a `bash` call — see
+"Starting a session" above if bash isn't enabled yet; every other built-in
+tool prompts the same way:
 
 ```
 ┌ PERMISSION REQUIRED ────────────────────────────────────────────┐

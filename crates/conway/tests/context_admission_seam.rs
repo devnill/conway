@@ -86,7 +86,7 @@ use std::time::Duration;
 
 use conway::config::schema::{
     AgentsConfig, BackendEntry, BackendKind, ConwayConfig, HealthSection, LimitsConfig,
-    ModelsConfig, PermissionsConfig, RoleEntry, RoutingSection, SessionConfig, TuiSection,
+    ModelsConfig, PermissionsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig, TuiSection,
 };
 use conway::{Conway, ConwayBuilder, SessionSpec};
 use conway_core::agent::{PermissionDecision, ResultStatus};
@@ -194,6 +194,7 @@ fn config_naming(headroom: u32, metadata_path: PathBuf) -> ConwayConfig {
             probe_on_startup: false,
         },
         tui: TuiSection::default(),
+        tools: ToolsConfig::default(),
     }
 }
 
