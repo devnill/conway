@@ -18,6 +18,7 @@
 
 use conway_core::agent::{AgentDefRef, Budget, SubagentMode, SubagentSpec, ToolSelector};
 use conway_core::ids::RoleAlias;
+use conway_core::log::AskOrigin;
 
 /// A request to fork a live agent: the child inherits the forker's entire
 /// context (by reference, as of the fork point) plus `directive`.
@@ -66,6 +67,23 @@ pub struct ForkSpec {
     /// own default and preserving the existing autonomous, one-shot fork
     /// behavior unchanged. Set via [`ForkSpec::keep_alive`].
     pub keep_alive: bool,
+    /// A `SessionMeta`-listing-visibility bit (P-2 provenance is unaffected
+    /// -- the child stays attached to the live `AgentTreeSnapshot`
+    /// regardless), NOT a third subagent mode (P-1: `ask` is fork+await-text,
+    /// built on top of fork, never a new primitive). Defaults `false` via
+    /// [`ForkSpec::new`], preserving the pre-existing non-ephemeral fork
+    /// behavior unchanged. Set via [`ForkSpec::ephemeral`]. Mirrors
+    /// [`conway_core::agent::SubagentSpec::ephemeral`]'s own doc.
+    pub ephemeral: bool,
+    /// Which `/ask`-style path is creating this child, stamped verbatim
+    /// into the child's durable `SessionMeta::ask_origin`. `None` (the
+    /// [`ForkSpec::new`] default) is the ordinary, non-ask fork path.
+    /// **Ask is fork-only (P-1)**: `SpawnSpec` deliberately has no matching
+    /// field at all, so a caller cannot express "spawn with an ask origin"
+    /// -- an incoherent combination the type system rules out rather than
+    /// rejecting at runtime. Set via [`ForkSpec::ask_origin`]. Mirrors
+    /// [`conway_core::agent::SubagentSpec::ask_origin`]'s own doc.
+    pub ask_origin: Option<AskOrigin>,
 }
 
 impl ForkSpec {
@@ -89,6 +107,8 @@ impl ForkSpec {
             cache_hint: true,
             result_contract: None,
             keep_alive: false,
+            ephemeral: false,
+            ask_origin: None,
         }
     }
 
@@ -127,6 +147,18 @@ impl ForkSpec {
         self.keep_alive = keep_alive;
         self
     }
+
+    /// See [`ForkSpec::ephemeral`]'s own field doc.
+    pub fn ephemeral(mut self, ephemeral: bool) -> Self {
+        self.ephemeral = ephemeral;
+        self
+    }
+
+    /// See [`ForkSpec::ask_origin`]'s own field doc.
+    pub fn ask_origin(mut self, ask_origin: AskOrigin) -> Self {
+        self.ask_origin = Some(ask_origin);
+        self
+    }
 }
 
 impl From<ForkSpec> for SubagentSpec {
@@ -151,8 +183,8 @@ impl From<ForkSpec> for SubagentSpec {
             // is not a place this facade needs to expose a toggle.
             await_result: true,
             keep_alive: spec.keep_alive,
-            ephemeral: false,
-            ask_origin: None,
+            ephemeral: spec.ephemeral,
+            ask_origin: spec.ask_origin,
             // Deliberately NOT exposed on `ForkSpec` (C1): a fork inherits
             // the forker's ENTIRE context (GP-02), so a `ForkSpec` field
             // saying "but scope tools to this other directory" would be
@@ -382,6 +414,14 @@ mod tests {
             converted.root, None,
             "ForkSpec has no root field at all -- a fork always inherits the forker's root"
         );
+        assert!(
+            !converted.ephemeral,
+            "ephemeral defaults false when not set via the builder"
+        );
+        assert_eq!(
+            converted.ask_origin, None,
+            "ask_origin defaults None when not set via the builder"
+        );
     }
 
     #[test]
@@ -404,6 +444,39 @@ mod tests {
         assert!(opted_in.keep_alive);
         let converted: SubagentSpec = opted_in.into();
         assert!(converted.keep_alive);
+    }
+
+    /// The ephemeral-ask shape (P-1: `ask` is fork+await-text, not a third
+    /// primitive) round-trips through `From<ForkSpec> for SubagentSpec`:
+    /// `ephemeral: true` plus a concrete `ask_origin` both survive the
+    /// conversion unchanged, and each defaults to today's non-ask behavior
+    /// (`false`/`None`) when left unset.
+    #[test]
+    fn fork_spec_ephemeral_ask_shape_round_trips_through_the_conversion() {
+        let default_spec = ForkSpec::new("x");
+        assert!(!default_spec.ephemeral);
+        assert_eq!(default_spec.ask_origin, None);
+        let default_converted: SubagentSpec = default_spec.into();
+        assert!(!default_converted.ephemeral);
+        assert_eq!(default_converted.ask_origin, None);
+
+        let ask_spec = ForkSpec::new("summarize this")
+            .ephemeral(true)
+            .ask_origin(AskOrigin::ToolAsk);
+        assert!(ask_spec.ephemeral);
+        assert_eq!(ask_spec.ask_origin, Some(AskOrigin::ToolAsk));
+
+        let converted: SubagentSpec = ask_spec.into();
+        assert_eq!(converted.mode, SubagentMode::Fork);
+        assert!(
+            converted.ephemeral,
+            "ephemeral must survive the ForkSpec -> SubagentSpec conversion"
+        );
+        assert_eq!(
+            converted.ask_origin,
+            Some(AskOrigin::ToolAsk),
+            "ask_origin must survive the ForkSpec -> SubagentSpec conversion"
+        );
     }
 
     #[test]
