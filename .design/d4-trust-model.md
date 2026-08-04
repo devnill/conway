@@ -508,6 +508,25 @@ fanning out without awaiting (`SubagentSpec.await_result: false`,
 `agent.rs:176-178`) under a default budget of 40 steps and no token cap
 (`agent.rs:149-157`).
 
+> **Status (2026-08-04), board item 01KZ59SXNQ3BRXP49V4JW10N72 (C1).** The
+> type named above is no longer what ships: `ToolCtx.subagents` is a concrete
+> `SubagentHandle` (`ports/subagent.rs`), not a bare `Arc<dyn SubagentHost>`.
+> **Read the change narrowly — it is not the guarded handle §7 goes on to
+> propose.** C1 narrowed on CALLER IDENTITY, not on capability grants: the
+> handle bakes in the calling agent's own `AgentId` and its methods expose no
+> `caller`/`parent` parameter, so P-1's "an agent acts only within its own
+> subtree" became structural at the tool surface instead of a runtime check.
+> Nothing about it consults an operator grant, and no `CapabilityDenied`
+> exists. Everything §7 says about a holder's POWER therefore still stands:
+> a tool holding the handle can still `start`, `steer`, `ask`, `cancel`, and
+> read its own tree, spending tokens under the same budgets — it simply can
+> no longer aim any of that at an agent outside its own subtree. The
+> capability-grant proposal below remains unbuilt; if it lands, it extends
+> `SubagentHandle` rather than replacing a trait object, and the two
+> narrowings compose (identity is structural, grants would be checked).
+> `SubagentHost` itself is deliberately unchanged — the port stays host-tier
+> and the narrowing happens at `ToolCtx`.
+
 Two facts from the current tree materially bound the danger, and one does not:
 
 - **Confinement inherits and may only narrow.** `subagent.rs:231-280` resolves
@@ -554,7 +573,16 @@ The move that resolves the tension is to change the key:
 Concretely: `ToolCtx.subagents` stops being a bare `Arc<dyn SubagentHost>` and
 becomes a per-plugin guarded handle. Every method checks the calling plugin's
 granted caps and returns `RuntimeError::CapabilityDenied { plugin, cap }` when
-`subagent.spawn` is absent. The built-in subagent tool ships in a plugin whose
+`subagent.spawn` is absent.
+
+> **Status (2026-08-04), board item 01KZ59SXNQ3BRXP49V4JW10N72 (C1).** Half of
+> the first sentence has happened and the rest has not. `ToolCtx.subagents` is
+> no longer a bare `Arc<dyn SubagentHost>` — it is a `SubagentHandle` — but
+> that handle is keyed on the calling AGENT's identity, not on a plugin's
+> granted capabilities. No method consults a grant, `CapabilityDenied` does
+> not exist, and no manifest is read. Treat this paragraph as still-open
+> design: the work it describes would now add grant checks to an existing
+> handle type rather than introduce one. See §7's status note above. The built-in subagent tool ships in a plugin whose
 manifest requests `subagent.spawn` and which is **seeded** with that grant for
 built-in-scope plugins.
 

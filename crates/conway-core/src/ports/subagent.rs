@@ -604,6 +604,27 @@ mod tests {
                 agent: agent_id,
                 reason: "r".into(),
             },
+            // The remaining three share the same match arm as the six above,
+            // but the test's name claims EVERY other variant -- so drive them
+            // rather than let the name overclaim what it covers.
+            RuntimeError::Backend(crate::error::BackendError::Transport {
+                detail: "connection reset".into(),
+            }),
+            RuntimeError::Routing(crate::error::RoutingError::UnknownRole {
+                role: crate::ids::RoleAlias::new("coder"),
+            }),
+            RuntimeError::ForkContextOverflow {
+                parent: agent_id,
+                model: crate::ids::ModelRef {
+                    backend: crate::ids::BackendId::new("local"),
+                    model: crate::ids::ModelId::new("qwen3-coder:30b"),
+                },
+                est_tokens: 100_000,
+                headroom_tokens: 16_000,
+                required_tokens: 116_000,
+                max_context_tokens: 100_000,
+                shortfall_tokens: 16_000,
+            },
         ];
         for runtime_err in cases {
             let rendered = runtime_err.to_string();
