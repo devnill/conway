@@ -21,8 +21,8 @@ use conway_core::error::{RuntimeError, ToolError};
 use conway_core::ids::{AgentId, SessionId, ToolName};
 use conway_core::log::SubagentMode;
 use conway_core::ports::{
-    CancellationToken, CwdHandle, EventSinkHandle, Plugin, PluginConfig, SubagentHost, Tool,
-    ToolCtx, ToolOutput,
+    CancellationToken, CwdHandle, EventSinkHandle, Plugin, PluginConfig, SubagentHandle,
+    SubagentHost, Tool, ToolCtx, ToolOutput,
 };
 use conway_tools::subagent::{
     AskTool, AwaitTool, CancelTool, SteerTool, SubagentPlugin, SubagentTool,
@@ -130,7 +130,7 @@ async fn fork_records_start_with_fork_mode_prompt_and_cache_hint_true() {
     let (ctx, _handles) = test_ctx(PathBuf::from("/tmp/x"));
     let (fake, scripted_id) = fake_with_result(ResultStatus::Completed);
     let ctx = ToolCtx {
-        subagents: fake.clone() as Arc<dyn SubagentHost>,
+        subagents: SubagentHandle::new(fake.clone() as Arc<dyn SubagentHost>, ctx.agent_id),
         ..ctx
     };
 
@@ -159,7 +159,7 @@ async fn spawn_with_agent_def_records_spawn_mode_and_cache_hint_false() {
     let (ctx, _handles) = test_ctx(PathBuf::from("/tmp/x"));
     let (fake, _scripted_id) = fake_with_result(ResultStatus::Completed);
     let ctx = ToolCtx {
-        subagents: fake.clone() as Arc<dyn SubagentHost>,
+        subagents: SubagentHandle::new(fake.clone() as Arc<dyn SubagentHost>, ctx.agent_id),
         ..ctx
     };
 
@@ -192,7 +192,7 @@ async fn spawn_without_agent_def_starts_with_agent_def_none() {
     let (ctx, _handles) = test_ctx(PathBuf::from("/tmp/x"));
     let (fake, _scripted_id) = fake_with_result(ResultStatus::Completed);
     let ctx = ToolCtx {
-        subagents: fake.clone() as Arc<dyn SubagentHost>,
+        subagents: SubagentHandle::new(fake.clone() as Arc<dyn SubagentHost>, ctx.agent_id),
         ..ctx
     };
 
@@ -232,7 +232,7 @@ async fn ask_tool_calls_subagent_host_ask_with_ephemeral_fork_spec() {
     let (ctx, _h) = test_ctx(PathBuf::from("/tmp/x"));
     let ctx = ToolCtx {
         agent_id: parent,
-        subagents: fake.clone() as Arc<dyn SubagentHost>,
+        subagents: SubagentHandle::new(fake.clone() as Arc<dyn SubagentHost>, parent),
         ..ctx
     };
 
@@ -297,7 +297,7 @@ async fn ask_tools_arg_maps_to_only_selector_on_child_spec() {
     let (ctx, _h) = test_ctx(PathBuf::from("/tmp/x"));
     let ctx = ToolCtx {
         agent_id: parent,
-        subagents: fake.clone() as Arc<dyn SubagentHost>,
+        subagents: SubagentHandle::new(fake.clone() as Arc<dyn SubagentHost>, parent),
         ..ctx
     };
 
@@ -390,7 +390,7 @@ async fn ask_result_status_maps_to_is_error_per_variant() {
         let (ctx, _h) = test_ctx(PathBuf::from("/tmp/x"));
         let ctx = ToolCtx {
             agent_id: parent,
-            subagents: fake as Arc<dyn SubagentHost>,
+            subagents: SubagentHandle::new(fake as Arc<dyn SubagentHost>, parent),
             ..ctx
         };
         let out = AskTool::new()
@@ -404,16 +404,22 @@ async fn ask_result_status_maps_to_is_error_per_variant() {
 #[tokio::test]
 async fn ask_host_runtime_error_surfaces_as_err_not_is_error() {
     // Mirrors `host_runtime_error_surfaces_as_err_not_is_error` (conway_await):
-    // a `SubagentHost::ask` failure maps through `map_err(host_error)` to
-    // `Err(ToolError::Internal)` -- it must NOT come back as `Ok` with
+    // a `SubagentHost::ask` failure surfaces as `Err`, never `Ok` with
     // `is_error` set (that shape is reserved for a non-Completed AskOutcome).
+    //
+    // Board item C1: `RuntimeError::AgentNotFound` -> `SubagentError::
+    // UnknownAgent` -> `ToolError::InvalidArguments`, not `Internal` -- an
+    // unknown `agent_id` the model itself never even supplied here (this
+    // fake's `ask_error` fires unconditionally) is still, structurally, a
+    // caller-correctable mistake rather than a host bug; see
+    // `conway_core::error::SubagentError`'s own doc for why.
     let (ctx, _h) = test_ctx(PathBuf::from("/tmp/x"));
     let missing = AgentId::new();
     let fake = Arc::new(
         FakeSubagentHost::new().with_ask_error(RuntimeError::AgentNotFound { agent: missing }),
     );
     let ctx = ToolCtx {
-        subagents: fake as Arc<dyn SubagentHost>,
+        subagents: SubagentHandle::new(fake as Arc<dyn SubagentHost>, ctx.agent_id),
         ..ctx
     };
     let err = AskTool::new()
@@ -421,10 +427,10 @@ async fn ask_host_runtime_error_surfaces_as_err_not_is_error() {
         .await
         .unwrap_err();
     match err {
-        ToolError::Internal { detail } => {
-            assert!(detail.contains("not found"), "detail was {detail:?}");
+        ToolError::InvalidArguments { detail } => {
+            assert!(detail.contains("unknown agent"), "detail was {detail:?}");
         }
-        other => panic!("expected Internal (conway-core has no Host variant), got {other:?}"),
+        other => panic!("expected InvalidArguments (SubagentError::UnknownAgent), got {other:?}"),
     }
 }
 
@@ -531,7 +537,7 @@ async fn await_omitted_defaults_true_and_returns_scripted_result_json() {
     let (ctx, _handles) = test_ctx(PathBuf::from("/tmp/x"));
     let (fake, scripted_id) = fake_with_result(ResultStatus::Completed);
     let ctx = ToolCtx {
-        subagents: fake as Arc<dyn SubagentHost>,
+        subagents: SubagentHandle::new(fake as Arc<dyn SubagentHost>, ctx.agent_id),
         ..ctx
     };
 
@@ -600,7 +606,7 @@ async fn result_status_maps_to_is_error_per_variant() {
         let (ctx, _handles) = test_ctx(PathBuf::from("/tmp/x"));
         let (fake, _scripted_id) = fake_with_result(status.clone());
         let ctx = ToolCtx {
-            subagents: fake as Arc<dyn SubagentHost>,
+            subagents: SubagentHandle::new(fake as Arc<dyn SubagentHost>, ctx.agent_id),
             ..ctx
         };
         let out = SubagentTool::new()
@@ -622,7 +628,7 @@ async fn budget_defaults_to_40_steps_and_ten_minute_deadline_unless_configured()
     let (ctx, _handles) = test_ctx(PathBuf::from("/tmp/x"));
     let (fake, _scripted_id) = fake_with_result(ResultStatus::Completed);
     let ctx = ToolCtx {
-        subagents: fake.clone() as Arc<dyn SubagentHost>,
+        subagents: SubagentHandle::new(fake.clone() as Arc<dyn SubagentHost>, ctx.agent_id),
         ..ctx
     };
     let before = chrono::Utc::now();
@@ -651,7 +657,7 @@ async fn config_key_overrides_default_max_steps() {
     let mut values = serde_json::Map::new();
     values.insert("subagent.max_steps".into(), serde_json::json!(7));
     let ctx = ToolCtx {
-        subagents: fake.clone() as Arc<dyn SubagentHost>,
+        subagents: SubagentHandle::new(fake.clone() as Arc<dyn SubagentHost>, ctx.agent_id),
         config: Arc::new(PluginConfig { values }),
         ..ctx
     };
@@ -744,7 +750,7 @@ async fn await_tool_calls_await_result_and_applies_same_is_error_mapping() {
         ),
     ));
     let ctx = ToolCtx {
-        subagents: fake as Arc<dyn SubagentHost>,
+        subagents: SubagentHandle::new(fake as Arc<dyn SubagentHost>, ctx.agent_id),
         ..ctx
     };
     let out = AwaitTool::new()
@@ -782,7 +788,11 @@ async fn malformed_agent_id_is_invalid_arguments() {
 async fn host_runtime_error_surfaces_as_err_not_is_error() {
     let (ctx, _handles) = test_ctx(PathBuf::from("/tmp/x"));
     // No scripted result for this unknown id: `FakeSubagentHost::await_result`
-    // returns `Err(RuntimeError::AgentNotFound)`.
+    // returns `Err(RuntimeError::AgentNotFound)`, which `SubagentHandle`
+    // translates to `SubagentError::UnknownAgent` -> `ToolError::
+    // InvalidArguments` (board item C1: an unknown `agent_id` the model
+    // itself supplied is a caller-correctable mistake, not a host bug --
+    // see `conway_core::error::SubagentError`'s own doc).
     let unknown = AgentId::new();
     let err = AwaitTool::new()
         .invoke(
@@ -795,10 +805,10 @@ async fn host_runtime_error_surfaces_as_err_not_is_error() {
         .await
         .unwrap_err();
     match err {
-        ToolError::Internal { detail } => {
-            assert!(detail.contains("not found"), "detail was {detail:?}");
+        ToolError::InvalidArguments { detail } => {
+            assert!(detail.contains("unknown agent"), "detail was {detail:?}");
         }
-        other => panic!("expected Internal (conway-core has no Host variant), got {other:?}"),
+        other => panic!("expected InvalidArguments (SubagentError::UnknownAgent), got {other:?}"),
     }
 }
 
@@ -917,7 +927,7 @@ async fn cancel_during_blocked_await_cancels_child_and_returns_cancelled() {
         chdir: CwdHandle::new(PathBuf::from("/tmp/x")),
         cancel: cancel.clone(),
         events: Arc::new(RecordingEventSink::new()) as EventSinkHandle,
-        subagents: host,
+        subagents: SubagentHandle::new(host, caller),
         config: Arc::new(PluginConfig::default()),
     };
 

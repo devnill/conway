@@ -16,7 +16,7 @@ use conway_core::content::{ContentBlock, ToolCall, TruncationPolicy};
 use conway_core::error::ToolError;
 use conway_core::ids::{AgentId, SessionId, ToolName};
 use conway_core::permission_pattern::PatternRule;
-use conway_core::ports::{RenderKind, SubagentHost, Tool, ToolCtx, ToolOutput};
+use conway_core::ports::{RenderKind, SubagentHandle, SubagentHost, Tool, ToolCtx, ToolOutput};
 use conway_tools::builtin_plugins;
 use conway_tools::fs::{CdTool, EditTool, GlobTool, GrepTool, ReadTool, WriteTool};
 use conway_tools::report::ReportTool;
@@ -596,7 +596,7 @@ async fn truncation_matches_the_documented_table_per_tool() {
     let (ctx, _h) = test_ctx(dir.path().to_path_buf());
     let ctx = ToolCtx {
         agent_id: ask_parent,
-        subagents: ask_host as Arc<dyn SubagentHost>,
+        subagents: SubagentHandle::new(ask_host as Arc<dyn SubagentHost>, ask_parent),
         ..ctx
     };
     let out = AskTool::new()
@@ -631,7 +631,7 @@ async fn truncation_matches_the_documented_table_per_tool() {
     let host = Arc::new(FakeSubagentHost::new().with_result(await_target, scripted));
     let (ctx, _h) = test_ctx(dir.path().to_path_buf());
     let ctx = ToolCtx {
-        subagents: host as Arc<dyn SubagentHost>,
+        subagents: SubagentHandle::new(host as Arc<dyn SubagentHost>, ctx.agent_id),
         ..ctx
     };
     let out = AwaitTool::new()

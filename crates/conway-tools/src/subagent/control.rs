@@ -73,15 +73,14 @@ impl Tool for SteerTool {
         check_cancel(&ctx)?;
         let args: SteerArgs = parse_args(&call)?;
         let target = parse_agent_id(&args.agent_id)?;
-        // P-1 (board item 01KYT8TS0EBKJHYNJRF6S88NRH): `ctx.agent_id` -- the
-        // runtime-assigned identity of the agent actually dispatching this
-        // tool call, never model-supplied -- is passed as `caller` so the
-        // trait boundary (`impl SubagentHost for Runtime`) can enforce that
-        // this agent may only steer its own subtree. A model that supplies
-        // a sibling's `agent_id` here gets a typed rejection, not a forged
-        // steer.
+        // P-1 (board item 01KYT8TS0EBKJHYNJRF6S88NRH, structural since
+        // `SubagentHandle`): `ctx.subagents` is a `SubagentHandle` with this
+        // agent's own id baked in -- `steer` has no `caller` parameter at
+        // all, so this agent can only ever steer its own subtree. A model
+        // that supplies a sibling's `agent_id` as `target` gets a typed
+        // rejection, not a forged steer.
         ctx.subagents
-            .steer(ctx.agent_id, target, args.text)
+            .steer(target, args.text)
             .await
             .map_err(host_error)?;
         Ok(text_output(format!("steered agent {target}"), TRUNCATION))
@@ -171,10 +170,10 @@ impl Tool for CancelTool {
         let reason = args
             .reason
             .unwrap_or_else(|| "cancelled by parent agent".to_string());
-        // P-1: see `SteerTool::invoke`'s identical note -- `ctx.agent_id`
-        // (not model-supplied) is `caller`.
+        // P-1: see `SteerTool::invoke`'s identical note -- `ctx.subagents`
+        // has no `caller` parameter for `cancel` to receive one through.
         ctx.subagents
-            .cancel(ctx.agent_id, target, reason.clone())
+            .cancel(target, reason.clone())
             .await
             .map_err(host_error)?;
         Ok(text_output(

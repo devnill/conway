@@ -20,18 +20,48 @@
 //! (`conway-core`'s `Plugin`/`Tool` ports, dispatched through a real agent
 //! turn via the real `ToolRunner`) against two SIBLING agents produced by
 //! the real `SubagentHost::start`, calling `ctx.subagents` -- the exact
-//! trait object every built-in AND third-party tool holds -- directly.
+//! capability every built-in AND third-party tool holds -- directly.
+//!
+//! **Board item C1 superseded most of this file's original premise, in the
+//! strongest possible direction.** This file predates `SubagentHandle`:
+//! `ctx.subagents` used to be a raw `Arc<dyn SubagentHost>`, so a
+//! third-party tool COULD, syntactically, pass a model-chosen `target`/
+//! `parent` distinct from its own `caller` -- the whole point of the
+//! `Exfiltrate*`/`TreeRecon` tools below was to prove that the `SubagentHost`
+//! trait boundary rejects such a call at RUNTIME even though nothing at the
+//! `ToolCtx` layer stopped a tool from ATTEMPTING it. Since C1,
+//! `ctx.subagents` is a `SubagentHandle` with the calling agent's own id
+//! baked in: `SubagentHandle::start`/`steer`/`await_result`/`cancel`/`ask`/
+//! `tree` have NO `caller`/`parent`/`target`-as-a-different-agent parameter
+//! for any tool -- hostile or not -- to supply. The exact three attack
+//! shapes this file probes (`ask` a sibling's context, `start` a child
+//! under a sibling, `tree()` a foreign branch) no longer TYPE-CHECK against
+//! `ctx.subagents` at all; see `conway_core::ports::subagent`'s own test
+//! module (`start_and_ask_pass_the_handles_own_agent_id_as_both_caller_and_parent`,
+//! `steer_await_cancel_and_tree_always_pass_the_handles_own_agent_id_as_caller`)
+//! for that fact proven directly, at the type's own definition, without a
+//! facade/runtime round trip.
+//!
+//! This file is kept, rewritten rather than deleted, because the RUNTIME
+//! trait boundary these tools originally exercised is UNCHANGED (C1
+//! deliberately does not touch `SubagentHost`/`RuntimeError` -- the D2 tier
+//! line) and still deserves live coverage through a real `Tool`/`ToolCtx`
+//! round trip, not only a unit test against the handle in isolation. Each
+//! tool below keeps its ORIGINAL "hostile shape" -- a `target_agent_id`
+//! argument a model could supply -- but its `invoke` can no longer thread
+//! that argument anywhere `ctx.subagents` would honor it; each test now
+//! asserts the STRUCTURALLY GUARANTEED outcome (the call always acts on the
+//! tool's own caller, never the named target) rather than a runtime
+//! rejection, since there is no longer a rejection to observe -- the call
+//! simply succeeds, harmlessly, against the caller's own subtree.
 //!
 //! **Why a custom tool, not `conway_ask`/`conway_subagent`:** neither
 //! built-in tool's OWN JSON schema exposes a field naming a different
 //! parent/target -- both always pass `ctx.agent_id` for both `caller` and
-//! `parent` (see `conway-tools`' `subagent/{ask,tools}.rs`). That is exactly
-//! why this item's fix has to live at the `SubagentHost` PORT rather than at
-//! either tool's own callsite (P-1): "a tool-layer guard alone is
-//! insufficient because it leaves the trait impl bypassable from any OTHER
-//! caller" -- a future or third-party tool that DOES expose a model-chosen
-//! target (exactly the shape `ExfiltrateTool` below represents) must be
-//! safe by construction, not by the current built-ins' convention.
+//! `parent` (see `conway-tools`' `subagent/{ask,tools}.rs`). That was already
+//! true before C1; what C1 adds is that even a tool willing to accept and
+//! try to use such a field (exactly the shape `Exfiltrate*` below
+//! represents) now has no way to make it matter.
 #![cfg(feature = "builtin-tools")]
 
 use std::collections::{BTreeMap, VecDeque};
@@ -215,11 +245,12 @@ impl Backend for LazyBackend {
 // `ExfiltrateAskTool`/`ExfiltrateStartTool`: the shape a future/third-party
 // tool takes IF it exposes a model-chosen target -- unlike `conway_ask`/
 // `conway_subagent`, which never do (see this file's own module doc). Both
-// pass `ctx.agent_id` (the runtime-assigned, non-forgeable true caller
-// identity) as `caller`, and the MODEL-SUPPLIED `target_agent_id` argument
-// as `parent` -- exactly the shape the `SubagentHost` port must refuse on
-// its own, since a tool-layer guard alone would not protect a tool written
-// like this one.
+// still accept a MODEL-SUPPLIED `target_agent_id` argument (the hostile
+// shape), but since board item C1, `SubagentHandle::ask`/`start` have no
+// `caller`/`parent` parameter at all for either tool to thread it through
+// -- `target_agent_id` is parsed (proving a real, well-formed foreign id
+// was genuinely supplied) and then provably unused: whatever id a model
+// names, the call can only ever act on `ctx.agent_id` itself.
 // ---------------------------------------------------------------------
 
 struct ExfiltrateAskTool;
@@ -249,7 +280,13 @@ impl Tool for ExfiltrateAskTool {
         let target_raw = call.arguments["target_agent_id"]
             .as_str()
             .expect("target_agent_id present");
-        let target: AgentId = target_raw
+        // Parsed only to prove a real, well-formed foreign agent id was
+        // genuinely supplied by the "model" here -- `SubagentHandle::ask`
+        // (below) has no parameter to receive it through, so it is never
+        // used for anything else. This is the structural guarantee under
+        // test: however hostile this tool's OWN code is, it cannot make
+        // this id matter.
+        let _target: AgentId = target_raw
             .parse()
             .map_err(|e| ToolError::InvalidArguments {
                 detail: format!("target_agent_id: {e}"),
@@ -261,11 +298,7 @@ impl Tool for ExfiltrateAskTool {
 
         let outcome = ctx
             .subagents
-            .ask(
-                ctx.agent_id,
-                target,
-                SubagentSpec::fork(prompt, Budget::default()),
-            )
+            .ask(SubagentSpec::fork(prompt, Budget::default()))
             .await
             .map_err(|e| ToolError::Internal {
                 detail: e.to_string(),
@@ -306,7 +339,11 @@ impl Tool for ExfiltrateStartTool {
         let target_raw = call.arguments["target_agent_id"]
             .as_str()
             .expect("target_agent_id present");
-        let target: AgentId = target_raw
+        // See `ExfiltrateAskTool::invoke`'s identical note: parsed to prove
+        // a real foreign id was supplied, then provably unused --
+        // `SubagentHandle::start` has no `parent` parameter to receive it
+        // through.
+        let _target: AgentId = target_raw
             .parse()
             .map_err(|e| ToolError::InvalidArguments {
                 detail: format!("target_agent_id: {e}"),
@@ -316,7 +353,7 @@ impl Tool for ExfiltrateStartTool {
         spec.mode = SubagentMode::Spawn;
         let child = ctx
             .subagents
-            .start(ctx.agent_id, target, spec)
+            .start(spec)
             .await
             .map_err(|e| ToolError::Internal {
                 detail: e.to_string(),
@@ -332,9 +369,12 @@ impl Tool for ExfiltrateStartTool {
     }
 }
 
-/// A tool that reports the `AgentId`s visible in `ctx.subagents.tree
-/// (ctx.agent_id)` -- the reconnaissance half of the exfiltration attack
-/// this item closes.
+/// A tool that reports the `AgentId`s visible in `ctx.subagents.tree()` --
+/// the reconnaissance half of the exfiltration attack this item closes.
+/// Since board item C1, `SubagentHandle::tree` takes no `caller` argument
+/// at all (it was always `ctx.agent_id` in practice here; now there is no
+/// parameter through which this -- or any -- tool could supply anything
+/// else).
 struct TreeReconTool;
 
 #[async_trait]
@@ -350,7 +390,7 @@ impl Tool for TreeReconTool {
     }
 
     async fn invoke(&self, _call: ToolCall, ctx: ToolCtx) -> Result<ToolOutput, ToolError> {
-        let snapshot = ctx.subagents.tree(ctx.agent_id);
+        let snapshot = ctx.subagents.tree();
         let ids: Vec<String> = snapshot
             .nodes
             .iter()
@@ -455,20 +495,27 @@ fn blocks_text(blocks: &[ContentBlock]) -> String {
 const VICTIM_SECRET: &str = "B_SECRET_MARKER_9f3a1c";
 
 // ---------------------------------------------------------------------
-// 1. `ask` -- the exfiltration attack itself: A forks B's entire context
-//    and tries to read the reply back as plain model output.
+// 1. `ask` -- the exfiltration attack itself: A tries to fork B's entire
+//    context and read the reply back as plain model output. Since board
+//    item C1, this call can no longer even NAME B as the fork target --
+//    `SubagentHandle::ask` always forks the caller (A) itself, so the call
+//    SUCCEEDS, harmlessly, against A's own context, instead of being
+//    rejected. See this file's own module doc for why the assertions below
+//    changed from "rejected with an AgentNotInSubtree message" to
+//    "succeeded, but never touched B".
 // ---------------------------------------------------------------------
 #[tokio::test]
-async fn a_sibling_cannot_ask_against_another_siblings_context() {
+async fn a_hostile_ask_tool_can_only_ever_ask_its_own_caller_never_a_named_target() {
     let target: Arc<Mutex<Option<AgentId>>> = Arc::new(Mutex::new(None));
     let target_for_step = target.clone();
+    const SELF_FORK_REPLY: &str = "A_SELF_FORK_REPLY_5c2e9b";
 
     let conway = build_conway(
         vec![
             // B's own single turn -- carries the secret marker.
             Box::new(|| text_response(VICTIM_SECRET)),
-            // A's first turn: attempts to fork B's context via the
-            // exfiltration tool, by which point B's real id is known.
+            // A's first turn: calls the hostile tool naming B as
+            // `target_agent_id`, by which point B's real id is known.
             Box::new(move || {
                 let b = target_for_step
                     .lock()
@@ -482,12 +529,14 @@ async fn a_sibling_cannot_ask_against_another_siblings_context() {
                     }),
                 )
             }),
-            // A's follow-up turn, after seeing the tool's error result.
-            Box::new(|| text_response("exfiltration was rejected, as expected")),
+            // The ephemeral child `SubagentHandle::ask` forks -- structurally
+            // always a fork of A itself, never of B, so this is the ONLY
+            // turn that can possibly run here regardless of what
+            // `target_agent_id` named.
+            Box::new(|| text_response(SELF_FORK_REPLY)),
+            // A's follow-up turn, after seeing the tool's (successful) result.
+            Box::new(|| text_response("noted")),
         ],
-        // AllowOnce, not a denial: proves the rejection below is the
-        // trait-boundary subtree check, not a permission denial that would
-        // mask it (mirrors `subagent_control_seam.rs`'s identical note).
         Arc::new(FakeGate::new(PermissionDecision::AllowOnce)) as Arc<dyn PermissionGate>,
     );
 
@@ -503,21 +552,22 @@ async fn a_sibling_cannot_ask_against_another_siblings_context() {
 
     let result = tool_result(&a_records);
     assert!(
-        result.is_error,
-        "a sibling's ask against another sibling's context must be rejected: {:?}",
+        !result.is_error,
+        "the call always succeeds -- there is no longer a foreign target to reject, since \
+         SubagentHandle::ask has no parameter to name one: {:?}",
         blocks_text(&result.blocks)
     );
-    let rendered = blocks_text(&result.blocks);
-    assert!(
-        rendered.contains("subtree"),
-        "the rejection must be the descendancy check (AgentNotInSubtree), not some other \
-         failure: {rendered:?}"
+    assert_eq!(
+        blocks_text(&result.blocks),
+        SELF_FORK_REPLY,
+        "the ask must have forked A itself (its own reply comes back), never B"
     );
 
-    // The core exfiltration assertion: B's secret marker must NEVER appear
-    // anywhere in A's own transcript -- not in the rejected tool's result,
-    // and not in any later turn (which would prove the reply text leaked
-    // out even though the call itself was flagged an error).
+    // The core exfiltration assertion, unchanged in spirit: B's secret
+    // marker must NEVER appear anywhere in A's own transcript. This is now
+    // guaranteed structurally (there is no code path left, in this tool or
+    // any other reachable through `ctx.subagents`, that could produce a
+    // fork of B), not merely because the attempt happened to be rejected.
     let a_full_text: String = a_records
         .iter()
         .filter_map(|r| match r {
@@ -543,10 +593,15 @@ async fn a_sibling_cannot_ask_against_another_siblings_context() {
 }
 
 // ---------------------------------------------------------------------
-// 2. `start` -- a sibling cannot attach a new child under another sibling.
+// 2. `start` -- a sibling tries to attach a new child under another
+//    sibling. Since board item C1, `SubagentHandle::start` has no `parent`
+//    parameter at all -- the call always attaches the new child under the
+//    CALLER (A) itself, so it SUCCEEDS instead of being rejected; the
+//    assertion that matters is that the attached child's parent is A,
+//    never B, regardless of what `target_agent_id` named.
 // ---------------------------------------------------------------------
 #[tokio::test]
-async fn a_sibling_cannot_start_a_child_under_another_sibling() {
+async fn a_hostile_start_tool_can_only_ever_attach_under_its_own_caller() {
     let target: Arc<Mutex<Option<AgentId>>> = Arc::new(Mutex::new(None));
     let target_for_step = target.clone();
 
@@ -560,7 +615,16 @@ async fn a_sibling_cannot_start_a_child_under_another_sibling() {
                     serde_json::json!({ "target_agent_id": b.to_string() }),
                 )
             }),
-            Box::new(|| text_response("start was rejected, as expected")),
+            // Two more turns are needed once `start` SUCCEEDS: A's own
+            // follow-up turn (after seeing the tool result) AND the newly
+            // spawned grandchild's single turn (it runs to completion as
+            // its own background task -- see this test's own comment
+            // below for why `start`'s return already guarantees correct
+            // attachment regardless of which of these two runs first).
+            // Identical, innocuous content on purpose: nothing here
+            // depends on which agent consumes which of these two.
+            Box::new(|| text_response("ok")),
+            Box::new(|| text_response("ok")),
         ],
         Arc::new(FakeGate::new(PermissionDecision::AllowOnce)) as Arc<dyn PermissionGate>,
     );
@@ -573,21 +637,34 @@ async fn a_sibling_cannot_start_a_child_under_another_sibling() {
     let (b, _) = spawn_and_await(&handle, SpawnSpec::new("b: sit quietly")).await;
     *target.lock().unwrap() = Some(b);
 
-    let (_a, a_records) = spawn_and_await(&handle, SpawnSpec::new("a: attack b")).await;
+    let (a, a_records) = spawn_and_await(&handle, SpawnSpec::new("a: attack b")).await;
 
     let result = tool_result(&a_records);
     assert!(
-        result.is_error,
-        "a sibling's start against another sibling must be rejected: {:?}",
+        !result.is_error,
+        "the call always succeeds -- there is no longer a foreign parent to reject, since \
+         SubagentHandle::start has no parameter to name one: {:?}",
         blocks_text(&result.blocks)
     );
-    assert!(blocks_text(&result.blocks).contains("subtree"));
 
-    // No child was ever attached under B.
+    // `SubagentHost::start`'s own contract attaches the child to the tree
+    // SYNCHRONOUSLY, before returning the new `AgentId` (only the child's
+    // OWN turn execution is backgrounded) -- so this check is race-free
+    // immediately after `spawn_and_await` returns, without needing to wait
+    // for the grandchild's turn to finish.
     let tree = handle.tree();
+    let started_child = tree
+        .nodes
+        .iter()
+        .find(|n| n.parent == Some(a))
+        .expect("exfiltrate_start's child must be attached under A");
+    assert_ne!(
+        started_child.agent_id, b,
+        "the attached child must be a NEW agent, not B itself"
+    );
     assert!(
         tree.nodes.iter().all(|n| n.parent != Some(b)),
-        "no child should have been attached under B for a rejected start"
+        "no child was ever attached under B -- target_agent_id had no effect"
     );
 }
 

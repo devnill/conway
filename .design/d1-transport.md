@@ -122,6 +122,15 @@ human-readable wire, no ecosystem win.
 calling `ctx.subagents.start(...)` is a **plugin→host call**. So the wire is
 not request/response in one direction.
 
+> **Status (2026-08-04), board item 01KZ59SXNQ3BRXP49V4JW10N72 (C1).**
+> `subagents` is now a concrete `SubagentHandle`, not `Arc<dyn SubagentHost>`.
+> This section's argument is unaffected — `ctx.subagents.start(...)` is still a
+> plugin→host call and the wire is still bidirectional — but note for wire
+> design that the handle takes no `caller`/`parent` argument, because it bakes
+> the calling agent's id in. A remote tool therefore has no caller field to
+> send, and the host must supply identity from the connection rather than
+> trust anything in the payload. See `d4-trust-model.md` §7's status note.
+
 ### Decision: JSON-RPC 2.0's symmetry, confirmed, with disjoint id namespaces
 
 JSON-RPC 2.0 is symmetric by construction — both endpoints are simultaneously
