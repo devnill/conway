@@ -32,9 +32,10 @@ use conway::config::schema::{
 };
 use conway::plugin::{
     async_trait, Artifact, ArtifactKind, CancellationToken, ContentBlock, ContextHook,
-    ContextHookCtx, ContextPayload, OverflowInfo, PathArgs, PermissionClass, Plugin, PluginConfig,
-    PluginManifest, PromptSegment, Provenance, RenderKind, Role, Tool, ToolCall, ToolCategory,
-    ToolCtx, ToolError, ToolName, ToolOutput, ToolSpec, TruncationPolicy,
+    ContextHookCtx, ContextPayload, CwdError, Fact, OverflowInfo, PathArgs, PermissionClass,
+    Plugin, PluginConfig, PluginManifest, PromptSegment, Provenance, RenderKind, Role,
+    SubagentError, Tool, ToolCall, ToolCategory, ToolCtx, ToolError, ToolName, ToolOutput,
+    ToolSpec, TruncationPolicy,
 };
 use conway::{AgentId, ConwayBuilder, RoleAlias, SessionId};
 
@@ -277,6 +278,41 @@ fn authored_plugin_and_tool_are_self_consistent() {
     };
     assert_eq!(output.artifacts.len(), 1);
     assert_eq!(output.artifacts[0].kind, ArtifactKind::File);
+}
+
+/// C3: `Fact`, `CwdError`, and `SubagentError` are constructible/matchable
+/// from a facade-only dependent, the same "named, not just re-exported"
+/// property every other type in this file proves. `Fact` is the report
+/// tool's own typed-fact output shape (already half-reachable via
+/// `AgentResult.facts: Vec<Fact>` before this item, but not nameable to
+/// declare a local variable of the type); `CwdError`/`SubagentError` are
+/// the two `ToolCtx` capability-handle error types (`ctx.chdir`/
+/// `ctx.subagents`) a tool's `invoke` needs to match on to turn a handle
+/// failure into a `ToolError` without going through `conway_core` directly.
+#[test]
+fn fact_and_capability_handle_errors_are_constructible_and_matchable() {
+    let fact = Fact {
+        key: "reviewed_files".to_string(),
+        value: serde_json::json!(["a.rs", "b.rs"]),
+        source: Some("review-tool".to_string()),
+    };
+    assert_eq!(fact.key, "reviewed_files");
+    assert_eq!(fact.source.as_deref(), Some("review-tool"));
+
+    let cwd_err = CwdError::Poisoned;
+    assert!(matches!(cwd_err, CwdError::Poisoned));
+    assert_eq!(
+        cwd_err.to_string(),
+        "cwd handle's lock was poisoned by a panic in a prior `set` call"
+    );
+
+    let agent = AgentId::new();
+    let subagent_err = SubagentError::UnknownAgent { agent };
+    let mapped: ToolError = subagent_err.into();
+    assert!(
+        matches!(mapped, ToolError::InvalidArguments { .. }),
+        "SubagentError::UnknownAgent is a model-correctable mistake, not host infrastructure"
+    );
 }
 
 /// The hook surface is drivable, not just nameable: `ContextPayload`,
