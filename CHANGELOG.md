@@ -765,8 +765,16 @@ and was verified to fail when the guard is removed.
     prefix matching is not a containment boundary in either direction, and
     a `deny` rule is a seatbelt for the obvious case, not one. What keeps
     the composition sound is `allow`'s own gate: a command carrying a
-    metacharacter can never be auto-allowed regardless of what patterns
-    exist, so a chained command always reaches the operator either way.
+    metacharacter can never be satisfied by a **pattern grant**, regardless
+    of what patterns exist. (Corrected 2026-08-04, board item
+    01KZ71QDAFXT3MVYS3H5WCFMSC: this sentence originally ended "so a chained
+    command always reaches the operator either way," which was false and
+    contradicted this same release's own entries above — the gate governs
+    pattern matching only, and `AutoAllow` short-circuits to allow *after*
+    it and *before* the operator's gate. Under `AutoAllow`, with no
+    `deny`/`prompt` rule and no confinement root, a chained command runs
+    silently. The shipped behavior described by this entry is unchanged;
+    only the claim about it is.)
   - Every installed pattern grant now carries its origin
     (`PatternOrigin::Interactive` or `PatternOrigin::File(path)`), shown in
     `/settings`'s grant list (`[interactive] ...` / `[/path/to/file] ...`)

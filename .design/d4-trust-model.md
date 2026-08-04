@@ -215,9 +215,26 @@ adding a metacharacter would defeat the rule. So:
 The limit, said plainly rather than papered over: `deny bash:git push` does not
 catch `foo; git push`. Prefix matching is not a containment boundary in either
 direction. What makes the composition sound anyway is the *other* half — a
-command containing metacharacters can never be auto-allowed, so the chained
-form always reaches the human gate. **A deny rule is a seatbelt for the obvious
-case, not a boundary.** Anything that must not happen belongs in the
+command containing metacharacters can never be satisfied by a PATTERN GRANT,
+so the chained form falls through to whatever the mode does unaided. **A deny
+rule is a seatbelt for the obvious case, not a boundary.**
+
+> **Status (2026-08-04), board item 01KZ71QDAFXT3MVYS3H5WCFMSC.** This
+> paragraph used to end "so the chained form always reaches the human gate."
+> That is FALSE, and in a trust-model document it is the worst place for it
+> to be false. The metacharacter gate governs pattern matching only:
+> `PermissionBroker::decide` reaches the `AutoAllow` short-circuit AFTER the
+> gated `pattern_allows` check and BEFORE `gate.check`, and that
+> short-circuit consults nothing — so under `AutoAllow`, a chained command
+> with no `deny`/`prompt` rule and no confinement root is allowed silently.
+> Compounding it: confinement roots are opt-in (`--root` defaults to
+> `None`), and `AutoAllow` is session-scoped rather than per-agent, so every
+> subagent forked or spawned under the session inherits it with no opt-out.
+> Only `must_reach_gate` forces the gate regardless of mode, set solely by a
+> `PathArgs::Unconfinable` call under a root or a matching `prompt` rule.
+> The surrounding argument survives — a prefix grant cannot be widened by
+> chaining — but it must not be read as a guarantee that a human sees the
+> chained form. Anything that must not happen belongs in the
 confinement root or in a capability not granted. Overselling deny-by-prefix
 would be the same mistake as `readOnlyHint`.
 
