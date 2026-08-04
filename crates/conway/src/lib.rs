@@ -98,7 +98,12 @@ pub use conway_core::ports::{
 /// built-ins, not from a `conway`-only dependent. `Fact`, `CwdError`, and
 /// `SubagentError` are exported below and each pinned by name in
 /// `crates/conway/tests/plugin_surface.rs` (that file's own rule: an
-/// unnamed export is an unguarded one). Deliberately NOT widened alongside
+/// unnamed export is an unguarded one). The stronger, whole-tool proof is
+/// `crates/conway/tests/plugin_builtin_parity.rs`, which re-implements the
+/// `invoke` logic of all seven subagent/report/cd built-ins against
+/// `conway::` paths alone and fails to COMPILE if any of this surface
+/// regresses — `plugin_surface.rs` pins the types, that file demonstrates
+/// they are sufficient. Deliberately NOT widened alongside
 /// them, and this is the closed set (GP-14 cuts both ways — no reach claimed
 /// that isn't real):
 ///
