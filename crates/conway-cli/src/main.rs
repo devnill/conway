@@ -77,7 +77,7 @@ async fn main() -> std::process::ExitCode {
         (None, None)
     };
 
-    let conway = match build_conway(&cli, gate_override) {
+    let conway = match build_conway(&cli, gate_override, is_tui) {
         Ok(conway) => conway,
         Err(e) => {
             diag::error(e.to_string());
@@ -111,7 +111,22 @@ async fn main() -> std::process::ExitCode {
 /// called), NOT re-resolved against `--cwd`'s value again here -- clap
 /// itself never joins two path flags together, and neither does this
 /// function.
-fn build_conway(cli: &Cli, gate: Option<Arc<dyn PermissionGate>>) -> conway::Result<Conway> {
+///
+/// `is_tui` (bash opt-in board item: bash ships on by default and cannot be
+/// declined) selects which built-in plugins `build()` registers.
+/// Every non-interactive CLI target (`sessions`, `routes`, one-shot `-p`)
+/// keeps this crate's pre-item behavior UNCHANGED -- every built-in,
+/// `conway.shell`/bash included, is always registered
+/// (`PluginSelection::All`) exactly as `ConwayBuilder::build`'s own
+/// pre-item default did; one-shot's `--allowed-tools` allow-list (default:
+/// empty -- see `oneshot::build_gate`) is, and always was, the thing that
+/// actually keeps bash from running unattended, not registration. The
+/// interactive TUI is the one CLI target that now defers to the
+/// config-derived selection instead (`ConwayConfig::tools.builtin_plugins`,
+/// default: every built-in except bash) -- an operator turns bash on for
+/// the TUI by adding `"conway.shell"` to that `settings.json` array (see
+/// `docs/interactive.md`).
+fn build_conway(cli: &Cli, gate: Option<Arc<dyn PermissionGate>>, is_tui: bool) -> conway::Result<Conway> {
     let builder = match &cli.config {
         Some(path) => ConwayBuilder::from_config(path)?,
         None => ConwayBuilder::discover()?,
@@ -123,6 +138,11 @@ fn build_conway(cli: &Cli, gate: Option<Arc<dyn PermissionGate>>) -> conway::Res
     let builder = match &cli.root {
         Some(root) => builder.with_root(root.clone()),
         None => builder,
+    };
+    let builder = if is_tui {
+        builder
+    } else {
+        builder.with_builtin_plugins(conway::PluginSelection::All)
     };
     builder.build()
 }

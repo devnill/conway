@@ -6,8 +6,18 @@
 
 use crate::config::schema::{PermissionMode, PermissionsConfig};
 
-/// The built-in plugin set (`conway-tools`' `fs`, `shell`, `subagent`, and
-/// `report` plugins), unchanged.
+/// The full built-in plugin CANDIDATE set (`conway-tools`' `fs`, `shell`,
+/// `subagent`, and `report` plugins), unchanged.
+///
+/// **Not every candidate returned here necessarily ends up registered.**
+/// `ConwayBuilder::build` filters this list through a `PluginSelection`
+/// (board item: bash ships on by default and cannot be declined) before
+/// installing anything -- by default every candidate except `conway.shell`
+/// (bash), which requires a deliberate opt-in (see
+/// `crate::config::schema::ToolsConfig`'s doc and `ConwayBuilder::
+/// with_builtin_plugins`). This function itself still returns all four,
+/// unfiltered: it is the raw candidate source the builder filters, not the
+/// filtering policy.
 ///
 /// Gated on the `builtin-tools` feature: with it disabled, the crate has no
 /// `conway-tools` dependency and this function does not exist, rather than
@@ -16,6 +26,25 @@ use crate::config::schema::{PermissionMode, PermissionsConfig};
 #[cfg(feature = "builtin-tools")]
 pub fn builtin_plugins() -> Vec<std::sync::Arc<dyn conway_core::ports::Plugin>> {
     conway_tools::builtin_plugins()
+}
+
+/// Every built-in plugin id an operator may legitimately name in
+/// `tools.builtin_plugins`, derived from the candidates themselves rather
+/// than restated (P-14). A second hand-maintained list would drift the day
+/// a built-in is added or renamed, and the drift would be silent: a valid
+/// id rejected as unknown, or a stale one accepted and then never matched.
+///
+/// Used by config validation to reject a typo instead of letting it
+/// silently disable a tool the operator believes they enabled.
+///
+/// Returns owned `String`s because the ids come from each plugin's own
+/// `PluginManifest`, which is constructed per call.
+#[cfg(feature = "builtin-tools")]
+pub fn builtin_plugin_ids() -> Vec<String> {
+    builtin_plugins()
+        .iter()
+        .map(|p| p.manifest().id.clone())
+        .collect()
 }
 
 /// The recommended `[permissions]` config for one-shot (`-p`) invocations:

@@ -76,6 +76,12 @@ pub struct ConwayConfig {
     /// `[tui.status_line]` (T3).
     #[serde(default)]
     pub tui: TuiSection,
+    /// `[tools]` (board item: bash ships on by default and cannot be
+    /// declined). Which built-in `conway-tools` plugins
+    /// `ConwayBuilder::build` auto-registers -- see [`ToolsConfig`]'s own
+    /// doc.
+    #[serde(default)]
+    pub tools: ToolsConfig,
 }
 
 fn default_cwd() -> PathBuf {
@@ -376,6 +382,54 @@ impl Default for ModelsConfig {
         Self {
             metadata_path: PathBuf::from(".conway/models.json"),
             probe_on_startup: false,
+        }
+    }
+}
+
+/// `[tools]` (board item: bash ships on by default and cannot be declined).
+///
+/// `builtin_plugins` is a plain, explicit list of the
+/// `conway-tools` built-in plugins to auto-register at `build()` time,
+/// named by each one's own `PluginManifest::id` -- the SAME id space
+/// `ConwayBuilder::with_builtin_plugins`'s `PluginSelection` filters by (a
+/// `settings.json` edit and a library call express the identical policy,
+/// in the identical vocabulary). The four built-in ids are `"conway.fs"`,
+/// `"conway.shell"` (bash), `"conway.subagent"`, `"conway.report"`.
+///
+/// **Default: every built-in EXCEPT `"conway.shell"`.** conway's most
+/// dangerous built-in (arbitrary shell execution) used to install itself
+/// unconditionally, with no runtime way to decline it short of compiling
+/// out `fs`/`subagent`/`report` too. Obtaining bash now requires a
+/// deliberate act: add `"conway.shell"` to this list (the one-line
+/// `settings.json` opt-in -- see `docs/getting-started.md`), call
+/// `ConwayBuilder::with_builtin_plugins` directly, or (one-shot only) grant
+/// it via `--allowed-tools` -- one-shot's own registration was never
+/// gated by this key to begin with (see this crate's `presets::
+/// default_permissions_for_one_shot` and `conway-cli`'s own wiring), only
+/// its invocation was, and remains, gated by the permission mode.
+///
+/// `fs`/`subagent`/`report` staying on by default is a deliberate,
+/// considered choice, not an oversight: none of the three is a
+/// general-purpose arbitrary-code-execution primitive the way bash is (S0's
+/// own threat model), each is load-bearing for conway's own out-of-the-box
+/// usability (a `conway` with no filesystem tool cannot edit code; the
+/// TUI's own dogfooding depends on `fs`), and each was already reachable
+/// under the SAME `permissions.mode`/`--allowed-tools` invocation gate bash
+/// always was -- registration was never the actual gap for those three.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct ToolsConfig {
+    pub builtin_plugins: Vec<String>,
+}
+
+impl Default for ToolsConfig {
+    fn default() -> Self {
+        Self {
+            builtin_plugins: vec![
+                "conway.fs".to_string(),
+                "conway.subagent".to_string(),
+                "conway.report".to_string(),
+            ],
         }
     }
 }
