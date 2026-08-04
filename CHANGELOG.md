@@ -473,6 +473,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `crates/conway-routing/tests/router_resolution.rs`,
   `crates/conway-routing/tests/explain_report.rs`, `docs/routing.md`)
 
+- **`docs/scripting.md` promised `jsonl` consumers a global contract the
+  stream already breaks in any multi-agent run.** It claimed `seq` was
+  monotonically increasing and gap-free across the whole stream, and that
+  exactly one `agent_finished` marked the end. Both are false the moment a
+  session spawns a subagent (`conway_subagent`/`conway_ask`): the child's
+  lifecycle lines (`agent_spawned`/`agent_finished`/`agent_promoted`)
+  deliberately cross the session filter stamped with the *child's own*
+  session/agent id and its own, independent `seq` counter, so global `seq`
+  can go backward at the junction and a mid-stream `agent_finished` belongs
+  to the child, not the run's end — a consumer that broke on the first
+  `agent_finished` would truncate the run and lose the root's own final
+  answer. The doc now states the four-part contract the stream actually
+  guarantees: `seq` is strictly increasing only *within* a session; the
+  root session's own lines are gap-free from 0 (barring a lagged run);
+  other sessions surface only as sparse lifecycle slices; and the stream
+  ends at the `agent_finished` whose agent is the root agent, not the
+  first one. The stream's cross-session passthrough itself is unchanged —
+  this is a documentation and test correction only.
+  (`docs/scripting.md`, `crates/conway-cli/tests/oneshot.rs`,
+  `crates/conway-cli/src/render/jsonl.rs`)
+
 ## [0.7.0] — 2026-07-31
 
 Five security fixes and one cost fix, all found by reading the code against the
