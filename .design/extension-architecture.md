@@ -529,9 +529,25 @@ rule.
 The limit, said plainly rather than papered over: `deny bash:git push` does
 not catch `foo; git push`. **Prefix matching is not a containment boundary in
 either direction.** What makes the composition sound anyway is the other
-half — a command containing metacharacters can never be auto-allowed, so the
-chained form always reaches the human. A deny rule is a seatbelt for the
-obvious case. Anything that must not happen belongs in the confinement root
+half — a command containing metacharacters can never be satisfied by a
+PATTERN GRANT, so the chained form falls through to whatever the mode does
+unaided. A deny rule is a seatbelt for the obvious case.
+
+> **Status (2026-08-04), board item 01KZ71QDAFXT3MVYS3H5WCFMSC.** This
+> paragraph used to end "so the chained form always reaches the human,"
+> which is FALSE and is exactly the kind of claim a reader would build a
+> threat model on. The gate governs pattern matching only. In
+> `PermissionBroker::decide` the `AutoAllow` short-circuit sits AFTER the
+> gated `pattern_allows` check and BEFORE `gate.check`, and is itself
+> ungated — so under `AutoAllow`, a chained command with no `deny`/`prompt`
+> rule and no confinement root is allowed silently, never reaching a human.
+> Confinement roots are opt-in (`--root` defaults to `None`), and
+> `AutoAllow` is session-scoped rather than per-agent, so every subagent
+> inherits it. What forces the gate regardless of mode is `must_reach_gate`,
+> and only two things set it: a `PathArgs::Unconfinable` call under a root,
+> and a matching `prompt` rule. The reasoning above still holds for what it
+> actually claims — a prefix grant cannot be widened by chaining — but it
+> does not establish that a human sees the chained form. Anything that must not happen belongs in the confinement root
 or in a capability not granted. Overselling deny-by-prefix would be the same
 mistake as MCP's `readOnlyHint`.
 
