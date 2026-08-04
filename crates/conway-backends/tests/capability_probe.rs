@@ -327,6 +327,54 @@ async fn backend_probe_against_401_is_auth() {
     assert!(matches!(err, BackendError::Auth { .. }), "{err:?}");
 }
 
+/// The startup-probe-overrides-discard defect (board item, "the startup
+/// capability probe discards the operator's models.json overrides"): a
+/// `vllm_hermes` server reports a huge `max_model_len`, but the caller's own
+/// `overrides` map (mirroring `models_overrides_for`'s projection of
+/// `models.json` in `conway::builder`) pins `max_context_tokens` to a tiny
+/// explicit value. Per the module doc's merge precedence (config
+/// `ModelOverrides` > `ModelMetadata` entry > probed server value >
+/// `DialectDefaults`), the override must win outright — proving that a
+/// `CapabilityProbe` constructed with a non-empty `overrides` map (as
+/// `conway::builder::probe_openai_compat_backends` now passes) composes the
+/// operator-pinned value, not the server-reported one.
+#[tokio::test]
+async fn vllm_hermes_max_model_len_is_overridden_by_a_pinned_override() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{"id": "hermes-model", "max_model_len": 50_000_000}]
+        })))
+        .mount(&server)
+        .await;
+
+    let mut overrides = BTreeMap::new();
+    overrides.insert(
+        "hermes-model".to_string(),
+        ModelOverrides {
+            stream_tools: None,
+            max_context_tokens: Some(1),
+            reliability_tier: None,
+            parallel_tool_calls: None,
+            min_headroom_tokens: None,
+        },
+    );
+    let probe = probe_with(
+        &server.uri(),
+        Dialect::VllmHermes,
+        ModelMetadataStore::empty(),
+        overrides,
+    );
+    let discovered = probe.discover().await.unwrap();
+
+    assert_eq!(
+        discovered[&ModelId::new("hermes-model")].max_context_tokens,
+        1,
+        "an explicit override must win over the server-reported max_model_len, however large"
+    );
+}
+
 /// Cycle-1 review M1: a llama.cpp /props response with an empty
 /// chat_template downgrades reliability_tier to Unknown for probed models,
 /// while an explicit override tier still wins the precedence chain.

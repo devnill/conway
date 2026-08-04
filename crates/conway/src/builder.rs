@@ -95,6 +95,20 @@
 //!   returns `ProbeReport`, which carries no `max_context_tokens`/capability
 //!   data to overlay). `probe_on_startup` therefore only ever affects
 //!   `openai-compat` backends; this is disclosed, not silently no-op'd.
+//!   [`probe_openai_compat_backends`] constructs each backend's
+//!   `CapabilityProbe` with the *same* `models_overrides_for(id, metadata)`
+//!   map the backend itself is built with (not an empty one): `models.json`
+//!   wins outright, in both directions, for every model it lists — a probed
+//!   window can neither mask a smaller operator-declared one nor be masked
+//!   by a larger one the operator explicitly widened past what the probe
+//!   observed. This makes the `CapabilityIndexBuilder::insert` overlay a
+//!   verified no-op for `models.json`-listed pairs: `build_capabilities`
+//!   (`conway-backends`) is fed byte-identical `overrides` on both the probe
+//!   side and the `Backend::capabilities()` side, so equal inputs yield
+//!   equal outputs and the router's index ends up exactly what
+//!   `Backend::capabilities()` — and therefore the T-1 gate — would return
+//!   for the same pair, restoring the single-source guarantee the bullet
+//!   above already describes for the unprobed path.
 
 #[cfg(any(feature = "anthropic", feature = "openai-compat"))]
 use std::collections::BTreeMap;
@@ -362,7 +376,8 @@ impl ConwayBuilder {
         if config.models.probe_on_startup {
             #[cfg(feature = "openai-compat")]
             {
-                index_builder = probe_openai_compat_backends(&config, &profiles, index_builder);
+                index_builder =
+                    probe_openai_compat_backends(&config, &profiles, &metadata, index_builder);
             }
             #[cfg(not(feature = "openai-compat"))]
             {
@@ -755,10 +770,25 @@ fn resolve_profile(
 /// whose entry is missing/invalid config keeps its file-derived metadata
 /// unchanged (a `tracing::warn`, never a hard error — probe failure is
 /// always a warning per the WI-100 spec).
+///
+/// `metadata` is the facade's already-loaded `models.json` (step 2 of
+/// [`ConwayBuilder::build`]); [`models_overrides_for`] projects it into the
+/// exact same `BTreeMap<String, ModelOverrides>` shape each backend's own
+/// config is built with (see `build_openai_compat`'s `models:
+/// models_overrides_for(id, metadata)` field). Passing that same map into
+/// `CapabilityProbe::new` here — rather than an empty one — is what makes
+/// the probe's own merge precedence (this module's doc, `probe.rs`'s: config
+/// `ModelOverrides` > `ModelMetadata` entry > probed server value >
+/// `DialectDefaults`) agree with `Backend::capabilities()`'s: for every
+/// `models.json`-listed model, `build_capabilities` is fed byte-identical
+/// inputs on both sides, so the overlay below becomes a verified no-op
+/// wherever `models.json` already has an opinion — see the module doc's
+/// `CapabilityIndex`/`Backend::capabilities()` reconciliation note.
 #[cfg(feature = "openai-compat")]
 fn probe_openai_compat_backends(
     config: &ConwayConfig,
     profiles: &conway_backends::profile::ProfileStore,
+    metadata: &config::model_metadata::ModelMetadata,
     mut index_builder: conway_routing::CapabilityIndexBuilder,
 ) -> conway_routing::CapabilityIndexBuilder {
     use conway_backends::config::SecretString;
@@ -791,8 +821,12 @@ fn probe_openai_compat_backends(
             profile,
             auth,
             PROBE_TIMEOUT,
+            // Matches the backend's own store (`openai_compat/mod.rs`'s
+            // `metadata_path: None`) — the facade's `models.json` reaches
+            // the probe exclusively through `overrides` below, not through
+            // this store.
             ModelMetadataStore::defaults(),
-            BTreeMap::new(),
+            models_overrides_for(id, metadata),
         );
         let result = block_on(probe.discover_result());
         if result.degraded {

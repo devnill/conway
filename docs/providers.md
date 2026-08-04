@@ -205,7 +205,7 @@ like a maximally conservative, unfamiliar server. Verified against
 | `tool_call_style` | `"tolerant"` | `"structured"` (canonical deltas only), `"tolerant"` (also accepts a complete JSON-object `arguments` value, not just a string fragment), or `"hermes_text_fallback"` (also scans `delta.content` for an inline `<tool_call>` block). |
 | `cache` | `{ kind = "none" }` | Baseline caching behavior — see [prompt caching](routing.md#prompt-caching-economics-not-correctness). `{ kind = "implicit_prefix", min_prefix_tokens = N }`, `{ kind = "explicit_breakpoints", max_breakpoints, ttls }`, or `{ kind = "none" }`. |
 | `tool_calling` | `"non_streaming"` | Baseline tool-calling support: `"none"`, `"non_streaming"`, or `"streaming"` (with `structured_output`-style variants for validated streaming). |
-| `max_context_tokens` | `32768` | Baseline context window, in tokens. Overridden per model by `models.json` or a live probe. |
+| `max_context_tokens` | `32768` | Baseline context window, in tokens. A `models.json` entry for the model is authoritative and always wins; a live startup probe (`probe_on_startup`) only fills in a window for a model that neither `models.json` nor conway's bundled model metadata already describes. |
 | `structured_output` | `"none"` | `"none"`, `"json_schema"`, or `"grammar"`. |
 | `parallel_tool_calls` | `false` | Baseline "can an undescribed model of this provider make multiple tool calls in one turn" capability. |
 | `reliability_tier` | `"unknown"` | `"unknown"`, `"community"`, or `"verified"`. Feeds routing's capability floor if a role sets one. |
