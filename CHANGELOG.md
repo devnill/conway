@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`ForkSpec` gains the ephemeral-ask shape; `conway::plugin` gains `Fact`,
+  `CwdError`, and `SubagentError`.** `ForkSpec::ephemeral`/
+  `ForkSpec::ask_origin` let an embedder express the `/ask`-style
+  "fork, but keep it out of the default session listing" shape
+  (`SessionMeta` visibility, not a third subagent mode — P-1: `ask` is
+  fork+await-text, built on top of fork) through the public facade, instead
+  of only through the two in-tree ask paths (the TUI modal and the
+  `conway_ask` tool). Both fields default to today's non-ask behavior
+  (`false`/`None`) and thread through `From<ForkSpec> for
+  conway_core::agent::SubagentSpec` unchanged when unset. **Ask is
+  fork-only (P-1): `SpawnSpec` gets neither field**, so a caller cannot
+  even express "spawn with an ask origin" — the combination is ruled out by
+  the type it would have to be written on not existing, not by a runtime
+  check. `conway::plugin` separately gains three types the report tool,
+  the `cd` tool, and any `SubagentHandle`-driven tool need to be
+  facade-buildable at all: `Fact` (a typed fact a tool contributes to an
+  agent's result — previously nameable only as `AgentResult.facts`'
+  element type, never as a local variable's own type), `CwdError` (`ctx.
+  chdir`'s error type), and `SubagentError` (`ctx.subagents`'s error type,
+  added alongside `SubagentHandle` itself). All three are pinned by name in
+  `crates/conway/tests/plugin_surface.rs`, closing the gap that module's
+  own doc comment named as open. (`crates/conway/src/subagent_spec.rs`,
+  `crates/conway/src/lib.rs`, `crates/conway/tests/plugin_surface.rs`)
+
 - **The structured rule form: general rules for tool use.** A
   `permissions.json` file's flat `allow`/`deny` lists are now the surface
   syntax for a more general `Rule { select, when, then }` form, added as an
