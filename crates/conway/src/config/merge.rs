@@ -562,5 +562,54 @@ pub fn validate(
         }
     }
 
+    // 8. Hard error: every id in tools.builtin_plugins names a real built-in.
+    //
+    // A hard error rather than a warning, for the same reason check 1 hard-
+    // errors on an undefined default_role: the candidate set is closed and
+    // known at compile time, so an unrecognized id is unambiguously a typo,
+    // never a forward reference. And the failure it prevents is the one
+    // GP-14 ranks WORST -- user-facing configuration that silently does
+    // nothing. `builtin_plugins` is how an operator turns `bash` back on;
+    // `"conway.shel"` would leave it off with no signal, and the operator
+    // would believe they had enabled it. Silence there is indistinguishable
+    // from success, which is precisely the shape this project keeps having
+    // to walk back.
+    //
+    // Note this list is NOT the extension point: a third-party plugin is
+    // installed with `ConwayBuilder::with_plugin` and is never filtered by
+    // this selection, so naming one here is also a mistake worth catching.
+    //
+    // Gated on `builtin-tools` alongside the candidate source it validates
+    // against: without that feature there are no built-ins to name, and a
+    // check with nothing to check against would either reject every id or
+    // accept every id -- both worse than not running.
+    #[cfg(feature = "builtin-tools")]
+    {
+        let known = crate::presets::builtin_plugin_ids();
+        let mut unknown: Vec<&str> = config
+            .tools
+            .builtin_plugins
+            .iter()
+            .map(String::as_str)
+            .filter(|id| !known.iter().any(|k| k == id))
+            .collect();
+        if !unknown.is_empty() {
+            unknown.sort_unstable();
+            unknown.dedup();
+            let mut known_sorted = known.clone();
+            known_sorted.sort();
+            return Err(ConwayError::Config {
+                path: None,
+                message: format!(
+                    "tools.builtin_plugins names unknown built-in plugin(s): [{}]; known \
+                     built-ins: [{}]. A third-party plugin is installed with \
+                     ConwayBuilder::with_plugin and is not listed here.",
+                    unknown.join(", "),
+                    known_sorted.join(", ")
+                ),
+            });
+        }
+    }
+
     Ok(warnings)
 }

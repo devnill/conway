@@ -505,9 +505,12 @@ fn explicit_opt_in_via_builder_registers_the_bash_tool() {
     );
 }
 
-/// Same opt-in, expressed as a NAMED selection (`AllExcept([])`, i.e. "all
-/// except nothing") rather than the blanket `All` -- proves the mechanism
-/// is a real id-keyed predicate, not merely a two-state All/None switch.
+/// Same opt-in, expressed as a NAMED selection (`Only(["conway.shell"])`)
+/// rather than the blanket `All` -- proves the mechanism is a real id-keyed
+/// predicate, not merely a two-state All/None switch. The negative half
+/// matters as much as the positive one: naming only shell must also mean
+/// fs's `read` is absent, which a predicate that ignored its argument would
+/// fail.
 #[cfg(feature = "builtin-tools")]
 #[test]
 fn explicit_opt_in_via_only_naming_shell_registers_the_bash_tool() {
@@ -524,6 +527,82 @@ fn explicit_opt_in_via_only_naming_shell_registers_the_bash_tool() {
     assert!(
         conway.tool_render_kind(&ToolName::new("read")).is_none(),
         "Only([\"conway.shell\"]) must NOT also register fs's `read` tool"
+    );
+}
+
+/// A typo in `tools.builtin_plugins` must FAIL THE BUILD, not silently
+/// leave the tool off.
+///
+/// This is the config key an operator uses to turn `bash` back on. If
+/// `"conway.shel"` were accepted and simply never matched, the build would
+/// succeed, bash would stay absent, and the operator would believe they had
+/// enabled it -- silence indistinguishable from success, which GP-14 ranks
+/// as the WORST harm tier ("user-facing configuration that does nothing").
+/// The candidate set is closed and known at compile time, so an
+/// unrecognized id is always a mistake and never a forward reference.
+#[cfg(feature = "builtin-tools")]
+#[test]
+fn a_misspelled_builtin_plugin_id_is_rejected_rather_than_silently_ignored() {
+    let mut cfg = base_config();
+    cfg.tools.builtin_plugins = vec![
+        "conway.fs".to_string(),
+        "conway.shel".to_string(), // typo: missing the final `l`
+    ];
+
+    // `Conway` is not `Debug`, so match rather than `expect_err`.
+    let rendered = match ConwayBuilder::from_parts(cfg)
+        .with_backend(fake_backend("fake"))
+        .with_session_store(Arc::new(FakeStore::new()))
+        .with_permission_gate(Arc::new(FakeGate::new(PermissionDecision::AllowOnce)))
+        .with_router(fake_router())
+        .build()
+    {
+        Ok(_) => panic!("a misspelled built-in plugin id must fail the build, but it succeeded"),
+        Err(e) => e.to_string(),
+    };
+    assert!(
+        rendered.contains("conway.shel"),
+        "the error must name the offending id so the operator can find the typo: {rendered}"
+    );
+    assert!(
+        rendered.contains("conway.shell"),
+        "the error must list the known ids so the operator can see the correction: {rendered}"
+    );
+}
+
+/// The two remaining `PluginSelection` variants, which nothing else drives.
+/// Their `allows()` arms are one-liners today, so this is not chasing a
+/// live bug -- it is so that a future edit to `allows()` cannot regress
+/// them silently. `AllExcept` is the variant an operator reaches for to
+/// drop exactly one built-in, and `None` is the only way to get a runtime
+/// with no built-in tools at all; both deserve a guard.
+#[cfg(feature = "builtin-tools")]
+#[test]
+fn all_except_shell_and_none_select_what_their_names_say() {
+    let all_except_shell = build_conway_with_selection(Some(PluginSelection::AllExcept(vec![
+        "conway.shell".to_string(),
+    ])));
+    assert!(
+        all_except_shell
+            .tool_render_kind(&ToolName::new("bash"))
+            .is_none(),
+        "AllExcept([\"conway.shell\"]) must NOT register bash"
+    );
+    assert!(
+        all_except_shell
+            .tool_render_kind(&ToolName::new("read"))
+            .is_some(),
+        "AllExcept([\"conway.shell\"]) must still register everything it did not name"
+    );
+
+    let nothing = build_conway_with_selection(Some(PluginSelection::None));
+    assert!(
+        nothing.tool_render_kind(&ToolName::new("bash")).is_none(),
+        "None must register no bash"
+    );
+    assert!(
+        nothing.tool_render_kind(&ToolName::new("read")).is_none(),
+        "None must register no built-in tools at all, not merely skip shell"
     );
 }
 
