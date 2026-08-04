@@ -27,9 +27,9 @@
 //! confirm it compiles again (same discipline `plugin_surface.rs` states
 //! for itself).
 //!
-//! **Compile-only, not behavior-driven.** Every `invoke` body below is
-//! real -- the same argument parsing, spec construction, handle call, and
-//! error mapping as the built-in it replicates -- but no test here ever
+//! **Compile-only, not behavior-driven.** Every `invoke` body below
+//! performs the real argument parsing, spec construction, handle call, and
+//! error mapping of the built-in it replicates -- but no test here ever
 //! calls `invoke`: doing so needs a real `ToolCtx`, which needs
 //! `conway-core`'s `fakes` feature, which would reintroduce the exact
 //! dependency this file exists to prohibit (and would duplicate coverage
@@ -43,6 +43,22 @@
 //! needs no `ToolCtx` at all: each replica's own declared
 //! `spec()`/`path_args()`/`render_kind()`, mirroring
 //! `authored_plugin_and_tool_are_self_consistent`'s division of labor.
+//!
+//! **What these replicas deliberately do NOT reproduce.** They cover the
+//! logic that touches the facade surface; they are not line-for-line
+//! copies, and three of them omit work that needs nothing from `conway::`
+//! and so cannot regress this gate: `ReportToolReplica` drops the real
+//! tool's `artifacts` argument and its `parse_artifact_kind` /
+//! `MAX_SUMMARY_CHARS` validation (`ArtifactKind` is re-exported whole, so
+//! no variant-level regression can hide behind that); `CdToolReplica`
+//! drops the real `is_dir`/existence probe, since `tokio::fs::metadata` is
+//! not facade surface; and neither replica reproduces path resolution.
+//! `AwaitToolReplica` DOES reproduce the real cooperative-cancellation
+//! pin/select loop, because that one is not merely behavioral -- it pins
+//! and polls the future `SubagentHandle::await_result` returns, so it
+//! guards that future's `Unpin`/`Send` contract, which a bare `.await`
+//! would not. When adding a replica, apply that test: omit behavior, but
+//! never omit a way the surface is consumed.
 //!
 //! **`SubagentSpec` is never named, on purpose.** It is deliberately not
 //! exported (see `lib.rs`'s `pub mod plugin` doc, the closed list under
@@ -611,12 +627,36 @@ impl Tool for AwaitToolReplica {
                 detail: e.to_string(),
             })?;
         let target = parse_agent_id(&args.agent_id)?;
-        let result = ctx
-            .subagents
-            .await_result(target)
-            .await
-            .map_err(ToolError::from)?;
-        Ok(agent_result_output(&result))
+        // Reproduces the real tool's cooperative-cancellation wait
+        // (`conway-tools`' `wait_for_result`) rather than a bare `.await`,
+        // and does so deliberately: a bare await would still compile if
+        // `SubagentHandle::await_result`'s future stopped being `Unpin`-
+        // pinnable or `Send`, while the real built-in -- which pins it and
+        // drives it under `tokio::select!` -- would break. Guarding the
+        // await surface without guarding how it is actually consumed would
+        // leave this gate blind to that regression.
+        //
+        // One pinned future re-polled across iterations, matching the real
+        // tool: selecting on a fresh `await_result` call each tick would
+        // drop and re-issue the in-flight wait.
+        let result_fut = ctx.subagents.await_result(target);
+        tokio::pin!(result_fut);
+        loop {
+            tokio::select! {
+                result = &mut result_fut => {
+                    return Ok(agent_result_output(&result.map_err(ToolError::from)?));
+                }
+                _ = tokio::time::sleep(std::time::Duration::from_millis(20)) => {
+                    if ctx.cancel.is_cancelled() {
+                        let _ = ctx
+                            .subagents
+                            .cancel(target, "parent tool cancelled".to_string())
+                            .await;
+                        return Err(ToolError::Cancelled);
+                    }
+                }
+            }
+        }
     }
 }
 
