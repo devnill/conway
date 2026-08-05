@@ -120,6 +120,14 @@ pub struct ExplainReport {
     pub role: RoleAlias,
     pub pin: Option<ModelRef>,
     pub est_tokens: u32,
+    /// The EFFECTIVE requirement every `entries` outcome was actually
+    /// checked against: the role's configured floor merged with
+    /// `req.required` (`DeclarativeRouter::effective_required`), not
+    /// `req.required` alone -- otherwise a config-floor-caused
+    /// `CapabilitySkip` in `entries` would be inexplicable from this field
+    /// alone. Falls back to bare `req.required` only in the `UnknownRole`
+    /// branch below, where `entries` is empty and there is no admission
+    /// check to describe.
     pub required: RequiredCaps,
     pub headroom_tokens: u32,
     pub entries: Vec<ExplainEntry>,
@@ -269,7 +277,7 @@ impl<'a> RoutingExplain<'a> {
                     role: req.role.clone(),
                     pin: req.pin.clone(),
                     est_tokens: req.est_tokens,
-                    required: req.required.clone(),
+                    required: self.router.effective_required(&req.role, req),
                     headroom_tokens: evaluation.headroom_tokens,
                     entries,
                     generated_at,

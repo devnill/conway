@@ -209,18 +209,37 @@ pub struct RoleConfig {
 ///
 /// Every field has a serde default, so a config document omitting `[health]`
 /// keys (or the whole table) deserializes to [`HealthConfig::default`].
+///
+/// **`probe_*` fields are an honestly labeled forward declaration (GP-14).**
+/// `conway-routing::HealthProber` (the type these fields configure) has no
+/// production call site anywhere in this tree — the Transport breaker alone
+/// handles recovery today (it goes half-open on a clock read, and the next
+/// real request retries), so the prober fixes no correctness gap; it would
+/// only shave latency off the first request after an outage, which makes
+/// wiring it an optimization requiring a GP-12 measured baseline that does
+/// not yet exist. Wiring is deferred to board item `01KZ802GSF692EKYKQ2TTVCJB8`.
+/// Do not confuse this with `[models].probe_on_startup`
+/// (`conway::config::schema::ModelsConfig`), a different, already-wired
+/// startup CAPABILITY probe.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HealthConfig {
     pub transport_failures_to_open: u32,
     pub open_duration_secs: u64,
+    /// Not yet implemented: see the struct doc comment. Read by
+    /// `conway-routing::HealthProber`, which nothing spawns.
     pub probe_interval_secs: u64,
+    /// Not yet implemented: see the struct doc comment. Read by
+    /// `conway-routing::HealthProber`, which nothing spawns.
     pub probe_timeout_secs: u64,
     pub probe_failures_to_open: u32,
     /// Consecutive successful observations required to close a half-open
     /// breaker.
     pub half_open_successes_to_close: u32,
-    /// Whether the periodic health prober runs at all.
+    /// Whether the periodic health prober runs at all. Not yet implemented:
+    /// see the struct doc comment — `conway-routing::HealthProber` is never
+    /// spawned regardless of this value, so it defaults to `false`. Board
+    /// item `01KZ802GSF692EKYKQ2TTVCJB8` tracks wiring it.
     pub probe_enabled: bool,
 }
 
@@ -233,7 +252,10 @@ impl Default for HealthConfig {
             probe_timeout_secs: 2,
             probe_failures_to_open: 3,
             half_open_successes_to_close: 1,
-            probe_enabled: true,
+            // Default false: the forward declaration must not assert a
+            // behavior (periodic probing) that no production code performs.
+            // See the struct doc comment.
+            probe_enabled: false,
         }
     }
 }
@@ -333,6 +355,20 @@ mod tests {
         assert_eq!(h.probe_interval_secs, 15);
         assert_eq!(h.probe_timeout_secs, 2);
         assert_eq!(h.probe_failures_to_open, 3);
+    }
+
+    /// GP-14: `probe_enabled` must default `false` -- `HealthProber` has no
+    /// production call site, so a default-`true` key would assert a
+    /// behavior (periodic probing) that never happens on a fresh install.
+    /// Board item `01KZ802GSF692EKYKQ2TTVCJB8` tracks wiring it; until then
+    /// this default IS the honesty the forward-declaration label promises.
+    #[test]
+    fn probe_enabled_defaults_false_because_nothing_wires_the_prober() {
+        assert!(
+            !HealthConfig::default().probe_enabled,
+            "a default-true probe_enabled would claim a behavior conway-routing::HealthProber \
+             does not deliver (GP-14)"
+        );
     }
 
     #[test]

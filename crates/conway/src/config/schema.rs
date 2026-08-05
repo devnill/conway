@@ -16,12 +16,13 @@
 //!   ...]` bare-string array.
 //!
 //! This module therefore defines its own [`RoleEntry`] (`chain: Vec<String>`,
-//! `headroom_tokens: Option<u32>`) matching the documented schema exactly, and
-//! [`ConwayConfig::routing`] converts it into the authoritative
+//! `headroom_tokens: Option<u32>`, plus a per-role capability floor — see
+//! [`RoleEntry`]'s own doc comment) matching the documented schema exactly,
+//! and [`ConwayConfig::routing`] converts it into the authoritative
 //! `conway_core::routing::RoutingConfig`/`RoleConfig` (parsing each chain
-//! string via `ModelRef::from_str`, and filling `required`/`params` with
-//! their `Default` values — the documented schema never populates those
-//! sub-tables).
+//! string via `ModelRef::from_str`, mapping the capability-floor fields into
+//! `RequiredCaps`, and filling `params` with its `Default` value — the
+//! documented schema never populates that sub-table).
 //!
 //! `[health]` does NOT embed `conway_core::routing::HealthConfig` directly,
 //! even though that type has a container-level `#[serde(default)]`: it has
@@ -117,11 +118,20 @@ impl ConwayConfig {
                 })?;
                 chain.push(model_ref);
             }
+            let required = conway_core::capabilities::RequiredCaps {
+                tool_calling: entry.tool_calling.map(ToolCallSupportSpec::to_capability),
+                structured_output: entry.structured_output,
+                parallel_tool_calls: entry.parallel_tool_calls,
+                reasoning: entry.reasoning,
+                min_reliability: entry.min_reliability,
+                min_context: entry.min_context,
+                ..conway_core::capabilities::RequiredCaps::default()
+            };
             roles.insert(
                 name.clone(),
                 conway_core::routing::RoleConfig {
                     chain,
-                    required: conway_core::capabilities::RequiredCaps::default(),
+                    required,
                     params: conway_core::content::SamplingParams::default(),
                     headroom_tokens: entry.headroom_tokens,
                 },
@@ -301,6 +311,13 @@ pub const DEFAULT_HEADROOM_TOKENS: u32 = conway_core::capabilities::DEFAULT_HEAD
 /// `#[serde(deny_unknown_fields)]`). Every field name, type, and default
 /// value here must match `HealthConfig` exactly, or a valid setting would
 /// silently diverge in meaning between the two types.
+///
+/// `probe_enabled`/`probe_interval_secs`/`probe_timeout_secs`: not yet
+/// implemented. See `conway_core::routing::HealthConfig`'s doc comment —
+/// `conway-routing::HealthProber` has no production call site, wiring is
+/// deferred to board item `01KZ802GSF692EKYKQ2TTVCJB8`, and `probe_enabled`
+/// defaults `false` so a fresh `settings.json` never asserts periodic
+/// probing that does not happen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct HealthSection {
@@ -344,11 +361,84 @@ impl From<HealthSection> for conway_core::routing::HealthConfig {
 
 /// `[roles.<alias>]`. `chain` is `Vec<String>` (`"backend/model"`), not
 /// `Vec<ModelRef>` — see the module doc comment.
+///
+/// The six fields below are the role's capability floor: they map into
+/// `conway_core::capabilities::RequiredCaps` (everything but
+/// `headroom_tokens`, which has its own established path via
+/// `RoleEntry::headroom_tokens` above and `ConwayConfig::headroom_for`).
+/// Before this, `ConwayConfig::routing()` hardcoded `RequiredCaps::default()`
+/// for every role, so a per-role floor enforced literally nothing — see
+/// `docs/routing.md`'s "Capability matching" section for the pre-existing
+/// disclosure this closes. Every field is optional and defaults to `None`
+/// ("no requirement"), matching `RequiredCaps`'s own semantics exactly, so
+/// an existing config with none of these keys parses and behaves
+/// identically to before.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct RoleEntry {
     pub chain: Vec<String>,
     pub headroom_tokens: Option<u32>,
+    /// Minimum tool-calling support. Wire vocabulary: `"none"` |
+    /// `"non_streaming"` | `"streaming"` | `"streaming_validated"` — see
+    /// [`ToolCallSupportSpec`] for why this isn't
+    /// `conway_core::capabilities::ToolCallSupport` directly.
+    pub tool_calling: Option<ToolCallSupportSpec>,
+    /// Minimum structured-output support. Wire vocabulary: `"none"` |
+    /// `"json_schema"` | `"grammar"` (`conway_core::capabilities::StructuredOutput`'s
+    /// own `rename_all = "snake_case"` shape — a plain enum, no struct
+    /// variant, so no facade-local mirror is needed here).
+    pub structured_output: Option<conway_core::capabilities::StructuredOutput>,
+    pub parallel_tool_calls: Option<bool>,
+    pub reasoning: Option<bool>,
+    /// Minimum reliability tier. Wire vocabulary: `"verified"` |
+    /// `"community"` | `"unknown"`.
+    pub min_reliability: Option<conway_core::capabilities::ReliabilityTier>,
+    /// An explicit context-window floor, independent of (and in addition
+    /// to) the headroom-aware per-request gate — see
+    /// `conway_core::capabilities::RequiredCaps::min_context`'s own doc.
+    pub min_context: Option<u32>,
+}
+
+/// Facade-local wire vocabulary for [`RoleEntry::tool_calling`]: `"none"` |
+/// `"non_streaming"` | `"streaming"` | `"streaming_validated"`.
+///
+/// A distinct type from `conway_core::capabilities::ToolCallSupport`
+/// because that enum's `Streaming { validated: bool }` variant is a struct
+/// variant — awkward to hand-write in JSON (`{"streaming": {"validated":
+/// true}}`) compared to a flat string tag. Structurally identical to
+/// `conway_backends::model_metadata::ToolCallSupportSpec`, which solves the
+/// exact same problem for `models.json` — but that type cannot be reused
+/// here: `conway-backends` is an optional dependency (`crates/conway/
+/// Cargo.toml`: `conway-backends = { path = "../conway-backends", optional
+/// = true, .. }`, gated behind the `anthropic`/`openai-compat` features,
+/// C-04), and this schema module must parse `settings.json` regardless of
+/// which features are enabled. This is a deliberate independent duplicate,
+/// not an oversight — the same shape of tradeoff
+/// `crates/conway/src/config/model_metadata.rs` already makes for its own,
+/// separate reason (that module's `ModelMetadata` stays local to keep
+/// metadata loading network-free, disclosed in its own doc comment; this
+/// type stays local to avoid a hard dependency on an optional crate).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolCallSupportSpec {
+    None,
+    NonStreaming,
+    Streaming,
+    StreamingValidated,
+}
+
+impl ToolCallSupportSpec {
+    pub fn to_capability(self) -> conway_core::capabilities::ToolCallSupport {
+        use conway_core::capabilities::ToolCallSupport;
+        match self {
+            ToolCallSupportSpec::None => ToolCallSupport::None,
+            ToolCallSupportSpec::NonStreaming => ToolCallSupport::NonStreamingOnly,
+            ToolCallSupportSpec::Streaming => ToolCallSupport::Streaming { validated: false },
+            ToolCallSupportSpec::StreamingValidated => {
+                ToolCallSupport::Streaming { validated: true }
+            }
+        }
+    }
 }
 
 /// `[agents]`.

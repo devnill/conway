@@ -177,6 +177,7 @@ fn facade_only_config(session_root: std::path::PathBuf, metadata_path: std::path
         RoleEntry {
             chain: vec!["anthropic/claude-sonnet-4-6".to_string()],
             headroom_tokens: None,
+            ..Default::default()
         },
     );
     let mut backends = BTreeMap::new();

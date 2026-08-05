@@ -213,6 +213,7 @@ fn config_naming(base_url: String, metadata_path: PathBuf) -> ConwayConfig {
         RoleEntry {
             chain: vec![MODEL.to_string()],
             headroom_tokens: None,
+            ..Default::default()
         },
     );
     let mut backends = BTreeMap::new();
@@ -548,6 +549,7 @@ fn t1_backstop_config(metadata_path: PathBuf) -> ConwayConfig {
         RoleEntry {
             chain: vec![T1_BACKSTOP_MODEL.to_string()],
             headroom_tokens: None,
+            ..Default::default()
         },
     );
     let mut backends = BTreeMap::new();
