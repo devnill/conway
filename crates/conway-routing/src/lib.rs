@@ -1,6 +1,8 @@
 //! conway-routing: declarative role -> ordered-candidate resolution
-//! (`DeclarativeRouter`), per-endpoint circuit breakers and background
-//! health probing (`BreakerRegistry`, `HealthProber`), capability filtering
+//! (`DeclarativeRouter`), per-endpoint circuit breakers (`BreakerRegistry`)
+//! plus a background health prober (`HealthProber`) that is defined but not
+//! yet wired into production (see `prober`'s module doc comment and board
+//! item `01KZ802GSF692EKYKQ2TTVCJB8`), capability filtering
 //! (`CapabilityIndex`), and the "why did this model run" report
 //! (`RoutingExplain`).
 //!
@@ -22,6 +24,10 @@ pub mod failure;
 mod prober;
 mod router;
 
+/// Not yet implemented / not wired (GP-14 forward declaration): no
+/// production code constructs a [`HealthProber`] or calls
+/// [`HealthProber::spawn`] — see `prober`'s module doc comment for why, and
+/// board item `01KZ802GSF692EKYKQ2TTVCJB8` for the deferred wiring.
 pub use prober::{HealthProber, ProberHandle};
 
 // The crate's re-export block is authored incrementally by the work items

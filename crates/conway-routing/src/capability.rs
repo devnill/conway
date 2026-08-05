@@ -153,6 +153,78 @@ fn reliability_name(t: &ReliabilityTier) -> &'static str {
     }
 }
 
+/// Combines a role's configured capability floor (`RoutingConfig.roles.
+/// <alias>.required`) with the caller-supplied `req.required` into the
+/// single strictest requirement a candidate must clear: each field
+/// independently takes whichever of the two is more demanding (higher
+/// rank / larger minimum / `true` over `false`/`None`). Neither side can
+/// ever WEAKEN the other -- a role floor can only add restrictions on top
+/// of what a caller already asked for, and vice versa.
+///
+/// Mirrors `DeclarativeRouter::effective_headroom`'s own "config default,
+/// resolved once per role" shape, generalized from one scalar to the whole
+/// `RequiredCaps` struct. `headroom_tokens` is deliberately left
+/// untouched (copied from `request`) -- headroom is resolved and passed to
+/// `satisfies` as its own explicit parameter (see this module's own doc
+/// comment), never read from either side's `required.headroom_tokens`
+/// field, so merging it here would be dead code.
+pub(crate) fn strictest(config_floor: &RequiredCaps, request: &RequiredCaps) -> RequiredCaps {
+    RequiredCaps {
+        tool_calling: strictest_by_rank(config_floor.tool_calling, request.tool_calling, |t| {
+            t.rank()
+        }),
+        structured_output: strictest_by_rank(
+            config_floor.structured_output,
+            request.structured_output,
+            |s| structured_rank(&s),
+        ),
+        parallel_tool_calls: strictest_bool(
+            config_floor.parallel_tool_calls,
+            request.parallel_tool_calls,
+        ),
+        reasoning: strictest_bool(config_floor.reasoning, request.reasoning),
+        min_reliability: strictest_by_rank(
+            config_floor.min_reliability,
+            request.min_reliability,
+            |t| reliability_rank(&t),
+        ),
+        min_context: strictest_min(config_floor.min_context, request.min_context),
+        headroom_tokens: request.headroom_tokens,
+    }
+}
+
+/// `Some` wins over `None`; two `Some`s keep whichever ranks higher (a tie
+/// keeps `a`, arbitrarily -- the two are equally strict by definition).
+fn strictest_by_rank<T: Copy>(a: Option<T>, b: Option<T>, rank: impl Fn(T) -> u8) -> Option<T> {
+    match (a, b) {
+        (None, None) => None,
+        (Some(x), None) => Some(x),
+        (None, Some(y)) => Some(y),
+        (Some(x), Some(y)) => Some(if rank(x) >= rank(y) { x } else { y }),
+    }
+}
+
+/// `Some(true)` from either side wins (a requirement, once asserted by
+/// either the config floor or the caller, cannot be un-asserted by the
+/// other); otherwise whichever side is `Some(_)`, else `None`.
+fn strictest_bool(a: Option<bool>, b: Option<bool>) -> Option<bool> {
+    if a == Some(true) || b == Some(true) {
+        Some(true)
+    } else {
+        a.or(b)
+    }
+}
+
+/// The larger of the two minimums; `Some` wins over `None`.
+fn strictest_min(a: Option<u32>, b: Option<u32>) -> Option<u32> {
+    match (a, b) {
+        (None, None) => None,
+        (Some(x), None) => Some(x),
+        (None, Some(y)) => Some(y),
+        (Some(x), Some(y)) => Some(x.max(y)),
+    }
+}
+
 /// THE headroom gate, in one place. `Some(shortfall)` when the request does
 /// not fit this model's window; `None` when it fits.
 ///

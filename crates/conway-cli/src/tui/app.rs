@@ -1519,6 +1519,7 @@ mod tests {
             RoleEntry {
                 chain: vec![],
                 headroom_tokens: None,
+                ..Default::default()
             },
         );
         ConwayConfig {

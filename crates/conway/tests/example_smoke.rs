@@ -33,6 +33,7 @@ fn minimal_config() -> ConwayConfig {
         RoleEntry {
             chain: vec![],
             headroom_tokens: None,
+            ..Default::default()
         },
     );
     ConwayConfig {
