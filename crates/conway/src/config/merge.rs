@@ -50,8 +50,27 @@ impl Default for LoadOptions {
     }
 }
 
-/// The subset of config keys the CLI exposes, mirrored here (not in
-/// `conway-cli`) so the library is the source of truth (C-03).
+/// An embedder-facing override struct: [`load`]'s fifth (highest-precedence)
+/// layer, and [`apply_cli`]'s re-application point. Fully wired and tested
+/// *as a library API* — an embedder that constructs one and passes it to
+/// `LoadOptions::cli_overrides` or `ConwayBuilder::with_cli_overrides` gets
+/// exactly the precedence and validation this module promises.
+///
+/// **What it is not (corrected — GP-14):** despite its name and this
+/// struct's original doc comment, `conway-cli` does not construct or pass
+/// one of these. `grep -rn "with_cli_overrides" crates/` finds exactly three
+/// hits: this struct's definition, and two test files
+/// (`crates/conway-cli/tests/oneshot_ask.rs`,
+/// `crates/conway-cli/tests/continuity.rs`) — zero production call sites.
+/// `conway-cli`'s actual flag-to-config wiring is separate, bespoke code in
+/// that crate, not this struct. The previous wording ("mirrored here (not
+/// in `conway-cli`) so the library is the source of truth (C-03)") read as
+/// a claim that CLI flag values flow through this exact struct in
+/// production; they do not, and the next person to add a field here on the
+/// strength of that claim would reasonably expect it to reach a real `conway`
+/// invocation when it would not. Whether/how to reconcile the bespoke
+/// `conway-cli` wiring with this struct is the open architectural question
+/// filed as board item `01KZ8049CVW1GCAA081M7WSVSZ` — not decided here.
 ///
 /// Reconciliation disclosed in the WI-097 Self-Check: this field list is
 /// exactly the amendment's enumerated set. It has no per-backend override
@@ -74,6 +93,18 @@ pub struct CliOverrides {
     /// Amendment addition: sets `routing.default_headroom_tokens`. There is
     /// no CLI form for a per-role override — a CLI-supplied value is a
     /// session-wide floor.
+    ///
+    /// Not a C-03 reachability violation despite no `conway-cli` flag
+    /// setting it through this struct (see the struct doc comment):
+    /// headroom is independently reachable today via `settings.json`
+    /// (`[routing].default_headroom_tokens`, `[roles.<alias>].headroom_tokens`)
+    /// and the `CONWAY_ROUTING__DEFAULT_HEADROOM_TOKENS` /
+    /// `CONWAY_ROLES__<ALIAS>__HEADROOM_TOKENS` env vars. Left in place
+    /// rather than removed: every sibling field in this struct is equally
+    /// unwired from `conway-cli`, so singling this one out for deletion
+    /// would be arbitrary, not principled — the corrected struct doc
+    /// comment is what carries the honesty requirement here, not field
+    /// removal.
     pub headroom_tokens: Option<u32>,
 }
 

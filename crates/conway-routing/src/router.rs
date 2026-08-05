@@ -29,26 +29,43 @@
 //! were amended in the same change that added this note) and against
 //! `conway-runtime`'s `agent_loop.rs`, whose own note is retired alongside
 //! this one.
+//!
+//! **Per-role capability floor (`RoleConfig::required`) is merged, not
+//! read alone:** every candidate's admission check runs against
+//! [`DeclarativeRouter::effective_required`], the pointwise-strictest
+//! combination (`crate::capability::strictest`) of the role's configured
+//! floor and the caller-supplied `req.required` -- previously
+//! `check_candidate` used `req.required` in isolation and `CompiledRole`
+//! did not even carry the role's `required` field, so a config-declared
+//! floor had no effect on any real request (`conway-runtime`'s
+//! `agent_loop.rs` builds `RouteRequest.required` itself, from headroom
+//! plus a conditional tool-calling bump, never from `RoutingConfig`).
+//! Neither side can weaken the other: a role's floor only ever adds
+//! restrictions on top of what a caller already asked for, and vice versa.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use conway_core::capabilities::RequiredCaps;
 use conway_core::error::RoutingError;
 use conway_core::ids::{EndpointId, ModelRef, RoleAlias};
 use conway_core::ports::{HealthRegistry, Router};
 use conway_core::prelude::SamplingParams;
 use conway_core::routing::{BreakerState, Route, RouteRequest, RoutingConfig, RoutingReason};
 
-use crate::capability::{context_shortfall, satisfies, CapabilityIndex};
+use crate::capability::{context_shortfall, satisfies, strictest, CapabilityIndex};
 use crate::config::{ConfigIssue, ConfigIssueKind, HeadroomPolicy};
 
 /// One role's compiled routing data: its fallback chain, sampling defaults,
-/// and its once-resolved effective headroom.
+/// its once-resolved effective headroom, and its configured capability
+/// floor (`RoleConfig::required`, merged with the request's own `required`
+/// at check time -- see [`DeclarativeRouter::effective_required`]).
 #[derive(Debug, Clone)]
 struct CompiledRole {
     chain: Vec<ModelRef>,
     params: SamplingParams,
     headroom_tokens: u32,
+    required: RequiredCaps,
 }
 
 /// Declarative, config-driven `Router` implementation: pin -> capability
@@ -156,6 +173,7 @@ impl DeclarativeRouter {
                     chain: role_cfg.chain.clone(),
                     params: role_cfg.params.clone(),
                     headroom_tokens: policy_headroom,
+                    required: role_cfg.required.clone(),
                 },
             );
         }
@@ -190,6 +208,22 @@ impl DeclarativeRouter {
             .unwrap_or_default()
     }
 
+    /// The capability floor actually enforced for `role`: the role's
+    /// configured floor (`RoleConfig::required`, empty/no-op by default)
+    /// merged with the caller-supplied `req.required` via [`strictest`] --
+    /// neither side can weaken the other. A `role` absent from `roles`
+    /// (unreachable for a non-pinned request, since [`evaluate`] already
+    /// errors with `UnknownRole` first; reachable for a pin naming a role
+    /// with no chain of its own) contributes no floor, so `req.required`
+    /// alone applies -- the same total, never-panics fallback shape
+    /// [`effective_headroom`](Self::effective_headroom) already uses.
+    pub(crate) fn effective_required(&self, role: &RoleAlias, req: &RouteRequest) -> RequiredCaps {
+        match self.roles.get(role) {
+            Some(compiled) => strictest(&compiled.required, &req.required),
+            None => req.required.clone(),
+        }
+    }
+
     /// Capability (headroom-aware) then health, in that fixed order. `Ok`
     /// means the candidate survives; `Err` carries the skip reason plus,
     /// when (and only when) the *sole* reason this candidate was rejected is
@@ -210,6 +244,7 @@ impl DeclarativeRouter {
         model_ref: &ModelRef,
         req: &RouteRequest,
         headroom_tokens: u32,
+        required: &RequiredCaps,
     ) -> Result<(), (RoutingReason, Option<u32>)> {
         match self.capability_index.get(model_ref) {
             None => {
@@ -222,9 +257,7 @@ impl DeclarativeRouter {
                 ));
             }
             Some(caps) => {
-                if let Err(missing) =
-                    satisfies(caps, &req.required, req.est_tokens, headroom_tokens)
-                {
+                if let Err(missing) = satisfies(caps, required, req.est_tokens, headroom_tokens) {
                     let failed_headroom =
                         context_shortfall(caps, req.est_tokens, headroom_tokens).is_some();
                     let headroom_only = missing.len() == 1 && failed_headroom;
@@ -257,12 +290,15 @@ impl DeclarativeRouter {
     /// The full evaluation this request's resolution is a projection of.
     /// `Err(UnknownRole)` only when unpinned and `req.role` names no
     /// compiled role -- a pin never fails this way, since it supplies its
-    /// own single-entry chain and only consults the role for headroom.
+    /// own single-entry chain and only consults the role for headroom and
+    /// capability floor (both total, never-panics lookups that fall back
+    /// cleanly when `req.role` names no compiled role at all).
     pub(crate) fn evaluate<'a>(
         &'a self,
         req: &'a RouteRequest,
     ) -> Result<Evaluation<'a>, RoutingError> {
         let headroom_tokens = self.effective_headroom(&req.role);
+        let required = self.effective_required(&req.role, req);
 
         let (chain, is_pin): (&[ModelRef], bool) = match &req.pin {
             Some(pin_ref) => (std::slice::from_ref(pin_ref), true),
@@ -279,7 +315,7 @@ impl DeclarativeRouter {
 
         let mut entries = Vec::with_capacity(chain.len());
         for (position, model_ref) in chain.iter().enumerate() {
-            let outcome = match self.check_candidate(model_ref, req, headroom_tokens) {
+            let outcome = match self.check_candidate(model_ref, req, headroom_tokens, &required) {
                 Err((reason, headroom_only_window)) => {
                     EvalOutcome::Skipped(reason, headroom_only_window)
                 }
@@ -694,7 +730,7 @@ mod tests {
 
         let req = request("planner", 34_000);
         let err = router
-            .check_candidate(&m, &req, 16_000)
+            .check_candidate(&m, &req, 16_000, &req.required)
             .expect_err("40000 window can't hold 34000 + 16000");
         assert_eq!(
             err.1,
@@ -719,7 +755,7 @@ mod tests {
 
         let req = request("planner", 34_000);
         let err = router
-            .check_candidate(&m, &req, 16_000)
+            .check_candidate(&m, &req, 16_000, &req.required)
             .expect_err("unindexed model is always rejected");
         assert_eq!(err.1, None);
     }
@@ -747,7 +783,7 @@ mod tests {
         req.required.tool_calling = Some(ToolCallSupport::NonStreamingOnly);
 
         let err = router
-            .check_candidate(&m, &req, 16_000)
+            .check_candidate(&m, &req, 16_000, &req.required)
             .expect_err("fails both tool_calling and headroom");
         assert_eq!(err.1, None, "mixed failure must not report a window");
     }
@@ -775,7 +811,7 @@ mod tests {
         req.required.tool_calling = Some(ToolCallSupport::NonStreamingOnly);
 
         let err = router
-            .check_candidate(&m, &req, 16_000)
+            .check_candidate(&m, &req, 16_000, &req.required)
             .expect_err("tool_calling missing");
         assert_eq!(err.1, None);
     }

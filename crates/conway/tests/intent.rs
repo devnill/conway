@@ -56,6 +56,7 @@ fn base_config(with_intent_role: bool) -> ConwayConfig {
         RoleEntry {
             chain: vec![],
             headroom_tokens: None,
+            ..Default::default()
         },
     );
     // The `intent` role's chain references `fake/echo-model`; config
@@ -77,6 +78,7 @@ fn base_config(with_intent_role: bool) -> ConwayConfig {
             RoleEntry {
                 chain: vec!["fake/echo-model".to_string()],
                 headroom_tokens: None,
+                ..Default::default()
             },
         );
         backends.insert(

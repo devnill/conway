@@ -78,6 +78,11 @@ against `conway::Conway::explain_routing`):
 - "SELECTED" on more than one entry is normal: it means each of those
   candidates would be picked if routing reached that position, not that
   conway tried all of them. Position `0` is what actually runs first.
+- `explain_routing` itself asks for nothing (`RequiredCaps::default()`) —
+  any capability requirement a `SKIPPED` entry names still comes from
+  somewhere, and as of the per-role floor above that somewhere can now be
+  `[roles.<alias>]`'s own configured fields, not just a caller-supplied
+  requirement.
 
 For the routing decision an actual turn just made, the TUI's `/why`
 command shows the last live `Event::ModelDecision` for the focused agent
@@ -98,18 +103,56 @@ admission immediately, before conway contacts the provider — the exact
 error is in [`getting-started.md`](getting-started.md).
 
 Once resolved, a candidate is checked against the role's requirement
-floor and, last, against context headroom. **As shipped, the requirement
-floor `settings.json` actually lets you set is headroom** — verified
-against `crates/conway/src/config/schema.rs`'s `RoleEntry`: it carries
-`chain` and `headroom_tokens` and nothing else, so every role's other
-capability requirements (`tool_calling`, `structured_output`,
-`parallel_tool_calls`, `reasoning`, `min_reliability`, `min_context`)
-resolve to "no requirement" for every role today. The richer
-`RequiredCaps` struct these map to is fully implemented and enforced —
-`conway-routing`'s `satisfies` walks all seven fields, headroom last —
-it's just not reachable from the config file yet; setting it requires
-embedding conway as a library and constructing a `RouteRequest`
-directly.
+floor and, last, against context headroom. A role's requirement floor is
+set directly in `settings.json` — `[roles.<alias>]` carries
+`tool_calling`, `structured_output`, `parallel_tool_calls`, `reasoning`,
+`min_reliability`, and `min_context`, alongside `chain` and
+`headroom_tokens`, and `ConwayConfig::routing()` maps every one of them
+into the candidate's `RequiredCaps`:
+
+```json
+// .conway/settings.json
+{
+  "roles": {
+    "coder": {
+      "chain": ["local/qwen3-coder-80b", "anthropic/claude-sonnet-4-6"],
+      "tool_calling": "streaming_validated",
+      "structured_output": "json_schema",
+      "parallel_tool_calls": true,
+      "reasoning": false,
+      "min_reliability": "verified",
+      "min_context": 32768
+    }
+  }
+}
+```
+
+Every field is optional and defaults to "no requirement" — an existing
+config that sets none of them behaves exactly as before. `tool_calling`'s
+wire vocabulary is `"none"` | `"non_streaming"` | `"streaming"` |
+`"streaming_validated"` (a flat string, not
+`conway_core::capabilities::ToolCallSupport`'s own `{"streaming":
+{"validated": true}}` object shape); `structured_output` is `"none"` |
+`"json_schema"` | `"grammar"`; `min_reliability` is `"verified"` |
+`"community"` | `"unknown"`.
+
+Closing this gap took two changes, not one: `ConwayConfig::routing()`
+mapping the six fields into `RequiredCaps` (above) was necessary but not
+sufficient — `DeclarativeRouter` did not read a role's configured
+`required` at all (`CompiledRole` did not carry the field, and candidate
+admission consulted only the caller-supplied `RouteRequest.required`), so
+setting these keys previously had zero effect on a real turn regardless of
+what the schema parsed them into. The router now merges the two: each
+candidate's admission check runs against the **pointwise strictest**
+combination of the role's configured floor and whatever `required` the
+caller (or, for a real turn, `conway-runtime`'s own turn-time logic —
+currently just a `tool_calling >= non_streaming` floor whenever the turn
+has any registered tools) already supplied — per field, whichever of the
+two demands more wins; neither side can weaken the other. `conway-routing`'s
+`satisfies` still walks all seven `RequiredCaps` fields against that merged
+result, headroom last, exactly as before; a candidate that fails one shows
+up as an ordinary `RoutingReason::CapabilitySkip` / `context: ...`-style
+entry, e.g. `reliability_tier: requires Verified, has Community`.
 
 ## Headroom
 
@@ -202,7 +245,7 @@ a **Probe** breaker fed by periodic liveness checks, tuned by `[health]`:
     "probe_timeout_secs": 2,
     "probe_failures_to_open": 3,
     "half_open_successes_to_close": 1,
-    "probe_enabled": true
+    "probe_enabled": false
   }
 }
 ```
@@ -230,9 +273,23 @@ and tested in that crate, but no call site in `conway`, `conway-runtime`,
 or `conway-cli` ever spawns it — checked directly, it's referenced
 nowhere outside `conway-routing` itself. `probe_enabled`,
 `probe_interval_secs`, and `probe_timeout_secs` validate and load without
-error; they currently have no observable effect. The Transport breaker,
+error; they currently have no observable effect. This is a deliberate,
+labeled forward declaration (GP-14), not an oversight: the Transport
+breaker alone already handles recovery (a clock read takes it half-open;
+the next real request retries), so wiring the prober is a latency
+optimization, not a correctness fix, and GP-12 requires a measured
+baseline before shipping an optimization. `probe_enabled` defaults
+`false` for exactly this reason — a fresh install must not assert
+periodic probing that does not happen. Board item
+`01KZ802GSF692EKYKQ2TTVCJB8` tracks wiring it. The Transport breaker,
 by contrast, is wired end to end and does exactly what's described above
 — every example in this section was captured against a real run.
+
+(Do not confuse this periodic health prober with the *startup*
+`[models].probe_on_startup` capability probe covered above under
+"Capability matching" — same word, two unrelated mechanisms: one
+discovers model capabilities once at startup and is already wired; this
+one would feed the Probe breaker on an ongoing basis and is not.)
 
 ### What you see when a route is skipped
 

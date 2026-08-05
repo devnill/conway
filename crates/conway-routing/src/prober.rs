@@ -6,6 +6,17 @@
 //! This module only *writes* health state (`HealthRegistry::record`); it
 //! never reads it (`HealthRegistry::state` is not called anywhere here) --
 //! routing policy is `router.rs`'s concern, not this loop's.
+//!
+//! **Not yet implemented / not wired (GP-14 forward declaration):** nothing
+//! in this tree ever calls [`HealthProber::spawn`] in production —
+//! `ConwayBuilder::build` never constructs a [`HealthProber`], so this loop
+//! never runs today. The Transport breaker already handles recovery on its
+//! own (a clock read alone takes it half-open; the next real request
+//! retries), so wiring this prober is a latency optimization, not a
+//! correctness fix, and GP-12 requires a measured baseline before shipping
+//! an optimization — there isn't one yet. Wiring is deferred to board item
+//! `01KZ802GSF692EKYKQ2TTVCJB8`. `HealthConfig::probe_enabled` defaults
+//! `false` so a fresh config never implies this loop is running.
 
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;

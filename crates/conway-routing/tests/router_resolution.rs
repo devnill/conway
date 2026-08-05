@@ -623,3 +623,96 @@ fn one_headroom_only_candidate_plus_one_capability_only_candidate_stays_no_candi
         other => panic!("expected NoCandidate (mixed across chain), got {other:?}"),
     }
 }
+
+// ---------------------------------------------------------------------
+// Role-configured capability floor (`RoleConfig::required`): the router
+// must actually enforce a role's declared floor, not just carry it as an
+// unread config field -- `routing_config`'s helper above deliberately
+// never sets `required` (it always defaults to `RequiredCaps::default()`
+// via `..Default::default()`), so these two tests build `RoutingConfig` by
+// hand to set it explicitly.
+// ---------------------------------------------------------------------
+
+/// A role's configured `required.min_reliability` floor rejects a candidate
+/// that fails to meet it, even though the request itself
+/// (`request("coder", ..)`, unmodified) asks for nothing -- proving the
+/// floor is read from `RoutingConfig`, not merely carried by it. Deliberate
+/// choice of `min_reliability` as the probed field: it is untouched by
+/// `conway-runtime`'s own `RouteRequest.required` construction (only
+/// `tool_calling` gets a conditional runtime-side bump), so a pass here
+/// cannot be explained by anything but this role's own configured floor.
+#[test]
+fn role_configured_capability_floor_rejects_a_candidate_that_does_not_meet_it() {
+    let m = model_ref("local", "qwen3-coder-80b");
+    let mut roles = BTreeMap::new();
+    roles.insert(
+        "coder".to_string(),
+        conway_core::routing::RoleConfig {
+            chain: vec![m.clone()],
+            required: RequiredCaps {
+                min_reliability: Some(ReliabilityTier::Verified),
+                ..RequiredCaps::default()
+            },
+            ..Default::default()
+        },
+    );
+    let config = RoutingConfig {
+        roles,
+        health: HealthConfig::default(),
+        default_headroom_tokens: 4_096,
+    };
+    let community_tier = Capabilities {
+        reliability_tier: ReliabilityTier::Community,
+        ..caps(200_000)
+    };
+    let index = index_with(&[(m.clone(), community_tier)]);
+    let router = router_from(config, Arc::new(FakeHealth::new()), index);
+
+    let err = router
+        .resolve(&request("coder", 100))
+        .expect_err("Community tier must not satisfy a configured Verified floor");
+    match err {
+        RoutingError::NoCandidate { considered, .. } => {
+            assert_eq!(considered.len(), 1);
+            assert!(
+                considered[0].1.contains("reliability_tier"),
+                "got: {}",
+                considered[0].1
+            );
+        }
+        other => panic!("expected NoCandidate, got {other:?}"),
+    }
+}
+
+/// The complement (GP-14: "any check that cannot fail is not a check"):
+/// identical fixture, the candidate's tier raised to meet the configured
+/// floor -- resolution now succeeds.
+#[test]
+fn role_configured_capability_floor_admits_a_candidate_that_meets_it() {
+    let m = model_ref("local", "qwen3-coder-80b");
+    let mut roles = BTreeMap::new();
+    roles.insert(
+        "coder".to_string(),
+        conway_core::routing::RoleConfig {
+            chain: vec![m.clone()],
+            required: RequiredCaps {
+                min_reliability: Some(ReliabilityTier::Verified),
+                ..RequiredCaps::default()
+            },
+            ..Default::default()
+        },
+    );
+    let config = RoutingConfig {
+        roles,
+        health: HealthConfig::default(),
+        default_headroom_tokens: 4_096,
+    };
+    let index = index_with(&[(m.clone(), caps(200_000))]);
+    let router = router_from(config, Arc::new(FakeHealth::new()), index);
+
+    let routes = router
+        .resolve(&request("coder", 100))
+        .expect("Verified tier meets a configured Verified floor");
+    assert_eq!(routes.len(), 1);
+    assert_eq!(routes[0].model, m.model);
+}

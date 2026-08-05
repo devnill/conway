@@ -162,6 +162,7 @@ fn config_naming(headroom: u32, metadata_path: PathBuf) -> ConwayConfig {
         RoleEntry {
             chain: vec![MODEL.to_string()],
             headroom_tokens: None,
+            ..Default::default()
         },
     );
     let mut backends = BTreeMap::new();
