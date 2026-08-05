@@ -33,7 +33,7 @@ use chrono::Utc;
 use conway_core::agent::{Budget, ToolSelector};
 use conway_core::error::RuntimeError;
 use conway_core::ids::{AgentId, LogSeq, RoleAlias, SessionId};
-use conway_core::log::{SessionMeta, SessionStatus};
+use conway_core::log::SessionMeta;
 use conway_core::ports::SessionStore;
 use conway_runtime::runtime::{ResumeSpec, Runtime};
 
@@ -80,7 +80,6 @@ pub(crate) async fn fork_child(
         created: Utc::now(),
         cwd: parent_meta.cwd,
         labels: Vec::new(),
-        status: SessionStatus::Active,
         // Never ephemeral: a `fork_from` child is a first-class catalog
         // citizen (see the module doc's B2 history note).
         ephemeral: false,

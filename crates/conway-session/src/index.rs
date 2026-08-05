@@ -41,7 +41,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use conway_core::error::StoreError;
 use conway_core::ids::{AgentId, LogSeq, RoleAlias, SessionId};
-use conway_core::log::{ForkOrigin, SessionFilter, SessionMeta, SessionStatus, SubagentMode};
+use conway_core::log::{ForkOrigin, SessionFilter, SessionMeta, SubagentMode};
 
 use crate::codec;
 
@@ -66,7 +66,6 @@ struct IndexLine {
     cwd: PathBuf,
     #[serde(default)]
     labels: Vec<String>,
-    status: SessionStatus,
     /// Projects `SessionMeta::ephemeral` -- required here (not just on the
     /// session file's own header) so that a `list`/`children` result served
     /// from a *loaded* (not rebuilt) index still hides an ephemeral session
@@ -121,7 +120,6 @@ impl IndexLine {
             role: meta.role.clone(),
             cwd: meta.cwd.clone(),
             labels: meta.labels.clone(),
-            status: meta.status,
             ephemeral: meta.ephemeral,
             ask_origin: meta.ask_origin,
             root: meta.root.clone(),
@@ -146,7 +144,6 @@ impl IndexLine {
             created: self.created,
             cwd: self.cwd,
             labels: self.labels,
-            status: self.status,
             ephemeral: self.ephemeral,
             ask_origin: self.ask_origin,
             root: self.root,
@@ -619,7 +616,7 @@ impl SessionIndex {
     }
 
     /// Sessions matching `f`, AND-composed across `agent_def`/`parent`/
-    /// `status`/`label`/`include_ephemeral`, ordered descending `created`
+    /// `label`/`include_ephemeral`, ordered descending `created`
     /// with ties broken by ascending `id`, `limit` applied after filtering
     /// and ordering. Reads only in-memory state — no file I/O on the hot
     /// path.
@@ -635,7 +632,6 @@ impl SessionIndex {
                     && f.label
                         .as_ref()
                         .is_none_or(|v| m.labels.iter().any(|l| l == v))
-                    && f.status.is_none_or(|s| m.status == s)
                     && f.parent
                         .as_ref()
                         .is_none_or(|p| m.origin.as_ref().is_some_and(|o| o.parent == *p))

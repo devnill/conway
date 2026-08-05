@@ -11,7 +11,7 @@ use chrono::{DateTime, Utc};
 
 use conway_core::content::{ContentBlock, StopReason, Usage};
 use conway_core::ids::{AgentId, LogSeq, ModelRef, SeqRange, SessionId};
-use conway_core::log::{LogRecord, SessionStatus};
+use conway_core::log::LogRecord;
 use conway_core::ports::SessionStore;
 use conway_core::provenance::Provenance;
 use conway_session::provenance::{
@@ -34,7 +34,6 @@ fn meta_for(id: SessionId) -> SessionMeta {
         created: ts(),
         cwd: PathBuf::from("/tmp/project"),
         labels: vec![],
-        status: SessionStatus::Active,
         ephemeral: false,
         ask_origin: None,
         root: None,

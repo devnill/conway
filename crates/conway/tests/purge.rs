@@ -23,7 +23,7 @@ use conway_core::content::ContentBlock;
 use conway_core::error::{RuntimeError, StoreError};
 use conway_core::fakes::{FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
 use conway_core::ids::{AgentId, BackendId, ModelId, ModelRef, RoleAlias, SessionId};
-use conway_core::log::{SessionFilter, SessionMeta, SessionStatus};
+use conway_core::log::{SessionFilter, SessionMeta};
 use conway_core::ports::{Backend, GenerateResponse, LiveOwner, SessionStore};
 
 fn fake_router() -> Arc<dyn conway_core::ports::Router> {
@@ -343,7 +343,6 @@ async fn sweep_reaps_modal_ask_residue_but_never_tool_ask_or_untagged_sessions()
         created: chrono::Utc::now(),
         cwd: std::path::PathBuf::from("."),
         labels: vec![],
-        status: SessionStatus::Active,
         ephemeral: true,
         ask_origin: Some(AskOrigin::ToolAsk),
         root: None,
@@ -364,7 +363,6 @@ async fn sweep_reaps_modal_ask_residue_but_never_tool_ask_or_untagged_sessions()
         created: chrono::Utc::now(),
         cwd: std::path::PathBuf::from("."),
         labels: vec![],
-        status: SessionStatus::Active,
         ephemeral: true,
         ask_origin: None,
         root: None,

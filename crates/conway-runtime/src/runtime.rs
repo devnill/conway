@@ -119,9 +119,7 @@ use conway_core::containment::{CanonicalRoot, Containment};
 use conway_core::error::{ConwayError, RuntimeError};
 use conway_core::event::Event;
 use conway_core::ids::{AgentId, BackendId, LogSeq, ModelRef, RoleAlias, SeqRange, SessionId, ToolName};
-use conway_core::log::{
-    ForkOrigin, LogRecord, SessionFilter, SessionMeta, SessionStatus, SubagentMode,
-};
+use conway_core::log::{ForkOrigin, LogRecord, SessionFilter, SessionMeta, SubagentMode};
 use conway_core::ports::{
     Backend, ContextHook, HealthRegistry, PermissionGate, Plugin, PluginConfig, Router,
     SessionStore, SubagentHost,
@@ -699,7 +697,6 @@ impl Runtime {
             created: Utc::now(),
             cwd: spec.cwd.clone(),
             labels: Vec::new(),
-            status: SessionStatus::Active,
             // A root is never ephemeral -- only a facade-level fork-ask
             // child is (`conway`'s `SessionHandle::ask`, which sets this
             // itself before calling `store.fork`, never `start_root`).
