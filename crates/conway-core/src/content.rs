@@ -87,6 +87,20 @@ pub struct TruncationRecord {
 
 /// How oversized tool output is truncated. A truncation is a context-affecting
 /// event: the runtime records it in the log (GP-10).
+///
+/// **There is deliberately no spill-to-file variant.** An earlier `Artifact`
+/// variant promised to spill the full output to an [`Artifact`] and keep a
+/// pointer in context, but nothing ever constructed it and the runtime
+/// handled it identically to `None` -- the inverse of the promise (board item
+/// `01KYTN3A9SPDMRG610YSB5QQXX`). It was removed rather than implemented:
+/// where to spill, when, the retention/cleanup policy, and whether the
+/// preview is head/tail/summary are workload-specific opinions, and GP-11
+/// puts opinions like that in a hook or plugin, not in this enum.
+/// `ToolOutput::artifacts` and [`Artifact`] already give a plugin the type
+/// surface to report a spilled file; the seam a spill plugin still needs is
+/// a participant point that can *narrow* another tool's output before it
+/// reaches context, which does not exist yet
+/// (`.design/extension-architecture.md` §16.5 tracks the gap).
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "policy", rename_all = "snake_case")]
@@ -102,17 +116,6 @@ pub enum TruncationPolicy {
         head_bytes: u64,
         tail_bytes: u64,
     },
-    /// Spill the full output to an [`Artifact`], keep a pointer in context.
-    ///
-    /// **Not yet implemented**: no tool constructs this variant. Declaring
-    /// it today gets NO truncation at all -- `TruncationPolicy::None` and
-    /// `TruncationPolicy::Artifact` are currently handled identically
-    /// (`crates/conway-runtime/src/tools/runner.rs`), the inverse of the
-    /// promise above. Tracked by board item `01KYTN3A9SPDMRG610YSB5QQXX`;
-    /// allowlisted with a reason in
-    /// `crates/conway/tests/enum_variant_construction_guard.rs` until a
-    /// producer exists.
-    Artifact,
 }
 
 /// A tool's registration record: name, description, JSON Schema, category,

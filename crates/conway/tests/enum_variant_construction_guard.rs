@@ -12,12 +12,14 @@
 //! outside). This guard does not forbid that. **What it forbids is a
 //! MISMATCH between what a variant's own doc comment promises and what a
 //! reader would get if they declared it today.** `TruncationPolicy::Artifact`
-//! is not a problem because it is unconstructed; it was a problem because its
-//! doc comment described a behavior ("spill to an Artifact, keep a pointer")
-//! that a tool declaring it would not actually receive -- the doc claimed a
-//! promise nothing kept. An allowlisted entry's own doc comment must instead
-//! say plainly that it is not yet implemented (checked below), which is
-//! the cheap, high-value half of this guard.
+//! (board item `01KYTN3A9SPDMRG610YSB5QQXX`, since removed rather than
+//! wired -- see `ALLOWLIST`'s comment for that entry) was not a problem
+//! because it was unconstructed; it was a problem because its doc comment
+//! described a behavior ("spill to an Artifact, keep a pointer") that a tool
+//! declaring it would not actually receive -- the doc claimed a promise
+//! nothing kept. An allowlisted entry's own doc comment must instead say
+//! plainly that it is not yet implemented (checked below), which is the
+//! cheap, high-value half of this guard.
 //!
 //! So there are three honest answers to a variant this guard flags, not two:
 //! wire it (construct it somewhere in production), remove it (the vocabulary
@@ -150,7 +152,7 @@ const WATCHED_ENUMS: &[WatchedEnum] = &[
         name: "TruncationPolicy",
         decl_file: "crates/conway-core/src/content.rs",
         why: "each variant's doc names a distinct on-overflow behavior \
-              (keep the head, keep the tail, spill to an Artifact, ...) \
+              (keep the head, keep the tail, keep both ends, ...) \
               that a tool author picks specifically for its effect",
     },
     WatchedEnum {
@@ -235,16 +237,12 @@ struct Allowlisted {
 const NOT_YET_IMPLEMENTED_MARKER: &str = "not yet implemented";
 
 const ALLOWLIST: &[Allowlisted] = &[
-    Allowlisted {
-        enum_name: "TruncationPolicy",
-        variant: "Artifact",
-        reason: "No tool spills output to an Artifact store yet, so \
-                 nothing constructs this variant; its doc comment now \
-                 discloses that declaring it today yields no truncation \
-                 at all, the inverse of what the un-corrected doc used to \
-                 promise.",
-        board_item: "01KYTN3A9SPDMRG610YSB5QQXX",
-    },
+    // `TruncationPolicy::Artifact`, previously allowlisted here, was
+    // triaged by board item 01KYTN3A9SPDMRG610YSB5QQXX: REMOVED rather than
+    // wired. Spill-to-file is a workload-specific opinion (where to spill,
+    // when, retention, preview shape) that GP-11 puts in a hook or plugin,
+    // not in core's `TruncationPolicy`. The variant is gone, so its
+    // allowlist entry is gone too.
     Allowlisted {
         enum_name: "LogRecord",
         variant: "ContextMask",

@@ -481,7 +481,7 @@ fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
 fn apply_truncation(output: &mut ToolOutput) -> Option<TruncationRecord> {
     let policy = output.truncation;
     let (limit, mode) = match policy {
-        TruncationPolicy::None | TruncationPolicy::Artifact => return None,
+        TruncationPolicy::None => return None,
         TruncationPolicy::Head { max_bytes } => (max_bytes, TruncMode::Head),
         TruncationPolicy::Tail { max_bytes } => (max_bytes, TruncMode::Tail),
         TruncationPolicy::HeadTail {
