@@ -360,6 +360,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`sessions list`'s `ORIGIN` column no longer prints `fork@...` for a
+  spawned child.** `origin_cell` (and `origin_json`'s `--json` counterpart)
+  hardcoded the word `fork` for any session with a parent, discarding the
+  persisted `SessionMeta.origin.mode` that already distinguishes the two —
+  so a session `conway_subagent` created in **spawn** mode (clean-slate, no
+  inherited context) rendered identically to a **fork** (the parent's
+  entire context inherited), contradicting GP-02's "fork and spawn are two
+  separate concepts, never blur them into one operation" and this same
+  page's own `docs/sessions.md`. Both the text cell and the JSON `origin`
+  object now read the real mode (`fork@<seq> <parent>` /
+  `spawn@<seq> <parent>`; `"mode": "fork"` / `"mode": "spawn"`).
+  (`crates/conway-cli/src/commands/sessions.rs`,
+  `crates/conway-cli/tests/subcommands.rs`, `docs/sessions.md`)
+
 - **A scoped `--allowed-tools` glob entry no longer authorizes a
   chained shell command it wasn't written to match.** `AllowListGate::check`
   (one-shot mode's `allowlist` gate) matched a `tool_name(arg_glob)` entry's

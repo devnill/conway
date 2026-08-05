@@ -7,7 +7,7 @@ use std::io::Write as _;
 use std::path::PathBuf;
 
 use clap::{Args, Subcommand};
-use conway::{Conway, LogRecord, SessionFilter, SessionId, SessionMeta};
+use conway::{Conway, LogRecord, SessionFilter, SessionId, SessionMeta, SubagentMode};
 
 use crate::commands::fmt;
 use crate::diag;
@@ -95,9 +95,24 @@ fn status_str(status: &impl std::fmt::Debug) -> String {
     format!("{status:?}").to_lowercase()
 }
 
+/// The primitive that created a session (GP-02: fork and spawn are distinct
+/// and must never be blurred into one label) -- `"fork"` or `"spawn"`,
+/// matching `SubagentMode`'s own `snake_case` serde rendering.
+fn mode_str(mode: SubagentMode) -> &'static str {
+    match mode {
+        SubagentMode::Fork => "fork",
+        SubagentMode::Spawn => "spawn",
+    }
+}
+
 fn origin_cell(meta: &SessionMeta) -> String {
     match &meta.origin {
-        Some(origin) => format!("fork@{} {}", origin.at_seq, fmt::id_short(origin.parent)),
+        Some(origin) => format!(
+            "{}@{} {}",
+            mode_str(origin.mode),
+            origin.at_seq,
+            fmt::id_short(origin.parent)
+        ),
         None => String::new(),
     }
 }
@@ -107,6 +122,7 @@ fn origin_json(meta: &SessionMeta) -> serde_json::Value {
         Some(origin) => serde_json::json!({
             "parent": origin.parent.to_string(),
             "at_seq": origin.at_seq.0,
+            "mode": mode_str(origin.mode),
         }),
         None => serde_json::Value::Null,
     }

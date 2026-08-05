@@ -79,6 +79,26 @@ fn write_forked_child(fixture: &Fixture, parent: &str, at_seq: u64) -> String {
     child
 }
 
+/// Same shape as [`write_forked_child`], but `origin.mode` is `"spawn"`
+/// rather than `"fork"` -- the fixture for GP-02's "fork and spawn are
+/// distinct primitives that must never be blurred into one label"
+/// regression: a session `conway_subagent` created in spawn mode must never
+/// render as a fork in `sessions list` (neither the text `ORIGIN` cell nor
+/// the JSON `origin.mode` field).
+fn write_spawned_child(fixture: &Fixture, parent: &str, at_seq: u64) -> String {
+    let child = conway::SessionId::new().to_string();
+    let agent = conway::AgentId::new().to_string();
+    let line = format!(
+        "{{\"kind\":\"header\",\"session\":\"{child}\",\"agent\":\"{agent}\",\
+         \"created\":\"2026-07-20T00:00:00Z\",\"origin\":{{\"parent\":\"{parent}\",\
+         \"at_seq\":{at_seq},\"mode\":\"spawn\"}},\"agent_def\":null,\"role\":null,\
+         \"cwd\":\"/tmp\",\"status\":\"active\"}}\n"
+    );
+    std::fs::write(sessions_dir(fixture).join(format!("{child}.jsonl")), line)
+        .expect("write spawned child session file");
+    child
+}
+
 /// Same shape as [`write_forked_child`], plus an `"ephemeral":true` header
 /// field -- for exercising `sessions tree <id>`'s direct-id resolution over
 /// an ephemeral session (the same shape `/ask`'s fork-ask primitive
@@ -191,6 +211,76 @@ async fn sessions_list_json_has_id_created_status() {
     assert!(obj.contains_key("id"));
     assert!(obj.contains_key("created"));
     assert!(obj.contains_key("status"));
+}
+
+/// GP-02 regression (text output): a spawned child's `ORIGIN` cell must
+/// read `spawn@...`, never `fork@...` -- `origin_cell` used to hardcode the
+/// word `fork` regardless of the persisted `SessionMeta.origin.mode`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sessions_list_text_spawned_child_shows_spawn_not_fork() {
+    let mock =
+        MockBackend::start(Script(vec![vec![Chunk::Text("hi"), Chunk::Finish("stop")]])).await;
+    let fixture = fixture_with_mock(&mock);
+    let created = run_conway(&["-p", "hi"], &fixture);
+    assert!(created.status.success());
+    let parent = only_session_id(&fixture);
+    let _child = write_spawned_child(&fixture, &parent, 1);
+
+    let out = run_conway(&["sessions", "list"], &fixture);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8(out.stdout).expect("utf8 stdout");
+    // Matched by content, not by the child's short id: `fmt::id_short`
+    // truncates to 8 chars, and ULIDs created moments apart in this same
+    // test share a leading timestamp prefix (same rationale as
+    // `sessions_tree_resolves_ephemeral_target_by_direct_id`'s own line-count
+    // check), so a `starts_with(child_short)` row lookup is false-negative
+    // prone. The parent row has no origin (its `ORIGIN` cell is empty), so
+    // "some row says spawn@, no row ever says fork@" unambiguously targets
+    // the spawned child's own cell.
+    assert!(
+        text.contains("spawn@"),
+        "spawned child's row must say spawn: {text:?}"
+    );
+    assert!(
+        !text.contains("fork@"),
+        "spawned child's row must never say fork (GP-02): {text:?}"
+    );
+}
+
+/// GP-02 regression (JSON output), the `origin_json`-side counterpart of
+/// [`sessions_list_text_spawned_child_shows_spawn_not_fork`] -- text and
+/// JSON must agree (GP-05/C-03).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sessions_list_json_spawned_child_origin_mode_is_spawn() {
+    let mock =
+        MockBackend::start(Script(vec![vec![Chunk::Text("hi"), Chunk::Finish("stop")]])).await;
+    let fixture = fixture_with_mock(&mock);
+    let created = run_conway(&["-p", "hi"], &fixture);
+    assert!(created.status.success());
+    let parent = only_session_id(&fixture);
+    let child = write_spawned_child(&fixture, &parent, 1);
+
+    let out = run_conway(&["sessions", "list", "--json"], &fixture);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let value: Value = serde_json::from_slice(&out.stdout).expect("stdout is one JSON array");
+    let arr = value.as_array().expect("top-level array");
+    let child_obj = arr
+        .iter()
+        .find(|v| v["id"].as_str() == Some(child.as_str()))
+        .unwrap_or_else(|| panic!("no element for spawned child {child} in {arr:?}"));
+    assert_eq!(
+        child_obj["origin"]["mode"].as_str(),
+        Some("spawn"),
+        "spawned child's origin.mode must be \"spawn\", never \"fork\" (GP-02): {child_obj:?}"
+    );
 }
 
 // ---------------------------------------------------------------------
