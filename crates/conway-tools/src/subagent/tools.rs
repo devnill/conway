@@ -266,7 +266,6 @@ impl Tool for SubagentTool {
             })?;
 
         let spec = SubagentSpec {
-            cache_hint: matches!(mode, SubagentMode::Fork),
             mode,
             prompt: args.prompt,
             agent_def: args.agent_def.map(AgentDefRef),
