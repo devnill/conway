@@ -380,6 +380,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ExitCode::PermissionDenied` is deleted and 3 is unassigned; the denial
   remains observable as a `permission_resolved` envelope in the `jsonl`
   stream. (`crates/conway-cli/src/exit.rs`, `docs/scripting.md`)
+- **`TruncationPolicy::Artifact` is gone.** It was documented as "spill the
+  full output to an `Artifact`, keep a pointer in context," but nothing ever
+  constructed it and the runtime (`apply_truncation`) handled it identically
+  to `TruncationPolicy::None` — the inverse of the promise: a tool declaring
+  it got no truncation at all, in the expensive direction. Removed rather
+  than implemented: *where* to spill, *when*, the retention/cleanup policy,
+  and whether the preview is head/tail/summary are workload-specific
+  opinions GP-11 puts in a hook or plugin, not in this enum. `ToolOutput::
+  artifacts` and `Artifact` already give a plugin the type surface to report
+  a spilled file; the participant point that would let a plugin *narrow*
+  another tool's output before it reaches context does not exist yet
+  (`.design/extension-architecture.md` §16.5 tracks the gap). Board item
+  `01KYTN3A9SPDMRG610YSB5QQXX`. (`crates/conway-core/src/content.rs`,
+  `crates/conway-runtime/src/tools/runner.rs`,
+  `crates/conway/tests/enum_variant_construction_guard.rs`)
 
 ### Fixed
 
