@@ -232,13 +232,12 @@ A few things worth knowing before you rely on the output:
 - **An unknown session id is a usage error (exit 2), not a crash or an
   `AgentFailed` (exit 1)** — every one of the four subcommands maps "not
   found" and "malformed id" the same way.
-- **The `ORIGIN` column always reads `fork@<seq> <parent>` for any child
-  with a parent, including one created by `spawn`.** The persisted header
-  actually does distinguish fork from spawn (`SessionMeta.origin.mode`),
-  but `sessions list`/`sessions tree`'s own formatting doesn't consult it —
-  confirmed by spawning a child via `conway_subagent` and observing its
-  `ORIGIN` cell print `fork@N`, indistinguishable from a real fork. Don't
-  read that column as proof a child was forked rather than spawned.
+- **The `ORIGIN` column reads `fork@<seq> <parent>` or `spawn@<seq>
+  <parent>`**, matching the persisted `SessionMeta.origin.mode` — a forked
+  child inherited its parent's entire context, a spawned one is clean-slate
+  (GP-02), and this column, not the `ROLE`/`STATUS` columns, is where that
+  distinction shows up. `sessions list --json`'s `origin` object carries the
+  same distinction as a `"mode": "fork"`/`"mode": "spawn"` field.
 - **`status` reads `active` for essentially every session you'll ever
   list**, including ones whose agent has long since finished. Every header
   is written with `status: Active` at creation, and nothing in this build
