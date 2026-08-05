@@ -1536,7 +1536,7 @@ impl Conway {
     /// live agent task); this method only creates the child's session file.
     ///
     /// Reuses [`ForkSpec`] (WI-102) rather than a parallel type, per the
-    /// binding notes. `directive`/`cache_hint`/`result_contract` still have
+    /// binding notes. `directive`/`result_contract` still have
     /// no session-level counterpart -- `conway_core::log::SessionMeta`
     /// carries none of them, and there is no live child turn here to attach
     /// a `LogRecord::ForkDirective` to (the child session is *created* with

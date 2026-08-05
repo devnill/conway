@@ -54,10 +54,6 @@ pub struct ForkSpec {
     /// spec cannot *grant* a tool the forker itself lacks.
     pub tools: Option<ToolSelector>,
     pub budget: Budget,
-    /// Never correctness-bearing (GP-06) -- a caching hint only. Defaults to
-    /// `true` via [`ForkSpec::new`], matching
-    /// `conway_core::agent::SubagentSpec::fork`'s own default.
-    pub cache_hint: bool,
     pub result_contract: Option<schemars::schema::RootSchema>,
     /// Opt-in interactive keep-alive (WI "bare /spawn & /fork open an
     /// interactive session"): the child idles for the caller's next
@@ -104,7 +100,6 @@ impl ForkSpec {
             role: None,
             tools: None,
             budget: Budget::default(),
-            cache_hint: true,
             result_contract: None,
             keep_alive: false,
             ephemeral: false,
@@ -129,11 +124,6 @@ impl ForkSpec {
 
     pub fn budget(mut self, budget: Budget) -> Self {
         self.budget = budget;
-        self
-    }
-
-    pub fn cache_hint(mut self, cache_hint: bool) -> Self {
-        self.cache_hint = cache_hint;
         self
     }
 
@@ -170,7 +160,6 @@ impl From<ForkSpec> for SubagentSpec {
             role: spec.role,
             tools: spec.tools,
             budget: spec.budget,
-            cache_hint: spec.cache_hint,
             result_contract: spec.result_contract,
             keep_alive: spec.keep_alive,
             ephemeral: spec.ephemeral,
@@ -217,9 +206,6 @@ impl From<ForkSpec> for SubagentSpec {
 /// Use [`SpawnSpec::new`] plus [`SpawnSpec::agent_def`] to name a def
 /// explicitly, or leave it unset to inherit.
 ///
-/// `SpawnSpec` still has no `cache_hint` field (`cache_hint` is meaningless
-/// for spawn; `From<SpawnSpec> for SubagentSpec` forces it `false`, matching
-/// `SubagentSpec::spawn`'s own constructor).
 #[derive(Clone, Debug, PartialEq)]
 pub struct SpawnSpec {
     pub prompt: String,
@@ -351,7 +337,6 @@ impl From<SpawnSpec> for SubagentSpec {
             role: spec.role,
             tools: spec.tools,
             budget: spec.budget,
-            cache_hint: false,
             result_contract: spec.result_contract,
             keep_alive: spec.keep_alive,
             ephemeral: false,
@@ -378,8 +363,7 @@ mod tests {
             .agent_def("reviewer")
             .role(RoleAlias::new("planner"))
             .tools(ToolSelector::Only(vec!["read".into()]))
-            .budget(budget.clone())
-            .cache_hint(false);
+            .budget(budget.clone());
 
         let converted: SubagentSpec = spec.into();
         assert_eq!(converted.mode, SubagentMode::Fork);
@@ -391,7 +375,6 @@ mod tests {
             Some(ToolSelector::Only(vec!["read".into()]))
         );
         assert_eq!(converted.budget, budget);
-        assert!(!converted.cache_hint);
         assert!(converted.result_contract.is_none());
         assert_eq!(
             converted.cwd, None,
@@ -409,14 +392,6 @@ mod tests {
             converted.ask_origin, None,
             "ask_origin defaults None when not set via the builder"
         );
-    }
-
-    #[test]
-    fn fork_spec_default_cache_hint_is_true() {
-        let spec = ForkSpec::new("x");
-        assert!(spec.cache_hint);
-        let converted: SubagentSpec = spec.into();
-        assert!(converted.cache_hint);
     }
 
     #[test]
@@ -487,10 +462,6 @@ mod tests {
         assert_eq!(converted.role, Some(RoleAlias::new("fast")));
         assert_eq!(converted.tools, Some(ToolSelector::All));
         assert_eq!(converted.budget, budget);
-        assert!(
-            !converted.cache_hint,
-            "spawn always forces cache_hint false"
-        );
         assert_eq!(converted.cwd, None, "cwd defaults to None (inherit)");
         assert_eq!(converted.root, None, "root defaults to None (inherit)");
     }

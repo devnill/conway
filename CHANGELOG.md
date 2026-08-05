@@ -345,6 +345,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `crates/conway/src/subagent_spec.rs`, `crates/conway/src/session_handle.rs`,
   `crates/conway/src/intent.rs`, `crates/conway-tools/src/subagent/tools.rs`,
   `crates/conway-tools/src/subagent/ask.rs`)
+- **`SubagentSpec::cache_hint` and `ForkSpec::cache_hint` are gone.** The
+  sibling field `await_result`'s deletion (above) flagged as a follow-up:
+  every fork/spawn constructor and call site set it, but nothing anywhere in
+  the workspace ever read it back to change behavior — `conway-runtime`'s
+  `SubagentHost::start` hardcodes `AgentSpec::cache_mode: CacheMode::None`
+  for every fork/spawn child regardless of `spec.cache_hint`, and the real
+  cache-hint attachment (`attempt.rs`'s `attach_route_cache_hints`) runs
+  post-routing, keyed on the resolved model's `Capabilities::cache`, with no
+  reference to `SubagentSpec` at all. (Do not confuse this with
+  `PromptSegment::cache_hint` in `conway-core`'s `segment` module, an
+  unrelated, genuinely-read field that `conway-backends::anthropic::cache`
+  consults to place breakpoints — that one stays.) Using the same method as
+  `await_result`: `SubagentSpec` is never durably persisted (confirmed
+  again for this field specifically — no `Event`, `SessionMeta`, or
+  `LogRecord` carries `cache_hint`; the only whole-`SubagentSpec` holders
+  outside call sites are in-memory test doubles), so this is a plain field
+  removal on both `SubagentSpec` and the public facade's `ForkSpec`, not a
+  legacy-deserialize change. (`crates/conway-core/src/agent.rs`,
+  `crates/conway/src/subagent_spec.rs`, `crates/conway/src/session_handle.rs`,
+  `crates/conway/src/intent.rs`, `crates/conway/src/conway.rs`,
+  `crates/conway-runtime/src/subagent.rs`, `crates/conway-runtime/src/runtime.rs`,
+  `crates/conway-tools/src/subagent/tools.rs`,
+  `crates/conway-tools/src/subagent/ask.rs`)
 - **Exit code 3 (`PermissionDenied`) is gone from the `conway -p`
   contract.** It was declared from the start but unreachable: a permission
   denial — of either kind — becomes a tool result fed back into the

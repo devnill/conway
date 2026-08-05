@@ -132,7 +132,6 @@ impl Tool for AskTool {
             role: None,
             tools: args.tools.map(ToolSelector::Only),
             budget: resolve_ask_budget(args.budget, &ctx.config)?,
-            cache_hint: true,
             result_contract: None,
             keep_alive: false,
             ephemeral: true,

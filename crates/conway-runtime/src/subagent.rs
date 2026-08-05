@@ -105,23 +105,22 @@
 //! changed `from`/`at_parent_seq` to derive from it directly -- see that
 //! method's own doc.
 //!
-//! ## `CacheMode` is not wired from `SubagentSpec::cache_hint`
+//! ## `CacheMode` is hardcoded, not caller-supplied
 //!
-//! `SubagentSpec::cache_hint` is documented as "never correctness-bearing"
-//! and meaningful only as a *hint*. Below, `AgentSpec::cache_mode` is still
-//! hardcoded `CacheMode::None` for every fork/spawn child, same as
-//! `runtime.rs`'s `start_root`/resume-root — this is deliberate, not a gap:
-//! see the prompt-caching item's resolution (`attempt.rs`'s
-//! `attach_route_cache_hints`) for why. `ContextBuilder::build` runs
-//! *before* routing resolves a concrete model, so `AgentSpec::cache_mode`
-//! can only ever be a pre-routing placeholder here — the REAL cache-hint
-//! attachment for every turn (root, fork, and spawn alike, unconditionally,
-//! not gated on any caller-supplied `cache_mode`/`cache_hint`) happens as a
-//! post-pass in `AttemptEngine::execute`, keyed on the ACTUALLY resolved
-//! model's declared `Capabilities::cache` for each candidate in the
-//! fallback chain. `SubagentSpec::cache_hint` therefore still has no
-//! consumer anywhere in this crate; it remains a caller-intent hint with no
-//! selection policy attached to it, exactly as before this item.
+//! Below, `AgentSpec::cache_mode` is still hardcoded `CacheMode::None` for
+//! every fork/spawn child, same as `runtime.rs`'s `start_root`/resume-root —
+//! this is deliberate, not a gap: see the prompt-caching item's resolution
+//! (`attempt.rs`'s `attach_route_cache_hints`) for why. `ContextBuilder::
+//! build` runs *before* routing resolves a concrete model, so `AgentSpec::
+//! cache_mode` can only ever be a pre-routing placeholder here — the REAL
+//! cache-hint attachment for every turn (root, fork, and spawn alike,
+//! unconditionally, not gated on any caller-supplied `cache_mode`) happens
+//! as a post-pass in `AttemptEngine::execute`, keyed on the ACTUALLY
+//! resolved model's declared `Capabilities::cache` for each candidate in
+//! the fallback chain. (`SubagentSpec::cache_hint`, the caller-intent field
+//! this section used to describe as unconsumed here, was deleted outright
+//! rather than wired to anything, since nothing anywhere ever read it
+//! either -- the same conclusion `await_result` reached before it.)
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, Weak};
@@ -559,16 +558,14 @@ impl SubagentHost for Runtime {
             pin,
             budget: spec.budget.clone(),
             // Pre-routing placeholder -- see this module's doc, "`CacheMode`
-            // is not wired from `SubagentSpec::cache_hint`".
+            // is hardcoded, not caller-supplied".
             cache_mode: CacheMode::None,
             cache_ttl: CacheTtl::FiveMinutes,
             headroom_override: None,
             max_parallel_tools: DEFAULT_MAX_PARALLEL_TOOLS,
             report_slot: Some(last_report.clone()),
             // WI-086: carried straight through from the spec the caller
-            // supplied -- unlike `cache_hint`, `result_contract` already has
-            // a real consumer (`AgentLoop::run_inner`'s natural-completion
-            // branch), so this is a plain value handoff, not a design
+            // supplied -- this is a plain value handoff, not a design
             // decision this item needs to make.
             result_contract: spec.result_contract.clone(),
             // Threaded straight from the spec (WI keep-alive item): a
