@@ -9,6 +9,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`[roles.<alias>]` gains a per-role capability floor:
+  `tool_calling`/`structured_output`/`parallel_tool_calls`/`reasoning`/
+  `min_reliability`/`min_context`.** Previously `ConwayConfig::routing()`
+  hardcoded `RequiredCaps::default()` (every capability field `None`) for
+  every role regardless of what a config author wrote, so nothing
+  enforced these floors — a chain pointing a tool-using role at a
+  model with no tool support was accepted in silence. Closing the gap took
+  two changes: `RoleEntry` now carries these six fields (all optional,
+  defaulting to "no requirement" exactly like `RequiredCaps` itself, so an
+  existing config with none of them set is unaffected) and
+  `ConwayConfig::routing()` maps them into `RequiredCaps`; separately,
+  investigation found `DeclarativeRouter` never actually read a role's
+  `RequiredCaps` at all (`CompiledRole` did not carry it, and admission
+  consulted only the caller-supplied `RouteRequest.required`), so the
+  schema mapping alone would have had zero effect on any real turn — the
+  router now merges the role's configured floor with the request's own
+  `required` per candidate, taking the pointwise strictest of the two
+  (`crates/conway-routing/src/capability.rs`'s new `strictest`,
+  `DeclarativeRouter::effective_required`). `tool_calling`'s wire
+  vocabulary (`"none"` | `"non_streaming"` | `"streaming"` |
+  `"streaming_validated"`) is a facade-local `ToolCallSupportSpec`, not
+  `conway_core::capabilities::ToolCallSupport` directly — that type's
+  `Streaming { validated: bool }` struct variant is awkward to hand-write
+  in JSON, and `conway-backends`' own `ToolCallSupportSpec` (which solves
+  the identical problem for `models.json`) can't be reused since
+  `conway-backends` is an optional dependency. Proven end to end at both
+  layers: a role whose configured floor a candidate model does not meet is
+  rejected by admission, not merely parsed. (`crates/conway/src/config/
+  schema.rs`, `crates/conway-routing/src/router.rs`, `crates/conway-routing/
+  src/capability.rs`, `docs/routing.md`, `crates/conway/tests/
+  role_capability_floor_seam.rs`, `crates/conway-routing/tests/
+  router_resolution.rs`)
+
 - **`ForkSpec` gains the ephemeral-ask shape; `conway::plugin` gains `Fact`,
   `CwdError`, and `SubagentError`.** `ForkSpec::ephemeral`/
   `ForkSpec::ask_origin` let an embedder express the `/ask`-style
@@ -251,6 +284,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `docs/getting-started.md`, `docs/interactive.md`, `README.md`)
 
 ### Changed
+
+- **`[health].probe_enabled` now defaults `false`, and every `probe_*`
+  `[health]` key is labeled as not yet implemented (GP-14).** Investigation
+  found `conway-routing::HealthProber` — the periodic prober these keys
+  configure — has no production call site anywhere in the tree; the
+  Transport breaker alone handles recovery today (a clock read takes it
+  half-open, the next real request retries), so wiring the prober is a
+  latency optimization pending a GP-12 measured baseline, not a shipped
+  correctness fix. A default-`true` `probe_enabled` therefore asserted a
+  behavior no fresh install actually got. The prober itself, `BreakerKind::
+  Probe`, `Observation::ProbeFail`, and the config keys are all still
+  present — this is a forward declaration, not a deletion — and wiring is
+  tracked by a separate board item. Do not confuse this with the
+  already-wired startup `[models].probe_on_startup` capability probe,
+  a different mechanism. (`crates/conway-core/src/routing.rs`,
+  `crates/conway/src/config/schema.rs`, `crates/conway-routing/src/prober.rs`,
+  `crates/conway-routing/src/lib.rs`, `docs/routing.md`)
+
+- **`CliOverrides`'s doc comment no longer claims `conway-cli` sources it.**
+  The struct was documented as "mirrored here (not in `conway-cli`) so the
+  library is the source of truth" — but `conway-cli` never constructs one;
+  `grep -rn "with_cli_overrides" crates/` finds only the definition and two
+  test files. `conway-cli` uses its own, separate bespoke flag-to-config
+  wiring. `CliOverrides` remains a real, tested, embedder-facing override
+  API (`LoadOptions::cli_overrides`, `ConwayBuilder::with_cli_overrides`) —
+  only the doc comment's claim about who calls it was false, and is now
+  corrected; no behavior changed. Reconciling the two wiring paths is a
+  separate, not-yet-decided architectural question. (`crates/conway/src/
+  config/merge.rs`)
 
 - **A rejected subagent spec (a bad `cwd`/`root` on a spawn, or a resumed
   root's cwd escaping its persisted root) is now classified as

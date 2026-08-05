@@ -58,6 +58,7 @@ fn base_config() -> ConwayConfig {
         RoleEntry {
             chain: vec![],
             headroom_tokens: None,
+            ..Default::default()
         },
     );
     ConwayConfig {
@@ -227,6 +228,7 @@ async fn fork_without_a_role_inherits_the_parents_role_not_the_literal_default()
         RoleEntry {
             chain: vec![],
             headroom_tokens: None,
+            ..Default::default()
         },
     );
     let config = ConwayConfig {
@@ -1337,6 +1339,7 @@ async fn spawn_without_an_agent_def_inherits_the_parents_role_not_the_literal_de
         RoleEntry {
             chain: vec![],
             headroom_tokens: None,
+            ..Default::default()
         },
     );
     let config = ConwayConfig {
