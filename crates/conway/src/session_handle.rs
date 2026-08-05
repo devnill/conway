@@ -254,7 +254,6 @@ impl SessionHandle {
             role: None,
             tools: None,
             budget: Budget::default(),
-            cache_hint: true,
             result_contract: None,
             keep_alive: false,
             ephemeral: true,

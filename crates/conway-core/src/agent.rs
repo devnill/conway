@@ -168,10 +168,6 @@ pub struct SubagentSpec {
     pub role: Option<RoleAlias>,
     pub tools: Option<ToolSelector>,
     pub budget: Budget,
-    /// Never correctness-bearing (GP-06). Meaningful only for `Fork`, where
-    /// it defaults to `true`; ignored for `Spawn`, where the `fork`/`spawn`
-    /// constructors force it `false`.
-    pub cache_hint: bool,
     pub result_contract: Option<schemars::schema::RootSchema>,
     /// Opt-in interactive keep-alive (mirrors `conway_runtime`'s
     /// `agent_loop::AgentSpec::keep_alive`/`runtime::RootSpec::keep_alive`):
@@ -287,7 +283,7 @@ impl SubagentSpec {
         Ok(())
     }
 
-    /// Builds a `Fork` spec. `cache_hint` defaults to `true` for forks.
+    /// Builds a `Fork` spec.
     pub fn fork(prompt: impl Into<String>, budget: Budget) -> Self {
         Self {
             mode: SubagentMode::Fork,
@@ -296,7 +292,6 @@ impl SubagentSpec {
             role: None,
             tools: None,
             budget,
-            cache_hint: true,
             result_contract: None,
             keep_alive: false,
             ephemeral: false,
@@ -306,8 +301,7 @@ impl SubagentSpec {
         }
     }
 
-    /// Builds a `Spawn` spec. `cache_hint` is ignored for spawns and is
-    /// forced to `false`.
+    /// Builds a `Spawn` spec.
     pub fn spawn(prompt: impl Into<String>, agent_def: AgentDefRef, budget: Budget) -> Self {
         Self {
             mode: SubagentMode::Spawn,
@@ -316,7 +310,6 @@ impl SubagentSpec {
             role: None,
             tools: None,
             budget,
-            cache_hint: false,
             result_contract: None,
             keep_alive: false,
             ephemeral: false,
@@ -661,7 +654,6 @@ mod tests {
             role: None,
             tools: None,
             budget: Budget::default(),
-            cache_hint: false,
             result_contract: None,
             keep_alive: false,
             ephemeral: false,
@@ -682,20 +674,6 @@ mod tests {
     fn subagent_spec_validate_ok_for_spawn_with_agent_def() {
         let spec = SubagentSpec::spawn("do it", AgentDefRef("reviewer".into()), Budget::default());
         assert!(spec.validate().is_ok());
-    }
-
-    #[test]
-    fn fork_constructor_defaults_cache_hint_true() {
-        let spec = SubagentSpec::fork("x", Budget::default());
-        assert_eq!(spec.mode, SubagentMode::Fork);
-        assert!(spec.cache_hint);
-    }
-
-    #[test]
-    fn spawn_constructor_forces_cache_hint_false() {
-        let spec = SubagentSpec::spawn("x", AgentDefRef("r".into()), Budget::default());
-        assert_eq!(spec.mode, SubagentMode::Spawn);
-        assert!(!spec.cache_hint);
     }
 
     #[test]

@@ -67,8 +67,7 @@
 //!   any pre-`AskOrigin` leftover); it stays hidden from default listings.
 //! - **`budget`:** `max_steps: 2`, no deadline/token caps. With zero tools
 //!   the classifier can only answer in one step; the slack step is
-//!   belt-and-braces. `cache_hint: false` matches `SubagentSpec::spawn`'s
-//!   own constructor (the hint is never correctness-bearing).
+//!   belt-and-braces.
 //!
 //! ## Unconfigured-role fallback (the item's `UnknownRole` catch)
 //!
@@ -253,7 +252,6 @@ pub(crate) async fn classify(
         role: Some(RoleAlias::new(INTENT_ROLE)),
         tools: Some(ToolSelector::Only(Vec::new())),
         budget: INTENT_BUDGET,
-        cache_hint: false,
         result_contract: None,
         keep_alive: false,
         ephemeral: true,
