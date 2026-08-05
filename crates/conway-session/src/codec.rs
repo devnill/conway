@@ -194,8 +194,8 @@ mod tests {
     use super::*;
     use chrono::{DateTime, Utc};
     use conway_core::ids::{AgentId, SessionId};
+    use conway_core::log::ForkOrigin;
     use conway_core::log::SubagentMode;
-    use conway_core::log::{ForkOrigin, SessionStatus};
     use std::path::PathBuf;
 
     fn ts() -> DateTime<Utc> {
@@ -216,7 +216,6 @@ mod tests {
             created: ts(),
             cwd: PathBuf::from("/tmp/project"),
             labels: vec!["x".into()],
-            status: SessionStatus::Active,
             ephemeral: false,
             ask_origin: None,
             root: None,

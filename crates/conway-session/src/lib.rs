@@ -23,7 +23,7 @@ pub mod resolver;
 pub mod store;
 
 pub use index::SessionIndex;
-pub use meta::{ForkOrigin, SessionFilter, SessionMeta, SessionStatus};
+pub use meta::{ForkOrigin, SessionFilter, SessionMeta};
 pub use provenance::ContextReport;
 pub use resolver::TranscriptResolver;
 pub use store::{FsyncPolicy, JsonlSessionStore, StoreConfig};

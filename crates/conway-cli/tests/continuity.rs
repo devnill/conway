@@ -276,9 +276,9 @@ async fn fork_from_creates_child() {
         "the single child must be the tree's only (and thus last) branch: {tree_lines:?}"
     );
 
-    // `sessions tree`'s label carries role/status, not the fork origin's
-    // seq number -- read that off `Conway::sessions`/`SessionMeta`
-    // directly, against the same on-disk store the subprocess just wrote.
+    // `sessions tree`'s label carries role, not the fork origin's seq
+    // number -- read that off `Conway::sessions`/`SessionMeta` directly,
+    // against the same on-disk store the subprocess just wrote.
     let conway = open_conway(&fixture).await;
     let sessions = conway
         .sessions(SessionFilter::default())

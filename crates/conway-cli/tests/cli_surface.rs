@@ -158,6 +158,6 @@ fn sessions_list_on_empty_store_prints_header_only() {
         ])
         .assert()
         .success()
-        .stdout("ID  CREATED  ROLE  STATUS  ORIGIN\n")
+        .stdout("ID  CREATED  ROLE  ORIGIN\n")
         .stderr(predicate::str::is_empty());
 }

@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use chrono::{DateTime, Utc};
 
 use conway_core::ids::{AgentId, LogSeq, SessionId};
-use conway_core::log::{ForkOrigin, SessionStatus, SubagentMode};
+use conway_core::log::{ForkOrigin, SubagentMode};
 use conway_core::ports::SessionStore;
 use conway_session::{JsonlSessionStore, SessionFilter, SessionMeta};
 
@@ -38,7 +38,6 @@ fn meta_full(id: SessionId, created: DateTime<Utc>, origin: Option<ForkOrigin>) 
         created,
         cwd: PathBuf::from("/tmp/project"),
         labels: vec![],
-        status: SessionStatus::Active,
         ephemeral: false,
         ask_origin: None,
         root: None,
@@ -390,7 +389,7 @@ async fn children_are_ascending_by_created_regardless_of_call_order() {
 // ---------------------------------------------------------------------
 
 #[tokio::test]
-async fn list_filter_composes_parent_status_label_and_limit_with_and_semantics() {
+async fn list_filter_composes_parent_label_and_limit_with_and_semantics() {
     let dir = tempfile::tempdir().unwrap();
     let store = JsonlSessionStore::open(dir.path().to_path_buf())
         .await
@@ -403,7 +402,6 @@ async fn list_filter_composes_parent_status_label_and_limit_with_and_semantics()
 
     let match_a = SessionId::new();
     let match_b = SessionId::new();
-    let wrong_status = SessionId::new();
     let wrong_label = SessionId::new();
     let wrong_parent = SessionId::new();
 
@@ -413,11 +411,6 @@ async fn list_filter_composes_parent_status_label_and_limit_with_and_semantics()
 
     let mut m = meta_full(match_b, ts_plus(20), Some(fork_origin(parent)));
     m.labels = vec!["x".into(), "y".into()];
-    store.create(m).await.unwrap();
-
-    let mut m = meta_full(wrong_status, ts_plus(30), Some(fork_origin(parent)));
-    m.labels = vec!["x".into()];
-    m.status = SessionStatus::Completed;
     store.create(m).await.unwrap();
 
     let mut m = meta_full(wrong_label, ts_plus(40), Some(fork_origin(parent)));
@@ -431,7 +424,6 @@ async fn list_filter_composes_parent_status_label_and_limit_with_and_semantics()
     let filter = SessionFilter {
         agent_def: None,
         label: Some("x".into()),
-        status: Some(SessionStatus::Active),
         parent: Some(parent),
         limit: None,
         include_ephemeral: false,
@@ -439,7 +431,7 @@ async fn list_filter_composes_parent_status_label_and_limit_with_and_semantics()
     let metas = store.list(filter.clone()).await.unwrap();
     let ordered: Vec<SessionId> = metas.iter().map(|m| m.id).collect();
     // Descending created: match_b (t+20) before match_a (t+10); nothing
-    // else satisfies parent AND status AND label all at once.
+    // else satisfies parent AND label at once.
     assert_eq!(ordered, vec![match_b, match_a]);
 
     let limited = store

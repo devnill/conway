@@ -28,7 +28,7 @@ use conway_core::fakes::{FakeGate, FakeHealth, FakeStore, FakeSubagentHost};
 use conway_core::ids::{
     AgentId, BackendId, LogSeq, ModelId, ModelRef, RoleAlias, SessionId, ToolName,
 };
-use conway_core::log::{LogRecord, SessionFilter, SessionMeta, SessionStatus};
+use conway_core::log::{LogRecord, SessionFilter, SessionMeta};
 use conway_core::ports::{
     Backend, BoxStream, GenerateRequest, GenerateResponse, HealthRegistry, LiveOwner,
     PermissionGate, Plugin, PluginConfig, PluginManifest, Router, SessionStore, StreamChunk,
@@ -430,7 +430,6 @@ async fn seed_prompt(store: &dyn SessionStore, role: &str, prompt: &str) -> (Ses
             created: Utc::now(),
             cwd: PathBuf::from("/tmp"),
             labels: vec![],
-            status: SessionStatus::Active,
             ephemeral: false,
             ask_origin: None,
             root: None,

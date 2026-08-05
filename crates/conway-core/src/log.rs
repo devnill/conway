@@ -64,17 +64,6 @@ pub enum AskOrigin {
     ToolAsk,
 }
 
-/// Session lifecycle status.
-#[non_exhaustive]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SessionStatus {
-    Active,
-    Completed,
-    Failed,
-    Cancelled,
-}
-
 /// The session header: the first line of every session file.
 ///
 /// Serde note: `id` and `agent_id` serialize as `session` and `agent` to
@@ -92,18 +81,9 @@ pub struct SessionMeta {
     pub cwd: PathBuf,
     #[serde(default)]
     pub labels: Vec<String>,
-    pub status: SessionStatus,
     /// Marks a session as a disposable, catalog-hidden scratchpad (the
     /// `/ask` fork-ask flow: fork the current agent, drive one throwaway
-    /// question, discard). Deliberately a field orthogonal to `status`
-    /// rather than a `SessionStatus` variant: `status` is lifecycle
-    /// (Active/Completed/Failed/Cancelled) and an ephemeral session still
-    /// moves through that same lifecycle normally (Active -> Completed) --
-    /// "ephemeral" answers a different question ("should this ever show up
-    /// in a catalog listing") that cuts across every lifecycle state, so
-    /// folding it into `status` would either duplicate every variant
-    /// (`ActiveEphemeral`, `CompletedEphemeral`, ...) or conflate two
-    /// independent axes into one enum.
+    /// question, discard).
     ///
     /// Set once, at fork time, in the child's own `SessionMeta`. The single
     /// sanctioned later mutation is the one-way promote (true→false) via
@@ -166,7 +146,6 @@ pub struct SessionMeta {
 pub struct SessionFilter {
     pub agent_def: Option<String>,
     pub label: Option<String>,
-    pub status: Option<SessionStatus>,
     pub parent: Option<SessionId>,
     pub limit: Option<usize>,
     /// Whether ephemeral sessions (`SessionMeta::ephemeral`) are included in
@@ -327,7 +306,6 @@ mod tests {
             created: ts(),
             cwd: PathBuf::from("/tmp"),
             labels: vec![],
-            status: SessionStatus::Active,
             ephemeral: false,
             ask_origin: None,
             root: None,
@@ -460,7 +438,6 @@ mod tests {
             created: ts(),
             cwd: PathBuf::from("/tmp/project"),
             labels: vec!["x".into()],
-            status: SessionStatus::Active,
             ephemeral: false,
             ask_origin: None,
             root: None,
@@ -542,7 +519,6 @@ mod tests {
             created: ts(),
             cwd: PathBuf::from("/tmp/ask"),
             labels: vec![],
-            status: SessionStatus::Active,
             ephemeral: true,
             ask_origin: None,
             root: None,
@@ -588,7 +564,6 @@ mod tests {
                 created: ts(),
                 cwd: PathBuf::from("/tmp/ask"),
                 labels: vec![],
-                status: SessionStatus::Active,
                 ephemeral: true,
                 ask_origin: Some(origin),
                 root: None,
@@ -639,7 +614,6 @@ mod tests {
             created: ts(),
             cwd: PathBuf::from("/tmp/scoped"),
             labels: vec![],
-            status: SessionStatus::Active,
             ephemeral: false,
             ask_origin: None,
             root: Some(PathBuf::from("/tmp/scoped")),
@@ -667,6 +641,38 @@ mod tests {
         let record: LogRecord = serde_json::from_str(&header).unwrap();
         match record {
             LogRecord::Header(meta) => assert_eq!(meta.root, None),
+            other => panic!("expected Header, got {other:?}"),
+        }
+    }
+
+    /// C-04, in reverse of the usual direction: `SessionMeta` used to carry
+    /// a `status` field (`SessionStatus::Active`/`Completed`/`Failed`/
+    /// `Cancelled`), removed because only `Active` was ever written anywhere
+    /// in the workspace and nothing ever read it back meaningfully. A header
+    /// line written by that old code still has a `"status":"active"` key on
+    /// the wire (every other test literal above still carries it
+    /// unmodified, on purpose); today's status-less `SessionMeta` must still
+    /// decode such a line -- serde's default "ignore unknown fields"
+    /// behavior, not a special case -- rather than fail on an old session
+    /// file.
+    #[test]
+    fn session_meta_legacy_header_with_status_key_still_deserializes() {
+        let sid = SessionId::new();
+        let agent = AgentId::new();
+        let header = format!(
+            r#"{{"kind":"header","session":"{sid}","agent":"{agent}","created":"2026-07-20T00:00:00Z","origin":null,"agent_def":"reviewer","role":"coder","cwd":"/tmp/p","status":"active","labels":["x"]}}"#
+        );
+        let record: LogRecord = serde_json::from_str(&header).unwrap();
+        match record {
+            LogRecord::Header(meta) => {
+                assert_eq!(meta.id, sid);
+                assert_eq!(meta.agent_id, agent);
+                assert_eq!(meta.agent_def.as_deref(), Some("reviewer"));
+                assert_eq!(meta.labels, vec!["x".to_string()]);
+                assert!(!meta.ephemeral);
+                assert_eq!(meta.ask_origin, None);
+                assert_eq!(meta.root, None);
+            }
             other => panic!("expected Header, got {other:?}"),
         }
     }

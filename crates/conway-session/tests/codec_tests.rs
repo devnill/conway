@@ -8,7 +8,7 @@ use chrono::{DateTime, Utc};
 use conway_core::agent::{AgentResult, ResultStatus};
 use conway_core::content::{ContentBlock, StopReason, ToolResult, Usage};
 use conway_core::ids::{AgentId, LogSeq, ModelRef, SegmentId, SessionId, ToolName};
-use conway_core::log::{ForkOrigin, LogRecord, SessionStatus, SubagentMode};
+use conway_core::log::{ForkOrigin, LogRecord, SubagentMode};
 use conway_core::provenance::{ContextReport, ContextReportEntry, Provenance};
 use conway_session::codec::{
     decode_header, decode_line, decode_record, encode_header, encode_record, CodecError, Line,
@@ -74,7 +74,6 @@ fn header_round_trips_through_the_5_1_shaped_example_verbatim() {
         created: ts(),
         cwd: PathBuf::from("/tmp/p"),
         labels: vec![],
-        status: SessionStatus::Active,
         ephemeral: false,
         ask_origin: None,
         root: None,
