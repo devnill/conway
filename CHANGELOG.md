@@ -396,6 +396,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `crates/conway-runtime/src/tools/runner.rs`,
   `crates/conway/tests/enum_variant_construction_guard.rs`)
 
+- **The `STATUS` column is gone from `conway sessions list`/`sessions
+  tree`, and `SessionStatus` is gone entirely.** A session has no terminal
+  status, and this build never made it look like one honestly: only
+  `SessionStatus::Active` was ever constructed anywhere in the workspace —
+  the two points that could ever write a terminal status
+  (`AgentLoop::finish`, the Supervisor's `Outcome::Synthesized`) never fire
+  for a keep-alive session at all, which is exactly the case an operator
+  most wants a status on, and `resume_root` never reset a stale value
+  either. `SessionMeta::status`, `SessionFilter::status` (and the
+  `SessionIndex`/`FakeSessionStore` filter clauses reading it), and the
+  `SessionStatus` enum are all removed rather than left as dead-but-typed
+  plumbing. **A session file written by an older build still loads** — the
+  header's `status` key, if present, is now an unrecognized field that
+  deserialization simply ignores, not a breaking change to the on-disk
+  format. (`crates/conway-core/src/log.rs`,
+  `crates/conway-session/src/meta.rs`, `crates/conway-session/src/index.rs`,
+  `crates/conway-core/src/fakes.rs`,
+  `crates/conway-cli/src/commands/sessions.rs`, `docs/sessions.md`)
+
 ### Fixed
 
 - **`sessions list`'s `ORIGIN` column no longer prints `fork@...` for a

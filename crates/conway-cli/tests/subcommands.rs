@@ -184,12 +184,12 @@ fn sessions_list_empty_store_prints_header_only() {
         "stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert_eq!(out.stdout, b"ID  CREATED  ROLE  STATUS  ORIGIN\n".to_vec());
+    assert_eq!(out.stdout, b"ID  CREATED  ROLE  ORIGIN\n".to_vec());
     assert_no_esc_byte(&out.stdout);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn sessions_list_json_has_id_created_status() {
+async fn sessions_list_json_has_id_created_no_status() {
     let mock =
         MockBackend::start(Script(vec![vec![Chunk::Text("hi"), Chunk::Finish("stop")]])).await;
     let fixture = fixture_with_mock(&mock);
@@ -210,7 +210,9 @@ async fn sessions_list_json_has_id_created_status() {
     let obj = arr[0].as_object().expect("element is an object");
     assert!(obj.contains_key("id"));
     assert!(obj.contains_key("created"));
-    assert!(obj.contains_key("status"));
+    // The `status` field is gone (dead machinery removed): a session has
+    // no terminal status, and this key must never come back.
+    assert!(!obj.contains_key("status"));
 }
 
 /// GP-02 regression (text output): a spawned child's `ORIGIN` cell must

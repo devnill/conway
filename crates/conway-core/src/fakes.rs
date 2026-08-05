@@ -530,7 +530,6 @@ impl SessionStore for FakeStore {
                     .as_ref()
                     .is_none_or(|l| s.meta.labels.contains(l))
             })
-            .filter(|s| filter.status.is_none_or(|st| s.meta.status == st))
             .filter(|s| {
                 filter
                     .parent

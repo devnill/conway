@@ -99,7 +99,6 @@ fn sample_session_meta(id: SessionId, origin: Option<ForkOrigin>) -> SessionMeta
         created: Utc::now(),
         cwd: PathBuf::from("/tmp"),
         labels: vec![],
-        status: SessionStatus::Active,
         ephemeral: false,
         ask_origin: None,
         root: None,

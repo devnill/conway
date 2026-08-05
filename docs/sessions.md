@@ -16,7 +16,7 @@ kinds you'll see:
 
 | Kind | Carries |
 | --- | --- |
-| `header` | The session's metadata: id, owning agent, origin (if forked), agent def, role, cwd, status, labels. Always the first line. |
+| `header` | The session's metadata: id, owning agent, origin (if forked), agent def, role, cwd, labels. Always the first line. |
 | `user_turn` | A prompt delivered to the agent — from you, or from a parent's steer/fork directive folded in as a turn. |
 | `assistant` | One model turn: content blocks (text, thinking, tool calls the model requested), the model that served it, the routing reason, token usage, stop reason. |
 | `tool_result` | A tool call's result. |
@@ -100,12 +100,12 @@ run from one location will not show sessions created from the other:
 
 ```console
 $ cd my-project && conway -p "..." && conway sessions list
-ID        CREATED               ROLE   STATUS  ORIGIN
-01KYWYAD  2026-07-31T20:37:14Z  coder  active
+ID        CREATED               ROLE   ORIGIN
+01KYWYAD  2026-07-31T20:37:14Z  coder
 
 $ cd my-project/src && conway -p "..." && conway sessions list
-ID        CREATED               ROLE   STATUS  ORIGIN
-01KYWYK9  2026-07-31T20:42:04Z  coder  active
+ID        CREATED               ROLE   ORIGIN
+01KYWYK9  2026-07-31T20:42:04Z  coder
 ```
 
 Two different directories, two disjoint session stores, both reading the
@@ -213,9 +213,9 @@ session store to confirm its exact behavior, not just read from source.
 
 | Subcommand | Effect |
 | --- | --- |
-| `sessions list [--limit N] [--label L] [--json]` | Lists sessions (id, created, role, status, origin), newest first. `--json` prints a JSON array instead of a table. Excludes ephemeral sessions; there's no flag to include them. |
+| `sessions list [--limit N] [--label L] [--json]` | Lists sessions (id, created, role, origin), newest first. `--json` prints a JSON array instead of a table. Excludes ephemeral sessions; there's no flag to include them. |
 | `sessions show <id> [--json]` | Prints that session's ancestry-resolved transcript — its own records plus, if it's a fork child, everything it inherited. Default output is one `--- <kind> seq=<n> ---` block per record in Rust debug form; `--json` prints one compact JSON object per line (JSONL), the same wire shape the log itself uses. |
-| `sessions tree <id>` | Prints the session's fork/spawn tree as indented text: one line per node (role, status), starting from `<id>` itself and indenting each descendant under its parent. |
+| `sessions tree <id>` | Prints the session's fork/spawn tree as indented text: one line per node (role), starting from `<id>` itself and indenting each descendant under its parent. |
 | `sessions export <id> [--out PATH]` | Writes the ancestry-resolved transcript as JSONL — to `PATH` if given, else stdout. Same content as `show --json`, without the interleaved per-line inspection framing. |
 
 A few things worth knowing before you rely on the output:
@@ -235,16 +235,9 @@ A few things worth knowing before you rely on the output:
 - **The `ORIGIN` column reads `fork@<seq> <parent>` or `spawn@<seq>
   <parent>`**, matching the persisted `SessionMeta.origin.mode` — a forked
   child inherited its parent's entire context, a spawned one is clean-slate
-  (GP-02), and this column, not the `ROLE`/`STATUS` columns, is where that
+  (GP-02), and this column, not the `ROLE` column, is where that
   distinction shows up. `sessions list --json`'s `origin` object carries the
   same distinction as a `"mode": "fork"`/`"mode": "spawn"` field.
-- **`status` reads `active` for essentially every session you'll ever
-  list**, including ones whose agent has long since finished. Every header
-  is written with `status: Active` at creation, and nothing in this build
-  transitions it to `Completed`/`Failed`/`Cancelled` afterward — the field
-  exists and round-trips, but nothing currently sets it past its initial
-  value. Use the session's own `agent_result` record (via `sessions show`)
-  to find out how a specific run actually ended.
 - Values passed to `--session`/`--resume`/`--fork-from` and
   `sessions show|tree|export <id>` must be full ULIDs — the CLI does not
   accept a shortened/prefix id anywhere, even though `list`/`tree`'s own

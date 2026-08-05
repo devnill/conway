@@ -10,7 +10,7 @@ use proptest::prelude::*;
 
 use conway_core::error::StoreError;
 use conway_core::ids::{AgentId, LogSeq, SeqRange, SessionId};
-use conway_core::log::{ForkOrigin, LogRecord, SessionStatus, SubagentMode};
+use conway_core::log::{ForkOrigin, LogRecord, SubagentMode};
 use conway_core::ports::SessionStore;
 use conway_core::provenance::Provenance;
 use conway_session::{FsyncPolicy, JsonlSessionStore, SessionMeta, StoreConfig};
@@ -29,7 +29,6 @@ fn meta_for(id: SessionId) -> SessionMeta {
         created: ts(),
         cwd: PathBuf::from("/tmp/project"),
         labels: vec![],
-        status: SessionStatus::Active,
         ephemeral: false,
         ask_origin: None,
         root: None,
