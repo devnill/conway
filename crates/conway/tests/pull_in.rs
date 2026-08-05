@@ -24,7 +24,7 @@ use conway_core::content::ContentBlock;
 use conway_core::error::{RuntimeError, StoreError};
 use conway_core::fakes::{FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
 use conway_core::ids::{AgentId, BackendId, LogSeq, ModelId, ModelRef, RoleAlias, SeqRange, SessionId};
-use conway_core::log::{LogRecord, SessionFilter, SessionMeta, SessionStatus};
+use conway_core::log::{LogRecord, SessionFilter, SessionMeta};
 use conway_core::ports::{Backend, GenerateResponse, SessionStore};
 
 fn fake_router() -> Arc<dyn conway_core::ports::Router> {
@@ -393,7 +393,6 @@ async fn pull_in_refuses_when_the_child_has_children() {
         created: chrono::Utc::now(),
         cwd: std::path::PathBuf::from("."),
         labels: vec![],
-        status: SessionStatus::Active,
         ephemeral: false,
         ask_origin: None,
         root: None,

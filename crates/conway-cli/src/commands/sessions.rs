@@ -85,16 +85,6 @@ async fn resume_or_usage_error(
     })
 }
 
-/// A `Debug`-derived enum's variant name, lower-cased -- every
-/// `SessionStatus` variant (`Active`/`Completed`/`Failed`/`Cancelled`) is a
-/// single word, so this matches the type's own `snake_case` serde rendering
-/// without this crate needing to name `conway_core::log::SessionStatus`
-/// directly (out of file scope: that type is not re-exported by the
-/// `conway` facade).
-fn status_str(status: &impl std::fmt::Debug) -> String {
-    format!("{status:?}").to_lowercase()
-}
-
 /// The primitive that created a session (GP-02: fork and spawn are distinct
 /// and must never be blurred into one label) -- `"fork"` or `"spawn"`,
 /// matching `SubagentMode`'s own `snake_case` serde rendering.
@@ -136,7 +126,6 @@ fn session_row(meta: &SessionMeta) -> Vec<String> {
             .as_ref()
             .map(|r| r.to_string())
             .unwrap_or_default(),
-        status_str(&meta.status),
         origin_cell(meta),
     ]
 }
@@ -146,7 +135,6 @@ fn session_json(meta: &SessionMeta) -> serde_json::Value {
         "id": meta.id.to_string(),
         "created": fmt::ts(meta.created),
         "role": meta.role.as_ref().map(|r| r.to_string()),
-        "status": status_str(&meta.status),
         "origin": origin_json(meta),
     })
 }
@@ -172,10 +160,7 @@ async fn list(
         );
     } else {
         let rows = sessions.iter().map(session_row).collect();
-        print!(
-            "{}",
-            fmt::table(&["ID", "CREATED", "ROLE", "STATUS", "ORIGIN"], rows)
-        );
+        print!("{}", fmt::table(&["ID", "CREATED", "ROLE", "ORIGIN"], rows));
     }
     let _ = std::io::stdout().flush();
     Ok(ExitCode::Completed)
@@ -243,13 +228,12 @@ async fn tree(conway: &Conway, id: &str) -> conway::Result<ExitCode> {
     };
     let label = |m: &SessionMeta| {
         format!(
-            "{}  role={}  status={}",
+            "{}  role={}",
             fmt::id_short(m.id),
             m.role
                 .as_ref()
                 .map(|r| r.to_string())
                 .unwrap_or_else(|| "-".to_string()),
-            status_str(&m.status),
         )
     };
 

@@ -13,7 +13,7 @@ use conway_core::agent::{Budget, PermissionDecision, ResultStatus};
 use conway_core::event::Event;
 use conway_core::fakes::{FakeBackend, FakeGate, FakeRouter, FakeStore};
 use conway_core::ids::{AgentId, BackendId, LogSeq, SessionId};
-use conway_core::log::{LogRecord, SessionMeta, SessionStatus};
+use conway_core::log::{LogRecord, SessionMeta};
 use conway_core::ports::SessionStore;
 use conway_core::provenance::Provenance;
 use futures_core::Stream as _;
@@ -491,7 +491,6 @@ async fn transcript_resolves_the_effective_ancestry_of_a_forked_fixture() {
         created: chrono::Utc::now(),
         cwd: std::path::PathBuf::from("."),
         labels: vec![],
-        status: SessionStatus::Active,
         ephemeral: false,
         ask_origin: None,
         root: None,
@@ -589,7 +588,6 @@ async fn transcript_resolves_a_grandchild_fork_three_generations_deep() {
                 created: chrono::Utc::now(),
                 cwd: std::path::PathBuf::from("."),
                 labels: vec![],
-                status: SessionStatus::Active,
                 ephemeral: false,
                 ask_origin: None,
                 root: None,
@@ -631,7 +629,6 @@ async fn transcript_resolves_a_grandchild_fork_three_generations_deep() {
                 created: chrono::Utc::now(),
                 cwd: std::path::PathBuf::from("."),
                 labels: vec![],
-                status: SessionStatus::Active,
                 ephemeral: false,
                 ask_origin: None,
                 root: None,

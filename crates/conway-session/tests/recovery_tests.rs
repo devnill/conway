@@ -22,7 +22,7 @@ use conway_core::ids::{AgentId, LogSeq, SeqRange, SessionId};
 use conway_core::log::LogRecord;
 use conway_core::ports::SessionStore;
 use conway_core::provenance::Provenance;
-use conway_session::{JsonlSessionStore, SessionMeta, SessionStatus};
+use conway_session::{JsonlSessionStore, SessionMeta};
 
 fn ts() -> DateTime<Utc> {
     "2026-07-20T00:00:00Z".parse().unwrap()
@@ -38,7 +38,6 @@ fn meta_for(id: SessionId) -> SessionMeta {
         created: ts(),
         cwd: PathBuf::from("/tmp/project"),
         labels: vec![],
-        status: SessionStatus::Active,
         ephemeral: false,
         ask_origin: None,
         root: None,

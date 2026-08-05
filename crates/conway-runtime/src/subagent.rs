@@ -138,7 +138,7 @@ use conway_core::content::Usage;
 use conway_core::error::{ConwayError, RuntimeError, ToolError};
 use conway_core::event::Event;
 use conway_core::ids::{AgentId, LogSeq, RoleAlias, SeqRange, SessionId};
-use conway_core::log::{ForkOrigin, LogRecord, SessionMeta, SessionStatus};
+use conway_core::log::{ForkOrigin, LogRecord, SessionMeta};
 use conway_core::ports::SubagentHost;
 use conway_core::provenance::Provenance;
 use conway_core::segment::CacheTtl;
@@ -422,7 +422,6 @@ impl SubagentHost for Runtime {
             created: now,
             cwd: child_cwd.clone(),
             labels: Vec::new(),
-            status: SessionStatus::Active,
             // `ephemeral` flows straight from the caller's `SubagentSpec`: a
             // `conway_ask` fork (item d sets `spec.ephemeral = true`) stamps
             // `AgentSpawned`/`AgentFinished` with `ephemeral: true` via the

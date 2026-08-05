@@ -34,7 +34,7 @@ use conway_core::fakes::{
     FakeGate, FakeRouter, FakeStore, FakeSubagentHost, ScriptedBackend, ScriptedTurn,
 };
 use conway_core::ids::{AgentId, BackendId, ModelId, ModelRef, RoleAlias, SessionId, ToolName};
-use conway_core::log::{LogRecord, SessionMeta, SessionStatus};
+use conway_core::log::{LogRecord, SessionMeta};
 use conway_core::ports::{
     Backend, GenerateResponse, HealthRegistry, PermissionGate, Plugin, PluginConfig,
     PluginManifest, Router, SessionStore, Tool, ToolCtx, ToolOutput,
@@ -202,7 +202,6 @@ async fn seed_prompt(store: &dyn SessionStore, prompt: &str) -> (SessionId, Agen
             created: Utc::now(),
             cwd: PathBuf::from("/tmp"),
             labels: vec![],
-            status: SessionStatus::Active,
             ephemeral: false,
             ask_origin: None,
             root: None,
