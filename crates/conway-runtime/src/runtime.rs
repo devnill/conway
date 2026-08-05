@@ -765,9 +765,9 @@ impl Runtime {
             // ever be a pre-routing placeholder. The prompt-caching item's
             // real, capability-keyed cache-hint attachment happens as a
             // POST-routing pass in `attempt.rs`'s `attach_route_cache_hints`
-            // -- see `subagent.rs`'s module doc ("`CacheMode` is not wired
-            // from `SubagentSpec::cache_hint`") for the full rationale,
-            // which applies identically to a root.
+            // -- see `subagent.rs`'s module doc ("`CacheMode` is hardcoded,
+            // not caller-supplied") for the full rationale, which applies
+            // identically to a root.
             cache_mode: CacheMode::None,
             cache_ttl: CacheTtl::FiveMinutes,
             headroom_override: None,

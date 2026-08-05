@@ -126,7 +126,7 @@ fn subagent_schema_requires_mode_and_prompt_only() {
 }
 
 #[tokio::test]
-async fn fork_records_start_with_fork_mode_prompt_and_cache_hint_true() {
+async fn fork_records_start_with_fork_mode_and_prompt() {
     let (ctx, _handles) = test_ctx(PathBuf::from("/tmp/x"));
     let (fake, scripted_id) = fake_with_result(ResultStatus::Completed);
     let ctx = ToolCtx {
@@ -151,11 +151,10 @@ async fn fork_records_start_with_fork_mode_prompt_and_cache_hint_true() {
     assert_eq!(started[0].0, scripted_id);
     assert!(matches!(started[0].1.mode, SubagentMode::Fork));
     assert_eq!(started[0].1.prompt, "p");
-    assert!(started[0].1.cache_hint);
 }
 
 #[tokio::test]
-async fn spawn_with_agent_def_records_spawn_mode_and_cache_hint_false() {
+async fn spawn_with_agent_def_records_spawn_mode() {
     let (ctx, _handles) = test_ctx(PathBuf::from("/tmp/x"));
     let (fake, _scripted_id) = fake_with_result(ResultStatus::Completed);
     let ctx = ToolCtx {
@@ -176,7 +175,6 @@ async fn spawn_with_agent_def_records_spawn_mode_and_cache_hint_false() {
 
     let started = fake.started();
     assert!(matches!(started[0].1.mode, SubagentMode::Spawn));
-    assert!(!started[0].1.cache_hint);
     assert_eq!(
         started[0].1.agent_def,
         Some(AgentDefRef("reviewer".to_string()))
@@ -252,7 +250,6 @@ async fn ask_tool_calls_subagent_host_ask_with_ephemeral_fork_spec() {
     assert!(matches!(spec.mode, SubagentMode::Fork));
     assert!(spec.ephemeral, "ask spec must be ephemeral");
     assert!(!spec.keep_alive, "ask spec must not keep_alive");
-    assert!(spec.cache_hint, "ask (fork) spec must set cache_hint");
     // B5: the spec must stamp AskOrigin::ToolAsk -- the tag the TUI's
     // crash-residue sweep discriminates on (a ToolAsk child is NEVER
     // swept; its EphemeralSessionRef artifact would dangle).
