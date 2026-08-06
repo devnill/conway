@@ -140,13 +140,20 @@ started it:
 | --- | --- |
 | The model, per call | `conway_subagent`'s `result_contract` argument |
 | An embedder | `ForkSpec::result_contract`/`SpawnSpec::result_contract` on the facade builder |
+| An agent definition | `result_contract` in a `.conway/agents/*.md` file's frontmatter |
 
 A root agent never has a result contract — a root has no `SubagentSpec` to
-source one from, on any surface. And a `.conway/agents/*.md` def's
-`result_contract` frontmatter key **parses but is not applied**: spawning a
-child from a def carries over that def's role, system prompt, tools, and
-model pin, but not its `result_contract`. Declaring one there has no effect
-today — use the model argument or the facade builder instead.
+source one from, on any surface.
+
+A `.conway/agents/*.md` def's `result_contract` frontmatter key is applied
+when a child spawns from that def, exactly like the def's role, system
+prompt, tools, and model pin. It is the **default**, not an override: if the
+call site that started the child (the model's `conway_subagent` argument, or
+an embedder's `ForkSpec`/`SpawnSpec::result_contract`) also declares a
+`result_contract`, the call site's contract wins and the def's is not
+applied at all — only a spawn with no call-site contract of its own falls
+back to the def's. This mirrors how the def's `tools` selector already
+works: a call-site value shadows the def's, it does not merge with it.
 
 Validation runs at the natural end of a turn — one with no tool calls in
 it, not a check after every tool call:

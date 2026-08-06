@@ -479,6 +479,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **An agent definition's `result_contract` frontmatter key is now
+  enforced.** It parsed, compiled to a schema, and was stored on
+  `AgentDef.result_contract`, but `subagent.rs`'s `SubagentHost::start` —
+  which already applies a def's role, system prompt, tools, and model pin
+  to a spawned child — never read it, so setting `result_contract` in a
+  `.conway/agents/*.md` file bought nothing: the child's `structured` result
+  was never validated against it. `start` now applies the def's
+  `result_contract` as well, with a stated precedence rule: an explicit
+  call-site contract (the model's `conway_subagent` `result_contract`
+  argument, or an embedder's `ForkSpec`/`SpawnSpec::result_contract`) wins
+  when both are set; the def's is the default used only when the call site
+  left its own contract unset — mirroring how a def's `tools` selector
+  already shadows, rather than merges with, a call-site override. Proven
+  end to end through the real def-load path (a def file loaded from disk,
+  not a hand-constructed `AgentDef`): a spawned child's undeclared
+  `structured` output is retried once, then rejected, exactly like an
+  explicitly call-site-declared contract already was.
+  (`crates/conway-runtime/src/subagent.rs`,
+  `crates/conway/tests/agent_defs.rs`,
+  `crates/conway/tests/fixtures/agents/contract_child.md`, `docs/agents.md`)
+
 - **`sessions list`'s `ORIGIN` column no longer prints `fork@...` for a
   spawned child.** `origin_cell` (and `origin_json`'s `--json` counterpart)
   hardcoded the word `fork` for any session with a parent, discarding the
