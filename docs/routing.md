@@ -106,6 +106,26 @@ probe may only confirm and narrow capabilities for a pair `models.json`
 already declares, never add a pair on its own say-so — `models.json` stays
 the sole, hand-written source of which pairs are routable at all.
 
+**A model the startup probe observes but `models.json` never lists is
+dropped, silently as far as routing is concerned.** It never becomes
+routable and produces no warning or error at any of the normal log
+levels — the drop is logged only at `debug`
+(`crates/conway/src/builder.rs`, `probe_on_startup: server reported a
+model with no models.json entry for this backend; not admitting it`). Most
+deployments do not run at `debug`, so this is easy to mistake for "the
+probe never reached my server" rather than "the probe saw the model and
+RESTRICT dropped it." To see these drops, raise just this module's
+filter rather than the whole process's:
+
+```sh
+RUST_LOG=conway::builder=debug conway ...
+```
+
+(`RUST_LOG=debug` also works but is far noisier — it raises every crate,
+not just this one.) Each dropped pair logs its `backend` and `model`
+fields, so you can tell exactly which declarations are missing from
+`models.json`.
+
 Once resolved, a candidate is checked against the role's requirement
 floor and, last, against context headroom. A role's requirement floor is
 set directly in `settings.json` — `[roles.<alias>]` carries

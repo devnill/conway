@@ -4,12 +4,18 @@
 //! primitive `SubagentHandle` wraps, it is NOT a third primitive --
 //! fork+await-text, no mode parameter, GP-02).
 //!
-//! Fork-only (v1): the child inherits this agent's full context, agent_def,
-//! role, and tool set (fork semantics), so this tool takes only `prompt`,
-//! an optional `budget`, and an optional `tools` narrowing list — no
-//! `mode`/`result_contract`/`role`/`agent_def` args. Returns the full reply
-//! text (GP-01) so the model can compose a fresh spawn out-of-band, keeping
-//! the curation reasoning out of this agent's context window.
+//! Fork-only (v1): the child inherits this agent's full context and
+//! effective role (fork semantics; role via the runtime's parent-role
+//! fallback, WI-136, `conway_runtime::subagent`). It does **not** inherit
+//! this agent's `agent_def`: `invoke` below always passes `agent_def: None`
+//! on the `SubagentSpec`, so a def-declared `result_contract`, tools
+//! selector, system prompt, and model pin never apply to a `conway_ask`
+//! child, even when the parent itself was spawned from a def. This tool
+//! takes only `prompt`, an optional `budget`, and an optional `tools`
+//! narrowing list — no `mode`/`result_contract`/`role`/`agent_def` args.
+//! Returns the full reply text (GP-01) so the model can compose a fresh
+//! spawn out-of-band, keeping the curation reasoning out of this agent's
+//! context window.
 
 use async_trait::async_trait;
 use schemars::JsonSchema;
@@ -36,7 +42,9 @@ const DEFAULT_ASK_DEADLINE_SECS: u64 = 120;
 #[serde(deny_unknown_fields)]
 pub(super) struct AskArgs {
     /// The prompt to run in the ephemeral fork. The child inherits this
-    /// agent's full context, agent_def, role, and tool set (fork semantics).
+    /// agent's full context and effective role (fork semantics), but NOT
+    /// this agent's agent_def -- a parent def's result contract, tools
+    /// selector, system prompt, and model pin do not apply to the child.
     prompt: String,
     #[serde(default)]
     budget: Option<BudgetArg>,

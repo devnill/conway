@@ -335,3 +335,29 @@ fn typo_d_health_key_is_rejected_by_deny_unknown_fields() {
         "error must name the typo'd [health] key: {err}"
     );
 }
+
+/// Sibling of `typo_d_key_is_rejected_by_deny_unknown_fields` and
+/// `typo_d_health_key_is_rejected_by_deny_unknown_fields` for `RoleEntry`'s
+/// six capability-floor fields (`tool_calling`/`structured_output`/
+/// `parallel_tool_calls`/`reasoning`/`min_reliability`/`min_context`):
+/// they are structurally protected today by `RoleEntry`'s own
+/// `#[serde(deny_unknown_fields, default)]`, but nothing pinned that
+/// against a refactor that drops the annotation -- this project has direct
+/// precedent for exactly that silent-typo failure mode (a misspelled
+/// `builtin_plugins` id was silently ignored, cf98357).
+#[test]
+fn typo_d_role_capability_key_is_rejected_by_deny_unknown_fields() {
+    let dir = support::unique_temp_dir("unknown-role-capability-key");
+    let result = load(LoadOptions {
+        cwd: dir,
+        explicit_path: Some(support::fixtures_dir().join("unknown_role_capability_key.json")),
+        env: HashMap::new(),
+        cli_overrides: CliOverrides::default(),
+        model_metadata_refresh: false,
+    });
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("min_reliabilty"),
+        "error must name the typo'd [roles.<alias>] key: {err}"
+    );
+}

@@ -716,3 +716,214 @@ fn role_configured_capability_floor_admits_a_candidate_that_meets_it() {
     assert_eq!(routes.len(), 1);
     assert_eq!(routes[0].model, m.model);
 }
+
+/// Cross-role isolation (MINOR 5): every fixture above configures exactly
+/// ONE role's floor, so none of them can distinguish "the floor applies to
+/// the role that declared it" from "the floor leaked into every role's
+/// admission check." This fixture configures TWO roles pointing at the
+/// SAME candidate model -- `coder`'s floor (`min_reliability: Verified`)
+/// and `planner`, left with no floor at all -- and resolves both against
+/// the identical Community-tier candidate: `coder` must reject it,
+/// `planner` must admit the very same candidate, proving the floor is
+/// scoped per-role, not applied globally.
+#[test]
+fn role_configured_capability_floor_does_not_reach_an_unfloored_sibling_role() {
+    let m = model_ref("local", "qwen3-coder-80b");
+    let mut roles = BTreeMap::new();
+    roles.insert(
+        "coder".to_string(),
+        conway_core::routing::RoleConfig {
+            chain: vec![m.clone()],
+            required: RequiredCaps {
+                min_reliability: Some(ReliabilityTier::Verified),
+                ..RequiredCaps::default()
+            },
+            ..Default::default()
+        },
+    );
+    roles.insert(
+        "planner".to_string(),
+        conway_core::routing::RoleConfig {
+            chain: vec![m.clone()],
+            ..Default::default()
+        },
+    );
+    let config = RoutingConfig {
+        roles,
+        health: HealthConfig::default(),
+        default_headroom_tokens: 4_096,
+    };
+    let community_tier = Capabilities {
+        reliability_tier: ReliabilityTier::Community,
+        ..caps(200_000)
+    };
+    let index = index_with(&[(m.clone(), community_tier)]);
+    let router = router_from(config, Arc::new(FakeHealth::new()), index);
+
+    router
+        .resolve(&request("coder", 100))
+        .expect_err("coder's configured Verified floor must reject a Community-tier candidate");
+
+    let routes = router
+        .resolve(&request("planner", 100))
+        .expect("planner has no configured floor, so the identical candidate must be admitted");
+    assert_eq!(routes.len(), 1);
+    assert_eq!(routes[0].model, m.model);
+}
+
+// ---------------------------------------------------------------------
+// `capability::strictest`'s pointwise merge (config floor vs. caller
+// requirement) is only exercised above with one side always at
+// `RequiredCaps::default()` -- every `request(..)` helper call hardcodes
+// `required: RequiredCaps::default()`, and the pair above only ever sets
+// the ROLE's floor, never the caller's own `RouteRequest.required`. A
+// `strictest` that silently returned one side unconditionally would pass
+// every test above it in this file. The three tests below set DIFFERENT
+// fields on each side and assert the merge keeps both, observed as
+// admit/reject outcomes (GP-14: assert the observable outcome, not the
+// merged struct).
+//
+// Deliberately NOT `min_reliability`/`tool_calling` (the fields the
+// finding's own illustrative scenario named): those two fields are each
+// already independently exercised elsewhere in this file (config-only via
+// `role_configured_capability_floor_*` above, request-only via the mixed
+// headroom-and-capability tests below), so a mutation broad enough to drop
+// a whole side would incidentally trip one of THOSE tests too, muddying
+// the contrast this guard is meant to demonstrate. `structured_output`
+// (config floor) and `parallel_tool_calls` (caller requirement) probe the
+// identical merge machinery (`strictest_by_rank` / `strictest_bool`) but
+// are untouched by any other test in this file, so these three tests are
+// the only ones in the suite that can fail when the merge drops a side.
+// ---------------------------------------------------------------------
+
+/// Shared fixture for the three `strictest` merge tests: role "coder"'s
+/// configured floor sets `structured_output: JsonSchema` (and nothing
+/// else); callers separately set `required.parallel_tool_calls: true` on
+/// their own `RouteRequest` (and nothing else) via `merge_test_request`.
+fn merge_test_config(m: &ModelRef) -> RoutingConfig {
+    let mut roles = BTreeMap::new();
+    roles.insert(
+        "coder".to_string(),
+        conway_core::routing::RoleConfig {
+            chain: vec![m.clone()],
+            required: RequiredCaps {
+                structured_output: Some(StructuredOutput::JsonSchema),
+                ..RequiredCaps::default()
+            },
+            ..Default::default()
+        },
+    );
+    RoutingConfig {
+        roles,
+        health: HealthConfig::default(),
+        default_headroom_tokens: 4_096,
+    }
+}
+
+fn merge_test_request() -> RouteRequest {
+    let mut req = request("coder", 100);
+    req.required.parallel_tool_calls = Some(true);
+    req
+}
+
+/// Meets the role's configured floor (`structured_output: JsonSchema`) but
+/// not the caller's own requirement (`parallel_tool_calls: false`, caller
+/// demands `true`). If `strictest` silently dropped the caller's side
+/// (e.g. returned only `config_floor`), this candidate would be wrongly
+/// admitted -- the rejection reason must name `parallel_tool_calls` and
+/// must NOT name `structured_output` (the role floor was met).
+#[test]
+fn strictest_merge_still_enforces_the_callers_requirement_alongside_the_role_floor() {
+    let m = model_ref("local", "qwen3-coder-80b");
+    let config = merge_test_config(&m);
+    let structured_but_no_parallel = Capabilities {
+        structured_output: StructuredOutput::JsonSchema,
+        parallel_tool_calls: false,
+        ..caps(200_000)
+    };
+    let index = index_with(&[(m.clone(), structured_but_no_parallel)]);
+    let router = router_from(config, Arc::new(FakeHealth::new()), index);
+
+    let err = router
+        .resolve(&merge_test_request())
+        .expect_err("meets the role's floor but not the caller's own requirement");
+    match err {
+        RoutingError::NoCandidate { considered, .. } => {
+            assert_eq!(considered.len(), 1);
+            assert!(
+                considered[0].1.contains("parallel_tool_calls"),
+                "rejection must be attributed to the caller's requirement, got: {}",
+                considered[0].1
+            );
+            assert!(
+                !considered[0].1.contains("structured_output"),
+                "the role floor was met and must not appear as a failure reason, got: {}",
+                considered[0].1
+            );
+        }
+        other => panic!("expected NoCandidate, got {other:?}"),
+    }
+}
+
+/// Symmetric to the test above: meets the caller's own requirement
+/// (`parallel_tool_calls: true`) but not the role's configured floor
+/// (`structured_output: JsonSchema`, candidate offers `None`). If
+/// `strictest` silently dropped the config side (e.g. returned only
+/// `request`), this candidate would be wrongly admitted -- the rejection
+/// reason must name `structured_output` and must NOT name
+/// `parallel_tool_calls` (the caller's requirement was met).
+#[test]
+fn strictest_merge_still_enforces_the_role_floor_alongside_the_callers_requirement() {
+    let m = model_ref("local", "qwen3-coder-80b");
+    let config = merge_test_config(&m);
+    let parallel_but_no_structured = Capabilities {
+        structured_output: StructuredOutput::None,
+        parallel_tool_calls: true,
+        ..caps(200_000)
+    };
+    let index = index_with(&[(m.clone(), parallel_but_no_structured)]);
+    let router = router_from(config, Arc::new(FakeHealth::new()), index);
+
+    let err = router
+        .resolve(&merge_test_request())
+        .expect_err("meets the caller's requirement but not the role's own floor");
+    match err {
+        RoutingError::NoCandidate { considered, .. } => {
+            assert_eq!(considered.len(), 1);
+            assert!(
+                considered[0].1.contains("structured_output"),
+                "rejection must be attributed to the role's floor, got: {}",
+                considered[0].1
+            );
+            assert!(
+                !considered[0].1.contains("parallel_tool_calls"),
+                "the caller's requirement was met and must not appear as a failure reason, got: {}",
+                considered[0].1
+            );
+        }
+        other => panic!("expected NoCandidate, got {other:?}"),
+    }
+}
+
+/// The complement (GP-14: "any check that cannot fail is not a check"): a
+/// candidate meeting BOTH the role's floor and the caller's requirement is
+/// admitted -- proving the merge is not just "reject unless both fail" but
+/// genuinely pointwise-strictest across both sides.
+#[test]
+fn strictest_merge_admits_a_candidate_meeting_both_the_role_floor_and_the_callers_requirement() {
+    let m = model_ref("local", "qwen3-coder-80b");
+    let config = merge_test_config(&m);
+    let meets_both = Capabilities {
+        structured_output: StructuredOutput::JsonSchema,
+        parallel_tool_calls: true,
+        ..caps(200_000)
+    };
+    let index = index_with(&[(m.clone(), meets_both)]);
+    let router = router_from(config, Arc::new(FakeHealth::new()), index);
+
+    let routes = router
+        .resolve(&merge_test_request())
+        .expect("meets both the role's floor and the caller's own requirement");
+    assert_eq!(routes.len(), 1);
+    assert_eq!(routes[0].model, m.model);
+}
