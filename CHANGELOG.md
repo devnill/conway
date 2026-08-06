@@ -458,6 +458,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `crates/conway-runtime/src/tools/runner.rs`,
   `crates/conway/tests/enum_variant_construction_guard.rs`)
 
+- **BREAKING: the `conway` crate's `anthropic` and `openai-compat` cargo
+  features are gone.** Which backend you talk to (native Anthropic, or one
+  of the OpenAI-compatible dialects) is runtime configuration — a
+  `[backends.<id>].kind` entry in settings — not a build-time choice, and
+  these two features were the wrong axis for it: every combination of the
+  workspace's own `feature-matrix.yml` job that had neither feature enabled
+  failed to compile (`conway_backends::profile::ProfileStore` referenced
+  ungated in `builder.rs`), and had been red since before the 0.7.0
+  release. `conway-backends` is now a plain, non-optional dependency of
+  `conway` (built with its own default features, i.e. both adapters); the
+  harness always ships both common API flavours, matching what
+  `docs/providers.md` already documented as always-available `kind`s. **Any
+  downstream `Cargo.toml` that named `conway = { ..., features =
+  ["anthropic"] }` or `["openai-compat"]` will fail to resolve** — drop the
+  feature list entirely (or keep only `builtin-tools`/`jsonl-store`, which
+  are unaffected and remain genuine, independently toggleable features).
+  The `#[cfg(not(feature = "anthropic"))]`/`#[cfg(not(feature =
+  "openai-compat"))]` stub functions that returned
+  `ConwayError::UnsupportedFeature` for a disabled backend are deleted
+  outright, not left behind as dead code for a state that can no longer
+  occur — that variant's sole remaining producer is
+  `config::model_metadata::refresh` (`metadata-refresh`, unrelated, still a
+  genuine no-op-until-implemented feature per WI-097). `feature-matrix.yml`
+  is updated to the new truth (`--no-default-features`, `builtin-tools`
+  alone, `jsonl-store` alone, both together, `--all-features`, default —
+  six combinations, all now green) and its own guard was proven to still
+  bite: a deliberately re-introduced ungated-caller/gated-callee mismatch
+  (the exact shape of the original defect) makes the `no-default-features`
+  job fail again, confirming the matrix is not a check that cannot fail.
+  Running the full test suite (not just `cargo check`) under all six
+  combinations — the matrix job itself only checks — surfaced two
+  pre-existing, unrelated test-gating bugs the compile break had been
+  hiding: `tests/conway_ask.rs` (needs `builtin-tools` for the
+  `conway_ask`/`conway_subagent` tools it drives) and
+  `tests/plugin_surface.rs`'s `plugin_tool_and_hook_register_through_the_builder`
+  (needs `jsonl-store` for the default session store it never overrides,
+  not `anthropic` — the feature it was actually, incorrectly, gated on).
+  Both are now gated on the feature they actually depend on. This is a
+  ground-clearing removal, not a replacement: backends as plugins,
+  installed declaratively on the same surface a third-party plugin author
+  uses (GP-03), is filed separately as board item
+  `01KZACKE05ZNYTYR0TGV3550SD`. (`crates/conway/Cargo.toml`,
+  `crates/conway/src/builder.rs`, `crates/conway/src/error.rs`,
+  `crates/conway/src/config/schema.rs`, `crates/conway/tests/builder.rs`,
+  `crates/conway/tests/plugin_surface.rs`, `crates/conway/tests/conway_ask.rs`,
+  `.github/workflows/feature-matrix.yml`, `ARCHITECTURE.md`,
+  `docs/providers.md`)
+
 - **The `STATUS` column is gone from `conway sessions list`/`sessions
   tree`, and `SessionStatus` is gone entirely.** A session has no terminal
   status, and this build never made it look like one honestly: only

@@ -52,11 +52,16 @@ pub enum ConwayError {
     #[error("{message}")]
     Build { message: String },
 
-    /// Config named a backend kind whose cargo feature was not enabled at
+    /// A caller reached a code path whose cargo feature was not enabled at
     /// build time.
     ///
-    /// `message` follows the template: `"backend kind '{kind}' requires the
-    /// '{feature}' cargo feature, which was not enabled at build time"`.
+    /// Backend selection (Anthropic vs. OpenAI-compatible) no longer has a
+    /// producer here: `conway-backends` is a non-optional dependency of
+    /// this crate, so both backend kinds are always buildable and this
+    /// variant can no longer be reached from `ConwayBuilder::build`. The
+    /// sole remaining producer is `config::model_metadata::refresh`, gated
+    /// on the still-genuinely-optional `metadata-refresh` feature (WI-097:
+    /// no HTTP client implementation exists yet).
     #[error("{message}")]
     UnsupportedFeature {
         feature: &'static str,

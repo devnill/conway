@@ -27,6 +27,21 @@
 //! - **Composition (P-1):** the parent's second turn drives
 //!   `conway_ask` -> `conway_subagent { mode: spawn, prompt: <brief> }`,
 //!   and the spawn child's own first `UserTurn` is the brief verbatim.
+//!
+//! Gated on the `builtin-tools` feature (like `tests/interactive_tools.rs`'s
+//! own gate, and `tests/gates.rs`'s `presets_builtin_plugins_matches_conway_tools`):
+//! `conway_ask`/`conway_subagent` are registered from `presets::builtin_plugins()`,
+//! which does not exist without this feature -- `build_conway`'s default
+//! `ToolsConfig` would register no tools at all, and the whole slice this
+//! file exercises has nothing meaningful to drive. Discovered by this
+//! item's own verification pass (board item: retire the backend
+//! compile-time feature flags): this file predates that item and had no
+//! such gate, but every combination that would have exposed the gap
+//! (`conway-backends` referenced ungated with neither backend feature
+//! enabled) failed to even *compile* until that item's fix, and the CI
+//! feature matrix only ever ran `cargo check`, never `cargo test` -- so the
+//! gap was invisible in both directions until now.
+#![cfg(feature = "builtin-tools")]
 
 mod support;
 
