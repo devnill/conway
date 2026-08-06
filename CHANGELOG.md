@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+**Seven of the entries below are one piece of work.** A declaration audit
+found the same defect in seven places — a declared surface that did not
+match the behavior behind it — and fixed them together. The breaking
+changes among them (`SubagentSpec::cache_hint` and `ForkSpec::cache_hint`
+removed, the `anthropic`/`openai-compat` cargo features retired,
+`SessionStatus` and the `sessions` `STATUS` column removed,
+`TruncationPolicy::Artifact` removed) all come from that sweep, so a
+migration is best read as one change rather than five. Two of the seven
+went the other way and made a declared capability real instead of removing
+it: agent-def `result_contract` is now enforced, and per-role capability
+floors are now settable. One was resolved by labeling rather than either —
+`probe_enabled` now defaults to `false` and says plainly that the health
+prober is not yet wired.
+
 ### Added
 
 - **`[roles.<alias>]` gains a per-role capability floor:
