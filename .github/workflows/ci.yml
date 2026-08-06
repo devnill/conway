@@ -1,0 +1,110 @@
+name: CI
+
+# Supersedes the old `feature-matrix.yml`, which ran `cargo check -p conway`
+# across feature combinations and nothing else. That guard was narrower than
+# its name suggested: because it never COMPILED tests, it could not catch a
+# test that fails to build under a feature combination -- and two such tests
+# (`conway_ask.rs` ungated, and a `plugin_surface.rs` test gated on the wrong
+# feature) sat broken and invisible until board item 01KZ7KAEJ0EZG4P8BJAQC95Z6C
+# retired the backend feature flags and exposed them.
+#
+# NOTE, deliberately: there is NO `cargo fmt --check` job. This repository is
+# not fmt-clean (337 files differ as of 2026-08-06), so a formatting gate would
+# be red on arrival and stay red. Reformatting is its own decision with its own
+# enormous diff; it is not a CI question. Do not add one without doing that
+# work first.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A newer push to the same ref makes the older run irrelevant. Cancelling it
+# keeps queue depth (and Actions minutes) down, which matters because the
+# feature matrix alone is six jobs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: cargo test (workspace, all features)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.94.0"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo test --workspace --all-features
+        run: cargo test --workspace --all-features --no-fail-fast
+
+  clippy:
+    name: cargo clippy (-D warnings)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.94.0"
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  feature-matrix:
+    # `cargo test --no-run` rather than `cargo check`: it compiles the test
+    # binaries too, so a test that cannot build under a given feature
+    # combination fails here instead of hiding. That is the gap the old
+    # workflow had. It does not RUN the tests -- the `test` job above does
+    # that once, with every feature on -- so the added cost is compile time
+    # for test targets, not six full suite executions.
+    name: cargo test --no-run -p conway (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      # Every combination reports independently. One red combination must not
+      # mask the others -- when this matrix regressed in 2026-07-30's
+      # `b86f5f8`, exactly two of six combinations broke, and knowing WHICH
+      # two is what identified the single root cause.
+      fail-fast: false
+      matrix:
+        include:
+          - name: no-default-features
+            args: --no-default-features
+          - name: builtin-tools-only
+            args: --no-default-features --features builtin-tools
+          - name: jsonl-store-only
+            args: --no-default-features --features jsonl-store
+          - name: builtin-tools+jsonl-store
+            args: --no-default-features --features builtin-tools,jsonl-store
+          - name: all-features
+            args: --all-features
+          - name: default
+            args: ""
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.94.0"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo test --no-run -p conway
+        run: cargo test --no-run -p conway ${{ matrix.args }}
