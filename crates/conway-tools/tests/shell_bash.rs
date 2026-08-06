@@ -69,18 +69,52 @@ fn find_pgid(events: &[Event]) -> i32 {
 /// occasionally recycle the freed pgid for an unrelated process before this
 /// check runs, which surfaces as `EPERM` instead — still proof our group is
 /// dead (had it still been alive, we own it and `kill` would return `Ok`).
-/// `Ok(())` is the only outcome that would actually indicate the group
-/// survived.
+///
+/// POLLS rather than checking once, because group teardown is ASYNCHRONOUS
+/// and this assertion is not. `kill_group` signals the whole group and then
+/// `child.wait()`s, but that reaps only the direct child — the bash shell.
+/// A backgrounded `sleep 300 &` is a GRANDchild: it receives the same
+/// group-directed SIGKILL, but when its parent shell dies it is reparented
+/// to init and stays a ZOMBIE until init reaps it. **A zombie still answers
+/// `kill(pid, 0)` with success**, so a single immediate check can observe
+/// `Ok` for a group whose members are already dead — which is not what this
+/// test means to catch.
+///
+/// That is not hypothetical: this checked once and passed on macOS while
+/// failing deterministically on Linux CI (two consecutive runs, GitHub
+/// Actions run 31129229843), because the reparent-and-reap timing differs.
+/// It was the first defect the workspace `cargo test` CI job ever caught,
+/// and it had never run on Linux before that job existed.
+///
+/// The poll is what makes the assertion honest, not a way to make a red test
+/// green: if the group genuinely SURVIVED — a real orphaned-process bug —
+/// polling cannot rescue it, because a live `sleep 300` outlives this window
+/// by minutes and every attempt returns `Ok`. Finding
+/// `01KZCMGF323DYRFCQBZRYVQMT5`.
 #[cfg(unix)]
 fn assert_group_dead(pgid: i32) {
-    let result = nix::sys::signal::kill(
-        nix::unistd::Pid::from_raw(-pgid),
-        None::<nix::sys::signal::Signal>,
-    );
-    assert!(
-        result.is_err(),
-        "process group {pgid} should be dead, but kill(-pgid, 0) returned Ok"
-    );
+    // Generous relative to reaping (milliseconds) and tiny relative to the
+    // 300s sleeps this test spawns, so it cannot mask a surviving group.
+    const DEADLINE: Duration = Duration::from_secs(2);
+    const POLL: Duration = Duration::from_millis(20);
+
+    let start = std::time::Instant::now();
+    loop {
+        let result = nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(-pgid),
+            None::<nix::sys::signal::Signal>,
+        );
+        if result.is_err() {
+            return;
+        }
+        assert!(
+            start.elapsed() < DEADLINE,
+            "process group {pgid} should be dead, but kill(-pgid, 0) still \
+             returned Ok after {DEADLINE:?} of polling — the group survived \
+             cancellation rather than merely awaiting reaping"
+        );
+        std::thread::sleep(POLL);
+    }
 }
 
 // ----------------------------------------------------------- identity ---
