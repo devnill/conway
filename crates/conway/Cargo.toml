@@ -7,9 +7,18 @@ rust-version.workspace = true
 description = "Embeddable facade over the conway agent harness: config, builder, session handle, and event stream"
 
 [features]
-default = ["anthropic", "openai-compat", "builtin-tools", "jsonl-store"]
-anthropic = ["dep:conway-backends", "conway-backends/anthropic"]
-openai-compat = ["dep:conway-backends", "conway-backends/openai-compat"]
+# Backend selection (Anthropic vs. OpenAI-compatible vs. both) is runtime
+# configuration (a `[backends.<id>].kind` entry in settings), not a
+# build-time choice -- `conway-backends` (below) is therefore an ordinary,
+# non-optional dependency and the harness always supports both common API
+# flavours. There used to be `anthropic`/`openai-compat` cargo features
+# here that gated that dependency; they were the wrong axis (they made
+# "the base harness" itself something you had to recompile to get a
+# backend from) and are gone. Board item 01KZACKE05ZNYTYR0TGV3550SD
+# tracks the follow-on: backends as plugins, installed declaratively on the
+# same surface a third party uses, rather than compiled or config-selected
+# from a closed built-in set.
+default = ["builtin-tools", "jsonl-store"]
 builtin-tools = ["dep:conway-tools"]
 jsonl-store = ["dep:conway-session"]
 # Empty on purpose (WI-097 scope: config schema/discovery/merge only, no
@@ -22,7 +31,10 @@ metadata-refresh = []
 conway-core = { path = "../conway-core" }
 conway-runtime = { path = "../conway-runtime" }
 conway-routing = { path = "../conway-routing" }
-conway-backends = { path = "../conway-backends", optional = true, default-features = false }
+# Non-optional (see the [features] table's doc above): the harness always
+# supports both common API flavours conway-backends ships (Anthropic,
+# OpenAI-compatible); default features pull both in.
+conway-backends = { path = "../conway-backends" }
 conway-session = { path = "../conway-session", optional = true }
 conway-tools = { path = "../conway-tools", optional = true }
 serde = { workspace = true }

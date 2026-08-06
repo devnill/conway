@@ -407,17 +407,15 @@ pub struct RoleEntry {
 /// variant — awkward to hand-write in JSON (`{"streaming": {"validated":
 /// true}}`) compared to a flat string tag. Structurally identical to
 /// `conway_backends::model_metadata::ToolCallSupportSpec`, which solves the
-/// exact same problem for `models.json` — but that type cannot be reused
-/// here: `conway-backends` is an optional dependency (`crates/conway/
-/// Cargo.toml`: `conway-backends = { path = "../conway-backends", optional
-/// = true, .. }`, gated behind the `anthropic`/`openai-compat` features,
-/// C-04), and this schema module must parse `settings.json` regardless of
-/// which features are enabled. This is a deliberate independent duplicate,
-/// not an oversight — the same shape of tradeoff
+/// exact same problem for `models.json`, but reusing that type here is a
+/// separate refactor this item does not make (`conway-backends` is now a
+/// non-optional dependency of this crate — the `anthropic`/`openai-compat`
+/// cargo features that used to gate it are gone — but unifying the two
+/// wire vocabularies is out of scope for that change alone). This stays a
+/// deliberate independent duplicate for now, the same shape of tradeoff
 /// `crates/conway/src/config/model_metadata.rs` already makes for its own,
 /// separate reason (that module's `ModelMetadata` stays local to keep
-/// metadata loading network-free, disclosed in its own doc comment; this
-/// type stays local to avoid a hard dependency on an optional crate).
+/// metadata loading network-free, disclosed in its own doc comment).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolCallSupportSpec {
