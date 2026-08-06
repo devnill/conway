@@ -1,0 +1,12 @@
+{
+  "default_role": "coder",
+  "roles": {
+    "coder": {
+      "chain": ["anthropic/claude-sonnet-4-6"],
+      "min_reliabilty": "verified"
+    }
+  },
+  "backends": {
+    "anthropic": { "kind": "anthropic" }
+  }
+}

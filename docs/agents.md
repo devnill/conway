@@ -109,8 +109,12 @@ plus `await` (default `true`) to block for the child's result or return its
 shorthand — no `mode`, no `agent_def`/`role` argument — that returns the
 child's full reply text rather than a structured `AgentResult`, meant for
 drafting or curating context out-of-band without spending the caller's own
-window on the reasoning. `conway_steer`/`conway_await`/`conway_cancel`
-round out the control surface:
+window on the reasoning. A `conway_ask` child inherits the caller's full
+context and effective role (ordinary fork semantics), but **not** the
+caller's own `agent_def`, even when the caller itself was spawned from one
+— so a def-declared `result_contract`, tools selector, system prompt, or
+model pin never reaches a `conway_ask` child. `conway_steer`/`conway_await`/
+`conway_cancel` round out the control surface:
 
 | Tool | Does | Key arguments | Permission class |
 | --- | --- | --- | --- |
@@ -154,6 +158,16 @@ an embedder's `ForkSpec`/`SpawnSpec::result_contract`) also declares a
 applied at all — only a spawn with no call-site contract of its own falls
 back to the def's. This mirrors how the def's `tools` selector already
 works: a call-site value shadows the def's, it does not merge with it.
+
+**`conway_ask` never carries an `agent_def`, by construction** — it is
+fork-only and takes no `agent_def` argument, and the fork it creates does
+not inherit the caller's own def either (see "A model tool call" above).
+So a def's `result_contract` (and its tools selector, system prompt, and
+model pin) can never reach a `conway_ask` child, regardless of what def the
+calling agent was itself spawned from. Whether a fork *should* inherit the
+forker's `agent_def` is an open design question, tracked separately — see
+`crates/conway-tools/src/subagent/ask.rs`'s module doc for the current,
+literal behavior.
 
 Validation runs at the natural end of a turn — one with no tool calls in
 it, not a check after every tool call:
