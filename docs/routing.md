@@ -100,7 +100,11 @@ two of `models.json`'s four fields actually reach this resolution —
 `reasoning` are informational only (`getting-started.md` says the same).
 A `(backend, model)` pair with no `models.json` entry at all fails
 admission immediately, before conway contacts the provider — the exact
-error is in [`getting-started.md`](getting-started.md).
+error is in [`getting-started.md`](getting-started.md). This holds even
+when `probe_on_startup` is on and the live server reports that model: the
+probe may only confirm and narrow capabilities for a pair `models.json`
+already declares, never add a pair on its own say-so — `models.json` stays
+the sole, hand-written source of which pairs are routable at all.
 
 Once resolved, a candidate is checked against the role's requirement
 floor and, last, against context headroom. A role's requirement floor is

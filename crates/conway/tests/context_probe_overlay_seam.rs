@@ -110,9 +110,21 @@
 //! estimator's under-count is caught here -- it is not, and nothing below
 //! exercises that failure mode.
 //!
-//! Not tested here (a separate, open board item): the unlisted
-//! probe-observed-model overlay path (a model the probe discovers that
-//! `models.json` never names at all).
+//! ## The unlisted probe-observed-model overlay path (RESTRICT, DECIDED)
+//!
+//! A model the probe discovers that `models.json` never names at all used
+//! to be silently admitted anyway -- `probe_openai_compat_backends`
+//! (`builder.rs`) inserted every probe-observed `(model_id, caps)` pair
+//! unconditionally, with no filter against `metadata.models`. Operator
+//! direction settled this: the probe may only *confirm* a model the
+//! operator already declared in `models.json`, never introduce a new one on
+//! the strength of a server's own say-so. `probe_openai_compat_backends`
+//! now drops any probed pair absent from `models.json` before it ever
+//! reaches `index_builder` (see that function's own comment for the full
+//! reasoning). `probe_observed_model_absent_from_models_json_is_not_admitted`
+//! and its negative control,
+//! `probe_control_listed_model_still_admits_when_probe_reports_a_different_model`,
+//! below are this fix's regression proof.
 
 mod support;
 
@@ -475,6 +487,137 @@ async fn widening_the_live_override_to_match_the_probe_admits_and_calls_the_back
         result.status,
         ResultStatus::Completed,
         "an admitted request must complete normally, got: {:?}",
+        result.status
+    );
+}
+
+/// The bare model name (no `backend/` prefix) the mock `/models` endpoint
+/// reports for the unlisted-overlay fixture below -- deliberately never
+/// written into any `models.json` fixture in this file.
+const UNDECLARED_MODEL_NAME: &str = "undeclared-model";
+
+/// The full `backend/model` ref for [`UNDECLARED_MODEL_NAME`] on the
+/// `"probed"` backend [`config_naming`] always configures.
+const UNDECLARED_MODEL: &str = "probed/undeclared-model";
+
+/// **3e**: the RESTRICT-policy proof (board item covering the DECIDED
+/// policy: "the startup capability probe may only confirm models the
+/// operator declared, never introduce new ones"). The live server reports a
+/// model `models.json` never names at all -- `models.json` still lists
+/// `MODEL` (so this isn't just "an empty models.json"), but the role's
+/// chain is pointed at the UNDECLARED pair instead. Per `probe.rs`'s own
+/// documented merge precedence (config `ModelOverrides` > `ModelMetadata`
+/// entry > probed server value > `DialectDefaults`) and its "discovery may
+/// only narrow" invariant, a server mentioning a model is never sufficient
+/// on its own to make it routable: this pair must be rejected exactly as if
+/// `probe_on_startup` had never run at all, with the SAME
+/// "unknown (backend, model) pair" reason `router.rs`'s `check_candidate`
+/// gives any pair `models.json` never declared (`docs/getting-started.md`'s
+/// published error text). Asserts on the observable end-to-end routing
+/// outcome of an actual turn -- not on the capability index's internal
+/// contents -- so a builder that reverted to unconditionally inserting
+/// every probed pair shows up here as the turn succeeding instead of
+/// failing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn probe_observed_model_absent_from_models_json_is_not_admitted() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{"id": UNDECLARED_MODEL_NAME, "max_model_len": HUGE_PROBED_WINDOW}]
+        })))
+        .mount(&server)
+        .await;
+    // No mock for POST /chat/completions: an admitted-in-error request
+    // would hang waiting for a response that never comes, turning a
+    // regression into an unmistakable test timeout rather than a silent
+    // pass.
+
+    let dir = support::unique_temp_dir("context-probe-overlay-unlisted");
+    // models.json still declares MODEL (a real, listed pair) -- proving
+    // this isn't just "no models.json at all" -- but the role chain below
+    // names a DIFFERENT pair the probe alone observed.
+    let metadata_path = write_model_metadata(&dir, HUGE_PROBED_WINDOW);
+    let mut config = config_naming(server.uri(), metadata_path);
+    config.roles.get_mut("coder").expect("coder role").chain = vec![UNDECLARED_MODEL.to_string()];
+    let conway = build_conway(config);
+
+    let handle = conway
+        .new_session(SessionSpec::default())
+        .await
+        .expect("new_session should succeed");
+    let turn = handle.prompt("hello").await.expect("prompt");
+    let result = tokio::time::timeout(Duration::from_secs(10), turn.result())
+        .await
+        .expect("result must not hang")
+        .expect("result() itself must not error -- the turn ends Failed, not the stream");
+
+    match &result.status {
+        ResultStatus::Failed { error } => {
+            assert!(
+                error.contains("unknown (backend, model) pair"),
+                "a probe-observed model absent from models.json must be rejected with the same \
+                 reason any undeclared pair gets, got: {error}"
+            );
+            assert!(error.contains(UNDECLARED_MODEL), "got: {error}");
+        }
+        other => panic!(
+            "expected ResultStatus::Failed (the undeclared model must never be admitted), got \
+             {other:?}"
+        ),
+    }
+}
+
+/// GP-14 negative control for 3e: identical fixture, except the role's
+/// chain names `MODEL` -- the pair `models.json` actually declares -- so
+/// the SAME probe response (which still reports `UNDECLARED_MODEL_NAME` and
+/// nothing else) has nothing to confirm for `MODEL` beyond metadata/dialect
+/// defaults. Proves the assertion above can fail: if the filter in
+/// `probe_openai_compat_backends` were broken in the other direction (e.g.
+/// dropping every pair, listed or not), this would fail too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn probe_control_listed_model_still_admits_when_probe_reports_a_different_model() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{"id": UNDECLARED_MODEL_NAME, "max_model_len": HUGE_PROBED_WINDOW}]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "choices": [{
+                "message": { "content": "ok" },
+                "finish_reason": "stop"
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let dir = support::unique_temp_dir("context-probe-overlay-unlisted-control");
+    let metadata_path = write_model_metadata(&dir, HUGE_PROBED_WINDOW);
+    let config = config_naming(server.uri(), metadata_path);
+    let conway = build_conway(config);
+
+    let handle = conway
+        .new_session(SessionSpec::default())
+        .await
+        .expect("new_session should succeed");
+    let turn = handle.prompt("hello").await.expect("prompt");
+    let result = tokio::time::timeout(Duration::from_secs(10), turn.result())
+        .await
+        .expect("result must not hang")
+        .expect("result should succeed");
+
+    server.verify().await;
+    assert_eq!(
+        result.status,
+        ResultStatus::Completed,
+        "MODEL is declared in models.json regardless of what the probe reports; an admitted \
+         request must complete normally, got: {:?}",
         result.status
     );
 }

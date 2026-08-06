@@ -38,6 +38,13 @@ error before conway ever contacts your provider:
 routing error: no candidate for role coder (1 considered): anthropic/claude-sonnet-4-6: capability: capabilities: unknown (backend, model) pair
 ```
 
+If you've set `[models].probe_on_startup` for an `openai-compat` backend,
+that startup probe cannot fill this gap for you: it may only confirm and
+narrow the capabilities of a pair `models.json` already lists, never add a
+pair on its own — a server reporting a model it serves is not the same as
+you declaring it, and conway never routes to a model on the strength of
+the server's own say-so alone.
+
 Each entry needs four fields; `max_context_tokens` and `reliability_tier`
 affect routing and the TUI's context-window display, `tool_calling` and
 `reasoning` are currently informational.

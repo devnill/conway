@@ -109,6 +109,15 @@
 //!   `Backend::capabilities()` — and therefore the T-1 gate — would return
 //!   for the same pair, restoring the single-source guarantee the bullet
 //!   above already describes for the unprobed path.
+//! - **The probe may confirm a declared model; it may never introduce one**
+//!   (RESTRICT, DECIDED — see [`probe_openai_compat_backends`]'s own
+//!   comment for the full reasoning). A server can report models
+//!   `models.json` never named at all; [`probe_openai_compat_backends`]'s
+//!   overlay loop drops every such pair rather than inserting it into
+//!   `index_builder`, so `models.json` stays the sole source of which
+//!   `(backend, model)` pairs are routable at all — `probe_on_startup`
+//!   narrows/confirms capabilities for declared models, it never expands
+//!   the declared set.
 
 #[cfg(any(feature = "anthropic", feature = "openai-compat"))]
 use std::collections::BTreeMap;
@@ -915,6 +924,11 @@ fn probe_openai_compat_backends(
             .filter(|key| !key.is_empty())
             .map(SecretString::new);
 
+        // Bound so the admission filter below can reuse the exact same
+        // backend-scoped, `ModelRef`-normalized key set the probe itself
+        // was constructed with, rather than re-deriving it (and risking a
+        // second, subtly different notion of "declared for this backend").
+        let overrides = models_overrides_for(id, metadata);
         let probe = CapabilityProbe::new(
             base_url,
             profile,
@@ -925,7 +939,7 @@ fn probe_openai_compat_backends(
             // the probe exclusively through `overrides` below, not through
             // this store.
             ModelMetadataStore::defaults(),
-            models_overrides_for(id, metadata),
+            overrides.clone(),
         );
         let result = block_on(probe.discover_result());
         if result.degraded {
@@ -936,7 +950,46 @@ fn probe_openai_compat_backends(
             );
             continue;
         }
+        // RESTRICT (DECIDED, operator direction 2026-08-06: "Keep
+        // configuration something done by hand and have the probe confirm
+        // that the model works, nothing else."): only overlay a pair
+        // `models.json` already declares for this backend. `probe.rs`'s own
+        // module doc states the merge precedence as config `ModelOverrides`
+        // > `ModelMetadata` entry > probed server value > `DialectDefaults`,
+        // and that discovery may only *narrow* `max_context_tokens` — never
+        // raise `tool_calling`, never set `reliability_tier` to `Verified`.
+        // Inserting a pair for a model `models.json` never named is the
+        // largest possible raise the probe could make: from not-routable-
+        // at-all to routable, on the strength of the server's own say-so
+        // alone. That is exactly the opaque, server-driven admission
+        // `probe.rs`'s contract already forbids in every other direction,
+        // and exactly what GP-07 ("no opaque auto-selection in the core")
+        // rules out — a model becoming routable because a server mentioned
+        // it, with no operator declaration behind it, is not a "route" a
+        // user could have predicted from `models.json` alone. `models.json`
+        // is the sole hand-written source of truth (same principle as prior
+        // decision 01KZ50GM85GF0TPNBYCNXYAS9Z: for a *listed* pair,
+        // `models.json` wins outright over the probe in both directions —
+        // this is that principle at its boundary, where no declaration
+        // means nothing for the probe to confirm). A pair the probe
+        // observed but `models.json` never listed is silently dropped, not
+        // inserted, and not surfaced as a hard error — `discover_result`
+        // itself treats absent-server-observation the same way (a probe
+        // failure is always a warning, never fatal, per `CapabilityProbe`'s
+        // own doc) — but it IS logged at `debug` below so an operator who
+        // enabled `probe_on_startup` and expected discovery to pick up an
+        // undeclared model has a signal for why it never became routable.
         for (model_id, caps) in result.capabilities {
+            if !overrides.contains_key(model_id.as_str()) {
+                tracing::debug!(
+                    backend = %id,
+                    model = %model_id,
+                    "probe_on_startup: server reported a model with no models.json entry for \
+                     this backend; not admitting it (models.json is the sole source of \
+                     routable models)"
+                );
+                continue;
+            }
             index_builder = index_builder.insert(BackendId::new(id.clone()), model_id, caps);
         }
     }

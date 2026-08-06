@@ -479,6 +479,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The startup capability probe (`[models].probe_on_startup`) can no
+  longer make a model routable that `models.json` never declared.**
+  `probe_openai_compat_backends` (`ConwayBuilder::build` step 5's overlay)
+  inserted every probe-observed `(backend, model)` pair into the router's
+  `CapabilityIndex` unconditionally, with no check against
+  `metadata.models` — so an `openai-compat` server that listed a model the
+  operator never wrote into `models.json` made that model silently
+  routable, contradicting `probe.rs`'s own documented merge precedence
+  (config `ModelOverrides` > `ModelMetadata` entry > probed server value >
+  `DialectDefaults`, which discovery may only *narrow*, never use to admit
+  a pair from nothing) and GP-07's "no opaque auto-selection." Per operator
+  direction (RESTRICT, DECIDED: "keep configuration something done by
+  hand and have the probe confirm that the model works, nothing else"),
+  the overlay now drops any probed pair absent from `models.json` before
+  it reaches the index — logged at `debug` so an operator relying on
+  discovery still has a signal for why an expected model never became
+  routable — rather than admitting it. This is operator-visible: such a
+  pair now fails routing with the same `capabilities: unknown (backend,
+  model) pair` error every other undeclared pair already gets, instead of
+  being silently reachable. `docs/routing.md` and
+  `docs/getting-started.md` now say so explicitly.
+  (`crates/conway/src/builder.rs`,
+  `crates/conway/tests/context_probe_overlay_seam.rs`, `docs/routing.md`,
+  `docs/getting-started.md`)
+
 - **`sessions list`'s `ORIGIN` column no longer prints `fork@...` for a
   spawned child.** `origin_cell` (and `origin_json`'s `--json` counterpart)
   hardcoded the word `fork` for any session with a parent, discarding the
