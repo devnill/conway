@@ -386,6 +386,35 @@ async fn sessions_tree_shows_two_forked_children_indented_under_parent() {
     );
 }
 
+/// MINOR 6: `tree()`'s per-node label lost its `status=` segment in the same
+/// change that dropped `sessions list`'s `STATUS` column (dead machinery
+/// removed -- see `sessions_list_json_has_id_created_no_status` above) but,
+/// unlike that one, got no regression test of its own. Sibling of that test
+/// for `sessions tree`'s text output: a session has no terminal status, and
+/// this label segment must never come back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sessions_tree_label_has_no_status_segment() {
+    let mock =
+        MockBackend::start(Script(vec![vec![Chunk::Text("hi"), Chunk::Finish("stop")]])).await;
+    let fixture = fixture_with_mock(&mock);
+    let created = run_conway(&["-p", "hi"], &fixture);
+    assert!(created.status.success());
+    let parent = only_session_id(&fixture);
+    let _child = write_forked_child(&fixture, &parent, 1);
+
+    let out = run_conway(&["sessions", "tree", &parent], &fixture);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8(out.stdout).expect("utf8 stdout");
+    assert!(
+        !text.contains("status="),
+        "tree label must never carry a status= segment: {text:?}"
+    );
+}
+
 /// Regression test: `tree()` used to resolve its explicitly-named target
 /// via the default-filtered `Conway::sessions` catalog (which excludes
 /// ephemeral sessions), so `sessions tree <ephemeral-id>` reported "unknown

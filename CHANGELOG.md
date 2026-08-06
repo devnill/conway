@@ -585,6 +585,29 @@ prober is not yet wired.
   (`crates/conway/src/builder.rs`,
   `crates/conway/tests/context_probe_overlay_seam.rs`, `docs/routing.md`,
   `docs/getting-started.md`)
+- **`docs/routing.md` now documents how to see a model the startup probe
+  observed but `models.json` never listed being dropped by the RESTRICT
+  rule above.** That drop was previously logged only at `debug`, which
+  most deployments do not run at, leaving no way to tell "the probe never
+  reached my server" apart from "the probe saw it and RESTRICT dropped
+  it" — GP-07 requires an operator always be able to answer that. No
+  behavior changed; the doc now states the log level and gives the
+  concrete `RUST_LOG=conway::builder=debug` invocation that surfaces it.
+  (`docs/routing.md`)
+- **`conway_ask`'s docs no longer claim an `agent_def` inheritance the
+  code does not do.** The tool's module doc and its `prompt` argument's
+  schema description both said a forked child "inherits this agent's full
+  context, agent_def, role, and tool set" — false: `AskTool::invoke`
+  always passes `agent_def: None`, so a def-declared `result_contract`,
+  tools selector, system prompt, and model pin never reach a `conway_ask`
+  child, even from a parent itself spawned from a def (only the parent's
+  effective *role* is inherited, via `conway-runtime`'s existing WI-136
+  fallback). This became load-bearing once agent-def `result_contract`
+  enforcement landed (above): for `conway_ask` it silently never applies,
+  and the docs previously implied otherwise. No behavior changed — the
+  docs now say what the code actually does; whether a fork *should*
+  inherit the forker's `agent_def` is an open design question, tracked
+  separately. (`crates/conway-tools/src/subagent/ask.rs`, `docs/agents.md`)
 
 - **`sessions list`'s `ORIGIN` column no longer prints `fork@...` for a
   spawned child.** `origin_cell` (and `origin_json`'s `--json` counterpart)
