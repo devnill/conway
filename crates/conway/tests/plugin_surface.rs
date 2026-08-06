@@ -22,9 +22,13 @@
 //! public signatures, and a real plugin crate names them in its own
 //! `Cargo.toml` — they are not what F8 curates.
 
+// Only used by `facade_only_config` and its sole caller, both gated on
+// `jsonl-store` (see that test's own doc).
+#[cfg(feature = "jsonl-store")]
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+#[cfg(feature = "jsonl-store")]
 use conway::config::schema::{
     AgentsConfig, BackendEntry, BackendKind, ConwayConfig, HealthSection, LimitsConfig,
     ModelsConfig, PermissionMode, PermissionsConfig, RoleEntry, RoutingSection, SessionConfig,
@@ -37,7 +41,10 @@ use conway::plugin::{
     SubagentError, Tool, ToolCall, ToolCategory, ToolCtx, ToolError, ToolName, ToolOutput,
     ToolSpec, TruncationPolicy,
 };
-use conway::{AgentId, ConwayBuilder, RoleAlias, SessionId};
+use conway::{AgentId, SessionId};
+// Only used by the `jsonl-store`-gated test below; see that test's own doc.
+#[cfg(feature = "jsonl-store")]
+use conway::{ConwayBuilder, RoleAlias};
 
 // ---------------------------------------------------------------------------
 // A trivial third-party tool, written against `conway::plugin` alone.
@@ -170,6 +177,8 @@ impl ContextHook for MarkerHook {
 // tempdir, the built-in deny gate, and the facade-compiled router.
 // ---------------------------------------------------------------------------
 
+// Only used by the `jsonl-store`-gated test below; see that test's own doc.
+#[cfg(feature = "jsonl-store")]
 fn facade_only_config(session_root: std::path::PathBuf, metadata_path: std::path::PathBuf) -> ConwayConfig {
     let mut roles = BTreeMap::new();
     roles.insert(
@@ -221,7 +230,20 @@ fn facade_only_config(session_root: std::path::PathBuf, metadata_path: std::path
 /// `ConwayBuilder::with_plugin`/`with_context_hook`, and `build()` --
 /// which runs the plugin-registration and duplicate-manifest-id paths for
 /// real -- succeeds.
-#[cfg(feature = "anthropic")]
+///
+/// Gated on `jsonl-store`: this test never calls `with_session_store`, so
+/// `build()` synthesizes the default `JsonlSessionStore` pointed at `dir`
+/// (`facade_only_config`'s own doc, above) -- without that feature
+/// `build_default_store` is `Err(ConwayError::Build)` and the `.expect`
+/// below panics. **Not** gated on any backend feature: `construct_backend`
+/// has no cfg-gated path left to fail on for `kind = "anthropic"` (board
+/// item: retire the backend compile-time feature flags) -- this test used
+/// to carry a now-removed `#[cfg(feature = "anthropic")]` for exactly that
+/// reason, which masked the real (`jsonl-store`) dependency; corrected as
+/// part of that item's own verification pass, which found this test failed
+/// under `--no-default-features`/`builtin-tools`-only for the true reason
+/// above, not the stale one.
+#[cfg(feature = "jsonl-store")]
 #[test]
 fn plugin_tool_and_hook_register_through_the_builder() {
     let dir = tempfile::tempdir().expect("tempdir");

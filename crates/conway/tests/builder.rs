@@ -10,7 +10,10 @@ use conway::config::schema::{
     PermissionsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig, TuiSection,
 };
 use conway::config::schema::{BackendEntry, BackendKind};
-use conway::{Conway, ConwayBuilder, ConwayError, PluginSelection, SessionSpec};
+use conway::{Conway, ConwayBuilder, ConwayError, SessionSpec};
+// Only named by the `builtin-tools`-gated tests below.
+#[cfg(feature = "builtin-tools")]
+use conway::PluginSelection;
 use conway_core::agent::PermissionDecision;
 use conway_core::capabilities::{
     CacheMode, Capabilities, ReliabilityTier, StructuredOutput, ToolCallSupport,
@@ -283,7 +286,6 @@ async fn build_constructs_default_jsonl_store_when_none_injected() {
 /// key was rejected at `build()` time to avoid a routing panic. Now the
 /// backend map and `config::merge::validate`'s chain-ref namespace agree by
 /// construction, so no such guard is needed.
-#[cfg(feature = "anthropic")]
 #[test]
 fn build_accepts_an_anthropic_backend_under_any_json_key() {
     let mut cfg = base_config();
@@ -308,7 +310,6 @@ fn build_accepts_an_anthropic_backend_under_any_json_key() {
 }
 
 /// The default case: a `backends.anthropic` entry still builds, unchanged.
-#[cfg(feature = "anthropic")]
 #[test]
 fn build_succeeds_for_a_conventionally_named_anthropic_backend() {
     let mut cfg = base_config();
@@ -329,36 +330,6 @@ fn build_succeeds_for_a_conventionally_named_anthropic_backend() {
         .with_router(fake_router())
         .build()
         .expect("a matching 'anthropic' JSON key must build successfully");
-}
-
-#[cfg(not(feature = "anthropic"))]
-#[test]
-fn build_reports_unsupported_feature_for_anthropic_backend_kind() {
-    let mut cfg = base_config();
-    cfg.backends.insert(
-        "anthropic".to_string(),
-        BackendEntry {
-            kind: BackendKind::Anthropic,
-            api_key: "sk-ant-api03-not-a-real-key".to_string(),
-            ..BackendEntry::default()
-        },
-    );
-    let store = Arc::new(FakeStore::new());
-    let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
-
-    let result = ConwayBuilder::from_parts(cfg)
-        .with_session_store(store)
-        .with_permission_gate(gate)
-        .build();
-    let err = expect_build_err(result, "anthropic feature is disabled");
-
-    match err {
-        ConwayError::UnsupportedFeature { feature, message } => {
-            assert_eq!(feature, "anthropic");
-            assert!(message.contains("anthropic"), "{message}");
-        }
-        other => panic!("expected UnsupportedFeature error, got {other:?}"),
-    }
 }
 
 /// Indirect but discriminating proof that `with_permission_gate` overrides
@@ -712,7 +683,6 @@ fn injected_plugin_is_unaffected_by_the_default_builtin_selection() {
     );
 }
 
-#[cfg(feature = "openai-compat")]
 #[test]
 fn injected_backend_replaces_config_derived_backend_with_same_id() {
     let mut cfg = base_config();
@@ -754,7 +724,6 @@ fn injected_backend_replaces_config_derived_backend_with_same_id() {
 /// kernel by the time this is called (called only after `build()` has
 /// already returned, so any network attempt `build()` made has either
 /// already happened or never will).
-#[cfg(feature = "openai-compat")]
 fn connection_was_accepted(listener: &std::net::TcpListener) -> bool {
     listener.set_nonblocking(true).expect("set_nonblocking");
     listener.accept().is_ok()
@@ -772,7 +741,6 @@ fn connection_was_accepted(listener: &std::net::TcpListener) -> bool {
 /// anything, since no `Backend` instance is consulted for capability
 /// discovery -- see `builder.rs`'s module doc, reconciliation on startup
 /// probing).
-#[cfg(feature = "openai-compat")]
 #[test]
 fn probe_on_startup_false_makes_no_network_call_true_does() {
     // probe_on_startup = false (the default): zero connection attempts.
@@ -845,7 +813,6 @@ fn probe_on_startup_false_makes_no_network_call_true_does() {
 /// (no `with_router` override here), and its `entries` correspond 1:1 to
 /// the role's configured chain, in order -- mirrors the shape
 /// `conway-routing`'s own `RoutingExplain` tests assert.
-#[cfg(feature = "openai-compat")]
 #[test]
 fn explain_routing_reports_the_configured_chain_for_the_role() {
     let mut cfg = base_config();
