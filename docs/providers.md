@@ -27,6 +27,18 @@ Two backend `kind`s exist:
 | `"anthropic"` | The native Anthropic Messages API | any endpoint speaking that wire format |
 | `"openai-compat"` | One adapter for every OpenAI-compatible server | a `dialect` (built-in or your own [profile](#declarative-provider-profiles)) |
 
+**Which of these you use is configuration, not a build option.** The
+`conway` binary and library both ship with both adapters compiled in
+always — there is no cargo feature to enable, and never was a supported
+one for very long: an operator picks a backend by writing a
+`[backends.<id>]` entry, not by recompiling. The base harness's job is to
+support the common API flavours out of the box; anything beyond that
+(a bespoke wire protocol, a vendor SDK) is expected to arrive as a
+**plugin**, not a new build-time switch on this crate — see board item
+`01KZACKE05ZNYTYR0TGV3550SD` for that direction (backends installed
+declaratively, on the same extension surface a third-party plugin author
+already uses, rather than a closed set of built-ins).
+
 ## Anthropic and Anthropic-compatible endpoints
 
 ```json

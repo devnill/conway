@@ -88,9 +88,9 @@
 //!   scope — see `conway_backends::capabilities`'s module doc and this
 //!   item's scope-boundary note.
 //! - **Startup capability probing is implemented via
-//!   `conway_backends::probe::CapabilityProbe`**, which is `openai-compat`-
-//!   feature-gated and only meaningful for `kind = "openai-compat"` backend
-//!   entries — there is no equivalent generic mechanism for `anthropic`
+//!   `conway_backends::probe::CapabilityProbe`**, which is only meaningful
+//!   for `kind = "openai-compat"` backend entries — there is no equivalent
+//!   generic mechanism for `anthropic`
 //!   entries in this crate (the `Backend::probe()` port method exists but
 //!   returns `ProbeReport`, which carries no `max_context_tokens`/capability
 //!   data to overlay). `probe_on_startup` therefore only ever affects
@@ -119,9 +119,7 @@
 //!   narrows/confirms capabilities for declared models, it never expands
 //!   the declared set.
 
-#[cfg(any(feature = "anthropic", feature = "openai-compat"))]
-use std::collections::BTreeMap;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -153,7 +151,6 @@ const EVENT_BUS_CAPACITY: usize = 1024;
 /// Per-discovery-request timeout for the optional startup capability probe.
 /// Mirrors `conway_backends::probe::DISCOVERY_TIMEOUT` (private to that
 /// crate) rather than importing it.
-#[cfg(feature = "openai-compat")]
 const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Which built-in plugins [`ConwayBuilder::build`] auto-registers, filtered
@@ -463,18 +460,8 @@ impl ConwayBuilder {
         let mut index_builder =
             CapabilityIndex::from_backends(&all_backends, &model_refs).into_builder();
         if config.models.probe_on_startup {
-            #[cfg(feature = "openai-compat")]
-            {
-                index_builder =
-                    probe_openai_compat_backends(&config, &profiles, &metadata, index_builder);
-            }
-            #[cfg(not(feature = "openai-compat"))]
-            {
-                tracing::warn!(
-                    "models.probe_on_startup is true but the 'openai-compat' feature is disabled; \
-                     no startup probing was performed"
-                );
-            }
+            index_builder =
+                probe_openai_compat_backends(&config, &profiles, &metadata, index_builder);
         }
         let capability_index = index_builder.build();
 
@@ -619,7 +606,6 @@ fn resolve_path(cwd: &Path, p: &Path) -> PathBuf {
 /// unset variable is a configuration mistake conway can describe exactly,
 /// so that stays a hard error; what the resolved value looks like is the
 /// provider's judgment to make, not conway's.
-#[cfg(any(feature = "anthropic", feature = "openai-compat"))]
 fn resolve_api_key(id: &str, entry: &BackendEntry) -> Result<String> {
     if !entry.api_key.is_empty() {
         return Ok(entry.api_key.clone());
@@ -687,7 +673,6 @@ fn load_provider_profiles(cwd: &Path) -> Result<conway_backends::profile::Profil
 /// `ModelOverrides` (`conway_core::routing`) has no field for
 /// `tool_calling`/`reasoning`, so those two `models.json` fields currently
 /// have no effect here — see this module's doc for the scope-boundary note.
-#[cfg(any(feature = "anthropic", feature = "openai-compat"))]
 fn models_overrides_for(
     id: &str,
     metadata: &config::model_metadata::ModelMetadata,
@@ -714,7 +699,6 @@ fn models_overrides_for(
         .collect()
 }
 
-#[cfg(feature = "anthropic")]
 fn build_anthropic(
     id: &str,
     entry: &BackendEntry,
@@ -763,21 +747,6 @@ fn build_anthropic(
     Ok(Arc::new(backend))
 }
 
-#[cfg(not(feature = "anthropic"))]
-fn build_anthropic(
-    _id: &str,
-    _entry: &BackendEntry,
-    _metadata: &config::model_metadata::ModelMetadata,
-) -> Result<Arc<dyn Backend>> {
-    Err(ConwayError::UnsupportedFeature {
-        feature: "anthropic",
-        message: "backend kind 'anthropic' requires the 'anthropic' cargo feature, which was not \
-                  enabled at build time"
-            .to_string(),
-    })
-}
-
-#[cfg(feature = "openai-compat")]
 fn build_openai_compat(
     id: &str,
     entry: &BackendEntry,
@@ -822,21 +791,6 @@ fn build_openai_compat(
     Ok(Arc::new(backend))
 }
 
-#[cfg(not(feature = "openai-compat"))]
-fn build_openai_compat(
-    _id: &str,
-    _entry: &BackendEntry,
-    _metadata: &config::model_metadata::ModelMetadata,
-    _profiles: &conway_backends::profile::ProfileStore,
-) -> Result<Arc<dyn Backend>> {
-    Err(ConwayError::UnsupportedFeature {
-        feature: "openai-compat",
-        message: "backend kind 'openai-compat' requires the 'openai-compat' cargo feature, which \
-                  was not enabled at build time"
-            .to_string(),
-    })
-}
-
 /// Resolves the facade's `backends.<id>.dialect` string to a
 /// [`conway_backends::profile::Profile`] against `profiles` (declarative
 /// provider profiles item). The three dialects whose documented facade
@@ -848,7 +802,6 @@ fn build_openai_compat(
 /// up as-is. This is what lets a new provider be selected by name with no
 /// recompile: adding it to `profiles` is enough, no change to this
 /// function is ever required.
-#[cfg(feature = "openai-compat")]
 fn resolve_profile(
     id: &str,
     raw: &str,
@@ -892,7 +845,6 @@ fn resolve_profile(
 /// inputs on both sides, so the overlay below becomes a verified no-op
 /// wherever `models.json` already has an opinion — see the module doc's
 /// `CapabilityIndex`/`Backend::capabilities()` reconciliation note.
-#[cfg(feature = "openai-compat")]
 fn probe_openai_compat_backends(
     config: &ConwayConfig,
     profiles: &conway_backends::profile::ProfileStore,
@@ -1032,7 +984,6 @@ fn build_default_store(_cwd: &Path, _root: &Path) -> Result<Arc<dyn SessionStore
 /// (`Handle::current().block_on` panics in that situation; a brand new
 /// thread + runtime does not). See the module doc's top-level reconciliation
 /// note.
-#[cfg(any(feature = "jsonl-store", feature = "openai-compat"))]
 fn block_on<F>(fut: F) -> F::Output
 where
     F: std::future::Future + Send,
@@ -1052,7 +1003,7 @@ where
     })
 }
 
-#[cfg(all(test, any(feature = "anthropic", feature = "openai-compat")))]
+#[cfg(test)]
 mod models_overrides_tests {
     use super::*;
     use crate::config::model_metadata::{ModelMetadata, ModelMetadataEntry};
@@ -1114,7 +1065,6 @@ mod models_overrides_tests {
     /// (`kimi`) by name with no special-casing, resolves a user-supplied
     /// profile id with no recompile, and rejects an unknown name with a
     /// named, typed error rather than a panic.
-    #[cfg(feature = "openai-compat")]
     #[test]
     fn resolve_profile_accepts_every_documented_dialect_string_and_new_built_ins() {
         use conway_backends::profile::ProfileStore;
@@ -1134,7 +1084,6 @@ mod models_overrides_tests {
         }
     }
 
-    #[cfg(feature = "openai-compat")]
     #[test]
     fn resolve_profile_resolves_a_user_supplied_profile_with_no_recompile() {
         use conway_backends::profile::ProfileStore;
@@ -1162,7 +1111,6 @@ mod models_overrides_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    #[cfg(feature = "openai-compat")]
     #[test]
     fn resolve_profile_names_the_unknown_dialect_in_a_typed_error() {
         use conway_backends::profile::ProfileStore;
@@ -1186,7 +1134,6 @@ mod models_overrides_tests {
     /// pair (built via `CapabilityIndex::from_backends`, step 5 of
     /// `ConwayBuilder::build`) must be identical -- not two independently
     /// recomputed values that can silently drift apart.
-    #[cfg(feature = "openai-compat")]
     #[test]
     fn models_json_drives_both_backend_capabilities_and_router_index_identically() {
         use conway_backends::config::{Dialect, OpenAiCompatConfig};

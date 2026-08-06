@@ -74,12 +74,19 @@ it depends only on the trait object it's handed.
 
 This shape exists so:
 
-- An embedder can depend on `conway` alone and never pull in `clap`, a TUI
-  renderer, or every backend's HTTP client.
+- An embedder can depend on `conway` alone and never pull in `clap` or a TUI
+  renderer.
 - A third-party plugin author depends on `conway-core` — a small, slow-moving
   crate with strict semver discipline — not on the whole harness.
-- Backend adapters are feature-gated per crate consumer (`anthropic`,
-  `openai-compat`), which only works cleanly with a dedicated crate.
+- **Which backend you talk to is runtime configuration, not a build-time
+  choice.** `conway-backends` is a non-optional dependency of `conway`: the
+  harness always ships adapters for the common API flavours (Anthropic
+  native, OpenAI-compatible), and a `[backends.<id>].kind` entry in settings
+  selects among them — there is no `anthropic`/`openai-compat` cargo feature
+  to recompile for. Board item `01KZACKE05ZNYTYR0TGV3550SD` tracks the
+  follow-on direction: backends as plugins, installed declaratively on the
+  same surface a third party uses (GP-03), rather than a closed built-in set
+  selected at config time.
 - Every port trait has a fake/test-double implementation available behind a
   feature flag, so the runtime and tools are testable end-to-end with zero
   network.

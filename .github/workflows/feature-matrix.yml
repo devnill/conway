@@ -15,10 +15,10 @@ jobs:
         include:
           - name: no-default-features
             args: --no-default-features
-          - name: anthropic-only
-            args: --no-default-features --features anthropic
-          - name: openai-compat-only
-            args: --no-default-features --features openai-compat
+          - name: builtin-tools-only
+            args: --no-default-features --features builtin-tools
+          - name: jsonl-store-only
+            args: --no-default-features --features jsonl-store
           - name: builtin-tools+jsonl-store
             args: --no-default-features --features builtin-tools,jsonl-store
           - name: all-features
