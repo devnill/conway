@@ -411,6 +411,19 @@ impl SubagentHost for Runtime {
             .clone()
             .or_else(|| agent_def.map(|d| d.tools.clone()));
         let pin = agent_def.and_then(|d| d.model.clone());
+        // Precedence: the explicit call-site contract (`spec.result_contract`
+        // -- the model's `conway_subagent` `result_contract` arg, or an
+        // embedder's `ForkSpec`/`SpawnSpec::result_contract` builder) wins
+        // over the def's; the def supplies only the DEFAULT applied when the
+        // call site left its own contract unset. This mirrors `tools` just
+        // above (`spec.tools` shadows `agent_def.tools`) rather than `role`,
+        // which additionally falls back to the parent -- a subagent's result
+        // contract has no such "inherit from parent" step, so the fallback
+        // chain here is exactly two-deep.
+        let result_contract = spec
+            .result_contract
+            .clone()
+            .or_else(|| agent_def.and_then(|d| d.result_contract.clone()));
 
         let now = Utc::now();
         let mut meta = SessionMeta {
@@ -563,10 +576,13 @@ impl SubagentHost for Runtime {
             headroom_override: None,
             max_parallel_tools: DEFAULT_MAX_PARALLEL_TOOLS,
             report_slot: Some(last_report.clone()),
-            // WI-086: carried straight through from the spec the caller
-            // supplied -- this is a plain value handoff, not a design
-            // decision this item needs to make.
-            result_contract: spec.result_contract.clone(),
+            // WI-086 carried `spec.result_contract` straight through as a
+            // plain value handoff. This item adds the def as a second,
+            // lower-precedence source: `result_contract` (computed above)
+            // is the call site's contract when the caller supplied one,
+            // else the spawning `AgentDef`'s own `result_contract` -- see
+            // that computation's own comment for the full precedence rule.
+            result_contract,
             // Threaded straight from the spec (WI keep-alive item): a
             // fork/spawn child that `await_result`s (`AgentTree::
             // await_result`, WI-083) still depends on `keep_alive: false`
