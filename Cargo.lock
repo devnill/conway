@@ -400,7 +400,7 @@ checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
 
 [[package]]
 name = "conway"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-trait",
  "blake3",
@@ -429,7 +429,7 @@ dependencies = [
 
 [[package]]
 name = "conway-backends"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -456,7 +456,7 @@ dependencies = [
 
 [[package]]
 name = "conway-cli"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "assert_cmd",
  "async-trait",
@@ -479,7 +479,7 @@ dependencies = [
 
 [[package]]
 name = "conway-core"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-trait",
  "blake3",
@@ -496,7 +496,7 @@ dependencies = [
 
 [[package]]
 name = "conway-routing"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -513,7 +513,7 @@ dependencies = [
 
 [[package]]
 name = "conway-runtime"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-trait",
  "blake3",
@@ -538,7 +538,7 @@ dependencies = [
 
 [[package]]
 name = "conway-session"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -555,7 +555,7 @@ dependencies = [
 
 [[package]]
 name = "conway-tools"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-trait",
  "chrono",

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-08-06
+
 **Seven of the entries below are one piece of work.** A declaration audit
 found the same defect in seven places — a declared surface that did not
 match the behavior behind it — and fixed them together. The breaking
@@ -2549,6 +2551,14 @@ capability is a plugin.
 - No bundled example third-party plugin, and OSS-release docs (README,
   plugin-author guide) are not yet written.
 
-<!-- No published remote yet; add a compare/tag link here once the repository is
-     hosted, e.g. [0.1.0]: https://<host>/<owner>/conway/releases/tag/v0.1.0 -->
+<!-- Only versions that carry a git tag are linked. Tagging began at v0.4.0
+     (decision 01KYT8AQBTK4EZMA0B57K58W3R); 0.3.0 and earlier were released
+     untagged and have no target to point at. -->
+
+[Unreleased]: https://github.com/devnill/conway/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/devnill/conway/releases/tag/v0.8.0
+[0.7.0]: https://github.com/devnill/conway/releases/tag/v0.7.0
+[0.6.0]: https://github.com/devnill/conway/releases/tag/v0.6.0
+[0.5.0]: https://github.com/devnill/conway/releases/tag/v0.5.0
+[0.4.0]: https://github.com/devnill/conway/releases/tag/v0.4.0
 
