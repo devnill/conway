@@ -3,6 +3,7 @@ name = "conway-runtime"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish.workspace = true
 rust-version.workspace = true
 description = "Agent engine: event bus, agent loop/tree, context assembly, tool execution, and multi-agent supervision for the conway agent harness"
 

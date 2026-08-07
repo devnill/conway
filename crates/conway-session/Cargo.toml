@@ -3,6 +3,7 @@ name = "conway-session"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish.workspace = true
 rust-version.workspace = true
 description = "JsonlSessionStore: append-only session log, fork-by-reference, ancestry resolution, and the session index"
 
