@@ -21,6 +21,13 @@ matter what this file says.
 Clear an entry by building it, or by amending the page. Both are legitimate; a
 claim that survives here unexamined for long is neither.
 
+**Cite entries by title, not by number.** Clearing one renumbers everything
+below it, so a number written down elsewhere goes stale silently and points at
+the wrong entry rather than at nothing. Soft cancellation was cleared on
+2026-08-07 and the entries below it moved up one: routing 5→4, path confinement
+6→5, the subagent tool split 7→6. Board specs written before that date cite the
+old numbers.
+
 ---
 
 ## 1. Declarative hooks
@@ -131,7 +138,7 @@ routing, compaction, memory, skills, and MCP support are unchanged by this
 item: none of the six ships in any form yet, and each is separate, later
 work.
 
-**Sequencing note, unchanged.** Routing (entry 5) is still the one to build
+**Sequencing note, unchanged.** Routing (entry 4) is still the one to build
 first, and not because it is most wanted. It is the hardest test of the
 plugin surface now that the tier has a place to put it, so it will find
 whatever is missing there before the remaining plugins are written against a
@@ -191,48 +198,7 @@ sequenced together.
 
 ---
 
-## 4. Soft cancellation
-
-**Claimed:** [The primitives](../PHILOSOPHY.md#1-the-primitives) says
-cancellation comes in soft and hard forms and that the `TERM`/`KILL` intuition
-transfers exactly, with soft asking a child to wind up at its next turn boundary.
-
-**Exists today:** the runtime half, and only the runtime half.
-`AgentMessage::Cancel` carries a `hard: bool`; `mailbox.rs` routes
-`hard: true` to the cancellation token at enqueue time and `hard: false` to
-`DrainEffect::SoftCancel`; `agent_loop.rs` consumes the soft flag at the top of
-a turn, which is exactly the turn-boundary semantics the page describes. It is
-unit-tested at that layer.
-
-What is missing is anybody sending it. **No production code constructs
-`AgentMessage::Cancel` at all** -- every construction site is in a test module.
-The public paths (`conway_cancel`, `SessionHandle::cancel`,
-`SubagentHost::cancel`, `Runtime::cancel` into `AgentTree::cancel`) trip the
-cancellation token directly, so every cancellation a user or a model can
-actually cause is hard.
-
-**Needed to make it true:** thread the existing flag outward. A `hard` argument
-on the `conway_cancel` tool and on `SessionHandle::cancel`, defaulting to the
-gentler form; a path from there to `AgentMessage::Cancel` rather than straight
-to the token; and a liveness test driving a real soft cancel through a public
-entry point and asserting the child completed its in-flight turn, since the
-current tests exercise the mailbox classifier rather than the path a caller
-takes.
-
-**Unlike entries 1 and 3, this one is small**, which makes it the best candidate
-for closing rather than carrying. Worth deciding deliberately: either wire it,
-or amend the page to say cancellation is immediate and the graceful form is
-internal. Both are honest; leaving it claimed and unreachable is not.
-
-**Related pre-existing defect, found while checking this and worth fixing
-independently:** `conway_cancel`'s own doc comment in
-`crates/conway-tools/src/subagent/control.rs` states that "cancelling carries an
-agent id and a mode," over a `CancelArgs` that has no mode field. That is a
-declaration/behavior mismatch inside the code, outside this page's exemption.
-
----
-
-## 5. Routing moved out of the core
+## 4. Routing moved out of the core
 
 **Claimed:** [Extending conway](../PHILOSOPHY.md#5-extending-conway) and
 [Decisions conway leaves to you](../PHILOSOPHY.md#6-decisions-conway-leaves-to-you)
@@ -329,14 +295,14 @@ an opinion rather than a seam. Moving it out is the change that makes the
 "mechanism in core, policy outside" claim uniformly true instead of true with an
 exception nobody had written down.
 
-**Deletes entry 4's neighbour for free.** The health prober (676 lines, nothing
+**Deletes the health prober for free.** The health prober (676 lines, nothing
 constructs it, gated behind a baseline that cannot be measured because no
 benchmark harness exists) leaves the core with the rest of the crate. Deleting
 it outright remains the better answer, but it stops being core debt either way.
 
 ---
 
-## 6. Path confinement moves into `conway.fs`
+## 5. Path confinement moves into `conway.fs`
 
 **Claimed:** [Constraining a child](../PHILOSOPHY.md#constraining-a-child-its-tool-set)
 says limits on reach belong to the plugin that performs the operation, that
@@ -396,7 +362,7 @@ argument stops being honest.
 
 ---
 
-## 7. `conway_fork` and `conway_spawn` as separate tools
+## 6. `conway_fork` and `conway_spawn` as separate tools
 
 **Claimed:** [Choosing between them](../PHILOSOPHY.md#choosing-between-them)
 says a model reaches the two primitives as two tools named after them, rather

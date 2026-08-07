@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use chrono::Utc;
 
-use conway_core::agent::{AgentResult, AgentTreeSnapshot, AskOutcome, SubagentSpec};
+use conway_core::agent::{AgentResult, AgentTreeSnapshot, AskOutcome, CancelMode, SubagentSpec};
 use conway_core::content::Usage;
 use conway_core::error::RuntimeError;
 use conway_core::event::Event;
@@ -47,8 +47,10 @@ pub struct FakeSubagentHost {
     /// actually threads `ToolCtx::agent_id` through as `caller`, not just
     /// that `target`/`text` arrived intact.
     steers: Mutex<Vec<(AgentId, AgentId, String)>>,
-    /// `(caller, target, reason)`, in call order -- see `steers`' own doc.
-    cancels: Mutex<Vec<(AgentId, AgentId, String)>>,
+    /// `(caller, target, reason, mode)`, in call order -- see `steers`' own
+    /// doc. `mode` (board item 01KZDC2222ARKMZKN8ZE4BYHD6) added alongside
+    /// the trait's new parameter.
+    cancels: Mutex<Vec<(AgentId, AgentId, String, CancelMode)>>,
     results: Mutex<HashMap<AgentId, AgentResult>>,
     asks: Mutex<Vec<(AgentId, SubagentSpec)>>,
     ask_outcomes: Mutex<HashMap<AgentId, AskOutcome>>,
@@ -138,9 +140,9 @@ impl FakeSubagentHost {
         self.steers.lock().unwrap().clone()
     }
 
-    /// Every `(caller, target, reason)` triple recorded by `cancel`, in
-    /// call order.
-    pub fn cancels(&self) -> Vec<(AgentId, AgentId, String)> {
+    /// Every `(caller, target, reason, mode)` quadruple recorded by
+    /// `cancel`, in call order.
+    pub fn cancels(&self) -> Vec<(AgentId, AgentId, String, CancelMode)> {
         self.cancels.lock().unwrap().clone()
     }
 
@@ -216,8 +218,12 @@ impl SubagentHost for FakeSubagentHost {
         caller: AgentId,
         target: AgentId,
         reason: String,
+        mode: CancelMode,
     ) -> Result<(), RuntimeError> {
-        self.cancels.lock().unwrap().push((caller, target, reason));
+        self.cancels
+            .lock()
+            .unwrap()
+            .push((caller, target, reason, mode));
         Ok(())
     }
 
@@ -369,13 +375,18 @@ mod tests {
         host.steer(caller, target, "keep going".into())
             .await
             .unwrap();
-        host.cancel(caller, target, "stop".into()).await.unwrap();
+        host.cancel(caller, target, "stop".into(), CancelMode::Immediate)
+            .await
+            .unwrap();
 
         assert_eq!(
             host.steers(),
             vec![(caller, target, "keep going".to_string())]
         );
-        assert_eq!(host.cancels(), vec![(caller, target, "stop".to_string())]);
+        assert_eq!(
+            host.cancels(),
+            vec![(caller, target, "stop".to_string(), CancelMode::Immediate)]
+        );
     }
 
     #[tokio::test]

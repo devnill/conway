@@ -86,7 +86,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::agent::{AgentResult, AgentTreeSnapshot, AskOutcome, SubagentSpec};
+use crate::agent::{AgentResult, AgentTreeSnapshot, AskOutcome, CancelMode, SubagentSpec};
 use crate::error::{RuntimeError, SubagentError};
 use crate::ids::AgentId;
 
@@ -125,11 +125,18 @@ pub trait SubagentHost: Send + Sync + 'static {
         target: AgentId,
     ) -> Result<AgentResult, RuntimeError>;
 
+    /// `mode` (board item 01KZDC2222ARKMZKN8ZE4BYHD6) selects between
+    /// [`CancelMode::Immediate`] (trips the token now, propagates to the
+    /// whole subtree structurally) and [`CancelMode::Graceful`] (lands at
+    /// `target`'s next turn boundary, stops only `target` itself). See
+    /// that type's own doc for the full contract, including the resume-gate
+    /// caveat.
     async fn cancel(
         &self,
         caller: AgentId,
         target: AgentId,
         reason: String,
+        mode: CancelMode,
     ) -> Result<(), RuntimeError>;
 
     /// `caller`'s own subtree (itself, plus every descendant) -- never a
@@ -258,10 +265,27 @@ impl SubagentHandle {
             .map_err(translate)
     }
 
-    /// Cancels `target` with `reason`.
+    /// Cancels `target` with `reason`, immediately (the pre-existing
+    /// behavior, unchanged) -- delegates to [`Self::cancel_with`] with
+    /// [`CancelMode::Immediate`], so every one of this crate's own existing
+    /// call sites keeps its exact prior semantics without needing to name a
+    /// mode.
     pub async fn cancel(&self, target: AgentId, reason: String) -> Result<(), SubagentError> {
+        self.cancel_with(target, reason, CancelMode::Immediate).await
+    }
+
+    /// Cancels `target` with `reason`, in `mode` (board item
+    /// 01KZDC2222ARKMZKN8ZE4BYHD6) -- the primitive both modes are reachable
+    /// through. See [`CancelMode`]'s own doc for what each mode guarantees,
+    /// including the resume-gate caveat on `Graceful`.
+    pub async fn cancel_with(
+        &self,
+        target: AgentId,
+        reason: String,
+        mode: CancelMode,
+    ) -> Result<(), SubagentError> {
         self.host
-            .cancel(self.agent_id, target, reason)
+            .cancel(self.agent_id, target, reason, mode)
             .await
             .map_err(translate)
     }
@@ -342,7 +366,11 @@ mod tests {
         last_start: Mutex<Option<(AgentId, AgentId)>>,
         last_steer: Mutex<Option<(AgentId, AgentId)>>,
         last_await: Mutex<Option<(AgentId, AgentId)>>,
-        last_cancel: Mutex<Option<(AgentId, AgentId)>>,
+        /// `(caller, target, mode)` -- `mode` added alongside the trait's
+        /// new parameter (board item 01KZDC2222ARKMZKN8ZE4BYHD6) so a test
+        /// can prove `SubagentHandle::cancel`/`cancel_with` thread it
+        /// through unchanged.
+        last_cancel: Mutex<Option<(AgentId, AgentId, CancelMode)>>,
         last_tree: Mutex<Option<AgentId>>,
         last_ask: Mutex<Option<(AgentId, AgentId)>>,
     }
@@ -406,8 +434,9 @@ mod tests {
             caller: AgentId,
             target: AgentId,
             _reason: String,
+            mode: CancelMode,
         ) -> Result<(), RuntimeError> {
-            *self.last_cancel.lock().unwrap() = Some((caller, target));
+            *self.last_cancel.lock().unwrap() = Some((caller, target, mode));
             match &self.error {
                 Some(err) => Err(err.clone()),
                 None => Ok(()),
@@ -512,10 +541,38 @@ mod tests {
         assert_eq!(*host.last_await.lock().unwrap(), Some((agent_id, target)));
 
         block_on(handle.cancel(target, "stop".into())).unwrap();
-        assert_eq!(*host.last_cancel.lock().unwrap(), Some((agent_id, target)));
+        assert_eq!(
+            *host.last_cancel.lock().unwrap(),
+            Some((agent_id, target, CancelMode::Immediate))
+        );
 
         handle.tree();
         assert_eq!(*host.last_tree.lock().unwrap(), Some(agent_id));
+    }
+
+    /// [`SubagentHandle::cancel`] (the two-argument convenience form) always
+    /// resolves to [`CancelMode::Immediate`] -- the pre-existing behavior,
+    /// preserved exactly -- and [`SubagentHandle::cancel_with`] is the one
+    /// place a caller can reach [`CancelMode::Graceful`] instead (board item
+    /// 01KZDC2222ARKMZKN8ZE4BYHD6).
+    #[test]
+    fn cancel_defaults_immediate_and_cancel_with_carries_the_caller_chosen_mode() {
+        let agent_id = AgentId::new();
+        let target = AgentId::new();
+        let host = Arc::new(RecordingHost::default());
+        let handle = SubagentHandle::new(host.clone(), agent_id);
+
+        block_on(handle.cancel(target, "stop".into())).unwrap();
+        assert_eq!(
+            *host.last_cancel.lock().unwrap(),
+            Some((agent_id, target, CancelMode::Immediate))
+        );
+
+        block_on(handle.cancel_with(target, "wind down".into(), CancelMode::Graceful)).unwrap();
+        assert_eq!(
+            *host.last_cancel.lock().unwrap(),
+            Some((agent_id, target, CancelMode::Graceful))
+        );
     }
 
     /// A clone of a `SubagentHandle` shares the same underlying `host` `Arc`

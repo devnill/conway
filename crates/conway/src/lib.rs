@@ -42,7 +42,7 @@ pub use session_handle::{SessionHandle, SessionSpec, TurnHandle};
 pub use subagent_spec::{ForkSpec, SpawnSpec};
 
 pub use conway_core::agent::{
-    AgentResult, AgentTreeSnapshot, Budget, PermissionDecision, PermissionDecisionKind,
+    AgentResult, AgentTreeSnapshot, Budget, CancelMode, PermissionDecision, PermissionDecisionKind,
     PermissionRequest, PermissionScope, ResultStatus, ToolSelector,
 };
 pub use conway_core::config::AgentDef;

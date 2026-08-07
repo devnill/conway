@@ -18,7 +18,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 
 use crate::agent::{
-    AgentResult, AgentTreeSnapshot, AskOutcome, PermissionDecision, PermissionRequest,
+    AgentResult, AgentTreeSnapshot, AskOutcome, CancelMode, PermissionDecision, PermissionRequest,
     ResultStatus, SubagentSpec,
 };
 use crate::capabilities::{
@@ -893,11 +893,17 @@ impl SubagentHost for FakeSubagentHost {
         }))
     }
 
+    // Board item 01KZDC2222ARKMZKN8ZE4BYHD6 added `mode` to `cancel`; this
+    // fake stays a pure recorder/no-op (module doc, item 1) and does not
+    // itself distinguish the two modes -- `mode` is accepted (so it
+    // type-checks against the real trait) and otherwise ignored, exactly as
+    // `_caller`/`_target`/`_reason` already were.
     async fn cancel(
         &self,
         _caller: AgentId,
         _target: AgentId,
         _reason: String,
+        _mode: CancelMode,
     ) -> Result<(), RuntimeError> {
         Ok(())
     }

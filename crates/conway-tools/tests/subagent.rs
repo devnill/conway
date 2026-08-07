@@ -13,8 +13,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use conway_core::agent::{
-    AgentDefRef, AgentResult, AgentTreeSnapshot, AskOutcome, ResultStatus, SubagentSpec,
-    ToolSelector,
+    AgentDefRef, AgentResult, AgentTreeSnapshot, AskOutcome, CancelMode, ResultStatus,
+    SubagentSpec, ToolSelector,
 };
 use conway_core::content::{ArtifactKind, ContentBlock, ToolCall, ToolCategory, TruncationPolicy};
 use conway_core::error::{RuntimeError, ToolError};
@@ -789,7 +789,12 @@ async fn cancel_uses_supplied_reason_or_default() {
         .unwrap();
     assert_eq!(
         handles.subagents.cancels(),
-        vec![(caller, target, "cancelled by parent agent".to_string())]
+        vec![(
+            caller,
+            target,
+            "cancelled by parent agent".to_string(),
+            CancelMode::Immediate
+        )]
     );
 
     let (ctx, handles) = test_ctx(PathBuf::from("/tmp/x"));
@@ -807,7 +812,42 @@ async fn cancel_uses_supplied_reason_or_default() {
         .unwrap();
     assert_eq!(
         handles.subagents.cancels(),
-        vec![(caller, target, "no longer needed".to_string())]
+        vec![(
+            caller,
+            target,
+            "no longer needed".to_string(),
+            CancelMode::Immediate
+        )]
+    );
+}
+
+#[tokio::test]
+async fn cancel_mode_graceful_is_threaded_through_to_the_host() {
+    let (ctx, handles) = test_ctx(PathBuf::from("/tmp/x"));
+    let caller = ctx.agent_id;
+    let target = AgentId::new();
+    CancelTool::new()
+        .invoke(
+            call(
+                "conway_cancel",
+                serde_json::json!({
+                    "agent_id": target.to_string(),
+                    "reason": "let it finish",
+                    "mode": "graceful",
+                }),
+            ),
+            ctx,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        handles.subagents.cancels(),
+        vec![(
+            caller,
+            target,
+            "let it finish".to_string(),
+            CancelMode::Graceful
+        )]
     );
 }
 
@@ -969,8 +1009,9 @@ impl SubagentHost for BlockingAwaitHost {
         caller: AgentId,
         target: AgentId,
         reason: String,
+        mode: CancelMode,
     ) -> Result<(), RuntimeError> {
-        self.inner.cancel(caller, target, reason).await
+        self.inner.cancel(caller, target, reason, mode).await
     }
     fn tree(&self, caller: AgentId) -> AgentTreeSnapshot {
         self.inner.tree(caller)
@@ -1030,6 +1071,11 @@ async fn cancel_during_blocked_await_cancels_child_and_returns_cancelled() {
     assert!(matches!(result, Err(ToolError::Cancelled)));
     assert_eq!(
         inner.cancels(),
-        vec![(caller, scripted_id, "parent tool cancelled".to_string())]
+        vec![(
+            caller,
+            scripted_id,
+            "parent tool cancelled".to_string(),
+            CancelMode::Immediate
+        )]
     );
 }

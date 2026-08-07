@@ -35,8 +35,14 @@ conway = { path = "../conway" }
   warnings, and `explain_routing`.
 - **`SessionHandle`** is a live, cheap-to-clone handle onto one running
   session: `prompt(text)` returns a `TurnHandle`; `ask`, `fork`, `spawn`,
-  `steer`, `await_agent`, `cancel`, and `tree()` are the subagent surface;
-  `events()`/`events_from(seq)` are the event stream.
+  `steer`, `await_agent`, `cancel`, `cancel_with`, and `tree()` are the
+  subagent surface; `events()`/`events_from(seq)` are the event stream.
+  `cancel` always stops immediately (propagating to the whole subtree);
+  `cancel_with(target, reason, CancelMode)` is the primitive it delegates
+  to, and `CancelMode::Graceful` is the only way to reach the turn-boundary
+  form — it cannot reach a `keep_alive` agent idling between turns, since
+  that wait never drains the mailbox a graceful cancel is delivered
+  through (see [`agents.md`](agents.md)'s control-surface table).
 - **`TurnHandle`** is one prompt in flight: `text().await` concatenates the
   reply as it streams in; `result().await` resolves once the agent's turn
   reaches a terminal `AgentResult` — including `BudgetExceeded`/`Cancelled`,

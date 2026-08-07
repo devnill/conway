@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
+use conway_core::agent::CancelMode;
 use conway_core::content::{PermissionClass, ToolCall, ToolCategory, ToolSpec};
 use conway_core::error::ToolError;
 use conway_core::ids::ToolName;
@@ -27,12 +28,48 @@ pub(super) struct AwaitArgs {
     agent_id: String,
 }
 
+/// The model-facing shape of [`CancelMode`] (board item
+/// 01KZDC2222ARKMZKN8ZE4BYHD6) -- mirrors `tools.rs`'s `ModeArg` pattern: a
+/// local, `JsonSchema`-deriving enum the tool layer owns, mapped onto the
+/// domain type at `invoke` time rather than deriving `JsonSchema` on
+/// `conway_core::agent::CancelMode` itself.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum CancelModeArg {
+    /// Stops now; does not wait for the current turn to finish, and
+    /// propagates to the whole subtree. The default.
+    #[default]
+    Immediate,
+    /// Lets the target finish its in-flight turn, then stops at the next
+    /// turn boundary. Stops only the named agent -- descendants are
+    /// unaffected. Does not reach an idle `keep_alive` agent parked at the
+    /// resume gate between turns; use `immediate` for that case.
+    Graceful,
+}
+
+impl From<CancelModeArg> for CancelMode {
+    fn from(arg: CancelModeArg) -> Self {
+        match arg {
+            CancelModeArg::Immediate => CancelMode::Immediate,
+            CancelModeArg::Graceful => CancelMode::Graceful,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(super) struct CancelArgs {
     agent_id: String,
     #[serde(default)]
     reason: Option<String>,
+    /// `immediate` (default) stops now and propagates to the whole subtree.
+    /// `graceful` lets the target finish its in-flight turn, then stops
+    /// only the named agent -- it does not itself cancel descendants, and
+    /// it cannot reach an idle `keep_alive` agent parked at the resume gate
+    /// between turns (that agent is not mid-turn to finish; use `immediate`
+    /// instead).
+    #[serde(default)]
+    mode: CancelModeArg,
 }
 
 /// `conway_steer`: sends a text message to a running child.
@@ -150,7 +187,13 @@ impl Tool for CancelTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: ToolName::new("conway_cancel"),
-            description: "Cancel a running child agent".into(),
+            description: "Cancel a running child agent. `mode` defaults to `immediate`: \
+                stops now and propagates to the whole subtree. `graceful` instead lets \
+                the target finish its in-flight turn, then stops only the named agent \
+                (descendants are unaffected); it cannot reach an idle keep_alive agent \
+                waiting between turns, since that agent has no in-flight turn to finish \
+                -- use `immediate` for that case."
+                .into(),
             schema: schemars::schema_for!(CancelArgs),
             category: ToolCategory::Delegate,
             permission: PermissionClass::RequiresApproval,
@@ -164,8 +207,9 @@ impl Tool for CancelTool {
         let reason = args
             .reason
             .unwrap_or_else(|| "cancelled by parent agent".to_string());
+        let mode: CancelMode = args.mode.into();
         ctx.subagents
-            .cancel(target, reason.clone())
+            .cancel_with(target, reason.clone(), mode)
             .await
             .map_err(ToolError::from)?;
         Ok(text_output(

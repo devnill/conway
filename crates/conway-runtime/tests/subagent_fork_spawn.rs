@@ -15,7 +15,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use conway_core::agent::{
-    AgentDefRef, Budget, PermissionDecision, ResultStatus, SubagentMode, SubagentSpec, ToolSelector,
+    AgentDefRef, Budget, CancelMode, PermissionDecision, ResultStatus, SubagentMode, SubagentSpec,
+    ToolSelector,
 };
 use conway_core::config::AgentDef;
 use conway_core::content::{ContentBlock, StopReason, Usage};
@@ -1129,6 +1130,7 @@ async fn cancel_rejects_a_sibling_but_the_owning_root_still_succeeds() {
         sibling_a,
         sibling_b,
         "destroy their work".to_string(),
+        CancelMode::Immediate,
     )
     .await
     .unwrap_err();
@@ -1145,9 +1147,15 @@ async fn cancel_rejects_a_sibling_but_the_owning_root_still_succeeds() {
     // already finished, so this is a benign no-op cancel, but the point
     // here is specifically that the subtree check does not also reject the
     // legitimate caller.
-    SubagentHost::cancel(&*runtime, root, sibling_b, "cleanup".to_string())
-        .await
-        .unwrap();
+    SubagentHost::cancel(
+        &*runtime,
+        root,
+        sibling_b,
+        "cleanup".to_string(),
+        CancelMode::Immediate,
+    )
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
