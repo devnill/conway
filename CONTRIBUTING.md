@@ -131,6 +131,19 @@ It is an exemption for that page's prose and nothing else. The conditions:
   unexamined stops being design intent and becomes the thing this section is
   about.
 
+**An audit resolves a mismatch in the code, not in the page.** The page states
+what conway is meant to be; the tree is what it currently is. When they
+disagree, the finding is against the tree by default, and the fix is a work
+item. Editing the page to describe what the code happens to do turns a
+requirement into a mirror, and it destroys the ledger's contract in the process:
+a claim quietly softened to match the tree never appears in the ledger, so the
+gap it recorded stops existing without anyone deciding it should.
+
+The page may be edited when it is internally inconsistent, or when it says
+something nobody intended. Even then the bar is that the edit makes the
+requirement clearer, never that it makes the requirement easier to satisfy. If
+you cannot tell which you are doing, you are doing the second one.
+
 ---
 
 ## 3. A check is not established until it has been shown to fail
