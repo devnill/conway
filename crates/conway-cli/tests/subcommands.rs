@@ -82,7 +82,7 @@ fn write_forked_child(fixture: &Fixture, parent: &str, at_seq: u64) -> String {
 /// Same shape as [`write_forked_child`], but `origin.mode` is `"spawn"`
 /// rather than `"fork"` -- the fixture for GP-02's "fork and spawn are
 /// distinct primitives that must never be blurred into one label"
-/// regression: a session `conway_subagent` created in spawn mode must never
+/// regression: a session `conway_spawn` created must never
 /// render as a fork in `sessions list` (neither the text `ORIGIN` cell nor
 /// the JSON `origin.mode` field).
 fn write_spawned_child(fixture: &Fixture, parent: &str, at_seq: u64) -> String {

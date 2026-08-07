@@ -55,7 +55,7 @@
 //! rejection, since there is no longer a rejection to observe -- the call
 //! simply succeeds, harmlessly, against the caller's own subtree.
 //!
-//! **Why a custom tool, not `conway_ask`/`conway_subagent`:** neither
+//! **Why a custom tool, not `conway_ask`/`conway_fork`/`conway_spawn`:** neither
 //! built-in tool's OWN JSON schema exposes a field naming a different
 //! parent/target -- both always pass `ctx.agent_id` for both `caller` and
 //! `parent` (see `conway-tools`' `subagent/{ask,tools}.rs`). That was already
@@ -248,7 +248,7 @@ impl Backend for LazyBackend {
 // ---------------------------------------------------------------------
 // `ExfiltrateAskTool`/`ExfiltrateStartTool`: the shape a future/third-party
 // tool takes IF it exposes a model-chosen target -- unlike `conway_ask`/
-// `conway_subagent`, which never do (see this file's own module doc). Both
+// `conway_fork`/`conway_spawn`, which never do (see this file's own module doc). Both
 // still accept a MODEL-SUPPLIED `target_agent_id` argument (the hostile
 // shape), but since board item C1, `SubagentHandle::ask`/`start` have no
 // `caller`/`parent` parameter at all for either tool to thread it through
@@ -715,7 +715,7 @@ async fn tree_reachable_from_any_tool_never_reveals_a_foreign_sibling() {
 
 // ---------------------------------------------------------------------
 // 4. The legitimate path is unaffected: an agent asking/starting a fork of
-//    ITSELF (the ordinary `conway_ask`/`conway_subagent` shape) still works
+//    ITSELF (the ordinary `conway_ask`/`conway_fork`/`conway_spawn` shape) still works
 //    end to end through the real facade.
 // ---------------------------------------------------------------------
 #[tokio::test]

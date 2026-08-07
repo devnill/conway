@@ -1,8 +1,9 @@
 //! C4: facade-only parity acceptance test (GP-03/P-6) -- the payoff and
 //! acceptance gate for the whole facade-parity epic (C1/C2/C3/C5).
 //!
-//! Proves that conway's own `conway_subagent`/`conway_ask`/`conway_steer`/
-//! `conway_await`/`conway_cancel`/`report`/`cd` tools can be RE-AUTHORED
+//! Proves that conway's own `conway_fork`/`conway_spawn`/`conway_ask`/
+//! `conway_steer`/`conway_await`/`conway_cancel`/`report`/`cd` tools can be
+//! RE-AUTHORED
 //! using only the public `conway::` plugin surface -- the identical surface
 //! a third-party plugin author gets. The in-tree built-ins
 //! (`conway-tools`) cannot prove this themselves: `conway` depends on
@@ -20,7 +21,7 @@
 //! `crates/conway/src/lib.rs`'s `pub mod plugin` (or the root re-exports
 //! `ForkSpec`/`SpawnSpec`/`AgentResult`/`AskOrigin`/`Budget`/`ToolSelector`/
 //! `RoleAlias` these replicas also need) is missing anything one of these
-//! seven tools' real logic needs, this file fails to COMPILE -- the test
+//! eight tools' real logic needs, this file fails to COMPILE -- the test
 //! cannot silently pass against a shrunken surface. The negative direction
 //! is verified by hand each time this surface changes: remove one
 //! re-export and confirm this file stops compiling, then restore it and
@@ -62,18 +63,18 @@
 //!
 //! **`SubagentSpec` is never named, on purpose.** It is deliberately not
 //! exported (see `lib.rs`'s `pub mod plugin` doc, the closed list under
-//! "RESOLVED"). Every place the real `conway_subagent`/`conway_ask` tools
-//! construct one directly, this file instead builds a `conway::ForkSpec`/
-//! `conway::SpawnSpec` and calls `.into()`: type inference resolves the
-//! public `From<ForkSpec>`/`From<SpawnSpec>` impl from the unnamed
-//! `SubagentSpec` parameter type of `SubagentHandle::start`/`::ask` --
-//! itself reached only through `ctx.subagents`, a `ToolCtx` field,
-//! method-dispatched without ever naming `SubagentHandle` either (the same
-//! "field access, not the type name" pattern `plugin_surface.rs` already
-//! uses for `ctx.cwd`). Per C5, `SubagentSpec::await_result` no longer
-//! exists and nothing here constructs or references it; awaiting is
-//! decided entirely by `conway_subagent`'s own `await` argument, exactly as
-//! in the real tool.
+//! "RESOLVED"). Every place the real `conway_fork`/`conway_spawn`/
+//! `conway_ask` tools construct one directly, this file instead builds a
+//! `conway::ForkSpec`/`conway::SpawnSpec` and calls `.into()`: type
+//! inference resolves the public `From<ForkSpec>`/`From<SpawnSpec>` impl
+//! from the unnamed `SubagentSpec` parameter type of
+//! `SubagentHandle::start`/`::ask` -- itself reached only through
+//! `ctx.subagents`, a `ToolCtx` field, method-dispatched without ever
+//! naming `SubagentHandle` either (the same "field access, not the type
+//! name" pattern `plugin_surface.rs` already uses for `ctx.cwd`). Per C5,
+//! `SubagentSpec::await_result` no longer exists and nothing here
+//! constructs or references it; awaiting is decided entirely by each
+//! tool's own `await` argument, exactly as in the real tools.
 //!
 //! `serde`/`serde_json`/`schemars` are the facade's own declared
 //! dependencies (available to every integration test in this crate, the
@@ -128,19 +129,16 @@ fn agent_result_output(result: &AgentResult) -> ToolOutput {
 }
 
 // ---------------------------------------------------------------------------
-// `conway_subagent`: SpawnSpec/ForkSpec construction + `.into()`, awaiting
-// per the args flag, AgentResult handling.
+// `conway_fork`/`conway_spawn`: SpawnSpec/ForkSpec construction + `.into()`,
+// awaiting per the args flag, AgentResult handling. Two replicas, not one --
+// mirroring the real split (board item 01KZDC1HSNJZ1K7HVQEW65S56R): the
+// `mode` field is gone, each tool's own `prompt` carries its own meaning,
+// and everything else (`agent_def`/`role`/`tools`/`budget`/`await`) is
+// declared on both, exactly like the real `ForkArgs`/`SpawnArgs`.
 // ---------------------------------------------------------------------------
 
 fn default_await() -> bool {
     true
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-enum ModeArg {
-    Fork,
-    Spawn,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -152,8 +150,23 @@ struct BudgetArg {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct SubagentArgs {
-    mode: ModeArg,
+struct ForkArgs {
+    prompt: String,
+    #[serde(default)]
+    agent_def: Option<String>,
+    #[serde(default)]
+    role: Option<String>,
+    #[serde(default)]
+    tools: Option<Vec<String>>,
+    #[serde(default)]
+    budget: Option<BudgetArg>,
+    #[serde(default = "default_await", rename = "await")]
+    await_flag: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct SpawnArgs {
     prompt: String,
     #[serde(default)]
     agent_def: Option<String>,
@@ -178,10 +191,32 @@ fn resolve_budget(arg: Option<BudgetArg>) -> Budget {
     budget
 }
 
-struct SubagentToolReplica;
+/// Per C5: `SubagentSpec::await_result` is gone. Whether to block is decided
+/// entirely by the caller's own `await` argument, then carried out through
+/// `SubagentHandle::await_result` -- unaffected by that deletion, and never
+/// itself constructed/referenced as a spec field anywhere in this file.
+async fn start_and_maybe_await(
+    ctx: &ToolCtx,
+    child: AgentId,
+    await_flag: bool,
+) -> Result<ToolOutput, ToolError> {
+    if !await_flag {
+        return Ok(text_output(
+            serde_json::json!({ "agent_id": child }).to_string(),
+        ));
+    }
+    let result = ctx
+        .subagents
+        .await_result(child)
+        .await
+        .map_err(ToolError::from)?;
+    Ok(agent_result_output(&result))
+}
+
+struct ForkToolReplica;
 
 #[async_trait]
-impl Tool for SubagentToolReplica {
+impl Tool for ForkToolReplica {
     fn path_args(&self) -> PathArgs {
         PathArgs::None
     }
@@ -192,9 +227,9 @@ impl Tool for SubagentToolReplica {
 
     fn spec(&self) -> ToolSpec {
         ToolSpec {
-            name: ToolName::new("conway_subagent"),
-            description: "Fork or spawn a child agent.".into(),
-            schema: schemars::schema_for!(SubagentArgs),
+            name: ToolName::new("conway_fork"),
+            description: "Fork this agent into a new child continuing its context.".into(),
+            schema: schemars::schema_for!(ForkArgs),
             category: ToolCategory::Delegate,
             permission: PermissionClass::Dangerous,
         }
@@ -204,7 +239,7 @@ impl Tool for SubagentToolReplica {
         if ctx.cancel.is_cancelled() {
             return Err(ToolError::Cancelled);
         }
-        let args: SubagentArgs =
+        let args: ForkArgs =
             serde_json::from_value(call.arguments).map_err(|e| ToolError::InvalidArguments {
                 detail: e.to_string(),
             })?;
@@ -212,62 +247,85 @@ impl Tool for SubagentToolReplica {
         let budget = resolve_budget(args.budget);
         let tools = args.tools.map(ToolSelector::Only);
 
-        // The `.into()` calls below are the type-inference point this item
-        // exists to pin: each resolves the public `From<ForkSpec>`/
-        // `From<SpawnSpec>` impl for `SubagentHandle::start`'s unnamed
-        // `SubagentSpec` parameter -- that type is never written anywhere
-        // in this file.
-        let child = match args.mode {
-            ModeArg::Fork => {
-                let mut spec = ForkSpec::new(args.prompt).budget(budget);
-                if let Some(def) = args.agent_def {
-                    spec = spec.agent_def(def);
-                }
-                if let Some(role) = args.role {
-                    spec = spec.role(RoleAlias::new(role));
-                }
-                if let Some(tools) = tools {
-                    spec = spec.tools(tools);
-                }
-                ctx.subagents
-                    .start(spec.into())
-                    .await
-                    .map_err(ToolError::from)?
-            }
-            ModeArg::Spawn => {
-                let mut spec = SpawnSpec::new(args.prompt).budget(budget);
-                if let Some(def) = args.agent_def {
-                    spec = spec.agent_def(def);
-                }
-                if let Some(role) = args.role {
-                    spec = spec.role(RoleAlias::new(role));
-                }
-                if let Some(tools) = tools {
-                    spec = spec.tools(tools);
-                }
-                ctx.subagents
-                    .start(spec.into())
-                    .await
-                    .map_err(ToolError::from)?
-            }
-        };
-
-        if !args.await_flag {
-            return Ok(text_output(
-                serde_json::json!({ "agent_id": child }).to_string(),
-            ));
+        // The `.into()` call below is the type-inference point this item
+        // exists to pin: it resolves the public `From<ForkSpec>` impl for
+        // `SubagentHandle::start`'s unnamed `SubagentSpec` parameter --
+        // that type is never written anywhere in this file.
+        let mut spec = ForkSpec::new(args.prompt).budget(budget);
+        if let Some(def) = args.agent_def {
+            spec = spec.agent_def(def);
         }
-        // Per C5: `SubagentSpec::await_result` is gone. Whether to block is
-        // decided entirely by this tool's own `await` argument above, then
-        // carried out through `SubagentHandle::await_result` -- unaffected
-        // by that deletion, and never itself constructed/referenced as a
-        // spec field anywhere in this file.
-        let result = ctx
+        if let Some(role) = args.role {
+            spec = spec.role(RoleAlias::new(role));
+        }
+        if let Some(tools) = tools {
+            spec = spec.tools(tools);
+        }
+        let child = ctx
             .subagents
-            .await_result(child)
+            .start(spec.into())
             .await
             .map_err(ToolError::from)?;
-        Ok(agent_result_output(&result))
+
+        start_and_maybe_await(&ctx, child, args.await_flag).await
+    }
+}
+
+struct SpawnToolReplica;
+
+#[async_trait]
+impl Tool for SpawnToolReplica {
+    fn path_args(&self) -> PathArgs {
+        PathArgs::None
+    }
+
+    fn render_kind(&self) -> RenderKind {
+        RenderKind::Structured
+    }
+
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: ToolName::new("conway_spawn"),
+            description: "Spawn a new, independent child agent with no inherited context.".into(),
+            schema: schemars::schema_for!(SpawnArgs),
+            category: ToolCategory::Delegate,
+            permission: PermissionClass::Dangerous,
+        }
+    }
+
+    async fn invoke(&self, call: ToolCall, ctx: ToolCtx) -> Result<ToolOutput, ToolError> {
+        if ctx.cancel.is_cancelled() {
+            return Err(ToolError::Cancelled);
+        }
+        let args: SpawnArgs =
+            serde_json::from_value(call.arguments).map_err(|e| ToolError::InvalidArguments {
+                detail: e.to_string(),
+            })?;
+
+        let budget = resolve_budget(args.budget);
+        let tools = args.tools.map(ToolSelector::Only);
+
+        // The `.into()` call below is the type-inference point this item
+        // exists to pin: it resolves the public `From<SpawnSpec>` impl for
+        // `SubagentHandle::start`'s unnamed `SubagentSpec` parameter --
+        // that type is never written anywhere in this file.
+        let mut spec = SpawnSpec::new(args.prompt).budget(budget);
+        if let Some(def) = args.agent_def {
+            spec = spec.agent_def(def);
+        }
+        if let Some(role) = args.role {
+            spec = spec.role(RoleAlias::new(role));
+        }
+        if let Some(tools) = tools {
+            spec = spec.tools(tools);
+        }
+        let child = ctx
+            .subagents
+            .start(spec.into())
+            .await
+            .map_err(ToolError::from)?;
+
+        start_and_maybe_await(&ctx, child, args.await_flag).await
     }
 }
 
@@ -718,12 +776,19 @@ impl Tool for CancelToolReplica {
 
 #[test]
 fn every_replica_tool_declares_its_own_name_category_and_permission() {
-    let subagent = SubagentToolReplica.spec();
-    assert_eq!(subagent.name.as_str(), "conway_subagent");
-    assert_eq!(subagent.category, ToolCategory::Delegate);
-    assert_eq!(subagent.permission, PermissionClass::Dangerous);
-    assert_eq!(SubagentToolReplica.path_args(), PathArgs::None);
-    assert_eq!(SubagentToolReplica.render_kind(), RenderKind::Structured);
+    let fork = ForkToolReplica.spec();
+    assert_eq!(fork.name.as_str(), "conway_fork");
+    assert_eq!(fork.category, ToolCategory::Delegate);
+    assert_eq!(fork.permission, PermissionClass::Dangerous);
+    assert_eq!(ForkToolReplica.path_args(), PathArgs::None);
+    assert_eq!(ForkToolReplica.render_kind(), RenderKind::Structured);
+
+    let spawn = SpawnToolReplica.spec();
+    assert_eq!(spawn.name.as_str(), "conway_spawn");
+    assert_eq!(spawn.category, ToolCategory::Delegate);
+    assert_eq!(spawn.permission, PermissionClass::Dangerous);
+    assert_eq!(SpawnToolReplica.path_args(), PathArgs::None);
+    assert_eq!(SpawnToolReplica.render_kind(), RenderKind::Structured);
 
     let ask = AskToolReplica.spec();
     assert_eq!(ask.name.as_str(), "conway_ask");

@@ -1,5 +1,5 @@
 //! WI-113 `conway_ask` one-shot (`-p`) smoke test (epic item f): proves the
-//! `conway_ask` -> `conway_subagent` spawn composition is reachable through
+//! `conway_ask` -> `conway_spawn` composition is reachable through
 //! the real compiled `conway` binary driven by a single `-p` prompt against a
 //! scripted OpenAI-compatible mock backend, and that the persisted
 //! transcripts carry the load-bearing properties (curation reasoning stays in
@@ -47,7 +47,7 @@ fn long_brief() -> String {
         "The runtime owns the agent loop, event bus, and subagent host.",
         "The facade exposes SessionHandle with prompt/ask/fork/spawn.",
         "conway_ask forks an ephemeral child to curate context out-of-band.",
-        "conway_subagent spawns a fresh agent with the curated prompt.",
+        "conway_spawn spawns a fresh agent with the curated prompt.",
         "The child's curation reasoning lives in its own session, not the parent's.",
         "AskOutcome.text is the full concatenated TextDelta stream, untruncated.",
         "The EphemeralSessionRef artifact carries the child's transcript_ref.",
@@ -114,10 +114,10 @@ const PROMPT: &str =
     "use conway_ask to draft a context for a fresh coder spawn that implements X, then spawn it";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn conway_p_drives_conway_ask_then_conway_subagent_spawn() {
+async fn conway_p_drives_conway_ask_then_conway_spawn() {
     // `Chunk::Text` requires `&'static str`, so leak the brief's `String`
     // for the test's lifetime. The brief is also used (as a `&str`) in the
-    // `conway_subagent` args and in the verbatim-equality assertions below.
+    // `conway_spawn` args and in the verbatim-equality assertions below.
     let brief: &'static str = Box::leak(long_brief().into_boxed_str());
     assert!(
         brief.len() > 2000,
@@ -129,7 +129,7 @@ async fn conway_p_drives_conway_ask_then_conway_subagent_spawn() {
 
     // Five sequential SSE responses (the mock plays a script in request
     // order): orchestrator -> conway_ask tool_use; ephemeral ask child ->
-    // brief; orchestrator -> conway_subagent spawn tool_use with the brief as
+    // brief; orchestrator -> conway_spawn tool_use with the brief as
     // prompt; spawn child -> completion; orchestrator -> final text EndTurn.
     let mock = MockBackend::start(Script(vec![
         vec![
@@ -142,8 +142,8 @@ async fn conway_p_drives_conway_ask_then_conway_subagent_spawn() {
         vec![Chunk::Text(brief), Chunk::Finish("stop")],
         vec![
             Chunk::ToolCall {
-                name: "conway_subagent",
-                args: serde_json::json!({ "mode": "spawn", "prompt": brief }),
+                name: "conway_spawn",
+                args: serde_json::json!({ "prompt": brief }),
             },
             Chunk::Finish("tool_calls"),
         ],
@@ -153,7 +153,7 @@ async fn conway_p_drives_conway_ask_then_conway_subagent_spawn() {
     .await;
     let fixture = write_fixture(&mock, 10);
 
-    // `--allowed-tools conway_ask,conway_subagent` allowlists both delegate
+    // `--allowed-tools conway_ask,conway_spawn` allowlists both delegate
     // tools by name (both are `Dangerous`; the default allowlist is
     // fail-closed, so without this the tool calls would be denied with feedback
     // and the run would loop until `max_steps`).
@@ -162,7 +162,7 @@ async fn conway_p_drives_conway_ask_then_conway_subagent_spawn() {
             "-p",
             PROMPT,
             "--allowed-tools",
-            "conway_ask,conway_subagent",
+            "conway_ask,conway_spawn",
         ],
         &fixture,
     );
@@ -224,7 +224,7 @@ async fn conway_p_drives_conway_ask_then_conway_subagent_spawn() {
     // Assertion: the orchestrator's transcript records the `conway_ask` tool
     // call (as a `ContentBlock::ToolUse` inside an `Assistant` record -- the
     // durable persisted shape for a model-proposed tool call) AND its
-    // `ToolResultRecord` carrying the FULL brief, plus the `conway_subagent`
+    // `ToolResultRecord` carrying the FULL brief, plus the `conway_spawn`
     // spawn tool call.
     // ------------------------------------------------------------------
     let ask_tool_use = orchestrator_records
@@ -274,17 +274,17 @@ async fn conway_p_drives_conway_ask_then_conway_subagent_spawn() {
         .iter()
         .find_map(|r| match r {
             LogRecord::Assistant { content, .. } => {
-                content.iter().find(|b| matches!(b, ContentBlock::ToolUse { name, .. } if name.as_str() == "conway_subagent"))
+                content.iter().find(|b| matches!(b, ContentBlock::ToolUse { name, .. } if name.as_str() == "conway_spawn"))
             }
             _ => None,
         })
-        .expect("the orchestrator's transcript must record the conway_subagent tool call");
+        .expect("the orchestrator's transcript must record the conway_spawn tool call");
     match spawn_tool_use {
         ContentBlock::ToolUse { arguments, .. } => {
             assert_eq!(
                 *arguments,
-                serde_json::json!({ "mode": "spawn", "prompt": brief }),
-                "the conway_subagent ToolUse must carry mode: spawn and the curated brief as prompt"
+                serde_json::json!({ "prompt": brief }),
+                "the conway_spawn ToolUse must carry the curated brief as prompt"
             );
         }
         _ => unreachable!("matched on ToolUse"),

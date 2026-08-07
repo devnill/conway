@@ -1,5 +1,6 @@
-//! `SubagentPlugin`: `conway_subagent`, `conway_ask`, `conway_steer`,
-//! `conway_await`, `conway_cancel` — pure wrappers over `ToolCtx::subagents`.
+//! `SubagentPlugin`: `conway_fork`, `conway_spawn`, `conway_ask`,
+//! `conway_steer`, `conway_await`, `conway_cancel` — pure wrappers over
+//! `ToolCtx::subagents`.
 
 use std::sync::Arc;
 
@@ -11,10 +12,10 @@ pub mod tools;
 
 pub use ask::AskTool;
 pub use control::{AwaitTool, CancelTool, SteerTool};
-pub use tools::SubagentTool;
+pub use tools::{ForkTool, SpawnTool};
 
-/// The `subagent` plugin: `conway_subagent`, `conway_ask`, `conway_steer`,
-/// `conway_await`, `conway_cancel`.
+/// The `subagent` plugin: `conway_fork`, `conway_spawn`, `conway_ask`,
+/// `conway_steer`, `conway_await`, `conway_cancel`.
 pub struct SubagentPlugin {
     tools: Vec<Arc<dyn Tool>>,
 }
@@ -22,7 +23,8 @@ pub struct SubagentPlugin {
 impl SubagentPlugin {
     pub fn new() -> Self {
         let tools: Vec<Arc<dyn Tool>> = vec![
-            Arc::new(SubagentTool::new()),
+            Arc::new(ForkTool::new()),
+            Arc::new(SpawnTool::new()),
             Arc::new(AskTool::new()),
             Arc::new(SteerTool::new()),
             Arc::new(AwaitTool::new()),
@@ -76,16 +78,17 @@ mod tests {
                 "conway_ask",
                 "conway_await",
                 "conway_cancel",
+                "conway_fork",
+                "conway_spawn",
                 "conway_steer",
-                "conway_subagent"
             ]
         );
     }
 
-    /// SIG-1 regression: `deadline_from_secs` (shared by `conway_ask` and
-    /// `conway_subagent`) range-checks the model-supplied deadline per P-10 --
-    /// out-of-range maps to a typed `InvalidArguments`, never the
-    /// `Duration::seconds` overflow panic the previous
+    /// SIG-1 regression: `deadline_from_secs` (shared by `conway_ask`,
+    /// `conway_fork`, and `conway_spawn`) range-checks the model-supplied
+    /// deadline per P-10 -- out-of-range maps to a typed `InvalidArguments`,
+    /// never the `Duration::seconds` overflow panic the previous
     /// `i64::try_from(..).unwrap_or(i64::MAX)` saturation caused.
     #[test]
     fn deadline_from_secs_accepts_sane_and_rejects_overflow_as_invalid_arguments() {

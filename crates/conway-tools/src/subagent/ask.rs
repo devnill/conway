@@ -33,8 +33,8 @@ use conway_core::ports::{PathArgs, PluginConfig, RenderKind, Tool, ToolCtx, Tool
 use super::tools::{config_u32, config_u64, deadline_from_secs, BudgetArg, TRUNCATION};
 use crate::common::{check_cancel, parse_args};
 
-/// `conway_ask` defaults: tighter than `conway_subagent` — curation is a
-/// bounded drafting step, not an open-ended delegation.
+/// `conway_ask` defaults: tighter than `conway_fork`/`conway_spawn` —
+/// curation is a bounded drafting step, not an open-ended delegation.
 const DEFAULT_ASK_MAX_STEPS: u32 = 20;
 const DEFAULT_ASK_DEADLINE_SECS: u64 = 120;
 
@@ -49,8 +49,8 @@ pub(super) struct AskArgs {
     #[serde(default)]
     budget: Option<BudgetArg>,
     /// Restrict the ephemeral child's tool set to these names
-    /// (`ToolSelector::Only`, the same mapping `conway_subagent`'s `tools`
-    /// arg uses). Narrowing-only (P-10): the runtime resolves the selector
+    /// (`ToolSelector::Only`, the same mapping `conway_fork`/`conway_spawn`'s
+    /// `tools` arg uses). Narrowing-only (P-10): the runtime resolves the selector
     /// against the registered tools the child would otherwise inherit in
     /// full, so this can restrict but never widen the child's set. Optional
     /// (C-04): absent means the child inherits the full set, as before.
@@ -124,7 +124,7 @@ impl Tool for AskTool {
             // The child inherits AT MOST the caller's requested tool set
             // (an absent `tools` arg means the full inherited set), so
             // arbitrary tool calls are one hop away — same risk class as
-            // `conway_subagent` and `bash`.
+            // `conway_fork`/`conway_spawn` and `bash`.
             permission: PermissionClass::Dangerous,
         }
     }

@@ -5,8 +5,8 @@
 //! "report".into()])` announces every builtin tool EXCEPT `report` to the
 //! backend, while a default `SessionSpec`/`SpawnSpec` (no override) still
 //! announces `report` -- exactly the split `conway-cli`'s TUI root/bare
-//! keep-alive children (excluded) vs. an autonomous `conway_subagent`-spawned
-//! child (default, unaffected) rely on.
+//! keep-alive children (excluded) vs. an autonomous `conway_fork`/
+//! `conway_spawn`-started child (default, unaffected) rely on.
 //!
 //! Gated on the `builtin-tools` feature (like `tests/gates.rs`'s own
 //! `presets_builtin_plugins_matches_conway_tools`): with it disabled the
@@ -125,8 +125,8 @@ async fn default_session_spec_announces_report_and_other_builtin_tools() {
         "a default (no tools override) SessionSpec must still announce `report`, got {names:?}"
     );
     assert!(
-        names.iter().any(|n| n == "conway_subagent"),
-        "a default SessionSpec must announce `conway_subagent` too, got {names:?}"
+        names.iter().any(|n| n == "conway_fork"),
+        "a default SessionSpec must announce `conway_fork` too, got {names:?}"
     );
     assert!(
         names.iter().any(|n| n == "read"),
@@ -164,8 +164,8 @@ async fn session_spec_tools_except_report_excludes_report_but_keeps_the_rest() {
          got {names:?}"
     );
     assert!(
-        names.iter().any(|n| n == "conway_subagent"),
-        "excluding `report` must not exclude `conway_subagent`, got {names:?}"
+        names.iter().any(|n| n == "conway_fork"),
+        "excluding `report` must not exclude `conway_fork`, got {names:?}"
     );
     assert!(
         names.iter().any(|n| n == "read"),
@@ -175,7 +175,7 @@ async fn session_spec_tools_except_report_excludes_report_but_keeps_the_rest() {
 
 /// Regression guard for spec item 6 ("do NOT change autonomous subagents'
 /// toolset"): a `SpawnSpec` built with no `.tools(..)` override (the shape
-/// `conway_tools`' own `conway_subagent` tool, and every OTHER facade
+/// `conway_tools`' own `conway_fork`/`conway_spawn` tools, and every OTHER facade
 /// consumer that has not opted into the interactive exclusion, uses) still
 /// announces `report` to its own child turn -- proving this item's plumbing
 /// is additive (an explicit opt-in via `SessionSpec::tools`/`SpawnSpec::

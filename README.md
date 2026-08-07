@@ -123,7 +123,7 @@ there is nothing a built-in can do that your own plugin cannot.
 | Plugin | Tools | Registered by default |
 |---|---|---|
 | `conway.fs` | `read`, `write`, `edit`, `glob`, `grep`, `cd` | yes |
-| `conway.subagent` | `conway_subagent`, `conway_ask`, `conway_steer`, `conway_await`, `conway_cancel` | yes |
+| `conway.subagent` | `conway_fork`, `conway_spawn`, `conway_ask`, `conway_steer`, `conway_await`, `conway_cancel` | yes |
 | `conway.report` | `report` | yes |
 | `conway.shell` | `bash` | **no** — opt-in |
 

@@ -44,7 +44,7 @@
 //!   that event.
 //! - A spawn/fork child (`AgentTree::is_prunable_on_finish`, `tree.rs`)
 //!   that was never ephemeral in the first place -- an ordinary
-//!   `conway_subagent` fork/spawn -- reclaimed by its caller passing
+//!   `conway_fork`/`conway_spawn` -- reclaimed by its caller passing
 //!   `prune: true` to [`EventBus::emit_pruning`] at the same emission site.
 //!   A PROMOTED child is deliberately excluded from this case (it stays
 //!   governed by the first case above, i.e. not reclaimed): see
@@ -327,7 +327,7 @@ mod tests {
     }
 
     /// Acceptance: a spawn/fork child that was never ephemeral (an ordinary
-    /// `conway_subagent` fork/spawn -- see `AgentTree::is_prunable_on_finish`,
+    /// `conway_fork`/`conway_spawn` -- see `AgentTree::is_prunable_on_finish`,
     /// `tree.rs`) has its `seqs` entry reclaimed too, via `emit_pruning`'s
     /// explicit `prune` flag -- the item's own motivating case (GP-05: a
     /// long-lived embedder driving many such children, with no way to

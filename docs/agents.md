@@ -61,7 +61,7 @@ and one spawn mechanism underneath, not three.
 | --- | --- | --- |
 | Interactive TUI | `/fork [<text>]` or `/fork @<agent> <directive>` | `/spawn [@<agent_def>] [<prompt>]` |
 | Embeddable library | `SessionHandle::fork(from, ForkSpec)` | `SessionHandle::spawn(from, SpawnSpec)` |
-| Model tool call | `conway_subagent` with `mode: "fork"` (or `conway_ask` for the fork-and-read-the-reply shorthand) | `conway_subagent` with `mode: "spawn"` |
+| Model tool call | `conway_fork` (or `conway_ask` for the fork-and-read-the-reply shorthand) | `conway_spawn` |
 
 ### The TUI
 
@@ -102,34 +102,41 @@ section for when to set it and what changes.
 
 ### A model tool call
 
-`conway_subagent` is the general primitive: `mode` (`"fork"` or `"spawn"`),
-`prompt`, and optional `agent_def`/`role`/`budget`/`tools`/`result_contract`,
-plus `await` (default `true`) to block for the child's result or return its
-`agent_id` immediately for fan-out. `conway_ask` is a narrower, fork-only
-shorthand — no `mode`, no `agent_def`/`role` argument — that returns the
-child's full reply text rather than a structured `AgentResult`, meant for
-drafting or curating context out-of-band without spending the caller's own
-window on the reasoning. A `conway_ask` child inherits the caller's full
-context and effective role (ordinary fork semantics), but **not** the
-caller's own `agent_def`, even when the caller itself was spawned from one
-— so a def-declared `result_contract`, tools selector, system prompt, or
-model pin never reaches a `conway_ask` child. `conway_steer`/`conway_await`/
+`conway_fork` and `conway_spawn` are two separate tools, not one call with a
+mode argument — see [`PHILOSOPHY.md`](../PHILOSOPHY.md#choosing-between-them)
+for why: a model reaches the fork/spawn choice by picking a tool name, which
+settles it before any argument is filled in, and it keeps each tool's
+`prompt` honest (a directive to a child that already has the context, for
+`conway_fork`; a complete statement of the task to a child that has none,
+for `conway_spawn`). Both take the same remaining arguments: `prompt`, and
+optional `agent_def`/`role`/`budget`/`tools`/`result_contract`, plus `await`
+(default `true`) to block for the child's result or return its `agent_id`
+immediately for fan-out. `conway_ask` is a narrower, fork-only shorthand —
+no `agent_def`/`role` argument — that returns the child's full reply text
+rather than a structured `AgentResult`, meant for drafting or curating
+context out-of-band without spending the caller's own window on the
+reasoning. A `conway_ask` child inherits the caller's full context and
+effective role (ordinary fork semantics), but **not** the caller's own
+`agent_def`, even when the caller itself was spawned from one — so a
+def-declared `result_contract`, tools selector, system prompt, or model pin
+never reaches a `conway_ask` child. `conway_steer`/`conway_await`/
 `conway_cancel` round out the control surface:
 
 | Tool | Does | Key arguments | Permission class |
 | --- | --- | --- | --- |
-| `conway_subagent` | Fork or spawn a child. | `mode`, `prompt`, `agent_def?`, `role?`, `budget?`, `tools?`, `result_contract?`, `await` | Dangerous |
+| `conway_fork` | Fork this agent into a new child continuing its context. | `prompt`, `agent_def?`, `role?`, `budget?`, `tools?`, `result_contract?`, `await` | Dangerous |
+| `conway_spawn` | Spawn a new, independent child with no inherited context. | `prompt`, `agent_def?`, `role?`, `budget?`, `tools?`, `result_contract?`, `await` | Dangerous |
 | `conway_ask` | Fork-only; returns the child's full reply text. | `prompt`, `budget?`, `tools?` | Dangerous |
 | `conway_steer` | Send a message to a running child, landing at its next turn boundary. | `agent_id`, `text` | Requires approval |
 | `conway_await` | Block for a child's terminal result. | `agent_id` | Safe |
 | `conway_cancel` | Cancel a running child. | `agent_id`, `reason?`, `mode?` | Requires approval |
 
-`conway_subagent`/`conway_ask` are `Dangerous`: starting a child hands it
-the ability to make its own tool calls, transitively, one hop removed from
-`bash`. `conway_await` alone needs no approval — reading a result back
-carries no side effect. A model-invoked fork/spawn is always autonomous
-(`keep_alive: false`); interactive keep-alive children exist only on the
-TUI and embedder surfaces above.
+`conway_fork`/`conway_spawn`/`conway_ask` are `Dangerous`: starting a child
+hands it the ability to make its own tool calls, transitively, one hop
+removed from `bash`. `conway_await` alone needs no approval — reading a
+result back carries no side effect. A model-invoked fork/spawn is always
+autonomous (`keep_alive: false`); interactive keep-alive children exist only
+on the TUI and embedder surfaces above.
 
 `conway_cancel`'s `mode` defaults to `immediate`: it stops the target right
 away, without waiting for its current turn, and propagates to the whole
@@ -156,7 +163,7 @@ started it:
 
 | Declared by | How |
 | --- | --- |
-| The model, per call | `conway_subagent`'s `result_contract` argument |
+| The model, per call | `conway_fork`/`conway_spawn`'s `result_contract` argument |
 | An embedder | `ForkSpec::result_contract`/`SpawnSpec::result_contract` on the facade builder |
 | An agent definition | `result_contract` in a `.conway/agents/*.md` file's frontmatter |
 
@@ -166,8 +173,8 @@ source one from, on any surface.
 A `.conway/agents/*.md` def's `result_contract` frontmatter key is applied
 when a child spawns from that def, exactly like the def's role, system
 prompt, tools, and model pin. It is the **default**, not an override: if the
-call site that started the child (the model's `conway_subagent` argument, or
-an embedder's `ForkSpec`/`SpawnSpec::result_contract`) also declares a
+call site that started the child (the model's `conway_fork`/`conway_spawn`
+argument, or an embedder's `ForkSpec`/`SpawnSpec::result_contract`) also declares a
 `result_contract`, the call site's contract wins and the def's is not
 applied at all — only a spawn with no call-site contract of its own falls
 back to the def's. This mirrors how the def's `tools` selector already
@@ -221,7 +228,7 @@ awaited from:
 
 | Awaited via | What the parent gets |
 | --- | --- |
-| `conway_subagent` (with `await` at its default) or `conway_await` | The serialized `AgentResult` as the tool result, flagged `is_error: true` — anything other than `completed` counts as an error result |
+| `conway_fork`/`conway_spawn` (with `await` at its default) or `conway_await` | The serialized `AgentResult` as the tool result, flagged `is_error: true` — anything other than `completed` counts as an error result |
 | `SessionHandle::await_agent` (embedding) | The `AgentResult` itself; match on its `status` field — there is no `is_error` on the struct |
 
 Read `missing` to tell whether the delegation itself went wrong or the
@@ -233,7 +240,7 @@ mechanism that writes into a transcript on conway's own initiative.
 
 ## What an agent may act on
 
-Every one of the five tools above — and their `SessionHandle` counterparts —
+Every one of the six tools above — and their `SessionHandle` counterparts —
 is scoped to the calling agent's own subtree: itself, or any descendant
 reached by walking fork/spawn links downward. Steer, await, or cancel a
 sibling or a stranger's agent and you get a typed refusal, not a forged
@@ -250,8 +257,8 @@ agent gets for its own, smaller subtree.
 
 The practical effect you'll encounter: fork or spawn a child three levels
 deep, and neither that child nor its own descendants can steer, cancel, or
-even discover an agent outside their own branch — `conway_subagent`'s
-underlying tree listing is scoped the same way. Nothing here is
+even discover an agent outside their own branch — `conway_fork`/
+`conway_spawn`'s underlying tree listing is scoped the same way. Nothing here is
 configurable per-agent; it follows structurally from where in the tree an
 agent sits.
 
@@ -301,7 +308,7 @@ narrow it further, never widen it. See
 [`getting-started.md`](getting-started.md)'s `--cwd`/`--root` section for
 the full explanation and the danger of confusing the two. Permission
 depth — pattern grants, project trust, how a `Dangerous`-class tool call
-like `conway_subagent` gets approved — is covered in
+like `conway_fork`/`conway_spawn` gets approved — is covered in
 [`permissions.md`](permissions.md).
 
 ## The `cd` tool: moving the working directory mid-session

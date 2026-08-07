@@ -41,7 +41,7 @@
 //! Cycle-2 review (F-085 S2): an earlier revision of this module shipped a
 //! `PendingSubagents` map (`AgentId` -> `oneshot::Sender<AgentResult>`) and
 //! a `resolve_pending_subagent` helper, meant to resolve a parent's pending
-//! `conway_subagent` tool call when a child's `Result` drained. Nothing in
+//! `conway_fork`/`conway_spawn` tool call when a child's `Result` drained. Nothing in
 //! production ever populated that map: `conway-tools`' subagent wait path
 //! resolves exclusively through `SubagentHost::await_result` ->
 //! `AgentTree::await_result` (WI-083, `tree.rs`), a `watch`-channel-backed
@@ -144,7 +144,7 @@ impl Mailbox {
 
 /// The sending half of one agent's mailbox. Cheap to clone: every clone
 /// enqueues into the same underlying bounded ring, so any number of callers
-/// (an embedder, a `conway_subagent` tool, a sibling, a child steering its
+/// (an embedder, a `conway_fork`/`conway_spawn` tool, a sibling, a child steering its
 /// own parent -- steer is bidirectional, Claude Code-style) can hold one
 /// concurrently.
 #[derive(Clone)]
@@ -299,7 +299,7 @@ pub enum DrainEffect {
     Progress { note: String },
     /// Carries a child's terminal `AgentResult`, delivered to this agent's
     /// own mailbox by the child's `AgentLoop::finish` (architecture §3.2).
-    /// The real resolution of a `conway_subagent` tool call's waiter is
+    /// The real resolution of a `conway_fork`/`conway_spawn` tool call's waiter is
     /// [`conway_core::ports::SubagentHost::await_result`] ->
     /// `AgentTree::await_result` (WI-083), not this drained message -- see
     /// the module doc's "`AgentMessage::Result` resolution lives in

@@ -26,7 +26,8 @@ below it, so a number written down elsewhere goes stale silently and points at
 the wrong entry rather than at nothing. Soft cancellation was cleared on
 2026-08-07 and the entries below it moved up one: routing 5→4, path confinement
 6→5, the subagent tool split 7→6. Board specs written before that date cite the
-old numbers.
+old numbers. The subagent tool split itself (then entry 6) was cleared later
+the same day; nothing was below it, so no further renumbering resulted.
 
 ---
 
@@ -359,66 +360,6 @@ about containment. The claim is that a boundary belongs to whatever can enforce
 it, and that a root spanning plugins advertises a promise no single plugin can
 keep. If `conway.fs`'s root ends up harder to reach than `--root` was, the
 argument stops being honest.
-
----
-
-## 6. `conway_fork` and `conway_spawn` as separate tools
-
-**Claimed:** [Choosing between them](../PHILOSOPHY.md#choosing-between-them)
-says a model reaches the two primitives as two tools named after them, rather
-than as one call with a mode argument.
-
-**Exists today:** one tool. `conway_subagent` takes a required
-`mode: fork | spawn` alongside `prompt`, `agent_def`, `role`, `budget`, `tools`,
-`result_contract`, and `await`. The shape follows the port rather than a
-decision about the model's ergonomics: `SubagentHandle::start` takes a
-`SubagentSpec` carrying `mode`, and the module doc describes the tool as a pure
-wrapper with zero delegation logic.
-
-**The evidence that it wants splitting is in its own schema.** Two field
-descriptions have to explain themselves per mode:
-
-```rust
-/// Fork: the fork directive. Spawn: the whole task.
-prompt: String,
-/// Agent definition name. Optional for both modes: omitting it on a
-/// spawn means the child inherits this agent's own role/model.
-agent_def: Option<String>,
-```
-
-`prompt` carries two meanings under one name, and `agent_def`'s description
-covers only the spawn case while the fork case is the subject of a separate open
-question. A schema needing per-mode prose is two schemas sharing a struct.
-
-Splitting also removes a failure mode rather than only tidying one. A model can
-currently send spawn-shaped arguments under `mode: "fork"` and get something
-that looks coherent and is not what it meant; with two tools the choice is made
-by name, before any argument is filled in.
-
-**Needed to make it true:** two `Tool` impls over the same
-`ToolCtx::subagents` call, each with the fields that apply to it, with
-`budget`/`tools`/`result_contract`/`await` declared on both. `SubagentSpec` can
-keep its `mode` field; the port is not what needs changing.
-
-**The "mirror the port" objection does not hold.** It would, if the tool layer
-were a reflection of the trait, but `conway_ask` is already a separate tool for
-what is fork-plus-await-text, so the tool surface is curated rather than
-mechanical. A mode on the port does not compel a mode on the tool.
-
-**Cost, stated rather than waved away.** Two announced schemas instead of one,
-on a page that argues context is the scarce resource. The schemas are small and
-the clarity is worth more, but the trade is real and should be re-examined if
-the subagent surface grows further.
-
-**Unblocks an open question.** Whether a fork should inherit the parent's
-`agent_def` is currently hard to answer because one optional field has to behave
-sensibly in both modes, and `conway_ask` sidesteps it by hardcoding `None`. Two
-tools let each answer for itself.
-
-**The README deliberately disagrees.** Its plugin table lists `conway_subagent`,
-which is what ships. That page describes the current surface and does not carry
-this page's exemption, so the two staying out of step until this lands is the
-arrangement working, not a defect.
 
 ---
 

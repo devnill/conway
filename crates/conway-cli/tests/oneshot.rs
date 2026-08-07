@@ -177,7 +177,7 @@ async fn jsonl_line_by_line() {
 }
 
 /// Pins the four-part jsonl `seq` contract `docs/scripting.md` documents,
-/// against a real multi-agent run (root turn -> `conway_subagent` spawn ->
+/// against a real multi-agent run (root turn -> `conway_spawn` ->
 /// child text -> root final text), driven through the real compiled
 /// binary. Asserts:
 /// (i) seq is strictly increasing WITHIN each session, grouped/keyed on
@@ -193,8 +193,8 @@ async fn jsonl_seq_is_per_session_not_global() {
     let mock = MockBackend::start(Script(vec![
         vec![
             Chunk::ToolCall {
-                name: "conway_subagent",
-                args: serde_json::json!({ "mode": "spawn", "prompt": "child task" }),
+                name: "conway_spawn",
+                args: serde_json::json!({ "prompt": "child task" }),
             },
             Chunk::Finish("tool_calls"),
         ],
@@ -209,7 +209,7 @@ async fn jsonl_seq_is_per_session_not_global() {
             "-p",
             "spawn a subagent to do a task, then answer",
             "--allowed-tools",
-            "conway_subagent",
+            "conway_spawn",
             "--output-format",
             "jsonl",
         ],
