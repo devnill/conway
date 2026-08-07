@@ -114,11 +114,59 @@ including local servers such as Ollama), roles and their model chains, routing,
 permissions, and limits. The library equivalent is
 `ConwayBuilder::discover()` / `ConwayBuilder::from_config(path)`.
 
+## Plugins
+
+Every tool conway offers comes from a plugin, including its own. The built-ins
+are written against the same `Plugin`/`Tool` traits a third party implements, so
+there is nothing a built-in can do that your own plugin cannot.
+
+| Plugin | Tools | Registered by default |
+|---|---|---|
+| `conway.fs` | `read`, `write`, `edit`, `glob`, `grep`, `cd` | yes |
+| `conway.subagent` | `conway_subagent`, `conway_ask`, `conway_steer`, `conway_await`, `conway_cancel` | yes |
+| `conway.report` | `report` | yes |
+| `conway.shell` | `bash` | **no** — opt-in |
+
+Registration is what the model is *told about*. It is separate from permission:
+a registered tool still passes the gate on every call, and in one-shot mode a
+tool absent from `--allowed-tools` is denied whether or not its plugin is
+installed.
+
+Change the set with `tools.builtin_plugins` in `settings.json`, which replaces
+the default list rather than adding to it:
+
+```json
+{ "tools": { "builtin_plugins": ["conway.fs", "conway.subagent", "conway.report", "conway.shell"] } }
+```
+
+An embedder uses `ConwayBuilder::with_builtin_plugins`. `conway.shell` is
+excluded by default because it is the one general-purpose code-execution
+primitive in the set; the other three are what make conway usable out of the
+box, and none of them grants arbitrary execution. See
+[`docs/getting-started.md`](docs/getting-started.md#enabling-bash-shell-commands).
+
+### First-party plugins
+
+**Planned; none of these ship yet.** conway intends a second tier of plugins
+maintained in this repository and shipped alongside it, but *not* registered by
+default: dynamic routing (fallback chains, health tracking, circuit breaking),
+context compaction, memory, skills, and MCP support.
+
+The reasoning is in
+[`PHILOSOPHY.md`](PHILOSOPHY.md#first-party-plugins-and-why-they-are-not-defaults),
+and the short version is that a capability being common does not make it
+neutral. Compaction and routing policy are choices that depend on how you work,
+so conway ships them as things you install rather than behavior you inherit.
+Progress against that intent is tracked in
+[`.design/philosophy-debt.md`](.design/philosophy-debt.md).
+
 ## Architecture
 
 **[`ARCHITECTURE.md`](ARCHITECTURE.md)** is the full system overview: the
 core primitives, the workspace layout, and the data flow of one turn. The
 table below is the quick reference.
+[`PHILOSOPHY.md`](PHILOSOPHY.md) is the other half of the picture: how the
+primitives are meant to be used, and the idioms they were shaped for.
 
 conway is a Cargo workspace of eight crates in a ports-and-adapters layout —
 the core defines traits (ports), and backends/session/tools are adapters.
