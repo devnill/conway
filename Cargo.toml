@@ -6,14 +6,17 @@ members = ["crates/*"]
 version = "0.8.0"
 edition = "2021"
 license = "AGPL-3.0-only"
-# Publishing to crates.io is UNDECIDED, not refused. The operator has not made
-# that call and does not want to deal with publishing yet, so this is a guard
-# on an open question rather than the enforcement of a settled one: it stops an
-# accidental `cargo publish` from deciding it irreversibly, since a crates.io
-# release cannot be withdrawn. Flip it when the question is actually answered.
+# Publishing to crates.io is DEFERRED, not refused: the operator intends to do
+# it eventually, it is simply not a priority now. So the direction is settled
+# and only the timing is open -- do not re-litigate whether to publish, and do
+# not treat this flag as a position against it.
+#
+# The guard exists because a crates.io release cannot be withdrawn: an
+# accidental `cargo publish` would force the timing irreversibly. Flip it when
+# publishing is actually on the roadmap.
 #
 # Do NOT read a rationale into the AGPL-3.0-only line above. The licence is a
-# made decision; publishing is not, and the two are independent.
+# made decision; the publishing timeline is a separate, open one.
 publish = false
 rust-version = "1.94.0"
 
