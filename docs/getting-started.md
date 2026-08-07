@@ -209,6 +209,27 @@ built-in except bash), so the snippet above is that default plus
 file: `ConwayBuilder::with_builtin_plugins(PluginSelection::All)` (or an
 `Only`/`AllExcept` selection naming `"conway.shell"`) before `.build()`.
 
+## Installing a first-party plugin
+
+conway also ships a small, separate tier of plugins that live in this
+repository but are never registered, even by default — see `README.md`'s
+"First-party plugins" section and
+[`PHILOSOPHY.md`](../PHILOSOPHY.md#first-party-plugins-and-why-they-are-not-defaults)
+for what that tier is for. Turn one on with a distinct `[plugins]` key (not
+`tools.builtin_plugins`, which names only the four built-ins above):
+
+```json
+// .conway/settings.json
+{ "plugins": { "install": ["conway.plugin_skeleton"] } }
+```
+
+`conway.plugin_skeleton` is the tier's own worked example
+(`crates/conway-plugin-skeleton`): it registers one `skeleton_ping` tool
+and does nothing else. Naming an id here that the `conway` binary does not
+recognize is a hard config error, not a silent no-op. See
+[`docs/embedding.md`](embedding.md#first-party-plugin-tier) for the full
+mechanism, including the library-embedder equivalent.
+
 ## Your first session
 
 Run `conway` with no arguments to start the interactive TUI:

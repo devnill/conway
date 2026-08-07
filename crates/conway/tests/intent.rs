@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use conway::config::schema::{
     AgentsConfig, BackendEntry, BackendKind, ConwayConfig, HealthSection, LimitsConfig,
-    ModelsConfig, PermissionsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig, TuiSection,
+    ModelsConfig, PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig, TuiSection,
 };
 use conway::{AgentIntent, Conway, ConwayBuilder, ConwayError, SessionHandle, SessionSpec};
 use conway_core::agent::{PermissionDecision, SubagentMode};
@@ -107,6 +107,7 @@ fn base_config(with_intent_role: bool) -> ConwayConfig {
         models: ModelsConfig::default(),
         tui: TuiSection::default(),
         tools: ToolsConfig::default(),
+        plugins: PluginsConfig::default(),
     }
 }
 

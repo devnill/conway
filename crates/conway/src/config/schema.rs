@@ -83,6 +83,11 @@ pub struct ConwayConfig {
     /// doc.
     #[serde(default)]
     pub tools: ToolsConfig,
+    /// `[plugins]` (the first-party plugin tier, board item
+    /// 01KZDC3JQ7W4DY1MG6MBCVB2DV) -- see [`PluginsConfig`]'s own doc for
+    /// why this crate carries the wire shape but never itself acts on it.
+    #[serde(default)]
+    pub plugins: PluginsConfig,
 }
 
 fn default_cwd() -> PathBuf {
@@ -520,6 +525,53 @@ impl Default for ToolsConfig {
             ],
         }
     }
+}
+
+/// `[plugins]` — the first-party plugin tier's install list (board item
+/// 01KZDC3JQ7W4DY1MG6MBCVB2DV; see `PHILOSOPHY.md`'s "First-party plugins,
+/// and why they are not defaults" and `docs/embedding.md`'s "First-party
+/// plugin tier" section).
+///
+/// **Deliberately distinct from `[tools].builtin_plugins`, not a rename or
+/// a shared list.** That key is documented and named for the CLOSED
+/// candidate set this crate itself compiles in behind the `builtin-tools`
+/// feature (`presets::builtin_plugins()`'s four `conway-tools` candidates)
+/// and filters at `build()` time (see [`ToolsConfig`]'s own doc) — an
+/// unknown id there is a hard config error precisely because the full
+/// candidate set is known here, at compile time
+/// (`config::merge::validate`'s check 8). A first-party plugin (dynamic
+/// routing, compaction, memory, skills, MCP — the six named in
+/// `PHILOSOPHY.md`) is never such a candidate: THIS crate does not, and
+/// must never, depend on any of them (GP-03/P-6 — a first-party plugin
+/// sits on the exact same footing as a third-party one from `conway`'s own
+/// point of view, never a privileged one folded into the built-in
+/// candidate set). Folding the two lists together would make
+/// `builtin_plugins`'s existing name a lie in the other direction the
+/// first day a real first-party plugin lands in it.
+///
+/// **This crate carries the wire shape and does nothing else with it.**
+/// `install` is inert data as far as `ConwayBuilder::build` is concerned —
+/// it never reads this field, exactly like [`TuiSection`] immediately
+/// below is carried here but consumed only by `conway-cli`'s TUI. Whatever
+/// binary or embedder actually links a given first-party plugin crate
+/// reads this list itself, via [`crate::ConwayBuilder::config`], and calls
+/// `ConwayBuilder::with_plugin`/`with_backend`/`with_router` for every id
+/// it recognizes *before* calling `build()` — see
+/// `crates/conway-cli/src/first_party_plugins.rs` for the worked example
+/// this item ships (`conway-cli` links `conway-plugin-skeleton` and
+/// resolves ids from this list against it). An id the reading binary does
+/// not recognize is that binary's own config error to raise (GP-14): a
+/// name silently doing nothing here would be exactly the rung-1 lie
+/// CONTRIBUTING's declaration rule exists to prevent.
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct PluginsConfig {
+    /// Manifest ids (`PluginManifest::id`) to install, resolved by whatever
+    /// binary or embedder links the named plugin crate(s). Empty by
+    /// default: no first-party plugin is ever installed unless named here
+    /// (or attached directly via `ConwayBuilder::with_plugin` in library
+    /// code) — the tier's whole point is that nothing in it runs unasked.
+    pub install: Vec<String>,
 }
 
 /// `[tui]` (TUI-only options). The facade owns the wire shape so the same

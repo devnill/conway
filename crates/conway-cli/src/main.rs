@@ -9,6 +9,7 @@ mod cli;
 mod commands;
 mod diag;
 mod exit;
+mod first_party_plugins;
 mod oneshot;
 mod render;
 mod session_ref;
@@ -144,6 +145,15 @@ fn build_conway(cli: &Cli, gate: Option<Arc<dyn PermissionGate>>, is_tui: bool) 
     } else {
         builder.with_builtin_plugins(conway::PluginSelection::All)
     };
+    // First-party plugin tier (board item 01KZDC3JQ7W4DY1MG6MBCVB2DV):
+    // `[plugins].install` names ids against the small bundle this binary
+    // links (`first_party_plugins::bundle`) -- every dispatch target
+    // (TUI, one-shot `-p`, `sessions`, `routes`) shares this single
+    // `build_conway` choke point, so all four see the same installed set
+    // from the same config, with no target-specific carve-out the way
+    // `is_tui`'s built-in selection above has one.
+    let wanted = builder.config().plugins.install.clone();
+    let builder = first_party_plugins::install(builder, &wanted)?;
     builder.build()
 }
 

@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, LimitsConfig, ModelsConfig, PermissionsConfig,
+    PluginsConfig,
     RoleEntry, RoutingSection, SessionConfig, ToolsConfig, TuiSection,
 };
 use conway::{Conway, ConwayBuilder, ConwayError, Provenance, SessionHandle, SessionSpec};
@@ -69,6 +70,7 @@ fn base_config() -> ConwayConfig {
         models: ModelsConfig::default(),
         tui: TuiSection::default(),
         tools: ToolsConfig::default(),
+        plugins: PluginsConfig::default(),
     }
 }
 

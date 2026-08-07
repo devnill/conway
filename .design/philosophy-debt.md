@@ -89,23 +89,53 @@ routing, compaction, memory, skills, and MCP support.
 then leans on it, telling a reader that several deferred decisions already have
 a plausible answer they can install.
 
-**Exists today:** none of it. There is no first-party plugin tier, no plugin in
-the repository outside the default built-ins, and none of the six named
-capabilities ships in any form. This is the largest single gap between the page
-and the tree.
+**Exists today (board item 01KZDC3JQ7W4DY1MG6MBCVB2DV): the shape, and one
+worked skeleton — none of the six named capabilities yet.** Four decisions
+settle the shape, each stated where a reader will find it
+(`docs/embedding.md`'s "First-party plugin tier" section is the fullest
+account):
 
-**Needed to make it true:** the tier needs a shape before it needs members.
-Where these crates live in the workspace, how one is installed (a settings key,
-presumably the same `builtin_plugins` list `bash` opts in through, or something
-new if the list is meant only for built-ins), how they are versioned against the
-plugin API, and what "first-party but not default" means for the semver
-discipline the core is held to. Decide that once, then the members are ordinary
+- **Where they live:** one crate per plugin under `crates/`, same layout as
+  every other workspace crate (`cargo test --workspace` covers them without
+  special-casing). `conway` (the facade) does not, and must never, depend
+  on any of them — a first-party plugin is written against `conway::plugin`,
+  the identical public surface a third party gets.
+- **How one is installed:** a new, distinct `[plugins].install` key in
+  `settings.json` (`conway::config::schema::PluginsConfig`), deliberately
+  NOT folded into `tools.builtin_plugins` (that key is a closed,
+  compile-time-known candidate set the facade itself validates; a
+  first-party plugin is never a member of it). The facade carries the wire
+  shape but never itself acts on it — `ConwayBuilder::config()` (new) lets
+  whatever binary or embedder links a given plugin crate read the list and
+  call `with_plugin` (or, plausibly, `with_backend`/`with_router` — nothing
+  about the mechanism is tool-specific) before `build()`.
+  `crates/conway-cli/src/first_party_plugins.rs` is the shipped instance:
+  one bundle, resolved for the TUI and one-shot `-p` alike through the
+  single `build_conway` choke point both share.
+- **Versioning:** with the workspace (`version.workspace = true`, same as
+  every crate here), not independently, and not held to `conway-core`'s own
+  strict-semver discipline — that discipline exists because *third-party*
+  plugins depend on `conway-core`'s port surface, and a first-party plugin
+  is just another consumer of the public facade from `conway`'s own point
+  of view.
+- **Discovery:** `README.md`'s "First-party plugins" section now describes
+  what exists (the mechanism, plus the one worked skeleton) rather than
+  what is planned.
+
+**`crates/conway-plugin-skeleton` is the one member so far, and it is not a
+real capability.** It registers a single `skeleton_ping` tool that echoes
+its argument back — enough to prove the mechanism (absent by default,
+installable via `[plugins].install` or `with_plugin`, callable from the TUI,
+one-shot, and a library embedder) end to end, and nothing more. Dynamic
+routing, compaction, memory, skills, and MCP support are unchanged by this
+item: none of the six ships in any form yet, and each is separate, later
 work.
 
-**Sequencing note.** Routing (entry 5) is the one to build first, and not
-because it is most wanted. It is the hardest test of the plugin surface, so it
-will find whatever is missing there before five easier plugins are written
-against a surface that turns out to be inadequate.
+**Sequencing note, unchanged.** Routing (entry 5) is still the one to build
+first, and not because it is most wanted. It is the hardest test of the
+plugin surface now that the tier has a place to put it, so it will find
+whatever is missing there before the remaining plugins are written against a
+surface that turns out to be inadequate.
 
 **This entry replaces an earlier, weaker one** about shipping "example
 implementations" for the deferred decisions. That was the same idea before it

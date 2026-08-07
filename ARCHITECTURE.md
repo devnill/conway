@@ -55,6 +55,9 @@ conway             The public facade: ConwayBuilder, Conway, SessionHandle.
 conway-cli         The `conway` binary: one-shot mode and the TUI.
 ```
 
+This is the fixed core layout; it does not include the first-party plugin
+tier (§2b), whose crate count grows independently of it.
+
 Dependency direction is **strictly downward**; `conway-core` depends on
 nothing else in the workspace:
 
@@ -90,6 +93,36 @@ This shape exists so:
 - Every port trait has a fake/test-double implementation available behind a
   feature flag, so the runtime and tools are testable end-to-end with zero
   network.
+
+## 2b. The first-party plugin tier
+
+A second, open-ended set of crates sits alongside the eight above: plugins
+written and shipped in this repository but never installed unless asked for
+(board item 01KZDC3JQ7W4DY1MG6MBCVB2DV; `PHILOSOPHY.md`'s "First-party
+plugins, and why they are not defaults"). `crates/conway-plugin-skeleton` is
+the first member — a worked example (one `skeleton_ping` tool) proving the
+mechanism, not a real capability; dynamic routing, compaction, memory,
+skills, and MCP support are separate, later work.
+
+The layout is one crate per plugin, under `crates/` like everything else.
+A single crate holding several would couple members that are meant to be
+independently installable, and would defer a naming question a growing tier
+has to answer anyway. A directory outside `crates/` was the other candidate
+and is worse than it looks: `cargo test --workspace` walks `crates/*`, so
+members would drop out of the suite silently — a coverage gap that goes
+unnoticed precisely because nothing fails.
+
+Each such crate depends on `conway` (the facade) — the identical public
+surface a third-party plugin author gets — and `conway` depends on none of
+them, in either direction, ever. That asymmetry is the whole point: a
+first-party plugin is written and reviewed here, but from the facade's own
+point of view it is indistinguishable from a plugin nobody at this project
+wrote. The one place a first-party plugin crate IS linked into a shipped
+binary is `conway-cli` (`src/first_party_plugins.rs`), behind a config key
+(`[plugins].install`) distinct from the built-in selection §2 describes — a
+library embedder instead links the crate directly and calls
+`ConwayBuilder::with_plugin`. See `docs/embedding.md`'s "First-party plugin
+tier" section for the full mechanism.
 
 ## 3. Core primitives
 

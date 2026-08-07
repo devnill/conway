@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The first-party plugin tier now has a settled shape** (board item
+  01KZDC3JQ7W4DY1MG6MBCVB2DV): `PHILOSOPHY.md` names a second tier of
+  plugins — dynamic routing, compaction, memory, skills, MCP — written and
+  shipped in this repository but never installed by default, and until now
+  none of it existed. Four decisions, made once so the members that follow
+  are ordinary work: (1) one crate per plugin under `crates/`, and `conway`
+  (the facade) never depends on any of them — a first-party plugin is
+  written against `conway::plugin`, the same public surface a third party
+  gets; (2) installed through a new, distinct `[plugins].install` key in
+  `settings.json` (deliberately not folded into `tools.builtin_plugins`,
+  which names only the closed conway-tools built-in set), resolved by
+  whatever binary or embedder links the plugin crate — `conway-cli` does
+  so in `crates/conway-cli/src/first_party_plugins.rs`, feeding the TUI and
+  one-shot `-p` from the same config; (3) versioned with the workspace, not
+  independently, and not held to `conway-core`'s own strict-semver
+  discipline; (4) discoverable from `README.md`'s "First-party plugins"
+  section, which now describes what exists rather than what is planned.
+  `crates/conway-plugin-skeleton` ships as the tier's first member: a
+  worked, non-default example plugin (`skeleton_ping`) proving the
+  mechanism end to end, not a real capability. `ConwayBuilder` gains a new
+  `config()` accessor so a caller can read `plugins.install` before
+  deciding which plugin to attach.
+
 ## [0.8.0] — 2026-08-06
 
 **Seven of the entries below are one piece of work.** A declaration audit
