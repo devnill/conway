@@ -350,5 +350,10 @@ context mid-generation.
 - [`docs/README.md`](docs/README.md) indexes conway's task-oriented
   documentation — installing conway, driving it interactively or from a
   script, and embedding it as a library.
+- [`PHILOSOPHY.md`](PHILOSOPHY.md) covers how these primitives are meant to be
+  used: how to shape an agent tree, when to fork versus spawn, and what conway
+  deliberately leaves to you.
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) is the discipline applied when changing
+  any of it: what "done" means, and the rules a change is held to.
 - Each crate's own source carries its implementation-level documentation;
   `cargo doc --workspace --no-deps --open` builds it.
