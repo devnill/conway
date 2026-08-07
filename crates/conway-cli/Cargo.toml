@@ -3,6 +3,7 @@ name = "conway-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish.workspace = true
 rust-version.workspace = true
 description = "The `conway` CLI: interactive TUI, `-p` one-shot mode, and session/routing introspection subcommands, built entirely over the `conway` facade"
 

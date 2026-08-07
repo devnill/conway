@@ -6,6 +6,10 @@ members = ["crates/*"]
 version = "0.8.0"
 edition = "2021"
 license = "AGPL-3.0-only"
+# Source-available on GitHub only, never crates.io. AGPL-3.0-only exists to
+# foreclose closed-SaaS forks, and publishing would undercut that. This is a
+# structural guard, not a reminder: `cargo publish` refuses outright.
+publish = false
 rust-version = "1.94.0"
 
 [workspace.dependencies]

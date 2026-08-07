@@ -3,6 +3,7 @@ name = "conway-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish.workspace = true
 rust-version.workspace = true
 description = "Domain types and port traits for the conway agent harness"
 

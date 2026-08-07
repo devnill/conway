@@ -3,6 +3,7 @@ name = "conway"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish.workspace = true
 rust-version.workspace = true
 description = "Embeddable facade over the conway agent harness: config, builder, session handle, and event stream"
 
