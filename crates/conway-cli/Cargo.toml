@@ -13,6 +13,12 @@ path = "src/main.rs"
 
 [dependencies]
 conway = { path = "../conway" }
+# The first-party plugin tier (board item 01KZDC3JQ7W4DY1MG6MBCVB2DV): the
+# ONE binary that links a first-party plugin crate -- `conway` (the facade)
+# deliberately does not (see `conway::config::schema::PluginsConfig`'s own
+# doc). See `src/first_party_plugins.rs` for the install path this crate's
+# dependency feeds.
+conway-plugin-skeleton = { path = "../conway-plugin-skeleton" }
 clap = { workspace = true, features = ["derive", "env"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }
 async-trait = { workspace = true }

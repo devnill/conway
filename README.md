@@ -147,18 +147,55 @@ box, and none of them grants arbitrary execution. See
 
 ### First-party plugins
 
-**Planned; none of these ship yet.** conway intends a second tier of plugins
-maintained in this repository and shipped alongside it, but *not* registered by
-default: dynamic routing (fallback chains, health tracking, circuit breaking),
-context compaction, memory, skills, and MCP support.
-
-The reasoning is in
+conway ships a second tier of plugins, maintained in this repository and
+shipped alongside it, but *not* registered by default: dynamic routing
+(fallback chains, health tracking, circuit breaking), context compaction,
+memory, skills, and MCP support are the ones named in
 [`PHILOSOPHY.md`](PHILOSOPHY.md#first-party-plugins-and-why-they-are-not-defaults),
-and the short version is that a capability being common does not make it
-neutral. Compaction and routing policy are choices that depend on how you work,
-so conway ships them as things you install rather than behavior you inherit.
-Progress against that intent is tracked in
-[`.design/philosophy-debt.md`](.design/philosophy-debt.md).
+and each lands as its own crate under `crates/` as it is built — a capability
+being common does not make it neutral, so conway ships these as things you
+install rather than behavior you inherit. Progress against that intent is
+tracked in [`.design/philosophy-debt.md`](.design/philosophy-debt.md).
+
+**The tier's shape is settled and demonstrated, with one worked example
+shipping today:** `crates/conway-plugin-skeleton`, a plugin that registers a
+single `skeleton_ping` tool and does nothing else — it exists to prove the
+mechanism below, not to be useful on its own. Real occupants (routing first)
+are separate, later work.
+
+- **Where they live.** A crate per plugin under `crates/`, exactly like the
+  workspace's other crates — `cargo test --workspace` covers them the same
+  way. `conway` (the facade) never depends on any of them: a first-party
+  plugin is written against `conway::plugin`, the identical public surface a
+  third-party plugin author gets, and is linked only by whatever binary or
+  embedder chooses to install it.
+- **How you install one.** A distinct `[plugins]` section, deliberately not
+  folded into `tools.builtin_plugins` (that key names only the four
+  compiled-in built-ins and is validated as a closed set; a first-party
+  plugin is not a member of it):
+  ```json
+  { "plugins": { "install": ["conway.plugin_skeleton"] } }
+  ```
+  The `conway` binary links its own small bundle of first-party plugin
+  crates (`crates/conway-cli/src/first_party_plugins.rs`) and resolves each
+  id in `plugins.install` against it, for the TUI and one-shot `-p` alike —
+  an unrecognized id is a hard config error, never a silent no-op. A library
+  embedder instead depends on the plugin crate directly and calls
+  `ConwayBuilder::with_plugin`, the same call a third party makes; reading
+  `ConwayBuilder::config().plugins.install` first (as `conway-cli` does) is
+  how an embedder offers the identical settings-driven experience.
+- **What compatibility they promise.** Versioned with the workspace
+  (`version.workspace = true`, same as every other crate here), not
+  independently and not held to `conway-core`'s own strict-semver
+  discipline — that discipline exists because third-party plugins depend on
+  `conway-core`'s port surface, and a first-party plugin is, from `conway`'s
+  point of view, just another consumer of the public facade, not a second
+  thing granting the stability promise itself. Pre-1.0, a first-party
+  plugin's own API can change in any workspace release, same as everything
+  else in this tree.
+
+See [`docs/embedding.md`](docs/embedding.md#first-party-plugin-tier) for the
+full mechanism, including what an embedder does differently from `conway-cli`.
 
 ## Architecture
 

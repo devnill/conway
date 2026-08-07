@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, LimitsConfig, ModelsConfig, PermissionMode,
-    PermissionsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig, TuiSection,
+    PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig, TuiSection,
 };
 use conway::config::schema::{BackendEntry, BackendKind};
 use conway::{Conway, ConwayBuilder, ConwayError, SessionSpec};
@@ -125,6 +125,7 @@ fn base_config() -> ConwayConfig {
         models: ModelsConfig::default(),
         tui: TuiSection::default(),
         tools: ToolsConfig::default(),
+        plugins: PluginsConfig::default(),
     }
 }
 

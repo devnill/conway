@@ -287,6 +287,26 @@ impl ConwayBuilder {
         self
     }
 
+    /// Read-only access to the config this builder currently holds --
+    /// board item 01KZDC3JQ7W4DY1MG6MBCVB2DV's answer to "how does a caller
+    /// decide which first-party (or third-party) plugin to `with_plugin`
+    /// before `build()`?" `config().plugins.install`
+    /// ([`crate::config::schema::PluginsConfig`]) is the intended read: a
+    /// binary that links a given plugin crate (this crate itself never
+    /// does -- see that field's own doc) checks whether its manifest id
+    /// appears in this list and, if so, attaches it -- exactly what
+    /// `crates/conway-cli/src/first_party_plugins.rs` does before calling
+    /// `build()`.
+    ///
+    /// Reflects any `with_cli_overrides` call made so far but NOT
+    /// `config::merge::apply_cli` (`build()`'s own step 1) -- CLI overrides
+    /// are only fully applied and re-validated inside `build()` itself, so
+    /// a caller reading `config()` beforehand sees the loaded/`from_parts`
+    /// config, not the final post-override one.
+    pub fn config(&self) -> &ConwayConfig {
+        &self.config
+    }
+
     /// Injects a backend. Takes precedence over any config-derived backend
     /// with the same `Backend::id()`.
     pub fn with_backend(mut self, backend: Arc<dyn Backend>) -> Self {

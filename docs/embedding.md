@@ -211,6 +211,73 @@ config-derived selection instead — so a plain `ConwayBuilder::discover()?
 mechanism exists to require of built-ins too, so an already-explicit call
 gains no new hoop to jump through.
 
+### First-party plugin tier
+
+Board item 01KZDC3JQ7W4DY1MG6MBCVB2DV settles the shape of the tier
+[`PHILOSOPHY.md`](../PHILOSOPHY.md#first-party-plugins-and-why-they-are-not-defaults)
+describes: plugins written and shipped in this repository, but installed the
+same way a third party's would be, never by default.
+
+**Where they live.** One crate per plugin under `crates/`, the same layout
+every other workspace crate uses — `cargo test --workspace` covers them
+without special-casing. `conway` (this facade crate) does not, and must
+never, depend on any of them: doing so would put a first-party plugin back
+on the exact footing the tier exists to avoid. `crates/conway-plugin-skeleton`
+is the worked example this item ships — a `SkeletonPlugin` registering one
+`skeleton_ping` tool, written entirely against `conway::plugin`, proving
+nothing beyond the mechanism below.
+
+**How one is installed — deliberately a distinct key from
+`tools.builtin_plugins`.** That key names a *closed* candidate set (the four
+`conway-tools` built-ins this crate itself compiles in) and is validated as
+one — an unrecognized id is a hard config error precisely because the full
+set is known here, at compile time. A first-party plugin is never a member
+of that set, so folding the two together would make `builtin_plugins`'s
+existing name a lie in the other direction the day a real first-party
+plugin lands in it. Instead:
+
+```json
+{ "plugins": { "install": ["conway.plugin_skeleton"] } }
+```
+
+`ConwayConfig::plugins.install` (`PluginsConfig`) carries this list, but
+this crate never itself acts on it — the same relationship `[tui]` already
+has with `conway-cli`'s TUI. Whatever binary or embedder actually links a
+given first-party plugin crate reads the list itself, via
+[`ConwayBuilder::config`], and calls `with_plugin` (or, for a future
+plugin-supplied backend or router, `with_backend`/`with_router` — nothing
+about this mechanism is tool-specific) for every id it recognizes, before
+calling `build()`:
+
+```rust,ignore
+let wanted = builder.config().plugins.install.clone();
+if wanted.iter().any(|id| id == conway_plugin_skeleton::PLUGIN_ID) {
+    builder = builder.with_plugin(Arc::new(conway_plugin_skeleton::SkeletonPlugin));
+}
+let conway = builder.build()?;
+```
+
+`crates/conway-cli/src/first_party_plugins.rs` is the shipped version of
+exactly this: the CLI binary links `conway-plugin-skeleton`, resolves
+`plugins.install` against its own small bundle for every dispatch target
+(TUI, one-shot `-p`, `sessions`, `routes` — they share one `build_conway`
+choke point), and raises a typed config error for an id it does not
+recognize rather than installing nothing silently (GP-14). A library
+embedder wanting the same plugin depends on `conway-plugin-skeleton`
+directly and writes the snippet above — there is no facade-level shortcut
+that spares an embedder from linking the crate, because that link is the
+whole reason the facade itself stays independent of it.
+
+**What compatibility they promise.** Versioned with the workspace
+(`version.workspace = true`, identical to every crate in this tree), not
+independently, and not held to `conway-core`'s own strict-semver discipline
+(ARCHITECTURE.md §2). That discipline exists because *third-party* plugins
+depend on `conway-core`'s port surface; a first-party plugin is, from this
+facade's point of view, just another consumer of the public `conway`/
+`conway::plugin` surface, not a second thing granting the stability promise
+itself. Pre-1.0, a first-party plugin's own API can change in any workspace
+release, same as everything else here.
+
 ## Consuming the event stream
 
 `SessionHandle::events()` and `TurnHandle::events()` both return
