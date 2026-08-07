@@ -122,7 +122,7 @@ model pin never reaches a `conway_ask` child. `conway_steer`/`conway_await`/
 | `conway_ask` | Fork-only; returns the child's full reply text. | `prompt`, `budget?`, `tools?` | Dangerous |
 | `conway_steer` | Send a message to a running child, landing at its next turn boundary. | `agent_id`, `text` | Requires approval |
 | `conway_await` | Block for a child's terminal result. | `agent_id` | Safe |
-| `conway_cancel` | Cancel a running child. | `agent_id`, `reason?` | Requires approval |
+| `conway_cancel` | Cancel a running child. | `agent_id`, `reason?`, `mode?` | Requires approval |
 
 `conway_subagent`/`conway_ask` are `Dangerous`: starting a child hands it
 the ability to make its own tool calls, transitively, one hop removed from
@@ -130,6 +130,20 @@ the ability to make its own tool calls, transitively, one hop removed from
 carries no side effect. A model-invoked fork/spawn is always autonomous
 (`keep_alive: false`); interactive keep-alive children exist only on the
 TUI and embedder surfaces above.
+
+`conway_cancel`'s `mode` defaults to `immediate`: it stops the target right
+away, without waiting for its current turn, and propagates to the whole
+subtree — every descendant's own `CancellationToken` is derived from its
+parent's, so a hard cancel collapses the branch structurally. `graceful`
+instead lets the target finish its in-flight turn, then stops at the next
+turn boundary — and stops only the named agent; it does not itself cancel
+descendants. **A graceful cancel cannot reach an idle `keep_alive` agent
+waiting between turns** (or a resumed root's very first iteration): that
+wait is not a turn boundary a queued cancel drains at, so use `immediate`
+for an agent you expect to be idle rather than mid-turn. `SessionHandle::
+cancel_with` is the embedder-facing counterpart; `SessionHandle::cancel`
+keeps calling it with `CancelMode::Immediate`, unchanged from before this
+distinction existed.
 
 ## Result contracts
 

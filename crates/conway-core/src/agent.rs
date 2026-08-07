@@ -404,6 +404,47 @@ pub enum AgentStatus {
     Cancelled,
 }
 
+/// The two ways a caller can stop a running agent (board item
+/// 01KZDC2222ARKMZKN8ZE4BYHD6, decision 01KZDDBNCC3K9HXJYHC8QX3DKQ) --
+/// `PHILOSOPHY.md`'s `TERM`/`KILL` analogy. `Immediate` trips the target's
+/// `CancellationToken` synchronously (`Runtime::cancel` -> `AgentTree::
+/// cancel`) and propagates to the whole subtree structurally, since every
+/// child's own token is a `child_token()` of its parent's (`tree.rs`).
+/// `Graceful` instead enqueues `AgentMessage::Cancel { hard: false, .. }`,
+/// landing at the target's next turn boundary and stopping ONLY the named
+/// agent -- it does not itself cancel descendants (that is board item
+/// 01KZDDCBGXNYTNM31PHW46R1SP, a deliberate follow-up, not a gap in this
+/// one). A graceful cancel also cannot reach an agent parked at the resume
+/// gate (an idle `keep_alive` agent between turns, or a resumed root's very
+/// first iteration): that wait only selects on the hard cancellation token,
+/// the deadline, and the gate's own notify -- never the mailbox -- so an
+/// enqueued soft cancel sits undrained until the agent's next real turn
+/// boundary, which for an idle `keep_alive` agent may never come. See
+/// `SessionHandle::cancel_with`'s own doc for where this is stated to a
+/// caller.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CancelMode {
+    /// Stops now, without waiting for the current turn to finish. The
+    /// default -- an absent choice preserves conway's pre-existing
+    /// behavior (every cancellation reachable before this type existed was
+    /// this one) rather than silently downgrading it.
+    #[default]
+    Immediate,
+    /// Lets the target finish its in-flight turn, then stops at the next
+    /// turn boundary.
+    Graceful,
+}
+
+impl CancelMode {
+    /// `true` for `Immediate`, `false` for `Graceful` -- the `hard` flag
+    /// [`AgentMessage::Cancel`] and `conway-runtime`'s `mailbox::classify`
+    /// already key on.
+    pub fn hard(self) -> bool {
+        matches!(self, CancelMode::Immediate)
+    }
+}
+
 /// A message exchanged between a parent and a child agent.
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -24,15 +24,18 @@ use conway::config::schema::{
     RoleEntry, RoutingSection, SessionConfig, ToolsConfig, TuiSection,
 };
 use conway::{
-    Conway, ConwayBuilder, ConwayError, ForkSpec, SessionHandle, SessionId, SessionSpec, SpawnSpec,
+    CancelMode, Conway, ConwayBuilder, ConwayError, ForkSpec, Plugin, SessionHandle, SessionId,
+    SessionSpec, SpawnSpec, Tool,
 };
 use conway_core::agent::{Budget, PermissionDecision, ResultStatus, SubagentMode};
 use conway_core::capabilities::{
     CacheMode, Capabilities, ProbeReport, ReliabilityTier, StructuredOutput, ToolCallSupport,
 };
-use conway_core::content::{ContentBlock, StopReason, Usage};
+use conway_core::content::{ContentBlock, StopReason, ToolCall, Usage};
 use conway_core::error::BackendError;
-use conway_core::fakes::{FakeBackend, FakeGate, FakeRouter, FakeStore};
+use conway_core::fakes::{
+    FakeBackend, FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn,
+};
 use conway_core::ids::{AgentId, BackendId, LogSeq, ModelId, RoleAlias};
 use conway_core::log::LogRecord;
 use conway_core::ports::{
@@ -1582,4 +1585,252 @@ async fn autonomous_spawn_and_fork_default_keep_alive_false_and_finish_after_one
         .expect("await_agent must not hang for a non-keep-alive fork")
         .expect("await_agent should resolve");
     assert_eq!(fork_result.status, ResultStatus::Completed);
+}
+
+// ---------------------------------------------------------------------
+// cancel_with(): the VERIFICATION ANCHOR for board item
+// 01KZDC2222ARKMZKN8ZE4BYHD6 ("wire graceful cancellation") -- graceful
+// cancellation, driven through a PUBLIC entry point (the facade), not the
+// mailbox classifier `conway-runtime`'s own `tests/steering.rs:717`
+// exercises (that test builds the loop harness directly; it proves nothing
+// about whether any caller-reachable path can ever produce a soft
+// `AgentMessage::Cancel` at all -- before this item, none did).
+// ---------------------------------------------------------------------
+
+/// Notifies `started` the instant `invoke` begins, then blocks on `release`
+/// -- gives a test a deterministic window in which a child is known to be
+/// mid-TOOL-EXECUTION (not merely mid-backend-call, like
+/// `DelayedEchoBackend` above), so a cancel enqueued during that window
+/// races a real, in-flight tool call rather than a sleep-based guess.
+struct SlowTool {
+    started: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+}
+
+#[async_trait]
+impl Tool for SlowTool {
+    fn spec(&self) -> conway_core::content::ToolSpec {
+        conway_core::content::ToolSpec {
+            name: conway_core::ids::ToolName::new("slow_tool"),
+            description: "test-only slow tool".into(),
+            schema: serde_json::from_value(serde_json::json!({"type": "object"}))
+                .expect("a trivial object schema always parses"),
+            category: conway_core::content::ToolCategory::Read,
+            permission: conway_core::content::PermissionClass::Safe,
+        }
+    }
+
+    async fn invoke(
+        &self,
+        _call: ToolCall,
+        _ctx: conway_core::ports::ToolCtx,
+    ) -> Result<conway_core::ports::ToolOutput, conway_core::error::ToolError> {
+        self.started.notify_one();
+        self.release.notified().await;
+        Ok(conway_core::ports::ToolOutput {
+            blocks: vec![ContentBlock::Text {
+                text: "slow tool done".to_string(),
+            }],
+            is_error: false,
+            truncation: conway_core::content::TruncationPolicy::None,
+            artifacts: vec![],
+        })
+    }
+}
+
+/// Registers [`SlowTool`] as the sole tool of a test-only plugin -- mirrors
+/// `keep_alive.rs`'s identical `FixtureToolsPlugin` pattern (duplicated
+/// locally rather than shared: each integration test binary is its own
+/// crate root).
+struct SlowToolPlugin(Arc<SlowTool>);
+
+impl Plugin for SlowToolPlugin {
+    fn manifest(&self) -> conway_core::ports::PluginManifest {
+        conway_core::ports::PluginManifest {
+            id: "test.slow-tool".to_string(),
+            version: "0.0.0".to_string(),
+            tools: vec![conway_core::ids::ToolName::new("slow_tool")],
+            required_host_caps: vec![],
+        }
+    }
+
+    fn tools(&self) -> Vec<Arc<dyn Tool>> {
+        vec![self.0.clone() as Arc<dyn Tool>]
+    }
+}
+
+/// Mirrors `subagent_control_seam.rs`'s identical helper -- a
+/// `GenerateResponse` carrying exactly one tool call, no text content.
+fn tool_call_response(tool: &str, arguments: serde_json::Value) -> GenerateResponse {
+    GenerateResponse {
+        content: vec![],
+        tool_calls: vec![ToolCall {
+            call_id: "call_1".to_string(),
+            name: conway_core::ids::ToolName::new(tool),
+            arguments,
+        }],
+        stop: StopReason::ToolUse,
+        usage: Usage::default(),
+    }
+}
+
+/// Like [`build_conway`], but also registers `plugin` -- for the two tests
+/// below, which need a real, in-flight tool call to cancel against.
+fn build_conway_with_plugin(
+    backend: Arc<dyn Backend>,
+    store: Arc<FakeStore>,
+    plugin: Arc<dyn Plugin>,
+) -> Conway {
+    let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
+    ConwayBuilder::from_parts(base_config())
+        .with_backend(backend)
+        .with_session_store(store)
+        .with_permission_gate(gate)
+        .with_router(fake_router())
+        .with_plugin(plugin)
+        .build()
+        .expect("build should succeed with every port injected")
+}
+
+#[tokio::test]
+async fn graceful_cancel_through_the_facade_lets_the_in_flight_tool_finish_then_stops() {
+    let started = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let tool = Arc::new(SlowTool {
+        started: started.clone(),
+        release: release.clone(),
+    });
+    // Scripted for exactly ONE turn: if a graceful cancel failed to stop
+    // BEFORE the next backend round trip, the loop would ask this backend
+    // for a second response, find the script exhausted, and fail the turn
+    // outright -- a loud, unambiguous signal that the "backend called
+    // exactly once" guarantee broke, not a silent pass.
+    let backend = Arc::new(
+        ScriptedBackend::new(vec![ScriptedTurn::Respond(tool_call_response(
+            "slow_tool",
+            serde_json::json!({}),
+        ))])
+        .with_id(BackendId::new("fake")),
+    );
+    let store = Arc::new(FakeStore::new());
+    let conway =
+        build_conway_with_plugin(backend.clone(), store, Arc::new(SlowToolPlugin(tool)));
+    let handle = new_handle(&conway).await;
+
+    let child = handle
+        .fork(handle.root(), ForkSpec::new("go"))
+        .await
+        .expect("fork should succeed");
+
+    // Wait for the child's tool call to actually be in flight before
+    // cancelling -- a genuine race against a real suspension point, not a
+    // sleep-based guess.
+    tokio::time::timeout(Duration::from_secs(5), started.notified())
+        .await
+        .expect("the slow tool must start");
+
+    handle
+        .cancel_with(child, "let it finish", CancelMode::Graceful)
+        .await
+        .expect("graceful cancel should succeed");
+
+    // Let the tool actually finish -- a graceful cancel must not abort it.
+    release.notify_one();
+
+    let result = tokio::time::timeout(Duration::from_secs(5), handle.await_agent(child))
+        .await
+        .expect("await_agent must not hang after a graceful cancel")
+        .expect("await_agent should resolve Ok even on Cancelled");
+    assert_eq!(
+        result.status,
+        ResultStatus::Cancelled {
+            reason: "let it finish".to_string()
+        },
+        "a graceful cancel must land with the supplied reason, at the next turn boundary"
+    );
+
+    let transcript = handle
+        .transcript(child)
+        .await
+        .expect("transcript should resolve");
+    assert!(
+        transcript.iter().any(|r| matches!(
+            r,
+            LogRecord::ToolResultRecord { result, .. } if result.call_id == "call_1"
+        )),
+        "the in-flight tool's own result must have been persisted before the graceful cancel \
+         landed -- that is exactly the 'finishes its current turn' contract"
+    );
+    assert_eq!(
+        backend.calls().len(),
+        1,
+        "a graceful cancel must stop BEFORE the next backend round trip -- only the turn \
+         already in flight when cancel was sent may complete"
+    );
+}
+
+#[tokio::test]
+async fn default_cancel_through_the_facade_stops_immediately_without_waiting_for_the_tool() {
+    let started = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let tool = Arc::new(SlowTool {
+        started: started.clone(),
+        release: release.clone(),
+    });
+    let backend = Arc::new(
+        ScriptedBackend::new(vec![ScriptedTurn::Respond(tool_call_response(
+            "slow_tool",
+            serde_json::json!({}),
+        ))])
+        .with_id(BackendId::new("fake")),
+    );
+    let store = Arc::new(FakeStore::new());
+    let conway =
+        build_conway_with_plugin(backend.clone(), store, Arc::new(SlowToolPlugin(tool)));
+    let handle = new_handle(&conway).await;
+
+    let child = handle
+        .fork(handle.root(), ForkSpec::new("go"))
+        .await
+        .expect("fork should succeed");
+
+    tokio::time::timeout(Duration::from_secs(5), started.notified())
+        .await
+        .expect("the slow tool must start");
+
+    // The default form -- `cancel`, no mode -- must resolve `Cancelled`
+    // WITHOUT `release` ever being notified: it must not wait for the
+    // in-flight tool to finish.
+    handle
+        .cancel(child, "test requested cancellation")
+        .await
+        .expect("cancel should succeed");
+
+    let result = tokio::time::timeout(Duration::from_secs(2), handle.await_agent(child))
+        .await
+        .expect("the default cancel path must resolve promptly, without waiting on the tool")
+        .expect("await_agent should resolve Ok even on Cancelled");
+    assert!(
+        matches!(result.status, ResultStatus::Cancelled { .. }),
+        "expected Cancelled, got {:?}",
+        result.status
+    );
+
+    let transcript = handle
+        .transcript(child)
+        .await
+        .expect("transcript should resolve");
+    assert!(
+        !transcript
+            .iter()
+            .any(|r| matches!(r, LogRecord::ToolResultRecord { .. })),
+        "an immediate cancel must abort the in-flight tool call outright -- its result must \
+         never be persisted, unlike the graceful path"
+    );
+
+    // Release the tool so its (already-dropped, by `ToolRunner::run_batch`'s
+    // own `select!`) future does not matter either way -- a no-op given the
+    // assertions above already passed, kept only so nothing here reads as
+    // silently relying on the tool eventually finishing.
+    release.notify_one();
 }

@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use conway_core::agent::{
-    AgentDefRef, AgentResult, AgentTreeSnapshot, Budget, SubagentMode, SubagentSpec,
+    AgentDefRef, AgentResult, AgentTreeSnapshot, Budget, CancelMode, SubagentMode, SubagentSpec,
 };
 use conway_core::content::{ContentBlock, ToolResult, Usage};
 use conway_core::error::{RuntimeError, StoreError};
@@ -822,13 +822,35 @@ impl SessionHandle {
             .map_err(ConwayError::Runtime)
     }
 
-    /// Cancels `target` with `reason`. Delegates to `Runtime::cancel` (`impl
-    /// SubagentHost`) with `reason` converted and otherwise unmodified.
+    /// Cancels `target` with `reason`, immediately (board item
+    /// 01KZDC2222ARKMZKN8ZE4BYHD6) -- delegates to [`Self::cancel_with`]
+    /// with [`CancelMode::Immediate`], the pre-existing behavior, so every
+    /// caller of this method keeps its exact prior semantics without
+    /// needing to name a mode.
+    pub async fn cancel(&self, target: AgentId, reason: &str) -> Result<()> {
+        self.cancel_with(target, reason, CancelMode::Immediate).await
+    }
+
+    /// Cancels `target` with `reason`, in `mode` (board item
+    /// 01KZDC2222ARKMZKN8ZE4BYHD6) -- the primitive [`Self::cancel`]
+    /// delegates to. `CancelMode::Immediate` trips `target`'s
+    /// `CancellationToken` now and propagates to `target`'s whole subtree,
+    /// structurally (`tree.rs`: every child's own token is a
+    /// `child_token()` of its parent's). `CancelMode::Graceful` instead lets
+    /// `target` finish its in-flight turn, landing at its next turn
+    /// boundary, and stops ONLY `target` itself -- it does not cancel
+    /// descendants (a deliberate, narrow scope: see [`CancelMode`]'s own
+    /// doc). **A graceful cancel cannot reach `target` while it is parked at
+    /// the resume gate** -- an idle `keep_alive` agent between turns, or a
+    /// resumed root's very first iteration -- since that wait selects only
+    /// on the hard cancellation token, the deadline, and the gate's own
+    /// notify, never the mailbox a graceful cancel is delivered through; use
+    /// `CancelMode::Immediate` for that case.
     ///
     /// Rejects `target` with `Err(ConwayError::Runtime)` when it does not
     /// belong to this session's agent tree -- without this check any handle
-    /// could hard-cancel another session's agent, since `cancel` is a
-    /// mutating control-plane op reached through the same runtime-wide
+    /// could cancel another session's agent, since `cancel`/`cancel_with`
+    /// is a mutating control-plane op reached through the same runtime-wide
     /// `Arc<Runtime>` every `SessionHandle` shares. See
     /// `SessionHandle::ensure_agent_in_session`'s doc.
     ///
@@ -843,16 +865,28 @@ impl SessionHandle {
     /// inherent method over a trait method with the same receiver type, so
     /// a plain `self.rt.cancel(...)` call would silently bind to that
     /// inherent method instead of the trait method this criterion is about
-    /// -- harmless here (the trait impl is a pure pass-through to that same
-    /// inherent method, confirmed in `conway-runtime`'s `subagent.rs`), but
-    /// named explicitly so this delegation's intent (going through
-    /// `SubagentHost`, the port this item's criteria are specified against)
-    /// isn't left to an incidental method-resolution tie-break.
-    pub async fn cancel(&self, target: AgentId, reason: &str) -> Result<()> {
+    /// -- harmless for the immediate path (the trait impl's immediate arm is
+    /// a pure pass-through to that same inherent method, confirmed in
+    /// `conway-runtime`'s `subagent.rs`), but wrong for the graceful path
+    /// (the inherent method has no such mode at all), so this is named
+    /// explicitly rather than left to an incidental method-resolution
+    /// tie-break either way.
+    pub async fn cancel_with(
+        &self,
+        target: AgentId,
+        reason: &str,
+        mode: CancelMode,
+    ) -> Result<()> {
         self.ensure_agent_in_session(target)?;
-        SubagentHost::cancel(self.rt.as_ref(), self.root, target, reason.to_string())
-            .await
-            .map_err(ConwayError::Runtime)
+        SubagentHost::cancel(
+            self.rt.as_ref(),
+            self.root,
+            target,
+            reason.to_string(),
+            mode,
+        )
+        .await
+        .map_err(ConwayError::Runtime)
     }
 
     /// Verifies `agent` is reachable from `self.root` by walking

@@ -131,7 +131,8 @@ context is unusually sensitive to corruption.
   `wait` that never returns.
 - **Cancellation** stops a child. The `TERM`/`KILL` distinction is the model:
   the graceful form lets the child finish its current turn, and the immediate
-  form does not.
+  form does not. Only the immediate form propagates to the child's own
+  descendants; the graceful form stops the named agent alone.
 
 Messaging and context inheritance stay separate. What a child knows came from
 its creation; everything since arrived through a channel you can point at.

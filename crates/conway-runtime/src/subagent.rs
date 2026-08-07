@@ -128,8 +128,8 @@ use std::sync::{Arc, Mutex, Weak};
 use async_trait::async_trait;
 use chrono::Utc;
 use conway_core::agent::{
-    AgentMessage, AgentResult, AgentTreeSnapshot, AskOutcome, ResultStatus, SubagentMode,
-    SubagentSpec,
+    AgentMessage, AgentResult, AgentTreeSnapshot, AskOutcome, CancelMode, ResultStatus,
+    SubagentMode, SubagentSpec,
 };
 use conway_core::capabilities::CacheMode;
 use conway_core::config::DEFAULT_MAX_PARALLEL_TOOLS;
@@ -750,19 +750,40 @@ impl SubagentHost for Runtime {
         self.tree_ref().await_result(target).await
     }
 
-    /// Delegates to the existing `Runtime::cancel` (WI-082/083), whose
-    /// signature (beyond the added `caller`) already matches this trait
-    /// method exactly. P-1: `caller` must own `target` (`ensure_own_subtree`,
-    /// below) -- checked BEFORE cancelling, so a sibling can never destroy
-    /// another branch's work.
+    /// `mode: CancelMode::Immediate` (board item 01KZDC2222ARKMZKN8ZE4BYHD6)
+    /// delegates to the existing `Runtime::cancel` (WI-082/083), whose
+    /// signature already matches this trait method's immediate path
+    /// exactly. `mode: CancelMode::Graceful` instead enqueues
+    /// `AgentMessage::Cancel { hard: false, .. }` into `target`'s own
+    /// mailbox -- the same three-step shape `steer` (above) already uses
+    /// (`ensure_own_subtree` -> `agent_mailbox` -> `mailbox.send`), just
+    /// with a `Cancel` message instead of a `Steer` one. P-1: `caller` must
+    /// own `target` (`ensure_own_subtree`, below) -- checked BEFORE either
+    /// path, so a sibling can never destroy another branch's work, hard or
+    /// soft.
     async fn cancel(
         &self,
         caller: AgentId,
         target: AgentId,
         reason: String,
+        mode: CancelMode,
     ) -> Result<(), RuntimeError> {
         self.ensure_own_subtree(caller, target)?;
-        Runtime::cancel(self, target, reason)
+        match mode {
+            CancelMode::Immediate => Runtime::cancel(self, target, reason),
+            CancelMode::Graceful => {
+                let mailbox = self.agent_mailbox(target)?;
+                mailbox.send(AgentMessage::Cancel {
+                    from: caller,
+                    reason,
+                    // `CancelMode::hard()` rather than a `false` literal: the
+                    // mode-to-flag mapping has one home, so a third variant
+                    // cannot be added without this callsite following it.
+                    hard: mode.hard(),
+                });
+                Ok(())
+            }
+        }
     }
 
     /// `caller`'s own subtree, projected from `Runtime::tree`'s whole
@@ -1072,11 +1093,12 @@ impl SubagentHost for WeakRuntimeHost {
         caller: AgentId,
         target: AgentId,
         reason: String,
+        mode: CancelMode,
     ) -> Result<(), RuntimeError> {
         // `Runtime` has its own inherent, sync `cancel` method (WI-082/083)
         // that method resolution prefers over this trait method of the
         // same name -- fully qualified syntax forces the trait impl above.
-        SubagentHost::cancel(&*self.upgrade()?, caller, target, reason).await
+        SubagentHost::cancel(&*self.upgrade()?, caller, target, reason, mode).await
     }
 
     /// Delegates to the real `Runtime` impl. The `ask` primitive is

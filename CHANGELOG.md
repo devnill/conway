@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Graceful cancellation is now reachable, and immediate stays the default**
+  (board item 01KZDC2222ARKMZKN8ZE4BYHD6, decision 01KZDDBNCC3K9HXJYHC8QX3DKQ):
+  `PHILOSOPHY.md` has described a `TERM`/`KILL`-style soft/hard cancellation
+  contract since it was written, but no production code ever constructed the
+  soft form — every reachable cancellation, from `conway_cancel` down to
+  `Runtime::cancel`, was hard. `conway_cancel` gains a `mode` argument
+  (`immediate`/`graceful`, defaulting to `immediate` — no existing caller is
+  silently downgraded), `SubagentHost::cancel` gains a `CancelMode` parameter
+  threaded from there down to `AgentMessage::Cancel`'s pre-existing `hard`
+  flag, and `SessionHandle::cancel_with(target, reason, CancelMode)` is the
+  new embedder-facing primitive `SessionHandle::cancel` now delegates to
+  (unchanged, immediate). A graceful cancel lets the target finish its
+  in-flight turn and stops only that agent — it does not itself cancel
+  descendants (tracked separately as board item 01KZDDCBGXNYTNM31PHW46R1SP)
+  — and cannot reach an agent idling at the resume gate between turns (an
+  idle `keep_alive` agent, or a resumed root's first iteration), which is
+  now stated on the tool, the facade, and `docs/agents.md`'s control-surface
+  table rather than left implicit.
+
+### Fixed
+
+- `conway_cancel`'s own doc comment in
+  `crates/conway-tools/src/subagent/control.rs` claimed cancelling "carries
+  an agent id and a mode" over a `CancelArgs` with no such field — a
+  declaration/behavior mismatch fixed by the `mode` addition above, not
+  merely by editing the comment.
+
 - **The first-party plugin tier now has a settled shape** (board item
   01KZDC3JQ7W4DY1MG6MBCVB2DV): `PHILOSOPHY.md` names a second tier of
   plugins — dynamic routing, compaction, memory, skills, MCP — written and
