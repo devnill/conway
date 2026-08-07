@@ -144,20 +144,11 @@ whatever it is told. Narrowing a child's announced tools requires no
 interpretation of intent and offers nothing to circumvent, which is why it is
 the mechanism the core provides.
 
-conway does not read a call and decide from its text whether it may run.
-Judging a shell command that way means predicting what a shell will make of a
-string, and a filter built on pattern matching fails in both directions. Loose
-enough to permit ordinary work, it misses the cases it was written for. Tight
-enough to catch those, it rejects enough routine commands that the people
-relying on it turn it off.
-
-One narrow check does read a command, and it is worth knowing because it is not
-a verdict on that command. When you grant a standing permission by pattern, of
-the "always allow commands starting with `git status`" kind, a command carrying
-shell metacharacters can never satisfy it: `git status; rm -rf /` starts with
-`git status`, so the grant would otherwise cover it. Such a command falls
-through to you rather than being refused. The check bounds what a remembered
-grant may cover; it never decides whether something is allowed to run.
+conway does not inspect a call and judge what it would do. Judging a shell
+command means predicting what a shell will make of a string, and a filter built
+on pattern matching fails in both directions. Loose enough to permit ordinary
+work, it misses the cases it was written for. Tight enough to catch those, it
+rejects enough routine commands that the people relying on it turn it off.
 
 Limits on reach belong to whichever plugin can enforce them, which in practice
 means the plugin that performs the operation. `conway.fs` takes a root
@@ -311,24 +302,17 @@ harness.
 **Distill.** One child, a job whose process you do not want, one result kept.
 The others build on it.
 
-**Map and gather.** Fork a coordinator so the work stays out of the caller's
-context, then have it spawn N differently-prompted children and collect their
-reports. The children start clean, because each one's task states itself:
-review this file, check this change against that criterion, search here. The
-caller ends up holding N conclusions rather than N transcripts, and each child
-was cheap because its context was small.
+**Map and gather.** Fork once so several children share a common inherited
+prefix, then spawn N differently-prompted children beneath it and collect their
+reports. The parent ends up holding N conclusions rather than N transcripts. It
+suits problems that split cleanly into independent pieces: reviewing ten files,
+checking one change against several criteria, searching a codebase in parallel.
 
-**Panel.** Fork N siblings at the same point instead, so each one starts from
-the identical context, and give each a different prompt. Take independent
-attempts at one problem, or have one child argue against another's output. It
-suits questions where a single answer is likely to be confidently wrong.
-
-The difference between those two is worth holding onto, because it decides what
-they cost. Map and gather fans out clean children who share nothing and need
-nothing. A panel fans out children who all need the same expensive context, and
-forking them from one point is what stops you paying for it N times. Reach for
-the first when the pieces are independent, and the second when the judgment
-needs the same material in front of it.
+**Panel.** The same arrangement with the children disagreeing on purpose. Give
+each a different prompt over the same inherited context, and take either
+independent attempts at one problem or one child arguing against another's
+output. It suits questions where a single answer is likely to be confidently
+wrong.
 
 **Draft, then commit.** Use an ephemeral child to produce something expensive,
 such as a plan or a briefing for another agent, and admit only the finished
