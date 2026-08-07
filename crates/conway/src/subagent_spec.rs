@@ -234,7 +234,7 @@ pub struct SpawnSpec {
     pub cwd: Option<std::path::PathBuf>,
     /// (S3) Scopes the spawned child's confinement root, independent of (but
     /// validated against) `cwd` above -- the embedder-only surface for the
-    /// "root plumbing" slice: `conway_subagent`/`conway_spawn` (the
+    /// "root plumbing" slice: `conway_fork`/`conway_spawn` (the
     /// model-invoked tools) gain no equivalent argument (GP-04), exactly as
     /// they have none for `cwd` today. `None` (the [`SpawnSpec::new`]
     /// default) preserves the pre-existing "inherit the parent's root"

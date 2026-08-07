@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`conway_subagent` is split into `conway_fork` and `conway_spawn`**
+  (board item 01KZDC1HSNJZ1K7HVQEW65S56R), settling the fork-vs-spawn
+  choice by tool name rather than by a `mode` argument, exactly as
+  `PHILOSOPHY.md`'s "Choosing between them" section has always described.
+  **This is a breaking change to the model-facing tool surface**: a config,
+  allowlist, or scripted backend that names `conway_subagent` (in
+  `--allowed-tools`, `tools.builtin_plugins` selectors, or a permission
+  pattern) must be updated to name `conway_fork` and/or `conway_spawn`
+  instead — `conway_subagent` no longer exists as a registered tool.
+  `conway_fork`'s `prompt` is documented solely as a directive to a child
+  that already holds this agent's context; `conway_spawn`'s solely as a
+  complete statement of a task to a child that has none — the two field
+  descriptions that used to have to explain themselves per mode are now two
+  honest, independent schemas. `budget`, `tools`, `result_contract`, and
+  `await` remain on both, and argument range-checking (an out-of-range
+  `deadline_secs` mapping to `ToolError::InvalidArguments`, never a panic)
+  is preserved on both. `SubagentSpec` (the port `conway-core`/
+  `conway-runtime` share) is unchanged — it keeps its own `mode` field;
+  only the tool layer split. Also unblocks board item
+  01KZC8DD9C74BSTP8BQDJKYNFR (whether a fork should inherit the parent's
+  `agent_def`) without deciding it: two tools let each answer for itself
+  instead of one optional field having to behave sensibly for both.
+  (`crates/conway-tools/src/subagent/{tools,mod}.rs`, `README.md`,
+  `docs/agents.md`, `docs/sessions.md`, `docs/scripting.md`)
+
 ### Added
 
 - **Graceful cancellation is now reachable, and immediate stays the default**

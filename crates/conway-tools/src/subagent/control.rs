@@ -29,10 +29,9 @@ pub(super) struct AwaitArgs {
 }
 
 /// The model-facing shape of [`CancelMode`] (board item
-/// 01KZDC2222ARKMZKN8ZE4BYHD6) -- mirrors `tools.rs`'s `ModeArg` pattern: a
-/// local, `JsonSchema`-deriving enum the tool layer owns, mapped onto the
-/// domain type at `invoke` time rather than deriving `JsonSchema` on
-/// `conway_core::agent::CancelMode` itself.
+/// 01KZDC2222ARKMZKN8ZE4BYHD6): a local, `JsonSchema`-deriving enum the tool
+/// layer owns, mapped onto the domain type at `invoke` time rather than
+/// deriving `JsonSchema` on `conway_core::agent::CancelMode` itself.
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 enum CancelModeArg {

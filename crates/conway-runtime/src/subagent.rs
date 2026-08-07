@@ -412,7 +412,7 @@ impl SubagentHost for Runtime {
             .or_else(|| agent_def.map(|d| d.tools.clone()));
         let pin = agent_def.and_then(|d| d.model.clone());
         // Precedence: the explicit call-site contract (`spec.result_contract`
-        // -- the model's `conway_subagent` `result_contract` arg, or an
+        // -- the model's `conway_fork`/`conway_spawn` `result_contract` arg, or an
         // embedder's `ForkSpec`/`SpawnSpec::result_contract` builder) wins
         // over the def's; the def supplies only the DEFAULT applied when the
         // call site left its own contract unset. This mirrors `tools` just
@@ -438,7 +438,7 @@ impl SubagentHost for Runtime {
             // `ephemeral` flows straight from the caller's `SubagentSpec`: a
             // `conway_ask` fork (item d sets `spec.ephemeral = true`) stamps
             // `AgentSpawned`/`AgentFinished` with `ephemeral: true` via the
-            // captured local below; legacy `conway_subagent` fork/spawn paths
+            // captured local below; legacy `conway_fork`/`conway_spawn` paths
             // build their `SubagentSpec` with `ephemeral: false`
             // (`SubagentSpec::fork`/`::spawn`'s own constructor default), so
             // they stay non-ephemeral exactly as before. The facade's `/ask`
@@ -653,7 +653,7 @@ impl SubagentHost for Runtime {
             // `meta.ephemeral` is `spec.ephemeral` (see the literal above): a
             // `conway_ask` fork carries `ephemeral: true` end-to-end through
             // `AgentNode` and thus `Event::AgentSpawned`/`Event::AgentFinished`;
-            // a legacy `conway_subagent` fork/spawn (`SubagentSpec::fork`/
+            // a legacy `conway_fork`/`conway_spawn` (`SubagentSpec::fork`/
             // `::spawn`, `ephemeral: false` by construction) keeps `false` all
             // the way through, exactly as before this field existed.
             ephemeral,
@@ -665,7 +665,7 @@ impl SubagentHost for Runtime {
         // UserTurn` head record appended above for a `Spawn` with a
         // non-empty initial prompt (a library caller's own `SpawnSpec`, or
         // -- the common production case -- the model-invoked
-        // `conway_subagent`/`conway_spawn` tool, which always supplies a
+        // `conway_fork`/`conway_spawn` tool, which always supplies a
         // real prompt and never sets `keep_alive`). Emitted AFTER
         // `launch_agent` (which calls `AgentTree::attach`, and thus, since
         // `node.kind` is `Some(spec.mode)` here, already emitted

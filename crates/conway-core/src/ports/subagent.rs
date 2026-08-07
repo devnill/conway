@@ -1,8 +1,9 @@
 //! The `SubagentHost` port: the cycle-breaker (architecture §4.6).
 //!
 //! The developer API (`SessionHandle::fork`/`spawn`) and the
-//! `conway_subagent` tool both call this same trait (decision 2, mechanically
-//! enforced): the tool is a thin wrapper with no privileged access.
+//! `conway_fork`/`conway_spawn` tools both call this same trait (decision 2,
+//! mechanically enforced): the tools are thin wrappers with no privileged
+//! access.
 //!
 //! ## `caller` on `steer`/`await_result`/`cancel` (board item
 //! 01KYT8TS0EBKJHYNJRF6S88NRH)
@@ -76,9 +77,9 @@
 //! SessionHandle::fork`/`spawn` pass `self.root` as `caller` (having
 //! already confirmed `parent` belongs to the session via
 //! `ensure_agent_in_session`, so the check always succeeds for that path,
-//! with no bypass needed), and the model-invoked `conway_subagent`/
-//! `conway_ask` tools always pass `ToolCtx::agent_id` as BOTH `caller` and
-//! `parent` (a tool call always starts/asks a child of the CALLING agent
+//! with no bypass needed), and the model-invoked `conway_fork`/
+//! `conway_spawn`/`conway_ask` tools always pass `ToolCtx::agent_id` as BOTH
+//! `caller` and `parent` (a tool call always starts/asks a child of the CALLING agent
 //! itself -- there is no model-facing argument that names a different
 //! parent, so nothing here removes any existing capability).
 
@@ -118,7 +119,7 @@ pub trait SubagentHost: Send + Sync + 'static {
 
     /// Always terminates: the supervisor synthesizes a result on budget
     /// exhaustion, cancellation, or task panic. A parent's pending
-    /// `conway_subagent` tool call can never hang on this call.
+    /// `conway_fork`/`conway_spawn` tool call can never hang on this call.
     async fn await_result(
         &self,
         caller: AgentId,

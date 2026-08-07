@@ -140,8 +140,8 @@ impl App {
             // "pure and light" tool profile for interactive chat sessions)
             // -- excluding `report` makes the model answer plain chat
             // questions in text instead of hitting the permission gate for a
-            // tool call nothing downstream ever unblocks. `conway_subagent`
-            // and every other builtin tool stay available.
+            // tool call nothing downstream ever unblocks. `conway_fork`/
+            // `conway_spawn` and every other builtin tool stay available.
             tools: Some(ToolSelector::Except(vec!["report".into()])),
             ..SessionSpec::default()
         };

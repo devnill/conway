@@ -481,11 +481,12 @@ impl Host for LiveHost<'_> {
 /// light" exclusion `App::new` gives the TUI root -- excludes `report`, since
 /// an interactive keep-alive child (like the root) has no parent to report an
 /// `AgentResult` to, and would otherwise hit the permission gate on a tool
-/// call nothing downstream ever unblocks. `conway_subagent` and every other
-/// builtin tool stay available. Deliberately NOT applied to the
+/// call nothing downstream ever unblocks. `conway_fork`/`conway_spawn` and
+/// every other builtin tool stay available. Deliberately NOT applied to the
 /// explicit-target `/fork @<agent> <directive>` arm above -- that fork stays
 /// autonomous (non-keep-alive) and keeps the default toolset, `report`
-/// included, exactly as an autonomous `conway_subagent`-spawned child does.
+/// included, exactly as an autonomous `conway_fork`/`conway_spawn`-started
+/// child does.
 fn interactive_keep_alive_tools() -> ToolSelector {
     ToolSelector::Except(vec!["report".into()])
 }
@@ -2383,7 +2384,8 @@ mod tests {
         // The explicit-target `/fork @<agent> <directive>` arm is the
         // pre-existing AUTONOMOUS (non-keep-alive) fork -- unlike the bare
         // fork/spawn arms, it must keep the default toolset (`report`
-        // included), exactly like a `conway_subagent`-spawned child does.
+        // included), exactly like a `conway_fork`/`conway_spawn`-started
+        // child does.
         let spec = host
             .last_fork_spec
             .lock()

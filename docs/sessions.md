@@ -171,7 +171,7 @@ it, not fire one directive and walk away.
 Use it whenever a caller — the TUI, or an embedder building a chat-style UI
 over a forked or spawned child — needs to send more than one message to the
 same agent over its lifetime. Leave it `false` (the default everywhere
-else, including every model-invoked `conway_subagent`/`conway_ask` call,
+else, including every model-invoked `conway_fork`/`conway_spawn`/`conway_ask` call,
 which is always autonomous) for a child that does one job and reports back.
 
 ## `/ask` and ephemeral children

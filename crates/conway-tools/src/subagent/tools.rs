@@ -1,12 +1,23 @@
-//! `conway_subagent`: a pure wrapper over `ToolCtx::subagents` (WI-066).
+//! `conway_fork` and `conway_spawn`: pure wrappers over `ToolCtx::subagents`
+//! (WI-066; split into two tools by board item 01KZDC1HSNJZ1K7HVQEW65S56R).
 //! Zero delegation logic: argument parsing, one `ToolCtx::subagents`
 //! (`SubagentHandle`) call -- the exact surface a third-party tool gets,
 //! nothing more -- and result shaping.
 //!
+//! The two tools share every field except `prompt`'s meaning: `conway_fork`
+//! sends a directive to a child that already holds this agent's context;
+//! `conway_spawn` sends a complete statement of a task to a child that has
+//! none. Splitting the single former tool -- one `mode: fork | spawn`
+//! argument choosing between them -- in two settles that choice by picking a
+//! name rather than by filling in a field -- see `PHILOSOPHY.md`'s "Choosing
+//! between them". `SubagentSpec` (the port) keeps its own `mode` field; only
+//! the tool surface changed.
+//!
 //! The small delegation tools `conway_steer`/`conway_await`/`conway_cancel`
 //! live in `control.rs`; `conway_ask` lives in `ask.rs`. This file holds the
 //! shared helpers those siblings need (`parse_agent_id`, `wait_for_result`,
-//! `BudgetArg`, the config helpers, `TRUNCATION`) plus `SubagentTool` itself.
+//! `BudgetArg`, the config helpers, `TRUNCATION`) plus `ForkTool`/`SpawnTool`
+//! themselves.
 //!
 //! Every fallible `ctx.subagents` call site maps its `SubagentError` straight
 //! to `ToolError` via `.map_err(ToolError::from)` -- `conway-core`'s own
@@ -50,15 +61,8 @@ fn default_await() -> bool {
     true
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-enum ModeArg {
-    Fork,
-    Spawn,
-}
-
-/// A resource ceiling passed to a subagent call. Shared by `conway_subagent`
-/// and `conway_ask`.
+/// A resource ceiling passed to a subagent call. Shared by `conway_fork`,
+/// `conway_spawn`, and `conway_ask`.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(super) struct BudgetArg {
@@ -70,16 +74,17 @@ pub(super) struct BudgetArg {
     pub(super) max_tokens: Option<u32>,
 }
 
+/// `conway_fork`'s arguments: the child inherits this agent's full context,
+/// so `prompt` is a directive, not a task restated from nothing.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct SubagentArgs {
-    /// "fork": new agent continuing from this agent's context, plus the
-    /// prompt. "spawn": new independent agent, fresh context.
-    mode: ModeArg,
-    /// Fork: the fork directive. Spawn: the whole task.
+struct ForkArgs {
+    /// Directive for a child that already holds this agent's full context.
+    /// Not a task description -- the child needs no briefing, only what to
+    /// do next.
     prompt: String,
-    /// Agent definition name. Optional for both modes: omitting it on a
-    /// spawn means the child inherits this agent's own role/model.
+    /// Agent definition name. Optional: omitting it means the child
+    /// inherits this agent's own role/model.
     #[serde(default)]
     agent_def: Option<String>,
     /// Role alias for routing
@@ -96,6 +101,79 @@ struct SubagentArgs {
     /// false returns the agent_id immediately for fan-out
     #[serde(default = "default_await", rename = "await")]
     await_flag: bool,
+}
+
+/// `conway_spawn`'s arguments: the child starts with none of this agent's
+/// context, so `prompt` must be a complete statement of the task.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct SpawnArgs {
+    /// Complete statement of the task for a child that starts with no
+    /// context of its own. Everything the child needs to do the work must be
+    /// in this prompt -- it inherits nothing from this agent's conversation.
+    prompt: String,
+    /// Agent definition name. Optional: omitting it means the child
+    /// inherits this agent's own role/model.
+    #[serde(default)]
+    agent_def: Option<String>,
+    /// Role alias for routing
+    #[serde(default)]
+    role: Option<String>,
+    #[serde(default)]
+    budget: Option<BudgetArg>,
+    /// Restrict the child's tool set to these names
+    #[serde(default)]
+    tools: Option<Vec<String>>,
+    /// JSON Schema the child's structured result must satisfy
+    #[serde(default)]
+    result_contract: Option<serde_json::Value>,
+    /// false returns the agent_id immediately for fan-out
+    #[serde(default = "default_await", rename = "await")]
+    await_flag: bool,
+}
+
+/// The fields common to `ForkArgs` and `SpawnArgs` once `prompt`'s per-mode
+/// meaning has been read -- an internal bundle, never itself `Deserialize`/
+/// `JsonSchema`, so the two model-facing schemas stay fully independent
+/// (each documents its own `prompt`) while `start_and_maybe_await` (the
+/// downstream `SubagentSpec` construction, the child start, and the
+/// await-or-return-immediately branch) is written once.
+struct StartRequest {
+    prompt: String,
+    agent_def: Option<String>,
+    role: Option<String>,
+    budget: Option<BudgetArg>,
+    tools: Option<Vec<String>>,
+    result_contract: Option<serde_json::Value>,
+    await_flag: bool,
+}
+
+impl From<ForkArgs> for StartRequest {
+    fn from(args: ForkArgs) -> Self {
+        Self {
+            prompt: args.prompt,
+            agent_def: args.agent_def,
+            role: args.role,
+            budget: args.budget,
+            tools: args.tools,
+            result_contract: args.result_contract,
+            await_flag: args.await_flag,
+        }
+    }
+}
+
+impl From<SpawnArgs> for StartRequest {
+    fn from(args: SpawnArgs) -> Self {
+        Self {
+            prompt: args.prompt,
+            agent_def: args.agent_def,
+            role: args.role,
+            budget: args.budget,
+            tools: args.tools,
+            result_contract: args.result_contract,
+            await_flag: args.await_flag,
+        }
+    }
 }
 
 pub(super) fn parse_agent_id(raw: &str) -> Result<AgentId, ToolError> {
@@ -125,7 +203,7 @@ pub(super) const MAX_DEADLINE_SECS: u64 = 1_576_800_000; // 50 * 365 * 86_400
 
 /// Builds the `deadline` `DateTime` from a model/config-supplied `deadline_secs`,
 /// range-checking per P-10. Out-of-range -> `ToolError::InvalidArguments`
-/// (never a panic). Shared by `conway_subagent` and `conway_ask`.
+/// (never a panic). Shared by `conway_fork`, `conway_spawn`, and `conway_ask`.
 pub(super) fn deadline_from_secs(secs: u64) -> Result<chrono::DateTime<chrono::Utc>, ToolError> {
     if secs > MAX_DEADLINE_SECS {
         return Err(ToolError::InvalidArguments {
@@ -205,29 +283,94 @@ pub(super) async fn wait_for_result(
     }
 }
 
-/// `conway_subagent`: forks or spawns a child agent, optionally blocking for
-/// its terminal result.
-#[derive(Debug, Default)]
-pub struct SubagentTool;
+/// Builds the `SubagentSpec` for a fixed `mode`, starts the child, and
+/// either returns its `agent_id` immediately (fan-out) or blocks for its
+/// terminal result -- the logic `conway_fork` and `conway_spawn` share once
+/// each has read its own `prompt` under its own meaning. `mode` is a
+/// parameter here, never a model-supplied argument: each caller below passes
+/// its own fixed `SubagentMode`, which is the entire point of the split (a
+/// model reaches the choice by tool name, not by filling in a field).
+async fn start_and_maybe_await(
+    ctx: &ToolCtx,
+    mode: SubagentMode,
+    req: StartRequest,
+) -> Result<ToolOutput, ToolError> {
+    // WI-099's "agent_def required for spawn" rule is relaxed: a spawn
+    // with no agent_def inherits this agent's own role/model.
 
-impl SubagentTool {
+    let result_contract = req
+        .result_contract
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|e: serde_json::Error| ToolError::InvalidArguments {
+            detail: format!("result_contract: {e}"),
+        })?;
+
+    let spec = SubagentSpec {
+        mode,
+        prompt: req.prompt,
+        agent_def: req.agent_def.map(AgentDefRef),
+        role: req.role.map(RoleAlias::new),
+        tools: req.tools.map(ToolSelector::Only),
+        budget: resolve_budget(req.budget, &ctx.config)?,
+        result_contract,
+        // The model-invoked `conway_fork`/`conway_spawn` tools are always
+        // the autonomous, one-shot fork/spawn primitives (P-1: "exactly two
+        // subagent primitives") -- `keep_alive` is an opt-in only the
+        // interactive-session facade paths (`conway`'s `SpawnSpec`/
+        // `ForkSpec::keep_alive`, the TUI's bare `/spawn`/`/fork`) ever
+        // set.
+        keep_alive: false,
+        ephemeral: false,
+        // Not an `/ask` child (B5): the `conway_ask` tool (`ask.rs`)
+        // stamps `AskOrigin::ToolAsk`, the TUI's modal `/ask` stamps
+        // `ModalAsk`; `conway_fork`/`conway_spawn` are neither.
+        ask_origin: None,
+        // The model-invoked `conway_fork`/`conway_spawn` tools have no
+        // `cwd` argument (C1 only adds `cwd` to the facade's `SpawnSpec`,
+        // not either tool's own args schema) -- inherit the parent's,
+        // unchanged.
+        cwd: None,
+        // (S3) Likewise, neither tool has a `root` argument (GP-04:
+        // embedder-only for this first slice) -- inherit the parent's
+        // root, unchanged, for both fork and spawn.
+        root: None,
+    };
+
+    let child = ctx.subagents.start(spec).await.map_err(ToolError::from)?;
+
+    if !req.await_flag {
+        return Ok(text_output(
+            serde_json::json!({ "agent_id": child }).to_string(),
+            TRUNCATION,
+        ));
+    }
+    wait_for_result(ctx, child).await
+}
+
+/// `conway_fork`: continues this agent's own context in a new child.
+#[derive(Debug, Default)]
+pub struct ForkTool;
+
+impl ForkTool {
     pub fn new() -> Self {
         Self
     }
 }
 
 #[async_trait]
-impl Tool for SubagentTool {
-    /// No path arguments: `SubagentArgs` carries a mode, prompt, agent_def,
-    /// role, budget, tool selection, and result contract -- no filesystem
-    /// path. The model-invoked tool deliberately has no `cwd` argument (see
-    /// `cwd: None` in `invoke`; only the facade's `SpawnSpec` takes one), so
-    /// there is genuinely nothing here for a root check to evaluate.
+impl Tool for ForkTool {
+    /// No path arguments: `ForkArgs` carries a prompt, agent_def, role,
+    /// budget, tool selection, and result contract -- no filesystem path.
+    /// The model-invoked tool deliberately has no `cwd` argument (see
+    /// `cwd: None` in `start_and_maybe_await`; only the facade's `ForkSpec`
+    /// takes one), so there is genuinely nothing here for a root check to
+    /// evaluate.
     fn path_args(&self) -> PathArgs {
         PathArgs::None
     }
 
-    /// `conway_subagent` never overrides `render`, so its rendering is
+    /// `conway_fork` never overrides `render`, so its rendering is
     /// always the trait's own default JSON dump -- never a shell command.
     /// Board item 01KYT3NSWRHMPEAXVXRJ73KDYR.
     fn render_kind(&self) -> RenderKind {
@@ -236,9 +379,9 @@ impl Tool for SubagentTool {
 
     fn spec(&self) -> ToolSpec {
         ToolSpec {
-            name: ToolName::new("conway_subagent"),
-            description: "Fork or spawn a child agent. `agent_def` is optional for `spawn`: name one to set the child's system prompt/tools/model, or omit it to inherit this agent's role and model.".into(),
-            schema: schemars::schema_for!(SubagentArgs),
+            name: ToolName::new("conway_fork"),
+            description: "Fork this agent: start a new child continuing from this agent's full context, plus a directive for what it should do next. `agent_def` is optional: name one to set the child's system prompt/tools/model, or omit it to inherit this agent's role and model.".into(),
+            schema: schemars::schema_for!(ForkArgs),
             category: ToolCategory::Delegate,
             // Starting a child grants it the capability to itself perform arbitrary tool
             // calls, transitively — the same risk class as `bash`, one hop removed.
@@ -248,61 +391,55 @@ impl Tool for SubagentTool {
 
     async fn invoke(&self, call: ToolCall, ctx: ToolCtx) -> Result<ToolOutput, ToolError> {
         check_cancel(&ctx)?;
-        let args: SubagentArgs = parse_args(&call)?;
+        let args: ForkArgs = parse_args(&call)?;
+        start_and_maybe_await(&ctx, SubagentMode::Fork, args.into()).await
+    }
+}
 
-        let mode = match args.mode {
-            ModeArg::Fork => SubagentMode::Fork,
-            ModeArg::Spawn => SubagentMode::Spawn,
-        };
-        // WI-099's "agent_def required for spawn" rule is relaxed: a spawn
-        // with no agent_def inherits this agent's own role/model.
+/// `conway_spawn`: starts a new child with none of this agent's context.
+#[derive(Debug, Default)]
+pub struct SpawnTool;
 
-        let result_contract = args
-            .result_contract
-            .map(serde_json::from_value)
-            .transpose()
-            .map_err(|e: serde_json::Error| ToolError::InvalidArguments {
-                detail: format!("result_contract: {e}"),
-            })?;
+impl SpawnTool {
+    pub fn new() -> Self {
+        Self
+    }
+}
 
-        let spec = SubagentSpec {
-            mode,
-            prompt: args.prompt,
-            agent_def: args.agent_def.map(AgentDefRef),
-            role: args.role.map(RoleAlias::new),
-            tools: args.tools.map(ToolSelector::Only),
-            budget: resolve_budget(args.budget, &ctx.config)?,
-            result_contract,
-            // The model-invoked `conway_subagent` tool is always the
-            // autonomous, one-shot fork/spawn primitive (P-1: "exactly two
-            // subagent primitives") -- `keep_alive` is an opt-in only the
-            // interactive-session facade paths (`conway`'s `SpawnSpec`/
-            // `ForkSpec::keep_alive`, the TUI's bare `/spawn`/`/fork`) ever
-            // set.
-            keep_alive: false,
-            ephemeral: false,
-            // Not an `/ask` child (B5): the `conway_ask` tool (`ask.rs`)
-            // stamps `AskOrigin::ToolAsk`, the TUI's modal `/ask` stamps
-            // `ModalAsk`; `conway_subagent` is neither.
-            ask_origin: None,
-            // The model-invoked `conway_subagent` tool has no `cwd` argument
-            // (C1 only adds `cwd` to the facade's `SpawnSpec`, not this
-            // tool's own args schema) -- inherit the parent's, unchanged.
-            cwd: None,
-            // (S3) Likewise, `conway_subagent` has no `root` argument (GP-04:
-            // embedder-only for this first slice) -- inherit the parent's
-            // root, unchanged, for both fork and spawn.
-            root: None,
-        };
+#[async_trait]
+impl Tool for SpawnTool {
+    /// No path arguments: `SpawnArgs` carries a prompt, agent_def, role,
+    /// budget, tool selection, and result contract -- no filesystem path.
+    /// The model-invoked tool deliberately has no `cwd` argument (see
+    /// `cwd: None` in `start_and_maybe_await`; only the facade's `SpawnSpec`
+    /// takes one), so there is genuinely nothing here for a root check to
+    /// evaluate.
+    fn path_args(&self) -> PathArgs {
+        PathArgs::None
+    }
 
-        let child = ctx.subagents.start(spec).await.map_err(ToolError::from)?;
+    /// `conway_spawn` never overrides `render`, so its rendering is
+    /// always the trait's own default JSON dump -- never a shell command.
+    /// Board item 01KYT3NSWRHMPEAXVXRJ73KDYR.
+    fn render_kind(&self) -> RenderKind {
+        RenderKind::Structured
+    }
 
-        if !args.await_flag {
-            return Ok(text_output(
-                serde_json::json!({ "agent_id": child }).to_string(),
-                TRUNCATION,
-            ));
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: ToolName::new("conway_spawn"),
+            description: "Spawn a new, independent child agent with none of this agent's context, plus a complete statement of its task. `agent_def` is optional: name one to set the child's system prompt/tools/model, or omit it to inherit this agent's role and model.".into(),
+            schema: schemars::schema_for!(SpawnArgs),
+            category: ToolCategory::Delegate,
+            // Starting a child grants it the capability to itself perform arbitrary tool
+            // calls, transitively — the same risk class as `bash`, one hop removed.
+            permission: PermissionClass::Dangerous,
         }
-        wait_for_result(&ctx, child).await
+    }
+
+    async fn invoke(&self, call: ToolCall, ctx: ToolCtx) -> Result<ToolOutput, ToolError> {
+        check_cancel(&ctx)?;
+        let args: SpawnArgs = parse_args(&call)?;
+        start_and_maybe_await(&ctx, SubagentMode::Spawn, args.into()).await
     }
 }

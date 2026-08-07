@@ -1,7 +1,7 @@
 //! Acceptance tests for the `conway_ask` epic, item f: the thin-slice
 //! end-to-end proof that `conway_ask` works through the REAL runtime + REAL
 //! `SubagentPlugin` (including `AskTool`, item d), composing with
-//! `conway_subagent` (P-1). This is the capstone: it proves the epic's goal
+//! `conway_spawn` (P-1). This is the capstone: it proves the epic's goal
 //! -- out-of-band context curation, full text not truncated, curation
 //! reasoning stays in the child, provenance preserved.
 //!
@@ -25,12 +25,12 @@
 //!   `store.list(SessionFilter { include_ephemeral: true, .. })` contains it
 //!   while `store.list(SessionFilter::default())` does NOT.
 //! - **Composition (P-1):** the parent's second turn drives
-//!   `conway_ask` -> `conway_subagent { mode: spawn, prompt: <brief> }`,
+//!   `conway_ask` -> `conway_spawn { prompt: <brief> }`,
 //!   and the spawn child's own first `UserTurn` is the brief verbatim.
 //!
 //! Gated on the `builtin-tools` feature (like `tests/interactive_tools.rs`'s
 //! own gate, and `tests/gates.rs`'s `presets_builtin_plugins_matches_conway_tools`):
-//! `conway_ask`/`conway_subagent` are registered from `presets::builtin_plugins()`,
+//! `conway_ask`/`conway_spawn` are registered from `presets::builtin_plugins()`,
 //! which does not exist without this feature -- `build_conway`'s default
 //! `ToolsConfig` would register no tools at all, and the whole slice this
 //! file exercises has nothing meaningful to drive. Discovered by this
@@ -188,7 +188,7 @@ fn long_brief() -> String {
         "AskOutcome.text is the concatenated TextDelta stream, untruncated.",
         "The EphemeralSessionRef artifact names the child session for provenance.",
         "store.list with include_ephemeral surfaces the fork; the default filter hides it.",
-        "conway_ask composes with conway_subagent spawn -- the model-facing pattern.",
+        "conway_ask composes with conway_spawn -- the model-facing pattern.",
         "Curation reasoning lives in the child's own session, not the parent's context.",
         "The parent sees only the final text via the ToolResultRecord.",
         "Fork semantics: the child inherits the parent's full context, role, and tools.",
@@ -220,7 +220,7 @@ fn long_brief() -> String {
 /// children share the parent's backend (`SubagentHost::start` reuses the
 /// runtime's registered backend), so the request order is deterministic --
 /// parent turn 1, parent turn 2's first call (conway_ask tool_use), the ask
-/// child's turn, parent turn 2's second call (conway_subagent tool_use), the
+/// child's turn, parent turn 2's second call (conway_spawn tool_use), the
 /// spawn child's turn, parent turn 2's final call. This mirrors how `ask.rs`
 /// itself distinguishes parent/child (it scripts two turns and asserts
 /// `backend.calls().last()` is the child) -- the sequential `ScriptedBackend`
@@ -255,15 +255,15 @@ async fn conway_ask_end_to_end_slice_through_the_real_runtime() {
             //    stay in the CHILD's session, not the parent's.
             ScriptedTurn::Respond(text_response(&brief)),
             // 3. Parent turn 1, second backend call: proposes
-            //    `conway_subagent` with mode: spawn and the curated brief as
-            //    its prompt (P-1: ask -> spawn composition).
+            //    `conway_spawn` with the curated brief as its prompt (P-1:
+            //    ask -> spawn composition).
             ScriptedTurn::Respond(tool_call_response(
                 "call_spawn_1",
-                "conway_subagent",
-                serde_json::json!({ "mode": "spawn", "prompt": brief }),
+                "conway_spawn",
+                serde_json::json!({ "prompt": brief }),
             )),
             // 4. The spawn child's one turn: completes so the parent's
-            //    `conway_subagent` await resolves.
+            //    `conway_spawn` await resolves.
             ScriptedTurn::Respond(text_response("spawn child done")),
             // 5. Parent turn 1, final backend call: a plain text reply that
             //    ends the turn (EndTurn) so the parent's `TurnHandle::result`
@@ -279,7 +279,7 @@ async fn conway_ask_end_to_end_slice_through_the_real_runtime() {
         .await
         .expect("new_session should succeed");
 
-    // The whole slice -- fact + conway_ask + conway_subagent spawn -- driven
+    // The whole slice -- fact + conway_ask + conway_spawn -- driven
     // by a single parent prompt. A `start_root` agent's task runs exactly one
     // prompt-to-completion cycle before exiting (`agent_loop.rs`: an `EndTurn`
     // is a `return`, not a loop-back), so a second `handle.prompt` on the same
@@ -451,7 +451,7 @@ async fn conway_ask_end_to_end_slice_through_the_real_runtime() {
     );
 
     // ------------------------------------------------------------------
-    // Assertion 6 (P-1 composition): `conway_ask` -> `conway_subagent` spawn.
+    // Assertion 6 (P-1 composition): `conway_ask` -> `conway_spawn`.
     // The parent's log has the spawn call as a `ContentBlock::ToolUse` inside
     // its `Assistant` record; the spawn child's own first `UserTurn` is the
     // curated brief, verbatim (the text `conway_ask` returned was passed
@@ -462,31 +462,31 @@ async fn conway_ask_end_to_end_slice_through_the_real_runtime() {
         .iter()
         .find_map(|r| match r {
             LogRecord::Assistant { content, .. } => {
-                content.iter().find(|b| matches!(b, ContentBlock::ToolUse { name, .. } if name.as_str() == "conway_subagent"))
+                content.iter().find(|b| matches!(b, ContentBlock::ToolUse { name, .. } if name.as_str() == "conway_spawn"))
             }
             _ => None,
         })
-        .expect("the parent's log must record the conway_subagent tool call (as a ToolUse block)");
+        .expect("the parent's log must record the conway_spawn tool call (as a ToolUse block)");
     match spawn_call {
         ContentBlock::ToolUse { arguments, .. } => {
             assert_eq!(
                 *arguments,
-                serde_json::json!({ "mode": "spawn", "prompt": brief }),
-                "the conway_subagent ToolUse must carry mode: spawn and the curated brief as prompt"
+                serde_json::json!({ "prompt": brief }),
+                "the conway_spawn ToolUse must carry the curated brief as prompt"
             );
         }
         _ => unreachable!("matched on ToolUse"),
     }
 
-    // The parent awaited the spawn: a ToolResultRecord for conway_subagent
+    // The parent awaited the spawn: a ToolResultRecord for conway_spawn
     // exists in the parent's log (it would not be there if the await had not
     // resolved -- the tool only returns after `wait_for_result` completes).
     let spawn_result_present = parent_records
         .iter()
-        .any(|r| matches!(r, LogRecord::ToolResultRecord { result, .. } if result.tool.as_str() == "conway_subagent"));
+        .any(|r| matches!(r, LogRecord::ToolResultRecord { result, .. } if result.tool.as_str() == "conway_spawn"));
     assert!(
         spawn_result_present,
-        "the parent's log must contain a ToolResultRecord for conway_subagent, proving the \
+        "the parent's log must contain a ToolResultRecord for conway_spawn, proving the \
          parent awaited the spawn child's completion (P-1 composition)"
     );
 

@@ -1074,7 +1074,7 @@ async fn steer_rejects_a_sibling_but_the_owning_root_still_succeeds() {
     let (root, sibling_a, sibling_b) = build_two_siblings(&runtime).await;
 
     // The vulnerability this item fixes: `sibling_a` has seen `sibling_b`'s
-    // id (e.g. from tool output/the event stream/`conway_subagent`'s own
+    // id (e.g. from tool output/the event stream/`conway_fork`/`conway_spawn`'s own
     // return value) and tries to inject a steering message into it --
     // context-injection with forged parent authority, per this item's own
     // spec.

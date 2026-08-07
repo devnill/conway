@@ -428,7 +428,7 @@ impl AgentLoop {
     /// handled at enqueue time (`MailboxSender::send`) and is a no-op here.
     /// `Progress` is emitted as `Event::AgentProgress` and never persisted.
     /// `Result` is classified but drives no action here -- the real
-    /// resolution path for a `conway_subagent` waiter is
+    /// resolution path for a `conway_fork`/`conway_spawn` waiter is
     /// `AgentTree::await_result` (WI-083), not this mailbox; see
     /// `mailbox.rs`'s module doc (cycle-2 review F-085 S2).
     ///

@@ -10,7 +10,7 @@
 //!   builds for an `ephemeral: true` fork spec, which is how both the
 //!   `conway_ask` tool and (post-B2) the facade's `SessionHandle::ask`
 //!   attach their `/ask` children.
-//! - A `conway_subagent` fork (`SubagentHost::start`, the `Runtime` impl in
+//! - A `conway_fork` (`SubagentHost::start`, the `Runtime` impl in
 //!   `subagent.rs`) is NEVER ephemeral -- `SessionMeta::ephemeral` is
 //!   hardcoded `false` on that path -- so both its `AgentSpawned` and
 //!   `AgentFinished` carry `ephemeral: false`. Exercised end-to-end here.
@@ -227,7 +227,7 @@ async fn snapshot_projects_ephemeral_flag_per_node() {
 }
 
 // ---------------------------------------------------------------------
-// End-to-end `conway_subagent` fork: both events `ephemeral: false`
+// End-to-end `conway_fork`: both events `ephemeral: false`
 // ---------------------------------------------------------------------
 
 fn text_response(text: &str) -> conway_core::ports::GenerateResponse {
@@ -294,12 +294,12 @@ fn fork_spec(prompt: &str) -> SubagentSpec {
     SubagentSpec::fork(prompt, Budget::default())
 }
 
-/// A `conway_subagent` fork (the `SubagentHost::start` path in `subagent.rs`)
+/// A `conway_fork` (the `SubagentHost::start` path in `subagent.rs`)
 /// is never ephemeral: `SessionMeta::ephemeral` is hardcoded `false` there, so
 /// both `Event::AgentSpawned` and `Event::AgentFinished` must carry
 /// `ephemeral: false`.
 #[tokio::test]
-async fn conway_subagent_fork_emits_ephemeral_false_on_spawn_and_finish() {
+async fn conway_fork_emits_ephemeral_false_on_spawn_and_finish() {
     let runtime = build_runtime(2);
     let mut stream = runtime.subscribe();
     let root = runtime.start_root(root_spec("investigate")).await.unwrap();
@@ -337,7 +337,7 @@ async fn conway_subagent_fork_emits_ephemeral_false_on_spawn_and_finish() {
             Event::AgentSpawned { ephemeral, .. } => {
                 assert!(
                     !ephemeral,
-                    "conway_subagent fork's AgentSpawned must carry ephemeral: false"
+                    "conway_fork's AgentSpawned must carry ephemeral: false"
                 );
                 seen_spawn = true;
             }
@@ -346,7 +346,7 @@ async fn conway_subagent_fork_emits_ephemeral_false_on_spawn_and_finish() {
             } => {
                 assert!(
                     !ephemeral,
-                    "conway_subagent fork's AgentFinished must carry ephemeral: false"
+                    "conway_fork's AgentFinished must carry ephemeral: false"
                 );
                 assert_eq!(result.status, ResultStatus::Completed);
                 seen_finish = true;
@@ -560,7 +560,7 @@ async fn promote_agent_flips_tree_and_emits_agent_promoted_under_the_child() {
 // ---------------------------------------------------------------------
 
 /// `is_prunable_on_finish` is `true` only for a spawn/fork child that was
-/// NEVER ephemeral at attach time (an ordinary `conway_subagent` fork/spawn)
+/// NEVER ephemeral at attach time (an ordinary `conway_fork`/`conway_spawn`)
 /// -- `false` for a root, for an ephemeral child that was never promoted
 /// (that case is `EventBus::emit`'s own ephemeral-based reclamation, not
 /// this method's concern), and -- the promotion subtlety this item's own

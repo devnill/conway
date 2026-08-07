@@ -141,11 +141,12 @@ Every line is a self-contained JSON object with `seq`, `ts`, `session`,
 struct-shaped event, or a bare string like `"turn_started"` for a unit
 variant, as in the excerpt above).
 
-When a run spawns a subagent (`conway_subagent`/`conway_ask`), the stream
-interleaves that child's own lifecycle lines into the parent's — each
-stamped with the child's *own* session, agent, and `seq` counter, not the
-root's. A trimmed excerpt from a real multi-agent run (root turn →
-`conway_subagent` spawn → child text → root final text) shows the junction:
+When a run forks or spawns a subagent (`conway_fork`/`conway_spawn`/
+`conway_ask`), the stream interleaves that child's own lifecycle lines into
+the parent's — each stamped with the child's *own* session, agent, and
+`seq` counter, not the root's. A trimmed excerpt from a real multi-agent run
+(root turn → `conway_spawn` → child text → root final text) shows the
+junction:
 
 ```json
 {"seq":9,"ts":"2026-07-31T20:44:10.010Z","session":"01KYWY…root","agent":"01KYWY…root","event":"tool_call_started","call_id":"call_1"}

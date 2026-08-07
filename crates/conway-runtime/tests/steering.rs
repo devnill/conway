@@ -823,7 +823,7 @@ async fn progress_never_enters_context_and_is_emitted_as_agent_progress() {
 
 /// Criterion (cycle-2 review F-085 S2): a drained `AgentMessage::Result` is
 /// classified but produces no drain-time side effect -- the real
-/// resolution path for a `conway_subagent` waiter is
+/// resolution path for a `conway_fork`/`conway_spawn` waiter is
 /// `AgentTree::await_result` (WI-083), exercised end-to-end (including
 /// genuinely BLOCKING until the child finishes, not just observing an
 /// already-finished child) by

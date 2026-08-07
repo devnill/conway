@@ -96,7 +96,7 @@ pub struct AgentNode {
     /// `Event::AgentSpawned::ephemeral` (when `kind.is_some()`) and read back
     /// by [`AgentTree::ephemeral_of`] for `Event::AgentFinished::ephemeral`.
     /// Defaults to `false` for every non-facade-`/ask` path: a root is never
-    /// ephemeral, and a `conway_subagent` fork/spawn child is never ephemeral
+    /// ephemeral, and a `conway_fork`/`conway_spawn` child is never ephemeral
     /// either (only `conway`'s facade-level `SessionHandle::ask` constructs a
     /// child `SessionMeta` with `ephemeral: true`).
     pub ephemeral: bool,
@@ -293,7 +293,7 @@ impl AgentTree {
     ///
     /// `true` only for a spawn/fork child (`kind.is_some()`) that was NEVER
     /// an ephemeral `/ask`-style aside (`!ephemeral_at_attach`) -- i.e. an
-    /// ordinary `conway_subagent` fork/spawn child, which nothing resumes or
+    /// ordinary `conway_fork`/`conway_spawn` child, which nothing resumes or
     /// revisits once finished, unlike a root. Deliberately `false` for two
     /// cases that might look eligible at a glance:
     /// - **A root** (`kind.is_none()`): out of this item's scope (one
