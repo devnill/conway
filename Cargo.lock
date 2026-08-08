@@ -407,7 +407,7 @@ dependencies = [
  "chrono",
  "conway-backends",
  "conway-core",
- "conway-routing",
+ "conway-plugin-routing",
  "conway-runtime",
  "conway-session",
  "conway-tools",
@@ -464,6 +464,7 @@ dependencies = [
  "clap",
  "conway",
  "conway-core",
+ "conway-plugin-routing",
  "conway-plugin-skeleton",
  "crossterm",
  "futures",
@@ -475,6 +476,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml",
+ "tracing",
  "tracing-subscriber",
 ]
 
@@ -496,19 +498,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "conway-plugin-skeleton"
-version = "0.8.0"
-dependencies = [
- "conway",
- "conway-core",
- "schemars",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "conway-routing"
+name = "conway-plugin-routing"
 version = "0.8.0"
 dependencies = [
  "async-trait",
@@ -520,6 +510,18 @@ dependencies = [
  "serde_json",
  "static_assertions",
  "thiserror 2.0.19",
+ "tokio",
+]
+
+[[package]]
+name = "conway-plugin-skeleton"
+version = "0.8.0"
+dependencies = [
+ "conway",
+ "conway-core",
+ "schemars",
+ "serde",
+ "serde_json",
  "tokio",
 ]
 

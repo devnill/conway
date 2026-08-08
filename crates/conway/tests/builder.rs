@@ -50,13 +50,18 @@ fn caps() -> Capabilities {
 }
 
 /// An injected router that trivially satisfies `ConwayBuilder::with_router`,
-/// used by tests whose `ConwayConfig` carries an empty-chain role.
-/// `conway_routing::DeclarativeRouter::new` (built when no router is
-/// injected) runs its own, stricter `conway_routing::config::validate`,
-/// which rejects an empty chain -- a check `crate::config::merge::validate`
-/// (the facade's own, already-run validation) does not perform. Injecting a
-/// `FakeRouter` sidesteps that stricter check for tests that are not
-/// exercising routing behavior.
+/// used by tests whose `ConwayConfig` carries an empty-chain role and that
+/// are not themselves exercising routing behavior. Board item
+/// 01KZFC43J1J06BM4CCWKCKHSNV: `build()`'s no-router/no-factory default is
+/// now `conway_core::routing::MinimalRouter`, which never validates a
+/// chain at construction at all (unlike the opt-in
+/// `conway-plugin-routing::DeclarativeRouter::new`, whose own, stricter
+/// `config::validate` rejects an empty chain -- a check
+/// `crate::config::merge::validate`, the facade's own already-run
+/// validation, does not perform). `fake_router()` therefore no longer
+/// exists to dodge a validation failure these tests would otherwise hit;
+/// it stays because these tests need a deterministic, content-free `Router`
+/// double, not `MinimalRouter`'s own chain-order behavior.
 fn fake_router() -> Arc<dyn conway_core::ports::Router> {
     Arc::new(FakeRouter::new(vec![]))
 }
@@ -809,11 +814,13 @@ fn probe_on_startup_false_makes_no_network_call_true_does() {
     );
 }
 
-/// `Conway::explain_routing` delegates to `conway_routing::RoutingExplain`
-/// over the concrete `DeclarativeRouter` this `Conway` compiled itself
-/// (no `with_router` override here), and its `entries` correspond 1:1 to
-/// the role's configured chain, in order -- mirrors the shape
-/// `conway-routing`'s own `RoutingExplain` tests assert.
+/// `Conway::explain_routing` delegates to `conway_core::routing::
+/// MinimalRouter` (the no-plugin default -- board item
+/// 01KZFC43J1J06BM4CCWKCKHSNV, no `with_router`/`with_router_factory` call
+/// here), and its `entries` correspond 1:1 to the role's configured chain,
+/// in order -- the same shape the richer, capability-/health-filtered
+/// `conway-plugin-routing::RoutingExplain` produces when that plugin is
+/// installed instead (see that crate's own tests).
 #[test]
 fn explain_routing_reports_the_configured_chain_for_the_role() {
     let mut cfg = base_config();
@@ -834,8 +841,9 @@ fn explain_routing_reports_the_configured_chain_for_the_role() {
     let store = Arc::new(FakeStore::new());
     let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
 
-    // No `with_router` override: `build()` compiles its own `DeclarativeRouter`,
-    // which `explain_routing` needs to project through.
+    // No `with_router`/`with_router_factory` override: `build()` falls
+    // through to `MinimalRouter`, which `explain_routing` projects through
+    // directly (board item 01KZFC43J1J06BM4CCWKCKHSNV).
     let conway = ConwayBuilder::from_parts(cfg)
         .with_session_store(store)
         .with_permission_gate(gate)

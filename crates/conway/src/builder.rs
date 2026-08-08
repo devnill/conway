@@ -129,8 +129,8 @@ use conway_core::ports::{
     Backend, ContextHook, HealthRegistry, PermissionGate, Plugin, Router, RouterBuildContext,
     RouterFactory, RoutingExplainer, SessionStore,
 };
-use conway_core::routing::ModelOverrides;
-use conway_routing::{BreakerRegistry, CapabilityIndex, DeclarativeRouter};
+use conway_core::ports::{CapabilityIndex, CapabilityIndexBuilder};
+use conway_core::routing::{AlwaysClosedHealthRegistry, MinimalRouter, ModelOverrides};
 use conway_runtime::events::EventBus;
 use conway_runtime::runtime::{Runtime, RuntimeDeps};
 
@@ -370,12 +370,14 @@ impl ConwayBuilder {
         self
     }
 
-    /// Overrides the default `DeclarativeRouter`. `Conway::explain_routing`
-    /// falls back to `conway_core::routing::MinimalRouter` (an honestly
-    /// degenerate report -- no capability/health filtering, one entry per
-    /// configured chain candidate) when this is set, since
-    /// `conway_routing::RoutingExplain` only projects a concrete
-    /// `DeclarativeRouter`, not the `Router` trait object.
+    /// Overrides the default router (board item 01KZFC43J1J06BM4CCWKCKHSNV:
+    /// `conway_core::routing::MinimalRouter`, the config-only core resolver
+    /// `build()` compiles when neither this nor `with_router_factory` is
+    /// called -- see that method's own doc). `Conway::explain_routing` falls
+    /// back to `MinimalRouter` (an honestly degenerate report -- no
+    /// capability/health filtering, one entry per configured chain
+    /// candidate) when this is set, since a `RoutingExplainer` for an
+    /// arbitrary injected `Router` trait object does not exist.
     pub fn with_router(mut self, router: Arc<dyn Router>) -> Self {
         self.router = Some(router);
         self
@@ -394,23 +396,31 @@ impl ConwayBuilder {
     /// factory with side effects in `build` sees none). Absent an injected
     /// router, a factory set here is invoked with the assembled
     /// `RouterBuildContext`; absent both, `build()` falls through to
-    /// compiling its own `DeclarativeRouter`, exactly as before this method
-    /// existed. A factory whose `build` returns `Err` fails the whole
-    /// `build()` call as `ConwayError::Build`, naming this factory's own
-    /// `RouterFactory::id()` and the underlying message -- never silently
-    /// swallowed, never a fallback to the compiled router.
+    /// `conway_core::routing::MinimalRouter` -- the config-only core
+    /// resolver (board item 01KZFC43J1J06BM4CCWKCKHSNV: `conway` no longer
+    /// links a capability-/health-filtering router engine at all; that is
+    /// exactly what this method installs). A factory whose `build` returns
+    /// `Err` fails the whole `build()` call as `ConwayError::Build`, naming
+    /// this factory's own `RouterFactory::id()` and the underlying message
+    /// -- never silently swallowed, never a fallback to `MinimalRouter`.
     ///
     /// When the factory path IS taken, its returned `RouterBundle::health`
     /// replaces the `HealthRegistry` `build()` would otherwise have
-    /// constructed from `[health]` -- the router and the runtime it serves
-    /// continue to share exactly one registry -- and its `RouterBundle::
-    /// explain`, when present, becomes what `Conway::explain_routing`
-    /// projects through (absent, `explain_routing` falls back to
-    /// `conway_core::routing::MinimalRouter`, the same honest degenerate
-    /// answer an injected `with_router` already falls back to).
+    /// constructed (the honestly degenerate `AlwaysClosedHealthRegistry`,
+    /// absent a factory) -- the router and the runtime it serves continue to
+    /// share exactly one registry -- and its `RouterBundle::explain`, when
+    /// present, becomes what `Conway::explain_routing` projects through
+    /// (absent, `explain_routing` falls back to `MinimalRouter`, the same
+    /// honest degenerate answer an injected `with_router` already falls back
+    /// to).
     ///
     /// **Not called at all (the default)** changes nothing: `build()`'s
-    /// router step behaves exactly as it did before this method existed.
+    /// router step behaves exactly as it did before this method existed --
+    /// `MinimalRouter` over `[roles]`/`[routing]`, no capability or health
+    /// filtering. `crates/conway-plugin-routing` is the first-party plugin
+    /// that installs the richer `DeclarativeRouter` engine instead, either
+    /// via this method directly or by naming its `ROUTER_ID` in
+    /// `[plugins].install` (see `docs/routing.md`).
     pub fn with_router_factory(mut self, factory: Arc<dyn RouterFactory>) -> Self {
         self.router_factory = Some(factory);
         self
@@ -531,28 +541,38 @@ impl ConwayBuilder {
         }
         let capability_index = index_builder.build();
 
-        // 6. BreakerRegistry from config.health (via ConwayConfig::routing()).
+        // 6. Resolve routing/headroom config. Board item
+        //    01KZFC43J1J06BM4CCWKCKHSNV: `conway` itself no longer links a
+        //    circuit-breaker implementation (that engine moved to the
+        //    `conway-plugin-routing` first-party plugin), so the default
+        //    `HealthRegistry` -- absent an installed router factory -- is
+        //    the honestly degenerate `AlwaysClosedHealthRegistry`: no
+        //    breaker ever opens, `record` is a no-op. A factory's own
+        //    `RouterBundle::health` REPLACES this below when one is taken.
         let routing_config = config.routing().map_err(|message| ConwayError::Config {
             path: None,
             message,
         })?;
         let headroom_policy = HeadroomPolicy::from_routing_config(&routing_config);
-        let health: Arc<dyn HealthRegistry> = BreakerRegistry::new(routing_config.health);
+        let health: Arc<dyn HealthRegistry> = Arc::new(AlwaysClosedHealthRegistry);
 
         // 7. Router: injected `router` wins UNCONDITIONALLY over everything
         //    below and is never wrapped, inspected, or validated; else a
         //    `RouterFactory` (`with_router_factory`), when set, is invoked
         //    with the build context assembled from the preceding steps;
-        //    else a freshly compiled `DeclarativeRouter`, exactly as
-        //    before this item. Whichever explainer the taken branch
-        //    produces (`None` for an injected router, the factory's own
-        //    `RouterBundle::explain`, or the compiled router itself) is
-        //    kept alongside the type-erased `Router` so
-        //    `Conway::explain_routing` can still project through it. When
-        //    the factory path is taken, its returned `health` REPLACES the
-        //    `BreakerRegistry` built immediately above -- the router and
-        //    the runtime must continue to share exactly ONE registry, so
-        //    `health` is reassigned below, never both kept alive.
+        //    else `conway_core::routing::MinimalRouter` -- the config-only
+        //    core resolver `conway` compiles with no plugin installed (board
+        //    item 01KZFC43J1J06BM4CCWKCKHSNV: this replaces the
+        //    `DeclarativeRouter` `build()` used to compile in directly).
+        //    Whichever explainer the taken branch produces (`None` for an
+        //    injected router, the factory's own `RouterBundle::explain`, or
+        //    `MinimalRouter` itself) is kept alongside the type-erased
+        //    `Router` so `Conway::explain_routing` can still project
+        //    through it. When the factory path is taken, its returned
+        //    `health` REPLACES the `AlwaysClosedHealthRegistry` built
+        //    immediately above -- the router and the runtime must continue
+        //    to share exactly ONE registry, so `health` is reassigned
+        //    below, never both kept alive.
         let (router, health, router_explain): (
             Arc<dyn Router>,
             Arc<dyn HealthRegistry>,
@@ -561,26 +581,17 @@ impl ConwayBuilder {
             (router, health, None)
         } else if let Some(factory) = router_factory {
             let ctx = RouterBuildContext {
-                routing: routing_config.clone(),
+                routing: routing_config,
                 headroom: headroom_policy.clone(),
                 backends: &all_backends,
+                capability_index,
             };
             let bundle = factory.build(ctx).map_err(|e| ConwayError::Build {
                 message: format!("router factory '{}' failed to build: {e}", factory.id()),
             })?;
             (bundle.router, bundle.health, bundle.explain)
         } else {
-            let compiled = Arc::new(
-                DeclarativeRouter::new(
-                    routing_config,
-                    headroom_policy.clone(),
-                    health.clone(),
-                    capability_index,
-                )
-                .map_err(|issues| ConwayError::Build {
-                    message: format!("routing config invalid: {issues:?}"),
-                })?,
-            );
+            let compiled = Arc::new(MinimalRouter::new(routing_config));
             (
                 compiled.clone() as Arc<dyn Router>,
                 health,
@@ -941,8 +952,8 @@ fn probe_openai_compat_backends(
     config: &ConwayConfig,
     profiles: &conway_backends::profile::ProfileStore,
     metadata: &config::model_metadata::ModelMetadata,
-    mut index_builder: conway_routing::CapabilityIndexBuilder,
-) -> conway_routing::CapabilityIndexBuilder {
+    mut index_builder: CapabilityIndexBuilder,
+) -> CapabilityIndexBuilder {
     use conway_backends::config::SecretString;
     use conway_backends::model_metadata::ModelMetadataStore;
     use conway_backends::probe::CapabilityProbe;

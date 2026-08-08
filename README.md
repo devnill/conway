@@ -157,33 +157,54 @@ being common does not make it neutral, so conway ships these as things you
 install rather than behavior you inherit. Progress against that intent is
 tracked in [`.design/philosophy-debt.md`](.design/philosophy-debt.md).
 
-**The tier's shape is settled and demonstrated, with one worked example
-shipping today:** `crates/conway-plugin-skeleton`, a plugin that registers a
-single `skeleton_ping` tool and does nothing else — it exists to prove the
-mechanism below, not to be useful on its own. Real occupants (routing first)
-are separate, later work.
+**The tier's shape is settled and demonstrated, with two members shipping
+today:** `crates/conway-plugin-skeleton`, a plugin that registers a single
+`skeleton_ping` tool and does nothing else — it exists to prove the `Plugin`/
+`Tool` mechanism below, not to be useful on its own — and
+`crates/conway-plugin-routing`, the real, first non-toy occupant: the
+declarative role-routing engine (ordered fallback chains, capability
+filtering, health tracking, circuit breaking) `conway` itself used to compile
+in unconditionally, now installed the same way. Context compaction, memory,
+skills, and MCP support remain separate, later work; conway-plugin-routing
+is not "dynamic routing" in the learned/adaptive sense PHILOSOPHY.md
+describes elsewhere — no classifier, no embedding model, ever — it is the
+same purely declarative resolver conway always had, no longer compiled in by
+default. With neither plugin installed, `build()` falls back to
+`conway_core::routing::MinimalRouter`, an honest, config-only resolver with
+no capability or health filtering — see
+[`docs/routing.md`](docs/routing.md#installing-a-different-router).
 
 - **Where they live.** A crate per plugin under `crates/`, exactly like the
   workspace's other crates — `cargo test --workspace` covers them the same
-  way. `conway` (the facade) never depends on any of them: a first-party
-  plugin is written against `conway::plugin`, the identical public surface a
-  third-party plugin author gets, and is linked only by whatever binary or
-  embedder chooses to install it.
+  way. `conway` (the facade) never depends on any of them. A `Plugin`/`Tool`
+  first-party plugin (`conway-plugin-skeleton`) is written against
+  `conway::plugin`, the identical public surface a third-party plugin author
+  gets. A router plugin (`conway-plugin-routing`) is a narrower, different
+  case: `Router`/`HealthRegistry` implementations are deliberately excluded
+  from the `conway::plugin` tier, so it depends on `conway-core` directly
+  instead, installed via a separate identity (`RouterFactory`,
+  `ConwayBuilder::with_router_factory`) — `conway` still links neither crate
+  either way. Each is linked only by whatever binary or embedder chooses to
+  install it.
 - **How you install one.** A distinct `[plugins]` section, deliberately not
   folded into `tools.builtin_plugins` (that key names only the four
   compiled-in built-ins and is validated as a closed set; a first-party
   plugin is not a member of it):
   ```json
-  { "plugins": { "install": ["conway.plugin_skeleton"] } }
+  { "plugins": { "install": ["conway.plugin_skeleton", "conway.routing"] } }
   ```
   The `conway` binary links its own small bundle of first-party plugin
-  crates (`crates/conway-cli/src/first_party_plugins.rs`) and resolves each
-  id in `plugins.install` against it, for the TUI and one-shot `-p` alike —
-  an unrecognized id is a hard config error, never a silent no-op. A library
-  embedder instead depends on the plugin crate directly and calls
-  `ConwayBuilder::with_plugin`, the same call a third party makes; reading
-  `ConwayBuilder::config().plugins.install` first (as `conway-cli` does) is
-  how an embedder offers the identical settings-driven experience.
+  crates AND router factories (`crates/conway-cli/src/first_party_plugins.rs`,
+  `bundle`/`router_bundle`) and resolves each id in `plugins.install` against
+  the two together, in one pass, for the TUI and one-shot `-p` alike — an
+  unrecognized id is a hard config error naming every linked id it does
+  recognize, never a silent no-op, and naming more than one router-factory id
+  is rejected too (a build has exactly one router). A library embedder
+  instead depends on the plugin crate directly and calls
+  `ConwayBuilder::with_plugin` (or, for a router, `with_router_factory`), the
+  same calls a third party makes; reading `ConwayBuilder::config().plugins.
+  install` first (as `conway-cli` does) is how an embedder offers the
+  identical settings-driven experience.
 - **What compatibility they promise.** Versioned with the workspace
   (`version.workspace = true`, same as every other crate here), not
   independently and not held to `conway-core`'s own strict-semver

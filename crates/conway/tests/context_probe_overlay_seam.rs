@@ -273,14 +273,19 @@ fn config_naming(base_url: String, metadata_path: PathBuf) -> ConwayConfig {
 /// constructs its own real `OpenAiCompatBackend` from `config` (no
 /// `.with_backend` call anywhere in these fixtures -- the double this file
 /// needs for the probe-driven tests is the *HTTP server* the backend and
-/// the probe both talk to, not the `Backend` itself) and compiles its own
-/// `DeclarativeRouter` over the resulting, probe-overlaid `CapabilityIndex`.
+/// the probe both talk to, not the `Backend` itself), with the first-party
+/// `conway-plugin-routing` engine installed via `with_router_factory` (board
+/// item 01KZFC43J1J06BM4CCWKCKHSNV: `conway` no longer compiles a capability-
+/// /health-filtering `DeclarativeRouter` in by default -- see that item's
+/// own doc for what changes without this call) so this file's assertions
+/// about the router's probe-overlaid `CapabilityIndex` stay meaningful.
 fn build_conway(config: ConwayConfig) -> Conway {
     let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
     let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
     ConwayBuilder::from_parts(config)
         .with_session_store(store)
         .with_permission_gate(gate)
+        .with_router_factory(Arc::new(conway_plugin_routing::RoutingRouterFactory))
         .build()
         .expect(
             "build should succeed: a probe failure/degraded result is a warning, never a hard \

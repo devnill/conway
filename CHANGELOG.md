@@ -46,6 +46,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `crates/conway-cli/src/first_party_plugins.rs`,
   `crates/conway-cli/tests/first_party_plugins.rs`)
 
+- **The routing engine moves from something conway is built with to
+  something you install: `conway-routing` is now `conway-plugin-routing`, a
+  first-party plugin, and `conway` links it no longer** (board item
+  01KZFC43J1J06BM4CCWKCKHSNV, closing this charter). The router
+  `RouterFactory` port (immediately above) gains its first real occupant:
+  `conway-plugin-routing::RoutingRouterFactory`, published id
+  `ROUTER_ID = "conway.routing"`, installed via `[plugins].install` (the
+  SAME mechanism `crates/conway-cli/src/first_party_plugins.rs`'s
+  `router_bundle` already resolved for an empty bundle) or directly via
+  `ConwayBuilder::with_router_factory`. **`crates/conway/src/builder.rs`'s
+  `build()` no longer compiles a `DeclarativeRouter` by default**: absent an
+  injected router or a registered/installed router factory, `build()` now
+  falls through to `conway_core::routing::MinimalRouter` — an honest,
+  config-only resolver walking `[roles.<alias>].chain` in order with no
+  capability filtering, no health filtering, and no circuit breaking — and
+  the default `HealthRegistry` becomes `conway_core::routing::
+  AlwaysClosedHealthRegistry` (no real breaker state) for the same reason:
+  `conway` no longer links a `BreakerRegistry` implementation at all. Every
+  capability this crate carried travels with it UNCHANGED: `DeclarativeRouter`,
+  `BreakerRegistry`/`Clock`/`SystemClock`/`TestClock` (`test-clock` feature),
+  `RoutingExplain`, `satisfies`/`strictest`, `config::validate`/`ConfigIssue`/
+  `ConfigIssueKind`, and the still-unwired `HealthProber` (board item
+  01KZ802GSF692EKYKQ2TTVCJB8 still owns its wire-or-retire decision).
+  `RouterBuildContext` gains a `capability_index: conway_core::ports::
+  CapabilityIndex` field (the SAME index `ConwayBuilder::build` itself
+  computes from `.conway/models.json`, optionally probe-overlaid) so a
+  router factory does not have to — and structurally cannot correctly —
+  reconstruct which `(backend, model)` pairs are declared routable at all
+  from `ctx.backends` alone; `CapabilityIndex`/`CapabilityIndexBuilder` join
+  the facade's root re-export list for the same reason `RoutingConfig`/
+  `HeadroomPolicy` already had to (a `RouterBuildContext` field type must be
+  nameable by a crate depending only on `conway`). **Breaking for any code
+  outside this workspace naming `conway_routing` directly**: the crate no
+  longer exists under that name; depend on `conway-plugin-routing` instead
+  (identical public API, `RoutingRouterFactory`/`ROUTER_ID` added). An
+  embedder that relied on `ConwayBuilder::build()`'s PRIOR default
+  (capability/health filtering with no plugin installed and no
+  `with_router`/`with_router_factory` call) must now call
+  `.with_router_factory(Arc::new(conway_plugin_routing::RoutingRouterFactory))`
+  explicitly to keep that behavior — this is the intended, disclosed
+  behavior change this item exists to make, not an oversight. See
+  [`docs/routing.md`](docs/routing.md#installing-a-different-router) for
+  what changes (and does not) between the absent and installed
+  configurations, and `.design/philosophy-debt.md`'s (renumbered) entry 4,
+  now cleared.
+  (`crates/conway-plugin-routing/` (renamed from `crates/conway-routing/`,
+  `git mv`, history preserved; `src/factory.rs` new),
+  `crates/conway-core/src/ports/routing.rs`, `crates/conway/src/lib.rs`,
+  `crates/conway/src/builder.rs`, `crates/conway/Cargo.toml`,
+  `crates/conway/tests/router_plugin_configurations.rs` (new),
+  `crates/conway/tests/context_probe_overlay_seam.rs`,
+  `crates/conway/tests/role_capability_floor_seam.rs`,
+  `crates/conway-cli/src/main.rs`, `crates/conway-cli/src/
+  first_party_plugins.rs`, `crates/conway-cli/Cargo.toml`,
+  `crates/conway-cli/tests/oneshot.rs`,
+  `crates/conway-cli/tests/first_party_plugins.rs`)
+
 - **`Backend` gains an `admit` method: whether a request fits is now
   answerable by the thing talking to the endpoint** (board item
   01KZDC4DKVC4JC3W4KN1WMC43N, decision 01KZDBYTKFYTVD9R2NA10QJNJE; P-4 and

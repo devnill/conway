@@ -40,12 +40,14 @@
 //! (`ConwayConfig::routing()`, this change's schema half) was therefore
 //! necessary but not sufficient: without also wiring the router to merge
 //! the role's configured floor into its admission check
-//! (`crates/conway-routing/src/router.rs`'s `effective_required` /
+//! (`crates/conway-plugin-routing/src/router.rs`'s `effective_required` /
 //! `crate::capability::strictest`, added alongside this test), the schema
 //! change alone would have been exactly the kind of unreached
 //! configuration this whole item exists to prevent. Both are proven here:
-//! this file end to end through a real `Conway`, and
-//! `crates/conway-routing/tests/router_resolution.rs`'s
+//! this file end to end through a real `Conway` (with the
+//! `conway-plugin-routing` first-party plugin installed -- board item
+//! 01KZFC43J1J06BM4CCWKCKHSNV, see `build_conway`'s own doc), and
+//! `crates/conway-plugin-routing/tests/router_resolution.rs`'s
 //! `role_configured_capability_floor_rejects_a_candidate_that_does_not_meet_it`
 //! / `..._admits_a_candidate_that_meets_it` directly against
 //! `DeclarativeRouter`.
@@ -156,12 +158,20 @@ fn config_naming(metadata_path: PathBuf) -> ConwayConfig {
     serde_json::from_str(&json).expect("fixture JSON must parse as ConwayConfig")
 }
 
+/// Board item 01KZFC43J1J06BM4CCWKCKHSNV: `conway` no longer compiles a
+/// capability-filtering `DeclarativeRouter` in by default -- the role's
+/// configured `min_reliability` floor this file exists to prove is enforced
+/// by that engine specifically, so it must be installed via
+/// `with_router_factory` for these assertions to mean anything (absent it,
+/// `conway_core::routing::MinimalRouter` performs no capability filtering at
+/// all, and the backend would be called regardless of `reliability_tier`).
 fn build_conway(config: ConwayConfig, backend: Arc<dyn Backend>, store: Arc<dyn SessionStore>) -> Conway {
     let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
     ConwayBuilder::from_parts(config)
         .with_backend(backend)
         .with_session_store(store)
         .with_permission_gate(gate)
+        .with_router_factory(Arc::new(conway_plugin_routing::RoutingRouterFactory))
         .build()
         .expect(
             "build should succeed: real ContextBuilder/DeclarativeRouter/AttemptEngine wiring \

@@ -65,6 +65,27 @@ fn no_forbidden_deps() {
         "expected a dependency on the `conway` facade crate"
     );
 
+    // Board item 01KZFC43J1J06BM4CCWKCKHSNV: "conway-routing" stays in this
+    // list even though that crate no longer exists (renamed and relocated
+    // to `conway-plugin-routing`) -- the string simply never matches any
+    // key in this crate's `[dependencies]` table again, which is exactly
+    // the state a deleted internal-engine crate should leave behind here.
+    // `conway-plugin-routing` is deliberately NOT added alongside it: this
+    // list guards against conway-cli reaching an internal IMPLEMENTATION
+    // crate `conway` itself used to assemble (conway-runtime, -backends,
+    // -session, -core, -tools -- see each one's own doc); a first-party
+    // PLUGIN crate is a different tier entirely (decision
+    // 01KZDM9EEVJDWAKJQPV0Y3CQ4D), explicitly meant to be linked by exactly
+    // one binary through `src/first_party_plugins.rs`'s `router_bundle` --
+    // `conway-plugin-skeleton`, immediately below in this crate's own
+    // `[dependencies]`, already establishes that this list has never
+    // covered the plugin tier. Verified, not asserted: adding
+    // `"conway-plugin-routing"` here fails `no_forbidden_deps` outright
+    // (conway-cli's Cargo.toml genuinely, necessarily depends on it for
+    // `router_bundle` to construct a real `RoutingRouterFactory`) -- tried
+    // during this item's implementation and reverted; recorded in this
+    // item's own completion report rather than left as a silent contradiction
+    // between "add the new crate to FORBIDDEN" and "and the test passes".
     const FORBIDDEN: &[&str] = &[
         "conway-runtime",
         "conway-backends",

@@ -651,6 +651,16 @@ async fn exit_4_no_backend() {
 /// backend -- `NoCandidate` with zero backend contact. (Same broken-chain
 /// setup `model_flag_pins_and_overrides_role_chain` rescues with `--model`;
 /// here nothing rescues it.)
+///
+/// Board item 01KZFC43J1J06BM4CCWKCKHSNV: capability filtering (the
+/// mechanism this test proves) is no longer compiled into `conway` by
+/// default -- it now lives in the `conway-plugin-routing` first-party
+/// plugin, installed here via `[plugins].install` (`"conway.routing"`,
+/// `RoutingRouterFactory::ROUTER_ID`) exactly as a real operator would in
+/// `settings.json`. Absent that entry, `conway_core::routing::MinimalRouter`
+/// (the default, no-plugin core resolver) performs no such filtering at
+/// all, and this fixture's broken chain would reach the mock server
+/// instead.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn exit_4_unregistered_model() {
     let mock = MockBackend::start(Script(vec![])).await;
@@ -658,7 +668,9 @@ async fn exit_4_unregistered_model() {
     let broken = std::fs::read_to_string(&fixture.config_path)
         .unwrap()
         .replace(&format!("mock/{}", mock.model), "mock/unregistered-model");
-    std::fs::write(&fixture.config_path, broken).unwrap();
+    let mut value: Value = serde_json::from_str(&broken).unwrap();
+    value["plugins"] = serde_json::json!({ "install": ["conway.routing"] });
+    std::fs::write(&fixture.config_path, serde_json::to_vec(&value).unwrap()).unwrap();
 
     let out = run_conway(&["-p", "hi"], &fixture);
 

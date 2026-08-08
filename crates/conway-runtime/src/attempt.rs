@@ -156,7 +156,7 @@ fn full_text(blocks: &[ContentBlock]) -> String {
 }
 
 /// The endpoint identity for a backend. Mirrors
-/// `conway_routing::router::endpoint_of` (crate-private there): endpoint
+/// `conway_plugin_routing::router::endpoint_of` (crate-private there): endpoint
 /// identity is 1:1 with backend identity for MVP.
 fn endpoint_of(backend: &BackendId) -> EndpointId {
     EndpointId::new(backend.as_str())
