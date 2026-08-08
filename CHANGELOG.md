@@ -172,9 +172,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `SessionMeta` when the call site leaves it unset, at the trait
     boundary rather than by widening `ToolCtx` for one call site (P-1).
     This is a fallback, not an override: an embedder that supplies its own
-    `spec.agent_def` is left untouched, and a caller-narrowing
+    `spec.agent_def` is left untouched, and an explicit
     `spec.tools`/`AskArgs::tools` still takes precedence over the def's
-    selector — it can restrict the inherited set, never widen it.
+    selector. **That precedence is a replacement, not an intersection**, so
+    an explicit `tools` list can name a tool the inherited def excludes —
+    this change closes the "no argument supplied" escalation above and does
+    **not** close the explicit-argument one. `conway_ask`'s own tool
+    description still claims otherwise ("narrowing-only — it can never
+    grant tools the child would not otherwise inherit"), as does
+    `ForkSpec::tools`' doc ("Intersected with the forker's own tool set by
+    the runtime"); no such intersection exists anywhere in the tree, and an
+    agent's `tools` selector is consulted only when building the schema
+    list offered to the model (`agent_loop.rs`), never at execution
+    (`ToolRunner` resolves a call by name against the whole registry, and
+    `ToolBatchCtx` carries no selector). Tracked as board item
+    01KZHET5G0DN7QC0YF5G9XSB1N, which owns both the implement-vs-retract
+    decision and those declaration sites.
   - *Over-inheritance, now carved out.* Filling `agent_def` exposed a live
     regression that already existed on the facade path, where
     `SessionHandle::ask` has always inherited the def: `start` also
