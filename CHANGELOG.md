@@ -186,6 +186,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `RouterBundle` it already was — router, health, explain — so the three
   selection arms agree on a named contract rather than on tuple position.
 
+- **A cancellation reason survives the in-flight-request race too** (board
+  item 01KZGRGN9MKJP549NMGT8QACCV). When a cancel landed while a request to
+  the model was already in flight, the agent stopped correctly but reported a
+  generic `"attempt cancelled"` instead of the caller's reason — a third
+  discard site, after the two closed by 01KZDDCN747FEZ3GM3NS0ANE7G. The
+  guarantee was stated in four places and untrue in this corner, which is
+  harder to notice than an undocumented gap. Fixed in the agent loop rather
+  than by plumbing a tree handle into the attempt engine: the loop already
+  holds the tree and already performs the identical lookup one function away,
+  and because `AgentTree::cancel` stashes the reason *before* it trips the
+  cancellation token, the read-back is race-free by construction.
+  (`crates/conway-runtime/src/agent_loop.rs`, `attempt.rs`, `tree.rs`,
+  `runtime.rs`, `crates/conway-core/src/agent.rs`)
+
 - **The TUI no longer silently ignores four documented flags** (board item
   01KZGRXFSY4ZB7NCA9NS2AGFS5). `--model`, `--session`, `--resume` and
   `--fork-from` were accepted by the parser and never read by the interactive

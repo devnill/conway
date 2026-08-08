@@ -1862,3 +1862,97 @@ async fn default_cancel_through_the_facade_stops_immediately_without_waiting_for
     // silently relying on the tool eventually finishing.
     release.notify_one();
 }
+
+/// Board item 01KZGRGN9MKJP549NMGT8QACCV: the two tests above (415fbc5,
+/// board item 01KZDDCN747FEZ3GM3NS0ANE7G) drive a cancel while the child is
+/// waiting on a *tool*, which lands at one of `AgentLoop::run_inner`'s own
+/// turn-boundary checks (`finish_cancelled`, already fixed). This test
+/// drives the THIRD, narrower site that item's worker disclosed but did not
+/// fix: a cancel observed while the child is suspended *inside a backend
+/// call itself* -- `AttemptEngine::run_generate`'s `tokio::select!` racing
+/// `cancel.cancelled()` against `backend.generate` (`attempt.rs`), which
+/// constructs `RuntimeError::Cancelled { reason: "attempt cancelled" }`
+/// rather than the caller's own string.
+///
+/// The race is made deterministic, not timing-dependent, by
+/// `ScriptedTurn::Pending`: the scripted backend's `generate` future never
+/// resolves on its own (`std::future::pending()`), so once the child's turn
+/// has reached it, the ONLY way that `select!` can ever complete is via the
+/// cancel branch -- there is no window in which the assertion below could
+/// flakily observe the pre-fix generic reason instead by losing a race, only
+/// a bound on how long it takes to observe the call happened at all (the
+/// polling loop just below, mirroring `pull_in.rs`'s identical
+/// `ScriptedTurn::Pending`-polling pattern for the same reason).
+#[tokio::test]
+async fn cancel_reason_reaches_the_result_when_observed_mid_request() {
+    let backend = Arc::new(
+        ScriptedBackend::new(vec![ScriptedTurn::Pending]).with_id(BackendId::new("fake")),
+    );
+    let store = Arc::new(FakeStore::new());
+    let conway = build_conway(backend.clone(), store);
+    let handle = new_handle(&conway).await;
+
+    let child = handle
+        .fork(handle.root(), ForkSpec::new("go"))
+        .await
+        .expect("fork should succeed");
+
+    // Poll until the scripted backend has actually recorded the call --
+    // proof the child's turn reached `backend.generate`/`stream` and is now
+    // suspended inside it (the scripted turn never resolves on its own), not
+    // merely "some time has passed".
+    let mut in_flight = false;
+    for _ in 0..100 {
+        if !backend.calls().is_empty() {
+            in_flight = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        in_flight,
+        "the child's backend call must be observed in flight within 5s"
+    );
+
+    handle
+        .cancel(child, "mid-request reason must reach the result")
+        .await
+        .expect("cancel should succeed");
+
+    let result = tokio::time::timeout(Duration::from_secs(5), handle.await_agent(child))
+        .await
+        .expect("await_agent must not hang after a mid-request cancel")
+        .expect("await_agent should resolve Ok even on Cancelled");
+    assert_eq!(
+        result.status,
+        ResultStatus::Cancelled {
+            reason: "mid-request reason must reach the result".to_string()
+        },
+        "a cancellation observed mid-request (attempt.rs's BackendError::Cancelled arm) must \
+         still carry the caller-supplied reason, not the generic \"attempt cancelled\" string \
+         RuntimeError::Cancelled is constructed with at that site"
+    );
+
+    // The PERSISTED result, not only the live `await_agent` value -- mirrors
+    // the immediate-path test above (`AgentLoop::finish` appends
+    // `LogRecord::AgentResultRecord` before publishing).
+    let transcript = handle
+        .transcript(child)
+        .await
+        .expect("transcript should resolve");
+    let persisted = transcript
+        .iter()
+        .find_map(|r| match r {
+            LogRecord::AgentResultRecord { result, .. } => Some(result),
+            _ => None,
+        })
+        .expect("the cancelled child's AgentResultRecord must be persisted");
+    assert_eq!(
+        persisted.status,
+        ResultStatus::Cancelled {
+            reason: "mid-request reason must reach the result".to_string()
+        },
+        "the mid-request cancel's reason must be present in the durably persisted AgentResult, \
+         not only the in-memory watch-channel value await_agent reads"
+    );
+}

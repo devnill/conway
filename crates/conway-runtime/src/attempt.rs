@@ -381,6 +381,25 @@ impl AttemptEngine {
                             // Auth, Cancelled, and any future unrecognized
                             // Fatal variant: not worth retrying anywhere in
                             // this turn (T-2) -- abort the whole chain.
+                            //
+                            // `reason` here is a generic placeholder, not the
+                            // caller's own `conway_cancel` string: this
+                            // engine has no `AgentTree` handle to look that
+                            // up with (it is deliberately backend/routing
+                            // machinery only), and `run_generate`/
+                            // `run_stream`'s `select!` -- the only place a
+                            // `BackendError::Cancelled` is produced -- has
+                            // already collapsed whichever reason the caller
+                            // gave down to a bare token trip by this point.
+                            // Board item 01KZGRGN9MKJP549NMGT8QACCV: rather
+                            // than plumb a tree handle in here, the caller's
+                            // reason is recovered one level up --
+                            // `agent_loop.rs`'s `finish_error` OVERWRITES
+                            // this placeholder with `tree.cancel_reason`
+                            // whenever this agent was itself the direct
+                            // target of the cancel (see that fn's own doc),
+                            // so it never actually reaches a persisted
+                            // `AgentResult`.
                             return Err(match err {
                                 BackendError::Cancelled => RuntimeError::Cancelled {
                                     agent: req.agent_id,

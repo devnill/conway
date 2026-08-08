@@ -426,11 +426,15 @@ pub enum AgentStatus {
 /// **The caller-supplied reason** (board item 01KZDDCN747FEZ3GM3NS0ANE7G)
 /// reaches the named target's own terminal `AgentResult` on both modes --
 /// `Graceful` always has, via its mailbox delivery; `Immediate` now does
-/// too, via `AgentTree::cancel`'s stash and `AgentLoop::finish_cancelled`'s
-/// read-back. `Immediate`'s whole-subtree propagation is still scoped to
-/// the reason's attribution, though: only the explicitly named target
-/// carries it, since a descendant swept up by the same structural token
-/// trip was never itself passed a reason to attach truthfully.
+/// too, via `AgentTree::cancel`'s stash, read back at whichever of
+/// `AgentLoop::finish_cancelled` (the ordinary loop-boundary case) or, for
+/// a cancel observed while the target's turn is mid-backend-call (board
+/// item 01KZGRGN9MKJP549NMGT8QACCV), `AgentLoop::finish_error` actually
+/// unwinds the target's task. `Immediate`'s whole-subtree propagation is
+/// still scoped to the reason's attribution, though: only the explicitly
+/// named target carries it, since a descendant swept up by the same
+/// structural token trip was never itself passed a reason to attach
+/// truthfully.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CancelMode {
