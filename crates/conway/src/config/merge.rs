@@ -83,7 +83,6 @@ impl Default for LoadOptions {
 #[derive(Debug, Clone, Default)]
 pub struct CliOverrides {
     pub default_role: Option<RoleAlias>,
-    pub model: Option<ModelRef>,
     pub permission_mode: Option<String>,
     pub allowed_tools: Option<Vec<String>>,
     pub denied_tools: Option<Vec<String>>,
@@ -100,11 +99,18 @@ pub struct CliOverrides {
     /// (`[routing].default_headroom_tokens`, `[roles.<alias>].headroom_tokens`)
     /// and the `CONWAY_ROUTING__DEFAULT_HEADROOM_TOKENS` /
     /// `CONWAY_ROLES__<ALIAS>__HEADROOM_TOKENS` env vars. Left in place
-    /// rather than removed: every sibling field in this struct is equally
-    /// unwired from `conway-cli`, so singling this one out for deletion
-    /// would be arbitrary, not principled — the corrected struct doc
-    /// comment is what carries the honesty requirement here, not field
-    /// removal.
+    /// rather than removed (decision 01KZGRW3CXEAGMP275P95KGN83, board item
+    /// `01KZ8049CVW1GCAA081M7WSVSZ`): unlike the deleted `model` field —
+    /// which had no `ConwayConfig` key to land on and was skipped by this
+    /// struct's own `cli_overrides_to_value` — this field IS translated
+    /// into the merge document (`routing.default_headroom_tokens`) and is
+    /// exercised end to end by `tests/config_headroom.rs`. Its only gap is
+    /// that no `conway-cli` flag ever constructs a `CliOverrides` with it
+    /// set, which is now true of every field here: `conway-cli` wires its
+    /// own flags directly rather than through this struct (see the struct
+    /// doc comment), so this field's reachability from a real CLI
+    /// invocation is exactly as good, and exactly as absent, as its seven
+    /// remaining siblings'.
     pub headroom_tokens: Option<u32>,
 }
 
@@ -436,9 +442,6 @@ fn cli_overrides_to_value(cli: &CliOverrides) -> Value {
             Value::from(headroom),
         );
     }
-    // `cli.model` is a routing pin consumed downstream by
-    // `ConwayBuilder`/`SessionSpec` (WI-100), not a `ConwayConfig` field —
-    // deliberately not merged here.
     Value::Object(root)
 }
 

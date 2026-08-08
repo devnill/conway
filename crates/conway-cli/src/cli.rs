@@ -17,6 +17,16 @@ use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 use crate::commands::routes::RoutesArgs;
 use crate::commands::sessions::SessionsArgs;
 
+/// Adding a flag here? It does **not** reach a running `conway` through
+/// `conway::config::merge::CliOverrides` — that struct is an embedder-facing
+/// config-override API `conway-cli` deliberately does not construct
+/// (decision 01KZGRW3CXEAGMP275P95KGN83, board item
+/// `01KZ8049CVW1GCAA081M7WSVSZ`; see that struct's own doc comment for why
+/// routing this crate's flags through it would be actively breaking, not
+/// merely unwired). This crate reads its own fields off `Cli` directly and
+/// wires them by hand: `oneshot::build_gate`/`oneshot::resolve_session` for
+/// one-shot mode, and the TUI's own equivalent construction path. A new flag
+/// needs a matching read in whichever of those paths it's meant to affect.
 #[derive(Parser, Debug)]
 #[command(name = "conway", version, about = "The conway agent harness CLI")]
 pub struct Cli {
