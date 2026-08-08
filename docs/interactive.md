@@ -14,18 +14,22 @@ Run `conway` with no `-p`/`--print` flag to get the TUI:
 conway
 ```
 
-A few flags change which session you land in:
+A couple of flags change the session the TUI starts:
 
 | Flag | Effect |
 | --- | --- |
-| `--session <id>` | Use (creating if new) a specific session id. |
-| `--resume <id>` | Reattach to a persisted session and continue its transcript. |
-| `--fork-from <id>[@seq]` | Start a new session branched from another one, optionally at a specific point in its log. |
 | `--role-override <role>` | Use this role instead of `default_role` for the session. |
 | `--model <backend/model>` | Pin a specific model instead of routing through a role's chain. |
 
-`--session`, `--resume`, and `--fork-from` are mutually exclusive; with
-none of them, conway starts a fresh session.
+`--session`, `--resume`, and `--fork-from` are **one-shot (`-p`) only**: the
+TUI refuses to start if you pass any of them, with a usage error naming the
+alternative. One-shot's continuity logic (an existence probe ahead of
+`--session`, `--cwd` rejected alongside `--fork-from`, resolving a seq-less
+`--fork-from` against the parent's current head) has no equivalent shape for
+an already-running interactive session to land in, so the flags are not
+silently accepted and ignored — they are refused outright. To reattach to a
+persisted session from inside the TUI, use the [`/resume`](#slash-commands)
+slash command once it's running instead.
 
 **bash is off by default.** `fs`/`subagent`/`report` are registered
 automatically; bash (arbitrary shell command execution) is not, and needs a

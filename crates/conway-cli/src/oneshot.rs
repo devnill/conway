@@ -47,13 +47,7 @@
 //!    allow-list, ... `read` yields `AllowOnce`") is deliberately **not**
 //!    implemented -- this module's own test for that scenario asserts
 //!    `read` is denied instead, and says why.
-//! 3. **`--model` has no wiring point.** Neither `SessionSpec` nor
-//!    `conway_runtime::runtime::RootSpec` (the two structs `new_session`
-//!    passes through) has a model-pin field of any kind -- confirmed by
-//!    reading both. `cli.model` is accepted by the parser (WI-111) but is
-//!    inert here; flagged for the facade to grow a pin field, not papered
-//!    over with an invented mechanism.
-//! 4. **`--session`/`--resume`/`--fork-from` (WI-117, driven live by
+//! 3. **`--session`/`--resume`/`--fork-from` (WI-117, driven live by
 //!    WI-120).** WI-117 wired these three flags but could only validate
 //!    them: `conway-runtime` had exactly one way to register a *live* root
 //!    agent (`Runtime::start_root`, reached only through
@@ -106,15 +100,12 @@ use std::io::{IsTerminal, Read};
 use std::time::Duration;
 
 use conway::gates::AllowListGate;
-use conway::{
-    AgentResult, Conway, ConwayError, Event, ForkSpec, ModelRef, RoleAlias, SessionHandle,
-    SessionSpec,
-};
+use conway::{AgentResult, Conway, Event, ForkSpec, RoleAlias, SessionHandle, SessionSpec};
 use futures::StreamExt;
-use std::str::FromStr;
 
 use crate::cli::{Cli, PermissionMode};
 use crate::exit::ExitCode;
+use crate::model_pin::{parse_model_pin, usage_error};
 use crate::{diag, render, session_ref, signal};
 
 /// One-shot mode's entry point (dispatched from `main.rs` when
@@ -201,7 +192,7 @@ pub async fn run(cli: &Cli, conway: Conway) -> conway::Result<ExitCode> {
 /// by WI-120) -- at most one is ever `Some`, per `cli.rs`'s
 /// `conflicts_with_all` -- into a live [`SessionHandle`] that [`run`] then
 /// subscribes to and prompts uniformly, regardless of which arm produced
-/// it. See this module's doc comment, reconciliation #4, for how each flag
+/// it. See this module's doc comment, reconciliation #3, for how each flag
 /// reaches a drivable handle; each arm's own comment below covers only what
 /// is specific to that flag.
 ///
@@ -365,24 +356,6 @@ fn read_prompt(cli: &Cli) -> conway::Result<String> {
         return Err(usage_error("no prompt provided: stdin was empty"));
     }
     Ok(buf)
-}
-
-fn usage_error(message: impl Into<String>) -> ConwayError {
-    ConwayError::Config {
-        path: None,
-        message: message.into(),
-    }
-}
-
-/// Parses `--model <ref>` (WI-128) into a [`ModelRef`] pin, or `None` when
-/// the flag was not passed. A malformed ref is a usage error (`ExitCode::
-/// Usage`, 2), consistent with every other flag this module parses in
-/// [`resolve_session`].
-fn parse_model_pin(cli: &Cli) -> conway::Result<Option<ModelRef>> {
-    cli.model
-        .as_deref()
-        .map(|r| ModelRef::from_str(r).map_err(|e| usage_error(format!("--model {r}: {e}"))))
-        .transpose()
 }
 
 /// Builds the one-shot gate from `--permission-mode`/`--allowed-tools`/
