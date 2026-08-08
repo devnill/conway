@@ -130,6 +130,50 @@ pub enum CwdError {
     Poisoned,
 }
 
+/// Errors produced by [`crate::ports::ArtifactWriteHandle::write`] (board
+/// item 01KZ84437RMKHP5DJX7RMHH7JY: the containment guard that makes it safe
+/// for a [`crate::ports::ContextHook`] to spill content to disk).
+///
+/// **`OutsideRoot` is not a corner case -- it is the guard this whole port
+/// exists to enforce.** See [`crate::ports::ArtifactWriteHandle`]'s own doc
+/// for the resolution rule (mirrors `conway_runtime::permission::
+/// resolve_like_the_tool_will` exactly -- P-14, one implementation) that
+/// decides when this fires.
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
+pub enum ArtifactWriteError {
+    /// The hook-supplied name could not be resolved into a candidate path
+    /// at all (P-10: a NUL byte, which the OS path APIs cannot represent --
+    /// the same rejection `conway_tools::common::resolve_path` gives a
+    /// tool's own path argument for the identical input). Distinct from
+    /// [`Self::OutsideRoot`]: this candidate was never even evaluated
+    /// against the root.
+    #[error("artifact name could not be resolved to a path: {detail}")]
+    InvalidName { detail: String },
+    /// The resolved write target is not inside this agent's confinement
+    /// root (or the resolved candidate could not even be evaluated -- see
+    /// `conway_core::containment::Containment::Undecidable`, which this
+    /// fuses with `Outside`: "can't check" is never "allow"). `path` is the
+    /// resolved candidate, rendered for a human/log, never the raw
+    /// hook-supplied name alone -- the whole point of this variant is
+    /// showing where the write actually would have landed.
+    #[error("artifact write to {path} refused: outside this agent's confinement root")]
+    OutsideRoot { path: String },
+    /// This agent's persisted confinement root no longer resolves on disk
+    /// (`conway_runtime::permission::AgentRoot::Broken`). Fails closed,
+    /// exactly like every other root-relevant call this agent makes while
+    /// its root is broken -- never silently downgraded to unconfined.
+    #[error(
+        "artifact write refused: this agent's confinement root could not be re-established"
+    )]
+    RootBroken,
+    /// The path resolved and passed containment, but the actual filesystem
+    /// operation (creating parent directories, or writing the file itself)
+    /// failed.
+    #[error("artifact write io error: {detail}")]
+    Io { detail: String },
+}
+
 /// Errors produced by a `SessionStore` implementation.
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]

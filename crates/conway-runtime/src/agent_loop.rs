@@ -133,8 +133,8 @@ use conway_core::event::Event;
 use conway_core::ids::{AgentId, ModelId, ModelRef, RoleAlias, SeqRange, SessionId};
 use conway_core::log::LogRecord;
 use conway_core::ports::{
-    ContextHook, ContextHookCtx, ContextPayload, CwdHandle, OverflowInfo, PluginConfig, Router,
-    SessionStore, SubagentHost,
+    ArtifactWriteHandle, ContextHook, ContextHookCtx, ContextPayload, CwdHandle, OverflowInfo,
+    PluginConfig, Router, SessionStore, SubagentHost,
 };
 use conway_core::provenance::{ContextReport, Provenance};
 use conway_core::routing::RouteRequest;
@@ -548,6 +548,7 @@ impl AgentLoop {
         mut tools: Vec<ToolSpec>,
         mut report: ContextReport,
         headroom: u32,
+        artifacts: &ArtifactWriteHandle,
     ) -> Result<(AttemptOutcome, ContextReport), RuntimeError> {
         let mut overflow_attempts: u8 = 0;
 
@@ -640,6 +641,7 @@ impl AgentLoop {
                 turn,
                 model: Some(model.clone()),
                 estimated_tokens: est_tokens,
+                artifacts: artifacts.clone(),
             };
             let overflow = OverflowInfo {
                 max_context_tokens,
@@ -712,6 +714,18 @@ impl AgentLoop {
         // filesystem `canonicalize` call this performs happens once per
         // agent's whole run, never once per batch or per tool call.
         let root = crate::permission::AgentRoot::reconstruct(&self.root);
+        // Board item 01KZ84437RMKHP5DJX7RMHH7JY: the write-location
+        // capability a registered `ContextHook` sees on `ContextHookCtx::
+        // artifacts`, built from the SAME `chdir`/`root` pair immediately
+        // above -- never a second, independent reconstruction (P-14). See
+        // `crate::artifact_store`'s own doc.
+        let artifacts = ArtifactWriteHandle::new(
+            Arc::new(crate::artifact_store::AgentArtifactWriter::new(
+                chdir.clone(),
+                root.clone(),
+            )),
+            self.agent_id,
+        );
 
         loop {
             try_rt!(state, self.drain_inbox().await);
@@ -838,6 +852,7 @@ impl AgentLoop {
                     turn: state.turn,
                     model: self.spec.pin.clone(),
                     estimated_tokens: report.total_tokens_est,
+                    artifacts: artifacts.clone(),
                 };
                 let payload = ContextPayload {
                     segments,
@@ -879,8 +894,14 @@ impl AgentLoop {
             // (see that method's own doc) -- the only thing this call site
             // still owns is racing it against the turn's deadline, exactly
             // as the pre-WI-126 `attempt_fut` race did.
-            let route_attempt_fut =
-                self.route_and_attempt(state.turn, segments, announced_tools, report, headroom);
+            let route_attempt_fut = self.route_and_attempt(
+                state.turn,
+                segments,
+                announced_tools,
+                report,
+                headroom,
+                &artifacts,
+            );
             let route_attempt_result = match self.spec.budget.deadline {
                 Some(deadline) => {
                     let remaining = (deadline - Utc::now()).to_std().unwrap_or(Duration::ZERO);

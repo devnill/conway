@@ -148,6 +148,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `crates/conway-backends/tests/admission.rs`,
   `crates/conway-routing/src/failure.rs`)
 
+- **A context hook can now write a file without guessing where it is
+  allowed to: `ContextHookCtx` carries a confinement-checked
+  `ArtifactWriteHandle`** (board item 01KZ84437RMKHP5DJX7RMHH7JY).
+  **BREAKING:** `ContextHookCtx` gained a required `artifacts` field, so
+  any code constructing one by hand must supply it.
+  `ContextHook::before_request` already receives the assembled
+  `ContextPayload` before it reaches the model and may edit a
+  `Provenance::ToolResult` segment in place — which means a spill-to-file
+  plugin (write oversized tool output to a file, leave a short preview and
+  a pointer in context) was already writable in-process with no core
+  change. What was missing was the one thing that makes writing a file
+  safe: the hook got neither a cwd nor a confinement root, while every
+  tool reaches the filesystem through `ToolCtx.cwd`/`chdir` bounded by the
+  agent's `AgentRoot`. A hook author's only options were to reach for
+  ambient filesystem access and guess a path, to take a path out-of-band
+  at construction time (fixed at install, unable to follow an agent that
+  `chdir`s or a subagent with a narrower root), or to write somewhere the
+  agent provably cannot read back.
+
+  The handle is **write-capable, not a value to resolve against**:
+  `ArtifactWriteHandle::write(name, bytes)` returns the resolved path or a
+  typed `ArtifactWriteError`, so the accessor is the sole place a
+  candidate path is resolved and checked and no `join`/`write` surface is
+  left for a hook to get subtly wrong. Handing over the raw `AgentRoot`
+  was rejected on two independent grounds: `AgentRoot` lives in
+  `conway-runtime`, which depends on `conway-core` and not the reverse, so
+  `ContextHookCtx` cannot name it without inverting crate layering; and it
+  would make every hook author re-implement resolve-then-contains, which
+  is the P-14 failure this tree has already suffered twice by losing the
+  NUL-byte guard from inlined copies. A `CwdHandle`-shaped object was
+  rejected in kind rather than degree — `CwdHandle::set` performs no
+  containment check by design, because under GP-13 cwd was never the
+  boundary.
+
+  The single implementation reuses `resolve_like_the_tool_will` and the
+  same three-way `Unconfined`/`Broken`/`Confined` match
+  `PermissionBroker::check_root` already applies to every tool's own path
+  arguments — no second resolution rule (P-14). The guard is shown to be
+  load-bearing (P-15): removed, three tests fail and a `..` traversal
+  actually reaches disk outside the root; restored, all nine pass. Exposed
+  through `conway::plugin` so a third-party hook gets the identical
+  surface a built-in does (GP-03).
+  (`crates/conway-core/src/ports/artifact.rs`,
+  `crates/conway-core/src/error.rs`, `crates/conway-core/src/ports/mod.rs`,
+  `crates/conway-core/src/ports/plugin.rs`,
+  `crates/conway-runtime/src/artifact_store.rs`,
+  `crates/conway-runtime/src/agent_loop.rs`,
+  `crates/conway-runtime/src/lib.rs`, `crates/conway/src/lib.rs`,
+  `crates/conway/tests/plugin_surface.rs`)
+
 ### Fixed
 
 - **A modal `/ask` against a session whose agent def declares a
