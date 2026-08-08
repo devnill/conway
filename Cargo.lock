@@ -531,7 +531,6 @@ dependencies = [
  "blake3",
  "chrono",
  "conway-core",
- "conway-routing",
  "conway-session",
  "futures",
  "jsonschema",

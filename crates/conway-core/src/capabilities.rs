@@ -13,6 +13,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::ids::{ModelId, RoleAlias};
+use crate::ports::Admission;
 use crate::routing::RoutingConfig;
 
 /// A backend/model's declared capabilities. Per-`(backend, model)`, not
@@ -247,10 +248,24 @@ impl RequiredCaps {
     }
 
     /// How far `total_required(est_tokens)` exceeds `caps.max_context_tokens`
-    /// (`0` if it does not exceed it). Saturating.
+    /// (`0` if it does not exceed it). Saturating. Delegates to
+    /// `Admission::shortfall_tokens` (P-14: the headroom arithmetic itself
+    /// lives in exactly one place, `conway_core::ports::check_admission`'s
+    /// `Admission`, not restated here).
     pub fn shortfall(&self, caps: &Capabilities, est_tokens: u32) -> u32 {
-        self.total_required(est_tokens)
-            .saturating_sub(caps.max_context_tokens)
+        self.admission(caps, est_tokens).shortfall_tokens()
+    }
+
+    /// Builds the `Admission` this requirement's headroom gate reduces to,
+    /// against `caps` for `est_tokens`. Private: `satisfied_by` and
+    /// `shortfall` are the only callers, and both only need `Admission`'s
+    /// derived numbers, never the value itself.
+    fn admission(&self, caps: &Capabilities, est_tokens: u32) -> Admission {
+        Admission {
+            est_tokens,
+            headroom_tokens: self.headroom_tokens,
+            max_context_tokens: caps.max_context_tokens,
+        }
     }
 
     /// Checks `caps` against every set requirement, given the current
@@ -273,13 +288,24 @@ impl RequiredCaps {
             }
         }
 
-        // Context: headroom-aware, the load-bearing check.
-        let total = self.total_required(est_tokens);
-        if total > caps.max_context_tokens {
-            let shortfall = self.shortfall(caps, est_tokens);
+        // Context: headroom-aware, the load-bearing check. The fit
+        // comparison itself is `Admission::fits`/`shortfall_tokens` (P-14:
+        // one headroom arithmetic in the workspace, `conway_core::ports::
+        // check_admission`) -- this method's own contribution is only its
+        // distinct message wording/ordering, which `capability.rs`
+        // (`conway-routing`)'s `satisfies` -- the router-facing sibling
+        // formulation of this same admission decision, pinned to agree with
+        // this one by `satisfies_agrees_with_core_on_accept_reject` -- keeps
+        // deliberately different (CLI-facing golden strings it cannot
+        // change; see that module's own doc).
+        let admission = self.admission(caps, est_tokens);
+        if !admission.fits() {
             missing.push(format!(
-                "context: needs {est_tokens} prompt + {} headroom = {total} tokens, model provides {} (short by {shortfall})",
-                self.headroom_tokens, caps.max_context_tokens
+                "context: needs {est_tokens} prompt + {} headroom = {} tokens, model provides {} (short by {})",
+                self.headroom_tokens,
+                admission.required_tokens(),
+                caps.max_context_tokens,
+                admission.shortfall_tokens()
             ));
         }
 

@@ -96,19 +96,25 @@
 //!
 //! ## The non-property: T-1 is NOT a backstop against estimator error
 //!
-//! Both admission gates -- the router's `satisfies`/`context_shortfall` and
-//! `AttemptEngine`'s own `caps.max_context_tokens >= required` check -- start
-//! from the identical `est_tokens` value the real `ContextBuilder` produced.
-//! Neither gate re-derives or cross-checks that number against anything; an
-//! under-count defeats both of them in exactly the same way, at exactly the
-//! same threshold. This is a live misreading risk given open board item
-//! `01KYTMJA0JHT5SAPYDGV251V17` (tool schemas counted once but sent twice, so
-//! the estimate crossing this seam is systematically low): T-1 backstops a
-//! disagreement between two *sources* of `Capabilities` for the same
-//! `est_tokens`, not a wrong `est_tokens` itself. A future reader should not
-//! conclude from this file (or from T-1's existence at all) that the
-//! estimator's under-count is caught here -- it is not, and nothing below
-//! exercises that failure mode.
+//! Historical note, ADJUSTED by board item 01KZFBZHTWDF11TH7G0H613ERE: this
+//! paragraph originally read that both admission gates -- the router's
+//! `satisfies` and `AttemptEngine`'s own pre-flight check -- started from the
+//! IDENTICAL `est_tokens` value the real `ContextBuilder` produced, so
+//! neither re-derived or cross-checked that number and an under-count
+//! defeated both identically. That is no longer how `AttemptEngine` gates:
+//! it now calls `Backend::admit`, which computes its OWN independent
+//! estimate from the actually-built `GenerateRequest` (each dialect's real
+//! wire body), never `ContextBuilder`'s `est_tokens`. The two gates are
+//! deliberately NOT required to agree (decision 01KZF13BAR473X5SXN8HN95T6B;
+//! `docs/routing.md`'s "Advisory vs. authoritative" section) -- this file's
+//! fixtures below still avoid pinning any test to a *specific* numeric
+//! estimate from either estimator (the property this note originally warned
+//! against relying on), which is exactly what keeps them valid under this
+//! decoupling: `t1_backstops_a_backend_that_shrinks_its_own_window_after_build`
+//! and `context_admission_seam.rs`'s own fixture use windows pinned far
+//! below (1) or far above (any real content's estimate under either
+//! estimator) rather than tuned to a predicted number, precisely so that
+//! which estimator produced the rejecting number is never load-bearing.
 //!
 //! ## The unlisted probe-observed-model overlay path (RESTRICT, DECIDED)
 //!

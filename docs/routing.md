@@ -252,6 +252,46 @@ happens on your behalf — this is terminal by design; shrink the turn's
 content, raise the role's headroom budget, or add a larger-window
 candidate to the chain.
 
+### Advisory vs. authoritative: two context checks, not one
+
+The `heuristic-chars4` estimate above is deliberately cheap — it runs
+before a request has even been assembled for a specific backend, as a
+first-pass filter over the router's declared `chain`. It is **advisory**:
+a candidate that fails it is skipped before conway ever contacts that
+provider, but nothing about the estimate is what actually decides
+whether a real request fits.
+
+The **authoritative** answer comes from the model adapter itself, the
+only party that actually knows how its own wire format counts tokens.
+Once a route has survived the router's advisory filter, `conway-runtime`
+builds that candidate's real request — its assembled segments, tools,
+cache hints, and sampling params, exactly as it will be sent — and asks
+the backend to admit it (`Backend::admit`). Each dialect estimates its
+*own* serialized wire body: an Anthropic Messages envelope and an
+OpenAI-compatible chat-completions body are different byte sequences for
+identical content, so the two adapters genuinely produce different
+numbers for the same prompt. `Backend::admit`'s refusal is a typed
+`ContextTooLarge`, carrying the same shape of numbers (input estimate,
+headroom, window, shortfall) as the router's own rejection above. A
+refusal skips only that one candidate — no network call is made, and it
+never trips a circuit breaker (a too-large prompt says nothing about the
+endpoint's health) — and the chain advances to the next candidate exactly
+as it does for any other request-incompatible failure.
+
+**The two checks are not required to agree, and a test asserting they do
+would be asserting the wrong thing.** The router's estimate is a rough
+heuristic over a *declared* window (`models.json`'s `max_context_tokens`);
+`Backend::admit`'s estimate is a real count over the *actual* bytes a
+specific dialect will send. A candidate the router's advisory filter
+waves through can still be refused by `admit` (a stale or optimistic
+capability entry, or simply a more accurate estimate) — this is by
+design, not a bug to reconcile. When every candidate in a chain fails its
+own `admit` this way, `conway-runtime` aggregates those refusals into the
+same `RoutingError::ContextTooLarge` shape, naming the largest window
+among them, so the two paths look identical from the outside even though
+they are answering genuinely different questions at genuinely different
+times.
+
 ## Health and failover
 
 Two independent circuit breakers exist per backend (its `EndpointId`,

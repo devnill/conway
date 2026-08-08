@@ -3,23 +3,57 @@
 //!
 //! Responsibilities: choose streaming vs non-streaming per the declared
 //! tool-calling capability, sequence the fallback chain, enforce the
-//! headroom-aware T-1 context gate as a backstop covering the pin path, and
-//! record health observations with the T-2 classification.
+//! per-candidate `Backend::admit` context gate, and record health
+//! observations with the T-2 classification.
+//!
+//! **T-1, AUTHORITATIVE (board item 01KZFBZHTWDF11TH7G0H613ERE):** each
+//! route's `GenerateRequest` is built first -- segments already carrying
+//! that specific candidate's cache hints, tools, prefix key, and resolved
+//! sampling params -- then handed to `backend.admit(&gen_req, req.headroom)`.
+//! `admit` is the backend's OWN dialect-aware estimate of its OWN wire body
+//! (Anthropic's Messages envelope vs. an OpenAI-compatible chat-completions
+//! body genuinely serialize to different byte counts for identical content),
+//! never a pre-flight restatement of the arithmetic. A candidate `admit`
+//! refuses (`Err(BackendError::ContextTooLarge)`) is skipped before any
+//! network call and never feeds a health `Observation` (T-2: a too-large
+//! prompt is a request problem, not an endpoint-health signal). When EVERY
+//! candidate refuses this way, the refusals are aggregated into
+//! `RuntimeError::Routing(RoutingError::ContextTooLarge)`, naming the
+//! largest window among them and sourcing every number from the refusing
+//! `BackendError`s directly -- never recomputed locally. This replaces the
+//! former pre-flight partition by `conway-routing`'s own restatement of the
+//! arithmetic over the router's declared window (now retired) -- see
+//! `docs/routing.md`'s "Advisory vs. authoritative" section for the split
+//! this item drew.
+//!
+//! **Build-order note:** `gen_req` is built once per candidate, immediately
+//! after that candidate's own cache-hint pass (`attach_route_cache_hints`)
+//! -- the SAME relative order as before this item (cache hints were always
+//! resolved before `build_request`; only WHEN `build_request` ran relative
+//! to the retry loop changed). `gen_req`'s fields (segments/tools/
+//! prefix_key/params/model) do not depend on `Strategy`, so a single build
+//! reused (cloned) across the ToolParse-retry loop's Stream -> Generate
+//! switch is behaviourally identical to the old per-attempt rebuild --
+//! `toolparse_triggers_one_retry_then_advances_chain` (`attempt_fallback.rs`)
+//! pins byte-identical retry requests. Cache-hint semantics are therefore
+//! unchanged: per-candidate, computed once, never per-attempt.
 //!
 //! T-1 error-shape reconciliation (decision 01KYXS3PTYVATWR58JR95AZJYN,
 //! closing board item 01KYXNAHN64YMADZPQDQC0CPTJ): the router (conway-routing
-//! `DeclarativeRouter`, WI-034) now also constructs
-//! `RoutingError::ContextTooLarge` -- but only when every candidate it
-//! rejected failed *solely* on headroom (see that crate's `router.rs` module
-//! doc); a mixed rejection, or one this engine reaches at all, still surfaces
-//! as `NoCandidate` from the router side. This engine's own T-1 check below
-//! is a second, independent construction site for `ContextTooLarge` -- its
-//! per-route backstop gate, which fires only when every route *this engine*
-//! was handed fails the `est_tokens + headroom <= max_context_tokens` check,
-//! independent of whatever filtering the caller already did upstream (this
-//! matters for the pin path, which can bypass the router's chain filtering
-//! entirely, and as a backstop against a router capability index that has
-//! drifted from what the backend actually reports).
+//! `DeclarativeRouter`, WI-034) still constructs `RoutingError::
+//! ContextTooLarge` from its own ADVISORY declared-window check
+//! (`conway_core::capabilities::RequiredCaps`-based `satisfies`, evaluated
+//! against the router's own `heuristic-chars4` estimate) when every
+//! candidate it considered was rejected solely on that check (see that
+//! crate's `router.rs` module doc); this engine's `admit`-based gate above
+//! is the AUTHORITATIVE second construction site, reachable whenever the
+//! router admitted a candidate whose real backend still refuses (a stale or
+//! incorrect capability entry, or simply a different, more accurate
+//! estimate) -- this matters especially for the pin path, which can bypass
+//! the router's chain filtering entirely. The two are deliberately NOT
+//! required to agree (decision 01KZF13BAR473X5SXN8HN95T6B): the router's
+//! estimate over a declared window and `admit`'s measure of the actual
+//! serialized wire body are different questions asked at different times.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -53,6 +87,11 @@ pub struct AttemptRequest<'a> {
     pub segments: &'a [PromptSegment],
     pub tools: &'a [ToolSpec],
     pub prefix_key: Option<PrefixKey>,
+    /// The caller's own (advisory) estimate -- carried for callers that
+    /// still want it (e.g. `agent_loop.rs`'s `ContextHookCtx`), but no
+    /// longer read by `execute` itself (board item 01KZFBZHTWDF11TH7G0H613ERE):
+    /// each candidate's own `Backend::admit` produces its own authoritative
+    /// estimate from the actually-built `GenerateRequest`, not this field.
     pub est_tokens: u32,
     /// Reserved output/reasoning budget, resolved by the caller (WI-081).
     /// The engine never reads config; it only performs the arithmetic.
@@ -76,8 +115,8 @@ pub struct AttemptOutcome {
     /// non-streaming `ToolParse` retry.
     pub attempts: u8,
     pub latency: Duration,
-    /// Candidates the headroom gate excluded before any backend call, each
-    /// with the `CapabilitySkip` reason it was skipped for.
+    /// Candidates `Backend::admit` refused before any network call, each
+    /// with a `CapabilitySkip` reason carrying that refusal's own message.
     pub skipped: Vec<(ModelRef, RoutingReason)>,
 }
 
@@ -198,78 +237,24 @@ impl AttemptEngine {
     }
 
     pub async fn execute(&self, req: AttemptRequest<'_>) -> Result<AttemptOutcome, RuntimeError> {
-        // T-1 pre-flight (backstop gate): partition candidates by whether
-        // their declared window covers the prompt plus reserved headroom.
-        // The admissibility predicate is the SHARED one --
-        // `context_shortfall(...).is_none()` (Min-1 / P-14, board item
-        // 01KZ00VV3F3EBZ9WQSB292TBJZ) -- not a local restatement of the
-        // arithmetic, so a future edit to the gate (a `>=` vs `>`, a safety
-        // margin) changes this backstop in lockstep with the router's gate.
-        // Inclusive bound: `est + headroom == max_context_tokens` is
-        // admissible (context_shortfall returns `None` there).
-        let mut admissible: Vec<Route> = Vec::new();
-        let mut skipped: Vec<(ModelRef, RoutingReason)> = Vec::new();
-        for route in req.routes {
-            let caps = self.backend_for(&route.backend).capabilities(&route.model);
-            if conway_routing::context_shortfall(&caps, req.est_tokens, req.headroom).is_none() {
-                admissible.push(route);
-            } else {
-                let model_ref = ModelRef {
-                    backend: route.backend.clone(),
-                    model: route.model.clone(),
-                };
-                skipped.push((
-                    model_ref.clone(),
-                    RoutingReason::CapabilitySkip {
-                        skipped: model_ref,
-                        missing: vec!["min_context".to_string()],
-                    },
-                ));
-            }
-        }
-
-        if admissible.is_empty() {
-            let (model, caps) = skipped
-                .iter()
-                .map(|(model_ref, _)| {
-                    (
-                        model_ref.clone(),
-                        self.backend_for(&model_ref.backend).capabilities(&model_ref.model),
-                    )
-                })
-                .max_by_key(|(_, caps)| caps.max_context_tokens)
-                .expect("T-1 gate: req.routes is non-empty whenever admissible is empty");
-            // The error payload's arithmetic is sourced from the SAME shared
-            // gate (Min-1 / P-14): `shortfall` is exactly what
-            // `context_shortfall` computes, and `required = window +
-            // shortfall` (== est + headroom) is derived from it rather than
-            // restated. `expect` is an internal invariant, not user input:
-            // `admissible` is empty only because every route shortfell.
-            let shortfall = conway_routing::context_shortfall(&caps, req.est_tokens, req.headroom)
-                .expect("T-1 gate: every skipped route shortfalls against its window");
-            return Err(RuntimeError::Routing(RoutingError::ContextTooLarge {
-                role: req.role,
-                model,
-                est_tokens: req.est_tokens,
-                headroom_tokens: req.headroom,
-                required_tokens: caps.max_context_tokens.saturating_add(shortfall),
-                max_context_tokens: caps.max_context_tokens,
-                shortfall_tokens: shortfall,
-            }));
-        }
-
         let has_tools = !req.tools.is_empty();
         let mut attempt: u8 = 0;
         let mut considered: Vec<(ModelRef, String)> = Vec::new();
+        let mut skipped: Vec<(ModelRef, RoutingReason)> = Vec::new();
+        // The raw refusals `Backend::admit` produced, kept alongside
+        // `skipped` (whose `missing` is already a rendered `String`) so the
+        // all-refused aggregate below can source its numbers directly from
+        // the `BackendError`s rather than recomputing anything.
+        let mut admission_refusals: Vec<(ModelRef, BackendError)> = Vec::new();
+        let mut any_admitted = false;
 
-        for route in &admissible {
+        for route in req.routes {
             let backend = self.backend_for(&route.backend);
             let caps = backend.capabilities(&route.model);
             let model_ref = ModelRef {
                 backend: route.backend.clone(),
                 model: route.model.clone(),
             };
-            let endpoint = endpoint_of(&route.backend);
 
             // Cache-hint post-pass (WI: prompt caching), keyed on THIS
             // route's resolved `caps.cache` — not `ContextInput.cache_mode`,
@@ -280,10 +265,45 @@ impl AttemptEngine {
             // that crosses dialects (e.g. Anthropic -> a local
             // `ImplicitPrefix` model) gets each candidate's OWN correct
             // treatment rather than the first route's. See
-            // `attach_route_cache_hints`'s own doc.
+            // `attach_route_cache_hints`'s own doc. UNCHANGED relative
+            // order vs. before this item: cache hints are still resolved
+            // before the request is built, and still once per candidate.
             let mut route_segments = req.segments.to_vec();
             attach_route_cache_hints(&mut route_segments, &route.model, &caps, req.cache_ttl);
 
+            // Built once per candidate (see this fn's module-doc "build-order
+            // note"): every field is independent of `Strategy`, so the same
+            // `gen_req` -- cloned, never rebuilt -- serves every attempt this
+            // route makes, including the ToolParse-retry's Stream -> Generate
+            // switch below.
+            let gen_req = self.build_request(
+                &route_segments,
+                req.tools,
+                req.prefix_key.clone(),
+                req.max_tokens_override,
+                req.headroom,
+                &route,
+                model_ref.model.clone(),
+            );
+
+            // T-1, AUTHORITATIVE (see module doc): the backend's own
+            // `admit`, over the request actually built for it. A refusal
+            // skips this ONE candidate -- never a backend call, never a
+            // health `Observation` -- and the chain advances.
+            if let Err(err) = backend.admit(&gen_req, req.headroom) {
+                skipped.push((
+                    model_ref.clone(),
+                    RoutingReason::CapabilitySkip {
+                        skipped: model_ref.clone(),
+                        missing: vec![err.to_string()],
+                    },
+                ));
+                admission_refusals.push((model_ref, err));
+                continue;
+            }
+            any_admitted = true;
+
+            let endpoint = endpoint_of(&route.backend);
             let mut strategy = strategy_for(&caps, has_tools);
             let mut toolparse_retried = false;
 
@@ -300,27 +320,24 @@ impl AttemptEngine {
                 );
                 attempt += 1;
 
-                let gen_req = self.build_request(
-                    &route_segments,
-                    req.tools,
-                    req.prefix_key.clone(),
-                    req.max_tokens_override,
-                    req.headroom,
-                    route,
-                    model_ref.model.clone(),
-                );
                 let start = Instant::now();
                 let result = match strategy {
                     Strategy::Stream => {
-                        self.run_stream(req.session, req.agent_id, &*backend, gen_req, &req.cancel)
-                            .await
+                        self.run_stream(
+                            req.session,
+                            req.agent_id,
+                            &*backend,
+                            gen_req.clone(),
+                            &req.cancel,
+                        )
+                        .await
                     }
                     Strategy::Generate => {
                         self.run_generate(
                             req.session,
                             req.agent_id,
                             &*backend,
-                            gen_req,
+                            gen_req.clone(),
                             &req.cancel,
                         )
                         .await
@@ -396,6 +413,64 @@ impl AttemptEngine {
                     },
                 }
             }
+        }
+
+        if !any_admitted {
+            // Every candidate refused on size (see module doc): aggregate
+            // into the WHOLE request's `ContextTooLarge`, naming the
+            // largest window among the refusals -- the best case that
+            // still didn't fit, mirroring the router's own T-1 aggregate
+            // (`router.rs`'s `resolve`). Every number is sourced from the
+            // refusing `BackendError`s directly, never recomputed. Never
+            // records a health `Observation` (T-2: a too-large prompt is a
+            // request problem, not an endpoint-health signal) -- this
+            // branch makes no call to `self.health.record` anywhere above.
+            let worst = admission_refusals
+                .into_iter()
+                .max_by_key(|(_, err)| match err {
+                    BackendError::ContextTooLarge {
+                        max_context_tokens,
+                        ..
+                    } => *max_context_tokens,
+                    _ => 0,
+                });
+            let Some((model, err)) = worst else {
+                // `req.routes` was itself empty -- unreachable in production
+                // (`Router::resolve` never returns an empty `Ok(routes)`;
+                // `config::validate` rejects an empty chain), but a direct
+                // `AttemptRequest` construction (e.g. a test, or a future
+                // caller) could still hit it. `NoCandidate` with nothing
+                // considered describes that precisely.
+                return Err(RuntimeError::Routing(RoutingError::NoCandidate {
+                    role: req.role,
+                    considered: Vec::new(),
+                }));
+            };
+            let BackendError::ContextTooLarge {
+                est_tokens,
+                headroom_tokens,
+                required_tokens,
+                max_context_tokens,
+                shortfall_tokens,
+                ..
+            } = err
+            else {
+                // `Backend::admit`'s documented contract is `Ok` or
+                // `Err(BackendError::ContextTooLarge)` only -- a
+                // non-conformant implementation returning anything else is
+                // surfaced as the backend error it actually produced rather
+                // than fabricating T-1 numbers it never gave us.
+                return Err(RuntimeError::Backend(err));
+            };
+            return Err(RuntimeError::Routing(RoutingError::ContextTooLarge {
+                role: req.role,
+                model,
+                est_tokens,
+                headroom_tokens,
+                required_tokens,
+                max_context_tokens,
+                shortfall_tokens,
+            }));
         }
 
         Err(RuntimeError::Routing(RoutingError::NoCandidate {

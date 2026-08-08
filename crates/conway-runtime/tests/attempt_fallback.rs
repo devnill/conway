@@ -19,7 +19,8 @@ use conway_core::ids::{
     AgentId, BackendId, EndpointId, ModelId, ModelRef, RoleAlias, SessionId, ToolName,
 };
 use conway_core::ports::{
-    Backend, BoxStream, GenerateRequest, GenerateResponse, HealthRegistry, StreamChunk,
+    check_admission, Admission, Backend, BoxStream, GenerateRequest, GenerateResponse,
+    HealthRegistry, StreamChunk,
 };
 use conway_core::provenance::Provenance;
 use conway_core::routing::{BreakerKind, BreakerState, Route, RoutingReason};
@@ -55,15 +56,25 @@ enum Method {
 struct RecordingBackend {
     id: BackendId,
     caps: Capabilities,
+    /// Feeds this backend's own `admit` override (see the `Backend` impl
+    /// below) -- board item 01KZFBZHTWDF11TH7G0H613ERE: `AttemptEngine`
+    /// now gates admission through `Backend::admit` over the actually-built
+    /// `GenerateRequest`, not `AttemptRequest.est_tokens`, so a test
+    /// exercising the T-1 gate needs a way to control the ESTIMATE a
+    /// candidate reports, independent of this file's tiny real fixture
+    /// segments (`a_segment()`'s "hi" would otherwise estimate a token
+    /// count of a handful, never large enough to exercise rejection).
+    est_tokens: u32,
     script: Mutex<VecDeque<Turn>>,
     calls: Mutex<Vec<(Method, GenerateRequest)>>,
 }
 
 impl RecordingBackend {
-    fn new(id: &str, caps: Capabilities, script: Vec<Turn>) -> Self {
+    fn new(id: &str, caps: Capabilities, est_tokens: u32, script: Vec<Turn>) -> Self {
         Self {
             id: BackendId::new(id),
             caps,
+            est_tokens,
             script: Mutex::new(script.into()),
             calls: Mutex::new(Vec::new()),
         }
@@ -129,6 +140,20 @@ impl Backend for RecordingBackend {
 
     fn capabilities(&self, _model: &ModelId) -> Capabilities {
         self.caps.clone()
+    }
+
+    /// Overrides the trait default so tests control the estimate directly
+    /// (see the `est_tokens` field's own doc) rather than the default
+    /// dialect-neutral estimator's real (tiny) count of this file's fixture
+    /// segments. Still calls the ONE shared arithmetic, `check_admission`
+    /// (P-14) -- only the estimate is test-controlled, not the comparison.
+    fn admit(&self, req: &GenerateRequest, headroom_tokens: u32) -> Result<Admission, BackendError> {
+        check_admission(
+            req.model.clone(),
+            self.est_tokens,
+            headroom_tokens,
+            self.caps.max_context_tokens,
+        )
     }
 
     async fn generate(&self, req: GenerateRequest) -> Result<GenerateResponse, BackendError> {
@@ -335,6 +360,7 @@ async fn strategy_table_selects_stream_or_generate() {
         let backend = Arc::new(RecordingBackend::new(
             "b1",
             caps(row.tool_calling, 100_000),
+            100,
             vec![Turn::Respond(text_response("hi"))],
         ));
         let fx = fixture(backends_map(vec![(
@@ -371,6 +397,7 @@ async fn generate_path_emits_full_text_delta() {
     let backend = Arc::new(RecordingBackend::new(
         "b1",
         caps(ToolCallSupport::NonStreamingOnly, 100_000),
+        100,
         vec![Turn::Respond(text_response("hello world"))],
     ));
     let fx = fixture(backends_map(vec![("b1", backend as Arc<dyn Backend>)]));
@@ -398,6 +425,7 @@ async fn toolparse_triggers_one_retry_then_advances_chain() {
     let route_a_backend = Arc::new(RecordingBackend::new(
         "a",
         caps(ToolCallSupport::Streaming { validated: true }, 100_000),
+        100,
         vec![
             Turn::Fail(BackendError::ToolParse {
                 detail: "bad json".into(),
@@ -410,6 +438,7 @@ async fn toolparse_triggers_one_retry_then_advances_chain() {
     let route_b_backend = Arc::new(RecordingBackend::new(
         "b",
         caps(ToolCallSupport::Streaming { validated: true }, 100_000),
+        100,
         vec![Turn::Respond(text_response("ok"))],
     ));
     let fx = fixture(backends_map(vec![
@@ -465,11 +494,13 @@ async fn model_decision_before_every_call_with_monotonic_attempt() {
     let a = Arc::new(RecordingBackend::new(
         "a",
         caps(ToolCallSupport::Streaming { validated: true }, 100_000),
+        100,
         vec![Turn::Fail(BackendError::Transport { detail: "x".into() })],
     ));
     let b = Arc::new(RecordingBackend::new(
         "b",
         caps(ToolCallSupport::Streaming { validated: true }, 100_000),
+        100,
         vec![Turn::Respond(text_response("ok"))],
     ));
     let fx = fixture(backends_map(vec![
@@ -510,11 +541,13 @@ async fn health_records_transport_error_and_advances() {
     let a = Arc::new(RecordingBackend::new(
         "a",
         caps(ToolCallSupport::Streaming { validated: true }, 100_000),
+        100,
         vec![Turn::Fail(BackendError::Transport { detail: "x".into() })],
     ));
     let b = Arc::new(RecordingBackend::new(
         "b",
         caps(ToolCallSupport::Streaming { validated: true }, 100_000),
+        100,
         vec![Turn::Respond(text_response("ok"))],
     ));
     let fx = fixture(backends_map(vec![
@@ -551,6 +584,7 @@ async fn health_records_rate_limited() {
     let a = Arc::new(RecordingBackend::new(
         "a",
         caps(ToolCallSupport::Streaming { validated: true }, 100_000),
+        100,
         vec![Turn::Fail(BackendError::RateLimit {
             retry_after_secs: Some(7),
         })],
@@ -558,6 +592,7 @@ async fn health_records_rate_limited() {
     let b = Arc::new(RecordingBackend::new(
         "b",
         caps(ToolCallSupport::Streaming { validated: true }, 100_000),
+        100,
         vec![Turn::Respond(text_response("ok"))],
     ));
     let fx = fixture(backends_map(vec![
@@ -602,11 +637,13 @@ async fn t2_context_overflow_and_bad_request_advance_with_zero_health_records() 
         let a = Arc::new(RecordingBackend::new(
             "a",
             caps(ToolCallSupport::Streaming { validated: true }, 100_000),
+            100,
             vec![Turn::Fail(err)],
         ));
         let b = Arc::new(RecordingBackend::new(
             "b",
             caps(ToolCallSupport::Streaming { validated: true }, 100_000),
+            100,
             vec![Turn::Respond(text_response("ok"))],
         ));
         let fx = fixture(backends_map(vec![
@@ -640,6 +677,7 @@ async fn t2_auth_produces_zero_health_records_and_aborts_chain() {
     let a = Arc::new(RecordingBackend::new(
         "a",
         caps(ToolCallSupport::Streaming { validated: true }, 100_000),
+        100,
         vec![Turn::Fail(BackendError::Auth {
             detail: "no key".into(),
         })],
@@ -648,6 +686,7 @@ async fn t2_auth_produces_zero_health_records_and_aborts_chain() {
     let b = Arc::new(RecordingBackend::new(
         "b",
         caps(ToolCallSupport::Streaming { validated: true }, 100_000),
+        100,
         vec![Turn::Respond(text_response("ok"))],
     ));
     let fx = fixture(backends_map(vec![
@@ -685,6 +724,7 @@ async fn breaker_closed_to_open_emits_exactly_one_backend_degraded() {
     let a = Arc::new(RecordingBackend::new(
         "a",
         caps(ToolCallSupport::Streaming { validated: true }, 100_000),
+        100,
         vec![
             Turn::Fail(BackendError::Transport { detail: "1".into() }),
             Turn::Fail(BackendError::Transport { detail: "2".into() }),
@@ -771,6 +811,7 @@ async fn breaker_edge_triggers_exactly_one_backend_degraded() {
     let a = Arc::new(RecordingBackend::new(
         "a",
         caps(ToolCallSupport::Streaming { validated: true }, 100_000),
+        100,
         vec![
             Turn::Fail(BackendError::Transport { detail: "1".into() }),
             Turn::Fail(BackendError::Transport { detail: "2".into() }),
@@ -815,11 +856,13 @@ async fn t1_headroom_gate_rejects_when_all_candidates_too_small() {
     let a = Arc::new(RecordingBackend::new(
         "a",
         caps(ToolCallSupport::Streaming { validated: true }, 32_768),
+        30_000,
         vec![],
     ));
     let b = Arc::new(RecordingBackend::new(
         "b",
         caps(ToolCallSupport::Streaming { validated: true }, 32_000),
+        30_000,
         vec![],
     ));
     let fx = fixture(backends_map(vec![
@@ -860,6 +903,65 @@ async fn t1_headroom_gate_rejects_when_all_candidates_too_small() {
     }
     assert_eq!(a.stream_count(), 0, "no backend call on T-1 rejection");
     assert_eq!(b.stream_count(), 0, "no backend call on T-1 rejection");
+    assert!(
+        fx.health.observations().is_empty(),
+        "a too-large prompt must never feed a health Observation (T-2)"
+    );
+}
+
+/// The largest-window-among-refusals rule (acceptance criterion 7, board
+/// item 01KZFBZHTWDF11TH7G0H613ERE) picked by VALUE, not by chain position:
+/// the SECOND route (`b`, `fallback(1)`) has the larger window here, so a
+/// bug that reported the FIRST refusal instead of the LARGEST one would
+/// still pass a fixture where position 0 happens to have the larger window
+/// (as `t1_headroom_gate_rejects_when_all_candidates_too_small` above does)
+/// -- this fixture is shaped so only the correct rule passes.
+#[tokio::test]
+async fn t1_all_refused_reports_the_largest_window_even_when_it_is_not_first() {
+    let a = Arc::new(RecordingBackend::new(
+        "a",
+        caps(ToolCallSupport::Streaming { validated: true }, 20_000),
+        30_000,
+        vec![],
+    ));
+    let b = Arc::new(RecordingBackend::new(
+        "b",
+        caps(ToolCallSupport::Streaming { validated: true }, 32_768),
+        30_000,
+        vec![],
+    ));
+    let fx = fixture(backends_map(vec![
+        ("a", a.clone() as Arc<dyn Backend>),
+        ("b", b.clone() as Arc<dyn Backend>),
+    ]));
+    let segments = vec![a_segment()];
+    let tools: Vec<ToolSpec> = vec![];
+    let routes = vec![
+        route("a", "m1", primary("planner")),
+        route("b", "m1", fallback(1)),
+    ];
+    let req = base_request(routes, &segments, &tools, 30_000, 4_000);
+
+    let err = fx
+        .engine
+        .execute(req)
+        .await
+        .expect_err("both candidates too small");
+    match err {
+        RuntimeError::Routing(RoutingError::ContextTooLarge {
+            max_context_tokens,
+            model,
+            ..
+        }) => {
+            assert_eq!(
+                max_context_tokens, 32_768,
+                "must report b's larger window, not a's smaller one"
+            );
+            assert_eq!(model, model_ref("b", "m1"));
+        }
+        other => panic!("expected ContextTooLarge, got {other:?}"),
+    }
+    assert!(fx.health.observations().is_empty());
 }
 
 #[tokio::test]
@@ -868,6 +970,7 @@ async fn t1_boundary_inclusive_and_exclusive() {
     let a = Arc::new(RecordingBackend::new(
         "a",
         caps(ToolCallSupport::Streaming { validated: true }, 32_768),
+        28_768,
         vec![Turn::Respond(text_response("ok"))],
     ));
     let fx = fixture(backends_map(vec![("a", a as Arc<dyn Backend>)]));
@@ -884,6 +987,7 @@ async fn t1_boundary_inclusive_and_exclusive() {
     let a2 = Arc::new(RecordingBackend::new(
         "a",
         caps(ToolCallSupport::Streaming { validated: true }, 32_768),
+        28_769,
         vec![],
     ));
     let fx2 = fixture(backends_map(vec![("a", a2 as Arc<dyn Backend>)]));
@@ -905,11 +1009,13 @@ async fn t1_mixed_candidates_skips_small_attempts_large() {
     let small = Arc::new(RecordingBackend::new(
         "small",
         caps(ToolCallSupport::Streaming { validated: true }, 32_768),
+        30_000,
         vec![],
     ));
     let large = Arc::new(RecordingBackend::new(
         "large",
         caps(ToolCallSupport::Streaming { validated: true }, 200_000),
+        30_000,
         vec![Turn::Respond(text_response("ok"))],
     ));
     let fx = fixture(backends_map(vec![
@@ -943,7 +1049,18 @@ async fn t1_mixed_candidates_skips_small_attempts_large() {
     assert_eq!(*skipped_model, model_ref("small", "m1"));
     match reason {
         RoutingReason::CapabilitySkip { missing, .. } => {
-            assert_eq!(missing, &vec!["min_context".to_string()]);
+            // The `Backend::admit` refusal's own `Display`, board item
+            // 01KZFBZHTWDF11TH7G0H613ERE (previously a hardcoded
+            // "min_context" placeholder from the pre-flight partition this
+            // item retired).
+            assert_eq!(missing.len(), 1);
+            assert!(
+                missing[0].starts_with("context too large:"),
+                "got: {missing:?}"
+            );
+            for needle in ["30000", "4000", "34000", "32768", "1232"] {
+                assert!(missing[0].contains(needle), "missing {needle} in {missing:?}");
+            }
         }
         other => panic!("expected CapabilitySkip, got {other:?}"),
     }
@@ -969,6 +1086,7 @@ async fn t1_error_display_names_all_five_values() {
     let a = Arc::new(RecordingBackend::new(
         "a",
         caps(ToolCallSupport::Streaming { validated: true }, 32_768),
+        30_000,
         vec![],
     ));
     let fx = fixture(backends_map(vec![("a", a as Arc<dyn Backend>)]));
@@ -997,6 +1115,7 @@ async fn max_tokens_defaults_to_headroom_and_override_passes_through_unclamped()
     let a = Arc::new(RecordingBackend::new(
         "a",
         caps(ToolCallSupport::Streaming { validated: true }, 100_000),
+        100,
         vec![Turn::Respond(text_response("ok"))],
     ));
     let fx = fixture(backends_map(vec![("a", a.clone() as Arc<dyn Backend>)]));
@@ -1011,6 +1130,7 @@ async fn max_tokens_defaults_to_headroom_and_override_passes_through_unclamped()
     let a2 = Arc::new(RecordingBackend::new(
         "a",
         caps(ToolCallSupport::Streaming { validated: true }, 100_000),
+        100,
         vec![Turn::Respond(text_response("ok"))],
     ));
     let fx2 = fixture(backends_map(vec![("a", a2.clone() as Arc<dyn Backend>)]));
@@ -1035,6 +1155,7 @@ async fn exhausting_all_routes_returns_no_candidate_enumerating_failures() {
     let a = Arc::new(RecordingBackend::new(
         "a",
         caps(ToolCallSupport::Streaming { validated: true }, 100_000),
+        100,
         vec![Turn::Fail(BackendError::Transport {
             detail: "a down".into(),
         })],
@@ -1042,6 +1163,7 @@ async fn exhausting_all_routes_returns_no_candidate_enumerating_failures() {
     let b = Arc::new(RecordingBackend::new(
         "b",
         caps(ToolCallSupport::Streaming { validated: true }, 100_000),
+        100,
         vec![Turn::Fail(BackendError::ServerError {
             status: 503,
             detail: "b down".into(),
