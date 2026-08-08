@@ -313,6 +313,38 @@ to a role that already exists in the merged config; an unknown alias is
 ignored, not an error). There's no `--headroom-tokens` CLI flag — only
 `settings.json` and these two env vars reach it.
 
+### A headroom that already exceeds a model's window
+
+Config loading catches one shape of this mistake before you ever hit
+`ContextTooLarge`: a role's effective headroom (per-role override, or the
+global default) that is `>=` the *smallest* context window reachable
+through its own chain. That role's requests would be rejected by the
+context-window gate before a single token of real content is ever
+counted — so this is surfaced as a startup warning, not left for you to
+discover mid-session:
+
+```
+conway: warning: headroom for role 'coder' is 200000 tokens, which is not
+less than the smallest context window in its chain
+(anthropic/claude-haiku-4-5 = 32768 tokens); every request routed to that
+model will be rejected by the context-window gate
+```
+
+The CLI prints every such warning to stderr at startup, for every
+subcommand (`sessions`, `routes`, one-shot `-p`) as well as the
+interactive TUI's launch. The TUI additionally puts each warning in the
+transcript (as a non-fatal error entry) so it stays visible once the
+alternate screen takes over and the startup stderr line has scrolled out
+of view. Embedding conway as a library gets the same data through
+`Conway::warnings()` — nothing renders it on your behalf, so an embedder
+is responsible for surfacing it (or deliberately choosing not to).
+
+This warning does not clamp or reject the config — the value you set
+survives unmodified, and the role still routes exactly as configured.
+Fix it by raising the model's declared `max_context_tokens` in
+`models.json` (if you under-declared it), lowering the role's
+`headroom_tokens`, or adding a larger-window candidate to the chain.
+
 ### Estimated, not exact
 
 `est_tokens` is a heuristic, never a real tokenizer count — conway's

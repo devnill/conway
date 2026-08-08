@@ -148,6 +148,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `crates/conway-backends/tests/admission.rs`,
   `crates/conway-routing/src/failure.rs`)
 
+### Fixed
+
+- **Configuration warnings reach you instead of being computed and
+  discarded** (board item 01KZ803DJW8Y1H4FXTM8D3PYMY). `Conway::warnings()`
+  had zero call sites anywhere in the workspace: `config::merge::validate`
+  correctly detected a role whose configured headroom meets or exceeds the
+  smallest context window reachable through its chain, stored the warning on
+  the handle, and nothing ever read it. Every request routed to that model
+  would be refused by the context-window gate, and conway said nothing about
+  why. Warnings now print to stderr at startup for every non-interactive
+  target (`sessions`, `routes`, one-shot `-p`), and enter the transcript as a
+  non-fatal entry in the TUI — a stray stderr write would otherwise land on
+  top of the drawn UI once the terminal is in raw mode. The embedder path was
+  already covered by the accessor itself; what was missing was the two
+  surfaces that own a human's attention (GP-05/C-03: no capability in only
+  one mode). `WarningCode` has exactly one variant and exactly one producer,
+  so nothing was declared-but-unconstructed alongside it.
+  (`crates/conway-cli/src/main.rs`, `crates/conway-cli/src/tui/app.rs`,
+  `crates/conway-cli/tests/config_warnings.rs`, `docs/routing.md`)
+
 ### Changed
 
 - **`Backend::admit` becomes the authoritative context-fit check;
