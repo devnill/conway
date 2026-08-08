@@ -20,25 +20,31 @@
 //! context compaction, memory, skills, and MCP support are each a
 //! separate, later board item (`.design/philosophy-debt.md` entry 2's own
 //! sequencing note) and each adds its own entry here when it lands --
-//! plausibly through `ConwayBuilder::with_backend`/`with_router` too, not
+//! through `ConwayBuilder::with_backend`/`with_router_factory` too, not
 //! only `with_plugin`, since nothing about `[plugins].install` itself is
-//! tool-specific.
+//! tool-specific -- [`router_bundle`] below is exactly that second channel,
+//! already wired even though nothing populates it yet.
 //!
-//! Those two are not equally cheap, and an earlier draft of this comment
-//! said they were. Resolution below matches an id against each candidate's
-//! own `PluginManifest::id`. `Backend` carries an `id()` of its own
-//! (`conway_core::ports::backend`), so a backend arm is close to
-//! mechanical. `Router` (`conway_core::ports::routing`) has NO id-bearing
-//! method at all, so a `[plugins].install` entry has nothing to match a
-//! router candidate against: board item 01KZDC5BJWSWZZJQ7HHS11S97H must
-//! give one an identity before it can be installed this way. That is more
-//! than a second branch, and it is worth knowing before that item is
-//! scoped.
+//! Resolution below matches an id against each candidate's own identity.
+//! `Backend` carries an `id()` of its own (`conway_core::ports::backend`),
+//! so a backend arm is close to mechanical. `Router`
+//! (`conway_core::ports::routing`) has NO id-bearing method at all --
+//! board item 01KZFC2MD1FVNA674YJ9A19T8E answered this, settling that a
+//! router's identity lives on a separate `RouterFactory` trait instead
+//! (`RouterFactory::id`), never on `Router` itself: router SELECTION
+//! (naming a kind) must precede router CONSTRUCTION, which needs backends
+//! and a capability picture that do not exist until much later in
+//! startup, well after `[plugins].install` is read. [`router_bundle`]
+//! below is this binary's linked `RouterFactory` list, resolved against
+//! `[plugins].install` in the SAME pass [`install`] already runs for
+//! [`bundle`] -- an id may name either a plugin or a router factory, never
+//! both, and naming more than one router factory is rejected (a build has
+//! exactly one router).
 
 use std::sync::Arc;
 
 use conway::plugin::Plugin;
-use conway::{ConwayBuilder, ConwayError};
+use conway::{ConwayBuilder, ConwayError, RouterFactory};
 
 /// Every first-party plugin this binary links, in no particular order.
 /// `Vec<Arc<dyn Plugin>>` rather than a `HashMap` keyed by id: the bundle
@@ -50,11 +56,29 @@ fn bundle() -> Vec<Arc<dyn Plugin>> {
     vec![Arc::new(conway_plugin_skeleton::SkeletonPlugin)]
 }
 
+/// Every first-party `RouterFactory` this binary links, in no particular
+/// order -- the router-side sibling of [`bundle`], resolved against the
+/// SAME `[plugins].install` list, in the same pass ([`install`]).
+///
+/// **Empty today, honestly** (GP-14): no first-party router crate has
+/// landed yet (dynamic routing is a separate, later board item --
+/// `.design/philosophy-debt.md` entry 2's own sequencing note, echoed in
+/// this module's own top-of-file note). An empty `Vec` here means every
+/// `[plugins].install` id still resolves against [`bundle`] alone, exactly
+/// as it did before this function existed -- this function existing at
+/// all does not by itself claim any router is installable; only a real
+/// entry in it would.
+fn router_bundle() -> Vec<Arc<dyn RouterFactory>> {
+    vec![]
+}
+
 /// Applies `wanted` (`ConwayBuilder::config().plugins.install`, read by the
-/// caller before this is called) against [`bundle`]: calls
-/// `ConwayBuilder::with_plugin` for every recognized id, in the order
-/// `wanted` names them, and returns a descriptive error for the first one
-/// this binary does not recognize.
+/// caller before this is called) against [`bundle`] and [`router_bundle`]
+/// together, in one pass: for each id, in the order `wanted` names them,
+/// calls `ConwayBuilder::with_plugin` for a recognized plugin id or
+/// `ConwayBuilder::with_router_factory` for a recognized router-factory
+/// id, and returns a descriptive error for the first id this binary
+/// recognizes as neither.
 ///
 /// GP-14: an id in `[plugins].install` that silently did nothing would be
 /// exactly the rung-1 lie CONTRIBUTING's declaration rule exists to
@@ -63,7 +87,11 @@ fn bundle() -> Vec<Arc<dyn Plugin>> {
 /// `tools.builtin_plugins` (that check lives in the facade because the
 /// facade owns that candidate set; this one lives here because only this
 /// binary knows this one -- see `PluginsConfig`'s own doc for why the
-/// facade cannot perform it itself).
+/// facade cannot perform it itself). An id resolving to MORE THAN ONE
+/// router factory is also a hard error: a build has exactly one router, so
+/// `[plugins].install` naming two would be a request this binary cannot
+/// honor either way, and picking one silently would be exactly the kind of
+/// unstated choice GP-14 forbids.
 pub fn install(
     mut builder: ConwayBuilder,
     wanted: &[String],
@@ -72,24 +100,42 @@ pub fn install(
         return Ok(builder);
     }
     let bundle = bundle();
+    let router_bundle = router_bundle();
+    let mut router_factories_installed: Vec<String> = Vec::new();
     for id in wanted {
-        match bundle.iter().find(|p| &p.manifest().id == id) {
-            Some(plugin) => {
-                builder = builder.with_plugin(plugin.clone());
-            }
-            None => {
-                let known: Vec<String> = bundle.iter().map(|p| p.manifest().id).collect();
+        if let Some(plugin) = bundle.iter().find(|p| &p.manifest().id == id) {
+            builder = builder.with_plugin(plugin.clone());
+            continue;
+        }
+        if let Some(factory) = router_bundle.iter().find(|f| f.id() == id) {
+            if let Some(already) = router_factories_installed.first() {
                 return Err(ConwayError::Config {
                     path: None,
                     message: format!(
-                        "plugins.install names unknown first-party plugin '{id}'; linked \
-                         first-party plugins: [{}]. A third-party plugin is installed with \
-                         ConwayBuilder::with_plugin in library code and is not listed here.",
-                        known.join(", ")
+                        "plugins.install names more than one router factory ('{already}' and \
+                         '{id}'); a build has exactly one router, so at most one router-factory \
+                         id may appear in plugins.install."
                     ),
                 });
             }
+            router_factories_installed.push(id.clone());
+            builder = builder.with_router_factory(factory.clone());
+            continue;
         }
+        let known_plugins: Vec<String> = bundle.iter().map(|p| p.manifest().id).collect();
+        let known_routers: Vec<String> =
+            router_bundle.iter().map(|f| f.id().to_string()).collect();
+        return Err(ConwayError::Config {
+            path: None,
+            message: format!(
+                "plugins.install names unknown first-party id '{id}'; linked first-party \
+                 plugins: [{}]; linked router factories: [{}]. A third-party plugin is \
+                 installed with ConwayBuilder::with_plugin (or a third-party router with \
+                 ConwayBuilder::with_router_factory) in library code and is not listed here.",
+                known_plugins.join(", "),
+                known_routers.join(", ")
+            ),
+        });
     }
     Ok(builder)
 }
@@ -101,10 +147,12 @@ pub fn install(
 /// (`skeleton_tool_is_present_in_the_announced_set_once_installed`), the
 /// resulting tool actually running (`skeleton_tool_is_callable_from_one_shot_
 /// once_installed`), and the unknown-id hard error
-/// (`unknown_plugins_install_id_is_a_hard_error`). Each asserts on an
-/// observable outcome — the announced tool set on the wire, the invoked
-/// tool's preview text, the process exit code and stderr — rather than on an
-/// intermediate signal.
+/// (`unknown_plugins_install_id_is_a_hard_error`, which also pins that the
+/// error message lists both the linked plugin ids and the linked router
+/// factory ids -- the latter an empty list today, per [`router_bundle`]'s
+/// own doc). Each asserts on an observable outcome — the announced tool set
+/// on the wire, the invoked tool's preview text, the process exit code and
+/// stderr — rather than on an intermediate signal.
 ///
 /// This module deliberately does NOT restate that coverage as unit tests.
 /// Constructing a `ConwayBuilder` here would need a stub config solely to

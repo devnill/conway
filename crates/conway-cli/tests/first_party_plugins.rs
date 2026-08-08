@@ -242,4 +242,16 @@ async fn unknown_plugins_install_id_is_a_hard_error() {
         stderr.contains("conway.totally_unknown"),
         "the error must name the offending id, got stderr: {stderr}"
     );
+    // Board item 01KZFC2MD1FVNA674YJ9A19T8E: the message widened to list
+    // linked router factory ids alongside linked plugin ids, resolved
+    // against `[plugins].install` in the same pass.
+    assert!(
+        stderr.contains("conway.plugin_skeleton"),
+        "the error must list the linked first-party plugin ids, got stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("linked router factories"),
+        "the error must also list linked router factory ids (empty today, honestly -- see \
+         first_party_plugins::router_bundle's own doc), got stderr: {stderr}"
+    );
 }

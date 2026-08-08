@@ -66,8 +66,8 @@ pub use conway_core::event::{Envelope, Event};
 pub use conway_core::ids::{AgentId, LogSeq, ModelRef, RoleAlias, SegmentId, SessionId, ToolName};
 pub use conway_core::log::{AskOrigin, LogRecord, SessionFilter, SessionMeta, SubagentMode};
 pub use conway_core::ports::{
-    Backend, ContextHook, HealthRegistry, PermissionGate, Plugin, RenderKind, Router, SessionStore,
-    Tool,
+    Backend, ContextHook, HealthRegistry, PermissionGate, Plugin, RenderKind, Router,
+    RouterBuildContext, RouterBundle, RouterFactory, SessionStore, Tool,
 };
 
 /// The GP-03 extension surface: every type a crate depending only on
@@ -188,3 +188,15 @@ pub use conway_core::routing::{AttemptFailure, BreakerKind, BreakerState, Routin
 pub use conway_core::routing::{
     BreakerSnapshot, CapabilitySummary, EntryOutcome, ExplainEntry, ExplainReport,
 };
+
+// Board item 01KZFC2MD1FVNA674YJ9A19T8E, GP-03/P-6: `RouterFactory` joins the
+// extension surface above, so the field types of what its `build` receives
+// must be nameable by a crate depending only on `conway`. Without these two,
+// a third-party factory could read `ctx.routing.roles` and call
+// `ctx.headroom.resolve(..)` but could not write a helper taking
+// `&RoutingConfig` or `&HeadroomPolicy` as a parameter -- it would have to
+// depend on `conway-core` directly, which is exactly the privileged-interface
+// asymmetry P-6 forbids. A port whose context cannot be spelled through the
+// public facade is only half-installed.
+pub use conway_core::capabilities::HeadroomPolicy;
+pub use conway_core::routing::RoutingConfig;
