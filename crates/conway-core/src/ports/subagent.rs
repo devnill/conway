@@ -131,7 +131,8 @@ pub trait SubagentHost: Send + Sync + 'static {
     /// whole subtree structurally) and [`CancelMode::Graceful`] (lands at
     /// `target`'s next turn boundary, stops only `target` itself). See
     /// that type's own doc for the full contract, including the resume-gate
-    /// caveat.
+    /// caveat and (board item 01KZDDCN747FEZ3GM3NS0ANE7G) exactly which
+    /// agent's terminal result `reason` reaches under each mode.
     async fn cancel(
         &self,
         caller: AgentId,

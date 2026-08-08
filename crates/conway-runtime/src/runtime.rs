@@ -1198,9 +1198,26 @@ impl Runtime {
     }
 
     /// Trips `agent`'s `CancellationToken` via `AgentTree::cancel` (WI-083).
-    /// See that method's doc, and this module's reconciliation note, on why
-    /// `reason` is recorded (via `tracing`) but cannot yet reach the
-    /// resulting `AgentResult`.
+    /// This is the immediate half of `conway_cancel`/`SessionHandle::
+    /// cancel_with`'s two modes -- see `CancelMode`'s own doc for the other.
+    ///
+    /// `reason` is recorded via `tracing` (unchanged) AND now (board item
+    /// 01KZDDCN747FEZ3GM3NS0ANE7G) reaches `agent`'s own terminal
+    /// `AgentResult` (`ResultStatus::Cancelled { reason }`), the same way
+    /// the graceful path's mailbox-delivered reason always has -- see
+    /// `AgentTree::cancel`'s own doc for the storage mechanism and
+    /// `AgentLoop::finish_cancelled`'s for where it is read back.
+    ///
+    /// This guarantee is scoped to `agent` ITSELF, not the whole subtree
+    /// this call structurally cancels: every child's `CancellationToken` is
+    /// a `child_token()` of its parent's (`tree.rs`), so a hard cancel on an
+    /// ancestor trips every descendant's token too, but only `agent` was
+    /// ever actually named in this call -- a descendant's own result falls
+    /// back to a generic "cancelled" reason, since attributing `reason` to
+    /// an agent that was never told it would misrepresent where it came
+    /// from (P-2). Whether the subtree collapse itself should carry a
+    /// reason down to every descendant is a separate, open question (board
+    /// item 01KZDDCBGXNYTNM31PHW46R1SP), not decided here.
     pub fn cancel(&self, agent: AgentId, reason: String) -> Result<(), RuntimeError> {
         self.tree.cancel(agent, reason)
     }

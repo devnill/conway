@@ -55,8 +55,8 @@ use std::sync::{Arc, RwLock};
 
 use chrono::Utc;
 use conway_core::agent::{
-    AgentNode as CoreAgentNode, AgentResult, AgentStatus, AgentTreeSnapshot, Budget, ResultStatus,
-    SubagentMode,
+    AgentNode as CoreAgentNode, AgentResult, AgentStatus, AgentTreeSnapshot, Budget,
+    DEFAULT_SUMMARY_LIMIT, ResultStatus, SubagentMode,
 };
 use conway_core::error::{RuntimeError, ToolError};
 use conway_core::event::Event;
@@ -127,6 +127,17 @@ struct TreeEntry {
     /// `subscribe()`d receiver are used for that).
     _keepalive_rx: watch::Receiver<Option<AgentResult>>,
     resolved: AtomicBool,
+    /// The `reason` from the most recent [`AgentTree::cancel`] call naming
+    /// THIS agent directly -- `None` until `cancel` is called on `id`
+    /// itself. Deliberately not propagated to descendants when a cancel on
+    /// an ancestor trips this agent's token structurally (see `cancel`'s own
+    /// doc): only the agent actually named in the call has a reason to
+    /// attach here. A `std::sync::Mutex` behind the tree's outer `RwLock`
+    /// read guard (`cancel`/`cancel_reason` both only ever need a read lock
+    /// on `nodes`) -- interior mutability for the one field that changes
+    /// after `attach`, without upgrading every cancel to a tree-wide write
+    /// lock.
+    cancel_reason: std::sync::Mutex<Option<String>>,
 }
 
 /// The multi-agent tree: attachment, structural lookups, cancellation
@@ -183,6 +194,7 @@ impl AgentTree {
                 result_tx,
                 _keepalive_rx: keepalive_rx,
                 resolved: AtomicBool::new(false),
+                cancel_reason: std::sync::Mutex::new(None),
             },
         );
         // Released before emitting: `EventBus::emit` is synchronous and
@@ -238,14 +250,62 @@ impl AgentTree {
     /// Trips `agent`'s `CancellationToken`. Because every child's token is
     /// (by construction, see [`AgentNode::cancel`]) a `child_token()` of its
     /// parent's, this structurally cancels the entire subtree in one call.
+    ///
+    /// `reason` is recorded (via `tracing`, unchanged) AND stashed on
+    /// `agent`'s own [`TreeEntry`], readable back via
+    /// [`Self::cancel_reason`] -- board item 01KZDDCN747FEZ3GM3NS0ANE7G:
+    /// `agent_loop.rs`'s loop-boundary cancellation checks read it back from
+    /// there to attach it to `agent`'s own terminal `AgentResult`
+    /// (`ResultStatus::Cancelled { reason }`), so the immediate path now
+    /// agrees with the graceful path's `pending_cancel` mailbox mechanism,
+    /// which has always carried its reason this way.
+    ///
+    /// This ONLY stashes the reason on `agent` itself, never on the
+    /// descendants its token trip structurally collapses: a descendant was
+    /// never itself passed a reason (this call names exactly one agent), so
+    /// there is nothing truthful to attach to its own result -- it simply
+    /// observes an ancestor's token already cancelled and falls back to a
+    /// generic reason (see `AgentLoop::finish_cancelled`'s doc). Whether that
+    /// subtree collapse should itself carry a reason down to every
+    /// descendant is a separate, open question (board item
+    /// 01KZDDCBGXNYTNM31PHW46R1SP), not decided here.
     pub fn cancel(&self, agent: AgentId, reason: String) -> Result<(), RuntimeError> {
         let nodes = self.nodes.read().expect("agent tree lock poisoned");
         let entry = nodes
             .get(&agent)
             .ok_or(RuntimeError::AgentNotFound { agent })?;
         tracing::info!(agent = %agent, reason = %reason, "AgentTree::cancel");
+        // P-10: `reason` is model-supplied (a tool argument, `conway_cancel`)
+        // and, from this item on, reaches a persisted `AgentResult` on the
+        // immediate path (`cancel_reason`, `AgentLoop::finish_cancelled`) --
+        // bounded to the same `DEFAULT_SUMMARY_LIMIT` `AgentResult::new`
+        // already caps `summary` at, on the same char-boundary-safe logic,
+        // so an adversarial caller cannot grow the tree's per-agent
+        // bookkeeping (and, downstream, the durable log) unboundedly.
+        *entry
+            .cancel_reason
+            .lock()
+            .expect("cancel reason lock poisoned") = Some(truncate_reason(reason));
         entry.node.cancel.cancel();
         Ok(())
+    }
+
+    /// The `reason` most recently supplied to [`Self::cancel`] naming
+    /// `agent` directly, if any -- `None` for an agent never itself the
+    /// direct target of a `cancel` call (including one whose token was
+    /// tripped only by an ancestor's cancellation propagating structurally;
+    /// see `cancel`'s own doc). `None` also for an unknown `agent`, matching
+    /// this module's other read-only lookups' (`ephemeral_of`,
+    /// `is_prunable_on_finish`) "default rather than error" convention.
+    pub fn cancel_reason(&self, agent: AgentId) -> Option<String> {
+        let nodes = self.nodes.read().expect("agent tree lock poisoned");
+        nodes.get(&agent).and_then(|entry| {
+            entry
+                .cancel_reason
+                .lock()
+                .expect("cancel reason lock poisoned")
+                .clone()
+        })
     }
 
     /// Publishes `agent`'s terminal result. Set-once: the first call wins
@@ -412,6 +472,19 @@ impl AgentTree {
             at: Utc::now(),
         }
     }
+}
+
+/// Truncates `reason` (a model-supplied `conway_cancel` argument, P-10) to at
+/// most [`DEFAULT_SUMMARY_LIMIT`] `char`s, on a character boundary --
+/// mirrors [`AgentResult::new`]'s own identical `summary` truncation, whose
+/// private helper this crate has no access to (`conway_core::agent`'s
+/// `truncate_to_char_limit` is not `pub`), so this is a same-shaped local
+/// copy rather than a new cross-crate dependency.
+fn truncate_reason(mut reason: String) -> String {
+    if let Some((byte_idx, _)) = reason.char_indices().nth(DEFAULT_SUMMARY_LIMIT) {
+        reason.truncate(byte_idx);
+    }
+    reason
 }
 
 /// `RuntimeError` (conway-core, out of this item's file scope) has no
