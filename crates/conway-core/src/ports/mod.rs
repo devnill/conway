@@ -49,6 +49,7 @@ mod tests {
         _: &dyn HealthRegistry,
         _: &dyn SubagentHost,
         _: &dyn EventSink,
+        _: &dyn RouterFactory,
     ) {
     }
 }

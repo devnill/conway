@@ -12,7 +12,6 @@ use conway_core::log::{LogRecord, SessionFilter, SessionMeta};
 use conway_core::ports::{RoutingExplainer, SessionStore};
 use conway_core::provenance::Provenance;
 use conway_core::routing::{ExplainReport, MinimalRouter, RouteRequest};
-use conway_routing::{DeclarativeRouter, RoutingExplain};
 use conway_runtime::runtime::{ResumeSpec, RootSpec, Runtime};
 
 use crate::config::model_metadata::ModelMetadata;
@@ -109,9 +108,11 @@ pub enum RevokeOutcome {
     RevokedButPersistFailed { error: String },
 }
 
-/// The live, assembled facade: one `Runtime`, its resolved config, and (when
-/// the builder compiled its own router rather than receiving an injected
-/// one) the concrete router `explain_routing` projects through.
+/// The live, assembled facade: one `Runtime`, its resolved config, and --
+/// when the builder had a real answer to "why" (it compiled its own router,
+/// or a `RouterFactory` supplied one, board item
+/// 01KZFC2MD1FVNA674YJ9A19T8E) -- the `RoutingExplainer` `explain_routing`
+/// projects through.
 ///
 /// Cheap to `Clone`: every field is an `Arc`.
 #[derive(Clone)]
@@ -122,7 +123,7 @@ pub struct Conway {
     // (`new_session`), which needs it for `SessionHandle::transcript`'s
     // ancestry walk (WI-101).
     store: Arc<dyn SessionStore>,
-    router_explain: Option<Arc<DeclarativeRouter>>,
+    router_explain: Option<Arc<dyn RoutingExplainer>>,
     warnings: Arc<Vec<ConfigWarning>>,
     // T3 follow-up: the local model-metadata map `ConwayBuilder::build`
     // already loads (`[models.metadata_path]`, step 2) to construct the
@@ -170,7 +171,7 @@ impl Conway {
         rt: Arc<Runtime>,
         config: ConwayConfig,
         store: Arc<dyn SessionStore>,
-        router_explain: Option<Arc<DeclarativeRouter>>,
+        router_explain: Option<Arc<dyn RoutingExplainer>>,
         warnings: Vec<ConfigWarning>,
         model_metadata: ModelMetadata,
         root: Option<std::path::PathBuf>,
@@ -1383,17 +1384,17 @@ impl Conway {
     /// `Conway` compiled itself.
     ///
     /// When the builder instead received an injected `Router`
-    /// (`ConwayBuilder::with_router`), there is no concrete
-    /// `DeclarativeRouter` to project through -- `conway_routing::RoutingExplain`
-    /// is defined over that concrete type, not the `Router` trait object.
-    /// This used to fall back to a fabricated-empty report (`entries:
-    /// vec![]`), which `conway routes explain` then misread as "unknown
-    /// role" for a perfectly valid one (GP-14: a silent inversion, board
-    /// item 01KZFC1KNGQ51TZ0BG7P7RAY9H). It now falls back to
-    /// `conway_core::routing::MinimalRouter`, projected over this `Conway`'s
-    /// own resolved `RoutingConfig` -- an honestly degenerate answer (no
-    /// capability filtering, no health filtering, one entry per configured
-    /// chain candidate) rather than an empty one.
+    /// (`ConwayBuilder::with_router`) with no `RouterFactory`-supplied
+    /// explainer either, there is no `RoutingExplainer` to project through
+    /// at all -- `router_explain` is `None`. This used to fall back to a
+    /// fabricated-empty report (`entries: vec![]`), which `conway routes
+    /// explain` then misread as "unknown role" for a perfectly valid one
+    /// (GP-14: a silent inversion, board item 01KZFC1KNGQ51TZ0BG7P7RAY9H).
+    /// It now falls back to `conway_core::routing::MinimalRouter`,
+    /// projected over this `Conway`'s own resolved `RoutingConfig` -- an
+    /// honestly degenerate answer (no capability filtering, no health
+    /// filtering, one entry per configured chain candidate) rather than an
+    /// empty one.
     pub fn explain_routing(&self, role: &RoleAlias) -> ExplainReport {
         let req = RouteRequest {
             role: role.clone(),
@@ -1403,7 +1404,7 @@ impl Conway {
             agent_id: AgentId::new(),
         };
         match &self.router_explain {
-            Some(router) => RoutingExplain::new(router).explain(&req),
+            Some(explainer) => explainer.explain(&req),
             None => {
                 let routing_config = self.config.routing().unwrap_or_else(|_| {
                     conway_core::routing::RoutingConfig {

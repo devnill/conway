@@ -284,6 +284,81 @@ facade's point of view, just another consumer of the public `conway`/
 itself. Pre-1.0, a first-party plugin's own API can change in any workspace
 release, same as everything else here.
 
+### Installing a router: `RouterFactory` and the `[plugins].install` router arm
+
+Board item 01KZFC2MD1FVNA674YJ9A19T8E extends the same `[plugins].install`
+key to router selection. `Router` itself has no identity method — a router
+that ships as an installable component instead names itself through a
+small, separate factory trait, `conway::RouterFactory`:
+
+```rust,ignore
+use conway::{RouterBuildContext, RouterBundle, RouterFactory};
+use conway_core::error::ConwayError;
+
+struct MyRouterFactory;
+
+impl RouterFactory for MyRouterFactory {
+    fn id(&self) -> &str {
+        "my.dynamic_router"
+    }
+
+    fn build(&self, ctx: RouterBuildContext<'_>) -> Result<RouterBundle, ConwayError> {
+        // `ctx.routing`, `ctx.headroom`, and `ctx.backends` are everything
+        // a router genuinely needs — build a `Router` (and the
+        // `HealthRegistry` it shares state with) from them here.
+        todo!()
+    }
+}
+```
+
+This exists because router **selection** must precede router
+**construction**: `[plugins].install` is read long before backends and a
+capability picture exist, and building a real router needs both. A
+`RouterFactory` carries the id up front and defers the fallible `build`
+step to `ConwayBuilder::build()`'s own router step, once that context is
+actually assembled.
+
+**Wiring it in, as a library embedder:**
+
+```rust,ignore
+let conway = ConwayBuilder::discover()?
+    .with_router_factory(Arc::new(MyRouterFactory))
+    .build()?;
+```
+
+`ConwayBuilder::with_router` (an already-built `Router`) still wins
+UNCONDITIONALLY over a registered factory — it is never wrapped, inspected,
+or validated, and a factory set alongside it is then never even invoked.
+Absent an injected router, a registered factory is invoked instead; absent
+both, `build()` falls through to compiling its own `DeclarativeRouter`,
+unchanged from before this method existed. A factory whose `build` returns
+`Err` fails the whole `build()` call as `ConwayError::Build`, naming the
+factory's own id and the underlying message — never silently swallowed,
+never a silent fallback to the compiled router.
+
+**Wiring it in, as `[plugins].install`:** exactly the same shape as a
+plugin id, resolved against a binary's own linked bundle of router
+factories in the SAME pass as its linked plugins
+(`crates/conway-cli/src/first_party_plugins.rs`'s `router_bundle`, beside
+its existing `bundle`):
+
+```json
+{ "plugins": { "install": ["my.dynamic_router"] } }
+```
+
+Naming more than one router-factory id in `[plugins].install` is a hard
+config error — a build has exactly one router. `conway-cli`'s own linked
+router-factory bundle is empty today (no first-party router crate has
+landed yet — dynamic routing is a separate, later board item); an id an
+operator names that this binary does not recognize as either a plugin or a
+router factory is a hard error listing both known sets, mirroring the
+plugin-only unknown-id error this tier already raised.
+
+**No mode asymmetry** (GP-05/C-03): a router installed via
+`[plugins].install` takes effect identically for the TUI, one-shot, and a
+library embedder calling `with_router_factory` directly — all three reach
+the same `ConwayBuilder::build()` router step.
+
 ## Consuming the event stream
 
 `SessionHandle::events()` and `TurnHandle::events()` both return

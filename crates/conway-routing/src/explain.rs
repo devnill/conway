@@ -145,3 +145,18 @@ impl RoutingExplainer for RoutingExplain<'_> {
         RoutingExplain::explain(self, req)
     }
 }
+
+/// Lets an owned `Arc<DeclarativeRouter>` (as `ConwayBuilder::build` holds
+/// once it compiles one, board item 01KZFC2MD1FVNA674YJ9A19T8E) stand in
+/// directly as an `Arc<dyn RoutingExplainer>` for `Conway`'s
+/// `router_explain` slot. `RoutingExplain<'a>` above borrows a `&'a
+/// DeclarativeRouter` and so cannot itself be boxed/arc'd as a `'static`
+/// trait object; this impl delegates to the exact same
+/// `RoutingExplain::new(self).explain(req)` path, so it adds no second
+/// filtering implementation to keep in sync with this module's own
+/// top-of-file note ("it must never re-implement filtering").
+impl RoutingExplainer for DeclarativeRouter {
+    fn explain(&self, req: &RouteRequest) -> ExplainReport {
+        RoutingExplain::new(self).explain(req)
+    }
+}

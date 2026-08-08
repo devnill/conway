@@ -125,7 +125,10 @@ use std::sync::Arc;
 
 use conway_core::capabilities::{HeadroomPolicy, ReliabilityTier};
 use conway_core::ids::{BackendId, ModelRef};
-use conway_core::ports::{Backend, ContextHook, PermissionGate, Plugin, Router, SessionStore};
+use conway_core::ports::{
+    Backend, ContextHook, HealthRegistry, PermissionGate, Plugin, Router, RouterBuildContext,
+    RouterFactory, RoutingExplainer, SessionStore,
+};
 use conway_core::routing::ModelOverrides;
 use conway_routing::{BreakerRegistry, CapabilityIndex, DeclarativeRouter};
 use conway_runtime::events::EventBus;
@@ -218,6 +221,11 @@ pub struct ConwayBuilder {
     gate: Option<Arc<dyn PermissionGate>>,
     store: Option<Arc<dyn SessionStore>>,
     router: Option<Arc<dyn Router>>,
+    /// Board item 01KZFC2MD1FVNA674YJ9A19T8E. `None` (the default) means
+    /// `build()`'s router step falls through to compiling its own
+    /// `DeclarativeRouter`, exactly as it did before this field existed --
+    /// see [`Self::with_router_factory`]'s own doc for the full precedence.
+    router_factory: Option<Arc<dyn RouterFactory>>,
     /// WI-126. `None` (the default) means `build()` never calls
     /// `Runtime::set_context_hook` at all, leaving every agent's
     /// `context_hook` at the `Runtime`-constructed default of `None` --
@@ -274,6 +282,7 @@ impl ConwayBuilder {
             gate: None,
             store: None,
             router: None,
+            router_factory: None,
             context_hook: None,
             builtin_selection: None,
             warnings: Vec::new(),
@@ -372,6 +381,41 @@ impl ConwayBuilder {
         self
     }
 
+    /// Registers a [`RouterFactory`] (board item 01KZFC2MD1FVNA674YJ9A19T8E):
+    /// a router KIND, named up front, whose actual construction is deferred
+    /// to `build()`'s own router step -- once backends and a resolved
+    /// routing/headroom policy actually exist for the factory to build
+    /// against.
+    ///
+    /// **Precedence, exact:** an injected [`Self::with_router`] wins
+    /// UNCONDITIONALLY over this -- it is never wrapped, inspected, or
+    /// validated, and a factory set here is then never even invoked (not
+    /// merely ignored: `RouterFactory::build` is not called at all, so a
+    /// factory with side effects in `build` sees none). Absent an injected
+    /// router, a factory set here is invoked with the assembled
+    /// `RouterBuildContext`; absent both, `build()` falls through to
+    /// compiling its own `DeclarativeRouter`, exactly as before this method
+    /// existed. A factory whose `build` returns `Err` fails the whole
+    /// `build()` call as `ConwayError::Build`, naming this factory's own
+    /// `RouterFactory::id()` and the underlying message -- never silently
+    /// swallowed, never a fallback to the compiled router.
+    ///
+    /// When the factory path IS taken, its returned `RouterBundle::health`
+    /// replaces the `HealthRegistry` `build()` would otherwise have
+    /// constructed from `[health]` -- the router and the runtime it serves
+    /// continue to share exactly one registry -- and its `RouterBundle::
+    /// explain`, when present, becomes what `Conway::explain_routing`
+    /// projects through (absent, `explain_routing` falls back to
+    /// `conway_core::routing::MinimalRouter`, the same honest degenerate
+    /// answer an injected `with_router` already falls back to).
+    ///
+    /// **Not called at all (the default)** changes nothing: `build()`'s
+    /// router step behaves exactly as it did before this method existed.
+    pub fn with_router_factory(mut self, factory: Arc<dyn RouterFactory>) -> Self {
+        self.router_factory = Some(factory);
+        self
+    }
+
     /// Sets CLI-sourced overrides, applied (and fully re-validated,
     /// including OAuth-token rejection) at `build()` time.
     pub fn with_cli_overrides(mut self, cli: CliOverrides) -> Self {
@@ -416,6 +460,7 @@ impl ConwayBuilder {
             gate,
             store,
             router,
+            router_factory,
             context_hook,
             builtin_selection,
             warnings,
@@ -492,30 +537,56 @@ impl ConwayBuilder {
             message,
         })?;
         let headroom_policy = HeadroomPolicy::from_routing_config(&routing_config);
-        let health: Arc<dyn conway_core::ports::HealthRegistry> =
-            BreakerRegistry::new(routing_config.health);
+        let health: Arc<dyn HealthRegistry> = BreakerRegistry::new(routing_config.health);
 
-        // 7. Router: injected, else a freshly compiled DeclarativeRouter.
-        //    The concrete instance is kept alongside the type-erased one so
-        //    `Conway::explain_routing` can still project through it.
-        let (router, router_explain): (Arc<dyn Router>, Option<Arc<DeclarativeRouter>>) =
-            match router {
-                Some(router) => (router, None),
-                None => {
-                    let compiled = Arc::new(
-                        DeclarativeRouter::new(
-                            routing_config,
-                            headroom_policy.clone(),
-                            health.clone(),
-                            capability_index,
-                        )
-                        .map_err(|issues| ConwayError::Build {
-                            message: format!("routing config invalid: {issues:?}"),
-                        })?,
-                    );
-                    (compiled.clone() as Arc<dyn Router>, Some(compiled))
-                }
+        // 7. Router: injected `router` wins UNCONDITIONALLY over everything
+        //    below and is never wrapped, inspected, or validated; else a
+        //    `RouterFactory` (`with_router_factory`), when set, is invoked
+        //    with the build context assembled from the preceding steps;
+        //    else a freshly compiled `DeclarativeRouter`, exactly as
+        //    before this item. Whichever explainer the taken branch
+        //    produces (`None` for an injected router, the factory's own
+        //    `RouterBundle::explain`, or the compiled router itself) is
+        //    kept alongside the type-erased `Router` so
+        //    `Conway::explain_routing` can still project through it. When
+        //    the factory path is taken, its returned `health` REPLACES the
+        //    `BreakerRegistry` built immediately above -- the router and
+        //    the runtime must continue to share exactly ONE registry, so
+        //    `health` is reassigned below, never both kept alive.
+        let (router, health, router_explain): (
+            Arc<dyn Router>,
+            Arc<dyn HealthRegistry>,
+            Option<Arc<dyn RoutingExplainer>>,
+        ) = if let Some(router) = router {
+            (router, health, None)
+        } else if let Some(factory) = router_factory {
+            let ctx = RouterBuildContext {
+                routing: routing_config.clone(),
+                headroom: headroom_policy.clone(),
+                backends: &all_backends,
             };
+            let bundle = factory.build(ctx).map_err(|e| ConwayError::Build {
+                message: format!("router factory '{}' failed to build: {e}", factory.id()),
+            })?;
+            (bundle.router, bundle.health, bundle.explain)
+        } else {
+            let compiled = Arc::new(
+                DeclarativeRouter::new(
+                    routing_config,
+                    headroom_policy.clone(),
+                    health.clone(),
+                    capability_index,
+                )
+                .map_err(|issues| ConwayError::Build {
+                    message: format!("routing config invalid: {issues:?}"),
+                })?,
+            );
+            (
+                compiled.clone() as Arc<dyn Router>,
+                health,
+                Some(compiled as Arc<dyn RoutingExplainer>),
+            )
+        };
 
         // 8. Store: injected, else JsonlSessionStore::open (jsonl-store
         //    feature), else a Build error.

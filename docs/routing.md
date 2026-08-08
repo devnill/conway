@@ -40,6 +40,42 @@ Two flags override chain resolution for a single run:
 | `--role-override <role>` | Use this role instead of `default_role`. |
 | `--model <backend/model>` | Pin a specific model, bypassing the chain entirely (`RoutingReason::PinnedByApi`). |
 
+## Installing a different router
+
+Everything above describes conway's own compiled `DeclarativeRouter` — the
+router `build()` assembles by default from `[roles]`/`[routing]`. A router
+can also be swapped out entirely, two ways:
+
+- **Already built**: `ConwayBuilder::with_router(router)` hands `build()` a
+  fully-constructed `Router` directly. This is unconditional: an injected
+  router is never wrapped, inspected, or validated, and it wins over
+  everything below.
+- **Named, built later**: `ConwayBuilder::with_router_factory(factory)`
+  registers a `conway::RouterFactory` — an id plus a deferred, fallible
+  `build` step — invoked by `build()` itself once backends and a resolved
+  routing/headroom policy exist for it to build against. This is what makes
+  a router installable by *name*, the same way `[plugins].install` already
+  installs a plugin by name: `[plugins].install` is read long before
+  backends exist, so a router named there cannot be built yet at that
+  point — a `RouterFactory` carries the identity up front and defers
+  construction to the moment `build()` actually has what a router needs.
+  See [`embedding.md`](embedding.md#installing-a-router-routerfactory-and-the-pluginsinstall-router-arm)
+  for the full `RouterFactory` shape and the `[plugins].install` router arm.
+
+Absent both, `build()` compiles its own `DeclarativeRouter` — the default,
+unchanged behavior this whole page otherwise describes.
+
+Either substitution changes what `conway routes explain` can show: a
+router that did not come from `build()`'s own `DeclarativeRouter` (an
+injected `with_router`, or a `RouterFactory` whose `RouterBundle::explain`
+came back `None`) falls back to an honest, degenerate answer — no
+capability filtering, no health filtering, one entry per configured chain
+candidate — rather than reporting an empty, fabricated one. A `RouterFactory`
+that wants the richer explain answer supplies its own `RoutingExplainer` as
+`RouterBundle::explain` at the same moment it builds the router, since
+construction is the only point a router and a matching explainer are
+guaranteed to agree with each other about "why".
+
 ## Asking why a route was chosen
 
 `conway routes explain <role>` is the direct answer to "which model

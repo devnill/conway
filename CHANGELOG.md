@@ -9,6 +9,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A router can now be named and installed the same way a plugin is:
+  `RouterFactory`, `ConwayBuilder::with_router_factory`, and a
+  `[plugins].install` router arm** (board item 01KZFC2MD1FVNA674YJ9A19T8E,
+  settled decision 01KZF15KSWVD689HPBNNATFP8C). `conway_core::ports::
+  routing::RouterFactory` carries a router *kind*'s identity (`id`) up
+  front and defers actual construction to a deferred, fallible `build`
+  step — necessary because `[plugins].install` is read long before the
+  backends and capability picture a real router needs even exist.
+  `RouterFactory::build` receives a `RouterBuildContext` (the resolved
+  `RoutingConfig`, `HeadroomPolicy`, and every already-constructed
+  backend) and returns a `RouterBundle` (the constructed `Router`, the
+  `HealthRegistry` it shares breaker state with, and optionally a matching
+  `RoutingExplainer`), or an existing `conway_core::error::ConwayError` on
+  failure — no new crate-level error enum. `Router` itself gains no `id()`
+  method: router *selection* (naming a kind) must precede router
+  *construction* (a fallible step needing backends), so the two stay on
+  separate traits, and none of this workspace's 31 `.with_router(..)` call
+  sites needed to change.
+  `ConwayBuilder::with_router_factory(Arc<dyn RouterFactory>)` registers
+  one; `ConwayBuilder::with_router` is unchanged byte-for-byte and still
+  wins unconditionally over a registered factory (which is then never even
+  invoked). Absent both, `build()` still compiles its own
+  `DeclarativeRouter`, exactly as before. `crates/conway-cli/src/
+  first_party_plugins.rs` gains a `router_bundle()` beside its existing
+  `bundle()`, resolved against `[plugins].install` in the same pass —
+  empty today (no first-party router crate has landed yet), which the
+  unknown-id error now discloses by listing linked router factory ids
+  alongside linked plugin ids. See
+  [`docs/embedding.md`](docs/embedding.md#installing-a-router-routerfactory-and-the-pluginsinstall-router-arm)
+  and [`docs/routing.md`](docs/routing.md#installing-a-different-router).
+  (`crates/conway-core/src/ports/routing.rs`, `crates/conway-core/src/ports/mod.rs`,
+  `crates/conway-routing/src/explain.rs`, `crates/conway/src/lib.rs`,
+  `crates/conway/src/builder.rs`, `crates/conway/src/conway.rs`,
+  `crates/conway/tests/router_factory.rs`,
+  `crates/conway-cli/src/first_party_plugins.rs`,
+  `crates/conway-cli/tests/first_party_plugins.rs`)
+
 - **`Backend` gains an `admit` method: whether a request fits is now
   answerable by the thing talking to the endpoint** (board item
   01KZDC4DKVC4JC3W4KN1WMC43N, decision 01KZDBYTKFYTVD9R2NA10QJNJE; P-4 and
