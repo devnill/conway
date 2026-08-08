@@ -186,6 +186,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `RouterBundle` it already was — router, health, explain — so the three
   selection arms agree on a named contract rather than on tuple position.
 
+- **Graceful cancellation's non-propagation is now enforced, not just
+  documented** (board item 01KZDDCBGXNYTNM31PHW46R1SP, decision
+  01KZGV7TN6KSWRZM9XRJAKW4CE). `CancelMode::Graceful` stops the named agent
+  alone; only `Immediate` collapses the subtree. That contract was stated in
+  ten places and demonstrated in none, while its opposite — immediate
+  propagation — had a test. It now has one too: a graceful cancel on a parent
+  with a live child, asserting the parent reaches `Cancelled` while the child
+  runs on to its own terminal result. `SubagentHandle::cancel_with`, the
+  plugin author's primary surface, previously named the resume-gate caveat by
+  reference while silently omitting this one, which reads as "the resume gate
+  is the only catch"; it now names both. No behaviour changed.
+  (`crates/conway-core/src/ports/subagent.rs`,
+  `crates/conway/tests/session_handle_subagent.rs`)
+
 - **A cancellation reason survives the in-flight-request race too** (board
   item 01KZGRGN9MKJP549NMGT8QACCV). When a cancel landed while a request to
   the model was already in flight, the agent stopped correctly but reported a
