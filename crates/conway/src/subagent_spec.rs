@@ -47,13 +47,26 @@ pub struct ForkSpec {
     /// the child inherits.
     pub directive: String,
     /// Overrides the forker's own system prompt. `None` means the child
-    /// keeps whatever the forker was running under.
+    /// keeps whatever the forker was running under -- system prompt, tools
+    /// selector, and model pin (`SubagentHost::start`'s Fork-only
+    /// inheritance fill, decision 01KZHEWXDZWPWMEAQ01XY2RDCB). **Except**
+    /// that def's own `result_contract`, which this inheritance never
+    /// carries along -- see [`ForkSpec::result_contract`]'s own doc.
     pub agent_def: Option<String>,
     pub role: Option<RoleAlias>,
     /// Intersected with the forker's own tool set by the runtime -- this
     /// spec cannot *grant* a tool the forker itself lacks.
     pub tools: Option<ToolSelector>,
     pub budget: Budget,
+    /// **Never sourced from an INHERITED `agent_def`** (decision
+    /// 01KZHEWXDZWPWMEAQ01XY2RDCB): leaving this `None` on a `ForkSpec` that
+    /// also leaves `agent_def: None` does NOT pick up the def the forker
+    /// itself happens to be running under, even though `SubagentHost::
+    /// start` fills that def's system prompt/tools/model pin onto the
+    /// child. A result contract is declared at a call site -- this field,
+    /// or naming the def explicitly via [`ForkSpec::agent_def`] -- never by
+    /// inheritance alone. See `AgentDef::result_contract`'s own doc for the
+    /// full rule.
     pub result_contract: Option<schemars::schema::RootSchema>,
     /// Opt-in interactive keep-alive (WI "bare /spawn & /fork open an
     /// interactive session"): the child idles for the caller's next

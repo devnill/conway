@@ -148,6 +148,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `crates/conway-backends/tests/admission.rs`,
   `crates/conway-routing/src/failure.rs`)
 
+- **A forked child now inherits the parent's `agent_def` — but never that
+  def's `result_contract`** (board item 01KZGXYSEKMVM4GVG4ZBWC0WSC,
+  decision 01KZHEWXDZWPWMEAQ01XY2RDCB). **BREAKING:** a def's system
+  prompt, tools selector, and model pin newly apply to fork children that
+  had none before. Inside the same TUI, `/ask` kept the parent's def and
+  `/fork` lost it — drift rather than design, and git history shows an
+  earlier commit finding the same mismatch, choosing to delete the claims
+  rather than implement them, and the claims returning within weeks.
+
+  Losing the def was two defects at once (GP-01 names both).
+  *Under-inheriting:* the child inherited the parent's entire transcript,
+  every turn authored under that persona, then ran it with no system
+  prompt at all. *Over-inheriting, and this one escalated:* with no
+  `agent_def` and no `tools` argument the selector resolved to `None` and
+  the registry returned everything, so a parent restricted by its def to
+  `[read, grep, conway_fork]` forked and got a child holding `bash`,
+  `write`, `edit` — strictly wider capability than the parent, in a fork
+  whose premise is "same agent, one more directive".
+
+  `Runtime::start`'s Fork arm now fills `agent_def` from the parent's
+  `SessionMeta` when the call site left it unset. That is the single choke
+  point — `conway_fork`, `ForkSpec`/`SessionHandle::fork`, the TUI's bare
+  `/fork` and `/fork @<agent>`, and `SubagentSpec::fork` all reach it, so
+  none needed editing. Spawn is untouched. The near-identical fill
+  `Runtime::ask` carried is deleted rather than kept in sync by hand, since
+  `ask` is fork-only and this covers it.
+
+  **A `result_contract` is never inherited.** `def_was_inherited` is
+  captured *before* the fill mutates `spec.agent_def`, so a contract is
+  sourced only from a def the call site *named*. This is not the ask
+  carve-out by analogy — a fork's `AgentResult.structured` is both
+  satisfiable and readable by the forker, so that reasoning does not
+  transfer. It rests instead on `start`'s own existing statement that the
+  contract chain is exactly two-deep with no inherit-from-parent step, and
+  on the concrete regression it prevents: without the rule, a bare `/fork`
+  off any def-carrying agent produces a keep-alive interactive child
+  *required* to `report` and *denied* that tool (the TUI hardcodes
+  `Except(["report"])`), reproducing 01KZGX1RR0VXN2YH3P75SBE9SA in a new
+  path with nobody having typed either half.
+
+  Both guards shown to fail first (P-15), verified independently of the
+  implementer. The tool-set guard fails on the offered tool list itself —
+  `["marker", "secret"]` against `["marker"]` — because that list is what
+  the model was handed and is the escalation, not an error string.
+  (`crates/conway-runtime/src/subagent.rs`,
+  `crates/conway-runtime/tests/subagent_fork_spawn.rs`,
+  `crates/conway-core/src/config.rs`, `crates/conway/src/subagent_spec.rs`,
+  `crates/conway-cli/src/tui/commands.rs`,
+  [`docs/agents.md`](docs/agents.md))
+
 - **A context hook can now write a file without guessing where it is
   allowed to: `ContextHookCtx` carries a confinement-checked
   `ArtifactWriteHandle`** (board item 01KZ84437RMKHP5DJX7RMHH7JY).

@@ -575,9 +575,12 @@ async fn bare_spawn<H: Host>(
 ///   `SlashCommand`, which would re-classify the free text and loop). The
 ///   recipe may have been cross-classified (user typed `/fork`, classifier
 ///   said `spawn`); `intent.agent_def` is honored only for `Spawn`
-///   (`ForkSpec` has no agent_def field; a fork inherits the parent's def,
-///   so a classifier-returned `agent_def` on a `Fork` recipe is ignored,
-///   matching `AgentIntent`'s own doc: the def is the OPTIONAL garnish).
+///   ([`bare_fork`] builds its `ForkSpec` with `agent_def` always unset --
+///   see that function's own body -- so a classifier-returned `agent_def`
+///   on a `Fork` recipe is ignored, matching `AgentIntent`'s own doc: the
+///   def is the OPTIONAL garnish; the child still inherits whatever def the
+///   focused agent was itself running under, via `SubagentHost::start`'s
+///   own Fork-only fallback, decision 01KZHEWXDZWPWMEAQ01XY2RDCB).
 ///   `intent.prompt` becomes the first message. Reuses the existing
 ///   `bare_fork`/`bare_spawn` execution path (the `Effect::FocusNewSession`
 ///   machinery) -- no new facade ops.
@@ -611,8 +614,11 @@ pub async fn execute_intent_confirm<H: Host>(
             // which would re-classify the free text and loop. The recipe may
             // have been cross-classified (user typed /fork, classifier said
             // spawn); `intent.agent_def` is honored only for `Spawn`
-            // (`ForkSpec` has no agent_def field; a fork inherits the
-            // parent's def). `intent.prompt` becomes the first message.
+            // (`bare_fork`, below, builds its `ForkSpec` with `agent_def`
+            // always unset; the child still inherits whatever def the
+            // focused agent was itself running under, via `SubagentHost::
+            // start`'s own Fork-only fallback). `intent.prompt` becomes the
+            // first message.
             let focused = state.focused_agent;
             match card.intent.recipe {
                 SubagentMode::Fork => {

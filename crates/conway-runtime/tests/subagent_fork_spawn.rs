@@ -2528,3 +2528,301 @@ async fn a_real_spec_rejection_reaches_the_subagent_handle_as_invalid_arguments(
         ),
     }
 }
+
+// ---------------------------------------------------------------------
+// Decision 01KZHEWXDZWPWMEAQ01XY2RDCB: a fork inherits the parent's own
+// `agent_def` (system prompt, tools selector, model pin) when the call site
+// left its own `agent_def` unset -- `SubagentHost::start`'s Fork-only
+// fallback (`subagent.rs`, right before its `agent_def` resolution) -- but
+// NEVER sources a `result_contract` from a def that arrived that way (only
+// from a def the call site NAMED). Two dedicated fixtures below: a plugin
+// registering TWO tools (one the restricted def allows, one it denies --
+// with plugins: vec![] BOTH the broken and fixed paths would offer an empty
+// tool list and neither guard below could ever fail on the tool list, per
+// this item's own binding notes), and a builder that returns the
+// `ScriptedBackend` handle so a test can inspect exactly what a child was
+// offered via `ScriptedBackend::calls()`.
+// ---------------------------------------------------------------------
+
+fn marker_tool_spec() -> conway_core::content::ToolSpec {
+    conway_core::content::ToolSpec {
+        name: conway_core::ids::ToolName::new("marker"),
+        description: "the tool the restricted def's ToolSelector::Only names".into(),
+        schema: serde_json::from_value(serde_json::json!({"type": "object"})).unwrap(),
+        category: conway_core::content::ToolCategory::Read,
+        permission: conway_core::content::PermissionClass::Safe,
+    }
+}
+
+fn secret_tool_spec() -> conway_core::content::ToolSpec {
+    conway_core::content::ToolSpec {
+        name: conway_core::ids::ToolName::new("secret"),
+        description: "a tool the restricted def's ToolSelector::Only does NOT name".into(),
+        schema: serde_json::from_value(serde_json::json!({"type": "object"})).unwrap(),
+        category: conway_core::content::ToolCategory::Read,
+        permission: conway_core::content::PermissionClass::Safe,
+    }
+}
+
+struct InertTool(conway_core::content::ToolSpec);
+
+#[async_trait]
+impl conway_core::ports::Tool for InertTool {
+    fn spec(&self) -> conway_core::content::ToolSpec {
+        self.0.clone()
+    }
+
+    async fn invoke(
+        &self,
+        _call: conway_core::content::ToolCall,
+        _ctx: conway_core::ports::ToolCtx,
+    ) -> Result<conway_core::ports::ToolOutput, ToolError> {
+        Ok(conway_core::ports::ToolOutput {
+            blocks: vec![ContentBlock::Text {
+                text: "noop".into(),
+            }],
+            is_error: false,
+            truncation: conway_core::content::TruncationPolicy::None,
+            artifacts: vec![],
+        })
+    }
+}
+
+/// Registers TWO tools (`marker`, `secret`) so a `ToolSelector::Only(["marker"])`
+/// def is actually discriminating -- an empty registry cannot distinguish
+/// "the child got the def's selector" from "the child got nothing at all"
+/// (this file's own binding notes call this out as the trap: `build_runtime`
+/// above passes `plugins: vec![]`, which would make either guard below
+/// vacuous).
+struct TwoToolPlugin;
+
+impl conway_core::ports::Plugin for TwoToolPlugin {
+    fn manifest(&self) -> conway_core::ports::PluginManifest {
+        conway_core::ports::PluginManifest {
+            id: "two_tool".to_string(),
+            version: "0.0.0".to_string(),
+            tools: vec![marker_tool_spec().name, secret_tool_spec().name],
+            required_host_caps: vec![],
+        }
+    }
+
+    fn tools(&self) -> Vec<Arc<dyn conway_core::ports::Tool>> {
+        vec![
+            Arc::new(InertTool(marker_tool_spec())),
+            Arc::new(InertTool(secret_tool_spec())),
+        ]
+    }
+}
+
+fn restricted_def() -> AgentDef {
+    AgentDef {
+        name: "restricted".to_string(),
+        description: None,
+        system_prompt: "You are restricted to the marker tool.".to_string(),
+        role: None,
+        model: None,
+        tools: ToolSelector::Only(vec!["marker".to_string()]),
+        skills: Vec::new(),
+        max_steps: None,
+        result_contract: None,
+    }
+}
+
+fn restricted_def_with_contract() -> AgentDef {
+    AgentDef {
+        result_contract: Some(schema_requiring_summary()),
+        ..restricted_def()
+    }
+}
+
+fn schema_requiring_summary() -> schemars::schema::RootSchema {
+    serde_json::from_value(serde_json::json!({
+        "type": "object",
+        "properties": { "summary": { "type": "string" } },
+        "required": ["summary"],
+    }))
+    .unwrap()
+}
+
+/// Mirrors `build_runtime` above, but wires `TwoToolPlugin` (so
+/// `ToolSelector::Only`/`Except` are actually discriminating) and returns
+/// the `ScriptedBackend` handle -- `build_runtime` drops it, and
+/// `ScriptedBackend::calls()` is the only way to inspect exactly what a
+/// child's own `GenerateRequest.tools` contained.
+fn build_runtime_with_two_tools_and_defs(
+    turns: usize,
+    agent_defs: HashMap<String, AgentDef>,
+) -> (Arc<Runtime>, Arc<ScriptedBackend>) {
+    let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
+
+    let backend = Arc::new(
+        ScriptedBackend::new(
+            (0..turns)
+                .map(|_| ScriptedTurn::Respond(text_response("ok")))
+                .collect(),
+        )
+        .with_id(BackendId::new("b")),
+    );
+    let model = ModelRef {
+        backend: backend.id(),
+        model: ModelId::new("m"),
+    };
+    let router: Arc<dyn Router> = Arc::new(FakeRouter::single(model));
+    let mut backends: HashMap<BackendId, Arc<dyn Backend>> = HashMap::new();
+    backends.insert(backend.id(), backend.clone());
+
+    let runtime = Runtime::new(RuntimeDeps {
+        store,
+        router,
+        health: Arc::new(FakeHealth::new()),
+        backends,
+        plugins: vec![Arc::new(TwoToolPlugin)],
+        gate: Arc::new(FakeGate::new(PermissionDecision::AllowOnce)),
+        agent_defs,
+        event_bus: EventBus::with_default_capacity(),
+        headroom: Arc::new(HeadroomPolicy::default()),
+    });
+    (runtime, backend)
+}
+
+/// Guard 1: byte-for-byte what `conway_fork` (and the TUI's `bare_fork`, and
+/// `ForkSpec::from`) build -- `SubagentSpec::fork("go", ..)` leaves
+/// `agent_def: None`/`tools: None` -- forked off a root running under a
+/// `ToolSelector::Only(["marker"])` def. The discriminating observable is
+/// the child's own `GenerateRequest.tools`, captured via
+/// `ScriptedBackend::calls()`: this IS literally what the model was offered,
+/// which is the escalation itself, not a proxy for it (an error string, a
+/// gate-call count, or tree bookkeeping would all be a step removed). Two
+/// secondary assertions cover the under-inheritance half: `AgentNode::
+/// agent_def` and a `Provenance::AgentDef` segment in the child's own
+/// assembled context.
+///
+/// Break-the-guard expectation (reverting the fill in `subagent.rs::start`):
+/// the child's `GenerateRequest.tools` contains BOTH `marker` and `secret`
+/// (the full two-tool registry -- `PluginRegistry::specs`'s `selector.
+/// is_none_or(..)` "no selector -> everything" fallback, since an unfilled
+/// `spec.agent_def` resolves no `agent_def.tools` to narrow against), and
+/// the assertion fails on that list directly, not on an error string.
+#[tokio::test]
+async fn fork_child_inherits_the_parents_agent_def_and_cannot_widen_its_tool_set() {
+    let mut defs = HashMap::new();
+    defs.insert("restricted".to_string(), restricted_def());
+    let (runtime, backend) = build_runtime_with_two_tools_and_defs(2, defs);
+
+    let mut spec = root_spec("investigate");
+    spec.agent_def = Some(AgentDefRef("restricted".to_string()));
+    let mut stream = runtime.subscribe();
+    let root = runtime.start_root(spec).await.unwrap();
+    wait_for_agent_finished(&mut stream, root).await;
+
+    // Byte-for-byte what `conway_fork` builds: no `agent_def`, no `tools`.
+    let child_spec = SubagentSpec::fork("go", Budget::default());
+    assert!(
+        child_spec.agent_def.is_none(),
+        "this spec must start with no agent_def, or the test proves nothing about inheritance"
+    );
+    assert!(child_spec.tools.is_none());
+
+    let mut stream = runtime.subscribe();
+    let child = SubagentHost::start(&*runtime, root, root, child_spec)
+        .await
+        .unwrap();
+    wait_for_agent_finished(&mut stream, child).await;
+
+    // The discriminating observable: exactly what the model was offered.
+    let calls = backend.calls();
+    let child_call = calls
+        .last()
+        .expect("the child must have made at least one generate call");
+    let offered: Vec<String> = child_call
+        .tools
+        .iter()
+        .map(|t| t.name.0.clone())
+        .collect();
+    assert_eq!(
+        offered,
+        vec!["marker".to_string()],
+        "the child must be offered EXACTLY the restricted def's tool set (inherited from the \
+         parent), not the full two-tool registry -- got {offered:?}"
+    );
+    assert!(
+        !offered.contains(&"secret".to_string()),
+        "the child must specifically NOT be offered a tool the inherited def denies"
+    );
+
+    // Secondary: the under-inheritance half.
+    let child_node = runtime
+        .tree()
+        .nodes
+        .into_iter()
+        .find(|n| n.agent_id == child)
+        .expect("child attached to the tree");
+    assert_eq!(
+        child_node.agent_def,
+        Some("restricted".to_string()),
+        "AgentNode::agent_def must carry the inherited def's name"
+    );
+
+    let report = runtime.context_report(child).unwrap();
+    assert!(
+        report
+            .segments
+            .iter()
+            .any(|e| matches!(&e.provenance, Provenance::AgentDef { name } if name == "restricted")),
+        "the child's own context must carry a Provenance::AgentDef segment for the inherited \
+         def, got: {:?}",
+        report.segments
+    );
+}
+
+/// Guard 2: the contract rule. Same `restricted` def, but this one also
+/// carries a `result_contract` (`schema_requiring_summary`). The fork
+/// child's own spec mirrors the TUI's `bare_fork` EXACTLY: `agent_def: None`
+/// (inherit), `result_contract: None` (never inherited, per this item's
+/// ruling), `tools: Some(Except(["report"]))` (the TUI's own hardcoded
+/// keep-alive selector). If a def-declared contract were wrongly sourced
+/// from an INHERITED def, this child would be required to call `report` to
+/// produce `structured` while simultaneously being denied that very tool --
+/// `ContractOutcome::Retry` then `Rejected`, `01KZGX1RR0VXN2YH3P75SBE9SA`'s
+/// exact failure shape reproduced in a new path with nobody having typed
+/// either half. `ScriptedBackend` never calls `report` at all here (plain
+/// text turns only), so a `Some` contract fails validation immediately
+/// (`structured` is null) -- three turns are scripted so the BROKEN path
+/// (which spends its one retry) still has a turn to consume rather than
+/// hitting "scripted backend exhausted" and masking the real assertion.
+///
+/// Break-the-guard expectation (reverting the `def_was_inherited` carve-out
+/// in `subagent.rs::start`'s `result_contract` computation): the child ends
+/// `Rejected { missing: [..] }`, not `Completed`.
+#[tokio::test]
+async fn fork_child_does_not_source_a_result_contract_from_an_inherited_agent_def() {
+    let mut defs = HashMap::new();
+    defs.insert("restricted".to_string(), restricted_def_with_contract());
+    let (runtime, _backend) = build_runtime_with_two_tools_and_defs(3, defs);
+
+    let mut spec = root_spec("investigate");
+    spec.agent_def = Some(AgentDefRef("restricted".to_string()));
+    let mut stream = runtime.subscribe();
+    let root = runtime.start_root(spec).await.unwrap();
+    wait_for_agent_finished(&mut stream, root).await;
+
+    // Mirrors the TUI's `bare_fork` (`commands.rs`) exactly: no agent_def,
+    // no result_contract, tools narrowed to exclude `report`.
+    let mut child_spec = SubagentSpec::fork("go", Budget::default());
+    child_spec.tools = Some(ToolSelector::Except(vec!["report".to_string()]));
+    assert!(child_spec.agent_def.is_none());
+    assert!(child_spec.result_contract.is_none());
+
+    let mut stream = runtime.subscribe();
+    let child = SubagentHost::start(&*runtime, root, root, child_spec)
+        .await
+        .unwrap();
+    let result = wait_for_agent_finished(&mut stream, child).await;
+
+    assert_eq!(
+        result.status,
+        ResultStatus::Completed,
+        "a forked child must NOT inherit its def's result_contract merely because the def \
+         itself was inherited (never named at the call site) -- got {result:?}"
+    );
+}
