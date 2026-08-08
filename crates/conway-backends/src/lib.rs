@@ -25,6 +25,7 @@
 //! HTTP client of its own and is shared, unmodified, by both the
 //! `anthropic` and `openai-compat` adapters' delta-accumulation paths.
 
+pub(crate) mod admission;
 pub mod capabilities;
 pub mod config;
 pub mod error;

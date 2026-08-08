@@ -15,11 +15,22 @@
 //! window). Chain policy consults THIS module; transport-retry policy
 //! consults `is_failover_worthy`.
 //!
-//! `BackendError::ContextOverflow` and `BackendError::BadRequest` are
-//! request problems, not endpoint-health signals: they advance the chain
-//! (the next candidate may well be able to serve the request) but never
-//! produce an `Observation`, so a too-large prompt never trips a breaker
-//! for an otherwise-healthy endpoint.
+//! `BackendError::ContextOverflow`, `BackendError::ContextTooLarge`, and
+//! `BackendError::BadRequest` are request problems, not endpoint-health
+//! signals: they advance the chain (the next candidate may well be able to
+//! serve the request) but never produce an `Observation`, so a too-large
+//! prompt never trips a breaker for an otherwise-healthy endpoint.
+//!
+//! `ContextTooLarge` is the pre-flight twin of `ContextOverflow` —
+//! `Backend::admit`'s own refusal before a request is sent, rather than a
+//! provider's after-the-fact rejection — and both classify identically.
+//! Note that ANY new `BackendError` variant must be added to this table AND
+//! to the test module's `all_variants()`: the type is `#[non_exhaustive]`,
+//! so a missing arm silently falls through to `Fatal` and compiles clean,
+//! and the consistency test below can only catch that for variants it is
+//! actually given. `ContextTooLarge` was added to the type without either,
+//! and read as `Fatal` — chain does not advance — while
+//! `is_failover_worthy()` said the opposite.
 
 use conway_core::error::BackendError;
 use conway_core::routing::Observation;
@@ -56,7 +67,7 @@ impl FailureClass {
 
 /// Classifies a `BackendError` per the T-2 table:
 /// `Transport | ServerError | RateLimit` -> `FailoverRetryable`;
-/// `ContextOverflow | BadRequest` -> `RequestIncompatible`;
+/// `ContextOverflow | ContextTooLarge | BadRequest` -> `RequestIncompatible`;
 /// `Auth | Cancelled | ToolParse` -> `Fatal`.
 pub fn classify(err: &BackendError) -> FailureClass {
     match err {
@@ -64,9 +75,15 @@ pub fn classify(err: &BackendError) -> FailureClass {
         | BackendError::ServerError { .. }
         | BackendError::RateLimit { .. } => FailureClass::FailoverRetryable,
 
-        BackendError::ContextOverflow { .. } | BackendError::BadRequest { .. } => {
-            FailureClass::RequestIncompatible
-        }
+        // `ContextTooLarge` is `ContextOverflow`'s pre-flight twin and is
+        // classified identically: `Backend::admit` refused this candidate
+        // before the request was sent, the endpoint is perfectly healthy,
+        // and a larger-window candidate further down the operator's chain
+        // may well accept it. Advances the chain, never produces an
+        // `Observation`.
+        BackendError::ContextOverflow { .. }
+        | BackendError::ContextTooLarge { .. }
+        | BackendError::BadRequest { .. } => FailureClass::RequestIncompatible,
 
         BackendError::Auth { .. } | BackendError::Cancelled | BackendError::ToolParse { .. } => {
             FailureClass::Fatal
@@ -118,6 +135,14 @@ mod tests {
                 required_tokens: 2,
                 max_context_tokens: 1,
             },
+            BackendError::ContextTooLarge {
+                model: conway_core::ids::ModelId::new("m"),
+                est_tokens: 34_000,
+                headroom_tokens: 16_000,
+                required_tokens: 50_000,
+                max_context_tokens: 40_000,
+                shortfall_tokens: 10_000,
+            },
             BackendError::ToolParse { detail: "x".into() },
             BackendError::Cancelled,
         ]
@@ -148,6 +173,17 @@ mod tests {
                 BackendError::ContextOverflow {
                     required_tokens: 1,
                     max_context_tokens: 1,
+                },
+                RequestIncompatible,
+            ),
+            (
+                BackendError::ContextTooLarge {
+                    model: conway_core::ids::ModelId::new("m"),
+                    est_tokens: 34_000,
+                    headroom_tokens: 16_000,
+                    required_tokens: 50_000,
+                    max_context_tokens: 40_000,
+                    shortfall_tokens: 10_000,
                 },
                 RequestIncompatible,
             ),

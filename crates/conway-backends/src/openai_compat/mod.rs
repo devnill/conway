@@ -21,7 +21,9 @@ use async_trait::async_trait;
 use conway_core::capabilities::{Capabilities, ProbeReport};
 use conway_core::error::BackendError;
 use conway_core::ids::{BackendId, ModelId};
-use conway_core::ports::{Backend, BoxStream, GenerateRequest, GenerateResponse, StreamChunk};
+use conway_core::ports::{
+    check_admission, Admission, Backend, BoxStream, GenerateRequest, GenerateResponse, StreamChunk,
+};
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
@@ -160,5 +162,32 @@ impl Backend for OpenAiCompatBackend {
 
     async fn probe(&self) -> Result<ProbeReport, BackendError> {
         self.run_probe().await
+    }
+
+    /// This dialect's own counting (board item 01KZDC4DKVC4JC3W4KN1WMC43N):
+    /// builds the exact chat-completions wire body `generate`/`stream`
+    /// would send — this profile's own message envelope, tool-schema
+    /// shape, and any per-provider quirks `wire::build_request_body`
+    /// applies — distinct from `AnthropicBackend`'s native Messages body,
+    /// estimates its size locally with
+    /// [`crate::admission::estimate_wire_tokens`] (no network I/O; no
+    /// OpenAI-compatible server this crate targets even exposes a
+    /// count-tokens endpoint), then calls the ONE shared arithmetic helper,
+    /// [`check_admission`], for the fits/shortfall comparison rather than
+    /// restating it (P-14).
+    fn admit(
+        &self,
+        req: &GenerateRequest,
+        headroom_tokens: u32,
+    ) -> Result<Admission, BackendError> {
+        let caps = self.capabilities(&req.model);
+        let body = wire::build_request_body(req, &self.profile, caps.parallel_tool_calls, false);
+        let est_tokens = crate::admission::estimate_wire_tokens(&body);
+        check_admission(
+            req.model.clone(),
+            est_tokens,
+            headroom_tokens,
+            caps.max_context_tokens,
+        )
     }
 }

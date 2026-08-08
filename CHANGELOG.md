@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`Backend` gains an `admit` method: whether a request fits is now
+  answerable by the thing talking to the endpoint** (board item
+  01KZDC4DKVC4JC3W4KN1WMC43N, decision 01KZDBYTKFYTVD9R2NA10QJNJE; P-4 and
+  P-9 amended accordingly). Only a backend knows its model's real window,
+  how its provider tokenizes, and what a refusal looks like when it
+  arrives, so `Backend::admit(&self, req: &GenerateRequest, headroom_tokens:
+  u32) -> Result<Admission, BackendError>` answers with the numbers behind
+  the verdict — `est_tokens`, `headroom_tokens`, `max_context_tokens` — on
+  both `Ok` and the new `BackendError::ContextTooLarge` (which additionally
+  names `required_tokens` and `shortfall_tokens`), never a bare boolean.
+  `AnthropicBackend` and `OpenAiCompatBackend` each estimate `est_tokens`
+  from their OWN wire-format request body (Anthropic's Messages envelope
+  vs. an OpenAI-compatible chat-completions body genuinely serialize to
+  different byte counts for identical content), entirely locally — no
+  network round trip, not even Anthropic's own `/v1/messages/count_tokens`
+  endpoint, is ever made on this path. Both dialects call one shared
+  helper, `conway_core::ports::check_admission`, for the headroom
+  arithmetic and fit comparison (P-14: exactly one implementation, not one
+  per dialect); `admit` has a dialect-neutral default implementation so
+  every other `Backend` in the workspace (every test fake included) keeps
+  compiling unchanged. Headroom the *number* is still declarative
+  configuration, resolved by whoever calls `admit` — only who *reads* it
+  moved. `capability.rs` (`conway-routing`) still performs its own,
+  pre-existing headroom check today; consolidating onto this new port
+  method, and relocating `capability.rs` itself, is board item
+  01KZDC5BJWSWZZJQ7HHS11S97H, not this one — `conway-runtime`'s existing
+  admission path is unchanged here, and the only `conway-routing` change is
+  the classification arm described next.
+  **A refusal advances the fallback chain rather than ending the turn.**
+  `BackendError::ContextTooLarge` is classified as `RequestIncompatible`,
+  exactly like its post-flight twin `ContextOverflow`: the endpoint is
+  healthy, so no circuit-breaker observation is recorded, but the chain
+  advances because a larger-window candidate further down the operator's
+  own configured list may accept the request. Advancing to the next entry
+  the operator already declared is not the silent escalation P-9 forbids.
+  This also keeps the routing-side table consistent with
+  `BackendError::is_failover_worthy()`; because `BackendError` is
+  `#[non_exhaustive]`, a missing arm would have compiled cleanly and read
+  as `Fatal`, which is the opposite behaviour.
+  (`crates/conway-core/src/ports/backend.rs`, `crates/conway-core/src/error.rs`,
+  `crates/conway-backends/src/admission.rs`,
+  `crates/conway-backends/src/{anthropic,openai_compat}/mod.rs`,
+  `crates/conway-backends/tests/admission.rs`,
+  `crates/conway-routing/src/failure.rs`)
+
 ### Changed
 
 - **`conway_subagent` is split into `conway_fork` and `conway_spawn`**
