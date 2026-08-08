@@ -599,6 +599,119 @@ async fn ask_child_can_invoke_a_tool_the_parent_session_had() {
 }
 
 // ---------------------------------------------------------------------
+// Board item 01KZGX1RR0VXN2YH3P75SBE9SA: a def-declared `result_contract`
+// must never govern an ask child.
+// ---------------------------------------------------------------------
+
+/// A def whose `tools` selector omits `report` (so the ask child can never
+/// satisfy any contract -- `structured` is populated ONLY by a successful
+/// `report` call, `conway-runtime`'s `result.rs`) AND declares a
+/// `result_contract` of its own. `SessionHandle::ask` already inherits this
+/// def (`parent_meta.agent_def.map(AgentDefRef)`); before the fix,
+/// `conway-runtime`'s `subagent.rs::start` also sourced `result_contract`
+/// from this SAME def as a fallback, so the ask child had a contract it
+/// structurally could not satisfy -- one retry, then `Rejected`.
+fn write_contract_asker_agent_def(dir: &std::path::Path) {
+    let content = concat!(
+        "---\n",
+        "name: contract_asker\n",
+        "tools: [marker]\n",
+        "result_contract:\n",
+        "  type: object\n",
+        "  required: [ok]\n",
+        "  properties:\n",
+        "    ok: { type: boolean }\n",
+        "---\n",
+        "Contract asker system prompt.\n",
+    );
+    std::fs::write(dir.join("contract_asker.md"), content).expect("write agent def fixture");
+}
+
+/// **Part 1 guard (board item 01KZGX1RR0VXN2YH3P75SBE9SA), shown to fail
+/// before the fix.** The asker's own def declares a `result_contract` the
+/// child cannot possibly satisfy (its `tools` selector omits `report`, so
+/// `structured` always resolves to `null`). Drives the exact production
+/// path the TUI's modal `/ask` uses (`SessionHandle::ask`, which already
+/// inherits `agent_def` -- see that method's own doc). Before this item's
+/// fix, `subagent.rs::start` sourced `result_contract` from the SAME
+/// inherited def as a second, lower-precedence source (WI-086's original
+/// precedence chain, meant for an ordinary `conway_fork`/`conway_spawn`
+/// child that CAN call `report`), so this ask child failed validation on
+/// its first turn, spent its one corrective retry (consuming a SECOND
+/// scripted backend turn), and terminated `Rejected` -- never `Completed`.
+/// `AskOutcome` (the `conway_ask` tool path) and `TurnHandle::result`'s
+/// `AgentResult` (this facade path) are the two things a caller can
+/// actually observe; `AskOutcome` in particular carries no `structured`
+/// field at all, so a contract governing an ask child could only ever
+/// break a good answer, never validate one.
+#[tokio::test]
+async fn ask_child_completes_with_prose_despite_a_def_declared_result_contract_it_cannot_satisfy()
+{
+    let agents_dir = support::unique_temp_dir("ask-contract-carveout");
+    write_contract_asker_agent_def(&agents_dir);
+
+    let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
+    let backend = Arc::new(
+        ScriptedBackend::new(vec![
+            ScriptedTurn::Respond(text_response("parent ack")),
+            // The child's one (and, post-fix, ONLY) turn: plain prose, no
+            // `report` call. A second scripted turn is queued too, so a
+            // pre-fix run (contract enforced -> corrective retry) has a
+            // response to consume instead of exhausting the script and
+            // masking the real failure behind an unrelated backend error.
+            ScriptedTurn::Respond(text_response("ask prose answer")),
+            ScriptedTurn::Respond(text_response("ask prose answer, retry turn")),
+        ])
+        .with_id(BackendId::new("fake")),
+    );
+    let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
+    let mut config = base_config();
+    config.agents = AgentsConfig { dir: agents_dir };
+    let conway = ConwayBuilder::from_parts(config)
+        .with_backend(backend as Arc<dyn Backend>)
+        .with_session_store(store.clone())
+        .with_permission_gate(gate)
+        .with_router(fake_router())
+        .build()
+        .expect("build should succeed");
+
+    let handle = conway
+        .new_session(SessionSpec {
+            agent_def: Some("contract_asker".to_string()),
+            ..SessionSpec::default()
+        })
+        .await
+        .expect("new_session should succeed");
+    let turn = handle.prompt("parent turn").await.expect("prompt");
+    let _ = tokio::time::timeout(Duration::from_secs(5), turn.result())
+        .await
+        .expect("result must not hang")
+        .expect("result should succeed");
+
+    let ask_turn = handle
+        .ask("what's the answer?")
+        .await
+        .expect("ask should succeed");
+    let result = tokio::time::timeout(Duration::from_secs(5), ask_turn.result())
+        .await
+        .expect("ask result must not hang")
+        .expect("ask result should succeed (the outer Result -- distinct from AgentResult::status, asserted below)");
+
+    assert_eq!(
+        result.status,
+        conway_core::agent::ResultStatus::Completed,
+        "an ask child must complete with prose -- a def-declared result_contract must never \
+         govern it, since AskOutcome/TurnHandle expose no `structured` field a contract could \
+         ever satisfy. Got: {:?}",
+        result.status
+    );
+    assert_eq!(
+        result.summary, "ask prose answer",
+        "the child's prose reply, unmolested by contract validation"
+    );
+}
+
+// ---------------------------------------------------------------------
 // Ephemeral flag on the live event stream (board item b)
 // ---------------------------------------------------------------------
 

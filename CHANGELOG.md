@@ -150,6 +150,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A modal `/ask` against a session whose agent def declares a
+  `result_contract` no longer fails on every call, and an `ask` child now
+  inherits the parent's agent def** (board items
+  01KZGX1RR0VXN2YH3P75SBE9SA and 01KZC8DD9C74BSTP8BQDJKYNFR, settled
+  decision 01KZGX0RSJ7WDYMCT9SE2V5GHF — one change, because both land at
+  the same trait boundary). Two halves of a single inconsistency, and
+  together an instance of GP-01 in **both** directions at once:
+  - *Under-inheritance, now fixed.* The `conway_ask` tool builds its
+    `SubagentSpec` with `agent_def: None` — a `ToolCtx` has no
+    `SessionMeta`/`AgentDef` lookup of its own — and `Runtime::ask` passed
+    that `None` straight through. The child therefore inherited the
+    parent's **entire transcript** (a fork always does) while getting no
+    system prompt of its own: it silently read a transcript authored by an
+    agent it was not. Worse, since an absent `spec.tools` *plus* an absent
+    `agent_def.tools` falls through to `PluginRegistry::specs`'s "no
+    selector means everything", the child resolved to the **full tool
+    registry** rather than the parent def's restrictive selector — a
+    capability escalation one `conway_ask` hop away from a def-restricted
+    parent. `Runtime::ask` now fills `agent_def` from the parent's own
+    `SessionMeta` when the call site leaves it unset, at the trait
+    boundary rather than by widening `ToolCtx` for one call site (P-1).
+    This is a fallback, not an override: an embedder that supplies its own
+    `spec.agent_def` is left untouched, and a caller-narrowing
+    `spec.tools`/`AskArgs::tools` still takes precedence over the def's
+    selector — it can restrict the inherited set, never widen it.
+  - *Over-inheritance, now carved out.* Filling `agent_def` exposed a live
+    regression that already existed on the facade path, where
+    `SessionHandle::ask` has always inherited the def: `start` also
+    sourced `result_contract` from that def, so a TUI modal `/ask` against
+    any session whose def declares a contract failed **every** call.
+    `structured` is populated only by a successful `report` call, and no
+    operator lists `report` in a reviewer's tools, so the child failed
+    validation, spent its one corrective retry, and terminated `Rejected`.
+    A def-declared contract is now never sourced for an ask child, gated
+    on `spec.ask_origin.is_some()` — already `Some` for exactly the two
+    ask entry points and `None` for every fork/spawn reaching the same
+    `start`, so no parallel "is this an ask" flag was needed. The
+    justification is structural, not a heuristic: `AskOutcome` carries no
+    `structured` field at all, and `TurnHandle` is driven the same way, so
+    a contract on an ask child can only ever turn a good prose answer into
+    a rejection — it can never satisfy anything a caller reads back. An
+    embedder hand-constructing a spec with both `ask_origin` and
+    `result_contract` set is rejected with a typed `InvalidSpec` rather
+    than silently ignored (P-10).
+
+  Both halves ship with a guard shown to fail first (P-15): the facade
+  test reproduces the exact live failure
+  (`Rejected { missing: [": null is not of type \"object\""] }`) and the
+  runtime test asserts the child's context carries a
+  `Provenance::AgentDef` segment, not merely that tree bookkeeping records
+  a def. `conway_fork`'s own def-dropping asymmetry — the same TUI keeps
+  the def on `/ask` and loses it on `/fork` — is deliberately **not**
+  changed here; it is filed separately as 01KZGXYSEKMVM4GVG4ZBWC0WSC,
+  because a fork returns a full `AgentResult` *with* a `structured` field,
+  so the contract reasoning above does not transfer to it.
+  (`crates/conway-runtime/src/subagent.rs`,
+  `crates/conway-core/src/ports/subagent.rs`,
+  `crates/conway-tools/src/subagent/ask.rs`,
+  `crates/conway-runtime/tests/ask.rs`, `crates/conway/tests/ask.rs`,
+  [`docs/agents.md`](docs/agents.md))
+
 - **Tool schemas are sent once per request instead of twice** (board item
   01KYTMJA0JHT5SAPYDGV251V17). Every request carried the full tool-schema set
   twice: as the native `tools` array the provider consumes, and again as a

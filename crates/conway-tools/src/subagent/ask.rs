@@ -6,16 +6,25 @@
 //!
 //! Fork-only (v1): the child inherits this agent's full context and
 //! effective role (fork semantics; role via the runtime's parent-role
-//! fallback, WI-136, `conway_runtime::subagent`). It does **not** inherit
-//! this agent's `agent_def`: `invoke` below always passes `agent_def: None`
-//! on the `SubagentSpec`, so a def-declared `result_contract`, tools
-//! selector, system prompt, and model pin never apply to a `conway_ask`
-//! child, even when the parent itself was spawned from a def. This tool
-//! takes only `prompt`, an optional `budget`, and an optional `tools`
-//! narrowing list — no `mode`/`result_contract`/`role`/`agent_def` args.
-//! Returns the full reply text (GP-01) so the model can compose a fresh
-//! spawn out-of-band, keeping the curation reasoning out of this agent's
-//! context window.
+//! fallback, WI-136, `conway_runtime::subagent`). `invoke` below always
+//! passes `agent_def: None` on the `SubagentSpec` -- but `Runtime::ask`
+//! (`conway_runtime::subagent`, board item 01KZC8DD9C74BSTP8BQDJKYNFR)
+//! fills it from the parent's own `SessionMeta::agent_def` at the trait
+//! boundary when the call site leaves it unset, so the child DOES inherit
+//! the parent's `agent_def` for system prompt, tools selector, and model
+//! pin -- exactly like an ordinary `conway_fork`. The one thing it never
+//! inherits is a def-declared `result_contract` (board item
+//! 01KZGX1RR0VXN2YH3P75SBE9SA): `Runtime::start` carves that out
+//! unconditionally for any spec whose `ask_origin` is set (both ask entry
+//! points set it), because `AskOutcome`/the facade's `TurnHandle` expose no
+//! `structured` field a contract could ever satisfy -- it could only ever
+//! fail one. This tool takes only `prompt`, an optional `budget`, and an
+//! optional `tools` narrowing list — no `mode`/`result_contract`/`role`/
+//! `agent_def` args; `tools`, when supplied, still narrows the inherited
+//! set (it can restrict, never widen, the def's own selector). Returns the
+//! full reply text (GP-01) so the model can compose a fresh spawn
+//! out-of-band, keeping the curation reasoning out of this agent's context
+//! window.
 
 use async_trait::async_trait;
 use schemars::JsonSchema;
@@ -42,9 +51,12 @@ const DEFAULT_ASK_DEADLINE_SECS: u64 = 120;
 #[serde(deny_unknown_fields)]
 pub(super) struct AskArgs {
     /// The prompt to run in the ephemeral fork. The child inherits this
-    /// agent's full context and effective role (fork semantics), but NOT
-    /// this agent's agent_def -- a parent def's result contract, tools
-    /// selector, system prompt, and model pin do not apply to the child.
+    /// agent's full context and effective role (fork semantics), AND this
+    /// agent's agent_def -- a parent def's tools selector, system prompt,
+    /// and model pin all apply to the child, exactly like an ordinary fork.
+    /// The one exception: a def-declared result_contract never applies to
+    /// this child (the reply is always plain text; there is no structured
+    /// field for a contract to validate).
     prompt: String,
     #[serde(default)]
     budget: Option<BudgetArg>,
@@ -136,6 +148,15 @@ impl Tool for AskTool {
         let spec = SubagentSpec {
             mode: SubagentMode::Fork,
             prompt: args.prompt,
+            // `None` here is not "no agent_def" -- `ToolCtx` has no
+            // `SessionMeta`/`AgentDef` lookup surface for this tool to
+            // resolve the parent's own def itself (P-1: that lookup belongs
+            // at the `SubagentHost` trait boundary, not duplicated at a
+            // single tool callsite). `Runtime::ask`
+            // (`conway_runtime::subagent`) fills this from the parent's
+            // `SessionMeta::agent_def` when it is left `None`, so the child
+            // still inherits the parent's system prompt/tools/model pin --
+            // see this module's own doc.
             agent_def: None,
             role: None,
             tools: args.tools.map(ToolSelector::Only),

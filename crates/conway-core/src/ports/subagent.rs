@@ -158,6 +158,22 @@ pub trait SubagentHost: Send + Sync + 'static {
     /// does not resolve the drain. `ask` is fork+await-text, NOT a third
     /// subagent primitive (P-1): no mode parameter. `caller` must own
     /// `parent`, exactly as `start` requires -- see this module's own doc.
+    ///
+    /// **Agent-def inheritance (board items 01KZGX1RR0VXN2YH3P75SBE9SA/
+    /// 01KZC8DD9C74BSTP8BQDJKYNFR):** when `spec.agent_def` is left `None`
+    /// (the `conway_ask` tool never sets it), an implementation MUST fill
+    /// it from `parent`'s own `SessionMeta::agent_def` before forking --
+    /// otherwise the child inherits the parent's ENTIRE transcript (a fork
+    /// always does) but gets no system prompt of its own, and its tool set
+    /// resolves to the FULL registry rather than the def's own selector
+    /// (`ToolSelector`'s "no selector means everything" convention), a
+    /// capability escalation one `ask` hop away from a def-restricted
+    /// parent. The def's `result_contract`, however, MUST NEVER govern the
+    /// resulting child, regardless of whether `agent_def` was filled or
+    /// caller-supplied: `AskOutcome` above carries no `structured` field
+    /// for any caller to validate against, so a def-declared contract on an
+    /// ask child could only ever turn a good prose answer into a rejection,
+    /// never satisfy anything a caller reads back.
     async fn ask(
         &self,
         caller: AgentId,

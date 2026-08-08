@@ -128,8 +128,8 @@ use std::sync::{Arc, Mutex, Weak};
 use async_trait::async_trait;
 use chrono::Utc;
 use conway_core::agent::{
-    AgentMessage, AgentResult, AgentTreeSnapshot, AskOutcome, CancelMode, ResultStatus,
-    SubagentMode, SubagentSpec,
+    AgentDefRef, AgentMessage, AgentResult, AgentTreeSnapshot, AskOutcome, CancelMode,
+    ResultStatus, SubagentMode, SubagentSpec,
 };
 use conway_core::capabilities::CacheMode;
 use conway_core::config::DEFAULT_MAX_PARALLEL_TOOLS;
@@ -420,10 +420,63 @@ impl SubagentHost for Runtime {
         // which additionally falls back to the parent -- a subagent's result
         // contract has no such "inherit from parent" step, so the fallback
         // chain here is exactly two-deep.
-        let result_contract = spec
-            .result_contract
-            .clone()
-            .or_else(|| agent_def.and_then(|d| d.result_contract.clone()));
+        //
+        // **`ask_origin.is_some()` carve-out** (board items 01KZGX1RR0VXN2YH3P75SBE9SA/
+        // 01KZC8DD9C74BSTP8BQDJKYNFR): `spec.ask_origin` is `Some` for
+        // exactly the two ask entry points -- `conway`'s `SessionHandle::ask`
+        // (`AskOrigin::ModalAsk`) and the `conway_ask` tool
+        // (`AskOrigin::ToolAsk`) -- and `None` for every `conway_fork`/
+        // `conway_spawn` call, model-invoked or embedder-invoked, that
+        // reaches this SAME `start` (P-1: `ask` composes `start`, it is not
+        // a third primitive, so this is the one place both an `ask` and an
+        // ordinary fork/spawn spec converge). It is therefore the correct
+        // signal to gate on here, RELIABLY, without adding a parallel
+        // "is this an ask" flag: it already means exactly that, everywhere
+        // a `SubagentSpec` reaches this function.
+        //
+        // An ask child's result never reaches a caller who can read
+        // `structured` at all -- `SubagentHost::ask` returns `AskOutcome`
+        // (`text`/`usage`/`status`/`transcript_ref` only, no `structured`
+        // field, `conway-core`'s `agent.rs`), and `SessionHandle::ask`'s
+        // `TurnHandle` is driven the same way. A def-declared
+        // `result_contract` can therefore only ever turn a good prose
+        // answer into a validation failure for an ask child -- it can never
+        // satisfy anything a caller reads back -- so it is NEVER sourced
+        // from the def here, regardless of what the spawning def declares.
+        // An EXPLICIT call-site contract on an ask spec (not reachable from
+        // either shipped ask entry point today -- both always pass
+        // `result_contract: None` -- but `SubagentSpec` is a public library
+        // type an embedder could construct by hand with `ask_origin: Some`
+        // AND `result_contract: Some` set directly) is rejected with a
+        // typed error (P-10: never silently ignored) rather than accepted
+        // and then structurally unsatisfiable. Reuses `RuntimeError::
+        // InvalidSpec` via the `invalid_spec` helper already used at every
+        // other "reject the caller's own spec" site in this file (see the
+        // module doc's "`RuntimeError::InvalidSpec` (rejected specs)"
+        // section) rather than minting a new variant paralleling
+        // `AskRequiresFork`'s shape one-for-one: `InvalidSpec` already
+        // routes identically through `conway_core::ports::subagent::
+        // translate` -> `SubagentError::InvalidSpec` ->
+        // `ToolError::InvalidArguments`, so a dedicated variant would add a
+        // second, structurally identical path for zero behavioral gain.
+        let result_contract = if spec.ask_origin.is_some() {
+            match spec.result_contract.clone() {
+                Some(_) => {
+                    return Err(invalid_spec(ConwayError::Config {
+                        detail: "an ask spec (ask_origin is set) may not carry its own \
+                                 result_contract: AskOutcome/TurnHandle never expose a \
+                                 structured field for a caller to read, so a contract on an \
+                                 ask child can only ever fail, never succeed"
+                            .to_string(),
+                    }));
+                }
+                None => None,
+            }
+        } else {
+            spec.result_contract
+                .clone()
+                .or_else(|| agent_def.and_then(|d| d.result_contract.clone()))
+        };
 
         let now = Utc::now();
         let mut meta = SessionMeta {
@@ -912,12 +965,51 @@ impl SubagentHost for Runtime {
         if spec.mode != SubagentMode::Fork {
             return Err(RuntimeError::AskRequiresFork { mode: spec.mode });
         }
+        // P-1/board item 01KZC8DD9C74BSTP8BQDJKYNFR: the `conway_ask` tool
+        // (`crates/conway-tools/src/subagent/ask.rs`) always builds its
+        // `SubagentSpec` with `agent_def: None` -- it has no
+        // `SessionMeta`/`AgentDef` lookup surface of its own, only a
+        // `ToolCtx`. Filled in HERE, at the trait boundary (not widening
+        // `ToolCtx` to give a single tool callsite its own copy of this
+        // lookup -- P-1's own "enforced at the trait boundary, not only at
+        // a single tool callsite" shape), from the PARENT's own
+        // `SessionMeta::agent_def` when the caller left it unset -- the
+        // exact fallback `conway`'s `SessionHandle::ask` already hardcodes
+        // itself (`parent_meta.agent_def.map(AgentDefRef)`) and
+        // `runtime.rs`'s `resume_root` already uses for its own resume
+        // path. A caller that DOES supply `spec.agent_def` (an embedder's
+        // own `ForkSpec`, hypothetically) is left untouched -- this is a
+        // fallback, not an override, mirroring `tools`'/`result_contract`'s
+        // own "call site wins" precedence in `start` below.
+        //
+        // Before this fill, an ask child got NO agent_def at all: no
+        // system-prompt segment (it silently read a transcript authored by
+        // an agent it is not), and -- since an absent `spec.tools` PLUS an
+        // absent `agent_def.tools` resolves to `PluginRegistry::specs`'s
+        // `selector.is_none_or(..)` "no selector -> everything" fallback --
+        // the FULL tool registry rather than the parent def's own
+        // restrictive selector: a capability escalation one `conway_ask`
+        // hop away from a def-restricted parent. `spec.tools` (a caller-
+        // narrowing arg, e.g. `AskArgs::tools`) still takes precedence over
+        // whatever the now-filled `agent_def.tools` supplies -- unchanged,
+        // see `start`'s own `tools` precedence below.
+        let mut spec = spec;
+        if spec.agent_def.is_none() {
+            let parent_session = self.agent_session(parent)?;
+            let parent_meta = self.loop_deps().store.meta(&parent_session).await?;
+            spec.agent_def = parent_meta.agent_def.map(AgentDefRef);
+        }
         // 1. Subscribe BEFORE launch so the first TextDelta is not missed.
         let mut stream = Runtime::subscribe(self);
         // 2. Launch the child (fork per `spec.mode`; `ask` is fork-only --
         //    P-1). `caller` flows straight through: `start`'s own
         //    `ensure_own_subtree(caller, parent)` is this method's ONLY
-        //    ownership check -- see this method's own doc.
+        //    ownership check -- see this method's own doc. `spec.ask_origin`
+        //    is set by the caller (`ToolAsk`/`ModalAsk`) before it reaches
+        //    here -- `start`'s own carve-out (see that method's
+        //    `result_contract` computation) is what keeps a def-declared
+        //    `result_contract`, now reachable via the `agent_def` fill just
+        //    above, from ever governing this child.
         let child_agent = self.start(caller, parent, spec).await?;
         // 3. Resolve the child's SessionId for `transcript_ref` (P-2). The
         //    child is already attached (start -> launch_agent -> tree.attach
