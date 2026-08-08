@@ -182,6 +182,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   design. Every unbuilt section names its board item
   (01KZDC0RDRMMMJHX7SAFMM2Q5A, 01KZ844ZXZMVRWC7ZANT7PSM6X).
 
+- **`conway::backend` — a `Backend` can now be written from a crate that
+  depends only on `conway`** (board item 01KZHEZF8XCD0TMDYZQP06J2KH, under
+  the backends-as-plugins charter; shape approved in decision
+  01KZHRPZ010R37411R3W1XR5TF). The trait was re-exported, but none of the
+  types its five methods name were, so nobody outside this repository could
+  actually implement one. That gap was established by **compiling, not by
+  reading**: a scratch crate depending only on `conway` with a full
+  `impl conway::Backend` failed with 17 unresolved-name errors — a wider
+  set than any of the three documents describing it, all of which omitted
+  `Admission`, `check_admission`, and `BoxStream` despite `Backend::admit`
+  requiring all three.
+
+  The new curated module exports exactly what the trait's signatures and
+  their field types demand, each name justified in the module doc by what
+  requires it (GP-14 bars exporting anything "for completeness").
+  `check_admission` is not decoration: `admit`'s contract requires every
+  implementation to route its arithmetic through that one function rather
+  than restating `est + headroom <= max`, so an author who cannot name it
+  cannot honour the contract (P-14). It is a **separate module beside
+  `conway::plugin`** rather than folded into it — a `Backend` is not a
+  `Tool`/`Plugin`/`ContextHook`, it is selected by `backends.<id>.kind` in
+  config rather than registered in-process alongside a session's tools, and
+  its twenty-odd names would bury that module's own narrower promise.
+
+  Two tests lock it: `backend_parity.rs` implements all five methods with
+  `admit` overridden and delegating to `check_admission`, using only
+  `conway::` paths and importing no internal crate and no `fakes` feature —
+  so a shrink in the public surface is a **build** failure, not a runtime
+  assertion — and `backend_surface.rs` pins every exported name so a silent
+  removal fails to compile there too. Verified by deleting one export and
+  observing `error[E0432]: unresolved import`, then restoring.
+  `docs/embedding.md`'s reachability table now shows `Backend` as
+  implementable from a facade-only crate, and the prose beneath it no
+  longer bundles it into the "deliberate, not gaps" claim. `builder.rs` is
+  unchanged and no existing test needed editing — this is purely additive.
+  (`crates/conway/src/lib.rs`, `crates/conway/tests/backend_parity.rs`,
+  `crates/conway/tests/backend_surface.rs`,
+  [`docs/embedding.md`](docs/embedding.md))
+
 - **Docs 2/5 — the normative hook and extension-point reference,
   [`docs/plugins/hooks.md`](docs/plugins/hooks.md)** (board item
   01KYTP63BD0J0324VB5AH7NXK5). Fourteen extension points, each with all
