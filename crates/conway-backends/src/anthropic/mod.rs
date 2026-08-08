@@ -23,7 +23,9 @@ use conway_core::capabilities::{CacheMode, Capabilities, ProbeReport};
 use conway_core::content::ToolSpec;
 use conway_core::error::BackendError;
 use conway_core::ids::{BackendId, ModelId};
-use conway_core::ports::{Backend, BoxStream, GenerateRequest, GenerateResponse, StreamChunk};
+use conway_core::ports::{
+    check_admission, Admission, Backend, BoxStream, GenerateRequest, GenerateResponse, StreamChunk,
+};
 use conway_core::segment::PromptSegment;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
@@ -184,6 +186,31 @@ impl Backend for AnthropicBackend {
         // spawned driver task in `stream.rs` — nothing further is retried.
         let response = self.http.send_with_retry(make, &cancel).await?;
         Ok(stream::spawn(response, req.tools))
+    }
+
+    /// Anthropic's own dialect counting (board item 01KZDC4DKVC4JC3W4KN1WMC43N):
+    /// builds the exact `/v1/messages` wire body `generate`/`stream` would
+    /// send (Anthropic's message envelope, its system-prompt handling, its
+    /// tool-schema shape — all distinct from `OpenAiCompatBackend`'s),
+    /// estimates its size locally with [`crate::admission::estimate_wire_tokens`]
+    /// (no network I/O — not even Anthropic's own `/v1/messages/count_tokens`),
+    /// then calls the ONE shared arithmetic helper,
+    /// [`check_admission`], for the fits/shortfall comparison rather than
+    /// restating it (P-14).
+    fn admit(
+        &self,
+        req: &GenerateRequest,
+        headroom_tokens: u32,
+    ) -> Result<Admission, BackendError> {
+        let caps = self.capabilities(&req.model);
+        let (body, _placements) = wire::build_request_body(req, DEFAULT_MAX_TOKENS, false);
+        let est_tokens = crate::admission::estimate_wire_tokens(&body);
+        check_admission(
+            req.model.clone(),
+            est_tokens,
+            headroom_tokens,
+            caps.max_context_tokens,
+        )
     }
 
     async fn probe(&self) -> Result<ProbeReport, BackendError> {

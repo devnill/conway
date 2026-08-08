@@ -220,6 +220,25 @@ requires a `RoutingReason` per candidate. What is missing is a declarative
 install path, which is the identical gap entry 3 describes for backends. Both
 should be solved once.
 
+**Admission is half landed, and the half that is missing is the consuming
+half.** Board item 01KZDC4DKVC4JC3W4KN1WMC43N added `Backend::admit`, the
+`Admission` numbers it returns, `BackendError::ContextTooLarge`, and one shared
+`check_admission` that every dialect calls. Both shipped adapters implement it
+over their own wire bodies. So the page's "a backend answers admissible or not
+and says so with numbers" is true today.
+
+The page's next clause is not: "a router uses that answer to pass over a
+candidate that cannot take the request." **Nothing calls `admit` outside tests.**
+The live request path still admits through `conway_routing`'s own pre-existing
+`context_shortfall`, so the tree currently holds two implementations of the same
+arithmetic — which P-14 forbids as a steady state and which this entry's work is
+what resolves. `admit` is labelled at its declaration site as not yet consumed,
+naming this item.
+
+The design question deliberately left for here, rather than improvised there:
+how `RoutingError::ContextTooLarge` and `BackendError::ContextTooLarge` relate
+at the call site. Settle that before deleting `capability.rs`'s copy.
+
 **Needed to make it true:**
 
 - Split the crate. The core keeps the `Router` port, the `RoutingReason` /

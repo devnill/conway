@@ -10,6 +10,107 @@ use crate::error::BackendError;
 use crate::ids::{BackendId, ModelId, PrefixKey};
 use crate::segment::PromptSegment;
 
+/// The numbers behind an admission verdict (P-4/P-9 amendment, decision
+/// 01KZDBYTKFYTVD9R2NA10QJNJE, board item 01KZDC4DKVC4JC3W4KN1WMC43N):
+/// `est_tokens` as measured by whichever `Backend::admit` implementation
+/// produced this (its own dialect's local estimate -- never a network round
+/// trip), the `headroom_tokens` the caller resolved from configuration, and
+/// the model's declared `max_context_tokens`. `Backend::admit` returns
+/// these numbers whether or not the request fits: on success as `Ok`, on
+/// rejection folded into [`BackendError::ContextTooLarge`] (which carries
+/// the same three numbers plus the two derived ones). Nothing about
+/// admission is ever collapsed to a bare boolean.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Admission {
+    pub est_tokens: u32,
+    pub headroom_tokens: u32,
+    pub max_context_tokens: u32,
+}
+
+impl Admission {
+    /// `est_tokens + headroom_tokens`, saturating.
+    pub fn required_tokens(&self) -> u32 {
+        self.est_tokens.saturating_add(self.headroom_tokens)
+    }
+
+    /// Whether `required_tokens()` fits inside `max_context_tokens`.
+    /// Inclusive bound: an exact fit (`required_tokens() ==
+    /// max_context_tokens`) admits -- the same inclusive bound
+    /// `conway_routing::context_shortfall` documents for its own,
+    /// pre-relocation copy of this arithmetic (that copy is retired by
+    /// board item 01KZDC5BJWSWZZJQ7HHS11S97H, not this one).
+    pub fn fits(&self) -> bool {
+        self.required_tokens() <= self.max_context_tokens
+    }
+
+    /// How far `required_tokens()` exceeds `max_context_tokens` (`0` when
+    /// it fits). Saturating.
+    pub fn shortfall_tokens(&self) -> u32 {
+        self.required_tokens()
+            .saturating_sub(self.max_context_tokens)
+    }
+}
+
+/// THE headroom arithmetic and fit comparison (P-14, P-4's "what stays
+/// shared" clause): every `Backend::admit` implementation -- the default
+/// below, and both shipped `conway-backends` dialects -- calls this rather
+/// than restating `est_tokens + headroom_tokens <= max_context_tokens`
+/// itself. Only the estimate feeding `est_tokens` may legitimately differ
+/// per dialect (that is the "tokenizer as the injected seam" P-4 asks for);
+/// the comparison itself must never be restated, since two backends
+/// growing slightly different notions of "fits" -- one of which quietly
+/// omits a check -- is precisely the drift P-14 exists to prevent.
+pub fn check_admission(
+    model: ModelId,
+    est_tokens: u32,
+    headroom_tokens: u32,
+    max_context_tokens: u32,
+) -> Result<Admission, BackendError> {
+    let admission = Admission {
+        est_tokens,
+        headroom_tokens,
+        max_context_tokens,
+    };
+    if admission.fits() {
+        Ok(admission)
+    } else {
+        Err(BackendError::ContextTooLarge {
+            model,
+            est_tokens,
+            headroom_tokens,
+            required_tokens: admission.required_tokens(),
+            max_context_tokens,
+            shortfall_tokens: admission.shortfall_tokens(),
+        })
+    }
+}
+
+/// Dialect-neutral fallback estimator for [`Backend::admit`]'s default
+/// implementation: `ceil(chars / 4)` over each segment's serialized content
+/// (roughly `conway-runtime`'s `ContextBuilder::TOKEN_ESTIMATOR`,
+/// `"heuristic-chars4"`, without that estimator's `+4`-per-block framing
+/// term, folded into a per-segment `+4` here instead), plus the same over
+/// the serialized tool schemas when any are present. A real dialect adapter
+/// overrides `admit` entirely with its own wire-format-aware estimate and
+/// never calls this -- see that method's own doc.
+fn default_estimate_tokens(req: &GenerateRequest) -> u32 {
+    let mut total: u32 = 0;
+    for segment in &req.segments {
+        let rendered = serde_json::to_value(&segment.content)
+            .map(|value| value.to_string())
+            .unwrap_or_default();
+        let chars = u32::try_from(rendered.chars().count()).unwrap_or(u32::MAX);
+        total = total.saturating_add(chars.div_ceil(4)).saturating_add(4);
+    }
+    if !req.tools.is_empty() {
+        if let Ok(value) = serde_json::to_value(&req.tools) {
+            let chars = u32::try_from(value.to_string().chars().count()).unwrap_or(u32::MAX);
+            total = total.saturating_add(chars.div_ceil(4)).saturating_add(4);
+        }
+    }
+    total
+}
+
 /// A boxed, `Send` stream of `T`.
 ///
 /// Defined locally over `futures_core::Stream` so this crate does not need
@@ -41,6 +142,62 @@ pub trait Backend: Send + Sync + 'static {
     /// Cheap liveness/readiness probe. Distinct from transport errors
     /// encountered during `generate`/`stream`.
     async fn probe(&self) -> Result<ProbeReport, BackendError>;
+
+    /// Whether `req` fits inside its own `req.model`'s context window,
+    /// reserving `headroom_tokens` for output/reasoning (P-4/P-9 amendment,
+    /// decision 01KZDBYTKFYTVD9R2NA10QJNJE, board item
+    /// 01KZDC4DKVC4JC3W4KN1WMC43N). Headroom the NUMBER stays declarative
+    /// configuration -- a default plus a per-role override -- resolved by
+    /// the caller and passed in here; only who *reads* it moved.
+    ///
+    /// Synchronous and MUST NOT perform network I/O: an implementation that
+    /// needs a round trip (e.g. a provider's own count-tokens endpoint) to
+    /// answer this is using the wrong API. Estimate locally with your own
+    /// dialect's tokenization, reconciled after the fact against reported
+    /// usage if you choose to calibrate it (GP-12; not required here).
+    ///
+    /// `Ok(admission)` when it fits, `Err(BackendError::ContextTooLarge)`
+    /// when it does not -- the numbers travel with the verdict either way,
+    /// never a bare boolean. A caller that receives `Err` must relay the
+    /// refusal rather than work around it: no trimming the request, no
+    /// silently retrying against a larger model (P-9 -- core's remaining
+    /// commitment once the arithmetic itself moved here).
+    ///
+    /// The default estimates `req`'s size with a dialect-neutral heuristic
+    /// over its assembled segments and tool schemas. A real dialect adapter
+    /// SHOULD override this with its own tokenization (its wire format, its
+    /// framing overhead) -- see `conway-backends`'s Anthropic and
+    /// OpenAI-compatible adapters. Every override, and this default, MUST
+    /// call [`check_admission`] for the arithmetic rather than restating it
+    /// (P-14: ONE implementation of "fits", not one per dialect).
+    ///
+    /// **NOT YET CONSUMED BY ANY PRODUCTION PATH.** This method is
+    /// implemented and tested, and nothing calls it outside tests: the
+    /// request path still admits through `conway_routing`'s own pre-existing
+    /// copy of the arithmetic. Board item 01KZDC5BJWSWZZJQ7HHS11S97H is what
+    /// retires that copy and routes admission through here, and it owns the
+    /// design question this item deliberately did not improvise -- how
+    /// `RoutingError::ContextTooLarge` and `BackendError::ContextTooLarge`
+    /// relate at the call site.
+    ///
+    /// So the caller obligation stated above describes the contract a
+    /// consumer will be held to, not one any consumer is meeting today.
+    /// Implementing this on a third-party backend is correct and currently
+    /// changes no behaviour (GP-14: a capability may ship ahead of its
+    /// consumer; what it may not do is describe itself as working).
+    fn admit(
+        &self,
+        req: &GenerateRequest,
+        headroom_tokens: u32,
+    ) -> Result<Admission, BackendError> {
+        let est_tokens = default_estimate_tokens(req);
+        check_admission(
+            req.model.clone(),
+            est_tokens,
+            headroom_tokens,
+            self.capabilities(&req.model).max_context_tokens,
+        )
+    }
 }
 
 /// A request to generate a response from one model.
@@ -160,5 +317,131 @@ mod tests {
         }
 
         let _s: BoxStream<'static, Result<StreamChunk, BackendError>> = Box::pin(Empty);
+    }
+
+    // -----------------------------------------------------------------
+    // `Admission` / `check_admission` (board item 01KZDC4DKVC4JC3W4KN1WMC43N)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn admission_required_tokens_is_saturating() {
+        let admission = Admission {
+            est_tokens: u32::MAX,
+            headroom_tokens: 16_000,
+            max_context_tokens: 100,
+        };
+        assert_eq!(admission.required_tokens(), u32::MAX);
+        assert!(!admission.fits());
+        assert_eq!(admission.shortfall_tokens(), u32::MAX - 100);
+    }
+
+    #[test]
+    fn boundary_exact_fit_admits_one_over_rejects() {
+        let ok = check_admission(ModelId::new("m"), 34_000, 16_000, 50_000);
+        assert!(ok.is_ok(), "exact fit (34000 + 16000 == 50000) must admit");
+
+        let err = check_admission(ModelId::new("m"), 34_000, 16_001, 50_000).unwrap_err();
+        let BackendError::ContextTooLarge {
+            est_tokens,
+            headroom_tokens,
+            required_tokens,
+            max_context_tokens,
+            shortfall_tokens,
+            ..
+        } = err
+        else {
+            panic!("expected ContextTooLarge, got a different variant");
+        };
+        assert_eq!(est_tokens, 34_000);
+        assert_eq!(headroom_tokens, 16_001);
+        assert_eq!(required_tokens, 50_001);
+        assert_eq!(max_context_tokens, 50_000);
+        assert_eq!(shortfall_tokens, 1);
+    }
+
+    #[test]
+    fn check_admission_names_the_model_on_rejection() {
+        let model = ModelId::new("claude-sonnet-4-6");
+        let err = check_admission(model.clone(), 100_000, 8_192, 32_768).unwrap_err();
+        let BackendError::ContextTooLarge { model: named, .. } = err else {
+            panic!("expected ContextTooLarge");
+        };
+        assert_eq!(named, model);
+    }
+
+    /// A minimal `Backend` that relies entirely on `admit`'s default
+    /// implementation -- exercises the dialect-neutral estimator plus
+    /// `check_admission` together, the same path every fake in
+    /// `conway-core::fakes` and every other test-local `Backend` in the
+    /// workspace gets for free without writing a single line for it.
+    struct DefaultAdmitBackend {
+        max_context_tokens: u32,
+    }
+
+    #[async_trait]
+    impl Backend for DefaultAdmitBackend {
+        fn id(&self) -> BackendId {
+            BackendId::new("default-admit")
+        }
+        fn capabilities(&self, _model: &ModelId) -> Capabilities {
+            use crate::capabilities::{
+                CacheMode, ReliabilityTier, StructuredOutput, ToolCallSupport,
+            };
+            Capabilities {
+                tool_calling: ToolCallSupport::None,
+                cache: CacheMode::None,
+                parallel_tool_calls: false,
+                structured_output: StructuredOutput::None,
+                max_context_tokens: self.max_context_tokens,
+                reasoning: false,
+                reliability_tier: ReliabilityTier::Unknown,
+            }
+        }
+        async fn generate(&self, _req: GenerateRequest) -> Result<GenerateResponse, BackendError> {
+            unimplemented!("not exercised by this test")
+        }
+        async fn stream(
+            &self,
+            _req: GenerateRequest,
+        ) -> Result<BoxStream<'static, Result<StreamChunk, BackendError>>, BackendError> {
+            unimplemented!("not exercised by this test")
+        }
+        async fn probe(&self) -> Result<ProbeReport, BackendError> {
+            unimplemented!("not exercised by this test")
+        }
+    }
+
+    fn tiny_request(text: &str) -> GenerateRequest {
+        use crate::provenance::Provenance;
+        GenerateRequest {
+            model: ModelId::new("m"),
+            segments: vec![PromptSegment::new(
+                crate::content::Role::User,
+                vec![ContentBlock::Text { text: text.into() }],
+                Provenance::UserPrompt,
+            )],
+            tools: vec![],
+            params: SamplingParams::default(),
+            prefix_key: None,
+        }
+    }
+
+    #[test]
+    fn default_admit_admits_a_small_request_against_a_roomy_window() {
+        let backend = DefaultAdmitBackend {
+            max_context_tokens: 1_000_000,
+        };
+        let admission = backend.admit(&tiny_request("hello"), 8_192).unwrap();
+        assert!(admission.fits());
+        assert_eq!(admission.max_context_tokens, 1_000_000);
+    }
+
+    #[test]
+    fn default_admit_rejects_against_a_window_too_small_to_hold_headroom_alone() {
+        let backend = DefaultAdmitBackend {
+            max_context_tokens: 10,
+        };
+        let err = backend.admit(&tiny_request("hello"), 8_192).unwrap_err();
+        assert!(matches!(err, BackendError::ContextTooLarge { .. }));
     }
 }

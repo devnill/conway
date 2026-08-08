@@ -9,7 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::ids::{AgentId, LogSeq, ModelRef, RoleAlias, SessionId, ToolName};
+use crate::ids::{AgentId, LogSeq, ModelId, ModelRef, RoleAlias, SessionId, ToolName};
 use crate::log::SubagentMode;
 
 /// Errors produced by a `Backend` implementation.
@@ -31,6 +31,32 @@ pub enum BackendError {
         required_tokens: u32,
         max_context_tokens: u32,
     },
+    /// `Backend::admit`'s rejection (P-4/P-9 amendment, decision
+    /// 01KZDBYTKFYTVD9R2NA10QJNJE, board item 01KZDC4DKVC4JC3W4KN1WMC43N):
+    /// this backend's own local, pre-flight estimate of `req`'s size, plus
+    /// the resolved headroom, exceeds `model`'s declared window --
+    /// discovered before any network call, unlike [`Self::ContextOverflow`]
+    /// (which classifies a provider's own after-the-fact rejection of a
+    /// request that was already sent). Distinct variant, deliberately: the
+    /// two are different failure modes with different remediation, and
+    /// collapsing them would blur which one actually happened. Terminal --
+    /// no truncation or escalation is performed by core (P-9); every number
+    /// behind the verdict travels with it rather than being collapsed into
+    /// a bare boolean.
+    #[error("context too large: {est_tokens} input tokens + {headroom_tokens} headroom = {required_tokens} exceeds {model}'s window of {max_context_tokens} tokens (short by {shortfall_tokens}); not trimmed or escalated")]
+    ContextTooLarge {
+        model: ModelId,
+        /// This backend's own local estimate of the request's size.
+        est_tokens: u32,
+        /// Reserved output/reasoning budget, resolved by the caller from
+        /// configuration and passed into `Backend::admit`.
+        headroom_tokens: u32,
+        /// `est_tokens + headroom_tokens`, saturating.
+        required_tokens: u32,
+        max_context_tokens: u32,
+        /// `required_tokens - max_context_tokens`, saturating.
+        shortfall_tokens: u32,
+    },
     #[error("tool call parse failure: {detail}")]
     ToolParse { detail: String },
     #[error("request cancelled")]
@@ -39,6 +65,13 @@ pub enum BackendError {
 
 impl BackendError {
     /// Whether the attempt loop should advance to the next candidate route.
+    ///
+    /// `ContextTooLarge` is included alongside `ContextOverflow`: both name
+    /// a candidate this specific request does not fit, which is exactly
+    /// the shape a fallback chain (an operator-configured list, not a
+    /// silent escalation) exists to route past. What P-9 forbids is core
+    /// inventing a substitute on its own initiative -- advancing to the
+    /// NEXT entry the operator already declared is not that.
     pub fn is_failover_worthy(&self) -> bool {
         matches!(
             self,
@@ -46,13 +79,15 @@ impl BackendError {
                 | BackendError::RateLimit { .. }
                 | BackendError::ServerError { .. }
                 | BackendError::ContextOverflow { .. }
+                | BackendError::ContextTooLarge { .. }
         )
     }
 
     /// Whether this error is a signal about endpoint health.
     ///
-    /// `Auth`, `BadRequest`, `ContextOverflow`, `ToolParse`, and `Cancelled`
-    /// are request problems, not endpoint-health signals (§8).
+    /// `Auth`, `BadRequest`, `ContextOverflow`, `ContextTooLarge`,
+    /// `ToolParse`, and `Cancelled` are request problems, not
+    /// endpoint-health signals (§8).
     pub fn is_health_signal(&self) -> bool {
         matches!(
             self,
@@ -565,6 +600,34 @@ mod tests {
         assert!(rendered.contains("openai/gpt-5: rate limited (retry after Some(30) seconds)"));
     }
 
+    /// [`BackendError::ContextTooLarge`] (board item 01KZDC4DKVC4JC3W4KN1WMC43N):
+    /// roundtrips, and its `Display` names every one of the four inputs
+    /// plus the derived shortfall -- the acceptance criterion's "typed
+    /// error naming the input size, the resolved headroom, and the window"
+    /// is this variant.
+    #[test]
+    fn context_too_large_exists_roundtrips_and_names_all_numbers() {
+        let err = BackendError::ContextTooLarge {
+            model: ModelId::new("ollama-cloud/glm-5.2"),
+            est_tokens: 34_000,
+            headroom_tokens: 16_000,
+            required_tokens: 50_000,
+            max_context_tokens: 40_000,
+            shortfall_tokens: 10_000,
+        };
+        let json = serde_json::to_string(&err).unwrap();
+        let back: BackendError = serde_json::from_str(&json).unwrap();
+        assert_eq!(err, back);
+
+        let rendered = err.to_string();
+        for needle in ["34000", "16000", "50000", "40000", "10000", "glm-5.2"] {
+            assert!(
+                rendered.contains(needle),
+                "missing {needle:?} in {rendered:?}"
+            );
+        }
+    }
+
     #[test]
     fn cwd_error_poisoned_exists_and_roundtrips() {
         let err = CwdError::Poisoned;
@@ -643,7 +706,9 @@ mod tests {
         let json = serde_json::to_string(&err).unwrap();
         let back: SubagentError = serde_json::from_str(&json).unwrap();
         assert_eq!(err, back);
-        assert!(err.to_string().contains("the runtime has already been dropped"));
+        assert!(err
+            .to_string()
+            .contains("the runtime has already been dropped"));
     }
 
     /// The From<SubagentError> for ToolError mapping (P-14: the ONE place
@@ -718,6 +783,18 @@ mod tests {
                 BackendError::ContextOverflow {
                     required_tokens: 2,
                     max_context_tokens: 1,
+                },
+                true,
+                false,
+            ),
+            (
+                BackendError::ContextTooLarge {
+                    model: ModelId::new("m"),
+                    est_tokens: 34_000,
+                    headroom_tokens: 16_000,
+                    required_tokens: 50_000,
+                    max_context_tokens: 40_000,
+                    shortfall_tokens: 10_000,
                 },
                 true,
                 false,
