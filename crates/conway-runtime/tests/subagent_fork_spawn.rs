@@ -2775,6 +2775,73 @@ async fn fork_child_inherits_the_parents_agent_def_and_cannot_widen_its_tool_set
     );
 }
 
+/// Characterization test for board item 01KZHET5G0DN7QC0YF5G9XSB1N /
+/// decision 01KZHH9N313T5BTDR8281QDWHC: an agent def's (or a call site's)
+/// `tools` selects what is announced to the model, it is NOT a capability
+/// restriction. `subagent.rs::start` computes the child's announced
+/// selector as `spec.tools.clone().or_else(|| agent_def.map(|d|
+/// d.tools.clone()))` -- an explicit call-site `tools` *replaces* the
+/// inherited def's selector outright, it is never intersected with it. This
+/// pins that behavior directly, against the same `restricted` def (`Only(
+/// ["marker"])`) Guard 1 above uses, but this time the fork spec supplies
+/// its OWN `tools` naming `secret` -- the one tool the inherited def
+/// excludes. Reusing Guard 1's two-tool fixture (`TwoToolPlugin`,
+/// `build_runtime_with_two_tools_and_defs`, `restricted_def`) rather than a
+/// third: a registry with fewer than two tools would make this vacuous, the
+/// same trap Guard 1's own doc calls out.
+///
+/// If this ever asserted `["marker"]` here (or an error/deny), that would
+/// mean an intersection had been added somewhere and this item's ruling
+/// (Shape B: retract the false "narrowing-only" claims, do not implement
+/// enforcement) would need to be revisited, since the four retracted
+/// doc-comment claims would have become true.
+#[tokio::test]
+async fn fork_child_explicit_tools_argument_replaces_rather_than_narrows_the_inherited_defs_selector(
+) {
+    let mut defs = HashMap::new();
+    defs.insert("restricted".to_string(), restricted_def());
+    let (runtime, backend) = build_runtime_with_two_tools_and_defs(2, defs);
+
+    let mut spec = root_spec("investigate");
+    spec.agent_def = Some(AgentDefRef("restricted".to_string()));
+    let mut stream = runtime.subscribe();
+    let root = runtime.start_root(spec).await.unwrap();
+    wait_for_agent_finished(&mut stream, root).await;
+
+    // An explicit `tools` argument naming a tool the inherited def's
+    // `ToolSelector::Only(["marker"])` does NOT include -- the same shape a
+    // model's `conway_fork` call, or `conway_ask`'s `AskArgs::tools`, can
+    // produce.
+    let mut child_spec = SubagentSpec::fork("go", Budget::default());
+    child_spec.tools = Some(ToolSelector::Only(vec!["secret".to_string()]));
+    assert!(child_spec.agent_def.is_none());
+
+    let mut stream = runtime.subscribe();
+    let child = SubagentHost::start(&*runtime, root, root, child_spec)
+        .await
+        .unwrap();
+    wait_for_agent_finished(&mut stream, child).await;
+
+    // The discriminating observable: exactly what the model was offered.
+    let calls = backend.calls();
+    let child_call = calls
+        .last()
+        .expect("the child must have made at least one generate call");
+    let offered: Vec<String> = child_call
+        .tools
+        .iter()
+        .map(|t| t.name.0.clone())
+        .collect();
+    assert_eq!(
+        offered,
+        vec!["secret".to_string()],
+        "an explicit `tools` argument REPLACES the inherited def's selector rather than \
+         intersecting with it -- the child was offered `secret`, a tool the `restricted` def's \
+         Only([\"marker\"]) selector excludes. `tools` selects what is announced, it is not a \
+         capability boundary -- got {offered:?}"
+    );
+}
+
 /// Guard 2: the contract rule. Same `restricted` def, but this one also
 /// carries a `result_contract` (`schema_requiring_summary`). The fork
 /// child's own spec mirrors the TUI's `bare_fork` EXACTLY: `agent_def: None`

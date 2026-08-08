@@ -92,7 +92,7 @@ struct ForkArgs {
     role: Option<String>,
     #[serde(default)]
     budget: Option<BudgetArg>,
-    /// Restrict the child's tool set to these names
+    /// Select the tools announced to the child by name
     #[serde(default)]
     tools: Option<Vec<String>>,
     /// JSON Schema the child's structured result must satisfy
@@ -121,7 +121,7 @@ struct SpawnArgs {
     role: Option<String>,
     #[serde(default)]
     budget: Option<BudgetArg>,
-    /// Restrict the child's tool set to these names
+    /// Set the tools announced to the child by name
     #[serde(default)]
     tools: Option<Vec<String>>,
     /// JSON Schema the child's structured result must satisfy

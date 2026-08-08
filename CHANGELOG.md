@@ -182,6 +182,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   design. Every unbuilt section names its board item
   (01KZDC0RDRMMMJHX7SAFMM2Q5A, 01KZ844ZXZMVRWC7ZANT7PSM6X).
 
+- **The four "`tools` is narrowing-only" claims are retracted rather than
+  implemented: a `tools` selector chooses what is *announced* to the model
+  and is not a capability boundary** (board item
+  01KZHET5G0DN7QC0YF5G9XSB1N, decision 01KZHH9N313T5BTDR8281QDWHC,
+  confirmed by the project owner). `AskTool`'s **model-facing description**,
+  `AskArgs::tools`, `ask.rs`'s module doc, and `ForkSpec::tools` variously
+  claimed the selector could "restrict, never widen" or was "intersected
+  with the forker's own tool set by the runtime". No such intersection
+  exists anywhere in the tree, and the model-facing one was false in the
+  dangerous direction — it told the model the argument was safe to pass
+  freely, which is an invitation to the very widening path it denied.
+
+  The behaviour is deliberate, and the tree already said so at the
+  selector's own consumption site: `PluginRegistry::specs`' doc states that
+  the permission gate "decides whether a call the model actually proposes
+  is allowed to run, **regardless of what was announced** — announcement
+  and execution are independent gates, and neither implies the other."
+  Corroborating: `ToolSelector::selects` has exactly one non-test call site
+  (that method); `ToolBatchCtx` carries no selector, so `ToolRunner`
+  resolves a proposed call by name against the whole registry; and `tools`
+  is never persisted in `SessionMeta`, sharing `budget`'s lifecycle rather
+  than a boundary's. The TUI's own use says it outright — it excludes
+  `report` so the model answers in text "instead of hitting the permission
+  gate for a tool call nothing downstream ever unblocks", i.e. the selector
+  is prompt economy and the gate is what would otherwise have caught it.
+
+  So the sites now say plainly that `tools` selects what is announced, that
+  it *replaces* rather than narrows an inherited selector, and that **the
+  permission gate and the confinement root are the capability boundary**.
+  Two characterization tests pin the real behaviour so it cannot drift
+  back into being claimed: a def-restricted parent forking with an explicit
+  `tools` argument naming an excluded tool is genuinely offered it, and a
+  registered-but-unselected tool genuinely executes when called — the
+  latter distinct from the existing unknown-tool case, which fails at
+  `resolve` for a name that was never registered at all.
+  `docs/permissions.md`'s "Limits" section — the page's enumeration of what
+  is *not* guaranteed — now carries it too. Enforcement was deliberately
+  not implemented; it remains available at roughly fifteen lines, and these
+  tests would become its fail-first guards.
+  (`crates/conway-tools/src/subagent/ask.rs`,
+  `crates/conway-tools/src/subagent/tools.rs`,
+  `crates/conway/src/subagent_spec.rs`,
+  `crates/conway-runtime/tests/subagent_fork_spawn.rs`,
+  `crates/conway-runtime/tests/tool_runner.rs`,
+  [`docs/permissions.md`](docs/permissions.md))
+
 - **A forked child now inherits the parent's `agent_def` — but never that
   def's `result_contract`** (board item 01KZGXYSEKMVM4GVG4ZBWC0WSC,
   decision 01KZHEWXDZWPWMEAQ01XY2RDCB). **BREAKING:** a def's system
@@ -311,17 +357,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     selector. **That precedence is a replacement, not an intersection**, so
     an explicit `tools` list can name a tool the inherited def excludes —
     this change closes the "no argument supplied" escalation above and does
-    **not** close the explicit-argument one. `conway_ask`'s own tool
-    description still claims otherwise ("narrowing-only — it can never
-    grant tools the child would not otherwise inherit"), as does
-    `ForkSpec::tools`' doc ("Intersected with the forker's own tool set by
-    the runtime"); no such intersection exists anywhere in the tree, and an
-    agent's `tools` selector is consulted only when building the schema
-    list offered to the model (`agent_loop.rs`), never at execution
-    (`ToolRunner` resolves a call by name against the whole registry, and
-    `ToolBatchCtx` carries no selector). Tracked as board item
-    01KZHET5G0DN7QC0YF5G9XSB1N, which owns both the implement-vs-retract
-    decision and those declaration sites.
+    **not** close the explicit-argument one — which turns out to be the
+    intended design rather than a hole, and the four declarations claiming
+    otherwise have since been retracted (see below).
   - *Over-inheritance, now carved out.* Filling `agent_def` exposed a live
     regression that already existed on the facade path, where
     `SessionHandle::ask` has always inherited the def: `start` also

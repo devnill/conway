@@ -440,6 +440,81 @@ async fn schema_invalid_arguments_are_error_without_invoking() {
     assert!(text.contains("/path"), "{text}");
 }
 
+/// Characterization test for board item 01KZHET5G0DN7QC0YF5G9XSB1N /
+/// decision 01KZHH9N313T5BTDR8281QDWHC: an agent's `tools` selector is
+/// consulted only when building the schema list announced to the model
+/// (`PluginRegistry::specs`, exercised by `specs_respects_selector` above)
+/// -- it plays no part at execution. `ToolBatchCtx` (below) carries no
+/// selector field at all, and `ToolRunner::run_batch`/`execute_one` resolve
+/// a proposed call by name against the WHOLE registry (`PluginRegistry::
+/// resolve`), with no selector consulted anywhere on that path. This is
+/// distinct from `unknown_tool_is_error` just below: that covers a
+/// hallucinated tool that was never registered at all, which fails at
+/// `resolve` regardless of any selector question. Here, `not_selected` IS
+/// registered (so `resolve` would succeed even if the runner had a selector
+/// to consult) -- the discriminating claim is that a tool merely absent
+/// from what a selector would have announced still executes when called,
+/// because nothing downstream of announcement re-checks the selector.
+///
+/// Fixture trap (per this item's own binding notes): a registry with fewer
+/// than two tools makes this vacuous -- it must be possible to distinguish
+/// "the selected tool ran" from "anything at all ran." `selected`'s own
+/// `specs(Some(&selector))` call proves the selector genuinely would have
+/// excluded `not_selected` from the announced list, before the run_batch
+/// call below proves it executes anyway.
+#[tokio::test]
+async fn a_tool_absent_from_the_agents_selector_still_executes_because_the_selector_never_reaches_the_runner(
+) {
+    let reg = registry(vec![
+        Arc::new(EchoTool(ToolName::new("selected"))),
+        Arc::new(EchoTool(ToolName::new("not_selected"))),
+    ]);
+
+    // Prove the selector genuinely discriminates at announcement time: a
+    // `conway-runtime`-native `AgentDef`/call-site `tools` selector naming
+    // only `selected` would announce exactly that, excluding
+    // `not_selected` -- the same mechanism `specs_respects_selector`
+    // exercises above.
+    let selector = ToolSelector::Only(vec!["selected".into()]);
+    let announced: Vec<String> = reg
+        .specs(Some(&selector))
+        .into_iter()
+        .map(|s| s.name.as_str().to_string())
+        .collect();
+    assert_eq!(
+        announced,
+        vec!["selected".to_string()],
+        "the selector must genuinely exclude `not_selected` from what would be announced, or \
+         this test cannot distinguish enforcement from its absence"
+    );
+
+    // `ToolBatchCtx` (below) carries no selector at all -- there is nowhere
+    // for `run_batch` to even consult one. Call the tool the selector above
+    // would have excluded from the announced list.
+    let (runner, _bus) = runner_with_gate(reg, PermissionDecision::AllowOnce);
+    let ctx = batch_ctx(4);
+    let outcomes = runner
+        .run_batch(
+            &ctx,
+            vec![call("c1", "not_selected", serde_json::json!({}))],
+        )
+        .await;
+
+    assert_eq!(outcomes.len(), 1);
+    assert!(
+        !outcomes[0].is_error,
+        "a tool absent from the agent's selector, but still registered, must EXECUTE when \
+         called -- the selector selects what is announced, it is not a capability boundary. \
+         got: {:?}",
+        outcomes[0]
+    );
+    // `EchoTool::invoke` echoes `call.arguments` back verbatim -- this is
+    // NOT `unknown tool` text (the `resolve`-fails path `unknown_tool_is_error`
+    // covers), which is the discriminating proof the call actually reached
+    // `invoke` rather than being turned away earlier.
+    assert_eq!(text_of(&outcomes[0]), "{}");
+}
+
 #[tokio::test]
 async fn unknown_tool_is_error() {
     let reg = registry(vec![]);
