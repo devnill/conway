@@ -192,16 +192,76 @@ impl ContextBuilder {
         }
 
         // [2] ToolSchemas — unconditional; breakpoint A attaches here.
+        //
+        // NO SCHEMA TEXT LIVES IN THIS SEGMENT'S `content` (board item
+        // 01KYTMJA0JHT5SAPYDGV251V17). Every request already carries the
+        // full tool-schema set once as the native `tools` array the
+        // provider actually consumes (`conway-backends`'s `openai_compat`/
+        // `anthropic` wire modules, built straight from `ContextInput.tools`
+        // via `AttemptEngine::build_request`, independent of `segments`
+        // entirely). A `Role::System` segment holding the SAME canonical
+        // JSON used to be pushed here too, as a `ToolSpec`-serializing
+        // superset (name, description, schema, **and** the harness-internal
+        // `category`/`permission` fields the model never needed) — a full
+        // second copy of every tool's schema, paid on every turn and, via
+        // fork inheritance (GP-02), at every fork depth for every sibling.
+        // Measured against a representative 14-tool built-in set
+        // (`conway-tools::builtin_plugins`), that duplicate text ran
+        // ~13.7KB / ~3.4K estimated tokens — on the close order of, and
+        // often larger than, everything else in a single turn (GP-12).
+        //
+        // Investigated rather than assumed: Anthropic's Messages API DOES
+        // support `cache_control` directly on the `tools` array — "Tool
+        // definitions can be cached by placing `cache_control` on the last
+        // tool in your `tools` array. All tools defined before and
+        // including that tool are cached as a single prefix." (Anthropic
+        // docs, "Prompt caching" > "Caching tool definitions",
+        // https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching,
+        // verified 2026-08-08). That is exactly what breakpoint A needs, so
+        // this segment's TEXT is no longer sent — the native array is the
+        // only copy — while the segment ITSELF is kept, with empty
+        // `content`, for three reasons that would otherwise regress:
+        //   1. It is still the anchor `desired_breakpoints`/
+        //      `attach_cache_hints` mark for breakpoint A — unchanged, since
+        //      that machinery keys on `Provenance::ToolRegistry`, never on
+        //      content. `conway-backends::anthropic::wire`'s
+        //      `BreakpointTarget::Tools` is what redirects the resulting
+        //      `cache_hint` to `body["tools"]`'s last entry instead of a
+        //      `system` entry (see that module).
+        //   2. It is still the sole source of `Provenance::ToolRegistry {
+        //      hash }`, which `prefix::boundary_index`/`prefix_key` rely on
+        //      to be unconditionally present (an empty-content Static-tier
+        //      segment satisfies that exactly as well as a populated one —
+        //      neither this key's boundary-finding nor its canonical-bytes
+        //      hashing cares whether `content` is empty, only that a
+        //      `ToolRegistry` segment with a `hash` derived from the real
+        //      tool set exists). `prefix_key` behaviour is therefore
+        //      UNCHANGED in shape (still `blake3(model ‖
+        //      canonical_bytes(segments[0..=B]))`) and still changes when
+        //      the tool set changes (via `hash`), even though the bytes it
+        //      hashes for this one segment shrank to nothing.
+        //   3. It is still the segment `ContextReportEntry` attaches a
+        //      `tokens_est` to for `/context`'s reporting — see
+        //      `estimate_tool_schemas_tokens` below, which fixes the
+        //      matching under-count: the generic per-segment estimator
+        //      would now see empty `content` and report 0, so this value is
+        //      computed directly from `input.tools` instead and assigned
+        //      onto the segment after the generic pass runs.
+        //
+        // OpenAI-compatible dialects have no `cache_control` equivalent at
+        // all (`CacheMode::ImplicitPrefix` attaches no hints — see
+        // `attach_cache_hints`), so for them this is a pure win: one fewer
+        // `system` message, no cache anchor lost because there was never
+        // one to lose.
         let mut sorted_tools = input.tools.clone();
         sorted_tools.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
         let tools_value = serde_json::to_value(&sorted_tools).expect("ToolSpec always serializes");
-        let canonical = canonical_json_bytes(&tools_value);
-        let hash = blake3::hash(&canonical).to_hex().to_string();
-        let tool_schemas_text =
-            String::from_utf8(canonical).expect("canonical JSON is always valid UTF-8");
+        let hash = blake3::hash(&canonical_json_bytes(&tools_value))
+            .to_hex()
+            .to_string();
         segments.push(PromptSegment::new(
             Role::System,
-            text_block(&tool_schemas_text),
+            Vec::new(),
             Provenance::ToolRegistry { hash },
         ));
         let a_index = segments.len() - 1;
@@ -263,6 +323,15 @@ impl ContextBuilder {
             );
             segment.tokens_est = Some(estimate_tokens(&segment.content));
         }
+        // [2]'s `content` is deliberately empty (see its own comment
+        // above), so the generic per-segment pass just set its estimate to
+        // 0 -- overwrite it with a term for the native `tools` array that
+        // segment no longer carries text for, so `ContextReport::
+        // total_tokens_est` (and therefore `est_tokens` on every downstream
+        // `RouteRequest`/`AttemptRequest`, `agent_loop.rs`'s
+        // `route_and_attempt`) does not silently drop the whole tool-schema
+        // cost the way it would if this were left at the generic 0.
+        segments[a_index].tokens_est = Some(estimate_tool_schemas_tokens(&input.tools));
 
         // Cache hints — never correctness-bearing (GP-06).
         let key = prefix::prefix_key(&input.model, &segments);
@@ -295,13 +364,32 @@ impl ContextBuilder {
 /// builder makes no determinism claim about a hook's own output) or cache
 /// hints (a hook that cares about cache-breakpoint placement is responsible
 /// for its own `cache_hint`).
+///
+/// `tools` (board item 01KYTMJA0JHT5SAPYDGV251V17): the same
+/// `ContextPayload::tools` a hook returned alongside `segments` -- a
+/// `ContextHook` can narrow/replace the announced tool set (WI-126's
+/// `announced_tools`) as well as edit segments, and the `[2] ToolSchemas`
+/// segment's `content` is deliberately always empty (see `ContextBuilder::
+/// build`'s own comment), so the generic per-segment loop above cannot
+/// recover its token cost the way it can for every other segment kind.
+/// Both call sites (`agent_loop.rs`'s `on_overflow` and `before_request`
+/// handling) already have the hook's returned tools at hand and pass the
+/// same value here that flows into the eventual request.
 pub(crate) fn retotal(
     agent_id: AgentId,
     turn: u32,
     segments: &mut [PromptSegment],
+    tools: &[ToolSpec],
 ) -> ContextReport {
     for segment in segments.iter_mut() {
         segment.tokens_est = Some(estimate_tokens(&segment.content));
+    }
+    if let Some(segment) = segments
+        .iter_mut()
+        .rev()
+        .find(|segment| matches!(segment.provenance, Provenance::ToolRegistry { .. }))
+    {
+        segment.tokens_est = Some(estimate_tool_schemas_tokens(tools));
     }
     build_report(agent_id, turn, segments)
 }
@@ -459,6 +547,34 @@ const PER_BLOCK_OVERHEAD_TOKENS: u32 = 4;
 /// framing.
 fn estimate_tokens(content: &[ContentBlock]) -> u32 {
     content.iter().map(estimate_block_tokens).sum()
+}
+
+/// Estimated token cost of the native provider `tools` array (board item
+/// 01KYTMJA0JHT5SAPYDGV251V17): the `[2] ToolSchemas` segment carries no
+/// `content` to run [`estimate_tokens`] over anymore, so this is the
+/// estimator's dedicated term for the copy that actually reaches the wire.
+/// Same `heuristic-chars4` shape as every other estimate in this module
+/// (`ceil(chars / 4)` plus a fixed per-payload overhead), over the full
+/// (unstripped) `ToolSpec` list -- the same shape
+/// `conway_core::ports::backend::default_estimate_tokens`'s own `req.tools`
+/// term uses, so the informational `/context` report this feeds and the
+/// authoritative admission gate that estimator feeds do not drift far
+/// apart, even though (per that function's own doc, and `attempt.rs`'s
+/// module doc) the two are never required to agree exactly -- a real
+/// dialect's `Backend::admit` override measures the ACTUAL serialized wire
+/// body instead, which is smaller (no `category`/`permission` fields, a
+/// dialect-specific envelope) -- so this is deliberately an approximation
+/// (T-9), not a claim of matching either the model's own tokenizer or any
+/// specific dialect's wire bytes.
+fn estimate_tool_schemas_tokens(tools: &[ToolSpec]) -> u32 {
+    if tools.is_empty() {
+        return 0;
+    }
+    let rendered = serde_json::to_value(tools)
+        .map(|value| value.to_string())
+        .unwrap_or_default();
+    let chars = u32::try_from(rendered.chars().count()).unwrap_or(u32::MAX);
+    chars.div_ceil(4) + PER_BLOCK_OVERHEAD_TOKENS
 }
 
 fn estimate_block_tokens(block: &ContentBlock) -> u32 {
@@ -712,7 +828,7 @@ mod estimator_tests {
             text: "a".repeat(40),
         }];
 
-        let report = retotal(agent_id, 3, &mut segments);
+        let report = retotal(agent_id, 3, &mut segments, &[]);
 
         let expected = estimate_tokens(&segments[0].content);
         assert_eq!(segments[0].tokens_est, Some(expected));
@@ -730,8 +846,102 @@ mod estimator_tests {
             _ => true,
         });
 
-        let report = retotal(agent_id, 0, &mut segments);
+        let report = retotal(agent_id, 0, &mut segments, &[]);
         assert_eq!(report.segments.len(), 1);
+    }
+
+    fn sample_tool(name: &str) -> ToolSpec {
+        ToolSpec {
+            name: conway_core::ids::ToolName::new(name),
+            description: format!("{name} tool"),
+            schema: schemars::schema_for!(std::collections::BTreeMap<String, String>),
+            category: conway_core::content::ToolCategory::Read,
+            permission: conway_core::content::PermissionClass::Safe,
+        }
+    }
+
+    /// Board item 01KYTMJA0JHT5SAPYDGV251V17: the `[2] ToolSchemas` segment
+    /// no longer carries the schema text on the wire (the native `tools`
+    /// array is the only copy), but the estimator must still account for
+    /// it.
+    #[test]
+    fn tool_schemas_estimate_is_nonzero_and_grows_with_the_tool_set() {
+        assert_eq!(estimate_tool_schemas_tokens(&[]), 0);
+
+        let one = estimate_tool_schemas_tokens(&[sample_tool("read")]);
+        assert!(one > 0, "a non-empty tool set must estimate > 0 tokens");
+
+        let two =
+            estimate_tool_schemas_tokens(&[sample_tool("read"), sample_tool("write")]);
+        assert!(
+            two > one,
+            "a larger tool set must estimate more tokens ({two} vs {one})"
+        );
+    }
+
+    /// `retotal` must recover the SAME estimate `ContextBuilder::build`
+    /// itself would have set, using whatever `tools` a `ContextHook`
+    /// returned — not fall back to the generic (now-zero, since `[2]`'s
+    /// `content` is always empty) per-segment estimate.
+    #[test]
+    fn retotal_recovers_the_tool_schemas_estimate_from_the_given_tools() {
+        let agent_id = AgentId::new();
+        let mut segments = vec![PromptSegment::new(
+            Role::System,
+            Vec::new(),
+            Provenance::ToolRegistry {
+                hash: "deadbeef".into(),
+            },
+        )];
+        let tools = vec![sample_tool("read"), sample_tool("write")];
+
+        let report = retotal(agent_id, 0, &mut segments, &tools);
+
+        let expected = estimate_tool_schemas_tokens(&tools);
+        assert!(expected > 0);
+        assert_eq!(segments[0].tokens_est, Some(expected));
+        assert_eq!(report.total_tokens_est, expected);
+    }
+
+    /// End-to-end through `ContextBuilder::build`: the `[2] ToolSchemas`
+    /// segment carries no content (nothing to duplicate the native `tools`
+    /// array with) but still contributes a non-zero, tool-set-derived
+    /// `tokens_est` to the report — the acceptance criterion "the token
+    /// estimator accounts for the native tools array" made concrete.
+    #[test]
+    fn build_sends_no_tool_schema_text_but_still_estimates_its_cost() {
+        let tools = vec![sample_tool("read"), sample_tool("write")];
+        let input = ContextInput {
+            agent_id: AgentId::new(),
+            turn: 0,
+            model: ModelId::new("m"),
+            cache_mode: CacheMode::None,
+            system_prompt: None,
+            skills: vec![],
+            tools: tools.clone(),
+            inherited: None,
+            head: HeadSegment::Prompt {
+                text: "hi".into(),
+            },
+            own: Arc::from(vec![]),
+            cache_ttl: CacheTtl::FiveMinutes,
+        };
+        let (segments, report) = ContextBuilder::new().build(&input).unwrap();
+
+        let tool_registry = segments
+            .iter()
+            .find(|s| matches!(s.provenance, Provenance::ToolRegistry { .. }))
+            .expect("ToolSchemas segment is unconditional");
+        assert!(
+            tool_registry.content.is_empty(),
+            "the native `tools` array is the only wire copy now"
+        );
+        let expected = estimate_tool_schemas_tokens(&tools);
+        assert_eq!(tool_registry.tokens_est, Some(expected));
+        assert!(
+            report.total_tokens_est >= expected,
+            "the report's total must include the tool-schema estimate"
+        );
     }
 }
 

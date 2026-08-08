@@ -47,7 +47,7 @@ impl RouterFactory for RoutingRouterFactory {
     /// directly (step 5-7 of `ConwayBuilder::build`, before this crate
     /// existed as a plugin) -- relocated here, not reimplemented.
     fn build(&self, ctx: RouterBuildContext<'_>) -> Result<RouterBundle, ConwayError> {
-        let health = BreakerRegistry::new(ctx.routing.health.clone());
+        let health = BreakerRegistry::new(ctx.routing.health);
 
         let router = Arc::new(
             DeclarativeRouter::new(

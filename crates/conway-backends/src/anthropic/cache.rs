@@ -74,6 +74,23 @@ pub(crate) fn apply_cache_hints(
                     block.insert("cache_control".into(), cache_control);
                 }
             }
+            // Anthropic docs, "Prompt caching" > "Caching tool
+            // definitions": "placing `cache_control` on the last tool in
+            // your `tools` array" caches every tool defined before and
+            // including it as a single prefix -- so this targets the LAST
+            // element regardless of which segment's `cache_hint` requested
+            // it (there is only ever one `Provenance::ToolRegistry`
+            // segment/breakpoint A). No-op when `tools` is absent or empty,
+            // same as `None`.
+            Some(BreakpointTarget::Tools) => {
+                if let Some(Value::Object(last_tool)) = body
+                    .get_mut("tools")
+                    .and_then(Value::as_array_mut)
+                    .and_then(|tools| tools.last_mut())
+                {
+                    last_tool.insert("cache_control".into(), cache_control);
+                }
+            }
             Some(BreakpointTarget::None) | None => {}
         }
     }
@@ -154,5 +171,50 @@ mod tests {
         let mut body = json!({ "system": [{"type": "text", "text": "s0"}] });
         apply_cache_hints(&mut body, &segments, &placements, 4);
         assert!(body["system"][0].get("cache_control").is_none());
+    }
+
+    /// Board item 01KYTMJA0JHT5SAPYDGV251V17: Anthropic's documented anchor
+    /// for caching tool definitions is `cache_control` on the LAST entry of
+    /// `body["tools"]` -- `BreakpointTarget::Tools` must land there, never
+    /// in `body["system"]` (there is nothing to attach to there since the
+    /// `ToolRegistry` segment contributes no system entry at all).
+    #[test]
+    fn tools_breakpoint_attaches_cache_control_to_the_last_tool() {
+        let segments = vec![segment_with_hint("", true, CacheTtl::FiveMinutes)];
+        let placements = vec![BreakpointTarget::Tools];
+        let mut body = json!({
+            "tools": [
+                {"name": "search", "description": "d", "input_schema": {}},
+                {"name": "fetch", "description": "d", "input_schema": {}},
+            ]
+        });
+
+        apply_cache_hints(&mut body, &segments, &placements, 4);
+
+        assert!(
+            body["tools"][0].get("cache_control").is_none(),
+            "only the LAST tool gets the marker"
+        );
+        assert_eq!(
+            body["tools"][1]["cache_control"],
+            json!({"type": "ephemeral"})
+        );
+    }
+
+    /// No `tools` array (or an empty one) means there is no addressable
+    /// block -- the hint is silently dropped, same as `BreakpointTarget::
+    /// None`, not a panic or a spurious mutation.
+    #[test]
+    fn tools_breakpoint_is_a_no_op_when_tools_is_absent_or_empty() {
+        let segments = vec![segment_with_hint("", true, CacheTtl::FiveMinutes)];
+        let placements = vec![BreakpointTarget::Tools];
+
+        let mut no_tools_body = json!({});
+        apply_cache_hints(&mut no_tools_body, &segments, &placements, 4);
+        assert_eq!(no_tools_body, json!({}));
+
+        let mut empty_tools_body = json!({"tools": []});
+        apply_cache_hints(&mut empty_tools_body, &segments, &placements, 4);
+        assert_eq!(empty_tools_body, json!({"tools": []}));
     }
 }

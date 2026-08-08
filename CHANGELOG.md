@@ -150,6 +150,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Tool schemas are sent once per request instead of twice** (board item
+  01KYTMJA0JHT5SAPYDGV251V17). Every request carried the full tool-schema set
+  twice: as the native `tools` array the provider consumes, and again as a
+  system message holding the canonical JSON of the same `ToolSpec` list. The
+  second copy was a superset — `ToolSpec` serialized every field, so it also
+  shipped `category` and `permission`, leaking conway's internal permission
+  taxonomy into the prompt where a model has no use for it. Measured against
+  the 14 built-in tools, the duplicate was **13,771 bytes (~3,443 tokens) per
+  turn** — roughly 83% of a no-history turn's estimate — and, because a fork
+  inherits the whole ancestry transcript, it was paid again at every fork
+  depth for every sibling. The system segment still exists and still carries
+  no schema text: it remains the cache breakpoint anchor, the source of
+  `Provenance::ToolRegistry`'s hash, and the boundary `prefix_key` requires,
+  so prefix-key behaviour is unchanged in shape and still varies with the
+  tool set. On Anthropic the breakpoint now attaches to the last entry of the
+  native `tools` array, which the Messages API supports directly; on
+  OpenAI-compatible dialects the segment simply emits no message. Stripping
+  only the two leaked fields was measured and rejected — it saves 4.6%,
+  because the schema JSON dominates, not the enums (GP-12: the measurement
+  chose the option).
+- **The context estimate no longer under-counts every request by a full
+  schema dump.** The estimator counted the system copy and had no term at all
+  for the native `tools` array, so `ContextReport::total_tokens_est` was
+  systematically low — and that estimate gates admission, so requests were
+  admitted that should have been refused. The estimate is now computed from
+  the tool set directly, including on the `ContextHook` re-estimation path, so
+  a hook that narrows or replaces tools cannot regress the report to an
+  under-count. This is a correctness fix independent of the duplication.
+- **`cargo clippy --workspace --all-targets -- -D warnings` passes again.**
+  Two lints introduced earlier in this same unreleased series made strict
+  workspace linting fail outright: a `Copy` config cloned in the routing
+  plugin's factory, and a bare three-element tuple in `ConwayBuilder::build`
+  complex enough to trip `type_complexity`. The latter is now spelled as the
+  `RouterBundle` it already was — router, health, explain — so the three
+  selection arms agree on a named contract rather than on tuple position.
+
 - **Configuration warnings reach you instead of being computed and
   discarded** (board item 01KZ803DJW8Y1H4FXTM8D3PYMY). `Conway::warnings()`
   had zero call sites anywhere in the workspace: `config::merge::validate`

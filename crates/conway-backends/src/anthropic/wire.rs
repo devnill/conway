@@ -9,10 +9,19 @@
 //! side channel this module emits alongside the body so `cache.rs` can
 //! attach `cache_control` as a strictly additive post-pass, without
 //! re-deriving the segment→JSON mapping itself.
+//!
+//! `Provenance::ToolRegistry` segments never produce a `system` entry (board
+//! item 01KYTMJA0JHT5SAPYDGV251V17): `conway-runtime`'s `ContextBuilder`
+//! stopped putting the tool-schema JSON in that segment's `content` at all
+//! — the native `tools` array below is the only copy — so
+//! `segments_to_body_parts` skips it entirely and records
+//! [`BreakpointTarget::Tools`] instead of a `System`/`Message` placement.
+//! See `cache.rs` for where that target actually attaches `cache_control`.
 
 use conway_core::content::{ContentBlock, Role, StopReason, ToolSpec, Usage};
 use conway_core::error::BackendError;
 use conway_core::ports::{GenerateRequest, GenerateResponse};
+use conway_core::provenance::Provenance;
 use conway_core::segment::PromptSegment;
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
@@ -35,6 +44,17 @@ pub(crate) enum BreakpointTarget {
         message_index: usize,
         block_index: usize,
     },
+    /// `body["tools"]`'s LAST entry — Anthropic's documented anchor for
+    /// caching tool definitions ("Tool definitions can be cached by placing
+    /// `cache_control` on the last tool in your `tools` array. All tools
+    /// defined before and including that tool are cached as a single
+    /// prefix.", Anthropic docs, "Prompt caching" > "Caching tool
+    /// definitions", verified 2026-08-08). Recorded for the
+    /// `Provenance::ToolRegistry` segment in place of a `System`/`Message`
+    /// placement, since that segment no longer contributes any body content
+    /// of its own. A cache hint that lands here is dropped (same as `None`)
+    /// when `body["tools"]` is absent or empty.
+    Tools,
     /// The segment produced no addressable content block (e.g. empty
     /// content) — a cache hint on such a segment is silently dropped.
     None,
@@ -130,6 +150,15 @@ fn segments_to_body_parts(
     let mut prev_role: Option<Role> = None;
 
     for segment in segments {
+        // `Provenance::ToolRegistry` carries no body content of its own
+        // anymore -- the native `tools` array below is the only copy (see
+        // this module's doc) -- so it contributes no `system` entry, and
+        // its placement points at `tools` instead of `system`.
+        if matches!(segment.provenance, Provenance::ToolRegistry { .. }) {
+            placements.push(BreakpointTarget::Tools);
+            prev_role = Some(segment.role);
+            continue;
+        }
         match segment.role {
             Role::System => {
                 let text = concat_text(&segment.content);
@@ -571,6 +600,49 @@ mod tests {
                 block_index: 1
             }
         );
+    }
+
+    /// Board item 01KYTMJA0JHT5SAPYDGV251V17: a `Provenance::ToolRegistry`
+    /// segment contributes NO `system` entry -- the native `tools` array is
+    /// the only copy of the schema text -- and its placement is
+    /// `BreakpointTarget::Tools`, not `System`, even when (as `build`
+    /// always produces) its `content` is empty.
+    #[test]
+    fn tool_registry_segment_produces_no_system_entry_and_targets_tools() {
+        let segments = vec![
+            PromptSegment::new(
+                Role::System,
+                vec![ContentBlock::Text {
+                    text: "You are a helpful assistant.".into(),
+                }],
+                Provenance::AgentDef {
+                    name: "assistant".into(),
+                },
+            ),
+            PromptSegment::new(
+                Role::System,
+                Vec::new(),
+                Provenance::ToolRegistry {
+                    hash: "deadbeef".into(),
+                },
+            ),
+            PromptSegment::new(
+                Role::User,
+                vec![ContentBlock::Text {
+                    text: "hi".into(),
+                }],
+                Provenance::UserPrompt,
+            ),
+        ];
+
+        let (system, _messages, placements) = segments_to_body_parts(&segments);
+
+        assert_eq!(
+            Value::Array(system),
+            json!([{"type": "text", "text": "You are a helpful assistant."}]),
+            "the ToolRegistry segment must not add a second system entry"
+        );
+        assert_eq!(placements[1], BreakpointTarget::Tools);
     }
 
     #[test]

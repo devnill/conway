@@ -351,10 +351,12 @@ Fix it by raising the model's declared `max_context_tokens` in
 context builder names it explicitly (`TOKEN_ESTIMATOR =
 "heuristic-chars4"`): each content block contributes `ceil(chars / 4) +
 4` tokens (the `+4` standing in for wire-format framing), summed across
-the assembled prompt. This is deliberately conservative, not precise —
-don't present a routing decision as if the token figure gating it were
-exact. When a candidate is rejected on context, the message says so in
-full:
+the assembled prompt, **plus a dedicated term for the tool schemas
+themselves** — approximated from the tool set directly, not from any
+segment's content (see the next section for why). This is deliberately
+conservative, not precise — don't present a routing decision as if the
+token figure gating it were exact. When a candidate is rejected on
+context, the message says so in full:
 
 ```
 context: needs 34000 input + 16000 headroom = 50000, model max_context_tokens is 40000
@@ -528,6 +530,36 @@ just a claim:
 A profile's `cache` field (see [`providers.md`](providers.md)) is
 informational for exactly this reason — it tells `conway-runtime`
 whether it's worth marking a hint at all, never how a request is built.
+
+### Tool schemas are sent once, not twice
+
+Every request needs the model's tool schemas — every backend sends them
+as the native `tools` array. Earlier, conway *also* rendered the same
+schemas into a system-prompt segment purely so it would have something
+to anchor a cache breakpoint to and hash for the prefix key, duplicating
+every tool's name/description/JSON-Schema on **every turn**, and — since
+a fork inherits its parent's whole transcript — at every fork depth, for
+every sibling. Measured against conway's own 14-tool built-in set, that
+duplicate text ran to roughly 3.4K estimated tokens: often larger than
+everything else in a single turn.
+
+Anthropic's Messages API documents `cache_control` as a marker you can
+place directly on the *last* entry of the `tools` array itself ("Tool
+definitions can be cached by placing `cache_control` on the last tool in
+your `tools` array. All tools defined before and including that tool are
+cached as a single prefix." — Anthropic's "Prompt caching" docs, "Caching
+tool definitions"), so the duplicate segment was unnecessary: breakpoint
+A now anchors on the native `tools` array directly, and the system
+segment that used to hold a second copy of every schema sends no text at
+all. `conway-backends`'s `anthropic::wire::BreakpointTarget::Tools`
+carries that cache hint from the segment to `body["tools"]`'s last
+element; OpenAI-compatible dialects have no `cache_control` equivalent to
+redirect to, so for them it is a pure size reduction — one fewer system
+message, nothing else changes.
+
+The segment itself still exists (empty) and is still the source of the
+tool-set identity hash that feeds `PrefixKey` and the estimator's
+tool-schema term described above — only its wire *text* is gone.
 
 ## Worked example: a fallback chain across a cloud and a local provider
 
