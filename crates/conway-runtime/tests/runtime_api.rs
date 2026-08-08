@@ -17,7 +17,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use conway_core::agent::{Budget, PermissionDecision, ResultStatus};
 use conway_core::capabilities::{
-    CacheMode, Capabilities, ProbeReport, ReliabilityTier, StructuredOutput, ToolCallSupport,
+    CacheMode, Capabilities, HeadroomPolicy, ProbeReport, ReliabilityTier, StructuredOutput,
+    ToolCallSupport,
 };
 use conway_core::content::{
     ContentBlock, PermissionClass, StopReason, ToolCall, ToolCategory, ToolSpec, Usage,
@@ -34,7 +35,6 @@ use conway_core::ports::{
     SessionStore, StreamChunk, Tool, ToolCtx, ToolOutput,
 };
 use conway_core::provenance::Provenance;
-use conway_routing::config::HeadroomPolicy;
 use conway_runtime::events::EventBus;
 use conway_runtime::runtime::{RootSpec, Runtime, RuntimeDeps};
 use futures::stream;

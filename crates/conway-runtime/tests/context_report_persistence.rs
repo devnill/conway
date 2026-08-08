@@ -15,6 +15,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use conway_core::agent::{AgentDefRef, Budget, PermissionDecision, SubagentSpec};
+use conway_core::capabilities::HeadroomPolicy;
 use conway_core::config::AgentDef;
 use conway_core::content::{
     ContentBlock, PermissionClass, StopReason, ToolCall, ToolCategory, ToolSpec, TruncationPolicy,
@@ -32,7 +33,6 @@ use conway_core::ports::{
     ToolCtx, ToolOutput,
 };
 use conway_core::provenance::Provenance;
-use conway_routing::config::HeadroomPolicy;
 use conway_runtime::events::EventBus;
 use conway_runtime::runtime::{RootSpec, Runtime, RuntimeDeps};
 use futures::StreamExt;

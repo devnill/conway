@@ -297,11 +297,10 @@ impl Default for RoutingSection {
 /// Disclosed reconciliation: the WI-097 amendment's prose says
 /// `default_headroom_tokens` "defaults to `16000` when the key is absent."
 /// The already-committed `conway_core::capabilities::DEFAULT_HEADROOM_TOKENS`
-/// (consumed by `RequiredCaps::default()` and
-/// `conway_core::routing::RoutingConfig`'s own serde default) is `8_192`,
-/// and `conway-routing`'s `HeadroomPolicy` explicitly aliases the same
-/// constant with a comment noting it supersedes an earlier, different
-/// literal. Introducing a third, disagreeing "default headroom" value at
+/// (consumed by `RequiredCaps::default()`,
+/// `conway_core::routing::RoutingConfig`'s own serde default, and
+/// `conway_core::capabilities::HeadroomPolicy::default()`) is `8_192`.
+/// Introducing a third, disagreeing "default headroom" value at
 /// the facade layer would mean the same omitted key resolves to three
 /// different numbers depending which layer computed it — strictly worse
 /// than deviating from the amendment's literal `16000`. This constant

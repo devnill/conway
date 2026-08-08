@@ -46,7 +46,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use conway_core::capabilities::RequiredCaps;
+use conway_core::capabilities::{HeadroomPolicy, RequiredCaps};
 use conway_core::error::RoutingError;
 use conway_core::ids::{EndpointId, ModelRef, RoleAlias};
 use conway_core::ports::{HealthRegistry, Router};
@@ -54,7 +54,7 @@ use conway_core::prelude::SamplingParams;
 use conway_core::routing::{BreakerState, Route, RouteRequest, RoutingConfig, RoutingReason};
 
 use crate::capability::{context_shortfall, satisfies, strictest, CapabilityIndex};
-use crate::config::{ConfigIssue, ConfigIssueKind, HeadroomPolicy};
+use crate::config::{ConfigIssue, ConfigIssueKind};
 
 /// One role's compiled routing data: its fallback chain, sampling defaults,
 /// its once-resolved effective headroom, and its configured capability

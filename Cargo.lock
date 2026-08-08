@@ -521,7 +521,6 @@ dependencies = [
  "static_assertions",
  "thiserror 2.0.19",
  "tokio",
- "toml",
 ]
 
 [[package]]

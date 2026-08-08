@@ -113,7 +113,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use chrono::Utc;
 use conway_core::agent::{AgentDefRef, AgentResult, AgentTreeSnapshot, Budget, ToolSelector};
-use conway_core::capabilities::CacheMode;
+use conway_core::capabilities::{CacheMode, HeadroomPolicy};
 use conway_core::config::{AgentDef, DEFAULT_MAX_PARALLEL_TOOLS};
 use conway_core::containment::{CanonicalRoot, Containment};
 use conway_core::error::{ConwayError, RuntimeError};
@@ -126,7 +126,6 @@ use conway_core::ports::{
 };
 use conway_core::provenance::{ContextReport, Provenance};
 use conway_core::segment::CacheTtl;
-use conway_routing::config::HeadroomPolicy;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 

@@ -22,7 +22,6 @@ futures = { workspace = true }
 test-clock = []
 
 [dev-dependencies]
-toml = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 conway-core = { path = "../conway-core", features = ["fakes"] }
 static_assertions = { workspace = true }

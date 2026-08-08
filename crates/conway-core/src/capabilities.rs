@@ -7,10 +7,13 @@
 //! rather than `&'static [CacheTtl]`, because every public type in this crate
 //! must be `Deserialize` and a `'static` slice cannot be.
 
+use std::collections::BTreeMap;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::ids::ModelId;
+use crate::ids::{ModelId, RoleAlias};
+use crate::routing::RoutingConfig;
 
 /// A backend/model's declared capabilities. Per-`(backend, model)`, not
 /// per-backend: quantization and chat template change tool-call reliability
@@ -120,6 +123,76 @@ pub const DEFAULT_HEADROOM_TOKENS: u32 = 8_192;
 
 fn default_headroom_tokens() -> u32 {
     DEFAULT_HEADROOM_TOKENS
+}
+
+/// A declarative, config-time-resolved reservation of output/reasoning
+/// tokens: a global default with per-role overrides.
+///
+/// Moved here from `conway-routing`'s `config.rs` (board item
+/// 01KZFC0JDMC2Y631FFCXWR37CP): enumerating every read of
+/// [`HeadroomPolicy::resolve`] and every construction site found it is not
+/// a total, drop-in replacement for [`RoutingConfig::headroom_for`] --
+/// `conway-routing`'s `DeclarativeRouter::new` takes a `HeadroomPolicy` as a
+/// caller-supplied sidecar and cross-checks its resolution against
+/// `RoutingConfig::headroom_for` for every role at construction time,
+/// rejecting a disagreement as `ConfigIssueKind::HeadroomSourcesDisagree`
+/// rather than silently trusting either source. That check has no meaning
+/// if there is only one source left to compare, so the type stays, moved
+/// beside [`DEFAULT_HEADROOM_TOKENS`] rather than deleted.
+///
+/// Resolution ([`HeadroomPolicy::resolve`]) happens once, is total, and
+/// never depends on anything but the policy and a role name -- no request
+/// data, no runtime measurement. `per_role` is not populated by `serde`
+/// (`#[serde(skip)]`): it is built explicitly by
+/// [`HeadroomPolicy::from_routing_config`] from [`RoutingConfig`]'s own
+/// per-role `headroom_tokens`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct HeadroomPolicy {
+    /// Mirrors the `[routing] default_headroom_tokens` config key.
+    pub default_headroom_tokens: u32,
+    #[serde(skip)]
+    pub per_role: BTreeMap<RoleAlias, u32>,
+}
+
+impl Default for HeadroomPolicy {
+    fn default() -> Self {
+        Self {
+            default_headroom_tokens: DEFAULT_HEADROOM_TOKENS,
+            per_role: BTreeMap::new(),
+        }
+    }
+}
+
+impl HeadroomPolicy {
+    /// The per-role override when present, else `default_headroom_tokens`.
+    /// Total: never errors, never panics, including for a `role` absent
+    /// from `per_role` (the global default is returned).
+    pub fn resolve(&self, role: &RoleAlias) -> u32 {
+        self.per_role
+            .get(role)
+            .copied()
+            .unwrap_or(self.default_headroom_tokens)
+    }
+
+    /// Builds a `HeadroomPolicy` from a [`RoutingConfig`]: the global
+    /// default from `RoutingConfig::default_headroom_tokens`, and the
+    /// per-role table from every `RoleConfig::headroom_tokens` that is
+    /// `Some(_)`.
+    pub fn from_routing_config(config: &RoutingConfig) -> Self {
+        let per_role = config
+            .roles
+            .iter()
+            .filter_map(|(name, role)| {
+                role.headroom_tokens
+                    .map(|tokens| (RoleAlias::new(name.clone()), tokens))
+            })
+            .collect();
+        Self {
+            default_headroom_tokens: config.default_headroom_tokens,
+            per_role,
+        }
+    }
 }
 
 /// The capability floor a routing candidate must clear, plus the reserved
@@ -289,6 +362,110 @@ mod tests {
             reasoning: false,
             reliability_tier: ReliabilityTier::Community,
         }
+    }
+
+    // -----------------------------------------------------------------
+    // HeadroomPolicy (moved here from conway-routing's config.rs, board
+    // item 01KZFC0JDMC2Y631FFCXWR37CP)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn headroom_policy_default_matches_core_constant_and_empty() {
+        let policy = HeadroomPolicy::default();
+        assert_eq!(policy.default_headroom_tokens, DEFAULT_HEADROOM_TOKENS);
+        assert!(policy.per_role.is_empty());
+    }
+
+    #[test]
+    fn headroom_policy_deserializes_the_routing_table_shape() {
+        let policy: HeadroomPolicy = serde_json::from_str(r#"{"default_headroom_tokens":4096}"#)
+            .expect("valid HeadroomPolicy json");
+        assert_eq!(policy.default_headroom_tokens, 4_096);
+        assert!(policy.per_role.is_empty());
+    }
+
+    #[test]
+    fn headroom_policy_omitting_the_field_deserializes_to_default() {
+        let policy: HeadroomPolicy =
+            serde_json::from_str("{}").expect("empty document uses default");
+        assert_eq!(policy, HeadroomPolicy::default());
+    }
+
+    #[test]
+    fn headroom_resolve_per_role_hit() {
+        let mut per_role = BTreeMap::new();
+        per_role.insert(RoleAlias::new("planner"), 16_384);
+        let policy = HeadroomPolicy {
+            default_headroom_tokens: 4_096,
+            per_role,
+        };
+        assert_eq!(policy.resolve(&RoleAlias::new("planner")), 16_384);
+    }
+
+    #[test]
+    fn headroom_resolve_per_role_miss_falls_back_to_global_default() {
+        let mut per_role = BTreeMap::new();
+        per_role.insert(RoleAlias::new("planner"), 16_384);
+        let policy = HeadroomPolicy {
+            default_headroom_tokens: 4_096,
+            per_role,
+        };
+        // "fast" has no override.
+        assert_eq!(policy.resolve(&RoleAlias::new("fast")), 4_096);
+    }
+
+    #[test]
+    fn headroom_resolve_empty_policy_returns_default() {
+        let policy = HeadroomPolicy::default();
+        assert_eq!(
+            policy.resolve(&RoleAlias::new("anything")),
+            DEFAULT_HEADROOM_TOKENS
+        );
+        // Total: even a role absent from every table never panics/errors.
+        assert_eq!(
+            policy.resolve(&RoleAlias::new("unknown-role")),
+            DEFAULT_HEADROOM_TOKENS
+        );
+    }
+
+    #[test]
+    fn headroom_policy_from_routing_config_reads_per_role_override_and_global_default() {
+        use crate::ids::{BackendId, ModelRef};
+        use crate::routing::{HealthConfig, RoleConfig};
+
+        let mut roles = BTreeMap::new();
+        roles.insert(
+            "planner".to_string(),
+            RoleConfig {
+                chain: vec![ModelRef {
+                    backend: BackendId::new("anthropic"),
+                    model: ModelId::new("claude-sonnet-4-6"),
+                }],
+                headroom_tokens: Some(16_384),
+                ..Default::default()
+            },
+        );
+        roles.insert(
+            "fast".to_string(),
+            RoleConfig {
+                chain: vec![ModelRef {
+                    backend: BackendId::new("local"),
+                    model: ModelId::new("qwen3-coder-80b"),
+                }],
+                headroom_tokens: None,
+                ..Default::default()
+            },
+        );
+        let routing_config = RoutingConfig {
+            roles,
+            health: HealthConfig::default(),
+            default_headroom_tokens: 4_096,
+        };
+
+        let policy = HeadroomPolicy::from_routing_config(&routing_config);
+        assert_eq!(policy.default_headroom_tokens, 4_096);
+        assert_eq!(policy.resolve(&RoleAlias::new("planner")), 16_384);
+        assert_eq!(policy.resolve(&RoleAlias::new("fast")), 4_096);
     }
 
     #[test]

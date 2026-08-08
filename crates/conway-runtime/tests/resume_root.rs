@@ -13,6 +13,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use conway_core::agent::{Budget, PermissionDecision};
+use conway_core::capabilities::HeadroomPolicy;
 use conway_core::content::ContentBlock;
 use conway_core::error::{RuntimeError, StoreError};
 use conway_core::event::Event;
@@ -21,7 +22,6 @@ use conway_core::fakes::{
 };
 use conway_core::ids::{AgentId, BackendId, ModelId, ModelRef, RoleAlias, SessionId};
 use conway_core::ports::{Backend, Router, SessionStore};
-use conway_routing::config::HeadroomPolicy;
 use conway_runtime::events::EventBus;
 use conway_runtime::runtime::{ResumeSpec, RootSpec, Runtime, RuntimeDeps};
 use futures::StreamExt;

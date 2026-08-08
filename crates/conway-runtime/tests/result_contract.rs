@@ -17,7 +17,7 @@ use conway_core::agent::{
     AgentResult, Budget, PermissionDecision, ResultStatus, SubagentSpec, ToolSelector,
 };
 use conway_core::capabilities::{
-    CacheMode, Capabilities, ReliabilityTier, StructuredOutput, ToolCallSupport,
+    CacheMode, Capabilities, HeadroomPolicy, ReliabilityTier, StructuredOutput, ToolCallSupport,
 };
 use conway_core::content::{
     ContentBlock, PermissionClass, StopReason, ToolCall, ToolCategory, ToolSpec, Usage,
@@ -34,7 +34,6 @@ use conway_core::ports::{
 };
 use conway_core::provenance::Provenance;
 use conway_core::routing::{Route, RouteRequest, RoutingReason};
-use conway_routing::config::HeadroomPolicy;
 use conway_runtime::agent_loop::{AgentLoop, AgentSpec, LoopDeps};
 use conway_runtime::attempt::AttemptEngine;
 use conway_runtime::context::ContextBuilder;

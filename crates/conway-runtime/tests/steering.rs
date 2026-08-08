@@ -15,7 +15,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use conway_core::agent::{AgentMessage, AgentResult, Budget, PermissionDecision, ResultStatus};
 use conway_core::capabilities::{
-    CacheMode, Capabilities, ReliabilityTier, StructuredOutput, ToolCallSupport,
+    CacheMode, Capabilities, HeadroomPolicy, ReliabilityTier, StructuredOutput, ToolCallSupport,
 };
 use conway_core::content::{
     ContentBlock, PermissionClass, Role, StopReason, ToolCall, ToolCategory, ToolSpec, Usage,
@@ -34,7 +34,6 @@ use conway_core::ports::{
     SessionStore, SubagentHost, Tool, ToolCtx, ToolOutput,
 };
 use conway_core::provenance::Provenance;
-use conway_routing::config::HeadroomPolicy;
 use conway_runtime::agent_loop::{AgentLoop, AgentSpec, LoopDeps};
 use conway_runtime::attempt::AttemptEngine;
 use conway_runtime::context::ContextBuilder;

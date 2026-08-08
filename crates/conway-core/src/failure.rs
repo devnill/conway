@@ -1,19 +1,22 @@
-//! The authority on whether a `conway_core::error::BackendError` should
-//! advance the fallback chain and/or feed a health observation (tension
-//! T-2), as the three-class model the attempt loop consults.
+//! The authority on whether a [`crate::error::BackendError`] should advance
+//! the fallback chain and/or feed a health observation (tension T-2), as the
+//! three-class model the attempt loop consults.
 //!
-//! Relationship to `conway-core`'s coarse boolean helpers (S1, cycle-1
-//! incremental review): `BackendError::is_health_signal()` is the two-way
-//! projection of this table — `observation_for(e).is_some() ==
-//! e.is_health_signal()` is pinned by a consistency test below, so the two
-//! can never drift silently. `BackendError::is_failover_worthy()` answers a
-//! DIFFERENT, narrower question (same-request retriability per §8) and
-//! intentionally disagrees with `FailureClass::advances_chain` on
-//! `BadRequest`: a bad request is never worth re-sending anywhere as-is,
-//! but the chain still advances past it (`RequestIncompatible`) because a
-//! different candidate model may accept the request (e.g. a larger context
-//! window). Chain policy consults THIS module; transport-retry policy
-//! consults `is_failover_worthy`.
+//! Relationship to [`BackendError`]'s own coarse boolean helpers (moved here
+//! from `conway-routing`'s `failure.rs`, board item 01KZFC0JDMC2Y631FFCXWR37CP,
+//! so P-14's consistency test below and the two projections it pins can
+//! never drift across a crate boundary — they previously lived on opposite
+//! sides of one):
+//! `BackendError::is_health_signal()` is the two-way projection of this
+//! table — `observation_for(e).is_some() == e.is_health_signal()` is pinned
+//! by a consistency test below, so the two can never drift silently.
+//! `BackendError::is_failover_worthy()` answers a DIFFERENT, narrower
+//! question (same-request retriability per §8) and intentionally disagrees
+//! with `FailureClass::advances_chain` on `BadRequest`: a bad request is
+//! never worth re-sending anywhere as-is, but the chain still advances past
+//! it (`RequestIncompatible`) because a different candidate model may accept
+//! the request (e.g. a larger context window). Chain policy consults THIS
+//! module; transport-retry policy consults `is_failover_worthy`.
 //!
 //! `BackendError::ContextOverflow`, `BackendError::ContextTooLarge`, and
 //! `BackendError::BadRequest` are request problems, not endpoint-health
@@ -21,19 +24,28 @@
 //! serve the request) but never produce an `Observation`, so a too-large
 //! prompt never trips a breaker for an otherwise-healthy endpoint.
 //!
-//! `ContextTooLarge` is the pre-flight twin of `ContextOverflow` —
+//! `ContextTooLarge` is the pre-flight twin of `ContextOverflow` --
 //! `Backend::admit`'s own refusal before a request is sent, rather than a
-//! provider's after-the-fact rejection — and both classify identically.
-//! Note that ANY new `BackendError` variant must be added to this table AND
-//! to the test module's `all_variants()`: the type is `#[non_exhaustive]`,
-//! so a missing arm silently falls through to `Fatal` and compiles clean,
-//! and the consistency test below can only catch that for variants it is
-//! actually given. `ContextTooLarge` was added to the type without either,
-//! and read as `Fatal` — chain does not advance — while
-//! `is_failover_worthy()` said the opposite.
+//! provider's after-the-fact rejection -- and both classify identically.
+//! `ContextTooLarge` was added to `BackendError` once without a matching arm
+//! here (only caught by the consistency test below, and only once that test
+//! was actually extended to include it -- see `all_variants()`); at the
+//! time `classify` lived in `conway-routing`, a different crate than
+//! `BackendError`, so `#[non_exhaustive]` forced a catch-all arm and a
+//! missing case silently fell through to `Fatal` and compiled clean. Now
+//! that `classify` lives in the SAME crate as `BackendError`,
+//! `#[non_exhaustive]` no longer applies to this match (it only restricts
+//! matching from *outside* the defining crate): the `match` below is
+//! exhaustive over concrete variants with no wildcard arm, so a future
+//! variant added to `BackendError` without a corresponding arm here is a
+//! COMPILE ERROR, not a silent `Fatal` fallback waiting on someone to
+//! remember to extend a test. `all_variants()` in the test module still
+//! must be extended by hand for a new variant to be covered by the
+//! consistency test below, but the classification itself can no longer
+//! silently drift.
 
-use conway_core::error::BackendError;
-use conway_core::routing::Observation;
+use crate::error::BackendError;
+use crate::routing::Observation;
 
 /// The three-way classification of a `BackendError` the runtime consults to
 /// decide (a) whether to advance to the next candidate in the fallback
@@ -89,15 +101,15 @@ pub fn classify(err: &BackendError) -> FailureClass {
             FailureClass::Fatal
         }
 
-        // `BackendError` is `#[non_exhaustive]`: an unrecognized future
-        // variant is treated as the safest of the three classes -- no
-        // chain advance, no health mutation -- until this crate is updated
-        // to classify it explicitly.
-        _ => FailureClass::Fatal,
+        // No wildcard arm, deliberately: `classify` now lives in the same
+        // crate as `BackendError`, so `#[non_exhaustive]` does not force one
+        // here, and omitting it means a future variant added without a
+        // corresponding arm above is a compile error rather than a silent
+        // `Fatal` (see the module doc).
     }
 }
 
-/// This crate's single authority on whether a `BackendError` should feed
+/// This module's single authority on whether a `BackendError` should feed
 /// `HealthRegistry::record`, and with which `Observation`. Returns `None`
 /// for every error whose [`classify`] result is `RequestIncompatible` or
 /// `Fatal`; returns `Some(_)` for every `FailoverRetryable` variant.
@@ -115,6 +127,7 @@ pub fn observation_for(err: &BackendError) -> Option<Observation> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ids::ModelId;
 
     fn all_variants() -> Vec<BackendError> {
         vec![
@@ -136,7 +149,7 @@ mod tests {
                 max_context_tokens: 1,
             },
             BackendError::ContextTooLarge {
-                model: conway_core::ids::ModelId::new("m"),
+                model: ModelId::new("m"),
                 est_tokens: 34_000,
                 headroom_tokens: 16_000,
                 required_tokens: 50_000,
@@ -178,7 +191,7 @@ mod tests {
             ),
             (
                 BackendError::ContextTooLarge {
-                    model: conway_core::ids::ModelId::new("m"),
+                    model: ModelId::new("m"),
                     est_tokens: 34_000,
                     headroom_tokens: 16_000,
                     required_tokens: 50_000,
@@ -281,9 +294,35 @@ mod tests {
         assert!(!FailureClass::Fatal.advances_chain());
     }
 
-    /// S1 pin: the routing-side table and conway-core's boolean projections
-    /// can never drift silently. Exhaustive over every `BackendError`
-    /// variant.
+    /// The load-bearing, deliberate divergence documented in this module's
+    /// doc comment: `BadRequest` is `RequestIncompatible` (the chain still
+    /// advances -- a different candidate model may accept the request as-is,
+    /// e.g. a larger context window) even though `is_failover_worthy()`
+    /// answers the narrower, different question "is this worth re-sending
+    /// as-is" with `false` (a malformed request stays malformed no matter
+    /// where it is re-sent). Pinned as its own test, distinct from the
+    /// exhaustive consistency check below, so this specific disagreement
+    /// cannot silently disappear if a future edit "fixes" it back into
+    /// agreement.
+    #[test]
+    fn bad_request_deliberately_disagrees_with_is_failover_worthy() {
+        let err = BackendError::BadRequest { detail: "x".into() };
+        assert_eq!(classify(&err), FailureClass::RequestIncompatible);
+        assert!(
+            classify(&err).advances_chain(),
+            "the chain still advances past a bad request"
+        );
+        assert!(
+            !err.is_failover_worthy(),
+            "a bad request is never worth re-sending anywhere as-is"
+        );
+    }
+
+    /// P-14 pin: this module's table and `BackendError`'s own boolean
+    /// projections live in the same crate now (moved from `conway-routing`
+    /// by board item 01KZFC0JDMC2Y631FFCXWR37CP specifically so this could
+    /// never drift silently across a crate boundary). Exhaustive over every
+    /// `BackendError` variant.
     #[test]
     fn classification_is_consistent_with_core_projections() {
         for e in all_variants() {
@@ -305,7 +344,7 @@ mod tests {
                 FailureClass::RequestIncompatible => {
                     // ContextOverflow is failover-worthy (a bigger-window
                     // candidate helps); BadRequest deliberately is not (the
-                    // request itself is malformed) — both still advance the
+                    // request itself is malformed) -- both still advance the
                     // chain. Documented divergence; no assertion beyond
                     // advances_chain.
                     assert!(classify(&e).advances_chain());

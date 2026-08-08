@@ -18,6 +18,7 @@ use conway_core::agent::{
     AgentDefRef, Budget, CancelMode, PermissionDecision, ResultStatus, SubagentMode, SubagentSpec,
     ToolSelector,
 };
+use conway_core::capabilities::HeadroomPolicy;
 use conway_core::config::AgentDef;
 use conway_core::content::{ContentBlock, StopReason, Usage};
 use conway_core::error::{RuntimeError, SubagentError, ToolError};
@@ -29,7 +30,6 @@ use conway_core::ids::{AgentId, BackendId, LogSeq, ModelId, ModelRef, RoleAlias,
 use conway_core::log::{ForkOrigin, SessionFilter, SessionMeta};
 use conway_core::ports::{Backend, LiveOwner, Router, SessionStore, SubagentHandle, SubagentHost};
 use conway_core::provenance::Provenance;
-use conway_routing::config::HeadroomPolicy;
 use conway_runtime::events::EventBus;
 use conway_runtime::runtime::{ResumeSpec, RootSpec, Runtime, RuntimeDeps};
 use futures::StreamExt;

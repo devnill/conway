@@ -20,7 +20,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use conway_core::agent::{Budget, PermissionDecision, ResultStatus, SubagentMode, SubagentSpec};
-use conway_core::capabilities::ProbeReport;
+use conway_core::capabilities::{HeadroomPolicy, ProbeReport};
 use conway_core::content::{ContentBlock, StopReason, Usage};
 use conway_core::error::BackendError;
 use conway_core::event::Event;
@@ -30,7 +30,6 @@ use conway_core::ports::{
     Backend, BoxStream, GenerateRequest, GenerateResponse, Router, SessionStore, StreamChunk,
     SubagentHost,
 };
-use conway_routing::config::HeadroomPolicy;
 use conway_runtime::events::EventBus;
 use conway_runtime::runtime::{RootSpec, Runtime, RuntimeDeps};
 use futures::{stream, StreamExt};

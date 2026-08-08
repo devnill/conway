@@ -41,7 +41,8 @@ use std::time::Duration;
 
 use conway_core::agent::{Budget, PermissionDecision};
 use conway_core::capabilities::{
-    CacheMode, CacheTtl, Capabilities, ReliabilityTier, StructuredOutput, ToolCallSupport,
+    CacheMode, CacheTtl, Capabilities, HeadroomPolicy, ReliabilityTier, StructuredOutput,
+    ToolCallSupport,
 };
 use conway_core::content::{ContentBlock, StopReason, Usage};
 use conway_core::event::Event;
@@ -51,7 +52,6 @@ use conway_core::fakes::{
 use conway_core::ids::{AgentId, BackendId, ModelId, ModelRef, RoleAlias};
 use conway_core::ports::{Backend, GenerateRequest, Router, SessionStore, SubagentHost};
 use conway_core::provenance::Provenance;
-use conway_routing::config::HeadroomPolicy;
 use conway_runtime::events::EventBus;
 use conway_runtime::runtime::{RootSpec, Runtime, RuntimeDeps};
 use futures::StreamExt;

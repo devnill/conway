@@ -50,8 +50,11 @@
 //! `headroom.rs` this item would create) and a `RouteRequest.required.
 //! min_context` field carrying `est_tokens + headroom`. Neither exists in
 //! the committed workspace:
-//! - `HeadroomPolicy` is `conway_routing::config::HeadroomPolicy` (WI-034,
-//!   already committed) — reused directly rather than duplicated.
+//! - `HeadroomPolicy` is `conway_core::capabilities::HeadroomPolicy` (WI-034,
+//!   already committed; relocated out of `conway-routing`'s `config` module
+//!   into `conway-core` by board item 01KZFC0JDMC2Y631FFCXWR37CP so this
+//!   engine no longer needs to depend on the whole routing crate for it) —
+//!   reused directly rather than duplicated.
 //! - `conway_core::routing::RequiredCaps` has no `min_context: u32` total;
 //!   it has `min_context: Option<u32>` (an independent absolute floor,
 //!   unrelated to headroom) and `headroom_tokens: u32` (the headroom
@@ -123,7 +126,7 @@ use std::time::Duration;
 
 use chrono::Utc;
 use conway_core::agent::{AgentMessage, AgentResult, Budget, ResultStatus, ToolSelector};
-use conway_core::capabilities::{CacheMode, RequiredCaps, ToolCallSupport};
+use conway_core::capabilities::{CacheMode, HeadroomPolicy, RequiredCaps, ToolCallSupport};
 use conway_core::content::{ContentBlock, ToolResult, ToolSpec, Usage};
 use conway_core::error::{ConwayError, RoutingError, RuntimeError, StoreError};
 use conway_core::event::Event;
@@ -136,7 +139,6 @@ use conway_core::ports::{
 use conway_core::provenance::{ContextReport, Provenance};
 use conway_core::routing::RouteRequest;
 use conway_core::segment::{CacheTtl, PromptSegment};
-use conway_routing::config::HeadroomPolicy;
 use tokio_util::sync::CancellationToken;
 
 use crate::attempt::{AttemptEngine, AttemptOutcome, AttemptRequest};
