@@ -186,6 +186,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `RouterBundle` it already was — router, health, explain — so the three
   selection arms agree on a named contract rather than on tuple position.
 
+- **The economic claim behind map-and-gather is now verified on the wire**
+  (board item 01KZDDPZPAXFHDF1YTZG7F95EG). `PHILOSOPHY.md` says siblings
+  forked at the same point "open with the same bytes", and that ten children
+  forked from one point are largely paid for after the first. The existing
+  tests proved the siblings share one in-process allocation — which is not
+  the same property and does not save anything. A new test drives three
+  `conway_fork` calls issued in a single assistant turn through the real
+  Anthropic adapter over `wiremock`, captures the outgoing request bodies,
+  and asserts the `system` block, the `tools` array (including breakpoint
+  A's `cache_control` on the last tool), and every message before each
+  sibling's own directive are byte-identical across all three — with
+  breakpoint B landing on the last block of that shared run, where a
+  provider's prefix match needs it. Each sibling's own directive is asserted
+  to differ, so the test cannot pass vacuously. Measured on the fixture's
+  captured bytes: ~13.5KB shared against an ~82-byte per-sibling tail, i.e.
+  roughly 99% of a sibling's input recoverable from cache in steady state.
+  No behaviour changed; the claim was true and is now enforced.
+  (`crates/conway/tests/fanout_prefix_sharing.rs`)
+
 - **Graceful cancellation's non-propagation is now enforced, not just
   documented** (board item 01KZDDCBGXNYTNM31PHW46R1SP, decision
   01KZGV7TN6KSWRZM9XRJAKW4CE). `CancelMode::Graceful` stops the named agent
