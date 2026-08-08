@@ -35,19 +35,21 @@ others, because all three are written against the same public API:
   permission, it fails closed: tools are denied unless explicitly named via
   `--allowed-tools`.
 
-## 2. The workspace: 8 crates, ports-and-adapters
+## 2. The workspace: 7 crates, ports-and-adapters
 
-conway is a Cargo workspace of eight crates laid out as ports-and-adapters
+conway is a Cargo workspace of seven crates laid out as ports-and-adapters
 (hexagonal architecture). `conway-core` defines the domain types and every
 port trait; every other crate is either an adapter implementing those ports,
 or a consumer wiring adapters together.
 
 ```
-conway-core        domain types + port traits. No I/O, no tokio-net.
+conway-core        domain types + port traits. No I/O, no tokio-net. Also
+                    where `MinimalRouter` lives — the config-only `Router`
+                    a default build resolves roles with (§3.3); there is no
+                    dedicated routing crate in this fixed layout.
 conway-backends    Backend adapters: Anthropic native, OpenAI-compatible
                     dialects (OpenAI, Ollama, vLLM/Hermes, LM Studio,
                     llama.cpp server).
-conway-routing     Capability-based routing, circuit breakers, health probes.
 conway-session     The append-only session log; transcript/prefix resolution.
 conway-tools       The tool/plugin registry and built-in tools.
 conway-runtime     The agent loop, context assembly, fork/spawn orchestration.
@@ -56,17 +58,44 @@ conway-cli         The `conway` binary: one-shot mode and the TUI.
 ```
 
 This is the fixed core layout; it does not include the first-party plugin
-tier (§2b), whose crate count grows independently of it.
+tier (§2b), whose crate count grows independently of it — notably
+`conway-plugin-routing` (install id `conway.routing`), the capability-/
+health-filtering `DeclarativeRouter` engine that used to be a mandatory
+crate in this table (`conway-routing`) until board item
+01KZFC43J1J06BM4CCWKCKHSNV moved it out to the plugin tier.
 
 Dependency direction is **strictly downward**; `conway-core` depends on
-nothing else in the workspace:
+nothing else in the workspace. This is the **default build** — no routing
+plugin installed, and no edge from `conway` or `conway-runtime` to any
+routing crate, because there isn't one:
 
 ```
-conway-cli ──> conway ──> conway-runtime ──┬─> conway-routing ─┐
-                  │           │            ├─> conway-session ─┤
+conway-cli ──> conway ──> conway-runtime ──┬─> conway-session ─┐
                   │           │            ├─> conway-tools ───┤─> conway-core
                   └───────────┴────────────┴─> conway-backends ┘
 ```
+
+Installing the routing plugin (`[plugins].install = ["conway.routing"]`,
+§3.3) adds exactly **one** edge to this graph, and it touches neither
+`conway` nor `conway-runtime` — only `conway-cli` gains it, because linking
+the plugin crate to populate `first_party_plugins::router_bundle()` is what
+makes `RoutingRouterFactory` nameable in `[plugins].install` at all:
+
+```
+conway-cli ──> conway-plugin-routing ──> conway-core
+```
+
+`conway-cli` may carry this edge while remaining forbidden from depending on
+the internal engine crates above (`conway-runtime`, `conway-backends`,
+`conway-session`, `conway-core`, `conway-tools` — machine-checked by
+`no_forbidden_deps`, `crates/conway-cli/tests/cli_surface.rs`) because a
+first-party **plugin** crate is a different tier entirely (§2b): it is meant
+to be linked by exactly one binary, the same way a third party would link
+it, not an internal implementation detail `conway` itself assembles — that
+list was never meant to, and does not, cover the plugin tier. A library
+embedder wanting the same router links `conway-plugin-routing` directly and
+calls `ConwayBuilder::with_router_factory`; no edge through `conway-cli` is
+involved at all.
 
 There are no cycles. The one place a cycle would naturally appear — the
 fork/spawn *tool*, which lives in `conway-tools`, needing to drive the
@@ -96,13 +125,18 @@ This shape exists so:
 
 ## 2b. The first-party plugin tier
 
-A second, open-ended set of crates sits alongside the eight above: plugins
+A second, open-ended set of crates sits alongside the seven above: plugins
 written and shipped in this repository but never installed unless asked for
 (board item 01KZDC3JQ7W4DY1MG6MBCVB2DV; `PHILOSOPHY.md`'s "First-party
-plugins, and why they are not defaults"). `crates/conway-plugin-skeleton` is
+plugins, and why they are not defaults"). `crates/conway-plugin-skeleton` was
 the first member — a worked example (one `skeleton_ping` tool) proving the
-mechanism, not a real capability; dynamic routing, compaction, memory,
-skills, and MCP support are separate, later work.
+mechanism, not a real capability. `crates/conway-plugin-routing` is the
+second: the capability-/health-filtering `DeclarativeRouter` engine `conway`
+itself used to compile in unconditionally, relocated here by board item
+01KZFC43J1J06BM4CCWKCKHSNV and installed by naming its `RouterFactory::id()`
+(`ROUTER_ID = "conway.routing"`) in `[plugins].install` — see §3.3 for
+exactly what it adds over the default `MinimalRouter`. Compaction, memory,
+skills, and MCP support remain separate, later work.
 
 The layout is one crate per plugin, under `crates/` like everything else.
 A single crate holding several would couple members that are meant to be
@@ -112,17 +146,27 @@ and is worse than it looks: `cargo test --workspace` walks `crates/*`, so
 members would drop out of the suite silently — a coverage gap that goes
 unnoticed precisely because nothing fails.
 
-Each such crate depends on `conway` (the facade) — the identical public
-surface a third-party plugin author gets — and `conway` depends on none of
-them, in either direction, ever. That asymmetry is the whole point: a
-first-party plugin is written and reviewed here, but from the facade's own
-point of view it is indistinguishable from a plugin nobody at this project
-wrote. The one place a first-party plugin crate IS linked into a shipped
-binary is `conway-cli` (`src/first_party_plugins.rs`), behind a config key
-(`[plugins].install`) distinct from the built-in selection §2 describes — a
-library embedder instead links the crate directly and calls
-`ConwayBuilder::with_plugin`. See `docs/embedding.md`'s "First-party plugin
-tier" section for the full mechanism.
+Most such crates depend on `conway` (the facade) — the identical public
+surface a third-party plugin author gets, and how `conway-plugin-skeleton`
+does it. `conway-plugin-routing` is the deliberate exception: it implements
+`Router`/`HealthRegistry`/`RoutingExplainer`, surfaces `conway::plugin`'s own
+module doc excludes from the third-party `Plugin`/`Tool` tier, so it depends
+on `conway-core` directly instead — `RouterFactory` (§3.3) is a separate,
+root-level installable mechanism built for exactly that: a router kind
+needs the full routing/capability domain the facade does not curate down
+to. Either way, `conway` itself depends on none of the plugin tier, in
+either direction, ever. That asymmetry is the whole point: a first-party
+plugin is written and reviewed here, but from the facade's own point of
+view it is indistinguishable from a plugin nobody at this project wrote.
+The one place a first-party plugin crate IS linked into a shipped binary is
+`conway-cli` (`src/first_party_plugins.rs`), behind a config key
+(`[plugins].install`) distinct from the built-in selection §2 describes —
+a `Plugin` via `bundle()`/`ConwayBuilder::with_plugin`, or, for
+`conway-plugin-routing` specifically, a `RouterFactory` via
+`router_bundle()`/`ConwayBuilder::with_router_factory`. A library embedder
+instead links the crate directly and calls the matching `ConwayBuilder`
+method itself. See `docs/embedding.md`'s "First-party plugin tier" section
+for the full mechanism.
 
 ## 3. Core primitives
 
@@ -181,18 +225,17 @@ prefix is resolved once at fork time by `conway-session`'s
 sequence) and is then simply replayed into every one of the child's turns
 unchanged.
 
-### 3.3 Capability-based routing
+### 3.3 Routing: `MinimalRouter` by default, an installable plugin for the rest
 
-`conway-routing` resolves a role alias (`"planner"`, `"coder"`, `"fast"`, ...)
-to an ordered list of candidate `(backend, model)` routes, filtered by each
-candidate's declared `Capabilities` (context window, tool-calling support,
-reasoning) against the turn's requirements. Routing never inspects prompt
-content — there is no code path in `conway-routing` that can see request
-text.
-
-That is a crate-level guarantee, not a claim that conway can never route on
-content. It makes the router's decision a pure function of role,
-capabilities, and health. Content-aware policy lives one layer up, in role
+**Content-blindness is a `Router`-port guarantee, not a routing-crate one.**
+`Router::resolve` (`conway_core::ports::routing`) takes a `RouteRequest`
+that carries no prompt-bearing field at all, for any implementation of the
+port — the guarantee holds **by construction**, not by convention or an
+audit of one crate's code paths: there is no code path reachable through
+`Router` that can see request text, because the type handed to it cannot
+carry any. That is not a claim that conway can never route on content — it
+makes the router's decision a pure function of role, capabilities, and
+health, with content-aware policy living one layer up, in role
 *selection*: the caller picks the role, whether that is the host, an agent
 definition, or a plugin spawning with a role it chose. `ContextHook` cannot
 do this today — `ContextPayload` carries only `segments` and `tools`, and
@@ -200,13 +243,45 @@ do this today — `ContextPayload` carries only `segments` and `tools`, and
 the routing outcome (`ContextHookCtx::model`) rather than steering it.
 Widening that surface is future work.
 
-Two independent circuit breakers are tracked per endpoint — **transport**
-(connection failures) and **probe** (a background liveness/readiness check) —
-because a slow-but-alive local server and a genuinely dead one are different
-states that should be handled differently. When the primary candidate for a
-role is unavailable, the runtime walks the ordered fallback chain, recording
-health observations as it goes; `conway routes explain` surfaces exactly
-which candidate was chosen and why, and which were skipped and why.
+**A default build** resolves a role alias (`"planner"`, `"coder"`,
+`"fast"`, ...) with `conway_core::routing::MinimalRouter`: a config-only
+resolver that walks `[roles.<alias>].chain` in order — the first entry
+carries `RoutingReason::AliasPrimary`, every entry after it
+`RoutingReason::Fallback` — paired with `AlwaysClosedHealthRegistry`,
+which reports every breaker `Closed` and records nothing. Stated plainly,
+what a default build does **NOT** do: no capability filtering, no health
+tracking, no circuit breaking — every configured candidate is treated as
+eligible, so an unregistered model or a dead endpoint is discovered only
+when the request is actually attempted, not skipped in advance.
+
+Capability matching (each candidate's declared `Capabilities` — context
+window, tool-calling support, reasoning — checked against the turn's
+requirements) and two independent circuit breakers per endpoint —
+**transport** (fed by connection failures) and **probe** (a background
+liveness/readiness check), because a slow-but-alive local server and a
+genuinely dead one are different states that should be handled differently
+— are what installing `conway-plugin-routing` (§2b) adds, not something a
+default build has. `[plugins].install = ["conway.routing"]` resolves
+`RoutingRouterFactory` (`ROUTER_ID = "conway.routing"`) from
+`conway-cli`'s `router_bundle()`, which builds a `DeclarativeRouter` plus a
+real `BreakerRegistry` in `MinimalRouter`/`AlwaysClosedHealthRegistry`'s
+place. Once installed, when the primary candidate for a role is
+unavailable, the router walks the ordered fallback chain, recording health
+observations as it goes. Selection precedence inside `ConwayBuilder::build`
+is exact: an injected `with_router` wins unconditionally; else a registered
+`with_router_factory` wins; else `MinimalRouter`. See
+[`docs/routing.md`](docs/routing.md) for the full mechanism, including
+exactly what each configuration does and does not do.
+
+`conway routes explain` answers in **both** configurations: every candidate
+either resolver returns carries a `RoutingReason`. Absent the plugin, the
+answer is honestly degenerate (`capabilities: None`, every breaker
+`Closed`, one entry per configured chain candidate) rather than invented —
+installed, it is capability- and health-filtered. `ExplainReport` and the
+field types it's built from (`ExplainEntry`, `EntryOutcome`,
+`CapabilitySummary`, `BreakerSnapshot`) live in `conway_core::routing`, so
+producing one never requires depending on `conway-plugin-routing`'s own
+filtering logic.
 
 ### 3.4 Tools as plugins, behind a permission gate
 
@@ -354,7 +429,10 @@ context build       ContextBuilder resolves records -> ordered, provenance-
   │
   ▼
 route                Router::resolve(role, required capabilities, est_tokens)
-                     -> an ordered candidate list, filtered by breaker state
+                     -> an ordered candidate list (§3.3: capability- and
+                     breaker-aware only when the routing plugin is
+                     installed; a default build's `MinimalRouter` treats
+                     every configured candidate as eligible)
   │
   ▼
 attempt / backend call   Walk the candidate list; call Backend::generate or
