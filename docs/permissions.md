@@ -519,6 +519,21 @@ does:
   underneath a running session does not retroactively pull back what it
   already granted; it only affects what installs at the *next* session
   start (see "Load-time, not continuous," above).
+- **An agent def's (or `conway_fork`/`conway_spawn`/`conway_ask`'s) `tools`
+  selects what is announced to the model, not what it may execute.** A
+  narrow `tools` list — on an `AgentDef`, or passed to `conway_fork`,
+  `conway_spawn`, or `conway_ask` — keeps a tool out of the schema list the
+  model is shown for that turn, so it is far less likely to be *proposed*.
+  It is not a capability boundary: `ToolRunner` resolves a proposed call by
+  name against the whole registry, with no selector in the picture at all,
+  so if a tool is registered and a call for it somehow reaches the runner,
+  the permission gate — not the selector — is what decides whether it runs.
+  A `tools` argument passed to `conway_fork`/`conway_spawn`/`conway_ask`
+  makes this concrete: it *replaces* whatever the child would otherwise
+  inherit (a def's own selector, if any) rather than narrowing it, so it can
+  name a tool an inherited def excludes. What actually bounds what a call
+  can do is the permission gate (this page) and the confinement root
+  (`--root`, above) — never the announcement list.
 
 See also [`getting-started.md`](getting-started.md) for installing conway
 and configuring a provider, and [`interactive.md`](interactive.md) for the

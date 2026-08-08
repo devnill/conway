@@ -19,9 +19,12 @@
 //! points set it), because `AskOutcome`/the facade's `TurnHandle` expose no
 //! `structured` field a contract could ever satisfy -- it could only ever
 //! fail one. This tool takes only `prompt`, an optional `budget`, and an
-//! optional `tools` narrowing list — no `mode`/`result_contract`/`role`/
-//! `agent_def` args; `tools`, when supplied, still narrows the inherited
-//! set (it can restrict, never widen, the def's own selector). Returns the
+//! optional `tools` selection — no `mode`/`result_contract`/`role`/
+//! `agent_def` args; `tools`, when supplied, replaces the inherited set
+//! (`ToolSelector::selects`, `PluginRegistry::specs`) rather than narrowing
+//! it -- it selects what is announced to the child, not what the child may
+//! execute; the permission gate and confinement root are the capability
+//! boundary (decision 01KZHH9N313T5BTDR8281QDWHC). Returns the
 //! full reply text (GP-01) so the model can compose a fresh spawn
 //! out-of-band, keeping the curation reasoning out of this agent's context
 //! window.
@@ -60,12 +63,16 @@ pub(super) struct AskArgs {
     prompt: String,
     #[serde(default)]
     budget: Option<BudgetArg>,
-    /// Restrict the ephemeral child's tool set to these names
-    /// (`ToolSelector::Only`, the same mapping `conway_fork`/`conway_spawn`'s
-    /// `tools` arg uses). Narrowing-only (P-10): the runtime resolves the selector
-    /// against the registered tools the child would otherwise inherit in
-    /// full, so this can restrict but never widen the child's set. Optional
-    /// (C-04): absent means the child inherits the full set, as before.
+    /// Selects which of the registered tools are announced to the ephemeral
+    /// child (`ToolSelector::Only`, the same mapping `conway_fork`/
+    /// `conway_spawn`'s `tools` arg uses), replacing whatever the child
+    /// would otherwise inherit (its own def's selector, if any) rather than
+    /// narrowing it (decision 01KZHH9N313T5BTDR8281QDWHC): this selects what
+    /// the model is offered, it is NOT a capability restriction, so it can
+    /// name a tool an inherited def excludes -- the permission gate and the
+    /// confinement root are what actually bound what the child may execute.
+    /// Optional (C-04): absent means the child inherits the full set, as
+    /// before.
     #[serde(default)]
     tools: Option<Vec<String>>,
 }
@@ -130,7 +137,7 @@ impl Tool for AskTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: ToolName::new("conway_ask"),
-            description: "Run a prompt in an ephemeral fork of this agent and return the child's full reply text. Use this to draft or curate context for a fresh spawn out-of-band, keeping the curation reasoning out of this agent's context window. Pass `tools` to restrict the child's tool set to the named tools (narrowing-only — it can never grant tools the child would not otherwise inherit).".into(),
+            description: "Run a prompt in an ephemeral fork of this agent and return the child's full reply text. Use this to draft or curate context for a fresh spawn out-of-band, keeping the curation reasoning out of this agent's context window. Pass `tools` to select which tools are announced to the child; it does not restrict what the child may execute -- the permission gate and confinement root are the capability boundary, not this argument.".into(),
             schema: schemars::schema_for!(AskArgs),
             category: ToolCategory::Delegate,
             // The child inherits AT MOST the caller's requested tool set

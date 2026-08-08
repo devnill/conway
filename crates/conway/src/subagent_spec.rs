@@ -54,8 +54,14 @@ pub struct ForkSpec {
     /// carries along -- see [`ForkSpec::result_contract`]'s own doc.
     pub agent_def: Option<String>,
     pub role: Option<RoleAlias>,
-    /// Intersected with the forker's own tool set by the runtime -- this
-    /// spec cannot *grant* a tool the forker itself lacks.
+    /// Selects which of the registered tools are announced to the child,
+    /// replacing whatever it would otherwise inherit (an `agent_def`'s own
+    /// selector) rather than narrowing it (decision
+    /// 01KZHH9N313T5BTDR8281QDWHC) -- this can name a tool the forker's own
+    /// set excludes, and the runtime performs no intersection anywhere. It
+    /// selects what the model is offered, never what it may execute: the
+    /// permission gate and the confinement root are the actual capability
+    /// boundary.
     pub tools: Option<ToolSelector>,
     pub budget: Budget,
     /// **Never sourced from an INHERITED `agent_def`** (decision
