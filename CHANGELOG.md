@@ -186,6 +186,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `RouterBundle` it already was — router, health, explain — so the three
   selection arms agree on a named contract rather than on tuple position.
 
+- **The TUI no longer silently ignores four documented flags** (board item
+  01KZGRXFSY4ZB7NCA9NS2AGFS5). `--model`, `--session`, `--resume` and
+  `--fork-from` were accepted by the parser and never read by the interactive
+  UI, while `docs/interactive.md` documented them. There was no error and no
+  warning — the session simply behaved as if the flag were absent, and the
+  same flags worked correctly in one-shot, so anyone who tried them there
+  first had no reason to suspect otherwise. `--model` now pins the model in
+  the TUI, through the *same* parser one-shot uses, so a malformed
+  `backend/model` fails identically in both modes rather than two different
+  ways. The three continuity flags are **refused with a usage error** naming
+  the alternatives (one-shot for startup continuity, `/resume <id>` once the
+  UI is running) rather than honoured: one-shot's session resolution carries
+  flag-specific logic — an existence probe, `--cwd` rejected with
+  `--fork-from`, local-head resolution for a seq-less fork — with no natural
+  TUI equivalent, and building a second version was out of scope. Refusing
+  loudly is the point; silently accepting was the defect. `docs/interactive.md`
+  and `docs/sessions.md` now describe what actually happens, including a
+  `--resume <id> (CLI/TUI)` claim in the latter that was simply false.
+  **A doc comment in the TUI justified the omission by asserting a
+  `SessionSpec` field "does not exist yet"; it has existed since WI-128.**
+  A wrong justification is worse than none — a reader who checks it stops
+  looking, which is plausibly how this survived. Both that comment and a
+  matching stale note in `oneshot.rs` are gone.
+  (`crates/conway-cli/src/model_pin.rs`, `crates/conway-cli/src/tui/app.rs`,
+  `crates/conway-cli/src/oneshot.rs`, `crates/conway-cli/tests/tui_model_pin.rs`,
+  `docs/interactive.md`, `docs/sessions.md`)
+
 - **`CliOverrides::model` is removed** (board item 01KZ8049CVW1GCAA081M7WSVSZ,
   decision 01KZGRW3CXEAGMP275P95KGN83). **Breaking for an embedder that set
   it** — though setting it never did anything: the field had zero readers

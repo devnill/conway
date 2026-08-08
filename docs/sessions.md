@@ -127,8 +127,9 @@ Your input history is separate from session data and always lives at
 
 ## Resuming
 
-`--resume <id>` (CLI/TUI) or `Conway::resume(id)` (embedder) reattaches to a
-persisted session and continues its transcript: the returned handle's next
+`--resume <id>` (one-shot CLI), `/resume <id>` (TUI, see below), or
+`Conway::resume(id)` (embedder) reattaches to a persisted session and
+continues its transcript: the returned handle's next
 `prompt` genuinely continues where the session left off, with the model
 seeing its own full prior history. Verified end to end — asking a fresh
 one-shot run to echo a string, then resuming that exact session id and
@@ -140,7 +141,10 @@ just that the flag is accepted.
 exactly as the persisted header recorded them; there's no flag or spec
 field to change them on the way back in.
 
-Three related but distinct ways to get a session handle:
+Three related but distinct ways to get a session handle -- **all one-shot
+(`-p`) only.** The TUI refuses to start if you pass any of these three
+flags (a usage error naming the alternative), rather than silently ignoring
+them — see [`interactive.md`](interactive.md#starting-a-session).
 
 | Flag / call | Effect |
 | --- | --- |
@@ -149,7 +153,9 @@ Three related but distinct ways to get a session handle:
 | `--fork-from <id>[@seq]` | Branch a **new** session from an existing one's log, at its current head or an explicit earlier point — no live parent agent involved, and the store copies zero parent records (a fork is always a reference, not a copy). Omit `--cwd` when using this flag: the child always inherits the parent's cwd, and there's no field to override it. |
 
 The TUI's `/resume <session-id>` command does the same thing as `--resume`,
-without restarting the process — see [`interactive.md`](interactive.md).
+once the TUI is already running rather than at startup — see
+[`interactive.md`](interactive.md). It has no equivalent for `--session` or
+`--fork-from`.
 
 ## Keep-alive sessions
 

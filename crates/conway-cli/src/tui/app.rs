@@ -118,15 +118,44 @@ enum SubmitOutcome {
 }
 
 impl App {
-    /// Creates the interactive session. `--role-override` is the only
-    /// `SessionSpec` field this item's flags reach -- `--model`/`--session`/
-    /// `--resume`/`--fork-from` are `SessionSpec`-adjacent but belong to
-    /// WI-117 (session continuity, out of this item's scope) and, for
-    /// `--model`, to a `SessionSpec` field that does not exist yet (the
-    /// facade has no model-pin field on this type today -- see
-    /// `crates/conway/src/session_handle.rs`'s `SessionSpec`).
-    pub async fn new(cli: &Cli, conway: &Conway) -> conway::Result<Self> {
-        let spec = SessionSpec {
+    /// Builds the `SessionSpec` [`Self::new`] passes to `Conway::
+    /// new_session` -- factored out into its own associated function,
+    /// rather than left inline, so it is directly testable without a live
+    /// `Conway`/terminal (`tests/tui_model_pin.rs` drives THIS function --
+    /// `App::new`'s own construction path, not one-shot's
+    /// `oneshot::resolve_session`, which has no equivalent for the TUI to
+    /// share).
+    ///
+    /// Board item 01KZGRXFSY4ZB7NCA9NS2AGFS5: `--model` used to be accepted
+    /// by the parser and then never read here at all, despite the same flag
+    /// being genuinely wired in one-shot mode -- a renderer-only gap (P-8),
+    /// closed by reusing one-shot's own `--model` parser
+    /// (`crate::model_pin::parse_model_pin`) rather than a second one that
+    /// could fail a malformed value a different way.
+    ///
+    /// `--session`/`--resume`/`--fork-from` (WI-117's session-continuity
+    /// flags) are a decided non-goal for the TUI, not an oversight: one-
+    /// shot's `resolve_session` has real per-flag logic with no equivalent
+    /// shape here (an existence probe ahead of `--session`, `--cwd`
+    /// rejected alongside `--fork-from`, a local-head lookup for a seq-less
+    /// fork ref) -- building a second, TUI-flavored version of that logic is
+    /// out of this item's scope. Rather than leave the three flags
+    /// accepted-and-ignored (the exact defect this item exists to close for
+    /// `--model`), the TUI refuses to start when any of them is passed, with
+    /// a usage error naming both alternatives: one-shot mode for startup
+    /// continuity, or the already-wired `/resume <session-id>` slash
+    /// command once the TUI is running. `docs/interactive.md` documents
+    /// this as one-shot-only accordingly.
+    pub fn session_spec(cli: &Cli) -> conway::Result<SessionSpec> {
+        if cli.session.is_some() || cli.resume.is_some() || cli.fork_from.is_some() {
+            return Err(crate::model_pin::usage_error(
+                "--session/--resume/--fork-from are not supported when starting the \
+                 interactive TUI; use one-shot mode (-p) for session continuity at startup, \
+                 or the `/resume <session-id>` slash command once the TUI is running",
+            ));
+        }
+        let model = crate::model_pin::parse_model_pin(cli)?;
+        Ok(SessionSpec {
             role: cli.role_override.clone().map(RoleAlias::new),
             // The TUI drives one `SessionHandle::prompt` call per chat
             // message on the same handle/session for the app's whole
@@ -143,8 +172,14 @@ impl App {
             // tool call nothing downstream ever unblocks. `conway_fork`/
             // `conway_spawn` and every other builtin tool stay available.
             tools: Some(ToolSelector::Except(vec!["report".into()])),
+            model,
             ..SessionSpec::default()
-        };
+        })
+    }
+
+    /// Creates the interactive session.
+    pub async fn new(cli: &Cli, conway: &Conway) -> conway::Result<Self> {
+        let spec = Self::session_spec(cli)?;
         let handle = conway.new_session(spec).await?;
         let mut state = AppState::new(handle.root());
         // T1: build the theme once from the loaded `[tui.theme]` config
