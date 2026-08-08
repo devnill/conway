@@ -448,6 +448,8 @@ if every type its methods name is also reachable; the authoring surface
 for the three traits plugin authors implement lives in the curated
 `conway::plugin` module (below), so that `use conway::plugin::...` plus
 the facade root is the whole surface — no `conway-core` dependency.
+`Backend` authors have their own analogous curated module,
+`conway::backend` (also below).
 
 | Extension point | Trait itself re-exported | Every type its methods need, also re-exported | Implementable from a facade-only crate |
 | --- | --- | --- | --- |
@@ -455,16 +457,19 @@ the facade root is the whole surface — no `conway-core` dependency.
 | `Tool` | Yes | Yes, via `conway::plugin` (`ToolSpec`, `ToolCall`, `ToolCtx`, `ToolOutput`, `ToolError`, `PathArgs`, `RenderKind`, plus the `ToolSpec`/`ToolOutput` field types) | **Yes** |
 | `Plugin` | Yes | Yes, via `conway::plugin` (`PluginManifest`, plus `Tool`'s own types) | **Yes** |
 | `ContextHook` (`with_context_hook`) | Yes | Yes, via `conway::plugin` (`ContextPayload`, `ContextHookCtx`, `OverflowInfo`, `PromptSegment`, `Role`, `Provenance`) | **Yes** |
-| `Backend` | Yes | No (`GenerateRequest`, `GenerateResponse`, `BackendError`, `StreamChunk`, `ProbeReport`, `ModelId`, `Capabilities`, …) | No |
+| `Backend` | Yes | Yes, via `conway::backend` (`GenerateRequest`, `GenerateResponse`, `StreamChunk`, `BoxStream`, `Admission`, `check_admission`, `BackendError`, `Capabilities`, `ProbeReport`, `BackendId`, `ModelId`, plus the field types those structs are built from) | **Yes** |
 | `SessionStore` | Yes | No (`SeqRange`, `StoreError`) | No |
 | `Router` | Yes | No (`RouteRequest`, `Route`, `RoutingError`) | No |
 
-The last three rows are deliberate, not gaps: the extension architecture
-rejects plugin implementations of `Backend`, `SessionStore`, `Router`,
+The remaining two rows are deliberate, not gaps: the extension
+architecture rejects plugin implementations of `SessionStore`, `Router`,
 `HealthRegistry`, `SubagentHost`, and `EventSink` with stated reasons
 (`.design/extension-architecture.md` §13.5 — two of those ports are
 structurally uncrossable by an async RPC boundary; the rest are policy).
-Those traits are re-exported so you can *inject* the workspace's own
+`Backend` used to be named alongside them here; board item
+01KZHEZF8XCD0TMDYZQP06J2KH added `conway::backend` specifically to make it
+implementable, so that reasoning no longer applies to it. `SessionStore`
+and `Router` are still re-exported so you can *inject* the workspace's own
 implementations or a test double written inside this workspace, not so
 third parties write new ones against the facade.
 
@@ -504,6 +509,41 @@ a trivial `Tool`, `Plugin`, and `ContextHook` written against
 `conway::plugin` alone (it imports no `conway-core` path, and fails to
 compile if the export set ever shrinks), registered through
 `ConwayBuilder` exactly as above.
+
+### Writing a `Backend`
+
+`conway::backend` re-exports everything needed to implement `Backend`:
+the trait itself (already at the facade root, duplicated here for
+self-sufficiency), its five methods' request/response types
+(`GenerateRequest`, `GenerateResponse`, `StreamChunk`, `BoxStream`,
+`ProbeReport`), the admission types (`Admission`, `check_admission`),
+`BackendError`, and the field types those structs are built from
+(`BackendId`, `ModelId`, `Capabilities` and its four capability enums,
+`SamplingParams`, `PrefixKey`, `PromptSegment`, `ToolSpec`, `StopReason`,
+`Usage`, `ContentBlock`, `ToolCall`), plus the `async_trait` attribute
+macro the trait is transformed with.
+
+`check_admission` is not optional: `Backend::admit`'s contract requires
+every implementation — the trait's own default and every override —
+to call it for the fits/shortfall arithmetic rather than restating
+`est_tokens + headroom_tokens <= max_context_tokens` itself (P-14, one
+implementation of "fits" for the whole workspace). An override that
+cannot name `check_admission` cannot honour that contract.
+
+A handful of field types one level further down (`Role`, `Provenance`,
+`ToolCategory`, `PermissionClass`, `ToolName` — needed to construct a
+`PromptSegment`/`ToolSpec` literal) are not re-exported a second time
+inside `conway::backend`; they are already reachable at the facade root
+or through `conway::plugin`, and a `Backend` author names them from
+there, same as any other facade-only crate would.
+
+`crates/conway/tests/backend_parity.rs` is a complete worked example — a
+small, deterministic, no-network-I/O `Backend` written against
+`conway::backend` alone (all five methods implemented, `admit` overridden
+and calling `check_admission`), driven end to end by its own tests rather
+than merely compiling. `crates/conway/tests/backend_surface.rs` pins the
+module's export list by name, the same way `public_api_surface.rs` pins
+the facade root's.
 
 ## Next steps
 

@@ -152,8 +152,16 @@ pub use conway_core::ports::{
 ///   for `SubagentHandle` specifically when it landed (C1, board item
 ///   01KZ59SXNQ3BRXP49V4JW10N72): no concrete call site names it either.
 /// - The `SubagentHost`/`EventSink`/`SessionStore`/`Router`/
-///   `HealthRegistry`/`Backend` implementation surfaces — §13.5 rejects
-///   plugin implementations of those with stated reasons.
+///   `HealthRegistry` implementation surfaces — §13.5 rejects plugin
+///   implementations of those with stated reasons. `Backend` used to be
+///   named alongside them here; board item 01KZHEZF8XCD0TMDYZQP06J2KH added
+///   `pub mod backend` (below, a second curated module beside this one —
+///   see its own doc for why it is separate) specifically to make
+///   third-party `Backend` implementations possible, so `Backend` is no
+///   longer part of this closed list. The `Router` half of this same
+///   sentence is ALSO stale for an unrelated reason (`RouterFactory` is
+///   re-exported a few dozen lines below this doc comment) — tracked
+///   separately as board item 01KZHMNABS6HC0KT1D1CKM9W8H, not fixed here.
 /// - `schemars`/`serde_json` — plain data-type crates a plugin author names
 ///   in their own `Cargo.toml` (version-matched to conway's; the compiler
 ///   enforces the match loudly). `async_trait` IS re-exported: the three
@@ -176,6 +184,132 @@ pub mod plugin {
     pub use conway_core::provenance::Provenance;
     pub use conway_core::segment::PromptSegment;
 }
+
+/// The `Backend` authoring surface (board item 01KZHEZF8XCD0TMDYZQP06J2KH):
+/// every type a crate depending only on `conway` needs to write `impl
+/// conway::Backend for MyBackend`. `Backend`'s trait itself has been
+/// re-exported at this crate's root since WI-096, but nothing its five
+/// methods' signatures name was, so a facade-only crate could name the
+/// trait and could not implement it — full stop, not "mostly" (the
+/// preceding item's own compile evidence,
+/// `.design/backends-as-plugins-q1-compile-evidence.md`: 17 unresolved-name
+/// errors against a scratch crate that named every one of the trait's own
+/// types through `conway::` paths). This list was derived the same way —
+/// by compiling, not by reading the trait — and `crates/conway/tests/
+/// backend_parity.rs` is that same compile check kept alive as a
+/// permanent regression guard.
+///
+/// WHY A SEPARATE MODULE, NOT FOLDED INTO `pub mod plugin` ABOVE (F8
+/// decide-and-state, the same choice `pub mod plugin` states for itself):
+/// `Backend` is not a `Tool`/`Plugin`/`ContextHook`. It is selected by
+/// `backends.<id>.kind` in configuration — one adapter per LLM provider
+/// dialect (`.design/extension-architecture.md` §4.1) — not registered
+/// in-process alongside a session's tools, and its authoring surface is
+/// twenty names deep on its own. Folding it into `pub mod plugin` would
+/// bury that module's own stated promise ("the set an in-process
+/// tool/plugin author needs") under names a tool author never touches;
+/// keeping them apart keeps both promises narrow and true. `use
+/// conway::backend::...` reads as intent the same way `use
+/// conway::plugin::...` already does.
+///
+/// This module sits inside the shape decision 01KZHRPZ010R37411R3W1XR5TF
+/// settled (board item 01KZHEYPGN7VCDKR7KBGEM9NJN): both shipped adapters
+/// will install by default through a new declarative key (not folded into
+/// `[plugins].install`), the adapter crate is being renamed
+/// `conway-plugin-backends`, and `backends.<id>.kind` is becoming an open
+/// name rather than a closed enum. None of that is this module's job —
+/// later chain items own the installation story — this module only makes
+/// the Rust trait nameable and implementable, independent of how an
+/// implementation eventually gets installed.
+///
+/// Every name below is justified by appearing in `Backend`'s own method
+/// signatures (`crates/conway-core/src/ports/backend.rs`) or in a public
+/// field of one of those signatures' types — GP-14 cuts both ways, so see
+/// "Deliberately NOT here" below for the names one level further down that
+/// are NOT duplicated a third time:
+///
+/// - `Backend` — already re-exported at this crate's root; duplicated here
+///   (matching `Tool`/`Plugin`/`ContextHook`'s identical dual export inside
+///   `pub mod plugin` above) so `use conway::backend::*` alone names both
+///   the trait and everything its impl block needs.
+/// - `BackendId` — `Backend::id`'s return type.
+/// - `ModelId` — `Backend::capabilities`'s `model` parameter and
+///   `GenerateRequest::model`.
+/// - `Capabilities` — `Backend::capabilities`'s return type.
+/// - `ToolCallSupport`, `CacheMode`, `StructuredOutput`, `ReliabilityTier`
+///   — `Capabilities`'s own fields; a `capabilities()` implementation
+///   cannot construct its return value without them.
+/// - `GenerateRequest` — `Backend::generate`/`::stream`/`::admit`'s shared
+///   request parameter.
+/// - `SamplingParams`, `PrefixKey` — `GenerateRequest`'s own fields, with
+///   no existing re-export anywhere else in this facade before this item.
+/// - `PromptSegment`, `ToolSpec` — `GenerateRequest::segments`/`::tools`'
+///   element types; a caller building a request (this module's own parity
+///   test, standing in for `conway-runtime`'s real one) must construct
+///   these.
+/// - `GenerateResponse` — `Backend::generate`'s `Ok` type, and
+///   `StreamChunk::Done`'s payload.
+/// - `ContentBlock`, `ToolCall` — `GenerateResponse`'s own fields; a
+///   `generate()` implementation cannot construct its return value without
+///   them.
+/// - `StopReason` — `GenerateResponse::stop`'s type, with no existing
+///   re-export anywhere else in this facade before this item.
+/// - `Usage` — `GenerateResponse::usage`'s type. Already re-exported at
+///   this crate's root (`conway::Usage`); duplicated here so this module
+///   is self-sufficient on its own, the same choice already made for
+///   `Provenance` (re-exported at both the root and inside `pub mod
+///   plugin` above).
+/// - `StreamChunk`, `BoxStream` — `Backend::stream`'s item and return
+///   types.
+/// - `ProbeReport` — `Backend::probe`'s `Ok` type.
+/// - `BackendError` — every method's `Err` type.
+/// - `Admission`, `check_admission` — `Backend::admit`'s `Ok` type and the
+///   ONE arithmetic implementation (P-14) every override — including this
+///   module's own parity test's — MUST call rather than restating
+///   `est_tokens + headroom_tokens <= max_context_tokens` itself.
+///   `check_admission` is not decoration: an author who cannot name it
+///   cannot honour `Backend::admit`'s contract.
+/// - `async_trait` — `Backend` is `#[async_trait]`-transformed, the same
+///   reason `pub mod plugin` re-exports the macro for its own three
+///   traits.
+///
+/// Deliberately NOT here:
+///
+/// - `CacheTtl` — reachable only through `CacheMode::ExplicitBreakpoints`,
+///   a single variant of one `Capabilities` field, and no signature or
+///   field this module curates requires that specific variant.
+///   `backend_parity.rs`'s own stub declares `CacheMode::ImplicitPrefix`
+///   instead (an equally real dialect shape — OpenAI-compatible servers
+///   use it), so nothing here needs `CacheTtl`. A real Anthropic-shaped
+///   adapter that does need it lives inside this repository already
+///   (`conway-backends`' `AnthropicBackend`), the same asymmetry this
+///   item's own preceding investigation (board item
+///   01KZHEY78NCGYZCPDNFENF96N4) flagged as a decision for a later chain
+///   item, not this one.
+/// - `Role`, `Provenance`, `ToolCategory`, `PermissionClass`, `ToolName` —
+///   needed one level further down, to construct a `PromptSegment`/
+///   `ToolSpec` literal, but already reachable without duplicating them a
+///   third time: `Provenance`/`ToolCategory`/`ToolName` at this crate's
+///   root, `Role`/`PermissionClass` through `pub mod plugin` above.
+///   `backend_parity.rs` imports them from wherever they already live, the
+///   same way a real third-party `Backend` crate would.
+pub mod backend {
+    pub use async_trait::async_trait;
+    pub use conway_core::capabilities::{
+        CacheMode, Capabilities, ProbeReport, ReliabilityTier, StructuredOutput, ToolCallSupport,
+    };
+    pub use conway_core::content::{
+        ContentBlock, SamplingParams, StopReason, ToolCall, ToolSpec, Usage,
+    };
+    pub use conway_core::error::BackendError;
+    pub use conway_core::ids::{BackendId, ModelId, PrefixKey};
+    pub use conway_core::ports::{
+        check_admission, Admission, Backend, BoxStream, GenerateRequest, GenerateResponse,
+        StreamChunk,
+    };
+    pub use conway_core::segment::PromptSegment;
+}
+
 pub use conway_core::provenance::{ContextReport, Provenance};
 pub use conway_core::routing::{AttemptFailure, BreakerKind, BreakerState, RoutingReason};
 
