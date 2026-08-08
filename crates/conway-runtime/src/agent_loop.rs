@@ -1260,11 +1260,33 @@ impl AgentLoop {
         None
     }
 
+    /// The immediate-path terminus for every `self.cancel.is_cancelled()`
+    /// check in [`Self::run_inner`]. Board item 01KZDDCN747FEZ3GM3NS0ANE7G:
+    /// looks up `self.deps.tree.cancel_reason(self.agent_id)` -- the reason
+    /// [`crate::tree::AgentTree::cancel`] stashed if THIS agent was itself
+    /// the direct target of a `Runtime::cancel`/`conway_cancel` call -- and
+    /// carries it into the terminal `ResultStatus::Cancelled`, agreeing with
+    /// the graceful path's `pending_cancel` mailbox mechanism (above, at the
+    /// top of `run_inner`'s loop), which has always carried its caller-
+    /// supplied reason this way.
+    ///
+    /// Falls back to the pre-existing literal `"cancelled"` when there is no
+    /// stashed reason -- true for a descendant whose token was tripped only
+    /// by an ancestor's cancellation propagating structurally (that
+    /// descendant was never itself named in a `cancel` call, so there is no
+    /// truthful reason to attach; see `AgentTree::cancel`'s own doc), and
+    /// also true for the pre-existing deadline-triggered token trip
+    /// (`supervisor.rs`'s deadline arm calls `cancel.cancel()` directly, with
+    /// no reason at all -- `check_budget` normally catches a deadline first,
+    /// but this fallback keeps that race harmless either way).
     async fn finish_cancelled(&self, state: LoopState, builder: &ResultBuilder) -> AgentResult {
+        let reason = self
+            .deps
+            .tree
+            .cancel_reason(self.agent_id)
+            .unwrap_or_else(|| "cancelled".to_string());
         self.finish(
-            ResultStatus::Cancelled {
-                reason: "cancelled".to_string(),
-            },
+            ResultStatus::Cancelled { reason },
             "",
             state.usage,
             state.turn,

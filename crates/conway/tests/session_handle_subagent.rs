@@ -1802,7 +1802,7 @@ async fn default_cancel_through_the_facade_stops_immediately_without_waiting_for
     // WITHOUT `release` ever being notified: it must not wait for the
     // in-flight tool to finish.
     handle
-        .cancel(child, "test requested cancellation")
+        .cancel(child, "immediate reason must reach the result")
         .await
         .expect("cancel should succeed");
 
@@ -1810,10 +1810,19 @@ async fn default_cancel_through_the_facade_stops_immediately_without_waiting_for
         .await
         .expect("the default cancel path must resolve promptly, without waiting on the tool")
         .expect("await_agent should resolve Ok even on Cancelled");
-    assert!(
-        matches!(result.status, ResultStatus::Cancelled { .. }),
-        "expected Cancelled, got {:?}",
-        result.status
+    // Board item 01KZDDCN747FEZ3GM3NS0ANE7G (P-15 break-the-guard: against
+    // the pre-fix `Runtime::cancel`, this failed -- `finish_cancelled`
+    // hardcoded `reason: "cancelled".to_string()`, discarding the caller's
+    // string outright). A distinctive reason, not just any `Cancelled`
+    // status, is what proves it reached the result rather than only the
+    // `tracing::info!` line `AgentTree::cancel` already emitted.
+    assert_eq!(
+        result.status,
+        ResultStatus::Cancelled {
+            reason: "immediate reason must reach the result".to_string()
+        },
+        "an immediate cancel's caller-supplied reason must land in the target's own terminal \
+         result, exactly as the graceful path's reason already does"
     );
 
     let transcript = handle
@@ -1826,6 +1835,25 @@ async fn default_cancel_through_the_facade_stops_immediately_without_waiting_for
             .any(|r| matches!(r, LogRecord::ToolResultRecord { .. })),
         "an immediate cancel must abort the in-flight tool call outright -- its result must \
          never be persisted, unlike the graceful path"
+    );
+    // The PERSISTED result, not only the live `await_agent` value or a log
+    // line: `AgentLoop::finish` appends `LogRecord::AgentResultRecord`
+    // before publishing, so this is what a resumed/replayed session would
+    // see too.
+    let persisted = transcript
+        .iter()
+        .find_map(|r| match r {
+            LogRecord::AgentResultRecord { result, .. } => Some(result),
+            _ => None,
+        })
+        .expect("the cancelled child's AgentResultRecord must be persisted");
+    assert_eq!(
+        persisted.status,
+        ResultStatus::Cancelled {
+            reason: "immediate reason must reach the result".to_string()
+        },
+        "the immediate cancel's reason must be present in the durably persisted AgentResult, \
+         not only the in-memory watch-channel value await_agent reads"
     );
 
     // Release the tool so its (already-dropped, by `ToolRunner::run_batch`'s

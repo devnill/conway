@@ -186,6 +186,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `RouterBundle` it already was — router, health, explain — so the three
   selection arms agree on a named contract rather than on tuple position.
 
+- **A cancellation reason now reaches the cancelled agent's result on the
+  immediate path, not just the graceful one** (board item
+  01KZDDCN747FEZ3GM3NS0ANE7G). `conway_cancel` accepts a `reason`; on the
+  immediate path it went to a `tracing` line and nowhere else. That became
+  worse than a uniform gap once graceful cancellation shipped, because the
+  same argument on the same tool then reached the result on one path and
+  vanished on the other. The reason is stashed on the named agent's tree
+  entry and read back by BOTH immediate-path sites that build a terminal
+  result — the agent loop's own cancellation check, and the supervisor's
+  synthesis when a task fails to unwind within its grace window. Previously
+  each independently hardcoded `"cancelled"`, so fixing only the common one
+  would have left the guarantee false in exactly the case nobody tests by
+  hand. **Scope, stated because it is a real limit and not an oversight:**
+  only the agent actually named in the cancel carries the reason. Immediate
+  cancellation collapses the subtree structurally, by cancellation-token
+  propagation, which carries no data — a descendant swept up by it was never
+  itself given a reason, so its result falls back to a generic one. That is
+  documented at every declaration site: the tool argument's own schema
+  description, `Runtime::cancel`, `CancelMode`, and `AgentTree::cancel`.
+  A model-supplied reason is bounded before it reaches persistence (P-10).
+  (`crates/conway-runtime/src/{tree,agent_loop,supervisor,runtime}.rs`,
+  `crates/conway-core/src/agent.rs`,
+  `crates/conway-tools/src/subagent/control.rs`)
+
 - **Configuration warnings reach you instead of being computed and
   discarded** (board item 01KZ803DJW8Y1H4FXTM8D3PYMY). `Conway::warnings()`
   had zero call sites anywhere in the workspace: `config::merge::validate`

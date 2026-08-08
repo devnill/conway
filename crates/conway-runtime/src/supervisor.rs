@@ -124,7 +124,23 @@ pub fn supervise(args: SuperviseArgs) -> JoinHandle<()> {
                     Err(_elapsed) => {
                         // See the abort note on the deadline arm above.
                         task.abort();
-                        Outcome::Synthesized(cancelled(agent, session, "cancelled"))
+                        // Board item 01KZDDCN747FEZ3GM3NS0ANE7G: this branch
+                        // only fires when the task fails to unwind within
+                        // `grace` and this module synthesizes a result
+                        // instead of the task's own `finish_cancelled`
+                        // publishing one (the common case, which already
+                        // reads `AgentTree::cancel_reason` itself) -- but a
+                        // synthesized result still needs the SAME reason,
+                        // not a generic placeholder, since it is otherwise
+                        // indistinguishable from a real one to the caller.
+                        // `tree.cancel_reason` is the identical lookup
+                        // `AgentLoop::finish_cancelled` uses; `None` (an
+                        // ancestor's cancel, not this agent's own) falls
+                        // back to the same pre-existing literal.
+                        let reason = tree
+                            .cancel_reason(agent)
+                            .unwrap_or_else(|| "cancelled".to_string());
+                        Outcome::Synthesized(cancelled(agent, session, &reason))
                     }
                 }
             }

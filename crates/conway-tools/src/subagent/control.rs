@@ -59,6 +59,14 @@ impl From<CancelModeArg> for CancelMode {
 #[serde(deny_unknown_fields)]
 pub(super) struct CancelArgs {
     agent_id: String,
+    /// Why `agent_id` is being cancelled. Reaches `agent_id`'s OWN terminal
+    /// result (`AgentResult.status`'s `Cancelled { reason }`) on BOTH modes
+    /// -- but in `immediate` mode, which propagates to the whole subtree
+    /// structurally, only `agent_id` itself carries this reason; a
+    /// descendant swept up by the same cancellation was never itself named
+    /// here, so its own result falls back to a generic reason instead of
+    /// misattributing this one to it. Defaults to "cancelled by parent
+    /// agent" when omitted.
     #[serde(default)]
     reason: Option<String>,
     /// `immediate` (default) stops now and propagates to the whole subtree.
