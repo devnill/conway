@@ -72,7 +72,12 @@ toml = { workspace = true }
 # WI-113: the hand-rolled `tests/common/mock_backend.rs` OpenAI-compatible
 # mock server (request parsing) and its SIGINT-delivery tests (unix-only).
 httparse = { workspace = true }
-nix = { workspace = true, features = ["signal"] }
+# "fs" (board item 01KZFC1KNGQ51TZ0BG7P7RAY9H): `nix::unistd::{dup,dup2}`,
+# gated behind this feature, back
+# `tests/routes_explain_injected_router.rs`'s in-process stderr capture --
+# not a new dependency (C-04), `nix` is already present for the "signal"
+# feature above.
+nix = { workspace = true, features = ["signal", "fs"] }
 # WI-113: `tests/common/mock_backend.rs` needs a raw TCP listener/stream
 # (`net`) and async read/write helpers (`io-util`) to serve real chunked
 # HTTP responses -- the shipped binary itself never touches raw sockets

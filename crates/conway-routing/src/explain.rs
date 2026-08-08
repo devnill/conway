@@ -4,6 +4,14 @@
 //! per-candidate health/capability snapshot -- it must never re-implement
 //! filtering, which is the specific bug this structure prevents.
 //!
+//! **The report shape itself moved to `conway-core`** (board item
+//! 01KZFC1KNGQ51TZ0BG7P7RAY9H): `BreakerSnapshot`, `CapabilitySummary`,
+//! `EntryOutcome`, `ExplainEntry`, and `ExplainReport` are now defined in
+//! `conway_core::routing` and re-exported from this crate's `lib.rs` for
+//! source compatibility. This module now also implements
+//! `conway_core::ports::RoutingExplainer` for [`RoutingExplain`], delegating
+//! to the existing inherent `explain` method below so the two never diverge.
+//!
 //! Divergence note (flagged, not worked around): the binding plan
 //! specifies each
 //! entry's `breaker` field as `BreakerSnapshot { transport: BreakerState,
@@ -41,181 +49,14 @@
 //! deliberate, documented limitation, not a silent swallow: `resolve` still
 //! surfaces `UnknownRole` as an error to callers that need it.
 
-use std::fmt::Write as _;
+use chrono::Utc;
 
-use chrono::{DateTime, SecondsFormat, Utc};
-use serde::{Deserialize, Serialize};
-
-use conway_core::capabilities::{
-    Capabilities, ReliabilityTier, RequiredCaps, StructuredOutput, ToolCallSupport,
+use conway_core::ports::RoutingExplainer;
+use conway_core::routing::{
+    BreakerSnapshot, CapabilitySummary, EntryOutcome, ExplainEntry, ExplainReport, RouteRequest,
 };
-use conway_core::ids::{ModelRef, RoleAlias};
-use conway_core::routing::{BreakerKind, BreakerState, RouteRequest, RoutingReason};
 
 use crate::router::{endpoint_of, DeclarativeRouter, EvalOutcome};
-
-/// A single breaker read at explain time. See the module-level divergence
-/// note: this carries the `HealthRegistry`-port-visible merged state, not
-/// the plan's originally specified `{transport, probe}` split.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct BreakerSnapshot {
-    pub state: BreakerState,
-}
-
-/// A read-only projection of a `(backend, model)` pair's `Capabilities`, for
-/// rendering in an `ExplainEntry`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct CapabilitySummary {
-    pub tool_calling: ToolCallSupport,
-    pub max_context_tokens: u32,
-    pub structured_output: StructuredOutput,
-    pub parallel_tool_calls: bool,
-    pub reasoning: bool,
-    pub reliability_tier: ReliabilityTier,
-}
-
-impl From<&Capabilities> for CapabilitySummary {
-    fn from(caps: &Capabilities) -> CapabilitySummary {
-        CapabilitySummary {
-            tool_calling: caps.tool_calling,
-            max_context_tokens: caps.max_context_tokens,
-            structured_output: caps.structured_output,
-            parallel_tool_calls: caps.parallel_tool_calls,
-            reasoning: caps.reasoning,
-            reliability_tier: caps.reliability_tier,
-        }
-    }
-}
-
-/// Whether a candidate was chosen, or skipped -- carrying the router's exact
-/// `RoutingReason` either way.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub enum EntryOutcome {
-    Selected { reason: RoutingReason },
-    Skipped { reason: RoutingReason },
-}
-
-/// One evaluated candidate: its place in the chain (or `None` for a pin),
-/// whether it was selected or skipped and why, its capability summary (when
-/// indexed), and its breaker snapshot.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct ExplainEntry {
-    pub model_ref: ModelRef,
-    pub chain_position: Option<u8>,
-    pub outcome: EntryOutcome,
-    pub capabilities: Option<CapabilitySummary>,
-    pub breaker: BreakerSnapshot,
-}
-
-/// The full "why did this model run, and why not the others" answer for one
-/// `RouteRequest`, including the effective headroom reservation used for
-/// the admission check (see the amendment).
-///
-/// Invariant consumers may rely on: `entries.is_empty()` is possible only
-/// for an unrecognized role, since `config::validate` rejects empty chains
-/// — a recognized role always yields one entry per chain candidate (or
-/// exactly one for a pin), whatever their outcomes.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct ExplainReport {
-    pub role: RoleAlias,
-    pub pin: Option<ModelRef>,
-    pub est_tokens: u32,
-    /// The EFFECTIVE requirement every `entries` outcome was actually
-    /// checked against: the role's configured floor merged with
-    /// `req.required` (`DeclarativeRouter::effective_required`), not
-    /// `req.required` alone -- otherwise a config-floor-caused
-    /// `CapabilitySkip` in `entries` would be inexplicable from this field
-    /// alone. Falls back to bare `req.required` only in the `UnknownRole`
-    /// branch below, where `entries` is empty and there is no admission
-    /// check to describe.
-    pub required: RequiredCaps,
-    pub headroom_tokens: u32,
-    pub entries: Vec<ExplainEntry>,
-    pub generated_at: DateTime<Utc>,
-}
-
-impl ExplainReport {
-    /// A stable, line-oriented rendering (see `docs/routing.md`'s "Asking
-    /// why a route was chosen" section for the exact format). Two-space
-    /// indent, `[<position>]` (or `[pin]`), the model ref right-padded to the
-    /// longest ref in the report plus two spaces, `SELECTED`/`SKIPPED`
-    /// padded to eight columns, then the reason. Timestamps are RFC 3339
-    /// UTC. Trailing newline present. No ANSI codes -- rendering is the
-    /// CLI's concern, not this crate's.
-    pub fn render_text(&self) -> String {
-        let mut out = format!(
-            "role: {}  (est_tokens={}, headroom_tokens={})\n",
-            self.role, self.est_tokens, self.headroom_tokens
-        );
-
-        let width = self
-            .entries
-            .iter()
-            .map(|e| e.model_ref.to_string().len())
-            .max()
-            .unwrap_or(0)
-            + 2;
-
-        for entry in &self.entries {
-            let marker = match entry.chain_position {
-                Some(position) => format!("[{position}]"),
-                None => "[pin]".to_string(),
-            };
-            let (word, reason) = match &entry.outcome {
-                EntryOutcome::Selected { reason } => ("SELECTED", render_selected(reason)),
-                EntryOutcome::Skipped { reason } => {
-                    ("SKIPPED", render_skipped(reason, &entry.breaker))
-                }
-            };
-            let model_ref = entry.model_ref.to_string();
-            let _ = writeln!(
-                out,
-                "  {marker} {model_ref:<width$}{word:<8} {reason}",
-                width = width,
-            );
-        }
-
-        out
-    }
-}
-
-/// Renders an `EntryOutcome::Selected` reason for `render_text`.
-fn render_selected(reason: &RoutingReason) -> String {
-    match reason {
-        RoutingReason::PinnedByApi => "pinned(via=api)".to_string(),
-        RoutingReason::PinnedByAgentDef => "pinned(via=agent_def)".to_string(),
-        RoutingReason::AliasPrimary { alias } => format!("primary(role={alias})"),
-        RoutingReason::Fallback { position, .. } => format!("fallback(position={position})"),
-        _ => "selected".to_string(),
-    }
-}
-
-/// Renders an `EntryOutcome::Skipped` reason for `render_text`. The health
-/// case reads its `until` timestamp from `breaker` (the independent snapshot
-/// taken at explain time), since `RoutingReason::HealthSkip` itself carries
-/// only the breaker kind, not a timestamp.
-fn render_skipped(reason: &RoutingReason, breaker: &BreakerSnapshot) -> String {
-    match reason {
-        RoutingReason::CapabilitySkip { missing, .. } => {
-            format!("capability: {}", missing.join("; "))
-        }
-        RoutingReason::HealthSkip { breaker: kind, .. } => {
-            let kind_name = match kind {
-                BreakerKind::Transport => "transport",
-                BreakerKind::Probe => "probe",
-                _ => "unknown",
-            };
-            match &breaker.state {
-                BreakerState::Open { until, .. } => format!(
-                    "health: {kind_name} breaker open until {}",
-                    until.to_rfc3339_opts(SecondsFormat::Secs, true)
-                ),
-                _ => format!("health: {kind_name} breaker open"),
-            }
-        }
-        _ => "skipped".to_string(),
-    }
-}
 
 /// Builds `ExplainReport`s as a pure projection of `DeclarativeRouter`'s
 /// evaluation -- the "why did this model run" answer, sharing its filtering
@@ -296,5 +137,11 @@ impl<'a> RoutingExplain<'a> {
                 generated_at,
             },
         }
+    }
+}
+
+impl RoutingExplainer for RoutingExplain<'_> {
+    fn explain(&self, req: &RouteRequest) -> ExplainReport {
+        RoutingExplain::explain(self, req)
     }
 }

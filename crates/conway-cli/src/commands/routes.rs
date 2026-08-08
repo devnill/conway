@@ -29,15 +29,20 @@ pub enum RoutesAction {
 pub async fn run(args: &RoutesArgs, conway: &Conway) -> conway::Result<ExitCode> {
     match &args.action {
         RoutesAction::Explain { role, json } => {
-            let report = conway.explain_routing(&conway::RoleAlias::new(role.as_str()));
-
-            // Invariant documented on `conway::ExplainReport`: `entries` is
-            // empty only for a role the router does not recognize -- a
-            // configured role always yields at least one entry. Detecting
-            // an unknown role here (rather than letting `explain_routing`
-            // itself error) matches its own signature, which is infallible
-            // by design.
-            if report.entries.is_empty() {
+            // Unknown-role detection reads `conway.config().roles` directly
+            // -- the configuration's own source of truth for which roles
+            // exist -- rather than inferring it from whether the report
+            // came back with no entries at all. A `Router` supplied from
+            // outside `conway-routing` (`ConwayBuilder::with_router`) makes
+            // `Conway::explain_routing` fall back to
+            // `conway_core::routing::MinimalRouter`'s honestly degenerate
+            // report, which has no entries for an unconfigured role but is
+            // not the only way it can end up that way in principle (an
+            // empty-chain role is a second, distinct cause) -- inferring
+            // "unknown role" from bare emptiness previously made that
+            // fallback misreport every correctly-configured role as unknown
+            // (board item 01KZFC1KNGQ51TZ0BG7P7RAY9H).
+            if !conway.config().roles.contains_key(role.as_str()) {
                 let mut roles: Vec<&String> = conway.config().roles.keys().collect();
                 roles.sort();
                 let roles_list = roles
@@ -50,6 +55,8 @@ pub async fn run(args: &RoutesArgs, conway: &Conway) -> conway::Result<ExitCode>
                 ));
                 return Ok(ExitCode::Usage);
             }
+
+            let report = conway.explain_routing(&conway::RoleAlias::new(role.as_str()));
 
             if *json {
                 print_json(&report);

@@ -5,24 +5,14 @@
 //! there is exactly one place (the bottom of this file) that turns an
 //! `ExitCode` into a process exit status.
 
-mod cli;
-mod commands;
-mod diag;
-mod exit;
-mod first_party_plugins;
-mod oneshot;
-mod render;
-mod session_ref;
-mod signal;
-mod tui;
-
 use std::sync::Arc;
 
 use clap::Parser;
 use conway::{Conway, ConwayBuilder, PermissionGate};
 
-use cli::{Cli, Command};
-use exit::ExitCode;
+use conway_cli::cli::{Cli, Command};
+use conway_cli::exit::ExitCode;
+use conway_cli::{commands, diag, first_party_plugins, oneshot, tui};
 
 #[tokio::main]
 async fn main() -> std::process::ExitCode {

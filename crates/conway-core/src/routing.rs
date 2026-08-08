@@ -1,6 +1,8 @@
 //! The content-free routing request/response contract (GP-07), the routing
-//! reason vocabulary, health/breaker state, and the declarative routing
-//! config types.
+//! reason vocabulary, health/breaker state, the declarative routing config
+//! types, the "why did this model run" explain-report shape, and a minimal
+//! config-only `Router`/`RoutingExplainer` fallback (`MinimalRouter`) usable
+//! without depending on `conway-routing` at all.
 //!
 //! `Router::resolve` (defined as a port trait in WI-007) never consults
 //! request *content* — [`RouteRequest`] is constructed so that no field can
@@ -9,13 +11,19 @@
 //! fields.
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::capabilities::{ReliabilityTier, RequiredCaps, DEFAULT_HEADROOM_TOKENS};
+use crate::capabilities::{
+    Capabilities, ReliabilityTier, RequiredCaps, StructuredOutput, ToolCallSupport,
+    DEFAULT_HEADROOM_TOKENS,
+};
 use crate::content::SamplingParams;
+use crate::error::RoutingError;
 use crate::ids::{AgentId, BackendId, EndpointId, ModelId, ModelRef, RoleAlias};
+use crate::ports::{HealthRegistry, Router, RoutingExplainer};
 
 fn default_headroom_tokens() -> u32 {
     DEFAULT_HEADROOM_TOKENS
@@ -126,18 +134,184 @@ pub enum Observation {
     RateLimited { retry_after_secs: Option<u64> },
 }
 
-/// The "why did this model run" answer for `conway routes explain <role>`:
-/// the chosen route, every skipped candidate and why, breaker states, and
-/// the effective headroom (a headroom-caused exclusion is otherwise
-/// invisible and looks like an arbitrary skip).
-#[derive(Clone, Debug, Serialize, Deserialize)]
+/// A single breaker read at explain time. Carries the `HealthRegistry`
+/// port's merged view (`state`), not an independent `{transport, probe}`
+/// pair -- `conway-routing`'s `RoutingExplain` (this type's other producer)
+/// documents why that split is unreachable through the port; `MinimalRouter`
+/// below never has independent breaker state at all, so every entry it
+/// produces carries `Closed`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BreakerSnapshot {
+    pub state: BreakerState,
+}
+
+/// A read-only projection of a `(backend, model)` pair's `Capabilities`, for
+/// rendering in an `ExplainEntry`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CapabilitySummary {
+    pub tool_calling: ToolCallSupport,
+    pub max_context_tokens: u32,
+    pub structured_output: StructuredOutput,
+    pub parallel_tool_calls: bool,
+    pub reasoning: bool,
+    pub reliability_tier: ReliabilityTier,
+}
+
+impl From<&Capabilities> for CapabilitySummary {
+    fn from(caps: &Capabilities) -> CapabilitySummary {
+        CapabilitySummary {
+            tool_calling: caps.tool_calling,
+            max_context_tokens: caps.max_context_tokens,
+            structured_output: caps.structured_output,
+            parallel_tool_calls: caps.parallel_tool_calls,
+            reasoning: caps.reasoning,
+            reliability_tier: caps.reliability_tier,
+        }
+    }
+}
+
+/// Whether a candidate was chosen, or skipped -- carrying the router's exact
+/// `RoutingReason` either way.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum EntryOutcome {
+    Selected { reason: RoutingReason },
+    Skipped { reason: RoutingReason },
+}
+
+/// One evaluated candidate: its place in the chain (or `None` for a pin),
+/// whether it was selected or skipped and why, its capability summary (when
+/// indexed), and its breaker snapshot.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ExplainEntry {
+    pub model_ref: ModelRef,
+    pub chain_position: Option<u8>,
+    pub outcome: EntryOutcome,
+    pub capabilities: Option<CapabilitySummary>,
+    pub breaker: BreakerSnapshot,
+}
+
+/// The full "why did this model run, and why not the others" answer for one
+/// `RouteRequest`, including the effective headroom reservation used for
+/// the admission check (see the amendment).
+///
+/// **Moved here from `conway-routing` (board item 01KZFC1KNGQ51TZ0BG7P7RAY9H),
+/// replacing a dead, unreached second `ExplainReport` shape this module used
+/// to declare on its own.** The type used to live only in `conway-routing`,
+/// reachable exclusively through `RoutingExplain`'s projection of a concrete
+/// `DeclarativeRouter` -- so a `Router` supplied from outside that crate
+/// (`ConwayBuilder::with_router`) had no way to produce one, and
+/// `Conway::explain_routing` fell back to a fabricated-empty report that
+/// `conway routes explain` then misread as "unknown role" (GP-14: a silent
+/// inversion, not an honest degradation -- the bug this move exists to
+/// close). It now lives here, where both `conway-routing::RoutingExplain`
+/// (the rich, capability- and health-filtered answer) and `MinimalRouter`
+/// (below; the honest degenerate answer core itself can produce with no
+/// filtering at all) build the same shape. `conway-routing` re-exports these
+/// five names for source compatibility.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ExplainReport {
     pub role: RoleAlias,
-    pub chain: Vec<ModelRef>,
-    pub chosen: Option<Route>,
-    pub considered: Vec<(ModelRef, RoutingReason)>,
-    pub breaker_states: Vec<(EndpointId, BreakerState)>,
+    pub pin: Option<ModelRef>,
+    pub est_tokens: u32,
+    /// The EFFECTIVE requirement every `entries` outcome was actually
+    /// checked against, when the producer performs a real check
+    /// (`conway-routing::RoutingExplain`: the role's configured floor
+    /// merged with `req.required`). `MinimalRouter::explain` performs no
+    /// check at all, so its value here is only the role's configured floor
+    /// plus resolved headroom (`RoutingConfig::required_caps_for`) --
+    /// informational, not a claim that any entry was actually verified
+    /// against it (GP-14).
+    pub required: RequiredCaps,
     pub headroom_tokens: u32,
+    pub entries: Vec<ExplainEntry>,
+    pub generated_at: DateTime<Utc>,
+}
+
+impl ExplainReport {
+    /// A stable, line-oriented rendering (see `docs/routing.md`'s "Asking
+    /// why a route was chosen" section for the exact format). Two-space
+    /// indent, `[<position>]` (or `[pin]`), the model ref right-padded to the
+    /// longest ref in the report plus two spaces, `SELECTED`/`SKIPPED`
+    /// padded to eight columns, then the reason. Timestamps are RFC 3339
+    /// UTC. Trailing newline present. No ANSI codes -- rendering is the
+    /// CLI's concern, not this crate's.
+    pub fn render_text(&self) -> String {
+        let mut out = format!(
+            "role: {}  (est_tokens={}, headroom_tokens={})\n",
+            self.role, self.est_tokens, self.headroom_tokens
+        );
+
+        let width = self
+            .entries
+            .iter()
+            .map(|e| e.model_ref.to_string().len())
+            .max()
+            .unwrap_or(0)
+            + 2;
+
+        for entry in &self.entries {
+            let marker = match entry.chain_position {
+                Some(position) => format!("[{position}]"),
+                None => "[pin]".to_string(),
+            };
+            let (word, reason) = match &entry.outcome {
+                EntryOutcome::Selected { reason } => ("SELECTED", render_selected(reason)),
+                EntryOutcome::Skipped { reason } => {
+                    ("SKIPPED", render_skipped(reason, &entry.breaker))
+                }
+            };
+            let model_ref = entry.model_ref.to_string();
+            let _ = writeln!(
+                out,
+                "  {marker} {model_ref:<width$}{word:<8} {reason}",
+                width = width,
+            );
+        }
+
+        out
+    }
+}
+
+/// Renders an `EntryOutcome::Selected` reason for `render_text`.
+fn render_selected(reason: &RoutingReason) -> String {
+    match reason {
+        RoutingReason::PinnedByApi => "pinned(via=api)".to_string(),
+        RoutingReason::PinnedByAgentDef => "pinned(via=agent_def)".to_string(),
+        RoutingReason::AliasPrimary { alias } => format!("primary(role={alias})"),
+        RoutingReason::Fallback { position, .. } => format!("fallback(position={position})"),
+        _ => "selected".to_string(),
+    }
+}
+
+/// Renders an `EntryOutcome::Skipped` reason for `render_text`. The health
+/// case reads its `until` timestamp from `breaker` (the independent snapshot
+/// taken at explain time), since `RoutingReason::HealthSkip` itself carries
+/// only the breaker kind, not a timestamp.
+fn render_skipped(reason: &RoutingReason, breaker: &BreakerSnapshot) -> String {
+    match reason {
+        RoutingReason::CapabilitySkip { missing, .. } => {
+            format!("capability: {}", missing.join("; "))
+        }
+        RoutingReason::HealthSkip { breaker: kind, .. } => {
+            // `BreakerKind` is `#[non_exhaustive]` for OTHER crates; within
+            // its own defining crate (this one, now that this type moved
+            // here from conway-routing) every variant is already covered, so
+            // a trailing wildcard would be unreachable dead code rather than
+            // genuine forward-compatibility.
+            let kind_name = match kind {
+                BreakerKind::Transport => "transport",
+                BreakerKind::Probe => "probe",
+            };
+            match &breaker.state {
+                BreakerState::Open { until, .. } => format!(
+                    "health: {kind_name} breaker open until {}",
+                    until.to_rfc3339_opts(SecondsFormat::Secs, true)
+                ),
+                _ => format!("health: {kind_name} breaker open"),
+            }
+        }
+        _ => "skipped".to_string(),
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -296,6 +470,158 @@ pub struct ModelOverrides {
     /// A model that reasons heavily can insist on more reserved space than a
     /// role requests, but cannot reduce it.
     pub min_headroom_tokens: Option<u32>,
+}
+
+// ---------------------------------------------------------------------
+// Minimal fallback implementations (board item 01KZFC1KNGQ51TZ0BG7P7RAY9H).
+//
+// `crate::ports`'s own module doc reserves `conway-core` for feature-gated
+// test fakes plus "every other implementation lives in a dedicated crate".
+// These two types are the narrow, deliberate exception: `MinimalRouter` and
+// `AlwaysClosedHealthRegistry` are production code, not test doubles -- they
+// back `Conway::explain_routing`'s honest degenerate answer when the caller
+// supplied its own `Router` (`ConwayBuilder::with_router`) and there is no
+// concrete `conway_routing::DeclarativeRouter` left to project an
+// `ExplainReport` through. Neither performs I/O, matching every other port
+// implementation's constraint.
+// ---------------------------------------------------------------------
+
+/// A `HealthRegistry` that always reports `Closed` and records nothing.
+/// Not a test double (`crate::fakes::FakeHealth`, gated behind `feature =
+/// "fakes"`, is that): this is the honest production answer for a caller
+/// that has no real breaker state to consult at all, per the module note
+/// above.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AlwaysClosedHealthRegistry;
+
+impl HealthRegistry for AlwaysClosedHealthRegistry {
+    fn state(&self, _ep: &EndpointId) -> BreakerState {
+        BreakerState::Closed
+    }
+
+    fn record(&self, _ep: &EndpointId, _obs: Observation) {}
+}
+
+/// A minimal, config-only `Router` + `RoutingExplainer`: no capability
+/// filtering, no health filtering, no invented values (GP-14). `resolve`
+/// returns a role's configured chain in order (or a pin's single-element
+/// chain); `explain` answers with one degenerate `ExplainEntry` per chain
+/// entry -- the first `Selected`, the rest `Skipped`, `capabilities: None`
+/// (this type indexes no capabilities) and `breaker: BreakerSnapshot {
+/// state: Closed }` (paired with [`AlwaysClosedHealthRegistry`] -- this type
+/// tracks no real breaker state either). See the module-note above this
+/// section for why these two live in `conway-core` at all.
+#[derive(Clone, Debug)]
+pub struct MinimalRouter {
+    config: RoutingConfig,
+}
+
+impl MinimalRouter {
+    pub fn new(config: RoutingConfig) -> MinimalRouter {
+        MinimalRouter { config }
+    }
+
+    /// The chain this request resolves against, and whether it came from a
+    /// pin -- `None` only when `req` is unpinned and names a role absent
+    /// from `self.config.roles`.
+    fn chain_for(&self, req: &RouteRequest) -> Option<(Vec<ModelRef>, bool)> {
+        match &req.pin {
+            Some(pin) => Some((vec![pin.clone()], true)),
+            None => self
+                .config
+                .roles
+                .get(req.role.as_str())
+                .map(|role| (role.chain.clone(), false)),
+        }
+    }
+
+    fn reason_for(is_pin: bool, position: usize, role: &RoleAlias) -> RoutingReason {
+        if is_pin {
+            RoutingReason::PinnedByApi
+        } else if position == 0 {
+            RoutingReason::AliasPrimary {
+                alias: role.clone(),
+            }
+        } else {
+            RoutingReason::Fallback {
+                position: position as u8,
+                after: Vec::new(),
+            }
+        }
+    }
+}
+
+impl Router for MinimalRouter {
+    fn resolve(&self, req: &RouteRequest) -> Result<Vec<Route>, RoutingError> {
+        let Some((chain, is_pin)) = self.chain_for(req) else {
+            return Err(RoutingError::UnknownRole {
+                role: req.role.clone(),
+            });
+        };
+        if chain.is_empty() {
+            return Err(RoutingError::NoCandidate {
+                role: req.role.clone(),
+                considered: Vec::new(),
+            });
+        }
+
+        let params = self
+            .config
+            .roles
+            .get(req.role.as_str())
+            .map(|role| role.params.clone())
+            .unwrap_or_default();
+
+        Ok(chain
+            .iter()
+            .enumerate()
+            .map(|(position, model_ref)| Route {
+                backend: model_ref.backend.clone(),
+                model: model_ref.model.clone(),
+                params: params.clone(),
+                reason: Self::reason_for(is_pin, position, &req.role),
+            })
+            .collect())
+    }
+}
+
+impl RoutingExplainer for MinimalRouter {
+    fn explain(&self, req: &RouteRequest) -> ExplainReport {
+        let generated_at = Utc::now();
+        let (chain, is_pin) = self.chain_for(req).unwrap_or_default();
+
+        let entries = chain
+            .iter()
+            .enumerate()
+            .map(|(position, model_ref)| {
+                let reason = Self::reason_for(is_pin, position, &req.role);
+                let outcome = if position == 0 {
+                    EntryOutcome::Selected { reason }
+                } else {
+                    EntryOutcome::Skipped { reason }
+                };
+                ExplainEntry {
+                    model_ref: model_ref.clone(),
+                    chain_position: if is_pin { None } else { Some(position as u8) },
+                    outcome,
+                    capabilities: None,
+                    breaker: BreakerSnapshot {
+                        state: BreakerState::Closed,
+                    },
+                }
+            })
+            .collect();
+
+        ExplainReport {
+            role: req.role.clone(),
+            pin: req.pin.clone(),
+            est_tokens: req.est_tokens,
+            required: self.config.required_caps_for(&req.role),
+            headroom_tokens: self.config.headroom_for(&req.role),
+            entries,
+            generated_at,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -520,17 +846,93 @@ mod tests {
         assert_eq!(back.id, cfg.id);
     }
 
+    // -------------------------------------------------------------------
+    // `MinimalRouter`/`ExplainReport` (board item 01KZFC1KNGQ51TZ0BG7P7RAY9H)
+    // -------------------------------------------------------------------
+
+    fn model_ref(backend: &str, model: &str) -> ModelRef {
+        ModelRef {
+            backend: BackendId::new(backend),
+            model: ModelId::new(model),
+        }
+    }
+
+    fn two_entry_chain_config() -> RoutingConfig {
+        let mut roles = BTreeMap::new();
+        roles.insert(
+            "planner".to_string(),
+            RoleConfig {
+                chain: vec![
+                    model_ref("anthropic", "claude-sonnet-4-6"),
+                    model_ref("local", "qwen3-coder-80b"),
+                ],
+                required: RequiredCaps::default(),
+                params: SamplingParams::default(),
+                headroom_tokens: None,
+            },
+        );
+        RoutingConfig {
+            roles,
+            health: HealthConfig::default(),
+            default_headroom_tokens: 4_096,
+        }
+    }
+
+    fn request(role: &str) -> RouteRequest {
+        RouteRequest {
+            role: RoleAlias::new(role),
+            pin: None,
+            required: RequiredCaps::default(),
+            est_tokens: 0,
+            agent_id: AgentId::new(),
+        }
+    }
+
     #[test]
-    fn explain_report_carries_effective_headroom() {
-        let report = ExplainReport {
-            role: RoleAlias::new("planner"),
-            chain: vec![],
-            chosen: None,
-            considered: vec![],
-            breaker_states: vec![],
-            headroom_tokens: 32_768,
-        };
-        let json = serde_json::to_value(&report).unwrap();
-        assert_eq!(json["headroom_tokens"], 32_768);
+    fn minimal_router_explain_over_two_entry_chain_is_honestly_degenerate() {
+        let router = MinimalRouter::new(two_entry_chain_config());
+        let report = router.explain(&request("planner"));
+
+        assert_eq!(report.entries.len(), 2);
+        assert!(matches!(
+            report.entries[0].outcome,
+            EntryOutcome::Selected { .. }
+        ));
+        assert!(matches!(
+            report.entries[1].outcome,
+            EntryOutcome::Skipped { .. }
+        ));
+        for entry in &report.entries {
+            assert_eq!(entry.capabilities, None);
+            assert_eq!(entry.breaker, BreakerSnapshot { state: BreakerState::Closed });
+        }
+    }
+
+    #[test]
+    fn minimal_router_resolve_returns_configured_chain_in_order() {
+        let router = MinimalRouter::new(two_entry_chain_config());
+        let routes = router.resolve(&request("planner")).expect("configured role resolves");
+        assert_eq!(routes.len(), 2);
+        assert!(matches!(
+            routes[0].reason,
+            RoutingReason::AliasPrimary { .. }
+        ));
+        assert!(matches!(routes[1].reason, RoutingReason::Fallback { position: 1, .. }));
+    }
+
+    #[test]
+    fn minimal_router_resolve_unconfigured_role_is_unknown_role() {
+        let router = MinimalRouter::new(two_entry_chain_config());
+        let err = router
+            .resolve(&request("no-such-role"))
+            .expect_err("unconfigured role must not resolve");
+        assert!(matches!(err, RoutingError::UnknownRole { .. }));
+    }
+
+    #[test]
+    fn minimal_router_explain_unconfigured_role_is_empty_not_invented() {
+        let router = MinimalRouter::new(two_entry_chain_config());
+        let report = router.explain(&request("no-such-role"));
+        assert!(report.entries.is_empty());
     }
 }

@@ -8,7 +8,7 @@
 
 use crate::error::RoutingError;
 use crate::ids::EndpointId;
-use crate::routing::{BreakerState, Observation, Route, RouteRequest};
+use crate::routing::{BreakerState, ExplainReport, Observation, Route, RouteRequest};
 
 /// Resolves a routing role to an ordered list of candidates.
 pub trait Router: Send + Sync {
@@ -63,4 +63,20 @@ pub trait Router: Send + Sync {
 pub trait HealthRegistry: Send + Sync {
     fn state(&self, ep: &EndpointId) -> BreakerState;
     fn record(&self, ep: &EndpointId, obs: Observation);
+}
+
+/// Produces the "why did this model run, and why not the others" answer for
+/// a `RouteRequest` -- see `ExplainReport`. Deliberately a separate port from
+/// `Router` rather than a new method on it (board item
+/// 01KZFC1KNGQ51TZ0BG7P7RAY9H): `Router` has exactly one method, `resolve`,
+/// and every existing `.with_router(..)` call site across this workspace
+/// supplies a trait object that only ever needed to answer that one
+/// question. Implemented by `conway_routing::RoutingExplain` (a capability-
+/// and health-filtered projection of a concrete `DeclarativeRouter`) and by
+/// `crate::routing::MinimalRouter` (an honestly degenerate answer needing
+/// nothing but a `RoutingConfig`) -- both build the one `ExplainReport`
+/// shape, so a caller never sees two answers to "why" that could disagree
+/// about which report fields exist.
+pub trait RoutingExplainer: Send + Sync {
+    fn explain(&self, req: &RouteRequest) -> ExplainReport;
 }

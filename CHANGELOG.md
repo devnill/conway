@@ -180,6 +180,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`crates/conway-tools/src/subagent/{tools,mod}.rs`, `README.md`,
   `docs/agents.md`, `docs/sessions.md`, `docs/scripting.md`)
 
+- **`conway routes explain` stays honest when the router was supplied from
+  outside `conway-routing`** (board item 01KZFC1KNGQ51TZ0BG7P7RAY9H). Before
+  this item, `ExplainReport` (and its field types -- `ExplainEntry`,
+  `EntryOutcome`, `CapabilitySummary`, `BreakerSnapshot`) were defined only
+  in `conway-routing`, reachable exclusively through `RoutingExplain`'s
+  projection of a concrete `DeclarativeRouter`; a `Router` injected via
+  `ConwayBuilder::with_router` had no way to produce one at all, so
+  `Conway::explain_routing` fell back to a fabricated-empty report, and
+  `conway routes explain <role>` -- which inferred "unknown role" from
+  `report.entries.is_empty()` -- printed that lie for every correctly
+  configured role (GP-14: a silent behavioral inversion, not a compile
+  error). The five types move, verbatim, to `conway_core::routing`
+  (`conway-routing` and the `conway` facade both re-export them under the
+  same names for source compatibility -- no consumer-visible shape change).
+  `conway-core` gains a new `RoutingExplainer` port (`fn explain(&self, req:
+  &RouteRequest) -> ExplainReport`), deliberately separate from `Router`
+  (which keeps its one method, `resolve`, so every existing
+  `.with_router(..)` call site across the workspace keeps compiling
+  untouched) plus two production-only fallback implementations,
+  `MinimalRouter` and `AlwaysClosedHealthRegistry` -- config-only, no
+  capability filtering, no health filtering, no invented values: one
+  `ExplainEntry` per configured chain candidate, `capabilities: None`,
+  `breaker: BreakerSnapshot { state: Closed }`. `Conway::explain_routing`
+  now falls back to `MinimalRouter`, projected over this `Conway`'s own
+  resolved `RoutingConfig`, instead of the old fabricated-empty report.
+  `commands::routes::run`'s unknown-role detection now reads
+  `conway.config().roles` directly rather than inferring emptiness, so a
+  configured role prints its (possibly degenerate) report instead of an
+  "unknown role" error regardless of which `Router` produced it.
+  (`crates/conway-core/src/routing.rs`, `crates/conway-core/src/ports/routing.rs`,
+  `crates/conway-core/src/ports/mod.rs`, `crates/conway-routing/src/explain.rs`,
+  `crates/conway-routing/src/lib.rs`, `crates/conway/src/lib.rs`,
+  `crates/conway/src/conway.rs`, `crates/conway/src/builder.rs`,
+  `crates/conway-cli/src/commands/routes.rs`, `docs/routing.md`)
+
 ### Added
 
 - **Graceful cancellation is now reachable, and immediate stays the default**
