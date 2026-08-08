@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use crate::content::{Artifact, ContentBlock, ToolCall, ToolSpec, TruncationPolicy};
 use crate::error::{CwdError, ToolError};
 use crate::ids::{AgentId, ModelRef, SessionId, ToolName};
-use crate::ports::{EventSinkHandle, SubagentHandle};
+use crate::ports::{ArtifactWriteHandle, EventSinkHandle, SubagentHandle};
 use crate::segment::PromptSegment;
 
 /// A source of tools: a plugin declares its identity and the tools it
@@ -455,6 +455,14 @@ pub struct ContextHookCtx {
     /// already chosen and found to overflow by the time that fires).
     pub model: Option<ModelRef>,
     pub estimated_tokens: u32,
+    /// Board item 01KZ84437RMKHP5DJX7RMHH7JY: where this hook may safely
+    /// write an artifact file (e.g. a spill-to-file `TruncationPolicy::
+    /// Artifact` implementation), if it wants to. See
+    /// [`crate::ports::ArtifactWriteHandle`]'s own doc, and
+    /// `crate::ports::artifact`'s module doc, for the full containment
+    /// guarantee and why this is a write-capable accessor rather than a raw
+    /// root or cwd value a hook would have to resolve against itself.
+    pub artifacts: ArtifactWriteHandle,
 }
 
 /// Why [`ContextHook::on_overflow`] fired: the same shortfall accounting as
@@ -664,6 +672,31 @@ mod tests {
         assert_eq!(out, back);
     }
 
+    /// An `ArtifactWriter` double that never actually touches a
+    /// filesystem (this crate performs no I/O, even in tests) -- just
+    /// enough to satisfy `ContextHookCtx::artifacts`' field type for
+    /// fixtures in this module that exercise `before_request`/`on_overflow`
+    /// transforms unrelated to artifact writing. The REAL containment
+    /// guarantee is exercised by `conway-runtime`'s `artifact_store`
+    /// tests, against a real `AgentArtifactWriter` and a real filesystem.
+    struct NoopArtifactWriter;
+
+    #[async_trait]
+    impl crate::ports::ArtifactWriter for NoopArtifactWriter {
+        async fn write(
+            &self,
+            _agent_id: AgentId,
+            name: &str,
+            _bytes: Vec<u8>,
+        ) -> Result<std::path::PathBuf, crate::error::ArtifactWriteError> {
+            Ok(std::path::PathBuf::from(name))
+        }
+    }
+
+    fn artifacts_handle() -> crate::ports::ArtifactWriteHandle {
+        crate::ports::ArtifactWriteHandle::new(std::sync::Arc::new(NoopArtifactWriter), AgentId::new())
+    }
+
     fn hook_ctx() -> ContextHookCtx {
         ContextHookCtx {
             agent_id: AgentId::new(),
@@ -674,6 +707,7 @@ mod tests {
                 model: crate::ids::ModelId::new("claude-sonnet-4-6"),
             }),
             estimated_tokens: 100,
+            artifacts: artifacts_handle(),
         }
     }
 

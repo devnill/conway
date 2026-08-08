@@ -12,6 +12,7 @@
 //! `DeclarativeRouter` left to project an `ExplainReport` through. Every
 //! other implementation lives in a dedicated crate.
 
+mod artifact;
 mod backend;
 mod capability_index;
 mod events;
@@ -21,6 +22,7 @@ mod routing;
 mod session;
 mod subagent;
 
+pub use artifact::*;
 pub use backend::*;
 pub use capability_index::*;
 pub use events::*;
@@ -50,6 +52,7 @@ mod tests {
         _: &dyn SubagentHost,
         _: &dyn EventSink,
         _: &dyn RouterFactory,
+        _: &dyn ArtifactWriter,
     ) {
     }
 }

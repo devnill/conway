@@ -166,11 +166,12 @@ pub mod plugin {
         Artifact, ArtifactKind, ContentBlock, PermissionClass, Role, ToolCall, ToolCategory,
         ToolSpec, TruncationPolicy,
     };
-    pub use conway_core::error::{CwdError, SubagentError, ToolError};
+    pub use conway_core::error::{ArtifactWriteError, CwdError, SubagentError, ToolError};
     pub use conway_core::ids::ToolName;
     pub use conway_core::ports::{
-        CancellationToken, ContextHook, ContextHookCtx, ContextPayload, OverflowInfo, PathArgs,
-        Plugin, PluginConfig, PluginManifest, RenderKind, Tool, ToolCtx, ToolOutput,
+        ArtifactWriteHandle, ArtifactWriter, CancellationToken, ContextHook, ContextHookCtx,
+        ContextPayload, OverflowInfo, PathArgs, Plugin, PluginConfig, PluginManifest, RenderKind,
+        Tool, ToolCtx, ToolOutput,
     };
     pub use conway_core::provenance::Provenance;
     pub use conway_core::segment::PromptSegment;

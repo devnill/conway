@@ -13,6 +13,7 @@
 //! item lands.
 
 pub mod agent_loop;
+pub mod artifact_store;
 pub mod attempt;
 pub mod context;
 pub mod error;

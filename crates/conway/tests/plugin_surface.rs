@@ -35,11 +35,11 @@ use conway::config::schema::{
     ToolsConfig, TuiSection,
 };
 use conway::plugin::{
-    async_trait, Artifact, ArtifactKind, CancellationToken, ContentBlock, ContextHook,
-    ContextHookCtx, ContextPayload, CwdError, Fact, OverflowInfo, PathArgs, PermissionClass,
-    Plugin, PluginConfig, PluginManifest, PromptSegment, Provenance, RenderKind, Role,
-    SubagentError, Tool, ToolCall, ToolCategory, ToolCtx, ToolError, ToolName, ToolOutput,
-    ToolSpec, TruncationPolicy,
+    async_trait, Artifact, ArtifactKind, ArtifactWriteError, ArtifactWriteHandle, ArtifactWriter,
+    CancellationToken, ContentBlock, ContextHook, ContextHookCtx, ContextPayload, CwdError, Fact,
+    OverflowInfo, PathArgs, PermissionClass, Plugin, PluginConfig, PluginManifest, PromptSegment,
+    Provenance, RenderKind, Role, SubagentError, Tool, ToolCall, ToolCategory, ToolCtx, ToolError,
+    ToolName, ToolOutput, ToolSpec, TruncationPolicy,
 };
 use conway::{AgentId, SessionId};
 // Only used by the `jsonl-store`-gated test below; see that test's own doc.
@@ -134,6 +134,34 @@ impl Plugin for EchoPlugin {
 // `PromptSegment`/`Role`/`Provenance` construction, the thing a masking or
 // system-prompt-instrumenting hook actually does.
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// A third-party `ArtifactWriter` double (board item 01KZ84437RMKHP5DJX7RMHH7JY):
+// an EMBEDDER-supplied capability (like `PermissionGate`/`Router`, not a
+// hook-authored one -- a hook only ever RECEIVES `ContextHookCtx::artifacts`,
+// already wired to the runtime's real, containment-checked writer). This
+// double just proves the trait and its handle are nameable/implementable
+// from a facade-only dependent, mirroring every other extension point in
+// this file; the REAL containment guarantee lives in
+// `conway_runtime::artifact_store`'s own tests, against the real writer.
+// ---------------------------------------------------------------------------
+
+struct RecordingArtifactWriter {
+    last_write: std::sync::Mutex<Option<(String, Vec<u8>)>>,
+}
+
+#[async_trait]
+impl ArtifactWriter for RecordingArtifactWriter {
+    async fn write(
+        &self,
+        _agent_id: AgentId,
+        name: &str,
+        bytes: Vec<u8>,
+    ) -> Result<std::path::PathBuf, ArtifactWriteError> {
+        *self.last_write.lock().unwrap() = Some((name.to_string(), bytes));
+        Ok(std::path::PathBuf::from(name))
+    }
+}
 
 struct MarkerHook;
 
@@ -346,12 +374,16 @@ fn fact_and_capability_handle_errors_are_constructible_and_matchable() {
 #[tokio::test]
 async fn authored_hook_transforms_payloads() {
     let hook = MarkerHook;
+    let writer = Arc::new(RecordingArtifactWriter {
+        last_write: std::sync::Mutex::new(None),
+    });
     let ctx = ContextHookCtx {
         agent_id: AgentId::new(),
         session_id: SessionId::new(),
         turn: 0,
         model: None,
         estimated_tokens: 42,
+        artifacts: ArtifactWriteHandle::new(writer.clone(), AgentId::new()),
     };
     let payload = ContextPayload {
         segments: vec![
@@ -390,4 +422,14 @@ async fn authored_hook_transforms_payloads() {
         )
         .await;
     assert!(retry.is_some());
+
+    // C-family liveness: `ContextHookCtx::artifacts` is drivable, not just
+    // nameable -- a hook can actually call `.write()` through the facade
+    // type and observe the write reach the underlying `ArtifactWriter`.
+    let written = ctx.artifacts.write("spill.txt", b"overflow content".to_vec()).await;
+    assert_eq!(written.unwrap(), std::path::PathBuf::from("spill.txt"));
+    assert_eq!(
+        writer.last_write.lock().unwrap().as_ref(),
+        Some(&("spill.txt".to_string(), b"overflow content".to_vec()))
+    );
 }
