@@ -186,6 +186,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `RouterBundle` it already was — router, health, explain — so the three
   selection arms agree on a named contract rather than on tuple position.
 
+- **`CliOverrides::model` is removed** (board item 01KZ8049CVW1GCAA081M7WSVSZ,
+  decision 01KZGRW3CXEAGMP275P95KGN83). **Breaking for an embedder that set
+  it** — though setting it never did anything: the field had zero readers
+  anywhere in the workspace, and `cli_overrides_to_value`, the only function
+  that consumes the struct, deliberately skipped it because a model pin is not
+  a `ConwayConfig` key. A struct's own translation function having to
+  special-case a field out is the tell that the field is on the wrong axis. No
+  capability is lost: the model pin's real home is `SessionSpec::model`, which
+  passes straight through to `RootSpec::model` and is what an embedder already
+  uses. The remaining eight fields each land on a real config key and stay.
+- **`CliOverrides` is documented as what it actually is** — an embedder-facing
+  API for layering flag-shaped overrides onto discovered config, and the
+  highest-precedence of the five merge sources. `conway-cli` deliberately does
+  not use it, and now says so where a flag-adder is standing: routing this
+  crate's flags through it would be actively breaking rather than merely
+  unwired, because `--permission-mode` carries a clap default and the tool
+  lists are `Vec` rather than `Option`, so as the top merge layer they would
+  stomp `settings.json` on every invocation and trip the validator's
+  allowlist-requires-a-non-empty-list check on a bare run.
+  (`crates/conway/src/config/merge.rs`, `crates/conway-cli/src/cli.rs`,
+  `docs/embedding.md`)
+
 - **A cancellation reason now reaches the cancelled agent's result on the
   immediate path, not just the graceful one** (board item
   01KZDDCN747FEZ3GM3NS0ANE7G). `conway_cancel` accepts a `reason`; on the

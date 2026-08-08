@@ -117,6 +117,33 @@ Backend>)` takes precedence over any config-derived backend with the same
 `Backend::id()` — this is how the minimal example supplies its fake backend
 with no `[backends]` table at all.
 
+### Layering flag-shaped overrides: `CliOverrides`
+
+`conway::config::merge::CliOverrides` is the fifth and highest-precedence of
+`load`'s five merge sources (default < XDG < project < env < CLI-overrides),
+and the only one that isn't a settings-file-shaped table: a struct of
+`Option<T>` fields shaped like command-line flags (`default_role`,
+`cwd`, `permission_mode`, `allowed_tools`, `denied_tools`, `max_steps`,
+`session_root`, `headroom_tokens`) that a host application constructs
+programmatically — say, from its own CLI parser, a web request, or a
+config UI — and layers onto whatever `discover()`/`from_config()` already
+found. Pass one via `LoadOptions::cli_overrides` (before `load()` runs) or
+`ConwayBuilder::with_cli_overrides` (re-applied, and fully re-validated, at
+`build()` time); either way, a `Some` field wins over every other source,
+and each field's `None` leaves the lower-precedence value untouched.
+
+**The `conway` CLI binary does not use this struct.** `conway-cli` wires its
+own flags (`--role-override`, `--cwd`, `--permission-mode`,
+`--allowed-tools`, `--deny-tools`, etc.) directly into one-shot's/the TUI's
+own construction paths instead — routing them through `CliOverrides` would
+be actively breaking there (several of `conway-cli`'s flags are
+non-`Option`, always-present-with-a-default clap fields, so layering them
+as the highest-precedence source would make a bare `conway -p "hi"` fail
+config validation; see `CliOverrides`'s own doc comment and board item
+`01KZ8049CVW1GCAA081M7WSVSZ` for the full reasoning). That does not affect
+an embedder: your own flags are typically `Option`-shaped from the start
+(absent means "don't override"), which is exactly what this struct expects.
+
 ### Permissions
 
 `PermissionsConfig` (`conway::config::schema`):
