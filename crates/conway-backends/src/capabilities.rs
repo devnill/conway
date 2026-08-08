@@ -14,7 +14,7 @@
 //! that (see that test for the exact forbidden token list).
 //!
 //! WI-123 (unifying the two capability systems that previously diverged —
-//! see `conway_routing::capability::CapabilityIndex::from_backends`'s doc):
+//! see `conway_core::ports::CapabilityIndex::from_backends`'s doc):
 //! [`build_capabilities`] is the *only* function that turns dialect
 //! defaults + metadata + overrides into a `Capabilities` value anywhere in
 //! the workspace. `Backend::capabilities()` (each adapter's own impl) calls

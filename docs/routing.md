@@ -7,6 +7,27 @@ which model actually served a request and why. Nothing here reads your
 prompt to decide where it goes. For how to point conway at the providers
 these chains reference, see [`providers.md`](providers.md).
 
+**The capability filtering, health tracking, and circuit breaking this page
+mostly describes are an installable first-party plugin, not something
+`conway` ships built in** (board item 01KZFC43J1J06BM4CCWKCKHSNV). Add
+`"conway.routing"` to `[plugins].install`:
+
+```json
+// .conway/settings.json
+{ "plugins": { "install": ["conway.routing"] } }
+```
+
+Absent that entry, `conway` still resolves every role to a model and
+completes a turn — using `conway_core::routing::MinimalRouter`, an honest,
+config-only resolver that walks `[roles.<alias>].chain` in order with **no**
+capability filtering, health filtering, or circuit breaking at all: every
+candidate is treated as eligible, so an unregistered model or a dead
+endpoint is only discovered when the request itself is actually attempted,
+not skipped in advance. Everything from ["Capability matching"](#capability-matching)
+onward on this page describes the INSTALLED behavior; see ["Installing a
+different router"](#installing-a-different-router) for exactly what
+`MinimalRouter` does and does not do.
+
 ## Roles and fallback chains
 
 A role is a named alias — `default_role`, `--role-override`, or an
@@ -42,39 +63,56 @@ Two flags override chain resolution for a single run:
 
 ## Installing a different router
 
-Everything above describes conway's own compiled `DeclarativeRouter` — the
-router `build()` assembles by default from `[roles]`/`[routing]`. A router
-can also be swapped out entirely, two ways:
+**Absent, by default: `conway_core::routing::MinimalRouter`.** `build()`
+compiles this whenever nothing else is installed or injected — it needs
+nothing but `[roles]`, walks a role's configured chain in order, and
+performs **no** capability filtering, **no** health filtering, and **no**
+circuit breaking. `--model`/pin still works (`RoutingReason::PinnedByApi`),
+and every candidate still carries a `RoutingReason` (`conway routes explain`
+still works, just with a degenerate answer — see below), but nothing about
+`.conway/models.json`, a role's capability floor, or endpoint health has any
+effect on routing in this configuration: an unregistered model or a dead
+endpoint is only discovered when conway actually tries the request, not
+skipped in advance the way the rest of this page describes.
 
-- **Already built**: `ConwayBuilder::with_router(router)` hands `build()` a
-  fully-constructed `Router` directly. This is unconditional: an injected
-  router is never wrapped, inspected, or validated, and it wins over
-  everything below.
-- **Named, built later**: `ConwayBuilder::with_router_factory(factory)`
-  registers a `conway::RouterFactory` — an id plus a deferred, fallible
-  `build` step — invoked by `build()` itself once backends and a resolved
-  routing/headroom policy exist for it to build against. This is what makes
-  a router installable by *name*, the same way `[plugins].install` already
-  installs a plugin by name: `[plugins].install` is read long before
-  backends exist, so a router named there cannot be built yet at that
-  point — a `RouterFactory` carries the identity up front and defers
-  construction to the moment `build()` actually has what a router needs.
-  See [`embedding.md`](embedding.md#installing-a-router-routerfactory-and-the-pluginsinstall-router-arm)
-  for the full `RouterFactory` shape and the `[plugins].install` router arm.
+**Installed: `conway-plugin-routing`'s `DeclarativeRouter`.** This is the
+engine `conway` itself used to compile in unconditionally before board item
+01KZFC43J1J06BM4CCWKCKHSNV — capability matching, headroom, health, and
+circuit breaking, everything else on this page — now an installable
+first-party plugin (see the note at the top of this page for the
+`[plugins].install` entry). Two ways to install it:
 
-Absent both, `build()` compiles its own `DeclarativeRouter` — the default,
-unchanged behavior this whole page otherwise describes.
+- **By name, in `settings.json`**: `{ "plugins": { "install":
+  ["conway.routing"] } }`, resolved by whatever binary links the plugin
+  crate (`conway-cli` does, for the TUI and one-shot `-p` alike) against its
+  own `RouterFactory::id()` — `conway-plugin-routing::ROUTER_ID`,
+  `"conway.routing"`.
+- **By an embedder, directly**: `ConwayBuilder::with_router_factory(Arc::new(
+  conway_plugin_routing::RoutingRouterFactory))`, the library-embedder shape
+  of the SAME mechanism `[plugins].install` resolves for a binary — a
+  `conway::RouterFactory` names a router *kind* up front (an id plus a
+  deferred, fallible `build` step) since `[plugins].install` is read long
+  before backends exist to build a real router against. See
+  [`embedding.md`](embedding.md#installing-a-router-routerfactory-and-the-pluginsinstall-router-arm)
+  for the full `RouterFactory` shape.
 
-Either substitution changes what `conway routes explain` can show: a
-router that did not come from `build()`'s own `DeclarativeRouter` (an
-injected `with_router`, or a `RouterFactory` whose `RouterBundle::explain`
-came back `None`) falls back to an honest, degenerate answer — no
-capability filtering, no health filtering, one entry per configured chain
-candidate — rather than reporting an empty, fabricated one. A `RouterFactory`
-that wants the richer explain answer supplies its own `RoutingExplainer` as
-`RouterBundle::explain` at the same moment it builds the router, since
-construction is the only point a router and a matching explainer are
-guaranteed to agree with each other about "why".
+**A third option overrides routing entirely, bypassing both of the above**:
+`ConwayBuilder::with_router(router)` hands `build()` an already-constructed
+`Router` directly. This is unconditional: an injected router is never
+wrapped, inspected, or validated, and wins over an installed/registered
+router factory, which is then never even invoked.
+
+Which of the three is taken changes what `conway routes explain` can show: a
+router that is not `conway-plugin-routing`'s own `DeclarativeRouter` (the
+absent-plugin `MinimalRouter` default, an injected `with_router`, or a
+`RouterFactory` whose `RouterBundle::explain` came back `None`) falls back to
+an honest, degenerate answer — no capability filtering, no health filtering,
+one entry per configured chain candidate — rather than reporting an empty,
+fabricated one. A `RouterFactory` that wants the richer explain answer
+supplies its own `RoutingExplainer` as `RouterBundle::explain` at the same
+moment it builds the router, since construction is the only point a router
+and a matching explainer are guaranteed to agree with each other about
+"why".
 
 ## Asking why a route was chosen
 
@@ -128,9 +166,9 @@ turn's real `est_tokens`.
 **Where the report type lives, and what happens with a non-default
 router.** `ExplainReport` (and the field types it's built from --
 `ExplainEntry`, `EntryOutcome`, `CapabilitySummary`, `BreakerSnapshot`) are
-defined in `conway_core::routing`, not in `conway-routing` -- so producing
-one never requires depending on `conway-routing`'s filtering logic.
-`conway-routing::RoutingExplain` (the rich, capability- and health-filtered
+defined in `conway_core::routing`, not in `conway-plugin-routing` -- so producing
+one never requires depending on `conway-plugin-routing`'s filtering logic.
+`conway-plugin-routing::RoutingExplain` (the rich, capability- and health-filtered
 answer this page's examples above show) is one producer; embedders that
 supply their own `Router` via `ConwayBuilder::with_router` get a different
 one automatically: `Conway::explain_routing` falls back to
@@ -231,7 +269,7 @@ combination of the role's configured floor and whatever `required` the
 caller (or, for a real turn, `conway-runtime`'s own turn-time logic —
 currently just a `tool_calling >= non_streaming` floor whenever the turn
 has any registered tools) already supplied — per field, whichever of the
-two demands more wins; neither side can weaken the other. `conway-routing`'s
+two demands more wins; neither side can weaken the other. `conway-plugin-routing`'s
 `satisfies` still walks all seven `RequiredCaps` fields against that merged
 result, headroom last, exactly as before; a candidate that fails one shows
 up as an ordinary `RoutingReason::CapabilitySkip` / `context: ...`-style
@@ -389,12 +427,12 @@ explain <role>` shows every breaker's current state, and a candidate
 skipped for `HealthSkip` names which breaker and until when.
 
 **Verified: only the Transport breaker is live in a running `conway`
-process today.** `conway-routing`'s periodic prober
-(`conway_routing::prober::HealthProber`, the component that would feed
+process today.** `conway-plugin-routing`'s periodic prober
+(`conway_plugin_routing::prober::HealthProber`, the component that would feed
 the Probe breaker independently of request traffic) is fully implemented
 and tested in that crate, but no call site in `conway`, `conway-runtime`,
 or `conway-cli` ever spawns it — checked directly, it's referenced
-nowhere outside `conway-routing` itself. `probe_enabled`,
+nowhere outside `conway-plugin-routing` itself. `probe_enabled`,
 `probe_interval_secs`, and `probe_timeout_secs` validate and load without
 error; they currently have no observable effect. This is a deliberate,
 labeled forward declaration (GP-14), not an oversight: the Transport

@@ -60,16 +60,16 @@ fn bundle() -> Vec<Arc<dyn Plugin>> {
 /// order -- the router-side sibling of [`bundle`], resolved against the
 /// SAME `[plugins].install` list, in the same pass ([`install`]).
 ///
-/// **Empty today, honestly** (GP-14): no first-party router crate has
-/// landed yet (dynamic routing is a separate, later board item --
-/// `.design/philosophy-debt.md` entry 2's own sequencing note, echoed in
-/// this module's own top-of-file note). An empty `Vec` here means every
-/// `[plugins].install` id still resolves against [`bundle`] alone, exactly
-/// as it did before this function existed -- this function existing at
-/// all does not by itself claim any router is installable; only a real
-/// entry in it would.
+/// **First occupant, board item 01KZFC43J1J06BM4CCWKCKHSNV:**
+/// `conway-plugin-routing`'s `RoutingRouterFactory` -- the capability-/
+/// health-filtering `DeclarativeRouter` engine `conway` itself used to
+/// compile in unconditionally, now installed by naming its published
+/// `ROUTER_ID` (`"conway.routing"`) in `[plugins].install`, exactly the way
+/// [`bundle`]'s skeleton plugin is named. Absent that entry, `build()`
+/// falls through to `conway_core::routing::MinimalRouter` (see
+/// `docs/routing.md`).
 fn router_bundle() -> Vec<Arc<dyn RouterFactory>> {
-    vec![]
+    vec![Arc::new(conway_plugin_routing::RoutingRouterFactory)]
 }
 
 /// Applies `wanted` (`ConwayBuilder::config().plugins.install`, read by the

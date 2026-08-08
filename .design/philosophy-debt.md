@@ -28,6 +28,11 @@ the wrong entry rather than at nothing. Soft cancellation was cleared on
 6→5, the subagent tool split 7→6. Board specs written before that date cite the
 old numbers. The subagent tool split itself (then entry 6) was cleared later
 the same day; nothing was below it, so no further renumbering resulted.
+"Routing moved out of the core" (then entry 4) was cleared on 2026-08-08
+(board item 01KZFC43J1J06BM4CCWKCKHSNV) and the one entry below it moved up
+one: path confinement 5→4. Board specs written before that date (including
+this item's own, which cites "entry 5") mean the entry that was numbered 5
+when they were written.
 
 ---
 
@@ -106,8 +111,18 @@ account):
 - **Where they live:** one crate per plugin under `crates/`, same layout as
   every other workspace crate (`cargo test --workspace` covers them without
   special-casing). `conway` (the facade) does not, and must never, depend
-  on any of them — a first-party plugin is written against `conway::plugin`,
-  the identical public surface a third party gets.
+  on any of them. A `Plugin`/`Tool` first-party crate is written against
+  `conway::plugin`, the identical public surface a third party gets
+  (`conway-plugin-skeleton`). A `RouterFactory` first-party crate is a
+  narrower, deliberately different case (`conway-plugin-routing`): `Router`/
+  `HealthRegistry` implementations are excluded from the `conway::plugin`
+  tier outright (`crates/conway/src/lib.rs`'s own "Deliberately NOT here"
+  list, §13.5) since a router genuinely needs the routing/capability domain
+  `conway::plugin`'s curated surface does not (and should not) carry, so
+  this one depends on `conway-core` directly instead — the SAME facade
+  independence still holds (`conway` links neither crate), just not the
+  identical-to-third-party-authoring claim for this specific extension
+  point.
 - **How one is installed:** a new, distinct `[plugins].install` key in
   `settings.json` (`conway::config::schema::PluginsConfig`), deliberately
   NOT folded into `tools.builtin_plugins` (that key is a closed,
@@ -130,20 +145,33 @@ account):
   what exists (the mechanism, plus the one worked skeleton) rather than
   what is planned.
 
-**`crates/conway-plugin-skeleton` is the one member so far, and it is not a
-real capability.** It registers a single `skeleton_ping` tool that echoes
-its argument back — enough to prove the mechanism (absent by default,
-installable via `[plugins].install` or `with_plugin`, callable from the TUI,
-one-shot, and a library embedder) end to end, and nothing more. Dynamic
-routing, compaction, memory, skills, and MCP support are unchanged by this
-item: none of the six ships in any form yet, and each is separate, later
-work.
+**`crates/conway-plugin-skeleton` and `crates/conway-plugin-routing` are the
+two members so far, and neither is one of the six capabilities this page
+names.** The skeleton registers a single `skeleton_ping` tool that echoes
+its argument back — enough to prove the `Plugin`/`Tool` mechanism (absent by
+default, installable via `[plugins].install` or `with_plugin`, callable from
+the TUI, one-shot, and a library embedder) end to end, and nothing more.
+`conway-plugin-routing` (board item 01KZFC43J1J06BM4CCWKCKHSNV) is a
+different, harder case: the declarative `Router`/`HealthRegistry` engine
+`conway` itself used to compile in unconditionally, relocated wholesale
+behind the SAME `[plugins].install` mechanism via a second installable
+identity, `RouterFactory` (`ConwayBuilder::with_router_factory`), since
+router *selection* has to be nameable before backends exist to build one
+against. It is NOT "dynamic routing" in this page's sense — no classifier,
+embedding model, or other learned component (GP-07, unchanged) — it is the
+pre-existing, purely declarative resolver becoming an install-time choice
+rather than a compiled-in default. Dynamic routing, compaction, memory,
+skills, and MCP support are unchanged by either item: none of the six ships
+in any form yet, and each is separate, later work.
 
-**Sequencing note, unchanged.** Routing (entry 4) is still the one to build
-first, and not because it is most wanted. It is the hardest test of the
-plugin surface now that the tier has a place to put it, so it will find
-whatever is missing there before the remaining plugins are written against a
-surface that turns out to be inadequate.
+**Sequencing note, resolved.** The prior note here said routing (then this
+ledger's entry 4) was the one to build first, as the hardest test of the
+plugin surface now that the tier had a place to put it. That happened: it
+found the gap the `RouterFactory` port item closed (router construction
+needs backends and a capability picture that do not exist when
+`[plugins].install` is first read, which a bare `Plugin`/`Tool` never
+needed) before the remaining plugins are written against a surface that
+would otherwise have turned out to be inadequate.
 
 **This entry replaces an earlier, weaker one** about shipping "example
 implementations" for the deferred decisions. That was the same idea before it
@@ -199,130 +227,7 @@ sequenced together.
 
 ---
 
-## 4. Routing moved out of the core
-
-**Claimed:** [Extending conway](../PHILOSOPHY.md#5-extending-conway) and
-[Decisions conway leaves to you](../PHILOSOPHY.md#6-decisions-conway-leaves-to-you)
-both say the core resolves a role to a model and stops, with ordered fallback,
-capability filtering, health tracking, circuit breaking, and headroom policy
-living in a routing plugin that is not installed by default.
-
-**Exists today:** the opposite arrangement. `conway-routing` is a workspace
-crate the facade depends on, and `DeclarativeRouter` is wired in as the default.
-All of it is in the core app: 3,904 lines across the router (848), the health
-prober (676), capability filtering (665), the two circuit breakers (572),
-routing config (521), explain (300), and failure classification (280).
-
-The seam is genuinely there, which is what makes this a relocation rather than a
-redesign. `Router` is a port trait in `conway-core`, `ConwayBuilder::with_router`
-already lets an embedder replace the whole thing, and the port contract already
-requires a `RoutingReason` per candidate. What is missing is a declarative
-install path, which is the identical gap entry 3 describes for backends. Both
-should be solved once.
-
-**Admission is half landed, and the half that is missing is the consuming
-half.** Board item 01KZDC4DKVC4JC3W4KN1WMC43N added `Backend::admit`, the
-`Admission` numbers it returns, `BackendError::ContextTooLarge`, and one shared
-`check_admission` that every dialect calls. Both shipped adapters implement it
-over their own wire bodies. So the page's "a backend answers admissible or not
-and says so with numbers" is true today.
-
-The page's next clause is not: "a router uses that answer to pass over a
-candidate that cannot take the request." **Nothing calls `admit` outside tests.**
-The live request path still admits through `conway_routing`'s own pre-existing
-`context_shortfall`, so the tree currently holds two implementations of the same
-arithmetic — which P-14 forbids as a steady state and which this entry's work is
-what resolves. `admit` is labelled at its declaration site as not yet consumed,
-naming this item.
-
-The design question deliberately left for here, rather than improvised there:
-how `RoutingError::ContextTooLarge` and `BackendError::ContextTooLarge` relate
-at the call site. Settle that before deleting `capability.rs`'s copy.
-
-**Needed to make it true:**
-
-- Split the crate. The core keeps the `Router` port, the `RoutingReason` /
-  `ModelRef` / `Observation` / breaker-state vocabulary, and a minimal resolver
-  that maps a role to a model. Everything else moves.
-- Emit attempt outcomes as something a plugin can observe, since breakers move
-  out and still have to see every attempt.
-- Keep the router in-process. A breaker observing every attempt across a
-  subprocess boundary is a round trip per attempt, so this stays a Rust plugin
-  regardless of what cheaper plugin hosts arrive later.
-- Decide where `conway routes explain` renders from, given the detail it can
-  show now depends on which router is installed.
-- Move admission to the backend, not to the router and not left in core
-  (**ruled**, see below).
-
-
-**Admission belongs to the backend (ruled), as a port method rather than a
-plugin of its own.** The question of who decides whether a request fits was open
-when this entry was written. `Backend` grows a method answering admissible or
-not with numbers; each backend plugin implements it; the router consumes
-verdicts to skip candidates it cannot use; the core keeps the behavioural half,
-which is that a refusal reaches the caller rather than being worked around by
-trimming or escalating.
-
-**A standalone admission plugin was considered and rejected.** It would still
-need a measurement from whichever backend the request is headed to, so the port
-has to exist either way. What remains after adding that port is a headroom rule
-and a comparison, and a policy layer sitting on top of per-candidate verdicts is
-what the router already is. The second thing in that position would do less than
-the first.
-
-**What is irreducibly per-backend**, and the reason this pushes down rather than
-being shared wholesale:
-
-- Tokenization. Anthropic, the OpenAI dialects, and a local llama.cpp server
-  count differently, so one shared estimator is wrong for at least two of them.
-- What draws on the window. Whether a reasoning budget comes from the same
-  allowance, how tool schemas are counted, how cache blocks figure. Provider
-  semantics, not arithmetic.
-- The refusal itself. What overflow looks like coming back, and whether it is
-  distinguishable from a rate limit or a malformed request.
-- Calibration. Every response reports actual input tokens, so a backend can
-  compare its own estimate against that and correct its bias. A shared estimator
-  can only average two dialects' errors together.
-
-**What stays shared, and why it has to.** The headroom arithmetic and the fit
-comparison are identical everywhere, and
-[safety-bearing code](../CONTRIBUTING.md#5-safety-bearing-code) requires one
-implementation of a computation a guard depends on rather than a restatement per
-callsite. So: a shared helper both plugins call, with the tokenizer as the
-injected seam. The failure this avoids is two backend plugins growing slightly
-different notions of "fits," one of which quietly omits a check. Headroom the
-number is configuration, a default plus a per-role override, read by whichever
-backend is answering.
-
-**Do not put a count-tokens API call on the admission path.** Anthropic offers
-one, and it is a network round trip per check on the hot path. Local estimation
-with the dialect's own tokenizer, reconciled after the fact against reported
-usage, gets the accuracy without spending a request to learn whether a request
-can be made.
-
-**Two consequences for the split.** `capability.rs` (665 lines) is doing
-backend-shaped work inside the routing crate today and should move to the
-backend side rather than travelling with the router. And the estimator gains an
-owner it has never had: `heuristic-chars4` is currently never compared against
-the `input_tokens` the provider reports on the very next response, so its bias is
-unmeasured in both directions, causing false rejections and admitting requests
-that should have been refused. Closing that loop is a correctness improvement
-this relocation makes available rather than a requirement of it.
-
-**Resolves an open tension rather than creating one.** Routing was the largest
-concentration of default policy in the system and the one subsystem that shipped
-an opinion rather than a seam. Moving it out is the change that makes the
-"mechanism in core, policy outside" claim uniformly true instead of true with an
-exception nobody had written down.
-
-**Deletes the health prober for free.** The health prober (676 lines, nothing
-constructs it, gated behind a baseline that cannot be measured because no
-benchmark harness exists) leaves the core with the rest of the crate. Deleting
-it outright remains the better answer, but it stops being core debt either way.
-
----
-
-## 5. Path confinement moves into `conway.fs`
+## 4. Path confinement moves into `conway.fs`
 
 **Claimed:** [Constraining a child](../PHILOSOPHY.md#constraining-a-child-its-tool-set)
 says limits on reach belong to the plugin that performs the operation, that

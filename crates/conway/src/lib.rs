@@ -1,11 +1,14 @@
 //! `conway`: the embeddable facade over the conway agent harness.
 //!
 //! Assembles `conway-core`'s ports and domain types with the concrete
-//! `conway-runtime`, `conway-backends`, `conway-session`, `conway-routing`,
-//! and `conway-tools` implementations behind one stable public API
-//! (`ConwayBuilder` -> `Conway` -> `SessionHandle`). This crate is the
-//! primary integration surface for embedders (e.g. a Tauri IDE) and for the
-//! `conway` CLI.
+//! `conway-runtime`, `conway-backends`, `conway-session`, and `conway-tools`
+//! implementations behind one stable public API (`ConwayBuilder` -> `Conway`
+//! -> `SessionHandle`). This crate is the primary integration surface for
+//! embedders (e.g. a Tauri IDE) and for the `conway` CLI. Board item
+//! 01KZFC43J1J06BM4CCWKCKHSNV: this crate no longer links a routing engine
+//! at all -- `conway-plugin-routing` is an installable first-party plugin,
+//! not one of the implementations assembled here; absent it, `build()`
+//! compiles `conway_core::routing::MinimalRouter` instead.
 //!
 //! This item (WI-096) establishes the crate skeleton: dependency wiring,
 //! the cargo feature flags below, the crate-level [`ConwayError`]/[`Result`],
@@ -179,8 +182,8 @@ pub use conway_core::routing::{AttemptFailure, BreakerKind, BreakerState, Routin
 // `routes explain` needs `Conway::explain_routing`'s return type.
 // `ExplainReport` (and its own public field types -- `ExplainEntry`,
 // `EntryOutcome`, `CapabilitySummary`, `BreakerSnapshot`) used to be defined
-// in `conway_routing`; they now live in `conway_core::routing`, so any
-// `Router` supplied from outside `conway_routing` (`ConwayBuilder::with_router`)
+// in `conway_plugin_routing`; they now live in `conway_core::routing`, so
+// any `Router` supplied from outside that crate (`ConwayBuilder::with_router`)
 // can still produce one (see `conway_core::routing::MinimalRouter`) instead
 // of a fabricated-empty report. Re-exported here from `conway_core` --
 // same five names, same shapes -- so this facade's public surface is

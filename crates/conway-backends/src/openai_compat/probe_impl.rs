@@ -24,7 +24,7 @@
 //! still proves the server answers HTTP requests at all. If every tier
 //! 404s, [`OpenAiCompatBackend::run_probe`] still returns
 //! `Err(BackendError::BadRequest{..})` (via [`classify`]) rather than
-//! inventing a synthetic success — it is `conway_routing::prober`'s job
+//! inventing a synthetic success — it is `conway_plugin_routing::prober`'s job
 //! (WI-124) to recognize that a `BadRequest`-classified probe failure means
 //! "this liveness path isn't served here", not "the endpoint is down", and
 //! to withhold a health observation accordingly rather than tripping the
@@ -268,7 +268,7 @@ mod tests {
     /// every Ollama liveness path — `/models`, `/api/tags`, `/api/version`
     /// — is unsupported, `run_probe` reports the failure as
     /// `BackendError::BadRequest` (via `classify`'s 404 row), never as a
-    /// transport-level failure. It is `conway_routing::prober`'s job to
+    /// transport-level failure. It is `conway_plugin_routing::prober`'s job to
     /// read that classification and withhold a health observation rather
     /// than trip the breaker.
     #[tokio::test]

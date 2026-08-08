@@ -19,6 +19,12 @@ conway = { path = "../conway" }
 # doc). See `src/first_party_plugins.rs` for the install path this crate's
 # dependency feeds.
 conway-plugin-skeleton = { path = "../conway-plugin-skeleton" }
+# Board item 01KZFC43J1J06BM4CCWKCKHSNV: the routing engine `conway` itself
+# used to compile in directly is now a first-party plugin too, resolved
+# through the SAME `[plugins].install` mechanism and the same `src/
+# first_party_plugins.rs` choke point as the line above (see that file's
+# `router_bundle`).
+conway-plugin-routing = { path = "../conway-plugin-routing" }
 clap = { workspace = true, features = ["derive", "env"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }
 async-trait = { workspace = true }
@@ -52,6 +58,18 @@ tracing-subscriber = { workspace = true }
 chrono = { workspace = true }
 
 [dev-dependencies]
+# Board item 01KZFC43J1J06BM4CCWKCKHSNV: `main.rs`'s own `tracing_target_
+# tests` module emits real `tracing::{info,trace}!` events (targeting
+# `conway_plugin_routing` by name) against a scoped `EnvFilter`-driven
+# subscriber, to verify the `-v`/`-vv` target-list string by observing
+# actual filtered output rather than reading the source line. Already a
+# pinned workspace dependency (`tracing-subscriber`, above, depends on it
+# transitively; every implementation crate this binary pulls in emits
+# through it directly), not a new one (C-04); test-only here since
+# production code only ever calls the `tracing::{info,warn,...}!` macros
+# already re-exported through `tracing-subscriber`'s own dependency, never
+# constructs a `Subscriber`/emits an event by hand outside this test module.
+tracing = { workspace = true }
 # Test-only: used exclusively to construct `conway_core::{error,agent,event}`
 # fixture values for `exit.rs`/`oneshot.rs`/`render/*.rs`'s unit tests (see
 # `exit.rs`'s doc comment for why this cannot be a production dependency).

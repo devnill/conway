@@ -1,0 +1,43 @@
+[package]
+name = "conway-plugin-routing"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+description = "Declarative role routing, per-endpoint health, and capability filtering, installed as a first-party plugin (board item 01KZFC43J1J06BM4CCWKCKHSNV) rather than built into `conway` by default"
+
+# Board item 01KZFC43J1J06BM4CCWKCKHSNV: this crate is the routing engine
+# `conway`'s own `builder.rs` used to compile in unconditionally, relocated
+# to the first-party plugin tier (decision 01KZDM9EEVJDWAKJQPV0Y3CQ4D) --
+# installed via `[plugins].install` (`RoutingRouterFactory`/`ROUTER_ID`,
+# `factory.rs`), never linked by `conway` itself. Unlike
+# `conway-plugin-skeleton` (which depends only on the `conway` facade), this
+# crate depends on `conway-core` DIRECTLY: it implements `Router`/
+# `HealthRegistry`/`RoutingExplainer` (`conway::plugin`'s own module doc
+# rejects THOSE implementation surfaces from the third-party `Plugin`/`Tool`
+# tier -- see `crates/conway/src/lib.rs`'s "Deliberately NOT here" list --
+# but `RouterFactory` is a separate, root-level installable mechanism
+# designed for exactly this: a router kind needs the full routing/capability
+# domain the facade does not curate down to). `conway`'s own `builder.rs`
+# depends on neither this crate nor `conway-core`'s routing internals beyond
+# what `RouterBuildContext` already carries -- this is the edge the whole
+# charter exists to cut.
+[dependencies]
+conway-core = { path = "../conway-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+humantime-serde = { workspace = true }
+chrono = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+
+[features]
+test-clock = []
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+conway-core = { path = "../conway-core", features = ["fakes"] }
+static_assertions = { workspace = true }

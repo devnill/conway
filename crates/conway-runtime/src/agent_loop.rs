@@ -507,7 +507,9 @@ impl AgentLoop {
     /// `ContextHook::on_overflow` when the T-1 gate rejects the assembled
     /// request as too large for the routed model's window
     /// (`RoutingError::ContextTooLarge`) -- from either `Router::resolve`
-    /// (the committed `conway_routing::DeclarativeRouter` now does construct
+    /// (the committed `conway_plugin_routing::DeclarativeRouter` -- an
+    /// installable engine as of board item 01KZFC43J1J06BM4CCWKCKHSNV, not a
+    /// dependency of this crate -- now does construct
     /// this variant, exactly when every candidate's rejection is
     /// attributable solely to the headroom gate; decision
     /// 01KYXS3PTYVATWR58JR95AZJYN, closing board item

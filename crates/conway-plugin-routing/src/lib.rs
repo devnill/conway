@@ -1,10 +1,22 @@
-//! conway-routing: declarative role -> ordered-candidate resolution
+//! conway-plugin-routing: declarative role -> ordered-candidate resolution
 //! (`DeclarativeRouter`), per-endpoint circuit breakers (`BreakerRegistry`)
 //! plus a background health prober (`HealthProber`) that is defined but not
 //! yet wired into production (see `prober`'s module doc comment and board
 //! item `01KZ802GSF692EKYKQ2TTVCJB8`), the router's own capability
 //! predicate (`satisfies`, `capability.rs`), and the "why did this model
 //! run" report (`RoutingExplain`).
+//!
+//! **First-party plugin, not a `conway` built-in (board item
+//! 01KZFC43J1J06BM4CCWKCKHSNV).** `conway`'s own `builder.rs` used to
+//! compile a `DeclarativeRouter` in unconditionally; that Cargo edge is now
+//! cut, and this entire engine (everything this crate contains) is
+//! installed instead, by naming [`ROUTER_ID`] in `[plugins].install`
+//! (`factory.rs`'s `RoutingRouterFactory`) or by handing a
+//! `RoutingRouterFactory` to `ConwayBuilder::with_router_factory` directly.
+//! Absent that, `ConwayBuilder::build` falls through to
+//! `conway_core::routing::MinimalRouter` -- the honest, config-only core
+//! resolver that needs no filtering logic at all. See `docs/routing.md`
+//! for what changes (and what doesn't) between the two configurations.
 //!
 //! `CapabilityIndex`/`CapabilityIndexBuilder` are re-exported here for
 //! source compatibility but no longer defined in this crate (board item
@@ -34,6 +46,7 @@ mod breaker;
 mod capability;
 pub mod config;
 mod explain;
+mod factory;
 mod prober;
 mod router;
 
@@ -54,4 +67,5 @@ pub use conway_core::routing::{
     BreakerSnapshot, CapabilitySummary, EntryOutcome, ExplainEntry, ExplainReport,
 };
 pub use explain::RoutingExplain;
+pub use factory::{RoutingRouterFactory, ROUTER_ID};
 pub use router::DeclarativeRouter;

@@ -31,7 +31,6 @@ metadata-refresh = []
 [dependencies]
 conway-core = { path = "../conway-core" }
 conway-runtime = { path = "../conway-runtime" }
-conway-routing = { path = "../conway-routing" }
 # Non-optional (see the [features] table's doc above): the harness always
 # supports both common API flavours conway-backends ships (Anthropic,
 # OpenAI-compatible); default features pull both in.
@@ -62,6 +61,16 @@ blake3 = { workspace = true }
 
 [dev-dependencies]
 conway-core = { path = "../conway-core", features = ["fakes"] }
+# Board item 01KZFC43J1J06BM4CCWKCKHSNV: `conway` itself no longer depends on
+# the routing engine ([dependencies], above, has no such edge -- that's the
+# whole point of this crate becoming a first-party plugin). This
+# dev-dependency exists ONLY so this crate's own test suite can drive the
+# INSTALLED configuration end-to-end through a real `ConwayBuilder::
+# with_router_factory(Arc::new(conway_plugin_routing::RoutingRouterFactory))`
+# call -- see `tests/router_plugin_seam.rs` -- exercising the exact same
+# `RouterFactory` path `conway-cli`'s `first_party_plugins::router_bundle`
+# links for real. Never referenced from `src/`.
+conway-plugin-routing = { path = "../conway-plugin-routing" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 # S5's root-containment seam test needs real tempdirs/symlinks (a real
 # filesystem is the only honest way to prove a symlink escape is denied) --

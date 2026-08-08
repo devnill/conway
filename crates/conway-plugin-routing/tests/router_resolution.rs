@@ -45,7 +45,7 @@ use conway_core::routing::{
     BreakerKind, BreakerState, HealthConfig, RouteRequest, RoutingConfig, RoutingReason,
 };
 
-use conway_routing::{CapabilityIndex, DeclarativeRouter};
+use conway_plugin_routing::{CapabilityIndex, DeclarativeRouter};
 
 fn model_ref(backend: &str, model: &str) -> ModelRef {
     ModelRef {

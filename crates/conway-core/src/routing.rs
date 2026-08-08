@@ -481,7 +481,7 @@ pub struct ModelOverrides {
 // `AlwaysClosedHealthRegistry` are production code, not test doubles -- they
 // back `Conway::explain_routing`'s honest degenerate answer when the caller
 // supplied its own `Router` (`ConwayBuilder::with_router`) and there is no
-// concrete `conway_routing::DeclarativeRouter` left to project an
+// concrete `conway_plugin_routing::DeclarativeRouter` left to project an
 // `ExplainReport` through. Neither performs I/O, matching every other port
 // implementation's constraint.
 // ---------------------------------------------------------------------

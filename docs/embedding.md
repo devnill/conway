@@ -330,11 +330,13 @@ let conway = ConwayBuilder::discover()?
 UNCONDITIONALLY over a registered factory — it is never wrapped, inspected,
 or validated, and a factory set alongside it is then never even invoked.
 Absent an injected router, a registered factory is invoked instead; absent
-both, `build()` falls through to compiling its own `DeclarativeRouter`,
-unchanged from before this method existed. A factory whose `build` returns
-`Err` fails the whole `build()` call as `ConwayError::Build`, naming the
-factory's own id and the underlying message — never silently swallowed,
-never a silent fallback to the compiled router.
+both, `build()` falls through to `conway_core::routing::MinimalRouter` —
+the config-only core resolver (board item 01KZFC43J1J06BM4CCWKCKHSNV: this
+crate no longer compiles a capability-/health-filtering router engine in at
+all). A factory whose `build` returns `Err` fails the whole `build()` call
+as `ConwayError::Build`, naming the factory's own id and the underlying
+message — never silently swallowed, never a silent fallback to
+`MinimalRouter`.
 
 **Wiring it in, as `[plugins].install`:** exactly the same shape as a
 plugin id, resolved against a binary's own linked bundle of router
@@ -343,16 +345,20 @@ factories in the SAME pass as its linked plugins
 its existing `bundle`):
 
 ```json
-{ "plugins": { "install": ["my.dynamic_router"] } }
+{ "plugins": { "install": ["conway.routing"] } }
 ```
 
 Naming more than one router-factory id in `[plugins].install` is a hard
 config error — a build has exactly one router. `conway-cli`'s own linked
-router-factory bundle is empty today (no first-party router crate has
-landed yet — dynamic routing is a separate, later board item); an id an
-operator names that this binary does not recognize as either a plugin or a
-router factory is a hard error listing both known sets, mirroring the
-plugin-only unknown-id error this tier already raised.
+router-factory bundle carries one first-party occupant today,
+`conway-plugin-routing`'s `RoutingRouterFactory` (published id
+`"conway.routing"`) — the same capability-/health-filtering
+`DeclarativeRouter` engine `conway` itself used to compile in
+unconditionally before this crate existed, see
+[`routing.md`](routing.md#installing-a-different-router). An id an operator
+names that this binary does not recognize as either a plugin or a router
+factory is a hard error listing both known sets, mirroring the plugin-only
+unknown-id error this tier already raised.
 
 **No mode asymmetry** (GP-05/C-03): a router installed via
 `[plugins].install` takes effect identically for the TUI, one-shot, and a

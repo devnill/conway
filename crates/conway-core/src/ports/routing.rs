@@ -13,7 +13,7 @@ use crate::error::{ConwayError, RoutingError};
 use crate::ids::EndpointId;
 use crate::routing::{BreakerState, ExplainReport, Observation, Route, RouteRequest, RoutingConfig};
 
-use super::Backend;
+use super::{Backend, CapabilityIndex};
 
 /// Resolves a routing role to an ordered list of candidates.
 pub trait Router: Send + Sync {
@@ -76,7 +76,7 @@ pub trait HealthRegistry: Send + Sync {
 /// 01KZFC1KNGQ51TZ0BG7P7RAY9H): `Router` has exactly one method, `resolve`,
 /// and every existing `.with_router(..)` call site across this workspace
 /// supplies a trait object that only ever needed to answer that one
-/// question. Implemented by `conway_routing::RoutingExplain` (a capability-
+/// question. Implemented by `conway_plugin_routing::RoutingExplain` (a capability-
 /// and health-filtered projection of a concrete `DeclarativeRouter`) and by
 /// `crate::routing::MinimalRouter` (an honestly degenerate answer needing
 /// nothing but a `RoutingConfig`) -- both build the one `ExplainReport`
@@ -146,13 +146,31 @@ impl std::fmt::Debug for RouterBundle {
 /// Everything a [`RouterFactory::build`] genuinely needs, and nothing more.
 ///
 /// Every field type here is already defined in `conway-core` itself
-/// (`RoutingConfig`, `HeadroomPolicy`, [`Backend`]) -- this deliberately
-/// does NOT carry a `conway_core::ports::CapabilityIndex` (or any other
-/// sibling-crate type), so this port stays constructible with no new
-/// dependency from `conway-core` onto `conway-routing` (C-04). A factory
-/// that wants a capability picture builds one from `backends` itself,
-/// exactly as `conway_routing::CapabilityIndex::from_backends` already does
-/// for the compiled path.
+/// (`RoutingConfig`, `HeadroomPolicy`, [`Backend`], [`CapabilityIndex`]) --
+/// none of it reaches into a sibling crate, so this port stays constructible
+/// with no new dependency (C-04).
+///
+/// **`capability_index` (board item 01KZFC43J1J06BM4CCWKCKHSNV, amending
+/// this struct's original shape):** the struct originally omitted this
+/// field on the reasoning "a factory that wants a capability picture builds
+/// one from `backends` itself" -- true for the WI-123 base guarantee
+/// (`CapabilityIndex::from_backends` reads `Backend::capabilities()`
+/// directly, so a factory recomputing that part independently cannot
+/// diverge from it), but incomplete for the other half of what a
+/// `ConwayConfig`-driven index encodes: WHICH `(backend, model)` pairs are
+/// indexed at all. That set comes from `.conway/models.json`
+/// (`ConwayBuilder::build`'s own step 5), a declarative allow-list a
+/// factory has no way to reconstruct from `backends` alone -- deriving it
+/// from `routing.roles`' own chains instead (the only other candidate
+/// source in this struct) would let ANY model a role's chain names become
+/// indexed merely by being named there, silently defeating the documented
+/// invariant that `models.json` is the sole source of which pairs are
+/// routable at all (`docs/routing.md`'s "Capability matching" section, the
+/// RESTRICT policy's own regression tests). Carrying the already-built
+/// index closes that gap and, as a second-order effect, restores
+/// `[models].probe_on_startup`'s overlay to a router that installs this
+/// context -- both properties this crate's own `conway-plugin-routing`
+/// occupant depends on.
 pub struct RouterBuildContext<'a> {
     /// The role → fallback-chain routing policy resolved from
     /// `[routing]`/`[roles]`.
@@ -166,6 +184,12 @@ pub struct RouterBuildContext<'a> {
     /// a second, independently-recomputed notion of what a backend can do
     /// (P-14).
     pub backends: &'a [Arc<dyn Backend>],
+    /// The SAME index `ConwayBuilder::build` itself would consult -- built
+    /// from `.conway/models.json` via `CapabilityIndex::from_backends`,
+    /// optionally overlaid by the startup capability probe
+    /// (`[models].probe_on_startup`). See this struct's own doc for why a
+    /// factory cannot correctly reconstruct this from `backends` alone.
+    pub capability_index: CapabilityIndex,
 }
 
 /// Manual, opaque-placeholder `Debug` for the `backends` slice's `dyn
@@ -177,6 +201,7 @@ impl std::fmt::Debug for RouterBuildContext<'_> {
             .field("routing", &self.routing)
             .field("headroom", &self.headroom)
             .field("backends", &format!("<{} backend(s)>", self.backends.len()))
+            .field("capability_index", &self.capability_index)
             .finish()
     }
 }

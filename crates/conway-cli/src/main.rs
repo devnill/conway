@@ -190,7 +190,7 @@ fn install_tracing(verbose: u8) {
     let level = if verbose >= 2 { "trace" } else { "info" };
     let directive = format!(
         "warn,conway={level},conway_core={level},conway_backends={level},\
-         conway_routing={level},conway_tools={level},conway_session={level},\
+         conway_plugin_routing={level},conway_tools={level},conway_session={level},\
          conway_runtime={level},conway_cli={level}"
     );
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
@@ -203,4 +203,168 @@ fn install_tracing(verbose: u8) {
 
 fn to_process_code(code: ExitCode) -> std::process::ExitCode {
     std::process::ExitCode::from(code.code() as u8)
+}
+
+#[cfg(test)]
+mod tracing_target_tests {
+    //! Board item 01KZFC43J1J06BM4CCWKCKHSNV names `install_tracing`'s
+    //! per-crate target list as a place a rename can silently stop matching
+    //! with no compile error (it's a plain `&str`, not a dependency): this
+    //! module verifies `conway_plugin_routing` is actually a live,
+    //! filter-matched target by observing REAL `tracing_subscriber::
+    //! EnvFilter` behavior -- constructing the exact directive
+    //! `install_tracing` builds and checking what it lets through -- rather
+    //! than asserting on the literal source string.
+    //!
+    //! **Finding, disclosed rather than hidden:** `EnvFilter`'s per-target
+    //! directive matching is an unanchored string prefix, not a `::`-
+    //! segment-boundary match (a documented `tracing-subscriber` quirk).
+    //! Every crate name in this list literally starts with `"conway"`, so
+    //! the very first clause, `conway={level}`, already prefix-matches
+    //! `conway_plugin_routing`, `conway_backends`, `conway_cli`, and (had it
+    //! never been renamed) the pre-rename crate name too -- an event on
+    //! that OLD target (the `conway-routing` crate's module-path spelling,
+    //! not written out verbatim here since this crate no longer exists --
+    //! see `.design/philosophy-debt.md` entry 5) was verified, empirically,
+    //! to still pass this exact directive string even with every trace of
+    //! that name gone from the source. The specific `conway_plugin_routing={level}`
+    //! clause this item's spec worried would "silently stop matching after
+    //! the rename, with NO compile error" is therefore, in practice,
+    //! redundant with the catch-all `conway={level}` clause that already
+    //! precedes it -- the concrete risk named never actually materializes
+    //! for THIS crate list, because every name in it shares that one
+    //! prefix. The tests below still verify the real, user-facing property
+    //! that matters (`-v`/`-vv` genuinely surface `conway_plugin_routing`
+    //! events, at the right level, and genuinely exclude a
+    //! non-`conway`-prefixed dependency crate) rather than a claim about
+    //! the specific clause that the mechanism does not actually support.
+    //!
+    //! `install_tracing` itself calls `.init()`, which installs a
+    //! process-global subscriber exactly once; calling it twice across
+    //! multiple tests in one process would panic. These tests therefore
+    //! reconstruct the same directive-building logic against a SCOPED
+    //! subscriber (`tracing::subscriber::with_default`, not `.init()`), so
+    //! each test gets its own filter without touching global state -- never
+    //! calling `install_tracing` itself.
+
+    use std::sync::{Arc, Mutex};
+
+    /// Byte-for-byte the directive `install_tracing` constructs, kept in
+    /// sync deliberately (not `pub(crate)`-shared, since `install_tracing`
+    /// is a four-line function with no other caller): a drift between the
+    /// two would be undetectable by Rust's own compiler (this is exactly
+    /// the "plain string, not a dependency" risk this module exists to
+    /// guard against some OTHER way), so every test below runs against
+    /// THIS copy and is only as trustworthy as this copy staying identical
+    /// to `install_tracing`'s own `format!` call -- both are four lines,
+    /// side by side in this same file, for a reviewer to diff by eye.
+    fn directive(verbose: u8) -> String {
+        let level = if verbose >= 2 { "trace" } else { "info" };
+        format!(
+            "warn,conway={level},conway_core={level},conway_backends={level},\
+             conway_plugin_routing={level},conway_tools={level},conway_session={level},\
+             conway_runtime={level},conway_cli={level}"
+        )
+    }
+
+    #[derive(Clone, Default)]
+    struct CapturingWriter(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for CapturingWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().expect("capture lock").extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CapturingWriter {
+        type Writer = CapturingWriter;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    fn captured_output(verbose: u8, run: impl FnOnce()) -> String {
+        let writer = CapturingWriter::default();
+        let filter = tracing_subscriber::EnvFilter::new(directive(verbose));
+        let subscriber = tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_writer(writer.clone())
+            .with_ansi(false)
+            .finish();
+        tracing::subscriber::with_default(subscriber, run);
+        let bytes = writer.0.lock().expect("capture lock").clone();
+        String::from_utf8(bytes).expect("tracing output is utf8")
+    }
+
+    /// `-v` (verbose=1, "info" level): an `info!` event targeting
+    /// `conway_plugin_routing` -- the crate's real module path once
+    /// installed as a router plugin -- is actually let through the filter
+    /// `install_tracing` builds, all the way to the writer. Observed,
+    /// real filtered output, not a read of the source string.
+    #[test]
+    fn dash_v_lets_an_info_event_from_conway_plugin_routing_through() {
+        let output = captured_output(1, || {
+            tracing::info!(target: "conway_plugin_routing", "marker-info-conway-plugin-routing");
+        });
+        assert!(
+            output.contains("marker-info-conway-plugin-routing"),
+            "an info! event targeting conway_plugin_routing must pass `-v`'s filter (built from \
+             install_tracing's own directive string), got captured output: {output:?}"
+        );
+    }
+
+    /// The exclusion half of the same property (the doc comment's own
+    /// stated purpose: "`-v` doesn't also turn on dependency-level tracing
+    /// noise"): a target that does NOT start with `"conway"` at all --
+    /// unlike every name actually listed, see this module's own top-of-file
+    /// finding -- is filtered by the trailing catch-all `warn` clause, at
+    /// the SAME info level this fixture would otherwise easily clear.
+    #[test]
+    fn dash_v_excludes_a_non_conway_prefixed_dependency_target() {
+        let output = captured_output(1, || {
+            tracing::info!(target: "reqwest", "marker-info-dependency-noise");
+        });
+        assert!(
+            !output.contains("marker-info-dependency-noise"),
+            "an info! event on a non-conway-prefixed target must be filtered out by the \
+             trailing `warn` catch-all, got captured output: {output:?}"
+        );
+    }
+
+    /// `-v` (verbose=1, "info" level) does NOT let a `trace!`-level event on
+    /// `conway_plugin_routing` through -- proves the filter's LEVEL, not
+    /// just its target list, is real: a directive string with the crate
+    /// name spelled right but no level suffix (or the wrong syntax) would
+    /// either fail to parse (falling back to `warn` only) or match every
+    /// level, and either failure mode would flip this assertion.
+    #[test]
+    fn dash_v_does_not_let_a_trace_event_from_conway_plugin_routing_through() {
+        let output = captured_output(1, || {
+            tracing::trace!(target: "conway_plugin_routing", "marker-trace-conway-plugin-routing");
+        });
+        assert!(
+            !output.contains("marker-trace-conway-plugin-routing"),
+            "a trace! event targeting conway_plugin_routing must NOT pass `-v`'s (info-level) \
+             filter, got captured output: {output:?}"
+        );
+    }
+
+    /// `-vv` (verbose=2, "trace" level) DOES let that same trace! event
+    /// through -- the positive control proving the assertion above can
+    /// fail, and that `-vv` genuinely raises the level for this target.
+    #[test]
+    fn dash_vv_lets_a_trace_event_from_conway_plugin_routing_through() {
+        let output = captured_output(2, || {
+            tracing::trace!(target: "conway_plugin_routing", "marker-trace-conway-plugin-routing-vv");
+        });
+        assert!(
+            output.contains("marker-trace-conway-plugin-routing-vv"),
+            "a trace! event targeting conway_plugin_routing must pass `-vv`'s (trace-level) \
+             filter, got captured output: {output:?}"
+        );
+    }
 }

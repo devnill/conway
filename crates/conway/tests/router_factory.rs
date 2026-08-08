@@ -68,14 +68,19 @@ fn fake_backend(id: &str) -> Arc<dyn conway_core::ports::Backend> {
     ))
 }
 
-/// One role with an EMPTY chain -- `conway_routing::DeclarativeRouter::new`
-/// (the compiled path, taken only if neither an injected router nor a
-/// registered factory intercepts it first) rejects an empty chain at
-/// `build()` time. A `build()` that succeeds against this config is
-/// therefore proof the compiled path was never reached -- exactly the
-/// discriminating signal `builder.rs`'s own tests already lean on for
-/// `with_router` (see that file's `fake_router` doc), reused here for
-/// `with_router_factory`.
+/// One role with an EMPTY chain. Board item 01KZFC43J1J06BM4CCWKCKHSNV:
+/// `build()`'s own no-router/no-factory default fell through to
+/// `conway_core::routing::MinimalRouter` (which never validates a chain at
+/// construction) by the time this test landed; this fixture's discriminating
+/// power instead comes from `CountingRouterFactory`'s own router double
+/// (`FakeRouter`, which also performs no such validation) vs. the properly
+/// STRICTER validation `conway-plugin-routing::DeclarativeRouter::new`
+/// would apply if that engine were installed instead -- a `build()` that
+/// succeeds against this config together with the call-counter assertions
+/// below is still proof the registered factory's own router, not some
+/// other path, produced the result -- exactly the discriminating signal
+/// `builder.rs`'s own tests already lean on for `with_router` (see that
+/// file's `fake_router` doc), reused here for `with_router_factory`.
 fn base_config() -> ConwayConfig {
     let mut roles = BTreeMap::new();
     roles.insert(
