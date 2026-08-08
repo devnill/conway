@@ -30,6 +30,7 @@ use conway_core::ports::{
     Backend, BoxStream, GenerateRequest, GenerateResponse, Router, SessionStore, StreamChunk,
     SubagentHost,
 };
+use conway_core::provenance::Provenance;
 use conway_runtime::events::EventBus;
 use conway_runtime::runtime::{RootSpec, Runtime, RuntimeDeps};
 use futures::{stream, StreamExt};
@@ -597,4 +598,145 @@ async fn ask_drain_resolves_with_cancelled_status_when_parent_is_cancelled() {
         .expect("child node present in tree")
         .session;
     assert_eq!(outcome.transcript_ref, child_session);
+}
+
+// ---------------------------------------------------------------------
+// Board item 01KZC8DD9C74BSTP8BQDJKYNFR: the `conway_ask` TOOL path (the
+// `Runtime::ask` trait method `AskTool::invoke` -- `conway-tools`' --
+// drives directly) must fill `agent_def` from the parent's own
+// `SessionMeta` when the call site leaves it `None`, exactly like
+// `conway`'s `SessionHandle::ask` already hardcodes for the facade path.
+// ---------------------------------------------------------------------
+
+fn restrictive_asker_def() -> conway_core::config::AgentDef {
+    conway_core::config::AgentDef {
+        name: "asker".to_string(),
+        description: None,
+        system_prompt: "You are a careful asker.".to_string(),
+        role: None,
+        model: None,
+        tools: conway_core::agent::ToolSelector::Only(vec!["marker".to_string()]),
+        skills: Vec::new(),
+        max_steps: None,
+        result_contract: None,
+    }
+}
+
+fn build_runtime_with_backend_and_defs(
+    backend: Arc<dyn Backend>,
+    bus: Arc<EventBus>,
+    agent_defs: HashMap<String, conway_core::config::AgentDef>,
+) -> Arc<Runtime> {
+    let model = ModelRef {
+        backend: backend.id(),
+        model: ModelId::new("m"),
+    };
+    let router: Arc<dyn Router> = Arc::new(FakeRouter::single(model));
+    let mut backends: HashMap<BackendId, Arc<dyn Backend>> = HashMap::new();
+    backends.insert(backend.id(), backend);
+    let store: Arc<dyn SessionStore> = Arc::new(conway_core::fakes::FakeStore::new());
+
+    Runtime::new(RuntimeDeps {
+        store,
+        router,
+        health: Arc::new(FakeHealth::new()),
+        backends,
+        plugins: vec![],
+        gate: Arc::new(FakeGate::new(PermissionDecision::AllowOnce)),
+        agent_defs,
+        event_bus: bus,
+        headroom: Arc::new(HeadroomPolicy::default()),
+    })
+}
+
+/// **Part 2 guard (board item 01KZC8DD9C74BSTP8BQDJKYNFR), shown to fail
+/// before the fix.** The parent is started from a def (`"asker"`) with a
+/// restrictive `tools: Only(["marker"])` selector; `ask_fork_spec` mirrors
+/// EXACTLY what `AskTool::invoke` (`conway-tools`' `subagent/ask.rs`)
+/// builds -- `agent_def: None`, since a `ToolCtx` has no `SessionMeta`
+/// lookup of its own. Before this item's fix, `Runtime::ask` passed that
+/// `None` straight through to `start`, so the child got no `agent_def` at
+/// all: `AgentNode.agent_def` stayed `None` and the child's context opened
+/// with no `Provenance::AgentDef` segment -- the parent's own def-declared
+/// system prompt and tools selector never reached it.
+#[tokio::test]
+async fn ask_child_inherits_the_parents_agent_def_for_system_prompt_and_tools() {
+    let backend = Arc::new(AskBackend::new(
+        BackendId::new("b"),
+        vec![
+            AskTurn::text("root ok", Duration::ZERO),
+            AskTurn::text("child ok", Duration::ZERO),
+        ],
+    ));
+    let bus = EventBus::with_default_capacity();
+    let mut defs = HashMap::new();
+    defs.insert("asker".to_string(), restrictive_asker_def());
+    let runtime = build_runtime_with_backend_and_defs(backend, bus, defs);
+
+    let mut spec = root_spec("investigate");
+    spec.agent_def = Some(conway_core::agent::AgentDefRef("asker".to_string()));
+    let mut stream = runtime.subscribe();
+    let parent = runtime.start_root(spec).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let envelope = stream.next().await.expect("event stream ended early");
+            if envelope.agent == parent {
+                if let Event::AgentFinished { .. } = envelope.event {
+                    return;
+                }
+            }
+        }
+    })
+    .await
+    .expect("root never finished");
+
+    let ask_spec = ask_fork_spec("say hi");
+    // `AskTool::invoke` always builds its `SubagentSpec` with `agent_def:
+    // None` -- this test's whole point is that `Runtime::ask` (not the
+    // call site) is what fills it in.
+    assert!(ask_spec.agent_def.is_none());
+
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(5),
+        runtime.ask(parent, parent, ask_spec),
+    )
+    .await
+    .expect("ask did not resolve")
+    .expect("ask errored");
+    assert_eq!(outcome.status, ResultStatus::Completed);
+
+    let child = runtime
+        .tree()
+        .nodes
+        .iter()
+        .find(|n| n.parent == Some(parent))
+        .expect("ask child attached to the tree")
+        .agent_id;
+    let child_node = runtime
+        .tree()
+        .nodes
+        .into_iter()
+        .find(|n| n.agent_id == child)
+        .expect("ask child node present");
+    assert_eq!(
+        child_node.agent_def,
+        Some("asker".to_string()),
+        "the ask child must inherit the PARENT's own agent_def, not start with none at all"
+    );
+
+    // The def's system prompt actually threads into the child's own
+    // context (not just tree bookkeeping): its first segment carries
+    // `Provenance::AgentDef { name: "asker" }` -- the same shape
+    // `subagent_fork_spawn.rs`'s
+    // `spawn_context_has_no_inherited_segment_and_uses_agent_def_system_prompt`
+    // asserts for an ordinary spawn.
+    let report = runtime.context_report(child).unwrap();
+    assert!(
+        report
+            .segments
+            .iter()
+            .any(|e| matches!(&e.provenance, Provenance::AgentDef { name } if name == "asker")),
+        "the ask child's context must carry the parent's agent_def system prompt, got: {:?}",
+        report.segments
+    );
 }

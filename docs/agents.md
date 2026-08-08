@@ -115,12 +115,15 @@ immediately for fan-out. `conway_ask` is a narrower, fork-only shorthand —
 no `agent_def`/`role` argument — that returns the child's full reply text
 rather than a structured `AgentResult`, meant for drafting or curating
 context out-of-band without spending the caller's own window on the
-reasoning. A `conway_ask` child inherits the caller's full context and
-effective role (ordinary fork semantics), but **not** the caller's own
-`agent_def`, even when the caller itself was spawned from one — so a
-def-declared `result_contract`, tools selector, system prompt, or model pin
-never reaches a `conway_ask` child. `conway_steer`/`conway_await`/
-`conway_cancel` round out the control surface:
+reasoning. A `conway_ask` child inherits the caller's full context,
+effective role, and the caller's own `agent_def` (system prompt, tools
+selector, model pin) when the caller itself was spawned from one — exactly
+like an ordinary `conway_fork`. The one exception is a def-declared
+`result_contract`, which never reaches a `conway_ask` child: the reply is
+always plain text (there is no structured field a contract could validate),
+so applying one could only ever turn a good answer into a rejection.
+`conway_steer`/`conway_await`/`conway_cancel` round out the control
+surface:
 
 | Tool | Does | Key arguments | Permission class |
 | --- | --- | --- | --- |
@@ -180,15 +183,23 @@ applied at all — only a spawn with no call-site contract of its own falls
 back to the def's. This mirrors how the def's `tools` selector already
 works: a call-site value shadows the def's, it does not merge with it.
 
-**`conway_ask` never carries an `agent_def`, by construction** — it is
-fork-only and takes no `agent_def` argument, and the fork it creates does
-not inherit the caller's own def either (see "A model tool call" above).
-So a def's `result_contract` (and its tools selector, system prompt, and
-model pin) can never reach a `conway_ask` child, regardless of what def the
-calling agent was itself spawned from. Whether a fork *should* inherit the
-forker's `agent_def` is an open design question, tracked separately — see
-`crates/conway-tools/src/subagent/ask.rs`'s module doc for the current,
-literal behavior.
+**`conway_ask` takes no `agent_def` argument, but its child inherits the
+caller's own def anyway** — the answer to what was, before board items
+01KZGX1RR0VXN2YH3P75SBE9SA/01KZC8DD9C74BSTP8BQDJKYNFR, an open design
+question: a forked child inherits its parent's `agent_def` (system prompt,
+tools selector, model pin), the same as an ordinary `conway_fork`, enforced
+at the `SubagentHost`/`Runtime::ask` trait boundary rather than at the
+`conway_ask` tool callsite (`conway-tools` has no `SessionMeta` lookup
+surface to do this itself). The def's `result_contract` is the one field
+explicitly excluded from that inheritance: it can NEVER reach a
+`conway_ask` child, regardless of what def the calling agent was itself
+spawned from, because `conway_ask` always returns plain reply text — there
+is no `structured` field on its result for a contract to validate, so
+applying one could only ever turn a good answer into a rejection, never
+satisfy anything the caller reads back. See
+`crates/conway-tools/src/subagent/ask.rs`'s module doc for exactly where
+this inheritance is filled in, and `conway_core::ports::subagent`'s
+`SubagentHost::ask` doc for the enforcement itself.
 
 Validation runs at the natural end of a turn — one with no tool calls in
 it, not a check after every tool call:
