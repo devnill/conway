@@ -1205,8 +1205,11 @@ impl Runtime {
     /// 01KZDDCN747FEZ3GM3NS0ANE7G) reaches `agent`'s own terminal
     /// `AgentResult` (`ResultStatus::Cancelled { reason }`), the same way
     /// the graceful path's mailbox-delivered reason always has -- see
-    /// `AgentTree::cancel`'s own doc for the storage mechanism and
-    /// `AgentLoop::finish_cancelled`'s for where it is read back.
+    /// `AgentTree::cancel`'s own doc for the storage mechanism and both
+    /// read-back sites: `AgentLoop::finish_cancelled` for the ordinary
+    /// loop-boundary case, and (board item 01KZGRGN9MKJP549NMGT8QACCV)
+    /// `AgentLoop::finish_error` for the narrower case where the cancel is
+    /// instead observed mid-request, inside a backend call.
     ///
     /// This guarantee is scoped to `agent` ITSELF, not the whole subtree
     /// this call structurally cancels: every child's `CancellationToken` is

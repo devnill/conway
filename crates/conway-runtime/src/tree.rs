@@ -252,13 +252,22 @@ impl AgentTree {
     /// parent's, this structurally cancels the entire subtree in one call.
     ///
     /// `reason` is recorded (via `tracing`, unchanged) AND stashed on
-    /// `agent`'s own [`TreeEntry`], readable back via
-    /// [`Self::cancel_reason`] -- board item 01KZDDCN747FEZ3GM3NS0ANE7G:
-    /// `agent_loop.rs`'s loop-boundary cancellation checks read it back from
+    /// `agent`'s own [`TreeEntry`] *before* the token below is tripped,
+    /// readable back via [`Self::cancel_reason`] -- board item
+    /// 01KZDDCN747FEZ3GM3NS0ANE7G: `agent_loop.rs`'s loop-boundary
+    /// cancellation checks (`AgentLoop::finish_cancelled`) read it back from
     /// there to attach it to `agent`'s own terminal `AgentResult`
     /// (`ResultStatus::Cancelled { reason }`), so the immediate path now
     /// agrees with the graceful path's `pending_cancel` mailbox mechanism,
-    /// which has always carried its reason this way.
+    /// which has always carried its reason this way. Board item
+    /// 01KZGRGN9MKJP549NMGT8QACCV closed the one remaining gap: a cancel
+    /// observed WHILE a backend call is in flight (`attempt.rs`'s
+    /// `run_generate`/`run_stream`) unwinds through `AgentLoop::finish_error`
+    /// instead, which performs this exact same `cancel_reason` read-back
+    /// rather than keeping `attempt.rs`'s generic placeholder reason --
+    /// stashing before the trip is what makes that lookup race-free: the
+    /// reason is always already stored by the time either read-back site
+    /// runs.
     ///
     /// This ONLY stashes the reason on `agent` itself, never on the
     /// descendants its token trip structurally collapses: a descendant was
@@ -277,7 +286,9 @@ impl AgentTree {
         tracing::info!(agent = %agent, reason = %reason, "AgentTree::cancel");
         // P-10: `reason` is model-supplied (a tool argument, `conway_cancel`)
         // and, from this item on, reaches a persisted `AgentResult` on the
-        // immediate path (`cancel_reason`, `AgentLoop::finish_cancelled`) --
+        // immediate path (`cancel_reason`, read back by both
+        // `AgentLoop::finish_cancelled` and, since board item
+        // 01KZGRGN9MKJP549NMGT8QACCV, `AgentLoop::finish_error`) --
         // bounded to the same `DEFAULT_SUMMARY_LIMIT` `AgentResult::new`
         // already caps `summary` at, on the same char-boundary-safe logic,
         // so an adversarial caller cannot grow the tree's per-agent

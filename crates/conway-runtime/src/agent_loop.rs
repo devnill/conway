@@ -1310,9 +1310,38 @@ impl AgentLoop {
     /// result, only a non-empty summary (which `ResultBuilder::resolve`'s
     /// status-naming fallback still provides from a fresh builder) and
     /// correct `usage`/`steps_taken`/`transcript_ref`.
+    ///
+    /// ## The third `RuntimeError::Cancelled` site (board item
+    /// 01KZGRGN9MKJP549NMGT8QACCV)
+    ///
+    /// `RuntimeError::Cancelled` reaches this fn from exactly one production
+    /// site: `attempt.rs`'s `run_generate`/`run_stream`, when a cancel lands
+    /// while a backend call is actually in flight (`tokio::select!` races
+    /// `cancel.cancelled()` against `backend.generate`/`stream`) rather than
+    /// at one of this loop's own turn-boundary checks. That site has no
+    /// `AgentTree` handle -- `AttemptEngine` is deliberately backend/routing
+    /// machinery only -- so it cannot look up the caller's own reason and
+    /// hardcodes a generic `"attempt cancelled"` on the `RuntimeError` it
+    /// returns (see that call site's own comment).
+    ///
+    /// Rather than plumb a tree handle into `AttemptEngine` for this one
+    /// case, this loop -- which already performs the identical lookup for
+    /// the turn-boundary path ([`Self::finish_cancelled`], board item
+    /// 01KZDDCN747FEZ3GM3NS0ANE7G) -- performs the SAME
+    /// `tree.cancel_reason(self.agent_id)` lookup here and prefers it over
+    /// `err`'s generic reason. Because [`crate::tree::AgentTree::cancel`]
+    /// stashes the reason BEFORE it trips the token, the stashed reason is
+    /// always present by the time an in-flight attempt observes the trip and
+    /// unwinds into this fn -- so `Some` is returned deterministically
+    /// whenever THIS agent was itself the direct target of the cancel.
+    /// `None` (an unknown agent, or a descendant whose token was tripped
+    /// only by an ancestor's cancellation propagating structurally --
+    /// `AgentTree::cancel`'s own doc) falls back to `err`'s own reason,
+    /// unchanged, exactly as before this item.
     async fn finish_error(&self, state: LoopState, err: RuntimeError) -> AgentResult {
         let builder = ResultBuilder::new();
         if let RuntimeError::Cancelled { reason, .. } = err {
+            let reason = self.deps.tree.cancel_reason(self.agent_id).unwrap_or(reason);
             return self
                 .finish(
                     ResultStatus::Cancelled { reason },
