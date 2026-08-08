@@ -246,6 +246,29 @@ impl App {
                 fatal: false,
             });
         }
+        // Board item 01KZ803DJW8Y1H4FXTM8D3PYMY: `Conway::warnings()`
+        // (currently only `WarningCode::HeadroomExceedsContext`, pushed by
+        // `config::merge::validate` when a role's effective headroom is
+        // `>=` the smallest context window reachable through its chain --
+        // every request routed to that model would be rejected outright by
+        // the context-window gate) had zero callers workspace-wide before
+        // this. `main.rs` prints the SAME warnings to stderr for every
+        // non-interactive target, but a stray stderr write here would land
+        // on top of the drawn UI once the terminal is in raw/alternate-
+        // screen mode -- so the TUI's own surface is the transcript instead,
+        // exactly the two-surfaces answer GP-05/C-03 asks for. Rendered
+        // through the SAME `Entry::Error { fatal: false }` channel
+        // `report.registration_errors` uses just above, not `Entry::Notice`:
+        // a misconfigured headroom is not a routine notice, it is a
+        // standing routing failure for that role, and `fatal: false`'s
+        // whole purpose is to keep exactly that kind of message from being
+        // camouflaged as ordinary cyan chatter.
+        for warning in conway.warnings() {
+            state.transcript.push(super::state::Entry::Error {
+                text: format!("config warning: {}", warning.message),
+                fatal: false,
+            });
+        }
         state.permission_mode = conway.permission_mode();
         state.permission_paths = report.paths;
         // T3: cwd display -- prefer the CLI `--cwd` override, fall back to
@@ -1908,6 +1931,114 @@ mod tests {
             !app.state.focused_seen_segments.is_empty(),
             "the re-fetch must also seed the dedup set from the report's own \
              segments, or the child's next live turn would double-count them"
+        );
+    }
+
+    /// Board item 01KZ803DJW8Y1H4FXTM8D3PYMY: `Conway::warnings()` (real,
+    /// populated by `config::merge::validate` -- `WarningCode::
+    /// HeadroomExceedsContext` when a role's effective headroom is `>=` the
+    /// smallest context window reachable through its chain) had zero
+    /// callers workspace-wide before this. `main.rs` deliberately does NOT
+    /// print these to stderr for the TUI target (a stray write would land
+    /// on top of the drawn UI once the terminal is in raw/alternate-screen
+    /// mode); `App::new` is the TUI's own surface instead. This asserts the
+    /// OBSERVABLE OUTCOME -- the rendered transcript TEXT `App::new`
+    /// produces for a REAL misconfigured fixture -- not the return value of
+    /// `conway.warnings()`, which is checked only as a sanity precondition
+    /// below, never as a substitute (GP-14's own warning against asserting
+    /// the intermediate signal).
+    ///
+    /// Reached through the REAL `config::load` path
+    /// (`ConwayBuilder::from_config` against a fixture written to a real
+    /// temp dir), not `from_parts`/`base_config` -- `Conway::warnings()`'s
+    /// own doc: "Empty when this `Conway` was built via
+    /// `ConwayBuilder::from_parts`, which bypasses `load` entirely", so
+    /// this is the one test in this module that cannot reuse
+    /// `build_conway_with_echo_backend`. `models.metadata_path` is written
+    /// as an ABSOLUTE path so its resolution never depends on this test
+    /// process's current directory (`config::merge::resolve_metadata_path`
+    /// only joins a RELATIVE path onto the load's own `cwd`). The
+    /// `backends.fake` entry's placeholder `api_key` is never dialed --
+    /// `with_backend` below overwrites it, same id, last insert wins
+    /// (`ConwayBuilder::build`'s own step 3+4), the identical pattern
+    /// `tests/routes_explain_injected_router.rs` already uses.
+    #[tokio::test]
+    async fn misconfigured_headroom_lands_in_the_tui_transcript_at_startup() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let models_path = dir.path().join("models.json");
+        std::fs::write(
+            &models_path,
+            serde_json::json!({
+                "models": {
+                    "fake/echo-model": {
+                        "max_context_tokens": 32_768,
+                        "tool_calling": "streaming",
+                        "reasoning": false,
+                        "reliability_tier": "verified",
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .expect("write models.json");
+
+        let config_path = dir.path().join("conway.json");
+        std::fs::write(
+            &config_path,
+            serde_json::json!({
+                "default_role": "coder",
+                "roles": {
+                    "coder": { "chain": ["fake/echo-model"], "headroom_tokens": 200_000 }
+                },
+                "backends": {
+                    "fake": { "kind": "anthropic", "api_key": "unused-placeholder-key" }
+                },
+                "permissions": { "mode": "deny" },
+                "models": { "metadata_path": models_path }
+            })
+            .to_string(),
+        )
+        .expect("write conway.json");
+
+        let backend: Arc<dyn conway::Backend> =
+            Arc::new(FakeBackend::echo(BackendId::new("fake")));
+        let gate: Arc<dyn PermissionGate> = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
+        let router: Arc<dyn conway::Router> = Arc::new(FakeRouter::single(conway::ModelRef {
+            backend: BackendId::new("fake"),
+            model: ModelId::new("echo-model"),
+        }));
+        let conway = ConwayBuilder::from_config(&config_path)
+            .expect("from_config should load the fixture and compute its headroom warning")
+            .with_backend(backend)
+            .with_session_store(Arc::new(FakeStore::new()))
+            .with_permission_gate(gate)
+            .with_router(router)
+            .build()
+            .expect("build should succeed with every I/O port injected");
+
+        // Sanity precondition, not the assertion this test exists for (see
+        // this test's own doc).
+        assert_eq!(conway.warnings().len(), 1);
+
+        let mut cli = minimal_cli();
+        cli.config = Some(config_path);
+        let app = App::new(&cli, &conway).await.expect("App::new should succeed");
+
+        let rendered: Vec<&str> = app
+            .state
+            .transcript
+            .iter()
+            .filter_map(|e| match e {
+                Entry::Error { text, fatal: false } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            rendered.iter().any(|text| {
+                text.contains("headroom for role 'coder'") && text.contains("200000")
+            }),
+            "expected the transcript to carry the headroom warning as a non-fatal \
+             error entry, got: {rendered:?}"
         );
     }
 }
