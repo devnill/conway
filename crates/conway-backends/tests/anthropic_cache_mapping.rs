@@ -85,6 +85,81 @@ fn strip_cache_control_keys(value: &mut Value) {
     }
 }
 
+fn sample_tool(name: &str) -> conway_core::content::ToolSpec {
+    conway_core::content::ToolSpec {
+        name: conway_core::ids::ToolName::new(name),
+        description: format!("{name} tool"),
+        schema: schemars::schema_for!(std::collections::BTreeMap<String, String>),
+        category: conway_core::content::ToolCategory::Read,
+        permission: conway_core::content::PermissionClass::Safe,
+    }
+}
+
+/// Board item 01KYTMJA0JHT5SAPYDGV251V17, end to end through the real
+/// `AnthropicBackend::generate`: a `Provenance::ToolRegistry` segment
+/// carrying a breakpoint hint (exactly what `conway-runtime`'s
+/// `ContextBuilder` now produces -- empty `content`) must NOT put a second
+/// copy of the schema in `body["system"]`, and its `cache_control` must
+/// land on the LAST entry of the real native `body["tools"]` array instead.
+#[tokio::test]
+async fn tool_registry_breakpoint_lands_on_the_last_native_tool_not_a_system_entry() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(minimal_response()))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let segments = vec![
+        system_segment("You are a helpful assistant."),
+        PromptSegment::new(
+            Role::System,
+            Vec::new(),
+            Provenance::ToolRegistry {
+                hash: "deadbeef".into(),
+            },
+        )
+        .with_cache_hint(breakpoint_hint(CacheTtl::FiveMinutes, "k1")),
+    ];
+    let req = GenerateRequest {
+        model: ModelId::new("claude-sonnet-4-6"),
+        segments,
+        tools: vec![sample_tool("search"), sample_tool("fetch")],
+        params: SamplingParams::default(),
+        prefix_key: None,
+    };
+
+    let backend = AnthropicBackend::new(config(&server.uri())).unwrap();
+    backend.generate(req).await.unwrap();
+
+    let requests = server.received_requests().await.unwrap_or_default();
+    assert_eq!(requests.len(), 1);
+    let body: Value = requests[0].body_json().unwrap();
+
+    let system = body["system"].as_array().expect("system array");
+    assert_eq!(
+        system.len(),
+        1,
+        "only the AgentDef segment produces a system entry: {system:?}"
+    );
+    assert!(
+        system[0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("helpful assistant"),
+        "no second, tool-schema-duplicating system entry: {system:?}"
+    );
+
+    let tools = body["tools"].as_array().expect("tools array");
+    assert_eq!(tools.len(), 2);
+    assert!(
+        tools[0].get("cache_control").is_none(),
+        "only the LAST tool carries the marker: {tools:?}"
+    );
+    assert_eq!(tools[1]["cache_control"], json!({"type": "ephemeral"}));
+}
+
 #[tokio::test]
 async fn six_breakpointed_segments_produce_exactly_four_cache_control_markers_on_the_last_four() {
     let server = MockServer::start().await;

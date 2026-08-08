@@ -6,10 +6,19 @@
 //! omission, not a positive check, is what makes `CacheMode::ImplicitPrefix`
 //! a wire no-op (§4.1): stripping every `cache_hint` from a request's
 //! segments cannot change a single byte of the body this module produces.
+//!
+//! `Provenance::ToolRegistry` segments produce no chat message (board item
+//! 01KYTMJA0JHT5SAPYDGV251V17): `conway-runtime`'s `ContextBuilder` stopped
+//! putting the tool-schema JSON in that segment's `content` at all — the
+//! native `tools` array below is the only copy. OpenAI-compatible dialects
+//! have no `cache_control` equivalent to redirect a breakpoint to (unlike
+//! `anthropic::wire`'s `BreakpointTarget::Tools`), so this is a pure size
+//! reduction: one fewer `system` message, nothing else changes.
 
 use conway_core::content::{ContentBlock, Role, StopReason, ToolSpec, Usage};
 use conway_core::error::BackendError;
 use conway_core::ports::{GenerateRequest, GenerateResponse};
+use conway_core::provenance::Provenance;
 use conway_core::segment::PromptSegment;
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
@@ -123,6 +132,10 @@ fn segments_to_messages(segments: &[PromptSegment], profile: &Profile) -> Vec<Va
 }
 
 fn segment_to_messages(segment: &PromptSegment, profile: &Profile) -> Vec<Value> {
+    if matches!(segment.provenance, Provenance::ToolRegistry { .. }) {
+        // No body content of its own anymore -- see this module's doc.
+        return Vec::new();
+    }
     match segment.role {
         Role::System => vec![system_message(&segment.content)],
         Role::User => vec![user_message(&segment.content, profile)],
@@ -484,6 +497,39 @@ mod tests {
             {"role": "tool", "tool_call_id": "call_1", "content": "22C, sunny"}
         ]);
         assert_eq!(Value::Array(messages), golden);
+    }
+
+    /// Board item 01KYTMJA0JHT5SAPYDGV251V17: a `Provenance::ToolRegistry`
+    /// segment produces no chat message at all -- the native `tools` array
+    /// (a separate `GenerateRequest` field, unrelated to `segments`) is the
+    /// only copy of the schema text now.
+    #[test]
+    fn tool_registry_segment_produces_no_message() {
+        let mut segments = fixture_segments();
+        segments.insert(
+            1,
+            PromptSegment::new(
+                Role::System,
+                Vec::new(),
+                Provenance::ToolRegistry {
+                    hash: "deadbeef".into(),
+                },
+            ),
+        );
+
+        let messages = segments_to_messages(&segments, &Dialect::OpenAi.profile());
+
+        assert!(
+            messages
+                .iter()
+                .all(|m| m != &json!({"role": "system", "content": ""})),
+            "no spurious empty-content system message for the ToolRegistry segment: {messages:?}"
+        );
+        assert_eq!(
+            messages.len(),
+            4,
+            "the ToolRegistry segment must not add a fifth message"
+        );
     }
 
     #[test]

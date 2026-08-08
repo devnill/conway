@@ -127,7 +127,7 @@ use conway_core::capabilities::{HeadroomPolicy, ReliabilityTier};
 use conway_core::ids::{BackendId, ModelRef};
 use conway_core::ports::{
     Backend, ContextHook, HealthRegistry, PermissionGate, Plugin, Router, RouterBuildContext,
-    RouterFactory, RoutingExplainer, SessionStore,
+    RouterBundle, RouterFactory, RoutingExplainer, SessionStore,
 };
 use conway_core::ports::{CapabilityIndex, CapabilityIndexBuilder};
 use conway_core::routing::{AlwaysClosedHealthRegistry, MinimalRouter, ModelOverrides};
@@ -573,12 +573,22 @@ impl ConwayBuilder {
         //    immediately above -- the router and the runtime must continue
         //    to share exactly ONE registry, so `health` is reassigned
         //    below, never both kept alive.
-        let (router, health, router_explain): (
-            Arc<dyn Router>,
-            Arc<dyn HealthRegistry>,
-            Option<Arc<dyn RoutingExplainer>>,
-        ) = if let Some(router) = router {
-            (router, health, None)
+        //    The three outcomes are spelled as a `RouterBundle` rather than a
+        //    bare triple: that type already IS this exact shape (router,
+        //    health, explain), because it is what a `RouterFactory` hands
+        //    back. Naming it here keeps the three arms visibly agreeing on
+        //    one contract instead of on tuple position, and is what the
+        //    factory arm below unwraps into anyway.
+        let RouterBundle {
+            router,
+            health,
+            explain: router_explain,
+        } = if let Some(router) = router {
+            RouterBundle {
+                router,
+                health,
+                explain: None,
+            }
         } else if let Some(factory) = router_factory {
             let ctx = RouterBuildContext {
                 routing: routing_config,
@@ -586,17 +596,16 @@ impl ConwayBuilder {
                 backends: &all_backends,
                 capability_index,
             };
-            let bundle = factory.build(ctx).map_err(|e| ConwayError::Build {
+            factory.build(ctx).map_err(|e| ConwayError::Build {
                 message: format!("router factory '{}' failed to build: {e}", factory.id()),
-            })?;
-            (bundle.router, bundle.health, bundle.explain)
+            })?
         } else {
             let compiled = Arc::new(MinimalRouter::new(routing_config));
-            (
-                compiled.clone() as Arc<dyn Router>,
+            RouterBundle {
+                router: compiled.clone() as Arc<dyn Router>,
                 health,
-                Some(compiled as Arc<dyn RoutingExplainer>),
-            )
+                explain: Some(compiled as Arc<dyn RoutingExplainer>),
+            }
         };
 
         // 8. Store: injected, else JsonlSessionStore::open (jsonl-store

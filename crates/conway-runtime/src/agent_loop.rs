@@ -656,7 +656,12 @@ impl AgentLoop {
                 Some(transformed) => {
                     segments = transformed.segments;
                     tools = transformed.tools;
-                    report = crate::context::builder::retotal(self.agent_id, turn, &mut segments);
+                    report = crate::context::builder::retotal(
+                        self.agent_id,
+                        turn,
+                        &mut segments,
+                        &tools,
+                    );
                 }
                 None => return Err(too_large(role, model).into()),
             }
@@ -841,7 +846,12 @@ impl AgentLoop {
                 let transformed = hook.before_request(&hook_ctx, payload).await;
                 segments = transformed.segments;
                 announced_tools = transformed.tools;
-                report = crate::context::builder::retotal(self.agent_id, state.turn, &mut segments);
+                report = crate::context::builder::retotal(
+                    self.agent_id,
+                    state.turn,
+                    &mut segments,
+                    &announced_tools,
+                );
             }
 
             if let Some(slot) = &self.spec.report_slot {
