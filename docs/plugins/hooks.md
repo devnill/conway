@@ -197,6 +197,18 @@ should get one before doc 3 or 4 promises the durable form as available.
 | Ordering | Two-stage composition (`.design/extension-architecture.md` §5.5, confirmed live in `PermissionBroker::decide`): **admission** — a `deny`/`prompt` rule installs from any file, trusted or not (narrowing has no failure mode worth gating on trust); an `allow` rule from a *project* file installs only once its exact bytes match a recorded trust decision (`TrustStore`, see `concepts.md`'s "Trust" section) — then **most-restrictive-wins** over the admitted set: any `deny` beats every `prompt` beats every `allow`. Registration order (which file, which rule within a file) never changes the outcome, only which single matching rule is reported |
 | Status | **Implemented**, including the structured `{ select, when, then }` form. This corrects the item spec that produced this document: it named the structured rule form (board `01KYTJD6CJ1CHJBXZ0GFYMV5MT`, "F12") as pending at writing time. That item is now **done** — `Rule`/`Select`/`When`/`Then` are real, exercised by `permission_pattern::f12_tests` and the real-stack seam `crates/conway/tests/structured_rule_seam.rs`, and documented operator-facing in `docs/permissions.md`'s "The structured `rules` array" section |
 
+**A second correction, same shape.** The item spec also named the
+convergence of conway's three control-character sanitizers (board
+`01KYTJE5TSJBF01598F3BKJP1X`, "F2/F3") as pending. It too is **done** — a
+single shared `conway_core::text::sanitize_control_chars` now backs the
+`rendered` seam every `PermissionRequest.rendered` value passes through
+(`runner::sanitize_rendered`) and `ToolOutcome::error`'s construction alike,
+per `CHANGELOG.md`'s entry for that item. It is not itself a hook or
+extension point — no row above documents it — but it bears on point 5's
+`PermissionRequest.rendered` field and point 6's `command_prefix` matching,
+both of which read the now-single-source sanitized form rather than one of
+three previously-divergent copies.
+
 ### 7. Plugin-contributed permission rules — `PatternOrigin::Plugin`
 
 | Field | Value |

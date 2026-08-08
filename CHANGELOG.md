@@ -182,6 +182,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   design. Every unbuilt section names its board item
   (01KZDC0RDRMMMJHX7SAFMM2Q5A, 01KZ844ZXZMVRWC7ZANT7PSM6X).
 
+- **Docs 2/5 — the normative hook and extension-point reference,
+  [`docs/plugins/hooks.md`](docs/plugins/hooks.md)** (board item
+  01KYTP63BD0J0324VB5AH7NXK5). Fourteen extension points, each with all
+  nine required fields — Kind, Receives, May return, On error, On timeout,
+  On garbage, When absent, Ordering, and **Status** — checked against the
+  tree rather than against the design corpus. **Six of the fourteen are
+  implemented** (tool declaration and execution, `ContextHook::
+  before_request` and `on_overflow`, `PermissionGate::check`, and
+  operator-authored `permissions.json` rules); the other eight are labeled
+  designed-not-built with their board items. That Status row is the point
+  of the document: this codebase has shipped documented capabilities with
+  nothing behind them, and a reference that cannot tell built from designed
+  would produce another.
+
+  Three things it pins that were previously only inferable. The
+  `on_overflow` boundary is exact: it fires only when the router rejects
+  with `ContextTooLarge` — every candidate having failed *solely* on
+  headroom — so a *mixed* rejection yields `NoCandidate` and no hook fires
+  at all. A hook cannot always shrink a request back under the window, and
+  the page says so instead of implying otherwise. The permission ordering
+  is documented as `PermissionBroker::decide`'s real eight steps, with its
+  honest limit stated rather than smoothed over: a trusted pattern grant
+  legitimately short-circuits a human prompt that would otherwise have
+  happened, and what makes that acceptable is the narrowing/widening type
+  split plus operator-only grants, not the ordering alone. And
+  `PluginManifest::required_host_caps` is labeled as a declared field with
+  **zero consumers anywhere in the tree** — every construction site passes
+  an empty vector and nothing reads it — so no later page documents
+  capabilities as if they gate anything.
+
+  Writing it also corrected the item's own spec twice: it named the
+  structured rule form (01KYTJD6CJ1CHJBXZ0GFYMV5MT) and the sanitizer
+  convergence (01KYTJE5TSJBF01598F3BKJP1X) as pending and instructed that
+  both be labeled designed-not-built. Both have since shipped, so both are
+  documented as implemented and the stale framing is called out at the site
+  rather than silently followed.
+  (`docs/plugins/hooks.md`, `docs/plugins/README.md`)
+
 - **The four "`tools` is narrowing-only" claims are retracted rather than
   implemented: a `tools` selector chooses what is *announced* to the model
   and is not a capability boundary** (board item
