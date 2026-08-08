@@ -89,6 +89,29 @@ command shows the last live `Event::ModelDecision` for the focused agent
 instead (see [`interactive.md`](interactive.md)) — that one carries the
 turn's real `est_tokens`.
 
+**Where the report type lives, and what happens with a non-default
+router.** `ExplainReport` (and the field types it's built from --
+`ExplainEntry`, `EntryOutcome`, `CapabilitySummary`, `BreakerSnapshot`) are
+defined in `conway_core::routing`, not in `conway-routing` -- so producing
+one never requires depending on `conway-routing`'s filtering logic.
+`conway-routing::RoutingExplain` (the rich, capability- and health-filtered
+answer this page's examples above show) is one producer; embedders that
+supply their own `Router` via `ConwayBuilder::with_router` get a different
+one automatically: `Conway::explain_routing` falls back to
+`conway_core::routing::MinimalRouter`, projected over the same
+`RoutingConfig` the embedder's `settings.json` declares. That fallback
+report is honestly *degenerate*, not empty and not fabricated-rich: one
+entry per configured chain candidate (position `0` `SELECTED`, the rest
+`SKIPPED`), every `capabilities` field `None`, and every `breaker` field
+`Closed` -- because a `MinimalRouter` genuinely indexes no capabilities and
+tracks no real breaker state, and inventing either would be exactly the
+kind of claim GP-14 forbids. Critically, `conway routes explain` still
+distinguishes "unknown role" from "configured role, empty report" in this
+configuration: it checks `[roles]` directly against your configuration,
+not whether the report came back with zero entries -- a configured role
+whose chain happens to be empty gets an honest, entry-less report rather
+than being misreported as "unknown".
+
 ## Capability matching
 
 Each chain candidate's `Capabilities` are resolved with a fixed

@@ -175,15 +175,16 @@ pub mod plugin {
 pub use conway_core::provenance::{ContextReport, Provenance};
 pub use conway_core::routing::{AttemptFailure, BreakerKind, BreakerState, RoutingReason};
 
-// WI-116 (CARRIED F-111-1): `routes explain` needs `Conway::explain_routing`'s
-// return type, and this is the one type in this crate's re-export list drawn
-// from `conway_routing` rather than `conway_core` -- `ExplainReport` is
-// defined in that crate (see `conway.rs`'s own `use conway_routing::{..,
-// ExplainReport, ..}`), not duplicated here. Its own public field types
-// (`ExplainEntry`, `EntryOutcome`, `CapabilitySummary`, `BreakerSnapshot`)
-// are re-exported alongside it so a consumer can name every type reachable
-// by field access without reaching past this facade into `conway_routing`
-// directly.
-pub use conway_routing::{
+// WI-116 (CARRIED F-111-1), amended by board item 01KZFC1KNGQ51TZ0BG7P7RAY9H:
+// `routes explain` needs `Conway::explain_routing`'s return type.
+// `ExplainReport` (and its own public field types -- `ExplainEntry`,
+// `EntryOutcome`, `CapabilitySummary`, `BreakerSnapshot`) used to be defined
+// in `conway_routing`; they now live in `conway_core::routing`, so any
+// `Router` supplied from outside `conway_routing` (`ConwayBuilder::with_router`)
+// can still produce one (see `conway_core::routing::MinimalRouter`) instead
+// of a fabricated-empty report. Re-exported here from `conway_core` --
+// same five names, same shapes -- so this facade's public surface is
+// unchanged.
+pub use conway_core::routing::{
     BreakerSnapshot, CapabilitySummary, EntryOutcome, ExplainEntry, ExplainReport,
 };

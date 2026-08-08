@@ -2,9 +2,15 @@
 //! against.
 //!
 //! These signatures are load-bearing (architecture §4). No default method on
-//! any port may perform I/O. The only implementations `conway-core` is
-//! permitted to contain are the feature-gated test fakes (`feature =
-//! "fakes"`, WI-008); every other implementation lives in a dedicated crate.
+//! any port may perform I/O. The implementations `conway-core` is permitted
+//! to contain are the feature-gated test fakes (`feature = "fakes"`,
+//! WI-008) plus two narrowly-scoped production fallbacks in
+//! `crate::routing` (`MinimalRouter`, `AlwaysClosedHealthRegistry`; board
+//! item 01KZFC1KNGQ51TZ0BG7P7RAY9H) that back `Conway::explain_routing`'s
+//! honest degenerate answer when a caller supplies its own `Router`
+//! (`ConwayBuilder::with_router`) and there is no `conway-routing`
+//! `DeclarativeRouter` left to project an `ExplainReport` through. Every
+//! other implementation lives in a dedicated crate.
 
 mod backend;
 mod capability_index;

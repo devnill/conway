@@ -9,10 +9,10 @@ use conway_core::capabilities::RequiredCaps;
 use conway_core::error::{RuntimeError, StoreError};
 use conway_core::ids::{AgentId, LogSeq, RoleAlias, SeqRange, SessionId};
 use conway_core::log::{LogRecord, SessionFilter, SessionMeta};
-use conway_core::ports::SessionStore;
+use conway_core::ports::{RoutingExplainer, SessionStore};
 use conway_core::provenance::Provenance;
-use conway_core::routing::RouteRequest;
-use conway_routing::{DeclarativeRouter, ExplainReport, RoutingExplain};
+use conway_core::routing::{ExplainReport, MinimalRouter, RouteRequest};
+use conway_routing::{DeclarativeRouter, RoutingExplain};
 use conway_runtime::runtime::{ResumeSpec, RootSpec, Runtime};
 
 use crate::config::model_metadata::ModelMetadata;
@@ -1385,10 +1385,15 @@ impl Conway {
     /// When the builder instead received an injected `Router`
     /// (`ConwayBuilder::with_router`), there is no concrete
     /// `DeclarativeRouter` to project through -- `conway_routing::RoutingExplain`
-    /// is defined over that concrete type, not the `Router` trait object --
-    /// so this returns a degraded, empty report (`entries: vec![]`,
-    /// `headroom_tokens: 0`), mirroring `RoutingExplain::explain`'s own
-    /// fallback for an unrecognized role.
+    /// is defined over that concrete type, not the `Router` trait object.
+    /// This used to fall back to a fabricated-empty report (`entries:
+    /// vec![]`), which `conway routes explain` then misread as "unknown
+    /// role" for a perfectly valid one (GP-14: a silent inversion, board
+    /// item 01KZFC1KNGQ51TZ0BG7P7RAY9H). It now falls back to
+    /// `conway_core::routing::MinimalRouter`, projected over this `Conway`'s
+    /// own resolved `RoutingConfig` -- an honestly degenerate answer (no
+    /// capability filtering, no health filtering, one entry per configured
+    /// chain candidate) rather than an empty one.
     pub fn explain_routing(&self, role: &RoleAlias) -> ExplainReport {
         let req = RouteRequest {
             role: role.clone(),
@@ -1399,15 +1404,16 @@ impl Conway {
         };
         match &self.router_explain {
             Some(router) => RoutingExplain::new(router).explain(&req),
-            None => ExplainReport {
-                role: role.clone(),
-                pin: None,
-                est_tokens: 0,
-                required: RequiredCaps::default(),
-                headroom_tokens: 0,
-                entries: Vec::new(),
-                generated_at: Utc::now(),
-            },
+            None => {
+                let routing_config = self.config.routing().unwrap_or_else(|_| {
+                    conway_core::routing::RoutingConfig {
+                        roles: std::collections::BTreeMap::new(),
+                        health: conway_core::routing::HealthConfig::default(),
+                        default_headroom_tokens: conway_core::capabilities::DEFAULT_HEADROOM_TOKENS,
+                    }
+                });
+                MinimalRouter::new(routing_config).explain(&req)
+            }
         }
     }
 

@@ -362,7 +362,9 @@ impl ConwayBuilder {
     }
 
     /// Overrides the default `DeclarativeRouter`. `Conway::explain_routing`
-    /// falls back to a degraded (empty) report when this is set, since
+    /// falls back to `conway_core::routing::MinimalRouter` (an honestly
+    /// degenerate report -- no capability/health filtering, one entry per
+    /// configured chain candidate) when this is set, since
     /// `conway_routing::RoutingExplain` only projects a concrete
     /// `DeclarativeRouter`, not the `Router` trait object.
     pub fn with_router(mut self, router: Arc<dyn Router>) -> Self {

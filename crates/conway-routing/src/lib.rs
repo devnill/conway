@@ -13,6 +13,13 @@
 //! `Backend::capabilities` and nothing about the type is routing-policy
 //! specific).
 //!
+//! `BreakerSnapshot`/`CapabilitySummary`/`EntryOutcome`/`ExplainEntry`/
+//! `ExplainReport` are, likewise, re-exported here for source compatibility
+//! but no longer defined in this crate (board item 01KZFC1KNGQ51TZ0BG7P7RAY9H
+//! moved them to `conway_core::routing`, so a `Router` supplied from outside
+//! this crate can still produce one via `conway_core::routing::MinimalRouter`
+//! -- see that type's doc for why).
+//!
 //! `conway-core` owns the port traits (`Router`, `HealthRegistry`) and the
 //! content-free request/response/config types this crate operates on; this
 //! crate provides the implementations. See `ARCHITECTURE.md` for the
@@ -43,7 +50,8 @@ pub use breaker::TestClock;
 pub use breaker::{BreakerRegistry, Clock, SystemClock};
 pub use capability::satisfies;
 pub use conway_core::ports::{CapabilityIndex, CapabilityIndexBuilder};
-pub use explain::{
-    BreakerSnapshot, CapabilitySummary, EntryOutcome, ExplainEntry, ExplainReport, RoutingExplain,
+pub use conway_core::routing::{
+    BreakerSnapshot, CapabilitySummary, EntryOutcome, ExplainEntry, ExplainReport,
 };
+pub use explain::RoutingExplain;
 pub use router::DeclarativeRouter;
