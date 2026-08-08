@@ -182,6 +182,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   design. Every unbuilt section names its board item
   (01KZDC0RDRMMMJHX7SAFMM2Q5A, 01KZ844ZXZMVRWC7ZANT7PSM6X).
 
+- **Docs 3/5 — trust, security, and compatibility promises:
+  [`docs/plugins/trust-and-security.md`](docs/plugins/trust-and-security.md)
+  and [`docs/plugins/compatibility.md`](docs/plugins/compatibility.md)**
+  (board item 01KYTP78T0NR20A9HV93D7E3AE). The security page states the
+  limit unhedged and up front rather than buried in a non-goals list:
+  **conway does not sandbox the plugin process — a trusted plugin runs with
+  the operator's full privileges**, their filesystem, network, credentials,
+  and ability to exec. The decision to trust is the entire control at that
+  level and it is binary. That is also what makes the capability vocabulary
+  honest: capabilities govern what a plugin can make *conway* do, never
+  what it can do to the machine, which is why `fs.read`, `net`, and `exec`
+  are deliberately absent from it — naming them would manufacture a false
+  belief.
+
+  It documents what **ships** rather than what was designed: `TrustStore`
+  implements exactly one subject kind, `permission_file`, keyed on absolute
+  path plus content digest — not the full `(kind, id, digest)` model — and
+  no board item names building the rest. It also records a design-versus-
+  shipped gap found while writing: `.design/d4-trust-model.md` describes an
+  operator-opened diff against the trusted digest, but the shipped
+  `/trust permissions` shows no diff or preview at all, installing and
+  trusting in one action.
+
+  The compatibility page gives rules concrete enough to implement against
+  rather than "use versioning" — unknown enum tags fail to the **most
+  restrictive** value, not to a permissive default; `deny_unknown_fields`
+  on for hand-authored files, off for a future wire frame, because a
+  misspelled key in a file a human wrote should error loudly while a newer
+  field on the wire should not break an older peer. Verified fresh against
+  the tree, that asymmetry is currently unimplemented in one direction:
+  neither `PermissionFile` nor `TrustFile` sets `deny_unknown_fields`, so a
+  misspelled `denys` key still silently installs **zero** deny rules. Filed
+  as 01KZHVDDQQ7XT0RK3JVNM2YV83.
+
+  Both pages also correct two stale instructions in their own originating
+  spec — the sanitizer convergence and the structured rule form are `done`,
+  not pending — and say so at the site rather than following the stale
+  framing.
+  (`docs/plugins/trust-and-security.md`, `docs/plugins/compatibility.md`,
+  `docs/plugins/README.md`)
+
 - **`conway::backend` — a `Backend` can now be written from a crate that
   depends only on `conway`** (board item 01KZHEZF8XCD0TMDYZQP06J2KH, under
   the backends-as-plugins charter; shape approved in decision
