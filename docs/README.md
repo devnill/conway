@@ -28,6 +28,7 @@ everything else assumes that page's setup.
 | [`providers.md`](providers.md) | How do I point conway at Anthropic, an OpenAI-compatible server, or a provider conway doesn't already know about? | You're configuring a backend beyond the minimal example in `getting-started.md`. |
 | [`routing.md`](routing.md) | How does conway pick which configured model actually serves a request, and how do I see why? | You have more than one model configured and need to control or debug which one runs. |
 | [`permissions.md`](permissions.md) | What do the permission modes, the prompt, pattern grants, project trust, and `--root` confinement actually guarantee — and not guarantee? | You're deciding what an agent is allowed to touch. |
+| [`tools.md`](tools.md) | What are the built-in tools, what's each one's category, permission class, and truncation policy, and which ones can `--root` actually confine? | You're writing `--allowed-tools`/`--deny-tools`, a permission rule, or a `PermissionGate`. |
 
 For the system-level picture — the crate layout, the core primitives, and
 the data flow of one turn — see [`/ARCHITECTURE.md`](../ARCHITECTURE.md).

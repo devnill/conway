@@ -86,7 +86,9 @@ impl Tool for BashTool {
     /// is not confined by root alone (see `docs/permissions.md`'s
     /// "Confinement" section for the full boundary, including the
     /// composition -- root plus a tool set excluding `bash` -- that IS a
-    /// real guarantee).
+    /// real guarantee; see `docs/tools.md` for the full built-in tool list,
+    /// each one's category and permission class, and this same exception
+    /// stated in the table itself).
     fn path_args(&self) -> PathArgs {
         PathArgs::Unconfinable {
             checkable: &["cwd"],
