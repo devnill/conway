@@ -1956,3 +1956,231 @@ async fn cancel_reason_reaches_the_result_when_observed_mid_request() {
          not only the in-memory watch-channel value await_agent reads"
     );
 }
+
+// ---------------------------------------------------------------------
+// Graceful cancellation does NOT propagate (decision 01KZGV7TN6KSWRZM9XRJAKW4CE,
+// board item 01KZDDCBGXNYTNM31PHW46R1SP): `CancelMode::Graceful` stops only
+// the named target, never its descendants -- `PHILOSOPHY.md` and
+// `CancelMode`'s own doc both state this; immediate propagation already has
+// a pinning test (`conway-runtime`'s `tests/supervisor.rs`,
+// `cancelling_parent_cancels_entire_subtree_and_every_descendant_
+// terminates`), but graceful's non-propagation had none. Placed HERE, at
+// the facade level, rather than alongside its immediate twin in
+// `conway-runtime`'s `supervisor.rs`: that file's harness drives
+// `supervisor::supervise` directly over bare `tokio::spawn(std::future::
+// pending())` stand-in tasks and a raw `AgentTree`, with no `AgentLoop` and
+// no mailbox at all -- there is no turn boundary for a *graceful* cancel to
+// land at, and nothing to drain the soft-cancel message from. This file
+// already hosts every other cancellation-mode test (including the
+// 415fbc5/637bbf2 additions above) against a real `AgentLoop` turn over
+// `conway_core::fakes`, which is exactly the machinery graceful cancellation
+// needs to be observed at all.
+// ---------------------------------------------------------------------
+
+/// Like [`SlowTool`] above, but with a configurable tool name -- lets a
+/// parent and its own child each block on their OWN, independently
+/// controlled tool call. Sharing [`SlowTool`]'s single hardcoded
+/// `"slow_tool"` name between two concurrently in-flight agents would
+/// conflate both agents' start/release signals on the very same `Notify`
+/// pair, which is exactly the ambiguity
+/// `graceful_cancel_on_a_parent_does_not_touch_a_live_childs_terminal_result`
+/// below must avoid to stay deterministic (P-15).
+struct NamedSlowTool {
+    name: conway_core::ids::ToolName,
+    started: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+}
+
+#[async_trait]
+impl Tool for NamedSlowTool {
+    fn spec(&self) -> conway_core::content::ToolSpec {
+        conway_core::content::ToolSpec {
+            name: self.name.clone(),
+            description: "test-only slow tool".into(),
+            schema: serde_json::from_value(serde_json::json!({"type": "object"}))
+                .expect("a trivial object schema always parses"),
+            category: conway_core::content::ToolCategory::Read,
+            permission: conway_core::content::PermissionClass::Safe,
+        }
+    }
+
+    async fn invoke(
+        &self,
+        _call: ToolCall,
+        _ctx: conway_core::ports::ToolCtx,
+    ) -> Result<conway_core::ports::ToolOutput, conway_core::error::ToolError> {
+        self.started.notify_one();
+        self.release.notified().await;
+        Ok(conway_core::ports::ToolOutput {
+            blocks: vec![ContentBlock::Text {
+                text: "slow tool done".to_string(),
+            }],
+            is_error: false,
+            truncation: conway_core::content::TruncationPolicy::None,
+            artifacts: vec![],
+        })
+    }
+}
+
+/// Registers two distinctly-named [`NamedSlowTool`]s as one plugin's tools
+/// -- mirrors [`SlowToolPlugin`] above, extended to two tools so a single
+/// `Conway` can give a parent and its own child each an independently
+/// blockable call.
+struct TwoSlowToolsPlugin(Arc<NamedSlowTool>, Arc<NamedSlowTool>);
+
+impl Plugin for TwoSlowToolsPlugin {
+    fn manifest(&self) -> conway_core::ports::PluginManifest {
+        conway_core::ports::PluginManifest {
+            id: "test.two-slow-tools".to_string(),
+            version: "0.0.0".to_string(),
+            tools: vec![self.0.name.clone(), self.1.name.clone()],
+            required_host_caps: vec![],
+        }
+    }
+
+    fn tools(&self) -> Vec<Arc<dyn Tool>> {
+        vec![
+            self.0.clone() as Arc<dyn Tool>,
+            self.1.clone() as Arc<dyn Tool>,
+        ]
+    }
+}
+
+#[tokio::test]
+async fn graceful_cancel_on_a_parent_does_not_touch_a_live_childs_terminal_result() {
+    let parent_started = Arc::new(tokio::sync::Notify::new());
+    let parent_release = Arc::new(tokio::sync::Notify::new());
+    let child_started = Arc::new(tokio::sync::Notify::new());
+    let child_release = Arc::new(tokio::sync::Notify::new());
+    let parent_tool = Arc::new(NamedSlowTool {
+        name: conway_core::ids::ToolName::new("slow_tool_parent"),
+        started: parent_started.clone(),
+        release: parent_release.clone(),
+    });
+    let child_tool = Arc::new(NamedSlowTool {
+        name: conway_core::ids::ToolName::new("slow_tool_child"),
+        started: child_started.clone(),
+        release: child_release.clone(),
+    });
+    // Three scripted turns, consumed strictly in this order (`ScriptedBackend`
+    // pops one FIFO queue regardless of which agent calls `generate`, and
+    // this test's own sequencing -- each fork/release only proceeds once the
+    // PRECEDING step's tool call is observed in flight -- guarantees no
+    // other `generate` call can interleave and steal an entry out of order):
+    // [0] the parent's own tool call; [1] the child's own tool call; [2] the
+    // child's post-tool-result continuation, needed so the child can reach
+    // an ordinary `Completed` result once released, rather than exhausting
+    // the script and failing -- exactly what would happen if a SECOND
+    // backend round trip were needed for the parent too (it must not be:
+    // that is the whole point of `graceful_cancel_through_the_facade_lets_
+    // the_in_flight_tool_finish_then_stops`'s `backend.calls().len() == 1`
+    // assertion, reused here by construction rather than repeated).
+    let backend = Arc::new(
+        ScriptedBackend::new(vec![
+            ScriptedTurn::Respond(tool_call_response(
+                "slow_tool_parent",
+                serde_json::json!({}),
+            )),
+            ScriptedTurn::Respond(tool_call_response(
+                "slow_tool_child",
+                serde_json::json!({}),
+            )),
+            ScriptedTurn::Respond(GenerateResponse {
+                content: vec![ContentBlock::Text {
+                    text: "child done".to_string(),
+                }],
+                tool_calls: vec![],
+                stop: StopReason::EndTurn,
+                usage: Usage::default(),
+            }),
+        ])
+        .with_id(BackendId::new("fake")),
+    );
+    let store = Arc::new(FakeStore::new());
+    let conway = build_conway_with_plugin(
+        backend.clone(),
+        store,
+        Arc::new(TwoSlowToolsPlugin(parent_tool, child_tool)),
+    );
+    let handle = new_handle(&conway).await;
+
+    let parent = handle
+        .fork(handle.root(), ForkSpec::new("parent go"))
+        .await
+        .expect("fork should succeed");
+
+    // Wait for the parent's own tool call to actually be in flight -- a
+    // real turn boundary the graceful cancel below will have to wait past.
+    tokio::time::timeout(Duration::from_secs(5), parent_started.notified())
+        .await
+        .expect("the parent's slow tool must start");
+
+    // Fork a child OF THE PARENT (not the root) while the parent is still
+    // mid-turn -- `fork`'s `from` argument does not need to be idle.
+    let child = handle
+        .fork(parent, ForkSpec::new("child go"))
+        .await
+        .expect("fork of the parent's own child should succeed");
+
+    tokio::time::timeout(Duration::from_secs(5), child_started.notified())
+        .await
+        .expect("the child's slow tool must start");
+
+    // Gracefully cancel the PARENT -- the contract under test is exactly
+    // that this must not touch the child.
+    handle
+        .cancel_with(parent, "wind down gracefully", CancelMode::Graceful)
+        .await
+        .expect("graceful cancel should succeed");
+
+    // Let the parent's own in-flight tool finish so its turn reaches the
+    // boundary where the graceful cancel actually lands.
+    parent_release.notify_one();
+
+    let parent_result = tokio::time::timeout(Duration::from_secs(5), handle.await_agent(parent))
+        .await
+        .expect("await_agent must not hang after a graceful cancel")
+        .expect("await_agent should resolve Ok even on Cancelled");
+    assert_eq!(
+        parent_result.status,
+        ResultStatus::Cancelled {
+            reason: "wind down gracefully".to_string()
+        },
+        "the parent must reach Cancelled at its own next turn boundary"
+    );
+
+    // The child must still be RUNNING at this point -- not swept up by the
+    // parent's graceful cancel. Nothing has released the child's own
+    // in-flight tool yet, so the ONLY way `await_agent(child)` could resolve
+    // at all here (Cancelled or otherwise) is if the cancel had reached the
+    // child too -- a short timeout that fails to resolve is itself the
+    // discriminating assertion (P-15: observable terminal state, not a call
+    // count -- a correct non-propagation and a broken cancel would both
+    // produce "no cancel call recorded against the child").
+    let still_running =
+        tokio::time::timeout(Duration::from_millis(200), handle.await_agent(child)).await;
+    assert!(
+        still_running.is_err(),
+        "the child must still be running immediately after the parent's graceful cancel lands \
+         -- a propagating implementation would have delivered it a cancel too, and it could only \
+         still be running here if that delivery had not happened"
+    );
+
+    // Let the child's own tool finish naturally, with no cancel pending
+    // against it: if graceful cancellation does NOT propagate (the
+    // contract), the child runs its own continuation turn (script entry
+    // [2]) to an ordinary `Completed` result.
+    child_release.notify_one();
+    let child_result = tokio::time::timeout(Duration::from_secs(5), handle.await_agent(child))
+        .await
+        .expect("await_agent must not hang for the child")
+        .expect("await_agent should resolve Ok for the child");
+    assert_eq!(
+        child_result.status,
+        ResultStatus::Completed,
+        "the child must reach its OWN ordinary terminal result, untouched by the parent's \
+         graceful cancel -- this is the observable pin for 'Graceful stops only the named \
+         agent, not its descendants' (PHILOSOPHY.md; CancelMode's own doc; decision \
+         01KZGV7TN6KSWRZM9XRJAKW4CE)"
+    );
+}

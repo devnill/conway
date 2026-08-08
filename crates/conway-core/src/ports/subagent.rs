@@ -279,7 +279,10 @@ impl SubagentHandle {
     /// Cancels `target` with `reason`, in `mode` (board item
     /// 01KZDC2222ARKMZKN8ZE4BYHD6) -- the primitive both modes are reachable
     /// through. See [`CancelMode`]'s own doc for what each mode guarantees,
-    /// including the resume-gate caveat on `Graceful`.
+    /// including the resume-gate caveat on `Graceful` -- and note `Graceful`
+    /// stops ONLY `target` itself: it does not propagate to `target`'s
+    /// descendants (board item 01KZDDCBGXNYTNM31PHW46R1SP), unlike
+    /// `Immediate`.
     pub async fn cancel_with(
         &self,
         target: AgentId,
