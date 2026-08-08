@@ -28,11 +28,10 @@ use tokio::task::{JoinError, JoinSet};
 use tokio::time::{Instant, MissedTickBehavior};
 
 use conway_core::error::BackendError;
+use conway_core::failure::{self, FailureClass};
 use conway_core::ids::{BackendId, EndpointId};
 use conway_core::ports::{Backend, HealthRegistry};
 use conway_core::routing::{HealthConfig, Observation};
-
-use crate::failure::{self, FailureClass};
 
 /// Handle to a spawned [`HealthProber`] task.
 ///

@@ -29,13 +29,13 @@ use conway_core::capabilities::{Capabilities, ToolCallSupport};
 use conway_core::content::{ContentBlock, ToolSpec};
 use conway_core::error::{BackendError, RoutingError, RuntimeError};
 use conway_core::event::Event;
+use conway_core::failure::{classify, observation_for, FailureClass};
 use conway_core::ids::{
     AgentId, BackendId, EndpointId, ModelId, ModelRef, PrefixKey, RoleAlias, SessionId,
 };
 use conway_core::ports::{Backend, GenerateRequest, GenerateResponse, HealthRegistry, StreamChunk};
 use conway_core::routing::{BreakerState, Observation, Route, RoutingReason};
 use conway_core::segment::{CacheTtl, PromptSegment};
-use conway_routing::failure::{classify, observation_for, FailureClass};
 use futures::StreamExt;
 use tokio_util::sync::CancellationToken;
 

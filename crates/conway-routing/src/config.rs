@@ -1,13 +1,22 @@
 //! Routing-crate-owned configuration: semantic validation of
-//! `conway_core::routing::RoutingConfig`, plus the declarative headroom
-//! reservation policy (`HeadroomPolicy`).
+//! `conway_core::routing::RoutingConfig`.
 //!
 //! Config *types* (`RoutingConfig`, `RoleConfig`, `HealthConfig`,
 //! `ModelRef`) and their `serde` shapes are owned by `conway-core`; loading
 //! (file discovery, env resolution, merging) is owned by the `conway`
 //! facade. This module owns only the semantic checks a loaded
-//! `RoutingConfig` must pass, and a sidecar policy for the reserved
-//! output/reasoning token budget ("headroom").
+//! `RoutingConfig` must pass.
+//!
+//! **`HeadroomPolicy` moved to `conway_core::capabilities` (board item
+//! 01KZFC0JDMC2Y631FFCXWR37CP)**, beside `DEFAULT_HEADROOM_TOKENS`: checking
+//! every read of `HeadroomPolicy::resolve` and every construction site found
+//! `DeclarativeRouter::new` (`router.rs`) still takes it as a caller-supplied
+//! sidecar and cross-checks its resolution against
+//! `RoutingConfig::headroom_for` per role, so `RoutingConfig::headroom_for`
+//! is not a total replacement -- the type stayed, it just no longer lives in
+//! this crate. `crate::config::validate` below is unaffected: its
+//! `HeadroomExceedsBudget` check already used `RoutingConfig::headroom_for`
+//! directly, never `HeadroomPolicy`.
 //!
 //! Divergence note (flagged, not worked around): the WI-031 amendment
 //! anticipated `conway-core`'s `RoleConfig` lacking a `headroom_tokens`
@@ -15,15 +24,7 @@
 //! path. The `conway-core` this crate builds against already carries
 //! `RoleConfig::headroom_tokens` and `RoutingConfig::headroom_for` /
 //! `RoutingConfig::default_headroom_tokens` -- the flagged interface gap is
-//! already closed. `HeadroomPolicy` below is still implemented per the
-//! amendment's criteria (its own default, its own `resolve`, its own
-//! deserialization of the `[routing]` table shape) and gains a
-//! `from_routing_config` constructor that delegates to the now-existing
-//! core field, which is the path the amendment's notes anticipated ("write
-//! both, the latter delegating when the field exists"). `validate` uses
-//! `RoutingConfig::headroom_for` directly for the `HeadroomExceedsBudget`
-//! check, since that is now the authoritative resolution path for a loaded
-//! config.
+//! already closed.
 
 use std::collections::BTreeMap;
 
@@ -31,82 +32,9 @@ use conway_core::ids::RoleAlias;
 use conway_core::routing::RoutingConfig;
 use serde::{Deserialize, Serialize};
 
-/// Tokens reserved for model output/reasoning when a role has neither a
-/// per-role override nor a configured `[routing] default_headroom_tokens`.
-///
-/// Aliased to `conway_core::capabilities::DEFAULT_HEADROOM_TOKENS` so the
-/// config-time fallback and `RequiredCaps`'s per-request fallback can never
-/// diverge: whichever construction path produces a headroom value
-/// (`HeadroomPolicy::default`, bare deserialization, `from_routing_config`,
-/// or core's `RoutingConfig` serde default), the omitted-key case resolves
-/// to the same number. (The WI-031 amendment's literal `4_096` predates
-/// core's own headroom amendment landing at `8_192`; a single value
-/// supersedes both — incremental review S2, cycle 1.)
-pub const DEFAULT_HEADROOM_TOKENS: u32 = conway_core::capabilities::DEFAULT_HEADROOM_TOKENS;
-
 /// A resolved headroom at or above this value is rejected by [`validate`]
 /// as an implausible configuration (a stray digit, a unit mix-up, etc.).
 const MAX_PLAUSIBLE_HEADROOM_TOKENS: u32 = 1_000_000;
-
-/// A declarative, config-time-resolved reservation of output/reasoning
-/// tokens: a global default with per-role overrides.
-///
-/// Resolution ([`HeadroomPolicy::resolve`]) happens once, is total, and
-/// never depends on anything but the policy and a role name -- no request
-/// data, no runtime measurement. `per_role` is not populated by `serde`
-/// (`#[serde(skip)]`): it is built explicitly by
-/// [`HeadroomPolicy::from_routing_config`] from `conway-core`'s
-/// `RoleConfig::headroom_tokens`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, default)]
-pub struct HeadroomPolicy {
-    /// Mirrors the `[routing] default_headroom_tokens` config key.
-    pub default_headroom_tokens: u32,
-    #[serde(skip)]
-    pub per_role: BTreeMap<RoleAlias, u32>,
-}
-
-impl Default for HeadroomPolicy {
-    fn default() -> Self {
-        Self {
-            default_headroom_tokens: DEFAULT_HEADROOM_TOKENS,
-            per_role: BTreeMap::new(),
-        }
-    }
-}
-
-impl HeadroomPolicy {
-    /// The per-role override when present, else `default_headroom_tokens`.
-    /// Total: never errors, never panics, including for a `role` absent
-    /// from `per_role` (the global default is returned).
-    pub fn resolve(&self, role: &RoleAlias) -> u32 {
-        self.per_role
-            .get(role)
-            .copied()
-            .unwrap_or(self.default_headroom_tokens)
-    }
-
-    /// Builds a `HeadroomPolicy` from a `conway-core` `RoutingConfig`: the
-    /// global default from `RoutingConfig::default_headroom_tokens`, and
-    /// the per-role table from every `RoleConfig::headroom_tokens` that is
-    /// `Some(_)`. This is the delegating path the WI-031 amendment
-    /// anticipated once `RoleConfig` carried the field -- it already does
-    /// in the `conway-core` this crate builds against.
-    pub fn from_routing_config(config: &RoutingConfig) -> Self {
-        let per_role = config
-            .roles
-            .iter()
-            .filter_map(|(name, role)| {
-                role.headroom_tokens
-                    .map(|tokens| (RoleAlias::new(name.clone()), tokens))
-            })
-            .collect();
-        Self {
-            default_headroom_tokens: config.default_headroom_tokens,
-            per_role,
-        }
-    }
-}
 
 /// One semantic problem found by [`validate`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -236,97 +164,6 @@ mod tests {
             health: HealthConfig::default(),
             default_headroom_tokens,
         }
-    }
-
-    // -----------------------------------------------------------------
-    // HeadroomPolicy
-    // -----------------------------------------------------------------
-
-    #[test]
-    fn headroom_policy_default_matches_core_constant_and_empty() {
-        let policy = HeadroomPolicy::default();
-        assert_eq!(policy.default_headroom_tokens, DEFAULT_HEADROOM_TOKENS);
-        assert_eq!(
-            DEFAULT_HEADROOM_TOKENS,
-            conway_core::capabilities::DEFAULT_HEADROOM_TOKENS
-        );
-        assert!(policy.per_role.is_empty());
-    }
-
-    #[test]
-    fn headroom_policy_deserializes_the_routing_table_shape() {
-        // The `[routing]` table from the amendment's fragment:
-        //   [routing]
-        //   default_headroom_tokens = 4096
-        let policy: HeadroomPolicy =
-            toml::from_str("default_headroom_tokens = 4096").expect("valid HeadroomPolicy toml");
-        assert_eq!(policy.default_headroom_tokens, 4_096);
-        assert!(policy.per_role.is_empty());
-    }
-
-    #[test]
-    fn headroom_policy_omitting_the_field_deserializes_to_default() {
-        let policy: HeadroomPolicy = toml::from_str("").expect("empty document uses default");
-        assert_eq!(policy, HeadroomPolicy::default());
-    }
-
-    #[test]
-    fn headroom_resolve_per_role_hit() {
-        let mut per_role = BTreeMap::new();
-        per_role.insert(RoleAlias::new("planner"), 16_384);
-        let policy = HeadroomPolicy {
-            default_headroom_tokens: 4_096,
-            per_role,
-        };
-        assert_eq!(policy.resolve(&RoleAlias::new("planner")), 16_384);
-    }
-
-    #[test]
-    fn headroom_resolve_per_role_miss_falls_back_to_global_default() {
-        let mut per_role = BTreeMap::new();
-        per_role.insert(RoleAlias::new("planner"), 16_384);
-        let policy = HeadroomPolicy {
-            default_headroom_tokens: 4_096,
-            per_role,
-        };
-        // "fast" has no override.
-        assert_eq!(policy.resolve(&RoleAlias::new("fast")), 4_096); // explicit key below sets 4096
-    }
-
-    #[test]
-    fn headroom_resolve_empty_policy_returns_default() {
-        let policy = HeadroomPolicy::default();
-        assert_eq!(
-            policy.resolve(&RoleAlias::new("anything")),
-            DEFAULT_HEADROOM_TOKENS
-        );
-        // Total: even a role absent from every table never panics/errors.
-        assert_eq!(
-            policy.resolve(&RoleAlias::new("unknown-role")),
-            DEFAULT_HEADROOM_TOKENS
-        );
-    }
-
-    #[test]
-    fn headroom_policy_from_routing_config_reads_per_role_override_and_global_default() {
-        let mut roles = BTreeMap::new();
-        roles.insert(
-            "planner".to_string(),
-            role(
-                vec![model_ref("anthropic", "claude-sonnet-4-6")],
-                Some(16_384),
-            ),
-        );
-        roles.insert(
-            "fast".to_string(),
-            role(vec![model_ref("local", "qwen3-coder-80b")], None),
-        );
-        let routing_config = config(roles, 4_096);
-
-        let policy = HeadroomPolicy::from_routing_config(&routing_config);
-        assert_eq!(policy.default_headroom_tokens, 4_096);
-        assert_eq!(policy.resolve(&RoleAlias::new("planner")), 16_384);
-        assert_eq!(policy.resolve(&RoleAlias::new("fast")), 4_096); // explicit key below sets 4096
     }
 
     // -----------------------------------------------------------------

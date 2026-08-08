@@ -34,7 +34,8 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use conway_core::capabilities::{
-    CacheMode, Capabilities, ReliabilityTier, RequiredCaps, StructuredOutput, ToolCallSupport,
+    CacheMode, Capabilities, HeadroomPolicy, ReliabilityTier, RequiredCaps, StructuredOutput,
+    ToolCallSupport,
 };
 use conway_core::error::RoutingError;
 use conway_core::fakes::FakeHealth;
@@ -44,7 +45,6 @@ use conway_core::routing::{
     BreakerKind, BreakerState, HealthConfig, RouteRequest, RoutingConfig, RoutingReason,
 };
 
-use conway_routing::config::HeadroomPolicy;
 use conway_routing::{CapabilityIndex, DeclarativeRouter};
 
 fn model_ref(backend: &str, model: &str) -> ModelRef {

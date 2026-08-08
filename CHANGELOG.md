@@ -56,6 +56,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The T-2 failure-classification table and `HeadroomPolicy` move from
+  `conway-routing` into `conway-core`** (board item
+  01KZFC0JDMC2Y631FFCXWR37CP), the precondition for the agent engine to stop
+  depending on the whole routing library for two small things unrelated to
+  routing policy. `FailureClass`, `classify`, and `observation_for` (the
+  authority on whether a `BackendError` advances the fallback chain and/or
+  feeds a health observation) move from `conway-routing`'s `failure.rs`
+  (deleted, along with its `pub mod failure` declaration) to
+  `conway_core::failure` — half the table already lived in `conway-core` as
+  `BackendError::is_health_signal()`/`is_failover_worthy()`, and the
+  consistency test pinning the two together (`observation_for(e).is_some()
+  == e.is_health_signal()`, exhaustive over every variant including
+  `ContextTooLarge`) is now intra-crate, so it can never again drift across
+  a crate boundary the way `ContextTooLarge`'s missing arm did in board item
+  01KZDC4DKVC4JC3W4KN1WMC43N (commit `92bfbd7`).
+  `HeadroomPolicy` moves from `conway-routing`'s `config.rs` to
+  `conway_core::capabilities`, beside `DEFAULT_HEADROOM_TOKENS`: checking
+  every read of `HeadroomPolicy::resolve` and every construction site found
+  `DeclarativeRouter::new` still takes it as a caller-supplied sidecar and
+  cross-checks its resolution against `RoutingConfig::headroom_for` per role
+  (`ConfigIssueKind::HeadroomSourcesDisagree`), so it is not a total,
+  drop-in replacement for `RoutingConfig::headroom_for` and stays as a real
+  type, just relocated. `crate::config::validate`, `ConfigIssue`, and
+  `ConfigIssueKind` stay in `conway-routing` unchanged. **Breaking for any
+  code outside this workspace naming these by their old crate path**:
+  `conway_routing::failure::*` and `conway_routing::config::HeadroomPolicy`
+  no longer exist; use `conway_core::failure::*` and
+  `conway_core::capabilities::HeadroomPolicy`. The `conway` facade's own
+  public surface (`crates/conway/src/lib.rs`) named neither type, so it is
+  unaffected. `crates/conway-runtime/src/` now names `conway_routing` for
+  nothing except `context_shortfall` (the sibling item owns removing that
+  last dependency line).
+  **A missing classification arm is now a compile error rather than a silent
+  `Fatal`.** `classify`'s wildcard arm is gone: co-locating it with
+  `BackendError` means `#[non_exhaustive]` no longer forces a catch-all, so
+  a future variant added without an arm fails to build instead of falling
+  through to "do not advance the chain". That is the general fix for the
+  specific defect `ContextTooLarge` hit, which compiled cleanly precisely
+  because a catch-all absorbed it. `conway-routing` also drops its `toml`
+  dev-dependency, whose only consumer was the relocated tests.
+  (`crates/conway-core/src/failure.rs`, `crates/conway-core/src/capabilities.rs`,
+  `crates/conway-core/src/lib.rs`, `crates/conway-routing/src/config.rs`,
+  `crates/conway-routing/src/router.rs`, `crates/conway-routing/src/prober.rs`,
+  `crates/conway-routing/src/lib.rs`, `crates/conway-runtime/src/attempt.rs`,
+  `crates/conway-runtime/src/runtime.rs`, `crates/conway-runtime/src/agent_loop.rs`,
+  `crates/conway/src/builder.rs`)
+
 - **`conway_subagent` is split into `conway_fork` and `conway_spawn`**
   (board item 01KZDC1HSNJZ1K7HVQEW65S56R), settling the fork-vs-spawn
   choice by tool name rather than by a `mode` argument, exactly as

@@ -20,7 +20,6 @@ mod breaker;
 mod capability;
 pub mod config;
 mod explain;
-pub mod failure;
 mod prober;
 mod router;
 

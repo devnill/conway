@@ -14,10 +14,9 @@ use conway_core::ids::RoleAlias;
 /// Disclosed reconciliation (see `schema::DEFAULT_HEADROOM_TOKENS`'s doc
 /// comment): the amendment's prose says the built-in default is `16000`.
 /// The already-committed `conway_core::capabilities::DEFAULT_HEADROOM_TOKENS`
-/// (and `conway-routing`'s `HeadroomPolicy`, which explicitly notes it
-/// supersedes an earlier, different literal) is `8_192`. This crate reuses
-/// that cross-crate-agreed constant rather than introducing a third,
-/// disagreeing default.
+/// (also consumed directly by `conway_core::capabilities::HeadroomPolicy`)
+/// is `8_192`. This crate reuses that cross-crate-agreed constant rather
+/// than introducing a third, disagreeing default.
 #[test]
 fn empty_config_default_headroom_matches_the_cross_crate_constant_not_the_amendment_literal() {
     let cfg: ConwayConfig =

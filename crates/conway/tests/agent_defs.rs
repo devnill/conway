@@ -41,8 +41,8 @@ mod result_contract_via_def {
     use conway_core::ports::{
         Backend, GenerateResponse, HealthRegistry, Plugin, Router, SessionStore, SubagentHost,
     };
+    use conway_core::capabilities::HeadroomPolicy;
     use conway_core::routing::{Route, RouteRequest, RoutingReason};
-    use conway_routing::config::HeadroomPolicy;
     use conway_runtime::events::EventBus;
     use conway_runtime::runtime::{RootSpec, Runtime, RuntimeDeps};
 

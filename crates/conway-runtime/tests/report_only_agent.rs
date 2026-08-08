@@ -25,7 +25,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use conway_core::agent::{Budget, PermissionDecision, ResultStatus, ToolSelector};
 use conway_core::capabilities::{
-    CacheMode, Capabilities, ReliabilityTier, StructuredOutput, ToolCallSupport,
+    CacheMode, Capabilities, HeadroomPolicy, ReliabilityTier, StructuredOutput, ToolCallSupport,
 };
 use conway_core::content::{
     ContentBlock, PermissionClass, StopReason, ToolCall, ToolCategory, ToolSpec, Usage,
@@ -271,7 +271,7 @@ fn build_loop(
         plugin_config: Arc::new(PluginConfig::default()),
         bus: bus.clone(),
         builder: Arc::new(ContextBuilder::new()),
-        headroom: Arc::new(conway_routing::config::HeadroomPolicy::default()),
+        headroom: Arc::new(HeadroomPolicy::default()),
         tree: tree.clone(),
         context_hook: std::sync::RwLock::new(None),
     });
@@ -689,7 +689,7 @@ fn runtime_with_plugins(
         gate: Arc::new(FakeGate::new(PermissionDecision::AllowOnce)),
         agent_defs,
         event_bus: EventBus::with_default_capacity(),
-        headroom: Arc::new(conway_routing::config::HeadroomPolicy::default()),
+        headroom: Arc::new(HeadroomPolicy::default()),
     });
     (runtime, store)
 }

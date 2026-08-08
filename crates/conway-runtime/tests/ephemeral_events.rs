@@ -30,6 +30,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use conway_core::agent::{Budget, PermissionDecision, ResultStatus, SubagentMode, SubagentSpec};
+use conway_core::capabilities::HeadroomPolicy;
 use conway_core::content::{ContentBlock, StopReason, Usage};
 use conway_core::event::Event;
 use conway_core::fakes::{
@@ -39,7 +40,6 @@ use conway_core::ids::{AgentId, BackendId, LogSeq, ModelId, ModelRef, RoleAlias,
 use conway_core::log::SessionMeta;
 use conway_core::ports::{Backend, Router, SessionStore, SubagentHost};
 use conway_core::provenance::Provenance;
-use conway_routing::config::HeadroomPolicy;
 use conway_runtime::events::EventBus;
 use conway_runtime::runtime::{RootSpec, Runtime, RuntimeDeps};
 use conway_runtime::tree::{AgentNode, AgentTree};

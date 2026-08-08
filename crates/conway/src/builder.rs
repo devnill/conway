@@ -123,11 +123,10 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use conway_core::capabilities::ReliabilityTier;
+use conway_core::capabilities::{HeadroomPolicy, ReliabilityTier};
 use conway_core::ids::{BackendId, ModelRef};
 use conway_core::ports::{Backend, ContextHook, PermissionGate, Plugin, Router, SessionStore};
 use conway_core::routing::ModelOverrides;
-use conway_routing::config::HeadroomPolicy;
 use conway_routing::{BreakerRegistry, CapabilityIndex, DeclarativeRouter};
 use conway_runtime::events::EventBus;
 use conway_runtime::runtime::{Runtime, RuntimeDeps};
