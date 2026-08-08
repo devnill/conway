@@ -36,9 +36,9 @@ impl Admission {
     /// Whether `required_tokens()` fits inside `max_context_tokens`.
     /// Inclusive bound: an exact fit (`required_tokens() ==
     /// max_context_tokens`) admits -- the same inclusive bound
-    /// `conway_routing::context_shortfall` documents for its own,
-    /// pre-relocation copy of this arithmetic (that copy is retired by
-    /// board item 01KZDC5BJWSWZZJQ7HHS11S97H, not this one).
+    /// `conway-routing`'s pre-relocation restatement of this arithmetic
+    /// used to document for itself, before board item
+    /// 01KZFBZHTWDF11TH7G0H613ERE retired that copy.
     pub fn fits(&self) -> bool {
         self.required_tokens() <= self.max_context_tokens
     }
@@ -171,20 +171,23 @@ pub trait Backend: Send + Sync + 'static {
     /// call [`check_admission`] for the arithmetic rather than restating it
     /// (P-14: ONE implementation of "fits", not one per dialect).
     ///
-    /// **NOT YET CONSUMED BY ANY PRODUCTION PATH.** This method is
-    /// implemented and tested, and nothing calls it outside tests: the
-    /// request path still admits through `conway_routing`'s own pre-existing
-    /// copy of the arithmetic. Board item 01KZDC5BJWSWZZJQ7HHS11S97H is what
-    /// retires that copy and routes admission through here, and it owns the
-    /// design question this item deliberately did not improvise -- how
-    /// `RoutingError::ContextTooLarge` and `BackendError::ContextTooLarge`
-    /// relate at the call site.
+    /// **THE production admission path** (board item
+    /// 01KZFBZHTWDF11TH7G0H613ERE): `conway_runtime::attempt::AttemptEngine
+    /// ::execute` builds each candidate route's real `GenerateRequest`
+    /// first, then calls this method -- the authoritative answer to
+    /// "does it fit?" -- before making any network call. A refusal skips
+    /// that one candidate; when every candidate refuses this way, the
+    /// engine aggregates into `RuntimeError::Routing(RoutingError::
+    /// ContextTooLarge)`, sourcing every number from the refusing
+    /// `BackendError`s directly. `conway-routing`'s own declared-window
+    /// check (`DeclarativeRouter`'s `satisfies`) still runs first, as a
+    /// cheap ADVISORY pre-filter over the router's chain -- see `docs/
+    /// routing.md`'s "Advisory vs. authoritative" section for why the two
+    /// are not required to agree.
     ///
-    /// So the caller obligation stated above describes the contract a
-    /// consumer will be held to, not one any consumer is meeting today.
-    /// Implementing this on a third-party backend is correct and currently
-    /// changes no behaviour (GP-14: a capability may ship ahead of its
-    /// consumer; what it may not do is describe itself as working).
+    /// So the caller obligation stated above is live, not aspirational: a
+    /// third-party `Backend` implementing this (or relying on the default)
+    /// is on the real request path today.
     fn admit(
         &self,
         req: &GenerateRequest,

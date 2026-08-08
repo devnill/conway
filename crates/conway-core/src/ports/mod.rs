@@ -7,6 +7,7 @@
 //! "fakes"`, WI-008); every other implementation lives in a dedicated crate.
 
 mod backend;
+mod capability_index;
 mod events;
 mod permission;
 mod plugin;
@@ -15,6 +16,7 @@ mod session;
 mod subagent;
 
 pub use backend::*;
+pub use capability_index::*;
 pub use events::*;
 pub use permission::*;
 pub use plugin::*;

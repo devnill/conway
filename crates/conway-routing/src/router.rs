@@ -49,11 +49,11 @@ use std::sync::Arc;
 use conway_core::capabilities::{HeadroomPolicy, RequiredCaps};
 use conway_core::error::RoutingError;
 use conway_core::ids::{EndpointId, ModelRef, RoleAlias};
-use conway_core::ports::{HealthRegistry, Router};
+use conway_core::ports::{Admission, CapabilityIndex, HealthRegistry, Router};
 use conway_core::prelude::SamplingParams;
 use conway_core::routing::{BreakerState, Route, RouteRequest, RoutingConfig, RoutingReason};
 
-use crate::capability::{context_shortfall, satisfies, strictest, CapabilityIndex};
+use crate::capability::{non_size_missing, size_missing, strictest};
 use crate::config::{ConfigIssue, ConfigIssueKind};
 
 /// One role's compiled routing data: its fallback chain, sampling defaults,
@@ -234,11 +234,14 @@ impl DeclarativeRouter {
     /// and neither does a candidate that fails headroom *and* some other
     /// requirement.
     ///
-    /// "Failed the headroom gate" is decided by [`context_shortfall`], the
-    /// same predicate [`satisfies`] itself uses -- NOT by restating the
-    /// arithmetic here, and not by parsing `missing`'s strings. `missing.len()
-    /// == 1` then means "no OTHER requirement failed", since a failing
-    /// headroom gate contributes exactly one entry.
+    /// "Failed the headroom gate" is decided STRUCTURALLY (board item
+    /// 01KZFBZHTWDF11TH7G0H613ERE): solely-on-size is `non_size_missing(..)
+    /// .is_empty() && size_missing(..).is_some()`; mixed is `!non_size_missing
+    /// (..).is_empty()` (with or without a size failure alongside it). No
+    /// string counting, no string parsing of `missing`'s entries --
+    /// [`crate::capability::non_size_missing`] and
+    /// [`crate::capability::size_missing`] are asked directly, the same two
+    /// functions [`crate::capability::satisfies`] itself composes.
     fn check_candidate(
         &self,
         model_ref: &ModelRef,
@@ -257,11 +260,13 @@ impl DeclarativeRouter {
                 ));
             }
             Some(caps) => {
-                if let Err(missing) = satisfies(caps, required, req.est_tokens, headroom_tokens) {
-                    let failed_headroom =
-                        context_shortfall(caps, req.est_tokens, headroom_tokens).is_some();
-                    let headroom_only = missing.len() == 1 && failed_headroom;
+                let non_size = non_size_missing(caps, required);
+                let size_entry = size_missing(caps, req.est_tokens, headroom_tokens);
+                if !non_size.is_empty() || size_entry.is_some() {
+                    let headroom_only = non_size.is_empty() && size_entry.is_some();
                     let window = headroom_only.then_some(caps.max_context_tokens);
+                    let mut missing = non_size;
+                    missing.extend(size_entry);
                     return Err((
                         RoutingReason::CapabilitySkip {
                             skipped: model_ref.clone(),
@@ -410,17 +415,26 @@ impl Router for DeclarativeRouter {
 
         if all_headroom_only {
             if let Some((model_ref, max_context_tokens)) = largest_window {
-                let est_tokens = req.est_tokens;
-                let headroom_tokens = evaluation.headroom_tokens;
-                let required_tokens = est_tokens.saturating_add(headroom_tokens);
+                // The derived numbers come from `Admission` rather than being
+                // restated here (P-14: ONE implementation of the headroom
+                // arithmetic). This site is the aggregate -- the whole
+                // request's refusal after every candidate refused -- and it
+                // must report the same `required`/`shortfall` a per-candidate
+                // `Admission` would, or the two halves of one rejection would
+                // disagree in the operator's own error message.
+                let admission = Admission {
+                    est_tokens: req.est_tokens,
+                    headroom_tokens: evaluation.headroom_tokens,
+                    max_context_tokens,
+                };
                 return Err(RoutingError::ContextTooLarge {
                     role: req.role.clone(),
                     model: model_ref.clone(),
-                    est_tokens,
-                    headroom_tokens,
-                    required_tokens,
+                    est_tokens: admission.est_tokens,
+                    headroom_tokens: admission.headroom_tokens,
+                    required_tokens: admission.required_tokens(),
                     max_context_tokens,
-                    shortfall_tokens: required_tokens.saturating_sub(max_context_tokens),
+                    shortfall_tokens: admission.shortfall_tokens(),
                 });
             }
         }

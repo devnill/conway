@@ -1,6 +1,8 @@
-//! The `(backend, model) -> Capabilities` lookup built at startup, and the
-//! pure predicate the router uses for capability filtering (WI-032, amended:
-//! headroom-aware context gate).
+//! The pure predicate the router uses for capability filtering (WI-032,
+//! amended: headroom-aware context gate; further amended, board item
+//! 01KZFBZHTWDF11TH7G0H613ERE, to express the size half of that gate through
+//! `conway_core::ports::Admission` and to move `CapabilityIndex` to
+//! `conway-core`'s `ports` module — see that module's own doc).
 //!
 //! Reconciliation with `conway-core` (documented choice): core's
 //! `RequiredCaps::satisfied_by(&Capabilities, est_tokens)` already enforces
@@ -12,98 +14,24 @@
 //! The two formulations are pinned together by
 //! `satisfies_agrees_with_core_on_accept_reject` below: for identical
 //! inputs they must agree on ACCEPT vs REJECT (messages may differ; the
-//! decision may not).
-
-use std::collections::HashMap;
-use std::sync::Arc;
+//! decision may not). As of 01KZFBZHTWDF11TH7G0H613ERE, the SIZE half of
+//! both formulations is no longer two independent restatements of
+//! `est_tokens + headroom_tokens <= max_context_tokens`: both
+//! [`size_missing`] here and `RequiredCaps::satisfied_by`'s own context
+//! check build a `conway_core::ports::Admission` and read its
+//! `fits`/`required_tokens`/`shortfall_tokens` (P-14). What still
+//! legitimately differs between the two -- and is why a single surviving
+//! function did not replace both -- is per-field MESSAGE rendering (routing
+//! is bound to the amendment's exact CLI-facing strings; core's own public
+//! `satisfied_by` has its own, differently-ordered, differently-worded
+//! contract, exercised directly by `conway-core`'s own tests) and, for the
+//! six non-size fields, independently-written rank/equality comparisons
+//! that were never the same arithmetic to begin with.
 
 use conway_core::capabilities::{
     Capabilities, ReliabilityTier, RequiredCaps, StructuredOutput, ToolCallSupport,
 };
-use conway_core::ids::{BackendId, ModelId, ModelRef};
-use conway_core::ports::Backend;
-
-/// Immutable `(backend, model) -> Capabilities` lookup. Built once at
-/// startup; capability refresh is a rebuild (owned by the facade).
-#[derive(Debug, Clone, Default)]
-pub struct CapabilityIndex {
-    map: HashMap<(BackendId, ModelId), Capabilities>,
-}
-
-/// Builder for [`CapabilityIndex`].
-#[derive(Debug, Default)]
-pub struct CapabilityIndexBuilder {
-    map: HashMap<(BackendId, ModelId), Capabilities>,
-}
-
-impl CapabilityIndexBuilder {
-    pub fn insert(
-        mut self,
-        backend: BackendId,
-        model: ModelId,
-        caps: Capabilities,
-    ) -> CapabilityIndexBuilder {
-        self.map.insert((backend, model), caps);
-        self
-    }
-
-    pub fn build(self) -> CapabilityIndex {
-        CapabilityIndex { map: self.map }
-    }
-}
-
-impl CapabilityIndex {
-    pub fn builder() -> CapabilityIndexBuilder {
-        CapabilityIndexBuilder::default()
-    }
-
-    /// Reopens a built index as a [`CapabilityIndexBuilder`] so a caller can
-    /// layer more entries on top (e.g. the facade's optional startup probe
-    /// overlay) without re-querying every already-resolved pair.
-    pub fn into_builder(self) -> CapabilityIndexBuilder {
-        CapabilityIndexBuilder { map: self.map }
-    }
-
-    /// O(1) `HashMap` lookup — no scan.
-    pub fn get(&self, model_ref: &ModelRef) -> Option<&Capabilities> {
-        self.map
-            .get(&(model_ref.backend.clone(), model_ref.model.clone()))
-    }
-
-    /// Builds the index by asking each backend for its capabilities, once
-    /// per `(backend, model)` pair in `refs`. Refs whose backend id is not
-    /// present in `backends` are silently omitted. Synchronous —
-    /// `Backend::capabilities` performs no I/O.
-    ///
-    /// This is the *only* place the facade should populate a
-    /// `CapabilityIndex` from real backends: routing this way (rather than
-    /// recomputing `Capabilities` independently from the same source
-    /// metadata) is what pins the router's admission decisions to exactly
-    /// what `Backend::capabilities()` — and therefore
-    /// `conway_runtime::attempt::AttemptEngine`'s T-1 gate — will actually
-    /// see. A second, parallel `models.json` → `Capabilities` conversion is
-    /// the divergence bug class WI-123 closes; don't reintroduce one.
-    pub fn from_backends(backends: &[Arc<dyn Backend>], refs: &[ModelRef]) -> CapabilityIndex {
-        let by_id: HashMap<BackendId, &Arc<dyn Backend>> =
-            backends.iter().map(|b| (b.id(), b)).collect();
-        let mut map = HashMap::new();
-        for r in refs {
-            if let Some(backend) = by_id.get(&r.backend) {
-                map.entry((r.backend.clone(), r.model.clone()))
-                    .or_insert_with(|| backend.capabilities(&r.model));
-            }
-        }
-        CapabilityIndex { map }
-    }
-
-    pub fn len(&self) -> usize {
-        self.map.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.map.is_empty()
-    }
-}
+use conway_core::ports::Admission;
 
 /// Rank helpers over core's `#[non_exhaustive]` enums. Unknown future
 /// variants rank as their documented-lowest peer; never panic.
@@ -225,58 +153,17 @@ fn strictest_min(a: Option<u32>, b: Option<u32>) -> Option<u32> {
     }
 }
 
-/// THE headroom gate, in one place. `Some(shortfall)` when the request does
-/// not fit this model's window; `None` when it fits.
+/// The non-size half of the capability predicate: every requirement in
+/// `required` EXCEPT the context/headroom gate, in the fixed order
+/// tool_calling, structured_output, parallel_tool_calls, reasoning,
+/// reliability_tier, min_context. Returns every unmet requirement (never
+/// short-circuits on the first) as a human-readable string.
 ///
-/// All consumers of the gate call this rather than restating the formula:
-/// [`satisfies`] (to decide whether to push its `"context: ..."` entry),
-/// `router::DeclarativeRouter::check_candidate` (to decide whether a
-/// rejection is attributable to context size alone, and therefore whether
-/// `resolve` may return `RoutingError::ContextTooLarge`), and
-/// `conway_runtime::attempt::AttemptEngine::execute` (the T-1 pre-flight
-/// backstop that partitions candidate routes by whether the declared
-/// window covers the prompt plus reserved headroom -- board item
-/// 01KZ00VV3F3EBZ9WQSB292TBJZ, the founding case for P-14: a third
-/// consumer was restating the arithmetic until that item). `pub` for the
-/// cross-crate consumer; `pub(crate)` would hide it from `conway-runtime`.
-///
-/// Keeping it here is load-bearing, not tidiness. Board item
-/// `01KYXNAHN64YMADZPQDQC0CPTJ` originally landed with this arithmetic
-/// duplicated in `router.rs`. Nothing tied the two copies together, so a
-/// later edit to one -- `>=` instead of `>`, a safety margin, different
-/// rounding -- would have silently desynchronized them, and the failure is
-/// quiet in both directions: a genuinely headroom-only rejection
-/// misclassified as mixed (regressing P-9 back to `NoCandidate`, the exact
-/// bug that item existed to fix), or a non-context failure misreported as
-/// `ContextTooLarge`, which blames the window for an unrelated defect.
-///
-/// Saturating: `u32::MAX` inputs produce a rejection, never a wrap or panic.
-/// Inclusive bound: `est_tokens + headroom == max_context_tokens` fits
-/// (`None`) -- the same inclusive bound `AttemptEngine::execute` documented
-/// for its own restated copy.
-pub fn context_shortfall(
-    caps: &Capabilities,
-    est_tokens: u32,
-    headroom_tokens: u32,
-) -> Option<u32> {
-    let needed = est_tokens.saturating_add(headroom_tokens);
-    (needed > caps.max_context_tokens).then(|| needed.saturating_sub(caps.max_context_tokens))
-}
-
-/// Pure, synchronous admission predicate over four scalars: no `&self`, no
-/// clock, no registry. Returns `Ok(())` (allocation-free) when every
-/// requirement holds, else `Err` listing **every** unmet requirement in the
-/// fixed order: tool_calling, structured_output, parallel_tool_calls,
-/// reasoning, reliability_tier, min_context, context (headroom gate last).
-///
-/// The caller (the router, WI-034) resolves the effective headroom once per
-/// role and passes it in — headroom policy lives in exactly one place.
-pub fn satisfies(
-    caps: &Capabilities,
-    required: &RequiredCaps,
-    est_tokens: u32,
-    headroom_tokens: u32,
-) -> Result<(), Vec<String>> {
+/// Split out (board item 01KZFBZHTWDF11TH7G0H613ERE) so `router.rs`'s
+/// `check_candidate` can ask "did anything OTHER than size fail?"
+/// structurally -- `non_size_missing(..).is_empty()` -- rather than by
+/// counting strings in `satisfies`'s combined `Vec`.
+pub(crate) fn non_size_missing(caps: &Capabilities, required: &RequiredCaps) -> Vec<String> {
     let mut missing: Vec<String> = Vec::new();
 
     if let Some(required_tc) = &required.tool_calling {
@@ -326,17 +213,60 @@ pub fn satisfies(
         }
     }
 
-    // The headroom gate, last (amendment ordering). The predicate itself
-    // lives in `context_shortfall` so the router's headroom-only
-    // classification cannot drift from it.
-    if context_shortfall(caps, est_tokens, headroom_tokens).is_some() {
-        let needed = est_tokens.saturating_add(headroom_tokens);
-        missing.push(format!(
-            "context: needs {est_tokens} input + {headroom_tokens} headroom = {needed}, \
+    missing
+}
+
+/// The size half of the capability predicate, expressed through
+/// `conway_core::ports::Admission` (P-14: the headroom arithmetic itself --
+/// `fits`/`required_tokens`/`shortfall_tokens` -- lives in exactly one
+/// place, not restated here). `Some(entry)` is the CONTRACT golden string
+/// (amendment ordering: `"context: needs {est_tokens} input +
+/// {headroom_tokens} headroom = {needed}, model max_context_tokens is
+/// {max}"`) when the request does not fit; `None` when it does. `router.rs`'s
+/// `check_candidate` calls this directly for its structural headroom-only
+/// discrimination; [`satisfies`] below calls it to build its own combined
+/// `missing` list.
+///
+/// Saturating: `u32::MAX` inputs produce a rejection, never a wrap or panic.
+/// Inclusive bound: `est_tokens + headroom_tokens == max_context_tokens`
+/// fits (`None`).
+pub(crate) fn size_missing(caps: &Capabilities, est_tokens: u32, headroom_tokens: u32) -> Option<String> {
+    let admission = Admission {
+        est_tokens,
+        headroom_tokens,
+        max_context_tokens: caps.max_context_tokens,
+    };
+    if admission.fits() {
+        None
+    } else {
+        Some(format!(
+            "context: needs {est_tokens} input + {headroom_tokens} headroom = {}, \
              model max_context_tokens is {}",
+            admission.required_tokens(),
             caps.max_context_tokens
-        ));
+        ))
     }
+}
+
+/// Pure, synchronous admission predicate over four scalars: no `&self`, no
+/// clock, no registry. Returns `Ok(())` (allocation-free) when every
+/// requirement holds, else `Err` listing **every** unmet requirement in the
+/// fixed order: tool_calling, structured_output, parallel_tool_calls,
+/// reasoning, reliability_tier, min_context, context (headroom gate last) --
+/// a thin composition of [`non_size_missing`] and [`size_missing`], appended
+/// in that same fixed order (CONTRACT: the context entry is always last,
+/// with the exact string [`size_missing`] documents).
+///
+/// The caller (the router, WI-034) resolves the effective headroom once per
+/// role and passes it in — headroom policy lives in exactly one place.
+pub fn satisfies(
+    caps: &Capabilities,
+    required: &RequiredCaps,
+    est_tokens: u32,
+    headroom_tokens: u32,
+) -> Result<(), Vec<String>> {
+    let mut missing = non_size_missing(caps, required);
+    missing.extend(size_missing(caps, est_tokens, headroom_tokens));
 
     if missing.is_empty() {
         Ok(())
@@ -349,69 +279,79 @@ pub fn satisfies(
 mod tests {
     use super::*;
     use conway_core::capabilities::CacheMode;
-    use conway_core::fakes::FakeBackend;
-    use std::sync::atomic::{AtomicUsize, Ordering};
 
-    static_assertions::assert_impl_all!(CapabilityIndex: Send, Sync, Clone);
-
-    /// Pins the invariant `DeclarativeRouter::check_candidate` depends on to
-    /// classify a rejection as headroom-only: a failing headroom gate
-    /// contributes EXACTLY ONE entry to `missing`, so `missing.len() == 1`
-    /// combined with `context_shortfall(..).is_some()` means "the headroom
-    /// gate failed and nothing else did".
+    /// STRUCTURAL discrimination (replaces the old pin that counted
+    /// `missing`'s entries, board item 01KZFBZHTWDF11TH7G0H613ERE): a
+    /// headroom-only failure is exactly `non_size_missing(..).is_empty() &&
+    /// size_missing(..).is_some()` -- never a string count. `router.rs`'s
+    /// `check_candidate` consumes these two functions directly, not
+    /// `satisfies`'s combined `Vec<String>`.
     ///
     /// Without this, the router's classification rests on an unstated
-    /// property of this function. If someone splits the context entry into
-    /// two strings, this test fails here rather than silently turning every
-    /// headroom-only rejection back into a `NoCandidate` (board item
+    /// property of these functions. If someone splits the context entry
+    /// into two strings, this test fails here rather than silently turning
+    /// every headroom-only rejection back into a `NoCandidate` (board item
     /// `01KYXNAHN64YMADZPQDQC0CPTJ`, P-9).
     #[test]
-    fn a_headroom_only_failure_contributes_exactly_one_missing_entry() {
+    fn headroom_only_failure_is_non_size_empty_and_size_some() {
         let fits_everything_but_context = caps(40_000);
         let required = RequiredCaps::default();
 
+        assert!(
+            non_size_missing(&fits_everything_but_context, &required).is_empty(),
+            "no non-size requirement is set"
+        );
+        assert!(
+            size_missing(&fits_everything_but_context, 34_000, 16_000).is_some(),
+            "50000 needed against a 40000 window must not fit"
+        );
+
+        // `satisfies`'s combined view agrees: exactly one entry, the
+        // context one.
         let missing = satisfies(&fits_everything_but_context, &required, 34_000, 16_000)
             .expect_err("50000 needed against a 40000 window must be rejected");
-
-        assert_eq!(
-            missing.len(),
-            1,
-            "a headroom-only failure must contribute exactly one entry, got: {missing:?}"
-        );
-        assert!(
-            missing[0].starts_with("context:"),
-            "the sole entry must be the context one, got: {}",
-            missing[0]
-        );
-        assert!(
-            context_shortfall(&fits_everything_but_context, 34_000, 16_000).is_some(),
-            "context_shortfall must agree that this is a headroom failure"
-        );
+        assert_eq!(missing.len(), 1);
+        assert!(missing[0].starts_with("context:"));
     }
 
-    /// The complement: when the headroom gate passes, `context_shortfall`
-    /// reports nothing and no `context:` entry appears — so a single-entry
-    /// `missing` caused by some OTHER requirement can never be mistaken for
-    /// a headroom-only rejection.
+    /// The complement: a non-size failure alone -- `non_size_missing(..)`
+    /// non-empty, `size_missing(..)` `None` -- is never classified
+    /// headroom-only.
     #[test]
-    fn a_non_context_failure_is_never_classified_as_headroom() {
+    fn non_context_failure_alone_is_never_classified_as_headroom_only() {
         let roomy_but_weak = weak_caps();
         let required = RequiredCaps {
             reasoning: Some(true),
             ..RequiredCaps::default()
         };
 
+        assert!(!non_size_missing(&roomy_but_weak, &required).is_empty());
+        assert!(
+            size_missing(&roomy_but_weak, 10, 10).is_none(),
+            "the window is ample; nothing to report on size"
+        );
+
         let missing = satisfies(&roomy_but_weak, &required, 10, 10)
             .expect_err("weak_caps has reasoning=false, so this must be rejected");
+        assert!(!missing.iter().any(|m| m.starts_with("context:")));
+    }
 
-        assert!(
-            !missing.iter().any(|m| m.starts_with("context:")),
-            "the window is ample here; no context entry expected, got: {missing:?}"
-        );
-        assert!(
-            context_shortfall(&roomy_but_weak, 10, 10).is_none(),
-            "context_shortfall must not report a shortfall when the window is ample"
-        );
+    /// The MIXED case: both halves fail at once -- `non_size_missing(..)`
+    /// non-empty AND `size_missing(..)` `Some` -- which `check_candidate`
+    /// must NOT classify as headroom-only (P-9's mixed-rejection rule).
+    #[test]
+    fn mixed_failure_is_neither_non_size_empty_nor_size_none() {
+        let weak_and_small = Capabilities {
+            tool_calling: ToolCallSupport::None,
+            ..caps(40_000)
+        };
+        let required = RequiredCaps {
+            tool_calling: Some(ToolCallSupport::NonStreamingOnly),
+            ..RequiredCaps::default()
+        };
+
+        assert!(!non_size_missing(&weak_and_small, &required).is_empty());
+        assert!(size_missing(&weak_and_small, 34_000, 16_000).is_some());
     }
 
     fn caps(max_context_tokens: u32) -> Capabilities {
@@ -448,103 +388,6 @@ mod tests {
             min_context: Some(40_000),
             ..RequiredCaps::default()
         }
-    }
-
-    #[test]
-    fn builder_insert_get_and_unknown_ref() {
-        let index = CapabilityIndex::builder()
-            .insert(BackendId::new("local"), ModelId::new("m1"), caps(1000))
-            .build();
-        let hit = index.get(&"local/m1".parse().unwrap());
-        assert_eq!(hit.map(|c| c.max_context_tokens), Some(1000));
-        assert!(index.get(&"local/other".parse().unwrap()).is_none());
-        assert!(index.get(&"remote/m1".parse().unwrap()).is_none());
-    }
-
-    /// Counting backend: delegates capability values, counts calls.
-    struct CountingBackend {
-        id: BackendId,
-        inner: FakeBackend,
-        calls: Arc<AtomicUsize>,
-    }
-
-    #[async_trait::async_trait]
-    impl Backend for CountingBackend {
-        fn id(&self) -> BackendId {
-            self.id.clone()
-        }
-        fn capabilities(&self, model: &ModelId) -> Capabilities {
-            self.calls.fetch_add(1, Ordering::SeqCst);
-            self.inner.capabilities(model)
-        }
-        async fn generate(
-            &self,
-            req: conway_core::ports::GenerateRequest,
-        ) -> Result<conway_core::ports::GenerateResponse, conway_core::error::BackendError>
-        {
-            self.inner.generate(req).await
-        }
-        async fn stream(
-            &self,
-            req: conway_core::ports::GenerateRequest,
-        ) -> Result<
-            conway_core::ports::BoxStream<
-                'static,
-                Result<conway_core::ports::StreamChunk, conway_core::error::BackendError>,
-            >,
-            conway_core::error::BackendError,
-        > {
-            self.inner.stream(req).await
-        }
-        async fn probe(
-            &self,
-        ) -> Result<conway_core::capabilities::ProbeReport, conway_core::error::BackendError>
-        {
-            self.inner.probe().await
-        }
-    }
-
-    #[test]
-    fn into_builder_preserves_existing_entries_for_further_layering() {
-        let index = CapabilityIndex::builder()
-            .insert(BackendId::new("local"), ModelId::new("m1"), caps(1000))
-            .build();
-        let rebuilt = index
-            .into_builder()
-            .insert(BackendId::new("local"), ModelId::new("m2"), caps(2000))
-            .build();
-        assert_eq!(
-            rebuilt
-                .get(&"local/m1".parse().unwrap())
-                .map(|c| c.max_context_tokens),
-            Some(1000)
-        );
-        assert_eq!(
-            rebuilt
-                .get(&"local/m2".parse().unwrap())
-                .map(|c| c.max_context_tokens),
-            Some(2000)
-        );
-    }
-
-    #[test]
-    fn from_backends_calls_once_per_pair_and_omits_absent_backends() {
-        let calls = Arc::new(AtomicUsize::new(0));
-        let backend: Arc<dyn Backend> = Arc::new(CountingBackend {
-            id: BackendId::new("local"),
-            inner: FakeBackend::with_capabilities(caps(1000)),
-            calls: Arc::clone(&calls),
-        });
-        let refs: Vec<ModelRef> = vec![
-            "local/m1".parse().unwrap(),
-            "local/m2".parse().unwrap(),
-            "local/m1".parse().unwrap(), // duplicate: must not re-query
-            "absent/m3".parse().unwrap(),
-        ];
-        let index = CapabilityIndex::from_backends(&[backend], &refs);
-        assert_eq!(calls.load(Ordering::SeqCst), 2, "once per unique pair");
-        assert_eq!(index.len(), 2);
-        assert!(index.get(&"absent/m3".parse().unwrap()).is_none());
     }
 
     #[test]
@@ -629,11 +472,23 @@ mod tests {
         assert!(err[1].starts_with("context:"));
     }
 
-    /// Reconciliation pin: routing's `satisfies` and core's
-    /// `RequiredCaps::satisfied_by` must agree on ACCEPT vs REJECT for
-    /// identical inputs (messages may differ; the decision may not). Core
-    /// reads headroom from `required.headroom_tokens`, so the pin sets that
-    /// field to the value passed to `satisfies`. `structured_output` is
+    /// Reconciliation pin (re-aimed, board item 01KZFBZHTWDF11TH7G0H613ERE):
+    /// routing's `satisfies` and core's `RequiredCaps::satisfied_by` --
+    /// TWO surviving renderings of ONE admission decision, not two
+    /// independent implementations of it -- must agree on ACCEPT vs REJECT
+    /// for identical inputs (messages may differ; the decision may not).
+    /// This is what "the surviving single source" actually is here: the SIZE
+    /// arithmetic both call is now the SAME code, `conway_core::ports::
+    /// Admission` (see `size_missing`'s own doc and `RequiredCaps::
+    /// satisfied_by`'s context-check block) -- deleting either renderer
+    /// outright is not possible without breaking a real, distinct contract
+    /// (`satisfies`'s CLI-facing golden strings here; `satisfied_by`'s own
+    /// public API and tests in `conway-core`), so this test is what keeps
+    /// the two renderings from silently drifting on the one thing that must
+    /// never differ between them: the verdict.
+    ///
+    /// Core reads headroom from `required.headroom_tokens`, so the pin sets
+    /// that field to the value passed to `satisfies`. `structured_output` is
     /// held to `None` here: core uses equality where routing uses rank
     /// ordering (a documented, deliberate difference in requirement
     /// semantics, not in admission arithmetic).

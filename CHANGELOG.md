@@ -56,6 +56,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`Backend::admit` becomes the authoritative context-fit check;
+  `conway-routing`'s pre-flight arithmetic is demoted to an advisory
+  filter** (board item 01KZFBZHTWDF11TH7G0H613ERE, decision
+  01KZF13BAR473X5SXN8HN95T6B), completing the admission work board item
+  01KZDC4DKVC4JC3W4KN1WMC43N shipped `admit` for but left unconsumed.
+  Right up to this item, three call sites asked the same question --
+  "does this fit?" -- with three independent restatements of
+  `est_tokens + headroom_tokens <= max_context_tokens`:
+  `conway_routing::context_shortfall` (`router.rs`'s `check_candidate` and
+  `capability.rs`'s `satisfies`) and `conway-runtime`'s own
+  `AttemptEngine::execute`, which partitioned candidates by that same
+  predicate BEFORE a request had even been assembled. `context_shortfall`
+  is deleted outright; `AttemptEngine::execute` now builds each route's
+  real `GenerateRequest` first (segments already carrying that candidate's
+  own cache hints -- see below) and asks `backend.admit(&gen_req,
+  req.headroom)`, the backend's own dialect-aware estimate over its own
+  wire body, never a restatement. A refusal skips that one candidate --
+  no network call, no health `Observation` (a too-large prompt is a
+  request problem, not an endpoint-health signal) -- and the chain
+  advances; when EVERY candidate refuses this way, the refusals are
+  aggregated into `RuntimeError::Routing(RoutingError::ContextTooLarge)`,
+  naming the largest window among them and sourcing every number from the
+  refusing `BackendError`s directly. **The router's own declared-window
+  check survives as a cheap, ADVISORY pre-filter** -- `capability.rs`'s
+  `satisfies` is split into `non_size_missing` (the six non-size
+  requirements) and `size_missing` (the headroom gate, now expressed
+  through `conway_core::ports::Admission` rather than restating the
+  arithmetic), and `router.rs`'s `check_candidate` asks both directly --
+  `non_size_missing(..).is_empty() && size_missing(..).is_some()` --
+  rather than counting strings in a combined `Vec` (`missing.len() == 1`,
+  the prior, fragile discrimination). **The two checks are deliberately
+  NOT required to agree**: the router's `heuristic-chars4` estimate over a
+  *declared* window and `admit`'s measure of the *actual* serialized wire
+  body are different questions asked at different times -- `docs/
+  routing.md`'s new "Advisory vs. authoritative" section explains why a
+  test asserting agreement between them would be asserting the wrong
+  thing. `CapabilityIndex`/`CapabilityIndex::from_backends` move from
+  `conway-routing` to `conway_core::ports` ("the backend side": the type
+  reads directly off `Backend::capabilities` and is not routing-policy
+  specific), re-exported from `conway-routing` for source compatibility.
+  `conway-routing` is no longer a dependency of `conway-runtime` at all --
+  `context_shortfall` was the last thing it named there. **Breaking for
+  any code outside this workspace naming `conway_routing::context_shortfall`
+  directly**: it no longer exists; there is no drop-in replacement, by
+  design -- a caller that needs this question answered should build its
+  `GenerateRequest` and call `Backend::admit`.
+  (`crates/conway-core/src/ports/capability_index.rs`,
+  `crates/conway-core/src/ports/mod.rs`, `crates/conway-core/src/capabilities.rs`,
+  `crates/conway-routing/src/capability.rs`, `crates/conway-routing/src/router.rs`,
+  `crates/conway-routing/src/lib.rs`, `crates/conway-runtime/src/attempt.rs`,
+  `crates/conway-runtime/Cargo.toml`, `docs/routing.md`)
+
 - **The T-2 failure-classification table and `HeadroomPolicy` move from
   `conway-routing` into `conway-core`** (board item
   01KZFC0JDMC2Y631FFCXWR37CP), the precondition for the agent engine to stop
