@@ -148,6 +148,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `crates/conway-backends/tests/admission.rs`,
   `crates/conway-routing/src/failure.rs`)
 
+- **Two foundation pages for the plugin and hook documentation set:
+  [`docs/plugins/concepts.md`](docs/plugins/concepts.md) and
+  [`docs/plugins/README.md`](docs/plugins/README.md)** (board item
+  01KYTP59ZBQZ6GDAHNH5N3T6HR), indexed from `docs/README.md`'s new
+  "Extending conway" group. `concepts.md` is the mental model the other
+  four pages assume and none of them re-explain: hook-first registration,
+  the observer/participant split (an observer's shape *structurally cannot*
+  carry a denial; participants compose so registration order is
+  unobservable), the value-class boundary — tool **arguments** are never
+  rewritten by anything, permission **verdicts** narrow only, and
+  **context** may be edited, dropped, replaced, or masked — fork versus
+  spawn for inference-evaluated hooks, and trust in one paragraph.
+
+  The value-class table's reasoning is the part that is not guessable, so
+  it is stated once, here: rewriting arguments desynchronizes what a human
+  authorized from what executes, because the permission cache key digests
+  them; verdicts narrow only because an inference-evaluated policy reads
+  attacker-influenced text, making it a property of the type rather than a
+  config flag; and context is the *permissive* row precisely because a
+  plugin that can append to context can already inject arbitrary text —
+  the security line was crossed by `append`, not by `replace`. A reader who
+  infers "strict everywhere" from the first two rows would get that wrong.
+
+  **Written ahead of the implementation, and labeled as such at every
+  claim** (GP-14: a labeled forward declaration is respectable, an
+  unlabeled one is a trap). Most of the hook architecture is not built:
+  `Plugin` has no `hooks()` method, no `hook.fork` capability exists, and
+  nothing reads a `hooks` block from settings because no such block
+  exists. What is real is in-process `Plugin`/`Tool` registration,
+  `ContextHook`, `PermissionGate`, and a `TrustStore` that implements one
+  kind keyed on absolute path rather than the full `(kind, id, digest)`
+  design. Every unbuilt section names its board item
+  (01KZDC0RDRMMMJHX7SAFMM2Q5A, 01KZ844ZXZMVRWC7ZANT7PSM6X).
+
 - **A forked child now inherits the parent's `agent_def` — but never that
   def's `result_contract`** (board item 01KZGXYSEKMVM4GVG4ZBWC0WSC,
   decision 01KZHEWXDZWPWMEAQ01XY2RDCB). **BREAKING:** a def's system

@@ -30,5 +30,11 @@ everything else assumes that page's setup.
 | [`permissions.md`](permissions.md) | What do the permission modes, the prompt, pattern grants, project trust, and `--root` confinement actually guarantee — and not guarantee? | You're deciding what an agent is allowed to touch. |
 | [`tools.md`](tools.md) | What are the built-in tools, what's each one's category, permission class, and truncation policy, and which ones can `--root` actually confine? | You're writing `--allowed-tools`/`--deny-tools`, a permission rule, or a `PermissionGate`. |
 
+## Extending conway
+
+| Page | Answers | Read if |
+| --- | --- | --- |
+| [`plugins/`](plugins/README.md) | How does conway's plugin and hook architecture work — what's built today, what's decided but not yet built, and where do I start? Start with [`plugins/concepts.md`](plugins/concepts.md) for the mental model. | You're writing a plugin, a hook, or a policy that attaches to conway rather than just using it. |
+
 For the system-level picture — the crate layout, the core primitives, and
 the data flow of one turn — see [`/ARCHITECTURE.md`](../ARCHITECTURE.md).
