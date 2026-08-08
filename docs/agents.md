@@ -183,6 +183,17 @@ applied at all — only a spawn with no call-site contract of its own falls
 back to the def's. This mirrors how the def's `tools` selector already
 works: a call-site value shadows the def's, it does not merge with it.
 
+**"Spawns from that def" means the call site *named* it** — a `conway_fork`/
+`ForkSpec` that leaves `agent_def` unset and instead inherits the forker's
+own def (see below) does NOT pick up that def's `result_contract`, even
+though it picks up everything else the def carries (system prompt, tools,
+model pin). A result contract is declared at a call site — the model's
+argument, an embedder's builder field, or naming a def explicitly — and is
+never inherited merely because the def that happens to define it was. This
+is the concrete reason a bare `/fork` (which never sets `result_contract`
+and inherits its def) does not require its interactive child to call
+`report` while simultaneously denying it that tool.
+
 **`conway_ask` takes no `agent_def` argument, but its child inherits the
 caller's own def anyway** — the answer to what was, before board items
 01KZGX1RR0VXN2YH3P75SBE9SA/01KZC8DD9C74BSTP8BQDJKYNFR, an open design

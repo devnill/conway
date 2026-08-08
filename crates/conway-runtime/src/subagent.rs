@@ -183,7 +183,7 @@ impl SubagentHost for Runtime {
         &self,
         caller: AgentId,
         parent: AgentId,
-        spec: SubagentSpec,
+        mut spec: SubagentSpec,
     ) -> Result<AgentId, RuntimeError> {
         // P-1 (board item 01KYTP0PGKJ4VCJP5TD39A1WHF): `caller` must own
         // `parent` -- checked BEFORE anything else runs, exactly like
@@ -383,6 +383,43 @@ impl SubagentHost for Runtime {
         let mut agent_path = self.tree_ref().path(parent);
         agent_path.push(agent_id);
 
+        // Fork-only inheritance fill (decision 01KZHEWXDZWPWMEAQ01XY2RDCB): a
+        // forked child inherits the PARENT's own `agent_def` when the call
+        // site named none itself -- `conway_fork`, `ForkSpec::from`, and the
+        // TUI's `bare_fork` all build `SubagentSpec::agent_def: None`
+        // unconditionally today, so without this fill a fork off a
+        // def-carrying agent silently dropped that def (system prompt, tool
+        // selector, model pin) rather than continuing under it. Gated on
+        // `spec.mode == Fork`: spawn is explicitly out of scope for this
+        // ruling and must not inherit a def this way (a spawn with no
+        // `agent_def` already has its own documented "inherit the parent's
+        // role/model, but not a def" behavior -- see `SpawnSpec`'s doc --
+        // and is left alone).
+        //
+        // This supersedes the near-identical fill `ask` (below) used to
+        // perform on the parent's `agent_def` before calling this method:
+        // `ask` is fork-only (P-1: the `spec.mode != Fork` guard at the top
+        // of that method), so this Fork arm now covers every path that used
+        // to need it, and the second copy was deleted rather than kept in
+        // sync by hand.
+        //
+        // ORDERING, load-bearing for `result_contract` below: `def_was_inherited`
+        // is captured from `spec.agent_def` BEFORE this fill mutates it, so
+        // the `result_contract` computation further down can tell "the call
+        // site named this def" apart from "this def only got here via
+        // inheritance" and never source a contract from the latter. A result
+        // contract is always declared at a call site (a tool's own
+        // argument, a `ForkSpec`/`SpawnSpec` builder field, or by naming a
+        // def) and is NEVER inherited -- see `AgentDef::result_contract`'s
+        // own doc and this file's `result_contract` computation below for
+        // the full reasoning (the contract chain is exactly two-deep;
+        // sourcing from an inherited def would be a third, undocumented
+        // step).
+        let def_was_inherited = spec.mode == SubagentMode::Fork && spec.agent_def.is_none();
+        if def_was_inherited {
+            spec.agent_def = parent_meta.agent_def.clone().map(AgentDefRef);
+        }
+
         let agent_def = spec
             .agent_def
             .as_ref()
@@ -420,6 +457,25 @@ impl SubagentHost for Runtime {
         // which additionally falls back to the parent -- a subagent's result
         // contract has no such "inherit from parent" step, so the fallback
         // chain here is exactly two-deep.
+        //
+        // **`def_was_inherited` carve-out (decision 01KZHEWXDZWPWMEAQ01XY2RDCB):**
+        // a fork's `agent_def` may now be the fork-only inheritance fill just
+        // above rather than something the call site itself named. A result
+        // contract is always declared AT a call site -- a tool argument, a
+        // `ForkSpec`/`SpawnSpec` builder field, or by NAMING a def -- and is
+        // never inherited merely because the def that happens to carry it
+        // was. `def_was_inherited` guards exactly that: when true, `agent_def`
+        // here is the SAME `AgentDef` the parent itself is running under, and
+        // its `result_contract` is skipped entirely, never consulted, even
+        // though `agent_def.tools`/`.model`/the system prompt (all resolved
+        // above, from the very same `agent_def`) DO apply to this child. This
+        // is deliberately NOT the same rule as the `ask_origin` carve-out
+        // just below: that one exists because `AskOutcome` has no
+        // `structured` field for a contract to validate at all; THIS one
+        // applies to an ordinary fork child, whose `AgentResult.structured`
+        // is both satisfiable and readable by the forker -- the contract is
+        // skipped purely because "the def only got here by inheritance" is
+        // not "the call site declared a contract".
         //
         // **`ask_origin.is_some()` carve-out** (board items 01KZGX1RR0VXN2YH3P75SBE9SA/
         // 01KZC8DD9C74BSTP8BQDJKYNFR): `spec.ask_origin` is `Some` for
@@ -473,9 +529,13 @@ impl SubagentHost for Runtime {
                 None => None,
             }
         } else {
-            spec.result_contract
-                .clone()
-                .or_else(|| agent_def.and_then(|d| d.result_contract.clone()))
+            spec.result_contract.clone().or_else(|| {
+                if def_was_inherited {
+                    None
+                } else {
+                    agent_def.and_then(|d| d.result_contract.clone())
+                }
+            })
         };
 
         let now = Utc::now();
@@ -965,40 +1025,35 @@ impl SubagentHost for Runtime {
         if spec.mode != SubagentMode::Fork {
             return Err(RuntimeError::AskRequiresFork { mode: spec.mode });
         }
-        // P-1/board item 01KZC8DD9C74BSTP8BQDJKYNFR: the `conway_ask` tool
+        // P-1/board item 01KZC8DD9C74BSTP8BQDJKYNFR, MOVED (decision
+        // 01KZHEWXDZWPWMEAQ01XY2RDCB): the `conway_ask` tool
         // (`crates/conway-tools/src/subagent/ask.rs`) always builds its
         // `SubagentSpec` with `agent_def: None` -- it has no
         // `SessionMeta`/`AgentDef` lookup surface of its own, only a
-        // `ToolCtx`. Filled in HERE, at the trait boundary (not widening
-        // `ToolCtx` to give a single tool callsite its own copy of this
-        // lookup -- P-1's own "enforced at the trait boundary, not only at
-        // a single tool callsite" shape), from the PARENT's own
-        // `SessionMeta::agent_def` when the caller left it unset -- the
-        // exact fallback `conway`'s `SessionHandle::ask` already hardcodes
-        // itself (`parent_meta.agent_def.map(AgentDefRef)`) and
-        // `runtime.rs`'s `resume_root` already uses for its own resume
-        // path. A caller that DOES supply `spec.agent_def` (an embedder's
-        // own `ForkSpec`, hypothetically) is left untouched -- this is a
-        // fallback, not an override, mirroring `tools`'/`result_contract`'s
-        // own "call site wins" precedence in `start` below.
+        // `ToolCtx`. This method used to fill that in itself, HERE, from the
+        // PARENT's own `SessionMeta::agent_def`; that fill has been deleted
+        // in favor of `start`'s own Fork-only inheritance fill (see that
+        // method's doc, right before its `agent_def` resolution) -- `ask` is
+        // fork-only (the `spec.mode != Fork` guard just above), so passing
+        // `spec.agent_def: None` straight through to `self.start` below now
+        // reaches the SAME fallback fill an ordinary def-less `conway_fork`
+        // does, with no second copy to keep in sync by hand. A caller that
+        // DOES supply `spec.agent_def` itself (an embedder's own `ForkSpec`,
+        // hypothetically) is unaffected either way -- both this method's old
+        // fill and `start`'s new one are fallbacks, never overrides.
         //
-        // Before this fill, an ask child got NO agent_def at all: no
-        // system-prompt segment (it silently read a transcript authored by
-        // an agent it is not), and -- since an absent `spec.tools` PLUS an
-        // absent `agent_def.tools` resolves to `PluginRegistry::specs`'s
+        // Before either fill existed, an ask child got NO agent_def at all:
+        // no system-prompt segment (it silently read a transcript authored
+        // by an agent it is not), and -- since an absent `spec.tools` PLUS
+        // an absent `agent_def.tools` resolves to `PluginRegistry::specs`'s
         // `selector.is_none_or(..)` "no selector -> everything" fallback --
         // the FULL tool registry rather than the parent def's own
         // restrictive selector: a capability escalation one `conway_ask`
         // hop away from a def-restricted parent. `spec.tools` (a caller-
         // narrowing arg, e.g. `AskArgs::tools`) still takes precedence over
-        // whatever the now-filled `agent_def.tools` supplies -- unchanged,
-        // see `start`'s own `tools` precedence below.
-        let mut spec = spec;
-        if spec.agent_def.is_none() {
-            let parent_session = self.agent_session(parent)?;
-            let parent_meta = self.loop_deps().store.meta(&parent_session).await?;
-            spec.agent_def = parent_meta.agent_def.map(AgentDefRef);
-        }
+        // whatever the filled-in `agent_def.tools` supplies -- unchanged,
+        // see `start`'s own `tools` precedence.
+        //
         // 1. Subscribe BEFORE launch so the first TextDelta is not missed.
         let mut stream = Runtime::subscribe(self);
         // 2. Launch the child (fork per `spec.mode`; `ask` is fork-only --
@@ -1006,10 +1061,11 @@ impl SubagentHost for Runtime {
         //    `ensure_own_subtree(caller, parent)` is this method's ONLY
         //    ownership check -- see this method's own doc. `spec.ask_origin`
         //    is set by the caller (`ToolAsk`/`ModalAsk`) before it reaches
-        //    here -- `start`'s own carve-out (see that method's
-        //    `result_contract` computation) is what keeps a def-declared
-        //    `result_contract`, now reachable via the `agent_def` fill just
-        //    above, from ever governing this child.
+        //    here -- `start`'s own `ask_origin.is_some()` carve-out (see
+        //    that method's `result_contract` computation) is what keeps a
+        //    def-declared `result_contract`, now reachable via `start`'s own
+        //    Fork-only `agent_def` inheritance fill, from ever governing
+        //    this child.
         let child_agent = self.start(caller, parent, spec).await?;
         // 3. Resolve the child's SessionId for `transcript_ref` (P-2). The
         //    child is already attached (start -> launch_agent -> tree.attach

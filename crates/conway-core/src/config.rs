@@ -31,6 +31,22 @@ pub struct AgentDef {
     pub tools: ToolSelector,
     pub skills: Vec<String>,
     pub max_steps: Option<u32>,
+    /// Applied to a child that spawns/forks FROM this def -- i.e. a call
+    /// site (a `conway_fork`/`conway_spawn` argument, or an embedder's
+    /// `ForkSpec`/`SpawnSpec` builder field) that NAMES this def, and left
+    /// its own `result_contract` unset (a call-site contract always wins;
+    /// see `docs/agents.md`'s result-contract table).
+    ///
+    /// **Never applied when this def arrived by inheritance rather than by
+    /// being named** (decision 01KZHEWXDZWPWMEAQ01XY2RDCB): a forked child
+    /// whose `agent_def` is filled in from its parent's own
+    /// (`conway_runtime`'s `SubagentHost::start`, Fork-only fallback, gated
+    /// on the call site leaving `agent_def` unset) still gets this def's
+    /// system prompt, tools selector, and model pin, but NOT this field --
+    /// a result contract is always declared AT a call site, never merely
+    /// carried along because the def that happens to define it was. This is
+    /// otherwise knowable only from that method's own implementation, which
+    /// is why it is spelled out here too.
     pub result_contract: Option<schemars::schema::RootSchema>,
 }
 
