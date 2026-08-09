@@ -182,6 +182,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   design. Every unbuilt section names its board item
   (01KZDC0RDRMMMJHX7SAFMM2Q5A, 01KZ844ZXZMVRWC7ZANT7PSM6X).
 
+- **Docs 4/5 — the authoring guide:
+  [`docs/plugins/authoring.md`](docs/plugins/authoring.md),
+  [`scripts.md`](docs/plugins/scripts.md), and
+  [`inference-hooks.md`](docs/plugins/inference-hooks.md)** (board item
+  01KYTP8BT2BT4ADAPZENHT4FQV). `authoring.md`'s ten-minute walkthrough gets
+  an author from an empty crate to a `ContextHook` they can watch transform
+  a payload, and **its code was executed verbatim** against a scratch crate
+  whose only conway dependency is `conway` itself — the snippets are
+  extracted from the page's own markdown, compiled, and run, so what a
+  reader copies is literally what was tested.
+
+  Running it is what justified the requirement. The walkthrough did **not**
+  compile as first written: it left `ContextHookCtx`'s `artifacts` field as
+  a comment (`artifacts: /* see "Artifacts" below */,`), which is
+  `error: expected expression, found ','`. Making it work needs about
+  fifteen lines of no-op `ArtifactWriter` boilerplate, because that field
+  became required in this same release and the facade ships no no-op
+  implementation. The page now shows the working form; the underlying
+  ergonomic problem is filed as 01KZJ5S3ZC8SPWTX94C4HTEC2R.
+
+  `scripts.md` carries a heavier caveat, stated at the top rather than
+  buried: **no script-dispatching plugin exists in the tree**, so it
+  documents a designed convention rather than a runnable path — the honest
+  shape when six of fourteen extension points are implemented. It still
+  states the cost that decides the design (process spawn is roughly
+  10-50 ms for a shell script and 200-400 ms for a Python one, per
+  invocation, compounding across parallel tool batches) and the rule that a
+  script which *dies* must never be read as consent.
+  `inference-hooks.md` frames fork-versus-spawn as "judge with full context"
+  against "judge in isolation", names the security asymmetry plainly, and
+  leads its guidance with when *not* to reach for one: a static rule is
+  faster, cheaper, deterministic, and still works when the plugin is dead.
+  (`docs/plugins/authoring.md`, `docs/plugins/scripts.md`,
+  `docs/plugins/inference-hooks.md`, `docs/plugins/README.md`,
+  `docs/plugins/hooks.md`)
+
 - **`BackendFactory` — a provider dialect can be named and constructed as an
   installable component** (board item 01KZHF0RBKJZZC68F7GPFB347Q, under the
   backends-as-plugins charter; shape approved in decision

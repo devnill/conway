@@ -114,6 +114,28 @@ The fastest possible proof that your hook does what you think: call
 `ConwayBuilder`, no credentials, sub-second:
 
 ```rust
+use conway::plugin::{ArtifactWriteError, ArtifactWriteHandle, ArtifactWriter};
+use std::path::PathBuf;
+use std::sync::Arc;
+
+// `ContextHookCtx` requires an `artifacts` handle even if your hook never
+// writes a file, and there is no no-op writer in the facade yet, so a unit
+// test has to supply one. See "Artifacts" below for the real thing; board
+// item 01KZJ5S3ZC8SPWTX94C4HTEC2R tracks removing this boilerplate.
+struct NoopWriter;
+
+#[async_trait]
+impl ArtifactWriter for NoopWriter {
+    async fn write(
+        &self,
+        _agent_id: conway::AgentId,
+        name: &str,
+        _bytes: Vec<u8>,
+    ) -> Result<PathBuf, ArtifactWriteError> {
+        Ok(PathBuf::from(name))
+    }
+}
+
 #[tokio::test]
 async fn my_first_hook_appends_its_marker() {
     let hook = MyFirstHook;
@@ -123,7 +145,7 @@ async fn my_first_hook_appends_its_marker() {
         turn: 0,
         model: None,
         estimated_tokens: 0,
-        artifacts: /* see "Artifacts" below if your hook writes files */,
+        artifacts: ArtifactWriteHandle::new(Arc::new(NoopWriter), conway::AgentId::new()),
     };
     let payload = ContextPayload { segments: vec![], tools: vec![] };
 
@@ -133,6 +155,9 @@ async fn my_first_hook_appends_its_marker() {
     assert!(matches!(out.segments[0].provenance, Provenance::SystemNote { .. }));
 }
 ```
+
+You will also need `tokio` with the `macros` and `rt-multi-thread` features
+as a dev-dependency for `#[tokio::test]`.
 
 This is exactly the shape of `plugin_surface.rs`'s own
 `authored_hook_transforms_payloads` test. Treat it as a floor, not a ceiling —
@@ -186,12 +211,11 @@ without recompiling it, because a plugin is `Arc<dyn Plugin>`, linked into
 the binary before the process starts (`concepts.md`'s "What exists today"
 list).
 
-**This walkthrough was not executed end to end this session** — see this
-item's completion report for exactly why and exactly what to run to close
-that gap. Every snippet above is either byte-for-byte from
-`crates/conway/tests/plugin_surface.rs` / `crates/conway/examples/
-minimal_session.rs`, or a one-line, mechanical combination of the two;
-neither piece was modified in substance.
+**Steps 1-3 of this walkthrough were executed verbatim** against a scratch
+crate outside the workspace whose only conway dependency is `conway`
+itself, and the test passes. Running it is what caught the missing
+`artifacts` handle above: the snippet previously left that field as a
+comment, which is not valid Rust, so the page did not compile as written.
 
 ## Where things live
 
