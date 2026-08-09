@@ -240,10 +240,59 @@ pub enum PermissionMode {
 /// adapter configs constructed from this by WI-100). Mirrors how those two
 /// adapter configs are already a third, distinct shape from
 /// `conway_core::routing::BackendConfig` in the committed code.
+///
+/// **`kind` is an open name, not a closed enum** (board item
+/// 01KZHF1E85MS1VF4YH8CDNCP9Z, cite decision 01KZHRPZ010R37411R3W1XR5TF —
+/// the config break this represents is accepted, pre-1.0, not re-litigated
+/// here). `crate::builder::construct_backend` resolves it against every
+/// `conway_core::ports::BackendFactory` registered on the builder
+/// (`ConwayBuilder::with_backend_factory`), falling back to the two
+/// adapters this facade still compiles in (`"anthropic"`,
+/// `"openai-compat"`) for any name they claim — see that function's own doc
+/// for the temporary, deliberate nature of that fallback. An unrecognised
+/// name is a hard, named `build()` error, never a silent no-op (GP-14).
+///
+/// **Kind-specific keys: the catch-all shape, chosen over its two
+/// alternatives, with its cost stated rather than papered over.** Three
+/// shapes were on the table:
+/// 1. *Chosen*: keep the five typed fields below and add `extra` — a
+///    flattened catch-all for whatever else a third-party kind's entry
+///    carries. Cost, accepted explicitly: `#[serde(flatten)]` cannot
+///    coexist with `#[serde(deny_unknown_fields)]` (serde denies unknown
+///    fields by rejecting them before the flatten target ever sees them,
+///    which defeats the whole point of a catch-all), so this struct drops
+///    that annotation — a typo in one of the five typed field names (e.g.
+///    `base_ur1`) is no longer a parse error; it is silently captured into
+///    `extra` and never read by either shipped adapter. This is a genuine
+///    regression in a validation surface `tests/config_precedence.rs`'s
+///    sibling `deny_unknown_fields` tests still enforce for every OTHER
+///    section of `settings.json` — accepted here, and only here, because
+///    the alternative (below) forecloses third-party kinds entirely. A
+///    factory is free to validate its own `extra` keys inside `build()`
+///    (`BackendBuildContext` does not yet carry `extra` — a follow-on
+///    concern once a real third-party kind needs it, not one this item's
+///    two fallback adapters do) and reject its own typos there; the facade
+///    itself does not attempt per-kind validation.
+/// 2. *Rejected*: nest custom keys under one explicit sub-object (e.g.
+///    `{"kind": "foo", "config": {...}}`), leaving the top level closed and
+///    `deny_unknown_fields` intact. Rejected because it reintroduces
+///    exactly the privileged-built-in asymmetry this item exists to
+///    remove (GP-03): the five built-in-shaped keys would sit at one level
+///    and a third party's own keys at another, a structural "built-ins are
+///    first-class, everyone else is a guest" distinction with no technical
+///    justification.
+/// 3. *Rejected*: move every kind-specific key (including `dialect`, which
+///    is already `openai-compat`-only) into the catch-all too, so nothing
+///    but `kind` stays typed. Rejected because it is the largest break to
+///    every existing `settings.json` and every example in
+///    `docs/providers.md` for no benefit the chosen shape does not already
+///    provide — `dialect` staying a typed, documented field for the
+///    built-in `openai-compat` kind costs nothing since a third-party kind
+///    is free to ignore or reuse it via `BackendBuildContext::dialect`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, default)]
+#[serde(default)]
 pub struct BackendEntry {
-    pub kind: BackendKind,
+    pub kind: String,
     /// Mutually exclusive with `api_key_env` (enforced by
     /// `merge::validate`).
     pub api_key: String,
@@ -251,31 +300,33 @@ pub struct BackendEntry {
     pub base_url: String,
     pub dialect: Option<String>,
     pub stream_tools: Option<bool>,
+    /// Every key this entry carries beyond the five typed fields above —
+    /// where a third-party `kind`'s own configuration lives. See this
+    /// struct's own doc comment for the typo-detection cost this flattened
+    /// catch-all accepts.
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
 }
 
 impl Default for BackendEntry {
     fn default() -> Self {
         Self {
-            kind: BackendKind::Anthropic,
+            kind: DEFAULT_BACKEND_KIND.to_string(),
             api_key: String::new(),
             api_key_env: String::new(),
             base_url: String::new(),
             dialect: None,
             stream_tools: None,
+            extra: BTreeMap::new(),
         }
     }
 }
 
-/// `backends.<id>.kind`. `OpenaiCompat` (not `OpenAiCompat`) is deliberate:
-/// `#[serde(rename_all = "kebab-case")]` splits on the type's own case
-/// boundaries, so `OpenaiCompat` -> `"openai-compat"` matches the documented
-/// value exactly; `OpenAiCompat` would instead produce `"open-ai-compat"`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum BackendKind {
-    Anthropic,
-    OpenaiCompat,
-}
+/// `backends.<id>.kind`'s default when the key is absent — matches the
+/// pre-open-name default (`BackendKind::Anthropic`'s
+/// `#[serde(rename_all = "kebab-case")]` wire value) exactly, so an entry
+/// that never set `kind` before this item behaves identically after it.
+pub const DEFAULT_BACKEND_KIND: &str = "anthropic";
 
 /// `[routing]` (headroom amendment). Just the global headroom default —
 /// `[roles]` and `[health]` are separate top-level sections per the

@@ -15,8 +15,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use conway::config::schema::{
-    AgentsConfig, BackendEntry, BackendKind, ConwayConfig, HealthSection, LimitsConfig,
-    ModelsConfig, PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig, TuiSection,
+    AgentsConfig, BackendEntry, ConwayConfig, HealthSection, LimitsConfig, ModelsConfig,
+    PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
+    TuiSection,
 };
 use conway::{AgentIntent, Conway, ConwayBuilder, ConwayError, SessionHandle, SessionSpec};
 use conway_core::agent::{PermissionDecision, SubagentMode};
@@ -84,12 +85,10 @@ fn base_config(with_intent_role: bool) -> ConwayConfig {
         backends.insert(
             "fake".to_string(),
             BackendEntry {
-                kind: BackendKind::OpenaiCompat,
-                api_key: String::new(),
-                api_key_env: String::new(),
+                kind: "openai-compat".to_string(),
                 base_url: "http://localhost:11434".to_string(),
                 dialect: Some("ollama".to_string()),
-                stream_tools: None,
+                ..BackendEntry::default()
             },
         );
     }

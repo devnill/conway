@@ -9,7 +9,7 @@ use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, LimitsConfig, ModelsConfig, PermissionMode,
     PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig, TuiSection,
 };
-use conway::config::schema::{BackendEntry, BackendKind};
+use conway::config::schema::BackendEntry;
 use conway::{Conway, ConwayBuilder, ConwayError, SessionSpec};
 // Only named by the `builtin-tools`-gated tests below.
 #[cfg(feature = "builtin-tools")]
@@ -298,7 +298,7 @@ fn build_accepts_an_anthropic_backend_under_any_json_key() {
     cfg.backends.insert(
         "kimi".to_string(),
         BackendEntry {
-            kind: BackendKind::Anthropic,
+            kind: "anthropic".to_string(),
             api_key: "any-non-empty-key".to_string(),
             base_url: "https://api.kimi.com/coding/".to_string(),
             ..BackendEntry::default()
@@ -322,7 +322,7 @@ fn build_succeeds_for_a_conventionally_named_anthropic_backend() {
     cfg.backends.insert(
         "anthropic".to_string(),
         BackendEntry {
-            kind: BackendKind::Anthropic,
+            kind: "anthropic".to_string(),
             api_key: "sk-ant-api03-not-a-real-key".to_string(),
             ..BackendEntry::default()
         },
@@ -695,7 +695,7 @@ fn injected_backend_replaces_config_derived_backend_with_same_id() {
     cfg.backends.insert(
         "local".to_string(),
         BackendEntry {
-            kind: BackendKind::OpenaiCompat,
+            kind: "openai-compat".to_string(),
             dialect: Some("ollama".to_string()),
             base_url: "http://localhost:11434/v1".to_string(),
             ..BackendEntry::default()
@@ -756,7 +756,7 @@ fn probe_on_startup_false_makes_no_network_call_true_does() {
     cfg.backends.insert(
         "probe".to_string(),
         BackendEntry {
-            kind: BackendKind::OpenaiCompat,
+            kind: "openai-compat".to_string(),
             dialect: Some("openai".to_string()),
             base_url: format!("http://{addr}/v1"),
             ..BackendEntry::default()
@@ -791,7 +791,7 @@ fn probe_on_startup_false_makes_no_network_call_true_does() {
     cfg.backends.insert(
         "probe".to_string(),
         BackendEntry {
-            kind: BackendKind::OpenaiCompat,
+            kind: "openai-compat".to_string(),
             dialect: Some("openai".to_string()),
             base_url: format!("http://{addr}/v1"),
             ..BackendEntry::default()
@@ -827,7 +827,7 @@ fn explain_routing_reports_the_configured_chain_for_the_role() {
     cfg.backends.insert(
         "local".to_string(),
         BackendEntry {
-            kind: BackendKind::OpenaiCompat,
+            kind: "openai-compat".to_string(),
             dialect: Some("ollama".to_string()),
             base_url: "http://localhost:11434/v1".to_string(),
             ..BackendEntry::default()
@@ -886,12 +886,10 @@ fn unset_api_key_env_fails_naming_the_variable() {
     cfg.backends.insert(
         "kimi".to_string(),
         BackendEntry {
-            kind: BackendKind::Anthropic,
-            api_key: String::new(),
+            kind: "anthropic".to_string(),
             api_key_env: "CONWAY_TEST_DEFINITELY_UNSET_KEY_VAR".to_string(),
             base_url: "https://api.kimi.com/coding/".to_string(),
-            dialect: None,
-            stream_tools: None,
+            ..BackendEntry::default()
         },
     );
 
@@ -912,5 +910,96 @@ fn unset_api_key_env_fails_naming_the_variable() {
     assert!(
         !err.contains("console.anthropic.com"),
         "must not misdirect a third-party-endpoint user to Anthropic's console: {err}"
+    );
+}
+
+/// Board item 01KZHF1E85MS1VF4YH8CDNCP9Z: a `[backends.<id>].kind` no
+/// installed factory claims (and that isn't one of the two fallback
+/// adapters) fails `build()` -- a production entry point
+/// (`ConwayBuilder::from_parts(..).build()`, the same call every other
+/// `build()`-time error in this file goes through) -- with an error naming
+/// the offending value and listing the kinds this build actually
+/// recognises. GP-14: a silently ignored `kind` is exactly the failure this
+/// error exists to prevent.
+#[test]
+fn unknown_backend_kind_fails_build_naming_the_value_and_recognised_kinds() {
+    let mut cfg = base_config();
+    cfg.backends.insert(
+        "mystery".to_string(),
+        BackendEntry {
+            kind: "totally-unrecognised-kind".to_string(),
+            ..BackendEntry::default()
+        },
+    );
+
+    let result = ConwayBuilder::from_parts(cfg)
+        .with_session_store(Arc::new(FakeStore::new()))
+        .with_permission_gate(Arc::new(FakeGate::new(PermissionDecision::AllowOnce)))
+        .with_router(fake_router())
+        .build();
+
+    let err = result
+        .err()
+        .expect("an unknown backend kind must fail the build")
+        .to_string();
+    assert!(
+        err.contains("totally-unrecognised-kind"),
+        "the error must quote the offending kind value: {err}"
+    );
+    assert!(
+        err.contains("anthropic") && err.contains("openai-compat"),
+        "the error must list the recognised kinds: {err}"
+    );
+}
+
+/// The novel-kind sibling of the test above: a `[backends.<id>].kind` that
+/// DOES match a registered `BackendFactory` is resolved to it -- checked
+/// here by listing that factory's own kind id in the SAME unknown-kind
+/// error's recognised-kinds set once it is registered, proving the
+/// recognised-kinds list is genuinely derived from what is installed, not a
+/// hardcoded pair. `tests/backend_factory.rs`'s `factory_built_backend_
+/// serves_a_turn` is the discriminating end-to-end proof that such a kind
+/// actually builds and serves a turn; this test only pins the error-message
+/// side of the same resolution.
+#[test]
+fn registered_factory_kind_appears_in_the_recognised_kinds_list() {
+    use conway::{BackendBuildContext, BackendFactory, CoreConwayError};
+
+    struct StubFactory;
+    impl BackendFactory for StubFactory {
+        fn id(&self) -> &str {
+            "stub-novel-kind"
+        }
+        fn build(
+            &self,
+            _ctx: BackendBuildContext,
+        ) -> Result<Arc<dyn conway_core::ports::Backend>, CoreConwayError> {
+            unreachable!("this test never names 'stub-novel-kind' from a [backends.<id>] entry")
+        }
+    }
+
+    let mut cfg = base_config();
+    cfg.backends.insert(
+        "mystery".to_string(),
+        BackendEntry {
+            kind: "still-totally-unrecognised".to_string(),
+            ..BackendEntry::default()
+        },
+    );
+
+    let result = ConwayBuilder::from_parts(cfg)
+        .with_session_store(Arc::new(FakeStore::new()))
+        .with_permission_gate(Arc::new(FakeGate::new(PermissionDecision::AllowOnce)))
+        .with_router(fake_router())
+        .with_backend_factory(Arc::new(StubFactory))
+        .build();
+
+    let err = result
+        .err()
+        .expect("an unknown backend kind must still fail the build")
+        .to_string();
+    assert!(
+        err.contains("stub-novel-kind"),
+        "the recognised-kinds list must include the registered factory's own kind id: {err}"
     );
 }

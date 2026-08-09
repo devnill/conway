@@ -20,24 +20,40 @@ Anthropic-compatible third-party endpoint can be named for what it
 actually is (`kimi`, `internal-proxy`) and sit alongside a real
 `anthropic` backend in the same config.
 
-Two backend `kind`s exist:
+**`kind` is an open name, not a closed set of two.** `conway` resolves it
+against every `BackendFactory` an embedder has registered
+(`ConwayBuilder::with_backend_factory`), falling back to the two adapters
+this facade still compiles in for any name they claim:
 
 | `kind` | Adapter | Selects |
 | --- | --- | --- |
 | `"anthropic"` | The native Anthropic Messages API | any endpoint speaking that wire format |
 | `"openai-compat"` | One adapter for every OpenAI-compatible server | a `dialect` (built-in or your own [profile](#declarative-provider-profiles)) |
 
-**Which of these you use is configuration, not a build option.** The
+**Which of these two you use is configuration, not a build option.** The
 `conway` binary and library both ship with both adapters compiled in
 always — there is no cargo feature to enable, and never was a supported
-one for very long: an operator picks a backend by writing a
-`[backends.<id>]` entry, not by recompiling. The base harness's job is to
-support the common API flavours out of the box; anything beyond that
-(a bespoke wire protocol, a vendor SDK) is expected to arrive as a
-**plugin**, not a new build-time switch on this crate — see board item
-`01KZACKE05ZNYTYR0TGV3550SD` for that direction (backends installed
-declaratively, on the same extension surface a third-party plugin author
-already uses, rather than a closed set of built-ins).
+one for very long: an operator picks one of them by writing a
+`[backends.<id>]` entry naming it, not by recompiling. **A third `kind` is
+a library extension point, not a config typo.** An embedder registers a
+`BackendFactory` under whatever kind name it wants
+(`ConwayBuilder::with_backend_factory`, board item
+01KZHF0RBKJZZC68F7GPFB347Q/01KZHF1E85MS1VF4YH8CDNCP9Z) and a
+`[backends.<id>]` entry naming that kind is resolved to it — the same
+extension surface a third-party plugin author already uses, not a
+build-time switch on this crate. A `kind` neither a registered factory nor
+the two built-ins above claims is a hard `build()` error naming the
+offending value and listing every kind the running binary actually
+recognises — never a silently ignored entry.
+
+An entry's keys beyond `kind`/`api_key`/`api_key_env`/`base_url`/`dialect`/
+`stream_tools` are not rejected: they are captured verbatim and handed to
+whichever factory built that entry's backend, so a third-party kind can
+carry its own configuration without this crate knowing its shape in
+advance. The cost: a typo in one of the six named keys above (e.g.
+`base_ur1`) is no longer caught at load time — it is silently captured
+alongside any real custom key rather than erroring. Double-check spelling
+against the fields named above; `conway` cannot catch that typo for you.
 
 ## Anthropic and Anthropic-compatible endpoints
 

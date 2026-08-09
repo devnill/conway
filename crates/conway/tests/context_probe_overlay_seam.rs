@@ -140,8 +140,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use conway::config::schema::{
-    AgentsConfig, BackendEntry, BackendKind, ConwayConfig, HealthSection, LimitsConfig,
-    ModelsConfig, PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig, TuiSection,
+    AgentsConfig, BackendEntry, ConwayConfig, HealthSection, LimitsConfig, ModelsConfig,
+    PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
+    TuiSection,
 };
 use conway::{Conway, ConwayBuilder, SessionSpec};
 use conway_core::agent::{PermissionDecision, ResultStatus};
@@ -238,12 +239,10 @@ fn config_naming(base_url: String, metadata_path: PathBuf) -> ConwayConfig {
     backends.insert(
         "probed".to_string(),
         BackendEntry {
-            kind: BackendKind::OpenaiCompat,
-            api_key: String::new(),
-            api_key_env: String::new(),
+            kind: "openai-compat".to_string(),
             base_url,
             dialect: Some("vllm_hermes".to_string()),
-            stream_tools: None,
+            ..BackendEntry::default()
         },
     );
     ConwayConfig {
@@ -711,12 +710,10 @@ fn t1_backstop_config(metadata_path: PathBuf) -> ConwayConfig {
     backends.insert(
         "mutable".to_string(),
         BackendEntry {
-            kind: BackendKind::OpenaiCompat,
-            api_key: String::new(),
-            api_key_env: String::new(),
+            kind: "openai-compat".to_string(),
             base_url: "http://127.0.0.1:9".to_string(),
             dialect: Some("openai".to_string()),
-            stream_tools: None,
+            ..BackendEntry::default()
         },
     );
     ConwayConfig {
