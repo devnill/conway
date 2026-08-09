@@ -377,6 +377,294 @@ your override an `id` that unambiguously matches (or doesn't match) a
 built-in's on purpose, or, if you're embedding conway as a library, call
 `ProfileStore::list()` directly.
 
+## Writing your own adapter
+
+A [declarative profile](#declarative-provider-profiles) and a new adapter
+solve different problems, and reaching for the wrong one costs you either a
+config file you didn't need or code you didn't need to write. A profile
+parameterizes the one `openai-compat` adapter for a server that speaks (a
+variant of) OpenAI's own wire protocol — no code, just a
+`.conway/profiles.toml` entry, merged by
+`crates/conway-plugin-backends/src/profile.rs`'s `merge_file`. A new adapter is for
+a genuinely different wire protocol — not Anthropic's Messages API, not an
+OpenAI-compatible chat-completions endpoint. If your provider needs its own
+request/response shaping from the ground up, this is that path.
+
+**The crate boundary.** Depend on `conway` — the public facade — alone; no
+`conway-core` dependency is needed or, for a third party, available.
+`conway::backend` is a curated module re-exporting the `Backend` trait and
+every type its five methods (`id`, `capabilities`, `generate`, `stream`,
+`probe`, plus the overridable `admit`) name; `conway::{BackendFactory,
+BackendBuildContext, ConwayBuilder, CoreConwayError}` (root re-exports) are
+the installation surface. The full, name-by-name breakdown of what's in
+each is [`embedding.md`'s "Writing a `Backend`"](embedding.md#writing-a-backend)
+and ["Installing a backend:
+`BackendFactory`"](embedding.md#installing-a-backend-backendfactory); this
+page's job is the crate you depend on and a worked example, not restating
+that list a second time.
+
+**Publishing and naming a kind id.** `BackendFactory::id()` returns the
+*kind* string — the same open name `[backends.<id>].kind` (see ["Where a
+backend is declared"](#where-a-backend-is-declared) above) resolves against
+every registered factory, with no privileged set: the two shipped dialects
+resolve through the identical mechanism. Publish your own kind as a `pub
+const`, the way the shipped dialects publish `ANTHROPIC_KIND`/
+`OPENAI_COMPAT_KIND`, so a consumer of your crate names it instead of
+retyping a string literal that only works by coincidentally matching yours.
+
+**Attaching it, as a library embedder.**
+`ConwayBuilder::with_backend_factory(Arc::new(YourFactory))` before
+`build()` — the identical channel `conway-plugin-backends`'s own two
+factories attach through. This is the only mechanism there is: this tree
+has no dynamic-loading path at all (no `dlopen`/`libloading`/`dylib`
+anywhere in it), so a third-party adapter is always a Rust dependency an
+embedder links and registers in code, never a crate name the shipped
+`conway` binary can pick up from `settings.json` on its own.
+
+### A complete worked example
+
+The strongest claim this page can make is that its example is the same
+code a test compiles, not a fresh retelling. It is: every snippet below is
+lifted verbatim from `crates/conway-thirdparty-backend/src/lib.rs`, a real
+workspace member built for exactly this purpose (board item
+01KZHF3E1ZG3AZ7F7HHVY324T9) — a third-party-shaped `Backend` +
+`BackendFactory` whose own `[dependencies]` name exactly one workspace
+crate, `conway`, so `use conway_core::...` anywhere in it is a hard
+`error[E0433]: failed to resolve`, not a convention a reviewer has to
+police. `crates/conway-thirdparty-backend/tests/end_to_end.rs` and
+`src/bin/thirdparty_backend_demo.rs` both build a real `Conway` from this
+code and run a real turn through it — the former as a library call,
+asserting on the turn's own returned text directly; the latter as a
+genuinely separate compiled binary that prints that text to stdout, which
+`tests/binary.rs` then asserts on via `assert_cmd`. Every Rust block below
+is byte-for-byte what the file contains, omitting only the struct field
+declarations, a hand-rolled `Stream` impl (`VecStream`)
+`Backend::stream`'s return type needs, and doc comments; the
+`.conway/models.json` block near the end is shown rendered as the JSON it
+produces, not as the `serde_json::json!` call that builds it (that call
+IS shown verbatim for `settings.json`, immediately above it) — nothing
+below diverges in substance from what the file contains.
+
+The imports — everything needed to implement `Backend`, and nothing from
+`conway-core`:
+
+```rust,ignore
+use conway::backend::{
+    async_trait, check_admission, Admission, Backend, BackendError, BackendId, BoxStream,
+    CacheMode, Capabilities, ContentBlock, GenerateRequest, GenerateResponse, ModelId, ProbeReport,
+    ReliabilityTier, StopReason, StreamChunk, StructuredOutput, ToolCallSupport, Usage,
+};
+use conway::{BackendBuildContext, BackendFactory, CoreConwayError, ModelOverrides};
+```
+
+The published kind id, alongside the other ids this fixture uses:
+
+```rust,ignore
+/// The `[backends.<id>]` JSON key `fixture::write_settings` renders, and
+/// the `Backend::id()` `ThirdPartyBackendFactory::build` gives back.
+pub const BACKEND_ID: &str = "thirdparty";
+/// The `kind` `fixture::write_settings` names -- an open string
+/// (`ThirdPartyBackendFactory::id()` returns the identical value), never a
+/// closed enum variant (board item 01KZHF1E85MS1VF4YH8CDNCP9Z).
+pub const BACKEND_KIND: &str = "thirdparty-stub";
+```
+
+The `Backend` implementation — all five methods, `admit` overridden and
+calling `check_admission` rather than restating the fits/shortfall
+arithmetic itself (P-14):
+
+```rust,ignore
+#[async_trait]
+impl Backend for ThirdPartyBackend {
+    fn id(&self) -> BackendId {
+        self.id.clone()
+    }
+
+    fn capabilities(&self, _model: &ModelId) -> Capabilities {
+        Capabilities {
+            tool_calling: ToolCallSupport::Streaming { validated: true },
+            cache: CacheMode::ImplicitPrefix {
+                min_prefix_tokens: 0,
+            },
+            parallel_tool_calls: false,
+            structured_output: StructuredOutput::None,
+            max_context_tokens: self.max_context_tokens,
+            reasoning: false,
+            reliability_tier: ReliabilityTier::Community,
+        }
+    }
+
+    async fn generate(&self, _req: GenerateRequest) -> Result<GenerateResponse, BackendError> {
+        Ok(self.respond())
+    }
+
+    async fn stream(
+        &self,
+        _req: GenerateRequest,
+    ) -> Result<BoxStream<'static, Result<StreamChunk, BackendError>>, BackendError> {
+        let response = self.respond();
+        let first_delta = match response.content.first() {
+            Some(ContentBlock::Text { text }) => StreamChunk::TextDelta(text.clone()),
+            _ => StreamChunk::TextDelta(String::new()),
+        };
+        let items = vec![Ok(first_delta), Ok(StreamChunk::Done(response))];
+        Ok(Box::pin(VecStream {
+            items: items.into_iter().collect(),
+        }))
+    }
+
+    async fn probe(&self) -> Result<ProbeReport, BackendError> {
+        Ok(ProbeReport {
+            ok: true,
+            latency_ms: 0,
+            models: vec![ModelId::new(MODEL_ID)],
+            detail: None,
+            at: chrono::Utc::now(),
+        })
+    }
+
+    fn admit(
+        &self,
+        req: &GenerateRequest,
+        headroom_tokens: u32,
+    ) -> Result<Admission, BackendError> {
+        let est_tokens = estimate_tokens(req);
+        check_admission(
+            req.model.clone(),
+            est_tokens,
+            headroom_tokens,
+            self.max_context_tokens,
+        )
+    }
+}
+```
+
+`admit`'s own `estimate_tokens` helper (a facade-only crate cannot reach
+`conway-core`'s bundled `default_estimate_tokens`, so it writes a small,
+dialect-neutral one instead — a real adapter is free to size a request
+however its own provider's tokenizer actually works):
+
+```rust,ignore
+fn estimate_tokens(req: &GenerateRequest) -> u32 {
+    let mut total: u32 = 0;
+    for segment in &req.segments {
+        for block in &segment.content {
+            if let ContentBlock::Text { text } = block {
+                total =
+                    total.saturating_add(u32::try_from(text.len()).unwrap_or(u32::MAX).div_ceil(4));
+            }
+        }
+    }
+    total.saturating_add(
+        u32::try_from(req.tools.len())
+            .unwrap_or(u32::MAX)
+            .saturating_mul(16),
+    )
+}
+```
+
+The `BackendFactory` — `id()` names the published kind, `build()` reads
+`BackendBuildContext::models` (the same `.conway/models.json`-derived table
+a config-derived backend's own capabilities are projected from) for a
+per-model override, exactly the way `conway-plugin-backends`'s own two
+shipped factories do:
+
+```rust,ignore
+pub struct ThirdPartyBackendFactory;
+
+impl BackendFactory for ThirdPartyBackendFactory {
+    fn id(&self) -> &str {
+        BACKEND_KIND
+    }
+
+    fn build(&self, ctx: BackendBuildContext) -> Result<Arc<dyn Backend>, CoreConwayError> {
+        let max_context_tokens = ctx
+            .models
+            .get(MODEL_ID)
+            .and_then(|overrides: &ModelOverrides| overrides.max_context_tokens)
+            .unwrap_or(32_000);
+        Ok(Arc::new(ThirdPartyBackend {
+            id: ctx.id,
+            max_context_tokens,
+        }))
+    }
+}
+```
+
+Installing it and building a real `Conway` from a real, on-disk
+`settings.json` — `conway::config::load` is the same five-source loader a
+real `conway` invocation uses, and `with_backend_factory` is the same
+channel every embedding path in this doc uses:
+
+```rust,ignore
+pub fn build_conway(dir: &Path, config_path: &Path) -> conway::Result<conway::Conway> {
+    let mut env = std::collections::HashMap::new();
+    env.insert(
+        "XDG_CONFIG_HOME".to_string(),
+        dir.to_string_lossy().into_owned(),
+    );
+    let outcome = conway::config::load(conway::config::LoadOptions {
+        cwd: dir.to_path_buf(),
+        explicit_path: Some(config_path.to_path_buf()),
+        env,
+        cli_overrides: conway::config::CliOverrides::default(),
+        model_metadata_refresh: false,
+    })?;
+    conway::ConwayBuilder::from_parts(outcome.config)
+        .with_backend_factory(Arc::new(ThirdPartyBackendFactory))
+        .build()
+}
+```
+
+And the `settings.json`/`.conway/models.json` pair this factory resolves
+against — the same `[backends.<id>].kind` shape every dialect on this page
+uses, naming a kind no built-in factory claims:
+
+```rust,ignore
+let chain = format!("{BACKEND_ID}/{MODEL_ID}");
+let settings = serde_json::json!({
+    "default_role": "coder",
+    "cwd": dir.to_string_lossy(),
+    // `permissions.mode = "allowlist"` requires a non-empty
+    // `allowed_tools` list (`config::merge::validate`) even though
+    // `ThirdPartyBackend` never issues a tool call and this gate is
+    // therefore never actually consulted -- `"*"` is a real,
+    // syntactically valid `AllowListGate` glob entry (matches any
+    // tool name), not a magic sentinel this fixture invented.
+    "permissions": { "mode": "allowlist", "allowed_tools": ["*"] },
+    "backends": {
+        BACKEND_ID: { "kind": BACKEND_KIND }
+    },
+    "roles": {
+        "coder": { "chain": [chain] }
+    }
+});
+```
+
+```json
+// .conway/models.json
+{
+  "models": {
+    "thirdparty/stub-model": {
+      "max_context_tokens": 200000,
+      "tool_calling": "streaming_validated",
+      "reasoning": false,
+      "reliability_tier": "community"
+    }
+  }
+}
+```
+
+Run it yourself: `cargo test -p conway-thirdparty-backend` builds this
+exact code, installs it through the exact mechanism above, completes one
+real turn, and asserts the returned text is the adapter's own hand-written
+reply — credential-free and network-free throughout, since this particular
+stand-in adapter never makes an outbound call at all. A dialect that talks
+to a real provider does the identical `Backend`/`BackendFactory`/
+`with_backend_factory` dance; only `generate`/`stream`/`probe`'s own
+bodies differ, the same way `conway-plugin-backends`'s two shipped
+factories differ from this one.
+
 ## How it fits together
 
 A backend entry alone doesn't make a model routable. Every `(backend,
