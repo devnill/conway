@@ -392,6 +392,7 @@ What this means for you, concretely:
 [`scripts.md`](scripts.md) covers the any-language script convention (a
 different authoring surface, layered on the same mechanism, not yet built
 either). [`inference-hooks.md`](inference-hooks.md) covers a hook whose
-decision is made by a model rather than by code. `cookbook.md` (not yet
-written, board item `01KYTP9XCPQW88P7WNNBFMNE31`) will carry worked,
-end-to-end examples beyond this page's single demo hook.
+decision is made by a model rather than by code.
+[`cookbook.md`](cookbook.md) carries worked, end-to-end examples beyond
+this page's single demo hook — five of them, each labeled
+implementable-today, partially-implementable, or blocked.
