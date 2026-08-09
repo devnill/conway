@@ -6,8 +6,8 @@
 //! This module is deliberately independent of `reqwest`: it takes a raw
 //! status code, a raw response body, and a raw `Retry-After` header value
 //! (not `reqwest::StatusCode`/`HeaderMap`), so it compiles and is testable
-//! under `--no-default-features`, with no HTTP client of its own. [`http`](crate::http)
-//! is the (feature-gated) caller that extracts these primitives from a
+//! independently of the HTTP transport, with no HTTP client of its own.
+//! [`http`](crate::http) is the caller that extracts these primitives from a
 //! `reqwest::Response`.
 //!
 //! Two rows of the classification table have no HTTP status at all —

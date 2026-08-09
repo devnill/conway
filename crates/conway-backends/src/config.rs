@@ -124,8 +124,8 @@ struct AnthropicConfigRaw {
     models: BTreeMap<String, ModelOverrides>,
 }
 
-/// Configuration for `AnthropicBackend` (feature `anthropic`; adapter itself
-/// is WI-021). Deserializing this type runs [`AnthropicConfig::validate`]: a
+/// Configuration for `AnthropicBackend` (adapter itself is WI-021).
+/// Deserializing this type runs [`AnthropicConfig::validate`]: a
 /// value that fails validation fails deserialization, so it is never
 /// possible to construct an `AnthropicConfig` carrying an empty key.
 ///
@@ -189,8 +189,8 @@ impl TryFrom<AnthropicConfigRaw> for AnthropicConfig {
     }
 }
 
-/// Configuration for `OpenAiCompatBackend` (feature `openai-compat`; adapter
-/// itself is WI-019/WI-022). One adapter, profile-selected behavior
+/// Configuration for `OpenAiCompatBackend` (adapter itself is
+/// WI-019/WI-022). One adapter, profile-selected behavior
 /// (declarative provider profiles item): `profile` is a fully resolved
 /// [`Profile`] value, not a file path or a name — resolving a name (built-in
 /// `Dialect`, or a user-supplied profile id) against a `ProfileStore` is the

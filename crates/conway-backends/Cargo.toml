@@ -7,11 +7,6 @@ publish.workspace = true
 rust-version.workspace = true
 description = "Backend adapters (Anthropic, OpenAI-compatible) for the conway agent harness"
 
-[features]
-default = ["anthropic", "openai-compat"]
-anthropic = ["dep:reqwest", "dep:eventsource-stream"]
-openai-compat = ["dep:reqwest", "dep:eventsource-stream"]
-
 [dependencies]
 conway-core = { path = "../conway-core" }
 serde = { workspace = true }
@@ -29,8 +24,8 @@ tokio-util = { workspace = true }
 tracing = { workspace = true }
 humantime-serde = { workspace = true }
 toml = { workspace = true }
-reqwest = { workspace = true, optional = true }
-eventsource-stream = { workspace = true, optional = true }
+reqwest = { workspace = true }
+eventsource-stream = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }
