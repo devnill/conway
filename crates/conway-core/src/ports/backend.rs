@@ -1,13 +1,16 @@
 //! The `Backend` port: one adapter per LLM provider dialect (architecture
 //! §4.1).
 
+use std::collections::BTreeMap;
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use crate::capabilities::{Capabilities, ProbeReport};
 use crate::content::{ContentBlock, SamplingParams, StopReason, ToolCall, ToolSpec, Usage};
-use crate::error::BackendError;
+use crate::error::{BackendError, ConwayError};
 use crate::ids::{BackendId, ModelId, PrefixKey};
+use crate::routing::ModelOverrides;
 use crate::segment::PromptSegment;
 
 /// The numbers behind an admission verdict (P-4/P-9 amendment, decision
@@ -201,6 +204,164 @@ pub trait Backend: Send + Sync + 'static {
             self.capabilities(&req.model).max_context_tokens,
         )
     }
+}
+
+// ---------------------------------------------------------------------
+// `BackendFactory` (board item 01KZHF0RBKJZZC68F7GPFB347Q): names a
+// provider-adapter KIND up front -- so a third party can ship one -- and
+// defers actual construction to a later, fallible step. Mirrors
+// `RouterFactory`/`RouterBuildContext`/`RouterBundle`
+// (`crate::ports::routing`, board item 01KZFC2MD1FVNA674YJ9A19T8E) one layer
+// over, with one load-bearing asymmetry stated in `BackendFactory`'s own doc
+// below: a build has exactly one router, so `RouterFactory::build` is
+// invoked at most once; a build has a SET of backends, so a `BackendFactory`
+// is not bounded that way.
+// ---------------------------------------------------------------------
+
+/// Everything a [`BackendFactory::build`] genuinely needs to construct one
+/// backend instance, resolved by the caller before this is handed over --
+/// the same "resolved pieces, not a raw entry" shape `RouterBuildContext`
+/// already chose for `RoutingConfig`/`HeadroomPolicy`, and for the same
+/// reason: `conway_backends::config::{AnthropicConfig, OpenAiCompatConfig}`
+/// (`crates/conway/src/builder.rs`'s `build_anthropic`/`build_openai_compat`)
+/// are what this shape is read off of, and every one of these five fields is
+/// something those two functions resolve BEFORE their adapter's own
+/// constructor ever runs.
+///
+/// **Why not the raw `[backends.<id>]` entry instead (the cheaper-looking
+/// alternative)?** Two reasons, not one:
+/// 1. `crate::config::schema::BackendEntry` (the facade's own type) cannot
+///    appear here at all -- `conway-core` cannot depend on `conway` (that
+///    edge runs the other way), so a "raw entry" option would mean
+///    inventing a SECOND, `conway-core`-native struct shaped like
+///    `BackendEntry` purely to duplicate it across the crate boundary.
+/// 2. Even granting that duplication, handing over `api_key`/`api_key_env`
+///    unresolved would mean every third-party kind reimplements "literal
+///    key wins, else read `api_key_env` from the process environment, else
+///    unset" -- and they would diverge, silently losing
+///    [`crate::error::ConwayError`]'s specific "api_key_env '...' is not
+///    set" message the facade's own `resolve_api_key` already produces.
+///    Resolving it once, centrally, and handing over the result is what
+///    keeps that one good error message the only one that exists.
+///
+/// **Why not both (the raw entry ALONGSIDE these resolved fields)?** Two
+/// sources of the same value invites the question "which one wins when they
+/// disagree" for no benefit this item's own scope needs answering -- see
+/// this module's own doc for the disclosed limitation this leaves standing:
+/// `backends.<id>.kind` is still a closed, two-variant enum (decision
+/// 01KZHRPZ010R37411R3W1XR5TF; a later item's job, not this one's), so no
+/// `[backends.<id>]` entry can name a third-party kind at all yet, and
+/// there is therefore nothing an escape-hatch field would carry today that
+/// `BackendEntry`'s own six fields (`kind`, `api_key`, `api_key_env`,
+/// `base_url`, `dialect`, `stream_tools`) don't already fully cover via the
+/// five resolved fields below (`stream_tools` has no analogue here for the
+/// same reason: it is not read by either `build_anthropic` or
+/// `build_openai_compat` today). A follow-on item, once that closed enum
+/// opens, is free to widen this struct with a raw/escape-hatch field for
+/// whatever `[backends.<id>]` gains at that point -- nothing about this
+/// shape forecloses that.
+#[derive(Clone, Debug)]
+pub struct BackendBuildContext {
+    /// The instance identity this backend SHOULD report from its own
+    /// `Backend::id()` -- ordinarily the `[backends.<id>]` JSON key
+    /// (`build_anthropic`/`build_openai_compat`'s own `id` parameter).
+    /// Advisory, not enforced: `build()` never inspects the returned
+    /// `Backend::id()` against this field, the same way `RouterBuildContext`
+    /// hands over data a `RouterFactory` is trusted to use, not data it is
+    /// mechanically checked against.
+    pub id: BackendId,
+    /// `[backends.<id>].base_url`, unparsed. Raw rather than a parsed URL
+    /// type: `conway-core` depends on nothing that could parse or validate
+    /// one (no new dependency, C-04), and the two shipped adapters do not
+    /// even agree with each other on how to treat an empty value (Anthropic
+    /// substitutes a hardcoded default; OpenAI-compatible requires one) --
+    /// a third kind is entitled to its own policy here too, not one this
+    /// context would otherwise impose on it.
+    pub base_url: String,
+    /// The resolved secret: a literal `api_key`, or an `api_key_env`
+    /// variable already read from the process environment, or `None` when
+    /// neither was set -- see this struct's own doc for why resolving this
+    /// centrally (rather than handing over the two raw, unresolved fields)
+    /// is the whole point of choosing this shape.
+    pub api_key: Option<String>,
+    /// `[backends.<id>].dialect`, unresolved: this is the facade's
+    /// `AnthropicConfig`/`OpenAiCompatConfig`-agnostic notion of "which
+    /// wire shape" only in the sense that it is the SAME string
+    /// `build_openai_compat` feeds to its own `resolve_profile` -- a
+    /// third-party kind is free to give it an entirely different meaning
+    /// (or ignore it) rather than being forced through the facade's own
+    /// `conway_backends::profile::ProfileStore`, which this crate does not
+    /// depend on either.
+    pub dialect: Option<String>,
+    /// The exact `BTreeMap<String, ModelOverrides>` shape
+    /// `models_overrides_for(id, metadata)` projects out of `models.json`
+    /// for this same `id` -- so a factory-built backend's
+    /// `Backend::capabilities()` can honor an operator's `models.json`
+    /// override the identical way a config-derived backend's own
+    /// `ModelOverrides` table already does (WI-123's single-source
+    /// guarantee, extended to a third-party kind rather than left as a
+    /// built-ins-only privilege).
+    pub models: BTreeMap<String, ModelOverrides>,
+}
+
+/// Builds one [`Backend`] instance for a provider-adapter KIND named up
+/// front by [`Self::id`] -- the provider-adapter analogue of
+/// [`crate::ports::routing::RouterFactory`], one layer over: read that
+/// trait's own doc first, the shape here mirrors it deliberately.
+///
+/// **A kind identity is NOT [`Backend::id()`], and this is a different
+/// question than `RouterFactory` answering "why isn't a router id `Router
+/// ::id()`" -- restated here in this port's own words, not merely cited,
+/// because the two ports differ in a way that matters:** `Backend::id()` is
+/// a CONFIGURED INSTANCE's identity, read off the `[backends.<id>]` JSON key
+/// the instance was built from (`build_anthropic`/`build_openai_compat`'s
+/// own `id` parameter) -- it exists only once construction has already
+/// happened, and it answers "which of MY backends is this." `BackendFactory
+/// ::id()` exists BEFORE any instance does, is fixed for the life of the
+/// factory, and answers "which ADAPTER IMPLEMENTATION would build this" --
+/// e.g. "anthropic" the KIND versus "kimi" the INSTANCE, where "kimi" is an
+/// Anthropic-compatible endpoint configured under a name that says what it
+/// IS, not what built it (`crates/conway/src/builder.rs`'s own module doc,
+/// "The backend map is keyed by..."). Collapsing the two would make it
+/// impossible to configure two different instances of the same kind under
+/// two different ids -- exactly the "kimi" scenario the shipped Anthropic
+/// adapter already supports today.
+///
+/// **The asymmetry against `RouterFactory::build`, stated up front so an
+/// implementor does not assume the stricter cardinality:** a build has
+/// EXACTLY ONE router, so `RouterFactory::build` is invoked at most once.
+/// A build has a SET of backends -- one installed kind can legitimately
+/// produce many configured instances (as the "kimi" example above already
+/// shows for a built-in kind) -- so nothing about this trait promises
+/// `build` is called at most once over a `ConwayBuilder::build()` call.
+/// **Disclosed, current-item limitation:** `[backends.<id>].kind` is still
+/// a closed, two-variant enum today (decision 01KZHRPZ010R37411R3W1XR5TF is
+/// a later item's job, not this one's), so `ConwayBuilder::build()` cannot
+/// yet route a specific `[backends.<id>]` entry to a registered factory by
+/// name -- see [`crate::ports::backend`]'s module doc and
+/// `ConwayBuilder::with_backend_factory`'s own doc for exactly what THIS
+/// item's `build()` does instead (invoking each registered factory once,
+/// unconditionally). Once that enum opens, invoking `build` once per
+/// matching `[backends.<id>]` entry is the natural extension -- nothing
+/// about this trait's own shape needs to change for that to land.
+pub trait BackendFactory: Send + Sync {
+    /// This factory's own identity -- the id an operator will eventually
+    /// name (once `[backends.<id>].kind` opens, decision
+    /// 01KZHRPZ010R37411R3W1XR5TF) to select it. A KIND, not a configured
+    /// instance's identity -- see this trait's own doc for why the two are
+    /// not the same question asked twice. Stable across every `Backend`
+    /// this factory might construct.
+    fn id(&self) -> &str;
+
+    /// Builds one backend instance from `ctx`. Deferred (invoked only once
+    /// `ctx` can actually be assembled) and fallible, returning
+    /// [`ConwayError`] -- `conway-core`'s own existing crate-level error
+    /// enum, reused rather than inventing a new one (C-04), the same choice
+    /// [`crate::ports::routing::RouterFactory::build`] already makes for
+    /// the identical reason: a factory's construction failure is exactly
+    /// the shape `ConwayError::Config`/`ConwayError::Parse` already exist to
+    /// describe.
+    fn build(&self, ctx: BackendBuildContext) -> Result<std::sync::Arc<dyn Backend>, ConwayError>;
 }
 
 /// A request to generate a response from one model.

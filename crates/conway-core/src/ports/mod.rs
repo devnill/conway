@@ -53,6 +53,7 @@ mod tests {
         _: &dyn EventSink,
         _: &dyn RouterFactory,
         _: &dyn ArtifactWriter,
+        _: &dyn BackendFactory,
     ) {
     }
 }

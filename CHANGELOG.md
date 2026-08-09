@@ -182,6 +182,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   design. Every unbuilt section names its board item
   (01KZDC0RDRMMMJHX7SAFMM2Q5A, 01KZ844ZXZMVRWC7ZANT7PSM6X).
 
+- **`BackendFactory` — a provider dialect can be named and constructed as an
+  installable component** (board item 01KZHF0RBKJZZC68F7GPFB347Q, under the
+  backends-as-plugins charter; shape approved in decision
+  01KZHRPZ010R37411R3W1XR5TF). `ConwayBuilder::with_backend` takes a backend
+  already constructed; `with_backend_factory` takes something that knows how
+  to construct one and defers that until the config it needs exists — the
+  same split `RouterFactory` makes, because an install list is read long
+  before API keys, base URLs, and per-model overrides do.
+
+  `BackendFactory::id()` names a **kind**, and its doc says why that is not
+  the question `Backend::id()` answers: that one is a *configured instance*
+  identity taken from the `[backends.<id>]` key, and two configured backends
+  can be the same kind under different ids. The consequence is the one real
+  asymmetry against routing — a backend factory is built **once per matching
+  configuration entry**, where a `RouterFactory` is built at most once,
+  because a build has exactly one router.
+
+  Precedence extends the existing per-id rule rather than inventing a second
+  one: an injected instance beats a factory-built one sharing its
+  `Backend::id()`. Two factories reporting the same kind id is a hard
+  `build()` error naming both, and it is checked in its own pass **before
+  any factory's `build` runs**, so a duplicate never leaves one factory's
+  side effects behind while the whole call still fails. A factory whose
+  `build` errors fails the entire `build()` with an error naming that
+  factory's kind — never a silent fallback (GP-14). Registering no factories
+  leaves `build()` behaving exactly as before, and no existing test needed
+  editing.
+
+  Every `BackendBuildContext` field type is nameable from a crate depending
+  only on `conway`, proven by extending `backend_parity.rs` — the
+  compile-guarded facade test from the preceding item — to construct a
+  factory and read every field, rather than by inspection. A port whose
+  context cannot be spelled through the public facade is only half-installed.
+
+  **Disclosed limitation:** `[backends.<id>].kind` is still a closed enum, so
+  a config entry cannot yet name a factory and a registered factory receives
+  an empty context. Opening `kind` is board item 01KZHF1E85MS1VF4YH8CDNCP9Z;
+  until then this surface is reachable only by an embedder calling the
+  builder directly. Labeled at the method doc and in
+  [`docs/embedding.md`](docs/embedding.md)'s new "Installing a backend"
+  section rather than left for a reader to discover.
+  (`crates/conway-core/src/ports/backend.rs`,
+  `crates/conway-core/src/ports/mod.rs`, `crates/conway/src/builder.rs`,
+  `crates/conway/src/lib.rs`, `crates/conway/tests/backend_factory.rs`,
+  `crates/conway/tests/backend_parity.rs`,
+  [`docs/embedding.md`](docs/embedding.md))
+
 - **Docs 3/5 — trust, security, and compatibility promises:
   [`docs/plugins/trust-and-security.md`](docs/plugins/trust-and-security.md)
   and [`docs/plugins/compatibility.md`](docs/plugins/compatibility.md)**

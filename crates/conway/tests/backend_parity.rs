@@ -33,9 +33,26 @@
 //! already live (`conway::plugin`/`conway::` root) rather than from
 //! `conway::backend` — see that module's own doc, "Deliberately NOT here",
 //! for why they are not duplicated a third time.
+//!
+//! **Board item 01KZHF0RBKJZZC68F7GPFB347Q extends this same file** (rather
+//! than adding a second parity file) with `StubBackendFactory`: a
+//! `BackendFactory` implementation, written using the same "only
+//! `conway::`-rooted imports" discipline, that reads every field
+//! `BackendBuildContext` exposes and hands back a working `StubBackend` —
+//! the same "genuinely runs end to end, not compile-only" bar the file's
+//! own `StubBackend` already set. `BackendFactory`/`BackendBuildContext`
+//! live at this crate's root (alongside `Backend` and `RouterFactory`/
+//! `RouterBuildContext`), not inside `conway::backend` — see
+//! `crates/conway/src/lib.rs`'s own re-export comment for why the port
+//! traits stay flat at the root. `CoreConwayError` (also root) is
+//! `BackendFactory::build`'s `Err` type — the same
+//! `conway_core::error::ConwayError` `RouterFactory::build` already
+//! commits to, re-exported under a different name than this crate's own
+//! `conway::ConwayError` so the two do not collide at the same path.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use futures_core::Stream;
@@ -47,7 +64,10 @@ use conway::backend::{
     StructuredOutput, ToolCall, ToolCallSupport, ToolSpec, Usage,
 };
 use conway::plugin::{PermissionClass, Role};
-use conway::{Provenance, ToolCategory, ToolName};
+use conway::{
+    BackendBuildContext, BackendFactory, CoreConwayError, ModelOverrides, Provenance,
+    ToolCategory, ToolName,
+};
 
 /// The marker this test's own "please call a tool" scenario looks for in
 /// the last user segment's text, mirroring how a real dialect adapter
@@ -61,6 +81,13 @@ const TOOL_TRIGGER: &str = "please use the tool";
 struct StubBackend {
     id: BackendId,
     max_context_tokens: u32,
+    /// Not read by any `Backend` method below -- carried only so
+    /// `StubBackendFactory::build`'s test (`factory_build_reads_every_context_field`)
+    /// can assert these three `BackendBuildContext` fields genuinely reached
+    /// the constructed backend, not merely compiled.
+    base_url: String,
+    api_key: Option<String>,
+    dialect: Option<String>,
 }
 
 /// The dialect-neutral request-size estimate this stub's `admit` override
@@ -181,11 +208,29 @@ impl Backend for StubBackend {
     }
 
     async fn probe(&self) -> Result<ProbeReport, BackendError> {
+        // `detail` folds in `base_url`/`api_key`/`dialect` when any is set
+        // (never for `backend(..)`'s plain fixture, whose three are always
+        // empty/`None`) -- this is what makes those three
+        // `BackendBuildContext` fields a factory-built `StubBackend`
+        // GENUINELY reads, observable through `Backend::probe`, not merely
+        // stored and dropped. `factory_build_reads_every_context_field_and_
+        // produces_a_working_backend` (below) is the assertion.
+        let detail = if self.base_url.is_empty() && self.api_key.is_none() && self.dialect.is_none()
+        {
+            None
+        } else {
+            Some(format!(
+                "base_url={} dialect={} api_key_set={}",
+                self.base_url,
+                self.dialect.as_deref().unwrap_or("<none>"),
+                self.api_key.is_some()
+            ))
+        };
         Ok(ProbeReport {
             ok: true,
             latency_ms: 0,
             models: vec![ModelId::new("stub-model")],
-            detail: None,
+            detail,
             at: chrono::Utc::now(),
         })
     }
@@ -277,6 +322,9 @@ fn backend(max_context_tokens: u32) -> StubBackend {
     StubBackend {
         id: BackendId::new("stub"),
         max_context_tokens,
+        base_url: String::new(),
+        api_key: None,
+        dialect: None,
     }
 }
 
@@ -384,4 +432,134 @@ async fn probe_reports_ok_with_no_network_access() {
     let report = backend(200_000).probe().await.unwrap();
     assert!(report.ok);
     assert_eq!(report.models, vec![ModelId::new("stub-model")]);
+}
+
+// ---------------------------------------------------------------------------
+// `BackendFactory` parity (board item 01KZHF0RBKJZZC68F7GPFB347Q)
+// ---------------------------------------------------------------------------
+
+/// A `BackendFactory` whose `build` reads every `BackendBuildContext` field
+/// (the destructure below is exhaustive -- a field this file could not name
+/// would fail to compile, and a field added to the struct without a
+/// corresponding binding here would fail too) and plumbs three of them
+/// (`base_url`/`api_key`/`dialect`) straight into the `StubBackend` it
+/// constructs, so `factory_build_reads_every_context_field_and_produces_a_working_backend`
+/// below can assert they genuinely arrived, not merely that this file
+/// compiles against their types.
+struct StubBackendFactory;
+
+impl BackendFactory for StubBackendFactory {
+    fn id(&self) -> &str {
+        "stub-kind"
+    }
+
+    fn build(&self, ctx: BackendBuildContext) -> Result<Arc<dyn Backend>, CoreConwayError> {
+        let BackendBuildContext {
+            id,
+            base_url,
+            api_key,
+            dialect,
+            models,
+        } = ctx;
+        let max_context_tokens = models
+            .get("stub-model")
+            .and_then(|overrides: &ModelOverrides| overrides.max_context_tokens)
+            .unwrap_or(200_000);
+        Ok(Arc::new(StubBackend {
+            id,
+            max_context_tokens,
+            base_url,
+            api_key,
+            dialect,
+        }))
+    }
+}
+
+/// A `BackendFactory` whose `build` always fails -- this file's sibling
+/// `RouterFactory` test suite's own precedent
+/// (`crates/conway/tests/router_factory.rs`'s `ErrRouterFactory`) for the
+/// identical shape, proving `BackendFactory::build`'s `Err` path
+/// ([`CoreConwayError`]) is spellable from a crate depending only on
+/// `conway` too.
+struct ErrBackendFactory;
+
+impl BackendFactory for ErrBackendFactory {
+    fn id(&self) -> &str {
+        "exploding-kind"
+    }
+
+    fn build(&self, _ctx: BackendBuildContext) -> Result<Arc<dyn Backend>, CoreConwayError> {
+        Err(CoreConwayError::Config {
+            detail: "no upstream reachable for this kind".to_string(),
+        })
+    }
+}
+
+#[tokio::test]
+async fn factory_build_reads_every_context_field_and_produces_a_working_backend() {
+    let mut models = BTreeMap::new();
+    models.insert(
+        "stub-model".to_string(),
+        ModelOverrides {
+            stream_tools: None,
+            max_context_tokens: Some(321_000),
+            reliability_tier: None,
+            parallel_tool_calls: None,
+            min_headroom_tokens: None,
+        },
+    );
+    let ctx = BackendBuildContext {
+        id: BackendId::new("stub-instance"),
+        base_url: "https://example.invalid".to_string(),
+        api_key: Some("sk-test".to_string()),
+        dialect: Some("stub-dialect".to_string()),
+        models,
+    };
+
+    let backend = StubBackendFactory
+        .build(ctx)
+        .expect("factory build must succeed");
+
+    // `id`/`models` reached the backend: identity and capabilities.
+    assert_eq!(backend.id(), BackendId::new("stub-instance"));
+    let caps = backend.capabilities(&ModelId::new("stub-model"));
+    assert_eq!(
+        caps.max_context_tokens, 321_000,
+        "the factory-built backend must honor BackendBuildContext::models, the same table \
+         models_overrides_for projects for a config-derived backend"
+    );
+
+    // `base_url`/`api_key`/`dialect` reached the backend too: observable
+    // through `probe()`'s `detail`, not merely stored and dropped (see
+    // `StubBackend::probe`'s own comment).
+    let report = backend.probe().await.expect("probe must succeed");
+    let detail = report.detail.expect("detail must be Some: three fields were set on ctx");
+    assert!(detail.contains("base_url=https://example.invalid"));
+    assert!(detail.contains("dialect=stub-dialect"));
+    assert!(detail.contains("api_key_set=true"));
+}
+
+#[test]
+fn factory_build_error_is_a_named_conway_core_error() {
+    let ctx = BackendBuildContext {
+        id: BackendId::new("stub-instance"),
+        base_url: String::new(),
+        api_key: None,
+        dialect: None,
+        models: BTreeMap::new(),
+    };
+    // `Arc<dyn Backend>` (the `Ok` type) is not `Debug`, so `expect_err`
+    // (which requires `T: Debug`) cannot be used here -- match directly
+    // instead, the same workaround `crates/conway/tests/router_factory.rs`'s
+    // own `expect_build_err` documents for the identical reason on `Conway`.
+    let err = match ErrBackendFactory.build(ctx) {
+        Err(err) => err,
+        Ok(_) => panic!("ErrBackendFactory::build must fail"),
+    };
+    match err {
+        CoreConwayError::Config { detail } => {
+            assert_eq!(detail, "no upstream reachable for this kind");
+        }
+        other => panic!("expected CoreConwayError::Config, got a different variant: {other:?}"),
+    }
 }
