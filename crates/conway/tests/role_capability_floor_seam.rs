@@ -172,6 +172,11 @@ fn build_conway(config: ConwayConfig, backend: Arc<dyn Backend>, store: Arc<dyn 
         .with_session_store(store)
         .with_permission_gate(gate)
         .with_router_factory(Arc::new(conway_plugin_routing::RoutingRouterFactory))
+        // Board item 01KZHF270T3W8GZ7NM6DSNQ4MM: `conway` no longer
+        // compiles the `kind = "openai-compat"` fixture entry above in.
+        .with_backend_factory(Arc::new(
+            conway_plugin_backends::OpenAiCompatBackendFactory,
+        ))
         .build()
         .expect(
             "build should succeed: real ContextBuilder/DeclarativeRouter/AttemptEngine wiring \

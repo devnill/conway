@@ -196,7 +196,7 @@ impl ContextBuilder {
         // NO SCHEMA TEXT LIVES IN THIS SEGMENT'S `content` (board item
         // 01KYTMJA0JHT5SAPYDGV251V17). Every request already carries the
         // full tool-schema set once as the native `tools` array the
-        // provider actually consumes (`conway-backends`'s `openai_compat`/
+        // provider actually consumes (`conway-plugin-backends`'s `openai_compat`/
         // `anthropic` wire modules, built straight from `ContextInput.tools`
         // via `AttemptEngine::build_request`, independent of `segments`
         // entirely). A `Role::System` segment holding the SAME canonical
@@ -224,7 +224,7 @@ impl ContextBuilder {
         //   1. It is still the anchor `desired_breakpoints`/
         //      `attach_cache_hints` mark for breakpoint A — unchanged, since
         //      that machinery keys on `Provenance::ToolRegistry`, never on
-        //      content. `conway-backends::anthropic::wire`'s
+        //      content. `conway-plugin-backends::anthropic::wire`'s
         //      `BreakpointTarget::Tools` is what redirects the resulting
         //      `cache_hint` to `body["tools"]`'s last entry instead of a
         //      `system` entry (see that module).

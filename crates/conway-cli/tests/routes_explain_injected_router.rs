@@ -65,7 +65,7 @@ fn config_with_role(role: &str) -> ConwayConfig {
     // too, even though `build_conway` below overwrites the backend it
     // constructs from this entry with the injected `FakeBackend` (same id,
     // last insert wins -- `ConwayBuilder::build`'s step 3+4). `api_key` is
-    // a throwaway placeholder: `conway_backends::AnthropicBackend::new`
+    // a throwaway placeholder: `conway_plugin_backends::AnthropicBackend::new`
     // rejects an empty one, but this backend is never actually dialed --
     // it is immediately shadowed by the injected `FakeBackend` sharing its
     // id.
@@ -113,6 +113,11 @@ fn build_conway(role: &str) -> Conway {
         .with_session_store(Arc::new(FakeStore::new()))
         .with_permission_gate(gate)
         .with_router(router)
+        // Board item 01KZHF270T3W8GZ7NM6DSNQ4MM: `conway` no longer
+        // compiles the `"fake"` entry's default `kind = "anthropic"` in
+        // (overwritten by the injected `FakeBackend` above, but still
+        // resolved by `build()` before that overwrite happens).
+        .with_backend_factory(Arc::new(conway_plugin_backends::AnthropicBackendFactory))
         .build()
         .expect("build should succeed with every port injected")
 }

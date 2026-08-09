@@ -182,6 +182,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   design. Every unbuilt section names its board item
   (01KZDC0RDRMMMJHX7SAFMM2Q5A, 01KZ844ZXZMVRWC7ZANT7PSM6X).
 
+- **BREAKING: `conway` no longer compiles either provider dialect in —
+  `conway-backends` is now `conway-plugin-backends`, a first-party plugin,
+  installed by default** (board item 01KZHF270T3W8GZ7NM6DSNQ4MM, closing
+  the backends-as-plugins charter; decision 01KZHRPZ010R37411R3W1XR5TF).
+  `crates/conway/Cargo.toml`'s dependency on the adapter crate is gone, and
+  `conway`'s own `src/` names neither dialect anywhere.
+  `AnthropicBackendFactory` and `OpenAiCompatBackendFactory` (kind ids
+  `ANTHROPIC_KIND`/`OPENAI_COMPAT_KIND`, strings unchanged) are the crate's
+  two `BackendFactory` implementations, **relocated** from `builder.rs`'s
+  own `build_anthropic`/`build_openai_compat` rather than reimplemented.
+  The temporary compiled-in fallback the preceding item deliberately left
+  behind is deleted: `[backends.<id>].kind` now resolves against registered
+  factories and nothing else.
+
+  **A backend is the one first-party mechanism that attaches without a
+  `[plugins].install` entry.** `PluginsConfig` gains `default_backends`
+  (defaulting to both dialects), because a backend has no honest degenerate
+  fallback the way an absent router has `MinimalRouter` — a missing router
+  degrades routing, a missing backend leaves conway unable to reach a model
+  at all. `first_party_plugins.rs` gains a third arm and a `wanted_ids`
+  helper unioning `install` with `default_backends`.
+
+  **Startup capability probing moved with the adapter.** `BackendFactory`
+  gains a default-no-op `probe_capabilities`, implemented only by the
+  OpenAI-compatible dialect; leaving it behind would have meant the facade
+  still constructing the plugin's probe type, i.e. a facade that secretly
+  still links what it claims not to. The RESTRICT eligibility filter —
+  never admit a pair `models.json` did not declare — stays in `build()` and
+  is applied generically over *every* factory's discovered map, so a
+  third-party kind inherits that guarantee rather than reimplementing it.
+  `BackendBuildContext` gains `profile_file_paths`: the facade still
+  discovers which profile files exist; parsing and merging them is the
+  plugin's concern now.
+
+  Both proofs are end to end and credential-free. A new
+  `conway-cli` test drives the **real compiled binary** against a loopback
+  server with an ordinary settings file and **no `[plugins]` section at
+  all**, asserting a one-shot prompt completes and the reply reaches
+  stdout. A new test in the plugin crate's own suite proves the identical
+  capability for a **library embedder** calling
+  `with_backend_factory` directly, with no CLI involved. Nothing required
+  reaching past the public surface — the finding that would have mattered
+  most here is that there wasn't one.
+  (`crates/conway-plugin-backends/`, `crates/conway-core/src/ports/backend.rs`,
+  `crates/conway/src/builder.rs`, `crates/conway/src/config/schema.rs`,
+  `crates/conway-cli/src/first_party_plugins.rs`,
+  `crates/conway-cli/src/main.rs`, [`docs/providers.md`](docs/providers.md))
+
 - **Removed: `conway-backends`' `anthropic` and `openai-compat` cargo
   features; `reqwest` and `eventsource-stream` are now plain, non-optional
   dependencies** (board item 01KZHEZWT3ET8C4V1RHVMSMNJA, under the

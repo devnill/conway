@@ -405,8 +405,8 @@ dependencies = [
  "async-trait",
  "blake3",
  "chrono",
- "conway-backends",
  "conway-core",
+ "conway-plugin-backends",
  "conway-plugin-routing",
  "conway-runtime",
  "conway-session",
@@ -428,33 +428,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "conway-backends"
-version = "0.8.0"
-dependencies = [
- "async-trait",
- "chrono",
- "conway-core",
- "eventsource-stream",
- "futures",
- "futures-core",
- "humantime-serde",
- "jsonschema",
- "rand 0.10.2",
- "regex",
- "reqwest",
- "schemars",
- "serde",
- "serde_json",
- "thiserror 2.0.19",
- "tokio",
- "tokio-util",
- "toml",
- "tracing",
- "url",
- "wiremock",
-]
-
-[[package]]
 name = "conway-cli"
 version = "0.8.0"
 dependencies = [
@@ -464,6 +437,7 @@ dependencies = [
  "clap",
  "conway",
  "conway-core",
+ "conway-plugin-backends",
  "conway-plugin-routing",
  "conway-plugin-skeleton",
  "crossterm",
@@ -495,6 +469,34 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.19",
  "ulid",
+]
+
+[[package]]
+name = "conway-plugin-backends"
+version = "0.8.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "conway",
+ "conway-core",
+ "eventsource-stream",
+ "futures",
+ "futures-core",
+ "humantime-serde",
+ "jsonschema",
+ "rand 0.10.2",
+ "regex",
+ "reqwest",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+ "tokio-util",
+ "toml",
+ "tracing",
+ "url",
+ "wiremock",
 ]
 
 [[package]]

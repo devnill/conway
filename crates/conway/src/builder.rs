@@ -7,19 +7,24 @@
 //! - **`build(self) -> Result<Conway>` is synchronous** (the WI-100 golden
 //!   end-to-end criterion chains `.build()?.new_session(..).await?` — `?`
 //!   with no `.await` on `build()`), but the default session store
-//!   (`conway_session::JsonlSessionStore::open`) and the optional startup
-//!   capability probe (`conway_backends::probe::CapabilityProbe::discover_result`)
-//!   are both `async fn`s that perform real I/O. `build()` bridges this by
-//!   running that one `async` call to completion on a fresh OS thread with
-//!   its own throwaway current-thread `tokio` runtime ([`block_on`]) rather
-//!   than via `Handle::current().block_on(..)`, which panics when `build()`
-//!   is (as it commonly will be) invoked from inside an existing `tokio`
-//!   task. This still briefly blocks whichever thread calls `build()` when
-//!   it needs to construct a real store or run a probe; embedders that call
-//!   `build()` from an async context and care about that should do so via
-//!   `spawn_blocking`. This is a load-bearing, disclosed deviation forced by
-//!   the sync/async mismatch between the golden criterion and the lower
-//!   crates' committed `async` signatures — not an oversight.
+//!   (`conway_session::JsonlSessionStore::open`) is an `async fn` that
+//!   performs real I/O. `build()` bridges this by running that one `async`
+//!   call to completion on a fresh OS thread with its own throwaway
+//!   current-thread `tokio` runtime ([`block_on`]) rather than via
+//!   `Handle::current().block_on(..)`, which panics when `build()` is (as
+//!   it commonly will be) invoked from inside an existing `tokio` task.
+//!   This still briefly blocks whichever thread calls `build()` when it
+//!   needs to construct a real store; embedders that call `build()` from an
+//!   async context and care about that should do so via `spawn_blocking`.
+//!   This is a load-bearing, disclosed deviation forced by the sync/async
+//!   mismatch between the golden criterion and the lower crates' committed
+//!   `async` signatures — not an oversight. (Board item
+//!   01KZHF270T3W8GZ7NM6DSNQ4MM: the optional startup capability probe used
+//!   to be the OTHER caller of this same bridge, directly in this module;
+//!   `conway_plugin_backends::OpenAiCompatBackendFactory::
+//!   probe_capabilities` now runs its own probe behind its own,
+//!   independently-maintained bridge — see that method's own doc — so this
+//!   module's `block_on` is used by [`build_default_store`] alone today.)
 //! - **No `with_prompt_handler` method exists** (the criteria list
 //!   `ConwayBuilder`'s methods "exactly", and that list has no such
 //!   method), so `gates::from_config` is always called with `prompt_handler:
@@ -29,39 +34,27 @@
 //!   gap in this item's own public surface (the CLI or a future item should
 //!   likely add a way to supply a prompt handler) rather than silently
 //!   adding an undocumented method.
-//! - **`AnthropicBackend`/`OpenAiCompatBackend` construction bypasses the
-//!   private `AnthropicConfigRaw`/serde `TryFrom` path**: every field on
-//!   both `conway_backends::config::{AnthropicConfig, OpenAiCompatConfig}`
-//!   is `pub`, so this module builds each directly via a struct literal
-//!   instead of round-tripping through a synthesized JSON document.
-//!   `AnthropicConfig::validate()` (which the private `TryFrom` path would
-//!   otherwise run) is called explicitly after construction: `api_key_env`
-//!   is resolved from the live process environment at `build()` time, a
-//!   value the earlier `config::load` never saw (it only inspected
-//!   `LoadOptions.env`).
-//! - **`OpenAiCompatConfig.profile` is resolved by hand**
-//!   ([`resolve_profile`]), not via `Profile`'s own `Deserialize` impl: a
-//!   backend entry's `dialect` string names a *profile id* (built-in or
-//!   loaded from `.conway/profiles.toml` — declarative provider profiles
-//!   item), resolved against a `conway_backends::profile::ProfileStore`
-//!   this module assembles once per `build()` call
-//!   ([`load_provider_profiles`]). The facade's three historically
-//!   kebab-case dialect strings (`"vllm-hermes"`, `"lm-studio"`,
-//!   `"llamacpp-server"`) are translated to their snake_case built-in
-//!   profile ids (`"vllm_hermes"`, `"lm_studio"`, `"llama_cpp_server"`)
-//!   before the `ProfileStore` lookup, preserving every existing config
-//!   file unchanged; every other string (`"openai"`, `"ollama"`, `"kimi"`,
-//!   or any id a user-supplied profile file declares) is looked up
-//!   verbatim — this is what makes a new provider selectable with no
-//!   recompile.
+//! - **Backend construction, dialect/profile resolution, and startup
+//!   capability probing are `conway_plugin_backends`'s concern, not this
+//!   module's** (board item 01KZHF270T3W8GZ7NM6DSNQ4MM): `resolve_backend_
+//!   factory` resolves a `[backends.<id>]` entry's `kind` against every
+//!   registered [`BackendFactory`] ONLY (no compiled-in fallback), and
+//!   [`build_backend_context`] resolves the [`BackendBuildContext`] a
+//!   matching factory's own `build`/`probe_capabilities` receives -- what
+//!   `AnthropicConfig`/`OpenAiCompatConfig` construction, `Profile`
+//!   resolution (the three historically kebab-case dialect strings
+//!   translated to their snake_case built-in profile ids), and
+//!   `CapabilityProbe`'s own HTTP round trip do with those resolved fields
+//!   is entirely `conway_plugin_backends::factory`'s own implementation now
+//!   -- this facade compiles neither dialect in, and names neither
+//!   `"anthropic"` nor `"openai-compat"` anywhere else in `src/`.
 //! - **The backend map is keyed by each constructed backend's own
-//!   `Backend::id()`, which both adapters set from the `backends.<id>` JSON
-//!   key.** `config::merge::validate` checks chain refs
+//!   `Backend::id()`.** `config::merge::validate` checks chain refs
 //!   (`<backend_id>/<model>`) against that same key namespace, so the two
-//!   agree by construction. `AnthropicConfig` gained an `id` field for
-//!   this: an Anthropic-compatible third-party endpoint can be named for
-//!   what it is (`kimi`) and coexist with a real `anthropic` backend,
-//!   rather than every such config having to squat the key `"anthropic"`.
+//!   agree by construction -- this is what lets an Anthropic-compatible
+//!   third-party endpoint be named for what it is (`kimi`) and coexist with
+//!   a real `anthropic` backend, rather than every such config having to
+//!   squat the key `"anthropic"`.
 //! - **`config.limits.max_parallel_tools` has no wiring point**: neither
 //!   `conway_runtime::runtime::RootSpec` nor `AgentSpec` (which
 //!   `Runtime::start_root` builds internally, hardcoding
@@ -85,39 +78,42 @@
 //!   `reasoning` fields, however, still reach neither the router nor
 //!   `Backend::capabilities()`: `ModelOverrides` (owned by `conway-core`)
 //!   has no field for them, and extending it is outside this item's file
-//!   scope — see `conway_backends::capabilities`'s module doc and this
-//!   item's scope-boundary note.
-//! - **Startup capability probing is implemented via
-//!   `conway_backends::probe::CapabilityProbe`**, which is only meaningful
-//!   for `kind = "openai-compat"` backend entries — there is no equivalent
-//!   generic mechanism for `anthropic`
-//!   entries in this crate (the `Backend::probe()` port method exists but
-//!   returns `ProbeReport`, which carries no `max_context_tokens`/capability
-//!   data to overlay). `probe_on_startup` therefore only ever affects
-//!   `openai-compat` backends; this is disclosed, not silently no-op'd.
-//!   [`probe_openai_compat_backends`] constructs each backend's
-//!   `CapabilityProbe` with the *same* `models_overrides_for(id, metadata)`
-//!   map the backend itself is built with (not an empty one): `models.json`
-//!   wins outright, in both directions, for every model it lists — a probed
-//!   window can neither mask a smaller operator-declared one nor be masked
-//!   by a larger one the operator explicitly widened past what the probe
-//!   observed. This makes the `CapabilityIndexBuilder::insert` overlay a
-//!   verified no-op for `models.json`-listed pairs: `build_capabilities`
-//!   (`conway-backends`) is fed byte-identical `overrides` on both the probe
-//!   side and the `Backend::capabilities()` side, so equal inputs yield
-//!   equal outputs and the router's index ends up exactly what
-//!   `Backend::capabilities()` — and therefore the T-1 gate — would return
-//!   for the same pair, restoring the single-source guarantee the bullet
-//!   above already describes for the unprobed path.
-//! - **The probe may confirm a declared model; it may never introduce one**
-//!   (RESTRICT, DECIDED — see [`probe_openai_compat_backends`]'s own
-//!   comment for the full reasoning). A server can report models
-//!   `models.json` never named at all; [`probe_openai_compat_backends`]'s
-//!   overlay loop drops every such pair rather than inserting it into
-//!   `index_builder`, so `models.json` stays the sole source of which
-//!   `(backend, model)` pairs are routable at all — `probe_on_startup`
-//!   narrows/confirms capabilities for declared models, it never expands
-//!   the declared set.
+//!   scope — see `conway_plugin_backends::capabilities`'s module doc and
+//!   this item's scope-boundary note.
+//! - **Startup capability probing is a per-kind opt-in
+//!   ([`BackendFactory::probe_capabilities`]'s own doc), and only
+//!   `conway_plugin_backends::OpenAiCompatBackendFactory` implements it** —
+//!   the Anthropic wire format has no server-side model-listing endpoint
+//!   this facade's plugin speaks (`Backend::probe()`'s own `ProbeReport`
+//!   carries no `max_context_tokens`/capability data to overlay either).
+//!   `probe_on_startup` therefore only ever affects `"openai-compat"`-kind
+//!   backends; this is disclosed, not silently no-op'd, and is unchanged
+//!   from before this item's relocation. **The RESTRICT eligibility
+//!   filter — a probed pair only overlays the router's `CapabilityIndex`
+//!   when its key already appears in that entry's own `BackendBuildContext
+//!   ::models` (i.e. `models.json` already declared it for this backend) —
+//!   is enforced HERE, in [`ConwayBuilder::build`]'s own step 5, identically
+//!   for every kind's discovered map**, not delegated to each
+//!   `BackendFactory::probe_capabilities` implementation to get right on its
+//!   own (GP-07: no opaque auto-selection in the core — a model becoming
+//!   routable because a server mentioned it, with no operator declaration
+//!   behind it, is not a "route" a user could have predicted from
+//!   `models.json` alone). A pair a factory's probe observed but
+//!   `models.json` never listed is silently dropped, not inserted, and not
+//!   surfaced as a hard error, but it IS logged at `debug` so an operator
+//!   who enabled `probe_on_startup` and expected discovery to pick up an
+//!   undeclared model has a signal for why it never became routable.
+//!   `ctx.models` (`models_overrides_for(id, metadata)`, the same map the
+//!   backend itself was built with, not an independently-derived one) wins
+//!   outright over a probed value in both directions for every model it
+//!   lists — a probed window can neither mask a smaller operator-declared
+//!   one nor be masked by a larger one the operator explicitly widened past
+//!   what the probe observed — which makes the overlay a verified no-op for
+//!   every `models.json`-listed pair: equal inputs (`ctx.models`) reach
+//!   `build_capabilities` on both the probe side and the
+//!   `Backend::capabilities()` side, so equal outputs mean the router's
+//!   index ends up exactly what `Backend::capabilities()` — and therefore
+//!   the T-1 gate — would return for the same pair.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -130,7 +126,7 @@ use conway_core::ports::{
     Plugin, Router, RouterBuildContext, RouterBundle, RouterFactory, RoutingExplainer,
     SessionStore,
 };
-use conway_core::ports::{CapabilityIndex, CapabilityIndexBuilder};
+use conway_core::ports::CapabilityIndex;
 use conway_core::routing::{AlwaysClosedHealthRegistry, MinimalRouter, ModelOverrides};
 use conway_runtime::events::EventBus;
 use conway_runtime::runtime::{Runtime, RuntimeDeps};
@@ -150,11 +146,6 @@ use crate::presets;
 /// `conway-runtime`'s own tests use for a long-lived bus) rather than
 /// inventing a config surface this item has no mandate to add.
 const EVENT_BUS_CAPACITY: usize = 1024;
-
-/// Per-discovery-request timeout for the optional startup capability probe.
-/// Mirrors `conway_backends::probe::DISCOVERY_TIMEOUT` (private to that
-/// crate) rather than importing it.
-const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Which built-in plugins [`ConwayBuilder::build`] auto-registers, filtered
 /// by each candidate's own `PluginManifest::id` (board item: bash ships on
@@ -385,10 +376,12 @@ impl ConwayBuilder {
     /// 01KZHF1E85MS1VF4YH8CDNCP9Z, decision 01KZHRPZ010R37411R3W1XR5TF): for
     /// every `[backends.<id>]` entry, `build()`'s own `construct_backend`
     /// resolves `entry.kind` against every registered factory's own
-    /// [`BackendFactory::id`] FIRST, falling back to the two adapters this
-    /// facade still compiles in (`"anthropic"`, `"openai-compat"`) for any
-    /// name they claim -- see `construct_backend`'s own doc for the exact
-    /// resolution order and the unknown-kind error shape. A matching
+    /// [`BackendFactory::id`] -- and against nothing else. The temporary
+    /// fallback to two compiled-in adapters is GONE (board item
+    /// 01KZHF270T3W8GZ7NM6DSNQ4MM): this facade no longer links either
+    /// dialect, so an unregistered kind is an unknown-kind error, not a
+    /// silent built-in. See `construct_backend`'s own doc for the exact
+    /// resolution order and the error shape. A matching
     /// factory's `build` is invoked with a [`BackendBuildContext`] resolved
     /// from THAT entry: `id` is the entry's own `[backends.<id>]` JSON key,
     /// `base_url`/`dialect` are copied verbatim, and `api_key` is resolved
@@ -405,11 +398,14 @@ impl ConwayBuilder {
     /// reachable for a third-party kind and not just the two built-in ones.
     /// **Registering a factory whose kind no entry names is still fine, not
     /// an error** -- its `build` is simply never invoked, the literal case
-    /// the paragraph above already covers. **Not called at all (the
-    /// default)** still changes nothing beyond what config-driven `kind`
-    /// resolution itself does: every `[backends.<id>]` entry then resolves
-    /// against the two fallback adapters only, exactly as if this whole
-    /// mechanism did not exist.
+    /// the paragraph above already covers. **Not called at all**, however,
+    /// is no longer a benign default: with no factory registered there is
+    /// nothing left for a `kind` to resolve against, so every
+    /// `[backends.<id>]` entry fails with an unknown-kind error and the
+    /// build reaches no model at all. The `conway` CLI avoids this by
+    /// installing `conway-plugin-backends`' two factories from
+    /// `[plugins].default_backends`; a library embedder linking this facade
+    /// alone must register a factory itself.
     pub fn with_backend_factory(mut self, factory: Arc<dyn BackendFactory>) -> Self {
         self.backend_factories.push(factory);
         self
@@ -581,12 +577,19 @@ impl ConwayBuilder {
         let metadata_path = resolve_path(&cwd, &config.models.metadata_path);
         let metadata = config::model_metadata::load(&metadata_path)?;
 
-        // 2b. Declarative provider profiles: built-ins layered under any
-        //     discovered `.conway/profiles.toml` (project then global —
-        //     `config::discovery::provider_profile_file_paths`). Resolved
-        //     once here so every `openai-compat` backend entry (and startup
-        //     probing, step 5) sees the same loaded set.
-        let profiles = load_provider_profiles(&cwd)?;
+        // 2b. Declarative provider profiles (board item 01KZHF270T3W8GZ7NM6DSNQ4MM):
+        //     this facade no longer parses/merges `.conway/profiles.toml`
+        //     itself -- that is now `conway_plugin_backends`'s own
+        //     `OpenAiCompatBackendFactory::resolve_profile_store` concern
+        //     (a kind with no "dialect" notion, like `"anthropic"`, simply
+        //     never reads this field). What stays here is discovering WHICH
+        //     files exist to read at all (project then global —
+        //     `config::discovery::provider_profile_file_paths`, unchanged),
+        //     resolved once so every `[backends.<id>]` entry's
+        //     `BackendBuildContext` (construction below, and startup
+        //     probing, step 5) carries the identical path list.
+        let env: HashMap<String, String> = std::env::vars().collect();
+        let profile_file_paths = config::discovery::provider_profile_file_paths(&cwd, &env);
 
         // 3+3b+4. Duplicate-kind check over every registered factory FIRST
         //         (before any factory's own `build` runs, regardless of
@@ -596,17 +599,19 @@ impl ConwayBuilder {
         //         side effects to have run while the whole call still
         //         fails). Then construct one backend per `[backends.<id>]`
         //         entry, resolving `entry.kind` against the registered
-        //         factories (board item 01KZHF0RBKJZZC68F7GPFB347Q, opened
-        //         to config-driven selection by board item
-        //         01KZHF1E85MS1VF4YH8CDNCP9Z) falling back to the two
-        //         adapters this facade still compiles in. Then merge
-        //         injected ones over all of that -- each step keyed into
-        //         the same map by each backend's own `id()`, so a later
-        //         step overwrites an earlier step's entry sharing an id.
-        //         See `ConwayBuilder::with_backend_factory`'s own doc for
-        //         the full precedence/duplicate-kind rules this step
-        //         implements, and `construct_backend`'s own doc for the
-        //         exact per-entry resolution order.
+        //         factories ONLY (board item 01KZHF270T3W8GZ7NM6DSNQ4MM
+        //         removed the temporary compiled-in fallback board item
+        //         01KZHF1E85MS1VF4YH8CDNCP9Z left standing -- see
+        //         `resolve_backend_factory`'s own doc). Then merge injected
+        //         ones over all of that -- each step keyed into the same map
+        //         by each backend's own `id()`, so a later step overwrites
+        //         an earlier step's entry sharing an id. See
+        //         `ConwayBuilder::with_backend_factory`'s own doc for the
+        //         full precedence/duplicate-kind rules this step implements.
+        //         Each entry's already-resolved `BackendBuildContext` is
+        //         also kept (`probe_targets`) so step 5's optional startup
+        //         probe can reuse it rather than re-resolving the same
+        //         `api_key`/`profile_file_paths` a second time.
         let mut seen_factory_kinds: HashSet<&str> = HashSet::new();
         for factory in &backend_factories {
             if !seen_factory_kinds.insert(factory.id()) {
@@ -623,8 +628,20 @@ impl ConwayBuilder {
             backend_factories.iter().map(|f| (f.id(), f)).collect();
 
         let mut backend_map: HashMap<BackendId, Arc<dyn Backend>> = HashMap::new();
+        let mut probe_targets: Vec<(String, Arc<dyn BackendFactory>, BackendBuildContext)> =
+            Vec::new();
         for (id, entry) in &config.backends {
-            let backend = construct_backend(id, entry, &metadata, &profiles, &factories_by_kind)?;
+            let factory = resolve_backend_factory(id, entry, &factories_by_kind)?;
+            let ctx = build_backend_context(id, entry, &metadata, &profile_file_paths)?;
+            if config.models.probe_on_startup {
+                probe_targets.push((id.clone(), factory.clone(), ctx.clone()));
+            }
+            let backend = factory.build(ctx).map_err(|e| ConwayError::Build {
+                message: format!(
+                    "backend '{id}': factory for kind '{}' failed to build: {e}",
+                    entry.kind
+                ),
+            })?;
             backend_map.insert(backend.id(), backend);
         }
         for backend in backends {
@@ -643,7 +660,16 @@ impl ConwayBuilder {
         //    index and the runtime's T-1 gate both read — see
         //    `CapabilityIndex::from_backends`'s doc) for every
         //    `(backend, model)` pair `models.json` declares. Optionally
-        //    overlaid with a startup probe.
+        //    overlaid with a startup probe -- board item
+        //    01KZHF270T3W8GZ7NM6DSNQ4MM relocated the probing mechanism
+        //    itself into `conway_plugin_backends::OpenAiCompatBackendFactory
+        //    ::probe_capabilities` (this facade no longer names
+        //    `CapabilityProbe`, or "openai-compat", anywhere in `src/`); the
+        //    RESTRICT eligibility filter below -- overlay only a pair
+        //    `models.json` already declared for this backend, per
+        //    `BackendFactory::probe_capabilities`'s own doc -- stays here,
+        //    applied identically to every kind's discovered map, not
+        //    delegated to each kind to get right on its own.
         let model_refs: Vec<ModelRef> = metadata
             .models
             .keys()
@@ -661,9 +687,20 @@ impl ConwayBuilder {
         let all_backends: Vec<Arc<dyn Backend>> = backend_map.values().cloned().collect();
         let mut index_builder =
             CapabilityIndex::from_backends(&all_backends, &model_refs).into_builder();
-        if config.models.probe_on_startup {
-            index_builder =
-                probe_openai_compat_backends(&config, &profiles, &metadata, index_builder);
+        for (id, factory, ctx) in &probe_targets {
+            for (model_id, caps) in factory.probe_capabilities(ctx) {
+                if !ctx.models.contains_key(model_id.as_str()) {
+                    tracing::debug!(
+                        backend = %id,
+                        model = %model_id,
+                        "probe_on_startup: server reported a model with no models.json entry \
+                         for this backend; not admitting it (models.json is the sole source of \
+                         routable models)"
+                    );
+                    continue;
+                }
+                index_builder = index_builder.insert(BackendId::new(id.clone()), model_id, caps);
+            }
         }
         let capability_index = index_builder.build();
 
@@ -861,87 +898,62 @@ fn resolve_api_key(id: &str, entry: &BackendEntry) -> Result<String> {
     Ok(String::new())
 }
 
-/// The two adapter kinds this facade still compiles in directly (WI-100)
-/// -- the temporary, deliberate fallback [`construct_backend`]'s own doc
-/// describes. Board item 01KZHF270T3W8GZ7NM6DSNQ4MM (the relocation item)
-/// removes this fallback; nothing else in this item moves either kind out
-/// of the facade.
-const BUILTIN_BACKEND_KIND_ANTHROPIC: &str = "anthropic";
-const BUILTIN_BACKEND_KIND_OPENAI_COMPAT: &str = "openai-compat";
-
-/// Resolves one `[backends.<id>]` entry's `kind` into a live [`Backend`]
-/// (board item 01KZHF1E85MS1VF4YH8CDNCP9Z: `kind` is an open name, not a
-/// closed enum).
+/// Resolves one `[backends.<id>]` entry's `kind` against every registered
+/// [`BackendFactory`] (board item 01KZHF1E85MS1VF4YH8CDNCP9Z: `kind` is an
+/// open name, not a closed enum) -- ONLY against registered factories, with
+/// no compiled-in fallback: board item 01KZHF270T3W8GZ7NM6DSNQ4MM removed
+/// the temporary two-adapter fallback `construct_backend` used to fall
+/// through to (`"anthropic"`, `"openai-compat"` compiled directly into this
+/// facade), the deliberate, disclosed gap that item's own predecessor left
+/// standing so its slice could ship alone. Every kind this facade resolves
+/// today, including those two, is therefore a registered factory -- see
+/// `conway_plugin_backends::factory`'s own module doc for what makes both
+/// attach by default with no `[plugins].install`/`with_backend_factory` call
+/// an operator has to write by hand.
 ///
-/// **Resolution order, exact:** every `factories` entry (keyed by each
-/// registered [`BackendFactory::id`]) is checked FIRST; a match invokes
-/// that factory's `build` with a [`BackendBuildContext`] resolved from
-/// THIS entry ([`build_backend_context`]). Only when no registered factory
-/// claims `entry.kind` does resolution fall back to the two adapters this
-/// facade still compiles in (`"anthropic"`, `"openai-compat"`) --
-/// deliberate and temporary, kept so this slice ships alone; the
-/// relocation item that follows removes the fallback, at which point every
-/// kind (including these two) is a registered factory. A name neither a
-/// factory nor the fallback claims is a hard, named [`ConwayError::Config`]
-/// listing every kind this build actually recognises -- the same
-/// disclosure shape `crates/conway-cli/src/first_party_plugins.rs`'s
-/// unknown-id error already produces for plugin ids (GP-14: a silently
-/// ignored `kind` is exactly the failure that check exists to prevent).
-fn construct_backend(
+/// A `kind` no registered factory claims is a hard, named
+/// [`ConwayError::Config`] listing every kind this build actually
+/// recognises -- the same disclosure shape
+/// `crates/conway-cli/src/first_party_plugins.rs`'s unknown-id error already
+/// produces for plugin ids (GP-14: a silently ignored `kind` is exactly the
+/// failure that check exists to prevent).
+fn resolve_backend_factory<'a>(
     id: &str,
     entry: &BackendEntry,
-    metadata: &config::model_metadata::ModelMetadata,
-    profiles: &conway_backends::profile::ProfileStore,
-    factories: &HashMap<&str, &Arc<dyn BackendFactory>>,
-) -> Result<Arc<dyn Backend>> {
-    if let Some(factory) = factories.get(entry.kind.as_str()) {
-        let ctx = build_backend_context(id, entry, metadata)?;
-        return factory.build(ctx).map_err(|e| ConwayError::Build {
+    factories: &'a HashMap<&str, &Arc<dyn BackendFactory>>,
+) -> Result<&'a Arc<dyn BackendFactory>> {
+    factories.get(entry.kind.as_str()).copied().ok_or_else(|| {
+        let mut known: Vec<String> = factories.keys().map(|k| k.to_string()).collect();
+        known.sort();
+        known.dedup();
+        ConwayError::Config {
+            path: None,
             message: format!(
-                "backend '{id}': factory for kind '{}' failed to build: {e}",
-                entry.kind
+                "backend '{id}': unknown kind '{}'; recognised kinds: [{}]. A third-party kind \
+                 is installed with ConwayBuilder::with_backend_factory before build().",
+                entry.kind,
+                known.join(", ")
             ),
-        });
-    }
-    match entry.kind.as_str() {
-        BUILTIN_BACKEND_KIND_ANTHROPIC => build_anthropic(id, entry, metadata),
-        BUILTIN_BACKEND_KIND_OPENAI_COMPAT => build_openai_compat(id, entry, metadata, profiles),
-        other => {
-            let mut known: Vec<String> = vec![
-                BUILTIN_BACKEND_KIND_ANTHROPIC.to_string(),
-                BUILTIN_BACKEND_KIND_OPENAI_COMPAT.to_string(),
-            ];
-            known.extend(factories.keys().map(|k| k.to_string()));
-            known.sort();
-            known.dedup();
-            Err(ConwayError::Config {
-                path: None,
-                message: format!(
-                    "backend '{id}': unknown kind '{other}'; recognised kinds: [{}]. A \
-                     third-party kind is installed with \
-                     ConwayBuilder::with_backend_factory before build().",
-                    known.join(", ")
-                ),
-            })
         }
-    }
+    })
 }
 
 /// Resolves the [`BackendBuildContext`] a registered [`BackendFactory`]
 /// receives for one `[backends.<id>]` entry naming its kind: `id` is the
 /// entry's own JSON key, `base_url`/`dialect` copied verbatim, `api_key`
 /// resolved through the same centralized [`resolve_api_key`] every
-/// config-derived backend's credential already goes through, and `models`
-/// the same per-backend `models.json` overrides
-/// [`models_overrides_for`] projects for the two built-in adapters -- so a
-/// factory-built backend's `Backend::capabilities()` honors an operator's
-/// `models.json` override identically to a built-in one (WI-123's
-/// single-source guarantee, extended here rather than left a built-ins-only
-/// privilege).
+/// config-derived backend's credential already goes through, `models` the
+/// same per-backend `models.json` overrides [`models_overrides_for`]
+/// projects (WI-123's single-source guarantee, extended to every registered
+/// kind rather than left a built-ins-only privilege), and `profile_file_paths`
+/// copied verbatim from [`ConwayBuilder::build`]'s own step 2b resolution --
+/// see that field's own doc ([`conway_core::ports::BackendBuildContext`]) for
+/// why every kind receives the identical list whether or not it reads it.
 fn build_backend_context(
     id: &str,
     entry: &BackendEntry,
     metadata: &config::model_metadata::ModelMetadata,
+    profile_file_paths: &[PathBuf],
 ) -> Result<BackendBuildContext> {
     let api_key = resolve_api_key(id, entry)?;
     Ok(BackendBuildContext {
@@ -954,31 +966,8 @@ fn build_backend_context(
         },
         dialect: entry.dialect.clone(),
         models: models_overrides_for(id, metadata),
+        profile_file_paths: profile_file_paths.to_vec(),
     })
-}
-
-/// Declarative provider profiles: built-ins ([`conway_backends::profile::ProfileStore::built_ins`])
-/// layered under any discovered `.conway/profiles.toml` file(s) — project
-/// then global (`config::discovery::provider_profile_file_paths`). Reads
-/// the live process environment directly (`std::env::vars()`), matching
-/// [`resolve_api_key`]'s own precedent of touching real env for exactly
-/// this kind of build()-time resolution rather than threading an injected
-/// map through every caller.
-fn load_provider_profiles(cwd: &Path) -> Result<conway_backends::profile::ProfileStore> {
-    use conway_backends::profile::ProfileStore;
-
-    let env: HashMap<String, String> = std::env::vars().collect();
-    let mut store = ProfileStore::built_ins();
-    for path in config::discovery::provider_profile_file_paths(cwd, &env) {
-        store = store.merge_file(&path).map_err(|e| ConwayError::Config {
-            path: Some(path.clone()),
-            message: format!(
-                "failed to load provider profiles from {}: {e}",
-                path.display()
-            ),
-        })?;
-    }
-    Ok(store)
 }
 
 /// Per-model capability overrides for backend `id`, projected from the
@@ -1019,255 +1008,6 @@ fn models_overrides_for(
             ))
         })
         .collect()
-}
-
-fn build_anthropic(
-    id: &str,
-    entry: &BackendEntry,
-    metadata: &config::model_metadata::ModelMetadata,
-) -> Result<Arc<dyn Backend>> {
-    use conway_backends::anthropic::AnthropicBackend;
-    use conway_backends::config::{AnthropicConfig, SecretString};
-
-    // The configured JSON key becomes the backend's own id, so a chain ref
-    // (`<backend_id>/<model>`) resolves against the same namespace
-    // `config::merge::validate` checked. This is what lets an
-    // Anthropic-compatible third-party endpoint be named for what it is
-    // (`kimi`) and coexist with a real `anthropic` backend.
-    let api_key = resolve_api_key(id, entry)?;
-    let base_url = if entry.base_url.is_empty() {
-        url::Url::parse("https://api.anthropic.com")
-            .expect("hardcoded default Anthropic base URL must be valid")
-    } else {
-        url::Url::parse(&entry.base_url).map_err(|e| ConwayError::Config {
-            path: None,
-            message: format!("backend '{id}': invalid base_url: {e}"),
-        })?
-    };
-
-    let cfg = AnthropicConfig {
-        api_key: SecretString::new(api_key),
-        // The JSON key is the backend's identity, so a chain ref resolves
-        // against the namespace `config::merge::validate` already checked.
-        id: BackendId::new(id),
-        base_url,
-        // Not exposed by the facade schema; mirrors
-        // `conway_backends::config`'s own (private) default literal.
-        anthropic_version: "2023-06-01".to_string(),
-        timeout: None,
-        models: models_overrides_for(id, metadata),
-    };
-    cfg.validate().map_err(|e| ConwayError::Config {
-        path: None,
-        message: format!("backend '{id}': {e}"),
-    })?;
-
-    let backend = AnthropicBackend::new(cfg).map_err(|e| ConwayError::Config {
-        path: None,
-        message: format!("backend '{id}': {e}"),
-    })?;
-    Ok(Arc::new(backend))
-}
-
-fn build_openai_compat(
-    id: &str,
-    entry: &BackendEntry,
-    metadata: &config::model_metadata::ModelMetadata,
-    profiles: &conway_backends::profile::ProfileStore,
-) -> Result<Arc<dyn Backend>> {
-    use conway_backends::config::{OpenAiCompatConfig, SecretString};
-    use conway_backends::openai_compat::OpenAiCompatBackend;
-
-    let dialect_raw = entry
-        .dialect
-        .as_deref()
-        .ok_or_else(|| ConwayError::Config {
-            path: None,
-            message: format!("backend '{id}': kind 'openai-compat' requires 'dialect'"),
-        })?;
-    let profile = resolve_profile(id, dialect_raw, profiles)?;
-    let api_key = resolve_api_key(id, entry)?;
-    let base_url = url::Url::parse(&entry.base_url).map_err(|e| ConwayError::Config {
-        path: None,
-        message: format!("backend '{id}': invalid base_url: {e}"),
-    })?;
-
-    let cfg = OpenAiCompatConfig {
-        id: BackendId::new(id.to_string()),
-        base_url,
-        api_key: if api_key.is_empty() {
-            None
-        } else {
-            Some(SecretString::new(api_key))
-        },
-        profile,
-        timeout: None,
-        metadata_path: None,
-        models: models_overrides_for(id, metadata),
-    };
-
-    let backend = OpenAiCompatBackend::new(cfg).map_err(|e| ConwayError::Config {
-        path: None,
-        message: format!("backend '{id}': {e}"),
-    })?;
-    Ok(Arc::new(backend))
-}
-
-/// Resolves the facade's `backends.<id>.dialect` string to a
-/// [`conway_backends::profile::Profile`] against `profiles` (declarative
-/// provider profiles item). The three dialects whose documented facade
-/// spelling is kebab-case (`"vllm-hermes"`, `"lm-studio"`,
-/// `"llamacpp-server"`) are translated to their snake_case built-in profile
-/// ids first — preserving every existing config file unchanged — then
-/// looked up verbatim; every other string (`"openai"`, `"ollama"`,
-/// `"kimi"`, or any id a `.conway/profiles.toml` file declares) is looked
-/// up as-is. This is what lets a new provider be selected by name with no
-/// recompile: adding it to `profiles` is enough, no change to this
-/// function is ever required.
-fn resolve_profile(
-    id: &str,
-    raw: &str,
-    profiles: &conway_backends::profile::ProfileStore,
-) -> Result<conway_backends::profile::Profile> {
-    let canonical = match raw {
-        "vllm-hermes" => "vllm_hermes",
-        "lm-studio" => "lm_studio",
-        "llamacpp-server" => "llama_cpp_server",
-        other => other,
-    };
-    profiles
-        .get(canonical)
-        .cloned()
-        .ok_or_else(|| ConwayError::Config {
-            path: None,
-            message: format!(
-                "backend '{id}': unknown dialect/profile '{raw}' (no built-in or loaded profile \
-                 named '{canonical}')"
-            ),
-        })
-}
-
-/// Runs a startup `CapabilityProbe` for every `openai-compat` backend entry,
-/// overlaying discovered capabilities over the file-derived ones already in
-/// `index_builder`. A backend whose probe observes nothing (`degraded`) or
-/// whose entry is missing/invalid config keeps its file-derived metadata
-/// unchanged (a `tracing::warn`, never a hard error — probe failure is
-/// always a warning per the WI-100 spec).
-///
-/// `metadata` is the facade's already-loaded `models.json` (step 2 of
-/// [`ConwayBuilder::build`]); [`models_overrides_for`] projects it into the
-/// exact same `BTreeMap<String, ModelOverrides>` shape each backend's own
-/// config is built with (see `build_openai_compat`'s `models:
-/// models_overrides_for(id, metadata)` field). Passing that same map into
-/// `CapabilityProbe::new` here — rather than an empty one — is what makes
-/// the probe's own merge precedence (this module's doc, `probe.rs`'s: config
-/// `ModelOverrides` > `ModelMetadata` entry > probed server value >
-/// `DialectDefaults`) agree with `Backend::capabilities()`'s: for every
-/// `models.json`-listed model, `build_capabilities` is fed byte-identical
-/// inputs on both sides, so the overlay below becomes a verified no-op
-/// wherever `models.json` already has an opinion — see the module doc's
-/// `CapabilityIndex`/`Backend::capabilities()` reconciliation note.
-fn probe_openai_compat_backends(
-    config: &ConwayConfig,
-    profiles: &conway_backends::profile::ProfileStore,
-    metadata: &config::model_metadata::ModelMetadata,
-    mut index_builder: CapabilityIndexBuilder,
-) -> CapabilityIndexBuilder {
-    use conway_backends::config::SecretString;
-    use conway_backends::model_metadata::ModelMetadataStore;
-    use conway_backends::probe::CapabilityProbe;
-
-    for (id, entry) in &config.backends {
-        if entry.kind != BUILTIN_BACKEND_KIND_OPENAI_COMPAT {
-            continue;
-        }
-        let Some(dialect_raw) = entry.dialect.as_deref() else {
-            tracing::warn!(backend = %id, "probe_on_startup: skipping backend with no 'dialect'");
-            continue;
-        };
-        let Ok(profile) = resolve_profile(id, dialect_raw, profiles) else {
-            tracing::warn!(backend = %id, dialect = %dialect_raw, "probe_on_startup: skipping backend with unknown dialect/profile");
-            continue;
-        };
-        let Ok(base_url) = url::Url::parse(&entry.base_url) else {
-            tracing::warn!(backend = %id, "probe_on_startup: skipping backend with invalid base_url");
-            continue;
-        };
-        let auth = resolve_api_key(id, entry)
-            .ok()
-            .filter(|key| !key.is_empty())
-            .map(SecretString::new);
-
-        // Bound so the admission filter below can reuse the exact same
-        // backend-scoped, `ModelRef`-normalized key set the probe itself
-        // was constructed with, rather than re-deriving it (and risking a
-        // second, subtly different notion of "declared for this backend").
-        let overrides = models_overrides_for(id, metadata);
-        let probe = CapabilityProbe::new(
-            base_url,
-            profile,
-            auth,
-            PROBE_TIMEOUT,
-            // Matches the backend's own store (`openai_compat/mod.rs`'s
-            // `metadata_path: None`) — the facade's `models.json` reaches
-            // the probe exclusively through `overrides` below, not through
-            // this store.
-            ModelMetadataStore::defaults(),
-            overrides.clone(),
-        );
-        let result = block_on(probe.discover_result());
-        if result.degraded {
-            tracing::warn!(
-                backend = %id,
-                "probe_on_startup: capability discovery observed no models; keeping file-derived \
-                 metadata"
-            );
-            continue;
-        }
-        // RESTRICT (DECIDED, operator direction 2026-08-06: "Keep
-        // configuration something done by hand and have the probe confirm
-        // that the model works, nothing else."): only overlay a pair
-        // `models.json` already declares for this backend. `probe.rs`'s own
-        // module doc states the merge precedence as config `ModelOverrides`
-        // > `ModelMetadata` entry > probed server value > `DialectDefaults`,
-        // and that discovery may only *narrow* `max_context_tokens` — never
-        // raise `tool_calling`, never set `reliability_tier` to `Verified`.
-        // Inserting a pair for a model `models.json` never named is the
-        // largest possible raise the probe could make: from not-routable-
-        // at-all to routable, on the strength of the server's own say-so
-        // alone. That is exactly the opaque, server-driven admission
-        // `probe.rs`'s contract already forbids in every other direction,
-        // and exactly what GP-07 ("no opaque auto-selection in the core")
-        // rules out — a model becoming routable because a server mentioned
-        // it, with no operator declaration behind it, is not a "route" a
-        // user could have predicted from `models.json` alone. `models.json`
-        // is the sole hand-written source of truth (same principle as prior
-        // decision 01KZ50GM85GF0TPNBYCNXYAS9Z: for a *listed* pair,
-        // `models.json` wins outright over the probe in both directions —
-        // this is that principle at its boundary, where no declaration
-        // means nothing for the probe to confirm). A pair the probe
-        // observed but `models.json` never listed is silently dropped, not
-        // inserted, and not surfaced as a hard error — `discover_result`
-        // itself treats absent-server-observation the same way (a probe
-        // failure is always a warning, never fatal, per `CapabilityProbe`'s
-        // own doc) — but it IS logged at `debug` below so an operator who
-        // enabled `probe_on_startup` and expected discovery to pick up an
-        // undeclared model has a signal for why it never became routable.
-        for (model_id, caps) in result.capabilities {
-            if !overrides.contains_key(model_id.as_str()) {
-                tracing::debug!(
-                    backend = %id,
-                    model = %model_id,
-                    "probe_on_startup: server reported a model with no models.json entry for \
-                     this backend; not admitting it (models.json is the sole source of \
-                     routable models)"
-                );
-                continue;
-            }
-            index_builder = index_builder.insert(BackendId::new(id.clone()), model_id, caps);
-        }
-    }
-    index_builder
 }
 
 /// Parses the facade's `models.json` `reliability_tier` string (WI-097's
@@ -1381,74 +1121,16 @@ mod models_overrides_tests {
         );
     }
 
-    /// Declarative provider profiles: `resolve_profile` accepts every
-    /// existing documented dialect string (both plain and the three
-    /// kebab-case spellings), resolves a brand-new built-in profile
-    /// (`kimi`) by name with no special-casing, resolves a user-supplied
-    /// profile id with no recompile, and rejects an unknown name with a
-    /// named, typed error rather than a panic.
-    #[test]
-    fn resolve_profile_accepts_every_documented_dialect_string_and_new_built_ins() {
-        use conway_backends::profile::ProfileStore;
-
-        let profiles = ProfileStore::built_ins();
-        for (raw, expected_id) in [
-            ("openai", "openai"),
-            ("ollama", "ollama"),
-            ("vllm-hermes", "vllm_hermes"),
-            ("lm-studio", "lm_studio"),
-            ("llamacpp-server", "llama_cpp_server"),
-            ("kimi", "kimi"),
-        ] {
-            let profile = resolve_profile("test", raw, &profiles)
-                .unwrap_or_else(|e| panic!("'{raw}' must resolve: {e}"));
-            assert_eq!(profile.id, expected_id);
-        }
-    }
-
-    #[test]
-    fn resolve_profile_resolves_a_user_supplied_profile_with_no_recompile() {
-        use conway_backends::profile::ProfileStore;
-
-        let dir = std::env::temp_dir().join(format!(
-            "conway-builder-resolve-profile-test-{}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("profiles.toml");
-        std::fs::write(
-            &path,
-            r#"
-            [[profile]]
-            id = "my-vendor"
-            chat_path = "/chat/completions"
-            "#,
-        )
-        .unwrap();
-
-        let profiles = ProfileStore::built_ins().merge_file(&path).unwrap();
-        let profile = resolve_profile("test", "my-vendor", &profiles).unwrap();
-        assert_eq!(profile.id, "my-vendor");
-
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn resolve_profile_names_the_unknown_dialect_in_a_typed_error() {
-        use conway_backends::profile::ProfileStore;
-
-        let profiles = ProfileStore::built_ins();
-        let err = resolve_profile("mybackend", "totally-unknown", &profiles)
-            .expect_err("an unknown dialect/profile must be rejected");
-        match err {
-            ConwayError::Config { message, .. } => {
-                assert!(message.contains("mybackend"), "{message}");
-                assert!(message.contains("totally-unknown"), "{message}");
-            }
-            other => panic!("expected ConwayError::Config, got {other:?}"),
-        }
-    }
-
+    /// Declarative provider profiles: `resolve_profile`'s own coverage
+    /// (every documented dialect string, both plain and the three
+    /// kebab-case spellings; a brand-new built-in profile resolved by name
+    /// with no special-casing; a user-supplied profile resolved with no
+    /// recompile; an unknown name rejected with a named, typed error rather
+    /// than a panic) moved with the function itself to
+    /// `conway_plugin_backends::factory` (board item 01KZHF270T3W8GZ7NM6DSNQ4MM)
+    /// -- see that crate's `src/factory.rs` test module for the ported
+    /// tests, unchanged in what they check.
+    ///
     /// WI-123's core proof: `models.json` has exactly one predictable
     /// routing effect. The value `Backend::capabilities()` returns (what
     /// `conway_runtime::attempt::AttemptEngine`'s T-1 gate reads directly)
@@ -1458,9 +1140,9 @@ mod models_overrides_tests {
     /// recomputed values that can silently drift apart.
     #[test]
     fn models_json_drives_both_backend_capabilities_and_router_index_identically() {
-        use conway_backends::config::{Dialect, OpenAiCompatConfig};
-        use conway_backends::openai_compat::OpenAiCompatBackend;
         use conway_core::ids::ModelId;
+        use conway_plugin_backends::config::{Dialect, OpenAiCompatConfig};
+        use conway_plugin_backends::openai_compat::OpenAiCompatBackend;
 
         let mut m = ModelMetadata::empty();
         m.models.insert(

@@ -517,13 +517,13 @@ just a claim:
 - **Anthropic** uses explicit cache breakpoints (`cache_control`),
   attached in a strictly additive post-pass over an already-built request
   body. `body_with_hints_stripped_equals_body_with_hints_minus_every_cache_control_key`
-  (`conway-backends/tests/anthropic_cache_mapping.rs`) pins this: strip
+  (`conway-plugin-backends/tests/anthropic_cache_mapping.rs`) pins this: strip
   every cache hint and the body is identical except for the absence of
   `cache_control` keys — nothing else about the request changes.
 - **OpenAI-compatible providers** (Ollama, vLLM, Kimi's platform API, and
   others) cache implicitly on prefix match — there's no request field to
   set at all. `cache_hint_never_changes_the_serialized_request_body`
-  (`conway-backends/src/openai_compat/wire.rs`) pins the stronger claim:
+  (`conway-plugin-backends/src/openai_compat/wire.rs`) pins the stronger claim:
   this adapter never reads a cache hint in the first place, so a marked
   segment and an unmarked one serialize identically.
 
@@ -551,7 +551,7 @@ cached as a single prefix." — Anthropic's "Prompt caching" docs, "Caching
 tool definitions"), so the duplicate segment was unnecessary: breakpoint
 A now anchors on the native `tools` array directly, and the system
 segment that used to hold a second copy of every schema sends no text at
-all. `conway-backends`'s `anthropic::wire::BreakpointTarget::Tools`
+all. `conway-plugin-backends`'s `anthropic::wire::BreakpointTarget::Tools`
 carries that cache hint from the segment to `body["tools"]`'s last
 element; OpenAI-compatible dialects have no `cache_control` equivalent to
 redirect to, so for them it is a pure size reduction — one fewer system

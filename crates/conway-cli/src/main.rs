@@ -165,7 +165,20 @@ fn build_conway(cli: &Cli, gate: Option<Arc<dyn PermissionGate>>, is_tui: bool) 
     // `build_conway` choke point, so all four see the same installed set
     // from the same config, with no target-specific carve-out the way
     // `is_tui`'s built-in selection above has one.
-    let wanted = builder.config().plugins.install.clone();
+    //
+    // Board item 01KZHF270T3W8GZ7NM6DSNQ4MM: `wanted` is not `[plugins].
+    // install` alone -- `first_party_plugins::wanted_ids` unions it with
+    // `[plugins].default_backends` (default: both provider-adapter dialect
+    // kind ids) BEFORE `install` resolves anything, which is what makes a
+    // default install reach a model with no `[plugins]` section in
+    // `settings.json` at all. Every dispatch target sees this union from
+    // the SAME choke point, so the property holds for the TUI and every
+    // one-shot/subcommand invocation identically.
+    let plugins_config = &builder.config().plugins;
+    let wanted = first_party_plugins::wanted_ids(
+        &plugins_config.install,
+        &plugins_config.default_backends,
+    );
     let builder = first_party_plugins::install(builder, &wanted)?;
     builder.build()
 }
@@ -212,7 +225,7 @@ fn install_tracing(verbose: u8) {
     }
     let level = if verbose >= 2 { "trace" } else { "info" };
     let directive = format!(
-        "warn,conway={level},conway_core={level},conway_backends={level},\
+        "warn,conway={level},conway_core={level},conway_plugin_backends={level},\
          conway_plugin_routing={level},conway_tools={level},conway_session={level},\
          conway_runtime={level},conway_cli={level}"
     );
@@ -244,7 +257,7 @@ mod tracing_target_tests {
     //! segment-boundary match (a documented `tracing-subscriber` quirk).
     //! Every crate name in this list literally starts with `"conway"`, so
     //! the very first clause, `conway={level}`, already prefix-matches
-    //! `conway_plugin_routing`, `conway_backends`, `conway_cli`, and (had it
+    //! `conway_plugin_routing`, `conway_plugin_backends`, `conway_cli`, and (had it
     //! never been renamed) the pre-rename crate name too -- an event on
     //! that OLD target (the `conway-routing` crate's module-path spelling,
     //! not written out verbatim here since this crate no longer exists --
@@ -284,7 +297,7 @@ mod tracing_target_tests {
     fn directive(verbose: u8) -> String {
         let level = if verbose >= 2 { "trace" } else { "info" };
         format!(
-            "warn,conway={level},conway_core={level},conway_backends={level},\
+            "warn,conway={level},conway_core={level},conway_plugin_backends={level},\
              conway_plugin_routing={level},conway_tools={level},conway_session={level},\
              conway_runtime={level},conway_cli={level}"
         )

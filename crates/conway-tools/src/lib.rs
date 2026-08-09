@@ -6,7 +6,7 @@
 //! available to third parties, and every runtime interaction goes through
 //! `ToolCtx` ports (`events`, `subagents`, `cancel`, `config`). This crate
 //! MUST NOT depend on `conway-runtime`, `conway-session`, `conway-routing`,
-//! or `conway-backends` (architecture boundary rule).
+//! or `conway-plugin-backends` (architecture boundary rule).
 //!
 //! Four built-in plugins, one per submodule:
 //! - [`fs`] — `cd`, `read`, `write`, `edit`, `glob`, `grep` (`FsPlugin`)

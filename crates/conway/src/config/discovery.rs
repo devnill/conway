@@ -88,9 +88,14 @@ pub fn permission_file_paths(cwd: &std::path::Path, env: &HashMap<String, String
 /// file path(s), resolved project-first then global — the identical
 /// layering [`permission_file_paths`] already establishes, reused here
 /// rather than invented anew (this module's own precedent). Both candidates
-/// are returned in precedence order; `conway_backends::profile::ProfileStore::merge_file`
-/// treats a missing file at either level as a no-op, not an error, so the
-/// caller can always attempt both without checking existence first.
+/// are returned in precedence order (board item 01KZHF270T3W8GZ7NM6DSNQ4MM:
+/// copied verbatim onto every `[backends.<id>]` entry's `BackendBuildContext
+/// ::profile_file_paths` -- this module still owns discovering WHICH files
+/// exist; parsing/merging them is `conway_plugin_backends::profile::
+/// ProfileStore::merge_file`'s concern now, a crate this one does not
+/// depend on). That function treats a missing file at either level as a
+/// no-op, not an error, so the caller can always attempt both without
+/// checking existence first.
 ///
 /// Project-first mirrors `permission_file_paths`'s own reasoning: a
 /// provider profile override (a local llama.cpp build's actual behavior, a

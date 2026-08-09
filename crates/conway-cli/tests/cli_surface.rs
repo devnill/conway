@@ -70,22 +70,31 @@ fn no_forbidden_deps() {
     // to `conway-plugin-routing`) -- the string simply never matches any
     // key in this crate's `[dependencies]` table again, which is exactly
     // the state a deleted internal-engine crate should leave behind here.
-    // `conway-plugin-routing` is deliberately NOT added alongside it: this
-    // list guards against conway-cli reaching an internal IMPLEMENTATION
-    // crate `conway` itself used to assemble (conway-runtime, -backends,
-    // -session, -core, -tools -- see each one's own doc); a first-party
-    // PLUGIN crate is a different tier entirely (decision
-    // 01KZDM9EEVJDWAKJQPV0Y3CQ4D), explicitly meant to be linked by exactly
-    // one binary through `src/first_party_plugins.rs`'s `router_bundle` --
+    // Board item 01KZHF270T3W8GZ7NM6DSNQ4MM did the identical relocation
+    // for "conway-backends" (-> `conway-plugin-backends`), for the same
+    // reason and with the same outcome here: it stays too, a second dead
+    // string this list will never match again either.
+    // `conway-plugin-routing`/`conway-plugin-backends` are deliberately NOT
+    // added alongside their retired names: this list guards against
+    // conway-cli reaching an internal IMPLEMENTATION crate `conway` itself
+    // used to assemble (conway-runtime, -backends, -session, -core, -tools
+    // -- see each one's own doc); a first-party PLUGIN crate is a different
+    // tier entirely (decision 01KZDM9EEVJDWAKJQPV0Y3CQ4D), explicitly meant
+    // to be linked by exactly one binary through `src/
+    // first_party_plugins.rs`'s `router_bundle`/`backend_bundle` --
     // `conway-plugin-skeleton`, immediately below in this crate's own
     // `[dependencies]`, already establishes that this list has never
-    // covered the plugin tier. Verified, not asserted: adding
+    // covered the plugin tier. Verified, not asserted, for BOTH: adding
     // `"conway-plugin-routing"` here fails `no_forbidden_deps` outright
     // (conway-cli's Cargo.toml genuinely, necessarily depends on it for
     // `router_bundle` to construct a real `RoutingRouterFactory`) -- tried
-    // during this item's implementation and reverted; recorded in this
-    // item's own completion report rather than left as a silent contradiction
-    // between "add the new crate to FORBIDDEN" and "and the test passes".
+    // during that item's implementation and reverted. This item repeated
+    // the identical experiment for `"conway-plugin-backends"` (conway-cli
+    // genuinely depends on it too, for `backend_bundle` to construct the
+    // two real `BackendFactory`s) with the identical result -- both
+    // recorded in their own completion reports rather than left as a
+    // silent contradiction between "add the new crate to FORBIDDEN" and
+    // "and the test passes".
     const FORBIDDEN: &[&str] = &[
         "conway-runtime",
         "conway-backends",

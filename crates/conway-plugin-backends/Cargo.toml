@@ -1,0 +1,60 @@
+[package]
+name = "conway-plugin-backends"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+description = "Anthropic and OpenAI-compatible provider-adapter BackendFactory implementations, installed as a first-party plugin (board item 01KZHF270T3W8GZ7NM6DSNQ4MM) rather than built into conway by default"
+
+# Board item 01KZHF270T3W8GZ7NM6DSNQ4MM: this crate is what
+# `crates/conway/src/builder.rs` used to compile in directly (both dialect
+# adapters, plus the config/profile/probe plumbing around them), relocated to
+# the first-party plugin tier per decision 01KZHRPZ010R37411R3W1XR5TF --
+# installed by default (see `factory.rs`'s module doc for exactly what makes
+# each dialect attach), never linked by `conway` itself.
+
+[dependencies]
+conway-core = { path = "../conway-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+futures-core = { workspace = true }
+chrono = { workspace = true }
+regex = { workspace = true }
+jsonschema = { workspace = true }
+url = { workspace = true }
+rand = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+humantime-serde = { workspace = true }
+toml = { workspace = true }
+reqwest = { workspace = true }
+eventsource-stream = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }
+wiremock = { workspace = true }
+futures = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+schemars = { workspace = true }
+# Board item 01KZHF270T3W8GZ7NM6DSNQ4MM: this crate's own "library embedder"
+# proof (`tests/builder_end_to_end.rs`) drives `ConwayBuilder::with_backend_
+# factory` directly, exactly as `crates/conway-plugin-skeleton`'s own
+# `tests/skeleton_end_to_end.rs` does for `with_plugin` -- dev-only, never a
+# build dependency (this crate's own `[dependencies]` above has no such
+# edge). `conway` itself has the mirrored dev-dependency edge back onto
+# THIS crate (`crates/conway/Cargo.toml`) for its own config-derived
+# `openai-compat`/`anthropic` fixtures -- a dev-only cycle, which Cargo
+# supports (dev-dependencies are excluded from the normal build graph a
+# consumer of either crate ever compiles).
+conway = { path = "../conway" }
+# `conway_core::fakes::{FakeGate, FakeStore}` -- the credential-free fake
+# family `tests/builder_end_to_end.rs` uses for every port BESIDES the
+# backend under test (already a pinned workspace dependency via
+# `[dependencies]`'s own `conway-core` entry above; this adds the `fakes`
+# feature for test builds only, C-04).
+conway-core = { path = "../conway-core", features = ["fakes"] }

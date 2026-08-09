@@ -6,7 +6,7 @@
 //!
 //! Built entirely from `conway-core`'s fakes plus local scripted doubles
 //! (mirrors `runtime_api.rs`'s and `subagent_fork_spawn.rs`'s own practice)
-//! -- this file does not depend on `conway-backends` or `conway-tools`.
+//! -- this file does not depend on `conway-plugin-backends` or `conway-tools`.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;

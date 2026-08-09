@@ -89,6 +89,14 @@ async fn open_conway(fixture: &Fixture) -> Conway {
             ..Default::default()
         })
         .with_permission_gate(gate)
+        // Board item 01KZHF270T3W8GZ7NM6DSNQ4MM: `conway` no longer
+        // compiles the fixture template's `kind = "openai-compat"` entry
+        // in -- the same factory `main.rs`'s own `build_conway` attaches by
+        // default, registered explicitly here since this helper builds a
+        // `Conway` directly rather than going through that choke point.
+        .with_backend_factory(Arc::new(
+            conway_plugin_backends::OpenAiCompatBackendFactory,
+        ))
         .build()
         .expect("build conway against the fixture's own store")
 }

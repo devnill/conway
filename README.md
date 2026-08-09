@@ -157,35 +157,46 @@ being common does not make it neutral, so conway ships these as things you
 install rather than behavior you inherit. Progress against that intent is
 tracked in [`.design/philosophy-debt.md`](.design/philosophy-debt.md).
 
-**The tier's shape is settled and demonstrated, with two members shipping
+**The tier's shape is settled and demonstrated, with three members shipping
 today:** `crates/conway-plugin-skeleton`, a plugin that registers a single
 `skeleton_ping` tool and does nothing else — it exists to prove the `Plugin`/
-`Tool` mechanism below, not to be useful on its own — and
-`crates/conway-plugin-routing`, the real, first non-toy occupant: the
-declarative role-routing engine (ordered fallback chains, capability
+`Tool` mechanism below, not to be useful on its own — `crates/conway-plugin-routing`,
+the declarative role-routing engine (ordered fallback chains, capability
 filtering, health tracking, circuit breaking) `conway` itself used to compile
-in unconditionally, now installed the same way. Context compaction, memory,
-skills, and MCP support remain separate, later work; conway-plugin-routing
-is not "dynamic routing" in the learned/adaptive sense PHILOSOPHY.md
-describes elsewhere — no classifier, no embedding model, ever — it is the
-same purely declarative resolver conway always had, no longer compiled in by
-default. With neither plugin installed, `build()` falls back to
+in unconditionally, now installed the same way, and `crates/conway-plugin-backends`,
+the Anthropic-native and OpenAI-compatible provider adapters `conway` itself
+used to compile in unconditionally too. Context compaction, memory, skills,
+and MCP support remain separate, later work; conway-plugin-routing is not
+"dynamic routing" in the learned/adaptive sense PHILOSOPHY.md describes
+elsewhere — no classifier, no embedding model, ever — it is the same purely
+declarative resolver conway always had, no longer compiled in by default.
+With no router plugin installed, `build()` falls back to
 `conway_core::routing::MinimalRouter`, an honest, config-only resolver with
 no capability or health filtering — see
 [`docs/routing.md`](docs/routing.md#installing-a-different-router).
+**The backend plugin is the one deliberate exception to "not registered by
+default"** named at the top of this section: `conway-cli` attaches both its
+`BackendFactory`s without any `[plugins].install` entry (see below) — a
+missing router or tool plugin costs a capability, but a missing backend
+leaves conway unable to reach a model at all, so this one pair ships
+attached (owner decision, board item 01KZHF270T3W8GZ7NM6DSNQ4MM). See
+[`docs/providers.md`](docs/providers.md#where-a-backend-is-declared) for how
+an operator declines a specific dialect, and how a library embedder using
+`conway` alone attaches one instead.
 
 - **Where they live.** A crate per plugin under `crates/`, exactly like the
   workspace's other crates — `cargo test --workspace` covers them the same
   way. `conway` (the facade) never depends on any of them. A `Plugin`/`Tool`
   first-party plugin (`conway-plugin-skeleton`) is written against
   `conway::plugin`, the identical public surface a third-party plugin author
-  gets. A router plugin (`conway-plugin-routing`) is a narrower, different
-  case: `Router`/`HealthRegistry` implementations are deliberately excluded
-  from the `conway::plugin` tier, so it depends on `conway-core` directly
-  instead, installed via a separate identity (`RouterFactory`,
-  `ConwayBuilder::with_router_factory`) — `conway` still links neither crate
-  either way. Each is linked only by whatever binary or embedder chooses to
-  install it.
+  gets. A router plugin (`conway-plugin-routing`) and the backend plugin
+  (`conway-plugin-backends`) are a narrower, different case each:
+  `Router`/`HealthRegistry` and `Backend`/`BackendFactory` implementations
+  are installed via their own separate identities (`RouterFactory`/
+  `ConwayBuilder::with_router_factory`, `BackendFactory`/`ConwayBuilder::
+  with_backend_factory`) rather than through `conway::plugin` — `conway`
+  still links none of the three crates either way. Each is linked only by
+  whatever binary or embedder chooses to install it.
 - **How you install one.** A distinct `[plugins]` section, deliberately not
   folded into `tools.builtin_plugins` (that key names only the four
   compiled-in built-ins and is validated as a closed set; a first-party
@@ -194,17 +205,21 @@ no capability or health filtering — see
   { "plugins": { "install": ["conway.plugin_skeleton", "conway.routing"] } }
   ```
   The `conway` binary links its own small bundle of first-party plugin
-  crates AND router factories (`crates/conway-cli/src/first_party_plugins.rs`,
-  `bundle`/`router_bundle`) and resolves each id in `plugins.install` against
-  the two together, in one pass, for the TUI and one-shot `-p` alike — an
+  crates, router factories, AND backend factories
+  (`crates/conway-cli/src/first_party_plugins.rs`, `bundle`/`router_bundle`/
+  `backend_bundle`) and resolves each id in `plugins.install` — UNIONED with
+  `plugins.default_backends` for the backend factories, since those two
+  attach without needing an `install` entry at all — against the three
+  together, in one pass, for the TUI and one-shot `-p` alike. An
   unrecognized id is a hard config error naming every linked id it does
   recognize, never a silent no-op, and naming more than one router-factory id
-  is rejected too (a build has exactly one router). A library embedder
-  instead depends on the plugin crate directly and calls
-  `ConwayBuilder::with_plugin` (or, for a router, `with_router_factory`), the
-  same calls a third party makes; reading `ConwayBuilder::config().plugins.
-  install` first (as `conway-cli` does) is how an embedder offers the
-  identical settings-driven experience.
+  is rejected too (a build has exactly one router; a backend factory has no
+  such limit — a build has a SET of backends). A library embedder instead
+  depends on the plugin crate directly and calls `ConwayBuilder::with_plugin`
+  (or, for a router/backend, `with_router_factory`/`with_backend_factory`),
+  the same calls a third party makes; reading `ConwayBuilder::config().
+  plugins.install`/`default_backends` first (as `conway-cli` does) is how an
+  embedder offers the identical settings-driven experience.
 - **What compatibility they promise.** Versioned with the workspace
   (`version.workspace = true`, same as every other crate here), not
   independently and not held to `conway-core`'s own strict-semver
@@ -226,14 +241,14 @@ table below is the quick reference.
 [`PHILOSOPHY.md`](PHILOSOPHY.md) is the other half of the picture: how the
 primitives are meant to be used, and the idioms they were shaped for.
 
-conway is a Cargo workspace of eight crates in a ports-and-adapters layout —
-the core defines traits (ports), and backends/session/tools are adapters.
+conway is a Cargo workspace of six fixed crates in a ports-and-adapters
+layout — the core defines traits (ports), and session/tools are adapters —
+plus an open-ended first-party plugin tier (below) that supplies routing and
+backend adapters instead of either being compiled into the fixed layout.
 
 | Crate | Responsibility |
 |---|---|
 | `conway-core` | Domain types and the port traits (`Backend`, `Router`, `PermissionGate`, `SessionStore`, `ContextHook`, tools). No I/O. |
-| `conway-backends` | Backend adapters: Anthropic and OpenAI-compatible (OpenAI, Ollama, …) dialects. |
-| `conway-routing` | Capability-based router, circuit breakers, health probes. |
 | `conway-session` | The append-only session log and transcript/prefix resolution. |
 | `conway-tools` | The tool plugin registry and built-in tools. |
 | `conway-runtime` | The per-agent turn loop, context assembly, fork/spawn orchestration. |

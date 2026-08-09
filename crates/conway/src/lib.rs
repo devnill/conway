@@ -1,14 +1,19 @@
 //! `conway`: the embeddable facade over the conway agent harness.
 //!
 //! Assembles `conway-core`'s ports and domain types with the concrete
-//! `conway-runtime`, `conway-backends`, `conway-session`, and `conway-tools`
-//! implementations behind one stable public API (`ConwayBuilder` -> `Conway`
-//! -> `SessionHandle`). This crate is the primary integration surface for
+//! `conway-runtime`, `conway-session`, and `conway-tools` implementations
+//! behind one stable public API (`ConwayBuilder` -> `Conway` ->
+//! `SessionHandle`). This crate is the primary integration surface for
 //! embedders (e.g. a Tauri IDE) and for the `conway` CLI. Board item
 //! 01KZFC43J1J06BM4CCWKCKHSNV: this crate no longer links a routing engine
 //! at all -- `conway-plugin-routing` is an installable first-party plugin,
 //! not one of the implementations assembled here; absent it, `build()`
-//! compiles `conway_core::routing::MinimalRouter` instead.
+//! compiles `conway_core::routing::MinimalRouter` instead. Board item
+//! 01KZHF270T3W8GZ7NM6DSNQ4MM: the same is now true of both provider-adapter
+//! dialects -- `conway-plugin-backends` is a first-party plugin too, and
+//! this crate names neither `"anthropic"` nor `"openai-compat"` anywhere in
+//! `src/`; absent a registered `BackendFactory` for a `[backends.<id>]`
+//! entry's `kind`, `build()` fails naming every kind it does recognise.
 //!
 //! This item (WI-096) establishes the crate skeleton: dependency wiring,
 //! the cargo feature flags below, the crate-level [`ConwayError`]/[`Result`],
@@ -301,7 +306,7 @@ pub mod plugin {
 ///   instead (an equally real dialect shape — OpenAI-compatible servers
 ///   use it), so nothing here needs `CacheTtl`. A real Anthropic-shaped
 ///   adapter that does need it lives inside this repository already
-///   (`conway-backends`' `AnthropicBackend`), the same asymmetry this
+///   (`conway-plugin-backends`' `AnthropicBackend`), the same asymmetry this
 ///   item's own preceding investigation (board item
 ///   01KZHEY78NCGYZCPDNFENF96N4) flagged as a decision for a later chain
 ///   item, not this one.

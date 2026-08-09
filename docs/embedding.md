@@ -507,16 +507,35 @@ Registering no factories leaves `build()` behaving exactly as before.
 
 **Reachable from configuration.** `[backends.<id>].kind` is an open name
 (board item 01KZHF1E85MS1VF4YH8CDNCP9Z), resolved against every registered
-factory's own `id()` first, falling back to the two adapters `conway`
-still compiles in (`"anthropic"`, `"openai-compat"`) for any name they
-claim. A `[backends.<id>]` entry naming `MyDialectFactory`'s own kind is
-what invokes it, with a `BackendBuildContext` resolved from THAT entry —
-`id` is the entry's own JSON key, `base_url`/`dialect` copied verbatim, and
-`api_key` resolved the same centralized way (literal `api_key` wins, else
-`api_key_env` read from the process environment, else `None`). A `kind`
-neither a registered factory nor the two built-ins claims fails `build()`
-naming the offending value and every kind this build recognises — a
-misspelled or unregistered kind is never silently ignored (GP-14).
+factory's own `id()` — ONLY (board item 01KZHF270T3W8GZ7NM6DSNQ4MM removed
+the temporary compiled-in fallback the predecessor item left standing;
+`conway` itself compiles in no kind at all any more). A `[backends.<id>]`
+entry naming `MyDialectFactory`'s own kind is what invokes it, with a
+`BackendBuildContext` resolved from THAT entry — `id` is the entry's own
+JSON key, `base_url`/`dialect` copied verbatim, `api_key` resolved the same
+centralized way (literal `api_key` wins, else `api_key_env` read from the
+process environment, else `None`), and `profile_file_paths` the same
+discovered `.conway/profiles.toml` path list every entry receives whether
+or not its kind reads it. A `kind` no registered factory claims fails
+`build()` naming the offending value and every kind this build recognises —
+a misspelled or unregistered kind is never silently ignored (GP-14).
+
+**The two dialects `conway` used to compile in are now `conway-plugin-backends`,
+a first-party plugin (board item 01KZHF270T3W8GZ7NM6DSNQ4MM) — see
+[`docs/providers.md`](providers.md#where-a-backend-is-declared)**. Its
+`AnthropicBackendFactory`/`OpenAiCompatBackendFactory` (published kind ids
+`ANTHROPIC_KIND`/`OPENAI_COMPAT_KIND`, unchanged strings `"anthropic"`/
+`"openai-compat"`) are registered exactly like `MyDialectFactory` above — an
+embedder using `conway` alone depends on `conway-plugin-backends` directly
+and calls `with_backend_factory` for each dialect it wants, before
+`build()`. The shipped `conway` binary is the one place this happens
+without you writing it: `conway-cli` links the crate and attaches both
+factories by default (`[plugins].default_backends`, default
+`["anthropic", "openai-compat"]`) — the one first-party mechanism that
+attaches with no `[plugins].install` entry at all, since a backend, unlike
+a router or a tool plugin, has no honest degenerate fallback (an install
+with none attached cannot reach a model). `conway` (the facade) never does
+this for you.
 
 ### Writing a plugin
 

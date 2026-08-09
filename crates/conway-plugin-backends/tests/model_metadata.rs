@@ -1,12 +1,12 @@
-//! Integration tests for `conway_backends::model_metadata` (WI-017):
+//! Integration tests for `conway_plugin_backends::model_metadata` (WI-017):
 //! `ModelMetadataStore::load` semantics (fixture loading, missing-path,
 //! invalid-file, normalized lookup) plus a grep-style assertion that
 //! `capabilities.rs` never gains a filesystem/network dependency.
 
 use std::path::Path;
 
-use conway_backends::config::ConfigError;
-use conway_backends::model_metadata::{
+use conway_plugin_backends::config::ConfigError;
+use conway_plugin_backends::model_metadata::{
     ModelMetadata, ModelMetadataStore, StructuredOutputSpec, ToolCallSupportSpec,
 };
 use conway_core::capabilities::ReliabilityTier;

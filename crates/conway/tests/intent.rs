@@ -121,6 +121,15 @@ fn build_conway(
         .with_session_store(store)
         .with_permission_gate(gate)
         .with_router(fake_router())
+        // Board item 01KZHF270T3W8GZ7NM6DSNQ4MM: `conway` no longer
+        // compiles either dialect in -- `with_intent_role`'s `fake`
+        // `[backends.<id>]` entry (kind "openai-compat") needs a
+        // registered factory to construct (then be overwritten by the
+        // injected `backend` above), the same as every other config-
+        // derived `openai-compat`/`anthropic` fixture in this suite.
+        .with_backend_factory(Arc::new(
+            conway_plugin_backends::OpenAiCompatBackendFactory,
+        ))
         .build()
         .expect("build should succeed with every port injected")
 }

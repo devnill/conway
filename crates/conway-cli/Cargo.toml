@@ -25,6 +25,15 @@ conway-plugin-skeleton = { path = "../conway-plugin-skeleton" }
 # first_party_plugins.rs` choke point as the line above (see that file's
 # `router_bundle`).
 conway-plugin-routing = { path = "../conway-plugin-routing" }
+# Board item 01KZHF270T3W8GZ7NM6DSNQ4MM: both provider-adapter dialects
+# `conway` itself used to compile in directly are now first-party plugins
+# too, resolved through the SAME mechanism -- see `src/
+# first_party_plugins.rs`'s `backend_bundle`. Unlike the two crates above,
+# these attach by DEFAULT (no `[plugins].install` entry required -- see
+# `conway::config::schema::PluginsConfig::default_backends`'s own doc):
+# `main.rs`'s `build_conway` unions that key into `wanted` before calling
+# `first_party_plugins::install`.
+conway-plugin-backends = { path = "../conway-plugin-backends" }
 clap = { workspace = true, features = ["derive", "env"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }
 async-trait = { workspace = true }

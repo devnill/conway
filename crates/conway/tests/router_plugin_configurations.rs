@@ -155,6 +155,13 @@ async fn absent_configuration_resolves_via_the_core_resolver_and_completes() {
         .with_backend(backend)
         .with_session_store(store)
         .with_permission_gate(gate)
+        // Board item 01KZHF270T3W8GZ7NM6DSNQ4MM: `conway` no longer
+        // compiles either dialect in -- `base_config`'s `kind =
+        // "openai-compat"` entries (overwritten by the injected fakes
+        // above) need a registered factory to construct.
+        .with_backend_factory(Arc::new(
+            conway_plugin_backends::OpenAiCompatBackendFactory,
+        ))
         .build()
         .expect("build should succeed: MinimalRouter needs nothing but [roles]");
 
@@ -257,6 +264,9 @@ async fn installed_configuration_ordered_fallback_and_breaker_skip_the_open_endp
         .with_session_store(store)
         .with_permission_gate(gate)
         .with_router_factory(Arc::new(RoutingRouterFactory))
+        .with_backend_factory(Arc::new(
+            conway_plugin_backends::OpenAiCompatBackendFactory,
+        ))
         .build()
         .expect("build should succeed: a valid two-candidate chain");
 

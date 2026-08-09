@@ -4,7 +4,7 @@
 //! fixtures are reusable by later work items' SSE-level integration tests
 //! (WI-019, WI-022).
 
-use conway_backends::tool_calls::{ToolCallAccumulator, ToolCallStyle};
+use conway_plugin_backends::tool_calls::{ToolCallAccumulator, ToolCallStyle};
 use conway_core::content::{PermissionClass, StopReason, ToolCategory, ToolSpec};
 use conway_core::ids::ToolName;
 

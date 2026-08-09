@@ -7,7 +7,7 @@
 //! (mirroring `agent_loop_e2e.rs`'s own note: `ScriptedBackend` has no
 //! built-in response delay, so a small local `DelayedBackend` stands in
 //! wherever a test needs a window to observe "in progress" behavior) --
-//! this file does not depend on `conway-backends` or `conway-tools`.
+//! this file does not depend on `conway-plugin-backends` or `conway-tools`.
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
@@ -305,7 +305,7 @@ async fn wait_for_agent_finished(
 
 /// `RuntimeDeps` is constructible entirely from `conway-core` fakes plus a
 /// fake router; this crate's `[dev-dependencies]` name neither
-/// `conway-backends` nor `conway-tools` (see `Cargo.toml`).
+/// `conway-plugin-backends` nor `conway-tools` (see `Cargo.toml`).
 #[tokio::test]
 async fn runtime_deps_constructible_from_fakes_only() {
     let (runtime, _store) = build_runtime(

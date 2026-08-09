@@ -82,6 +82,11 @@ async fn open_conway(fixture: &Fixture) -> Conway {
             ..Default::default()
         })
         .with_permission_gate(gate)
+        // Board item 01KZHF270T3W8GZ7NM6DSNQ4MM: see `continuity.rs::
+        // open_conway`'s identical addition.
+        .with_backend_factory(Arc::new(
+            conway_plugin_backends::OpenAiCompatBackendFactory,
+        ))
         .build()
         .expect("build conway against the fixture's own store")
 }

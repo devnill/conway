@@ -2048,6 +2048,15 @@ mod tests {
             .with_session_store(Arc::new(FakeStore::new()))
             .with_permission_gate(gate)
             .with_router(router)
+            // Board item 01KZHF270T3W8GZ7NM6DSNQ4MM: `conway` no longer
+            // compiles either dialect in -- `from_config` also layers in
+            // whatever the live XDG-global `settings.json` declares (this
+            // function's own doc), so both factories are registered here,
+            // matching the real binary's own always-both default.
+            .with_backend_factory(Arc::new(conway_plugin_backends::AnthropicBackendFactory))
+            .with_backend_factory(Arc::new(
+                conway_plugin_backends::OpenAiCompatBackendFactory,
+            ))
             .build()
             .expect("build should succeed with every I/O port injected");
 

@@ -58,8 +58,8 @@ use conway::config::schema::{
     PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig, TuiSection,
 };
 use conway::{Conway, ConwayBuilder, SessionSpec};
-use conway_backends::anthropic::AnthropicBackend;
-use conway_backends::config::{AnthropicConfig, SecretString};
+use conway_plugin_backends::anthropic::AnthropicBackend;
+use conway_plugin_backends::config::{AnthropicConfig, SecretString};
 use conway_core::agent::{PermissionDecision, ResultStatus};
 use conway_core::fakes::{FakeGate, FakeRouter, FakeStore};
 use conway_core::ids::{BackendId, ModelId, ModelRef, RoleAlias};
@@ -135,7 +135,7 @@ fn anthropic_config(base_url: &str) -> AnthropicConfig {
     }
 }
 
-/// `anthropic_defaults()` (`conway-backends::capabilities`) declares
+/// `anthropic_defaults()` (`conway-plugin-backends::capabilities`) declares
 /// `tool_calling: ToolCallSupport::Streaming { validated: true }` with no
 /// per-model override field able to change it (`ModelOverrides` has no
 /// `tool_calling` key -- only `metadata` can, and `AnthropicBackend::new`

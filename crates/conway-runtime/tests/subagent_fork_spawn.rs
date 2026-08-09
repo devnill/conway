@@ -5,7 +5,7 @@
 //! Built entirely from `conway-core`'s fakes plus a local `CountingStore`
 //! decorator (mirrors `runtime_api.rs`'s and `agent_loop_e2e.rs`'s own
 //! practice of small local test doubles) -- this file does not depend on
-//! `conway-backends` or `conway-tools`.
+//! `conway-plugin-backends` or `conway-tools`.
 
 use std::collections::HashMap;
 use std::path::PathBuf;

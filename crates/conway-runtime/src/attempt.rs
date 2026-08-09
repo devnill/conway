@@ -165,7 +165,7 @@ fn endpoint_of(backend: &BackendId) -> EndpointId {
 /// Attaches cache breakpoint hints to `segments` in place, keyed on `caps`
 /// — the capability actually resolved for `model` (`Backend::capabilities`,
 /// called by `execute` right before this), never a pre-routing placeholder.
-/// This is `conway-backends`' own "additive post-pass" framing
+/// This is `conway-plugin-backends`' own "additive post-pass" framing
 /// (`anthropic::wire`'s module doc) applied one layer up: by the time this
 /// runs, `segments` is the FINAL list a `ContextHook` may already have
 /// added to, dropped from, or reordered (WI-126), so the A/B breakpoint
@@ -178,7 +178,7 @@ fn endpoint_of(backend: &BackendId) -> EndpointId {
 /// function's own match decides this) — which is what keeps every
 /// OpenAI-compatible backend's request byte-identical to before this
 /// existed: `PromptSegment::cache_hint` is read by exactly one module in
-/// the whole workspace, `conway_backends::anthropic::cache`
+/// the whole workspace, `conway_plugin_backends::anthropic::cache`
 /// (`openai_compat::wire`'s own module doc; `GenerateRequest::cache_hint`
 /// does not exist — the field lives per-segment, not per-request).
 ///
