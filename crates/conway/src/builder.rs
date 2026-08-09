@@ -126,8 +126,9 @@ use std::sync::Arc;
 use conway_core::capabilities::{HeadroomPolicy, ReliabilityTier};
 use conway_core::ids::{BackendId, ModelRef};
 use conway_core::ports::{
-    Backend, ContextHook, HealthRegistry, PermissionGate, Plugin, Router, RouterBuildContext,
-    RouterBundle, RouterFactory, RoutingExplainer, SessionStore,
+    Backend, BackendBuildContext, BackendFactory, ContextHook, HealthRegistry, PermissionGate,
+    Plugin, Router, RouterBuildContext, RouterBundle, RouterFactory, RoutingExplainer,
+    SessionStore,
 };
 use conway_core::ports::{CapabilityIndex, CapabilityIndexBuilder};
 use conway_core::routing::{AlwaysClosedHealthRegistry, MinimalRouter, ModelOverrides};
@@ -226,6 +227,12 @@ pub struct ConwayBuilder {
     /// `DeclarativeRouter`, exactly as it did before this field existed --
     /// see [`Self::with_router_factory`]'s own doc for the full precedence.
     router_factory: Option<Arc<dyn RouterFactory>>,
+    /// Board item 01KZHF0RBKJZZC68F7GPFB347Q. Empty (the default) means
+    /// `build()`'s backend step is byte-for-byte what it was before this
+    /// field existed -- config-derived backends merged with `backends`
+    /// (above), nothing more -- see [`Self::with_backend_factory`]'s own doc
+    /// for the full precedence and duplicate-kind rules.
+    backend_factories: Vec<Arc<dyn BackendFactory>>,
     /// WI-126. `None` (the default) means `build()` never calls
     /// `Runtime::set_context_hook` at all, leaving every agent's
     /// `context_hook` at the `Runtime`-constructed default of `None` --
@@ -283,6 +290,7 @@ impl ConwayBuilder {
             store: None,
             router: None,
             router_factory: None,
+            backend_factories: Vec::new(),
             context_hook: None,
             builtin_selection: None,
             warnings: Vec::new(),
@@ -315,10 +323,85 @@ impl ConwayBuilder {
         &self.config
     }
 
-    /// Injects a backend. Takes precedence over any config-derived backend
-    /// with the same `Backend::id()`.
+    /// Injects a backend. Takes precedence over any config-derived OR
+    /// factory-built backend with the same `Backend::id()` -- see
+    /// [`Self::with_backend_factory`]'s own doc for the full precedence
+    /// order among all three sources.
     pub fn with_backend(mut self, backend: Arc<dyn Backend>) -> Self {
         self.backends.push(backend);
+        self
+    }
+
+    /// Registers a [`BackendFactory`] (board item
+    /// 01KZHF0RBKJZZC68F7GPFB347Q): a provider-adapter KIND, named up front,
+    /// whose actual construction is deferred to `build()`'s own backend
+    /// step -- the [`Self::with_router_factory`] pattern, one layer over.
+    /// Read that method's own doc first; this restates it for a SET rather
+    /// than a singleton, since (unlike routing) a build has many backends,
+    /// not one.
+    ///
+    /// **Precedence, exact, extending [`Self::with_backend`]'s own
+    /// "takes precedence" doc to name all three sources by construction
+    /// order:** `build()`'s backend step constructs config-derived backends
+    /// FIRST, then invokes every registered factory, then merges every
+    /// `with_backend`-injected backend LAST -- each step keyed into the same
+    /// `HashMap<BackendId, Arc<dyn Backend>>` by `Backend::id()`, so a later
+    /// step's entry OVERWRITES an earlier step's entry sharing the same id.
+    /// Concretely: an injected backend wins over a factory-built backend
+    /// sharing its id, which in turn wins over a config-derived backend
+    /// sharing ITS id -- and the loser in either case is genuinely
+    /// discarded, never merely shadowed (its constructor still ran, so a
+    /// factory with side effects in `build` still sees them, but the
+    /// `Arc<dyn Backend>` it returned is dropped, never wired into the
+    /// runtime).
+    ///
+    /// **Two registered factories reporting the same [`BackendFactory::id`]
+    /// (a duplicate KIND, not a duplicate instance) is a hard `build()`
+    /// error** naming both -- mirroring the duplicate-manifest-id check
+    /// `build()`'s own plugin step already makes (below) rather than
+    /// inventing a second convention. Checked BEFORE any registered
+    /// factory's `build` is invoked (a dedicated first pass over every
+    /// registered id), so a duplicate never leaves one factory's `build`
+    /// side effects to have run while the whole call still fails.
+    ///
+    /// **A factory whose `build` returns `Err` fails the whole `build()`
+    /// call as [`crate::ConwayError::Build`], naming this factory's own
+    /// [`BackendFactory::id`] and the underlying message** -- never silently
+    /// swallowed, never a fallback that drops the kind and proceeds with
+    /// whatever other backends exist (GP-14: a registered factory that
+    /// silently produced nothing would be a configuration key an operator
+    /// set and got nothing for).
+    ///
+    /// **Registering a factory whose kind no `[backends.<id>]` entry ever
+    /// names is fine, not an error or a warning** -- trivially so in THIS
+    /// item, since `build()` invokes every registered factory
+    /// unconditionally (see the next paragraph); the question only becomes
+    /// substantive once config-driven selection exists to leave a factory
+    /// unreferenced, and this method's contract already covers that case
+    /// the same way it covers today's: nothing about registering a factory
+    /// promises any particular `[backends.<id>]` entry will ever select it.
+    ///
+    /// **Disclosed, current-item limitation (cite, do not relitigate:
+    /// decision 01KZHRPZ010R37411R3W1XR5TF):** `[backends.<id>].kind` is
+    /// still a closed, two-variant enum today, so `build()` has no
+    /// `[backends.<id>]` entry it could ever route to a registered factory
+    /// by name -- opening that enum is a later item's job. Until it lands,
+    /// `build()` invokes each registered factory EXACTLY ONCE per
+    /// `ConwayBuilder::build()` call (unconditionally, the same cardinality
+    /// `RouterFactory::build` has), with a [`BackendBuildContext`] whose
+    /// `id` defaults to `BackendId::new(factory.id())` (the only value
+    /// `build()` has any basis for, absent a matching config entry) and
+    /// whose `base_url`/`api_key`/`dialect`/`models` are empty/absent (there
+    /// is no `[backends.<id>]` entry to resolve them from yet). This does
+    /// NOT collapse kind identity into instance identity (see
+    /// [`BackendFactory`]'s own doc) -- it is a default VALUE for one
+    /// field, not a claim that the two concepts are the same question; a
+    /// factory remains free to construct a `Backend` reporting a different
+    /// `Backend::id()` if it has a better one. **Not called at all (the
+    /// default)** changes nothing: `build()`'s backend step behaves exactly
+    /// as it did before this method existed.
+    pub fn with_backend_factory(mut self, factory: Arc<dyn BackendFactory>) -> Self {
+        self.backend_factories.push(factory);
         self
     }
 
@@ -471,6 +554,7 @@ impl ConwayBuilder {
             store,
             router,
             router_factory,
+            backend_factories,
             context_hook,
             builtin_selection,
             warnings,
@@ -494,11 +578,55 @@ impl ConwayBuilder {
         //     probing, step 5) sees the same loaded set.
         let profiles = load_provider_profiles(&cwd)?;
 
-        // 3+4. Construct config-derived backends, then merge injected ones
-        //      over them, keyed by each backend's own `id()`.
+        // 3+3b+4. Construct config-derived backends, then invoke every
+        //         registered `BackendFactory` (board item
+        //         01KZHF0RBKJZZC68F7GPFB347Q), then merge injected ones
+        //         over BOTH -- each step keyed into the same map by each
+        //         backend's own `id()`, so a later step overwrites an
+        //         earlier step's entry sharing an id. See
+        //         `ConwayBuilder::with_backend_factory`'s own doc for the
+        //         full precedence/duplicate-kind rules this step
+        //         implements.
         let mut backend_map: HashMap<BackendId, Arc<dyn Backend>> = HashMap::new();
         for (id, entry) in &config.backends {
             let backend = construct_backend(id, entry, &metadata, &profiles)?;
+            backend_map.insert(backend.id(), backend);
+        }
+        // 3b. Backend factories. Duplicate-kind check FIRST, over every
+        //     registered id, before any factory's own `build` runs -- a
+        //     dedicated pass (not "insert-then-error-on-the-second-one",
+        //     the plugin loop's own style below) specifically so a
+        //     duplicate never leaves an earlier factory's `build` side
+        //     effects to have run while the whole call still fails.
+        let mut seen_factory_kinds: HashSet<&str> = HashSet::new();
+        for factory in &backend_factories {
+            if !seen_factory_kinds.insert(factory.id()) {
+                return Err(ConwayError::Build {
+                    message: format!(
+                        "duplicate backend factory kind '{}': two factories registered via \
+                         ConwayBuilder::with_backend_factory report the same BackendFactory::id()",
+                        factory.id()
+                    ),
+                });
+            }
+        }
+        for factory in &backend_factories {
+            // Disclosed, current-item limitation (`with_backend_factory`'s
+            // own doc): `[backends.<id>].kind` cannot yet name a factory
+            // (decision 01KZHRPZ010R37411R3W1XR5TF), so there is no
+            // `[backends.<id>]` entry to resolve these fields from -- `id`
+            // defaults to the factory's own kind id (the only value with
+            // any basis here); the rest are empty/absent.
+            let ctx = BackendBuildContext {
+                id: BackendId::new(factory.id()),
+                base_url: String::new(),
+                api_key: None,
+                dialect: None,
+                models: BTreeMap::new(),
+            };
+            let backend = factory.build(ctx).map_err(|e| ConwayError::Build {
+                message: format!("backend factory '{}' failed to build: {e}", factory.id()),
+            })?;
             backend_map.insert(backend.id(), backend);
         }
         for backend in backends {

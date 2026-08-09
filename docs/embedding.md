@@ -473,6 +473,45 @@ and `Router` are still re-exported so you can *inject* the workspace's own
 implementations or a test double written inside this workspace, not so
 third parties write new ones against the facade.
 
+### Installing a backend: `BackendFactory`
+
+`ConwayBuilder::with_backend` takes a backend you have already constructed.
+`with_backend_factory` takes something that knows *how* to construct one,
+and defers that until the configuration it needs exists — the same split
+`RouterFactory` makes above, and for the same reason: an install list is
+read long before API keys, base URLs, and per-model overrides do.
+
+`BackendFactory::id()` names a **kind** — a dialect, like `anthropic` — and
+is not the same question `Backend::id()` answers. That one is a *configured
+instance* identity, taken from the `[backends.<id>]` key, and two
+configured backends can be the same kind under different ids. The
+consequence: one registered factory can be built **once per matching
+configuration entry**, where a `RouterFactory` is built at most once,
+because a build has exactly one router.
+
+```rust,ignore
+use conway::{BackendBuildContext, BackendFactory, ConwayBuilder};
+
+let conway = ConwayBuilder::from_parts(config)
+    .with_backend_factory(Arc::new(MyDialectFactory))
+    .build()?;
+```
+
+Precedence, stated in `with_backend_factory`'s own doc and enforced by
+`build()`: an **injected** instance beats a factory-built one sharing its
+`Backend::id()` — extending `with_backend`'s existing per-id rule rather
+than inventing a second one. Two factories reporting the same kind id is a
+**hard `build()` error naming both**, checked before any factory's `build`
+runs so a duplicate never leaves one factory's side effects behind.
+Registering no factories leaves `build()` behaving exactly as before.
+
+**Not yet reachable from configuration.** `[backends.<id>].kind` is still a
+closed two-valued enum, so a config entry cannot yet *name* a factory, and a
+registered factory currently receives an empty `BackendBuildContext`.
+Opening `kind` to a resolved name is board item
+01KZHF1E85MS1VF4YH8CDNCP9Z; until it lands, this surface is reachable only
+by an embedder calling the builder directly.
+
 ### Writing a plugin
 
 `conway::plugin` re-exports everything needed to implement `Tool`,

@@ -69,9 +69,28 @@ pub use conway_core::event::{Envelope, Event};
 pub use conway_core::ids::{AgentId, LogSeq, ModelRef, RoleAlias, SegmentId, SessionId, ToolName};
 pub use conway_core::log::{AskOrigin, LogRecord, SessionFilter, SessionMeta, SubagentMode};
 pub use conway_core::ports::{
-    Backend, ContextHook, HealthRegistry, PermissionGate, Plugin, RenderKind, Router,
-    RouterBuildContext, RouterBundle, RouterFactory, SessionStore, Tool,
+    Backend, BackendBuildContext, BackendFactory, ContextHook, HealthRegistry, PermissionGate,
+    Plugin, RenderKind, Router, RouterBuildContext, RouterBundle, RouterFactory, SessionStore,
+    Tool,
 };
+
+/// Board item 01KZHF0RBKJZZC68F7GPFB347Q: the shared error type
+/// [`RouterFactory::build`] and [`BackendFactory::build`] both return.
+/// Re-exported under this name, not `ConwayError` (already this crate's own
+/// root error type, [`crate::error::ConwayError`], returned by every OTHER
+/// fallible public API here) -- the two are deliberately distinct types with
+/// the same short name at different crate depths (`conway_core::error::
+/// ConwayError` vs. `conway::error::ConwayError`), so re-exporting the
+/// former under the latter's own name at this SAME root would shadow one
+/// with the other. `CoreConwayError` names which one a factory
+/// implementation must actually return -- `RouterFactory::build`'s own
+/// signature already committed to this type (`crates/conway-core/src/ports/
+/// routing.rs`) before this item existed; this re-export is what finally
+/// makes that signature spellable from a crate depending only on `conway`,
+/// closing a latent gap `RouterFactory` alone never had a compile-guarded
+/// test to catch (`crates/conway/tests/backend_parity.rs`'s extension,
+/// this item's own, is the first such test either factory port has had).
+pub use conway_core::error::ConwayError as CoreConwayError;
 
 /// The GP-03 extension surface: every type a crate depending only on
 /// `conway` needs to implement [`Plugin`], [`Tool`], and [`ContextHook`]
@@ -338,3 +357,12 @@ pub use conway_core::routing::{
 // public facade is only half-installed.
 pub use conway_core::capabilities::HeadroomPolicy;
 pub use conway_core::routing::RoutingConfig;
+
+// Board item 01KZHF0RBKJZZC68F7GPFB347Q, same GP-03/P-6 reasoning one line
+// up: `BackendFactory` joins the extension surface too, and
+// `BackendBuildContext::models` names `ModelOverrides` in its own field
+// type -- without this re-export, a third-party factory could read
+// `ctx.models.get("some-model")` but could not write a helper taking
+// `&ModelOverrides` as a parameter, the identical gap `RoutingConfig`/
+// `HeadroomPolicy` closed for `RouterBuildContext` above.
+pub use conway_core::routing::ModelOverrides;
