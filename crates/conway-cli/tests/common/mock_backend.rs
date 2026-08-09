@@ -86,6 +86,9 @@ pub struct MockHandle {
     /// appends `/models`.
     pub base_url: String,
     pub model: String,
+    /// Read only through [`MockHandle::requests`], which carries the
+    /// per-binary `dead_code` rationale for both.
+    #[allow(dead_code)]
     requests: Arc<Mutex<Vec<Value>>>,
     accept_task: JoinHandle<()>,
 }
@@ -93,6 +96,15 @@ pub struct MockHandle {
 impl MockHandle {
     /// Every `/chat/completions` request body received so far, in arrival
     /// order, parsed as JSON.
+    ///
+    /// `#[allow(dead_code)]` for the same reason [`Chunk`] carries one: each
+    /// `tests/*.rs` file compiles this module fresh as its own crate, so a
+    /// suite that asserts only on a process's exit code and stderr (e.g.
+    /// `decline_backend_kind.rs`) never calls this and makes it look unused
+    /// *for that one binary*, while `oneshot.rs` and `continuity.rs` do call
+    /// it. Scoped here rather than to any one consuming file, since the
+    /// accessor is genuinely live, shared harness surface.
+    #[allow(dead_code)]
     pub fn requests(&self) -> Vec<Value> {
         self.requests.lock().unwrap().clone()
     }

@@ -1015,3 +1015,79 @@ fn registered_factory_kind_appears_in_the_recognised_kinds_list() {
         "the recognised-kinds list must include the registered factory's own kind id: {err}"
     );
 }
+
+/// Board item 01KZHF2W8Y1KBM7PJH7R4QQJA0: an unresolved `[backends.<id>].
+/// kind` is a hard `build()` error either way (unchanged), but the message
+/// must DISTINGUISH "conway has never heard of this kind" from "an operator
+/// declined it" -- two different diagnoses for the same unresolved-kind
+/// failure (GP-14: an operator who deliberately declined a dialect deserves
+/// the accurate one). `ConwayBuilder::with_declined_backend_kinds` is the
+/// mechanism a caller declares that distinction with;
+/// `crates/conway-cli/src/first_party_plugins.rs`'s `install` is the one
+/// caller wired today, computing it as every published backend-factory id
+/// this binary links minus `wanted` (`[plugins].install` unioned with
+/// `[plugins].default_backends`) -- see
+/// `crates/conway-cli/tests/decline_backend_kind.rs` for the compiled-binary
+/// sibling of this same property.
+#[test]
+fn declined_backend_kind_error_is_distinct_from_unknown_backend_kind_error() {
+    fn cfg_naming_openai_compat() -> ConwayConfig {
+        let mut cfg = base_config();
+        cfg.backends.insert(
+            "mock".to_string(),
+            BackendEntry {
+                kind: "openai-compat".to_string(),
+                ..BackendEntry::default()
+            },
+        );
+        cfg
+    }
+
+    // Genuinely unknown: no factory registered for "openai-compat", and
+    // nothing declared it declined either.
+    let unknown_err = ConwayBuilder::from_parts(cfg_naming_openai_compat())
+        .with_session_store(Arc::new(FakeStore::new()))
+        .with_permission_gate(Arc::new(FakeGate::new(PermissionDecision::AllowOnce)))
+        .with_router(fake_router())
+        .build()
+        .err()
+        .expect("an unresolved kind must fail the build")
+        .to_string();
+
+    // The identical unresolved kind, but this caller declares it was
+    // deliberately declined rather than simply never having heard of it.
+    let declined_err = ConwayBuilder::from_parts(cfg_naming_openai_compat())
+        .with_session_store(Arc::new(FakeStore::new()))
+        .with_permission_gate(Arc::new(FakeGate::new(PermissionDecision::AllowOnce)))
+        .with_router(fake_router())
+        .with_declined_backend_kinds(vec!["openai-compat".to_string()])
+        .build()
+        .err()
+        .expect("a declined kind still referenced by config must fail the build")
+        .to_string();
+
+    assert!(
+        unknown_err.contains("unknown kind"),
+        "the genuinely-unrecognised case must read as an unknown kind: {unknown_err}"
+    );
+    assert!(
+        !unknown_err.to_lowercase().contains("declined"),
+        "the genuinely-unrecognised case must not claim the kind was declined: {unknown_err}"
+    );
+    assert!(
+        declined_err.contains("declined"),
+        "the declined case must say so in the message: {declined_err}"
+    );
+    assert!(
+        !declined_err.contains("unknown kind"),
+        "the declined case must not read as an unrecognised kind: {declined_err}"
+    );
+    assert!(
+        unknown_err.contains("openai-compat") && declined_err.contains("openai-compat"),
+        "both messages must name the offending kind: unknown={unknown_err} declined={declined_err}"
+    );
+    assert_ne!(
+        unknown_err, declined_err,
+        "the two diagnoses must be genuinely different text, not the same message printed twice"
+    );
+}

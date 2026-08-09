@@ -147,16 +147,42 @@ fn backend_bundle() -> Vec<Arc<dyn BackendFactory>> {
 /// picking one silently would be exactly the kind of unstated choice GP-14
 /// forbids. A backend factory carries no such cardinality limit (a build
 /// has a SET of backends -- `BackendFactory::id`'s own doc).
+///
+/// **Also calls `ConwayBuilder::with_declined_backend_kinds`** (board item
+/// 01KZHF2W8Y1KBM7PJH7R4QQJA0), unconditionally and before anything else
+/// below, naming every id in [`backend_bundle`] that `wanted` does NOT
+/// name -- purely diagnostic (that method's own doc): it changes no attach
+/// behavior, only which of the two messages `ConwayBuilder::build` raises
+/// for a `[backends.<id>]` entry naming an unresolved `kind` -- **declined**
+/// (a kind this binary links but `wanted` did not select, e.g. an operator
+/// removed it from `default_backends`) versus **unknown** (a kind this
+/// binary has never heard of at all, e.g. a typo or an unregistered
+/// third-party kind).
 pub fn install(
     mut builder: ConwayBuilder,
     wanted: &[String],
 ) -> Result<ConwayBuilder, ConwayError> {
+    // Board item 01KZHF2W8Y1KBM7PJH7R4QQJA0: every published backend-factory
+    // id this binary links that `wanted` does NOT name is a DECLINED kind,
+    // not an unknown one -- computed and handed to the builder before the
+    // early return below, so the diagnosis is accurate even when `wanted` is
+    // empty (declining both shipped dialects at once, e.g.
+    // `default_backends = []`). Purely diagnostic
+    // (`ConwayBuilder::with_declined_backend_kinds`'s own doc): it changes
+    // nothing about which factories attach, only the message a later
+    // `[backends.<id>]` entry naming a declined kind gets from `build()`.
+    let backend_bundle = backend_bundle();
+    let declined_backend_kinds: Vec<String> = backend_bundle
+        .iter()
+        .map(|f| f.id().to_string())
+        .filter(|id| !wanted.iter().any(|w| w == id))
+        .collect();
+    builder = builder.with_declined_backend_kinds(declined_backend_kinds);
     if wanted.is_empty() {
         return Ok(builder);
     }
     let bundle = bundle();
     let router_bundle = router_bundle();
-    let backend_bundle = backend_bundle();
     let mut router_factories_installed: Vec<String> = Vec::new();
     for id in wanted {
         if let Some(plugin) = bundle.iter().find(|p| &p.manifest().id == id) {
@@ -236,6 +262,15 @@ pub fn wanted_ids(install: &[String], default_backends: &[String]) -> Vec<String
 /// asserts on an observable outcome — the announced tool set on the wire,
 /// the invoked tool's preview text, the process exit code and stderr —
 /// rather than on an intermediate signal.
+///
+/// The `with_declined_backend_kinds` call this function adds (board item
+/// 01KZHF2W8Y1KBM7PJH7R4QQJA0) is covered the same way, separately, in
+/// `tests/decline_backend_kind.rs`: declining a shipped dialect via
+/// `[plugins].default_backends` while a `[backends.<id>]` entry still names
+/// it fails the real compiled binary with a message that reads as
+/// **declined**, and a kind this binary has never linked at all still fails
+/// with the pre-existing **unknown-kind** message — with a third test
+/// pinning that the two stderr strings are genuinely different text.
 ///
 /// This module deliberately does NOT restate that coverage as unit tests.
 /// Constructing a `ConwayBuilder` here would need a stub config solely to

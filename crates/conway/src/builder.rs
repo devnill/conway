@@ -224,6 +224,12 @@ pub struct ConwayBuilder {
     /// (above), nothing more -- see [`Self::with_backend_factory`]'s own doc
     /// for the full precedence and duplicate-kind rules.
     backend_factories: Vec<Arc<dyn BackendFactory>>,
+    /// Board item 01KZHF2W8Y1KBM7PJH7R4QQJA0. Empty (the default) means
+    /// nothing changes from before this field existed -- see
+    /// [`Self::with_declined_backend_kinds`]'s own doc for what a non-empty
+    /// value does (purely diagnostic; it never removes, blocks, or replaces
+    /// a registered [`BackendFactory`]).
+    declined_backend_kinds: Vec<String>,
     /// WI-126. `None` (the default) means `build()` never calls
     /// `Runtime::set_context_hook` at all, leaving every agent's
     /// `context_hook` at the `Runtime`-constructed default of `None` --
@@ -282,6 +288,7 @@ impl ConwayBuilder {
             router: None,
             router_factory: None,
             backend_factories: Vec::new(),
+            declined_backend_kinds: Vec::new(),
             context_hook: None,
             builtin_selection: None,
             warnings: Vec::new(),
@@ -408,6 +415,43 @@ impl ConwayBuilder {
     /// alone must register a factory itself.
     pub fn with_backend_factory(mut self, factory: Arc<dyn BackendFactory>) -> Self {
         self.backend_factories.push(factory);
+        self
+    }
+
+    /// Declares which `BackendFactory` KIND ids this caller *knows about but
+    /// chose not to attach* (board item 01KZHF2W8Y1KBM7PJH7R4QQJA0 -- the
+    /// operator-facing decline mechanism for the two dialects
+    /// `conway_plugin_backends` ships, `[plugins].default_backends`'s own
+    /// doc, `crate::config::schema::PluginsConfig`). Replaces any prior call
+    /// wholesale, the same "whole value, not additive" contract
+    /// [`Self::with_cli_overrides`] already has.
+    ///
+    /// **Purely diagnostic -- changes no attach behavior at all.** Whether a
+    /// kind is attached is, and remains, entirely a function of
+    /// [`Self::with_backend_factory`] calls; this list is never consulted to
+    /// skip, block, or filter one. Its only effect is on the MESSAGE
+    /// [`build()`](Self::build) raises when a `[backends.<id>]` entry names a
+    /// `kind` no registered factory claims: a kind in this list gets a
+    /// **declined-kind** error naming it as such, distinguishable from the
+    /// **unknown-kind** error every other unresolved `kind` still gets (GP-14
+    /// -- an operator who deliberately declined a dialect deserves that
+    /// diagnosis, not "conway has never heard of this," which is a different,
+    /// worse-fitting claim about what happened). Not called at all (the
+    /// default, empty list) means every unresolved `kind` is an unknown-kind
+    /// error exactly as before this method existed -- unchanged.
+    ///
+    /// **`conway` (this binary's CLI) is the one caller wired today**:
+    /// `crates/conway-cli/src/first_party_plugins.rs`'s `install` computes
+    /// this as `conway_plugin_backends`'s published kind ids MINUS
+    /// `wanted_ids` (`[plugins].install` unioned with
+    /// `[plugins].default_backends`) -- i.e. every first-party dialect this
+    /// binary links but this build did not select -- and calls this method
+    /// with that list before `build()`. A library embedder linking
+    /// `conway_plugin_backends` (or any other kind bundle) directly can call
+    /// this the same way to get the same accurate diagnosis for its own
+    /// declined kinds; nothing about this method is CLI-specific.
+    pub fn with_declined_backend_kinds(mut self, kinds: Vec<String>) -> Self {
+        self.declined_backend_kinds = kinds;
         self
     }
 
@@ -561,11 +605,13 @@ impl ConwayBuilder {
             router,
             router_factory,
             backend_factories,
+            declined_backend_kinds,
             context_hook,
             builtin_selection,
             warnings,
             root,
         } = self;
+        let declined_backend_kinds: HashSet<String> = declined_backend_kinds.into_iter().collect();
 
         // 1. Apply CLI overrides; re-validate. This is what catches an
         //    invalid override in a config assembled via `from_parts`, which
@@ -631,7 +677,8 @@ impl ConwayBuilder {
         let mut probe_targets: Vec<(String, Arc<dyn BackendFactory>, BackendBuildContext)> =
             Vec::new();
         for (id, entry) in &config.backends {
-            let factory = resolve_backend_factory(id, entry, &factories_by_kind)?;
+            let factory =
+                resolve_backend_factory(id, entry, &factories_by_kind, &declined_backend_kinds)?;
             let ctx = build_backend_context(id, entry, &metadata, &profile_file_paths)?;
             if config.models.probe_on_startup {
                 probe_targets.push((id.clone(), factory.clone(), ctx.clone()));
@@ -917,23 +964,59 @@ fn resolve_api_key(id: &str, entry: &BackendEntry) -> Result<String> {
 /// `crates/conway-cli/src/first_party_plugins.rs`'s unknown-id error already
 /// produces for plugin ids (GP-14: a silently ignored `kind` is exactly the
 /// failure that check exists to prevent).
+///
+/// **Two distinct diagnoses for that same failure** (board item
+/// 01KZHF2W8Y1KBM7PJH7R4QQJA0), chosen by whether `entry.kind` appears in
+/// `declined` ([`ConwayBuilder::with_declined_backend_kinds`]):
+/// - present -> a **declined-kind** error: this build recognises the kind by
+///   name but a caller deliberately did not attach a factory for it.
+/// - absent -> the pre-existing **unknown-kind** error, unchanged: this
+///   build has never heard of the kind at all.
+///
+/// Both are the identical hard `build()`-time [`ConwayError::Config`] this
+/// function always raised -- neither timing nor severity changes, only the
+/// message an operator reads, so declining a shipped dialect and forgetting
+/// a `[backends.<id>]` entry that still names it fails the whole `build()`
+/// exactly as an unknown kind always has (see `PluginsConfig::
+/// default_backends`'s own doc for why a build with zero backends is never
+/// an acceptable silent outcome to fall back to instead).
 fn resolve_backend_factory<'a>(
     id: &str,
     entry: &BackendEntry,
     factories: &'a HashMap<&str, &Arc<dyn BackendFactory>>,
+    declined: &HashSet<String>,
 ) -> Result<&'a Arc<dyn BackendFactory>> {
     factories.get(entry.kind.as_str()).copied().ok_or_else(|| {
         let mut known: Vec<String> = factories.keys().map(|k| k.to_string()).collect();
         known.sort();
         known.dedup();
-        ConwayError::Config {
-            path: None,
-            message: format!(
-                "backend '{id}': unknown kind '{}'; recognised kinds: [{}]. A third-party kind \
-                 is installed with ConwayBuilder::with_backend_factory before build().",
-                entry.kind,
-                known.join(", ")
-            ),
+        if declined.contains(entry.kind.as_str()) {
+            ConwayError::Config {
+                path: None,
+                message: format!(
+                    "backend '{id}': kind '{}' was declined, not installed for this build. This \
+                     is a DIFFERENT diagnosis than a kind this build has never heard of at all: \
+                     '{}' is a recognised dialect that plugins.default_backends/plugins.install \
+                     no longer names (or that an embedder chose not to attach via \
+                     ConwayBuilder::with_backend_factory). Installed kinds: [{}]. Add '{}' back \
+                     to plugins.default_backends (or plugins.install), or call \
+                     ConwayBuilder::with_backend_factory for it, before build().",
+                    entry.kind,
+                    entry.kind,
+                    known.join(", "),
+                    entry.kind
+                ),
+            }
+        } else {
+            ConwayError::Config {
+                path: None,
+                message: format!(
+                    "backend '{id}': unknown kind '{}'; recognised kinds: [{}]. A third-party \
+                     kind is installed with ConwayBuilder::with_backend_factory before build().",
+                    entry.kind,
+                    known.join(", ")
+                ),
+            }
         }
     })
 }

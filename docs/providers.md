@@ -59,6 +59,53 @@ embedding path you're on:
   first-party backend gets exactly the surface a third party gets (GP-03/
   P-6). `conway` itself never does this for you.
 
+**Declining a shipped dialect means something observable, not just a
+smaller install (board item 01KZHF2W8Y1KBM7PJH7R4QQJA0).** Removing a kind
+id from `default_backends` — say, dropping `"openai-compat"` — does two
+things: no factory for that kind attaches (the install mechanism above,
+unchanged), *and* the CLI tells `build()` that kind was deliberately
+declined rather than simply never installed. If a `[backends.<id>]` entry
+still names it, `build()` still fails — a build with zero backends can
+never reach a model, so there is no silent smaller-but-working outcome to
+fall back to (`PluginsConfig::default_backends`'s own doc) — but the
+message reads as a decline, not a typo:
+
+```json
+// .conway/settings.json
+{
+  "plugins": { "default_backends": ["anthropic"] },
+  "backends": {
+    "mock": { "kind": "openai-compat", "base_url": "https://example.invalid/" }
+  }
+}
+```
+
+```text
+conway: error: backend 'mock': kind 'openai-compat' was declined, not
+installed for this build. This is a DIFFERENT diagnosis than a kind this
+build has never heard of at all: 'openai-compat' is a recognised dialect
+that plugins.default_backends/plugins.install no longer names (or that an
+embedder chose not to attach via ConwayBuilder::with_backend_factory).
+Installed kinds: [anthropic]. Add 'openai-compat' back to
+plugins.default_backends (or plugins.install), or call
+ConwayBuilder::with_backend_factory for it, before build().
+```
+
+A kind this build has genuinely never heard of at all — a typo, or a
+third-party kind nobody ever registered a factory for — still gets the
+plain **unknown kind** message (`recognised kinds: [...]`, no mention of a
+decline). The two are deliberately distinguishable text, because they are
+different situations: one is "you turned this off," the other is "conway
+doesn't know what this is."
+
+A library embedder gets the identical diagnosis by calling
+`ConwayBuilder::with_declined_backend_kinds(vec!["openai-compat".into()])`
+before `build()` — the builder-method equivalent of removing an id from
+`default_backends`, reaching the same code path `conway-cli` uses
+internally. It is purely diagnostic: it never attaches or removes a
+factory itself, only changes which of the two messages an unresolved
+`kind` gets.
+
 **A third `kind` is a library extension point, not a config typo.** An
 embedder registers a `BackendFactory` under whatever kind name it wants
 (`ConwayBuilder::with_backend_factory`, board item
