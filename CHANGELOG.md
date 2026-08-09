@@ -182,6 +182,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   design. Every unbuilt section names its board item
   (01KZDC0RDRMMMJHX7SAFMM2Q5A, 01KZ844ZXZMVRWC7ZANT7PSM6X).
 
+- **Declining a shipped dialect now says so: a `[backends.<id>]` entry
+  naming a declined kind gets a different message from one naming a kind
+  conway has never heard of** (board item 01KZHF2W8Y1KBM7PJH7R4QQJA0).
+  `[plugins].default_backends` already let an operator decline by editing a
+  list; what was missing was the consequence. Declining and leaving a stale
+  entry behind produced the plain unknown-kind error — telling someone who
+  deliberately turned a dialect off that it never existed, which is a worse
+  diagnosis than the situation deserves.
+
+  `ConwayBuilder::with_declined_backend_kinds` is **purely diagnostic**: it
+  never attaches, blocks, or filters a factory. It tells `build()` which
+  kinds this binary links but a caller chose not to install, so the
+  existing per-entry resolution failure can pick the accurate message.
+  Declining stays a hard `build()`-time error rather than a skip-with-
+  warning, because skipping moves the failure from start time to request
+  time — and a build that quietly ends up with zero backends is never an
+  acceptable thing to fall into.
+
+  Both messages are pinned by a test asserting they differ, exercised from
+  the library API and from the **real compiled binary**, on exit code and
+  stderr rather than an internal flag. The default is untouched: with
+  nothing declined the installed backends are identical, proven by the
+  existing suite passing with **no test edited** — 76 added lines, zero
+  deleted.
+  (`crates/conway/src/builder.rs`,
+  `crates/conway-cli/src/first_party_plugins.rs`,
+  `crates/conway-cli/tests/decline_backend_kind.rs`,
+  [`docs/providers.md`](docs/providers.md))
+
 - **BREAKING: `conway` no longer compiles either provider dialect in —
   `conway-backends` is now `conway-plugin-backends`, a first-party plugin,
   installed by default** (board item 01KZHF270T3W8GZ7NM6DSNQ4MM, closing
