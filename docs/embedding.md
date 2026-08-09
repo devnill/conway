@@ -345,6 +345,22 @@ capability picture exist, and building a real router needs both. A
 step to `ConwayBuilder::build()`'s own router step, once that context is
 actually assembled.
 
+**`RouterFactory` itself is facade-only implementable — filling in that
+`todo!()` with a hand-written `Router` is not, today.** `RouterFactory`'s
+own two methods name only `RouterBuildContext`, `RouterBundle`, and
+`ConwayError`, all re-exported at `conway`'s root, so the shell above
+compiles from a crate depending only on `conway`. What you put inside
+`build()` to actually satisfy it — a value implementing `Router::resolve`
+— is a different question (see the reachability table above): that
+method's own signature names `RouteRequest`, `Route`, and `RoutingError`,
+none of which the facade re-exports, so writing a *new* `Router` from
+scratch still needs a direct `conway-core` dependency, same as
+`conway-plugin-routing` (`crates/conway-plugin-routing/Cargo.toml`) needs
+to write the one this workspace ships. A facade-only `RouterFactory` can
+still be useful without writing a new `Router`: reuse or select among
+routers a fuller dependency elsewhere in your own workspace already built,
+and hand the chosen one back from `build()`.
+
 **Wiring it in, as a library embedder:**
 
 ```rust,ignore
@@ -461,17 +477,39 @@ the facade root is the whole surface — no `conway-core` dependency.
 | `SessionStore` | Yes | No (`SeqRange`, `StoreError`) | No |
 | `Router` | Yes | No (`RouteRequest`, `Route`, `RoutingError`) | No |
 
-The remaining two rows are deliberate, not gaps: the extension
-architecture rejects plugin implementations of `SessionStore`, `Router`,
-`HealthRegistry`, `SubagentHost`, and `EventSink` with stated reasons
-(`.design/extension-architecture.md` §13.5 — two of those ports are
-structurally uncrossable by an async RPC boundary; the rest are policy).
-`Backend` used to be named alongside them here; board item
-01KZHEZF8XCD0TMDYZQP06J2KH added `conway::backend` specifically to make it
-implementable, so that reasoning no longer applies to it. `SessionStore`
-and `Router` are still re-exported so you can *inject* the workspace's own
-implementations or a test double written inside this workspace, not so
-third parties write new ones against the facade.
+**This table is about the IN-PROCESS question — can a crate depending only
+on `conway` write a new `impl` of the trait itself — which is a different
+question from the one `.design/extension-architecture.md` §13.5 answers.**
+That section (dated status note, 2026-08-09) is a non-goals list for the
+OUT-OF-PROCESS subprocess-plugin design; it says nothing about registering
+an in-process Rust type through `ConwayBuilder`, and citing it here as
+though it did was itself a standing error this page carried, now corrected.
+`Backend` used to be named alongside `SessionStore`/`Router` in this
+table's "not reachable" set; board item 01KZHEZF8XCD0TMDYZQP06J2KH added
+`conway::backend` specifically to make the raw trait facade-only
+authorable, so that row is unconditionally **Yes** now.
+
+`SessionStore`'s row is unchanged and stays **No**: `SeqRange`/`StoreError`
+are not re-exported, so a facade-only crate cannot spell `SessionStore::
+append`'s own signature. `Router`'s row is also correctly **No** for the
+same narrow reason — `RouteRequest`/`Route`/`RoutingError` are not
+re-exported either, so a facade-only crate cannot write `impl Router`'s
+`resolve` method by hand, and (checked directly) `conway-plugin-routing`,
+the one crate in this workspace that does implement `Router`, depends on
+`conway-core` directly rather than only on `conway` to do it — verified by
+compiling a facade-only scratch crate against each claim, not by reading
+(`.design/router-installation-q2-compile-evidence.md`). **That is not
+the whole story for `Router`, though, and reading only this row would be
+misleading:** a *separate* trait, `RouterFactory` — installing, not
+authoring, a router — genuinely is facade-only implementable end to end
+(its own methods name only `RouterBuildContext`/`RouterBundle`/
+`ConwayError`, all re-exported), and is real, tested machinery, not a
+forward declaration — see "Installing a router" below, and
+`crates/conway/tests/router_factory.rs`. `SessionStore` and `Router` are
+both still re-exported at the trait level so you can *inject* the
+workspace's own implementation or a test double built inside this
+workspace via `with_session_store`/`with_router`, not so a facade-only
+crate authors a wholly new one.
 
 ### Installing a backend: `BackendFactory`
 

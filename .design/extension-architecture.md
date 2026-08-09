@@ -2543,6 +2543,64 @@ of that door are closing, for related reasons.)
 those are structural (synchronous ports cannot be crossed by async RPC); the
 rest are decisions with stated reasons.
 
+> **Status (2026-08-09), board items 01KZHF46C80HFAQN2CJEXXVYY5 and
+> 01KZHMNABS6HC0KT1D1CKM9W8H — scope stated explicitly, two of six corrected
+> for a transport this section never governed.** This section, like all of
+> §13, is a non-goals list for the OUT-OF-PROCESS design (§13.1 WASM, §13.2
+> process sandboxing, §13.3 the host inference callback) — the subprocess +
+> JSON-RPC transport of §2, not in-process Rust registration through
+> `ConwayBuilder`. `docs/embedding.md` and `.design/philosophy-debt.md` had
+> both cited this clause as though it settled the in-process question too,
+> which it never posed. **For the OUT-OF-PROCESS transport this section
+> actually governs, all six exclusions stand exactly as reasoned in §4's
+> "Ports deliberately not reachable"** — `Router`/`HealthRegistry`
+> structurally (a synchronous port cannot be crossed by async RPC without
+> blocking a runtime thread), `SessionStore`/`SubagentHost`/`EventSink` by
+> the policy reasons stated there, and `Backend` by its own: conway already
+> speaks HTTP to backends, and a non-Rust backend is already solved by
+> running a server that speaks a supported dialect.
+>
+> **For the IN-PROCESS transport — a different question this section was
+> never answering — two of the six now have a real, working answer that did
+> not exist when this section was written:**
+>
+> - **`Backend`** is now facade-only *authorable* (board item
+>   01KZHEZF8XCD0TMDYZQP06J2KH added `conway::backend`, a curated re-export
+>   module carrying every type `Backend`'s five methods name) and
+>   facade-only *installable* (`BackendFactory` /
+>   `ConwayBuilder::with_backend_factory`, board item
+>   01KZHF0RBKJZZC68F7GPFB347Q). `crates/conway-thirdparty-backend` (board
+>   item 01KZHF3E1ZG3AZ7F7HHVY324T9) is a real, separate-manifest workspace
+>   member proving both at once: its `[dependencies]` name exactly one
+>   workspace crate, `conway`, and it hand-writes a working `Backend` +
+>   `BackendFactory`, selected by `kind` from a real `settings.json` loaded
+>   through `conway::config::load`, serving a complete turn.
+> - **`Router`** gained a real, facade-only-reachable *installation* point —
+>   `RouterFactory` / `RouterBuildContext` / `RouterBundle` (all re-exported
+>   at `conway`'s own root) and `ConwayBuilder::with_router_factory` / the
+>   `[plugins].install` router arm (board item 01KZFC2MD1FVNA674YJ9A19T8E) —
+>   that did not exist when this clause was written and is exercised end to
+>   end by `crates/conway/tests/router_factory.rs`. Verified by compiling a
+>   facade-only scratch crate against each claim, not by reading:
+>   `.design/router-installation-q2-compile-evidence.md`. This is narrower than
+>   what `Backend` got, and stated precisely rather than rounded up: writing
+>   the raw `Router` trait's `resolve` method still needs `RouteRequest`,
+>   `Route`, and `RoutingError`, none of which `conway`'s facade re-exports,
+>   so authoring a genuinely new routing *algorithm* still needs a direct
+>   `conway-core` dependency — exactly what `conway-plugin-routing`'s own
+>   `Cargo.toml` says of itself. What changed is that *attaching* one, once
+>   built (inside this workspace, or by any crate willing to add that one
+>   dependency), is now a supported, tested, facade-reachable mechanism, not
+>   a foreclosed one.
+>
+> **`SessionStore`, `HealthRegistry`, `SubagentHost`, and `EventSink` are
+> unchanged in both transports.** No builder method injects a replacement
+> `HealthRegistry`, `SubagentHost`, or `EventSink` at all (checked against
+> every `pub fn with_*` in `crates/conway/src/builder.rs`), and `SessionStore`
+> has no curated re-export module the way `Backend` — and, for installation
+> only, `Router` — now do. The exclusion stands for these four exactly as
+> stated above and in §4, for both transports.
+
 **13.6 No compaction events, no blocking `Stop` point, no `ConfigChange`.**
 conway has no compaction, no "prevent the agent from stopping" concept, and
 config is load-time. **A hook naming a feature that does not exist documents

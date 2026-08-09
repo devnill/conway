@@ -182,6 +182,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   design. Every unbuilt section names its board item
   (01KZDC0RDRMMMJHX7SAFMM2Q5A, 01KZ844ZXZMVRWC7ZANT7PSM6X).
 
+- **Provider adapters have a documented authoring path, and three places
+  that said otherwise are corrected** (board item 01KZHF46C80HFAQN2CJEXXVYY5,
+  **closing the backends-as-plugins charter**). `docs/providers.md` gains
+  "Writing your own adapter": the crate boundary (`conway` alone, no
+  internal crate), how a kind id is published and named in
+  `[backends.<id>].kind`, how an embedder attaches one, and a worked
+  example **lifted verbatim** from `crates/conway-thirdparty-backend` —
+  the same code `cargo test -p conway-thirdparty-backend` compiles and
+  runs, not a fresh retelling. Elisions are named on the page; the
+  `models.json` block is disclosed as rendered JSON rather than source.
+
+  **A distinction the correction turns on, and it is narrower than it
+  looked.** `docs/embedding.md`'s table and its "Installing a router"
+  section appeared to contradict each other. They do not: they answer
+  different questions. `Router` is facade-only **installable** — a
+  `RouterFactory` compiles clean against `conway` alone — but still not
+  facade-only **authorable**, because `impl Router` needs `RouteRequest`,
+  `Route`, and `RoutingError`, none of which the facade exports. Both
+  established by compiling a scratch crate against each trait rather than
+  by reading, with transcripts recorded in
+  `.design/router-installation-q2-compile-evidence.md`. So the `Router`
+  row stays **No** and the prose now says which question it answers.
+
+  `.design/extension-architecture.md` §13.5 gains a dated status note.
+  That section is a non-goals list for the **out-of-process** subprocess
+  transport, not for in-process registration through `ConwayBuilder` — and
+  both `docs/embedding.md` and `.design/philosophy-debt.md` had been citing
+  it as though it settled the latter, which is the mis-citation that would
+  have made this recur. For the out-of-process transport all six
+  exclusions stand as originally reasoned. In-process, `Backend` and
+  `Router` each gained a real answer that did not exist when the section
+  was written; `SessionStore`, `HealthRegistry`, `SubagentHost`, and
+  `EventSink` did not, each verified rather than assumed.
+  (`docs/providers.md`, `docs/embedding.md`,
+  `.design/extension-architecture.md`,
+  `.design/router-installation-q2-compile-evidence.md`)
+
 - **The backend authoring surface now has a stranger proving it works, not
   conway's own test suite vouching for itself** (board item
   01KZHF3E1ZG3AZ7F7HHVY324T9). New workspace member
