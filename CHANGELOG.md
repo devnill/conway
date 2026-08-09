@@ -182,6 +182,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   design. Every unbuilt section names its board item
   (01KZDC0RDRMMMJHX7SAFMM2Q5A, 01KZ844ZXZMVRWC7ZANT7PSM6X).
 
+- **BREAKING: `[backends.<id>].kind` is an open name rather than a closed
+  two-valued enum** (board item 01KZHF1E85MS1VF4YH8CDNCP9Z, decision
+  01KZHRPZ010R37411R3W1XR5TF). `config::schema::BackendKind` is gone;
+  `BackendEntry.kind` is a plain `String`, resolved at `build()` against
+  every `BackendFactory` registered through
+  `ConwayBuilder::with_backend_factory`, falling back to the two adapters
+  this facade still compiles in (`"anthropic"`, `"openai-compat"`) for any
+  name they claim. **This is the change that makes the factory port
+  reachable from configuration at all** — a matching factory now receives a
+  real, per-entry `BackendBuildContext` (`id`, `base_url`, resolved
+  `api_key`, `dialect`, `models`) instead of the empty stub the previous
+  item disclosed, and is invoked **once per `[backends.<id>]` entry naming
+  its kind** rather than unconditionally once per `build()`. The built-in
+  fallback is deliberate and temporary; the relocation item
+  (01KZHF270T3W8GZ7NM6DSNQ4MM) removes it.
+
+  A `kind` that neither a registered factory nor the two built-ins claim
+  fails `build()` with an error quoting the offending value and listing
+  every recognised kind — the same disclosure shape the unknown-plugin-id
+  error already uses, because a silently ignored `kind` is exactly what
+  GP-14 forbids.
+
+  **BREAKING for a typo, not for a valid config.** A third-party kind needs
+  somewhere to put its own keys, so `BackendEntry` drops
+  `deny_unknown_fields` in favour of a flattened `extra` catch-all —
+  `serde`'s `flatten` and `deny_unknown_fields` cannot coexist, since one
+  needs unrecognised keys to fall through and the other needs them to
+  error. The consequence is stated rather than buried: **a misspelled
+  well-known key such as `base_ur1` no longer fails to load.** It is
+  captured into `extra`, never read, and `base_url` silently keeps its
+  default. A test pins that exact behaviour rather than merely asserting
+  the file loads. Every existing `"kind": "anthropic"` /
+  `"kind": "openai-compat"` config keeps working unchanged.
+
+  The two rejected shapes and why: nesting custom keys under a sub-object
+  would put built-in keys at one level and third-party keys at another,
+  reintroducing precisely the privileged-built-in asymmetry this work
+  exists to remove (GP-03); moving every kind-specific key including
+  `dialect` into the catch-all would be the largest possible break to
+  existing config files for no benefit the chosen shape does not already
+  give. `merge.rs`'s two backend validations were checked rather than
+  assumed and stay in the facade unchanged — neither ever inspected `kind`,
+  and credential resolution stays centralised regardless of which kind
+  builds the backend.
+
+  **Known follow-on:** `BackendBuildContext` does not yet expose `extra` to
+  a factory, so a third-party kind cannot read its own custom keys. Labeled
+  at `BackendEntry`'s doc rather than left to be discovered; no in-tree
+  factory needs it yet.
+  (`crates/conway/src/config/schema.rs`, `crates/conway/src/builder.rs`,
+  `crates/conway/tests/`, [`docs/providers.md`](docs/providers.md),
+  [`docs/embedding.md`](docs/embedding.md))
+
 - **Docs 5/5 — the cookbook:
   [`docs/plugins/cookbook.md`](docs/plugins/cookbook.md)** (board item
   01KYTP9XCPQW88P7WNNBFMNE31), completing the plugin documentation set. Five

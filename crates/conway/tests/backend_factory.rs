@@ -4,12 +4,24 @@
 //! mechanism one layer over, restated for a SET rather than a singleton
 //! (`with_backend_factory`'s own doc, `crates/conway/src/builder.rs`).
 //!
+//! **Updated for board item 01KZHF1E85MS1VF4YH8CDNCP9Z:** `[backends.<id>].
+//! kind` is now an open name resolved against registered factories, so a
+//! factory's `build` is invoked once per `[backends.<id>]` entry naming its
+//! kind -- never unconditionally regardless of config, which is what this
+//! file's fixtures exercised before that item landed (`with_backend_factory`'s
+//! own doc, `crates/conway/src/builder.rs`, states this explicitly:
+//! "registering a factory whose kind no entry names is still fine, not an
+//! error" -- its `build` is simply never invoked). Every fixture below that
+//! needs a factory invoked therefore names that factory's own `kind_id` in a
+//! `[backends.<id>]` entry via `config_naming_kind`.
+//!
 //! Four properties, each a discriminating observable rather than a
 //! structural check:
 //!
-//! 1. A factory registered via `with_backend_factory` IS invoked, and the
-//!    backend it builds actually SERVES a turn -- not merely that `build()`
-//!    succeeds (`factory_built_backend_serves_a_turn`).
+//! 1. A factory registered via `with_backend_factory` and named by a
+//!    `[backends.<id>].kind` entry IS invoked, and the backend it builds
+//!    actually SERVES a turn -- not merely that `build()` succeeds
+//!    (`factory_built_backend_serves_a_turn`).
 //! 2. An injected `with_backend` backend wins over a factory-built backend
 //!    sharing the same `Backend::id()`: the turn is served by the
 //!    INJECTED backend's own content, and the factory's `build()` was
@@ -20,7 +32,8 @@
 //!    (`injected_backend_wins_over_factory_built_backend_sharing_its_id`).
 //! 3. Two factories reporting the same `BackendFactory::id()` (a duplicate
 //!    KIND) is a hard `build()` error naming it, and NEITHER factory's
-//!    `build` runs (`duplicate_factory_kind_is_a_build_error_before_either_
+//!    `build` runs, regardless of whether any `[backends.<id>]` entry names
+//!    that kind (`duplicate_factory_kind_is_a_build_error_before_either_
 //!    build_runs`).
 //! 4. A factory whose `build` returns `Err` surfaces as `ConwayError::Build`,
 //!    naming both the factory's own kind id and the underlying message
@@ -35,8 +48,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use conway::config::schema::{
-    AgentsConfig, ConwayConfig, HealthSection, LimitsConfig, ModelsConfig, PermissionsConfig,
-    PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig, TuiSection,
+    AgentsConfig, BackendEntry, ConwayConfig, HealthSection, LimitsConfig, ModelsConfig,
+    PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
+    TuiSection,
 };
 use conway::{
     BackendBuildContext, BackendFactory, Conway, ConwayBuilder, ConwayError, CoreConwayError,
@@ -107,6 +121,25 @@ fn base_config() -> ConwayConfig {
     }
 }
 
+/// `base_config()` plus one `[backends.<entry_id>]` entry naming `kind` --
+/// what selects a registered `BackendFactory` whose own `id()` is `kind`
+/// (board item 01KZHF1E85MS1VF4YH8CDNCP9Z: `kind` is an open name resolved
+/// against registered factories). `entry_id` is the JSON key only; it never
+/// needs to match anything the factory itself returns from `Backend::id()`
+/// (`BackendBuildContext::id` is advisory, not enforced -- that struct's own
+/// doc).
+fn config_naming_kind(entry_id: &str, kind: &str) -> ConwayConfig {
+    let mut cfg = base_config();
+    cfg.backends.insert(
+        entry_id.to_string(),
+        BackendEntry {
+            kind: kind.to_string(),
+            ..BackendEntry::default()
+        },
+    );
+    cfg
+}
+
 fn fake_router_single(id: &str) -> Arc<dyn conway_core::ports::Router> {
     Arc::new(FakeRouter::single(ModelRef {
         backend: BackendId::new(id),
@@ -170,17 +203,18 @@ fn expect_build_err(result: Result<Conway, ConwayError>, msg: &str) -> ConwayErr
     }
 }
 
-/// Property 1: a factory registered via `with_backend_factory` IS invoked,
-/// and the backend it builds actually serves a turn. Discriminating
-/// because `base_config()` configures NO `[backends.<id>]` entries at all
-/// (`config.backends` is empty) and no `with_backend` is called either --
-/// `build()`'s own "no backends configured" guard means a success here,
-/// producing a turn whose text is the factory's OWN canned response, can
-/// only be explained by the registered factory's `build()` having actually
-/// run and its backend having actually served the request.
+/// Property 1: a factory registered via `with_backend_factory` and named by
+/// a `[backends.<id>].kind` entry IS invoked, and the backend it builds
+/// actually serves a turn. Discriminating because `config_naming_kind`'s one
+/// `[backends.<id>]` entry is the ONLY backend source (no `with_backend`
+/// call either) -- `build()`'s own "no backends configured" guard means a
+/// success here, producing a turn whose text is the factory's OWN canned
+/// response, can only be explained by the registered factory's `build()`
+/// having actually run (selected by the config entry naming its kind) and
+/// its backend having actually served the request.
 #[tokio::test]
 async fn factory_built_backend_serves_a_turn() {
-    let cfg = base_config();
+    let cfg = config_naming_kind("stub", "stub-kind");
     let store = Arc::new(FakeStore::new());
     let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
     let calls = Arc::new(AtomicUsize::new(0));
@@ -230,7 +264,7 @@ async fn factory_built_backend_serves_a_turn() {
 /// entirely -- `with_backend_factory`'s own doc states this asymmetry).
 #[tokio::test]
 async fn injected_backend_wins_over_factory_built_backend_sharing_its_id() {
-    let cfg = base_config();
+    let cfg = config_naming_kind("stub", "stub-kind");
     let store = Arc::new(FakeStore::new());
     let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
     let calls = Arc::new(AtomicUsize::new(0));
@@ -340,7 +374,7 @@ fn duplicate_factory_kind_is_a_build_error_before_either_build_runs() {
 /// fallback that drops the kind and proceeds.
 #[test]
 fn factory_build_error_surfaces_as_build_error() {
-    let cfg = base_config();
+    let cfg = config_naming_kind("exploding", "exploding-kind");
     let store = Arc::new(FakeStore::new());
     let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
     let factory = Arc::new(ErrBackendFactory {

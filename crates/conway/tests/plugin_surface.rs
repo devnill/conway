@@ -30,8 +30,8 @@ use std::sync::Arc;
 
 #[cfg(feature = "jsonl-store")]
 use conway::config::schema::{
-    AgentsConfig, BackendEntry, BackendKind, ConwayConfig, HealthSection, LimitsConfig,
-    ModelsConfig, PermissionMode, PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig,
+    AgentsConfig, BackendEntry, ConwayConfig, HealthSection, LimitsConfig, ModelsConfig,
+    PermissionMode, PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig,
     ToolsConfig, TuiSection,
 };
 use conway::plugin::{
@@ -221,7 +221,7 @@ fn facade_only_config(session_root: std::path::PathBuf, metadata_path: std::path
     backends.insert(
         "anthropic".to_string(),
         BackendEntry {
-            kind: BackendKind::Anthropic,
+            kind: "anthropic".to_string(),
             api_key: "sk-ant-api03-not-a-real-key".to_string(),
             ..BackendEntry::default()
         },

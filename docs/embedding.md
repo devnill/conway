@@ -505,12 +505,18 @@ than inventing a second one. Two factories reporting the same kind id is a
 runs so a duplicate never leaves one factory's side effects behind.
 Registering no factories leaves `build()` behaving exactly as before.
 
-**Not yet reachable from configuration.** `[backends.<id>].kind` is still a
-closed two-valued enum, so a config entry cannot yet *name* a factory, and a
-registered factory currently receives an empty `BackendBuildContext`.
-Opening `kind` to a resolved name is board item
-01KZHF1E85MS1VF4YH8CDNCP9Z; until it lands, this surface is reachable only
-by an embedder calling the builder directly.
+**Reachable from configuration.** `[backends.<id>].kind` is an open name
+(board item 01KZHF1E85MS1VF4YH8CDNCP9Z), resolved against every registered
+factory's own `id()` first, falling back to the two adapters `conway`
+still compiles in (`"anthropic"`, `"openai-compat"`) for any name they
+claim. A `[backends.<id>]` entry naming `MyDialectFactory`'s own kind is
+what invokes it, with a `BackendBuildContext` resolved from THAT entry —
+`id` is the entry's own JSON key, `base_url`/`dialect` copied verbatim, and
+`api_key` resolved the same centralized way (literal `api_key` wins, else
+`api_key_env` read from the process environment, else `None`). A `kind`
+neither a registered factory nor the two built-ins claims fails `build()`
+naming the offending value and every kind this build recognises — a
+misspelled or unregistered kind is never silently ignored (GP-14).
 
 ### Writing a plugin
 

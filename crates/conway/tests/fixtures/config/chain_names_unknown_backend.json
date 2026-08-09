@@ -1,0 +1,9 @@
+{
+  "default_role": "coder",
+  "roles": {
+    "coder": { "chain": ["ghost-backend/some-model"] }
+  },
+  "backends": {
+    "anthropic": { "kind": "anthropic" }
+  }
+}

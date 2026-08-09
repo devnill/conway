@@ -136,7 +136,7 @@ use conway_runtime::events::EventBus;
 use conway_runtime::runtime::{Runtime, RuntimeDeps};
 
 use crate::agents;
-use crate::config::schema::{BackendEntry, BackendKind, ConwayConfig};
+use crate::config::schema::{BackendEntry, ConwayConfig};
 use crate::config::{self, CliOverrides, ConfigWarning, LoadOptions};
 use crate::conway::Conway;
 use crate::error::{ConwayError, Result};
@@ -381,25 +381,35 @@ impl ConwayBuilder {
     /// the same way it covers today's: nothing about registering a factory
     /// promises any particular `[backends.<id>]` entry will ever select it.
     ///
-    /// **Disclosed, current-item limitation (cite, do not relitigate:
-    /// decision 01KZHRPZ010R37411R3W1XR5TF):** `[backends.<id>].kind` is
-    /// still a closed, two-variant enum today, so `build()` has no
-    /// `[backends.<id>]` entry it could ever route to a registered factory
-    /// by name -- opening that enum is a later item's job. Until it lands,
-    /// `build()` invokes each registered factory EXACTLY ONCE per
-    /// `ConwayBuilder::build()` call (unconditionally, the same cardinality
-    /// `RouterFactory::build` has), with a [`BackendBuildContext`] whose
-    /// `id` defaults to `BackendId::new(factory.id())` (the only value
-    /// `build()` has any basis for, absent a matching config entry) and
-    /// whose `base_url`/`api_key`/`dialect`/`models` are empty/absent (there
-    /// is no `[backends.<id>]` entry to resolve them from yet). This does
-    /// NOT collapse kind identity into instance identity (see
-    /// [`BackendFactory`]'s own doc) -- it is a default VALUE for one
-    /// field, not a claim that the two concepts are the same question; a
-    /// factory remains free to construct a `Backend` reporting a different
-    /// `Backend::id()` if it has a better one. **Not called at all (the
-    /// default)** changes nothing: `build()`'s backend step behaves exactly
-    /// as it did before this method existed.
+    /// **`[backends.<id>].kind` is now an open name** (board item
+    /// 01KZHF1E85MS1VF4YH8CDNCP9Z, decision 01KZHRPZ010R37411R3W1XR5TF): for
+    /// every `[backends.<id>]` entry, `build()`'s own `construct_backend`
+    /// resolves `entry.kind` against every registered factory's own
+    /// [`BackendFactory::id`] FIRST, falling back to the two adapters this
+    /// facade still compiles in (`"anthropic"`, `"openai-compat"`) for any
+    /// name they claim -- see `construct_backend`'s own doc for the exact
+    /// resolution order and the unknown-kind error shape. A matching
+    /// factory's `build` is invoked with a [`BackendBuildContext`] resolved
+    /// from THAT entry: `id` is the entry's own `[backends.<id>]` JSON key,
+    /// `base_url`/`dialect` are copied verbatim, and `api_key` is resolved
+    /// the same centralized way every config-derived backend's key already
+    /// is (literal `api_key` wins, else `api_key_env` read from the process
+    /// environment, else `None`) -- see [`BackendBuildContext`]'s own doc
+    /// for why resolving it once, here, is the point of that shape.
+    /// **This makes a registered factory's `build` re-invocable once PER
+    /// MATCHING entry**, not once per `ConwayBuilder::build()` call: two
+    /// `[backends.<id>]` entries naming the same kind invoke that kind's
+    /// factory twice, with two different contexts -- exactly the "one
+    /// installed kind, many configured instances" cardinality this method's
+    /// own doc above already promises (the "kimi" example), now actually
+    /// reachable for a third-party kind and not just the two built-in ones.
+    /// **Registering a factory whose kind no entry names is still fine, not
+    /// an error** -- its `build` is simply never invoked, the literal case
+    /// the paragraph above already covers. **Not called at all (the
+    /// default)** still changes nothing beyond what config-driven `kind`
+    /// resolution itself does: every `[backends.<id>]` entry then resolves
+    /// against the two fallback adapters only, exactly as if this whole
+    /// mechanism did not exist.
     pub fn with_backend_factory(mut self, factory: Arc<dyn BackendFactory>) -> Self {
         self.backend_factories.push(factory);
         self
@@ -578,26 +588,25 @@ impl ConwayBuilder {
         //     probing, step 5) sees the same loaded set.
         let profiles = load_provider_profiles(&cwd)?;
 
-        // 3+3b+4. Construct config-derived backends, then invoke every
-        //         registered `BackendFactory` (board item
-        //         01KZHF0RBKJZZC68F7GPFB347Q), then merge injected ones
-        //         over BOTH -- each step keyed into the same map by each
-        //         backend's own `id()`, so a later step overwrites an
-        //         earlier step's entry sharing an id. See
-        //         `ConwayBuilder::with_backend_factory`'s own doc for the
-        //         full precedence/duplicate-kind rules this step
-        //         implements.
-        let mut backend_map: HashMap<BackendId, Arc<dyn Backend>> = HashMap::new();
-        for (id, entry) in &config.backends {
-            let backend = construct_backend(id, entry, &metadata, &profiles)?;
-            backend_map.insert(backend.id(), backend);
-        }
-        // 3b. Backend factories. Duplicate-kind check FIRST, over every
-        //     registered id, before any factory's own `build` runs -- a
-        //     dedicated pass (not "insert-then-error-on-the-second-one",
-        //     the plugin loop's own style below) specifically so a
-        //     duplicate never leaves an earlier factory's `build` side
-        //     effects to have run while the whole call still fails.
+        // 3+3b+4. Duplicate-kind check over every registered factory FIRST
+        //         (before any factory's own `build` runs, regardless of
+        //         whether a `[backends.<id>]` entry ever names it -- a
+        //         dedicated pass, not "insert-then-error-on-the-second-one",
+        //         so a duplicate never leaves an earlier factory's `build`
+        //         side effects to have run while the whole call still
+        //         fails). Then construct one backend per `[backends.<id>]`
+        //         entry, resolving `entry.kind` against the registered
+        //         factories (board item 01KZHF0RBKJZZC68F7GPFB347Q, opened
+        //         to config-driven selection by board item
+        //         01KZHF1E85MS1VF4YH8CDNCP9Z) falling back to the two
+        //         adapters this facade still compiles in. Then merge
+        //         injected ones over all of that -- each step keyed into
+        //         the same map by each backend's own `id()`, so a later
+        //         step overwrites an earlier step's entry sharing an id.
+        //         See `ConwayBuilder::with_backend_factory`'s own doc for
+        //         the full precedence/duplicate-kind rules this step
+        //         implements, and `construct_backend`'s own doc for the
+        //         exact per-entry resolution order.
         let mut seen_factory_kinds: HashSet<&str> = HashSet::new();
         for factory in &backend_factories {
             if !seen_factory_kinds.insert(factory.id()) {
@@ -610,23 +619,12 @@ impl ConwayBuilder {
                 });
             }
         }
-        for factory in &backend_factories {
-            // Disclosed, current-item limitation (`with_backend_factory`'s
-            // own doc): `[backends.<id>].kind` cannot yet name a factory
-            // (decision 01KZHRPZ010R37411R3W1XR5TF), so there is no
-            // `[backends.<id>]` entry to resolve these fields from -- `id`
-            // defaults to the factory's own kind id (the only value with
-            // any basis here); the rest are empty/absent.
-            let ctx = BackendBuildContext {
-                id: BackendId::new(factory.id()),
-                base_url: String::new(),
-                api_key: None,
-                dialect: None,
-                models: BTreeMap::new(),
-            };
-            let backend = factory.build(ctx).map_err(|e| ConwayError::Build {
-                message: format!("backend factory '{}' failed to build: {e}", factory.id()),
-            })?;
+        let factories_by_kind: HashMap<&str, &Arc<dyn BackendFactory>> =
+            backend_factories.iter().map(|f| (f.id(), f)).collect();
+
+        let mut backend_map: HashMap<BackendId, Arc<dyn Backend>> = HashMap::new();
+        for (id, entry) in &config.backends {
+            let backend = construct_backend(id, entry, &metadata, &profiles, &factories_by_kind)?;
             backend_map.insert(backend.id(), backend);
         }
         for backend in backends {
@@ -863,16 +861,100 @@ fn resolve_api_key(id: &str, entry: &BackendEntry) -> Result<String> {
     Ok(String::new())
 }
 
+/// The two adapter kinds this facade still compiles in directly (WI-100)
+/// -- the temporary, deliberate fallback [`construct_backend`]'s own doc
+/// describes. Board item 01KZHF270T3W8GZ7NM6DSNQ4MM (the relocation item)
+/// removes this fallback; nothing else in this item moves either kind out
+/// of the facade.
+const BUILTIN_BACKEND_KIND_ANTHROPIC: &str = "anthropic";
+const BUILTIN_BACKEND_KIND_OPENAI_COMPAT: &str = "openai-compat";
+
+/// Resolves one `[backends.<id>]` entry's `kind` into a live [`Backend`]
+/// (board item 01KZHF1E85MS1VF4YH8CDNCP9Z: `kind` is an open name, not a
+/// closed enum).
+///
+/// **Resolution order, exact:** every `factories` entry (keyed by each
+/// registered [`BackendFactory::id`]) is checked FIRST; a match invokes
+/// that factory's `build` with a [`BackendBuildContext`] resolved from
+/// THIS entry ([`build_backend_context`]). Only when no registered factory
+/// claims `entry.kind` does resolution fall back to the two adapters this
+/// facade still compiles in (`"anthropic"`, `"openai-compat"`) --
+/// deliberate and temporary, kept so this slice ships alone; the
+/// relocation item that follows removes the fallback, at which point every
+/// kind (including these two) is a registered factory. A name neither a
+/// factory nor the fallback claims is a hard, named [`ConwayError::Config`]
+/// listing every kind this build actually recognises -- the same
+/// disclosure shape `crates/conway-cli/src/first_party_plugins.rs`'s
+/// unknown-id error already produces for plugin ids (GP-14: a silently
+/// ignored `kind` is exactly the failure that check exists to prevent).
 fn construct_backend(
     id: &str,
     entry: &BackendEntry,
     metadata: &config::model_metadata::ModelMetadata,
     profiles: &conway_backends::profile::ProfileStore,
+    factories: &HashMap<&str, &Arc<dyn BackendFactory>>,
 ) -> Result<Arc<dyn Backend>> {
-    match entry.kind {
-        BackendKind::Anthropic => build_anthropic(id, entry, metadata),
-        BackendKind::OpenaiCompat => build_openai_compat(id, entry, metadata, profiles),
+    if let Some(factory) = factories.get(entry.kind.as_str()) {
+        let ctx = build_backend_context(id, entry, metadata)?;
+        return factory.build(ctx).map_err(|e| ConwayError::Build {
+            message: format!(
+                "backend '{id}': factory for kind '{}' failed to build: {e}",
+                entry.kind
+            ),
+        });
     }
+    match entry.kind.as_str() {
+        BUILTIN_BACKEND_KIND_ANTHROPIC => build_anthropic(id, entry, metadata),
+        BUILTIN_BACKEND_KIND_OPENAI_COMPAT => build_openai_compat(id, entry, metadata, profiles),
+        other => {
+            let mut known: Vec<String> = vec![
+                BUILTIN_BACKEND_KIND_ANTHROPIC.to_string(),
+                BUILTIN_BACKEND_KIND_OPENAI_COMPAT.to_string(),
+            ];
+            known.extend(factories.keys().map(|k| k.to_string()));
+            known.sort();
+            known.dedup();
+            Err(ConwayError::Config {
+                path: None,
+                message: format!(
+                    "backend '{id}': unknown kind '{other}'; recognised kinds: [{}]. A \
+                     third-party kind is installed with \
+                     ConwayBuilder::with_backend_factory before build().",
+                    known.join(", ")
+                ),
+            })
+        }
+    }
+}
+
+/// Resolves the [`BackendBuildContext`] a registered [`BackendFactory`]
+/// receives for one `[backends.<id>]` entry naming its kind: `id` is the
+/// entry's own JSON key, `base_url`/`dialect` copied verbatim, `api_key`
+/// resolved through the same centralized [`resolve_api_key`] every
+/// config-derived backend's credential already goes through, and `models`
+/// the same per-backend `models.json` overrides
+/// [`models_overrides_for`] projects for the two built-in adapters -- so a
+/// factory-built backend's `Backend::capabilities()` honors an operator's
+/// `models.json` override identically to a built-in one (WI-123's
+/// single-source guarantee, extended here rather than left a built-ins-only
+/// privilege).
+fn build_backend_context(
+    id: &str,
+    entry: &BackendEntry,
+    metadata: &config::model_metadata::ModelMetadata,
+) -> Result<BackendBuildContext> {
+    let api_key = resolve_api_key(id, entry)?;
+    Ok(BackendBuildContext {
+        id: BackendId::new(id),
+        base_url: entry.base_url.clone(),
+        api_key: if api_key.is_empty() {
+            None
+        } else {
+            Some(api_key)
+        },
+        dialect: entry.dialect.clone(),
+        models: models_overrides_for(id, metadata),
+    })
 }
 
 /// Declarative provider profiles: built-ins ([`conway_backends::profile::ProfileStore::built_ins`])
@@ -1096,7 +1178,7 @@ fn probe_openai_compat_backends(
     use conway_backends::probe::CapabilityProbe;
 
     for (id, entry) in &config.backends {
-        if !matches!(entry.kind, BackendKind::OpenaiCompat) {
+        if entry.kind != BUILTIN_BACKEND_KIND_OPENAI_COMPAT {
             continue;
         }
         let Some(dialect_raw) = entry.dialect.as_deref() else {
