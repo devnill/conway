@@ -1,4 +1,4 @@
-//! Integration tests for `conway_backends::config`: key acceptance and the
+//! Integration tests for `conway_plugin_backends::config`: key acceptance and the
 //! empty-key check, exercised through both TOML and JSON deserialization.
 //!
 //! conway does not inspect the shape of an API key. Any non-empty value
@@ -6,7 +6,7 @@
 //! (a coding-plan subscription, a self-hosted shim) be configured without
 //! conway adjudicating whether the credential looks legitimate.
 
-use conway_backends::config::AnthropicConfig;
+use conway_plugin_backends::config::AnthropicConfig;
 
 #[test]
 fn any_non_empty_key_shape_parses_via_json() {

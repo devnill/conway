@@ -144,7 +144,7 @@ which composes a model's capabilities from a *different* input set
 override, which wins on precedence). A real `openai-compat`/`vllm_hermes`
 backend, wired through the real `ConwayBuilder::build` against a loopback-only
 `wiremock::MockServer` (the same already-in-tree technique
-`conway-backends/tests/capability_probe.rs` uses for this identical
+`conway-plugin-backends/tests/capability_probe.rs` uses for this identical
 mechanism), lets the probe report an inflated window while `models.json`
 pins a real, small one the backend's own `capabilities()` still honors. The
 primary assertion is the mock server's own request log: no `POST

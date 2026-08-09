@@ -212,6 +212,14 @@ fn build_conway(
         .with_backend(backend)
         .with_session_store(store)
         .with_permission_gate(gate)
+        // Board item 01KZHF270T3W8GZ7NM6DSNQ4MM: `conway` no longer
+        // compiles either dialect in, so this file's config-derived
+        // `kind = "openai-compat"` entry (overwritten by the injected
+        // `backend` above, but still resolved by `build()` before that
+        // overwrite happens) needs a registered factory.
+        .with_backend_factory(Arc::new(
+            conway_plugin_backends::OpenAiCompatBackendFactory,
+        ))
         .build()
         .expect(
             "build should succeed: real ContextBuilder/DeclarativeRouter/AttemptEngine wiring \

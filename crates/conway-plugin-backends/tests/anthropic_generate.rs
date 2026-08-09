@@ -9,10 +9,10 @@
 
 use std::collections::BTreeMap;
 
-use conway_backends::anthropic::AnthropicBackend;
-use conway_backends::capabilities::{anthropic_defaults, build_capabilities, CapabilityInputs};
-use conway_backends::config::{AnthropicConfig, SecretString};
-use conway_backends::model_metadata::ModelMetadataStore;
+use conway_plugin_backends::anthropic::AnthropicBackend;
+use conway_plugin_backends::capabilities::{anthropic_defaults, build_capabilities, CapabilityInputs};
+use conway_plugin_backends::config::{AnthropicConfig, SecretString};
+use conway_plugin_backends::model_metadata::ModelMetadataStore;
 use conway_core::capabilities::{CacheMode, ToolCallSupport};
 use conway_core::content::{
     ContentBlock, PermissionClass, Role, SamplingParams, StopReason, ToolCategory, ToolSpec,

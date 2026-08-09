@@ -61,7 +61,7 @@ pub fn write_fixture_with(base_url: &str, model: &str, max_steps: u32) -> Fixtur
 
     // `ConwayBuilder::build`'s `CapabilityIndex` is populated *only* from
     // `config.models.metadata_path` (default `.conway/models.json`) -- it
-    // is a wholly separate store from `conway_backends`' own bundled
+    // is a wholly separate store from `conway_plugin_backends`' own bundled
     // dialect-default metadata, so a model this facade-local file does not
     // name is an `unknown (backend, model) pair` the router rejects
     // (`CapabilitySkip`) before ever dialing a backend

@@ -20,31 +20,55 @@ Anthropic-compatible third-party endpoint can be named for what it
 actually is (`kimi`, `internal-proxy`) and sit alongside a real
 `anthropic` backend in the same config.
 
-**`kind` is an open name, not a closed set of two.** `conway` resolves it
-against every `BackendFactory` an embedder has registered
-(`ConwayBuilder::with_backend_factory`), falling back to the two adapters
-this facade still compiles in for any name they claim:
+**`kind` is an open name, not a closed set of two.** `conway` (the facade)
+resolves it against every `BackendFactory` an embedder has registered
+(`ConwayBuilder::with_backend_factory`) — and *only* those; the facade
+itself compiles in no fallback adapter of its own, and names neither
+`"anthropic"` nor `"openai-compat"` anywhere in its own source (board item
+01KZHF270T3W8GZ7NM6DSNQ4MM):
 
 | `kind` | Adapter | Selects |
 | --- | --- | --- |
 | `"anthropic"` | The native Anthropic Messages API | any endpoint speaking that wire format |
 | `"openai-compat"` | One adapter for every OpenAI-compatible server | a `dialect` (built-in or your own [profile](#declarative-provider-profiles)) |
 
-**Which of these two you use is configuration, not a build option.** The
-`conway` binary and library both ship with both adapters compiled in
-always — there is no cargo feature to enable, and never was a supported
-one for very long: an operator picks one of them by writing a
-`[backends.<id>]` entry naming it, not by recompiling. **A third `kind` is
-a library extension point, not a config typo.** An embedder registers a
-`BackendFactory` under whatever kind name it wants
+**Where these two `BackendFactory`s live, and how they reach a build.**
+Both are `conway-plugin-backends`, a first-party plugin crate (like
+`conway-plugin-routing`, see [`embedding.md`](embedding.md#first-party-plugin-tier))
+under `crates/`, published as `conway_plugin_backends::AnthropicBackendFactory`/
+`OpenAiCompatBackendFactory` (kind ids `ANTHROPIC_KIND`/`OPENAI_COMPAT_KIND`
+— the same two strings above). Getting from "this crate exists" to "your
+`settings.json` resolves `kind = "anthropic"`" differs by which binary or
+embedding path you're on:
+
+- **The shipped `conway` binary** links `conway-plugin-backends` and
+  attaches both factories by default — no `[plugins].install` entry
+  required, unlike every other first-party plugin. `[plugins].
+  default_backends` (default: `["anthropic", "openai-compat"]`) is the
+  declarative key that makes this happen (owner decision
+  01KZHRPZ010R37411R3W1XR5TF): a backend, unlike a router or a tool
+  plugin, has no honest degenerate fallback — an install with no backend
+  attached cannot reach a model at all — so this one pair ships on rather
+  than opt-in. An operator declines a specific kind by removing its id
+  from `default_backends` in `settings.json`.
+- **A library embedder using `conway` alone** (no `conway-cli`) depends on
+  `conway-plugin-backends` directly and calls `ConwayBuilder::
+  with_backend_factory(Arc::new(conway_plugin_backends::
+  AnthropicBackendFactory))` (and/or the OpenAI-compatible one) before
+  `build()` — the identical mechanism a third-party kind uses, since a
+  first-party backend gets exactly the surface a third party gets (GP-03/
+  P-6). `conway` itself never does this for you.
+
+**A third `kind` is a library extension point, not a config typo.** An
+embedder registers a `BackendFactory` under whatever kind name it wants
 (`ConwayBuilder::with_backend_factory`, board item
 01KZHF0RBKJZZC68F7GPFB347Q/01KZHF1E85MS1VF4YH8CDNCP9Z) and a
 `[backends.<id>]` entry naming that kind is resolved to it — the same
-extension surface a third-party plugin author already uses, not a
-build-time switch on this crate. A `kind` neither a registered factory nor
-the two built-ins above claims is a hard `build()` error naming the
-offending value and listing every kind the running binary actually
-recognises — never a silently ignored entry.
+extension surface `conway-plugin-backends`'s own two factories use, not a
+privileged, build-time switch on this crate. A `kind` no registered factory
+claims is a hard `build()` error naming the offending value and listing
+every kind the running binary actually recognises — never a silently
+ignored entry.
 
 An entry's keys beyond `kind`/`api_key`/`api_key_env`/`base_url`/`dialect`/
 `stream_tools` are not rejected: they are captured verbatim and handed to
@@ -190,7 +214,7 @@ but never gates on.
 
 ## Declarative provider profiles
 
-A provider profile is data, not code: `conway_backends::profile::Profile`
+A provider profile is data, not code: `conway_plugin_backends::profile::Profile`
 parameterizes the one `openai-compat` adapter, so a new provider — or your
 own local server's actual quirks — is added by writing a
 `.conway/profiles.toml` file, never by waiting on a conway release.
@@ -219,7 +243,7 @@ override mechanism, not a collision error.
 
 Every field is optional; a profile with only `id` set loads and behaves
 like a maximally conservative, unfamiliar server. Verified against
-`crates/conway-backends/src/profile.rs`'s `ProfileRaw`:
+`crates/conway-plugin-backends/src/profile.rs`'s `ProfileRaw`:
 
 | Field | Default | Effect |
 | --- | --- | --- |
@@ -285,7 +309,7 @@ names the profile's `id`:
 
 ### Seeing what's loaded
 
-`conway_backends::profile::ProfileStore::list()` is a real inspection
+`conway_plugin_backends::profile::ProfileStore::list()` is a real inspection
 surface at the library level: every loaded profile, its origin
 (`ProfileOrigin::BuiltIn` or `ProfileOrigin::File(path)`), and — when it
 replaced an existing entry — what it shadowed. An override nobody can see

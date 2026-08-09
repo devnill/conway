@@ -4,11 +4,11 @@
 //! child (`SubagentHost::start`), must hand `Backend::generate` a request
 //! whose segments carry `PromptSegment::cache_hint` when the resolved
 //! model's CAPABILITY declares `CacheMode::ExplicitBreakpoints` — exactly
-//! what `conway-backends`'s `AnthropicBackend` declares for every real
-//! Claude model (`anthropic_defaults`, `crates/conway-backends/src/
+//! what `conway-plugin-backends`'s `AnthropicBackend` declares for every real
+//! Claude model (`anthropic_defaults`, `crates/conway-plugin-backends/src/
 //! capabilities.rs`).
 //!
-//! Why this file exists rather than relying on `conway-backends/tests/
+//! Why this file exists rather than relying on `conway-plugin-backends/tests/
 //! anthropic_cache_mapping.rs`: that file (and any other unit test on
 //! `apply_cache_hints` alone) hand-constructs segments that ALREADY carry a
 //! `cache_hint` — it would have passed throughout the entire outage this
@@ -26,7 +26,7 @@
 //! `Backend::generate`, for a real `Runtime::start_root`/fork call.
 //!
 //! `ScriptedBackend` stands in for `AnthropicBackend` (this crate does not
-//! depend on `conway-backends`, C-04): its `capabilities()` is set to the
+//! depend on `conway-plugin-backends`, C-04): its `capabilities()` is set to the
 //! SAME `CacheMode::ExplicitBreakpoints { max_breakpoints: 4, .. }` value
 //! `anthropic_defaults()` declares, so the mechanism under test —
 //! capability-keyed cache-hint attachment in the attempt layer — runs
@@ -60,7 +60,7 @@ use futures::StreamExt;
 // Fixtures
 // ---------------------------------------------------------------------
 
-/// The exact `CacheMode` `conway-backends`'s `anthropic_defaults()`
+/// The exact `CacheMode` `conway-plugin-backends`'s `anthropic_defaults()`
 /// declares for a real Claude model.
 fn anthropic_like_capabilities() -> Capabilities {
     Capabilities {
@@ -95,7 +95,7 @@ fn text_response(text: &str) -> conway_core::ports::GenerateResponse {
 /// A `Runtime` wired to one `ScriptedBackend` whose declared capability is
 /// `anthropic_like_capabilities()` — an "Anthropic-capability model" for
 /// every purpose the cache-hint post-pass cares about, without this crate
-/// depending on `conway-backends` (C-04).
+/// depending on `conway-plugin-backends` (C-04).
 fn build_runtime(turns: usize) -> (Arc<Runtime>, Arc<ScriptedBackend>) {
     let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
     let backend = Arc::new(

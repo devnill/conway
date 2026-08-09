@@ -55,13 +55,15 @@ pub enum ConwayError {
     /// A caller reached a code path whose cargo feature was not enabled at
     /// build time.
     ///
-    /// Backend selection (Anthropic vs. OpenAI-compatible) no longer has a
-    /// producer here: `conway-backends` is a non-optional dependency of
-    /// this crate, so both backend kinds are always buildable and this
-    /// variant can no longer be reached from `ConwayBuilder::build`. The
-    /// sole remaining producer is `config::model_metadata::refresh`, gated
-    /// on the still-genuinely-optional `metadata-refresh` feature (WI-097:
-    /// no HTTP client implementation exists yet).
+    /// Backend selection (Anthropic vs. OpenAI-compatible) never has a
+    /// producer here: it is not a cargo-feature axis at all, and (board item
+    /// 01KZHF270T3W8GZ7NM6DSNQ4MM) this crate does not even depend on either
+    /// dialect's implementation crate any more -- a `[backends.<id>].kind`
+    /// this build cannot resolve is `ConwayError::Config`, naming the
+    /// offending value, not this variant. The sole remaining producer is
+    /// `config::model_metadata::refresh`, gated on the still-genuinely-
+    /// optional `metadata-refresh` feature (WI-097: no HTTP client
+    /// implementation exists yet).
     #[error("{message}")]
     UnsupportedFeature {
         feature: &'static str,

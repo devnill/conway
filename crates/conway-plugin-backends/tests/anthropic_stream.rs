@@ -3,8 +3,8 @@
 
 use std::collections::BTreeMap;
 
-use conway_backends::anthropic::AnthropicBackend;
-use conway_backends::config::{AnthropicConfig, SecretString};
+use conway_plugin_backends::anthropic::AnthropicBackend;
+use conway_plugin_backends::config::{AnthropicConfig, SecretString};
 use conway_core::content::{
     ContentBlock, PermissionClass, Role, SamplingParams, StopReason, ToolCategory, ToolSpec,
 };

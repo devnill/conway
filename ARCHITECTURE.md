@@ -35,9 +35,9 @@ others, because all three are written against the same public API:
   permission, it fails closed: tools are denied unless explicitly named via
   `--allowed-tools`.
 
-## 2. The workspace: 7 crates, ports-and-adapters
+## 2. The workspace: 6 crates, ports-and-adapters
 
-conway is a Cargo workspace of seven crates laid out as ports-and-adapters
+conway is a Cargo workspace of six crates laid out as ports-and-adapters
 (hexagonal architecture). `conway-core` defines the domain types and every
 port trait; every other crate is either an adapter implementing those ports,
 or a consumer wiring adapters together.
@@ -46,10 +46,8 @@ or a consumer wiring adapters together.
 conway-core        domain types + port traits. No I/O, no tokio-net. Also
                     where `MinimalRouter` lives — the config-only `Router`
                     a default build resolves roles with (§3.3); there is no
-                    dedicated routing crate in this fixed layout.
-conway-backends    Backend adapters: Anthropic native, OpenAI-compatible
-                    dialects (OpenAI, Ollama, vLLM/Hermes, LM Studio,
-                    llama.cpp server).
+                    dedicated routing crate, and no dedicated backend-adapter
+                    crate, in this fixed layout.
 conway-session     The append-only session log; transcript/prefix resolution.
 conway-tools       The tool/plugin registry and built-in tools.
 conway-runtime     The agent loop, context assembly, fork/spawn orchestration.
@@ -62,40 +60,53 @@ tier (§2b), whose crate count grows independently of it — notably
 `conway-plugin-routing` (install id `conway.routing`), the capability-/
 health-filtering `DeclarativeRouter` engine that used to be a mandatory
 crate in this table (`conway-routing`) until board item
-01KZFC43J1J06BM4CCWKCKHSNV moved it out to the plugin tier.
+01KZFC43J1J06BM4CCWKCKHSNV moved it out to the plugin tier, and
+`conway-plugin-backends`, the Anthropic-native and OpenAI-compatible
+provider adapters (OpenAI, Ollama, vLLM/Hermes, LM Studio, llama.cpp server
+dialects) that used to be the mandatory `conway-backends` crate above until
+board item 01KZHF270T3W8GZ7NM6DSNQ4MM moved it out the same way.
 
 Dependency direction is **strictly downward**; `conway-core` depends on
 nothing else in the workspace. This is the **default build** — no routing
-plugin installed, and no edge from `conway` or `conway-runtime` to any
-routing crate, because there isn't one:
+plugin installed, no backend plugin linked by `conway` itself, and no edge
+from `conway` or `conway-runtime` to any routing or backend-adapter crate,
+because there isn't one:
 
 ```
 conway-cli ──> conway ──> conway-runtime ──┬─> conway-session ─┐
-                  │           │            ├─> conway-tools ───┤─> conway-core
-                  └───────────┴────────────┴─> conway-backends ┘
+                                            └─> conway-tools ───┴─> conway-core
 ```
 
 Installing the routing plugin (`[plugins].install = ["conway.routing"]`,
 §3.3) adds exactly **one** edge to this graph, and it touches neither
 `conway` nor `conway-runtime` — only `conway-cli` gains it, because linking
 the plugin crate to populate `first_party_plugins::router_bundle()` is what
-makes `RoutingRouterFactory` nameable in `[plugins].install` at all:
+makes `RoutingRouterFactory` nameable in `[plugins].install` at all. The two
+provider-adapter dialects are the same shape, one layer over: `conway-cli`
+links `conway-plugin-backends` to populate `first_party_plugins::
+backend_bundle()`, but — unlike routing — needs no `[plugins].install` entry
+at all to attach both (`conway::config::schema::PluginsConfig::
+default_backends`'s own doc explains why a backend, unlike every other
+first-party mechanism, ships attached by default):
 
 ```
 conway-cli ──> conway-plugin-routing ──> conway-core
+conway-cli ──> conway-plugin-backends ─> conway-core
 ```
 
-`conway-cli` may carry this edge while remaining forbidden from depending on
-the internal engine crates above (`conway-runtime`, `conway-backends`,
-`conway-session`, `conway-core`, `conway-tools` — machine-checked by
-`no_forbidden_deps`, `crates/conway-cli/tests/cli_surface.rs`) because a
-first-party **plugin** crate is a different tier entirely (§2b): it is meant
-to be linked by exactly one binary, the same way a third party would link
-it, not an internal implementation detail `conway` itself assembles — that
-list was never meant to, and does not, cover the plugin tier. A library
-embedder wanting the same router links `conway-plugin-routing` directly and
-calls `ConwayBuilder::with_router_factory`; no edge through `conway-cli` is
-involved at all.
+`conway-cli` may carry these edges while remaining forbidden from depending
+on the internal engine crates above (`conway-runtime`, `conway-session`,
+`conway-core`, `conway-tools` — machine-checked by `no_forbidden_deps`,
+`crates/conway-cli/tests/cli_surface.rs`, whose FORBIDDEN list keeps the two
+retired crate names `conway-routing`/`conway-backends` as dead strings)
+because a first-party **plugin** crate is a different tier entirely (§2b):
+it is meant to be linked by exactly one binary, the same way a third party
+would link it, not an internal implementation detail `conway` itself
+assembles — that list was never meant to, and does not, cover the plugin
+tier. A library embedder wanting the same router or backend adapters links
+`conway-plugin-routing`/`conway-plugin-backends` directly and calls
+`ConwayBuilder::with_router_factory`/`with_backend_factory`; no edge through
+`conway-cli` is involved at all.
 
 There are no cycles. The one place a cycle would naturally appear — the
 fork/spawn *tool*, which lives in `conway-tools`, needing to drive the
@@ -111,14 +122,16 @@ This shape exists so:
 - A third-party plugin author depends on `conway-core` — a small, slow-moving
   crate with strict semver discipline — not on the whole harness.
 - **Which backend you talk to is runtime configuration, not a build-time
-  choice.** `conway-backends` is a non-optional dependency of `conway`: the
-  harness always ships adapters for the common API flavours (Anthropic
-  native, OpenAI-compatible), and a `[backends.<id>].kind` entry in settings
-  selects among them — there is no `anthropic`/`openai-compat` cargo feature
-  to recompile for. Board item `01KZACKE05ZNYTYR0TGV3550SD` tracks the
-  follow-on direction: backends as plugins, installed declaratively on the
-  same surface a third party uses (GP-03), rather than a closed built-in set
-  selected at config time.
+  choice.** `conway` itself depends on neither adapter (board item
+  01KZHF270T3W8GZ7NM6DSNQ4MM: `conway-plugin-backends` is a first-party
+  plugin, §2b); the shipped `conway-cli` binary links it and attaches both
+  `BackendFactory`s by default (`PluginsConfig::default_backends`), so the
+  harness still ships adapters for the common API flavours (Anthropic
+  native, OpenAI-compatible) out of the box, and a `[backends.<id>].kind`
+  entry in settings selects among whatever kinds are registered — there is
+  no `anthropic`/`openai-compat` cargo feature to recompile for, and no
+  closed built-in set: `kind` is an open name resolved against every
+  registered `BackendFactory` (decision 01KZHRPZ010R37411R3W1XR5TF).
 - Every port trait has a fake/test-double implementation available behind a
   feature flag, so the runtime and tools are testable end-to-end with zero
   network.
@@ -374,7 +387,7 @@ question never pollutes the live conversation.
 ### 3.7 Reasoning support at the wire layer
 
 conway carries reasoning/extended-thinking as a first-class, per-dialect
-wire concern in `conway-backends`: extended-thinking budget and
+wire concern in `conway-plugin-backends`: extended-thinking budget and
 reasoning-effort request parameters are mapped per backend dialect, and for
 Anthropic specifically, thinking-block **signature round-trip** is preserved
 across multi-turn tool-call loops (including `redacted_thinking` blocks),

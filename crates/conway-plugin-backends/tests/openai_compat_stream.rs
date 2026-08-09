@@ -3,8 +3,8 @@
 
 use std::collections::BTreeMap;
 
-use conway_backends::config::{Dialect, OpenAiCompatConfig};
-use conway_backends::openai_compat::OpenAiCompatBackend;
+use conway_plugin_backends::config::{Dialect, OpenAiCompatConfig};
+use conway_plugin_backends::openai_compat::OpenAiCompatBackend;
 use conway_core::content::{
     ContentBlock, PermissionClass, SamplingParams, StopReason, ToolCategory, ToolSpec,
 };

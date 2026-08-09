@@ -10,12 +10,12 @@
 
 use std::collections::BTreeMap;
 
-use conway_backends::capabilities::{
+use conway_plugin_backends::capabilities::{
     dialect_defaults, llama_cpp_server_defaults, lm_studio_defaults, vllm_hermes_defaults,
 };
-use conway_backends::config::{Dialect, OpenAiCompatConfig};
-use conway_backends::openai_compat::OpenAiCompatBackend;
-use conway_backends::tool_calls::{ToolCallAccumulator, ToolCallStyle};
+use conway_plugin_backends::config::{Dialect, OpenAiCompatConfig};
+use conway_plugin_backends::openai_compat::OpenAiCompatBackend;
+use conway_plugin_backends::tool_calls::{ToolCallAccumulator, ToolCallStyle};
 use conway_core::content::{
     ContentBlock, PermissionClass, SamplingParams, StopReason, ToolCategory, ToolSpec,
 };

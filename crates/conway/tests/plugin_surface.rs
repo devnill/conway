@@ -287,6 +287,11 @@ fn plugin_tool_and_hook_register_through_the_builder() {
     ConwayBuilder::from_parts(config)
         .with_plugin(Arc::new(EchoPlugin))
         .with_context_hook(Arc::new(MarkerHook))
+        // Board item 01KZHF270T3W8GZ7NM6DSNQ4MM: `conway` no longer
+        // compiles the `kind = "anthropic"` entry above in -- registering
+        // its factory is the third-party-shaped way this now-genuinely-
+        // constructed (never contacted) backend resolves.
+        .with_backend_factory(Arc::new(conway_plugin_backends::AnthropicBackendFactory))
         .build()
         .expect("a facade-only plugin/tool/hook must register and build");
 }

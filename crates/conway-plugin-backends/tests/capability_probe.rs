@@ -4,10 +4,10 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use conway_backends::config::{Dialect, ModelOverrides, OpenAiCompatConfig};
-use conway_backends::model_metadata::ModelMetadataStore;
-use conway_backends::openai_compat::OpenAiCompatBackend;
-use conway_backends::probe::CapabilityProbe;
+use conway_plugin_backends::config::{Dialect, ModelOverrides, OpenAiCompatConfig};
+use conway_plugin_backends::model_metadata::ModelMetadataStore;
+use conway_plugin_backends::openai_compat::OpenAiCompatBackend;
+use conway_plugin_backends::probe::CapabilityProbe;
 use conway_core::error::BackendError;
 use conway_core::ids::ModelId;
 use conway_core::ports::Backend;
@@ -331,13 +331,15 @@ async fn backend_probe_against_401_is_auth() {
 /// capability probe discards the operator's models.json overrides"): a
 /// `vllm_hermes` server reports a huge `max_model_len`, but the caller's own
 /// `overrides` map (mirroring `models_overrides_for`'s projection of
-/// `models.json` in `conway::builder`) pins `max_context_tokens` to a tiny
+/// `models.json` in `conway::builder`, copied verbatim onto
+/// `BackendBuildContext::models`) pins `max_context_tokens` to a tiny
 /// explicit value. Per the module doc's merge precedence (config
 /// `ModelOverrides` > `ModelMetadata` entry > probed server value >
 /// `DialectDefaults`), the override must win outright — proving that a
 /// `CapabilityProbe` constructed with a non-empty `overrides` map (as
-/// `conway::builder::probe_openai_compat_backends` now passes) composes the
-/// operator-pinned value, not the server-reported one.
+/// `OpenAiCompatBackendFactory::probe_capabilities`, board item
+/// 01KZHF270T3W8GZ7NM6DSNQ4MM, now passes) composes the operator-pinned
+/// value, not the server-reported one.
 #[tokio::test]
 async fn vllm_hermes_max_model_len_is_overridden_by_a_pinned_override() {
     let server = MockServer::start().await;

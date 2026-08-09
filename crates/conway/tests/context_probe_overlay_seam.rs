@@ -6,6 +6,16 @@
 //!
 //! ## History: two corrections, in order
 //!
+//! (Board item 01KZHF270T3W8GZ7NM6DSNQ4MM later relocated `builder.rs`'s
+//! `probe_openai_compat_backends` -- named throughout this history section
+//! below as the mechanism this fix landed in -- into `conway_plugin_backends
+//! ::OpenAiCompatBackendFactory::probe_capabilities`. The property this
+//! whole file proves is unaffected: `ctx.models` there is the identical
+//! `models_overrides_for(id, metadata)` map named below, and the RESTRICT
+//! eligibility filter moved WITH the caller, into `ConwayBuilder::build`'s
+//! own step 5 -- see that step's module doc. The mechanism names below are
+//! left as history, describing the fix at the time it landed.)
+//!
 //! 1. The item as originally filed claimed the router reads a static,
 //!    config-derived index while `AttemptEngine` reads live
 //!    `Backend::capabilities()`, and that the two could therefore diverge
@@ -62,7 +72,7 @@
 //!
 //! `probe_on_startup`'s mechanism is, by definition, an HTTP round trip --
 //! there is no way to drive it at all without *some* HTTP server on the
-//! other end. `crates/conway-backends/tests/capability_probe.rs` already
+//! other end. `crates/conway-plugin-backends/tests/capability_probe.rs` already
 //! tests this exact mechanism (`CapabilityProbe::discover`/`discover_result`)
 //! against a `wiremock::MockServer` bound to an ephemeral `127.0.0.1` port --
 //! never a real, external endpoint. This file reuses that established,
@@ -278,6 +288,13 @@ fn config_naming(base_url: String, metadata_path: PathBuf) -> ConwayConfig {
 /// /health-filtering `DeclarativeRouter` in by default -- see that item's
 /// own doc for what changes without this call) so this file's assertions
 /// about the router's probe-overlaid `CapabilityIndex` stay meaningful.
+///
+/// `with_backend_factory(OpenAiCompatBackendFactory)` (board item
+/// 01KZHF270T3W8GZ7NM6DSNQ4MM: `conway` no longer compiles either dialect
+/// in, so `config_naming`'s `kind = "openai-compat"` entry resolves to
+/// nothing without a registered factory) -- the exact same factory
+/// `conway-cli`'s own default-on backend arm links for real (`first_party_
+/// plugins::backend_bundle`).
 fn build_conway(config: ConwayConfig) -> Conway {
     let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
     let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
@@ -285,6 +302,9 @@ fn build_conway(config: ConwayConfig) -> Conway {
         .with_session_store(store)
         .with_permission_gate(gate)
         .with_router_factory(Arc::new(conway_plugin_routing::RoutingRouterFactory))
+        .with_backend_factory(Arc::new(
+            conway_plugin_backends::OpenAiCompatBackendFactory,
+        ))
         .build()
         .expect(
             "build should succeed: a probe failure/degraded result is a warning, never a hard \
@@ -398,8 +418,8 @@ async fn probe_narrower_than_the_operator_configured_window_still_admits_and_cal
 /// equal outputs -- any divergence is exactly the bug this item fixes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn explain_reported_window_matches_backend_capabilities_for_the_same_pair() {
-    use conway_backends::config::{Dialect, OpenAiCompatConfig};
-    use conway_backends::openai_compat::OpenAiCompatBackend;
+    use conway_plugin_backends::config::{Dialect, OpenAiCompatConfig};
+    use conway_plugin_backends::openai_compat::OpenAiCompatBackend;
     use conway_core::ports::Backend as _;
     use conway_core::routing::ModelOverrides;
 
@@ -771,6 +791,9 @@ async fn t1_backstops_a_backend_that_shrinks_its_own_window_after_build() {
         .with_backend(backend.clone())
         .with_session_store(store)
         .with_permission_gate(gate)
+        .with_backend_factory(Arc::new(
+            conway_plugin_backends::OpenAiCompatBackendFactory,
+        ))
         .build()
         .expect("build should succeed: real ContextBuilder/DeclarativeRouter/AttemptEngine \
                  wiring from valid config");
@@ -833,6 +856,9 @@ async fn t1_backstop_control_admits_when_the_live_window_never_shrinks() {
         .with_backend(backend.clone())
         .with_session_store(store)
         .with_permission_gate(gate)
+        .with_backend_factory(Arc::new(
+            conway_plugin_backends::OpenAiCompatBackendFactory,
+        ))
         .build()
         .expect("build should succeed");
 

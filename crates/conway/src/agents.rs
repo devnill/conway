@@ -180,7 +180,7 @@ fn parse_agent_def(content: &str, stem: &str, path: &Path) -> Result<AgentDef> {
 
 /// Validates `value` compiles as a JSON Schema document (draft 2020-12,
 /// `jsonschema`'s default when no `$schema` keyword is present — same
-/// compile-only pattern as `conway-backends`'
+/// compile-only pattern as `conway-plugin-backends`'
 /// `tool_calls::validate::SchemaValidator::compile`) and, on success,
 /// deserializes it into the `schemars::schema::RootSchema` shape
 /// `AgentDef.result_contract` requires (permissive: unrecognized keywords

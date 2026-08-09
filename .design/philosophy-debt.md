@@ -32,7 +32,10 @@ the same day; nothing was below it, so no further renumbering resulted.
 (board item 01KZFC43J1J06BM4CCWKCKHSNV) and the one entry below it moved up
 one: path confinement 5→4. Board specs written before that date (including
 this item's own, which cites "entry 5") mean the entry that was numbered 5
-when they were written.
+when they were written. "Backends as plugins" (then entry 3) was cleared on
+2026-08-08 (board item 01KZHF270T3W8GZ7NM6DSNQ4MM) and the one entry below
+it moved up one: path confinement 4→3. Board specs written before that date
+cite the old number.
 
 ---
 
@@ -145,24 +148,30 @@ account):
   what exists (the mechanism, plus the one worked skeleton) rather than
   what is planned.
 
-**`crates/conway-plugin-skeleton` and `crates/conway-plugin-routing` are the
-two members so far, and neither is one of the six capabilities this page
-names.** The skeleton registers a single `skeleton_ping` tool that echoes
-its argument back — enough to prove the `Plugin`/`Tool` mechanism (absent by
-default, installable via `[plugins].install` or `with_plugin`, callable from
-the TUI, one-shot, and a library embedder) end to end, and nothing more.
-`conway-plugin-routing` (board item 01KZFC43J1J06BM4CCWKCKHSNV) is a
-different, harder case: the declarative `Router`/`HealthRegistry` engine
-`conway` itself used to compile in unconditionally, relocated wholesale
-behind the SAME `[plugins].install` mechanism via a second installable
-identity, `RouterFactory` (`ConwayBuilder::with_router_factory`), since
-router *selection* has to be nameable before backends exist to build one
-against. It is NOT "dynamic routing" in this page's sense — no classifier,
-embedding model, or other learned component (GP-07, unchanged) — it is the
+**`crates/conway-plugin-skeleton`, `crates/conway-plugin-routing`, and
+`crates/conway-plugin-backends` are the three members so far, and none is
+one of the six capabilities this page names.** The skeleton registers a
+single `skeleton_ping` tool that echoes its argument back — enough to prove
+the `Plugin`/`Tool` mechanism (absent by default, installable via
+`[plugins].install` or `with_plugin`, callable from the TUI, one-shot, and
+a library embedder) end to end, and nothing more. `conway-plugin-routing`
+(board item 01KZFC43J1J06BM4CCWKCKHSNV) is a different, harder case: the
+declarative `Router`/`HealthRegistry` engine `conway` itself used to
+compile in unconditionally, relocated wholesale behind the SAME
+`[plugins].install` mechanism via a second installable identity,
+`RouterFactory` (`ConwayBuilder::with_router_factory`), since router
+*selection* has to be nameable before backends exist to build one against.
+It is NOT "dynamic routing" in this page's sense — no classifier, embedding
+model, or other learned component (GP-07, unchanged) — it is the
 pre-existing, purely declarative resolver becoming an install-time choice
-rather than a compiled-in default. Dynamic routing, compaction, memory,
-skills, and MCP support are unchanged by either item: none of the six ships
-in any form yet, and each is separate, later work.
+rather than a compiled-in default. `conway-plugin-backends` (board item
+01KZHF270T3W8GZ7NM6DSNQ4MM, formerly this ledger's own "Backends as
+plugins" entry, cleared the same day) is the third, and the ONE
+member of the tier that attaches without any `[plugins].install` entry at
+all — a backend, unlike a router or a tool, has no honest absent-
+configuration fallback. Dynamic routing, compaction, memory, skills, and
+MCP support are unchanged by any of the three: none of the six capabilities
+this page names ships in any form yet, and each is separate, later work.
 
 **Sequencing note, resolved.** The prior note here said routing (then this
 ledger's entry 4) was the one to build first, as the hardest test of the
@@ -179,55 +188,7 @@ had a name, and the page now commits to considerably more than examples.
 
 ---
 
-## 3. Backends as plugins
-
-**Claimed:** [Extending conway](../PHILOSOPHY.md#5-extending-conway) states that
-a backend is a plugin on the same surface as everything else, that there is no
-privileged inference path and no blessed provider list, and that a provider
-conway has never heard of is a plugin you install rather than a patch you
-submit. This is the most consequential aspirational claim on the page, because
-it is the one a reader is most likely to act on.
-
-**Exists today:** `conway-backends` ships Anthropic and OpenAI-compatible
-dialects as a non-optional workspace crate, selected at runtime by a
-`[backends.<id>].kind` entry in settings. An embedder can supply their own
-through `ConwayBuilder::with_backend`, which is real and is the honest version
-of the claim for library users. What does not exist is the declarative path: a
-third party cannot ship a backend as an installable plugin the way they can ship
-a tool.
-
-**Needed to make it true:** the open question comes first, and it decides the
-size of the work. Can the plugin surface carry a backend today, or does it only
-carry tools? If the former, this is a formalization: a declaration path,
-discovery, and documentation. If the latter, it is an extension-surface
-build-out, and it should be scoped as one rather than discovered halfway
-through.
-
-Either way the capability story has to come with it, since the page leans on
-declared capabilities (context window, tool-calling, streaming, caching
-mechanism) being what lets routing stay declarative rather than special-casing
-vendors. A plugin-supplied backend that cannot declare those is not on the same
-surface as a built-in, and the claim would still be false in the way that
-matters.
-
-**The default-set framing raises the stakes.**
-[The default set](../PHILOSOPHY.md#the-default-set) now presents the shipped
-Anthropic and OpenAI dialects as *plugins that happen to be installed*, swappable
-and wrappable through the same surface a third party uses. Today they are a
-non-optional workspace crate selected by a config `kind` field, which is a
-different thing wearing the same description. The page's `coreutils` argument
-only holds if the swap is real, so this entry is now load-bearing for a claim
-about conway's structure and not just for a convenience.
-
-**Note the asymmetry while it stands.** The embedder path works and the
-declarative path does not, so the claim is true for someone writing Rust against
-the facade and false for someone configuring a binary. That is precisely the
-split the hooks rung exists to close, and the two entries should probably be
-sequenced together.
-
----
-
-## 4. Path confinement moves into `conway.fs`
+## 3. Path confinement moves into `conway.fs`
 
 **Claimed:** [Constraining a child](../PHILOSOPHY.md#constraining-a-child-its-tool-set)
 says limits on reach belong to the plugin that performs the operation, that

@@ -33,7 +33,7 @@ treatment:
   own doc states this for `deny`/`rules`
   (`crates/conway-core/src/permission_pattern.rs`); `profile.rs`'s module
   doc states the identical reasoning for provider profiles
-  (`crates/conway-backends/src/profile.rs`).
+  (`crates/conway-plugin-backends/src/profile.rs`).
 - **A newer file (or a typo), an older binary.** `#[serde(deny_unknown_fields)]`
   turns an unrecognized field into a loud, named error instead of a silently
   ignored one. This is deliberately the *opposite* choice from a wire frame
@@ -41,7 +41,7 @@ treatment:
   misspelled key defaulting to "off" and running anyway is worse than a
   refusal naming the field. `crates/conway/src/config/schema.rs`,
   `crates/conway/src/agents.rs`'s frontmatter, and
-  `crates/conway-backends/src/profile.rs`'s `ProfileRaw` all set it; the
+  `crates/conway-plugin-backends/src/profile.rs`'s `ProfileRaw` all set it; the
   crate's own `config_precedence.rs` test suite pins the behavior with named
   typo cases (`typo_d_key_is_rejected_by_deny_unknown_fields`,
   `typo_d_health_key_is_rejected_by_deny_unknown_fields`).
@@ -204,9 +204,9 @@ elsewhere, not an exercised procedure:
   consumer** is not a deprecation but a relocation: `conway-routing`'s
   engine moved from a mandatory workspace crate into the installable
   first-party plugin tier (board item `01KZFC43J1J06BM4CCWKCKHSNV`), and
-  `conway_backends::config::Dialect`'s five-variant convenience enum was kept
+  `conway_plugin_backends::config::Dialect`'s five-variant convenience enum was kept
   working for every existing call site rather than replaced outright when
-  provider profiles became data (`crates/conway-backends/src/profile.rs`'s
+  provider profiles became data (`crates/conway-plugin-backends/src/profile.rs`'s
   own doc: *"it is not deprecated, but it can no longer name a provider this
   crate doesn't already ship code for"*) — the shipped instinct, in both
   cases, is to keep an old surface compiling and route it onto the new

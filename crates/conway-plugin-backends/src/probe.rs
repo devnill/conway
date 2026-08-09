@@ -48,7 +48,16 @@ use crate::profile::Profile;
 /// Per-step timeout for discovery requests. Deliberately short and
 /// independent of the adapter's configured request timeout — discovery is a
 /// best-effort startup probe, not a user-facing generation request.
-const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(5);
+///
+/// `pub(crate)`, not private: `factory.rs`'s `OpenAiCompatBackendFactory::
+/// probe_capabilities` constructs its own `CapabilityProbe` and needs this
+/// same value for `CapabilityProbe::new`'s `timeout` parameter — before
+/// board item 01KZHF270T3W8GZ7NM6DSNQ4MM, that caller lived in `crates/
+/// conway/src/builder.rs` (a different crate) and had to maintain its own
+/// `PROBE_TIMEOUT` constant "mirroring" this one; now that the caller moved
+/// into this same crate, the duplicate constant is gone and this is the one
+/// value both `probe_capabilities` and every test below share.
+pub(crate) const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Joins `suffix` onto `base`, trimming exactly one trailing slash from
 /// `base` first — the same join rule `OpenAiCompatBackend::chat_url` uses.

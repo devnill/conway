@@ -9,8 +9,8 @@
 
 use std::collections::BTreeMap;
 
-use conway_backends::anthropic::AnthropicBackend;
-use conway_backends::config::{AnthropicConfig, SecretString};
+use conway_plugin_backends::anthropic::AnthropicBackend;
+use conway_plugin_backends::config::{AnthropicConfig, SecretString};
 use conway_core::content::{ContentBlock, Role, SamplingParams};
 use conway_core::ids::{ModelId, PrefixKey};
 use conway_core::ports::{Backend, GenerateRequest};

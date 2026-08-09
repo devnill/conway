@@ -462,7 +462,7 @@ pub struct ModelOverrides {
     pub max_context_tokens: Option<u32>,
     pub reliability_tier: Option<ReliabilityTier>,
     /// Per-model override for the parallel-tool-calls capability
-    /// (overrides > metadata > dialect defaults, per conway-backends'
+    /// (overrides > metadata > dialect defaults, per conway-plugin-backends'
     /// capability precedence).
     pub parallel_tool_calls: Option<bool>,
     /// A floor, not an override: `conway-routing` applies

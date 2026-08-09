@@ -236,21 +236,25 @@ pub enum PermissionMode {
 /// `stream_tools` field — this crate's disambiguation between a literal
 /// `api_key` and an `api_key_env` indirection, plus the per-backend
 /// `stream_tools` default, only exist at the config-loading layer) and from
-/// `conway_backends::{AnthropicConfig, OpenAiCompatConfig}` (the concrete
-/// adapter configs constructed from this by WI-100). Mirrors how those two
-/// adapter configs are already a third, distinct shape from
-/// `conway_core::routing::BackendConfig` in the committed code.
+/// `conway_plugin_backends::{AnthropicConfig, OpenAiCompatConfig}` (the
+/// concrete adapter configs constructed from this by
+/// `conway_plugin_backends::factory`, board item 01KZHF270T3W8GZ7NM6DSNQ4MM).
+/// Mirrors how those two adapter configs are already a third, distinct
+/// shape from `conway_core::routing::BackendConfig` in the committed code.
 ///
 /// **`kind` is an open name, not a closed enum** (board item
 /// 01KZHF1E85MS1VF4YH8CDNCP9Z, cite decision 01KZHRPZ010R37411R3W1XR5TF —
 /// the config break this represents is accepted, pre-1.0, not re-litigated
-/// here). `crate::builder::construct_backend` resolves it against every
-/// `conway_core::ports::BackendFactory` registered on the builder
-/// (`ConwayBuilder::with_backend_factory`), falling back to the two
-/// adapters this facade still compiles in (`"anthropic"`,
-/// `"openai-compat"`) for any name they claim — see that function's own doc
-/// for the temporary, deliberate nature of that fallback. An unrecognised
-/// name is a hard, named `build()` error, never a silent no-op (GP-14).
+/// here). `crate::builder::resolve_backend_factory` resolves it against
+/// every `conway_core::ports::BackendFactory` registered on the builder
+/// (`ConwayBuilder::with_backend_factory`) -- ONLY: board item
+/// 01KZHF270T3W8GZ7NM6DSNQ4MM removed the temporary compiled-in fallback to
+/// `"anthropic"`/`"openai-compat"` that predecessor item deliberately left
+/// standing, so every kind, including those two, is a registered factory
+/// now (`conway_plugin_backends::factory`'s two `BackendFactory`s, attached
+/// by default -- see [`PluginsConfig::default_backends`]'s own doc for what
+/// makes them attach with no `settings.json` change). An unrecognised name
+/// is a hard, named `build()` error, never a silent no-op (GP-14).
 ///
 /// **Kind-specific keys: the catch-all shape, chosen over its two
 /// alternatives, with its cost stated rather than papered over.** Three
@@ -461,16 +465,18 @@ pub struct RoleEntry {
 /// because that enum's `Streaming { validated: bool }` variant is a struct
 /// variant — awkward to hand-write in JSON (`{"streaming": {"validated":
 /// true}}`) compared to a flat string tag. Structurally identical to
-/// `conway_backends::model_metadata::ToolCallSupportSpec`, which solves the
-/// exact same problem for `models.json`, but reusing that type here is a
-/// separate refactor this item does not make (`conway-backends` is now a
-/// non-optional dependency of this crate — the `anthropic`/`openai-compat`
-/// cargo features that used to gate it are gone — but unifying the two
-/// wire vocabularies is out of scope for that change alone). This stays a
-/// deliberate independent duplicate for now, the same shape of tradeoff
-/// `crates/conway/src/config/model_metadata.rs` already makes for its own,
-/// separate reason (that module's `ModelMetadata` stays local to keep
-/// metadata loading network-free, disclosed in its own doc comment).
+/// `conway_plugin_backends::model_metadata::ToolCallSupportSpec`, which
+/// solves the exact same problem for `models.json`, but reusing that type
+/// here is a separate refactor this item does not make: this crate does not
+/// depend on `conway_plugin_backends` at all (board item
+/// 01KZHF270T3W8GZ7NM6DSNQ4MM — that crate is a first-party plugin, never a
+/// build dependency of this one), so unifying the two wire vocabularies
+/// would mean either duplicating the type here anyway or reversing that
+/// dependency direction, neither of which this item's own scope covers.
+/// This stays a deliberate independent duplicate for now, the same shape of
+/// tradeoff `crates/conway/src/config/model_metadata.rs` already makes for
+/// its own, separate reason (that module's `ModelMetadata` stays local to
+/// keep metadata loading network-free, disclosed in its own doc comment).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolCallSupportSpec {
@@ -613,7 +619,7 @@ impl Default for ToolsConfig {
 /// not recognize is that binary's own config error to raise (GP-14): a
 /// name silently doing nothing here would be exactly the rung-1 lie
 /// CONTRIBUTING's declaration rule exists to prevent.
-#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct PluginsConfig {
     /// Manifest ids (`PluginManifest::id`) to install, resolved by whatever
@@ -622,6 +628,52 @@ pub struct PluginsConfig {
     /// (or attached directly via `ConwayBuilder::with_plugin` in library
     /// code) — the tier's whole point is that nothing in it runs unasked.
     pub install: Vec<String>,
+    /// The one deliberate exception to `install`'s "empty by default, the
+    /// tier's whole point" rule (owner decision 01KZHRPZ010R37411R3W1XR5TF,
+    /// board item 01KZHF270T3W8GZ7NM6DSNQ4MM): the `BackendFactory` kind ids
+    /// a reading binary/embedder attaches WITHOUT this array (or `install`)
+    /// naming them at all. **Default: `["anthropic", "openai-compat"]`** --
+    /// `conway_plugin_backends`'s two published `BackendFactory::id()`
+    /// values, so an operator's existing `[backends.<id>]` entries (which
+    /// already name `kind` as one of these two strings) keep resolving with
+    /// zero `settings.json` changes the moment this facade stopped
+    /// compiling either dialect in.
+    ///
+    /// **Why this one pair, and not every first-party kind, defaults to
+    /// on:** every OTHER first-party mechanism (a `Plugin`, a
+    /// `RouterFactory`) has an honest absent-configuration fallback --
+    /// `conway_core::routing::MinimalRouter` when no router factory is
+    /// installed, simply no extra tool when no plugin is -- so leaving
+    /// `install` empty by default costs a capability, never all of them. A
+    /// `[backends.<id>]` entry with no matching `BackendFactory` has no such
+    /// fallback (`ConwayBuilder::build` hard-errors: "no backends
+    /// configured"): a backend absent from a fresh install does not narrow
+    /// what `conway` can do, it leaves `conway` unable to reach a model at
+    /// all. That asymmetry, not a general exception to the tier's
+    /// opt-in-by-default rule, is why this ships attached.
+    ///
+    /// **Resolved in the SAME pass as `install`** (`crates/conway-cli/src/
+    /// first_party_plugins.rs`'s `install` function): a binary/embedder
+    /// unions this list with `install`'s ids before resolving each one
+    /// against every linked plugin/router-factory/backend-factory bundle,
+    /// so an id here and an id in `install` are handled identically once
+    /// resolution starts -- only WHERE each id comes from differs. Removing
+    /// an entry from this list -- the decline mechanism a later board item
+    /// designs the operator-facing UX for -- is already possible today by
+    /// editing `settings.json` directly (this is an ordinary,
+    /// `#[serde(default)]`-backed `Vec<String>` field, not special-cased
+    /// machinery); that later item's job is discoverability and validation
+    /// around doing so, not this field's existence.
+    pub default_backends: Vec<String>,
+}
+
+impl Default for PluginsConfig {
+    fn default() -> Self {
+        Self {
+            install: Vec::new(),
+            default_backends: vec!["anthropic".to_string(), "openai-compat".to_string()],
+        }
+    }
 }
 
 /// `[tui]` (TUI-only options). The facade owns the wire shape so the same

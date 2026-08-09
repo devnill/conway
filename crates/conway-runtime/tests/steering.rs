@@ -4,7 +4,7 @@
 //!
 //! Built entirely from `conway-core`'s fakes (mirroring `agent_loop_e2e.rs`'s
 //! and `runtime_api.rs`'s own harness style) -- this file does not depend on
-//! `conway-backends` or `conway-tools`.
+//! `conway-plugin-backends` or `conway-tools`.
 
 use std::collections::HashMap;
 use std::path::PathBuf;

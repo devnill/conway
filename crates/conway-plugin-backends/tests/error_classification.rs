@@ -1,4 +1,4 @@
-//! Integration tests for `conway_backends::error::classify`: one assertion
+//! Integration tests for `conway_plugin_backends::error::classify`: one assertion
 //! (or small loop of assertions) per row of the classification table in the
 //! WI-016 implementation notes. The two rows with no HTTP status
 //! (`Transport` for connect/timeout/IO errors, `Cancelled` for a
@@ -7,7 +7,7 @@
 //! `classify`, and the retry-loop wiring for the status-driven rows is
 //! covered by the wiremock tests inside `src/http.rs`.
 
-use conway_backends::error::{classify, classify_malformed_body};
+use conway_plugin_backends::error::{classify, classify_malformed_body};
 use conway_core::error::BackendError;
 
 #[test]

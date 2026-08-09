@@ -6,10 +6,10 @@
 
 use std::collections::BTreeMap;
 
-use conway_backends::capabilities::{build_capabilities, CapabilityInputs};
-use conway_backends::config::{Dialect, OpenAiCompatConfig};
-use conway_backends::model_metadata::ModelMetadataStore;
-use conway_backends::openai_compat::OpenAiCompatBackend;
+use conway_plugin_backends::capabilities::{build_capabilities, CapabilityInputs};
+use conway_plugin_backends::config::{Dialect, OpenAiCompatConfig};
+use conway_plugin_backends::model_metadata::ModelMetadataStore;
+use conway_plugin_backends::openai_compat::OpenAiCompatBackend;
 use conway_core::content::{
     ContentBlock, PermissionClass, SamplingParams, StopReason, ToolCategory, ToolSpec,
 };

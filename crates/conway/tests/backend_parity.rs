@@ -94,7 +94,7 @@ struct StubBackend {
 /// uses — deliberately NOT `conway_core`'s own default estimator (this
 /// file cannot see it; it lives in `conway-core`, not `conway`), but the
 /// same shape: walk the segments' text and count the tools. Real dialect
-/// adapters (`conway-backends`) build their actual wire body first and
+/// adapters (`conway-plugin-backends`) build their actual wire body first and
 /// measure that instead — this stub has no wire format to build.
 fn estimate_tokens(req: &GenerateRequest) -> u32 {
     let mut total: u32 = 0;
@@ -460,6 +460,14 @@ impl BackendFactory for StubBackendFactory {
             api_key,
             dialect,
             models,
+            // Board item 01KZHF270T3W8GZ7NM6DSNQ4MM: not read by this stub
+            // (no "dialect"/profile concept of its own to resolve a file
+            // list against -- the same reason `dialect` itself is only
+            // plumbed through for observation below, never interpreted) --
+            // still named here, not `..`, so a future field this file
+            // cannot name keeps failing to compile (this destructure's own
+            // doc, above).
+            profile_file_paths: _profile_file_paths,
         } = ctx;
         let max_context_tokens = models
             .get("stub-model")
@@ -514,6 +522,7 @@ async fn factory_build_reads_every_context_field_and_produces_a_working_backend(
         api_key: Some("sk-test".to_string()),
         dialect: Some("stub-dialect".to_string()),
         models,
+        profile_file_paths: Vec::new(),
     };
 
     let backend = StubBackendFactory
@@ -547,6 +556,7 @@ fn factory_build_error_is_a_named_conway_core_error() {
         api_key: None,
         dialect: None,
         models: BTreeMap::new(),
+        profile_file_paths: Vec::new(),
     };
     // `Arc<dyn Backend>` (the `Ok` type) is not `Debug`, so `expect_err`
     // (which requires `T: Debug`) cannot be used here -- match directly

@@ -311,6 +311,7 @@ fn build_accepts_an_anthropic_backend_under_any_json_key() {
         .with_session_store(store)
         .with_permission_gate(gate)
         .with_router(fake_router())
+        .with_backend_factory(Arc::new(conway_plugin_backends::AnthropicBackendFactory))
         .build()
         .expect("an anthropic-kind backend under the key 'kimi' must build");
 }
@@ -334,6 +335,7 @@ fn build_succeeds_for_a_conventionally_named_anthropic_backend() {
         .with_session_store(store)
         .with_permission_gate(gate)
         .with_router(fake_router())
+        .with_backend_factory(Arc::new(conway_plugin_backends::AnthropicBackendFactory))
         .build()
         .expect("a matching 'anthropic' JSON key must build successfully");
 }
@@ -713,6 +715,7 @@ fn injected_backend_replaces_config_derived_backend_with_same_id() {
         .with_session_store(store)
         .with_permission_gate(gate)
         .with_router(fake_router())
+        .with_backend_factory(Arc::new(conway_plugin_backends::OpenAiCompatBackendFactory))
         .build()
         .expect("build should succeed");
 
@@ -741,12 +744,12 @@ fn connection_was_accepted(listener: &std::net::TcpListener) -> bool {
 /// `TcpListener` (bound to an ephemeral port, never actually speaking
 /// HTTP) lets this test observe, at the TCP level, whether `build()` ever
 /// attempted a connection -- independent of whatever mechanism performs the
-/// probe (this crate's `probe_openai_compat_backends` calls
-/// `conway_backends::probe::CapabilityProbe` directly rather than through
-/// `Backend::probe()`; a "counting `Backend`" double would not observe
-/// anything, since no `Backend` instance is consulted for capability
-/// discovery -- see `builder.rs`'s module doc, reconciliation on startup
-/// probing).
+/// probe (board item 01KZHF270T3W8GZ7NM6DSNQ4MM: `OpenAiCompatBackendFactory
+/// ::probe_capabilities` calls `conway_plugin_backends::probe::
+/// CapabilityProbe` directly rather than through `Backend::probe()`; a
+/// "counting `Backend`" double would not observe anything, since no
+/// `Backend` instance is consulted for capability discovery -- see
+/// `builder.rs`'s module doc, reconciliation on startup probing).
 #[test]
 fn probe_on_startup_false_makes_no_network_call_true_does() {
     // probe_on_startup = false (the default): zero connection attempts.
@@ -773,6 +776,7 @@ fn probe_on_startup_false_makes_no_network_call_true_does() {
         .with_session_store(store)
         .with_permission_gate(gate)
         .with_router(fake_router())
+        .with_backend_factory(Arc::new(conway_plugin_backends::OpenAiCompatBackendFactory))
         .build()
         .expect("build should succeed: construction never contacts the backend");
 
@@ -805,6 +809,7 @@ fn probe_on_startup_false_makes_no_network_call_true_does() {
         .with_session_store(store)
         .with_permission_gate(gate)
         .with_router(fake_router())
+        .with_backend_factory(Arc::new(conway_plugin_backends::OpenAiCompatBackendFactory))
         .build()
         .expect("build should still succeed: a probe failure is a warning, not an error");
 
@@ -847,6 +852,7 @@ fn explain_routing_reports_the_configured_chain_for_the_role() {
     let conway = ConwayBuilder::from_parts(cfg)
         .with_session_store(store)
         .with_permission_gate(gate)
+        .with_backend_factory(Arc::new(conway_plugin_backends::OpenAiCompatBackendFactory))
         .build()
         .expect("build should succeed with a real, non-empty chain");
 
@@ -897,6 +903,7 @@ fn unset_api_key_env_fails_naming_the_variable() {
         .with_session_store(Arc::new(FakeStore::new()))
         .with_permission_gate(Arc::new(FakeGate::new(PermissionDecision::AllowOnce)))
         .with_router(fake_router())
+        .with_backend_factory(Arc::new(conway_plugin_backends::AnthropicBackendFactory))
         .build();
 
     let err = result
@@ -914,13 +921,16 @@ fn unset_api_key_env_fails_naming_the_variable() {
 }
 
 /// Board item 01KZHF1E85MS1VF4YH8CDNCP9Z: a `[backends.<id>].kind` no
-/// installed factory claims (and that isn't one of the two fallback
-/// adapters) fails `build()` -- a production entry point
+/// registered factory claims fails `build()` -- a production entry point
 /// (`ConwayBuilder::from_parts(..).build()`, the same call every other
 /// `build()`-time error in this file goes through) -- with an error naming
 /// the offending value and listing the kinds this build actually
 /// recognises. GP-14: a silently ignored `kind` is exactly the failure this
-/// error exists to prevent.
+/// error exists to prevent. Both `conway_plugin_backends` factories are
+/// registered here (board item 01KZHF270T3W8GZ7NM6DSNQ4MM removed the
+/// compiled-in fallback the previous item's own doc referenced -- every
+/// kind is a registered factory now, including these two) so the
+/// "recognised kinds" assertion below still has something real to list.
 #[test]
 fn unknown_backend_kind_fails_build_naming_the_value_and_recognised_kinds() {
     let mut cfg = base_config();
@@ -936,6 +946,8 @@ fn unknown_backend_kind_fails_build_naming_the_value_and_recognised_kinds() {
         .with_session_store(Arc::new(FakeStore::new()))
         .with_permission_gate(Arc::new(FakeGate::new(PermissionDecision::AllowOnce)))
         .with_router(fake_router())
+        .with_backend_factory(Arc::new(conway_plugin_backends::AnthropicBackendFactory))
+        .with_backend_factory(Arc::new(conway_plugin_backends::OpenAiCompatBackendFactory))
         .build();
 
     let err = result

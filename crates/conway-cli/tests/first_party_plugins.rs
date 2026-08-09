@@ -24,7 +24,7 @@
 //! (`request["tools"]`, the identical field `interactive_tools.rs`'s own
 //! `announced_names` helper reads at the library level). This sidesteps a
 //! real wrinkle: a model that actually tries to CALL a tool the request
-//! never announced trips `conway-backends`' own streaming-tool-call
+//! never announced trips `conway-plugin-backends`' own streaming-tool-call
 //! validation (`dialect: "openai"` defaults to `Streaming{validated:true}`)
 //! as a transport-level bad-request, before the runtime's own
 //! "unknown tool" resolution would even see it -- a different, unrelated
@@ -32,6 +32,20 @@
 //! `skeleton_tool_is_callable_from_one_shot_once_installed` test below
 //! drives a real call, always with the plugin installed (so the call is
 //! legitimate), to prove invocation rather than mere announcement.
+//!
+//! **`default_backends_attach_with_no_plugins_install_entry_and_complete_a_
+//! one_shot_prompt` (board item 01KZHF270T3W8GZ7NM6DSNQ4MM) is this file's
+//! second VERIFICATION ANCHOR:** a fresh install with an ordinary
+//! `settings.json` -- no `[plugins]` section at all, the exact fixture
+//! every other test in this file already renders -- must still complete a
+//! one-shot prompt against a configured backend, with no credentials and
+//! no network beyond the loopback mock. Every OTHER test in this file
+//! already depends on this property implicitly (each one calls
+//! `run_conway` against `write_fixture`'s rendered config and asserts
+//! success), which is real, load-bearing regression coverage -- but none of
+//! them NAMES the property this item exists to prove, so this test states
+//! it explicitly and would be the one to fail first if `conway-plugin-
+//! backends`'s two `BackendFactory`s ever stopped attaching by default.
 
 mod common;
 
@@ -259,5 +273,60 @@ async fn unknown_plugins_install_id_is_a_hard_error() {
         stderr.contains("conway.routing"),
         "the linked router factory list must name the installed router plugin's own \
          published id, got stderr: {stderr}"
+    );
+    // Board item 01KZHF270T3W8GZ7NM6DSNQ4MM: the message widened again to
+    // list linked backend factory ids alongside the other two.
+    assert!(
+        stderr.contains("linked backend factories"),
+        "the error must also list linked backend factory ids, got stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("anthropic") && stderr.contains("openai-compat"),
+        "the linked backend factory list must name both published kind ids, got stderr: {stderr}"
+    );
+}
+
+/// The VERIFICATION ANCHOR for board item 01KZHF270T3W8GZ7NM6DSNQ4MM (this
+/// module's own doc, above): an ORDINARY rendered fixture -- no
+/// `[plugins].install` entry, no `[plugins].default_backends` override, the
+/// exact config every other test in this file also renders -- completes a
+/// real one-shot prompt through the real compiled binary against a
+/// loopback mock server. No credentials (the fixture's `dialect: "openai"`
+/// entry carries none), no network beyond that loopback listener. If
+/// `conway_plugin_backends`'s two `BackendFactory`s ever stopped attaching
+/// by default (`[plugins].default_backends`'s own default value, unioned
+/// into `wanted` by `main.rs`'s `build_conway` before `first_party_plugins
+/// ::install` ever runs), `ConwayBuilder::build` would fail with "unknown
+/// kind 'openai-compat'" and this run would exit non-zero.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn default_backends_attach_with_no_plugins_install_entry_and_complete_a_one_shot_prompt() {
+    let mock = MockBackend::start(Script(vec![vec![
+        Chunk::Text("hi from the default-attached backend"),
+        Chunk::Finish("stop"),
+    ]]))
+    .await;
+    let fixture = write_fixture(&mock, 10);
+    // Deliberately no `add_plugins_install` call: an ordinary settings
+    // file, exactly as a fresh install ships.
+
+    let out = run_conway(&["-p", "hi"], &fixture);
+    assert!(
+        out.status.success(),
+        "a fresh install with an ordinary settings file must complete a one-shot prompt with \
+         no [plugins].install entry at all -- stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        "hi from the default-attached backend",
+        "stdout must carry the model's real reply, proving the request actually reached the \
+         mock backend through the default-attached OpenAiCompatBackendFactory"
+    );
+
+    let requests = mock.requests();
+    assert_eq!(
+        requests.len(),
+        1,
+        "exactly one real HTTP request must have reached the mock server"
     );
 }

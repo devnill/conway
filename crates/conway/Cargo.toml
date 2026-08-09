@@ -8,17 +8,14 @@ rust-version.workspace = true
 description = "Embeddable facade over the conway agent harness: config, builder, session handle, and event stream"
 
 [features]
-# Backend selection (Anthropic vs. OpenAI-compatible vs. both) is runtime
-# configuration (a `[backends.<id>].kind` entry in settings), not a
-# build-time choice -- `conway-backends` (below) is therefore an ordinary,
-# non-optional dependency and the harness always supports both common API
-# flavours. There used to be `anthropic`/`openai-compat` cargo features
-# here that gated that dependency; they were the wrong axis (they made
-# "the base harness" itself something you had to recompile to get a
-# backend from) and are gone. Board item 01KZACKE05ZNYTYR0TGV3550SD
-# tracks the follow-on: backends as plugins, installed declaratively on the
-# same surface a third party uses, rather than compiled or config-selected
-# from a closed built-in set.
+# Board item 01KZHF270T3W8GZ7NM6DSNQ4MM: both provider-adapter dialects
+# (Anthropic, OpenAI-compatible) moved to `conway-plugin-backends`, a
+# first-party plugin this crate no longer depends on at all -- see
+# `src/builder.rs`'s `construct_backend` and `crates/conway-cli/src/
+# first_party_plugins.rs`'s backend arm for where a kind now resolves
+# instead. There is therefore no backend-selection feature axis here any
+# more (there never should have been one -- "the base harness" itself
+# should not be something you recompile to get a backend from).
 default = ["builtin-tools", "jsonl-store"]
 builtin-tools = ["dep:conway-tools"]
 jsonl-store = ["dep:conway-session"]
@@ -31,10 +28,6 @@ metadata-refresh = []
 [dependencies]
 conway-core = { path = "../conway-core" }
 conway-runtime = { path = "../conway-runtime" }
-# Non-optional (see the [features] table's doc above): the harness always
-# supports both common API flavours conway-backends ships (Anthropic,
-# OpenAI-compatible); default features pull both in.
-conway-backends = { path = "../conway-backends" }
 conway-session = { path = "../conway-session", optional = true }
 conway-tools = { path = "../conway-tools", optional = true }
 serde = { workspace = true }
@@ -71,6 +64,19 @@ conway-core = { path = "../conway-core", features = ["fakes"] }
 # `RouterFactory` path `conway-cli`'s `first_party_plugins::router_bundle`
 # links for real. Never referenced from `src/`.
 conway-plugin-routing = { path = "../conway-plugin-routing" }
+# Board item 01KZHF270T3W8GZ7NM6DSNQ4MM: `conway` itself no longer depends
+# on either provider-adapter dialect ([dependencies], above, has no such
+# edge any more -- that is the whole point of this relocation). This
+# dev-dependency exists ONLY so this crate's own test suite can drive the
+# real `AnthropicBackendFactory`/`OpenAiCompatBackendFactory` through
+# `ConwayBuilder::with_backend_factory` end-to-end -- the exact same
+# `BackendFactory` path `conway-cli`'s `first_party_plugins::backend_bundle`
+# links for real -- and so `[backends.<id>].kind = "anthropic"`/
+# `"openai-compat"` config-derived fixtures already in this suite (`tests/
+# builder.rs`, `context_probe_overlay_seam.rs`, and others) keep resolving
+# to a real adapter rather than an "unknown kind" build error now that the
+# facade compiles neither in directly. Never referenced from `src/`.
+conway-plugin-backends = { path = "../conway-plugin-backends" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 # S5's root-containment seam test needs real tempdirs/symlinks (a real
 # filesystem is the only honest way to prove a symlink escape is denied) --
@@ -80,8 +86,8 @@ tempfile = { workspace = true }
 # context_probe_overlay_seam.rs drives `config.models.probe_on_startup`'s
 # real `CapabilityProbe` HTTP round trip through `ConwayBuilder::build`
 # end-to-end (board item 01KYXNBKWK2DZ7JE3VRKC5FRJB) -- already a pinned
-# workspace dependency (`conway-backends/tests/capability_probe.rs` uses it
-# for the identical mechanism, loopback-only, never a live/external
+# workspace dependency (`conway-plugin-backends/tests/capability_probe.rs`
+# uses it for the identical mechanism, loopback-only, never a live/external
 # endpoint), not a new one (C-04); this is the third consumer of the same
 # pinned crate, same reasoning as the `blake3` addition above.
 wiremock = { workspace = true }

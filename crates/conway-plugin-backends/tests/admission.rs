@@ -14,11 +14,11 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use conway_backends::anthropic::AnthropicBackend;
-use conway_backends::config::{
+use conway_plugin_backends::anthropic::AnthropicBackend;
+use conway_plugin_backends::config::{
     AnthropicConfig, Dialect, ModelOverrides, OpenAiCompatConfig, SecretString,
 };
-use conway_backends::openai_compat::OpenAiCompatBackend;
+use conway_plugin_backends::openai_compat::OpenAiCompatBackend;
 use conway_core::content::{
     ContentBlock, PermissionClass, Role, SamplingParams, ToolCategory, ToolSpec,
 };
