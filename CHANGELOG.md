@@ -182,6 +182,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   design. Every unbuilt section names its board item
   (01KZDC0RDRMMMJHX7SAFMM2Q5A, 01KZ844ZXZMVRWC7ZANT7PSM6X).
 
+- **Docs 5/5 — the cookbook:
+  [`docs/plugins/cookbook.md`](docs/plugins/cookbook.md)** (board item
+  01KYTP9XCPQW88P7WNNBFMNE31), completing the plugin documentation set. Five
+  worked examples, each labeled implementable-today, partially-implementable,
+  or blocked, and **every runnable one compiled and run** against a scratch
+  crate depending only on `conway` — 12 tests across five files, all passing.
+
+  These are the architecture's own acceptance tests: if the design makes one
+  awkward, the design is wrong, not the example. Both cases named as its
+  judges hold. **Spilling bulky tool output to a file** works today — and the
+  finding is that it was *never* the design failure it was recorded as:
+  `ContextHook::before_request` has had edit/drop/replace authority over any
+  segment, including a `Provenance::ToolResult` one, since WI-126. The only
+  genuinely missing piece was somewhere confinement-checked to put the bytes,
+  closed this release by `ContextHookCtx::artifacts`. **Progressive skill
+  disclosure** needed nothing new at all.
+
+  Compaction is the honest counter-case, and the reason a cookbook of only
+  what happens to work would be a marketing document. The ephemeral,
+  per-request form runs. The *persisted, reversible* form — the one that
+  keeps the session log append-only and the masking inspectable — has **no
+  producer for `LogRecord::ContextMask` anywhere in the tree**, and no hook
+  can reach it. The record type and its reader exist; nothing writes one.
+  Named as an open, unfiled gap rather than papered over.
+
+  Also stated exactly: `on_overflow` fires only on `ContextTooLarge` and
+  never on a mixed `NoCandidate` rejection. The inference-evaluated
+  permission variant and the plugin-declared status line are both
+  designed-not-built and cited as such, with the real embedder-level
+  `EventSink`/`Event` shape shown as the closest honest analog for the
+  latter.
+  (`docs/plugins/cookbook.md`, `docs/plugins/README.md`)
+
 - **Docs 4/5 — the authoring guide:
   [`docs/plugins/authoring.md`](docs/plugins/authoring.md),
   [`scripts.md`](docs/plugins/scripts.md), and

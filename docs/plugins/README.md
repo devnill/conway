@@ -21,7 +21,7 @@ find out what to build; that's what this set is for.
 | [`authoring.md`](authoring.md) — your first hook | How do I actually write one in Rust, register it, and confirm it fired? | You're ready to build. Its ten-minute walkthrough has been **executed verbatim** against a crate depending only on `conway`. |
 | [`scripts.md`](scripts.md) — the script convention | How would a hook fire a script in any language, and what does that cost per invocation? | You want a hook in something other than Rust. **Describes a designed convention; no script-dispatching plugin exists yet.** |
 | [`inference-hooks.md`](inference-hooks.md) — hooks judged by a model | When should a hook call an LLM rather than express a static rule, and do I fork or spawn? | You're weighing an inference-evaluated hook. Read its "when NOT to use one" section first. |
-| `cookbook.md` — worked examples | What does a real hook look like end to end — a permission policy, a context mask, a script-backed formatter? | You learn faster from a worked example than from a contract. **Not yet written** — board item `01KYTP9XCPQW88P7WNNBFMNE31`. |
+| [`cookbook.md`](cookbook.md) — worked examples | What does a real hook look like end to end — spilling bulky output to a file, compaction, a permission guardrail, progressive skill disclosure, a status-line observer? | You learn faster from a worked example than from a contract. Five examples, each labeled implementable-today, partially-implementable, or blocked, with two treated explicitly as the architecture's own acceptance tests. |
 
 ## Start here: a working hook, honestly scoped
 
