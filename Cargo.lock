@@ -569,6 +569,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "conway-thirdparty-backend"
+version = "0.8.0"
+dependencies = [
+ "assert_cmd",
+ "chrono",
+ "conway",
+ "futures-core",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "conway-tools"
 version = "0.8.0"
 dependencies = [

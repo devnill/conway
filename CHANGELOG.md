@@ -182,6 +182,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   design. Every unbuilt section names its board item
   (01KZDC0RDRMMMJHX7SAFMM2Q5A, 01KZ844ZXZMVRWC7ZANT7PSM6X).
 
+- **The backend authoring surface now has a stranger proving it works, not
+  conway's own test suite vouching for itself** (board item
+  01KZHF3E1ZG3AZ7F7HHVY324T9). New workspace member
+  `crates/conway-thirdparty-backend`, whose `[dependencies]` names exactly
+  one workspace crate — `conway` — and no internal crate, no `fakes`
+  feature, nothing a stranger could not enable. It hand-writes a `Backend`
+  and a `BackendFactory`, is selected by `kind` from a **real
+  `settings.json`** loaded through `conway::config::load`, and installs
+  through `ConwayBuilder::with_backend_factory`: the identical public
+  channel the shipped adapters now use.
+
+  The crate is a separate workspace member rather than a test file inside
+  `crates/conway/tests/` for a reason that is the point of the item: a
+  separate manifest **genuinely cannot resolve** `conway_core::anything`,
+  where `crates/conway`'s own dev-dependency graph already includes the
+  internal crates, so a stray import there would compile and silently
+  weaken the proof. Same choice `conway-plugin-skeleton` makes one
+  extension point over.
+
+  Demonstrated twice — as a library embedder, and as a genuinely separate
+  compiled binary driven through `assert_cmd` — both asserting the
+  completed turn's **returned text**, never a factory call count, since an
+  invoked factory whose result is discarded produces an identical count to
+  one that works. Credential-free and network-free throughout.
+
+  The compile guard is the load-bearing half: removing `ProbeReport` from
+  `conway::backend`'s re-export list makes this crate fail with
+  `error[E0432]: unresolved import` rather than failing a runtime
+  assertion. No asymmetry between the third-party and first-party paths was
+  found — the predicted tension (a stranger cannot reach `conway-core`'s
+  fakes) resolved to a fully public substitute the facade already provides.
+  (`crates/conway-thirdparty-backend/`)
+
 - **Declining a shipped dialect now says so: a `[backends.<id>]` entry
   naming a declined kind gets a different message from one naming a kind
   conway has never heard of** (board item 01KZHF2W8Y1KBM7PJH7R4QQJA0).

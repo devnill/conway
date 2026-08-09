@@ -1,0 +1,86 @@
+[package]
+name = "conway-thirdparty-backend"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+description = "A third-party-shaped Backend + BackendFactory stand-in (board item 01KZHF3E1ZG3AZ7F7HHVY324T9): written the way a stranger outside this repository would write it, installed by settings.json `kind` through ConwayBuilder::with_backend_factory, proving the backend authoring surface a stranger gets is genuinely sufficient -- not merely trusted to be"
+
+# Board item 01KZHF3E1ZG3AZ7F7HHVY324T9: a NEW workspace member, not a test
+# file inside `crates/conway/tests/` -- chosen over the cheaper option
+# because a separate manifest genuinely cannot see internal conway crates
+# (Cargo will not resolve `conway_core::anything` here no matter what this
+# crate's own source does; the manifest itself is the guard, not a
+# convention a reviewer has to notice). This is the exact structural choice
+# `crates/conway-plugin-skeleton` already made for the `Plugin`/`Tool`
+# authoring surface (see that crate's own `[dependencies]` comment) --
+# this crate is that same proof, one extension point over, for `Backend`.
+#
+# Unlike `conway-plugin-skeleton` (a first-party plugin, versioned WITH the
+# workspace, shipped and installable by real operators), this crate is
+# never installed by anything and ships nothing: it exists ONLY to be
+# compiled and run as this item's own proof, so it carries none of
+# `conway-plugin-skeleton`'s "first-party tier" framing -- it is a
+# stand-in for a repository that does not exist, not a first-party citizen
+# of this one.
+
+[dependencies]
+# The ONLY workspace crate this crate depends on -- the public facade,
+# exactly the surface a third-party Backend author gets (GP-03/P-6). It
+# does NOT depend on `conway-core` directly: `Backend`/`BackendFactory` and
+# every type their methods name are reachable through `conway::backend`/
+# `conway::` alone (`crates/conway/src/lib.rs`'s own `pub mod backend` doc
+# comment lists exactly what and why), which is the point being proven.
+# `crates/conway/tests/backend_parity.rs` already proves this for names
+# used *inside* `conway`'s own test suite; this crate proves it for a
+# *manifest* that cannot reach past the facade at all -- see the module
+# doc comment at the top of `src/lib.rs` for what that structural
+# difference buys over the cheaper alternative.
+conway = { path = "../conway" }
+# A plain data-type crate this author's own settings-document and
+# `.conway/models.json` fixtures are built with -- not re-exported by
+# `conway::` for the same reason `conway-plugin-skeleton`'s own
+# `[dependencies]` names `serde_json` directly (a plugin/backend author's
+# own dependency, not conway's to re-export). Already a pinned workspace
+# dependency (C-04, no new one added). Named here (not only in
+# `[dev-dependencies]`) because `src/bin/thirdparty_backend_demo.rs` --
+# the compiled-binary half of this item's proof -- needs it too, and a
+# plain `[[bin]]` target under `src/bin/` does not receive
+# `[dev-dependencies]` (those are only linked for tests/examples/benches).
+serde_json = { workspace = true }
+# `Backend::stream`'s `BoxStream` names the `futures_core::Stream` TRAIT in
+# its own bound, but `conway::backend` re-exports only the `BoxStream`
+# alias, never the trait itself -- a real implementor must `impl Stream for
+# ...` to produce a value the alias accepts, so must depend on this crate
+# directly, exactly as `crates/conway/tests/backend_parity.rs`'s own `use
+# futures_core::Stream;` already does for the identical reason. Already a
+# pinned workspace dependency (C-04).
+futures-core = { workspace = true }
+# `ProbeReport::at` names `chrono::DateTime<chrono::Utc>` in its own field
+# type, and `conway::backend` re-exports neither -- a real implementor of
+# `Backend::probe` must construct one, so must depend on this crate
+# directly, exactly the reason `futures-core` (above) is declared here too.
+# Already a pinned workspace dependency (C-04).
+chrono = { workspace = true }
+# `ConwayBuilder::build` is synchronous but `conway::SessionHandle::prompt`/
+# `TurnHandle::text` are `async fn`s -- `src/bin/thirdparty_backend_demo.rs`
+# needs its own runtime to drive them from `fn main`, and (same reasoning
+# as `serde_json` above) a plain `[[bin]]` target cannot reach a
+# `[dev-dependencies]`-only `tokio`. Already a pinned workspace dependency
+# (C-04).
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+
+[dev-dependencies]
+# Drives `src/bin/thirdparty_backend_demo.rs` as a genuinely separate
+# compiled process (not merely a function call inside this crate's own
+# `cargo test` binary) -- the same mechanism
+# `crates/conway-cli/tests/common/mod.rs`'s own `command`/`run_conway`
+# helpers use against the real `conway` binary, one layer down: a
+# third-party author never gets to run code inside `conway`'s own binary
+# (GP-03/P-6 -- there is no dynamic-loading mechanism anywhere in this
+# tree, `grep -rln "libloading\|dlopen\|dylib"` over every crate's `src/`
+# and `Cargo.toml` returns nothing), so THEIR compiled-binary proof is
+# necessarily their own binary, exactly what this crate's `[[bin]]`
+# stands in for. Already a pinned workspace dependency (C-04).
+assert_cmd = { workspace = true }
