@@ -468,8 +468,8 @@ inline.
 
 Tutorials and worked examples — see doc 4 (`authoring.md`) and doc 5
 (`cookbook.md`), neither written yet (`01KYTP8BT2BT4ADAPZENHT4FQV`,
-`01KYTP9XCPQW88P7WNNBFMNE31`). Trust in depth — see doc 3 (`trust.md`,
-`01KYTP78T0NR20A9HV93D7E3AE`); this page states only what each point's
+`01KYTP9XCPQW88P7WNNBFMNE31`). Trust in depth — see doc 3
+(`trust-and-security.md`, `01KYTP78T0NR20A9HV93D7E3AE`); this page states only what each point's
 failure table needs ("de-trusted") and defers the mechanism. The wire
 transport itself — `.design/d1-transport.md` is a closed design spike
 (`01KYNN7K02MS59GCM5PKC1JDW9`, done as design, not as code); this page
