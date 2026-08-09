@@ -62,7 +62,7 @@ pub(crate) fn new_tool_call_accumulator(tools: &[ToolSpec]) -> ToolCallAccumulat
     ToolCallAccumulator::new(ToolCallStyle::Structured, tools)
 }
 
-/// Native Anthropic Messages API adapter (feature `anthropic`).
+/// Native Anthropic Messages API adapter.
 pub struct AnthropicBackend {
     id: BackendId,
     base: Url,

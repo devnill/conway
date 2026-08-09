@@ -182,6 +182,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   design. Every unbuilt section names its board item
   (01KZDC0RDRMMMJHX7SAFMM2Q5A, 01KZ844ZXZMVRWC7ZANT7PSM6X).
 
+- **Removed: `conway-backends`' `anthropic` and `openai-compat` cargo
+  features; `reqwest` and `eventsource-stream` are now plain, non-optional
+  dependencies** (board item 01KZHEZWT3ET8C4V1RHVMSMNJA, under the
+  backends-as-plugins charter). The crate had a build-time knob nothing
+  ever turned: no CI job and no workspace member has ever built it with
+  `--no-default-features` — the CI feature matrix is scoped `-p conway`,
+  not `-p conway-backends`, and the sole consumer depends on it with
+  default features on, unconditionally.
+
+  Stated precisely, because the honest version is weaker than the
+  convenient one: the combination **did** compile. `cargo check -p
+  conway-backends --no-default-features` succeeded before the change, with
+  one dead-code warning on `admission::estimate_wire_tokens` (its callers
+  having been compiled out). So this is not an "it was already broken"
+  removal. It is an "it was never verified, and now actively contradicts
+  the crate's direction" one: `backends.<id>.kind` became an open name
+  resolved against installed factories in the same release, so a build
+  that compiles one adapter out could produce a plugin unable to honour a
+  `kind` its own configuration names — while CI, gating on that axis, would
+  certify the state green. Removing the axis makes "every kind this crate
+  can name, this crate can build" true by construction, which is what a
+  runtime-open `kind` requires.
+
+  `anthropic`, `capabilities`, `config`, `error`, `http`,
+  `model_metadata`, `openai_compat`, `probe`, `profile`, and `tool_calls`
+  are all reachable exactly as before, just unconditionally, and the crate
+  suite is unchanged at 207 tests across 14 binaries. The module docs no
+  longer describe anything as feature-independent or feature-gated, since
+  the distinction no longer exists.
+  (`crates/conway-backends/Cargo.toml`,
+  `crates/conway-backends/src/lib.rs`, `crates/conway-backends/src/http.rs`,
+  `crates/conway-backends/src/error.rs`,
+  `crates/conway-backends/src/config.rs`,
+  `crates/conway-backends/src/anthropic/mod.rs`)
+
 - **BREAKING: `[backends.<id>].kind` is an open name rather than a closed
   two-valued enum** (board item 01KZHF1E85MS1VF4YH8CDNCP9Z, decision
   01KZHRPZ010R37411R3W1XR5TF). `config::schema::BackendKind` is gone;

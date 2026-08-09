@@ -2,10 +2,7 @@
 //! (architecture §"Module: conway-backends" boundary rule: at most two
 //! retries, single endpoint, never cross-backend).
 //!
-//! Only compiled when at least one adapter feature is enabled (`lib.rs`
-//! gates this module on `any(feature = "anthropic", feature =
-//! "openai-compat")`), since it is the sole consumer of the optional
-//! `reqwest` dependency.
+//! This is the sole consumer of the crate's `reqwest` dependency.
 //!
 //! `HttpClient` itself is not yet constructed anywhere outside this
 //! module's own tests: the adapters that build one (`AnthropicBackend`,
