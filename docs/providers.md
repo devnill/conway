@@ -23,8 +23,8 @@ actually is (`kimi`, `internal-proxy`) and sit alongside a real
 **`kind` is an open name, not a closed set of two.** `conway` (the facade)
 resolves it against every `BackendFactory` an embedder has registered
 (`ConwayBuilder::with_backend_factory`) — and *only* those; the facade
-itself compiles in no fallback adapter of its own, and names neither
-`"anthropic"` nor `"openai-compat"` anywhere in its own source (board item
+itself compiles in no fallback adapter of its own, and its own resolution
+path names neither `"anthropic"` nor `"openai-compat"` (board item
 01KZHF270T3W8GZ7NM6DSNQ4MM):
 
 | `kind` | Adapter | Selects |

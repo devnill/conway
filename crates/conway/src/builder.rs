@@ -46,8 +46,10 @@
 //!   translated to their snake_case built-in profile ids), and
 //!   `CapabilityProbe`'s own HTTP round trip do with those resolved fields
 //!   is entirely `conway_plugin_backends::factory`'s own implementation now
-//!   -- this facade compiles neither dialect in, and names neither
-//!   `"anthropic"` nor `"openai-compat"` anywhere else in `src/`.
+//!   -- this facade compiles neither dialect in, and its own
+//!   `resolve_backend_factory` names neither `"anthropic"` nor
+//!   `"openai-compat"`: `kind` resolves only against whichever
+//!   `BackendFactory`s a caller registered.
 //! - **The backend map is keyed by each constructed backend's own
 //!   `Backend::id()`.** `config::merge::validate` checks chain refs
 //!   (`<backend_id>/<model>`) against that same key namespace, so the two
@@ -321,10 +323,10 @@ impl ConwayBuilder {
         &self.config
     }
 
-    /// Injects a backend. Takes precedence over any config-derived OR
-    /// factory-built backend with the same `Backend::id()` -- see
+    /// Injects a backend. Takes precedence over any `[backends.<id>]`
+    /// entry's factory-built backend with the same `Backend::id()` -- see
     /// [`Self::with_backend_factory`]'s own doc for the full precedence
-    /// order among all three sources.
+    /// order between both sources.
     pub fn with_backend(mut self, backend: Arc<dyn Backend>) -> Self {
         self.backends.push(backend);
         self
@@ -339,19 +341,21 @@ impl ConwayBuilder {
     /// not one.
     ///
     /// **Precedence, exact, extending [`Self::with_backend`]'s own
-    /// "takes precedence" doc to name all three sources by construction
-    /// order:** `build()`'s backend step constructs config-derived backends
-    /// FIRST, then invokes every registered factory, then merges every
-    /// `with_backend`-injected backend LAST -- each step keyed into the same
-    /// `HashMap<BackendId, Arc<dyn Backend>>` by `Backend::id()`, so a later
-    /// step's entry OVERWRITES an earlier step's entry sharing the same id.
-    /// Concretely: an injected backend wins over a factory-built backend
-    /// sharing its id, which in turn wins over a config-derived backend
-    /// sharing ITS id -- and the loser in either case is genuinely
-    /// discarded, never merely shadowed (its constructor still ran, so a
-    /// factory with side effects in `build` still sees them, but the
-    /// `Arc<dyn Backend>` it returned is dropped, never wired into the
-    /// runtime).
+    /// "takes precedence" doc to name both sources by construction order:**
+    /// `build()`'s backend step constructs one backend per `[backends.<id>]`
+    /// entry FIRST (resolving `entry.kind` against the registered
+    /// factories, below -- there is no separate "config-derived" backend
+    /// construction distinct from this: the temporary two-adapter fallback
+    /// that once made one is GONE, see the open-name paragraph below), then
+    /// merges every `with_backend`-injected backend LAST -- each step keyed
+    /// into the same `HashMap<BackendId, Arc<dyn Backend>>` by
+    /// `Backend::id()`, so a later step's entry OVERWRITES an earlier
+    /// step's entry sharing the same id. Concretely: an injected backend
+    /// wins over a `[backends.<id>]`-entry-built backend sharing its id --
+    /// and the loser is genuinely discarded, never merely shadowed (its
+    /// constructor still ran, so a factory with side effects in `build`
+    /// still sees them, but the `Arc<dyn Backend>` it returned is dropped,
+    /// never wired into the runtime).
     ///
     /// **Two registered factories reporting the same [`BackendFactory::id`]
     /// (a duplicate KIND, not a duplicate instance) is a hard `build()`
@@ -371,24 +375,23 @@ impl ConwayBuilder {
     /// set and got nothing for).
     ///
     /// **Registering a factory whose kind no `[backends.<id>]` entry ever
-    /// names is fine, not an error or a warning** -- trivially so in THIS
-    /// item, since `build()` invokes every registered factory
-    /// unconditionally (see the next paragraph); the question only becomes
-    /// substantive once config-driven selection exists to leave a factory
-    /// unreferenced, and this method's contract already covers that case
-    /// the same way it covers today's: nothing about registering a factory
-    /// promises any particular `[backends.<id>]` entry will ever select it.
+    /// names is fine, not an error or a warning** -- kind resolution is
+    /// PER ENTRY (see the open-name paragraph below): `build()` invokes a
+    /// registered factory's `build` only for a `[backends.<id>]` entry
+    /// whose `kind` names it, never unconditionally for every registered
+    /// factory. Nothing about registering a factory promises any
+    /// particular `[backends.<id>]` entry will ever select it.
     ///
     /// **`[backends.<id>].kind` is now an open name** (board item
     /// 01KZHF1E85MS1VF4YH8CDNCP9Z, decision 01KZHRPZ010R37411R3W1XR5TF): for
-    /// every `[backends.<id>]` entry, `build()`'s own `construct_backend`
-    /// resolves `entry.kind` against every registered factory's own
+    /// every `[backends.<id>]` entry, `build()`'s own `resolve_backend_
+    /// factory` resolves `entry.kind` against every registered factory's own
     /// [`BackendFactory::id`] -- and against nothing else. The temporary
     /// fallback to two compiled-in adapters is GONE (board item
     /// 01KZHF270T3W8GZ7NM6DSNQ4MM): this facade no longer links either
     /// dialect, so an unregistered kind is an unknown-kind error, not a
-    /// silent built-in. See `construct_backend`'s own doc for the exact
-    /// resolution order and the error shape. A matching
+    /// silent built-in. See `resolve_backend_factory`'s own doc for the
+    /// exact resolution order and the error shape. A matching
     /// factory's `build` is invoked with a [`BackendBuildContext`] resolved
     /// from THAT entry: `id` is the entry's own `[backends.<id>]` JSON key,
     /// `base_url`/`dialect` are copied verbatim, and `api_key` is resolved
@@ -710,8 +713,8 @@ impl ConwayBuilder {
         //    overlaid with a startup probe -- board item
         //    01KZHF270T3W8GZ7NM6DSNQ4MM relocated the probing mechanism
         //    itself into `conway_plugin_backends::OpenAiCompatBackendFactory
-        //    ::probe_capabilities` (this facade no longer names
-        //    `CapabilityProbe`, or "openai-compat", anywhere in `src/`); the
+        //    ::probe_capabilities` (this facade's own resolution path no
+        //    longer names `CapabilityProbe` or "openai-compat" at all); the
         //    RESTRICT eligibility filter below -- overlay only a pair
         //    `models.json` already declared for this backend, per
         //    `BackendFactory::probe_capabilities`'s own doc -- stays here,
@@ -949,11 +952,12 @@ fn resolve_api_key(id: &str, entry: &BackendEntry) -> Result<String> {
 /// [`BackendFactory`] (board item 01KZHF1E85MS1VF4YH8CDNCP9Z: `kind` is an
 /// open name, not a closed enum) -- ONLY against registered factories, with
 /// no compiled-in fallback: board item 01KZHF270T3W8GZ7NM6DSNQ4MM removed
-/// the temporary two-adapter fallback `construct_backend` used to fall
-/// through to (`"anthropic"`, `"openai-compat"` compiled directly into this
-/// facade), the deliberate, disclosed gap that item's own predecessor left
-/// standing so its slice could ship alone. Every kind this facade resolves
-/// today, including those two, is therefore a registered factory -- see
+/// the temporary two-adapter fallback this function (then named
+/// `construct_backend`) used to fall through to (`"anthropic"`,
+/// `"openai-compat"` compiled directly into this facade), the deliberate,
+/// disclosed gap that item's own predecessor left standing so its slice
+/// could ship alone. Every kind this facade resolves today, including
+/// those two, is therefore a registered factory -- see
 /// `conway_plugin_backends::factory`'s own module doc for what makes both
 /// attach by default with no `[plugins].install`/`with_backend_factory` call
 /// an operator has to write by hand.

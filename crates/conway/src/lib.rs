@@ -10,10 +10,12 @@
 //! not one of the implementations assembled here; absent it, `build()`
 //! compiles `conway_core::routing::MinimalRouter` instead. Board item
 //! 01KZHF270T3W8GZ7NM6DSNQ4MM: the same is now true of both provider-adapter
-//! dialects -- `conway-plugin-backends` is a first-party plugin too, and
-//! this crate names neither `"anthropic"` nor `"openai-compat"` anywhere in
-//! `src/`; absent a registered `BackendFactory` for a `[backends.<id>]`
-//! entry's `kind`, `build()` fails naming every kind it does recognise.
+//! dialects -- `conway-plugin-backends` is a first-party plugin too, and no
+//! production resolution path in this crate names either `"anthropic"` or
+//! `"openai-compat"`: `resolve_backend_factory` matches a
+//! `[backends.<id>]` entry's `kind` only against whichever
+//! `BackendFactory`s a caller registered, and absent one, `build()` fails
+//! naming every kind it does recognise.
 //!
 //! This item (WI-096) establishes the crate skeleton: dependency wiring,
 //! the cargo feature flags below, the crate-level [`ConwayError`]/[`Result`],
