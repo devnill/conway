@@ -386,7 +386,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   installed by default** (board item 01KZHF270T3W8GZ7NM6DSNQ4MM, closing
   the backends-as-plugins charter; decision 01KZHRPZ010R37411R3W1XR5TF).
   `crates/conway/Cargo.toml`'s dependency on the adapter crate is gone, and
-  `conway`'s own `src/` names neither dialect anywhere.
+  no production resolution path in `conway`'s own `src/` hardcodes either
+  dialect — `kind` is matched as data against whichever factories are
+  registered. (Both strings do still appear there as the shipped
+  *configuration defaults*, `DEFAULT_BACKEND_KIND` and
+  `default_backends`, which is what a default-on key requires.)
   `AnthropicBackendFactory` and `OpenAiCompatBackendFactory` (kind ids
   `ANTHROPIC_KIND`/`OPENAI_COMPAT_KIND`, strings unchanged) are the crate's
   two `BackendFactory` implementations, **relocated** from `builder.rs`'s

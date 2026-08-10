@@ -19,7 +19,9 @@
 //! `"anthropic"`, `"openai-compat"` -- so an existing `[backends.<id>].kind`
 //! value in any operator's `settings.json` keeps resolving unchanged, to a
 //! REGISTERED factory now rather than a compiled-in fallback. `conway`
-//! itself no longer names either string anywhere in `src/`.
+//! itself no longer hardcodes either string into its own resolution path
+//! (`resolve_backend_factory`); `kind` there is an open name matched only
+//! against whichever factories are registered.
 //!
 //! `[plugins].default_backends` (`conway::config::schema::PluginsConfig`,
 //! decision 01KZHRPZ010R37411R3W1XR5TF) is what makes both kinds attach
