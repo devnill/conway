@@ -182,6 +182,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   design. Every unbuilt section names its board item
   (01KZDC0RDRMMMJHX7SAFMM2Q5A, 01KZ844ZXZMVRWC7ZANT7PSM6X).
 
+- **The security page names backends and routers — the one extension point
+  the harness hands a credential to was the one it omitted** (board item
+  01KZMMCGAPGPRG7T0JXWMRM46S). `docs/plugins/trust-and-security.md` is 267
+  lines written so an author meets the limits alongside the guarantees, and
+  it did not contain the word "backend"; `docs/providers.md`'s authoring
+  section did not contain the word "trust". Meanwhile a `BackendFactory`
+  installs through the identical pass as a tool `Plugin`, runs with the
+  identical unsandboxed privileges, and is **additionally handed the
+  operator's resolved `api_key` and `extra` configuration** — which a tool
+  `Plugin` has no channel to receive at all, since its `ToolCtx::config` is
+  always an empty default. The extension point that asks for nothing was
+  warned about; the one the harness gives credentials to was not.
+
+  A `RouterFactory` turns out to sit between the two, and the page now says
+  so: it never receives a raw credential, but `RouterBuildContext` carries
+  live `Backend` handles it can call — so it can reach a provider using
+  that backend's already-resolved credential **without ever holding the
+  credential's bytes**. Narrower exposure, not absent.
+
+  `docs/providers.md` gains "What conway cannot enforce", naming the three
+  obligations a third-party implementor carries that no test in this tree
+  can check for a crate conway does not compile: cache hints must not
+  change request bytes, `admit` must call `check_admission` honestly, and
+  untrusted input must yield a typed error rather than a panic. For a
+  first-party adapter the first of those is a test conway runs; for a third
+  party it is a stated contract, and the authoring page is where it is
+  discharged. `docs/embedding.md` gains matching pointers, because a
+  library embedder calling the builder directly reaches this surface
+  without passing through either page.
+  ([`docs/plugins/trust-and-security.md`](docs/plugins/trust-and-security.md),
+  [`docs/providers.md`](docs/providers.md),
+  [`docs/embedding.md`](docs/embedding.md))
+
 - **A third-party provider adapter can now read its own configuration keys —
   `BackendBuildContext` carries `extra`** (board item
   01KZMM8ABQJQGHTDTP5S29P88C). `docs/providers.md` told an author their

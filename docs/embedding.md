@@ -313,6 +313,13 @@ release, same as everything else here.
 
 ### Installing a router: `RouterFactory` and the `[plugins].install` router arm
 
+`RouterFactory` installs through the same `[plugins].install` pass and
+runs with the same unsandboxed privileges as any other plugin; unlike a
+`BackendFactory` it receives no raw credential, only already-built
+`Backend` handles it can call — see
+[`docs/plugins/trust-and-security.md`](plugins/trust-and-security.md#backends-and-routers-the-same-install-pass-and-one-hands-over-more)
+for what that distinction does and does not buy you.
+
 Board item 01KZFC2MD1FVNA674YJ9A19T8E extends the same `[plugins].install`
 key to router selection. `Router` itself has no identity method — a router
 that ships as an installable component instead names itself through a
@@ -513,6 +520,13 @@ crate authors a wholly new one.
 
 ### Installing a backend: `BackendFactory`
 
+**Before you register one, read
+[`docs/plugins/trust-and-security.md`](plugins/trust-and-security.md#backends-and-routers-the-same-install-pass-and-one-hands-over-more).**
+`with_backend_factory` runs with the same unsandboxed privileges as
+`with_plugin`, and `BackendFactory::build` is additionally handed the
+operator's resolved `api_key` — see that section for what that means for a
+factory you didn't write yourself.
+
 `ConwayBuilder::with_backend` takes a backend you have already constructed.
 `with_backend_factory` takes something that knows *how* to construct one,
 and defers that until the configuration it needs exists — the same split
@@ -646,6 +660,20 @@ and calling `check_admission`), driven end to end by its own tests rather
 than merely compiling. `crates/conway/tests/backend_surface.rs` pins the
 module's export list by name, the same way `public_api_surface.rs` pins
 the facade root's.
+
+`docs/providers.md`'s ["Writing your own
+adapter"](providers.md#writing-your-own-adapter) is the full authoring
+page for this trait, including a worked example built against exactly
+this same crate boundary and, in ["What conway cannot
+enforce"](providers.md#what-conway-cannot-enforce), the obligations
+steering places on an implementor that no test in this tree can check for
+a crate it doesn't compile — cache hints must not change request bytes,
+`admit` must call `check_admission` honestly, untrusted input must yield a
+typed `BackendError` rather than panic. Read
+[`docs/plugins/trust-and-security.md`](plugins/trust-and-security.md#backends-and-routers-the-same-install-pass-and-one-hands-over-more)
+before shipping one: registering a `Backend` via `with_backend_factory`
+carries the same unsandboxed privileges as any other plugin, plus the
+operator's resolved credential.
 
 ## Next steps
 
