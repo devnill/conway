@@ -7,7 +7,7 @@
 //! practice of small local test doubles) -- this file does not depend on
 //! `conway-plugin-backends` or `conway-tools`.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -18,9 +18,9 @@ use conway_core::agent::{
     AgentDefRef, Budget, CancelMode, PermissionDecision, ResultStatus, SubagentMode, SubagentSpec,
     ToolSelector,
 };
-use conway_core::capabilities::HeadroomPolicy;
+use conway_core::capabilities::{HeadroomPolicy, RequiredCaps};
 use conway_core::config::AgentDef;
-use conway_core::content::{ContentBlock, StopReason, Usage};
+use conway_core::content::{ContentBlock, SamplingParams, StopReason, Usage};
 use conway_core::error::{RuntimeError, SubagentError, ToolError};
 use conway_core::event::Event;
 use conway_core::fakes::{
@@ -30,6 +30,7 @@ use conway_core::ids::{AgentId, BackendId, LogSeq, ModelId, ModelRef, RoleAlias,
 use conway_core::log::{ForkOrigin, SessionFilter, SessionMeta};
 use conway_core::ports::{Backend, LiveOwner, Router, SessionStore, SubagentHandle, SubagentHost};
 use conway_core::provenance::Provenance;
+use conway_core::routing::{HealthConfig, MinimalRouter, RoleConfig, RoutingConfig};
 use conway_runtime::events::EventBus;
 use conway_runtime::runtime::{ResumeSpec, RootSpec, Runtime, RuntimeDeps};
 use futures::StreamExt;
@@ -2614,13 +2615,45 @@ impl conway_core::ports::Plugin for TwoToolPlugin {
     }
 }
 
+/// The model `restricted_def` pins. Non-default on purpose (decision
+/// 01KZHEWXDZWPWMEAQ01XY2RDCB: fork-only `agent_def` inheritance covers the
+/// system prompt, the tools selector, AND the model pin) -- distinct from
+/// `default_model_ref` below, so a router that actually resolves
+/// `RouteRequest::pin` (`pin_aware_router`, not `FakeRouter::single`, which
+/// ignores it) can tell "the child's pin propagated" from "the child fell
+/// back to the role's plain default chain".
+///
+/// `restricted_def`'s `model` used to be `None` here: that left every
+/// existing user of this fixture (`FakeRouter::single`, which ignores
+/// `req.pin` unconditionally) unable to distinguish "the pin inherited" from
+/// "there was never a pin to inherit". Setting it to a distinguishing value
+/// changes nothing for those three existing tests -- none of them read
+/// `GenerateRequest.model`, and `FakeRouter::single` still returns the same
+/// fixed route regardless of `req.pin` -- but it is what makes the new pin
+/// guard below possible without a second, parallel `AgentDef` fixture.
+fn pinned_model_ref() -> ModelRef {
+    ModelRef {
+        backend: BackendId::new("pinned-backend"),
+        model: ModelId::new("pinned-model"),
+    }
+}
+
+/// The "planner" role's plain (unpinned) default under `pin_aware_router` --
+/// what a `RouteRequest` with `pin: None` resolves to.
+fn default_model_ref() -> ModelRef {
+    ModelRef {
+        backend: BackendId::new("default-backend"),
+        model: ModelId::new("default-model"),
+    }
+}
+
 fn restricted_def() -> AgentDef {
     AgentDef {
         name: "restricted".to_string(),
         description: None,
         system_prompt: "You are restricted to the marker tool.".to_string(),
         role: None,
-        model: None,
+        model: Some(pinned_model_ref()),
         tools: ToolSelector::Only(vec!["marker".to_string()]),
         skills: Vec::new(),
         max_steps: None,
@@ -2775,6 +2808,135 @@ async fn fork_child_inherits_the_parents_agent_def_and_cannot_widen_its_tool_set
     );
 }
 
+/// A REAL `Router` (not a fake that ignores the field) built solely to make
+/// `RouteRequest::pin` discriminating: `MinimalRouter` -- `conway-core`'s
+/// production config-only router -- resolves a `Some` pin to a
+/// single-element chain naming exactly that model (`chain_for`), and falls
+/// back to the "planner" role's configured chain (`default_model_ref`) only
+/// when `pin` is `None`. `FakeRouter::single`, used by every other builder
+/// in this file (including `build_runtime_with_two_tools_and_defs`, which
+/// Guard 1 above uses), returns the same fixed route regardless of
+/// `req.pin` -- exactly why it cannot tell "the fork's model-pin fill ran"
+/// from "it didn't".
+fn pin_aware_router() -> MinimalRouter {
+    let mut roles = BTreeMap::new();
+    roles.insert(
+        "planner".to_string(),
+        RoleConfig {
+            chain: vec![default_model_ref()],
+            required: RequiredCaps::default(),
+            params: SamplingParams::default(),
+            headroom_tokens: None,
+        },
+    );
+    MinimalRouter::new(RoutingConfig {
+        roles,
+        health: HealthConfig::default(),
+        default_headroom_tokens: 4096,
+    })
+}
+
+/// Mirrors `build_runtime_with_two_tools_and_defs`, but wires
+/// `pin_aware_router` in place of `FakeRouter::single`, and registers ONE
+/// `ScriptedBackend` under BOTH `default_model_ref().backend` and
+/// `pinned_model_ref().backend` -- `AttemptEngine::backend_for`
+/// (`attempt.rs`) looks the resolved route's backend id up in this map, so
+/// whichever one the router picks, its calls land on the SAME instance,
+/// and `ScriptedBackend::calls()` reports exactly which model the resolved
+/// route named regardless of which backend id was chosen.
+fn build_runtime_with_pin_aware_router(
+    turns: usize,
+    agent_defs: HashMap<String, AgentDef>,
+) -> (Arc<Runtime>, Arc<ScriptedBackend>) {
+    let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
+    let backend = Arc::new(ScriptedBackend::new(
+        (0..turns)
+            .map(|_| ScriptedTurn::Respond(text_response("ok")))
+            .collect(),
+    ));
+    let router: Arc<dyn Router> = Arc::new(pin_aware_router());
+    let mut backends: HashMap<BackendId, Arc<dyn Backend>> = HashMap::new();
+    backends.insert(default_model_ref().backend, backend.clone());
+    backends.insert(pinned_model_ref().backend, backend.clone());
+
+    let runtime = Runtime::new(RuntimeDeps {
+        store,
+        router,
+        health: Arc::new(FakeHealth::new()),
+        backends,
+        plugins: vec![],
+        gate: Arc::new(FakeGate::new(PermissionDecision::AllowOnce)),
+        agent_defs,
+        event_bus: EventBus::with_default_capacity(),
+        headroom: Arc::new(HeadroomPolicy::default()),
+    });
+    (runtime, backend)
+}
+
+/// Guard 1b (decision 01KZHEWXDZWPWMEAQ01XY2RDCB): the SAME Fork-only
+/// inheritance fill Guard 1 above proves for `tools` also carries the
+/// inherited def's MODEL PIN through to the real routing request --
+/// `subagent.rs::start`'s `let pin = agent_def.and_then(|d| d.model.clone())`
+/// feeds `AgentSpec::pin`, which `agent_loop.rs::route_and_attempt` copies
+/// straight into `RouteRequest::pin` on every attempt (`route_req.pin =
+/// self.spec.pin.clone()`). The discriminating observable is the child's own
+/// `GenerateRequest.model` -- read back off `ScriptedBackend::calls()`,
+/// exactly as Guard 1 reads `.tools` -- i.e. the model reference that
+/// actually reached the real routing request, not a field copied onto a
+/// tree node, and under a router that ACTUALLY resolves `pin`
+/// (`pin_aware_router`, not `FakeRouter::single`, which returns the same
+/// fixed route whether `pin` is `Some` or `None` and so could never fail
+/// here even if the fill were deleted).
+///
+/// Break-the-guard expectation (reverting the fill in `subagent.rs::start`):
+/// the child's `agent_def` resolves to `None`, so `pin` is `None`, and
+/// `pin_aware_router` falls back to the "planner" role's plain chain -- the
+/// child's `GenerateRequest.model` becomes `default_model_ref().model`, not
+/// `pinned_model_ref().model`, and the assertion below fails on that value
+/// directly.
+#[tokio::test]
+async fn fork_child_inherits_the_parents_agent_def_pinned_model() {
+    let mut defs = HashMap::new();
+    defs.insert("restricted".to_string(), restricted_def());
+    let (runtime, backend) = build_runtime_with_pin_aware_router(2, defs);
+
+    let mut spec = root_spec("investigate");
+    spec.agent_def = Some(AgentDefRef("restricted".to_string()));
+    let mut stream = runtime.subscribe();
+    let root = runtime.start_root(spec).await.unwrap();
+    wait_for_agent_finished(&mut stream, root).await;
+
+    // Byte-for-byte what `conway_fork` (and the TUI's `bare_fork`, and
+    // `ForkSpec::from`) build: no `agent_def`.
+    let child_spec = SubagentSpec::fork("go", Budget::default());
+    assert!(
+        child_spec.agent_def.is_none(),
+        "this spec must start with no agent_def, or the test proves nothing about inheritance"
+    );
+
+    let mut stream = runtime.subscribe();
+    let child = SubagentHost::start(&*runtime, root, root, child_spec)
+        .await
+        .unwrap();
+    wait_for_agent_finished(&mut stream, child).await;
+
+    // The discriminating observable: the model reference that actually
+    // reached the child's own routing/generate request.
+    let calls = backend.calls();
+    let child_call = calls
+        .last()
+        .expect("the child must have made at least one generate call");
+    assert_eq!(
+        child_call.model,
+        pinned_model_ref().model,
+        "the forked child must route on the restricted def's inherited model pin, not the \
+         role's plain default -- expected {:?}, the role default is {:?}, got {:?}",
+        pinned_model_ref().model,
+        default_model_ref().model,
+        child_call.model
+    );
+}
+
 /// Characterization test for board item 01KZHET5G0DN7QC0YF5G9XSB1N /
 /// decision 01KZHH9N313T5BTDR8281QDWHC: an agent def's (or a call site's)
 /// `tools` selects what is announced to the model, it is NOT a capability
@@ -2891,5 +3053,105 @@ async fn fork_child_does_not_source_a_result_contract_from_an_inherited_agent_de
         ResultStatus::Completed,
         "a forked child must NOT inherit its def's result_contract merely because the def \
          itself was inherited (never named at the call site) -- got {result:?}"
+    );
+}
+
+// ---------------------------------------------------------------------
+// Guard 3 (decision 01KZHEWXDZWPWMEAQ01XY2RDCB): the fork-only `agent_def`
+// inheritance fill is gated on `spec.mode == SubagentMode::Fork`
+// (`subagent.rs::start`'s `def_was_inherited` computation) -- a spawn from a
+// parent running under an `agent_def` must NOT pick that def up merely
+// because it left its own `agent_def` unset. `spawn_without_agent_def_
+// inherits_the_parents_role` above already proves the child ends up with
+// `agent_def: None`, but its root has NO definition at all
+// (`build_runtime(.., HashMap::new())`), so "the child has no agent_def"
+// there is equally consistent with "the gate correctly declined" and with
+// "there was never anything to decline" -- it cannot fail if the Fork-only
+// condition above were loosened to also cover `Spawn`. This guard reuses
+// `restricted_def`/`build_runtime_with_two_tools_and_defs` (Guard 1's own
+// fixtures) as the SPAWNING parent specifically so there is something real
+// to decline: the discriminating observable is the child's own
+// `GenerateRequest.tools`, which must be the full two-tool registry
+// (`marker` AND `secret`), not narrowed to the restricted def's
+// `Only(["marker"])` -- narrowing here would mean the fill had started
+// firing for `Spawn` too.
+// ---------------------------------------------------------------------
+
+/// Break-the-guard expectation (widening `def_was_inherited`'s mode check
+/// in `subagent.rs::start` to fire for `Spawn` as well as `Fork`): the
+/// child's `GenerateRequest.tools` narrows to exactly `["marker"]` (the
+/// restricted def's selector) instead of the full two-tool registry, and
+/// `AgentNode::agent_def` becomes `Some("restricted")` instead of `None`.
+#[tokio::test]
+async fn spawn_child_declines_the_parents_agent_def_even_though_a_fork_would_inherit_it() {
+    let mut defs = HashMap::new();
+    defs.insert("restricted".to_string(), restricted_def());
+    let (runtime, backend) = build_runtime_with_two_tools_and_defs(2, defs);
+
+    // The spawning parent: a root running under the restricted def, exactly
+    // as Guard 1's fork case starts -- the only difference from that guard
+    // is the mode of the CHILD spec below.
+    let mut spec = root_spec("investigate");
+    spec.agent_def = Some(AgentDefRef("restricted".to_string()));
+    let mut stream = runtime.subscribe();
+    let root = runtime.start_root(spec).await.unwrap();
+    wait_for_agent_finished(&mut stream, root).await;
+
+    // A bare spawn, mirroring `spawn_without_agent_def_inherits_the_parents_
+    // role`'s own construction: no `agent_def` named at the call site.
+    let child_spec = SubagentSpec {
+        mode: SubagentMode::Spawn,
+        prompt: "do it".into(),
+        agent_def: None,
+        role: None,
+        tools: None,
+        budget: Budget::default(),
+        result_contract: None,
+        keep_alive: false,
+        ephemeral: false,
+        ask_origin: None,
+        cwd: None,
+        root: None,
+    };
+    assert!(child_spec.agent_def.is_none());
+
+    let mut stream = runtime.subscribe();
+    let child = SubagentHost::start(&*runtime, root, root, child_spec)
+        .await
+        .unwrap();
+    wait_for_agent_finished(&mut stream, child).await;
+
+    // The discriminating observable: exactly what the model was offered --
+    // the full two-tool registry, NOT the restricted def's narrowed set,
+    // proving the spawn declined to inherit the parent's `agent_def` rather
+    // than merely having nothing to decline.
+    let calls = backend.calls();
+    let child_call = calls
+        .last()
+        .expect("the child must have made at least one generate call");
+    let mut offered: Vec<String> = child_call
+        .tools
+        .iter()
+        .map(|t| t.name.0.clone())
+        .collect();
+    offered.sort();
+    assert_eq!(
+        offered,
+        vec!["marker".to_string(), "secret".to_string()],
+        "a spawn must NOT inherit the parent's agent_def merely because it left its own unset \
+         -- the child should be offered the full two-tool registry, not the restricted def's \
+         Only([\"marker\"]) selector -- got {offered:?}"
+    );
+
+    let child_node = runtime
+        .tree()
+        .nodes
+        .into_iter()
+        .find(|n| n.agent_id == child)
+        .expect("child attached to the tree");
+    assert_eq!(
+        child_node.agent_def, None,
+        "a spawn with no agent_def named must resolve none -- even though the parent it spawned \
+         from has one, unlike a fork's fill"
     );
 }
