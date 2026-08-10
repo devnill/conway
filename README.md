@@ -62,7 +62,10 @@ and running your first prompt against it — see
 [`docs/getting-started.md`](docs/getting-started.md), and
 [`docs/README.md`](docs/README.md) for the rest of the documentation:
 driving the TUI, scripting one-shot mode, and embedding conway as a
-library.
+library. If you want to *extend* conway rather than use it —
+a hook, a tool, a provider adapter — start at
+[`docs/plugins/`](docs/plugins/README.md), which is the authoritative
+description of what an author may rely on.
 
 **Build the CLI:**
 
