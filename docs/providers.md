@@ -395,6 +395,14 @@ a genuinely different wire protocol — not Anthropic's Messages API, not an
 OpenAI-compatible chat-completions endpoint. If your provider needs its own
 request/response shaping from the ground up, this is that path.
 
+**Read [`docs/plugins/trust-and-security.md`](plugins/trust-and-security.md#backends-and-routers-the-same-install-pass-and-one-hands-over-more)
+before you write one.** A `BackendFactory` installs through the identical
+mechanism as a tool plugin and runs with the identical unsandboxed
+privileges — and, unlike a tool plugin, is additionally handed the
+operator's resolved `api_key` by the harness, without asking for it. That
+page states the privilege and the exposure in full; this page is the
+mechanics and the worked example.
+
 **The crate boundary.** Depend on `conway` — the public facade — alone; no
 `conway-core` dependency is needed or, for a third party, available.
 `conway::backend` is a curated module re-exporting the `Backend` trait and
@@ -425,6 +433,52 @@ has no dynamic-loading path at all (no `dlopen`/`libloading`/`dylib`
 anywhere in it), so a third-party adapter is always a Rust dependency an
 embedder links and registers in code, never a crate name the shipped
 `conway` binary can pick up from `settings.json` on its own.
+
+### What conway cannot enforce
+
+Implementing `Backend` means agreeing to rules nothing in this tree checks
+for a crate it doesn't compile. Stated here because unstated, they bind
+nobody:
+
+- **A cache hint must not change request bytes.** Caching is economics,
+  never correctness (GP-06): the request your adapter sends with every
+  cache hint stripped must be byte-identical to the request it sends with
+  hints applied. `conway-plugin-backends`'s own Anthropic dialect carries a
+  test for exactly this —
+  `body_with_hints_stripped_equals_body_with_hints_minus_every_cache_control_key`
+  (`crates/conway-plugin-backends/tests/anthropic_cache_mapping.rs`) — and
+  that test is required of every first-party adapter. For a third-party
+  one, conway cannot run your crate's tests and cannot assert this from
+  outside it: it is a contract you carry, not one conway verifies for you.
+  If your adapter's `capabilities()` reports a `CacheMode` other than
+  `CacheMode::None`, this is the invariant that claim is worth nothing
+  without.
+- **`admit` must be honest about what it can actually serve.** Override
+  `Backend::admit` by calling `check_admission` (`conway::backend`'s
+  re-export of `crates/conway-core/src/ports/backend.rs`'s function) for
+  the fits/shortfall arithmetic — never restate
+  `est_tokens + headroom_tokens <= max_context_tokens` by hand. This is the
+  one piece of the contract conway's own test suite states in words rather
+  than only in code: `crates/conway/tests/backend_parity.rs`'s own doc
+  comment calls out "an author who cannot name `check_admission` cannot
+  honour `Backend::admit`'s contract," and the [worked example
+  below](#a-complete-worked-example) does exactly this. An `admit` that
+  fabricates a fit conway didn't actually verify surfaces as a
+  `BackendError::ContextTooLarge` the caller never gets to react to in
+  time — the provider's own truncation or rejection, not conway's.
+- **Untrusted input yields a typed error, never a panic.** Model-supplied
+  values reaching your adapter — tool-call arguments, sampling parameters,
+  anything decoded off the wire — are untrusted input the same way a tool
+  argument is. A range check that fails must produce `BackendError`
+  (`conway::backend`'s re-export), not an `unwrap`/`expect`/arithmetic
+  overflow. A panic here takes down the turn calling it, not merely fails
+  the one request.
+
+None of this is enforced by the trait, by `build()`, or by any test
+`conway` runs against a crate it doesn't own. It is a contract discharged
+by you following it, the same way [`docs/plugins/trust-and-
+security.md`](plugins/trust-and-security.md) states what a plugin author
+is trusted with rather than what conway checks for them.
 
 ### A complete worked example
 

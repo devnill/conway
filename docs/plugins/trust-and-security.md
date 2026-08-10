@@ -159,6 +159,80 @@ Two things this bears on directly, so a reader does not have to infer them:
   that header from the same commit — a disclosure without the caveat reads
   as a guarantee.
 
+## Backends and routers: the same install pass, and one hands over more
+
+Everything above states the plugin case by name. It applies unmodified to
+a `BackendFactory` and a `RouterFactory` — this page just hasn't said so
+until now, and a reader who reaches [`docs/providers.md`](../providers.md)
+first and never lands on this page would have no way to know it.
+
+**Same mechanism, same privileges, no separate scrutiny.** conway's CLI
+resolves a `Plugin`, a `RouterFactory`, and a `BackendFactory` id in one
+pass off one list — `[plugins].install`, unioned with `[plugins].
+default_backends` for the backend arm specifically
+(`crates/conway-cli/src/first_party_plugins.rs`'s `install`; see
+[`docs/providers.md`'s "Where a backend is
+declared"](../providers.md#where-a-backend-is-declared) for the backend
+side of that union). A library embedder reaches the identical surface by
+calling `ConwayBuilder::with_backend_factory`/`with_router_factory` — the
+same channel `with_plugin` uses, not a more guarded one. Nothing above
+this section — the trust asymmetry, the unsandboxed-subprocess statement,
+the capability vocabulary's deliberate silence on `fs`/`net`/`exec` — is
+scoped to a tool plugin specifically; a `BackendFactory` and a
+`RouterFactory` are plugins in every sense this page means the word, and
+everything stated above about what conway does NOT protect against
+applies to both, unmodified. Naming a kind in configuration (or
+registering a factory in code) is the entire admission control; there is
+no per-backend or per-router review surface distinct from the one plugin
+review surface described throughout this page.
+
+**A `BackendFactory` is additionally handed a credential it never asked
+for.** `BackendFactory::build` receives a `BackendBuildContext`
+(`crates/conway-core/src/ports/backend.rs`) whose `api_key` field is not
+an environment variable's *name* — it is the resolved value: a literal
+`[backends.<id>].api_key`, or an `api_key_env` variable the harness has
+already read out of the operator's own process environment, before
+`build()` is ever called. The operator authorizes this once, structurally,
+by adding a `[backends.<id>]` entry that names the factory's kind — never
+per call, never as a runtime prompt, and with nothing in the review
+surface that distinguishes "this entry hands over a secret" from any
+other configuration key. `BackendBuildContext` also carries `extra`
+(`BTreeMap<String, serde_json::Value>`) — every key an entry sets beyond
+the five conway recognizes (`kind`, `api_key`, `api_key_env`, `base_url`,
+`dialect`, `stream_tools`), captured verbatim and handed over uninspected
+(`docs/providers.md`'s ["Where a backend is
+declared"](../providers.md#where-a-backend-is-declared) documents the
+field; a typo in one of the five named keys is silently captured here
+instead of caught at load). A tool `Plugin` has no equivalent
+operator-authored channel today: `ToolCtx::config` is a `PluginConfig`
+constructed as `PluginConfig::default()`
+(`crates/conway-runtime/src/runtime.rs`) — always empty, never populated
+from `settings.json` or anything else an operator writes. Between `extra`
+and `api_key`, a third-party `BackendFactory` receives operator-authored
+configuration a tool `Plugin` has no channel to receive at all — on top
+of, not instead of, the identical unsandboxed-subprocess privileges every
+plugin already carries.
+
+**A `RouterFactory` does not receive a raw credential the same way — the
+exposure is narrower, not absent.** `RouterBuildContext`
+(`crates/conway-core/src/ports/routing.rs`) carries `routing`, `headroom`,
+`capability_index`, and `backends: &[Arc<dyn Backend>]` — already-built
+`Backend` *handles*, never the strings that constructed them. A router
+factory cannot read an `api_key` out of its own context the way a
+`BackendFactory` can. It can, however, call `generate`/`stream`/`probe` on
+any backend in that slice, which reaches the provider using that
+backend's already-resolved credential without the router factory ever
+holding the credential's bytes itself. Same install pass, same
+unsandboxed process privileges, a real but strictly smaller version of the
+same exposure a `BackendFactory` carries — worth naming here rather than
+left as a silent assumption a reader has to derive for themselves.
+
+**Writing one.** [`docs/providers.md`'s "Writing your own
+adapter"](../providers.md#writing-your-own-adapter) is the authoring
+surface — the crate boundary, publishing a kind id, a complete worked
+example, and the obligations conway cannot check because no test in this
+tree can verify a third party's own code.
+
 ## What conway DOES ship
 
 "No complex sandboxing" is not "no isolation." conway does not acquire
