@@ -45,7 +45,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use conway::config::schema::{
     AgentsConfig, BackendEntry, ConwayConfig, HealthSection, LimitsConfig, ModelsConfig,
@@ -60,10 +60,11 @@ use conway_core::agent::PermissionDecision;
 use conway_core::capabilities::{
     CacheMode, Capabilities, ReliabilityTier, StructuredOutput, ToolCallSupport,
 };
-use conway_core::content::{ContentBlock, StopReason, Usage};
+use conway_core::content::{ContentBlock, SamplingParams, StopReason, Usage};
 use conway_core::fakes::{FakeBackend, FakeGate, FakeRouter, FakeStore};
-use conway_core::ids::{BackendId, ModelId, ModelRef};
+use conway_core::ids::{BackendId, ModelId, ModelRef, RoleAlias};
 use conway_core::ports::{Backend, GenerateResponse};
+use conway_core::routing::{Route, RoutingReason};
 
 fn caps() -> Capabilities {
     Capabilities {
@@ -132,6 +133,30 @@ fn config_naming_kind(entry_id: &str, kind: &str) -> ConwayConfig {
     let mut cfg = base_config();
     cfg.backends.insert(
         entry_id.to_string(),
+        BackendEntry {
+            kind: kind.to_string(),
+            ..BackendEntry::default()
+        },
+    );
+    cfg
+}
+
+/// `base_config()` plus TWO `[backends.<id>]` entries naming the SAME
+/// `kind` -- what `two_entries_naming_one_kind_invoke_the_factory_twice_
+/// and_produce_two_distinct_backends` below needs: two config entries must
+/// not collapse into one factory invocation merely because they share a
+/// kind.
+fn config_naming_kind_twice(entry_a: &str, entry_b: &str, kind: &str) -> ConwayConfig {
+    let mut cfg = base_config();
+    cfg.backends.insert(
+        entry_a.to_string(),
+        BackendEntry {
+            kind: kind.to_string(),
+            ..BackendEntry::default()
+        },
+    );
+    cfg.backends.insert(
+        entry_b.to_string(),
         BackendEntry {
             kind: kind.to_string(),
             ..BackendEntry::default()
@@ -403,4 +428,134 @@ fn factory_build_error_surfaces_as_build_error() {
         }
         other => panic!("expected ConwayError::Build, got a different variant: {other:?}"),
     }
+}
+
+/// A `BackendFactory` that builds a distinct backend PER CALL, using the
+/// entry's own id (`ctx.id`) as `Backend::id()` -- so two `[backends.<id>]`
+/// entries naming the SAME kind produce two independently addressable
+/// backends, not one. The entry named `refuse_id` is built with a
+/// `max_context_tokens` too small for ANY request to fit, so a routing
+/// chain that lists it FIRST always skips it (`Backend::admit`'s default
+/// `check_admission`) and falls through to the OTHER entry's own backend --
+/// proving both concretely exist in the built runtime, not merely that
+/// `build()` returned `Ok` twice.
+struct DualEntryBackendFactory {
+    kind_id: &'static str,
+    refuse_id: &'static str,
+    calls: Arc<Mutex<Vec<BackendId>>>,
+}
+
+impl BackendFactory for DualEntryBackendFactory {
+    fn id(&self) -> &str {
+        self.kind_id
+    }
+
+    fn build(&self, ctx: BackendBuildContext) -> Result<Arc<dyn Backend>, CoreConwayError> {
+        self.calls.lock().unwrap().push(ctx.id.clone());
+        let capabilities = if ctx.id.as_str() == self.refuse_id {
+            Capabilities {
+                max_context_tokens: 1,
+                ..caps()
+            }
+        } else {
+            caps()
+        };
+        Ok(Arc::new(FakeBackend::new(
+            ctx.id.clone(),
+            capabilities,
+            text_response(&format!("served by {}", ctx.id.as_str())),
+        )))
+    }
+}
+
+/// Property 5 (this item's own binding notes, board item
+/// 01KZMM9E5SMA9C1SB8D4RG6DDB): TWO `[backends.<id>]` entries naming the
+/// SAME kind invoke that kind's registered factory TWICE, with two
+/// DIFFERENT `BackendBuildContext`s -- the single material asymmetry
+/// against `RouterFactory`, which builds at most once regardless of how
+/// many config entries might reference it (`with_backend_factory`'s own
+/// doc: "a router build has ONE outcome... a backend build has MANY").
+///
+/// The discriminating observable is that TWO DISTINCT backends resulted,
+/// not merely that the call counter reached 2 (a dedupe-by-kind regression
+/// that invoked the factory once but recorded the call twice, or invoked it
+/// twice with the SAME context both times, would still pass a bare
+/// call-count assertion). Proven by forcing the routing chain through BOTH
+/// of them: the first-listed route's own backend (`entry-a`, built with an
+/// impossibly small `max_context_tokens`) always refuses admission, so the
+/// turn can only complete by falling through to the SECOND route's own
+/// backend (`entry-b`) -- if the two entries had collapsed into one
+/// factory invocation, or one had silently overwritten the other in the
+/// built backend map, `entry-b`'s backend would be entirely absent from the
+/// runtime, not merely differently configured, and this must fail loudly
+/// rather than produce different error text.
+#[tokio::test]
+async fn two_entries_naming_one_kind_invoke_the_factory_twice_and_produce_two_distinct_backends() {
+    let cfg = config_naming_kind_twice("entry-a", "entry-b", "shared-kind");
+    let store = Arc::new(FakeStore::new());
+    let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let factory = Arc::new(DualEntryBackendFactory {
+        kind_id: "shared-kind",
+        refuse_id: "entry-a",
+        calls: calls.clone(),
+    });
+
+    let route_a = Route {
+        backend: BackendId::new("entry-a"),
+        model: ModelId::new("stub-model"),
+        params: SamplingParams::default(),
+        reason: RoutingReason::AliasPrimary {
+            alias: RoleAlias::new("primary"),
+        },
+    };
+    let route_b = Route {
+        backend: BackendId::new("entry-b"),
+        model: ModelId::new("stub-model"),
+        params: SamplingParams::default(),
+        reason: RoutingReason::Fallback {
+            position: 1,
+            after: Vec::new(),
+        },
+    };
+    let router: Arc<dyn conway_core::ports::Router> =
+        Arc::new(FakeRouter::new(vec![route_a, route_b]));
+
+    let conway = ConwayBuilder::from_parts(cfg)
+        .with_session_store(store)
+        .with_permission_gate(gate)
+        .with_router(router)
+        .with_backend_factory(factory)
+        .build()
+        .expect("build must succeed: two entries naming the same kind is not itself an error");
+
+    let mut called: Vec<String> = calls
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|id| id.as_str().to_string())
+        .collect();
+    called.sort();
+    assert_eq!(
+        called,
+        vec!["entry-a".to_string(), "entry-b".to_string()],
+        "the registered factory must be invoked ONCE PER config entry naming its kind, not once \
+         per kind -- got {called:?}"
+    );
+
+    let session = conway
+        .new_session(SessionSpec::default())
+        .await
+        .expect("new_session must succeed");
+    let turn = session.prompt("hi").await.expect("prompt must succeed");
+    let text = turn.text().await.expect("text must succeed");
+
+    assert_eq!(
+        text, "served by entry-b",
+        "the first-listed route's own backend (entry-a) always refuses admission, so the turn \
+         can only complete by falling through to entry-b's own, DISTINCT backend -- if the two \
+         entries had collapsed into one factory call, or one had silently overwritten the \
+         other, entry-b's backend would be missing from the built runtime entirely, not merely \
+         differently configured -- got {text:?}"
+    );
 }

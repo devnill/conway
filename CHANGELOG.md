@@ -182,6 +182,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   design. Every unbuilt section names its board item
   (01KZDC0RDRMMMJHX7SAFMM2Q5A, 01KZ844ZXZMVRWC7ZANT7PSM6X).
 
+- **Three documented guarantees had tests that could not have failed if the
+  guarantee were deleted** (board item 01KZMM9E5SMA9C1SB8D4RG6DDB). Not
+  missing tests — existing ones whose fixtures left the thing under test at
+  its default, so the assertion said nothing.
+
+  **Model-pin inheritance.** A forked child is documented as inheriting its
+  parent's system prompt, tools selector, *and* model pin. The first two
+  were genuinely tested; the fixture set `model: None`, so nothing could
+  tell the pin reaching the routing request from the pin never existing —
+  and it decides which model actually serves the child's turn. The new
+  guard needed **two** fixes, not one: the def now carries a pin, *and* the
+  test runs under a real `MinimalRouter` rather than the `FakeRouter` the
+  neighbouring tests use, because that fake ignores `RouteRequest::pin`
+  outright and would have kept the assertion vacuous by a second route.
+
+  **Spawn's refusal to inherit.** The one test exercising it started from a
+  root with no definition at all, so asserting the child had none could not
+  distinguish "spawn correctly declined" from "there was nothing to
+  decline". It now spawns from a root running under the *same* restricted
+  definition a fork would inherit, and asserts the child is offered the
+  full tool registry rather than the def's narrowed set.
+
+  **One kind, many instances.** `with_backend_factory` documents that two
+  config entries naming one kind build that factory twice — the single
+  material asymmetry against `RouterFactory`, which builds at most once. No
+  test built two entries naming one kind. The new one routes a chain
+  through both resulting backends, with the first configured to always
+  refuse, so only genuinely distinct backends let the turn complete.
+
+  Each was watched to fail against the removed behaviour before being
+  accepted. Three existing tests share the changed fixture and were checked
+  to still assert what they did before.
+  (`crates/conway-runtime/tests/subagent_fork_spawn.rs`,
+  `crates/conway/tests/backend_factory.rs`)
+
 - **The security page names backends and routers — the one extension point
   the harness hands a credential to was the one it omitted** (board item
   01KZMMCGAPGPRG7T0JXWMRM46S). `docs/plugins/trust-and-security.md` is 267
