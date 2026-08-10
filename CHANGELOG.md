@@ -182,6 +182,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   design. Every unbuilt section names its board item
   (01KZDC0RDRMMMJHX7SAFMM2Q5A, 01KZ844ZXZMVRWC7ZANT7PSM6X).
 
+- **A third-party provider adapter can now read its own configuration keys —
+  `BackendBuildContext` carries `extra`** (board item
+  01KZMM8ABQJQGHTDTP5S29P88C). `docs/providers.md` told an author their
+  custom keys were "captured verbatim and handed to whichever factory built
+  that entry's backend". The first half was true; the second was not —
+  `BackendEntry::extra` was populated at load time and then discarded,
+  because the build context had no field for it and `build_backend_context`
+  never read it.
+
+  Fixed by building the mechanism rather than retracting the claim. The
+  reason that was the right way round: `BackendEntry` gave up
+  `deny_unknown_fields` *specifically* to give third-party kinds somewhere
+  to put custom keys, and the cost of that — a misspelled well-known key
+  now silently swallowed — was already paid and already pinned by a test.
+  With `extra` reaching no factory, the trade was all cost and no benefit.
+
+  Proven where it counts: `crates/conway-thirdparty-backend`, whose
+  `[dependencies]` names exactly one workspace crate, reads a custom key and
+  **varies its reply by the value**. The assertion is on that reply, not on
+  the field being populated — removing the wiring fails both its tests.
+  That crate compiling is also the facade-reachability proof: the field's
+  value type is `serde_json::Value`, which conway does not re-export, but a
+  third party names `serde_json` in their own manifest exactly as they
+  already do for `async-trait` and `serde`.
+
+  The two shipped dialects are unaffected — neither reads `extra` — and no
+  existing test needed editing.
+  (`crates/conway-core/src/ports/backend.rs`, `crates/conway/src/builder.rs`,
+  `crates/conway/src/config/schema.rs`,
+  `crates/conway-thirdparty-backend/`, `crates/conway/tests/backend_parity.rs`,
+  [`docs/providers.md`](docs/providers.md))
+
 - **Provider adapters have a documented authoring path, and three places
   that said otherwise are corrected** (board item 01KZHF46C80HFAQN2CJEXXVYY5,
   **closing the backends-as-plugins charter**). `docs/providers.md` gains
@@ -409,10 +441,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and credential resolution stays centralised regardless of which kind
   builds the backend.
 
-  **Known follow-on:** `BackendBuildContext` does not yet expose `extra` to
-  a factory, so a third-party kind cannot read its own custom keys. Labeled
-  at `BackendEntry`'s doc rather than left to be discovered; no in-tree
-  factory needs it yet.
+  **Follow-on, since closed:** `BackendBuildContext` did not expose `extra`
+  to a factory, so a third-party kind could not read its own custom keys.
+  That gap is closed — see the `extra` entry above.
   (`crates/conway/src/config/schema.rs`, `crates/conway/src/builder.rs`,
   `crates/conway/tests/`, [`docs/providers.md`](docs/providers.md),
   [`docs/embedding.md`](docs/embedding.md))

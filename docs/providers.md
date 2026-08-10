@@ -121,10 +121,15 @@ An entry's keys beyond `kind`/`api_key`/`api_key_env`/`base_url`/`dialect`/
 `stream_tools` are not rejected: they are captured verbatim and handed to
 whichever factory built that entry's backend, so a third-party kind can
 carry its own configuration without this crate knowing its shape in
-advance. The cost: a typo in one of the six named keys above (e.g.
-`base_ur1`) is no longer caught at load time — it is silently captured
-alongside any real custom key rather than erroring. Double-check spelling
-against the fields named above; `conway` cannot catch that typo for you.
+advance. Concretely: they land in `BackendBuildContext::extra` (a
+`BTreeMap<String, serde_json::Value>`), the exact argument
+`BackendFactory::build` receives — see ["Writing your own
+adapter"](#writing-your-own-adapter) below for a worked example that reads
+one back out and lets it change the backend's own behaviour. The cost: a
+typo in one of the six named keys above (e.g. `base_ur1`) is no longer
+caught at load time — it is silently captured alongside any real custom key
+rather than erroring. Double-check spelling against the fields named above;
+`conway` cannot catch that typo for you.
 
 ## Anthropic and Anthropic-compatible endpoints
 
@@ -438,12 +443,14 @@ asserting on the turn's own returned text directly; the latter as a
 genuinely separate compiled binary that prints that text to stdout, which
 `tests/binary.rs` then asserts on via `assert_cmd`. Every Rust block below
 is byte-for-byte what the file contains, omitting only the struct field
-declarations, a hand-rolled `Stream` impl (`VecStream`)
-`Backend::stream`'s return type needs, and doc comments; the
-`.conway/models.json` block near the end is shown rendered as the JSON it
-produces, not as the `serde_json::json!` call that builds it (that call
-IS shown verbatim for `settings.json`, immediately above it) — nothing
-below diverges in substance from what the file contains.
+declarations, a hand-rolled `Stream` impl (`VecStream`) `Backend::stream`'s
+return type needs, doc comments, and the file-writing tail of the private
+`write_settings_with_backend_entry` helper (the `std::fs::write` calls that
+serialize `settings.json` and `.conway/models.json` to disk, unchanged by
+this item); the `.conway/models.json` block near the end is shown rendered
+as the JSON it produces, not as the `serde_json::json!` call that builds it
+(that call IS shown verbatim for `settings.json`, immediately above it) —
+nothing below diverges in substance from what the file contains.
 
 The imports — everything needed to implement `Backend`, and nothing from
 `conway-core`:
@@ -467,6 +474,45 @@ pub const BACKEND_ID: &str = "thirdparty";
 /// (`ThirdPartyBackendFactory::id()` returns the identical value), never a
 /// closed enum variant (board item 01KZHF1E85MS1VF4YH8CDNCP9Z).
 pub const BACKEND_KIND: &str = "thirdparty-stub";
+```
+
+`REPLY_TEXT` and `GREETING_KEY` — the reply this backend gives when the
+entry sets no custom key, and the custom key it reads back out of
+`BackendBuildContext::extra` when the entry does:
+
+```rust,ignore
+pub const REPLY_TEXT: &str =
+    "hello from the third-party backend, installed through settings.json alone";
+pub const GREETING_KEY: &str = "greeting";
+```
+
+`respond()` is where `greeting` — read once at construction time by
+`ThirdPartyBackendFactory::build`, below — becomes an observable difference
+in what the backend says, not merely a field that arrived populated:
+
+```rust,ignore
+impl ThirdPartyBackend {
+    fn respond(&self) -> GenerateResponse {
+        let text = match &self.greeting {
+            Some(greeting) => format!(
+                "hello, {greeting} -- from the third-party backend, installed through \
+                 settings.json alone, with a custom `greeting` key read from \
+                 BackendBuildContext::extra"
+            ),
+            None => REPLY_TEXT.to_string(),
+        };
+        GenerateResponse {
+            content: vec![ContentBlock::Text { text: text.clone() }],
+            tool_calls: vec![],
+            stop: StopReason::EndTurn,
+            usage: Usage {
+                input_tokens: 0,
+                output_tokens: u32::try_from(text.len()).unwrap_or(u32::MAX).div_ceil(4),
+                ..Usage::default()
+            },
+        }
+    }
+}
 ```
 
 The `Backend` implementation — all five methods, `admit` overridden and
@@ -567,7 +613,10 @@ The `BackendFactory` — `id()` names the published kind, `build()` reads
 `BackendBuildContext::models` (the same `.conway/models.json`-derived table
 a config-derived backend's own capabilities are projected from) for a
 per-model override, exactly the way `conway-plugin-backends`'s own two
-shipped factories do:
+shipped factories do, and reads `BackendBuildContext::extra` for
+`GREETING_KEY` the identical way — the same context field, read the same
+way, proving the catch-all channel a third-party kind's own configuration
+travels through is genuinely reachable, not merely nameable:
 
 ```rust,ignore
 pub struct ThirdPartyBackendFactory;
@@ -583,9 +632,19 @@ impl BackendFactory for ThirdPartyBackendFactory {
             .get(MODEL_ID)
             .and_then(|overrides: &ModelOverrides| overrides.max_context_tokens)
             .unwrap_or(32_000);
+        // `extra` is the entry's own keys beyond `kind` and the five typed
+        // fields `BackendEntry` recognizes -- absent when the entry sets no
+        // `greeting`, in which case `ThirdPartyBackend::respond` gives back
+        // `REPLY_TEXT` unchanged.
+        let greeting = ctx
+            .extra
+            .get(GREETING_KEY)
+            .and_then(|value| value.as_str())
+            .map(str::to_string);
         Ok(Arc::new(ThirdPartyBackend {
             id: ctx.id,
             max_context_tokens,
+            greeting,
         }))
     }
 }
@@ -618,28 +677,57 @@ pub fn build_conway(dir: &Path, config_path: &Path) -> conway::Result<conway::Co
 
 And the `settings.json`/`.conway/models.json` pair this factory resolves
 against — the same `[backends.<id>].kind` shape every dialect on this page
-uses, naming a kind no built-in factory claims:
+uses, naming a kind no built-in factory claims. `write_settings_with_
+greeting` is the variant that also sets `GREETING_KEY` — the custom key
+beyond `kind` this section exists to demonstrate — leaving everything else
+to the shared `write_settings_with_backend_entry` helper so the two never
+drift apart on anything but the one entry that differs:
 
 ```rust,ignore
-let chain = format!("{BACKEND_ID}/{MODEL_ID}");
-let settings = serde_json::json!({
-    "default_role": "coder",
-    "cwd": dir.to_string_lossy(),
-    // `permissions.mode = "allowlist"` requires a non-empty
-    // `allowed_tools` list (`config::merge::validate`) even though
-    // `ThirdPartyBackend` never issues a tool call and this gate is
-    // therefore never actually consulted -- `"*"` is a real,
-    // syntactically valid `AllowListGate` glob entry (matches any
-    // tool name), not a magic sentinel this fixture invented.
-    "permissions": { "mode": "allowlist", "allowed_tools": ["*"] },
-    "backends": {
-        BACKEND_ID: { "kind": BACKEND_KIND }
-    },
-    "roles": {
-        "coder": { "chain": [chain] }
-    }
-});
+pub fn write_settings_with_greeting(dir: &std::path::Path, greeting: &str) -> PathBuf {
+    write_settings_with_backend_entry(
+        dir,
+        serde_json::json!({ "kind": BACKEND_KIND, (GREETING_KEY): greeting }),
+    )
+}
+
+fn write_settings_with_backend_entry(
+    dir: &std::path::Path,
+    backend_entry: serde_json::Value,
+) -> PathBuf {
+    let chain = format!("{BACKEND_ID}/{MODEL_ID}");
+    let settings = serde_json::json!({
+        "default_role": "coder",
+        "cwd": dir.to_string_lossy(),
+        // `permissions.mode = "allowlist"` requires a non-empty
+        // `allowed_tools` list (`config::merge::validate`) even though
+        // `ThirdPartyBackend` never issues a tool call and this gate is
+        // therefore never actually consulted -- `"*"` is a real,
+        // syntactically valid `AllowListGate` glob entry (matches any
+        // tool name), not a magic sentinel this fixture invented.
+        "permissions": { "mode": "allowlist", "allowed_tools": ["*"] },
+        "backends": {
+            BACKEND_ID: backend_entry
+        },
+        "roles": {
+            "coder": { "chain": [chain] }
+        }
+    });
+    // (elided here, unchanged by this item: the std::fs::write calls that
+    // serialize `settings` to `settings.json` and a `.conway/models.json`
+    // entry to disk -- shown rendered as JSON, not as the code that builds
+    // it, immediately below.)
+}
 ```
+
+A `write_settings_with_greeting(dir, "friend")` call therefore renders a
+`[backends.thirdparty]` entry of `{"kind": "thirdparty-stub", "greeting":
+"friend"}` — the `greeting` key is not one of `BackendEntry`'s five typed
+fields, so it lands in that entry's own `extra` map, which is exactly what
+`ThirdPartyBackendFactory::build` (above) reads back out. `fixture::
+write_settings` (used everywhere else on this page and in `tests/end_to_
+end.rs`) sets no such key, so its `ThirdPartyBackend` gives back
+`REPLY_TEXT` unchanged — the two fixtures differ only in that one entry.
 
 ```json
 // .conway/models.json
@@ -659,8 +747,13 @@ Run it yourself: `cargo test -p conway-thirdparty-backend` builds this
 exact code, installs it through the exact mechanism above, completes one
 real turn, and asserts the returned text is the adapter's own hand-written
 reply — credential-free and network-free throughout, since this particular
-stand-in adapter never makes an outbound call at all. A dialect that talks
-to a real provider does the identical `Backend`/`BackendFactory`/
+stand-in adapter never makes an outbound call at all.
+`tests/custom_key.rs` is the same proof one step further: it renders two
+entries differing only in their `greeting` value and asserts the two
+resulting turns come back with two different, `greeting`-naming replies —
+the observable evidence that a custom key genuinely reaches the factory,
+not merely that `BackendBuildContext::extra` is non-empty. A dialect that
+talks to a real provider does the identical `Backend`/`BackendFactory`/
 `with_backend_factory` dance; only `generate`/`stream`/`probe`'s own
 bodies differ, the same way `conway-plugin-backends`'s two shipped
 factories differ from this one.

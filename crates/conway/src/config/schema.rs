@@ -273,10 +273,13 @@ pub enum PermissionMode {
 ///    section of `settings.json` — accepted here, and only here, because
 ///    the alternative (below) forecloses third-party kinds entirely. A
 ///    factory is free to validate its own `extra` keys inside `build()`
-///    (`BackendBuildContext` does not yet carry `extra` — a follow-on
-///    concern once a real third-party kind needs it, not one this item's
-///    two fallback adapters do) and reject its own typos there; the facade
-///    itself does not attempt per-kind validation.
+///    and reject its own typos there — `conway_core::ports::
+///    BackendBuildContext::extra` (board item 01KZMM8ABQJQGHTDTP5S29P88C)
+///    carries this same map, cloned verbatim by
+///    `crate::builder::build_backend_context`, onward to every registered
+///    `BackendFactory::build`, so this is genuinely reachable now, not
+///    merely a follow-on concern; the facade itself still does not attempt
+///    per-kind validation on a factory's behalf.
 /// 2. *Rejected*: nest custom keys under one explicit sub-object (e.g.
 ///    `{"kind": "foo", "config": {...}}`), leaving the top level closed and
 ///    `deny_unknown_fields` intact. Rejected because it reintroduces
