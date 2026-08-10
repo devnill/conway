@@ -327,6 +327,11 @@ mod tests {
             dialect: dialect.map(|d| d.to_string()),
             models: BTreeMap::new(),
             profile_file_paths: Vec::new(),
+            // Board item 01KZMM8ABQJQGHTDTP5S29P88C: neither shipped
+            // dialect reads `extra` -- this helper's callers all assert on
+            // `base_url`/`dialect`/`profile_file_paths` behavior, unaffected
+            // by this field's addition.
+            extra: BTreeMap::new(),
         }
     }
 

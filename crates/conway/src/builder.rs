@@ -1028,10 +1028,15 @@ fn resolve_backend_factory<'a>(
 /// config-derived backend's credential already goes through, `models` the
 /// same per-backend `models.json` overrides [`models_overrides_for`]
 /// projects (WI-123's single-source guarantee, extended to every registered
-/// kind rather than left a built-ins-only privilege), and `profile_file_paths`
+/// kind rather than left a built-ins-only privilege), `profile_file_paths`
 /// copied verbatim from [`ConwayBuilder::build`]'s own step 2b resolution --
 /// see that field's own doc ([`conway_core::ports::BackendBuildContext`]) for
-/// why every kind receives the identical list whether or not it reads it.
+/// why every kind receives the identical list whether or not it reads it --
+/// and `extra` cloned verbatim from this same `entry`'s own
+/// [`BackendEntry::extra`] (board item 01KZMM8ABQJQGHTDTP5S29P88C), never
+/// from anywhere else: this is the ONLY place that map is read out of the
+/// loaded config and handed onward, closing the gap where it was previously
+/// captured at load time and then discarded before any factory saw it.
 fn build_backend_context(
     id: &str,
     entry: &BackendEntry,
@@ -1050,6 +1055,7 @@ fn build_backend_context(
         dialect: entry.dialect.clone(),
         models: models_overrides_for(id, metadata),
         profile_file_paths: profile_file_paths.to_vec(),
+        extra: entry.extra.clone(),
     })
 }
 

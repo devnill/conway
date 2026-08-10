@@ -93,9 +93,26 @@ pub const MODEL_ID: &str = "stub-model";
 /// `tests/end_to_end.rs` and `src/bin/thirdparty_backend_demo.rs` both
 /// assert the completed turn's text equals. Deliberately mentions neither
 /// "mock" nor "fake": this really is the backend's own, real, hand-written
-/// answer, not a stand-in for one.
+/// answer, not a stand-in for one. Given back only when the entry set no
+/// [`GREETING_KEY`] -- see that constant's own doc for the reply this
+/// backend gives instead when one is set.
 pub const REPLY_TEXT: &str =
     "hello from the third-party backend, installed through settings.json alone";
+
+/// The `[backends.<id>]` custom key this stand-in reads out of
+/// [`BackendBuildContext::extra`] (board item 01KZMM8ABQJQGHTDTP5S29P88C) --
+/// this crate's proof that a third-party kind's own configuration genuinely
+/// reaches its factory, rather than being captured at config-load time and
+/// discarded before any factory ever sees it (`docs/providers.md`'s
+/// "Writing your own adapter" section used to promise the former and
+/// deliver the latter; this is what makes the promise true).
+/// `fixture::write_settings_with_greeting` is what sets it;
+/// `ThirdPartyBackendFactory::build` is what reads it;
+/// `ThirdPartyBackend::respond`'s reply text is where the value becomes
+/// observable -- `tests/custom_key.rs` asserts on that reply text, not on
+/// `extra` merely containing the key, and removing the wiring anywhere
+/// along that chain makes it fail.
+pub const GREETING_KEY: &str = "greeting";
 
 /// A complete, in-process [`Backend`]: no network I/O, deterministic,
 /// hand-written -- exactly the shape a real stranger's own adapter for an
@@ -105,6 +122,11 @@ pub const REPLY_TEXT: &str =
 pub struct ThirdPartyBackend {
     id: BackendId,
     max_context_tokens: u32,
+    /// `ctx.extra.get(GREETING_KEY)`'s string value, read once by
+    /// `ThirdPartyBackendFactory::build` -- `None` when the entry set no
+    /// `greeting` key, in which case `respond()` gives back [`REPLY_TEXT`]
+    /// unchanged, exactly as it did before this field existed.
+    greeting: Option<String>,
 }
 
 /// The dialect-neutral request-size estimate `ThirdPartyBackend::admit`
@@ -133,19 +155,27 @@ impl ThirdPartyBackend {
     /// The one real response this backend ever gives, regardless of what
     /// `req` asked -- deliberately ignores `req.tools`/`req.segments`
     /// entirely (this stub never calls a tool), so the same text always
-    /// comes back through `generate`/`stream` alike.
+    /// comes back through `generate`/`stream` alike. What varies is
+    /// `self.greeting`: `REPLY_TEXT` verbatim when it is `None`, a reply
+    /// naming the value when it is `Some` -- the observable this crate's
+    /// `tests/custom_key.rs` asserts on to prove `BackendBuildContext::
+    /// extra` reached this factory-built instance.
     fn respond(&self) -> GenerateResponse {
+        let text = match &self.greeting {
+            Some(greeting) => format!(
+                "hello, {greeting} -- from the third-party backend, installed through \
+                 settings.json alone, with a custom `greeting` key read from \
+                 BackendBuildContext::extra"
+            ),
+            None => REPLY_TEXT.to_string(),
+        };
         GenerateResponse {
-            content: vec![ContentBlock::Text {
-                text: REPLY_TEXT.to_string(),
-            }],
+            content: vec![ContentBlock::Text { text: text.clone() }],
             tool_calls: vec![],
             stop: StopReason::EndTurn,
             usage: Usage {
                 input_tokens: 0,
-                output_tokens: u32::try_from(REPLY_TEXT.len())
-                    .unwrap_or(u32::MAX)
-                    .div_ceil(4),
+                output_tokens: u32::try_from(text.len()).unwrap_or(u32::MAX).div_ceil(4),
                 ..Usage::default()
             },
         }
@@ -243,7 +273,10 @@ impl Stream for VecStream {
 /// config-derived backend's capabilities are projected from, WI-123) for a
 /// [`MODEL_ID`] override, exactly the way `conway-plugin-backends`' own two
 /// shipped factories do -- proving a genuinely third-party factory reads
-/// the identical context a first-party one does.
+/// the identical context a first-party one does. Also reads
+/// [`BackendBuildContext::extra`] for [`GREETING_KEY`] -- the same context
+/// field, read the same way, proving the catch-all channel a third-party
+/// kind's own configuration travels through is genuinely reachable too.
 pub struct ThirdPartyBackendFactory;
 
 impl BackendFactory for ThirdPartyBackendFactory {
@@ -257,9 +290,19 @@ impl BackendFactory for ThirdPartyBackendFactory {
             .get(MODEL_ID)
             .and_then(|overrides: &ModelOverrides| overrides.max_context_tokens)
             .unwrap_or(32_000);
+        // `extra` is the entry's own keys beyond `kind` and the five typed
+        // fields `BackendEntry` recognizes -- absent when the entry sets no
+        // `greeting`, in which case `ThirdPartyBackend::respond` gives back
+        // `REPLY_TEXT` unchanged.
+        let greeting = ctx
+            .extra
+            .get(GREETING_KEY)
+            .and_then(|value| value.as_str())
+            .map(str::to_string);
         Ok(Arc::new(ThirdPartyBackend {
             id: ctx.id,
             max_context_tokens,
+            greeting,
         }))
     }
 }
@@ -307,7 +350,7 @@ pub fn build_conway(dir: &Path, config_path: &Path) -> conway::Result<conway::Co
 pub mod fixture {
     use std::path::PathBuf;
 
-    use super::{BACKEND_ID, BACKEND_KIND, MODEL_ID};
+    use super::{BACKEND_ID, BACKEND_KIND, GREETING_KEY, MODEL_ID};
 
     /// A fresh, uniquely-named directory under the OS temp dir -- this
     /// crate's own manual stand-in for `tempfile::tempdir()` (not a
@@ -338,8 +381,39 @@ pub mod fixture {
     /// only from `models.json`-declared pairs -- `crates/conway-cli/tests/
     /// common/mod.rs`'s own `write_fixture` documents the identical
     /// requirement for the compiled-binary suite one crate over). Returns
-    /// the `settings.json` path.
+    /// the `settings.json` path. The `[backends.<id>]` entry names only
+    /// `kind` -- no [`GREETING_KEY`] -- so `ThirdPartyBackend::respond`
+    /// gives back `REPLY_TEXT` unchanged; see
+    /// [`write_settings_with_greeting`] for the variant that exercises
+    /// `BackendBuildContext::extra`.
     pub fn write_settings(dir: &std::path::Path) -> PathBuf {
+        write_settings_with_backend_entry(dir, serde_json::json!({ "kind": BACKEND_KIND }))
+    }
+
+    /// Same as [`write_settings`], except the `[backends.<id>]` entry also
+    /// carries a [`GREETING_KEY`] key beyond `kind` -- one of the keys
+    /// `BackendEntry` does not itself recognize, captured into its `extra`
+    /// map and, since board item 01KZMM8ABQJQGHTDTP5S29P88C, handed onward
+    /// through `BackendBuildContext::extra` to
+    /// `ThirdPartyBackendFactory::build`. `tests/custom_key.rs` uses this to
+    /// prove the value genuinely reaches the factory-built backend's own
+    /// reply text, not merely that `extra` is populated.
+    pub fn write_settings_with_greeting(dir: &std::path::Path, greeting: &str) -> PathBuf {
+        write_settings_with_backend_entry(
+            dir,
+            serde_json::json!({ "kind": BACKEND_KIND, (GREETING_KEY): greeting }),
+        )
+    }
+
+    /// Shared by [`write_settings`] and [`write_settings_with_greeting`] --
+    /// only the `[backends.<id>]` entry itself differs between the two, so
+    /// this is the one place the rest of the rendered `settings.json` and
+    /// its `.conway/models.json` companion are written, keeping the two
+    /// fixtures from silently drifting apart on everything else.
+    fn write_settings_with_backend_entry(
+        dir: &std::path::Path,
+        backend_entry: serde_json::Value,
+    ) -> PathBuf {
         let chain = format!("{BACKEND_ID}/{MODEL_ID}");
         let settings = serde_json::json!({
             "default_role": "coder",
@@ -352,7 +426,7 @@ pub mod fixture {
             // tool name), not a magic sentinel this fixture invented.
             "permissions": { "mode": "allowlist", "allowed_tools": ["*"] },
             "backends": {
-                BACKEND_ID: { "kind": BACKEND_KIND }
+                BACKEND_ID: backend_entry
             },
             "roles": {
                 "coder": { "chain": [chain] }

@@ -468,6 +468,16 @@ impl BackendFactory for StubBackendFactory {
             // cannot name keeps failing to compile (this destructure's own
             // doc, above).
             profile_file_paths: _profile_file_paths,
+            // Board item 01KZMM8ABQJQGHTDTP5S29P88C: this stub has no
+            // custom-key concept of its own -- `crates/conway-thirdparty-
+            // backend` is the crate that proves `extra` reaches a factory
+            // and changes behavior, not this one (a facade-only manifest
+            // is the load-bearing part of that proof; this file's dev-
+            // dependency graph already includes `conway-core`, so it
+            // cannot stand in for it) -- still named here, not `..`, for
+            // the identical exhaustiveness reason as `profile_file_paths`
+            // just above.
+            extra: _extra,
         } = ctx;
         let max_context_tokens = models
             .get("stub-model")
@@ -523,6 +533,7 @@ async fn factory_build_reads_every_context_field_and_produces_a_working_backend(
         dialect: Some("stub-dialect".to_string()),
         models,
         profile_file_paths: Vec::new(),
+        extra: BTreeMap::new(),
     };
 
     let backend = StubBackendFactory
@@ -557,6 +568,7 @@ fn factory_build_error_is_a_named_conway_core_error() {
         dialect: None,
         models: BTreeMap::new(),
         profile_file_paths: Vec::new(),
+        extra: BTreeMap::new(),
     };
     // `Arc<dyn Backend>` (the `Ok` type) is not `Debug`, so `expect_err`
     // (which requires `T: Debug`) cannot be used here -- match directly

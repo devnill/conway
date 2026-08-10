@@ -255,10 +255,10 @@ pub trait Backend: Send + Sync + 'static {
 /// nameable; `BackendEntry`'s own six fields (`kind`, `api_key`,
 /// `api_key_env`, `base_url`, `dialect`, `stream_tools`) still fully cover
 /// via the resolved fields below (`stream_tools` has no analogue here: it is
-/// not read by either shipped kind's `build` today). A follow-on item is
-/// free to widen this struct with a raw/escape-hatch field for whatever
-/// `[backends.<id>]` gains in the future -- nothing about this shape
-/// forecloses that.
+/// not read by either shipped kind's `build` today), and [`Self::extra`]
+/// (board item 01KZMM8ABQJQGHTDTP5S29P88C) is that same escape hatch for
+/// whatever a `kind` puts beyond those six -- a raw entry duplicating the
+/// six typed fields a second time alongside it would still buy nothing.
 #[derive(Clone, Debug)]
 pub struct BackendBuildContext {
     /// The instance identity this backend SHOULD report from its own
@@ -322,6 +322,32 @@ pub struct BackendBuildContext {
     /// reads this field, the same way it is free to ignore
     /// [`Self::dialect`] itself.
     pub profile_file_paths: Vec<PathBuf>,
+    /// Every key `[backends.<id>]`'s entry carried beyond `kind` and the
+    /// five typed fields above -- the facade's own `BackendEntry::extra`
+    /// (`crates/conway/src/config/schema.rs`), copied here verbatim by
+    /// `build_backend_context` and from nowhere else. `BTreeMap<String,
+    /// serde_json::Value>` on purpose: the identical map type
+    /// `BackendEntry::extra` itself uses, so no conversion happens crossing
+    /// this boundary.
+    ///
+    /// This is the field that makes `BackendEntry`'s own trade real rather
+    /// than merely accepted: that struct dropped `#[serde(deny_unknown_
+    /// fields)]` specifically so a third-party kind would have somewhere to
+    /// put its own configuration, at the disclosed cost that a typo in one
+    /// of the five typed field names (e.g. `base_ur1`) is silently captured
+    /// here instead of rejected at load. Before this field existed, `extra`
+    /// was captured at load time and then discarded before any
+    /// [`BackendFactory::build`] ever saw it -- all of that cost, none of
+    /// the benefit. A kind's `build()` is free to validate its own keys out
+    /// of this map and reject its own typos there; the facade itself
+    /// performs no per-kind validation.
+    ///
+    /// Empty (not merely absent) when the entry set no key beyond the five
+    /// typed ones -- a kind that never reads this field behaves exactly as
+    /// it did before this field was added. Neither shipped kind
+    /// (`conway_plugin_backends`'s `"anthropic"`/`"openai-compat"`) reads
+    /// it.
+    pub extra: BTreeMap<String, serde_json::Value>,
 }
 
 /// Builds one [`Backend`] instance for a provider-adapter KIND named up
