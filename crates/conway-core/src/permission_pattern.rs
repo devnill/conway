@@ -1364,6 +1364,37 @@ pub fn suggested_rule(tool: &str, rendered: &str, render_kind: RenderKind) -> Op
 /// a `prompt` effect) has a home without forcing every existing rule into a
 /// schema reference. A file written before `rules` existed keeps parsing
 /// unchanged (`#[serde(default)]`).
+///
+/// ## Deliberately NOT `#[serde(deny_unknown_fields)]` (board item
+/// 01KZHVDDQQ7XT0RK3JVNM2YV83)
+///
+/// The type that must reject a misspelled key loudly is
+/// `parse_permission_file`'s inner `RawPermissionFile`, which is what
+/// `parse_rules`/`parse_deny_rules`/`parse_prompt_rules` (the LOAD path --
+/// `Conway::load_permission_files` calls them, gated further by
+/// `permission_file_unknown_field_error`) actually deserialize. `PermissionFile`
+/// itself is not that path: it is the ROUND-TRIP type `Conway`'s revoke
+/// rewrite (`rewrite_permission_file_removing[_structured]`) and the TUI's
+/// best-effort "always allow" append (`persist_permission_rule`) parse an
+/// EXISTING, already-on-disk file back into before writing it out again --
+/// and both are conway-authored writers reading conway-authored files back,
+/// exactly the version-skew case `docs/plugins/compatibility.md` calls out
+/// for a file exchanged across binary versions, not the hand-typed-key case
+/// `deny_unknown_fields` protects against. The append path is the sharper
+/// hazard: it already treats ANY parse failure as "file was empty" and
+/// OVERWRITES it with just the new rule (its own doc states this
+/// explicitly); if this type rejected an unrecognized field, a newer
+/// conway build's added field, read back by an older build appending one
+/// grant, would silently discard every OTHER rule the file held --
+/// including its `deny` rules -- a strictly worse outcome than the gap this
+/// item closes (a field this type doesn't know about is not itself
+/// preserved through the round trip either way -- neither variant has a
+/// catch-all for it -- so leniency here buys "the append does not nuke the
+/// rest of the file", not "the unknown field survives"). Keeping
+/// `PermissionFile` tolerant of an unrecognized field avoids that data
+/// loss, at the cost of not itself catching a typo in a file only ever
+/// reached through this type -- which does not happen: every load path
+/// reaches the file through `RawPermissionFile` first.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PermissionFile {
     /// Wire-form rules that AUTHORIZE. Malformed entries are dropped on
@@ -1415,7 +1446,9 @@ pub struct PermissionFile {
 /// round-trips the flat subset, so a caller that round-trips flat rules
 /// keeps working.
 pub fn parse_rules(contents: &str) -> Vec<Rule> {
-    parse_permission_file(contents).allow
+    parse_permission_file(contents)
+        .map(|f| f.allow)
+        .unwrap_or_default()
 }
 
 /// Parses a rules file's DENY rules -- flat `deny` strings desugared plus
@@ -1427,7 +1460,9 @@ pub fn parse_rules(contents: &str) -> Vec<Rule> {
 /// GUESSED AT from unparseable content would be worse: a half-understood
 /// safety rule inspires false confidence.
 pub fn parse_deny_rules(contents: &str) -> Vec<Rule> {
-    parse_permission_file(contents).deny
+    parse_permission_file(contents)
+        .map(|f| f.deny)
+        .unwrap_or_default()
 }
 
 /// Parses a rules file's PROMPT rules -- structured `rules` entries whose
@@ -1436,7 +1471,9 @@ pub fn parse_deny_rules(contents: &str) -> Vec<Rule> {
 /// F12), so this is drawn entirely from the structured `rules` array. Same
 /// fail-closed posture as [`parse_rules`]/[`parse_deny_rules`].
 pub fn parse_prompt_rules(contents: &str) -> Vec<Rule> {
-    parse_permission_file(contents).prompt
+    parse_permission_file(contents)
+        .map(|f| f.prompt)
+        .unwrap_or_default()
 }
 
 /// Shared parse used by [`parse_rules`], [`parse_deny_rules`], and
@@ -1446,19 +1483,55 @@ struct ParsedPermissionFile {
     allow: Vec<Rule>,
     deny: Vec<Rule>,
     prompt: Vec<Rule>,
+    /// Top-level keys `RawPermissionFile` does not recognize, captured by
+    /// its `#[serde(flatten)]` catch-all rather than detected from a
+    /// `serde_json::Error`'s message text -- see
+    /// [`permission_file_unknown_field_error`]'s own doc for why the
+    /// structural signal replaced the string one. Non-empty here means the
+    /// whole file is rejected: `allow`/`deny`/`prompt` above are left at
+    /// their empty default rather than populated from whatever the
+    /// correctly-spelled keys said, matching `Conway::load_permission_files`'s
+    /// "a typo rejects the whole file" contract even for a caller that
+    /// invokes [`parse_rules`]/[`parse_deny_rules`]/[`parse_prompt_rules`]
+    /// directly, bypassing that gate.
+    unknown_keys: Vec<String>,
 }
 
-fn parse_permission_file(contents: &str) -> ParsedPermissionFile {
-    // Parse `rules` as an array of opaque JSON values, then deserialize each
-    // one individually: a single structurally malformed `rules` entry is
-    // DROPPED, not guessed at (P-10), and the rest of the array plus the flat
-    // `allow`/`deny` lists survive. Parsing the whole document as
-    // `PermissionFile` (whose `rules: Vec<Rule>` is all-or-nothing under serde)
-    // would reject the entire file on one bad entry -- a louder but less
-    // useful failure, and one the field's own doc disclaims. The flat
-    // `allow`/`deny` lists are already drop-per-entry by construction
-    // (`PatternRule::parse` returns `Option`); this gives `rules` the same
-    // granular fail-closed posture.
+/// Parses the top-level shape of a permissions file, **failing closed on
+/// every error** (P-10). Still returns `Result` (not just the parsed value)
+/// because a `serde_json::Error` is possible for two reasons this function's
+/// callers must keep telling apart: content that is not valid JSON at all,
+/// and a type mismatch on a RECOGNIZED field (`"allow": "not-an-array"`) --
+/// both keep the existing SILENT fail-closed posture. A misspelled key is
+/// NOT one of those `Err` cases any more: it is reported structurally, via
+/// [`ParsedPermissionFile::unknown_keys`], not by matching a
+/// `serde_json::Error`'s message text -- see
+/// [`permission_file_unknown_field_error`]'s own doc for why the string
+/// match this replaced was fragile (board item 01KZHVDDQQ7XT0RK3JVNM2YV83).
+///
+/// Parses `rules` as an array of opaque JSON values, then deserializes each
+/// one individually: a single structurally malformed `rules` entry is
+/// DROPPED, not guessed at (P-10), and the rest of the array plus the flat
+/// `allow`/`deny` lists survive. Parsing the whole document as
+/// `PermissionFile` (whose `rules: Vec<Rule>` is all-or-nothing under serde)
+/// would reject the entire file on one bad `rules` entry -- a louder but
+/// less useful failure, and one the field's own doc disclaims. The flat
+/// `allow`/`deny` lists are already drop-per-entry by construction
+/// (`PatternRule::parse` returns `Option`); this gives `rules` the same
+/// granular fail-closed posture.
+///
+/// `RawPermissionFile` -- unlike the sibling public [`PermissionFile`] --
+/// carries a `#[serde(flatten)]` catch-all `extra` map instead of
+/// `#[serde(deny_unknown_fields)]` (the two are mutually incompatible in
+/// serde, and the catch-all is what lets an unknown key be reported
+/// structurally rather than by string-matching the error `deny_unknown_fields`
+/// would have produced). This inner type is the one that ACTUALLY
+/// deserializes a permissions file being loaded for installation (via
+/// [`parse_rules`]/[`parse_deny_rules`]/[`parse_prompt_rules`], which
+/// `Conway::load_permission_files` calls), so it is the type where a
+/// misspelled `"denys"` must be caught, not [`PermissionFile`] itself (see
+/// that type's own doc for why IT stays lenient).
+fn parse_permission_file(contents: &str) -> Result<ParsedPermissionFile, serde_json::Error> {
     #[derive(serde::Deserialize)]
     struct RawPermissionFile {
         #[serde(default)]
@@ -1467,19 +1540,31 @@ fn parse_permission_file(contents: &str) -> ParsedPermissionFile {
         deny: Vec<String>,
         #[serde(default)]
         rules: Vec<serde_json::Value>,
+        // Catches every top-level key above does not name. Non-empty is the
+        // ENTIRE signal `permission_file_unknown_field_error` acts on --
+        // structural, so it survives a wording change in serde/serde_json's
+        // own error text (the fragility board item 01KZHVDDQQ7XT0RK3JVNM2YV83's
+        // review found in the string-matching predecessor of this field).
+        #[serde(flatten)]
+        extra: serde_json::Map<String, serde_json::Value>,
     }
-    let file: RawPermissionFile = match serde_json::from_str(contents) {
-        Ok(file) => file,
-        // Fail closed: an unreadable file authorizes, denies, and prompts
-        // nothing.
-        Err(_) => {
-            return ParsedPermissionFile {
-                allow: Vec::new(),
-                deny: Vec::new(),
-                prompt: Vec::new(),
-            }
-        }
-    };
+    let file: RawPermissionFile = serde_json::from_str(contents)?;
+    let mut unknown_keys: Vec<String> = file.extra.keys().cloned().collect();
+    unknown_keys.sort();
+    if !unknown_keys.is_empty() {
+        // Fail closed on the whole file, same as the `deny_unknown_fields`
+        // `Err` this replaced: a file naming an unrecognized key installs
+        // NOTHING, not even its correctly-spelled `allow`/`deny`/`rules` --
+        // matching `Conway::load_permission_files`'s "a typo rejects the
+        // whole file" contract even for a caller that reaches
+        // `parse_rules`/`parse_deny_rules`/`parse_prompt_rules` directly.
+        return Ok(ParsedPermissionFile {
+            allow: Vec::new(),
+            deny: Vec::new(),
+            prompt: Vec::new(),
+            unknown_keys,
+        });
+    }
     // Flat `allow`/`deny` desugar into the same `Rule` the structured form
     // produces -- the second arm of `parse_rules`, not a second home. A
     // malformed flat entry is dropped (PatternRule::parse returns None).
@@ -1511,7 +1596,63 @@ fn parse_permission_file(contents: &str) -> ParsedPermissionFile {
             Err(_) => { /* drop the malformed entry, fail closed */ }
         }
     }
-    ParsedPermissionFile { allow, deny, prompt }
+    Ok(ParsedPermissionFile {
+        allow,
+        deny,
+        prompt,
+        unknown_keys,
+    })
+}
+
+/// Whether `contents` fails to parse specifically because it names a
+/// top-level key this schema does not recognize (`"denys"` for `"deny"`, or
+/// any other typo) -- board item 01KZHVDDQQ7XT0RK3JVNM2YV83.
+///
+/// Deliberately narrower than "any parse failure": content that is not
+/// valid JSON at all, or that names the RIGHT key with the WRONG shape
+/// (`"allow": "not-an-array"`), keeps the existing SILENT fail-closed
+/// posture [`parse_rules`]/[`parse_deny_rules`]/[`parse_prompt_rules`] have
+/// always had for those cases (P-10's floor: a bad file authorizes/denies/
+/// prompts nothing, which costs at most an extra prompt). A MISSPELLED key
+/// is a different failure in kind, not degree: it is not "malformed input"
+/// but an operator who wrote a `deny` rule, typo'd the one word that makes
+/// it apply, and would otherwise never learn the rule was never installed
+/// -- exactly the asymmetry this module's own doc states (`allow` requires
+/// trust; `deny` always applies, so a `deny` that silently never matches is
+/// the specific failure mode that guarantee exists to rule out).
+///
+/// `Conway::load_permission_files` calls this for every candidate file and,
+/// when it returns `Some`, skips installing ANY rule from that file --
+/// allow, deny, AND prompt -- rather than partially installing around the
+/// typo, matching `settings.json`'s own "a bad key rejects the whole file"
+/// precedent (`crates/conway/tests/config_precedence.rs`'s
+/// `typo_d_key_is_rejected_by_deny_unknown_fields`).
+///
+/// The signal is STRUCTURAL, not textual: `RawPermissionFile`'s
+/// `#[serde(flatten)] extra` catch-all collects every key the schema does
+/// not name, and this function reports `Some` exactly when that map is
+/// non-empty. Earlier this discriminated the typo case by matching the
+/// literal string `"unknown field"` inside a `serde_json::Error`'s message
+/// -- wording that is neither serde's nor serde_json's semver contract, so a
+/// future dependency bump changing it would silently fall this function back
+/// to `None` for a genuinely typo'd file, restoring the exact silent-zero-
+/// deny-rules bug board item 01KZHVDDQQ7XT0RK3JVNM2YV83 exists to close. The
+/// catch-all field depends on no error text at all.
+pub fn permission_file_unknown_field_error(contents: &str) -> Option<String> {
+    let file = parse_permission_file(contents).ok()?;
+    if file.unknown_keys.is_empty() {
+        return None;
+    }
+    let quoted: Vec<String> = file
+        .unknown_keys
+        .iter()
+        .map(|key| format!("`{key}`"))
+        .collect();
+    Some(format!(
+        "unknown field{} {}, expected one of `allow`, `deny`, `rules`",
+        if file.unknown_keys.len() == 1 { "" } else { "s" },
+        quoted.join(", "),
+    ))
 }
 
 /// Where an installed [`PatternRule`] grant came from. Required so a rule
@@ -1650,6 +1791,122 @@ mod store_tests {
         let deny = parse_deny_rules(contents);
         assert_eq!(deny.len(), 2);
         assert!(deny.iter().all(|r| r.to_wire() != "malformed-no-colon"));
+    }
+
+    // ---- typo'd keys (board item 01KZHVDDQQ7XT0RK3JVNM2YV83) ----
+
+    /// **The headline regression.** A misspelled `"denys"` key must not
+    /// silently install zero deny rules with nothing telling the operator
+    /// -- `permission_file_unknown_field_error` must catch it, naming the
+    /// key, so `Conway::load_permission_files` can refuse the whole file
+    /// loudly instead of quietly enforcing nothing.
+    ///
+    /// P-15: this is paired with `a_correctly_spelled_deny_key_installs_the_
+    /// rule_the_typo_would_have_dropped`, a CONTROL case whose deny list is
+    /// non-empty on success -- so "zero rules installed" here is evidence
+    /// of the typo being caught, not evidence the fixture never had any
+    /// rules to install in the first place.
+    #[test]
+    fn a_misspelled_deny_key_is_reported_rather_than_silently_installing_nothing() {
+        let contents = r#"{"denys": ["bash:curl"]}"#;
+
+        // The observable an operator would see: the rule they wrote never
+        // installs.
+        assert!(
+            parse_deny_rules(contents).is_empty(),
+            "the typo'd key must not be guessed at -- `deny` stays at its default"
+        );
+
+        // The observable that makes the miss LOUD instead of silent.
+        let err = permission_file_unknown_field_error(contents)
+            .expect("a misspelled top-level key must be reported, not swallowed");
+        assert!(
+            err.contains("denys"),
+            "the error must name the offending key: {err}"
+        );
+    }
+
+    /// The control case P-15 requires: the SAME rule, correctly spelled,
+    /// actually installs -- proving the typo test above is distinguishing
+    /// "silently dropped" from "there was nothing to install", not just
+    /// asserting an empty `Vec` that would be empty either way.
+    #[test]
+    fn a_correctly_spelled_deny_key_installs_the_rule_the_typo_would_have_dropped() {
+        let contents = r#"{"deny": ["bash:curl"]}"#;
+        let deny = parse_deny_rules(contents);
+        assert_eq!(
+            deny.len(),
+            1,
+            "the correctly spelled key must install its rule"
+        );
+        assert_eq!(deny[0].to_wire(), "bash:curl");
+        assert!(
+            permission_file_unknown_field_error(contents).is_none(),
+            "a file with only recognized keys must not be reported as bad"
+        );
+    }
+
+    /// Not special-cased to `deny` -- any unrecognized top-level key is
+    /// caught the same way, including one that would otherwise silently
+    /// widen `allow` instead of narrowing `deny`.
+    #[test]
+    fn any_unrecognized_top_level_key_is_reported_not_just_denys() {
+        for (contents, bad_key) in [
+            (r#"{"allows": ["bash:git status"]}"#, "allows"),
+            (r#"{"rulez": []}"#, "rulez"),
+            (
+                r#"{"deny": ["bash:curl"], "extra_field": true}"#,
+                "extra_field",
+            ),
+        ] {
+            let err = permission_file_unknown_field_error(contents)
+                .unwrap_or_else(|| panic!("must be reported: {contents:?}"));
+            assert!(err.contains(bad_key), "error must name {bad_key:?}: {err}");
+        }
+    }
+
+    /// A file with only recognized keys -- including one that predates
+    /// `rules` and only ever set `allow`/`deny` -- must never be flagged.
+    /// The strictness this item adds must not regress a document example
+    /// or a file written before a later field existed.
+    #[test]
+    fn a_well_formed_file_is_never_reported_as_having_an_unknown_field() {
+        for contents in [
+            "{}",
+            r#"{"allow": ["bash:cargo test", "read:*"]}"#,
+            r#"{"deny": ["bash:curl", "bash:ssh"]}"#,
+            r#"{"allow": ["bash:cargo test"], "deny": ["bash:curl"]}"#,
+            r#"{"allow": ["bash:cargo test"], "rules": [
+                {"select": {"tools": ["read"]}, "when": "always", "then": "allow"}
+            ]}"#,
+        ] {
+            assert!(
+                permission_file_unknown_field_error(contents).is_none(),
+                "a well-formed file must not be reported: {contents}"
+            );
+        }
+    }
+
+    /// Genuinely corrupt JSON (not a typo'd key) keeps its EXISTING silent
+    /// posture -- `permission_file_unknown_field_error` must not fire for
+    /// it, or every one of `a_corrupt_file_authorizes_nothing_rather_than_
+    /// everything`'s cases would newly become loud load errors, which is a
+    /// behavior change this item does not make.
+    #[test]
+    fn genuinely_malformed_json_is_not_reported_as_an_unknown_field() {
+        for corrupt in [
+            "",
+            "not json at all",
+            "{",
+            r#"{"allow": "not-an-array"}"#,
+            r#"{"allow": [123]}"#,
+            "null",
+        ] {
+            assert!(
+                permission_file_unknown_field_error(corrupt).is_none(),
+                "not the failure mode this function reports on: {corrupt:?}"
+            );
+        }
     }
 
     // ---- V2b: the offered rule ----

@@ -281,6 +281,19 @@ impl App {
                 fatal: false,
             });
         }
+        // Board item 01KZHVDDQQ7XT0RK3JVNM2YV83: a permissions file naming
+        // an unrecognized top-level key (`"denys"` for `"deny"`) installed
+        // NOTHING from that file -- allow, deny, AND prompt. Surfaced
+        // through the SAME `Entry::Error { fatal: false }` channel
+        // `report.registration_errors` uses just above, for the same
+        // reason: a silently-unenforced `deny` rule is a security outcome,
+        // not a routine notice, and must not be camouflaged as one.
+        for err in report.parse_errors {
+            state.transcript.push(super::state::Entry::Error {
+                text: err,
+                fatal: false,
+            });
+        }
         // Board item 01KZ803DJW8Y1H4FXTM8D3PYMY: `Conway::warnings()`
         // (currently only `WarningCode::HeadroomExceedsContext`, pushed by
         // `config::merge::validate` when a role's effective headroom is
@@ -1010,8 +1023,39 @@ impl App {
                             });
                         }
                         Err(e) => {
-                            self.state.transcript.push(super::state::Entry::Notice {
+                            // Board item 01KZHVDDQQ7XT0RK3JVNM2YV83: this
+                            // arm's most consequential case is
+                            // `Conway::trust_permission_file` refusing a
+                            // file that names an unrecognized top-level key
+                            // -- the exact defect the startup loader's own
+                            // `report.parse_errors` -> `Entry::Error`
+                            // branch above exists to make loud. Reporting
+                            // THAT specific case through `Entry::Notice`
+                            // here (as this arm previously did, for every
+                            // `Err`) would surface the identical failure at
+                            // a WEAKER severity depending only on which of
+                            // the two entry points hit it -- exactly the
+                            // inconsistency this item's review found.
+                            //
+                            // Every other `Err` this arm can see (the file
+                            // became unreadable between being listed and
+                            // being trusted; `TrustStore::trust`'s write
+                            // failed) is promoted the same way rather than
+                            // split out: `/trust permissions` is an
+                            // explicit operator action, so ANY failure to
+                            // do what it says on the tin means the
+                            // operator's belief ("I just trusted this
+                            // file") and reality (nothing was recorded)
+                            // have diverged -- the same camouflage risk
+                            // `report.registration_errors` and
+                            // `report.parse_errors` are surfaced through
+                            // `Entry::Error` for just above, not a
+                            // narrower one that would need a case split on
+                            // `e`'s `ErrorKind` to keep the two failure
+                            // classes apart here.
+                            self.state.transcript.push(super::state::Entry::Error {
                                 text: format!("could not trust {}: {e}", path.display()),
+                                fatal: false,
                             });
                         }
                     }
@@ -1758,6 +1802,66 @@ mod tests {
         assert!(
             text.contains("not installed") && text.contains("command_prefix"),
             "the registration-error Error entry must render on screen: {text}"
+        );
+    }
+
+    /// Board item 01KZHVDDQQ7XT0RK3JVNM2YV83, end to end through the real
+    /// startup loader -- the sibling of `registration_error_surfaces_as_a_
+    /// transcript_error` just above, same shape: a real `.conway/
+    /// permissions.json` on a real filesystem, loaded by the real
+    /// `App::new`, asserted on the OBSERVABLE transcript AND rendered
+    /// screen, not on `report.parse_errors` (the loader's own return value
+    /// -- already covered by unit tests in `conway-core`/`conway`; a test
+    /// that only re-checks that field would be the exact liveness trap
+    /// `registration_error_surfaces_as_a_transcript_error`'s own doc
+    /// describes). A misspelled `"denys"` key must surface loudly at
+    /// startup, naming the offending key, through the same `Entry::Error`
+    /// channel a registration error uses -- never merely logged or
+    /// dropped.
+    #[tokio::test]
+    async fn unknown_permission_key_surfaces_as_a_transcript_error_at_startup() {
+        let project = tempfile::TempDir::new().expect("tempdir");
+        let conway_dir = project.path().join(".conway");
+        std::fs::create_dir_all(&conway_dir).expect("mkdir .conway");
+        // Pin project discovery to the tempdir, same as the registration-
+        // error sibling above.
+        std::fs::write(conway_dir.join("settings.json"), "").expect("write settings.json");
+        std::fs::write(
+            conway_dir.join("permissions.json"),
+            r#"{"denys": ["bash:curl"]}"#,
+        )
+        .expect("write permissions.json");
+
+        let conway = build_conway_with_echo_backend();
+        let mut cli = minimal_cli();
+        cli.cwd = Some(project.path().to_path_buf());
+        let app = App::new(&cli, &conway).await.expect("App::new should succeed");
+
+        let errors: Vec<&str> = app
+            .state
+            .transcript
+            .iter()
+            .filter_map(|e| match e {
+                Entry::Error { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        let surfacing = errors
+            .iter()
+            .find(|text| text.contains("denys") && text.contains("was not loaded"));
+        assert!(
+            surfacing.is_some(),
+            "the misspelled key must surface as a transcript Error naming it; \
+             transcript errors were: {errors:?}"
+        );
+
+        // Buffer-asserting half (this crate's binding TUI test convention):
+        // render the REAL `AppState` through the REAL `view::draw` and
+        // confirm the operator can actually READ the surfacing on screen.
+        let text = super::super::test_support::render_text(&app.state, 120, 40);
+        assert!(
+            text.contains("denys") && text.contains("was not loaded"),
+            "the unknown-field Error entry must render on screen: {text}"
         );
     }
 

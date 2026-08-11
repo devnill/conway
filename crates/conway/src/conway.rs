@@ -35,7 +35,10 @@ pub struct PermissionLoadReport {
     /// (currently: a project file's allow rules skipped for lack of
     /// trust). Never an error -- see [`Conway::load_permission_files`]'s
     /// own doc for why every condition here is a silent, narrowing
-    /// degrade by design.
+    /// degrade by design. Distinct from [`Self::parse_errors`]: a notice
+    /// describes a file that DID load, just not fully in effect yet (an
+    /// untrusted project file's `allow` half); a parse error describes a
+    /// file that did NOT load at all.
     pub notices: Vec<String>,
     /// F12: typed registration errors for rules the loader refused to
     /// install silently -- currently, a `command_prefix` rule paired with
@@ -45,6 +48,18 @@ pub struct PermissionLoadReport {
     /// pin it (P-10: untrusted input -> typed errors). The rule is carried
     /// whole so the operator sees exactly what was rejected.
     pub registration_errors: Vec<conway_core::permission_pattern::RuleRegistrationError>,
+    /// Board item 01KZHVDDQQ7XT0RK3JVNM2YV83: one human-readable message per
+    /// candidate file that named a top-level key this schema does not
+    /// recognize (`conway_core::permission_pattern::
+    /// permission_file_unknown_field_error`) -- a misspelled `"denys"`
+    /// being the motivating case. A file listed here contributed ZERO
+    /// rules -- allow, deny, AND prompt -- to this load; unlike every other
+    /// condition [`Self::notices`] carries, this one IS the caller's signal
+    /// that a file failed to load, not merely that it loaded with something
+    /// degraded. Kept separate from [`Self::registration_errors`] (which is
+    /// always about one already-parsed [`conway_core::permission_pattern::
+    /// Rule`], never about the file failing to parse at all).
+    pub parse_errors: Vec<String>,
 }
 
 /// The result of [`Conway::trust_permission_file`] (board item
@@ -1054,7 +1069,23 @@ impl Conway {
     ///   explicit, recorded trust decision matching the file's CURRENT
     ///   bytes; otherwise they are skipped and a human-readable notice is
     ///   returned (never an error -- see this codebase's existing
-    ///   "every permissions-file failure is silent and narrowing" posture).
+    ///   "every permissions-file failure is silent and narrowing" posture,
+    ///   which still holds for content that is not valid JSON at all, or
+    ///   that names a recognized key with the wrong shape).
+    ///
+    /// **One deliberate exception to that silent posture** (board item
+    /// 01KZHVDDQQ7XT0RK3JVNM2YV83): a file naming a top-level key this
+    /// schema does not recognize -- `"denys"` for `"deny"`, or any other
+    /// typo -- is checked FIRST, via `conway_core::permission_pattern::
+    /// permission_file_unknown_field_error`, before any rule from that file
+    /// is parsed. When it fires, the file contributes NOTHING (not even its
+    /// correctly-spelled rules) and a message naming the offending key is
+    /// pushed to [`PermissionLoadReport::parse_errors`] -- LOUD, unlike
+    /// every other condition here. This is the one case where silence would
+    /// be the defect rather than the safety margin: `deny`'s whole point is
+    /// that it always applies regardless of trust, so a `deny` rule that
+    /// silently never installs because of a typo is exactly the fail-open
+    /// outcome the asymmetry above exists to rule out (P-13).
     ///
     /// `scope` is the [`PermissionScope`] every installed ALLOW rule is
     /// remembered at (`deny`/`prompt` rules are unscoped by design -- they
@@ -1078,11 +1109,32 @@ impl Conway {
         let trust_store = crate::config::trust::TrustStore::load(env);
         let mut notices = Vec::new();
         let mut registration_errors = Vec::new();
+        let mut parse_errors = Vec::new();
 
         for path in &paths {
             let Ok(contents) = std::fs::read_to_string(path) else {
                 continue;
             };
+
+            // Board item 01KZHVDDQQ7XT0RK3JVNM2YV83: a misspelled top-level
+            // key (`"denys"` for `"deny"`) must not silently install zero
+            // rules with nothing telling the operator -- checked BEFORE any
+            // of `parse_deny_rules`/`parse_prompt_rules`/`parse_rules` run,
+            // so a typo'd file contributes NOTHING (not even its
+            // correctly-spelled rules) rather than partially installing
+            // around the typo, matching `settings.json`'s own "a bad key
+            // rejects the whole file" precedent.
+            if let Some(err) =
+                conway_core::permission_pattern::permission_file_unknown_field_error(&contents)
+            {
+                parse_errors.push(format!(
+                    "{} was not loaded: {err} -- fix or remove the unrecognized key; \
+                     no rules (allow, deny, or prompt) from this file are in effect \
+                     until it is fixed",
+                    path.display()
+                ));
+                continue;
+            }
 
             let is_global = global_path.as_deref() == Some(path.as_path());
             // B2: the base a relative `paths_under` prefix in THIS file
@@ -1180,6 +1232,7 @@ impl Conway {
             paths,
             notices,
             registration_errors,
+            parse_errors,
         }
     }
 
@@ -1200,6 +1253,20 @@ impl Conway {
     /// [`Self::load_permission_files`] (board item
     /// 01KYT8SGX32CP56PRJNG72V2W5, D4 §5/§9: no startup prompt, no silent
     /// self-trust).
+    ///
+    /// Returns `Err` -- WITHOUT writing a trust record and WITHOUT
+    /// installing any rule -- for two reasons: the ordinary `std::io::Error`
+    /// an unreadable `path` or a failed `TrustStore::trust` write produces,
+    /// and, checked first, `path` naming an unrecognized top-level key (board
+    /// item 01KZHVDDQQ7XT0RK3JVNM2YV83; see
+    /// [`conway_core::permission_pattern::permission_file_unknown_field_error`]'s
+    /// own doc). The second case exists because a typo'd file's rules were
+    /// never going to install anyway -- recording trust for it first would
+    /// bless content that silently enforces nothing on every subsequent
+    /// load, exactly the failure this whole board item closes, just moved
+    /// to the trust-recording path instead of the load path. Both `Err`
+    /// cases carry a message naming `path` and, for the unknown-key case,
+    /// the offending field.
     pub fn trust_permission_file(
         &self,
         env: &std::collections::HashMap<String, String>,
@@ -1207,8 +1274,25 @@ impl Conway {
         scope: conway_core::agent::PermissionScope,
         granting_agent: conway_core::ids::AgentId,
     ) -> std::io::Result<TrustPermissionReport> {
-        crate::config::trust::TrustStore::trust(env, path)?;
         let contents = std::fs::read_to_string(path)?;
+        // Board item 01KZHVDDQQ7XT0RK3JVNM2YV83: refuse a file naming an
+        // unrecognized top-level key BEFORE recording a trust decision for
+        // it -- a typo'd file's rules were never going to install anyway
+        // (see `permission_file_unknown_field_error`'s own doc), so trusting
+        // it first would record a decision for content that installs
+        // nothing, silently, on every subsequent load.
+        if let Some(err) =
+            conway_core::permission_pattern::permission_file_unknown_field_error(&contents)
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "{} was not trusted: {err} -- fix or remove the unrecognized key first",
+                    path.display()
+                ),
+            ));
+        }
+        crate::config::trust::TrustStore::trust(env, path)?;
         let rules = conway_core::permission_pattern::parse_rules(&contents);
         // B2: the same relative-`paths_under` base `load_permission_files`
         // computes, so a rule installs with the SAME boundary whether it
