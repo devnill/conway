@@ -170,24 +170,49 @@ pub use conway_core::error::ConwayError as CoreConwayError;
 ///   `EventSink` — they appear only as `ToolCtx` *fields* an implementor
 ///   reads (method calls on `ctx.chdir`/`ctx.events`/`ctx.subagents` never
 ///   name the type — a tool calls `ctx.subagents.start(spec)` by method
-///   dispatch, exactly like the pre-existing `ctx.chdir.set(..)` precedent),
-///   and the extension design (§13.5) rejects plugin *implementations* of
-///   `SubagentHost`/`EventSink` outright. Constructing a `ToolCtx` by hand
-///   (what those names are needed for) is test-fixture work, served by
-///   `conway-core`'s `fakes` feature, not the authoring surface. Re-checked
-///   for `SubagentHandle` specifically when it landed (C1, board item
-///   01KZ59SXNQ3BRXP49V4JW10N72): no concrete call site names it either.
-/// - The `SubagentHost`/`EventSink`/`SessionStore`/`Router`/
-///   `HealthRegistry` implementation surfaces — §13.5 rejects plugin
-///   implementations of those with stated reasons. `Backend` used to be
-///   named alongside them here; board item 01KZHEZF8XCD0TMDYZQP06J2KH added
-///   `pub mod backend` (below, a second curated module beside this one —
-///   see its own doc for why it is separate) specifically to make
-///   third-party `Backend` implementations possible, so `Backend` is no
-///   longer part of this closed list. The `Router` half of this same
-///   sentence is ALSO stale for an unrelated reason (`RouterFactory` is
-///   re-exported a few dozen lines below this doc comment) — tracked
-///   separately as board item 01KZHMNABS6HC0KT1D1CKM9W8H, not fixed here.
+///   dispatch, exactly like the pre-existing `ctx.chdir.set(..)` precedent).
+///   `SubagentHost`/`EventSink` have no builder injection point at all — no
+///   `pub fn with_*` in `crates/conway/src/builder.rs` accepts either — which
+///   is the actual, IN-PROCESS reason they stay absent here. (§13.5 is a
+///   non-goals list for the OUT-OF-PROCESS subprocess transport and was
+///   never authority for this in-process question — `.design/
+///   extension-architecture.md` §13.5's own 2026-08-09 dated status note,
+///   board items 01KZHF46C80HFAQN2CJEXXVYY5 and 01KZHMNABS6HC0KT1D1CKM9W8H.)
+///   Constructing a `ToolCtx` by hand (what those names are needed for) is
+///   test-fixture work, served by `conway-core`'s `fakes` feature, not the
+///   authoring surface. Re-checked for `SubagentHandle` specifically when
+///   it landed (C1, board item 01KZ59SXNQ3BRXP49V4JW10N72): no concrete
+///   call site names it either.
+/// - The `SessionStore`/`HealthRegistry` implementation surfaces.
+///   `SessionStore` because `SeqRange`/`StoreError` — needed to spell
+///   `SessionStore::append`'s own signature — are not re-exported anywhere;
+///   `HealthRegistry` because, like `SubagentHost`/`EventSink` above, no
+///   `ConwayBuilder::with_*` method injects a replacement. Both checked by
+///   compiling a facade-only scratch crate against each claim, not by
+///   reading (`.design/router-installation-q2-compile-evidence.md`).
+///   `Backend` used to be named alongside these here; board item
+///   01KZHEZF8XCD0TMDYZQP06J2KH added `pub mod backend` (below, a second
+///   curated module beside this one — see its own doc for why it is
+///   separate) specifically to make third-party `Backend` implementations
+///   possible, so `Backend` is no longer part of this closed list.
+///
+///   `Router` stays on this list for a narrower reason than it used to
+///   (board item 01KZHMNABS6HC0KT1D1CKM9W8H): a wholly new `impl Router`
+///   still needs `RouteRequest`/`Route`/`RoutingError`, none of which this
+///   facade re-exports, so *authoring* a new routing algorithm is unchanged
+///   and this curated module still names none of those three types. But
+///   *installing* one, once built — whether built inside this workspace or
+///   by a crate willing to take the `conway-core` dependency that authoring
+///   still requires — now has a real, tested, facade-only mechanism this
+///   module does not carry:
+///   [`RouterFactory`]/[`RouterBuildContext`]/[`RouterBundle`], re-exported
+///   a few dozen lines above this doc comment, and
+///   `ConwayBuilder::with_router_factory` (board item
+///   01KZFC2MD1FVNA674YJ9A19T8E). See `docs/embedding.md`'s "What's
+///   reachable from the library, and what isn't" table and its "Installing
+///   a router" section for the full authoring-vs-installing distinction, and
+///   `crates/conway/tests/router_factory.rs` for the installation path
+///   exercised end to end.
 /// - `schemars`/`serde_json` — plain data-type crates a plugin author names
 ///   in their own `Cargo.toml` (version-matched to conway's; the compiler
 ///   enforces the match loudly). `async_trait` IS re-exported: the three
