@@ -1,0 +1,15 @@
+{
+  "default_role": "coder",
+  "roles": {
+    "coder": { "chain": ["anthropic/claude-sonnet-4-6"] }
+  },
+  "backends": {
+    "anthropic": { "kind": "anthropic" }
+  },
+  "hooks": {
+    "rules": [
+      { "id": "audit", "event": "pre_tool_use", "command": ["echo", "one"] },
+      { "id": "audit", "event": "post_tool_use", "command": ["echo", "two"] }
+    ]
+  }
+}

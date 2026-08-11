@@ -1,0 +1,20 @@
+{
+  "default_role": "coder",
+  "roles": {
+    "coder": { "chain": ["anthropic/claude-sonnet-4-6"] }
+  },
+  "backends": {
+    "anthropic": { "kind": "anthropic" }
+  },
+  "hooks": {
+    "rules": [
+      {
+        "id": "audit-bash",
+        "event": "pre_tool_use",
+        "command": ["/usr/local/bin/audit-hook", "--strict"],
+        "timeout_ms": 3000,
+        "enabled": true
+      }
+    ]
+  }
+}

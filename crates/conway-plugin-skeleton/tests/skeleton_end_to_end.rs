@@ -32,8 +32,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use conway::config::schema::{
-    AgentsConfig, ConwayConfig, HealthSection, LimitsConfig, ModelsConfig, PermissionsConfig,
-    PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig, TuiSection,
+    AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
+    PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
+    TuiSection,
 };
 use conway::{Conway, ConwayBuilder, Plugin as _, SessionSpec};
 use conway_core::agent::PermissionDecision;
@@ -88,6 +89,7 @@ fn base_config() -> ConwayConfig {
         // test does. Left empty here on purpose: proving the config-driven
         // install path is `conway-cli`'s own test, not this one.
         plugins: PluginsConfig::default(),
+        hooks: HooksConfig::default(),
     }
 }
 

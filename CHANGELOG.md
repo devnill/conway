@@ -59,6 +59,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A `[hooks]` config section that parses and validates -- forward
+  declaration, nothing dispatches yet** (board item
+  01KZRZW5CWMVQ0GPRT4GX4RV5G, child of the declarative-hooks umbrella
+  01KZDC0RDRMMMJHX7SAFMM2Q5A). `settings.json` now accepts a `[hooks]`
+  block: `HooksConfig { rules: Vec<HookEntry> }`, each rule an `id`
+  (required, non-empty, unique across the file -- `merge::validate`'s new
+  check), `event` (a bare string; the bare-vs-namespaced convention is a
+  sibling item's open decision, not this one's), `command` (an argv vector,
+  never a shell string, so config carries no shell-quoting ambiguity),
+  `timeout_ms` (default `5000`), and `enabled` (default `true`). Every new
+  struct carries `#[serde(deny_unknown_fields)]`, at both the container and
+  the entry level -- a typo'd key inside a rule (`"evnet"`, `"comand"`)
+  fails to parse exactly like a typo anywhere else in this file, not just a
+  typo'd top-level key. **GP-14: this is config only.** No dispatcher, no
+  process spawn, no event firing exists anywhere in the tree yet -- a rule
+  written today parses, validates, and then does nothing, which is stated
+  at every declaration site (`HooksConfig`, `HookEntry`, and the `hooks`
+  field on `ConwayConfig`), not only here. The default rule list is empty,
+  so an operator who never writes `[hooks]` sees no behavior change.
+  `enabled` defaulting to `true` does not repeat the `probe_enabled`
+  precedent GP-14 names: it only has any effect on a rule the operator
+  already hand-wrote, not on every config by default. Two later, separate
+  board items wire dispatch: `01KZRZY1MNM872BZ6AKEBG3SKE` (the script
+  runner that spawns `command` when `event` fires) and
+  `01KZS00JP5QNBJSSHNFP9C47GM` (`pre_tool_use` enforcement). Docs updated to
+  match: `docs/plugins/hooks.md` point 13's status row and its fail-closed
+  summary table row, and `docs/plugins/scripts.md`'s worked JSON example,
+  which previously sketched a different, now-superseded shape
+  (`{"hooks":{"<event>":[{"match","run"}]}}` — nested per event, a single
+  shell string) corrected to the shipped one
+  (`{"hooks":{"rules":[{"id","event","command",...}]}}` — a flat, id'd rule
+  list, an argv vector). (`crates/conway/src/config/schema.rs`,
+  `crates/conway/src/config/merge.rs`, `crates/conway/tests/config_validation.rs`,
+  `crates/conway/tests/fixtures/config/hooks_*.json`, `docs/plugins/hooks.md`,
+  `docs/plugins/scripts.md`)
+
 - **`ArtifactWriteHandle::noop(agent_id)`: a `ContextHookCtx` fixture no
   longer requires hand-rolling an `ArtifactWriter`** (board item
   01KZJ5S3ZC8SPWTX94C4HTEC2R). `ContextHookCtx::artifacts` became a required

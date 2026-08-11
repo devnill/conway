@@ -645,5 +645,42 @@ pub fn validate(
         }
     }
 
+    // 9. Every [hooks].rules[] entry has a non-empty `id`, and every `id` is
+    //    unique across the file. Enforced here (a semantic check on the
+    //    parsed value), not by serde, matching how every other "required in
+    //    practice" invariant in this function is enforced -- see check 3's
+    //    own precedent (`permissions.mode = "allowlist"` requiring
+    //    non-empty `allowed_tools`). `id` is load-bearing for the later
+    //    operator-visibility item that lists hook rules individually and
+    //    revokes one by name (`schema::HookEntry::id`'s own doc comment);
+    //    an empty or duplicate id there would make that lookup ambiguous or
+    //    silently target the wrong rule.
+    //
+    // Note: `[hooks]` itself only parses and validates today -- see
+    // `schema::HooksConfig`'s own GP-14 disclosure. This check runs
+    // regardless of whether any rule is ever dispatched, exactly like every
+    // other structural check in this function runs on config that may
+    // never be exercised at runtime.
+    {
+        let mut seen_ids: BTreeSet<&str> = BTreeSet::new();
+        for rule in &config.hooks.rules {
+            if rule.id.is_empty() {
+                return Err(ConwayError::Config {
+                    path: None,
+                    message: "hooks.rules[]: every rule must have a non-empty \"id\"".to_string(),
+                });
+            }
+            if !seen_ids.insert(rule.id.as_str()) {
+                return Err(ConwayError::Config {
+                    path: None,
+                    message: format!(
+                        "hooks.rules[]: duplicate id '{}' -- every rule's id must be unique",
+                        rule.id
+                    ),
+                });
+            }
+        }
+    }
+
     Ok(warnings)
 }

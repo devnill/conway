@@ -151,7 +151,7 @@ use std::time::Duration;
 
 use conway::config::schema::{
     AgentsConfig, BackendEntry, ConwayConfig, HealthSection, LimitsConfig, ModelsConfig,
-    PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
+    PermissionsConfig, HooksConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
     TuiSection,
 };
 use conway::{Conway, ConwayBuilder, SessionSpec};
@@ -275,6 +275,7 @@ fn config_naming(base_url: String, metadata_path: PathBuf) -> ConwayConfig {
         tui: TuiSection::default(),
         tools: ToolsConfig::default(),
         plugins: PluginsConfig::default(),
+        hooks: HooksConfig::default(),
     }
 }
 
@@ -756,6 +757,7 @@ fn t1_backstop_config(metadata_path: PathBuf) -> ConwayConfig {
         tui: TuiSection::default(),
         tools: ToolsConfig::default(),
         plugins: PluginsConfig::default(),
+        hooks: HooksConfig::default(),
     }
 }
 

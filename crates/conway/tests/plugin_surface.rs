@@ -31,7 +31,7 @@ use std::sync::Arc;
 #[cfg(feature = "jsonl-store")]
 use conway::config::schema::{
     AgentsConfig, BackendEntry, ConwayConfig, HealthSection, LimitsConfig, ModelsConfig,
-    PermissionMode, PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig,
+    PermissionMode, PermissionsConfig, HooksConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig,
     ToolsConfig, TuiSection,
 };
 use conway::plugin::{
@@ -251,6 +251,7 @@ fn facade_only_config(session_root: std::path::PathBuf, metadata_path: std::path
         tui: TuiSection::default(),
         tools: ToolsConfig::default(),
         plugins: PluginsConfig::default(),
+        hooks: HooksConfig::default(),
     }
 }
 

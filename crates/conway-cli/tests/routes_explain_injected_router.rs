@@ -21,9 +21,9 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use conway::config::schema::{
-    AgentsConfig, BackendEntry, ConwayConfig, HealthSection, LimitsConfig, ModelsConfig,
-    PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
-    TuiSection,
+    AgentsConfig, BackendEntry, ConwayConfig, HealthSection, HooksConfig, LimitsConfig,
+    ModelsConfig, PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig,
+    ToolsConfig, TuiSection,
 };
 use conway::{Conway, ConwayBuilder, PermissionGate};
 use conway_cli::commands::routes::{run, RoutesArgs, RoutesAction};
@@ -92,6 +92,7 @@ fn config_with_role(role: &str) -> ConwayConfig {
         tui: TuiSection::default(),
         tools: ToolsConfig::default(),
         plugins: PluginsConfig::default(),
+        hooks: HooksConfig::default(),
     }
 }
 
