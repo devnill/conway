@@ -3197,3 +3197,176 @@ cannot — under §16.3's union rule and §16.4's ephemeral/durable split.
 wired up differently, removed, because a point strictly weaker than the
 in-process capability it was supposed to give parity with is worse than
 absent — it is a promise of parity the design did not keep.
+
+### 16.6 Event name namespace — bare core vs `plugin_id.event` (board item
+01KZRZWXQP9QXP6BYN636Z3DCZ)
+
+`[hooks].rules[].event` (`crates/conway/src/config/schema.rs`) and
+`philosophy-debt.md` §1's "registration for plugin-declared events" both name
+the same open string, `event: String`, with no rule yet keeping a plugin's
+choice out of conway's own vocabulary. This section is that rule, decided
+before either the runner (`01KZRZY1MNM872BZ6AKEBG3SKE`) or the
+plugin-declared-events item (board item 01KZS03BFE720EQZG7Q2768N2H, which
+also carries the `philosophy-debt.md` §1 "registration for plugin-declared
+events" bullet) has to guess at it.
+**Design only — no dispatch exists yet; see §16.0's status line.**
+
+**The convention, stated once, for a reader who has not seen the rest of
+this section:** a core, built-in event name is a bare identifier
+(`pre_tool_use`, `post_tool_use`, `session_starting`, `child_spawned`,
+`prompt_submitted`, `request_assembled`, `context_overflow`) — no `.`
+anywhere in it. A plugin-declared event name always begins with the
+declaring plugin's `PluginManifest::id`, then a single `.`, then the event's
+own name (`myplugin.compaction_decided`) — never bare. So: **`myplugin.foo`
+is valid** (correctly prefixed). **Bare `foo` from a plugin is not valid** —
+it collides with the reserved core namespace no plugin may write into.
+**Bare `pre_tool_use` from core is valid** — it is exactly the form core
+names take. Both halves of the rule are checked the same way: does the name
+contain `.` or not, and if it does, does the text before the first `.` match
+the id of whoever is declaring it.
+
+**1. Separator and casing: `.`, snake_case on each side of it.**
+
+Dot, not colon or slash.
+[`PatternRule::parse`](../crates/conway-core/src/permission_pattern.rs)
+already owns `tool:prefix` as a wire form for a *different* concept
+(a permission grant, tool name plus command prefix); reusing `:` for event
+names would put two colon-separated wire forms with unrelated meanings in
+front of the same operator, in the same `settings.json`/`permissions.json`
+pair, at the same time — exactly the kind of accidental collision this item
+exists to prevent, just moved from "two events" to "two wire forms that look
+alike but parse differently." Slash was considered and rejected because it
+reads as a path or a URI segment boundary, implying a hierarchy deeper than
+"plugin, then event" (`a/b/c` invites the question "is `b` a namespace
+too?", which this design never intends to answer yes to) — a slash-joined
+event name also visually collides with a *filesystem* path the moment a
+plugin id and an event name are both short words, which a dot does not.
+Casing is not a new rule: every core example already listed above is
+snake_case, so the convention is simply "keep doing that" on both sides of
+the dot — `myplugin.compaction_decided`, not `myplugin.compactionDecided`.
+
+**2. The reserved core set is open, not a fixed list — the recommended
+default, adopted without a stated reason to diverge.** The rule is
+structural: a core event name MUST NOT contain `.`; a plugin-declared event
+name MUST contain `.`, with the text before the first occurrence equal to
+the declaring plugin's id. Nothing enumerates the core names anywhere near
+validation code — the seven listed above are the current inventory, not a
+closed set a validator checks membership against. A hardcoded list was
+rejected for the reason the spec anticipates: adding `context_overflow`'s
+successor next year would then be a second, independent compatibility
+decision ("is this new core name allowed?") layered on top of the one this
+item is already making, for no benefit — the structural rule already
+guarantees a core name (bare) and a plugin name (prefixed) can never
+collide, with or without conway's maintainers remembering to update a list.
+The only thing an open rule cannot catch is a *typo* in a core event name
+inside a hook subscription (`event = "pre_tol_use"`) silently failing to
+match anything rather than being rejected at config-validation time — noted
+as a real but separate gap, closed by whichever later item teaches
+`merge::validate` the actual closed vocabulary of dispatched core events
+(it cannot exist before the runner does, since "every event conway
+currently dispatches" is defined by the runner's own event loop, not by
+this document).
+
+**3. A plugin id containing the separator is excluded, not resolved by
+splitting.** The spec raises `PatternRule::parse`'s first-colon-only split
+(`bash:ssh host:path` → tool `bash`, prefix `ssh host:path`) as a possible
+precedent, and it is deliberately NOT reused here. That split works for
+`tool:prefix` because `tool` is drawn from a small, closed, engine-known
+vocabulary (`bash`, `read`, `grep`, ...) that never needs a colon in the
+first place — the ambiguity is theoretical. A `PluginManifest::id` is the
+opposite: an open string chosen by whoever wrote the plugin, with no
+existing format constraint anywhere in `crates/conway-core/src/ports/
+plugin.rs` today. Splitting `my.plugin.compaction_decided` on the *first*
+dot would recover prefix `my`, not the actual id `my.plugin` — silently
+misattributing the event to a plugin that may not even be the one that
+declared it (or worse, to a genuinely different plugin whose id happens to
+be `my`, if one is ever loaded alongside it). That is precisely the
+accidental-collision failure this whole item exists to close, just moved
+from "core vs plugin" to "plugin vs plugin." So: **`PluginManifest::id`
+values are constrained to never contain the separator (`.`)**, and
+`validate_event_name` (below) enforces this defensively at the one call
+site it owns — the declaring plugin's id is compared as a whole, known
+string against the whole prefix, not recovered by splitting the event name
+apart. This is a new constraint on `PluginManifest::id` that today's code
+does not enforce anywhere (no plugin ids exist in the tree yet to break by
+adding it) — flagged here as a follow-up for whichever item first validates
+a `PluginManifest` at registration time, not solved by this item, since
+`PluginManifest` construction is out of this design-only item's scope.
+
+**Which later item enforces this at validation time.** Two different call
+sites, two different items, stated so neither has to guess:
+- **The `[hooks]` schema item's already-landed `HookEntry.event` field**
+  (board item 01KZRZW5CWMVQ0GPRT4GX4RV5G, see its `merge.rs` check 9 and the
+  `FOLLOW-UP LANDING SPOT` comment on `HookEntry::event`) enforces the
+  *subscriber* side: an operator's `event` string must be either a bare
+  name or a correctly-prefixed one — `validate_event_name(event, None)`
+  called there checks "well-formed", not "matches a real event conway
+  actually dispatches" (that closed-vocabulary check needs the runner,
+  per point 2 above).
+- **The plugin-declared-events item** (board item
+  01KZS03BFE720EQZG7Q2768N2H, which also carries `philosophy-debt.md` §1's
+  "registration for plugin-declared events" bullet; its own acceptance
+  requires rejecting a manifest that declares a namespace-violating name,
+  per this section) enforces the *declaration* side: when a plugin
+  registers an event
+  it emits, `validate_event_name(name, Some(&manifest.id))` checks that the
+  plugin actually prefixed its own name with its own id, not someone
+  else's.
+
+**The GP-03 tension, examined rather than assumed away.** This rule does
+reserve a piece of vocabulary — the separator-free identifiers — for events
+conway's own maintainers add, and forbids any plugin from using that same
+shape. Read quickly, that looks like exactly the core-privileging GP-03/P-6
+forbid. It is not the same thing, for a reason worth stating precisely
+rather than by assertion: **GP-03 is about capability reach — whether a
+point exists that a built-in can call and a third party cannot** (§16.0's
+own headline finding is the corrective example: `context.append/1` being
+weaker than the in-process `ContextHook` was exactly that violation, fixed
+by giving remote plugins the SAME reach). This rule adds no such point. A
+core event and a plugin event are dispatched, subscribed to, and matched by
+`HookEntry.event` through the identical mechanism — the same `String`
+field, the same eventual runner, the same eligibility for any operator to
+write a `[hooks]` rule against it. Nothing about the runtime treats a
+dotted name differently from a bare one at dispatch time; the *only*
+asymmetry is which strings are reserved by a naming convention, and naming
+conventions are not capabilities. The actual justification for reserving
+*a* namespace to *someone* is unavoidable, not optional: any finite,
+versioned vocabulary of stable identifiers that must never be silently
+squatted needs exactly one curator whose additions are governed by a closed
+process (conway's own release process, the same one that already decides
+what `PathArgs`, `ToolName`, or any other closed enum contains) rather than
+by whichever plugin registers first. Reversing the rule — requiring core
+itself to carry a prefix (`core.pre_tool_use`) — was considered and
+rejected only because it costs real friction (renaming seven already-listed
+names, and every future one, for a benefit the structural rule already
+delivers without it) for no additional guarantee; it would not change who
+curates the reserved set, only how it is spelled. One further consequence
+worth stating so a first-party plugin does not accidentally claim the
+reservation for itself: **a first-party plugin (e.g. §16.0's script-runner
+plugin) still uses `plugin_id.event`, exactly like a third-party one** —
+the bare namespace belongs to events conway's own runtime fires directly
+(the ones a `Plugin` trait implementor never produces), not to "anything
+that ships in this workspace." Shipping in-tree is not a capability either.
+
+**`validate_event_name` — a forward declaration, no caller yet (GP-14).**
+`crates/conway-core/src/event_name.rs` adds:
+
+```rust
+pub fn validate_event_name(name: &str, declaring_plugin: Option<&str>) -> Result<(), String>
+```
+
+Written now because it is the concrete artifact the spec allows and asks
+for if it "makes the decision unambiguous enough to hand to the next
+items" — it does, since points 1–3 above are otherwise three paragraphs of
+prose a future implementer would have to re-derive into code by hand. It has
+**no caller anywhere in this tree today**, exactly like the two call sites
+named two paragraphs up: `merge::validate`'s hooks check does not call it
+(that wiring is the `[hooks]` schema item's own follow-up, not this item's),
+and no plugin-registration path exists yet to call it with
+`declaring_plugin: Some(_)`. This is the same shape `Plugin::on_init` was
+removed for (§11.6) — a declaration nothing reaches — except `on_init` was
+a trait method silently ready to be implemented and never invoked, while
+this is a free function with a doc comment stating in its own body, at its
+own definition site, exactly which two items reach it and that neither does
+yet. A reader who finds it mid-tree cannot mistake it for wired-up
+behavior.
