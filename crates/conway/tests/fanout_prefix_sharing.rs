@@ -55,7 +55,7 @@ use std::time::Duration;
 
 use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, LimitsConfig, ModelsConfig, PermissionsConfig,
-    PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig, TuiSection,
+    HooksConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig, TuiSection,
 };
 use conway::{Conway, ConwayBuilder, SessionSpec};
 use conway_plugin_backends::anthropic::AnthropicBackend;
@@ -118,6 +118,7 @@ fn base_config() -> ConwayConfig {
         // test exercises the exact tool surface a model gets out of the box.
         tools: ToolsConfig::default(),
         plugins: PluginsConfig::default(),
+        hooks: HooksConfig::default(),
     }
 }
 
