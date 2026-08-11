@@ -114,28 +114,13 @@ The fastest possible proof that your hook does what you think: call
 `ConwayBuilder`, no credentials, sub-second:
 
 ```rust
-use conway::plugin::{ArtifactWriteError, ArtifactWriteHandle, ArtifactWriter};
-use std::path::PathBuf;
-use std::sync::Arc;
+use conway::plugin::{ArtifactWriteHandle, ContextHookCtx, ContextPayload};
 
 // `ContextHookCtx` requires an `artifacts` handle even if your hook never
-// writes a file, and there is no no-op writer in the facade yet, so a unit
-// test has to supply one. See "Artifacts" below for the real thing; board
-// item 01KZJ5S3ZC8SPWTX94C4HTEC2R tracks removing this boilerplate.
-struct NoopWriter;
-
-#[async_trait]
-impl ArtifactWriter for NoopWriter {
-    async fn write(
-        &self,
-        _agent_id: conway::AgentId,
-        name: &str,
-        _bytes: Vec<u8>,
-    ) -> Result<PathBuf, ArtifactWriteError> {
-        Ok(PathBuf::from(name))
-    }
-}
-
+// writes a file. `ArtifactWriteHandle::noop` (board item
+// 01KZJ5S3ZC8SPWTX94C4HTEC2R) is the facade's own no-op writer, for exactly
+// this case -- no `ArtifactWriter` impl to write yourself. See "Artifacts"
+// below for wiring a hook that writes for real.
 #[tokio::test]
 async fn my_first_hook_appends_its_marker() {
     let hook = MyFirstHook;
@@ -145,7 +130,7 @@ async fn my_first_hook_appends_its_marker() {
         turn: 0,
         model: None,
         estimated_tokens: 0,
-        artifacts: ArtifactWriteHandle::new(Arc::new(NoopWriter), conway::AgentId::new()),
+        artifacts: ArtifactWriteHandle::noop(conway::AgentId::new()),
     };
     let payload = ContextPayload { segments: vec![], tools: vec![] };
 
@@ -308,10 +293,15 @@ let path = ctx.artifacts.write("spill.txt", b"overflow content".to_vec()).await?
 ```
 
 This is real and exercised end to end by `plugin_surface.rs`'s own
-`authored_hook_transforms_payloads` test (construct via
-`ArtifactWriteHandle::new(writer, agent_id)` when you're driving a hook
-directly, as in the test above — the real containment-checked writer is
-supplied by the runtime when your hook runs inside an actual session).
+`authored_hook_transforms_payloads` test, which drives a hook directly against
+its own `ArtifactWriter` implementation via `ArtifactWriteHandle::new(writer,
+agent_id)` — write that if you want to assert on what your hook actually
+wrote, the way that test's `RecordingArtifactWriter` does. `ArtifactWriteHandle
+::noop(agent_id)` (the constructor used in step 3, above) is for the opposite
+case: a hook under test that never calls `ctx.artifacts.write` at all. Either
+way, the real containment-checked writer is supplied by the runtime when your
+hook runs inside an actual session — neither constructor is what production
+code ever sees.
 
 ## Testing your hook
 

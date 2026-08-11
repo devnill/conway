@@ -179,10 +179,20 @@ pub use conway_core::error::ConwayError as CoreConwayError;
 ///   extension-architecture.md` §13.5's own 2026-08-09 dated status note,
 ///   board items 01KZHF46C80HFAQN2CJEXXVYY5 and 01KZHMNABS6HC0KT1D1CKM9W8H.)
 ///   Constructing a `ToolCtx` by hand (what those names are needed for) is
-///   test-fixture work, served by `conway-core`'s `fakes` feature, not the
-///   authoring surface. Re-checked for `SubagentHandle` specifically when
-///   it landed (C1, board item 01KZ59SXNQ3BRXP49V4JW10N72): no concrete
-///   call site names it either.
+///   test-fixture work, not the authoring surface. NOTE, corrected
+///   2026-08-10 (board item 01KZJ5S3ZC8SPWTX94C4HTEC2R): this paragraph
+///   used to say that work was "served by `conway-core`'s `fakes`
+///   feature". That is true INSIDE this workspace and false for a third
+///   party — `crates/conway/Cargo.toml` takes `conway-core` with
+///   `features = ["fakes"]` only under `[dev-dependencies]`, so a crate
+///   depending on `conway` cannot reach `FakeSubagentHost` or
+///   `CollectingEventSink` at all. `ToolCtx` therefore carries the same
+///   construction tax `ContextHookCtx` carried until
+///   `ArtifactWriteHandle::noop` closed it, and no equivalent exists yet
+///   for `SubagentHandle`/`EventSinkHandle` (board item
+///   01KZQ3AZWG3NNJNZEJFX21MDJT). Re-checked for `SubagentHandle`
+///   specifically when it landed (C1, board item
+///   01KZ59SXNQ3BRXP49V4JW10N72): no concrete call site names it either.
 /// - The `SessionStore`/`HealthRegistry` implementation surfaces.
 ///   `SessionStore` because `SeqRange`/`StoreError` — needed to spell
 ///   `SessionStore::append`'s own signature — are not re-exported anywhere;

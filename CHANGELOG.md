@@ -7,7 +7,86 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **BREAKING: a misspelled key in `permissions.json` now fails to load
+  instead of silently installing zero rules** (board item
+  01KZHVDDQQ7XT0RK3JVNM2YV83). A file containing `"denys"` instead of
+  `"deny"` previously parsed cleanly — the typo'd key was ignored as
+  unrecognized, `deny` fell back to its empty default, and the operator's
+  rule installed nothing, with no error anywhere. `deny` always applies
+  regardless of trust (the one guarantee this project's permission model is
+  built on), so a typo silently defeating it was a fail-open security
+  outcome, not a cosmetic one. `RawPermissionFile` — the private struct
+  inside `conway_core::permission_pattern::parse_permission_file` that
+  `parse_rules`/`parse_deny_rules`/`parse_prompt_rules` actually deserialize
+  operator input through, not the public `PermissionFile` type used only for
+  the revoke/append round-trip writers — now carries a
+  `#[serde(flatten)]` catch-all `extra` map instead of
+  `#[serde(deny_unknown_fields)]` (the two are mutually incompatible in
+  serde): an unknown key is detected structurally, from that map being
+  non-empty, rather than by matching text inside a `serde_json::Error`'s
+  message — a wording neither serde's nor serde_json's own semver contract
+  covers. `Conway::load_permission_files` and `Conway::trust_permission_file`
+  both check `permission_file_unknown_field_error` before parsing any rule
+  from a file, and when it fires the WHOLE file is refused (no allow, deny,
+  or prompt rule from it installs) with a message naming the offending key,
+  surfaced through the same `Entry::Error { fatal: false }` transcript
+  channel a registration error already uses — at BOTH the startup loader
+  and the `/trust permissions` command, which previously reported the
+  identical failure through the weaker, skippable `Entry::Notice` channel.
+  **Breaking:** any
+  `permissions.json` that previously loaded despite naming a key outside
+  `allow`/`deny`/`rules` (a typo, or a since-removed field) now fails to
+  load at all instead of silently ignoring the extra key; every shipped
+  example in this tree used only recognized keys and needed no changes.
+  `PermissionFile`'s own `TrustFile`/`TrustedRecord` sibling
+  (`crates/conway/src/config/trust.rs`) deliberately does NOT get the same
+  treatment: nobody hand-types a key into `trust.json` (it is written and
+  read exclusively by this crate across whatever two conway builds an
+  operator runs before and after an upgrade), so its realistic risk is
+  version skew, not a typo, and the same strictness there would zero every
+  recorded trust decision in the file the first time an older build reads
+  one a newer build wrote — a regression with no matching security upside,
+  since an untrusted-by-mistake record only ever means more prompting, never
+  less. See [`docs/permissions.md`](docs/permissions.md#rules-in-permissionsjson)
+  and [`docs/plugins/compatibility.md`](docs/plugins/compatibility.md) for
+  the full account of both decisions.
+  (`crates/conway-core/src/permission_pattern.rs`, `crates/conway/src/conway.rs`,
+  `crates/conway/src/config/trust.rs`, `crates/conway-cli/src/tui/app.rs`,
+  `crates/conway/tests/permission_trust_seam.rs`, `docs/permissions.md`,
+  `docs/plugins/compatibility.md`)
+
 ### Added
+
+- **`ArtifactWriteHandle::noop(agent_id)`: a `ContextHookCtx` fixture no
+  longer requires hand-rolling an `ArtifactWriter`** (board item
+  01KZJ5S3ZC8SPWTX94C4HTEC2R). `ContextHookCtx::artifacts` became a required
+  field when the real containment-checked writer landed (`c430ca9`), which
+  meant every construction site — including a unit test for a hook that
+  never writes a file — had to supply *some* `Arc<dyn ArtifactWriter>`.
+  `conway-core`'s own tests solved this with a private `NoopArtifactWriter`;
+  a third party got no equivalent (GP-03/P-6). `ArtifactWriteHandle::noop`
+  wraps the same no-op shape (performs no I/O, returns `name` unchanged) as
+  a constructor on the type the facade already re-exports, so no new name
+  was added to `conway::plugin`'s curated surface. Not gated behind
+  `feature = "fakes"`: that feature is not forwarded to `conway`'s own
+  dependents, so gating it there would have reproduced the exact
+  reachability gap this closes. It is a TEST-FIXTURE CONSTRUCTOR and
+  explicitly NOT a production fallback in the sense `MinimalRouter`/
+  `AlwaysClosedHealthRegistry` are: those compute a real, if degenerate,
+  answer that real callers receive, whereas this backs no production call
+  path at all (`conway-runtime`'s `agent_loop` always supplies the real
+  `AgentArtifactWriter`). It is unconditional for the narrow reachability
+  reason above, not as a general licence — see
+  `crates/conway-core/src/ports/mod.rs`'s module doc, which separates the
+  two kinds. `docs/plugins/authoring.md`'s ten-minute walkthrough
+  (step 3) now uses it in place of the fifteen-line hand-rolled double, and
+  `.design/context-hook-noop-writer-compile-evidence.md` records both forms
+  compiled and run from a facade-only scratch crate, with the before/after
+  line count. (`crates/conway-core/src/ports/artifact.rs`,
+  `crates/conway-core/src/ports/mod.rs`, `crates/conway-core/src/ports/plugin.rs`,
+  `docs/plugins/authoring.md`)
 
 - **A router can now be named and installed the same way a plugin is:
   `RouterFactory`, `ConwayBuilder::with_router_factory`, and a
@@ -318,6 +397,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`docs/providers.md`, `docs/embedding.md`,
   `.design/extension-architecture.md`,
   `.design/router-installation-q2-compile-evidence.md`)
+
+- **`crates/conway/src/lib.rs`'s `pub mod plugin` doc comment stops citing
+  §13.5 as authority over the in-process question, and stops naming
+  `Router` alongside ports that are still genuinely closed** (board item
+  01KZHMNABS6HC0KT1D1CKM9W8H, the third of the three stale declaration
+  sites the item above found — this one deferred rather than fixed by that
+  item because it needed its own, narrower edit). The comment used to say
+  the `SubagentHost`/`EventSink`/`SessionStore`/`Router`/`HealthRegistry`
+  surfaces were closed because "§13.5 rejects plugin implementations of
+  those with stated reasons," sitting a few dozen lines below the very
+  `RouterFactory`/`RouterBuildContext`/`RouterBundle` re-export that
+  contradicts the `Router` half of that sentence. `Router` now has its own
+  paragraph: authoring a new `impl Router` is still out of reach
+  (`RouteRequest`/`Route`/`RoutingError` are not re-exported), but
+  installing one is a real, tested, facade-only mechanism this module does
+  not carry, and the comment now points at `RouterFactory` and
+  `docs/embedding.md` instead of repeating the claim it just disproved.
+  `SubagentHost`/`EventSink`/`HealthRegistry` are still closed, but for
+  their own actual in-process reason (no `ConwayBuilder::with_*` injects a
+  replacement) rather than a citation to a section that never addressed
+  in-process registration; `SessionStore` for its own reason
+  (`SeqRange`/`StoreError` not re-exported). No behavior changed.
+  (`crates/conway/src/lib.rs`)
 
 - **The backend authoring surface now has a stranger proving it works, not
   conway's own test suite vouching for itself** (board item

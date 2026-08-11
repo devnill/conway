@@ -141,11 +141,66 @@ impl ArtifactWriteHandle {
         Self { writer, agent_id }
     }
 
+    /// A handle backed by a private [`ArtifactWriter`] that performs no I/O
+    /// and always succeeds, returning `name` unchanged (as a [`PathBuf`]) --
+    /// for a [`crate::ports::ContextHookCtx`] fixture in a test for a hook
+    /// that never calls [`Self::write`] (board item 01KZJ5S3ZC8SPWTX94C4HTEC2R).
+    ///
+    /// **Why this exists, given `ArtifactWriteHandle::new` already takes any
+    /// `Arc<dyn ArtifactWriter>`.** `ContextHookCtx::artifacts` became a
+    /// required field when the real containment guarantee landed
+    /// (`ArtifactWriter`'s own module doc): correct, but it means EVERY
+    /// construction site -- including a test fixture for a hook that writes
+    /// nothing -- must supply *some* implementation. Before this existed, a
+    /// hook author's only path was to hand-roll one: an `#[async_trait] impl
+    /// ArtifactWriter` returning `Ok(PathBuf::from(name))`, plus the `Arc`/
+    /// `PathBuf` imports that come with it -- exactly what `conway-core`'s
+    /// own `ports::plugin` tests did privately (GP-03/P-6: a capability a
+    /// built-in needs belongs on the shared surface, not kept private).
+    ///
+    /// **Not gated behind `feature = "fakes"`, unlike this crate's other test
+    /// doubles (`crate::fakes`).** Those exist to stand in for a PRODUCTION
+    /// capability a test wants to script (a backend that returns scripted
+    /// responses, a store that records what was appended) -- gating them
+    /// keeps this crate's "no I/O, except behind an explicit test feature"
+    /// promise legible. A no-op artifact writer scripts nothing and performs
+    /// no I/O either way, so it carries none of that risk; gating it would
+    /// only have reproduced the exact reachability gap this constructor
+    /// exists to close, since `conway`'s facade does not forward `fakes` to
+    /// its own dependents (only its `[dev-dependencies]` enable it, for this
+    /// workspace's own test suites) -- see `crate::ports`' own module doc
+    /// for the two prior production-fallback exceptions
+    /// (`MinimalRouter`/`AlwaysClosedHealthRegistry`) this is a third,
+    /// identically narrow instance of.
+    pub fn noop(agent_id: AgentId) -> Self {
+        Self::new(Arc::new(NoopArtifactWriter), agent_id)
+    }
+
     /// Writes `bytes` to `name`, resolved and confined exactly as
     /// [`ArtifactWriter::write`] documents. See this type's own doc, and
     /// this module's own doc, for the full containment guarantee.
     pub async fn write(&self, name: &str, bytes: Vec<u8>) -> Result<PathBuf, ArtifactWriteError> {
         self.writer.write(self.agent_id, name, bytes).await
+    }
+}
+
+/// The private implementation behind [`ArtifactWriteHandle::noop`]. Not
+/// itself exported -- see that constructor's own doc for why a name that
+/// exists purely for tests belongs behind a constructor on an already-
+/// justified type, rather than as a second top-level name in the facade's
+/// curated `conway::plugin` module (whose own doc requires every name in it
+/// to be justified by an authoring need, not a testing convenience).
+struct NoopArtifactWriter;
+
+#[async_trait]
+impl ArtifactWriter for NoopArtifactWriter {
+    async fn write(
+        &self,
+        _agent_id: AgentId,
+        name: &str,
+        _bytes: Vec<u8>,
+    ) -> Result<PathBuf, ArtifactWriteError> {
+        Ok(PathBuf::from(name))
     }
 }
 
