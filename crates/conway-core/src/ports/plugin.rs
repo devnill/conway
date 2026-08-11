@@ -672,29 +672,17 @@ mod tests {
         assert_eq!(out, back);
     }
 
-    /// An `ArtifactWriter` double that never actually touches a
-    /// filesystem (this crate performs no I/O, even in tests) -- just
-    /// enough to satisfy `ContextHookCtx::artifacts`' field type for
-    /// fixtures in this module that exercise `before_request`/`on_overflow`
-    /// transforms unrelated to artifact writing. The REAL containment
-    /// guarantee is exercised by `conway-runtime`'s `artifact_store`
-    /// tests, against a real `AgentArtifactWriter` and a real filesystem.
-    struct NoopArtifactWriter;
-
-    #[async_trait]
-    impl crate::ports::ArtifactWriter for NoopArtifactWriter {
-        async fn write(
-            &self,
-            _agent_id: AgentId,
-            name: &str,
-            _bytes: Vec<u8>,
-        ) -> Result<std::path::PathBuf, crate::error::ArtifactWriteError> {
-            Ok(std::path::PathBuf::from(name))
-        }
-    }
-
+    /// `ArtifactWriteHandle::noop` (board item 01KZJ5S3ZC8SPWTX94C4HTEC2R)
+    /// replaces what used to be a hand-rolled private `ArtifactWriter`
+    /// double here -- this module's own fixtures are exactly the boilerplate
+    /// that constructor exists to remove (P-14: reuse, don't restate). The
+    /// REAL containment guarantee is exercised by `conway-runtime`'s
+    /// `artifact_store` tests, against a real `AgentArtifactWriter` and a
+    /// real filesystem; this module's own fixtures exercise
+    /// `before_request`/`on_overflow` transforms unrelated to artifact
+    /// writing.
     fn artifacts_handle() -> crate::ports::ArtifactWriteHandle {
-        crate::ports::ArtifactWriteHandle::new(std::sync::Arc::new(NoopArtifactWriter), AgentId::new())
+        crate::ports::ArtifactWriteHandle::noop(AgentId::new())
     }
 
     fn hook_ctx() -> ContextHookCtx {

@@ -231,7 +231,7 @@ content" or "silently pretend it was spilled."
 
 **What this example does *not* prove.** `RecordingArtifactWriter` above is
 an in-memory double, the same pattern `plugin_surface.rs`'s own
-`RecordingArtifactWriter` and `authoring.md`'s `NoopWriter` use — it proves
+`RecordingArtifactWriter` uses — it proves
 the hook calls `write` with the right name and the full bytes, not that a
 real filesystem write landed inside a real confinement root. That guarantee
 is `conway-runtime`'s `AgentArtifactWriter`, exercised by its own
@@ -241,12 +241,18 @@ that check, by construction — `ArtifactWriteHandle::write` is the *only*
 place a hook-written path is resolved, so there is no second surface to get
 subtly wrong.
 
-**One piece of authoring friction, named rather than worked around:**
-building `ContextHookCtx` by hand for a test requires a real
-`ArtifactWriter` impl, and the facade ships no no-op one — the same ~15
-lines of boilerplate `authoring.md`'s own walkthrough hit, tracked as board
-item `01KZJ5S3ZC8SPWTX94C4HTEC2R` (open at the time of writing). This page's
-own test code carries the identical boilerplate for the identical reason.
+**One piece of authoring friction, closed since this page was first
+written:** building `ContextHookCtx` by hand for a test used to require a
+real `ArtifactWriter` impl even when a hook wrote nothing, and the facade
+shipped no no-op one — the ~15 lines of boilerplate `authoring.md`'s own
+walkthrough hit, tracked as board item `01KZJ5S3ZC8SPWTX94C4HTEC2R`, now
+closed: `ArtifactWriteHandle::noop(agent_id)` (`authoring.md`'s current step
+3) covers that case. It does **not** cover this example's own test above,
+which keeps its `RecordingArtifactWriter` on purpose — the test asserts on
+the exact name and bytes the hook wrote, something a no-op writer cannot
+record by construction. `noop` and a purpose-built recording double solve two
+different problems (nothing to supply vs. something to observe); this
+example genuinely needs the latter, board item or no.
 
 ### 2. Compaction
 
