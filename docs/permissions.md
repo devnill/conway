@@ -112,6 +112,17 @@ and a project "this checkout's build command is fine" rule answer different
 questions, and one silently discarding the other would surprise you either
 way.
 
+**A misspelled top-level key is a load error, not a silent no-op.** The only
+keys this file recognizes are `allow`, `deny`, and `rules`. Typing `"denys"`
+instead of `"deny"` used to parse cleanly, silently fall back to an empty
+deny list, and install nothing — the file "worked" and the rule you wrote
+simply never took effect, with nothing telling you. That is fixed: a file
+naming any key outside that set fails to load entirely — none of its rules
+(`allow`, `deny`, or `prompt`) take effect, and the transcript shows an
+error naming the offending key, at the same severity as a registration error
+(a red entry, not a routine notice). Fix the key and the file loads on the
+next session start, or after `/trust permissions` re-reads it.
+
 ## The structured `rules` array
 
 The flat `allow`/`deny` lists above are the surface syntax for a more

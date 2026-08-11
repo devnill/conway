@@ -41,31 +41,80 @@ treatment:
   misspelled key defaulting to "off" and running anyway is worse than a
   refusal naming the field. `crates/conway/src/config/schema.rs`,
   `crates/conway/src/agents.rs`'s frontmatter, and
-  `crates/conway-plugin-backends/src/profile.rs`'s `ProfileRaw` all set it; the
-  crate's own `config_precedence.rs` test suite pins the behavior with named
-  typo cases (`typo_d_key_is_rejected_by_deny_unknown_fields`,
-  `typo_d_health_key_is_rejected_by_deny_unknown_fields`).
+  `crates/conway-plugin-backends/src/profile.rs`'s `ProfileRaw` all set the
+  attribute directly. As of board item 01KZHVDDQQ7XT0RK3JVNM2YV83,
+  `crates/conway-core/src/permission_pattern.rs`'s `RawPermissionFile` — the
+  type `permissions.json` is actually loaded through — reaches the SAME
+  observable outcome (a loud, named error for an unrecognized key) by a
+  different mechanism instead: see below for why it uses a
+  `#[serde(flatten)]` catch-all rather than the attribute itself. The
+  crate's own `config_precedence.rs` test suite pins the `settings.json`
+  behavior with named typo cases (`typo_d_key_is_rejected_by_deny_unknown_fields`,
+  `typo_d_health_key_is_rejected_by_deny_unknown_fields`), and
+  `permission_pattern.rs`'s own suite does the same for `permissions.json`
+  (see below for the full account, including the one type in this file's
+  own family — `PermissionFile` — that deliberately stays lenient, and why).
 
-**A known gap in this rule, checked fresh against the tree at the time of
-writing: `PermissionFile` and `TrustFile` do not set
-`#[serde(deny_unknown_fields)]`.** `PermissionFile`
-(`crates/conway-core/src/permission_pattern.rs`) and the internal
-`RawPermissionFile` its own loader parses through carry no
-`deny_unknown_fields` attribute; neither does `TrustFile` or
-`TrustedRecord` (`crates/conway/src/config/trust.rs`). A misspelled key —
-`"denys"` instead of `"deny"` — is silently accepted as an unrecognized
-field, `deny` falls back to its `#[serde(default)]` empty vector, and **zero
-deny rules install, with no error surfaced anywhere.** This is the loud-typo
-property every other hand-authored config surface in this tree already has,
-missing from exactly the two files whose typo has a security consequence
-rather than a merely cosmetic one. No board item names this gap
-specifically — searched and confirmed absent. If filed, the item is: *add
-`#[serde(deny_unknown_fields)]` to `PermissionFile` (and its internal
-`RawPermissionFile` parse path) and to `trust.rs`'s `TrustFile`/
-`TrustedRecord`, with a regression test asserting a misspelled `denys` key
-is a loud load error rather than a silently-empty deny list — following the
-exact precedent `config_precedence.rs`'s existing typo tests already set for
-`settings.json`.*
+**This gap is closed for `permissions.json`, and deliberately NOT closed the
+same way for `trust.json` — board item 01KZHVDDQQ7XT0RK3JVNM2YV83.** The
+type that actually deserializes a permissions file being loaded for
+installation is `RawPermissionFile`, the private struct inside
+`conway_core::permission_pattern::parse_permission_file` — not the public
+`PermissionFile` type, which is used only for the ROUND-TRIP writers
+(`Conway`'s revoke rewrite, and `conway-cli`'s best-effort "always allow"
+append). `RawPermissionFile` now carries a `#[serde(flatten)] extra:
+serde_json::Map<String, serde_json::Value>` catch-all instead of
+`deny_unknown_fields` itself (the two are mutually incompatible in serde):
+a file naming an unrecognized top-level key (`"denys"` instead of `"deny"`,
+or any other typo) is detected structurally, by that map being non-empty,
+rather than by matching text inside a `serde_json::Error`'s message — text
+that is neither serde's nor serde_json's own semver contract, so a future
+dependency bump changing it could otherwise silently reopen the exact gap
+this item closes. `permission_file_unknown_field_error` checks this BEFORE
+any rule is parsed from the file, and `Conway::load_permission_files`/
+`Conway::trust_permission_file` both refuse the whole file — allow, deny,
+and prompt, none of it installs — surfacing a message that names the
+offending key, rather than silently enforcing nothing, at BOTH entry
+points, through the SAME `Entry::Error { fatal: false }` transcript
+severity (`crates/conway-cli/src/tui/app.rs`). `permission_pattern.rs`'s
+own test suite pins the typo case
+(`a_misspelled_deny_key_is_reported_rather_than_silently_installing_nothing`)
+and, per P-15, a CONTROL case with the key correctly spelled
+(`a_correctly_spelled_deny_key_installs_the_rule_the_typo_would_have_dropped`)
+so an empty result is evidence of the catch, not of an empty fixture; the
+same pairing is repeated at the real production seam in
+`crates/conway/tests/permission_trust_seam.rs`
+(`a_misspelled_deny_key_in_a_project_file_installs_no_rule_and_is_reported_loudly`
+/ `a_correctly_spelled_deny_key_in_a_project_file_does_refuse_the_call`).
+`PermissionFile` itself stays lenient — its own doc comment states why: the
+best-effort append path already treats ANY parse failure as "the file was
+empty" and overwrites it with just the one new rule, so making that read
+strict would mean a field a NEWER conway build added, read back by an OLDER
+build appending one grant, silently destroys every other rule the file
+held (its `deny` rules included) — a worse outcome than the gap this item
+closes. Every load path reaches the file through the now-strict
+`RawPermissionFile` first regardless, so this leniency in the round-trip
+type does not reopen the hole.
+
+`TrustFile`/`TrustedRecord` (`crates/conway/src/config/trust.rs`)
+deliberately keep NO `deny_unknown_fields` at all, established rather than
+assumed: nobody hand-types a key into `trust.json` — it is written
+exclusively by `TrustStore::trust` and read back exclusively by
+`TrustStore::load`, both this crate, across whatever two conway builds an
+operator happens to run before and after an upgrade. Its realistic failure
+mode is therefore version skew (a future build adds a field; an older
+build reads the file back), not an operator's typo, and
+`TrustStore::load_from_path` already treats ANY parse error as "trust.json
+is corrupt" — zeroing every recorded trust decision in the file at once,
+not just the one entry carrying the new field. That regression has no
+matching security upside the way `permissions.json`'s strictness does: an
+untrusted-by-mistake record degrades toward MORE prompting (the same
+direction this module's whole failure posture already takes on purpose),
+it never lets anything unenforced through the way a silently-dropped
+`deny` rule does. `trust.rs`'s own test suite pins that the leniency
+actually holds
+(`an_unrecognized_key_in_trust_json_does_not_prevent_a_recorded_decision_from_matching`),
+not just that it was decided.
 
 **The general fallback pattern — explicit match, deny by default — already
 ships, just not yet at the config-file-typo layer above.**

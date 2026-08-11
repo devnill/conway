@@ -315,6 +315,92 @@ async fn an_untrusted_project_deny_rule_still_applies_immediately() {
     );
 }
 
+/// Board item 01KZHVDDQQ7XT0RK3JVNM2YV83, driven through the REAL
+/// production seam. A misspelled `"denys"` key must not silently install
+/// zero deny rules: the operator wrote a rule they believe blocks `curl`,
+/// and it must be reported as never having loaded, not merely absent from
+/// some in-memory list. Paired with
+/// `a_correctly_spelled_deny_key_in_a_project_file_does_refuse_the_call`
+/// (P-15's control case) so "the call reaches the gate" here is evidence of
+/// the typo defeating the rule, not evidence the fixture never had a deny
+/// rule to enforce in the first place.
+#[tokio::test]
+async fn a_misspelled_deny_key_in_a_project_file_installs_no_rule_and_is_reported_loudly() {
+    let project = project_dir_with_permissions(r#"{"denys": ["bash:curl"]}"#);
+    let (_xdg, env) = isolated_env();
+
+    let gate = RecordingGate::new();
+    let conway = build_conway(
+        project.path(),
+        vec![
+            ScriptedTurn::Respond(bash_call_response("curl evil.example")),
+            ScriptedTurn::Respond(text_response("done")),
+        ],
+        gate.clone() as Arc<dyn PermissionGate>,
+    );
+
+    let report = conway.load_permission_files(project.path(), &env, PermissionScope::Session, AgentId::new());
+    assert_eq!(
+        report.parse_errors.len(),
+        1,
+        "a top-level key this schema does not recognize must be reported: {:?}",
+        report
+    );
+    assert!(
+        report.parse_errors[0].contains("denys"),
+        "the reported error must name the offending key: {}",
+        report.parse_errors[0]
+    );
+
+    run_one_bash_call(&conway).await;
+
+    assert_eq!(
+        gate.requests().len(),
+        1,
+        "the typo'd deny rule must NOT refuse the call -- it never installed, \
+         so `curl evil.example` reaches the operator's gate exactly as if no \
+         permissions file existed at all: {:?}",
+        gate.requests()
+    );
+    assert_eq!(gate.requests()[0].rendered, "curl evil.example");
+}
+
+/// P-15's control case for the test above: the SAME rule, correctly
+/// spelled, actually refuses the call before it ever reaches the gate --
+/// proving the typo test's "reaches the gate" observation is evidence of
+/// the miss, not an artifact of an empty fixture.
+#[tokio::test]
+async fn a_correctly_spelled_deny_key_in_a_project_file_does_refuse_the_call() {
+    let project = project_dir_with_permissions(r#"{"deny": ["bash:curl"]}"#);
+    let (_xdg, env) = isolated_env();
+
+    let gate = RecordingGate::new();
+    let conway = build_conway(
+        project.path(),
+        vec![
+            ScriptedTurn::Respond(bash_call_response("curl evil.example")),
+            ScriptedTurn::Respond(text_response("done")),
+        ],
+        gate.clone() as Arc<dyn PermissionGate>,
+    );
+
+    let report = conway.load_permission_files(project.path(), &env, PermissionScope::Session, AgentId::new());
+    assert!(
+        report.parse_errors.is_empty(),
+        "a correctly spelled key must never be reported as unrecognized: {:?}",
+        report.parse_errors
+    );
+
+    run_one_bash_call(&conway).await;
+
+    assert!(
+        gate.requests().is_empty(),
+        "a correctly spelled deny rule must refuse the call directly, without \
+         ever consulting the operator's gate: {:?}",
+        gate.requests()
+    );
+}
+
 /// A CHAINED command must still reach the operator even if it happens to
 /// match a deny prefix's tool+first-token -- proving the deny rule's
 /// short-circuit (return `Deny`, never fall through to a prompt) does not
@@ -396,6 +482,108 @@ async fn a_global_permissions_file_installs_with_no_trust_decision() {
     assert!(
         gate.requests().is_empty(),
         "the global file's allow rule must grant without any trust ceremony: {:?}",
+        gate.requests()
+    );
+}
+
+/// Board item 01KZHVDDQQ7XT0RK3JVNM2YV83, driven through
+/// `Conway::trust_permission_file` itself -- the `/trust permissions`
+/// production entry point, not just `load_permission_files` (which the
+/// tests above already cover). A file naming an unrecognized top-level key
+/// must be refused BEFORE a trust decision is recorded for it: recording
+/// trust for content that installs nothing would let a later edit that
+/// merely fixes the typo silently inherit a decision the operator never
+/// actually reviewed against real rules.
+///
+/// Asserts on the OBSERVABLE outcome twice over -- the `TrustStore` record
+/// itself (via the same `is_trusted` query `load_permission_files` uses)
+/// and the effect on a live gate -- not on the mere presence of the guard.
+/// Paired with `trusting_a_correctly_spelled_project_file_is_recorded_as_trusted`
+/// (P-15's control), so "not recorded" here is evidence of the refusal, not
+/// of `is_trusted` defaulting to `false` regardless of what
+/// `trust_permission_file` does.
+#[tokio::test]
+async fn trusting_a_project_file_with_an_unrecognized_key_is_refused_and_not_recorded() {
+    let project = project_dir_with_permissions(
+        r#"{"allow": ["bash:git status"], "denys": ["bash:curl"]}"#,
+    );
+    let (_xdg, env) = isolated_env();
+    let path = project.path().join(".conway").join("permissions.json");
+    let agent = AgentId::new();
+
+    let gate = RecordingGate::new();
+    let conway = build_conway(
+        project.path(),
+        vec![
+            ScriptedTurn::Respond(bash_call_response("git status")),
+            ScriptedTurn::Respond(text_response("done")),
+        ],
+        gate.clone() as Arc<dyn PermissionGate>,
+    );
+
+    let err = conway
+        .trust_permission_file(&env, &path, PermissionScope::Session, agent)
+        .expect_err("a file naming an unrecognized key must be refused, not trusted");
+    assert!(
+        err.to_string().contains("denys"),
+        "the refusal must name the offending key: {err}"
+    );
+
+    let contents = std::fs::read_to_string(&path).expect("read fixture back");
+    let trust_store = conway::config::trust::TrustStore::load(&env);
+    assert!(
+        !trust_store.is_trusted(&path, &contents),
+        "a refused trust attempt must not record a trust decision for the file"
+    );
+
+    run_one_bash_call(&conway).await;
+    assert_eq!(
+        gate.requests().len(),
+        1,
+        "the refused trust attempt must not have made the allow rule take \
+         effect -- `git status` must still reach the operator's gate: {:?}",
+        gate.requests()
+    );
+    assert_eq!(gate.requests()[0].rendered, "git status");
+}
+
+/// P-15's control for the test above: the SAME shape of file, correctly
+/// spelled, IS recorded as trusted and DOES let its allow rule take effect
+/// -- proving the assertions above are evidence of the refusal, not of a
+/// trust store or gate that behaves identically either way.
+#[tokio::test]
+async fn trusting_a_correctly_spelled_project_file_is_recorded_as_trusted() {
+    let project = project_dir_with_permissions(r#"{"allow": ["bash:git status"]}"#);
+    let (_xdg, env) = isolated_env();
+    let path = project.path().join(".conway").join("permissions.json");
+    let agent = AgentId::new();
+
+    let gate = RecordingGate::new();
+    let conway = build_conway(
+        project.path(),
+        vec![
+            ScriptedTurn::Respond(bash_call_response("git status")),
+            ScriptedTurn::Respond(text_response("done")),
+        ],
+        gate.clone() as Arc<dyn PermissionGate>,
+    );
+
+    conway
+        .trust_permission_file(&env, &path, PermissionScope::Session, agent)
+        .expect("a correctly spelled file must be trusted");
+
+    let contents = std::fs::read_to_string(&path).expect("read fixture back");
+    let trust_store = conway::config::trust::TrustStore::load(&env);
+    assert!(
+        trust_store.is_trusted(&path, &contents),
+        "a correctly spelled file must be recorded as trusted"
+    );
+
+    run_one_bash_call(&conway).await;
+    assert!(
+        gate.requests().is_empty(),
+        "a correctly spelled, trusted file's allow rule must grant without \
+         ever consulting the operator's gate: {:?}",
         gate.requests()
     );
 }

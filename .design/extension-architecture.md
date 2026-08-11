@@ -828,6 +828,25 @@ field) and reported in `conway plugins`, so an operator debugging "my
 plugin's new option does nothing" gets `unknown field "retry_budget" on
 tool/invoke result (14 times)`.
 
+> **Status (2026-08-10) — `trust.json`'s classification corrected; it is OFF,
+> not ON.** Board item 01KZHVDDQQ7XT0RK3JVNM2YV83 (`crates/conway/src/config/
+> trust.rs`, implemented, not this design) made `trust.json` deliberately
+> lenient — no `deny_unknown_fields` — the opposite of this row. `trust.json`
+> is machine-written and machine-read exclusively by `TrustStore::trust`/
+> `TrustStore::load`, never hand-typed, so its realistic failure mode is
+> version skew between two conway builds (a newer build adds a field; an
+> older build reads the file back), not an operator's typo. Under
+> `deny_unknown_fields` that skew would zero EVERY recorded trust decision in
+> the file on a mere downgrade, not just the one entry with the new field —
+> see `trust.rs`'s own module doc, "Deliberately NOT `#[serde(deny_unknown_
+> fields)]`", for the full reasoning and the test that pins the leniency.
+> `permissions.json` keeps the ON classification this row gives it — it IS
+> hand-authored, and a misspelled `deny` silently installing nothing is
+> exactly the failure this item exists to close (see `permission_pattern.rs`'s
+> `permission_file_unknown_field_error`). This status note corrects the row
+> rather than deleting it, matching this document's own convention for a
+> clause superseded by a shipped decision.
+
 **Rule 4 — the wire vocabulary is enumerated by a test**, the way `Event`
 already pins its variant count precisely so nobody adds one without updating
 it. A registry test listing every admitted type with its treatment; **golden

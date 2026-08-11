@@ -76,6 +76,42 @@
 //!   recorded digest -> untrusted. Mirrors how `Containment::Undecidable`
 //!   is fused with `Outside` everywhere in this codebase that consults
 //!   containment: "can't confirm" is never "trusted".
+//!
+//! ## Deliberately NOT `#[serde(deny_unknown_fields)]` (board item
+//! 01KZHVDDQQ7XT0RK3JVNM2YV83)
+//!
+//! `conway_core::permission_pattern`'s internal `RawPermissionFile` gained
+//! `deny_unknown_fields` under this item because `permissions.json` is a
+//! HAND-AUTHORED file where a typo'd key (`"denys"` for `"deny"`) silently
+//! drops a safety rule the operator believes is in effect -- P-13's fail-
+//! closed floor. `TrustFile`/[`TrustedRecord`] are a different kind of
+//! file entirely: nobody types a key into `trust.json` by hand. It is
+//! written exclusively by [`TrustStore::trust`] and read back exclusively
+//! by [`TrustStore::load`] -- both this crate, across whatever two conway
+//! builds an operator happens to run before and after an upgrade. That
+//! makes its realistic failure mode VERSION SKEW, not a typo: a future
+//! build adds a field to [`TrustedRecord`] (say, a digest algorithm tag),
+//! and an OLDER build reads that file back. Under `deny_unknown_fields`
+//! that read becomes `Err`, and [`TrustStore::load_from_path`] already
+//! treats any parse error as "trust.json is corrupt" -- which zeroes EVERY
+//! recorded trust decision in the file, not just the one entry with the
+//! new field. An operator who trusted ten projects would have to re-run
+//! `/trust permissions` on all ten after a mere downgrade, for a field
+//! that has nothing to do with any of their decisions.
+//!
+//! That regression has no offsetting safety benefit the way `permissions.json`'s
+//! does: an untrusted-by-mistake record fails in the SAME direction this
+//! module's whole failure posture already takes on purpose (fewer trusted
+//! subjects, never more -- see above) -- it degrades to more prompting, it
+//! does not let anything unenforced through the way a silently-dropped
+//! `deny` rule does. `deny_unknown_fields`'s value is catching a HUMAN
+//! typo before it causes a silent security gap; there is no human typing
+//! keys into `trust.json` for it to catch, so the same attribute here would
+//! only add the version-skew cost above for no matching benefit. This
+//! module stays lenient, and `an_unrecognized_key_in_trust_json_does_not_
+//! prevent_a_recorded_decision_from_matching` (this module's own test
+//! suite) pins that the leniency actually holds, not just that it was
+//! decided.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -86,6 +122,12 @@ use serde::{Deserialize, Serialize};
 /// path's `Display` string (JSON object keys must be strings; `PathBuf`
 /// has no portable string-key `Serialize` of its own) to the record of
 /// what was last explicitly trusted at that path.
+///
+/// Deliberately no `#[serde(deny_unknown_fields)]` -- see this module's own
+/// doc, "Deliberately NOT `#[serde(deny_unknown_fields)]`", for why this
+/// file's realistic risk is version skew between two conway builds, not an
+/// operator's typo, and why the same attribute that protects
+/// `permissions.json` would only add cost here.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct TrustFile {
     #[serde(default)]
@@ -94,7 +136,8 @@ struct TrustFile {
 
 /// One explicit trust decision, recorded at the moment the operator made
 /// it. `content_digest` is what makes this granular rather than sticky --
-/// see this module's own doc.
+/// see this module's own doc. Deliberately no `#[serde(deny_unknown_fields)]`
+/// either -- same reasoning as [`TrustFile`] itself.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct TrustedRecord {
     content_digest: String,
@@ -368,6 +411,52 @@ mod tests {
 
         let store = TrustStore::load(&env);
         assert!(!store.is_trusted(Path::new("/anything"), "anything"));
+    }
+
+    /// Board item 01KZHVDDQQ7XT0RK3JVNM2YV83, question 3: pins the
+    /// deliberate DIFFERENCE from `permissions.json`'s treatment, recorded
+    /// in this module's own doc -- an unrecognized key here (at either
+    /// nesting level: a stray top-level field, or a stray field inside one
+    /// recorded entry) must NOT prevent an otherwise-valid, already-
+    /// recorded trust decision from matching. `trust.json` is written and
+    /// read exclusively by this module across whatever two conway builds an
+    /// operator happens to run, so a field one build does not recognize is
+    /// version skew, not a human's typo -- and must not force every
+    /// project the operator already trusted back into "untrusted" the way
+    /// `deny_unknown_fields` would (see the module doc for the full
+    /// reasoning this test exists to keep honest).
+    #[test]
+    fn an_unrecognized_key_in_trust_json_does_not_prevent_a_recorded_decision_from_matching() {
+        let xdg = tempfile_dir();
+        fs::create_dir_all(xdg.join("conway")).unwrap();
+        let project = tempfile_dir().join("permissions.json");
+        let contents = r#"{"allow":["bash:cargo test"]}"#;
+        fs::write(&project, contents).unwrap();
+        let digest = content_digest(contents);
+        let trust_json = format!(
+            r#"{{
+                "a_future_top_level_field_this_build_does_not_know": "ignored",
+                "permission_files": {{
+                    {:?}: {{
+                        "content_digest": {:?},
+                        "trusted_at": "2024-01-01T00:00:00Z",
+                        "a_future_record_field_this_build_does_not_know": "also ignored"
+                    }}
+                }}
+            }}"#,
+            project.display().to_string(),
+            digest,
+        );
+        fs::write(xdg.join("conway").join("trust.json"), trust_json).unwrap();
+        let env = env_for(&xdg);
+
+        let store = TrustStore::load(&env);
+        assert!(
+            store.is_trusted(&project, contents),
+            "a field this build does not recognize -- at either nesting \
+             level -- must not prevent an otherwise-valid recorded trust \
+             decision from matching"
+        );
     }
 
     #[cfg(unix)]
