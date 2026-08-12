@@ -124,8 +124,11 @@ fn headroom_default_participates_in_the_full_five_source_precedence_chain() {
     .unwrap();
     assert_eq!(outcome.config.headroom_for(&role), 20_000);
 
-    // remove everything -> D.
-    let outcome = load(opts(empty_dir, HashMap::new(), CliOverrides::default())).unwrap();
+    // remove everything -> D. Still an isolated `XDG_CONFIG_HOME` (not a
+    // bare `HashMap::new()`): the point of this stage is "no source names a
+    // value," not "read whatever real settings.json this machine has" (see
+    // `support::isolated_env`'s doc comment).
+    let outcome = load(opts(empty_dir, support::isolated_env(), CliOverrides::default())).unwrap();
     assert_eq!(outcome.config.headroom_for(&role), DEFAULT_HEADROOM_TOKENS);
 }
 
@@ -210,7 +213,7 @@ fn env_var_overrides_a_per_role_headroom() {
 #[test]
 fn env_var_for_an_unknown_role_alias_is_ignored() {
     let root = support::unique_temp_dir("headroom-env-unknown-role");
-    let mut env = HashMap::new();
+    let mut env = support::isolated_env();
     env.insert(
         "CONWAY_ROLES__GHOST__HEADROOM_TOKENS".to_string(),
         "999".to_string(),
@@ -233,7 +236,7 @@ fn zero_global_headroom_is_a_hard_error() {
     let result = load(LoadOptions {
         cwd: dir,
         explicit_path: Some(support::fixtures_dir().join("headroom_zero.json")),
-        env: HashMap::new(),
+        env: support::isolated_env(),
         cli_overrides: CliOverrides::default(),
         model_metadata_refresh: false,
     });
@@ -255,7 +258,7 @@ fn zero_per_role_headroom_is_a_hard_error_naming_the_role() {
     let result = load(LoadOptions {
         cwd: dir,
         explicit_path: Some(path),
-        env: HashMap::new(),
+        env: support::isolated_env(),
         cli_overrides: CliOverrides::default(),
         model_metadata_refresh: false,
     });
@@ -270,7 +273,7 @@ fn headroom_role_override_fixture_resolves_as_documented() {
     let outcome = load(LoadOptions {
         cwd: dir,
         explicit_path: Some(support::fixtures_dir().join("headroom_role_override.json")),
-        env: HashMap::new(),
+        env: support::isolated_env(),
         cli_overrides: CliOverrides::default(),
         model_metadata_refresh: false,
     })
@@ -288,7 +291,7 @@ fn headroom_exceeding_smallest_reachable_context_warns_without_clamping() {
     let outcome = load(LoadOptions {
         cwd: fixtures.clone(),
         explicit_path: Some(fixtures.join("headroom_exceeds_context.json")),
-        env: HashMap::new(),
+        env: support::isolated_env(),
         cli_overrides: CliOverrides::default(),
         model_metadata_refresh: false,
     })
@@ -322,7 +325,7 @@ fn no_headroom_warning_when_model_metadata_is_absent() {
     let outcome = load(LoadOptions {
         cwd: dir,
         explicit_path: Some(path),
-        env: HashMap::new(),
+        env: support::isolated_env(),
         cli_overrides: CliOverrides::default(),
         model_metadata_refresh: false,
     })
@@ -356,7 +359,7 @@ fn two_offending_roles_produce_deterministically_ordered_warnings() {
         load(LoadOptions {
             cwd: dir.clone(),
             explicit_path: Some(path.clone()),
-            env: HashMap::new(),
+            env: support::isolated_env(),
             cli_overrides: CliOverrides::default(),
             model_metadata_refresh: false,
         })

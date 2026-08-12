@@ -208,10 +208,13 @@ fn five_source_precedence_across_representative_keys() {
         "https://xdg.example.com"
     );
 
-    // Stage 5: remove everything -> baked-in defaults.
+    // Stage 5: remove everything -> baked-in defaults. Still an isolated
+    // `XDG_CONFIG_HOME` (not a bare `HashMap::new()`): "remove everything"
+    // means no source names a value, not "read whatever real settings.json
+    // this machine has" (see `support::isolated_env`'s doc comment).
     let outcome = load(LoadOptions {
         cwd: empty_dir,
-        ..opts(HashMap::new(), CliOverrides::default())
+        ..opts(support::isolated_env(), CliOverrides::default())
     })
     .unwrap();
     assert_eq!(outcome.config.default_role.as_str(), "coder");
@@ -222,7 +225,7 @@ fn five_source_precedence_across_representative_keys() {
 
 #[test]
 fn env_var_mapping_reads_known_vars_and_ignores_unknown_ones() {
-    let mut env = HashMap::new();
+    let mut env = support::isolated_env();
     env.insert("CONWAY_DEFAULT_ROLE".to_string(), "coder".to_string());
     env.insert(
         "CONWAY_BACKENDS__ANTHROPIC__API_KEY".to_string(),
@@ -271,7 +274,7 @@ fn load_discovers_the_nearest_project_config_via_parent_walk() {
     let outcome = load(LoadOptions {
         cwd: nested,
         explicit_path: None,
-        env: HashMap::new(),
+        env: support::isolated_env(),
         cli_overrides: CliOverrides::default(),
         model_metadata_refresh: false,
     })
@@ -285,7 +288,7 @@ fn unknown_role_alias_in_default_role_names_the_alias_and_defined_roles() {
     let result = load(LoadOptions {
         cwd: dir,
         explicit_path: Some(support::fixtures_dir().join("bad_role.json")),
-        env: HashMap::new(),
+        env: support::isolated_env(),
         cli_overrides: CliOverrides::default(),
         model_metadata_refresh: false,
     });
@@ -306,7 +309,7 @@ fn typo_d_key_is_rejected_by_deny_unknown_fields() {
     let result = load(LoadOptions {
         cwd: dir,
         explicit_path: Some(support::fixtures_dir().join("unknown_key.json")),
-        env: HashMap::new(),
+        env: support::isolated_env(),
         cli_overrides: CliOverrides::default(),
         model_metadata_refresh: false,
     });
@@ -323,7 +326,7 @@ fn typo_d_health_key_is_rejected_by_deny_unknown_fields() {
     let result = load(LoadOptions {
         cwd: dir,
         explicit_path: Some(support::fixtures_dir().join("unknown_health_key.json")),
-        env: HashMap::new(),
+        env: support::isolated_env(),
         cli_overrides: CliOverrides::default(),
         model_metadata_refresh: false,
     });
@@ -352,7 +355,7 @@ fn removed_health_probe_key_is_rejected_by_deny_unknown_fields() {
     let result = load(LoadOptions {
         cwd: dir,
         explicit_path: Some(support::fixtures_dir().join("removed_health_probe_key.json")),
-        env: HashMap::new(),
+        env: support::isolated_env(),
         cli_overrides: CliOverrides::default(),
         model_metadata_refresh: false,
     });
@@ -378,7 +381,7 @@ fn typo_d_role_capability_key_is_rejected_by_deny_unknown_fields() {
     let result = load(LoadOptions {
         cwd: dir,
         explicit_path: Some(support::fixtures_dir().join("unknown_role_capability_key.json")),
-        env: HashMap::new(),
+        env: support::isolated_env(),
         cli_overrides: CliOverrides::default(),
         model_metadata_refresh: false,
     });
