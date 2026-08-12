@@ -773,6 +773,10 @@ impl Runtime {
             // (WI-086) -- only a fork/spawn child can declare one.
             result_contract: None,
             keep_alive: spec.keep_alive,
+            // A root agent has no `SubagentSpec` to source a consumer tag
+            // from either (01KZQJ03ZQ22MPM9H2TW1350ZF) -- `RootSpec` gains
+            // no counterpart field; out of this item's scope.
+            tag: None,
         };
 
         let cancel = CancellationToken::new();
@@ -1059,6 +1063,10 @@ impl Runtime {
             // always terminates on its first `Completed` turn, same as
             // before keep-alive existed.
             keep_alive: false,
+            // A resumed root has no `SubagentSpec` to source a consumer tag
+            // from either (01KZQJ03ZQ22MPM9H2TW1350ZF) -- same as
+            // `start_root`.
+            tag: None,
         };
 
         let cancel = CancellationToken::new();

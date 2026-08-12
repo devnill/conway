@@ -392,6 +392,7 @@ async fn authored_hook_transforms_payloads() {
         model: None,
         estimated_tokens: 42,
         artifacts: ArtifactWriteHandle::new(writer.clone(), AgentId::new()),
+        tag: None,
     };
     let payload = ContextPayload {
         segments: vec![

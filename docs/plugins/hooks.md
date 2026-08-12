@@ -91,7 +91,7 @@ could redirect — closing the exact cross-tree exfiltration shape board item
 | Field | Value |
 |---|---|
 | Kind | Participant |
-| Receives | `ContextHookCtx { agent_id, agent_path, session_id, turn, model, estimated_tokens, artifacts }` and a `ContextPayload { segments: Vec<PromptSegment>, tools: Vec<ToolSpec> }` — the just-assembled request, before routing |
+| Receives | `ContextHookCtx { agent_id, agent_path, session_id, turn, model, estimated_tokens, artifacts, tag }` and a `ContextPayload { segments: Vec<PromptSegment>, tools: Vec<ToolSpec> }` — the just-assembled request, before routing |
 | May return | An edited `ContextPayload` — see "The value-class boundary" below. Returning the payload unchanged is always valid; the trait's own doc states this explicitly |
 | On error | Not applicable at the trait level — `before_request` has no `Result` in its signature, so an implementation that wants to signal a failure can only do so by returning the payload unchanged or by panicking, and a panic here is not caught the way a tool's panic is (this call sits in `AgentLoop::run_inner`, not behind `ToolRunner`'s per-call `catch_unwind`) |
 | On timeout | No dedicated deadline. The call is awaited inside the agent's own turn, bounded only by `self.spec.budget.deadline` if the embedder set one (`AgentLoop::run_inner`'s `tokio::select!` against `route_attempt_fut`) — an agent with no configured deadline has no bound on this call at all |
@@ -122,6 +122,24 @@ below), both populated from the same `AgentLoop::agent_path` field. A hook
 that wants to behave differently for a top-level agent than for a subagent
 four levels down reads `ctx.agent_path.len()` (or walks it directly) rather
 than needing a second, redundant lookup against the live tree.
+
+**`ContextHookCtx.tag` is the embedder's own correlation identifier, and
+conway never reads it.** Board item `01KZQJ03ZQ22MPM9H2TW1350ZF`: an
+embedder mapping conway agents onto its own domain objects (a file, a job, a
+node in its own tool) sets `SubagentSpec::tag` when it creates the agent
+(`Some(String)`, or `None` for a root agent or a child whose caller left it
+unset), and reads it back here — on the child's very first turn, closing the
+race a post-hoc side table keyed on the freshly-minted `AgentId` would have:
+by the time `SubagentHost::start` returns an id to register against, a
+`keep_alive`-less child may already have run its first turn. Threaded
+through unread by `AgentSpec::tag` — this is the first field in this table
+conway carries but never branches, matches, or compares against for any
+decision (routing, permission, budget, or logging); contrast `role`, which
+`DeclarativeRouter` resolves against, and `SessionMeta::ask_origin`, which
+gates whether a `result_contract` may attach. Not yet exposed on the
+facade's `ForkSpec`/`SpawnSpec` — an embedder wanting one today constructs a
+`SubagentSpec` (or calls `SubagentHost::start` directly) rather than going
+through those two convenience builders.
 
 ### 4. Context overflow retry — `ContextHook::on_overflow`
 

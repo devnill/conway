@@ -197,6 +197,24 @@ pub struct AgentSpec {
     /// WI-083) depends on that child actually terminating -- making this
     /// universal would hang such a parent forever.
     pub keep_alive: bool,
+    /// Board item 01KZQJ03ZQ22MPM9H2TW1350ZF: the opaque consumer tag
+    /// threaded straight from `conway_core::agent::SubagentSpec::tag` by
+    /// `subagent.rs`'s `SubagentHost::start` (`None` for a root or resumed
+    /// root -- `runtime.rs`'s `start_root`/`resume_root` have no
+    /// `SubagentSpec` to source one from). This loop never reads it for any
+    /// decision; it exists solely to be cloned into every turn's
+    /// `ContextHookCtx::tag` (see that field's own doc) -- see
+    /// `SubagentSpec::tag`'s own doc for the full "conway never interprets
+    /// this" guarantee and why it is a genuinely new kind of field.
+    ///
+    /// Required, not defaulting: like `ContextHookCtx::agent_path`
+    /// (01KZQHZH8RXVR38JJX9AY4VSW4), `AgentSpec` derives no `Serialize`/
+    /// `Deserialize` and has no wire format to preserve compatibility with,
+    /// so there is no serialization justification for a silent default --
+    /// and a field whose entire purpose is telling two otherwise-identical
+    /// agents apart must not hand every construction site (tests included)
+    /// an identical `None` for free.
+    pub tag: Option<String>,
 }
 
 /// Everything an [`AgentLoop`] needs beyond its own identity and spec:
@@ -638,6 +656,7 @@ impl AgentLoop {
                 model: Some(model.clone()),
                 estimated_tokens: est_tokens,
                 artifacts: artifacts.clone(),
+                tag: self.spec.tag.clone(),
             };
             let overflow = OverflowInfo {
                 max_context_tokens,
@@ -850,6 +869,7 @@ impl AgentLoop {
                     model: self.spec.pin.clone(),
                     estimated_tokens: report.total_tokens_est,
                     artifacts: artifacts.clone(),
+                    tag: self.spec.tag.clone(),
                 };
                 let payload = ContextPayload {
                     segments,

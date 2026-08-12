@@ -135,6 +135,9 @@ async fn my_first_hook_appends_its_marker() {
         model: None,
         estimated_tokens: 0,
         artifacts: ArtifactWriteHandle::noop(agent_id),
+        // An embedder's own correlation identifier -- `None` unless the
+        // spec that created this agent set `SubagentSpec::tag`.
+        tag: None,
     };
     let payload = ContextPayload { segments: vec![], tools: vec![] };
 

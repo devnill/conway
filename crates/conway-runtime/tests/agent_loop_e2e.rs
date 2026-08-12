@@ -643,6 +643,7 @@ fn build_loop_inner(
         // (`crates/conway/tests/session_handle.rs`), not through this
         // file's own hand-built harness.
         keep_alive: false,
+        tag: None,
     };
 
     let cancel = CancellationToken::new();

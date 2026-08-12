@@ -271,6 +271,9 @@ impl SessionHandle {
             cwd: None,
             // (S3) Same rationale -- inherit its root too.
             root: None,
+            // (01KZQJ03ZQ22MPM9H2TW1350ZF) A modal `/ask` has no
+            // embedder-supplied correlation identifier of its own -- no tag.
+            tag: None,
         };
         // Subscribe BEFORE `start` so the child's first events cannot race
         // past this handle's stream (see the doc above).

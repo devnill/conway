@@ -264,6 +264,9 @@ pub(crate) async fn classify(
         // (S3) Likewise, no confinement-scoping need of its own -- inherit
         // the parent's root, unchanged.
         root: None,
+        // (01KZQJ03ZQ22MPM9H2TW1350ZF) Internal classification child, not an
+        // embedder correlation target -- no tag.
+        tag: None,
     };
 
     // Subscribe BEFORE `start` so the child's first `TextDelta` cannot race

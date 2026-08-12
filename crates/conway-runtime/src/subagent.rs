@@ -705,6 +705,10 @@ impl SubagentHost for Runtime {
             // TUI's bare `/spawn`/`/fork`, via `conway`'s `SpawnSpec::
             // keep_alive`/`ForkSpec::keep_alive`) sets.
             keep_alive: spec.keep_alive,
+            // Board item 01KZQJ03ZQ22MPM9H2TW1350ZF: threaded straight
+            // through, unread by this loop -- see `AgentSpec::tag`'s own
+            // doc for the "conway never interprets this" guarantee.
+            tag: spec.tag.clone(),
         };
 
         // WI-085: this child's own mailbox, plus the already-attached

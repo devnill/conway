@@ -198,6 +198,7 @@ async fn oversized_tool_results_are_narrowed_and_spilled() {
         model: None,
         estimated_tokens: 20_000,
         artifacts: ArtifactWriteHandle::new(writer.clone(), agent_id),
+        tag: None,
     };
     let big = "x".repeat(5_000);
     let payload = ContextPayload {

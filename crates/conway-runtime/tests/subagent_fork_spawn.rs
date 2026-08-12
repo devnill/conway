@@ -20,7 +20,7 @@ use conway_core::agent::{
 };
 use conway_core::capabilities::{HeadroomPolicy, RequiredCaps};
 use conway_core::config::AgentDef;
-use conway_core::content::{ContentBlock, SamplingParams, StopReason, Usage};
+use conway_core::content::{ContentBlock, Role, SamplingParams, StopReason, Usage};
 use conway_core::error::{RuntimeError, SubagentError, ToolError};
 use conway_core::event::Event;
 use conway_core::fakes::{
@@ -28,7 +28,10 @@ use conway_core::fakes::{
 };
 use conway_core::ids::{AgentId, BackendId, LogSeq, ModelId, ModelRef, RoleAlias, SessionId};
 use conway_core::log::{ForkOrigin, SessionFilter, SessionMeta};
-use conway_core::ports::{Backend, LiveOwner, Router, SessionStore, SubagentHandle, SubagentHost};
+use conway_core::ports::{
+    Backend, ContextHook, ContextHookCtx, ContextPayload, LiveOwner, Router, SessionStore,
+    SubagentHandle, SubagentHost,
+};
 use conway_core::provenance::Provenance;
 use conway_core::routing::{HealthConfig, MinimalRouter, RoleConfig, RoutingConfig};
 use conway_runtime::events::EventBus;
@@ -480,6 +483,7 @@ async fn spawn_without_agent_def_inherits_the_parents_role() {
         ask_origin: None,
         cwd: None,
         root: None,
+        tag: None,
     };
     let mut stream = runtime.subscribe();
     let child = SubagentHost::start(&*runtime, root, root, spec)
@@ -1779,6 +1783,7 @@ fn spawn_spec_with_cwd(prompt: &str, cwd: Option<PathBuf>) -> SubagentSpec {
         ask_origin: None,
         cwd,
         root: None,
+        tag: None,
     }
 }
 
@@ -3112,6 +3117,7 @@ async fn spawn_child_declines_the_parents_agent_def_even_though_a_fork_would_inh
         ask_origin: None,
         cwd: None,
         root: None,
+        tag: None,
     };
     assert!(child_spec.agent_def.is_none());
 
@@ -3153,5 +3159,264 @@ async fn spawn_child_declines_the_parents_agent_def_even_though_a_fork_would_inh
         child_node.agent_def, None,
         "a spawn with no agent_def named must resolve none -- even though the parent it spawned \
          from has one, unlike a fork's fill"
+    );
+}
+
+// ---------------------------------------------------------------------
+// Board item 01KZQJ03ZQ22MPM9H2TW1350ZF: `SubagentSpec::tag`, an opaque
+// consumer correlation identifier threaded onto `ContextHookCtx::tag` --
+// see that field's own doc for the "conway never interprets this" guarantee.
+// ---------------------------------------------------------------------
+
+/// Everything one `ContextHook::before_request` call observed, recorded so a
+/// test can assert on what the hook actually received (P-15) rather than on
+/// an intermediate value. `segments` deliberately captures role/content/
+/// provenance -- everything about a segment EXCEPT its own random
+/// `SegmentId` -- so two otherwise-identical turns can be compared for
+/// structural equality without a random id manufacturing a spurious
+/// mismatch.
+#[derive(Clone, Debug)]
+struct CapturedHookCall {
+    agent_id: AgentId,
+    turn: u32,
+    tag: Option<String>,
+    model: Option<ModelRef>,
+    estimated_tokens: u32,
+    segments: Vec<(Role, Vec<ContentBlock>, Provenance)>,
+    tool_names: Vec<String>,
+}
+
+struct RecordingContextHook {
+    captured: std::sync::Mutex<Vec<CapturedHookCall>>,
+}
+
+impl RecordingContextHook {
+    fn new() -> Self {
+        Self {
+            captured: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    fn calls(&self) -> Vec<CapturedHookCall> {
+        self.captured.lock().unwrap().clone()
+    }
+
+    /// Every call this hook observed for one specific agent, in the order
+    /// they were made -- index `0` is that agent's FIRST turn.
+    fn calls_for(&self, agent: AgentId) -> Vec<CapturedHookCall> {
+        self.calls()
+            .into_iter()
+            .filter(|c| c.agent_id == agent)
+            .collect()
+    }
+}
+
+#[async_trait]
+impl ContextHook for RecordingContextHook {
+    async fn before_request(&self, ctx: &ContextHookCtx, payload: ContextPayload) -> ContextPayload {
+        let segments = payload
+            .segments
+            .iter()
+            .map(|s| (s.role, s.content.clone(), s.provenance.clone()))
+            .collect();
+        let mut tool_names: Vec<String> = payload.tools.iter().map(|t| t.name.0.clone()).collect();
+        tool_names.sort();
+        self.captured.lock().unwrap().push(CapturedHookCall {
+            agent_id: ctx.agent_id,
+            turn: ctx.turn,
+            tag: ctx.tag.clone(),
+            model: ctx.model.clone(),
+            estimated_tokens: ctx.estimated_tokens,
+            segments,
+            tool_names,
+        });
+        // Pass-through: this hook's job is observing, never transforming.
+        payload
+    }
+}
+
+/// The acceptance criterion that matters most, in the item's own framing:
+/// "the first-turn timing IS the defect; a test that reads it back later
+/// proves nothing." The hook is registered BEFORE the child is even started
+/// -- exactly how a real embedder wires one up once, at startup -- so there
+/// is no window in which the child's first turn could run unobserved, and
+/// the assertion is against what the hook actually received on that FIRST
+/// call, not against `SubagentSpec::tag` still being present on some spec
+/// value sitting in a local variable.
+#[tokio::test]
+async fn consumer_tag_is_readable_from_the_context_hook_on_the_childs_first_turn() {
+    let (runtime, _store) = build_runtime(2, HashMap::new());
+    let hook = Arc::new(RecordingContextHook::new());
+    runtime.set_context_hook(Some(hook.clone()));
+    let root = start_and_finish_root(&runtime, "hi").await;
+
+    let mut spec = fork_spec("investigate the ticket");
+    spec.tag = Some("ticket-42".to_string());
+    let mut stream = runtime.subscribe();
+    let child = SubagentHost::start(&*runtime, root, root, spec)
+        .await
+        .unwrap();
+    wait_for_agent_finished(&mut stream, child).await;
+
+    let calls = hook.calls_for(child);
+    assert!(
+        !calls.is_empty(),
+        "the registered ContextHook must have been invoked for the child's own turn"
+    );
+    assert_eq!(
+        calls[0].turn, 0,
+        "the FIRST captured call for this agent must be turn 0 -- the child's first turn, not \
+         a later one"
+    );
+    assert_eq!(
+        calls[0].tag,
+        Some("ticket-42".to_string()),
+        "the consumer's tag must be readable from ContextHookCtx on the child's first turn, not \
+         merely present somewhere afterward"
+    );
+}
+
+/// **conway never interprets the value, proven rather than asserted**: a
+/// tag containing arbitrary content (control characters including a NUL
+/// byte, a multi-byte BMP character, and a non-BMP emoji -- deliberately not
+/// "just ASCII", the closest a `String`-typed field can get to "arbitrary
+/// bytes"), an empty string, and a very long string (100,000 characters) all
+/// round-trip through `SubagentSpec::tag` -> `AgentSpec::tag` ->
+/// `ContextHookCtx::tag` byte-for-byte unchanged.
+#[tokio::test]
+async fn consumer_tag_round_trips_arbitrary_content_empty_and_very_long_strings_unchanged() {
+    let (runtime, _store) = build_runtime(4, HashMap::new());
+    let hook = Arc::new(RecordingContextHook::new());
+    runtime.set_context_hook(Some(hook.clone()));
+    let root = start_and_finish_root(&runtime, "hi").await;
+
+    let cases: Vec<String> = vec![
+        "\0\u{1}\u{7}control-and-multibyte-\u{FFFD}-emoji-\u{1F600}-quote\"-backslash\\-newline\n"
+            .to_string(),
+        String::new(),
+        "x".repeat(100_000),
+    ];
+
+    for tag in cases {
+        let mut spec = fork_spec("go");
+        spec.tag = Some(tag.clone());
+        let mut stream = runtime.subscribe();
+        let child = SubagentHost::start(&*runtime, root, root, spec)
+            .await
+            .unwrap();
+        wait_for_agent_finished(&mut stream, child).await;
+
+        let calls = hook.calls_for(child);
+        assert_eq!(
+            calls[0].tag.as_deref(),
+            Some(tag.as_str()),
+            "a tag of length {} must round-trip byte-for-byte unchanged",
+            tag.len()
+        );
+    }
+}
+
+/// Two agents differing ONLY in their tag must take identical paths --
+/// proven by comparing what each child's context assembly, routing, budget
+/// accounting, and persisted transcript actually produced, not by reasoning
+/// about the implementation. `PermissionRequest` carries no `tag` field at
+/// all (this item's own scoping decision), so there is structurally nothing
+/// for a permission decision to diverge on; the assertions below cover the
+/// three axes that DO see a value derived from this agent's spec (routing,
+/// context/budget, and the persisted log).
+#[tokio::test]
+async fn two_agents_differing_only_in_tag_take_identical_routing_context_and_logging_paths() {
+    let (runtime, store) = build_runtime(3, HashMap::new());
+    let hook = Arc::new(RecordingContextHook::new());
+    runtime.set_context_hook(Some(hook.clone()));
+    let root = start_and_finish_root(&runtime, "hi").await;
+
+    let mut stream = runtime.subscribe();
+    let untagged = SubagentHost::start(&*runtime, root, root, fork_spec("do the work"))
+        .await
+        .unwrap();
+    let untagged_result = wait_for_agent_finished(&mut stream, untagged).await;
+
+    let tag_text = "a very distinctive tag: \u{1F600}\0\t".to_string();
+    let mut tagged_spec = fork_spec("do the work");
+    tagged_spec.tag = Some(tag_text.clone());
+    let mut stream = runtime.subscribe();
+    let tagged = SubagentHost::start(&*runtime, root, root, tagged_spec)
+        .await
+        .unwrap();
+    let tagged_result = wait_for_agent_finished(&mut stream, tagged).await;
+
+    assert_eq!(untagged_result.status, ResultStatus::Completed);
+    assert_eq!(tagged_result.status, ResultStatus::Completed);
+
+    let untagged_call = hook
+        .calls_for(untagged)
+        .into_iter()
+        .next()
+        .expect("untagged child's context hook must have fired");
+    let tagged_call = hook
+        .calls_for(tagged)
+        .into_iter()
+        .next()
+        .expect("tagged child's context hook must have fired");
+
+    // Different agents, by construction -- and, the point of this test,
+    // different tags. A test that could not tell these two calls apart
+    // would prove nothing about the comparisons below.
+    assert_ne!(untagged_call.agent_id, tagged_call.agent_id);
+    assert_eq!(untagged_call.tag, None);
+    assert_eq!(tagged_call.tag, Some(tag_text.clone()));
+
+    assert_eq!(
+        untagged_call.model, tagged_call.model,
+        "routing must not diverge based on the tag alone"
+    );
+    assert_eq!(
+        untagged_call.estimated_tokens, tagged_call.estimated_tokens,
+        "context sizing must not diverge based on the tag alone"
+    );
+    assert_eq!(
+        untagged_call.tool_names, tagged_call.tool_names,
+        "announced tools must not diverge based on the tag alone"
+    );
+    assert_eq!(
+        untagged_call.segments, tagged_call.segments,
+        "the assembled segments (role/content/provenance, deliberately excluding each \
+         segment's own random id) must be identical -- the tag must never be rendered into \
+         context"
+    );
+
+    let nodes = runtime.tree().nodes;
+    let untagged_node = nodes
+        .iter()
+        .find(|n| n.agent_id == untagged)
+        .expect("untagged child attached to the tree");
+    let tagged_node = nodes
+        .iter()
+        .find(|n| n.agent_id == tagged)
+        .expect("tagged child attached to the tree");
+    assert_eq!(
+        untagged_node.steps_taken, tagged_node.steps_taken,
+        "budget consumption must not diverge based on the tag alone"
+    );
+    assert_eq!(
+        untagged_node.budget, tagged_node.budget,
+        "budget must not diverge based on the tag alone"
+    );
+
+    // Logging: the tagged child's own persisted transcript never mentions
+    // the tag text anywhere -- proof the tag is never written into a log
+    // record either, the third behavior class the acceptance criterion
+    // names alongside routing and budget.
+    let tagged_session = session_of(&runtime, tagged);
+    let tagged_records = store
+        .read(&tagged_session, conway_core::ids::SeqRange::full())
+        .await
+        .unwrap();
+    assert!(
+        tagged_records
+            .iter()
+            .all(|r| !format!("{r:?}").contains(&tag_text)),
+        "the tag must never appear in a persisted LogRecord"
     );
 }

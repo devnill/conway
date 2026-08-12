@@ -121,6 +121,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `crates/conway/tests/plugin_surface.rs`, `crates/conway-runtime/tests/agent_loop_e2e.rs`,
   `docs/plugins/hooks.md`, `docs/plugins/authoring.md`, `docs/plugins/cookbook.md`)
 
+- **`SubagentSpec` gains `tag`, an opaque consumer correlation identifier
+  carried onto `ContextHookCtx.tag`** (board item 01KZQJ03ZQ22MPM9H2TW1350ZF,
+  decision 01KZT5EZD1RT6C3Q2MZPZ3NHAW). An embedder mapping conway agents
+  onto its own domain objects (a file, a job, a node in its own tool) had
+  nowhere to attach its own identifier at creation time -- the association
+  could only be recorded after `SubagentHost::start` returned, which raced
+  the child's first turn: a `ContextHook` firing on that turn found nothing
+  in a side table keyed on an id that did not exist yet. Decision
+  01KZT5EZD1RT6C3Q2MZPZ3NHAW ruled out the two alternatives considered (a
+  caller-supplied `AgentId`, which converts a conway-enforced invariant --
+  subtree permission scoping resolves entirely by comparing agent ids -- into
+  a caller obligation with a silent collision failure mode; and a
+  prepare/launch split, which forces two surfaces for one operation) in favor
+  of an opaque tag conway never reads. `tag: Option<String>` threads
+  unread from `SubagentSpec` (`conway-core`) through `AgentSpec`
+  (`conway-runtime`'s `SubagentHost::start`) onto every `ContextHookCtx` for
+  that agent's turns -- **conway's first genuinely uninterpreted consumer
+  field**: unlike `role` (a routing input) or `ask_origin` (branched on to
+  gate `result_contract` attachment), nothing in the runtime ever matches,
+  compares, or branches on `tag` -- grep-verified against every read site
+  (three: `agent_loop.rs`'s two `ContextHookCtx` constructions and
+  `subagent.rs`'s `AgentSpec` construction, all plain `.clone()`). Proven,
+  not merely asserted: a tag containing control characters/multi-byte/non-BMP
+  content, an empty string, and a 100,000-character string all round-trip
+  byte-for-byte unchanged, and two agents differing ONLY in their tag are
+  shown to take identical routing, context-assembly, budget, and logging
+  paths (`crates/conway-runtime/tests/subagent_fork_spawn.rs`'s
+  `two_agents_differing_only_in_tag_take_identical_routing_context_and_logging_paths`).
+  **Scoped to `ContextHookCtx` only** -- the spec's "ideally
+  `PermissionRequest` too" is left as a follow-on, since nothing forces it
+  yet and it would require threading through an additional type.
+  **Required on `AgentSpec`/`ContextHookCtx`, `#[serde(default)]` on
+  `SubagentSpec`:** `SubagentSpec` is `Serialize`/`Deserialize` (a genuine
+  backward-compatibility case, alongside `cwd`/`root`), so a spec serialized
+  before this field existed still deserializes as `None`; `AgentSpec` and
+  `ContextHookCtx` are neither, so -- matching board item
+  01KZQHZH8RXVR38JJX9AY4VSW4's `agent_path` precedent -- there is no
+  serialization justification for a silent default there, and every
+  construction site (including every test fixture) states the field
+  explicitly. Not yet exposed on the facade's `ForkSpec`/`SpawnSpec`: an
+  embedder wanting a tag today constructs a `SubagentSpec` directly. Docs
+  updated to match: `docs/plugins/hooks.md` point 3's field table and a new
+  paragraph on what the field is for, plus the two hand-built
+  `ContextHookCtx` examples in `docs/plugins/authoring.md` and
+  `docs/plugins/cookbook.md`.
+  (`crates/conway-core/src/agent.rs`, `crates/conway-core/src/ports/plugin.rs`,
+  `crates/conway-runtime/src/agent_loop.rs`, `crates/conway-runtime/src/subagent.rs`,
+  `crates/conway-runtime/src/runtime.rs`, `crates/conway/src/subagent_spec.rs`,
+  `crates/conway/src/session_handle.rs`, `crates/conway/src/intent.rs`,
+  `crates/conway-tools/src/subagent/tools.rs`, `crates/conway-tools/src/subagent/ask.rs`,
+  `crates/conway-runtime/tests/subagent_fork_spawn.rs`,
+  `crates/conway-runtime/tests/ask.rs`, `crates/conway-runtime/tests/steering.rs`,
+  `crates/conway-runtime/tests/step_digest.rs`, `crates/conway-runtime/tests/report_only_agent.rs`,
+  `crates/conway-runtime/tests/result_contract.rs`, `crates/conway-runtime/tests/agent_loop_e2e.rs`,
+  `crates/conway/tests/plugin_surface.rs`, `docs/plugins/hooks.md`,
+  `docs/plugins/authoring.md`, `docs/plugins/cookbook.md`)
+
 - **A `[hooks]` config section that parses and validates -- forward
   declaration, nothing dispatches yet** (board item
   01KZRZW5CWMVQ0GPRT4GX4RV5G, child of the declarative-hooks umbrella
