@@ -6,8 +6,6 @@
 #[path = "support/mod.rs"]
 mod support;
 
-use std::collections::HashMap;
-
 use conway::config::{load, CliOverrides, LoadOptions};
 
 #[test]
@@ -16,7 +14,7 @@ fn allowlist_mode_with_empty_allowed_tools_is_rejected() {
     let result = load(LoadOptions {
         cwd: dir,
         explicit_path: Some(support::fixtures_dir().join("allowlist_empty.json")),
-        env: HashMap::new(),
+        env: support::isolated_env(),
         cli_overrides: CliOverrides::default(),
         model_metadata_refresh: false,
     });
@@ -33,7 +31,7 @@ fn interval_fsync_with_zero_interval_ms_is_rejected() {
     let result = load(LoadOptions {
         cwd: dir,
         explicit_path: Some(support::fixtures_dir().join("fsync_interval_zero.json")),
-        env: HashMap::new(),
+        env: support::isolated_env(),
         cli_overrides: CliOverrides::default(),
         model_metadata_refresh: false,
     });
@@ -50,7 +48,7 @@ fn api_key_and_api_key_env_both_set_is_rejected() {
     let result = load(LoadOptions {
         cwd: dir,
         explicit_path: Some(support::fixtures_dir().join("api_key_both_set.json")),
-        env: HashMap::new(),
+        env: support::isolated_env(),
         cli_overrides: CliOverrides::default(),
         model_metadata_refresh: false,
     });
@@ -74,7 +72,7 @@ fn chain_entry_naming_unknown_backend_is_rejected() {
     let result = load(LoadOptions {
         cwd: dir,
         explicit_path: Some(support::fixtures_dir().join("chain_names_unknown_backend.json")),
-        env: HashMap::new(),
+        env: support::isolated_env(),
         cli_overrides: CliOverrides::default(),
         model_metadata_refresh: false,
     });
@@ -101,7 +99,7 @@ fn misspelled_well_known_backend_key_is_accepted_and_passed_through() {
     let outcome = load(LoadOptions {
         cwd: dir,
         explicit_path: Some(support::fixtures_dir().join("backend_typo_key.json")),
-        env: HashMap::new(),
+        env: support::isolated_env(),
         cli_overrides: CliOverrides::default(),
         model_metadata_refresh: false,
     })
@@ -136,7 +134,7 @@ fn hooks_rule_with_empty_id_is_rejected() {
     let result = load(LoadOptions {
         cwd: dir,
         explicit_path: Some(support::fixtures_dir().join("hooks_empty_id.json")),
-        env: HashMap::new(),
+        env: support::isolated_env(),
         cli_overrides: CliOverrides::default(),
         model_metadata_refresh: false,
     });
@@ -155,7 +153,7 @@ fn hooks_rules_with_duplicate_id_are_rejected() {
     let result = load(LoadOptions {
         cwd: dir,
         explicit_path: Some(support::fixtures_dir().join("hooks_duplicate_id.json")),
-        env: HashMap::new(),
+        env: support::isolated_env(),
         cli_overrides: CliOverrides::default(),
         model_metadata_refresh: false,
     });
@@ -176,7 +174,7 @@ fn well_formed_hooks_block_loads_through_the_full_load_path() {
     let outcome = load(LoadOptions {
         cwd: dir,
         explicit_path: Some(support::fixtures_dir().join("hooks_well_formed.json")),
-        env: HashMap::new(),
+        env: support::isolated_env(),
         cli_overrides: CliOverrides::default(),
         model_metadata_refresh: false,
     })
@@ -204,7 +202,7 @@ fn documented_kimi_coding_plan_config_loads() {
     let outcome = load(LoadOptions {
         cwd: dir,
         explicit_path: Some(support::fixtures_dir().join("kimi_coding_plan.json")),
-        env: HashMap::new(),
+        env: support::isolated_env(),
         cli_overrides: CliOverrides::default(),
         model_metadata_refresh: false,
     })
