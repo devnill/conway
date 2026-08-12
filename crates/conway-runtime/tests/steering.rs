@@ -820,19 +820,23 @@ async fn progress_never_enters_context_and_is_emitted_as_agent_progress() {
     );
 }
 
-/// Criterion (cycle-2 review F-085 S2): a drained `AgentMessage::Result` is
-/// classified but produces no drain-time side effect -- the real
-/// resolution path for a `conway_fork`/`conway_spawn` waiter is
-/// `AgentTree::await_result` (WI-083), exercised end-to-end (including
-/// genuinely BLOCKING until the child finishes, not just observing an
-/// already-finished child) by
-/// `tests/subagent_fork_spawn.rs`'s
-/// `await_result_blocks_until_the_child_actually_finishes_then_resolves_every_awaiter_once`.
-/// This test only proves the mailbox side is inert: delivering a `Result`
-/// into an agent's own inbox must not error, panic, or otherwise disturb
-/// that agent's own run.
+/// Criterion (cycle-2 review F-085 S2, updated by board item
+/// 01KZQHY6RTMYR4BRDTMQFP9J9R): the real resolution path for a
+/// `conway_fork`/`conway_spawn` waiter that BLOCKED on this specific child by id is
+/// still `AgentTree::await_result` (WI-083) alone, exercised end-to-end
+/// (including genuinely BLOCKING until the child finishes, not just
+/// observing an already-finished child) by `tests/subagent_fork_spawn.rs`'s
+/// `await_result_blocks_until_the_child_actually_finishes_then_resolves_every_awaiter_once`
+/// -- unmodified by this item.
+///
+/// What DID change: a drained `AgentMessage::Result` no longer vanishes.
+/// This test proves the mailbox side stays well-behaved (delivering a
+/// `Result` into an agent's own inbox must not error, panic, or otherwise
+/// disturb that agent's own run) AND that it is durably persisted --
+/// `a_parent_that_did_not_await_observes_its_childs_completion` below is
+/// the test that proves the parent's own NEXT TURN actually sees it.
 #[tokio::test]
-async fn result_message_is_classified_but_drives_no_drain_time_action() {
+async fn result_message_is_classified_and_persisted_without_disturbing_this_agents_own_run() {
     let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
     let session = SessionId::new();
     let agent = AgentId::new();
@@ -842,7 +846,7 @@ async fn result_message_is_classified_but_drives_no_drain_time_action() {
             .with_capabilities(caps_ok()),
     );
 
-    let harness = build_loop(session, agent, store, backend, vec![], None);
+    let harness = build_loop(session, agent, store.clone(), backend, vec![], None);
     let child = AgentId::new();
     let child_session = SessionId::new();
     let child_result =
@@ -858,6 +862,134 @@ async fn result_message_is_classified_but_drives_no_drain_time_action() {
         ResultStatus::Completed,
         "a drained Result must not disturb this agent's own run"
     );
+
+    let records = store
+        .read(&session, conway_core::ids::SeqRange::full())
+        .await
+        .unwrap();
+    assert!(records.iter().any(|r| matches!(
+        r,
+        LogRecord::ChildResultRecord { result, prov, .. }
+            if result.agent_id == child
+                && result.summary == "child done"
+                && matches!(prov, Provenance::ChildResult { from } if *from == child)
+    )));
+}
+
+/// Criterion (board item 01KZQHY6RTMYR4BRDTMQFP9J9R): a parent that starts
+/// several children and never blocks on `AgentTree::await_result` for any
+/// one of them by id can still learn that one finished -- by observing it
+/// on its own very next turn, exactly the way it already observes a steer.
+/// Asserted on what the SECOND turn's assembled context actually contains,
+/// not merely on a record having been written (a record-only assertion
+/// would prove the write, not the observation) -- see this test's own
+/// segment-content assertion below.
+#[tokio::test]
+async fn a_parent_that_did_not_await_observes_its_childs_completion() {
+    let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
+    let session = SessionId::new();
+    let agent = AgentId::new();
+    seed_prompt(&*store, agent, session, "go").await;
+
+    let backend = Arc::new(
+        ScriptedBackend::new(vec![
+            ScriptedTurn::Respond(tool_call_response("tc_1", "read")),
+            ScriptedTurn::Respond(text_response("done")),
+        ])
+        .with_capabilities(caps_ok()),
+    );
+    let tool: Arc<dyn Tool> = Arc::new(DelayTool {
+        name: ToolName::new("read"),
+        delay: Duration::from_millis(150),
+    });
+
+    let harness = build_loop(
+        session,
+        agent,
+        store.clone(),
+        backend.clone(),
+        vec![tool],
+        None,
+    );
+    let mailbox_tx = harness.mailbox_tx.clone();
+    let bus = harness.bus.clone();
+    let mut stream = bus.subscribe();
+
+    let handle = tokio::spawn(harness.agent_loop.run());
+    wait_for_tool_call_started(&mut stream).await;
+
+    // This agent (`agent`) never calls `AgentTree::await_result` for
+    // `child` -- the ONLY thing that happens is exactly what a real
+    // child's `AgentLoop::finish` does: deliver `AgentMessage::Result` to
+    // the parent's mailbox (architecture §3.2).
+    let child = AgentId::new();
+    let child_session = SessionId::new();
+    let child_result = AgentResult::new(
+        child,
+        child_session,
+        ResultStatus::Completed,
+        "found the bug",
+    );
+    mailbox_tx.send(AgentMessage::Result {
+        from: child,
+        result: child_result,
+    });
+
+    let result = tokio::time::timeout(Duration::from_secs(2), handle)
+        .await
+        .expect("agent loop did not finish")
+        .expect("agent loop task panicked");
+    assert_eq!(result.status, ResultStatus::Completed);
+
+    let calls = backend.calls();
+    assert_eq!(calls.len(), 2, "expected exactly two turns");
+
+    // Absent from the in-flight (first) turn -- the same turn-boundary
+    // landing guarantee steering already gets.
+    assert!(
+        !calls[0]
+            .segments
+            .iter()
+            .any(|s| matches!(s.provenance, Provenance::ChildResult { .. })),
+        "the child's result must not appear in the turn already in flight when it arrived"
+    );
+
+    // Present in the SECOND turn: THIS is the observation the acceptance
+    // criterion asks for -- the parent's own next-turn context genuinely
+    // carries the child's completion, with the correct provenance and
+    // content, not a parent-authored stand-in for it (P-2).
+    let new_segments = &calls[1].segments[calls[0].segments.len()..];
+    let child_segment = new_segments
+        .iter()
+        .find(|s| matches!(s.provenance, Provenance::ChildResult { .. }))
+        .expect("the next turn must contain a new segment carrying the child's result");
+    match &child_segment.provenance {
+        Provenance::ChildResult { from } => assert_eq!(*from, child),
+        other => panic!("expected Provenance::ChildResult, got {other:?}"),
+    }
+    assert!(
+        child_segment
+            .content
+            .iter()
+            .any(|b| matches!(b, ContentBlock::Text { text } if text.contains("found the bug"))),
+        "the segment text must carry the child's summary"
+    );
+
+    // Durably persisted, at the tail, as `LogRecord::ChildResultRecord`
+    // (the store-level byte-prefix invariant is exercised directly by
+    // `conway-session`'s
+    // `appending_a_child_result_record_leaves_the_prior_transcript_byte_identical`).
+    let records = store
+        .read(&session, conway_core::ids::SeqRange::full())
+        .await
+        .unwrap();
+    assert!(records.iter().any(|r| matches!(
+        r,
+        LogRecord::ChildResultRecord { result, prov, .. }
+            if result.agent_id == child
+                && result.summary == "found the bug"
+                && matches!(prov, Provenance::ChildResult { from } if *from == child)
+    )));
 }
 
 /// Bidirectional messaging (Claude Code-style): the exact same mailbox

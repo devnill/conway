@@ -25,15 +25,16 @@
 //!
 //! ## A documented interpretation gap: assistant-turn provenance
 //!
-//! `conway_core::provenance::Provenance` is exhaustively ten variants
-//! (enforced by that crate's own tests; the original §5.3 nine plus
-//! `MergedAsk`, added by B4) and none of them represents "the
+//! `conway_core::provenance::Provenance` is exhaustively eleven variants
+//! (enforced by that crate's own tests; the original §5.3 nine, plus
+//! `MergedAsk` added by B4, plus `ChildResult` added by board item
+//! 01KZQHY6RTMYR4BRDTMQFP9J9R) and none of them represents "the
 //! model's own prior turn" — `LogRecord::Assistant` does not even carry a
 //! `prov` field. Architecture §5.3's own-records mapping table names a
 //! provenance for `tool_result`, `parent_steer`, and system notes, but only
 //! a role (`Role::Assistant`) for assistant turns, not a provenance. Since
-//! `PromptSegment::provenance` is mandatory and this crate cannot add a
-//! tenth `Provenance` variant (out of `conway-runtime`'s scope), assistant
+//! `PromptSegment::provenance` is mandatory and this crate cannot add
+//! another `Provenance` variant (out of `conway-runtime`'s scope), assistant
 //! turns are mapped to `Provenance::SystemNote { reason: "assistant_turn"
 //! }` — the closest existing volatile-tier variant, using a `reason`
 //! sentinel that collides with no other component's matching (WI-086 only
@@ -438,6 +439,19 @@ fn tool_result_block(result: &ToolResult) -> Vec<ContentBlock> {
     }]
 }
 
+/// Renders a `LogRecord::ChildResultRecord`'s `result` into the plain-text
+/// a parent's context actually carries -- shared by [`record_role_and_content`]
+/// (inherited pass-through) and [`own_segment`] (this agent's own volatile
+/// records) so the two never drift apart on wording.
+fn child_result_text(result: &conway_core::agent::AgentResult) -> String {
+    format!(
+        "child agent {} finished ({}): {}",
+        result.agent_id,
+        crate::result::status_label(&result.status),
+        result.summary
+    )
+}
+
 /// Generic `(role, content)` extraction used for inherited records, whose
 /// original provenance is discarded and replaced with
 /// `Provenance::Inherited` regardless of record kind.
@@ -451,6 +465,13 @@ fn record_role_and_content(record: &LogRecord) -> Option<(Role, Vec<ContentBlock
         LogRecord::ForkDirective { text, .. } => Some((Role::User, text_block(text))),
         LogRecord::ParentSteer { text, .. } => Some((Role::User, text_block(text))),
         LogRecord::SystemNote { text, .. } => Some((Role::System, text_block(text))),
+        // A child's result, recorded into an ancestor's own log
+        // (01KZQHY6RTMYR4BRDTMQFP9J9R), flows into a fork child's inherited
+        // prefix exactly like any other own volatile record kind -- same
+        // treatment `ParentSteer` already gets two arms above.
+        LogRecord::ChildResultRecord { result, .. } => {
+            Some((Role::System, text_block(&child_result_text(result))))
+        }
         LogRecord::Header(_)
         | LogRecord::AgentResultRecord { .. }
         | LogRecord::ContextReportRecord { .. } => None,
@@ -515,6 +536,18 @@ fn own_segment(record: &LogRecord) -> Option<(Role, Vec<ContentBlock>, Provenanc
             Provenance::SystemNote {
                 reason: reason.clone(),
             },
+        )),
+        // Board item 01KZQHY6RTMYR4BRDTMQFP9J9R: a child's terminal result,
+        // drained into THIS agent's own mailbox and persisted by
+        // `mailbox::classify`, becomes visible on the very next turn's
+        // ordinary re-read -- exactly like `ParentSteer` above. `prov` is
+        // the STORED `Provenance::ChildResult` (never re-derived, never
+        // `SystemNote`), so the segment is unambiguously marked as having
+        // come from a child, not this agent itself (P-2).
+        LogRecord::ChildResultRecord { result, prov, .. } => Some((
+            Role::System,
+            text_block(&child_result_text(result)),
+            prov.clone(),
         )),
         LogRecord::Header(_)
         | LogRecord::AgentResultRecord { .. }
@@ -650,6 +683,7 @@ fn provenance_discriminant(provenance: &Provenance) -> &'static str {
         Provenance::ToolResult { .. } => "tool_result",
         Provenance::SystemNote { .. } => "system_note",
         Provenance::MergedAsk { .. } => "merged_ask",
+        Provenance::ChildResult { .. } => "child_result",
         _ => "unknown",
     }
 }

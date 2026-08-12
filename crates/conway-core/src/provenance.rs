@@ -13,9 +13,11 @@ use crate::ids::{AgentId, LogSeq, SegmentId, SeqRange, SessionId, ToolName};
 
 /// Why a segment of assembled context exists.
 ///
-/// Ten variants: the original nine of architecture §5.3 (GP-10) plus
-/// [`Provenance::MergedAsk`] (board item B4). Adding another is a breaking
-/// wire-format change and must be treated as such.
+/// Eleven variants: the original nine of architecture §5.3 (GP-10), plus
+/// [`Provenance::MergedAsk`] (board item B4), plus
+/// [`Provenance::ChildResult`] (board item 01KZQHY6RTMYR4BRDTMQFP9J9R).
+/// Adding another is a breaking wire-format change and must be treated as
+/// such.
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -51,6 +53,15 @@ pub enum Provenance {
     /// stays explicit and inspectable (P-2/GP-10) even after the child's
     /// own session file is gone.
     MergedAsk { from: SessionId },
+    /// A child's terminal `AgentResult`, recorded into the PARENT's own log
+    /// by `mailbox::classify` (`conway-runtime`) when a drained
+    /// `AgentMessage::Result` produces `DrainEffect::Persist` --
+    /// `LogRecord::ChildResultRecord` is the record. `from` is the
+    /// finishing child's `AgentId`. Exists so a child's own output is never
+    /// misattributed as parent-authored (P-2): a `ChildResult` segment is
+    /// unambiguously marked as having come from elsewhere in the tree, the
+    /// same way `ParentSteer` marks a steer as not self-authored.
+    ChildResult { from: AgentId },
 }
 
 /// Where a segment sits in the fixed §5.3 ordering: `Static` segments are
@@ -90,7 +101,8 @@ impl Provenance {
             | Provenance::ParentSteer { .. }
             | Provenance::ToolResult { .. }
             | Provenance::SystemNote { .. }
-            | Provenance::MergedAsk { .. } => SegmentTier::Volatile,
+            | Provenance::MergedAsk { .. }
+            | Provenance::ChildResult { .. } => SegmentTier::Volatile,
         }
     }
 }
@@ -190,6 +202,10 @@ mod tests {
                 },
                 "merged_ask",
             ),
+            (
+                Provenance::ChildResult { from: AgentId::new() },
+                "child_result",
+            ),
         ]
     }
 
@@ -201,8 +217,8 @@ mod tests {
             let back: Provenance = serde_json::from_value(value).unwrap();
             assert_eq!(back, prov);
         }
-        // Ten variants, no more, no fewer.
-        assert_eq!(all_tagged().len(), 10);
+        // Eleven variants, no more, no fewer.
+        assert_eq!(all_tagged().len(), 11);
     }
 
     #[test]
@@ -245,6 +261,11 @@ mod tests {
             seq_range: SeqRange::full(),
         }
         .is_static());
+        assert!(!Provenance::ChildResult { from: AgentId::new() }.is_static());
+        assert_eq!(
+            Provenance::ChildResult { from: AgentId::new() }.tier(),
+            SegmentTier::Volatile
+        );
 
         assert_eq!(
             Provenance::AgentDef { name: "x".into() }.tier(),

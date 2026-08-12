@@ -36,7 +36,8 @@
 //! such urgency and is classified at drain time like every other message
 //! (see [`classify`]).
 //!
-//! ## `AgentMessage::Result` resolution lives in `AgentTree`, not here
+//! ## `AgentMessage::Result`: a BLOCKING waiter resolves via `AgentTree`,
+//! everyone else observes the persisted record
 //!
 //! Cycle-2 review (F-085 S2): an earlier revision of this module shipped a
 //! `PendingSubagents` map (`AgentId` -> `oneshot::Sender<AgentResult>`) and
@@ -49,12 +50,28 @@
 //! would have been -- it survives a panic or a deadline-driven synthesis
 //! (`supervisor.rs`), and it does not require the waiter to have registered
 //! before the drain that would resolve it races in. That machinery has been
-//! removed rather than wired up to an invented consumer. `classify` still
-//! maps `AgentMessage::Result` to its own [`DrainEffect::Result`] variant
-//! (this crate's message-classification criterion covers every kind, not
-//! just the ones with drain-time side effects), but `AgentLoop::drain_inbox`
-//! takes no further action on it beyond classification -- see that
-//! function's own doc.
+//! removed rather than wired up to an invented consumer, and
+//! `AgentTree::await_result` remains untouched by everything below -- a
+//! caller that DID block on a specific child by id keeps resolving exactly
+//! as before.
+//!
+//! What WAS missing (board item 01KZQHY6RTMYR4BRDTMQFP9J9R): a parent that
+//! started several children and never blocked on any one of them by id had
+//! no way to learn that any had finished -- the child's `AgentMessage::
+//! Result` landed in the parent's mailbox, got classified, and was
+//! discarded. `classify` now maps `AgentMessage::Result` to
+//! [`DrainEffect::Persist`] carrying a fresh `LogRecord::
+//! ChildResultRecord` -- the exact same path `AgentMessage::Steer` already
+//! takes to become `LogRecord::ParentSteer` (see this module's own
+//! `AgentMessage::Steer` arm, and `AgentLoop::drain_inbox`'s single
+//! `DrainEffect::Persist` arm, which needed no change at all). The parent
+//! observes the child's completion on its own very next turn's ordinary
+//! `SessionStore::read` -- `context::builder`'s `own_segment` turns the
+//! record into a `Role::System` segment tagged `Provenance::ChildResult {
+//! from }`, never anything parent-authored (P-2). No new primitive, no
+//! public signature change, and `await_result`'s blocking path is entirely
+//! untouched -- this is purely an ADDITIONAL, non-blocking notification
+//! path for the case `await_result` was never built to cover.
 //!
 //! ## Overflow policy: only an evicted `Steer` is `Event::SteerDropped`
 //!
@@ -82,7 +99,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use chrono::Utc;
-use conway_core::agent::{AgentMessage, AgentResult, MessageKind};
+use conway_core::agent::{AgentMessage, MessageKind};
 use conway_core::event::Event;
 use conway_core::ids::{AgentId, LogSeq, SessionId};
 use conway_core::log::LogRecord;
@@ -297,17 +314,6 @@ pub enum DrainEffect {
     /// child chatter in a parent's context is the "context clash" failure
     /// mode) -- the caller emits `Event::AgentProgress` and moves on.
     Progress { note: String },
-    /// Carries a child's terminal `AgentResult`, delivered to this agent's
-    /// own mailbox by the child's `AgentLoop::finish` (architecture §3.2).
-    /// The real resolution of a `conway_fork`/`conway_spawn` tool call's waiter is
-    /// [`conway_core::ports::SubagentHost::await_result`] ->
-    /// `AgentTree::await_result` (WI-083), not this drained message -- see
-    /// the module doc's "`AgentMessage::Result` resolution lives in
-    /// `AgentTree`, not here" section. `classify` still surfaces this
-    /// variant (rather than folding it into `Unknown`) so message
-    /// classification stays complete per architecture §6.2's table; nothing
-    /// currently consumes the payload beyond that classification.
-    Result { from: AgentId, result: AgentResult },
     /// A future `AgentMessage` variant this crate doesn't yet recognize
     /// (`AgentMessage` is `#[non_exhaustive]` in `conway-core`). Treated as
     /// inert -- mirrors `tree.rs`'s `status_for` convention of mapping an
@@ -346,7 +352,24 @@ pub fn classify(msg: AgentMessage) -> DrainEffect {
         } => DrainEffect::SoftCancel { reason },
         AgentMessage::Cancel { hard: true, .. } => DrainEffect::HardCancelAcknowledged,
         AgentMessage::Progress { note, .. } => DrainEffect::Progress { note },
-        AgentMessage::Result { from, result } => DrainEffect::Result { from, result },
+        // Board item 01KZQHY6RTMYR4BRDTMQFP9J9R: a drained
+        // `AgentMessage::Result` now persists into THIS agent's (the
+        // parent's) own log, the same `DrainEffect::Persist` path
+        // `AgentMessage::Steer` already takes -- see the module doc. `from`
+        // and `result.agent_id` are always equal (the child's own
+        // `AgentLoop::finish` sets both from `self.agent_id`); `from` is
+        // carried at the top level too, mirroring `ParentSteer`, so a
+        // reader can identify the originating child without reaching into
+        // `result`.
+        AgentMessage::Result { from, result } => DrainEffect::Persist(LogRecord::ChildResultRecord {
+            // `SessionStore::append`'s `assign_seq` always overwrites this
+            // placeholder -- see the identical comment on the `Steer` arm
+            // above.
+            seq: LogSeq::ZERO,
+            ts: Utc::now(),
+            result,
+            prov: Provenance::ChildResult { from },
+        }),
         _ => DrainEffect::Unknown,
     }
 }
@@ -354,7 +377,7 @@ pub fn classify(msg: AgentMessage) -> DrainEffect {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use conway_core::agent::ResultStatus;
+    use conway_core::agent::{AgentResult, ResultStatus};
 
     fn steer(from: AgentId, text: &str) -> AgentMessage {
         AgentMessage::Steer {
@@ -453,7 +476,36 @@ mod tests {
                 from,
                 result: result.clone()
             }),
-            DrainEffect::Result { .. }
+            DrainEffect::Persist(LogRecord::ChildResultRecord { .. })
         ));
+    }
+
+    /// Board item 01KZQHY6RTMYR4BRDTMQFP9J9R: the persisted record carries
+    /// the originating child's id (both at the top level and inside
+    /// `result`) and its provenance is `ChildResult`, never anything that
+    /// would misattribute the child's output as parent-authored (P-2).
+    #[test]
+    fn result_classifies_to_a_child_result_record_naming_the_child() {
+        let child = AgentId::new();
+        let result = AgentResult::new(
+            child,
+            SessionId::new(),
+            ResultStatus::Completed,
+            "child done",
+        );
+        match classify(AgentMessage::Result {
+            from: child,
+            result: result.clone(),
+        }) {
+            DrainEffect::Persist(LogRecord::ChildResultRecord { result: r, prov, .. }) => {
+                assert_eq!(r.agent_id, child);
+                assert_eq!(r, result);
+                match prov {
+                    Provenance::ChildResult { from } => assert_eq!(from, child),
+                    other => panic!("expected Provenance::ChildResult, got {other:?}"),
+                }
+            }
+            other => panic!("expected DrainEffect::Persist(ChildResultRecord), got {other:?}"),
+        }
     }
 }
