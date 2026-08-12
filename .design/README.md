@@ -22,5 +22,6 @@ disagree with it.
 `d7-repetition-resistant-tool-calls.md` is a captured design direction
 (out of scope for implementation as of 2026-08-03): solving the
 repeated-tool-call loop class by idiomatic tool-result design rather than
-detection. It is the framing for any future revisit of the whitepaper §4.5
-vs WI-086 (in-core `StepDigest`) question.
+detection. It is the framing for any future revisit of the
+[`docs/whitepaper.md`](../docs/whitepaper.md) §4.5 vs WI-086 (in-core
+`StepDigest`) question.
