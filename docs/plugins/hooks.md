@@ -91,7 +91,7 @@ could redirect — closing the exact cross-tree exfiltration shape board item
 | Field | Value |
 |---|---|
 | Kind | Participant |
-| Receives | `ContextHookCtx { agent_id, session_id, turn, model, estimated_tokens, artifacts }` and a `ContextPayload { segments: Vec<PromptSegment>, tools: Vec<ToolSpec> }` — the just-assembled request, before routing |
+| Receives | `ContextHookCtx { agent_id, agent_path, session_id, turn, model, estimated_tokens, artifacts, tag }` and a `ContextPayload { segments: Vec<PromptSegment>, tools: Vec<ToolSpec> }` — the just-assembled request, before routing |
 | May return | An edited `ContextPayload` — see "The value-class boundary" below. Returning the payload unchanged is always valid; the trait's own doc states this explicitly |
 | On error | Not applicable at the trait level — `before_request` has no `Result` in its signature, so an implementation that wants to signal a failure can only do so by returning the payload unchanged or by panicking, and a panic here is not caught the way a tool's panic is (this call sits in `AgentLoop::run_inner`, not behind `ToolRunner`'s per-call `catch_unwind`) |
 | On timeout | No dedicated deadline. The call is awaited inside the agent's own turn, bounded only by `self.spec.budget.deadline` if the embedder set one (`AgentLoop::run_inner`'s `tokio::select!` against `route_attempt_fut`) — an agent with no configured deadline has no bound on this call at all |
@@ -113,6 +113,33 @@ hides a tool from announcement narrows what the model is offered, never what
 it is capable of calling if it names the tool anyway (that gate is
 `PermissionGate`, point 5 below, and the confinement root, neither of which
 consults `AgentSpec::tools`/`ContextPayload.tools` at execution time).
+
+**`ContextHookCtx.agent_path` tells a hook where in the tree it is running,
+not just who it is.** It is the root→this-agent chain, root first and
+including the agent's own id (a root agent's path is `vec![agent_id]`) — the
+identical shape and ordering as `PermissionRequest.agent_path` (point 5
+below), both populated from the same `AgentLoop::agent_path` field. A hook
+that wants to behave differently for a top-level agent than for a subagent
+four levels down reads `ctx.agent_path.len()` (or walks it directly) rather
+than needing a second, redundant lookup against the live tree.
+
+**`ContextHookCtx.tag` is the embedder's own correlation identifier, and
+conway never reads it.** Board item `01KZQJ03ZQ22MPM9H2TW1350ZF`: an
+embedder mapping conway agents onto its own domain objects (a file, a job, a
+node in its own tool) sets `SubagentSpec::tag` when it creates the agent
+(`Some(String)`, or `None` for a root agent or a child whose caller left it
+unset), and reads it back here — on the child's very first turn, closing the
+race a post-hoc side table keyed on the freshly-minted `AgentId` would have:
+by the time `SubagentHost::start` returns an id to register against, a
+`keep_alive`-less child may already have run its first turn. Threaded
+through unread by `AgentSpec::tag` — this is the first field in this table
+conway carries but never branches, matches, or compares against for any
+decision (routing, permission, budget, or logging); contrast `role`, which
+`DeclarativeRouter` resolves against, and `SessionMeta::ask_origin`, which
+gates whether a `result_contract` may attach. Not yet exposed on the
+facade's `ForkSpec`/`SpawnSpec` — an embedder wanting one today constructs a
+`SubagentSpec` (or calls `SubagentHost::start` directly) rather than going
+through those two convenience builders.
 
 ### 4. Context overflow retry — `ContextHook::on_overflow`
 
@@ -221,7 +248,7 @@ three previously-divergent copies.
 | On garbage | N/A |
 | When absent | This is the current, only state: no `Plugin` implementor has any way to submit a rule. `Plugin::tools()`/`Plugin::manifest()` are the entire trait surface (point 1) — there is no `Plugin::rules()` method or equivalent |
 | Ordering | N/A |
-| Status | **designed-not-built**, but with real, tested guard code already in place ahead of the producer: `PatternOrigin::Plugin` (`crates/conway-core/src/permission_pattern.rs`) exists as a variant, is exercised by `crates/conway-runtime/tests/permission_broker.rs` (proving the allow-rejection holds even though nothing constructs this variant outside tests today), and its own doc names the reason precisely — "the invariant rests on a guard, not on the absence of a transport." Tracked under the same umbrella as the declarative `hooks` surface, `01KZDC0RDRMMMJHX7SAFMM2Q5A`, whose own spec names `pre_tool_use` answering allow/deny/deny-with-feedback as exactly this capability's first concrete shape |
+| Status | **designed-not-built**, but with real, tested guard code already in place ahead of the producer: `PatternOrigin::Plugin` (`crates/conway-core/src/permission_pattern.rs`) exists as a variant, is exercised by `crates/conway-runtime/tests/permission_broker.rs` (proving the allow-rejection holds even though nothing constructs this variant outside tests today), and its own doc names the reason precisely — "the invariant rests on a guard, not on the absence of a transport." Tracked under the same umbrella as the declarative `hooks` surface, `01KZDC0RDRMMMJHX7SAFMM2Q5A`. **Correction (board item 01KZS00JP5QNBJSSHNFP9C47GM): this row's forward reference is now only partially right.** `pre_tool_use` IS a real, dispatched capability (point 13 below) — but it does NOT produce `PatternOrigin::Plugin` rules, and its answer shape is not "allow/deny/deny-with-feedback": `HookPermissionVerdict` is `no_opinion` (proceed) or `deny { reason }` ONLY, with no `allow` variant at all, by construction (decision 01KZRZAFD8T3GX407MZC8P1W1E — a hook may only narrow, never widen). `pre_tool_use` dispatch feeds `PermissionBroker::decide` directly, as an independent narrowing-only chain step (GP-13: exactly one, not configurable policy branching), never through this row's `Plugin::rules()`/`PatternOrigin::Plugin` producer, which remains exactly as unbuilt as before this item |
 
 ### 8. Composed inference-evaluated permission policy — `permission.policy/1`
 
@@ -287,10 +314,10 @@ three previously-divergent copies.
 | Field | Value |
 |---|---|
 | Kind | Declarative (registration) wrapping whatever kind the named event actually is (Observer for a logging hook, Participant for `pre_tool_use`) |
-| Receives / May return | Design only: an event name and a command in `settings.json`; the command receives structured input on stdin and answers via exit status plus stdout (`.design/extension-architecture.md`'s redirect, axis 2; the item spec itself, `01KZDC0RDRMMMJHX7SAFMM2Q5A`) |
-| On error / timeout / garbage / absent | Design only: P-13 applies in full — a hook that can deny a call fails closed on error, timeout, or an unreadable response, exactly like `permission.policy/1` above |
-| Ordering | Design only, per event: same order-independence rule as every other participant point |
-| Status | **designed-not-built.** `Plugin::manifest()`/`Plugin::tools()` is the whole trait; there is no `hooks()` method, no `subagent_mode` field, and no `hook.fork` capability anywhere in the tree, and nothing reads a `hooks` block from `settings.json` because no such block exists. This is the single item most of the rows above point back to: `01KZDC0RDRMMMJHX7SAFMM2Q5A`. **A script runner is not a second extension mechanism (GP-03):** the design is explicit that a script-dispatching hook is itself an ordinary `Plugin` whose own implementation happens to shell out per event, layered on top of the one mechanism, never beside it |
+| Receives / May return | **`pre_tool_use` is real, the rest is still design.** A `pre_tool_use` rule's command receives `{"name":"pre_tool_use","payload":{...}}` on stdin (`conway_core::hook::HookInvocation`/`HookEvent`) — the payload carries `AuthorizedCall`'s `tool`/`category`/`arguments`/`rendered` plus `PermissionCtx`'s `agent_id`/`agent_path`/`session`/`cwd` — and answers on stdout with a JSON `conway_core::hook::HookAnswer`, whose `permission` field (`HookPermissionVerdict`) may be `"no_opinion"` (proceed, the default) or `{"deny":{"reason":...}}` (refuse the call). **There is no `"allow"` shape — the type has no such variant, by construction** (decision 01KZRZAFD8T3GX407MZC8P1W1E: a hook may only narrow a permission verdict, never widen one). Every other event still only has the design-only shape described here. |
+| On error / timeout / garbage / absent | **`pre_tool_use`: real, fail-closed.** A missing/unexecutable command, a timeout, a nonzero exit, or stdout that fails to parse as `HookAnswer` are ALL `HookFailure` (`conway_core::error::HookFailure`), and `PermissionBroker::decide` treats every one of them as a denial — the runner's own failure signal, not a second weaker fail-closed implementation layered on top. Every other event: design only, P-13 applies in full once it ships. |
+| Ordering | `pre_tool_use`: rules are consulted in the order `ConwayBuilder::build` filtered them from `[hooks].rules[]`; the FIRST denying hook wins (order-independent for the boolean outcome — a `deny` beats a `no_opinion` however many hooks run, so which hook happens to be checked first only changes which hook's `reason` is reported, never whether the call is denied). Every other event: design only, per event, same order-independence rule as every other participant point. |
+| Status | **`pre_tool_use` is DISPATCHED (board item 01KZS00JP5QNBJSSHNFP9C47GM); every other event is still designed-not-built.** `conway_runtime::permission::PermissionBroker::decide` invokes an injected `Arc<dyn HookRunner>` (`ConwayBuilder::with_hook_runner` — mirroring `with_permission_gate`/`with_context_hook`; not called at all is still the default for a third-party embedder, and a `pre_tool_use` rule with no runner injected parses, validates, and is silently never consulted. `conway-cli` DOES inject one, via the `builtin-tools`-gated convenience `ConwayBuilder::with_default_hook_runner` which supplies `conway_tools::hook_runner::ProcessHookRunner` — board item 01KZVTTP492R3BDY33FAGYWDNW — so a rule written in a `settings.json` driving the CLI fires. The CLI's opt-in is not inherited by an embedder linking `conway` directly) once per enabled `[hooks].rules[]` entry whose `event == "pre_tool_use"`, at the SAME tier as a `deny` pattern rule — before the mode gate, the cache, pattern-allow grants, and `AutoAllow`, so a denying hook is enforced under every permission mode including `AutoAllow` (the one mode with no human in the loop to catch what a downstream-of-the-gate check would have missed). `Plugin::manifest()`/`Plugin::tools()` is still the whole `Plugin` trait otherwise; there is still no `hooks()` method, no `subagent_mode` field, and no `hook.fork` capability anywhere in the tree, and every `event` value other than `pre_tool_use` remains exactly the forward declaration board item 01KZRZW5CWMVQ0GPRT4GX4RV5G shipped: parses, validates, and does nothing. `01KZRZY1MNM872BZ6AKEBG3SKE`'s `HookRunner` port/`ProcessHookRunner` implementation is the general script-runner mechanism `pre_tool_use` dispatch is the FIRST consumer of, not the last — a later item wiring a second event reuses the same runner and the same fail-closed contract. Both remain tracked under the umbrella `01KZDC0RDRMMMJHX7SAFMM2Q5A`. **A script runner is not a second extension mechanism (GP-03):** the design is explicit that a script-dispatching hook is itself an ordinary `Plugin` whose own implementation happens to shell out per event, layered on top of the one mechanism, never beside it |
 
 ### 14. Fork/spawn declaration for an inference-evaluated hook
 
@@ -446,7 +473,7 @@ either denies, drops, or falls through to the strictest available default.
 | Plugin rules (7, designed) | `on_failure`-shaped, design only | Design only, clamped `timeout_ms` | Design only | Design only, never guessed at | Design only | No producer exists; contributes nothing | Design only |
 | Policy chain (8, designed) | `on_failure`, default `Deny`, **never `Allow`** | Clamped `timeout_ms`, design default 60 s; **excluded from any progress-reset rule** — a decision-bearing call's deadline never extends on a progress notification, so a hook that emits progress forever while never deciding cannot stall the session (§16.2d) | Design only | Design only | Design only | No chain exists; unaffected | Design only |
 | `context.hook/1` (9, designed) | Design only | Design only, same clamped-timeout shape as 8 | Design only | Design only | Design only | No wire transport exists | Design only |
-| Declarative hooks (13, designed) | Fail-closed per P-13 for any hook that can deny | Design only | Design only | Design only | Design only | No `hooks` block is read; behavior unaffected | Design only |
+| Declarative hooks (13, designed) | Fail-closed per P-13 for any hook that can deny | Design only | Design only | Design only | Design only | A `[hooks]` block is now parsed, deny-unknown-fields-strict, and validated (board item 01KZRZW5CWMVQ0GPRT4GX4RV5G) whether present or absent — but nothing dispatches a rule either way, so run-time behavior is unaffected regardless: an absent block yields an empty rule list, a present one yields typed rules nothing yet reads | Design only |
 
 ## Constraints this document keeps
 

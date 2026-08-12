@@ -124,13 +124,14 @@ use std::sync::Arc;
 use conway_core::capabilities::{HeadroomPolicy, ReliabilityTier};
 use conway_core::ids::{BackendId, ModelRef};
 use conway_core::ports::{
-    Backend, BackendBuildContext, BackendFactory, ContextHook, HealthRegistry, PermissionGate,
-    Plugin, Router, RouterBuildContext, RouterBundle, RouterFactory, RoutingExplainer,
-    SessionStore,
+    Backend, BackendBuildContext, BackendFactory, ContextHook, HealthRegistry, HookRunner,
+    PermissionGate, Plugin, Router, RouterBuildContext, RouterBundle, RouterFactory,
+    RoutingExplainer, SessionStore,
 };
 use conway_core::ports::CapabilityIndex;
 use conway_core::routing::{AlwaysClosedHealthRegistry, MinimalRouter, ModelOverrides};
 use conway_runtime::events::EventBus;
+use conway_runtime::permission::PreToolUseHookSpec;
 use conway_runtime::runtime::{Runtime, RuntimeDeps};
 
 use crate::agents;
@@ -237,6 +238,14 @@ pub struct ConwayBuilder {
     /// `context_hook` at the `Runtime`-constructed default of `None` --
     /// i.e. today's behavior, unchanged.
     context_hook: Option<Arc<dyn ContextHook>>,
+    /// Board item 01KZS00JP5QNBJSSHNFP9C47GM. `None` (the default) means
+    /// `build()` never calls `Runtime::set_hook_runner` at all, leaving
+    /// `PermissionBroker::decide`'s `pre_tool_use` hook-check step at the
+    /// `PermissionBroker`-constructed default of `None` -- a byte-for-byte
+    /// no-op, i.e. today's behavior, unchanged, REGARDLESS of whatever
+    /// `[hooks].rules[]` a loaded config declares (see
+    /// [`Self::with_hook_runner`]'s own doc).
+    hook_runner: Option<Arc<dyn HookRunner>>,
     /// Board item (bash ships on by default and cannot be declined).
     /// `None` (the default) means `build()` derives the effective
     /// [`PluginSelection`] from `config.tools.builtin_plugins` instead --
@@ -292,6 +301,7 @@ impl ConwayBuilder {
             backend_factories: Vec::new(),
             declined_backend_kinds: Vec::new(),
             context_hook: None,
+            hook_runner: None,
             builtin_selection: None,
             warnings: Vec::new(),
             root: None,
@@ -483,6 +493,71 @@ impl ConwayBuilder {
         self
     }
 
+    /// Registers a [`HookRunner`] (board item 01KZS00JP5QNBJSSHNFP9C47GM):
+    /// the dispatcher `conway_runtime::permission::PermissionBroker::decide`
+    /// invokes, at its deny tier, for every enabled `[hooks].rules[]` entry
+    /// whose `event` is `"pre_tool_use"`. Mirrors [`Self::with_permission_
+    /// gate`]/[`Self::with_context_hook`]'s own shape exactly (GP-03/P-6: a
+    /// third party supplies a runner on the identical surface a built-in
+    /// uses) -- this facade never constructs a concrete `HookRunner`
+    /// itself; `conway_tools::hook_runner::ProcessHookRunner` is the one
+    /// this workspace ships, and a binary that wants it attaches it here
+    /// (`conway`, this crate's own CLI, is the intended caller -- see that
+    /// binary's own startup wiring).
+    ///
+    /// **No call to this method (the default) means `build()` never calls
+    /// `Runtime::set_hook_runner` at all** -- `PermissionBroker::decide`'s
+    /// hook-check step stays a byte-for-byte no-op, REGARDLESS of whatever
+    /// `[hooks].rules[]` a loaded config declares: a `pre_tool_use` rule
+    /// with no runner ever injected parses, validates, and is silently
+    /// never consulted (see [`crate::config::schema::HooksConfig`]'s own
+    /// doc for the full disclosure of that precondition). This is
+    /// deliberately the same shape as every other optional port on this
+    /// builder, not a special case: an embedder who wants `[hooks].rules[]`
+    /// enforcement opts in explicitly, exactly like every other capability
+    /// here.
+    pub fn with_hook_runner(mut self, runner: Arc<dyn HookRunner>) -> Self {
+        self.hook_runner = Some(runner);
+        self
+    }
+
+    /// Convenience wrapper around [`Self::with_hook_runner`] that supplies
+    /// this workspace's own in-tree default -- `conway_tools::hook_runner::
+    /// ProcessHookRunner` -- rather than requiring every caller to name and
+    /// construct that type itself (board item 01KZVTTP492R3BDY33FAGYWDNW).
+    ///
+    /// **Not a second injection mechanism.** This method does nothing
+    /// `with_hook_runner` could not already do; it just fills in the one
+    /// argument a caller wanting the shipped default would otherwise repeat
+    /// verbatim everywhere. Contrast the general port itself, which stays
+    /// exactly as general as before: a third party wanting its OWN
+    /// `HookRunner` still calls `with_hook_runner` directly, on the
+    /// identical surface a built-in uses (GP-03/P-6) -- this method is not
+    /// where that capability lives, and the two are deliberately kept
+    /// separate rather than collapsed into one (calling this method twice,
+    /// or this method then `with_hook_runner`, behaves exactly like calling
+    /// `with_hook_runner` twice: last write wins, no special-casing here).
+    ///
+    /// Gated on the `builtin-tools` feature, mirroring `crate::presets`'
+    /// own built-in-plugin methods: with that feature disabled, this crate
+    /// has no `conway-tools` dependency to construct a `ProcessHookRunner`
+    /// from, so this method does not exist rather than existing and
+    /// panicking or silently no-opping.
+    ///
+    /// `conway-cli`'s `build_conway` is the intended caller (board item
+    /// 01KZVTTP492R3BDY33FAGYWDNW): the CLI itself never depends on
+    /// `conway-tools` directly (`crates/conway-cli/tests/cli_surface.rs::
+    /// no_forbidden_deps` forbids that edge outright), so this facade
+    /// method is what lets the CLI obtain the workspace's default runner
+    /// without naming `conway-tools` at all -- the same shape
+    /// `presets::builtin_plugins` already establishes for built-in tool
+    /// plugins (this file's own `build()`, around the `builtin-tools` cfg
+    /// block for `resolved_plugins`).
+    #[cfg(feature = "builtin-tools")]
+    pub fn with_default_hook_runner(self) -> Self {
+        self.with_hook_runner(Arc::new(conway_tools::hook_runner::ProcessHookRunner::new()))
+    }
+
     /// Overrides which built-in plugins `build()` auto-registers (board
     /// item: bash ships on by default and cannot be declined). See
     /// [`PluginSelection`]'s own doc for why this is a generic, id-keyed
@@ -610,6 +685,7 @@ impl ConwayBuilder {
             backend_factories,
             declined_backend_kinds,
             context_hook,
+            hook_runner,
             builtin_selection,
             warnings,
             root,
@@ -897,6 +973,30 @@ impl ConwayBuilder {
         // call) sets the runtime's hook to `None`, identical to never
         // calling this method at all.
         rt.set_context_hook(context_hook);
+        // Board item 01KZS00JP5QNBJSSHNFP9C47GM: mirrors the `context_hook`
+        // wiring immediately above -- `hook_runner: None` (no
+        // `with_hook_runner` call) sets the broker's runner to `None`,
+        // identical to never calling `Runtime::set_hook_runner` at all
+        // (`PermissionBroker::decide`'s hook-check step stays a no-op).
+        // `pre_tool_use_specs` is computed unconditionally either way (an
+        // empty `hook_runner` makes it inert regardless of what it
+        // contains -- `PermissionBroker::pre_tool_use_hook_denial`'s own
+        // doc), filtering `[hooks].rules[]` to exactly the entries this
+        // item's own `HooksConfig` doc names as dispatched: `event ==
+        // "pre_tool_use"` and `enabled`.
+        let pre_tool_use_specs: Vec<PreToolUseHookSpec> = config
+            .hooks
+            .rules
+            .iter()
+            .filter(|rule| rule.enabled && rule.event == "pre_tool_use")
+            .map(|rule| PreToolUseHookSpec {
+                id: rule.id.clone(),
+                command: rule.command.clone(),
+                timeout_ms: rule.timeout_ms,
+            })
+            .collect();
+        rt.set_hook_runner(hook_runner);
+        rt.set_pre_tool_use_hooks(pre_tool_use_specs);
 
         Ok(Conway::new(
             rt,

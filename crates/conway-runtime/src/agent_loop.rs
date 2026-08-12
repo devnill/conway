@@ -197,6 +197,24 @@ pub struct AgentSpec {
     /// WI-083) depends on that child actually terminating -- making this
     /// universal would hang such a parent forever.
     pub keep_alive: bool,
+    /// Board item 01KZQJ03ZQ22MPM9H2TW1350ZF: the opaque consumer tag
+    /// threaded straight from `conway_core::agent::SubagentSpec::tag` by
+    /// `subagent.rs`'s `SubagentHost::start` (`None` for a root or resumed
+    /// root -- `runtime.rs`'s `start_root`/`resume_root` have no
+    /// `SubagentSpec` to source one from). This loop never reads it for any
+    /// decision; it exists solely to be cloned into every turn's
+    /// `ContextHookCtx::tag` (see that field's own doc) -- see
+    /// `SubagentSpec::tag`'s own doc for the full "conway never interprets
+    /// this" guarantee and why it is a genuinely new kind of field.
+    ///
+    /// Required, not defaulting: like `ContextHookCtx::agent_path`
+    /// (01KZQHZH8RXVR38JJX9AY4VSW4), `AgentSpec` derives no `Serialize`/
+    /// `Deserialize` and has no wire format to preserve compatibility with,
+    /// so there is no serialization justification for a silent default --
+    /// and a field whose entire purpose is telling two otherwise-identical
+    /// agents apart must not hand every construction site (tests included)
+    /// an identical `None` for free.
+    pub tag: Option<String>,
 }
 
 /// Everything an [`AgentLoop`] needs beyond its own identity and spec:
@@ -429,10 +447,13 @@ impl AgentLoop {
     /// caller immediately after this returns. A hard cancel was already
     /// handled at enqueue time (`MailboxSender::send`) and is a no-op here.
     /// `Progress` is emitted as `Event::AgentProgress` and never persisted.
-    /// `Result` is classified but drives no action here -- the real
-    /// resolution path for a `conway_fork`/`conway_spawn` waiter is
-    /// `AgentTree::await_result` (WI-083), not this mailbox; see
-    /// `mailbox.rs`'s module doc (cycle-2 review F-085 S2).
+    /// `Result` (board item 01KZQHY6RTMYR4BRDTMQFP9J9R) is persisted as
+    /// `LogRecord::ChildResultRecord`, the exact same `DrainEffect::Persist`
+    /// arm as `Steer` -- this is a NON-blocking notification path, entirely
+    /// separate from a `conway_fork`/`conway_spawn` waiter that blocked on
+    /// this specific child by id, which still resolves exclusively through
+    /// `AgentTree::await_result` (WI-083); see `mailbox.rs`'s module doc
+    /// (cycle-2 review F-085 S2, updated by 01KZQHY6RTMYR4BRDTMQFP9J9R).
     ///
     /// ## A mid-batch persist failure does not lose the rest of the batch
     ///
@@ -476,14 +497,6 @@ impl AgentLoop {
                     self.deps
                         .bus
                         .emit(self.session, self.agent_id, Event::AgentProgress { note });
-                }
-                mailbox::DrainEffect::Result { from, .. } => {
-                    tracing::trace!(
-                        agent = %self.agent_id,
-                        from = %from,
-                        "drained AgentMessage::Result: AgentTree::await_result (WI-083) is \
-                         the authoritative resolution path, no drain-time action taken"
-                    );
                 }
                 mailbox::DrainEffect::Unknown => {}
             }
@@ -637,11 +650,13 @@ impl AgentLoop {
 
             let hook_ctx = ContextHookCtx {
                 agent_id: self.agent_id,
+                agent_path: self.agent_path.clone(),
                 session_id: self.session,
                 turn,
                 model: Some(model.clone()),
                 estimated_tokens: est_tokens,
                 artifacts: artifacts.clone(),
+                tag: self.spec.tag.clone(),
             };
             let overflow = OverflowInfo {
                 max_context_tokens,
@@ -848,11 +863,13 @@ impl AgentLoop {
             if let Some(hook) = self.context_hook() {
                 let hook_ctx = ContextHookCtx {
                     agent_id: self.agent_id,
+                    agent_path: self.agent_path.clone(),
                     session_id: self.session,
                     turn: state.turn,
                     model: self.spec.pin.clone(),
                     estimated_tokens: report.total_tokens_est,
                     artifacts: artifacts.clone(),
+                    tag: self.spec.tag.clone(),
                 };
                 let payload = ContextPayload {
                     segments,

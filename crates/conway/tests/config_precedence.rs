@@ -60,9 +60,7 @@ const FULL_SCHEMA_JSON: &str = r#"
   "health": {
     "transport_failures_to_open": 3,
     "open_duration_secs": 30,
-    "probe_interval_secs": 15,
-    "probe_timeout_secs": 2,
-    "probe_failures_to_open": 3
+    "half_open_successes_to_close": 1
   },
   "agents": {
     "dir": ".conway/agents"
@@ -210,10 +208,13 @@ fn five_source_precedence_across_representative_keys() {
         "https://xdg.example.com"
     );
 
-    // Stage 5: remove everything -> baked-in defaults.
+    // Stage 5: remove everything -> baked-in defaults. Still an isolated
+    // `XDG_CONFIG_HOME` (not a bare `HashMap::new()`): "remove everything"
+    // means no source names a value, not "read whatever real settings.json
+    // this machine has" (see `support::isolated_env`'s doc comment).
     let outcome = load(LoadOptions {
         cwd: empty_dir,
-        ..opts(HashMap::new(), CliOverrides::default())
+        ..opts(support::isolated_env(), CliOverrides::default())
     })
     .unwrap();
     assert_eq!(outcome.config.default_role.as_str(), "coder");
@@ -224,7 +225,7 @@ fn five_source_precedence_across_representative_keys() {
 
 #[test]
 fn env_var_mapping_reads_known_vars_and_ignores_unknown_ones() {
-    let mut env = HashMap::new();
+    let mut env = support::isolated_env();
     env.insert("CONWAY_DEFAULT_ROLE".to_string(), "coder".to_string());
     env.insert(
         "CONWAY_BACKENDS__ANTHROPIC__API_KEY".to_string(),
@@ -273,7 +274,7 @@ fn load_discovers_the_nearest_project_config_via_parent_walk() {
     let outcome = load(LoadOptions {
         cwd: nested,
         explicit_path: None,
-        env: HashMap::new(),
+        env: support::isolated_env(),
         cli_overrides: CliOverrides::default(),
         model_metadata_refresh: false,
     })
@@ -287,7 +288,7 @@ fn unknown_role_alias_in_default_role_names_the_alias_and_defined_roles() {
     let result = load(LoadOptions {
         cwd: dir,
         explicit_path: Some(support::fixtures_dir().join("bad_role.json")),
-        env: HashMap::new(),
+        env: support::isolated_env(),
         cli_overrides: CliOverrides::default(),
         model_metadata_refresh: false,
     });
@@ -308,7 +309,7 @@ fn typo_d_key_is_rejected_by_deny_unknown_fields() {
     let result = load(LoadOptions {
         cwd: dir,
         explicit_path: Some(support::fixtures_dir().join("unknown_key.json")),
-        env: HashMap::new(),
+        env: support::isolated_env(),
         cli_overrides: CliOverrides::default(),
         model_metadata_refresh: false,
     });
@@ -325,7 +326,7 @@ fn typo_d_health_key_is_rejected_by_deny_unknown_fields() {
     let result = load(LoadOptions {
         cwd: dir,
         explicit_path: Some(support::fixtures_dir().join("unknown_health_key.json")),
-        env: HashMap::new(),
+        env: support::isolated_env(),
         cli_overrides: CliOverrides::default(),
         model_metadata_refresh: false,
     });
@@ -333,6 +334,35 @@ fn typo_d_health_key_is_rejected_by_deny_unknown_fields() {
     assert!(
         err.contains("transport_failures_to_opne"),
         "error must name the typo'd [health] key: {err}"
+    );
+}
+
+/// **Breaking-change coverage (board item 01KZ802GSF692EKYKQ2TTVCJB8, "retire
+/// the health prober"): a `settings.json` naming a removed `[health].probe_*`
+/// key fails loudly, naming the key, rather than loading silently.**
+/// `probe_enabled`/`probe_interval_secs`/`probe_timeout_secs`/
+/// `probe_failures_to_open` used to configure a periodic health prober and
+/// the independent `Probe` breaker it fed; both were retired because the
+/// prober had no production call site and the Transport breaker alone
+/// already handles recovery. `HealthSection` keeps
+/// `#[serde(deny_unknown_fields)]`, so a config that previously loaded
+/// (silently accepting these keys) now fails to load at all -- the same
+/// mechanism `typo_d_health_key_is_rejected_by_deny_unknown_fields` above
+/// proves for a genuine typo.
+#[test]
+fn removed_health_probe_key_is_rejected_by_deny_unknown_fields() {
+    let dir = support::unique_temp_dir("removed-health-probe-key");
+    let result = load(LoadOptions {
+        cwd: dir,
+        explicit_path: Some(support::fixtures_dir().join("removed_health_probe_key.json")),
+        env: support::isolated_env(),
+        cli_overrides: CliOverrides::default(),
+        model_metadata_refresh: false,
+    });
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("probe_enabled"),
+        "error must name the removed [health] key: {err}"
     );
 }
 
@@ -351,7 +381,7 @@ fn typo_d_role_capability_key_is_rejected_by_deny_unknown_fields() {
     let result = load(LoadOptions {
         cwd: dir,
         explicit_path: Some(support::fixtures_dir().join("unknown_role_capability_key.json")),
-        env: HashMap::new(),
+        env: support::isolated_env(),
         cli_overrides: CliOverrides::default(),
         model_metadata_refresh: false,
     });

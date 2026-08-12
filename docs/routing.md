@@ -425,10 +425,9 @@ times.
 
 ## Health and failover
 
-Two independent circuit breakers exist per backend (its `EndpointId`,
-1:1 with the backend id — every model on the same backend shares one
-breaker pair): a **Transport** breaker fed by real request failures, and
-a **Probe** breaker fed by periodic liveness checks, tuned by `[health]`:
+One circuit breaker exists per backend (its `EndpointId`, 1:1 with the
+backend id — every model on the same backend shares one breaker): a
+**Transport** breaker fed by real request failures, tuned by `[health]`:
 
 ```json
 // .conway/settings.json
@@ -436,16 +435,12 @@ a **Probe** breaker fed by periodic liveness checks, tuned by `[health]`:
   "health": {
     "transport_failures_to_open": 3,
     "open_duration_secs": 30,
-    "probe_interval_secs": 15,
-    "probe_timeout_secs": 2,
-    "probe_failures_to_open": 3,
-    "half_open_successes_to_close": 1,
-    "probe_enabled": false
+    "half_open_successes_to_close": 1
   }
 }
 ```
 
-Every field above is the built-in default. A breaker is `Closed` (used
+Every field above is the built-in default. The breaker is `Closed` (used
 normally), `Open` (skipped until `until`, a fixed duration — no
 backoff), or `HalfOpen` (one probationary attempt after `until` passes;
 one more failure reopens it for another full `open_duration_secs`, one
@@ -457,34 +452,33 @@ malformed request, or a too-large prompt does not — those either abort
 the whole chain immediately (auth) or advance to the next candidate
 without touching breaker state (a bad request or an oversized prompt may
 still be perfectly servable by a different model). `conway routes
-explain <role>` shows every breaker's current state, and a candidate
-skipped for `HealthSkip` names which breaker and until when.
+explain <role>` shows the breaker's current state, and a candidate
+skipped for `HealthSkip` names it and until when.
 
-**Verified: only the Transport breaker is live in a running `conway`
-process today.** `conway-plugin-routing`'s periodic prober
-(`conway_plugin_routing::prober::HealthProber`, the component that would feed
-the Probe breaker independently of request traffic) is fully implemented
-and tested in that crate, but no call site in `conway`, `conway-runtime`,
-or `conway-cli` ever spawns it — checked directly, it's referenced
-nowhere outside `conway-plugin-routing` itself. `probe_enabled`,
-`probe_interval_secs`, and `probe_timeout_secs` validate and load without
-error; they currently have no observable effect. This is a deliberate,
-labeled forward declaration (GP-14), not an oversight: the Transport
-breaker alone already handles recovery (a clock read takes it half-open;
-the next real request retries), so wiring the prober is a latency
-optimization, not a correctness fix, and GP-12 requires a measured
-baseline before shipping an optimization. `probe_enabled` defaults
-`false` for exactly this reason — a fresh install must not assert
-periodic probing that does not happen. Board item
-`01KZ802GSF692EKYKQ2TTVCJB8` tracks wiring it. The Transport breaker,
-by contrast, is wired end to end and does exactly what's described above
-— every example in this section was captured against a real run.
+**A dead endpoint recovering is still detected without any periodic
+probing.** A crashed backend that comes back up is caught by the next
+real request: the breaker's `HalfOpen` state is derived from the clock at
+read time (no background task needed), and the router admits a
+half-open candidate exactly like a closed one — so the very next request
+against that role naturally retries it. `conway-plugin-routing` used to
+also carry a periodic `HealthProber` that fed a second, independent
+`Probe` breaker from liveness checks decoupled from request traffic; it
+was retired rather than wired (board item `01KZ802GSF692EKYKQ2TTVCJB8`)
+because it had no production call site anywhere in the tree, and the only
+thing it would have bought — shaving one failed round trip off recovery
+for a sparse-traffic role — is a latency optimization this project gates
+on a measured baseline that neither existed nor was scheduled. The
+`probe_enabled`/`probe_interval_secs`/`probe_timeout_secs`/
+`probe_failures_to_open` keys that used to configure it are gone; a
+`settings.json` naming any of them under `[health]` now fails to load,
+naming the offending key.
 
-(Do not confuse this periodic health prober with the *startup*
+(Do not confuse the retired periodic health prober with the *startup*
 `[models].probe_on_startup` capability probe covered above under
-"Capability matching" — same word, two unrelated mechanisms: one
-discovers model capabilities once at startup and is already wired; this
-one would feed the Probe breaker on an ongoing basis and is not.)
+"Capability matching" — same word, two unrelated mechanisms: that one
+discovers model capabilities once at startup and is wired; the health
+prober would have fed an ongoing liveness signal and no longer exists at
+all.)
 
 ### What you see when a route is skipped
 

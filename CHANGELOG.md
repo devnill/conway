@@ -9,6 +9,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **A `pre_tool_use` hook written in a `settings.json` now actually runs
+  under the CLI** (board item 01KZVTTP492R3BDY33FAGYWDNW). Board item
+  01KZS00JP5QNBJSSHNFP9C47GM built the enforcement -- a hook script that
+  refuses a tool call, checked at the same tier as a `deny` pattern rule so
+  it holds under every permission mode -- but that mechanism only runs when
+  an embedder injects a runner, and `conway-cli` injected none. An operator
+  who wrote a `pre_tool_use` rule got a config that parsed, validated,
+  rejected typos, and was **never consulted**: a guardrail they believed
+  they had installed did not exist. That is GP-14's worst rung (user-facing
+  configuration that does nothing, precedent `probe_enabled`) with an
+  aggravator the prober never had -- the configuration is security-bearing,
+  so the operator did not merely miss a benefit, they held a false belief
+  about what was being blocked while running an agent with tool access.
+  `ConwayBuilder::with_default_hook_runner` (new, `builtin-tools`-gated)
+  supplies `conway_tools::hook_runner::ProcessHookRunner`, and
+  `conway-cli`'s `build_conway` calls it unconditionally. **The injection
+  lives in the facade, not the CLI**, because `conway-cli` may depend only
+  on the `conway` facade -- `cli_surface::no_forbidden_deps` enforces that,
+  and its own comment records the same shortcut being tried and reverted
+  twice before; `conway` already carries `conway-tools` behind its default
+  `builtin-tools` feature, and `builder.rs` already used exactly this shape
+  for built-in tool plugins. `with_hook_runner` remains the general
+  injection point a third party uses on the identical surface a built-in
+  uses (GP-03/P-6); the new method is a convenience supplying the in-tree
+  default, deliberately NOT collapsed into it. **Scope, stated precisely
+  because the disclosure is the point:** a rule driving the CLI fires; an
+  embedder linking `conway` directly still gets nothing unless it calls one
+  of the two methods itself; and every `event` other than `pre_tool_use`
+  remains parsed-and-validated only. Guarded end to end rather than at the
+  seam -- an integration test drives the real compiled binary through a
+  one-shot with an isolated `XDG_CONFIG_HOME`, and asserts the on-disk
+  session transcript's denial names the HOOK ID. That precision is
+  load-bearing: with the injection removed the call is still denied, by the
+  default allow-list gate (`tool 'bash' is not in the allow list`), so a
+  test asserting only "denied" would pass whether or not the wiring existed.
+  (`crates/conway/src/builder.rs`, `crates/conway-cli/src/main.rs`,
+  `crates/conway-cli/tests/hook_runner_wiring.rs`,
+  `crates/conway/src/config/schema.rs`, `docs/plugins/hooks.md`)
+
 - **BREAKING: a misspelled key in `permissions.json` now fails to load
   instead of silently installing zero rules** (board item
   01KZHVDDQQ7XT0RK3JVNM2YV83). A file containing `"denys"` instead of
@@ -57,7 +96,228 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `crates/conway/tests/permission_trust_seam.rs`, `docs/permissions.md`,
   `docs/plugins/compatibility.md`)
 
+- **A configured `pre_tool_use` hook can now actually refuse a tool call --
+  wired at the ONE tier in `PermissionBroker::decide` that no permission
+  mode can route around** (board item 01KZS00JP5QNBJSSHNFP9C47GM). Placement
+  was the whole difficulty: a hook checked downstream of `gate.check` (or
+  implemented as a `PermissionGate` itself) would see only the calls that
+  reach the operator's prompt and NONE resolved by a cached `AllowAlways`
+  grant, a matching pattern-allow rule, or `AutoAllow` mode -- it would
+  evaporate entirely under `AutoAllow`, the one mode with no human already
+  in the loop to catch what the hook exists to catch. The new hook-check
+  step sits at the SAME tier as the existing `deny`-pattern check --
+  immediately after it, before the mode gate, the cache, pattern-allow
+  grants, and `AutoAllow` -- so a denying hook is enforced under every
+  permission mode, proven by a test that configures `AutoAllow` plus a
+  denying hook and asserts the call is still denied (plus one test each for
+  the cache-bypass and pattern-allow-bypass paths a downstream
+  implementation would have missed). **Deny-only, never allow, at the type
+  level, not by convention:** the hook's answer field
+  (`conway_core::hook::HookAnswer::permission`) is a new
+  `HookPermissionVerdict` enum with exactly two variants, `NoOpinion` and
+  `Deny { reason }` -- there is no `Allow` variant anywhere in the type for
+  a future edit to accidentally start acting on (decision
+  01KZRZAFD8T3GX407MZC8P1W1E: a hook may only narrow a permission verdict,
+  never widen one; mirrors `permission_pattern::Then`'s own
+  plugin-rule restriction one layer down, but as a structural omission
+  rather than a runtime rejection a future edit could get wrong).
+  **Fail-closed inherits from the runner, not a second implementation of
+  it:** a missing script, a timeout, a nonzero exit, or stdout that fails to
+  parse as `HookAnswer` are all `HookFailure`, and `PermissionBroker::
+  decide` treats every one of them as a denial directly. **Deny-only over a
+  three-way (deny/prompt/no-opinion) shape, decided and recorded:** a
+  `prompt`-forcing verdict would need its own `must_reach_gate` source with
+  different provenance than the existing `prompt`-pattern step, which is
+  exactly the kind of policy branching growth GP-13 bounds this item
+  against; an operator who wants "ask every time" for a call shape a plugin
+  author can identify already has the pattern-rule mechanism for it. **This
+  is what makes `conway_core::ports::HookRunner` reachable at all** -- the
+  port previously had no injection point and no caller anywhere in the
+  tree. `ConwayBuilder::with_hook_runner` injects an `Arc<dyn HookRunner>`
+  on the identical surface `with_permission_gate`/`with_context_hook`
+  already use (GP-03/P-6; `conway`'s `plugin` extension-surface module now
+  re-exports `HookRunner`/`HookInvocation`/`HookEvent`/`HookAnswer`/
+  `HookPermissionVerdict`/`HookFailure` so a third party can implement it
+  without depending on `conway-core`), and `conway-runtime` reaches it only
+  through `conway_core::ports` -- never through `conway-tools` (decision
+  01KZT642CEZ20K92DYWBTPE2XZ: the two are siblings; the runner arrives
+  already constructed). **Additive, not automatic:** with no
+  `with_hook_runner` call (the default) `PermissionBroker::decide` is
+  byte-for-byte unchanged -- the entire pre-existing `permission_broker.rs`
+  suite (46 tests) passes unmodified -- and a `[hooks].rules[]` entry with
+  `event: "pre_tool_use"` still parses and validates with no runner
+  injected, it just is silently never consulted (disclosed at every
+  relevant declaration site, not only here). `[hooks]`'s own GP-14 forward-
+  declaration label is corrected to be precise PER EVENT: `pre_tool_use` is
+  now dispatched; every other `event` value remains exactly the forward
+  declaration it always was. Docs updated to match: `docs/plugins/hooks.md`
+  point 13's status row (and its sibling point 7 correction, since that
+  row's forward reference to this item's eventual answer shape turned out
+  to name a different shape than what shipped) and `docs/plugins/scripts.md`'s
+  top note.
+  (`crates/conway-core/src/hook.rs`, `crates/conway-core/src/ports/hook_runner.rs`,
+  `crates/conway-runtime/src/permission.rs`, `crates/conway-runtime/src/runtime.rs`,
+  `crates/conway/src/builder.rs`, `crates/conway/src/lib.rs`,
+  `crates/conway/src/config/schema.rs`, `crates/conway/tests/plugin_surface.rs`,
+  `crates/conway-tools/tests/hook_runner.rs`, `docs/plugins/hooks.md`,
+  `docs/plugins/scripts.md`)
+
 ### Added
+
+- **A parent that fans out several children (`await: false`) now observes
+  each child's completion on its own very next turn, without ever calling
+  `conway_await` on it** (board item 01KZQHY6RTMYR4BRDTMQFP9J9R). A child's
+  `AgentLoop::finish` has always delivered its terminal `AgentResult` to its
+  parent's mailbox, but before this item that delivery was consumed only by
+  a caller that had actually blocked on that specific child by id
+  (`AgentTree::await_result`); a parent that never did had no way to learn
+  any of its children had finished. `mailbox::classify` now maps a drained
+  `AgentMessage::Result` to `DrainEffect::Persist` — the exact same path
+  `AgentMessage::Steer` already takes to become `LogRecord::ParentSteer` —
+  producing a new `LogRecord::ChildResultRecord`. The parent's own next
+  `SessionStore::read` picks it up like any other own record, and
+  `context::builder`'s `own_segment` turns it into a `Role::System` segment
+  tagged with a new `Provenance::ChildResult { from }`, never anything that
+  would misattribute the child's output as the parent's own (P-2). No new
+  primitive, no public signature change, and `AgentTree::await_result`'s
+  blocking path is entirely untouched — this is purely an additional
+  non-blocking notification path. Docs updated to match:
+  [`docs/agents.md`](docs/agents.md#a-model-tool-call)'s `await` section and
+  provenance vocabulary list, and
+  [`docs/sessions.md`](docs/sessions.md#the-append-only-log)'s record-kind
+  table.
+  (`crates/conway-core/src/log.rs`, `crates/conway-core/src/provenance.rs`,
+  `crates/conway-core/src/segment.rs`, `crates/conway-runtime/src/mailbox.rs`,
+  `crates/conway-runtime/src/agent_loop.rs`,
+  `crates/conway-runtime/src/context/builder.rs`,
+  `crates/conway-runtime/src/result.rs`, `crates/conway/src/session_handle.rs`,
+  `crates/conway-cli/src/tui/commands.rs`,
+  `crates/conway-runtime/tests/steering.rs`,
+  `crates/conway-session/tests/store_tests.rs`,
+  `crates/conway-session/tests/codec_tests.rs`, `docs/agents.md`,
+  `docs/sessions.md`)
+
+- **`ContextHookCtx` now carries `agent_path`, the same root-first,
+  self-inclusive ancestry chain `PermissionRequest.agent_path` already
+  carried** (board item 01KZQHZH8RXVR38JJX9AY4VSW4). A registered
+  `ContextHook` was told *which* agent it was running for but not *where*
+  that agent sat in the tree — it could not behave differently for a
+  top-level agent than for one four levels down, even though the permission
+  side of the runtime has had exactly this information since `agent_path`
+  was added to `PermissionRequest`. Both `ContextHookCtx` construction sites
+  in `AgentLoop::run_inner` now set `agent_path: self.agent_path.clone()` —
+  the SAME field `ToolBatchCtx`/`PermissionCtx` build `PermissionRequest.
+  agent_path` from, so the two ports cannot silently diverge. **Required,
+  not defaulted:** unlike `PermissionRequest`, `ContextHookCtx` is not
+  `Serialize`/`Deserialize` and has no wire format to stay compatible with,
+  so there is no serialization justification for a `#[serde(default)]`-style
+  silent empty vector, and a hook's whole reason to want this field is
+  telling a deep agent apart from a shallow one — a field that defaults to
+  `vec![]` would let a caller forget to plumb it and never notice. A test
+  fixture that needs one and doesn't care about depth can use
+  `vec![agent_id]` (a root agent's own path). **Breaking** for any
+  out-of-tree code constructing `ContextHookCtx` by field literal (every
+  hook *consuming* one — `_ctx: &ContextHookCtx` — needs no change; only a
+  test/fixture that builds the struct itself does). Docs updated to match:
+  `docs/plugins/hooks.md` point 3's field table and a new paragraph on what
+  the field is for, plus the two hand-built `ContextHookCtx` examples in
+  `docs/plugins/authoring.md` and `docs/plugins/cookbook.md`.
+  (`crates/conway-core/src/ports/plugin.rs`, `crates/conway-runtime/src/agent_loop.rs`,
+  `crates/conway/tests/plugin_surface.rs`, `crates/conway-runtime/tests/agent_loop_e2e.rs`,
+  `docs/plugins/hooks.md`, `docs/plugins/authoring.md`, `docs/plugins/cookbook.md`)
+
+- **`SubagentSpec` gains `tag`, an opaque consumer correlation identifier
+  carried onto `ContextHookCtx.tag`** (board item 01KZQJ03ZQ22MPM9H2TW1350ZF,
+  decision 01KZT5EZD1RT6C3Q2MZPZ3NHAW). An embedder mapping conway agents
+  onto its own domain objects (a file, a job, a node in its own tool) had
+  nowhere to attach its own identifier at creation time -- the association
+  could only be recorded after `SubagentHost::start` returned, which raced
+  the child's first turn: a `ContextHook` firing on that turn found nothing
+  in a side table keyed on an id that did not exist yet. Decision
+  01KZT5EZD1RT6C3Q2MZPZ3NHAW ruled out the two alternatives considered (a
+  caller-supplied `AgentId`, which converts a conway-enforced invariant --
+  subtree permission scoping resolves entirely by comparing agent ids -- into
+  a caller obligation with a silent collision failure mode; and a
+  prepare/launch split, which forces two surfaces for one operation) in favor
+  of an opaque tag conway never reads. `tag: Option<String>` threads
+  unread from `SubagentSpec` (`conway-core`) through `AgentSpec`
+  (`conway-runtime`'s `SubagentHost::start`) onto every `ContextHookCtx` for
+  that agent's turns -- **conway's first genuinely uninterpreted consumer
+  field**: unlike `role` (a routing input) or `ask_origin` (branched on to
+  gate `result_contract` attachment), nothing in the runtime ever matches,
+  compares, or branches on `tag` -- grep-verified against every read site
+  (three: `agent_loop.rs`'s two `ContextHookCtx` constructions and
+  `subagent.rs`'s `AgentSpec` construction, all plain `.clone()`). Proven,
+  not merely asserted: a tag containing control characters/multi-byte/non-BMP
+  content, an empty string, and a 100,000-character string all round-trip
+  byte-for-byte unchanged, and two agents differing ONLY in their tag are
+  shown to take identical routing, context-assembly, budget, and logging
+  paths (`crates/conway-runtime/tests/subagent_fork_spawn.rs`'s
+  `two_agents_differing_only_in_tag_take_identical_routing_context_and_logging_paths`).
+  **Scoped to `ContextHookCtx` only** -- the spec's "ideally
+  `PermissionRequest` too" is left as a follow-on, since nothing forces it
+  yet and it would require threading through an additional type.
+  **Required on `AgentSpec`/`ContextHookCtx`, `#[serde(default)]` on
+  `SubagentSpec`:** `SubagentSpec` is `Serialize`/`Deserialize` (a genuine
+  backward-compatibility case, alongside `cwd`/`root`), so a spec serialized
+  before this field existed still deserializes as `None`; `AgentSpec` and
+  `ContextHookCtx` are neither, so -- matching board item
+  01KZQHZH8RXVR38JJX9AY4VSW4's `agent_path` precedent -- there is no
+  serialization justification for a silent default there, and every
+  construction site (including every test fixture) states the field
+  explicitly. Not yet exposed on the facade's `ForkSpec`/`SpawnSpec`: an
+  embedder wanting a tag today constructs a `SubagentSpec` directly. Docs
+  updated to match: `docs/plugins/hooks.md` point 3's field table and a new
+  paragraph on what the field is for, plus the two hand-built
+  `ContextHookCtx` examples in `docs/plugins/authoring.md` and
+  `docs/plugins/cookbook.md`.
+  (`crates/conway-core/src/agent.rs`, `crates/conway-core/src/ports/plugin.rs`,
+  `crates/conway-runtime/src/agent_loop.rs`, `crates/conway-runtime/src/subagent.rs`,
+  `crates/conway-runtime/src/runtime.rs`, `crates/conway/src/subagent_spec.rs`,
+  `crates/conway/src/session_handle.rs`, `crates/conway/src/intent.rs`,
+  `crates/conway-tools/src/subagent/tools.rs`, `crates/conway-tools/src/subagent/ask.rs`,
+  `crates/conway-runtime/tests/subagent_fork_spawn.rs`,
+  `crates/conway-runtime/tests/ask.rs`, `crates/conway-runtime/tests/steering.rs`,
+  `crates/conway-runtime/tests/step_digest.rs`, `crates/conway-runtime/tests/report_only_agent.rs`,
+  `crates/conway-runtime/tests/result_contract.rs`, `crates/conway-runtime/tests/agent_loop_e2e.rs`,
+  `crates/conway/tests/plugin_surface.rs`, `docs/plugins/hooks.md`,
+  `docs/plugins/authoring.md`, `docs/plugins/cookbook.md`)
+
+- **A `[hooks]` config section that parses and validates -- forward
+  declaration, nothing dispatches yet** (board item
+  01KZRZW5CWMVQ0GPRT4GX4RV5G, child of the declarative-hooks umbrella
+  01KZDC0RDRMMMJHX7SAFMM2Q5A). `settings.json` now accepts a `[hooks]`
+  block: `HooksConfig { rules: Vec<HookEntry> }`, each rule an `id`
+  (required, non-empty, unique across the file -- `merge::validate`'s new
+  check), `event` (a bare string; the bare-vs-namespaced convention is a
+  sibling item's open decision, not this one's), `command` (an argv vector,
+  never a shell string, so config carries no shell-quoting ambiguity),
+  `timeout_ms` (default `5000`), and `enabled` (default `true`). Every new
+  struct carries `#[serde(deny_unknown_fields)]`, at both the container and
+  the entry level -- a typo'd key inside a rule (`"evnet"`, `"comand"`)
+  fails to parse exactly like a typo anywhere else in this file, not just a
+  typo'd top-level key. **GP-14: this is config only.** No dispatcher, no
+  process spawn, no event firing exists anywhere in the tree yet -- a rule
+  written today parses, validates, and then does nothing, which is stated
+  at every declaration site (`HooksConfig`, `HookEntry`, and the `hooks`
+  field on `ConwayConfig`), not only here. The default rule list is empty,
+  so an operator who never writes `[hooks]` sees no behavior change.
+  `enabled` defaulting to `true` does not repeat the `probe_enabled`
+  precedent GP-14 names: it only has any effect on a rule the operator
+  already hand-wrote, not on every config by default. Two later, separate
+  board items wire dispatch: `01KZRZY1MNM872BZ6AKEBG3SKE` (the script
+  runner that spawns `command` when `event` fires) and
+  `01KZS00JP5QNBJSSHNFP9C47GM` (`pre_tool_use` enforcement). Docs updated to
+  match: `docs/plugins/hooks.md` point 13's status row and its fail-closed
+  summary table row, and `docs/plugins/scripts.md`'s worked JSON example,
+  which previously sketched a different, now-superseded shape
+  (`{"hooks":{"<event>":[{"match","run"}]}}` — nested per event, a single
+  shell string) corrected to the shipped one
+  (`{"hooks":{"rules":[{"id","event","command",...}]}}` — a flat, id'd rule
+  list, an argv vector). (`crates/conway/src/config/schema.rs`,
+  `crates/conway/src/config/merge.rs`, `crates/conway/tests/config_validation.rs`,
+  `crates/conway/tests/fixtures/config/hooks_*.json`, `docs/plugins/hooks.md`,
+  `docs/plugins/scripts.md`)
 
 - **`ArtifactWriteHandle::noop(agent_id)`: a `ContextHookCtx` fixture no
   longer requires hand-rolling an `ArtifactWriter`** (board item
@@ -1456,6 +1716,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mechanism end to end, not a real capability. `ConwayBuilder` gains a new
   `config()` accessor so a caller can read `plugins.install` before
   deciding which plugin to attach.
+
+### Removed
+
+- **BREAKING: the periodic health prober is retired, not wired — the
+  independent `Probe` circuit breaker it fed, and the four `[health]`
+  config keys that tuned it, are gone** (board item
+  01KZ802GSF692EKYKQ2TTVCJB8, "retire the health prober"). The operator
+  ruled on the deferred question this project had carried since the
+  prober was first labeled a forward declaration: `HealthProber`
+  (`conway-plugin-routing`) never had a production call site — no code in
+  `conway`, `conway-runtime`, or `conway-cli` ever spawned it — and it
+  fixed no correctness gap. A crashed endpoint recovering is already
+  detected without it: the Transport breaker's `HalfOpen` state derives
+  from the clock at read time (no background task needed), and the router
+  admits a half-open candidate exactly like a closed one, so the next real
+  request against a role naturally retries a recovered endpoint. What
+  probing bought was shaving one failed round trip off recovery latency
+  for a sparse-traffic role — an optimization, and this project gates
+  optimizations on a measured baseline that did not exist and was not
+  scheduled; waiting indefinitely for a number nobody would produce is how
+  "not now" becomes "never" without anyone deciding, so it was decided.
+  `BreakerKind::Probe`, `Observation::ProbeFail` (its only producer),
+  `EndpointBreakers.probe`, and `RoutingReason::HealthSkip`'s ability to
+  name a `Probe` breaker are all gone — `BreakerKind::Transport` is now the
+  only variant, and `BreakerRegistry::merged_state`/`snapshot` degenerate
+  to a direct passthrough of the one remaining breaker rather than leaving
+  a labeled-but-dead second arm beside a live one. `conway routes explain`
+  now only ever renders a `transport` breaker kind.
+  **Breaking:** `[health].probe_enabled`, `probe_interval_secs`,
+  `probe_timeout_secs`, and `probe_failures_to_open` no longer exist on
+  `conway_core::routing::HealthConfig` or its facade mirror
+  (`conway::config::schema::HealthSection`, which keeps
+  `#[serde(deny_unknown_fields)]`); a `settings.json` that previously
+  loaded while naming any of them under `[health]` now fails to load,
+  naming the offending key, rather than silently accepting and ignoring
+  it. `docs/routing.md`'s "Health and failover" section and
+  `ARCHITECTURE.md` now describe one breaker, not two.
+  (`crates/conway-plugin-routing/src/breaker.rs`,
+  `crates/conway-plugin-routing/src/lib.rs`,
+  `crates/conway-plugin-routing/src/config.rs`,
+  `crates/conway-plugin-routing/tests/router_resolution.rs`,
+  `crates/conway-core/src/routing.rs`,
+  `crates/conway/src/config/schema.rs`, `crates/conway/src/config/merge.rs`,
+  `crates/conway/tests/config_precedence.rs`,
+  `crates/conway-cli/src/commands/routes.rs`, `docs/routing.md`,
+  `ARCHITECTURE.md`, `.design/philosophy-debt.md`; deleted
+  `crates/conway-plugin-routing/src/prober.rs`)
 
 ## [0.8.0] — 2026-08-06
 

@@ -335,6 +335,11 @@ async fn start_and_maybe_await(
         // embedder-only for this first slice) -- inherit the parent's
         // root, unchanged, for both fork and spawn.
         root: None,
+        // (01KZQJ03ZQ22MPM9H2TW1350ZF) The consumer tag is an embedder-only
+        // correlation mechanism, same reasoning as `root` above: neither
+        // model-invoked tool has a tag argument in its schema, so a
+        // model-initiated fork/spawn never carries one.
+        tag: None,
     };
 
     let child = ctx.subagents.start(spec).await.map_err(ToolError::from)?;

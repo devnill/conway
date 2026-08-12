@@ -269,12 +269,16 @@ when the request is actually attempted, not skipped in advance.
 
 Capability matching (each candidate's declared `Capabilities` — context
 window, tool-calling support, reasoning — checked against the turn's
-requirements) and two independent circuit breakers per endpoint —
-**transport** (fed by connection failures) and **probe** (a background
-liveness/readiness check), because a slow-but-alive local server and a
-genuinely dead one are different states that should be handled differently
-— are what installing `conway-plugin-routing` (§2b) adds, not something a
-default build has. `[plugins].install = ["conway.routing"]` resolves
+requirements) and a circuit breaker per endpoint — **transport**, fed by
+connection failures — are what installing `conway-plugin-routing` (§2b)
+adds, not something a default build has. (A second, independent **probe**
+breaker fed by a periodic background liveness check used to be planned
+alongside it; it was retired rather than wired — board item
+`01KZ802GSF692EKYKQ2TTVCJB8` — because the transport breaker alone already
+detects a recovered endpoint on the next real request, so the prober would
+only have shaved latency off that one request, an optimization with no
+measured baseline to justify it.) `[plugins].install = ["conway.routing"]`
+resolves
 `RoutingRouterFactory` (`ROUTER_ID = "conway.routing"`) from
 `conway-cli`'s `router_bundle()`, which builds a `DeclarativeRouter` plus a
 real `BreakerRegistry` in `MinimalRouter`/`AlwaysClosedHealthRegistry`'s

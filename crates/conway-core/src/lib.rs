@@ -13,9 +13,11 @@ pub mod containment;
 pub mod content;
 pub mod error;
 pub mod event;
+pub mod event_name;
 #[cfg(feature = "fakes")]
 pub mod fakes;
 pub mod failure;
+pub mod hook;
 pub mod ids;
 pub mod log;
 pub mod permission_mode;

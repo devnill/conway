@@ -156,10 +156,8 @@ mod unix {
     use std::os::unix::process::ExitStatusExt;
     use std::process::{ExitStatus, Stdio};
 
-    use nix::sys::signal::{kill, Signal};
-    use nix::unistd::Pid;
     use tokio::io::{AsyncBufReadExt, BufReader};
-    use tokio::process::{Child, Command};
+    use tokio::process::Command;
     use tokio::time::{Duration, Instant};
 
     use conway_core::content::ContentBlock;
@@ -167,13 +165,13 @@ mod unix {
     use conway_core::event::Event;
     use conway_core::ports::{ToolCtx, ToolOutput};
 
+    use crate::process::unix::kill_group;
+
     use super::{BashArgs, TRUNCATION};
 
     /// How often the run loop wakes up (absent stdout/stderr/exit activity)
     /// to re-check cancellation and the deadline.
     const POLL_INTERVAL: Duration = Duration::from_millis(50);
-    /// Grace period between SIGTERM and SIGKILL when killing a group.
-    const TERM_GRACE: Duration = Duration::from_secs(2);
 
     enum Outcome {
         Completed(ExitStatus),
@@ -291,19 +289,6 @@ mod unix {
                     true,
                     Some(args.timeout_ms),
                 ))
-            }
-        }
-    }
-
-    /// SIGTERM the whole group, give it `TERM_GRACE` to exit, then SIGKILL
-    /// and wait again. Always reaps `child` (never leaves a zombie).
-    async fn kill_group(child: &mut Child, pgid: i32) -> Option<ExitStatus> {
-        let _ = kill(Pid::from_raw(-pgid), Signal::SIGTERM);
-        match tokio::time::timeout(TERM_GRACE, child.wait()).await {
-            Ok(Ok(status)) => Some(status),
-            _ => {
-                let _ = kill(Pid::from_raw(-pgid), Signal::SIGKILL);
-                child.wait().await.ok()
             }
         }
     }

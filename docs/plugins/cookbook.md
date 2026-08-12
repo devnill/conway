@@ -192,11 +192,13 @@ async fn oversized_tool_results_are_narrowed_and_spilled() {
     let agent_id = AgentId::new();
     let ctx = ContextHookCtx {
         agent_id,
+        agent_path: vec![agent_id],
         session_id: SessionId::new(),
         turn: 4,
         model: None,
         estimated_tokens: 20_000,
         artifacts: ArtifactWriteHandle::new(writer.clone(), agent_id),
+        tag: None,
     };
     let big = "x".repeat(5_000);
     let payload = ContextPayload {

@@ -212,6 +212,27 @@ pub enum LogRecord {
         ts: DateTime<Utc>,
         result: AgentResult,
     },
+    /// A CHILD's terminal `AgentResult`, recorded into the PARENT's own
+    /// log -- the durable half of the notification gap: a child already
+    /// delivers `AgentMessage::Result` to its parent's mailbox on finish
+    /// (`AgentLoop::finish`), but before this variant existed a parent that
+    /// never blocked on `AgentTree::await_result` for that specific child
+    /// had no way to learn of it. `mailbox::classify` produces this via
+    /// `DrainEffect::Persist` -- the same path `AgentMessage::Steer`
+    /// already takes to become `LogRecord::ParentSteer` -- so the parent
+    /// observes it through the ordinary next-turn re-read, with no new
+    /// primitive and `AgentTree::await_result`'s blocking path untouched.
+    ///
+    /// `prov` is always `Provenance::ChildResult { from }` (never
+    /// `Provenance::SystemNote` or anything parent-authored) so the
+    /// child's output is never misattributed as the parent's own (P-2).
+    #[serde(rename = "child_result")]
+    ChildResultRecord {
+        seq: LogSeq,
+        ts: DateTime<Utc>,
+        result: AgentResult,
+        prov: Provenance,
+    },
     #[serde(rename = "context_report")]
     ContextReportRecord {
         seq: LogSeq,
@@ -262,6 +283,7 @@ impl LogRecord {
             | LogRecord::ParentSteer { seq, .. }
             | LogRecord::SystemNote { seq, .. }
             | LogRecord::AgentResultRecord { seq, .. }
+            | LogRecord::ChildResultRecord { seq, .. }
             | LogRecord::ContextReportRecord { seq, .. }
             | LogRecord::ContextMask { seq, .. } => Some(*seq),
         }
@@ -278,6 +300,7 @@ impl LogRecord {
             LogRecord::ParentSteer { .. } => "parent_steer",
             LogRecord::SystemNote { .. } => "system_note",
             LogRecord::AgentResultRecord { .. } => "agent_result",
+            LogRecord::ChildResultRecord { .. } => "child_result",
             LogRecord::ContextReportRecord { .. } => "context_report",
             LogRecord::ContextMask { .. } => "context_mask",
         }
@@ -389,6 +412,20 @@ mod tests {
                     ),
                 },
                 "agent_result",
+            ),
+            (
+                LogRecord::ChildResultRecord {
+                    seq: LogSeq(9),
+                    ts: ts(),
+                    result: crate::agent::AgentResult::new(
+                        AgentId::new(),
+                        SessionId::new(),
+                        crate::agent::ResultStatus::Completed,
+                        "child done",
+                    ),
+                    prov: Provenance::ChildResult { from: AgentId::new() },
+                },
+                "child_result",
             ),
             (
                 LogRecord::ContextReportRecord {

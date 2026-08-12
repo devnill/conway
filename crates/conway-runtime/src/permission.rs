@@ -21,8 +21,9 @@ use conway_core::agent::{
 use conway_core::containment::{CanonicalRoot, Containment};
 use conway_core::content::ToolCategory;
 use conway_core::event::Event;
+use conway_core::hook::{HookEvent, HookInvocation, HookPermissionVerdict};
 use conway_core::ids::{AgentId, SessionId, ToolName};
-use conway_core::ports::{PathArgs, PermissionGate, RenderKind};
+use conway_core::ports::{HookRunner, PathArgs, PermissionGate, RenderKind};
 
 use crate::context::prefix::canonical_json_bytes;
 use crate::events::EventBus;
@@ -74,6 +75,25 @@ pub struct AuthorizedCall {
     /// so the metacharacter gate applies only when `rendered` could
     /// actually reach a shell.
     pub render_kind: RenderKind,
+}
+
+/// One `pre_tool_use` hook [`PermissionBroker::decide`] consults (board item
+/// 01KZS00JP5QNBJSSHNFP9C47GM). Installed via
+/// [`PermissionBroker::set_pre_tool_use_hooks`], translated by the facade
+/// from `[hooks].rules[]` entries whose `event == "pre_tool_use"` and
+/// `enabled` is `true` -- this crate has no dependency on `conway`'s config
+/// schema and so knows nothing of `HookEntry` itself (`no_forbidden_deps`);
+/// this is the narrow shape `decide()` actually needs, the same relationship
+/// [`AuthorizedCall`] already has to a full `ToolSpec`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PreToolUseHookSpec {
+    /// The rule's operator-chosen identity (`HookEntry::id`), folded into a
+    /// denial's rendered message so an operator sees WHICH hook refused the
+    /// call, not merely that one did -- mirroring `deny_matches`' own
+    /// `rule.describe()` in its rendered error.
+    pub id: String,
+    pub command: Vec<String>,
+    pub timeout_ms: u64,
 }
 
 /// This agent's confinement root (S3's `SessionMeta.root`/`SubagentSpec.
@@ -542,6 +562,20 @@ pub struct PermissionBroker {
     /// `remember_*_rule` companions take a [`Rule`] directly, for the
     /// structured form the flat syntax cannot express.
     prompt_patterns: RwLock<Vec<(Rule, Option<CanonicalRoot>, PatternOrigin)>>,
+    /// Board item 01KZS00JP5QNBJSSHNFP9C47GM: the injected `pre_tool_use`
+    /// hook dispatcher. `None` (the default, and every caller before this
+    /// field existed) means the hook-check step in `Self::decide` is a
+    /// byte-for-byte no-op -- see [`Self::set_hook_runner`]'s own doc for
+    /// the full "additive, not a new dependency" contract.
+    hook_runner: RwLock<Option<Arc<dyn HookRunner>>>,
+    /// Board item 01KZS00JP5QNBJSSHNFP9C47GM: the `[hooks].rules[]` entries
+    /// (already filtered to `event == "pre_tool_use" && enabled` by the
+    /// facade) `Self::decide`'s hook-check step consults, in installation
+    /// order. Empty (the default) is the same no-op as `hook_runner` being
+    /// `None` -- both must be populated for the step to do anything, and
+    /// either alone is inert by construction (see
+    /// [`Self::pre_tool_use_hook_denial`]).
+    pre_tool_use_hooks: RwLock<Vec<PreToolUseHookSpec>>,
 }
 
 impl PermissionBroker {
@@ -554,7 +588,37 @@ impl PermissionBroker {
             patterns: RwLock::new(Vec::new()),
             deny_patterns: RwLock::new(Vec::new()),
             prompt_patterns: RwLock::new(Vec::new()),
+            hook_runner: RwLock::new(None),
+            pre_tool_use_hooks: RwLock::new(Vec::new()),
         }
+    }
+
+    /// Injects (or clears, via `None`) the `pre_tool_use` hook dispatcher
+    /// every call to `Self::decide` consults at the deny tier -- board item
+    /// 01KZS00JP5QNBJSSHNFP9C47GM. Mirrors `Runtime::set_context_hook`'s own
+    /// post-construction-setter shape (`conway::ConwayBuilder::
+    /// with_hook_runner` is this method's own facade-level caller, via
+    /// `Runtime::set_hook_runner`): not called at all (the default) leaves
+    /// every existing `decide()` behavior byte-for-byte unchanged, since the
+    /// hook-check step short-circuits to "no opinion" the instant it finds
+    /// no runner installed, before it ever reads `pre_tool_use_hooks` or
+    /// performs any I/O.
+    pub fn set_hook_runner(&self, runner: Option<Arc<dyn HookRunner>>) {
+        *self.hook_runner.write().expect("hook runner lock poisoned") = runner;
+    }
+
+    /// Installs the `pre_tool_use` hook specs `Self::decide`'s hook-check
+    /// step consults, wholesale (replacing whatever was installed before) --
+    /// board item 01KZS00JP5QNBJSSHNFP9C47GM. The facade computes this list
+    /// once, from `[hooks].rules[]` filtered to `event == "pre_tool_use" &&
+    /// enabled`, before any session starts; not called at all (the default,
+    /// an empty list) is the identical no-op `Self::set_hook_runner(None)`
+    /// is, and either one alone is enough to keep the hook-check step inert.
+    pub fn set_pre_tool_use_hooks(&self, hooks: Vec<PreToolUseHookSpec>) {
+        *self
+            .pre_tool_use_hooks
+            .write()
+            .expect("pre_tool_use hooks lock poisoned") = hooks;
     }
 
     /// The current mode. Cheap enough to call per render -- the status
@@ -1138,22 +1202,137 @@ impl PermissionBroker {
             .map(|(rule, _, _)| rule.clone())
     }
 
+    /// The rendered denial, if any INSTALLED `pre_tool_use` hook refuses
+    /// this call -- board item 01KZS00JP5QNBJSSHNFP9C47GM, `Self::decide`'s
+    /// only caller (see that method's own doc for WHY this sits at the deny
+    /// tier).
+    ///
+    /// **Deny-only, not three-way (deny/prompt/no-opinion) -- decided, not
+    /// left open.** A hook that wants a human decision rather than an
+    /// outright refusal already has two existing ways to get one without
+    /// this method growing a second `must_reach_gate` source of its own: an
+    /// operator-installed `prompt` pattern rule (`Self::prompt_matches`,
+    /// above) for a call shape a plugin author can identify statically, or
+    /// the hook script itself simply choosing not to run in "blocking" mode.
+    /// `HookPermissionVerdict` (this method's own answer type) has no
+    /// `Prompt` variant for the identical reason `decide()`'s GP-13 bound
+    /// applies to this whole item: one narrowing-only chain step, a FIXED
+    /// amount of mechanism, not a variable one -- adding a second
+    /// `must_reach_gate` source here, with different provenance than
+    /// `prompt_matches`' own, is exactly the kind of branching growth that
+    /// bound exists to block, for a capability the pattern-rule mechanism
+    /// already covers.
+    ///
+    /// **Fail-closed inherits from the runner, not a second implementation
+    /// of it.** `HookRunner::run`'s `Err(HookFailure)` -- a missing script,
+    /// a timeout, or stdout that failed to parse as a [`conway_core::hook::
+    /// HookAnswer`] -- is treated as a denial by this method directly; there
+    /// is no separate "is this hook broken" check layered on top that could
+    /// disagree with the runner's own verdict.
+    ///
+    /// Every `RwLock` this reads is acquired, cloned out of, and released
+    /// BEFORE the only `.await` point below (`runner.run`) -- the same
+    /// never-hold-a-lock-across-an-await invariant `Self::decide`'s own doc
+    /// states for its cache lock.
+    async fn pre_tool_use_hook_denial(
+        &self,
+        ctx: &PermissionCtx,
+        call: &AuthorizedCall,
+    ) -> Option<String> {
+        let runner = self
+            .hook_runner
+            .read()
+            .expect("hook runner lock poisoned")
+            .clone()?;
+        let hooks = self
+            .pre_tool_use_hooks
+            .read()
+            .expect("pre_tool_use hooks lock poisoned")
+            .clone();
+        if hooks.is_empty() {
+            return None;
+        }
+
+        // Built once, reused for every configured hook: `AuthorizedCall`'s
+        // `tool`/`category`/`arguments`/`rendered` (this method's own board
+        // item's own "what to build" section) plus enough of `PermissionCtx`
+        // for a script to know who is asking and from where.
+        let payload = serde_json::json!({
+            "tool": call.tool.as_str(),
+            "category": call.category,
+            "arguments": call.arguments,
+            "rendered": call.rendered,
+            "agent_id": ctx.agent_id,
+            "agent_path": ctx.agent_path,
+            "session": ctx.session,
+            "cwd": ctx.cwd,
+        });
+
+        for hook in &hooks {
+            let invocation = HookInvocation {
+                command: hook.command.clone(),
+                timeout_ms: hook.timeout_ms,
+                event: HookEvent {
+                    name: "pre_tool_use".to_string(),
+                    payload: payload.clone(),
+                },
+            };
+            match runner.run(&invocation).await {
+                Ok(answer) => {
+                    if let HookPermissionVerdict::Deny { reason } = answer.permission {
+                        return Some(format!(
+                            "`{}` is denied by `pre_tool_use` hook `{}`: {reason}",
+                            call.tool.as_str(),
+                            hook.id
+                        ));
+                    }
+                    // `HookPermissionVerdict::NoOpinion`: this hook has
+                    // nothing to say -- consult the next one, if any.
+                }
+                Err(failure) => {
+                    return Some(format!(
+                        "`{}` is denied: `pre_tool_use` hook `{}` failed ({failure}) -- \
+                         fail-closed",
+                        call.tool.as_str(),
+                        hook.id
+                    ));
+                }
+            }
+        }
+        None
+    }
+
     /// Authorize one tool call, consulting the cache first and the gate on a
     /// miss.
     ///
-    /// Full ordering (board item 01KYTP1D3XWEZPW4AKPH54FNB3 added the
-    /// `prompt` step; every step before it is unchanged): root →
-    /// deny-pattern → plan-mode → **prompt-pattern** → cache →
-    /// pattern-allow → `AutoAllow` → gate. Each step before `gate` either
-    /// returns a decision outright (root denial, deny-pattern, plan-mode) or
-    /// narrows what the LATER steps in this list are even allowed to do
-    /// (root's `MustReachGate`, and now `prompt`, both set the
-    /// `must_reach_gate` accumulator, which skips cache/pattern-allow/
-    /// `AutoAllow` entirely and forces `gate.check`). Composition is
+    /// Full ordering (board item 01KZS00JP5QNBJSSHNFP9C47GM added the
+    /// **`pre_tool_use` hook** step; board item 01KYTP1D3XWEZPW4AKPH54FNB3
+    /// added `prompt`; every step before each addition is unchanged): root →
+    /// deny-pattern → **`pre_tool_use` hook** → plan-mode → prompt-pattern →
+    /// cache → pattern-allow → `AutoAllow` → gate. Each step before `gate`
+    /// either returns a decision outright (root denial, deny-pattern, the
+    /// hook step, plan-mode) or narrows what the LATER steps in this list
+    /// are even allowed to do (root's `MustReachGate`, and `prompt`, both
+    /// set the `must_reach_gate` accumulator, which skips cache/pattern-
+    /// allow/`AutoAllow` entirely and forces `gate.check`). Composition is
     /// most-restrictive-wins and registration order within a step (which
     /// `deny`/`prompt` rule matched first, which pattern grant was installed
-    /// first) never changes the outcome, only which single value is picked
-    /// to report.
+    /// first, which hook was consulted first) never changes the outcome,
+    /// only which single value is picked to report.
+    ///
+    /// **Why the hook step sits at the SAME tier as `deny_matches` --
+    /// immediately after it, above every allow path in this method,
+    /// including plan-mode.** A denying hook implemented downstream of
+    /// `gate.check` (or as a `PermissionGate` itself) would see only the
+    /// calls that reach the gate, and NONE resolved by the cache, a
+    /// pattern-allow rule, or `AutoAllow` mode -- it would evaporate
+    /// entirely under `AutoAllow`, which is exactly the mode with no human
+    /// already in the loop to catch what the hook exists to catch. Placing
+    /// the check here, returning `Deny` outright and unconditionally exactly
+    /// as `deny_matches` does two lines below in the source, makes that
+    /// evaporation structurally impossible: nothing after this point in
+    /// `decide()` can run for a call this step already denied, and no mode,
+    /// cache entry, or pattern grant is even consulted before it does.
     ///
     /// Emission sequence, strictly: `PermissionRequested` → (root denial, or
     /// plan-mode denial, or cache hit, or await the gate and insert a cache
@@ -1235,6 +1414,30 @@ impl PermissionBroker {
                     rule.describe()
                 ),
             };
+        }
+
+        // Board item 01KZS00JP5QNBJSSHNFP9C47GM: the `pre_tool_use` hook
+        // step. SAME TIER as `deny_matches` immediately above -- checked
+        // BEFORE the mode gate, the prompt-pattern step, the cache, pattern
+        // allows, and `AutoAllow` -- see this method's own doc for why. A
+        // denying hook beats every one of those, regardless of mode,
+        // regardless of `must_reach_gate`, for the identical
+        // most-restrictive-wins reason `deny_matches` already states. No
+        // hook here can ever produce `Allow`: `Self::pre_tool_use_hook_
+        // denial` returns `Some(..)` only for an explicit
+        // `HookPermissionVerdict::Deny` or a runner failure (fail-closed),
+        // never for `NoOpinion` -- and `HookPermissionVerdict` itself has no
+        // `Allow` variant for a future edit to accidentally start acting on
+        // (see that type's own doc).
+        if let Some(rendered_error) = self.pre_tool_use_hook_denial(ctx, call).await {
+            self.emit(
+                ctx,
+                Event::PermissionResolved {
+                    call_id: call.call_id.clone(),
+                    decision: PermissionDecisionKind::Denied,
+                },
+            );
+            return PermissionOutcome::Deny { rendered_error };
         }
 
         // V2 mode gate. Ordered deliberately: PLAN's denial is checked
@@ -1420,5 +1623,426 @@ impl PermissionBroker {
 
     fn emit(&self, ctx: &PermissionCtx, event: Event) {
         self.bus.emit(ctx.session, ctx.agent_id, event);
+    }
+}
+
+/// Board item 01KZS00JP5QNBJSSHNFP9C47GM: the `pre_tool_use` hook step's own
+/// tests. Inline (not `tests/permission_broker.rs`) so `cargo test -p
+/// conway-runtime permission::` -- this item's own verification anchor --
+/// finds them by module path.
+///
+/// The acceptance criteria this module proves, one test each: a denying
+/// hook is enforced under `AutoAllow` (the failure this item's whole
+/// placement analysis exists to prevent); the same beats a cached
+/// `AllowAlways` grant and a matching pattern-allow rule (the other two
+/// bypass paths a downstream-of-`gate.check` implementation would have
+/// missed); a missing/failing/malformed-output hook denies via the
+/// runner's own failure signal, not a second fail-closed implementation;
+/// with nothing installed, `decide()` is unchanged (proving this is
+/// additive); and no JSON shape a hook can send ever produces `Allow`.
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use async_trait::async_trait;
+
+    use conway_core::agent::PermissionRequest;
+    use conway_core::error::HookFailure;
+    use conway_core::hook::HookAnswer;
+    use conway_core::permission_pattern::{PatternOrigin, PatternRule};
+
+    use super::*;
+
+    /// A gate that records every call and always grants `AllowOnce` --
+    /// installed in every test below that is not itself testing the gate,
+    /// so a test asserting `call_count() == 0` is asserting the hook step
+    /// stopped the call from ever reaching it, not merely that this
+    /// particular double happened to deny.
+    struct RecordingGate {
+        calls: Mutex<u32>,
+    }
+
+    impl RecordingGate {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                calls: Mutex::new(0),
+            })
+        }
+
+        fn call_count(&self) -> u32 {
+            *self.calls.lock().unwrap()
+        }
+    }
+
+    #[async_trait]
+    impl PermissionGate for RecordingGate {
+        async fn check(&self, _req: PermissionRequest) -> PermissionDecision {
+            *self.calls.lock().unwrap() += 1;
+            PermissionDecision::AllowOnce
+        }
+    }
+
+    /// A gate that always grants `AllowAlways { scope: Session }` -- used
+    /// only by the cache-bypass test, to populate a real cache entry the
+    /// hook step must still beat.
+    struct AllowAlwaysGate;
+
+    #[async_trait]
+    impl PermissionGate for AllowAlwaysGate {
+        async fn check(&self, _req: PermissionRequest) -> PermissionDecision {
+            PermissionDecision::AllowAlways {
+                scope: PermissionScope::Session,
+            }
+        }
+    }
+
+    /// A `HookRunner` double that plays back one fixed answer (or failure)
+    /// for every call, recording how many times it was invoked. This is the
+    /// double every test in this module drives `Self::pre_tool_use_hook_
+    /// denial` through -- there is no real process spawn anywhere in this
+    /// module (that is `conway-tools`' `ProcessHookRunner`'s own test
+    /// suite's job).
+    struct ScriptedHookRunner {
+        result: Result<HookAnswer, HookFailure>,
+        calls: Mutex<u32>,
+    }
+
+    impl ScriptedHookRunner {
+        fn no_opinion() -> Arc<Self> {
+            Self::answer(HookAnswer::default())
+        }
+
+        fn deny(reason: &str) -> Arc<Self> {
+            Self::answer(HookAnswer {
+                permission: HookPermissionVerdict::Deny {
+                    reason: reason.to_string(),
+                },
+                ..HookAnswer::default()
+            })
+        }
+
+        fn answer(answer: HookAnswer) -> Arc<Self> {
+            Arc::new(Self {
+                result: Ok(answer),
+                calls: Mutex::new(0),
+            })
+        }
+
+        fn failing(failure: HookFailure) -> Arc<Self> {
+            Arc::new(Self {
+                result: Err(failure),
+                calls: Mutex::new(0),
+            })
+        }
+
+        fn call_count(&self) -> u32 {
+            *self.calls.lock().unwrap()
+        }
+    }
+
+    #[async_trait]
+    impl HookRunner for ScriptedHookRunner {
+        async fn run(&self, _invocation: &HookInvocation) -> Result<HookAnswer, HookFailure> {
+            *self.calls.lock().unwrap() += 1;
+            self.result.clone()
+        }
+    }
+
+    fn hook_spec(id: &str) -> PreToolUseHookSpec {
+        PreToolUseHookSpec {
+            id: id.to_string(),
+            command: vec!["/usr/bin/env".to_string(), "true".to_string()],
+            timeout_ms: 1_000,
+        }
+    }
+
+    fn test_ctx(agent_id: AgentId, session: SessionId) -> PermissionCtx {
+        PermissionCtx {
+            agent_id,
+            agent_path: vec![agent_id],
+            session,
+            cwd: PathBuf::from("/tmp"),
+            root: AgentRoot::Unconfined,
+        }
+    }
+
+    fn bash_call(call_id: &str, rendered: &str) -> AuthorizedCall {
+        AuthorizedCall {
+            call_id: call_id.into(),
+            tool: ToolName::new("bash"),
+            category: ToolCategory::Execute,
+            arguments: serde_json::json!({ "command": rendered }),
+            rendered: rendered.into(),
+            path_args: PathArgs::Unconfinable {
+                checkable: &["cwd"],
+            },
+            render_kind: RenderKind::ShellCommand,
+        }
+    }
+
+    /// **With no hook runner and no hooks installed, `decide()` is
+    /// unchanged.** The gate is consulted, allows, and nothing about the
+    /// new hook step is even reachable -- proving the step is a true no-op
+    /// absent configuration, the same claim `tests/permission_broker.rs`'s
+    /// full pre-existing suite (run unmodified) proves at the crate's own
+    /// integration-test layer.
+    #[tokio::test]
+    async fn decide_is_unchanged_when_no_hook_runner_is_installed() {
+        let gate = RecordingGate::new();
+        let broker = PermissionBroker::new(gate.clone(), EventBus::new(64));
+        let session = SessionId::new();
+        let agent = AgentId::new();
+        let ctx = test_ctx(agent, session);
+
+        let outcome = broker.decide(&ctx, &bash_call("c1", "git status")).await;
+
+        assert_eq!(outcome, PermissionOutcome::Allow);
+        assert_eq!(gate.call_count(), 1);
+    }
+
+    /// **The single most important test in this item.** `AutoAllow` mode
+    /// plus a denying `pre_tool_use` hook: the call is STILL denied, and
+    /// the operator's gate is never consulted -- the exact failure this
+    /// item's placement analysis exists to prevent. A hook implemented
+    /// downstream of `gate.check` would never even run under `AutoAllow`;
+    /// this asserts the opposite is true here.
+    #[tokio::test]
+    async fn denying_hook_blocks_the_call_even_in_autoallow_mode() {
+        let gate = RecordingGate::new();
+        let broker = PermissionBroker::new(gate.clone(), EventBus::new(64));
+        broker.set_mode(PermissionMode::AutoAllow);
+        let runner = ScriptedHookRunner::deny("touches a path this hook refuses");
+        broker.set_hook_runner(Some(runner.clone()));
+        broker.set_pre_tool_use_hooks(vec![hook_spec("guard")]);
+        let session = SessionId::new();
+        let agent = AgentId::new();
+        let ctx = test_ctx(agent, session);
+
+        let outcome = broker.decide(&ctx, &bash_call("c1", "rm -rf /")).await;
+
+        match outcome {
+            PermissionOutcome::Deny { rendered_error } => {
+                assert!(
+                    rendered_error.contains("guard"),
+                    "denial must name which hook refused: {rendered_error}"
+                );
+                assert!(
+                    rendered_error.contains("touches a path this hook refuses"),
+                    "denial must carry the hook's own reason: {rendered_error}"
+                );
+            }
+            PermissionOutcome::Allow => {
+                panic!("AutoAllow must not bypass a denying pre_tool_use hook")
+            }
+        }
+        assert_eq!(
+            gate.call_count(),
+            0,
+            "the operator's gate must never be consulted for a hook-denied call"
+        );
+        assert_eq!(runner.call_count(), 1);
+    }
+
+    /// **Bypass path 1 of 2: a cached `AllowAlways` grant.** A hook
+    /// installed AFTER a grant is already cached must still deny the next
+    /// identical call -- proving the hook step sits above the cache lookup,
+    /// not merely above the gate.
+    #[tokio::test]
+    async fn denying_hook_blocks_a_call_a_cached_allow_always_grant_would_otherwise_allow() {
+        let broker = PermissionBroker::new(Arc::new(AllowAlwaysGate), EventBus::new(64));
+        let session = SessionId::new();
+        let agent = AgentId::new();
+        let ctx = test_ctx(agent, session);
+
+        // First call: no hook installed yet -- the gate grants `AllowAlways`
+        // and the broker caches it.
+        let first = broker.decide(&ctx, &bash_call("c1", "git status")).await;
+        assert_eq!(first, PermissionOutcome::Allow);
+
+        // Install a denying hook only now, after the grant is cached.
+        let runner = ScriptedHookRunner::deny("blocked after the grant was cached");
+        broker.set_hook_runner(Some(runner.clone()));
+        broker.set_pre_tool_use_hooks(vec![hook_spec("guard")]);
+
+        // Second call: identical tool + arguments, which WOULD hit the
+        // cache built by the first call.
+        let second = broker.decide(&ctx, &bash_call("c2", "git status")).await;
+
+        match second {
+            PermissionOutcome::Deny { .. } => {}
+            PermissionOutcome::Allow => {
+                panic!("a denying pre_tool_use hook must beat a cached AllowAlways grant")
+            }
+        }
+        assert_eq!(runner.call_count(), 1);
+    }
+
+    /// **Bypass path 2 of 2: a matching pattern-allow rule.** A pattern
+    /// grant that would ordinarily spare the operator a prompt (and the
+    /// hook step's own gate check further down `decide()`) must not spare
+    /// it from a denying hook either.
+    #[tokio::test]
+    async fn denying_hook_blocks_a_call_a_matching_pattern_allow_rule_would_otherwise_allow() {
+        let gate = RecordingGate::new();
+        let broker = PermissionBroker::new(gate.clone(), EventBus::new(64));
+        let session = SessionId::new();
+        let agent = AgentId::new();
+        let ctx = test_ctx(agent, session);
+
+        broker.remember_pattern(
+            PatternRule::parse("bash:git status").expect("valid rule"),
+            PermissionScope::Session,
+            agent,
+            PatternOrigin::Interactive,
+        );
+        let runner = ScriptedHookRunner::deny("blocked despite a matching pattern");
+        broker.set_hook_runner(Some(runner.clone()));
+        broker.set_pre_tool_use_hooks(vec![hook_spec("guard")]);
+
+        let outcome = broker.decide(&ctx, &bash_call("c1", "git status")).await;
+
+        match outcome {
+            PermissionOutcome::Deny { .. } => {}
+            PermissionOutcome::Allow => {
+                panic!("a denying pre_tool_use hook must beat a matching pattern-allow rule")
+            }
+        }
+        assert_eq!(
+            gate.call_count(),
+            0,
+            "the operator's gate must never be consulted for a hook-denied call"
+        );
+        assert_eq!(runner.call_count(), 1);
+    }
+
+    /// **Fail-closed: a missing/unexecutable command.** The runner's own
+    /// `Spawn` failure denies the call -- not a second, weaker fail-closed
+    /// implementation layered on top of the runner's contract.
+    #[tokio::test]
+    async fn a_hook_that_fails_to_spawn_denies_the_call() {
+        let gate = RecordingGate::new();
+        let broker = PermissionBroker::new(gate.clone(), EventBus::new(64));
+        let runner = ScriptedHookRunner::failing(HookFailure::Spawn {
+            detail: "no such file or directory".to_string(),
+        });
+        broker.set_hook_runner(Some(runner.clone()));
+        broker.set_pre_tool_use_hooks(vec![hook_spec("guard")]);
+        let session = SessionId::new();
+        let agent = AgentId::new();
+        let ctx = test_ctx(agent, session);
+
+        let outcome = broker.decide(&ctx, &bash_call("c1", "git status")).await;
+
+        assert!(
+            matches!(outcome, PermissionOutcome::Deny { .. }),
+            "a hook that fails to spawn must deny, not silently proceed: {outcome:?}"
+        );
+        assert_eq!(gate.call_count(), 0);
+    }
+
+    /// **Fail-closed: a timed-out hook.** Same contract as the spawn
+    /// failure above, exercised against the runner's other named failure
+    /// mode.
+    #[tokio::test]
+    async fn a_hook_that_times_out_denies_the_call() {
+        let gate = RecordingGate::new();
+        let broker = PermissionBroker::new(gate.clone(), EventBus::new(64));
+        let runner = ScriptedHookRunner::failing(HookFailure::TimedOut { after_ms: 5_000 });
+        broker.set_hook_runner(Some(runner.clone()));
+        broker.set_pre_tool_use_hooks(vec![hook_spec("guard")]);
+        let session = SessionId::new();
+        let agent = AgentId::new();
+        let ctx = test_ctx(agent, session);
+
+        let outcome = broker.decide(&ctx, &bash_call("c1", "git status")).await;
+
+        assert!(
+            matches!(outcome, PermissionOutcome::Deny { .. }),
+            "a hook that times out must deny, not silently proceed: {outcome:?}"
+        );
+        assert_eq!(gate.call_count(), 0);
+    }
+
+    /// **Fail-closed: malformed stdout.** The runner reports this as
+    /// `HookFailure::UnparseableAnswer` (its own parse rule, exercised for
+    /// real in `conway-tools`' test suite); this test proves `decide()`
+    /// treats that failure signal as a denial exactly like every other one,
+    /// via the SAME code path (P-15: proven by the observable outcome, not
+    /// by asserting a config field defaulted).
+    #[tokio::test]
+    async fn a_hook_with_malformed_output_denies_the_call() {
+        let gate = RecordingGate::new();
+        let broker = PermissionBroker::new(gate.clone(), EventBus::new(64));
+        let runner = ScriptedHookRunner::failing(HookFailure::UnparseableAnswer {
+            detail: "not valid JSON".to_string(),
+        });
+        broker.set_hook_runner(Some(runner.clone()));
+        broker.set_pre_tool_use_hooks(vec![hook_spec("guard")]);
+        let session = SessionId::new();
+        let agent = AgentId::new();
+        let ctx = test_ctx(agent, session);
+
+        let outcome = broker.decide(&ctx, &bash_call("c1", "git status")).await;
+
+        assert!(
+            matches!(outcome, PermissionOutcome::Deny { .. }),
+            "a hook with malformed output must deny, not silently proceed: {outcome:?}"
+        );
+        assert_eq!(gate.call_count(), 0);
+    }
+
+    /// A hook with `NoOpinion` (the default answer) does not deny -- the
+    /// call proceeds through the rest of `decide()` exactly as if no hook
+    /// existed. Paired with the `Allow`-shaped-JSON test below, this shows
+    /// the FULL range of what an installed hook can do: nothing, or deny --
+    /// never grant.
+    #[tokio::test]
+    async fn a_hook_with_no_opinion_does_not_block_the_call() {
+        let gate = RecordingGate::new();
+        let broker = PermissionBroker::new(gate.clone(), EventBus::new(64));
+        let runner = ScriptedHookRunner::no_opinion();
+        broker.set_hook_runner(Some(runner.clone()));
+        broker.set_pre_tool_use_hooks(vec![hook_spec("guard")]);
+        let session = SessionId::new();
+        let agent = AgentId::new();
+        let ctx = test_ctx(agent, session);
+
+        let outcome = broker.decide(&ctx, &bash_call("c1", "git status")).await;
+
+        assert_eq!(outcome, PermissionOutcome::Allow);
+        assert_eq!(gate.call_count(), 1);
+        assert_eq!(runner.call_count(), 1);
+    }
+
+    /// **No hook answer can produce `Allow` on its own -- proven at the
+    /// wire boundary.** A stdout payload a hostile or buggy hook script
+    /// shaped to *look* like a grant (`{"permission":{"allow":true}}`) has
+    /// no `HookPermissionVerdict` variant to decode into: parsing
+    /// `HookAnswer` from it is a hard error (unlike `HookAnswer`'s OWN
+    /// unknown-key leniency -- see `conway_core::hook`'s
+    /// `an_unknown_replace_shaped_key_is_ignored...` test for the contrast
+    /// -- an externally-tagged enum's tag key must name a real variant),
+    /// which `conway_tools::hook_runner::ProcessHookRunner::parse_answer`
+    /// turns into `HookFailure::UnparseableAnswer` in production -- i.e.
+    /// fail-closed, the OPPOSITE of what such a script would need for this
+    /// to work (`a_hook_with_malformed_output_denies_the_call`, above,
+    /// proves `decide()`'s side of that fail-closed chain). Together with
+    /// `conway_core::hook`'s own type-level proof
+    /// (`no_json_shape_decodes_to_an_allow_because_no_allow_variant_exists`)
+    /// and `a_hook_with_no_opinion_does_not_block_the_call` above (the one
+    /// verdict a hook CAN produce that isn't a denial merely falls through
+    /// to the rest of `decide()`, never fabricating an `Allow` itself),
+    /// this closes the loop: no JSON a hook script can write, and no code
+    /// path in this broker, ever turns a hook's answer into a grant.
+    #[test]
+    fn an_allow_shaped_hook_answer_fails_to_parse_rather_than_decoding_to_anything() {
+        let result: Result<HookAnswer, _> = serde_json::from_value(serde_json::json!({
+            "permission": {"allow": true},
+        }));
+        assert!(
+            result.is_err(),
+            "an 'allow'-shaped permission payload must not parse as any HookPermissionVerdict \
+             variant"
+        );
     }
 }

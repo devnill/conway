@@ -266,6 +266,42 @@ pub struct SubagentSpec {
     /// unconfined behavior for every such spec.
     #[serde(default)]
     pub root: Option<PathBuf>,
+    /// Board item 01KZQJ03ZQ22MPM9H2TW1350ZF: an opaque identifier an
+    /// embedder attaches at creation to correlate this agent with its OWN
+    /// domain object (a file, a job, a node in its own tool) -- set here,
+    /// atomically with the spec that creates the agent, so there is nothing
+    /// to register after `SubagentHost::start` returns and therefore no
+    /// window in which the child's first turn can race a side table that
+    /// does not have the association yet.
+    ///
+    /// **conway never reads this field.** Decision 01KZT5EZD1RT6C3Q2MZPZ3NHAW
+    /// ruled out the two alternatives considered (a caller-supplied
+    /// `AgentId`, and a prepare/launch split) specifically because both
+    /// either hand a conway-enforced invariant to the caller or force two
+    /// surfaces for one operation. The tag is the shape that survives, and
+    /// the whole point of that shape is that it carries no meaning conway
+    /// acts on -- unlike [`Self::role`] (a routing input,
+    /// `conway_runtime::agent_loop`'s `policy.resolve(&spec.role)`) or
+    /// [`Self::ask_origin`] (branched on in `conway_runtime::subagent`'s
+    /// `start`, gating whether a `result_contract` may attach), which look
+    /// like precedent for "another opaque consumer field" but are not --
+    /// this is conway's first field of this kind, so the "never
+    /// interpreted" guarantee has to be established directly (kept out of
+    /// every match/branch/comparison the runtime performs) rather than by
+    /// imitating either.
+    ///
+    /// Threaded through, unread, by `conway_runtime::subagent::SubagentHost::
+    /// start` onto `AgentSpec::tag`, and from there onto every
+    /// `ContextHookCtx::tag` for that agent's turns -- see those fields' own
+    /// docs. `None` everywhere else, including via the `fork`/`spawn`
+    /// constructors below: this item scopes the surface to `ContextHookCtx`
+    /// only (`PermissionRequest` is a documented follow-on, not built here).
+    ///
+    /// `#[serde(default)]` (C-04): a `SubagentSpec` serialized before this
+    /// field existed still deserializes, as `None` -- no tag, exactly the
+    /// pre-existing behavior for every such spec.
+    #[serde(default)]
+    pub tag: Option<String>,
 }
 
 impl SubagentSpec {
@@ -298,6 +334,7 @@ impl SubagentSpec {
             ask_origin: None,
             cwd: None,
             root: None,
+            tag: None,
         }
     }
 
@@ -316,6 +353,7 @@ impl SubagentSpec {
             ask_origin: None,
             cwd: None,
             root: None,
+            tag: None,
         }
     }
 }
@@ -714,6 +752,7 @@ mod tests {
             ask_origin: None,
             cwd: None,
             root: None,
+            tag: None,
         };
         assert!(spec.validate().is_ok());
     }

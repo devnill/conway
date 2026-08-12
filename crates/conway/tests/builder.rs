@@ -6,8 +6,9 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use conway::config::schema::{
-    AgentsConfig, ConwayConfig, HealthSection, LimitsConfig, ModelsConfig, PermissionMode,
-    PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig, TuiSection,
+    AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
+    PermissionMode, PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig,
+    ToolsConfig, TuiSection,
 };
 use conway::config::schema::BackendEntry;
 use conway::{Conway, ConwayBuilder, ConwayError, SessionSpec};
@@ -131,6 +132,7 @@ fn base_config() -> ConwayConfig {
         tui: TuiSection::default(),
         tools: ToolsConfig::default(),
         plugins: PluginsConfig::default(),
+        hooks: HooksConfig::default(),
     }
 }
 

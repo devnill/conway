@@ -100,8 +100,9 @@ pub use conway_core::ports::{
 pub use conway_core::error::ConwayError as CoreConwayError;
 
 /// The GP-03 extension surface: every type a crate depending only on
-/// `conway` needs to implement [`Plugin`], [`Tool`], and [`ContextHook`]
-/// against the public API.
+/// `conway` needs to implement [`Plugin`], [`Tool`], [`ContextHook`], and
+/// (board item 01KZS00JP5QNBJSSHNFP9C47GM) [`HookRunner`] against the
+/// public API.
 ///
 /// WHY A MODULE, NOT FLAT ROOT RE-EXPORTS (F8 decide-and-state): the root
 /// is already a flat collection of session/config/routing domain types,
@@ -235,12 +236,21 @@ pub mod plugin {
         Artifact, ArtifactKind, ContentBlock, PermissionClass, Role, ToolCall, ToolCategory,
         ToolSpec, TruncationPolicy,
     };
-    pub use conway_core::error::{ArtifactWriteError, CwdError, SubagentError, ToolError};
+    pub use conway_core::error::{
+        ArtifactWriteError, CwdError, HookFailure, SubagentError, ToolError,
+    };
+    /// Board item 01KZS00JP5QNBJSSHNFP9C47GM: the domain types one
+    /// `HookRunner::run` invocation carries in and out -- `HookInvocation`
+    /// is the argument, `HookEvent` is its `event` field, and
+    /// `HookAnswer`/`HookPermissionVerdict` together are what a
+    /// `pre_tool_use` implementor returns (see `HookPermissionVerdict`'s
+    /// own doc for why it has no `Allow` variant).
+    pub use conway_core::hook::{HookAnswer, HookEvent, HookInvocation, HookPermissionVerdict};
     pub use conway_core::ids::ToolName;
     pub use conway_core::ports::{
         ArtifactWriteHandle, ArtifactWriter, CancellationToken, ContextHook, ContextHookCtx,
-        ContextPayload, OverflowInfo, PathArgs, Plugin, PluginConfig, PluginManifest, RenderKind,
-        Tool, ToolCtx, ToolOutput,
+        ContextPayload, HookRunner, OverflowInfo, PathArgs, Plugin, PluginConfig, PluginManifest,
+        RenderKind, Tool, ToolCtx, ToolOutput,
     };
     pub use conway_core::provenance::Provenance;
     pub use conway_core::segment::PromptSegment;

@@ -29,7 +29,7 @@ restructure the hierarchy — fork it, then narrow what you tell it to focus
 on via the directive; or spawn it and hand it exactly what it needs in the
 prompt — not to look for a third primitive that sits between fork and spawn.
 This is a deliberate design position, not a gap: see
-[`.design/whitepaper.md`](../.design/whitepaper.md) §4.1 for the reasoning.
+[`whitepaper.md`](whitepaper.md) §4.1 for the reasoning.
 
 ## Why the hierarchy exists
 
@@ -140,6 +140,22 @@ removed from `bash`. `conway_await` alone needs no approval — reading a
 result back carries no side effect. A model-invoked fork/spawn is always
 autonomous (`keep_alive: false`); interactive keep-alive children exist only
 on the TUI and embedder surfaces above.
+
+**A fan-out caller (`await: false`) is notified when a child finishes, even
+without ever calling `conway_await` on it.** A child's `AgentLoop::finish`
+always delivers its terminal result to its parent's mailbox; previously that
+delivery was only ever consumed by a caller that had actually blocked on
+that specific child's id via `conway_await`/`AgentTree::await_result` — a
+caller that started several children and never awaited any one of them by
+id had no way to learn any of them had finished. The parent's own very next
+turn now carries that completion automatically: a `Role::System` segment
+tagged `Provenance::ChildResult`, naming the child's `agent_id` and status
+and summarizing its result — the exact same turn-boundary mechanism
+`conway_steer` already uses to land a steer message, not a second, separate
+notification channel. This is purely additive: `conway_await` still blocks
+and resolves exactly as before, and the two paths never race — a child that
+was awaited is resolved by `conway_await`'s own return value; the mailbox
+notification is what covers every child that was not.
 
 `conway_cancel`'s `mode` defaults to `immediate`: it stops the target right
 away, without waiting for its current turn, and propagates to the whole
@@ -311,8 +327,10 @@ registry` (the schema set the model was told about, identified by hash),
 session and range), `fork directive`, `parent steer`, `tool result`,
 `system note` (runtime-authored, e.g.
 [repeated-step detection](sessions.md#repeated-step-notices) or a
-[result-contract](#result-contracts) violation), and `merged
-/ask` (a pulled-in ephemeral question). See
+[result-contract](#result-contracts) violation), `merged
+/ask` (a pulled-in ephemeral question), and `child result` (a fan-out
+child's terminal result, landed automatically on your next turn — see
+[the model tool call section above](#a-model-tool-call)). See
 [`interactive.md`](interactive.md) for the exact `/agents`/`/context` key
 bindings and panel layout, and [`sessions.md`](sessions.md) for
 `conway sessions tree`, the equivalent read over *persisted* sessions rather

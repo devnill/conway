@@ -328,8 +328,12 @@ fn half_open_and_closed_candidates_are_retained() {
     assert_eq!(routes[1].model, b.model);
 }
 
+/// The `Probe` breaker kind was retired (board item
+/// `01KZ802GSF692EKYKQ2TTVCJB8`, "retire the health prober"); `Transport`
+/// is now the only `BreakerKind` variant, so this only proves the one
+/// surviving kind renders correctly.
 #[test]
-fn transport_open_and_probe_open_report_the_expected_breaker_kind() {
+fn transport_open_reports_the_expected_breaker_kind() {
     let a = model_ref("anthropic", "claude-sonnet-4-6");
 
     let transport_open = Arc::new(FakeHealth::new());
@@ -349,27 +353,6 @@ fn transport_open_and_probe_open_report_the_expected_breaker_kind() {
     match err {
         RoutingError::NoCandidate { considered, .. } => {
             assert_eq!(considered[0].1, "health: Transport breaker open");
-        }
-        other => panic!("expected NoCandidate, got {other:?}"),
-    }
-
-    let probe_open = Arc::new(FakeHealth::new());
-    probe_open.set_state(
-        conway_core::ids::EndpointId::new(a.backend.as_str()),
-        BreakerState::Open {
-            until: "2026-07-21T00:00:00Z".parse().unwrap(),
-            kind: BreakerKind::Probe,
-        },
-    );
-    let router2 = router_from(
-        routing_config(vec![("planner", vec![a.clone()], None)], 4_096),
-        probe_open,
-        index_with(&[(a.clone(), caps(100_000))]),
-    );
-    let err2 = router2.resolve(&request("planner", 1_000)).unwrap_err();
-    match err2 {
-        RoutingError::NoCandidate { considered, .. } => {
-            assert_eq!(considered[0].1, "health: Probe breaker open");
         }
         other => panic!("expected NoCandidate, got {other:?}"),
     }

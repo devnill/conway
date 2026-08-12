@@ -116,6 +116,42 @@ pub enum ToolError {
     Internal { detail: String },
 }
 
+/// Why a [`crate::ports::HookRunner`] invocation failed (board item
+/// 01KZRZY1MNM872BZ6AKEBG3SKE). **Every** distinct cause -- a nonzero exit,
+/// a timeout, a missing/unexecutable command, or stdout that did not parse
+/// as a [`crate::hook::HookAnswer`] -- lands here, uniformly, as the ONE
+/// way this port reports failure: "fail-closed is the runner's job,"
+/// enforced at every invocation, never merely at config-load time (the
+/// trap this project has previously shipped the inverse of: a broken script
+/// silently read as "no hook registered" instead of "a hook that must
+/// fail").
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
+pub enum HookFailure {
+    /// The command ran and exited, but not with status 0. `code` is `None`
+    /// when the process was killed by a signal rather than exiting normally
+    /// (mirrors `std::process::ExitStatus::code`'s own `None` case).
+    #[error("hook command exited nonzero: {code:?}")]
+    NonzeroExit { code: Option<i32> },
+    /// The command did not finish within its configured timeout and was
+    /// killed (process-group SIGTERM, then SIGKILL after a grace period --
+    /// see the implementing crate's process-group module).
+    #[error("hook command timed out after {after_ms}ms")]
+    TimedOut { after_ms: u64 },
+    /// The command could not even be spawned: not found, not executable, or
+    /// any other OS-level spawn failure. Also covers a malformed
+    /// invocation this runner cannot even attempt (e.g. an empty `command`).
+    #[error("hook command failed to spawn: {detail}")]
+    Spawn { detail: String },
+    /// The command exited 0 within its deadline, but its stdout was not
+    /// valid JSON matching [`crate::hook::HookAnswer`]'s shape. A hook that
+    /// crashes AFTER producing a well-formed answer is not this variant --
+    /// only its exit status is; this is specifically "we cannot trust what
+    /// it said," not "it also failed to finish cleanly."
+    #[error("hook stdout did not parse as a hook answer: {detail}")]
+    UnparseableAnswer { detail: String },
+}
+
 /// Errors produced by [`crate::ports::CwdHandle::set`] (S1: the `cd`
 /// capability lands on `ToolCtx` as `chdir: CwdHandle`). `CwdHandle::current`
 /// deliberately has no error type at all -- see its own doc for why only the
@@ -668,6 +704,39 @@ mod tests {
             assert!(
                 rendered.contains(needle),
                 "missing {needle:?} in {rendered:?}"
+            );
+        }
+    }
+
+    // ---- HookFailure (board item 01KZRZY1MNM872BZ6AKEBG3SKE) ----
+
+    #[test]
+    fn hook_failure_variants_roundtrip_and_render() {
+        let cases: Vec<(HookFailure, &str)> = vec![
+            (HookFailure::NonzeroExit { code: Some(3) }, "3"),
+            (HookFailure::NonzeroExit { code: None }, "None"),
+            (HookFailure::TimedOut { after_ms: 5_000 }, "5000"),
+            (
+                HookFailure::Spawn {
+                    detail: "No such file or directory".into(),
+                },
+                "No such file or directory",
+            ),
+            (
+                HookFailure::UnparseableAnswer {
+                    detail: "expected value".into(),
+                },
+                "expected value",
+            ),
+        ];
+        for (err, needle) in cases {
+            let json = serde_json::to_string(&err).unwrap();
+            let back: HookFailure = serde_json::from_str(&json).unwrap();
+            assert_eq!(err, back);
+            assert!(
+                err.to_string().contains(needle),
+                "missing {needle:?} in {}",
+                err
             );
         }
     }

@@ -6,8 +6,6 @@
 #[path = "support/mod.rs"]
 mod support;
 
-use std::collections::HashMap;
-
 use conway::config::{load, CliOverrides, LoadOptions};
 
 #[test]
@@ -16,7 +14,7 @@ fn allowlist_mode_with_empty_allowed_tools_is_rejected() {
     let result = load(LoadOptions {
         cwd: dir,
         explicit_path: Some(support::fixtures_dir().join("allowlist_empty.json")),
-        env: HashMap::new(),
+        env: support::isolated_env(),
         cli_overrides: CliOverrides::default(),
         model_metadata_refresh: false,
     });
@@ -33,7 +31,7 @@ fn interval_fsync_with_zero_interval_ms_is_rejected() {
     let result = load(LoadOptions {
         cwd: dir,
         explicit_path: Some(support::fixtures_dir().join("fsync_interval_zero.json")),
-        env: HashMap::new(),
+        env: support::isolated_env(),
         cli_overrides: CliOverrides::default(),
         model_metadata_refresh: false,
     });
@@ -50,7 +48,7 @@ fn api_key_and_api_key_env_both_set_is_rejected() {
     let result = load(LoadOptions {
         cwd: dir,
         explicit_path: Some(support::fixtures_dir().join("api_key_both_set.json")),
-        env: HashMap::new(),
+        env: support::isolated_env(),
         cli_overrides: CliOverrides::default(),
         model_metadata_refresh: false,
     });
@@ -74,7 +72,7 @@ fn chain_entry_naming_unknown_backend_is_rejected() {
     let result = load(LoadOptions {
         cwd: dir,
         explicit_path: Some(support::fixtures_dir().join("chain_names_unknown_backend.json")),
-        env: HashMap::new(),
+        env: support::isolated_env(),
         cli_overrides: CliOverrides::default(),
         model_metadata_refresh: false,
     });
@@ -101,7 +99,7 @@ fn misspelled_well_known_backend_key_is_accepted_and_passed_through() {
     let outcome = load(LoadOptions {
         cwd: dir,
         explicit_path: Some(support::fixtures_dir().join("backend_typo_key.json")),
-        env: HashMap::new(),
+        env: support::isolated_env(),
         cli_overrides: CliOverrides::default(),
         model_metadata_refresh: false,
     })
@@ -125,6 +123,71 @@ fn misspelled_well_known_backend_key_is_accepted_and_passed_through() {
     );
 }
 
+/// `merge::validate`'s hooks check (board item 01KZDC0RDRMMMJHX7SAFMM2Q5A):
+/// an empty `id` on a `[hooks].rules[]` entry is a hard error, not a
+/// silently-accepted default -- `schema::HookEntry::id`'s own doc comment
+/// says why (`id` is load-bearing for the later operator-visibility item
+/// that lists rules individually and revokes one by name).
+#[test]
+fn hooks_rule_with_empty_id_is_rejected() {
+    let dir = support::unique_temp_dir("hooks-empty-id");
+    let result = load(LoadOptions {
+        cwd: dir,
+        explicit_path: Some(support::fixtures_dir().join("hooks_empty_id.json")),
+        env: support::isolated_env(),
+        cli_overrides: CliOverrides::default(),
+        model_metadata_refresh: false,
+    });
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("hooks.rules") && err.contains("id"),
+        "error must name the empty-id requirement: {err}"
+    );
+}
+
+/// Sibling of `hooks_rule_with_empty_id_is_rejected`: two rules sharing the
+/// same `id` are rejected, naming the duplicated id.
+#[test]
+fn hooks_rules_with_duplicate_id_are_rejected() {
+    let dir = support::unique_temp_dir("hooks-duplicate-id");
+    let result = load(LoadOptions {
+        cwd: dir,
+        explicit_path: Some(support::fixtures_dir().join("hooks_duplicate_id.json")),
+        env: support::isolated_env(),
+        cli_overrides: CliOverrides::default(),
+        model_metadata_refresh: false,
+    });
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("duplicate") && err.contains("audit"),
+        "error must name the duplicated id: {err}"
+    );
+}
+
+/// A well-formed `[hooks]` block loads through the full five-source `load`
+/// path (not just a bare `serde_json::from_str`), and no process is spawned
+/// as a result -- this item ships config parsing only (board item
+/// 01KZDC0RDRMMMJHX7SAFMM2Q5A's forward-declaration scope).
+#[test]
+fn well_formed_hooks_block_loads_through_the_full_load_path() {
+    let dir = support::unique_temp_dir("hooks-well-formed");
+    let outcome = load(LoadOptions {
+        cwd: dir,
+        explicit_path: Some(support::fixtures_dir().join("hooks_well_formed.json")),
+        env: support::isolated_env(),
+        cli_overrides: CliOverrides::default(),
+        model_metadata_refresh: false,
+    })
+    .expect("a well-formed [hooks] block must load");
+
+    assert_eq!(outcome.config.hooks.rules.len(), 1);
+    let rule = &outcome.config.hooks.rules[0];
+    assert_eq!(rule.id, "audit-bash");
+    assert_eq!(rule.event, "pre_tool_use");
+    assert_eq!(rule.timeout_ms, 3000);
+    assert!(rule.enabled);
+}
+
 /// The Kimi coding-plan config block published in
 /// `docs/providers.md` must actually load. A copy-pasteable
 /// example that does not parse is worse than no example, and this is the
@@ -139,7 +202,7 @@ fn documented_kimi_coding_plan_config_loads() {
     let outcome = load(LoadOptions {
         cwd: dir,
         explicit_path: Some(support::fixtures_dir().join("kimi_coding_plan.json")),
-        env: HashMap::new(),
+        env: support::isolated_env(),
         cli_overrides: CliOverrides::default(),
         model_metadata_refresh: false,
     })
