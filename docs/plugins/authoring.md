@@ -124,13 +124,17 @@ use conway::plugin::{ArtifactWriteHandle, ContextHookCtx, ContextPayload};
 #[tokio::test]
 async fn my_first_hook_appends_its_marker() {
     let hook = MyFirstHook;
+    let agent_id = conway::AgentId::new();
     let ctx = ContextHookCtx {
-        agent_id: conway::AgentId::new(),
+        agent_id,
+        // Root-first, self-inclusive -- a root agent's own path is just
+        // itself.
+        agent_path: vec![agent_id],
         session_id: conway::SessionId::new(),
         turn: 0,
         model: None,
         estimated_tokens: 0,
-        artifacts: ArtifactWriteHandle::noop(conway::AgentId::new()),
+        artifacts: ArtifactWriteHandle::noop(agent_id),
     };
     let payload = ContextPayload { segments: vec![], tools: vec![] };
 

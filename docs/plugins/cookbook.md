@@ -192,6 +192,7 @@ async fn oversized_tool_results_are_narrowed_and_spilled() {
     let agent_id = AgentId::new();
     let ctx = ContextHookCtx {
         agent_id,
+        agent_path: vec![agent_id],
         session_id: SessionId::new(),
         turn: 4,
         model: None,

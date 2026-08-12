@@ -383,8 +383,10 @@ async fn authored_hook_transforms_payloads() {
     let writer = Arc::new(RecordingArtifactWriter {
         last_write: std::sync::Mutex::new(None),
     });
+    let agent_id = AgentId::new();
     let ctx = ContextHookCtx {
-        agent_id: AgentId::new(),
+        agent_id,
+        agent_path: vec![agent_id],
         session_id: SessionId::new(),
         turn: 0,
         model: None,

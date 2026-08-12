@@ -59,6 +59,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`ContextHookCtx` now carries `agent_path`, the same root-first,
+  self-inclusive ancestry chain `PermissionRequest.agent_path` already
+  carried** (board item 01KZQHZH8RXVR38JJX9AY4VSW4). A registered
+  `ContextHook` was told *which* agent it was running for but not *where*
+  that agent sat in the tree — it could not behave differently for a
+  top-level agent than for one four levels down, even though the permission
+  side of the runtime has had exactly this information since `agent_path`
+  was added to `PermissionRequest`. Both `ContextHookCtx` construction sites
+  in `AgentLoop::run_inner` now set `agent_path: self.agent_path.clone()` —
+  the SAME field `ToolBatchCtx`/`PermissionCtx` build `PermissionRequest.
+  agent_path` from, so the two ports cannot silently diverge. **Required,
+  not defaulted:** unlike `PermissionRequest`, `ContextHookCtx` is not
+  `Serialize`/`Deserialize` and has no wire format to stay compatible with,
+  so there is no serialization justification for a `#[serde(default)]`-style
+  silent empty vector, and a hook's whole reason to want this field is
+  telling a deep agent apart from a shallow one — a field that defaults to
+  `vec![]` would let a caller forget to plumb it and never notice. A test
+  fixture that needs one and doesn't care about depth can use
+  `vec![agent_id]` (a root agent's own path). **Breaking** for any
+  out-of-tree code constructing `ContextHookCtx` by field literal (every
+  hook *consuming* one — `_ctx: &ContextHookCtx` — needs no change; only a
+  test/fixture that builds the struct itself does). Docs updated to match:
+  `docs/plugins/hooks.md` point 3's field table and a new paragraph on what
+  the field is for, plus the two hand-built `ContextHookCtx` examples in
+  `docs/plugins/authoring.md` and `docs/plugins/cookbook.md`.
+  (`crates/conway-core/src/ports/plugin.rs`, `crates/conway-runtime/src/agent_loop.rs`,
+  `crates/conway/tests/plugin_surface.rs`, `crates/conway-runtime/tests/agent_loop_e2e.rs`,
+  `docs/plugins/hooks.md`, `docs/plugins/authoring.md`, `docs/plugins/cookbook.md`)
+
 - **A `[hooks]` config section that parses and validates -- forward
   declaration, nothing dispatches yet** (board item
   01KZRZW5CWMVQ0GPRT4GX4RV5G, child of the declarative-hooks umbrella

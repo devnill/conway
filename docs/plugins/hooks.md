@@ -91,7 +91,7 @@ could redirect — closing the exact cross-tree exfiltration shape board item
 | Field | Value |
 |---|---|
 | Kind | Participant |
-| Receives | `ContextHookCtx { agent_id, session_id, turn, model, estimated_tokens, artifacts }` and a `ContextPayload { segments: Vec<PromptSegment>, tools: Vec<ToolSpec> }` — the just-assembled request, before routing |
+| Receives | `ContextHookCtx { agent_id, agent_path, session_id, turn, model, estimated_tokens, artifacts }` and a `ContextPayload { segments: Vec<PromptSegment>, tools: Vec<ToolSpec> }` — the just-assembled request, before routing |
 | May return | An edited `ContextPayload` — see "The value-class boundary" below. Returning the payload unchanged is always valid; the trait's own doc states this explicitly |
 | On error | Not applicable at the trait level — `before_request` has no `Result` in its signature, so an implementation that wants to signal a failure can only do so by returning the payload unchanged or by panicking, and a panic here is not caught the way a tool's panic is (this call sits in `AgentLoop::run_inner`, not behind `ToolRunner`'s per-call `catch_unwind`) |
 | On timeout | No dedicated deadline. The call is awaited inside the agent's own turn, bounded only by `self.spec.budget.deadline` if the embedder set one (`AgentLoop::run_inner`'s `tokio::select!` against `route_attempt_fut`) — an agent with no configured deadline has no bound on this call at all |
@@ -113,6 +113,15 @@ hides a tool from announcement narrows what the model is offered, never what
 it is capable of calling if it names the tool anyway (that gate is
 `PermissionGate`, point 5 below, and the confinement root, neither of which
 consults `AgentSpec::tools`/`ContextPayload.tools` at execution time).
+
+**`ContextHookCtx.agent_path` tells a hook where in the tree it is running,
+not just who it is.** It is the root→this-agent chain, root first and
+including the agent's own id (a root agent's path is `vec![agent_id]`) — the
+identical shape and ordering as `PermissionRequest.agent_path` (point 5
+below), both populated from the same `AgentLoop::agent_path` field. A hook
+that wants to behave differently for a top-level agent than for a subagent
+four levels down reads `ctx.agent_path.len()` (or walks it directly) rather
+than needing a second, redundant lookup against the live tree.
 
 ### 4. Context overflow retry — `ContextHook::on_overflow`
 
