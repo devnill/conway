@@ -32,8 +32,9 @@ use conway_core::ids::{
 use conway_core::log::{LogRecord, SessionFilter, SessionMeta};
 use conway_core::ports::{
     Backend, BoxStream, ContextHook, ContextHookCtx, ContextPayload, GenerateRequest,
-    GenerateResponse, HealthRegistry, LiveOwner, PermissionGate, Plugin, PluginConfig,
-    PluginManifest, Router, SessionStore, StreamChunk, SubagentHost, Tool, ToolCtx, ToolOutput,
+    GenerateResponse, HealthRegistry, LiveOwner, OverflowInfo, PermissionGate, Plugin,
+    PluginConfig, PluginManifest, Router, SessionStore, StreamChunk, SubagentHost, Tool, ToolCtx,
+    ToolOutput,
 };
 use conway_core::provenance::Provenance;
 use conway_core::routing::{Route, RouteRequest, RoutingReason};
@@ -1643,5 +1644,225 @@ async fn context_hook_ctx_agent_path_distinguishes_depth_one_from_depth_four() {
         path4.len(),
         "a hook keyed on ctx.agent_path.len() must be able to tell a depth-1 agent \
          apart from a depth-4 one"
+    );
+}
+
+// ---------------------------------------------------------------------
+// Board item 01KZVD646PS4DGQV2S76VQ91X7: `ContextHookCtx` at the
+// `ContextHook::on_overflow` construction site (`agent_loop.rs`'s
+// `route_and_attempt`) was REACHED but never OBSERVED by any test --
+// unlike the `before_request` site above (01KZQJ03ZQ22MPM9H2TW1350ZF,
+// 01KZQHZH8RXVR38JJX9AY4VSW4). Measured, not assumed: stubbing `tag` at
+// that second construction site to `None` left the full `--all-features`
+// workspace suite green, 0 failed. `agent_path` and `artifacts` are built
+// from the identical field-literal pattern as `tag` at both sites, so one
+// test capturing the WHOLE `ContextHookCtx` an `on_overflow` call actually
+// received closes all three at once, rather than filing three items.
+// ---------------------------------------------------------------------
+
+/// A `Router` double that returns one SCRIPTED result per `resolve` call,
+/// in order -- unlike `CapturingRouter` above, which returns the same
+/// result every time. Needed to drive `AgentLoop::route_and_attempt`'s
+/// `ContextHook::on_overflow` retry loop: the first `resolve` must fail
+/// with `ContextTooLarge` (entering the overflow branch at all), and the
+/// second -- reached only after `on_overflow` hands back a payload to
+/// retry with -- must succeed, or the turn can never reach
+/// `ResultStatus::Completed` and nothing below would be exercising a real
+/// `on_overflow` call.
+struct SequencedRouter {
+    results: Mutex<VecDeque<Result<Vec<Route>, RoutingError>>>,
+}
+
+impl SequencedRouter {
+    fn new(results: Vec<Result<Vec<Route>, RoutingError>>) -> Self {
+        Self {
+            results: Mutex::new(results.into()),
+        }
+    }
+}
+
+impl Router for SequencedRouter {
+    fn resolve(&self, _req: &RouteRequest) -> Result<Vec<Route>, RoutingError> {
+        self.results.lock().unwrap().pop_front().expect(
+            "SequencedRouter script exhausted -- fixture called resolve() more times \
+             than scripted",
+        )
+    }
+}
+
+/// Records every `ContextHookCtx` a registered `ContextHook` sees at its
+/// two call sites SEPARATELY, so a test can assert on what `on_overflow`
+/// actually received without conflating it with the (already-guarded)
+/// `before_request` call earlier in the same turn. `on_overflow` passes
+/// `payload` through unchanged and returns `Some` -- observing, not
+/// transforming; returning `Some` (rather than the trait's default `None`)
+/// is what lets `route_and_attempt`'s retry loop reach a second
+/// `Router::resolve` call at all.
+struct RecordingOverflowHook {
+    before_request_calls: Mutex<Vec<ContextHookCtx>>,
+    overflow_calls: Mutex<Vec<ContextHookCtx>>,
+}
+
+impl RecordingOverflowHook {
+    fn new() -> Self {
+        Self {
+            before_request_calls: Mutex::new(Vec::new()),
+            overflow_calls: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn overflow_ctxs(&self) -> Vec<ContextHookCtx> {
+        self.overflow_calls.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl ContextHook for RecordingOverflowHook {
+    async fn before_request(
+        &self,
+        ctx: &ContextHookCtx,
+        payload: ContextPayload,
+    ) -> ContextPayload {
+        self.before_request_calls.lock().unwrap().push(ctx.clone());
+        payload
+    }
+
+    async fn on_overflow(
+        &self,
+        ctx: &ContextHookCtx,
+        payload: ContextPayload,
+        _overflow: OverflowInfo,
+    ) -> Option<ContextPayload> {
+        self.overflow_calls.lock().unwrap().push(ctx.clone());
+        Some(payload)
+    }
+}
+
+/// `ContextHookCtx` on the `on_overflow` call must carry the same
+/// `agent_path` and `tag` the `before_request` call sees, and a
+/// genuinely-working, agent-scoped `artifacts` handle -- proven by
+/// actually driving one turn into the overflow retry over a four-agent
+/// chain with a tagged spec, not by reading the two field-literal blocks
+/// in `agent_loop.rs` side by side and concluding they agree.
+#[tokio::test]
+async fn context_hook_ctx_at_on_overflow_carries_agent_path_tag_and_a_working_artifacts_handle() {
+    let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
+    let root = AgentId::new();
+    let mid1 = AgentId::new();
+    let mid2 = AgentId::new();
+    let leaf = AgentId::new();
+    let (session, _) = seed_prompt_for(&*store, leaf, "planner", "hello").await;
+
+    let backend = Arc::new(TrackingBackend::new("b", vec![text_response("done")]));
+
+    let model = ModelRef {
+        backend: BackendId::new("b"),
+        model: ModelId::new("m"),
+    };
+    // First `resolve`: rejected as too large, entering the overflow
+    // branch. Second `resolve` (after `on_overflow` hands back a payload
+    // to retry with): succeeds, so the turn actually completes.
+    let router = Arc::new(SequencedRouter::new(vec![
+        Err(RoutingError::ContextTooLarge {
+            role: RoleAlias::new("planner"),
+            model: model.clone(),
+            est_tokens: 30_000,
+            headroom_tokens: 4_000,
+            required_tokens: 34_000,
+            max_context_tokens: 32_768,
+            shortfall_tokens: 1_232,
+        }),
+        Ok(vec![make_route("b", "m")]),
+    ]));
+    let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
+    let hook = Arc::new(RecordingOverflowHook::new());
+
+    let mut harness = build_loop_with_ancestry_and_hook(
+        session,
+        leaf,
+        vec![root, mid1, mid2],
+        store,
+        router,
+        backend,
+        vec![],
+        gate,
+        Budget::default(),
+        HeadroomPolicy::default(),
+        "planner",
+        hook.clone(),
+    );
+    // `build_loop_with_ancestry_and_hook` has no `tag` parameter (no
+    // existing caller needs one) -- set it directly on the built spec,
+    // exactly as `SubagentSpec::tag` (01KZQJ03ZQ22MPM9H2TW1350ZF) is set on
+    // a real fork/spawn child before that child's first turn ever runs.
+    harness.agent_loop.spec.tag = Some("ticket-42".to_string());
+    // A real, writable confinement-free cwd for the `artifacts` assertion
+    // below -- `/tmp` literal (what `build_loop_inner` defaults to) would
+    // work too, but a fresh tempdir avoids any cross-test collision on the
+    // written file's name.
+    let tmp = tempfile::tempdir().unwrap();
+    harness.agent_loop.cwd = tmp.path().to_path_buf();
+
+    let result = harness.agent_loop.run().await;
+    assert_eq!(
+        result.status,
+        ResultStatus::Completed,
+        "the overflow retry must actually succeed on the second Router::resolve call, or \
+         nothing below is testing a real on_overflow ctx at all"
+    );
+
+    let calls = hook.overflow_ctxs();
+    assert_eq!(
+        calls.len(),
+        1,
+        "on_overflow must have fired exactly once for this fixture's single overflow"
+    );
+    let ctx = &calls[0];
+
+    let expected_path = vec![root, mid1, mid2, leaf];
+    assert_eq!(
+        ctx.agent_path, expected_path,
+        "ContextHookCtx::agent_path on the on_overflow call must be the same root-first, \
+         self-inclusive chain the before_request call sees -- not the pre-WI-126 default of \
+         just [agent_id]"
+    );
+    // A one-level tree can't distinguish a working copy from an empty
+    // vector (P-15) -- assert this fixture is genuinely depth-four.
+    assert_eq!(ctx.agent_path.len(), 4);
+
+    assert_eq!(
+        ctx.tag,
+        Some("ticket-42".to_string()),
+        "ContextHookCtx::tag on the on_overflow call must be the consumer's tag, not None -- \
+         this is the field board item 01KZVD646PS4DGQV2S76VQ91X7 was filed over"
+    );
+
+    assert_eq!(ctx.agent_id, leaf);
+    assert_eq!(ctx.session_id, session);
+    assert_eq!(
+        ctx.model,
+        Some(model),
+        "on_overflow's ctx.model must be the specific route that was found to overflow"
+    );
+
+    // `artifacts`: `ArtifactWriteHandle` has neither `PartialEq` nor an
+    // `agent_id` getter (by design -- see that type's own doc), so the
+    // only way to prove this is a REAL, working, agent-scoped handle
+    // (rather than e.g. a stray `ArtifactWriteHandle::noop` a future edit
+    // could substitute unnoticed) is to actually write through it and see
+    // the bytes land on disk.
+    let written = ctx
+        .artifacts
+        .write("overflow-hook-proof.txt", b"proof".to_vec())
+        .await
+        .expect("a working ArtifactWriteHandle must accept this write");
+    let on_disk = tokio::fs::read(&written).await.expect(
+        "the write must have actually landed on disk at the path ArtifactWriteHandle \
+         returned -- a stray ArtifactWriteHandle::noop reports success without writing \
+         anything, which this read would catch",
+    );
+    assert_eq!(
+        on_disk, b"proof",
+        "the bytes read back from disk must be exactly what was written"
     );
 }
