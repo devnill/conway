@@ -16,11 +16,19 @@
 //! - [`report`] — `report` (`ReportPlugin`)
 //!
 //! [`common`] holds the shared helper layer every tool builds on.
+//! [`process`] holds the process-group spawn/kill primitives [`shell`] and
+//! [`hook_runner`] both build on (P-14: one implementation).
+//! [`hook_runner`] is `conway_core::ports::HookRunner`'s one-shot exec
+//! implementation (board item 01KZRZY1MNM872BZ6AKEBG3SKE) -- not a
+//! `Plugin`/`Tool`, so it is not part of [`builtin_plugins`]; this item
+//! wires no event, so nothing constructs or injects it yet.
 //! [`builtin_plugins`] is the single registration entry point the facade
 //! consumes.
 
 pub mod common;
 pub mod fs;
+pub mod hook_runner;
+mod process;
 pub mod report;
 pub mod shell;
 pub mod subagent;
