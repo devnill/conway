@@ -89,17 +89,22 @@ pub struct ConwayConfig {
     #[serde(default)]
     pub plugins: PluginsConfig,
     /// `[hooks]` (board item 01KZDC0RDRMMMJHX7SAFMM2Q5A, "declarative
-    /// hooks"). **A `pre_tool_use` rule is dispatched ONLY IF an embedder
-    /// injected a runner via `ConwayBuilder::with_hook_runner` (board item
-    /// 01KZS00JP5QNBJSSHNFP9C47GM); every other `event` is still parsed and
-    /// validated only.** That precondition is stated here rather than only
-    /// in [`HooksConfig`] because this is the declaration site, and GP-14
-    /// treats a declaration site as ONE artifact: a reader who stops at this
-    /// field must not come away believing a rule they write here will run.
-    /// `conway-cli` does not inject a runner today (board item
-    /// 01KZVTTP492R3BDY33FAGYWDNW), so a `pre_tool_use` rule in a
-    /// `settings.json` driving the CLI still parses, validates, and is never
-    /// consulted. See [`HooksConfig`]'s own doc comment for the precise,
+    /// hooks"). **A `pre_tool_use` rule is dispatched ONLY IF a runner has
+    /// been injected -- either via `ConwayBuilder::with_hook_runner` (board
+    /// item 01KZS00JP5QNBJSSHNFP9C47GM) directly, or via
+    /// `ConwayBuilder::with_default_hook_runner`, the convenience that
+    /// supplies this workspace's own in-tree default; every other `event` is
+    /// still parsed and validated only.** That precondition is stated here
+    /// rather than only in [`HooksConfig`] because this is the declaration
+    /// site, and GP-14 treats a declaration site as ONE artifact: a reader
+    /// who stops at this field must not come away believing a rule they
+    /// write here will run. `conway-cli` DOES inject a runner (board item
+    /// 01KZVTTP492R3BDY33FAGYWDNW: `build_conway` calls `with_default_
+    /// hook_runner` unconditionally), so a `pre_tool_use` rule in a
+    /// `settings.json` driving the CLI fires. A third party that links this
+    /// crate directly, without calling either method itself, still gets
+    /// nothing -- the CLI's own choice to opt in is not inherited by every
+    /// embedder. See [`HooksConfig`]'s own doc comment for the precise,
     /// per-event disclosure of what runs today and what remains a forward
     /// declaration.
     #[serde(default)]
@@ -878,10 +883,23 @@ pub struct ThemeStyleConfig {
 ///   `with_context_hook`: not called at all is the default) is what
 ///   supplies one -- `conway-runtime` never constructs one itself (decision
 ///   01KZT642CEZ20K92DYWBTPE2XZ: it must not depend on `conway-tools` to
-///   reach one). A `pre_tool_use` rule declared here with no runner ever
-///   injected parses, validates, and is silently never consulted --
-///   exactly the same gap this doc used to disclose for the whole section,
-///   now narrowed to this one precondition.
+///   reach one).
+///
+///   **`conway-cli` supplies one.** Board item 01KZVTTP492R3BDY33FAGYWDNW:
+///   `build_conway` calls `ConwayBuilder::with_default_hook_runner` (a
+///   convenience over `with_hook_runner` that constructs this workspace's
+///   own `conway_tools::hook_runner::ProcessHookRunner`) unconditionally, so
+///   a `pre_tool_use` rule written in a real `settings.json` and driven
+///   through the CLI actually fires. **A third party embedding this crate
+///   directly gets none of that automatically** -- the CLI's choice to call
+///   `with_default_hook_runner` is that binary's own opt-in, not a default
+///   this crate applies on a caller's behalf; an embedder must call
+///   `with_hook_runner` or `with_default_hook_runner` itself, exactly like
+///   every other optional port on `ConwayBuilder`. A `pre_tool_use` rule
+///   declared here with no runner ever injected (the embedder case) still
+///   parses, validates, and is silently never consulted -- exactly the same
+///   gap this doc used to disclose for the whole section, now narrowed to
+///   that one precondition.
 /// - **Every OTHER `event` value: still forward-declared, unchanged.**
 ///   Nothing in this crate, or anywhere else in the tree, spawns a process,
 ///   dispatches an event, or otherwise acts on a rule whose `event` is not
@@ -995,9 +1013,12 @@ pub struct HookEntry {
     /// rule list is empty (see [`HooksConfig`]'s own doc) -- so there is no
     /// rule for `enabled` to apply to until the operator deliberately
     /// creates one. `enabled: true` on a rule an operator just wrote
-    /// asserts nothing about whether a runner exists (`ConwayBuilder::
-    /// with_hook_runner` may still not have been called -- see
-    /// [`HooksConfig`]'s own doc for that precondition); it only says
+    /// asserts nothing about whether a runner exists (neither
+    /// `ConwayBuilder::with_hook_runner` nor `with_default_hook_runner` may
+    /// have been called -- true for a direct embedder of this crate, though
+    /// no longer true for `conway-cli` itself, which now calls the latter
+    /// unconditionally; see [`HooksConfig`]'s own doc for that precondition
+    /// in full); it only says
     /// "don't treat the rule I just wrote as disabled", ordinary
     /// boolean-flag convention. `enabled: false` on a `pre_tool_use` rule
     /// is now genuinely load-bearing: `ConwayBuilder::build`'s filter into

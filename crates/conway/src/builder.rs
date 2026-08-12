@@ -521,6 +521,43 @@ impl ConwayBuilder {
         self
     }
 
+    /// Convenience wrapper around [`Self::with_hook_runner`] that supplies
+    /// this workspace's own in-tree default -- `conway_tools::hook_runner::
+    /// ProcessHookRunner` -- rather than requiring every caller to name and
+    /// construct that type itself (board item 01KZVTTP492R3BDY33FAGYWDNW).
+    ///
+    /// **Not a second injection mechanism.** This method does nothing
+    /// `with_hook_runner` could not already do; it just fills in the one
+    /// argument a caller wanting the shipped default would otherwise repeat
+    /// verbatim everywhere. Contrast the general port itself, which stays
+    /// exactly as general as before: a third party wanting its OWN
+    /// `HookRunner` still calls `with_hook_runner` directly, on the
+    /// identical surface a built-in uses (GP-03/P-6) -- this method is not
+    /// where that capability lives, and the two are deliberately kept
+    /// separate rather than collapsed into one (calling this method twice,
+    /// or this method then `with_hook_runner`, behaves exactly like calling
+    /// `with_hook_runner` twice: last write wins, no special-casing here).
+    ///
+    /// Gated on the `builtin-tools` feature, mirroring `crate::presets`'
+    /// own built-in-plugin methods: with that feature disabled, this crate
+    /// has no `conway-tools` dependency to construct a `ProcessHookRunner`
+    /// from, so this method does not exist rather than existing and
+    /// panicking or silently no-opping.
+    ///
+    /// `conway-cli`'s `build_conway` is the intended caller (board item
+    /// 01KZVTTP492R3BDY33FAGYWDNW): the CLI itself never depends on
+    /// `conway-tools` directly (`crates/conway-cli/tests/cli_surface.rs::
+    /// no_forbidden_deps` forbids that edge outright), so this facade
+    /// method is what lets the CLI obtain the workspace's default runner
+    /// without naming `conway-tools` at all -- the same shape
+    /// `presets::builtin_plugins` already establishes for built-in tool
+    /// plugins (this file's own `build()`, around the `builtin-tools` cfg
+    /// block for `resolved_plugins`).
+    #[cfg(feature = "builtin-tools")]
+    pub fn with_default_hook_runner(self) -> Self {
+        self.with_hook_runner(Arc::new(conway_tools::hook_runner::ProcessHookRunner::new()))
+    }
+
     /// Overrides which built-in plugins `build()` auto-registers (board
     /// item: bash ships on by default and cannot be declined). See
     /// [`PluginSelection`]'s own doc for why this is a generic, id-keyed
