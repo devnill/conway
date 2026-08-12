@@ -36,6 +36,7 @@ mod artifact;
 mod backend;
 mod capability_index;
 mod events;
+mod hook_runner;
 mod permission;
 mod plugin;
 mod routing;
@@ -46,6 +47,7 @@ pub use artifact::*;
 pub use backend::*;
 pub use capability_index::*;
 pub use events::*;
+pub use hook_runner::*;
 pub use permission::*;
 pub use plugin::*;
 pub use routing::*;
@@ -74,6 +76,7 @@ mod tests {
         _: &dyn RouterFactory,
         _: &dyn ArtifactWriter,
         _: &dyn BackendFactory,
+        _: &dyn HookRunner,
     ) {
     }
 }
