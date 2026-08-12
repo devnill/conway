@@ -159,11 +159,14 @@ impl ResultBuilder {
     }
 }
 
-/// A short, human-readable name for a `ResultStatus`, used only to build the
-/// non-empty fallback summary in [`ResultBuilder::from_trailing_text`].
-/// `ResultStatus` is `#[non_exhaustive]`; the wildcard arm is forward
-/// compatibility, not a modeled case.
-fn status_label(status: &ResultStatus) -> &'static str {
+/// A short, human-readable name for a `ResultStatus`. Originally used only
+/// to build the non-empty fallback summary in
+/// [`ResultBuilder::from_trailing_text`]; `pub(crate)` since
+/// `context::builder`'s `own_segment` also needs it to render a
+/// `LogRecord::ChildResultRecord`'s status into the segment text a parent's
+/// next turn actually sees. `ResultStatus` is `#[non_exhaustive]`; the
+/// wildcard arm is forward compatibility, not a modeled case.
+pub(crate) fn status_label(status: &ResultStatus) -> &'static str {
     match status {
         ResultStatus::Completed => "completed",
         ResultStatus::Failed { .. } => "failed",

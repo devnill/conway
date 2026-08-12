@@ -97,8 +97,8 @@ impl From<&Provenance> for SegmentKind {
     /// Mirrors the architecture §5.3 fixed segment order: `[0] AgentDef ->
     /// SystemPrompt`, `[1] Skill -> SkillFragment`, `[2] ToolRegistry ->
     /// ToolSchemas`, `[3] Inherited -> InheritedPrefix`, `[4]
-    /// ForkDirective|UserPrompt -> Directive`, `[5..] ParentSteer/ToolResult/
-    /// SystemNote -> Turn`.
+    /// ForkDirective|UserPrompt -> Directive`, `[5..]
+    /// ParentSteer/ToolResult/SystemNote/ChildResult -> Turn`.
     fn from(provenance: &Provenance) -> Self {
         match provenance {
             Provenance::AgentDef { .. } => SegmentKind::SystemPrompt,
@@ -110,9 +110,13 @@ impl From<&Provenance> for SegmentKind {
             // folded into the parent's log (B4) — same `[4]` slot as
             // `UserPrompt`/`ForkDirective`, not a model-turn artifact.
             Provenance::MergedAsk { .. } => SegmentKind::Directive,
+            // A child's terminal result, recorded into this agent's own
+            // `[5..]` volatile records by `mailbox::classify` -- same slot
+            // as a steer or a tool result, not a model-turn artifact either.
             Provenance::ParentSteer { .. }
             | Provenance::ToolResult { .. }
-            | Provenance::SystemNote { .. } => SegmentKind::Turn,
+            | Provenance::SystemNote { .. }
+            | Provenance::ChildResult { .. } => SegmentKind::Turn,
         }
     }
 }
@@ -215,6 +219,12 @@ mod tests {
         );
         assert_eq!(
             SegmentKind::from(&Provenance::SystemNote { reason: "x".into() }),
+            SegmentKind::Turn
+        );
+        assert_eq!(
+            SegmentKind::from(&Provenance::ChildResult {
+                from: crate::ids::AgentId::new()
+            }),
             SegmentKind::Turn
         );
     }

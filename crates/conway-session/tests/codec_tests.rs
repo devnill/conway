@@ -255,6 +255,18 @@ fn arb_agent_result_record() -> impl Strategy<Value = LogRecord> {
     })
 }
 
+fn arb_child_result_record() -> impl Strategy<Value = LogRecord> {
+    (arb_seq(), arb_text()).prop_map(|(seq, summary)| {
+        let from = AgentId::new();
+        LogRecord::ChildResultRecord {
+            seq,
+            ts: ts(),
+            result: AgentResult::new(from, SessionId::new(), ResultStatus::Completed, summary),
+            prov: Provenance::ChildResult { from },
+        }
+    })
+}
+
 fn arb_context_report_record() -> impl Strategy<Value = LogRecord> {
     (arb_seq(), any::<u32>(), any::<u32>()).prop_map(|(seq, turn, tokens_est)| {
         LogRecord::ContextReportRecord {
@@ -285,6 +297,7 @@ fn arb_log_record() -> impl Strategy<Value = LogRecord> {
         arb_parent_steer(),
         arb_system_note(),
         arb_agent_result_record(),
+        arb_child_result_record(),
         arb_context_report_record(),
     ]
 }

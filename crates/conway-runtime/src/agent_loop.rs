@@ -429,10 +429,13 @@ impl AgentLoop {
     /// caller immediately after this returns. A hard cancel was already
     /// handled at enqueue time (`MailboxSender::send`) and is a no-op here.
     /// `Progress` is emitted as `Event::AgentProgress` and never persisted.
-    /// `Result` is classified but drives no action here -- the real
-    /// resolution path for a `conway_fork`/`conway_spawn` waiter is
-    /// `AgentTree::await_result` (WI-083), not this mailbox; see
-    /// `mailbox.rs`'s module doc (cycle-2 review F-085 S2).
+    /// `Result` (board item 01KZQHY6RTMYR4BRDTMQFP9J9R) is persisted as
+    /// `LogRecord::ChildResultRecord`, the exact same `DrainEffect::Persist`
+    /// arm as `Steer` -- this is a NON-blocking notification path, entirely
+    /// separate from a `conway_fork`/`conway_spawn` waiter that blocked on
+    /// this specific child by id, which still resolves exclusively through
+    /// `AgentTree::await_result` (WI-083); see `mailbox.rs`'s module doc
+    /// (cycle-2 review F-085 S2, updated by 01KZQHY6RTMYR4BRDTMQFP9J9R).
     ///
     /// ## A mid-batch persist failure does not lose the rest of the batch
     ///
@@ -476,14 +479,6 @@ impl AgentLoop {
                     self.deps
                         .bus
                         .emit(self.session, self.agent_id, Event::AgentProgress { note });
-                }
-                mailbox::DrainEffect::Result { from, .. } => {
-                    tracing::trace!(
-                        agent = %self.agent_id,
-                        from = %from,
-                        "drained AgentMessage::Result: AgentTree::await_result (WI-083) is \
-                         the authoritative resolution path, no drain-time action taken"
-                    );
                 }
                 mailbox::DrainEffect::Unknown => {}
             }

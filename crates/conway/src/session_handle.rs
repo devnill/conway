@@ -1105,6 +1105,22 @@ fn record_to_event(record: &LogRecord) -> Option<(LogSeq, DateTime<Utc>, Event)>
                 ),
             },
         )),
+        // 01KZQHY6RTMYR4BRDTMQFP9J9R: a child's result recorded into this
+        // (the parent's) log -- same `AgentProgress` fallback shape as
+        // `ForkDirective`/`ParentSteer`/`ContextReportRecord` above, not a
+        // faithful `AgentFinished` (that event describes the RECORD-OWNING
+        // agent's own finish, and this record's owning agent is the
+        // parent, still running).
+        LogRecord::ChildResultRecord { seq, ts, result, .. } => Some((
+            *seq,
+            *ts,
+            Event::AgentProgress {
+                note: format!(
+                    "child {} finished: {}",
+                    result.agent_id, result.summary
+                ),
+            },
+        )),
         _ => None,
     }
 }

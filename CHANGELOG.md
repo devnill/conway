@@ -59,6 +59,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A parent that fans out several children (`await: false`) now observes
+  each child's completion on its own very next turn, without ever calling
+  `conway_await` on it** (board item 01KZQHY6RTMYR4BRDTMQFP9J9R). A child's
+  `AgentLoop::finish` has always delivered its terminal `AgentResult` to its
+  parent's mailbox, but before this item that delivery was consumed only by
+  a caller that had actually blocked on that specific child by id
+  (`AgentTree::await_result`); a parent that never did had no way to learn
+  any of its children had finished. `mailbox::classify` now maps a drained
+  `AgentMessage::Result` to `DrainEffect::Persist` — the exact same path
+  `AgentMessage::Steer` already takes to become `LogRecord::ParentSteer` —
+  producing a new `LogRecord::ChildResultRecord`. The parent's own next
+  `SessionStore::read` picks it up like any other own record, and
+  `context::builder`'s `own_segment` turns it into a `Role::System` segment
+  tagged with a new `Provenance::ChildResult { from }`, never anything that
+  would misattribute the child's output as the parent's own (P-2). No new
+  primitive, no public signature change, and `AgentTree::await_result`'s
+  blocking path is entirely untouched — this is purely an additional
+  non-blocking notification path. Docs updated to match:
+  [`docs/agents.md`](docs/agents.md#a-model-tool-call)'s `await` section and
+  provenance vocabulary list, and
+  [`docs/sessions.md`](docs/sessions.md#the-append-only-log)'s record-kind
+  table.
+  (`crates/conway-core/src/log.rs`, `crates/conway-core/src/provenance.rs`,
+  `crates/conway-core/src/segment.rs`, `crates/conway-runtime/src/mailbox.rs`,
+  `crates/conway-runtime/src/agent_loop.rs`,
+  `crates/conway-runtime/src/context/builder.rs`,
+  `crates/conway-runtime/src/result.rs`, `crates/conway/src/session_handle.rs`,
+  `crates/conway-cli/src/tui/commands.rs`,
+  `crates/conway-runtime/tests/steering.rs`,
+  `crates/conway-session/tests/store_tests.rs`,
+  `crates/conway-session/tests/codec_tests.rs`, `docs/agents.md`,
+  `docs/sessions.md`)
+
 - **`ContextHookCtx` now carries `agent_path`, the same root-first,
   self-inclusive ancestry chain `PermissionRequest.agent_path` already
   carried** (board item 01KZQHZH8RXVR38JJX9AY4VSW4). A registered

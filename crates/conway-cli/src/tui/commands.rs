@@ -1021,6 +1021,7 @@ fn provenance_label(p: &Provenance) -> String {
         Provenance::ToolResult { call_id, tool } => format!("tool result {tool} ({call_id})"),
         Provenance::SystemNote { reason } => format!("system note: {reason}"),
         Provenance::MergedAsk { from } => format!("merged /ask from {from}"),
+        Provenance::ChildResult { from } => format!("child result from {from}"),
         _ => "unknown provenance".to_string(),
     }
 }
