@@ -1612,6 +1612,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `config()` accessor so a caller can read `plugins.install` before
   deciding which plugin to attach.
 
+### Removed
+
+- **BREAKING: the periodic health prober is retired, not wired — the
+  independent `Probe` circuit breaker it fed, and the four `[health]`
+  config keys that tuned it, are gone** (board item
+  01KZ802GSF692EKYKQ2TTVCJB8, "retire the health prober"). The operator
+  ruled on the deferred question this project had carried since the
+  prober was first labeled a forward declaration: `HealthProber`
+  (`conway-plugin-routing`) never had a production call site — no code in
+  `conway`, `conway-runtime`, or `conway-cli` ever spawned it — and it
+  fixed no correctness gap. A crashed endpoint recovering is already
+  detected without it: the Transport breaker's `HalfOpen` state derives
+  from the clock at read time (no background task needed), and the router
+  admits a half-open candidate exactly like a closed one, so the next real
+  request against a role naturally retries a recovered endpoint. What
+  probing bought was shaving one failed round trip off recovery latency
+  for a sparse-traffic role — an optimization, and this project gates
+  optimizations on a measured baseline that did not exist and was not
+  scheduled; waiting indefinitely for a number nobody would produce is how
+  "not now" becomes "never" without anyone deciding, so it was decided.
+  `BreakerKind::Probe`, `Observation::ProbeFail` (its only producer),
+  `EndpointBreakers.probe`, and `RoutingReason::HealthSkip`'s ability to
+  name a `Probe` breaker are all gone — `BreakerKind::Transport` is now the
+  only variant, and `BreakerRegistry::merged_state`/`snapshot` degenerate
+  to a direct passthrough of the one remaining breaker rather than leaving
+  a labeled-but-dead second arm beside a live one. `conway routes explain`
+  now only ever renders a `transport` breaker kind.
+  **Breaking:** `[health].probe_enabled`, `probe_interval_secs`,
+  `probe_timeout_secs`, and `probe_failures_to_open` no longer exist on
+  `conway_core::routing::HealthConfig` or its facade mirror
+  (`conway::config::schema::HealthSection`, which keeps
+  `#[serde(deny_unknown_fields)]`); a `settings.json` that previously
+  loaded while naming any of them under `[health]` now fails to load,
+  naming the offending key, rather than silently accepting and ignoring
+  it. `docs/routing.md`'s "Health and failover" section and
+  `ARCHITECTURE.md` now describe one breaker, not two.
+  (`crates/conway-plugin-routing/src/breaker.rs`,
+  `crates/conway-plugin-routing/src/lib.rs`,
+  `crates/conway-plugin-routing/src/config.rs`,
+  `crates/conway-plugin-routing/tests/router_resolution.rs`,
+  `crates/conway-core/src/routing.rs`,
+  `crates/conway/src/config/schema.rs`, `crates/conway/src/config/merge.rs`,
+  `crates/conway/tests/config_precedence.rs`,
+  `crates/conway-cli/src/commands/routes.rs`, `docs/routing.md`,
+  `ARCHITECTURE.md`, `.design/philosophy-debt.md`; deleted
+  `crates/conway-plugin-routing/src/prober.rs`)
+
 ## [0.8.0] — 2026-08-06
 
 **Seven of the entries below are one piece of work.** A declaration audit

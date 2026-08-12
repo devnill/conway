@@ -1,8 +1,17 @@
-//! Dual per-endpoint circuit breakers (WI-033, Olla pattern): a `Transport`
-//! breaker fed by request-path failures and an independent `Probe` breaker
-//! fed by the health prober. All endpoint health *state* lives here; routing
-//! *policy* never mutates it — `state`/`kind_state` are read-only by
-//! construction (`&self`, read lock, expiry derived from the clock on read).
+//! A per-endpoint circuit breaker (WI-033, Olla pattern): a `Transport`
+//! breaker fed by request-path failures. All endpoint health *state* lives
+//! here; routing *policy* never mutates it — `state`/`kind_state` are
+//! read-only by construction (`&self`, read lock, expiry derived from the
+//! clock on read).
+//!
+//! **A second, independent `Probe` breaker fed by a periodic health prober
+//! used to live alongside this one; it was retired, not wired (board item
+//! `01KZ802GSF692EKYKQ2TTVCJB8`)** — the prober that would have fed it had
+//! no production call site, and the Transport breaker alone already handles
+//! recovery (a clock read takes it half-open; the next real request
+//! retries). `merged_state` below is a one-arm merge now, kept as its own
+//! method rather than inlined into `state` so a second breaker kind can be
+//! reintroduced later without re-deriving the merge policy from scratch.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -125,12 +134,11 @@ impl BreakerCell {
 #[derive(Debug, Default)]
 struct EndpointBreakers {
     transport: BreakerCell,
-    probe: BreakerCell,
     last_latency_ms: Option<u32>,
 }
 
-/// The workspace's `HealthRegistry` implementation: two independent
-/// breakers per endpoint, deterministic and clock-injectable.
+/// The workspace's `HealthRegistry` implementation: a per-endpoint breaker,
+/// deterministic and clock-injectable.
 pub struct BreakerRegistry {
     config: HealthConfig,
     clock: Arc<dyn Clock>,
@@ -167,7 +175,10 @@ impl BreakerRegistry {
     }
 
     /// One breaker's state, independently. Unknown endpoints read as
-    /// `Closed` without inserting an entry.
+    /// `Closed` without inserting an entry. `kind` is `#[non_exhaustive]`
+    /// from outside its defining crate, so the wildcard arm below is a real
+    /// compile-time requirement, not spare generality — it stays even
+    /// though `Transport` is the only variant that exists today.
     pub fn kind_state(&self, ep: &EndpointId, kind: BreakerKind) -> BreakerState {
         let now = self.clock.now();
         let endpoints = self.endpoints.read().expect("breaker lock");
@@ -175,55 +186,34 @@ impl BreakerRegistry {
             None => BreakerState::Closed,
             Some(cells) => match kind {
                 BreakerKind::Transport => cells.transport.state_at(now, BreakerKind::Transport),
-                BreakerKind::Probe => cells.probe.state_at(now, BreakerKind::Probe),
                 _ => BreakerState::Closed,
             },
         }
     }
 
-    /// Merged view: `Open` with the later `until` if either breaker is
-    /// open; else `HalfOpen` if either is half-open; else `Closed`.
+    /// Merged view. A single breaker remains (the `Probe` breaker was
+    /// retired — board item `01KZ802GSF692EKYKQ2TTVCJB8`), so this is now a
+    /// direct passthrough of the Transport breaker's own state.
     fn merged_state(&self, ep: &EndpointId) -> BreakerState {
-        let transport = self.kind_state(ep, BreakerKind::Transport);
-        let probe = self.kind_state(ep, BreakerKind::Probe);
-        match (transport, probe) {
-            (
-                BreakerState::Open {
-                    until: a, kind: ka, ..
-                },
-                BreakerState::Open { until: b, kind: kb },
-            ) => {
-                if a >= b {
-                    BreakerState::Open { until: a, kind: ka }
-                } else {
-                    BreakerState::Open { until: b, kind: kb }
-                }
-            }
-            (open @ BreakerState::Open { .. }, _) => open,
-            (_, open @ BreakerState::Open { .. }) => open,
-            (BreakerState::HalfOpen, _) | (_, BreakerState::HalfOpen) => BreakerState::HalfOpen,
-            _ => BreakerState::Closed,
-        }
+        self.kind_state(ep, BreakerKind::Transport)
     }
 
-    /// Deterministic snapshot for reporting: sorted by (endpoint, kind).
+    /// Deterministic snapshot for reporting: sorted by endpoint, one entry
+    /// per endpoint (a single breaker kind survives).
     pub fn snapshot(&self) -> Vec<(EndpointId, BreakerKind, BreakerState)> {
         let now = self.clock.now();
         let endpoints = self.endpoints.read().expect("breaker lock");
-        let mut out: Vec<(EndpointId, BreakerKind, BreakerState)> = Vec::new();
-        for (ep, cells) in endpoints.iter() {
-            out.push((
-                ep.clone(),
-                BreakerKind::Transport,
-                cells.transport.state_at(now, BreakerKind::Transport),
-            ));
-            out.push((
-                ep.clone(),
-                BreakerKind::Probe,
-                cells.probe.state_at(now, BreakerKind::Probe),
-            ));
-        }
-        out.sort_by(|a, b| (&a.0, breaker_kind_rank(a.1)).cmp(&(&b.0, breaker_kind_rank(b.1))));
+        let mut out: Vec<(EndpointId, BreakerKind, BreakerState)> = endpoints
+            .iter()
+            .map(|(ep, cells)| {
+                (
+                    ep.clone(),
+                    BreakerKind::Transport,
+                    cells.transport.state_at(now, BreakerKind::Transport),
+                )
+            })
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
         out
     }
 
@@ -250,14 +240,6 @@ impl BreakerRegistry {
     }
 }
 
-fn breaker_kind_rank(kind: BreakerKind) -> u8 {
-    match kind {
-        BreakerKind::Transport => 0,
-        BreakerKind::Probe => 1,
-        _ => 2,
-    }
-}
-
 impl HealthRegistry for BreakerRegistry {
     fn state(&self, ep: &EndpointId) -> BreakerState {
         self.merged_state(ep)
@@ -275,9 +257,6 @@ impl HealthRegistry for BreakerRegistry {
                 cells
                     .transport
                     .record_success(now, self.config.half_open_successes_to_close);
-                cells
-                    .probe
-                    .record_success(now, self.config.half_open_successes_to_close);
             }
             Observation::TransportError | Observation::ServerError => {
                 cells.transport.record_failure(
@@ -292,11 +271,6 @@ impl HealthRegistry for BreakerRegistry {
                         .map(|s| Duration::seconds(s as i64))
                         .unwrap_or(open_for);
                 cells.transport.force_open(until);
-            }
-            Observation::ProbeFail => {
-                cells
-                    .probe
-                    .record_failure(now, self.config.probe_failures_to_open, open_for);
             }
             _ => {}
         }
@@ -358,37 +332,13 @@ mod tests {
     }
 
     #[test]
-    fn breakers_are_fully_independent() {
-        let (registry, _) = fresh_registry();
-        let endpoint = ep("local");
-        for _ in 0..10 {
-            registry.record(&endpoint, Observation::ProbeFail);
-        }
-        assert_eq!(
-            registry.kind_state(&endpoint, BreakerKind::Transport),
-            BreakerState::Closed,
-            "probe failures never touch the transport breaker"
-        );
-        let (registry2, _clock2) = fresh_registry();
-        for _ in 0..10 {
-            registry2.record(&endpoint, Observation::TransportError);
-        }
-        assert_eq!(
-            registry2.kind_state(&endpoint, BreakerKind::Probe),
-            BreakerState::Closed,
-            "transport failures never touch the probe breaker"
-        );
-    }
-
-    #[test]
-    fn ok_resets_both_counters() {
+    fn ok_resets_the_counter() {
         let (registry, _) = fresh_registry();
         let endpoint = ep("local");
         registry.record(&endpoint, Observation::TransportError);
         registry.record(&endpoint, Observation::TransportError);
-        registry.record(&endpoint, Observation::ProbeFail);
         registry.record(&endpoint, Observation::Ok { latency_ms: 12 });
-        // Counters reset: two more transport failures stay Closed.
+        // Counter reset: two more transport failures stay Closed.
         registry.record(&endpoint, Observation::TransportError);
         registry.record(&endpoint, Observation::TransportError);
         assert_eq!(
@@ -399,7 +349,7 @@ mod tests {
     }
 
     #[test]
-    fn rate_limited_force_opens_without_counter_and_probe_untouched() {
+    fn rate_limited_force_opens_without_counter() {
         let (registry, _) = fresh_registry();
         let endpoint = ep("local");
         registry.record(
@@ -414,10 +364,6 @@ mod tests {
             }
             other => panic!("expected Open, got {other:?}"),
         }
-        assert_eq!(
-            registry.kind_state(&endpoint, BreakerKind::Probe),
-            BreakerState::Closed
-        );
         // Fallback to open_duration when retry_after is None.
         let (registry2, _clock2) = fresh_registry();
         registry2.record(
@@ -499,18 +445,13 @@ mod tests {
         }
     }
 
+    /// A single breaker survives (the `Probe` breaker was retired — board
+    /// item `01KZ802GSF692EKYKQ2TTVCJB8`), so the merged view is now a
+    /// direct passthrough of the Transport breaker's own state.
     #[test]
-    fn merged_state_prefers_later_until() {
+    fn merged_state_passes_through_the_transport_breaker() {
         let (registry, _) = fresh_registry();
         let endpoint = ep("local");
-        for _ in 0..3 {
-            registry.record(&endpoint, Observation::TransportError);
-        }
-        for _ in 0..3 {
-            registry.record(&endpoint, Observation::ProbeFail);
-        }
-        // Both opened at the same now with the same duration; force the
-        // transport breaker later via RateLimited.
         registry.record(
             &endpoint,
             Observation::RateLimited {
@@ -530,7 +471,7 @@ mod tests {
     fn snapshot_is_sorted_and_complete() {
         let (registry, _) = fresh_registry();
         registry.record(&ep("b"), Observation::TransportError);
-        registry.record(&ep("a"), Observation::ProbeFail);
+        registry.record(&ep("a"), Observation::TransportError);
         let snapshot = registry.snapshot();
         let keys: Vec<(String, BreakerKind)> = snapshot
             .iter()
@@ -540,9 +481,7 @@ mod tests {
             keys,
             vec![
                 ("a".to_string(), BreakerKind::Transport),
-                ("a".to_string(), BreakerKind::Probe),
                 ("b".to_string(), BreakerKind::Transport),
-                ("b".to_string(), BreakerKind::Probe),
             ]
         );
     }

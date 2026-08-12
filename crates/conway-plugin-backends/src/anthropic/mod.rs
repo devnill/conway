@@ -216,8 +216,8 @@ impl Backend for AnthropicBackend {
     async fn probe(&self) -> Result<ProbeReport, BackendError> {
         // A `/v1/messages` call is not free, so probe uses `GET
         // /v1/models` instead: 2s timeout, no retries (a probe is a single
-        // observation — the health layer's `BreakerKind::Probe` is
-        // independent of `BreakerKind::Transport`, Implementation Notes).
+        // observation, never retried like the transport-retry policy that
+        // owns `BreakerKind::Transport`, Implementation Notes).
         let url = self.models_url();
         let started = Instant::now();
         let response = self

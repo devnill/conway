@@ -225,9 +225,6 @@ fn default_document() -> Value {
         "health": {
             "transport_failures_to_open": 3,
             "open_duration_secs": 30,
-            "probe_interval_secs": 15,
-            "probe_timeout_secs": 2,
-            "probe_failures_to_open": 3,
         },
         "agents": {
             "dir": ".conway/agents",

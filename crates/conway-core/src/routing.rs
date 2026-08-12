@@ -94,13 +94,23 @@ pub struct AttemptFailure {
     pub at: DateTime<Utc>,
 }
 
-/// The two independent circuit breakers tracked per endpoint (Olla pattern).
+/// The circuit breaker kind tracked per endpoint (Olla pattern).
+///
+/// A second, independent `Probe` variant — fed by a periodic health prober
+/// decoupled from request traffic — used to exist here. It was retired, not
+/// wired (board item `01KZ802GSF692EKYKQ2TTVCJB8`): the prober that would
+/// have fed it had no production call site anywhere in this tree, and the
+/// Transport breaker alone already handles recovery (a clock read takes it
+/// half-open; the next real request retries), so wiring it would only have
+/// shaved latency off the first request after an outage — an optimization
+/// this project gates on a measured baseline that neither existed nor was
+/// scheduled. `#[non_exhaustive]` is kept so a future breaker kind can be
+/// added without a semver break.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BreakerKind {
     Transport,
-    Probe,
 }
 
 /// A circuit breaker's current state.
@@ -123,6 +133,11 @@ pub enum BreakerState {
 /// endpoint-health signals. Headroom exists specifically to convert most
 /// would-be `ContextOverflow` failures into pre-flight `CapabilitySkip` /
 /// `ContextTooLarge` decisions.
+///
+/// A `ProbeFail` variant, fed exclusively by the now-retired periodic health
+/// prober (board item `01KZ802GSF692EKYKQ2TTVCJB8`), used to exist here. It
+/// was removed along with its only producer rather than left unconstructible
+/// beside a live variant.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -130,7 +145,6 @@ pub enum Observation {
     Ok { latency_ms: u32 },
     TransportError,
     ServerError,
-    ProbeFail,
     RateLimited { retry_after_secs: Option<u64> },
 }
 
@@ -300,7 +314,6 @@ fn render_skipped(reason: &RoutingReason, breaker: &BreakerSnapshot) -> String {
             // genuine forward-compatibility.
             let kind_name = match kind {
                 BreakerKind::Transport => "transport",
-                BreakerKind::Probe => "probe",
             };
             match &breaker.state {
                 BreakerState::Open { until, .. } => format!(
@@ -378,21 +391,26 @@ pub struct RoleConfig {
     pub headroom_tokens: Option<u32>,
 }
 
-/// Circuit-breaker tuning, shared by every endpoint's `Transport` and
-/// `Probe` breakers.
+/// Circuit-breaker tuning for the endpoint's `Transport` breaker.
 ///
 /// Every field has a serde default, so a config document omitting `[health]`
 /// keys (or the whole table) deserializes to [`HealthConfig::default`].
 ///
-/// **`probe_*` fields are an honestly labeled forward declaration (GP-14).**
-/// `conway-routing::HealthProber` (the type these fields configure) has no
-/// production call site anywhere in this tree — the Transport breaker alone
-/// handles recovery today (it goes half-open on a clock read, and the next
-/// real request retries), so the prober fixes no correctness gap; it would
-/// only shave latency off the first request after an outage, which makes
-/// wiring it an optimization requiring a GP-12 measured baseline that does
-/// not yet exist. Wiring is deferred to board item `01KZ802GSF692EKYKQ2TTVCJB8`.
-/// Do not confuse this with `[models].probe_on_startup`
+/// **The `probe_*` fields (`probe_interval_secs`, `probe_timeout_secs`,
+/// `probe_failures_to_open`, `probe_enabled`) that used to configure a
+/// second, independent `Probe` breaker were removed (board item
+/// `01KZ802GSF692EKYKQ2TTVCJB8`), not merely left unwired.** The periodic
+/// health prober that would have fed that breaker had no production call
+/// site anywhere in this tree — the Transport breaker alone handles recovery
+/// (it goes half-open on a clock read, and the next real request retries),
+/// so the prober fixed no correctness gap; it would only have shaved latency
+/// off the first request after an outage, which made wiring it an
+/// optimization requiring a GP-12 measured baseline that neither existed nor
+/// was scheduled. **Breaking:** a `settings.json`/`RoutingConfig` document
+/// naming any of the four removed keys under `[health]` now fails to
+/// deserialize (`#[serde(deny_unknown_fields)]` on the facade's
+/// `HealthSection` mirror) rather than silently accepting and ignoring them.
+/// Do not confuse any of this with `[models].probe_on_startup`
 /// (`conway::config::schema::ModelsConfig`), a different, already-wired
 /// startup CAPABILITY probe.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -400,21 +418,9 @@ pub struct RoleConfig {
 pub struct HealthConfig {
     pub transport_failures_to_open: u32,
     pub open_duration_secs: u64,
-    /// Not yet implemented: see the struct doc comment. Read by
-    /// `conway-routing::HealthProber`, which nothing spawns.
-    pub probe_interval_secs: u64,
-    /// Not yet implemented: see the struct doc comment. Read by
-    /// `conway-routing::HealthProber`, which nothing spawns.
-    pub probe_timeout_secs: u64,
-    pub probe_failures_to_open: u32,
     /// Consecutive successful observations required to close a half-open
     /// breaker.
     pub half_open_successes_to_close: u32,
-    /// Whether the periodic health prober runs at all. Not yet implemented:
-    /// see the struct doc comment — `conway-routing::HealthProber` is never
-    /// spawned regardless of this value, so it defaults to `false`. Board
-    /// item `01KZ802GSF692EKYKQ2TTVCJB8` tracks wiring it.
-    pub probe_enabled: bool,
 }
 
 impl Default for HealthConfig {
@@ -422,14 +428,7 @@ impl Default for HealthConfig {
         Self {
             transport_failures_to_open: 3,
             open_duration_secs: 30,
-            probe_interval_secs: 15,
-            probe_timeout_secs: 2,
-            probe_failures_to_open: 3,
             half_open_successes_to_close: 1,
-            // Default false: the forward declaration must not assert a
-            // behavior (periodic probing) that no production code performs.
-            // See the struct doc comment.
-            probe_enabled: false,
         }
     }
 }
@@ -678,23 +677,7 @@ mod tests {
         let h = HealthConfig::default();
         assert_eq!(h.transport_failures_to_open, 3);
         assert_eq!(h.open_duration_secs, 30);
-        assert_eq!(h.probe_interval_secs, 15);
-        assert_eq!(h.probe_timeout_secs, 2);
-        assert_eq!(h.probe_failures_to_open, 3);
-    }
-
-    /// GP-14: `probe_enabled` must default `false` -- `HealthProber` has no
-    /// production call site, so a default-`true` key would assert a
-    /// behavior (periodic probing) that never happens on a fresh install.
-    /// Board item `01KZ802GSF692EKYKQ2TTVCJB8` tracks wiring it; until then
-    /// this default IS the honesty the forward-declaration label promises.
-    #[test]
-    fn probe_enabled_defaults_false_because_nothing_wires_the_prober() {
-        assert!(
-            !HealthConfig::default().probe_enabled,
-            "a default-true probe_enabled would claim a behavior conway-routing::HealthProber \
-             does not deliver (GP-14)"
-        );
+        assert_eq!(h.half_open_successes_to_close, 1);
     }
 
     #[test]
@@ -775,9 +758,7 @@ mod tests {
           "health": {
             "transport_failures_to_open": 3,
             "open_duration_secs": 30,
-            "probe_interval_secs": 15,
-            "probe_timeout_secs": 2,
-            "probe_failures_to_open": 3
+            "half_open_successes_to_close": 1
           },
           "default_headroom_tokens": 8192
         }

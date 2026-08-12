@@ -375,28 +375,30 @@ impl Default for RoutingSection {
 pub const DEFAULT_HEADROOM_TOKENS: u32 = conway_core::capabilities::DEFAULT_HEADROOM_TOKENS;
 
 /// `[health]`. Facade-owned mirror of `conway_core::routing::HealthConfig`'s
-/// seven fields and defaults — see the module doc comment for why this
+/// three fields and defaults — see the module doc comment for why this
 /// isn't a direct embed of `HealthConfig` (that type lacks
 /// `#[serde(deny_unknown_fields)]`). Every field name, type, and default
 /// value here must match `HealthConfig` exactly, or a valid setting would
 /// silently diverge in meaning between the two types.
 ///
-/// `probe_enabled`/`probe_interval_secs`/`probe_timeout_secs`: not yet
-/// implemented. See `conway_core::routing::HealthConfig`'s doc comment —
-/// `conway-routing::HealthProber` has no production call site, wiring is
-/// deferred to board item `01KZ802GSF692EKYKQ2TTVCJB8`, and `probe_enabled`
-/// defaults `false` so a fresh `settings.json` never asserts periodic
-/// probing that does not happen.
+/// **BREAKING: `probe_enabled`/`probe_interval_secs`/`probe_timeout_secs`/
+/// `probe_failures_to_open` were removed (board item
+/// `01KZ802GSF692EKYKQ2TTVCJB8`), not merely left unimplemented.** They used
+/// to configure a periodic health prober and the independent `Probe` breaker
+/// it fed; the prober had no production call site anywhere in this tree —
+/// the Transport breaker alone already handles recovery (a clock read takes
+/// it half-open; the next real request retries) — so wiring it was an
+/// optimization this project gates on a measured baseline that neither
+/// existed nor was scheduled. Because this struct still carries
+/// `#[serde(deny_unknown_fields)]`, a `settings.json` naming any of the four
+/// removed keys under `[health]` now fails to load with that key named,
+/// rather than silently accepting and ignoring it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct HealthSection {
     pub transport_failures_to_open: u32,
     pub open_duration_secs: u64,
-    pub probe_interval_secs: u64,
-    pub probe_timeout_secs: u64,
-    pub probe_failures_to_open: u32,
     pub half_open_successes_to_close: u32,
-    pub probe_enabled: bool,
 }
 
 impl Default for HealthSection {
@@ -405,11 +407,7 @@ impl Default for HealthSection {
         Self {
             transport_failures_to_open: d.transport_failures_to_open,
             open_duration_secs: d.open_duration_secs,
-            probe_interval_secs: d.probe_interval_secs,
-            probe_timeout_secs: d.probe_timeout_secs,
-            probe_failures_to_open: d.probe_failures_to_open,
             half_open_successes_to_close: d.half_open_successes_to_close,
-            probe_enabled: d.probe_enabled,
         }
     }
 }
@@ -419,11 +417,7 @@ impl From<HealthSection> for conway_core::routing::HealthConfig {
         Self {
             transport_failures_to_open: section.transport_failures_to_open,
             open_duration_secs: section.open_duration_secs,
-            probe_interval_secs: section.probe_interval_secs,
-            probe_timeout_secs: section.probe_timeout_secs,
-            probe_failures_to_open: section.probe_failures_to_open,
             half_open_successes_to_close: section.half_open_successes_to_close,
-            probe_enabled: section.probe_enabled,
         }
     }
 }
