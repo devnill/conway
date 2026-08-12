@@ -89,10 +89,19 @@ pub struct ConwayConfig {
     #[serde(default)]
     pub plugins: PluginsConfig,
     /// `[hooks]` (board item 01KZDC0RDRMMMJHX7SAFMM2Q5A, "declarative
-    /// hooks"). **Parses and validates only -- nothing dispatches a hook
-    /// declared here yet.** See [`HooksConfig`]'s own doc comment for the
-    /// full GP-14 forward-declaration disclosure and the two board items
-    /// that wire it.
+    /// hooks"). **A `pre_tool_use` rule is dispatched ONLY IF an embedder
+    /// injected a runner via `ConwayBuilder::with_hook_runner` (board item
+    /// 01KZS00JP5QNBJSSHNFP9C47GM); every other `event` is still parsed and
+    /// validated only.** That precondition is stated here rather than only
+    /// in [`HooksConfig`] because this is the declaration site, and GP-14
+    /// treats a declaration site as ONE artifact: a reader who stops at this
+    /// field must not come away believing a rule they write here will run.
+    /// `conway-cli` does not inject a runner today (board item
+    /// 01KZVTTP492R3BDY33FAGYWDNW), so a `pre_tool_use` rule in a
+    /// `settings.json` driving the CLI still parses, validates, and is never
+    /// consulted. See [`HooksConfig`]'s own doc comment for the precise,
+    /// per-event disclosure of what runs today and what remains a forward
+    /// declaration.
     #[serde(default)]
     pub hooks: HooksConfig,
 }
@@ -853,18 +862,37 @@ pub struct ThemeStyleConfig {
 /// hooks"; see `docs/plugins/hooks.md` point 13 and `docs/plugins/scripts.md`
 /// for the design this shape is drawn from).
 ///
-/// **GP-14 forward declaration -- read this before adding a rule.** This
-/// section, and every type it names, ONLY parses and validates today.
-/// Nothing in this crate, or anywhere else in the tree, spawns a process,
-/// dispatches an event, or otherwise acts on a rule declared here. Writing
-/// a `[hooks]` block gets you a config that parses and rejects a typo'd key
-/// exactly like every other section -- and, for now, nothing more. Two
-/// later, separate board items wire this up:
-/// - **01KZRZY1MNM872BZ6AKEBG3SKE** -- the script runner that actually
-///   spawns [`HookEntry::command`] when [`HookEntry::event`] fires and
-///   enforces [`HookEntry::timeout_ms`]/[`HookEntry::enabled`].
-/// - **01KZS00JP5QNBJSSHNFP9C47GM** -- `pre_tool_use` enforcement, the
-///   first concrete event the runner is consulted from.
+/// **GP-14 disclosure, PER EVENT -- read this before adding a rule.** This
+/// section itself, and every type it names, always parses and validates
+/// (that part was never event-conditional). Whether a rule actually RUNS is:
+///
+/// - **`event == "pre_tool_use"`, `enabled: true`: DISPATCHED** (board item
+///   01KZS00JP5QNBJSSHNFP9C47GM) -- `ConwayBuilder::build` filters
+///   `rules` to exactly these and hands them to
+///   `conway_runtime::permission::PermissionBroker::decide`, which invokes
+///   each via the injected [`crate::plugin::HookRunner`] at the SAME tier
+///   as a `deny` pattern rule -- before the mode gate, the cache, pattern
+///   allows, and `AutoAllow`, so a denial is enforced under every
+///   permission mode. **This still requires an actual runner.**
+///   `ConwayBuilder::with_hook_runner` (mirroring `with_permission_gate`/
+///   `with_context_hook`: not called at all is the default) is what
+///   supplies one -- `conway-runtime` never constructs one itself (decision
+///   01KZT642CEZ20K92DYWBTPE2XZ: it must not depend on `conway-tools` to
+///   reach one). A `pre_tool_use` rule declared here with no runner ever
+///   injected parses, validates, and is silently never consulted --
+///   exactly the same gap this doc used to disclose for the whole section,
+///   now narrowed to this one precondition.
+/// - **Every OTHER `event` value: still forward-declared, unchanged.**
+///   Nothing in this crate, or anywhere else in the tree, spawns a process,
+///   dispatches an event, or otherwise acts on a rule whose `event` is not
+///   `"pre_tool_use"`. Writing one gets you a config that parses and
+///   rejects a typo'd key exactly like every other section -- and, for
+///   now, nothing more. **01KZRZY1MNM872BZ6AKEBG3SKE** is the general
+///   script-runner port ([`crate::plugin::HookRunner`]) this item's
+///   `pre_tool_use` dispatch is the FIRST consumer of, not the last: a
+///   later item wiring a second event reuses the same runner, the same
+///   [`HookEntry::timeout_ms`]/[`HookEntry::enabled`] enforcement, and adds
+///   only its own event-specific dispatch call site.
 ///
 /// **Default: an empty rule list.** This is the part of GP-14's rule that
 /// is easiest to get backwards (its own named precedent, `probe_enabled`,
@@ -884,12 +912,15 @@ pub struct HooksConfig {
 
 /// One `[hooks].rules[]` entry: "when `event` happens, run `command`."
 ///
-/// **Parsed and validated only.** See [`HooksConfig`]'s own doc comment for
-/// the full GP-14 disclosure and the two board items (01KZRZY1MNM872BZ6AKEBG3SKE
-/// the runner, 01KZS00JP5QNBJSSHNFP9C47GM `pre_tool_use` enforcement) that
-/// will make an entry here actually run something. This crate never
+/// **Dispatched when `event == "pre_tool_use"` (and a runner is injected --
+/// see [`HooksConfig`]'s own doc for the exact precondition); parsed and
+/// validated only for every other `event` value.** This crate itself never
 /// constructs a `std::process::Command`/`tokio::process::Command` from a
-/// value of this type.
+/// value of this type either way -- `ConwayBuilder::build` only ever hands
+/// this data to an injected `Arc<dyn `[`crate::plugin::HookRunner`]`>`,
+/// which is where the actual process spawn lives
+/// (`conway_tools::hook_runner::ProcessHookRunner`, board item
+/// 01KZRZY1MNM872BZ6AKEBG3SKE).
 ///
 /// **Deliberately minimal.** The only fields beyond the five the owning
 /// board item names are the ones already covered by those five --
@@ -941,15 +972,16 @@ pub struct HookEntry {
     /// no such reason to need a shell at all, so argv is the right shape
     /// here.
     pub command: Vec<String>,
-    /// Milliseconds the (not-yet-existing) runner will allow this command
-    /// before killing it, once dispatch lands (board item
-    /// 01KZRZY1MNM872BZ6AKEBG3SKE). Default 5000ms, chosen the same way
-    /// `crates/conway-tools/src/shell/bash.rs`'s own `DEFAULT_TIMEOUT_MS`
-    /// was: long enough for a typical local script (lint, format-check, a
-    /// small HTTP call) to finish, short enough that a hung hook cannot
-    /// silently stall an agent turn indefinitely. Exists now purely so the
-    /// runner item has a field to read -- nothing reads or enforces this
-    /// value today.
+    /// Milliseconds an injected [`crate::plugin::HookRunner`] will allow
+    /// this command before killing it -- enforced for real, for a
+    /// `pre_tool_use` rule, by `ConwayBuilder::build`'s translation into
+    /// `conway_runtime::permission::PreToolUseHookSpec::timeout_ms` (board
+    /// item 01KZS00JP5QNBJSSHNFP9C47GM); still only READ, never enforced,
+    /// for any other `event` (see [`HooksConfig`]'s own doc). Default
+    /// 5000ms, chosen the same way `crates/conway-tools/src/shell/bash.rs`'s
+    /// own `DEFAULT_TIMEOUT_MS` was: long enough for a typical local script
+    /// (lint, format-check, a small HTTP call) to finish, short enough that
+    /// a hung hook cannot silently stall an agent turn indefinitely.
     #[serde(default = "default_hook_timeout_ms")]
     pub timeout_ms: u64,
     /// Whether this rule is active. Defaults to `true`.
@@ -963,11 +995,16 @@ pub struct HookEntry {
     /// rule list is empty (see [`HooksConfig`]'s own doc) -- so there is no
     /// rule for `enabled` to apply to until the operator deliberately
     /// creates one. `enabled: true` on a rule an operator just wrote
-    /// asserts nothing about whether a runner exists (it doesn't yet); it
-    /// only says "don't treat the rule I just wrote as disabled", ordinary
-    /// boolean-flag convention. `enabled: false` on a hand-written rule
-    /// becomes operationally meaningful only once the runner ships, and
-    /// stays exactly as inert as every other field here until then.
+    /// asserts nothing about whether a runner exists (`ConwayBuilder::
+    /// with_hook_runner` may still not have been called -- see
+    /// [`HooksConfig`]'s own doc for that precondition); it only says
+    /// "don't treat the rule I just wrote as disabled", ordinary
+    /// boolean-flag convention. `enabled: false` on a `pre_tool_use` rule
+    /// is now genuinely load-bearing: `ConwayBuilder::build`'s filter into
+    /// `PreToolUseHookSpec` drops a disabled rule before `PermissionBroker::
+    /// decide` ever sees it (board item 01KZS00JP5QNBJSSHNFP9C47GM).
+    /// `enabled` on any OTHER `event` stays exactly as inert as every other
+    /// field here.
     #[serde(default = "default_hook_enabled")]
     pub enabled: bool,
 }

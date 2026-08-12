@@ -57,6 +57,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `crates/conway/tests/permission_trust_seam.rs`, `docs/permissions.md`,
   `docs/plugins/compatibility.md`)
 
+- **A configured `pre_tool_use` hook can now actually refuse a tool call --
+  wired at the ONE tier in `PermissionBroker::decide` that no permission
+  mode can route around** (board item 01KZS00JP5QNBJSSHNFP9C47GM). Placement
+  was the whole difficulty: a hook checked downstream of `gate.check` (or
+  implemented as a `PermissionGate` itself) would see only the calls that
+  reach the operator's prompt and NONE resolved by a cached `AllowAlways`
+  grant, a matching pattern-allow rule, or `AutoAllow` mode -- it would
+  evaporate entirely under `AutoAllow`, the one mode with no human already
+  in the loop to catch what the hook exists to catch. The new hook-check
+  step sits at the SAME tier as the existing `deny`-pattern check --
+  immediately after it, before the mode gate, the cache, pattern-allow
+  grants, and `AutoAllow` -- so a denying hook is enforced under every
+  permission mode, proven by a test that configures `AutoAllow` plus a
+  denying hook and asserts the call is still denied (plus one test each for
+  the cache-bypass and pattern-allow-bypass paths a downstream
+  implementation would have missed). **Deny-only, never allow, at the type
+  level, not by convention:** the hook's answer field
+  (`conway_core::hook::HookAnswer::permission`) is a new
+  `HookPermissionVerdict` enum with exactly two variants, `NoOpinion` and
+  `Deny { reason }` -- there is no `Allow` variant anywhere in the type for
+  a future edit to accidentally start acting on (decision
+  01KZRZAFD8T3GX407MZC8P1W1E: a hook may only narrow a permission verdict,
+  never widen one; mirrors `permission_pattern::Then`'s own
+  plugin-rule restriction one layer down, but as a structural omission
+  rather than a runtime rejection a future edit could get wrong).
+  **Fail-closed inherits from the runner, not a second implementation of
+  it:** a missing script, a timeout, a nonzero exit, or stdout that fails to
+  parse as `HookAnswer` are all `HookFailure`, and `PermissionBroker::
+  decide` treats every one of them as a denial directly. **Deny-only over a
+  three-way (deny/prompt/no-opinion) shape, decided and recorded:** a
+  `prompt`-forcing verdict would need its own `must_reach_gate` source with
+  different provenance than the existing `prompt`-pattern step, which is
+  exactly the kind of policy branching growth GP-13 bounds this item
+  against; an operator who wants "ask every time" for a call shape a plugin
+  author can identify already has the pattern-rule mechanism for it. **This
+  is what makes `conway_core::ports::HookRunner` reachable at all** -- the
+  port previously had no injection point and no caller anywhere in the
+  tree. `ConwayBuilder::with_hook_runner` injects an `Arc<dyn HookRunner>`
+  on the identical surface `with_permission_gate`/`with_context_hook`
+  already use (GP-03/P-6; `conway`'s `plugin` extension-surface module now
+  re-exports `HookRunner`/`HookInvocation`/`HookEvent`/`HookAnswer`/
+  `HookPermissionVerdict`/`HookFailure` so a third party can implement it
+  without depending on `conway-core`), and `conway-runtime` reaches it only
+  through `conway_core::ports` -- never through `conway-tools` (decision
+  01KZT642CEZ20K92DYWBTPE2XZ: the two are siblings; the runner arrives
+  already constructed). **Additive, not automatic:** with no
+  `with_hook_runner` call (the default) `PermissionBroker::decide` is
+  byte-for-byte unchanged -- the entire pre-existing `permission_broker.rs`
+  suite (46 tests) passes unmodified -- and a `[hooks].rules[]` entry with
+  `event: "pre_tool_use"` still parses and validates with no runner
+  injected, it just is silently never consulted (disclosed at every
+  relevant declaration site, not only here). `[hooks]`'s own GP-14 forward-
+  declaration label is corrected to be precise PER EVENT: `pre_tool_use` is
+  now dispatched; every other `event` value remains exactly the forward
+  declaration it always was. Docs updated to match: `docs/plugins/hooks.md`
+  point 13's status row (and its sibling point 7 correction, since that
+  row's forward reference to this item's eventual answer shape turned out
+  to name a different shape than what shipped) and `docs/plugins/scripts.md`'s
+  top note.
+  (`crates/conway-core/src/hook.rs`, `crates/conway-core/src/ports/hook_runner.rs`,
+  `crates/conway-runtime/src/permission.rs`, `crates/conway-runtime/src/runtime.rs`,
+  `crates/conway/src/builder.rs`, `crates/conway/src/lib.rs`,
+  `crates/conway/src/config/schema.rs`, `crates/conway/tests/plugin_surface.rs`,
+  `crates/conway-tools/tests/hook_runner.rs`, `docs/plugins/hooks.md`,
+  `docs/plugins/scripts.md`)
+
 ### Added
 
 - **A parent that fans out several children (`await: false`) now observes

@@ -67,14 +67,58 @@ pub struct HookInvocation {
 /// of the same shape, not the justification -- caching is the inference
 /// plugin's own responsibility, not this runner's.
 ///
+/// **`permission` (board item 01KZS00JP5QNBJSSHNFP9C47GM): a second,
+/// independent axis, unrelated to context.** Only `pre_tool_use` dispatch
+/// (`conway_runtime::permission::PermissionBroker::decide`) ever reads it;
+/// every other event ignores the field completely, exactly as a hook that
+/// never touches `context` already leaves that axis at its own default. See
+/// [`HookPermissionVerdict`]'s own doc for why this field can narrow a
+/// permission decision but can never widen one.
+///
 /// The default (no fields set) is the correct answer for a hook that has
-/// nothing to say about context -- e.g. empty stdout on a zero exit (see
-/// the implementing crate's parse rule) -- and is indistinguishable from a
-/// hook that explicitly returned `{"context":{}}`.
+/// nothing to say about context OR permission -- e.g. empty stdout on a
+/// zero exit (see the implementing crate's parse rule) -- and is
+/// indistinguishable from a hook that explicitly returned
+/// `{"context":{},"permission":"no_opinion"}`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct HookAnswer {
     #[serde(default)]
     pub context: ContextDelta,
+    #[serde(default)]
+    pub permission: HookPermissionVerdict,
+}
+
+/// A `pre_tool_use` hook's opinion on whether the call it was invoked for
+/// should be allowed to proceed (board item 01KZS00JP5QNBJSSHNFP9C47GM).
+///
+/// **No `Allow` variant exists, anywhere in this type -- not "we only check
+/// whether it denied."** Decision 01KZRZAFD8T3GX407MZC8P1W1E: a hook may
+/// only NARROW a permission verdict, never widen one; it cannot grant an
+/// allow that was not already going to happen, only add another way to say
+/// no. `crate::permission_pattern::Then` enforces the same rule one layer
+/// down for plugin-contributed pattern rules, but does so by *rejecting*
+/// `Then::Allow` at admission time (`PermissionBroker::remember_pattern_rule`,
+/// a runtime check a future edit could get wrong) -- this type takes the
+/// strictly stronger option the same board item's spec asked for: there is
+/// no `Allow` variant for a runtime check to fail to reject, so
+/// `PermissionBroker::decide` structurally cannot treat a hook's answer as
+/// a grant, independent of whether every call site keeps checking that
+/// correctly.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HookPermissionVerdict {
+    /// This hook has no opinion on this call -- `decide()` proceeds exactly
+    /// as it would have without this hook at all. The default: an absent
+    /// `permission` key on the wire, and an explicit
+    /// `{"permission":"no_opinion"}` are indistinguishable, exactly like
+    /// [`HookAnswer`]'s own default/explicit-empty equivalence above.
+    #[default]
+    NoOpinion,
+    /// Refuse the call outright. `reason` is folded into the rendered
+    /// denial `PermissionBroker::decide` returns, alongside which hook
+    /// produced it -- mirroring the phrasing its existing deny-pattern
+    /// branch already uses for the identical purpose.
+    Deny { reason: String },
 }
 
 /// An append-only edit to computed context: items to append, and
@@ -143,6 +187,7 @@ mod tests {
                 appends: vec![serde_json::json!({"role": "system", "text": "note"})],
                 excludes: vec!["seg-1".to_string()],
             },
+            permission: HookPermissionVerdict::default(),
         };
         let json = serde_json::to_string(&answer).unwrap();
         let back: HookAnswer = serde_json::from_str(&json).unwrap();
@@ -150,12 +195,14 @@ mod tests {
     }
 
     /// The structural proof behind "cannot express wholesale replacement":
-    /// `HookAnswer`'s only field is a `ContextDelta`, and `ContextDelta`'s
-    /// only fields are `appends`/`excludes` -- there is no third field this
-    /// JSON shape could parse a `"replace"`/`"new_payload"`-shaped key into
-    /// even if a hook script tried to send one; an unknown key is simply
-    /// ignored by serde's default (non-`deny_unknown_fields`) leniency,
-    /// never interpreted as a replacement instruction.
+    /// `HookAnswer`'s `context` field is a `ContextDelta`, and
+    /// `ContextDelta`'s only fields are `appends`/`excludes` -- there is no
+    /// field anywhere on `HookAnswer` (its sibling `permission` field is a
+    /// wholly separate axis -- see that field's own doc) this JSON shape
+    /// could parse a `"replace"`/`"new_payload"`-shaped key into even if a
+    /// hook script tried to send one; an unknown key is simply ignored by
+    /// serde's default (non-`deny_unknown_fields`) leniency, never
+    /// interpreted as a replacement instruction.
     #[test]
     fn an_unknown_replace_shaped_key_is_ignored_not_interpreted_as_a_replacement() {
         let json = serde_json::json!({
@@ -164,5 +211,46 @@ mod tests {
         });
         let answer: HookAnswer = serde_json::from_value(json).unwrap();
         assert_eq!(answer, HookAnswer::default());
+    }
+
+    #[test]
+    fn default_hook_permission_verdict_is_no_opinion() {
+        assert_eq!(HookPermissionVerdict::default(), HookPermissionVerdict::NoOpinion);
+    }
+
+    #[test]
+    fn hook_permission_verdict_deny_round_trips() {
+        let verdict = HookPermissionVerdict::Deny {
+            reason: "touches a path this hook refuses".to_string(),
+        };
+        let json = serde_json::to_string(&verdict).unwrap();
+        let back: HookPermissionVerdict = serde_json::from_str(&json).unwrap();
+        assert_eq!(verdict, back);
+    }
+
+    /// The structural proof behind "no `Allow` variant, full stop": every
+    /// JSON shape this enum's own `Deserialize` impl accepts is enumerated
+    /// here (`"no_opinion"` and `{"deny":{"reason":...}}`) -- neither can
+    /// decode to anything but `NoOpinion`/`Deny`, and no third shape exists
+    /// for a hook script to spell an allow into. This is the type-level
+    /// proof `HookPermissionVerdict`'s own doc claims; a broken build here
+    /// (a new variant added without updating this test) is the guard.
+    #[test]
+    fn no_json_shape_decodes_to_an_allow_because_no_allow_variant_exists() {
+        let no_opinion: HookPermissionVerdict = serde_json::from_str("\"no_opinion\"").unwrap();
+        assert_eq!(no_opinion, HookPermissionVerdict::NoOpinion);
+
+        let deny: HookPermissionVerdict =
+            serde_json::from_str(r#"{"deny":{"reason":"no"}}"#).unwrap();
+        assert_eq!(
+            deny,
+            HookPermissionVerdict::Deny {
+                reason: "no".to_string()
+            }
+        );
+
+        // Anything else -- including a hypothetical `"allow"` -- is a
+        // deserialize error, not a silently-accepted third variant.
+        assert!(serde_json::from_str::<HookPermissionVerdict>("\"allow\"").is_err());
     }
 }

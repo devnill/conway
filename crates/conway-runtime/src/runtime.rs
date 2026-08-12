@@ -121,8 +121,8 @@ use conway_core::event::Event;
 use conway_core::ids::{AgentId, BackendId, LogSeq, ModelRef, RoleAlias, SeqRange, SessionId, ToolName};
 use conway_core::log::{ForkOrigin, LogRecord, SessionFilter, SessionMeta, SubagentMode};
 use conway_core::ports::{
-    Backend, ContextHook, HealthRegistry, PermissionGate, Plugin, PluginConfig, Router,
-    SessionStore, SubagentHost,
+    Backend, ContextHook, HealthRegistry, HookRunner, PermissionGate, Plugin, PluginConfig,
+    Router, SessionStore, SubagentHost,
 };
 use conway_core::provenance::{ContextReport, Provenance};
 use conway_core::segment::CacheTtl;
@@ -134,7 +134,7 @@ use crate::attempt::AttemptEngine;
 use crate::context::{ContextBuilder, InheritedPrefix, TOKEN_ESTIMATOR};
 use crate::events::{EventBus, EventStream};
 use crate::mailbox::{self, Mailbox, MailboxSender};
-use crate::permission::PermissionBroker;
+use crate::permission::{PermissionBroker, PreToolUseHookSpec};
 use crate::supervisor::{self, SuperviseArgs};
 use crate::tools::{PluginRegistry, ToolRunner};
 use crate::tree::{AgentNode, AgentTree};
@@ -413,6 +413,46 @@ impl Runtime {
             .context_hook
             .write()
             .expect("context_hook lock poisoned") = hook;
+    }
+
+    /// Board item 01KZS00JP5QNBJSSHNFP9C47GM: registers (or clears, via
+    /// `None`) the `HookRunner` [`PermissionBroker::decide`]'s `pre_tool_use`
+    /// step consults, at the SAME deny tier as `deny_matches` -- see that
+    /// method's own doc for why the placement, not merely the existence, is
+    /// what makes a denying hook enforceable under every permission mode,
+    /// `AutoAllow` included.
+    ///
+    /// Mirrors [`Self::set_context_hook`]'s own shape exactly, for the
+    /// identical reason: `RuntimeDeps` is out of this item's file scope
+    /// (also constructed by field literal in several existing tests a new
+    /// required field would break), so this is a purely additive
+    /// post-construction setter rather than a new `RuntimeDeps` field. Not
+    /// called at all (the default) leaves `PermissionBroker::decide`
+    /// byte-for-byte unchanged from before this item -- the broker's own
+    /// `hook_runner` field defaults to `None`, which the hook-check step
+    /// treats as "nothing to consult" before it performs any I/O or even
+    /// reads the installed hook list.
+    ///
+    /// `conway::ConwayBuilder::with_hook_runner` is this method's own
+    /// facade-level caller; `conway-runtime` itself never constructs a
+    /// concrete `HookRunner` (decision 01KZT642CEZ20K92DYWBTPE2XZ: this
+    /// crate must not depend on `conway-tools` to reach one -- the runner
+    /// arrives here as an already-constructed `Arc<dyn HookRunner>`, a
+    /// sibling crate's concern, not this one's).
+    pub fn set_hook_runner(&self, runner: Option<Arc<dyn HookRunner>>) {
+        self.broker.set_hook_runner(runner);
+    }
+
+    /// Board item 01KZS00JP5QNBJSSHNFP9C47GM: installs the `pre_tool_use`
+    /// hook specs [`Self::set_hook_runner`]'s dispatcher consults, wholesale
+    /// -- see [`PermissionBroker::set_pre_tool_use_hooks`]'s own doc.
+    /// `conway::ConwayBuilder::build` is this method's own caller, computing
+    /// the list once from `[hooks].rules[]` filtered to `event ==
+    /// "pre_tool_use" && enabled` before any session starts. Not called at
+    /// all (the default, an empty list) is the same no-op
+    /// `Self::set_hook_runner(None)` is.
+    pub fn set_pre_tool_use_hooks(&self, hooks: Vec<PreToolUseHookSpec>) {
+        self.broker.set_pre_tool_use_hooks(hooks);
     }
 
     /// Test-only accessor (mirrors `conway_session::TranscriptResolver::

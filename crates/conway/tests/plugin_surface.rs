@@ -37,6 +37,7 @@ use conway::config::schema::{
 use conway::plugin::{
     async_trait, Artifact, ArtifactKind, ArtifactWriteError, ArtifactWriteHandle, ArtifactWriter,
     CancellationToken, ContentBlock, ContextHook, ContextHookCtx, ContextPayload, CwdError, Fact,
+    HookAnswer, HookEvent, HookFailure, HookInvocation, HookPermissionVerdict, HookRunner,
     OverflowInfo, PathArgs, PermissionClass, Plugin, PluginConfig, PluginManifest, PromptSegment,
     Provenance, RenderKind, Role, SubagentError, Tool, ToolCall, ToolCategory, ToolCtx, ToolError,
     ToolName, ToolOutput, ToolSpec, TruncationPolicy,
@@ -199,6 +200,36 @@ impl ContextHook for MarkerHook {
 }
 
 // ---------------------------------------------------------------------------
+// A third-party `HookRunner` (board item 01KZS00JP5QNBJSSHNFP9C47GM): the
+// `pre_tool_use` dispatcher `ConwayBuilder::with_hook_runner` installs.
+// Names every type that trait's own signature needs
+// (`HookInvocation`/`HookEvent`/`HookAnswer`/`HookFailure`/
+// `HookPermissionVerdict`), proving the whole hook-authoring surface is
+// reachable and implementable from a facade-only dependent, not merely the
+// bare trait name.
+// ---------------------------------------------------------------------------
+
+struct NeverOpinionatedHookRunner;
+
+#[async_trait]
+impl HookRunner for NeverOpinionatedHookRunner {
+    async fn run(&self, invocation: &HookInvocation) -> Result<HookAnswer, HookFailure> {
+        // A real implementation would branch on `invocation.event.name`
+        // ("pre_tool_use") and inspect `invocation.event.payload`; this
+        // double always returns "no opinion" -- proving `HookAnswer`'s
+        // `permission` field is nameable/constructible, not that it denies
+        // anything (the real deny-tier enforcement is
+        // `conway-runtime`'s own `permission::` test suite's job).
+        let event: &HookEvent = &invocation.event;
+        let _name: &str = &event.name;
+        Ok(HookAnswer {
+            permission: HookPermissionVerdict::NoOpinion,
+            ..HookAnswer::default()
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Registration through `ConwayBuilder`, end to end, with no `conway_core`
 // test double anywhere: a real config-file backend (never contacted --
 // `build()` does no network I/O), the default JSONL store pointed at a
@@ -288,6 +319,11 @@ fn plugin_tool_and_hook_register_through_the_builder() {
     ConwayBuilder::from_parts(config)
         .with_plugin(Arc::new(EchoPlugin))
         .with_context_hook(Arc::new(MarkerHook))
+        // Board item 01KZS00JP5QNBJSSHNFP9C47GM: same shape as
+        // `with_context_hook` immediately above -- a facade-only
+        // `HookRunner` registers through the identical builder surface a
+        // built-in would.
+        .with_hook_runner(Arc::new(NeverOpinionatedHookRunner))
         // Board item 01KZHF270T3W8GZ7NM6DSNQ4MM: `conway` no longer
         // compiles the `kind = "anthropic"` entry above in -- registering
         // its factory is the third-party-shaped way this now-genuinely-

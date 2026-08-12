@@ -119,6 +119,7 @@ esac
                 appends: vec![serde_json::json!({"note": "seen"})],
                 excludes: vec!["seg-1".to_string()],
             },
+            ..HookAnswer::default()
         }
     );
 }
