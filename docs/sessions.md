@@ -256,7 +256,7 @@ does not summarize, truncate, or otherwise compact your session's history
 on your behalf, ever, as a built-in behavior. This is deliberate: what's
 safe to forget is a judgment call, and it's yours to make, not a policy the
 harness applies silently on your session because the harness guessed the
-window was getting full. See [`.design/whitepaper.md`](../.design/whitepaper.md)
+window was getting full. See [`whitepaper.md`](whitepaper.md)
 §3 and §4.5 for the reasoning.
 
 The consequence is direct: a long-running session's context keeps growing,
