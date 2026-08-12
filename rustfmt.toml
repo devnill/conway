@@ -1,0 +1,18 @@
+# Pinned so the workspace-wide reformat stays reproducible.
+#
+# `rust-toolchain.toml` already pins the toolchain to 1.94.0 with the `rustfmt`
+# component, and CI installs the same version, so every contributor runs an
+# identical rustfmt binary. That covers most of the reproducibility question.
+#
+# What it does NOT cover is the style edition. rustfmt derives that from the
+# crate's Rust edition when it is not set explicitly, so moving the workspace
+# from edition 2021 to 2024 would silently reformat every file in the tree and
+# undo the reformat that board item 01KZVYJZWK6DYZZ1NKD24EB8S6 landed -- as a
+# side effect of an edition bump, in a diff nobody would read as a formatting
+# change. Pinning it makes that a deliberate, separate decision.
+#
+# This is a no-op today: the workspace is edition 2021, so 2021 is already the
+# value rustfmt would infer. It is a guard against a future change, not a
+# statement of preference, and no other formatting option is set here on
+# purpose -- the defaults are the project's style.
+style_edition = "2021"
