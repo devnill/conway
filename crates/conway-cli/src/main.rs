@@ -145,6 +145,15 @@ fn build_conway(cli: &Cli, gate: Option<Arc<dyn PermissionGate>>, is_tui: bool) 
         Some(path) => ConwayBuilder::from_config(path)?,
         None => ConwayBuilder::discover()?,
     };
+    // Board item 01KZVTTP492R3BDY33FAGYWDNW: unconditional, not gated on
+    // whether the loaded config's `[hooks].rules` is non-empty -- injecting
+    // a runner that never gets consulted (no `pre_tool_use` rules present)
+    // costs nothing, and it is one fewer branch than checking first. Without
+    // this call a `pre_tool_use` rule in an operator's `settings.json`
+    // parses, validates, and is silently never dispatched -- see
+    // `conway::config::schema::HooksConfig`'s own doc for the full
+    // disclosure this call resolves.
+    let builder = builder.with_default_hook_runner();
     let builder = match gate {
         Some(gate) => builder.with_permission_gate(gate),
         None => builder,

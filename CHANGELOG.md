@@ -9,6 +9,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **A `pre_tool_use` hook written in a `settings.json` now actually runs
+  under the CLI** (board item 01KZVTTP492R3BDY33FAGYWDNW). Board item
+  01KZS00JP5QNBJSSHNFP9C47GM built the enforcement -- a hook script that
+  refuses a tool call, checked at the same tier as a `deny` pattern rule so
+  it holds under every permission mode -- but that mechanism only runs when
+  an embedder injects a runner, and `conway-cli` injected none. An operator
+  who wrote a `pre_tool_use` rule got a config that parsed, validated,
+  rejected typos, and was **never consulted**: a guardrail they believed
+  they had installed did not exist. That is GP-14's worst rung (user-facing
+  configuration that does nothing, precedent `probe_enabled`) with an
+  aggravator the prober never had -- the configuration is security-bearing,
+  so the operator did not merely miss a benefit, they held a false belief
+  about what was being blocked while running an agent with tool access.
+  `ConwayBuilder::with_default_hook_runner` (new, `builtin-tools`-gated)
+  supplies `conway_tools::hook_runner::ProcessHookRunner`, and
+  `conway-cli`'s `build_conway` calls it unconditionally. **The injection
+  lives in the facade, not the CLI**, because `conway-cli` may depend only
+  on the `conway` facade -- `cli_surface::no_forbidden_deps` enforces that,
+  and its own comment records the same shortcut being tried and reverted
+  twice before; `conway` already carries `conway-tools` behind its default
+  `builtin-tools` feature, and `builder.rs` already used exactly this shape
+  for built-in tool plugins. `with_hook_runner` remains the general
+  injection point a third party uses on the identical surface a built-in
+  uses (GP-03/P-6); the new method is a convenience supplying the in-tree
+  default, deliberately NOT collapsed into it. **Scope, stated precisely
+  because the disclosure is the point:** a rule driving the CLI fires; an
+  embedder linking `conway` directly still gets nothing unless it calls one
+  of the two methods itself; and every `event` other than `pre_tool_use`
+  remains parsed-and-validated only. Guarded end to end rather than at the
+  seam -- an integration test drives the real compiled binary through a
+  one-shot with an isolated `XDG_CONFIG_HOME`, and asserts the on-disk
+  session transcript's denial names the HOOK ID. That precision is
+  load-bearing: with the injection removed the call is still denied, by the
+  default allow-list gate (`tool 'bash' is not in the allow list`), so a
+  test asserting only "denied" would pass whether or not the wiring existed.
+  (`crates/conway/src/builder.rs`, `crates/conway-cli/src/main.rs`,
+  `crates/conway-cli/tests/hook_runner_wiring.rs`,
+  `crates/conway/src/config/schema.rs`, `docs/plugins/hooks.md`)
+
 - **BREAKING: a misspelled key in `permissions.json` now fails to load
   instead of silently installing zero rules** (board item
   01KZHVDDQQ7XT0RK3JVNM2YV83). A file containing `"denys"` instead of
