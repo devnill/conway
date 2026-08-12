@@ -312,25 +312,19 @@ mod tests {
 
     // -----------------------------------------------------------------
     // HealthConfig (owned by conway-core; this module only tests against
-    // conway-core's actual type -- see the divergence note below).
+    // conway-core's actual type).
     //
-    // Divergence note (flagged, not worked around): the WI-031 doc's
-    // illustrative `HealthConfig` has fields
-    // `{transport_failures_to_open, probe_failures_to_open, open_duration,
-    // half_open_successes_to_close, probe_interval, probe_timeout,
-    // probe_enabled}` with humantime-string durations, `#[serde(default)]`
-    // on the whole struct, and `probe_failures_to_open: 2` in its default.
-    // The `conway-core` this crate builds against instead defines
-    // `HealthConfig` with fields `{transport_failures_to_open,
-    // open_duration_secs, probe_interval_secs, probe_timeout_secs,
-    // probe_failures_to_open}` (plain integer seconds, no
-    // `half_open_successes_to_close` field, no `probe_enabled` field, no
-    // `#[serde(default)]`), and its documented default has
-    // `probe_failures_to_open: 3`. Per the coordinator's instruction, this
-    // crate tests conway-core's actual type/default rather than modifying
-    // conway-core; the two divergences (missing fields, and 3 vs. 2 for
-    // `probe_failures_to_open`) are flagged in the work-item completion
-    // report.
+    // `probe_interval_secs`/`probe_timeout_secs`/`probe_failures_to_open`/
+    // `probe_enabled` (which used to configure a periodic health prober and
+    // the independent `Probe` breaker it fed) were removed from
+    // `conway_core::routing::HealthConfig` (board item
+    // `01KZ802GSF692EKYKQ2TTVCJB8`, "retire the health prober") -- the
+    // prober had no production call site anywhere in this tree, and the
+    // Transport breaker alone already handles recovery. The two fixtures
+    // below were updated in step; the earlier divergence note this comment
+    // block used to carry (WI-031's illustrative `HealthConfig` shape versus
+    // conway-core's actual one) is moot now that both the doc and the type
+    // agree on three fields.
     // -----------------------------------------------------------------
 
     #[test]
@@ -338,9 +332,7 @@ mod tests {
         let json = r#"{
             "transport_failures_to_open": 3,
             "open_duration_secs": 30,
-            "probe_interval_secs": 15,
-            "probe_timeout_secs": 2,
-            "probe_failures_to_open": 3
+            "half_open_successes_to_close": 1
         }"#;
         let parsed: HealthConfig = serde_json::from_str(json).expect("valid HealthConfig json");
         assert_eq!(parsed, HealthConfig::default());
@@ -351,8 +343,6 @@ mod tests {
         let h = HealthConfig::default();
         assert_eq!(h.transport_failures_to_open, 3);
         assert_eq!(h.open_duration_secs, 30);
-        assert_eq!(h.probe_interval_secs, 15);
-        assert_eq!(h.probe_timeout_secs, 2);
-        assert_eq!(h.probe_failures_to_open, 3);
+        assert_eq!(h.half_open_successes_to_close, 1);
     }
 }

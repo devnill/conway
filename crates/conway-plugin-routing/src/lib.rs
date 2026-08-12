@@ -1,10 +1,20 @@
 //! conway-plugin-routing: declarative role -> ordered-candidate resolution
-//! (`DeclarativeRouter`), per-endpoint circuit breakers (`BreakerRegistry`)
-//! plus a background health prober (`HealthProber`) that is defined but not
-//! yet wired into production (see `prober`'s module doc comment and board
-//! item `01KZ802GSF692EKYKQ2TTVCJB8`), the router's own capability
-//! predicate (`satisfies`, `capability.rs`), and the "why did this model
-//! run" report (`RoutingExplain`).
+//! (`DeclarativeRouter`), a per-endpoint circuit breaker (`BreakerRegistry`),
+//! the router's own capability predicate (`satisfies`, `capability.rs`), and
+//! the "why did this model run" report (`RoutingExplain`).
+//!
+//! **The periodic health prober was retired, not wired (board item
+//! `01KZ802GSF692EKYKQ2TTVCJB8`).** A prober type used to live here,
+//! feeding an independent `Probe` breaker from periodic liveness checks
+//! decoupled from request traffic. It had no production call site — the
+//! Transport breaker alone already handles recovery (a clock read takes it
+//! half-open; the next real request retries), so wiring the prober would
+//! only have shaved latency off the first request after an outage, an
+//! optimization this project gates on a measured baseline that neither
+//! existed nor was scheduled. Retiring it (rather than leaving it as a
+//! forward declaration indefinitely) is the operator's decision, not a
+//! default. See `docs/routing.md`'s "Health and failover" section for the
+//! current, single-breaker shape.
 //!
 //! **First-party plugin, not a `conway` built-in (board item
 //! 01KZFC43J1J06BM4CCWKCKHSNV).** `conway`'s own `builder.rs` used to
@@ -47,14 +57,7 @@ mod capability;
 pub mod config;
 mod explain;
 mod factory;
-mod prober;
 mod router;
-
-/// Not yet implemented / not wired (GP-14 forward declaration): no
-/// production code constructs a [`HealthProber`] or calls
-/// [`HealthProber::spawn`] — see `prober`'s module doc comment for why, and
-/// board item `01KZ802GSF692EKYKQ2TTVCJB8` for the deferred wiring.
-pub use prober::{HealthProber, ProberHandle};
 
 // The crate's re-export block is authored incrementally by the work items
 // that implement each type (WI-032 .. WI-036); each lands its own line.

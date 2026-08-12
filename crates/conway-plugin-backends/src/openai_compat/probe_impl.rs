@@ -2,9 +2,10 @@
 //! liveness/readiness check (WI-020).
 //!
 //! Deliberately bypasses `HttpClient::send_with_retry` — a probe is one
-//! observation, never retried (architecture §4.5: `BreakerKind::Probe` is
-//! independent of `BreakerKind::Transport`, which owns the bounded
-//! transport-retry policy). `GET {base}/models`, falling back for the
+//! observation, never retried (architecture §4.5: unlike `BreakerKind::
+//! Transport`, which owns the bounded transport-retry policy, nothing here
+//! feeds an independent breaker of its own — see `docs/routing.md`'s
+//! "Health and failover" section). `GET {base}/models`, falling back for the
 //! `"ollama"` built-in profile only (when `/models` reports `404`) to
 //! `GET {base_origin}/api/tags` and then, if that is also unsupported, to
 //! `GET {base_origin}/api/version` — each request capped at
@@ -24,11 +25,15 @@
 //! still proves the server answers HTTP requests at all. If every tier
 //! 404s, [`OpenAiCompatBackend::run_probe`] still returns
 //! `Err(BackendError::BadRequest{..})` (via [`classify`]) rather than
-//! inventing a synthetic success — it is `conway_plugin_routing::prober`'s job
-//! (WI-124) to recognize that a `BadRequest`-classified probe failure means
-//! "this liveness path isn't served here", not "the endpoint is down", and
-//! to withhold a health observation accordingly rather than tripping the
-//! probe breaker.
+//! inventing a synthetic success — a caller of [`Backend::probe`] classifying
+//! this result is expected to recognize that a `BadRequest`-classified probe
+//! failure means "this liveness path isn't served here", not "the endpoint
+//! is down" (WI-124). No production code currently consumes
+//! `Backend::probe` at all — `conway_plugin_routing`'s periodic health
+//! prober, formerly this classification's only consumer, was retired (board
+//! item `01KZ802GSF692EKYKQ2TTVCJB8`); this method and `Backend::probe`
+//! itself are unaffected and remain part of the `Backend` port's public
+//! contract, exercised directly by this crate's own tests.
 
 use std::time::{Duration, Instant};
 

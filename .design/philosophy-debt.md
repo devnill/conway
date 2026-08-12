@@ -217,14 +217,18 @@ staying purely declarative (GP-07,
 `crates/conway-plugin-routing/src/lib.rs`) is a stronger guarantee than the
 page asks for, not a shortfall against it, and reading it as one (as an
 earlier version of this entry did) imported a stricter definition of
-"dynamic" the page itself does not state. One piece is still genuinely
-deferred, and worth naming precisely rather than folding into "built":
-`HealthProber`, the background per-endpoint liveness loop
-(`crates/conway-plugin-routing/src/prober.rs`), is implemented but never
-spawned in production (board item 01KZ802GSF692EKYKQ2TTVCJB8) — health
-tracking today comes from the Transport breaker reacting to real request
-traffic, not from an independent probe, so a dead endpoint is caught after
-the next request reaches it rather than before. `conway-plugin-backends`
+"dynamic" the page itself does not state. One piece named by an earlier
+version of this entry, `HealthProber` (a background per-endpoint liveness
+loop that would have fed a second, independent `Probe` breaker), is no
+longer deferred — it was retired outright (board item
+01KZ802GSF692EKYKQ2TTVCJB8), not built: it had no production call site
+anywhere in the tree, and the Transport breaker alone already catches a
+dead endpoint recovering (its `HalfOpen` state derives from the clock at
+read time, so the very next real request retries it), so wiring the
+prober would only have shaved latency off that one request — an
+optimization with no measured baseline to justify shipping it. Nothing
+about the page's own "Routing" account depended on that piece existing.
+`conway-plugin-backends`
 (board item 01KZHF270T3W8GZ7NM6DSNQ4MM, formerly this ledger's own
 "Backends as plugins" entry, cleared the same day) is the third member and
 NOT one of the five capabilities this page names — provider adapters, a

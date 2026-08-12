@@ -176,7 +176,6 @@ fn render_reason(reason: &RoutingReason) -> String {
 fn breaker_kind_name(kind: &BreakerKind) -> &'static str {
     match kind {
         BreakerKind::Transport => "transport",
-        BreakerKind::Probe => "probe",
         _ => "unknown",
     }
 }
