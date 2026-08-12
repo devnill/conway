@@ -19,21 +19,44 @@ use crate::hook::{HookAnswer, HookInvocation};
 /// implementation reached over the long-lived plugin transport instead
 /// would satisfy the identical contract.
 ///
-/// **NOT YET WIRED — read this before assuming an injection point exists.**
-/// `ConwayBuilder` has no `with_hook_runner` method today and `conway`'s
-/// extension-surface module does not re-export this trait. Nothing calls
-/// [`HookRunner::run`] anywhere in the tree. The port exists so the
-/// implementation has a contract to satisfy and so the shape is settled
-/// before a consumer arrives; the injection point lands with the first
-/// consumer, board item 01KZS00JP5QNBJSSHNFP9C47GM (`pre_tool_use` wired
-/// into the permission decision), which is what makes it reachable.
+/// **WIRED (board item 01KZS00JP5QNBJSSHNFP9C47GM): [`HookRunner::run`] has
+/// a real call site.** `conway_runtime::permission::PermissionBroker::
+/// decide` invokes it once per enabled `pre_tool_use` hook, at the SAME
+/// tier as its `deny`-pattern check -- before the mode gate, the cache,
+/// pattern-allow grants, and `AutoAllow` -- so a denying hook is enforced
+/// under every permission mode, `AutoAllow` included (see `decide`'s own
+/// doc for the full placement rationale). `PermissionBroker` reads the
+/// answer's `permission` field
+/// ([`crate::hook::HookAnswer::permission`]/[`crate::hook::
+/// HookPermissionVerdict`]), a type with no `Allow` variant at all: a hook
+/// may only narrow a permission verdict (deny it, or say nothing), never
+/// widen one (decision 01KZRZAFD8T3GX407MZC8P1W1E).
 ///
-/// The DESTINATION is the seam `PermissionGate`/`ContextHook` already use —
-/// an `Arc<dyn HookRunner>` injected through `ConwayBuilder`, so a third
-/// party supplies a runner on the identical surface a built-in uses
-/// (GP-03/P-6), and `conway-runtime` never depends on `conway-tools` to
-/// reach one (decision 01KZT642CEZ20K92DYWBTPE2XZ). That is where this is
-/// going, not where it is.
+/// The seam is exactly what this doc used to promise, now real:
+/// `ConwayBuilder::with_hook_runner` injects an `Arc<dyn HookRunner>` on
+/// the identical surface `with_permission_gate`/`with_context_hook` already
+/// use (GP-03/P-6), `conway`'s `plugin` extension-surface module re-exports
+/// this trait (and the domain types its signature names) so a third party
+/// can implement it without depending on `conway-core` directly, and
+/// `conway-runtime` reaches this port ONLY through `conway_core::ports` --
+/// never through `conway-tools` (decision 01KZT642CEZ20K92DYWBTPE2XZ): the
+/// runner arrives as an already-constructed `Arc<dyn HookRunner>` handed in
+/// by the facade, a sibling crate's concern.
+///
+/// **Not called at all (no `with_hook_runner`) is still the default, and
+/// is still a true no-op** -- `PermissionBroker`'s own `hook_runner` field
+/// defaults to `None`, and its hook-check step short-circuits on that
+/// before it ever reads an installed `[hooks].rules[]` entry or performs
+/// any I/O. A `pre_tool_use` rule declared in config with no runner ever
+/// injected parses, validates, and is silently never consulted -- see
+/// `conway::config::schema::HooksConfig`'s own doc for that precise
+/// disclosure.
+///
+/// **What is still NOT wired:** every event OTHER than `pre_tool_use`
+/// remains exactly the forward declaration it always was -- this item
+/// dispatches one event through this port, not the whole `[hooks]`
+/// section. A later item wiring a second event reuses this same port and
+/// this same fail-closed contract, adding only its own dispatch call site.
 ///
 /// **Fail-closed, uniformly, at every invocation** -- not merely at
 /// config-load time. A nonzero exit, a timeout, a missing/unexecutable

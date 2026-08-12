@@ -1,19 +1,24 @@
 # Scripts: the any-language hook convention
 
-**This page documents a designed convention, not a built one.** No
-script-dispatching plugin exists anywhere in this tree today — dispatch
-itself is still entirely design. Board item `01KZDC0RDRMMMJHX7SAFMM2Q5A`'s
-own config-schema child, `01KZRZW5CWMVQ0GPRT4GX4RV5G`, HAS now shipped the
-`[hooks]` block's typed, validated shape (`conway::config::schema::
-HooksConfig`/`HookEntry`) — see the correction note right after the JSON
-example below for exactly how it differs from this page's original
-illustrative sketch. Everything past config parsing (actually running a
-command when an event fires) is still what `01KZRZY1MNM872BZ6AKEBG3SKE` (the
-runner) and `01KZS00JP5QNBJSSHNFP9C47GM` (`pre_tool_use` enforcement) will
-build. `hooks.md` point 13 is the normative status row for this — read it
-for the exact "designed-not-built, config now parsed" boundary; this page is
-the how-it-will-work tutorial built on top of that boundary, not a second
-source of truth for it.
+**This page documents a designed convention, mostly still not a built one --
+`pre_tool_use` is the one exception.** Board item
+`01KZDC0RDRMMMJHX7SAFMM2Q5A`'s own config-schema child,
+`01KZRZW5CWMVQ0GPRT4GX4RV5G`, shipped the `[hooks]` block's typed, validated
+shape (`conway::config::schema::HooksConfig`/`HookEntry`) — see the
+correction note right after the JSON example below for exactly how it
+differs from this page's original illustrative sketch. `01KZRZY1MNM872BZ6AKEBG3SKE`
+(the script runner, `conway_core::ports::HookRunner`/
+`conway_tools::hook_runner::ProcessHookRunner`) and `01KZS00JP5QNBJSSHNFP9C47GM`
+(`pre_tool_use` enforcement) are BOTH now built: a `[hooks].rules[]` entry
+with `event: "pre_tool_use"` and `enabled: true` really does spawn `command`
+and can really deny a tool call, PROVIDED a binary or embedder also calls
+`ConwayBuilder::with_hook_runner` (not automatic — see `hooks.md` point 13's
+"Status" row for that exact precondition). Every event OTHER than
+`pre_tool_use` remains exactly the still-designed convention this page
+describes below — nothing dispatches a `session_start`/`context.hook`/etc.
+example on this page yet. `hooks.md` point 13 is the normative status row —
+read it for the precise per-event boundary; this page is the how-it-works
+tutorial built on top of that boundary, not a second source of truth for it.
 
 Two worked examples below (one shell, one Python) **are real and were run**
 — not against conway, which can't invoke them yet, but standalone, proving
