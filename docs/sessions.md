@@ -23,7 +23,8 @@ kinds you'll see:
 | `fork_directive` | The instruction a forking parent attached on top of the inherited prefix — a forked child's first record. |
 | `parent_steer` | A steer message drained from the mailbox at a turn boundary. |
 | `system_note` | A runtime-authored note (e.g. a [repeated-step notice](#repeated-step-notices) or a [result-contract](agents.md#result-contracts) violation) — never something you or the model wrote. |
-| `agent_result` | The agent's terminal result: status, summary, facts, artifacts. |
+| `agent_result` | The agent's own terminal result: status, summary, facts, artifacts. |
+| `child_result` | A CHILD's terminal result, recorded into the PARENT's own log at the next turn boundary after the child's `AgentMessage::Result` drains from the parent's mailbox — how a fan-out caller (`await: false`) learns a child finished without ever calling `conway_await` on it. See [`agents.md`](agents.md#a-model-tool-call). |
 | `context_report` | What was actually sent to the model that turn: every segment, its provenance, and its estimated token count. |
 | `context_mask` | Marks an earlier record (by its seq) excluded from — or re-included in — a *future fork's inherited prefix*, without touching that record. It has no effect on the owning session's own later turns; nothing in conway today writes one. |
 
@@ -256,7 +257,7 @@ does not summarize, truncate, or otherwise compact your session's history
 on your behalf, ever, as a built-in behavior. This is deliberate: what's
 safe to forget is a judgment call, and it's yours to make, not a policy the
 harness applies silently on your session because the harness guessed the
-window was getting full. See [`.design/whitepaper.md`](../.design/whitepaper.md)
+window was getting full. See [`whitepaper.md`](whitepaper.md)
 §3 and §4.5 for the reasoning.
 
 The consequence is direct: a long-running session's context keeps growing,

@@ -1601,8 +1601,9 @@ mod tests {
     use std::sync::Arc;
 
     use conway::config::schema::{
-        AgentsConfig, ConwayConfig, HealthSection, LimitsConfig, ModelsConfig,
-        PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig, TuiSection,
+        AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
+        PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
+        TuiSection,
     };
     use conway::{Conway, ConwayBuilder, PermissionGate};
     use conway_core::agent::PermissionDecision;
@@ -1639,6 +1640,7 @@ mod tests {
             tui: TuiSection::default(),
             tools: ToolsConfig::default(),
             plugins: PluginsConfig::default(),
+            hooks: HooksConfig::default(),
         }
     }
 

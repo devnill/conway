@@ -296,6 +296,7 @@ fn build_loop(
         report_slot: None,
         result_contract,
         keep_alive: false,
+        tag: None,
     };
 
     let cancel = CancellationToken::new();

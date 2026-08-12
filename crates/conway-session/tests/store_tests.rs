@@ -59,6 +59,21 @@ fn agent_result_record() -> LogRecord {
     }
 }
 
+fn child_result_record() -> LogRecord {
+    let child = AgentId::new();
+    LogRecord::ChildResultRecord {
+        seq: LogSeq(0),
+        ts: ts(),
+        result: AgentResult::new(
+            child,
+            SessionId::new(),
+            ResultStatus::Completed,
+            "child done",
+        ),
+        prov: Provenance::ChildResult { from: child },
+    }
+}
+
 async fn open_store(root: &std::path::Path) -> JsonlSessionStore {
     JsonlSessionStore::open(root.to_path_buf()).await.unwrap()
 }
@@ -474,6 +489,38 @@ async fn append_never_rewrites_existing_bytes() {
         );
         prev = now;
     }
+}
+
+/// Board item 01KZQHY6RTMYR4BRDTMQFP9J9R (P-2/GP-10's "append a delta,
+/// never mutate what was there"): appending a `LogRecord::ChildResultRecord`
+/// -- the record a parent's mailbox drain writes for a child's terminal
+/// result -- is an ordinary append like any other. Every byte written
+/// before it stays byte-identical; the record only ever extends the file.
+#[tokio::test]
+async fn appending_a_child_result_record_leaves_the_prior_transcript_byte_identical() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    let store = open_store(&root).await;
+    let sid = SessionId::new();
+    store.create(meta_for(sid)).await.unwrap();
+    store.append(&sid, user_turn("hello")).await.unwrap();
+    store.append(&sid, agent_result_record()).await.unwrap();
+
+    let path = root.join(format!("{sid}.jsonl"));
+    let prefix = tokio::fs::read(&path).await.unwrap();
+
+    store.append(&sid, child_result_record()).await.unwrap();
+    let after = tokio::fs::read(&path).await.unwrap();
+
+    assert!(
+        after.starts_with(&prefix),
+        "appending a ChildResultRecord must leave every previously-written \
+         byte untouched -- it may only extend the file at the tail"
+    );
+    assert!(
+        after.len() > prefix.len(),
+        "the append must actually have written new bytes"
+    );
 }
 
 // ---------------------------------------------------------------------

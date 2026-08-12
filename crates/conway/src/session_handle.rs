@@ -271,6 +271,9 @@ impl SessionHandle {
             cwd: None,
             // (S3) Same rationale -- inherit its root too.
             root: None,
+            // (01KZQJ03ZQ22MPM9H2TW1350ZF) A modal `/ask` has no
+            // embedder-supplied correlation identifier of its own -- no tag.
+            tag: None,
         };
         // Subscribe BEFORE `start` so the child's first events cannot race
         // past this handle's stream (see the doc above).
@@ -1102,6 +1105,22 @@ fn record_to_event(record: &LogRecord) -> Option<(LogSeq, DateTime<Utc>, Event)>
                     "context report: {} segments, {} tokens",
                     report.segments.len(),
                     report.total_tokens_est
+                ),
+            },
+        )),
+        // 01KZQHY6RTMYR4BRDTMQFP9J9R: a child's result recorded into this
+        // (the parent's) log -- same `AgentProgress` fallback shape as
+        // `ForkDirective`/`ParentSteer`/`ContextReportRecord` above, not a
+        // faithful `AgentFinished` (that event describes the RECORD-OWNING
+        // agent's own finish, and this record's owning agent is the
+        // parent, still running).
+        LogRecord::ChildResultRecord { seq, ts, result, .. } => Some((
+            *seq,
+            *ts,
+            Event::AgentProgress {
+                note: format!(
+                    "child {} finished: {}",
+                    result.agent_id, result.summary
                 ),
             },
         )),

@@ -446,6 +446,19 @@ pub struct ContextPayload {
 #[derive(Clone, Debug)]
 pub struct ContextHookCtx {
     pub agent_id: AgentId,
+    /// The root->this-agent chain, including `agent_id` itself -- same
+    /// ordering and self-inclusion as `crate::agent::PermissionRequest::
+    /// agent_path` (§4.3), populated from the SAME `AgentLoop::agent_path`
+    /// field that request is built from, so a consumer sharing one walk
+    /// between both ports never observes a divergence. Required, not
+    /// defaulted: unlike `PermissionRequest`, this struct has no wire format
+    /// to stay backward-compatible with, so there is no serialization
+    /// justification for a silent `vec![]` default -- and a hook's entire
+    /// reason to want this field is telling a depth-four agent apart from a
+    /// depth-one one, which an empty-by-default vector would defeat for any
+    /// caller that forgets to plumb it. A root agent's path is
+    /// `vec![agent_id]`.
+    pub agent_path: Vec<AgentId>,
     pub session_id: SessionId,
     pub turn: u32,
     /// The model this request is routed toward, if known yet. `None` for
@@ -463,6 +476,26 @@ pub struct ContextHookCtx {
     /// guarantee and why this is a write-capable accessor rather than a raw
     /// root or cwd value a hook would have to resolve against itself.
     pub artifacts: ArtifactWriteHandle,
+    /// Board item 01KZQJ03ZQ22MPM9H2TW1350ZF: the opaque tag an embedder
+    /// attached to this agent at creation time
+    /// (`crate::agent::SubagentSpec::tag`), carried through unread by
+    /// `conway_runtime`'s `AgentSpec::tag`. A hook may read it to correlate
+    /// this call with the caller's own domain object; conway itself never
+    /// branches on it -- see `SubagentSpec::tag`'s own doc for the full
+    /// "never interpreted" guarantee this field is required to uphold.
+    /// `None` for any agent whose spec did not set one (every root agent,
+    /// and any fork/spawn child whose caller left `SubagentSpec::tag`
+    /// unset).
+    ///
+    /// Required, not defaulting: same reasoning as [`Self::agent_path`]
+    /// (01KZQHZH8RXVR38JJX9AY4VSW4) -- this struct derives no `Serialize`/
+    /// `Deserialize` and has no wire format to stay backward-compatible
+    /// with, so there is no serialization justification for a silent
+    /// default, and a hook's whole reason to read this field is telling one
+    /// agent's tag apart from another's (including apart from "no tag"),
+    /// which a defaulted `None` would let a fixture satisfy for free
+    /// whether or not the value was actually plumbed.
+    pub tag: Option<String>,
 }
 
 /// Why [`ContextHook::on_overflow`] fired: the same shortfall accounting as
@@ -686,8 +719,10 @@ mod tests {
     }
 
     fn hook_ctx() -> ContextHookCtx {
+        let agent_id = AgentId::new();
         ContextHookCtx {
-            agent_id: AgentId::new(),
+            agent_id,
+            agent_path: vec![agent_id],
             session_id: SessionId::new(),
             turn: 0,
             model: Some(ModelRef {
@@ -696,6 +731,7 @@ mod tests {
             }),
             estimated_tokens: 100,
             artifacts: artifacts_handle(),
+            tag: None,
         }
     }
 

@@ -88,6 +88,27 @@ pub struct ConwayConfig {
     /// why this crate carries the wire shape but never itself acts on it.
     #[serde(default)]
     pub plugins: PluginsConfig,
+    /// `[hooks]` (board item 01KZDC0RDRMMMJHX7SAFMM2Q5A, "declarative
+    /// hooks"). **A `pre_tool_use` rule is dispatched ONLY IF a runner has
+    /// been injected -- either via `ConwayBuilder::with_hook_runner` (board
+    /// item 01KZS00JP5QNBJSSHNFP9C47GM) directly, or via
+    /// `ConwayBuilder::with_default_hook_runner`, the convenience that
+    /// supplies this workspace's own in-tree default; every other `event` is
+    /// still parsed and validated only.** That precondition is stated here
+    /// rather than only in [`HooksConfig`] because this is the declaration
+    /// site, and GP-14 treats a declaration site as ONE artifact: a reader
+    /// who stops at this field must not come away believing a rule they
+    /// write here will run. `conway-cli` DOES inject a runner (board item
+    /// 01KZVTTP492R3BDY33FAGYWDNW: `build_conway` calls `with_default_
+    /// hook_runner` unconditionally), so a `pre_tool_use` rule in a
+    /// `settings.json` driving the CLI fires. A third party that links this
+    /// crate directly, without calling either method itself, still gets
+    /// nothing -- the CLI's own choice to opt in is not inherited by every
+    /// embedder. See [`HooksConfig`]'s own doc comment for the precise,
+    /// per-event disclosure of what runs today and what remains a forward
+    /// declaration.
+    #[serde(default)]
+    pub hooks: HooksConfig,
 }
 
 fn default_cwd() -> PathBuf {
@@ -368,28 +389,30 @@ impl Default for RoutingSection {
 pub const DEFAULT_HEADROOM_TOKENS: u32 = conway_core::capabilities::DEFAULT_HEADROOM_TOKENS;
 
 /// `[health]`. Facade-owned mirror of `conway_core::routing::HealthConfig`'s
-/// seven fields and defaults — see the module doc comment for why this
+/// three fields and defaults — see the module doc comment for why this
 /// isn't a direct embed of `HealthConfig` (that type lacks
 /// `#[serde(deny_unknown_fields)]`). Every field name, type, and default
 /// value here must match `HealthConfig` exactly, or a valid setting would
 /// silently diverge in meaning between the two types.
 ///
-/// `probe_enabled`/`probe_interval_secs`/`probe_timeout_secs`: not yet
-/// implemented. See `conway_core::routing::HealthConfig`'s doc comment —
-/// `conway-routing::HealthProber` has no production call site, wiring is
-/// deferred to board item `01KZ802GSF692EKYKQ2TTVCJB8`, and `probe_enabled`
-/// defaults `false` so a fresh `settings.json` never asserts periodic
-/// probing that does not happen.
+/// **BREAKING: `probe_enabled`/`probe_interval_secs`/`probe_timeout_secs`/
+/// `probe_failures_to_open` were removed (board item
+/// `01KZ802GSF692EKYKQ2TTVCJB8`), not merely left unimplemented.** They used
+/// to configure a periodic health prober and the independent `Probe` breaker
+/// it fed; the prober had no production call site anywhere in this tree —
+/// the Transport breaker alone already handles recovery (a clock read takes
+/// it half-open; the next real request retries) — so wiring it was an
+/// optimization this project gates on a measured baseline that neither
+/// existed nor was scheduled. Because this struct still carries
+/// `#[serde(deny_unknown_fields)]`, a `settings.json` naming any of the four
+/// removed keys under `[health]` now fails to load with that key named,
+/// rather than silently accepting and ignoring it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct HealthSection {
     pub transport_failures_to_open: u32,
     pub open_duration_secs: u64,
-    pub probe_interval_secs: u64,
-    pub probe_timeout_secs: u64,
-    pub probe_failures_to_open: u32,
     pub half_open_successes_to_close: u32,
-    pub probe_enabled: bool,
 }
 
 impl Default for HealthSection {
@@ -398,11 +421,7 @@ impl Default for HealthSection {
         Self {
             transport_failures_to_open: d.transport_failures_to_open,
             open_duration_secs: d.open_duration_secs,
-            probe_interval_secs: d.probe_interval_secs,
-            probe_timeout_secs: d.probe_timeout_secs,
-            probe_failures_to_open: d.probe_failures_to_open,
             half_open_successes_to_close: d.half_open_successes_to_close,
-            probe_enabled: d.probe_enabled,
         }
     }
 }
@@ -412,11 +431,7 @@ impl From<HealthSection> for conway_core::routing::HealthConfig {
         Self {
             transport_failures_to_open: section.transport_failures_to_open,
             open_duration_secs: section.open_duration_secs,
-            probe_interval_secs: section.probe_interval_secs,
-            probe_timeout_secs: section.probe_timeout_secs,
-            probe_failures_to_open: section.probe_failures_to_open,
             half_open_successes_to_close: section.half_open_successes_to_close,
-            probe_enabled: section.probe_enabled,
         }
     }
 }
@@ -845,4 +860,304 @@ pub struct ThemeStyleConfig {
     pub bg: Option<String>,
     #[serde(default)]
     pub modifiers: Vec<String>,
+}
+
+/// `[hooks]` -- an operator-declared list of "when this event happens, run
+/// this command" rules (board item 01KZDC0RDRMMMJHX7SAFMM2Q5A, "declarative
+/// hooks"; see `docs/plugins/hooks.md` point 13 and `docs/plugins/scripts.md`
+/// for the design this shape is drawn from).
+///
+/// **GP-14 disclosure, PER EVENT -- read this before adding a rule.** This
+/// section itself, and every type it names, always parses and validates
+/// (that part was never event-conditional). Whether a rule actually RUNS is:
+///
+/// - **`event == "pre_tool_use"`, `enabled: true`: DISPATCHED** (board item
+///   01KZS00JP5QNBJSSHNFP9C47GM) -- `ConwayBuilder::build` filters
+///   `rules` to exactly these and hands them to
+///   `conway_runtime::permission::PermissionBroker::decide`, which invokes
+///   each via the injected [`crate::plugin::HookRunner`] at the SAME tier
+///   as a `deny` pattern rule -- before the mode gate, the cache, pattern
+///   allows, and `AutoAllow`, so a denial is enforced under every
+///   permission mode. **This still requires an actual runner.**
+///   `ConwayBuilder::with_hook_runner` (mirroring `with_permission_gate`/
+///   `with_context_hook`: not called at all is the default) is what
+///   supplies one -- `conway-runtime` never constructs one itself (decision
+///   01KZT642CEZ20K92DYWBTPE2XZ: it must not depend on `conway-tools` to
+///   reach one).
+///
+///   **`conway-cli` supplies one.** Board item 01KZVTTP492R3BDY33FAGYWDNW:
+///   `build_conway` calls `ConwayBuilder::with_default_hook_runner` (a
+///   convenience over `with_hook_runner` that constructs this workspace's
+///   own `conway_tools::hook_runner::ProcessHookRunner`) unconditionally, so
+///   a `pre_tool_use` rule written in a real `settings.json` and driven
+///   through the CLI actually fires. **A third party embedding this crate
+///   directly gets none of that automatically** -- the CLI's choice to call
+///   `with_default_hook_runner` is that binary's own opt-in, not a default
+///   this crate applies on a caller's behalf; an embedder must call
+///   `with_hook_runner` or `with_default_hook_runner` itself, exactly like
+///   every other optional port on `ConwayBuilder`. A `pre_tool_use` rule
+///   declared here with no runner ever injected (the embedder case) still
+///   parses, validates, and is silently never consulted -- exactly the same
+///   gap this doc used to disclose for the whole section, now narrowed to
+///   that one precondition.
+/// - **Every OTHER `event` value: still forward-declared, unchanged.**
+///   Nothing in this crate, or anywhere else in the tree, spawns a process,
+///   dispatches an event, or otherwise acts on a rule whose `event` is not
+///   `"pre_tool_use"`. Writing one gets you a config that parses and
+///   rejects a typo'd key exactly like every other section -- and, for
+///   now, nothing more. **01KZRZY1MNM872BZ6AKEBG3SKE** is the general
+///   script-runner port ([`crate::plugin::HookRunner`]) this item's
+///   `pre_tool_use` dispatch is the FIRST consumer of, not the last: a
+///   later item wiring a second event reuses the same runner, the same
+///   [`HookEntry::timeout_ms`]/[`HookEntry::enabled`] enforcement, and adds
+///   only its own event-specific dispatch call site.
+///
+/// **Default: an empty rule list.** This is the part of GP-14's rule that
+/// is easiest to get backwards (its own named precedent, `probe_enabled`,
+/// got exactly this wrong -- see [`HealthSection`]'s doc comment): the
+/// default here must not assert that any dispatch happens, and an empty
+/// list asserts nothing at all. An operator who never writes `[hooks]`
+/// observes zero behavior change from before this item existed.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct HooksConfig {
+    /// Individually named, individually revocable rules -- "rules", not
+    /// "entries" or "hooks", to match the vocabulary the later
+    /// operator-visibility item (umbrella 01KZDC0RDRMMMJHX7SAFMM2Q5A) uses
+    /// when it lists and revokes one by [`HookEntry::id`].
+    pub rules: Vec<HookEntry>,
+}
+
+/// One `[hooks].rules[]` entry: "when `event` happens, run `command`."
+///
+/// **Dispatched when `event == "pre_tool_use"` (and a runner is injected --
+/// see [`HooksConfig`]'s own doc for the exact precondition); parsed and
+/// validated only for every other `event` value.** This crate itself never
+/// constructs a `std::process::Command`/`tokio::process::Command` from a
+/// value of this type either way -- `ConwayBuilder::build` only ever hands
+/// this data to an injected `Arc<dyn `[`crate::plugin::HookRunner`]`>`,
+/// which is where the actual process spawn lives
+/// (`conway_tools::hook_runner::ProcessHookRunner`, board item
+/// 01KZRZY1MNM872BZ6AKEBG3SKE).
+///
+/// **Deliberately minimal.** The only fields beyond the five the owning
+/// board item names are the ones already covered by those five --
+/// specifically, no `cwd` override and no `args`-vs-`command` split were
+/// added: `command` already being an argv vector (program, then its
+/// arguments) settles the args-vs-command question by construction (the
+/// first element IS the program, the rest ARE its arguments -- a separate
+/// `args` field would just restate that split redundantly), and a `cwd`
+/// override is left out because nothing runs yet to need one -- the runner
+/// item (01KZRZY1MNM872BZ6AKEBG3SKE) is the one that knows what "current
+/// directory" should mean for a spawned hook (the invoking agent's cwd? the
+/// project root? see `crates/conway-tools/src/shell/bash.rs`'s own `cwd`
+/// field for the shape precedent if it wants one), and adding the field now,
+/// uninformed by that answer, risks shipping a name nothing reads correctly
+/// once something finally does. Per this item's own instructions: easier to
+/// add an optional field later than remove one from a shipped schema.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct HookEntry {
+    /// This rule's stable, operator-chosen identity. Required, must be
+    /// non-empty, and must be unique across every rule in the merged file
+    /// (`merge::validate`'s hooks check) -- enforced there rather than by a
+    /// serde-level required field, matching this schema's established
+    /// pattern of a lenient parse (missing key -> this type's own default)
+    /// plus a named semantic check for the actual domain invariant (e.g.
+    /// `permissions.mode = "allowlist"` requiring non-empty
+    /// `allowed_tools`).
+    ///
+    /// Load-bearing for the later operator-visibility item, which lists
+    /// hook rules individually and revokes one by name: deriving this from
+    /// list position instead would silently rename a rule the moment the
+    /// list is reordered, so it is never `Option<String>` and never
+    /// inferred from an index.
+    pub id: String,
+    /// The event name this rule fires on (e.g. `"pre_tool_use"`).
+    ///
+    /// FOLLOW-UP LANDING SPOT: this item does NOT validate the
+    /// bare-vs-namespaced event-name convention -- a sibling board item is
+    /// deciding that rule. When it lands, its check belongs here (or in
+    /// `merge::validate`, validating this field against whatever vocabulary
+    /// it settles on). Not blocked on here.
+    pub event: String,
+    /// The command to run, as an argv vector (program, then its arguments)
+    /// -- never a single shell string, so no shell-quoting ambiguity exists
+    /// in config. Contrast `crates/conway-tools/src/shell/bash.rs`'s
+    /// `BashArgs::command`, a single string handed to `bash -c` -- that
+    /// tool's whole point is running an arbitrary shell command, so a shell
+    /// string is the right shape there; a declaratively-configured hook has
+    /// no such reason to need a shell at all, so argv is the right shape
+    /// here.
+    pub command: Vec<String>,
+    /// Milliseconds an injected [`crate::plugin::HookRunner`] will allow
+    /// this command before killing it -- enforced for real, for a
+    /// `pre_tool_use` rule, by `ConwayBuilder::build`'s translation into
+    /// `conway_runtime::permission::PreToolUseHookSpec::timeout_ms` (board
+    /// item 01KZS00JP5QNBJSSHNFP9C47GM); still only READ, never enforced,
+    /// for any other `event` (see [`HooksConfig`]'s own doc). Default
+    /// 5000ms, chosen the same way `crates/conway-tools/src/shell/bash.rs`'s
+    /// own `DEFAULT_TIMEOUT_MS` was: long enough for a typical local script
+    /// (lint, format-check, a small HTTP call) to finish, short enough that
+    /// a hung hook cannot silently stall an agent turn indefinitely.
+    #[serde(default = "default_hook_timeout_ms")]
+    pub timeout_ms: u64,
+    /// Whether this rule is active. Defaults to `true`.
+    ///
+    /// **Why default-`true` does not repeat `probe_enabled`'s mistake:**
+    /// `probe_enabled` defaulted `true` on a section every config already
+    /// had a value for, so the bare default alone asserted periodic
+    /// probing was happening for every operator, including ones who never
+    /// touched `[health]`. This field only has any effect once an operator
+    /// has already hand-written a `[hooks].rules[]` entry -- the default
+    /// rule list is empty (see [`HooksConfig`]'s own doc) -- so there is no
+    /// rule for `enabled` to apply to until the operator deliberately
+    /// creates one. `enabled: true` on a rule an operator just wrote
+    /// asserts nothing about whether a runner exists (neither
+    /// `ConwayBuilder::with_hook_runner` nor `with_default_hook_runner` may
+    /// have been called -- true for a direct embedder of this crate, though
+    /// no longer true for `conway-cli` itself, which now calls the latter
+    /// unconditionally; see [`HooksConfig`]'s own doc for that precondition
+    /// in full); it only says
+    /// "don't treat the rule I just wrote as disabled", ordinary
+    /// boolean-flag convention. `enabled: false` on a `pre_tool_use` rule
+    /// is now genuinely load-bearing: `ConwayBuilder::build`'s filter into
+    /// `PreToolUseHookSpec` drops a disabled rule before `PermissionBroker::
+    /// decide` ever sees it (board item 01KZS00JP5QNBJSSHNFP9C47GM).
+    /// `enabled` on any OTHER `event` stays exactly as inert as every other
+    /// field here.
+    #[serde(default = "default_hook_enabled")]
+    pub enabled: bool,
+}
+
+impl Default for HookEntry {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            event: String::new(),
+            command: Vec::new(),
+            timeout_ms: default_hook_timeout_ms(),
+            enabled: default_hook_enabled(),
+        }
+    }
+}
+
+fn default_hook_timeout_ms() -> u64 {
+    5000
+}
+
+fn default_hook_enabled() -> bool {
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const HOOKS_BLOCK: &str = r#"
+    {
+      "default_role": "coder",
+      "roles": { "coder": { "chain": [] } },
+      "hooks": {
+        "rules": [
+          {
+            "id": "audit-bash",
+            "event": "pre_tool_use",
+            "command": ["/usr/local/bin/audit-hook", "--strict"],
+            "timeout_ms": 3000,
+            "enabled": true
+          }
+        ]
+      }
+    }
+    "#;
+
+    /// ACCEPTANCE: a well-formed `[hooks]` block with one entry parses and
+    /// round-trips (serialize back, re-parse, equal).
+    #[test]
+    fn hooks_block_round_trips() {
+        let cfg: ConwayConfig = serde_json::from_str(HOOKS_BLOCK).expect("must parse");
+        assert_eq!(cfg.hooks.rules.len(), 1);
+        let rule = &cfg.hooks.rules[0];
+        assert_eq!(rule.id, "audit-bash");
+        assert_eq!(rule.event, "pre_tool_use");
+        assert_eq!(
+            rule.command,
+            vec!["/usr/local/bin/audit-hook".to_string(), "--strict".to_string()]
+        );
+        assert_eq!(rule.timeout_ms, 3000);
+        assert!(rule.enabled);
+
+        let reserialized = serde_json::to_string(&cfg).expect("must serialize");
+        let cfg2: ConwayConfig = serde_json::from_str(&reserialized).expect("must re-parse");
+        assert_eq!(cfg, cfg2);
+    }
+
+    /// ACCEPTANCE: a typo'd key INSIDE an entry (`"evnet"`, `"comand"`)
+    /// fails to parse with a serde error naming the unrecognized field --
+    /// proving the strictness is on the entry (`HookEntry`), not just the
+    /// container (`HooksConfig`).
+    #[test]
+    fn typo_d_hook_entry_key_is_rejected_by_deny_unknown_fields() {
+        let json = r#"
+        {
+          "default_role": "coder",
+          "roles": { "coder": { "chain": [] } },
+          "hooks": {
+            "rules": [
+              { "id": "x", "evnet": "pre_tool_use", "comand": ["echo"] }
+            ]
+          }
+        }
+        "#;
+        let result: Result<ConwayConfig, _> = serde_json::from_str(json);
+        let err = result.expect_err("typo'd entry key must be rejected").to_string();
+        // Assert on the field NAME specifically, not on the generic phrase.
+        // An `|| err.contains("unknown field")` fallback would still pass if a
+        // future serde dropped the offending key from the message, which is the
+        // half an operator actually needs -- being told a key is wrong without
+        // being told WHICH key is barely better than silence.
+        assert!(
+            err.contains("evnet"),
+            "error must name the unrecognized field: {err}"
+        );
+    }
+
+    /// ACCEPTANCE: omitting `[hooks]` entirely still parses, with an empty
+    /// rule list -- every existing config file in the repo and in `docs/`
+    /// is unaffected by this item.
+    #[test]
+    fn hooks_omitted_entirely_parses_with_an_empty_rule_list() {
+        let json = r#"
+        {
+          "default_role": "coder",
+          "roles": { "coder": { "chain": [] } }
+        }
+        "#;
+        let cfg: ConwayConfig = serde_json::from_str(json).expect("must parse without [hooks]");
+        assert_eq!(cfg.hooks.rules, Vec::<HookEntry>::new());
+    }
+
+    /// `HookEntry::timeout_ms`/`enabled` each have their own defaults when
+    /// omitted from an entry, independent of `HooksConfig`'s own
+    /// container-level default (which only fires when `rules` itself is
+    /// entirely absent).
+    #[test]
+    fn hook_entry_defaults_apply_when_only_id_event_command_are_given() {
+        let json = r#"
+        {
+          "default_role": "coder",
+          "roles": { "coder": { "chain": [] } },
+          "hooks": {
+            "rules": [
+              { "id": "x", "event": "pre_tool_use", "command": ["echo", "hi"] }
+            ]
+          }
+        }
+        "#;
+        let cfg: ConwayConfig = serde_json::from_str(json).expect("must parse");
+        let rule = &cfg.hooks.rules[0];
+        assert_eq!(rule.timeout_ms, 5000);
+        assert!(rule.enabled);
+    }
 }

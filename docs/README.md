@@ -36,5 +36,11 @@ everything else assumes that page's setup.
 | --- | --- | --- |
 | [`plugins/`](plugins/README.md) | How does conway's plugin and hook architecture work — what's built today, what's decided but not yet built, and where do I start? Start with [`plugins/concepts.md`](plugins/concepts.md) for the mental model. | You're writing a plugin, a hook, or a policy that attaches to conway rather than just using it. |
 
+## Background
+
+| Page | Answers | Read if |
+| --- | --- | --- |
+| [`whitepaper.md`](whitepaper.md) | Why is conway shaped this way — the failure modes it's built against, the primitives fork/spawn and non-compaction rest on, and what they buy you? | You want the reasoning behind conway's design, not just how to drive it. |
+
 For the system-level picture — the crate layout, the core primitives, and
 the data flow of one turn — see [`/ARCHITECTURE.md`](../ARCHITECTURE.md).

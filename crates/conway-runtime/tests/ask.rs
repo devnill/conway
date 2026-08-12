@@ -242,6 +242,7 @@ fn ask_fork_spec(prompt: &str) -> SubagentSpec {
         ask_origin: None,
         cwd: None,
         root: None,
+        tag: None,
     }
 }
 

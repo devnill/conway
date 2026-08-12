@@ -1,13 +1,23 @@
 # Scripts: the any-language hook convention
 
-**This page documents a designed convention, not a built one.** No
-script-dispatching plugin exists anywhere in this tree today. Everything
-below describes the shape decision `01KYTNTRAGX2H72HF4R69XACEX` (the
-2026-07-30 hook-first redirect) committed to and board item
-`01KZDC0RDRMMMJHX7SAFMM2Q5A` will build: a `hooks` configuration block naming
-an event and a command, so extending conway does not require writing Rust.
-`hooks.md` point 13 is the normative status row for this — read it for the
-exact "designed-not-built" boundary; this page is the how-it-will-work
+**This page documents a designed convention, mostly still not a built one --
+`pre_tool_use` is the one exception.** Board item
+`01KZDC0RDRMMMJHX7SAFMM2Q5A`'s own config-schema child,
+`01KZRZW5CWMVQ0GPRT4GX4RV5G`, shipped the `[hooks]` block's typed, validated
+shape (`conway::config::schema::HooksConfig`/`HookEntry`) — see the
+correction note right after the JSON example below for exactly how it
+differs from this page's original illustrative sketch. `01KZRZY1MNM872BZ6AKEBG3SKE`
+(the script runner, `conway_core::ports::HookRunner`/
+`conway_tools::hook_runner::ProcessHookRunner`) and `01KZS00JP5QNBJSSHNFP9C47GM`
+(`pre_tool_use` enforcement) are BOTH now built: a `[hooks].rules[]` entry
+with `event: "pre_tool_use"` and `enabled: true` really does spawn `command`
+and can really deny a tool call, PROVIDED a binary or embedder also calls
+`ConwayBuilder::with_hook_runner` (not automatic — see `hooks.md` point 13's
+"Status" row for that exact precondition). Every event OTHER than
+`pre_tool_use` remains exactly the still-designed convention this page
+describes below — nothing dispatches a `session_start`/`context.hook`/etc.
+example on this page yet. `hooks.md` point 13 is the normative status row —
+read it for the precise per-event boundary; this page is the how-it-works
 tutorial built on top of that boundary, not a second source of truth for it.
 
 Two worked examples below (one shell, one Python) **are real and were run**
@@ -18,7 +28,9 @@ note for exactly what was verified.
 ## The contract
 
 **Declaration** — the shape board item `01KZDC0RDRMMMJHX7SAFMM2Q5A` itself
-gives as the worked example, a JSON block naming an event and a command:
+gave as the ORIGINAL worked example (an illustrative sketch, not the shipped
+schema — see the correction immediately below), a JSON block naming an
+event and a command:
 
 ```json
 { "hooks": {
@@ -27,6 +39,40 @@ gives as the worked example, a JSON block naming an event and a command:
     ]
 } }
 ```
+
+**Correction: this is NOT the shape `01KZRZW5CWMVQ0GPRT4GX4RV5G` shipped.**
+That item settled the config-parsing half of this page down to the field,
+and it diverges from the sketch above in three ways, each decided for a
+stated reason (see `conway::config::schema::HookEntry`'s own doc comment):
+rules are a flat, top-level `rules` list rather than nested per event name
+(`{"hooks":{"rules":[...]}}`, not `{"hooks":{"<event>":[...]}}`) — because
+every rule now carries its own required, unique `id`, which an
+operator-visibility item still to come needs to list and revoke rules
+individually, and a rule's event lives on the rule itself (`event`) rather
+than as its containing map key; and `run` (a single shell string) is
+`command` (an argv vector: program, then arguments) — no shell string, so no
+shell-quoting ambiguity exists in the config file itself. The worked shape
+today is:
+
+```json
+{ "hooks": {
+    "rules": [
+      {
+        "id": "audit-bash",
+        "event": "pre_tool_use",
+        "command": ["~/.conway/hooks/audit-command.sh"],
+        "timeout_ms": 5000,
+        "enabled": true
+      }
+    ]
+} }
+```
+
+This parses, validates (deny-unknown-fields per rule, non-empty/unique
+`id`), and round-trips today. **It still does nothing when loaded** — no
+dispatcher reads `rules` yet; see the runner/enforcement board items named
+above. The stdin/stdout contract described below (what the command receives
+and how it answers) is still design only, for either shape.
 
 **What's decided versus what's still open, stated plainly rather than
 guessed at:**

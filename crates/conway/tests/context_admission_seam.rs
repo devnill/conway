@@ -85,9 +85,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use conway::config::schema::{
-    AgentsConfig, BackendEntry, ConwayConfig, HealthSection, LimitsConfig, ModelsConfig,
-    PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
-    TuiSection,
+    AgentsConfig, BackendEntry, ConwayConfig, HealthSection, HooksConfig, LimitsConfig,
+    ModelsConfig, PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig,
+    ToolsConfig, TuiSection,
 };
 use conway::{Conway, ConwayBuilder, SessionSpec};
 use conway_core::agent::{PermissionDecision, ResultStatus};
@@ -196,6 +196,7 @@ fn config_naming(headroom: u32, metadata_path: PathBuf) -> ConwayConfig {
         tui: TuiSection::default(),
         tools: ToolsConfig::default(),
         plugins: PluginsConfig::default(),
+        hooks: HooksConfig::default(),
     }
 }
 
