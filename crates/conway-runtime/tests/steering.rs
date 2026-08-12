@@ -291,6 +291,7 @@ fn build_loop(
         // owns result-contract coverage.
         result_contract: None,
         keep_alive: false,
+        tag: None,
     };
 
     let cancel = CancellationToken::new();

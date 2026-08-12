@@ -186,6 +186,11 @@ impl Tool for AskTool {
             // (S3) A fork always inherits the forker's root, never overrides
             // it -- same rationale as `cwd` above.
             root: None,
+            // (01KZQJ03ZQ22MPM9H2TW1350ZF) `conway_ask` has no consumer-tag
+            // argument in its schema -- an embedder correlating agents with
+            // its own domain objects sets `SubagentSpec::tag` on a fork/spawn
+            // it constructs directly, not via a model-invoked tool call.
+            tag: None,
         };
 
         let outcome = ctx.subagents.ask(spec).await.map_err(ToolError::from)?;

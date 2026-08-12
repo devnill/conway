@@ -200,6 +200,15 @@ impl From<ForkSpec> for SubagentSpec {
             // concept; see that struct's `root` field and
             // `From<SpawnSpec>` below.
             root: None,
+            // (01KZQJ03ZQ22MPM9H2TW1350ZF) Not yet exposed on `ForkSpec`/
+            // `SpawnSpec`: this item scopes the new surface to
+            // `SubagentSpec`/`AgentSpec`/`ContextHookCtx` only. An embedder
+            // wanting a tag today constructs a `SubagentSpec` directly
+            // (`conway_core::agent::SubagentSpec::tag`) and calls
+            // `SubagentHost::start` itself rather than going through this
+            // facade; wiring a `ForkSpec`/`SpawnSpec` builder method is a
+            // natural follow-on, not built here.
+            tag: None,
         }
     }
 }
@@ -362,6 +371,9 @@ impl From<SpawnSpec> for SubagentSpec {
             ask_origin: None,
             cwd: spec.cwd,
             root: spec.root,
+            // (01KZQJ03ZQ22MPM9H2TW1350ZF) See the identical note in
+            // `From<ForkSpec>` above.
+            tag: None,
         }
     }
 }
