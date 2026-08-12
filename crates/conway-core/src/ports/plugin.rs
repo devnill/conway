@@ -446,6 +446,19 @@ pub struct ContextPayload {
 #[derive(Clone, Debug)]
 pub struct ContextHookCtx {
     pub agent_id: AgentId,
+    /// The root->this-agent chain, including `agent_id` itself -- same
+    /// ordering and self-inclusion as `crate::agent::PermissionRequest::
+    /// agent_path` (§4.3), populated from the SAME `AgentLoop::agent_path`
+    /// field that request is built from, so a consumer sharing one walk
+    /// between both ports never observes a divergence. Required, not
+    /// defaulted: unlike `PermissionRequest`, this struct has no wire format
+    /// to stay backward-compatible with, so there is no serialization
+    /// justification for a silent `vec![]` default -- and a hook's entire
+    /// reason to want this field is telling a depth-four agent apart from a
+    /// depth-one one, which an empty-by-default vector would defeat for any
+    /// caller that forgets to plumb it. A root agent's path is
+    /// `vec![agent_id]`.
+    pub agent_path: Vec<AgentId>,
     pub session_id: SessionId,
     pub turn: u32,
     /// The model this request is routed toward, if known yet. `None` for
@@ -686,8 +699,10 @@ mod tests {
     }
 
     fn hook_ctx() -> ContextHookCtx {
+        let agent_id = AgentId::new();
         ContextHookCtx {
-            agent_id: AgentId::new(),
+            agent_id,
+            agent_path: vec![agent_id],
             session_id: SessionId::new(),
             turn: 0,
             model: Some(ModelRef {

@@ -31,9 +31,9 @@ use conway_core::ids::{
 };
 use conway_core::log::{LogRecord, SessionFilter, SessionMeta};
 use conway_core::ports::{
-    Backend, BoxStream, GenerateRequest, GenerateResponse, HealthRegistry, LiveOwner,
-    PermissionGate, Plugin, PluginConfig, PluginManifest, Router, SessionStore, StreamChunk,
-    SubagentHost, Tool, ToolCtx, ToolOutput,
+    Backend, BoxStream, ContextHook, ContextHookCtx, ContextPayload, GenerateRequest,
+    GenerateResponse, HealthRegistry, LiveOwner, PermissionGate, Plugin, PluginConfig,
+    PluginManifest, Router, SessionStore, StreamChunk, SubagentHost, Tool, ToolCtx, ToolOutput,
 };
 use conway_core::provenance::Provenance;
 use conway_core::routing::{Route, RouteRequest, RoutingReason};
@@ -418,8 +418,20 @@ impl SessionStore for OrderingStore {
 }
 
 async fn seed_prompt(store: &dyn SessionStore, role: &str, prompt: &str) -> (SessionId, AgentId) {
-    let session = SessionId::new();
     let agent = AgentId::new();
+    seed_prompt_for(store, agent, role, prompt).await
+}
+
+/// Like [`seed_prompt`], but for a caller-chosen `agent` id -- needed by any
+/// test that must know the leaf agent's id up front (e.g. to attach it under
+/// a specific ancestor chain in the `AgentTree` before the loop runs).
+async fn seed_prompt_for(
+    store: &dyn SessionStore,
+    agent: AgentId,
+    role: &str,
+    prompt: &str,
+) -> (SessionId, AgentId) {
+    let session = SessionId::new();
     store
         .create(SessionMeta {
             id: session,
@@ -475,6 +487,7 @@ fn build_loop(
     build_loop_inner(
         session,
         agent,
+        vec![],
         store,
         router,
         backend,
@@ -484,6 +497,7 @@ fn build_loop(
         headroom,
         headroom_override,
         role,
+        None,
         None,
     )
 }
@@ -508,6 +522,7 @@ fn build_loop_with_report_slot(
     build_loop_inner(
         session,
         agent,
+        vec![],
         store,
         router,
         backend,
@@ -518,6 +533,47 @@ fn build_loop_with_report_slot(
         None,
         role,
         Some(report_slot),
+        None,
+    )
+}
+
+/// Like [`build_loop`], but attaches `agent` under `ancestors` (root-first,
+/// NOT including `agent` itself) in the `AgentTree` before the loop runs,
+/// derives `AgentLoop::agent_path` from a real `AgentTree::path` walk over
+/// that chain (mirroring `subagent.rs`'s own construction, not a hand-typed
+/// `vec![agent]`), and installs `context_hook` so a test can observe what a
+/// registered `ContextHook` actually receives. Board item
+/// 01KZQHZH8RXVR38JJX9AY4VSW4.
+#[allow(clippy::too_many_arguments)]
+fn build_loop_with_ancestry_and_hook(
+    session: SessionId,
+    agent: AgentId,
+    ancestors: Vec<AgentId>,
+    store: Arc<dyn SessionStore>,
+    router: Arc<dyn Router>,
+    backend: Arc<dyn Backend>,
+    tools: Vec<Arc<dyn Tool>>,
+    gate: Arc<dyn PermissionGate>,
+    budget: Budget,
+    headroom: HeadroomPolicy,
+    role: &str,
+    context_hook: Arc<dyn ContextHook>,
+) -> Harness {
+    build_loop_inner(
+        session,
+        agent,
+        ancestors,
+        store,
+        router,
+        backend,
+        tools,
+        gate,
+        budget,
+        headroom,
+        None,
+        role,
+        None,
+        Some(context_hook),
     )
 }
 
@@ -525,6 +581,7 @@ fn build_loop_with_report_slot(
 fn build_loop_inner(
     session: SessionId,
     agent: AgentId,
+    ancestors: Vec<AgentId>,
     store: Arc<dyn SessionStore>,
     router: Arc<dyn Router>,
     backend: Arc<dyn Backend>,
@@ -535,6 +592,7 @@ fn build_loop_inner(
     headroom_override: Option<u32>,
     role: &str,
     report_slot: Option<Arc<Mutex<Option<conway_core::provenance::ContextReport>>>>,
+    context_hook: Option<Arc<dyn ContextHook>>,
 ) -> Harness {
     let bus = EventBus::new(1024);
     let health: Arc<dyn HealthRegistry> = Arc::new(FakeHealth::new());
@@ -563,7 +621,7 @@ fn build_loop_inner(
         builder: Arc::new(ContextBuilder::new()),
         headroom: Arc::new(headroom),
         tree: tree.clone(),
-        context_hook: std::sync::RwLock::new(None),
+        context_hook: std::sync::RwLock::new(context_hook),
     });
 
     let spec = AgentSpec {
@@ -588,9 +646,26 @@ fn build_loop_inner(
     };
 
     let cancel = CancellationToken::new();
+    let mut parent: Option<AgentId> = None;
+    for ancestor in &ancestors {
+        tree.attach(AgentNode {
+            id: *ancestor,
+            parent,
+            session,
+            kind: None,
+            agent_def: None,
+            role: Some(RoleAlias::new(role)),
+            budget: budget.clone(),
+            cancel: CancellationToken::new(),
+            inherited_upto: None,
+            ephemeral: false,
+        })
+        .expect("fresh tree attach never fails");
+        parent = Some(*ancestor);
+    }
     tree.attach(AgentNode {
         id: agent,
-        parent: None,
+        parent,
         session,
         kind: None,
         agent_def: None,
@@ -601,13 +676,18 @@ fn build_loop_inner(
         ephemeral: false,
     })
     .expect("fresh tree attach never fails");
+    // Same construction `subagent.rs`'s `SubagentHost::start` uses for a
+    // real child's `agent_path` (§4.3): a real `AgentTree::path` walk, not a
+    // hand-typed literal -- so this harness's `agent_path` has the exact
+    // shape production code produces.
+    let agent_path = tree.path(agent);
     let (_mailbox_tx, mailbox_rx) =
         conway_runtime::mailbox::Mailbox::new(conway_runtime::mailbox::RUNTIME_CAPACITY);
     let agent_loop = AgentLoop {
         agent_id: agent,
         session,
-        parent: None,
-        agent_path: vec![agent],
+        parent,
+        agent_path,
         cwd: PathBuf::from("/tmp"),
         root: None,
         deps,
@@ -1367,4 +1447,200 @@ async fn report_slot_is_populated_and_updates_across_turns() {
     // was overwritten with a *new* report, not left stuck on the first one.
     assert!(final_report.turn >= 1);
     assert!(!final_report.segments.is_empty());
+}
+
+// ---------------------------------------------------------------------
+// Board item 01KZQHZH8RXVR38JJX9AY4VSW4: `ContextHookCtx::agent_path`
+// ---------------------------------------------------------------------
+
+/// Records every `ContextHookCtx` a registered `ContextHook` sees, so a test
+/// can assert on what the hook actually received (P-15) rather than on an
+/// intermediate value.
+struct RecordingContextHook {
+    captured: Mutex<Vec<ContextHookCtx>>,
+}
+
+impl RecordingContextHook {
+    fn new() -> Self {
+        Self {
+            captured: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn agent_paths(&self) -> Vec<Vec<AgentId>> {
+        self.captured
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|ctx| ctx.agent_path.clone())
+            .collect()
+    }
+}
+
+#[async_trait]
+impl ContextHook for RecordingContextHook {
+    async fn before_request(
+        &self,
+        ctx: &ContextHookCtx,
+        payload: ContextPayload,
+    ) -> ContextPayload {
+        self.captured.lock().unwrap().push(ctx.clone());
+        payload
+    }
+}
+
+/// The criterion that matters most: `ContextHookCtx::agent_path` and
+/// `PermissionRequest::agent_path`, walked from the SAME leaf agent in the
+/// SAME turn, must be byte-for-byte equal -- not merely equal by reading
+/// both struct definitions. Builds a real four-agent chain
+/// (root -> mid1 -> mid2 -> leaf) in the `AgentTree`, drives one turn that
+/// both fires the registered `ContextHook` and sends one tool call through
+/// the permission gate, and compares what each side actually observed.
+#[tokio::test]
+async fn context_hook_ctx_agent_path_equals_permission_request_agent_path_at_depth_four() {
+    let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
+    let root = AgentId::new();
+    let mid1 = AgentId::new();
+    let mid2 = AgentId::new();
+    let leaf = AgentId::new();
+    let (session, _) = seed_prompt_for(&*store, leaf, "planner", "hello").await;
+
+    let backend = Arc::new(TrackingBackend::new(
+        "b",
+        vec![
+            tool_call_response("tc_1", "read", serde_json::json!({"path": "a.txt"})),
+            text_response("done"),
+        ],
+    ));
+    let router = Arc::new(CapturingRouter::ok(vec![make_route("b", "m")]));
+    let gate = Arc::new(FakeGate::recording());
+    let tool: Arc<dyn Tool> = Arc::new(RecordingTool {
+        name: ToolName::new("read"),
+        output: "file contents".to_string(),
+        order: None,
+    });
+    let hook = Arc::new(RecordingContextHook::new());
+
+    let harness = build_loop_with_ancestry_and_hook(
+        session,
+        leaf,
+        vec![root, mid1, mid2],
+        store,
+        router,
+        backend,
+        vec![tool],
+        gate.clone(),
+        Budget::default(),
+        HeadroomPolicy::default(),
+        "planner",
+        hook.clone(),
+    );
+
+    let result = harness.agent_loop.run().await;
+    assert_eq!(result.status, ResultStatus::Completed);
+
+    let expected_path = vec![root, mid1, mid2, leaf];
+
+    let hook_paths = hook.agent_paths();
+    assert!(
+        !hook_paths.is_empty(),
+        "the registered ContextHook must have been invoked at least once"
+    );
+    assert_eq!(
+        hook_paths[0], expected_path,
+        "ContextHookCtx::agent_path must be the root-first, self-inclusive chain"
+    );
+
+    let requests = gate.requests();
+    assert_eq!(
+        requests.len(),
+        1,
+        "the tool call must have gone through the permission gate exactly once"
+    );
+    assert_eq!(requests[0].agent_id, leaf);
+    assert_eq!(requests[0].agent_path, expected_path);
+
+    // Not by reading both definitions and concluding they agree: compare the
+    // two OBSERVED vectors directly.
+    assert_eq!(
+        hook_paths[0], requests[0].agent_path,
+        "ContextHookCtx and PermissionRequest must agree, walked from the same agent"
+    );
+
+    // A one-level tree can't distinguish a working copy from an empty
+    // vector (P-15) -- assert this fixture is genuinely depth-four, not
+    // vacuously equal.
+    assert_eq!(hook_paths[0].len(), 4);
+    assert_ne!(hook_paths[0], vec![leaf]);
+}
+
+/// A hook can tell a depth-1 agent apart from a depth-4 one, using nothing
+/// but `ContextHookCtx::agent_path` -- proven by actually running both
+/// shapes and asserting on what the SAME hook implementation observed in
+/// each, not by inspecting a single fixture value.
+#[tokio::test]
+async fn context_hook_ctx_agent_path_distinguishes_depth_one_from_depth_four() {
+    // Depth 1: a root agent, no ancestors.
+    let store1: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
+    let (session1, agent1) = seed_prompt(&*store1, "planner", "hello").await;
+    let backend1 = Arc::new(TrackingBackend::new("b", vec![text_response("hi")]));
+    let router1 = Arc::new(CapturingRouter::ok(vec![make_route("b", "m")]));
+    let gate1 = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
+    let hook1 = Arc::new(RecordingContextHook::new());
+    let harness1 = build_loop_with_ancestry_and_hook(
+        session1,
+        agent1,
+        vec![],
+        store1,
+        router1,
+        backend1,
+        vec![],
+        gate1,
+        Budget::default(),
+        HeadroomPolicy::default(),
+        "planner",
+        hook1.clone(),
+    );
+    let result1 = harness1.agent_loop.run().await;
+    assert_eq!(result1.status, ResultStatus::Completed);
+
+    // Depth 4: root -> mid1 -> mid2 -> leaf.
+    let store4: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
+    let root = AgentId::new();
+    let mid1 = AgentId::new();
+    let mid2 = AgentId::new();
+    let leaf = AgentId::new();
+    let (session4, _) = seed_prompt_for(&*store4, leaf, "planner", "hello").await;
+    let backend4 = Arc::new(TrackingBackend::new("b", vec![text_response("hi")]));
+    let router4 = Arc::new(CapturingRouter::ok(vec![make_route("b", "m")]));
+    let gate4 = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
+    let hook4 = Arc::new(RecordingContextHook::new());
+    let harness4 = build_loop_with_ancestry_and_hook(
+        session4,
+        leaf,
+        vec![root, mid1, mid2],
+        store4,
+        router4,
+        backend4,
+        vec![],
+        gate4,
+        Budget::default(),
+        HeadroomPolicy::default(),
+        "planner",
+        hook4.clone(),
+    );
+    let result4 = harness4.agent_loop.run().await;
+    assert_eq!(result4.status, ResultStatus::Completed);
+
+    let path1 = hook1.agent_paths()[0].clone();
+    let path4 = hook4.agent_paths()[0].clone();
+
+    assert_eq!(path1, vec![agent1]);
+    assert_eq!(path4, vec![root, mid1, mid2, leaf]);
+    assert_ne!(
+        path1.len(),
+        path4.len(),
+        "a hook keyed on ctx.agent_path.len() must be able to tell a depth-1 agent \
+         apart from a depth-4 one"
+    );
 }

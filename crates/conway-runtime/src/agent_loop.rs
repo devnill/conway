@@ -637,6 +637,7 @@ impl AgentLoop {
 
             let hook_ctx = ContextHookCtx {
                 agent_id: self.agent_id,
+                agent_path: self.agent_path.clone(),
                 session_id: self.session,
                 turn,
                 model: Some(model.clone()),
@@ -848,6 +849,7 @@ impl AgentLoop {
             if let Some(hook) = self.context_hook() {
                 let hook_ctx = ContextHookCtx {
                     agent_id: self.agent_id,
+                    agent_path: self.agent_path.clone(),
                     session_id: self.session,
                     turn: state.turn,
                     model: self.spec.pin.clone(),
