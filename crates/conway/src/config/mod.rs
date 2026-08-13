@@ -14,7 +14,7 @@ pub mod schema;
 pub mod trust;
 
 pub use discovery::discover;
-pub use merge::{apply_cli, load, validate, CliOverrides, LoadOptions};
+pub use merge::{apply_cli, load, load_ignoring_xdg, validate, CliOverrides, LoadOptions};
 pub use model_metadata::ModelMetadata;
 pub use schema::ConwayConfig;
 

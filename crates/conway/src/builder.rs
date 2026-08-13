@@ -271,12 +271,50 @@ pub struct ConwayBuilder {
 impl ConwayBuilder {
     /// Loads config from an explicit path (bypassing discovery), still
     /// layered under XDG/env/CLI precedence.
+    ///
+    /// **This still reads the ambient XDG/user layer**
+    /// (`$XDG_CONFIG_HOME/conway/settings.json`, or `~/.conway/settings.json`)
+    /// unconditionally, before `path` — exactly as documented above, and
+    /// unchanged by board item 01KZYCKF3Z1XBCS50N7EWWVPEQ. A caller that
+    /// wants `path` to be the *only* config file read — a test fixture, or
+    /// an embedder that wants to use its own configuration rather than
+    /// whatever is in the invoking user's home directory — wants
+    /// [`Self::from_config_only`] instead.
     pub fn from_config(path: impl AsRef<Path>) -> Result<Self> {
         let options = LoadOptions {
             explicit_path: Some(path.as_ref().to_path_buf()),
             ..LoadOptions::default()
         };
         let outcome = config::load(options)?;
+        Ok(Self::from_parts(outcome.config).with_warnings(outcome.warnings))
+    }
+
+    /// Loads config from an explicit path, ignoring the ambient XDG/user
+    /// layer entirely (board item 01KZYCKF3Z1XBCS50N7EWWVPEQ) — the merge
+    /// this method drives is `default < path < env < CLI`, four sources
+    /// instead of [`Self::from_config`]'s five.
+    ///
+    /// **`env` is deliberately NOT suppressed** — `CONWAY_*` environment
+    /// variables are how CI and container entrypoints hand a specific
+    /// invocation its credentials and overrides, a caller-supplied input to
+    /// *this* invocation, not ambient state left over from someone else's.
+    /// See [`crate::config::merge::load_ignoring_xdg`]'s own doc for the
+    /// full reasoning. A caller that also wants an env-free load already
+    /// has the tool for that: [`Self::from_parts`] with a manually
+    /// assembled [`ConwayConfig`], or `config::load_ignoring_xdg` with a
+    /// hand-built (possibly empty) `env` map.
+    ///
+    /// The second consumer this seam serves, beyond test isolation: a host
+    /// application embedding `conway` as a library dependency has, until
+    /// this method, had no way to say "use my configuration" without first
+    /// discovering, and being at the mercy of, whatever happens to sit at
+    /// `~/.conway/settings.json` on the machine it runs on.
+    pub fn from_config_only(path: impl AsRef<Path>) -> Result<Self> {
+        let options = LoadOptions {
+            explicit_path: Some(path.as_ref().to_path_buf()),
+            ..LoadOptions::default()
+        };
+        let outcome = config::load_ignoring_xdg(options)?;
         Ok(Self::from_parts(outcome.config).with_warnings(outcome.warnings))
     }
 
