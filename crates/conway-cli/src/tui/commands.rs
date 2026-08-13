@@ -384,7 +384,7 @@ pub trait Host {
     /// (B3, `[f]` keep), pull_in (B4, `[p]` merge into the parent), purge
     /// (`[esc]` discard, and the quit-with-modal-open fallback). Routed
     /// through this trait like every other facade call so the modal's fate
-    /// dispatch (`apply_ask_fate`) is unit-testable against a fake (P-8:
+    /// dispatch (`apply_ask_fate`) is unit-testable against a fake (
     /// the TUI never reaches the store directly).
     async fn promote(&self, agent: AgentId) -> conway::Result<SessionId>;
     async fn pull_in(&self, child: AgentId) -> conway::Result<()>;
@@ -394,14 +394,14 @@ pub trait Host {
     /// session under the declarative `intent` role, then purged before
     /// returning. Routed through this trait like every other facade call
     /// so the free-text routing decision in `execute` is unit-testable
-    /// against a fake (P-8: the TUI never reaches the store directly).
+    /// against a fake (the TUI never reaches the store directly, only the facade).
     /// `default_recipe` is the CALLER's command default (`Fork` for
     /// `/fork`, `Spawn` for `/spawn`); every degraded path returns a
     /// verbatim passthrough `AgentIntent` carrying that recipe, the raw
     /// text, and no agent def (so a classifier failure can never break the
     /// command), while a real backend failure propagates as
     /// `ConwayError::IntentClassification` -- see `conway::intent`'s
-    /// module doc for the full P-10 validation policy.
+    /// module doc for the full untrusted-output validation policy.
     async fn classify_agent_intent(
         &self,
         parent: AgentId,
@@ -565,10 +565,10 @@ async fn bare_spawn<H: Host>(
 }
 
 /// Executes one NL intent confirmation choice (C2 -- the trust gate for
-/// classified `/fork`/`/spawn` intent, P-10), driven by `app.rs`'s
-/// `Action::IntentConfirm` arm. Reads the parked [`IntentConfirm`] from
-/// `state.mode` (a no-op when no card is open -- a stale choice after the
-/// card already closed cannot double-apply), then:
+/// classified `/fork`/`/spawn` intent, which is untrusted and validated),
+/// driven by `app.rs`'s `Action::IntentConfirm` arm. Reads the parked
+/// [`IntentConfirm`] from `state.mode` (a no-op when no card is open -- a stale
+/// choice after the card already closed cannot double-apply), then:
 ///
 /// - `Confirm`: closes the card and runs the CLASSIFIED recipe directly via
 ///   `bare_fork`/`bare_spawn` (NOT by re-entering `execute` with a synthetic
@@ -874,7 +874,7 @@ fn notice(state: &mut AppState, text: impl Into<String>) {
 /// `Conway::pull_in`, `Discard` -> `Conway::purge`), driven by `app.rs`'s
 /// `Action::AskFate` arm.
 ///
-/// **Forced choice (P-2/GP-10):** a SUCCESS closes the modal
+/// **Forced choice, so the ask's fate is always recorded:** a SUCCESS closes the modal
 /// (`AppState::close_ask_modal`, which also promotes any permission prompt
 /// queued behind it) and records the outcome as a `Notice`; a FAILURE
 /// keeps the modal OPEN with the error shown in-modal
@@ -954,7 +954,7 @@ fn resolve_agent(state: &AppState, token: &str) -> Result<AgentId, String> {
 ///
 /// Unlike the panel, the snapshot deliberately does NOT honor the
 /// `AgentVisibility` filter: it shows ALL nodes, terminal ones included.
-/// A transcript dump is a provenance/auditing artifact (P-2) -- hiding
+/// A transcript dump is a provenance/auditing artifact -- hiding
 /// finished agents here would silently drop rows a copied transcript is
 /// expected to keep.
 ///
@@ -2173,7 +2173,7 @@ mod tests {
 
     /// Item A3 (reworked onto `state.tree` from the MIN-3 runtime-snapshot
     /// test): the snapshot keeps ephemeral `/ask` children in the output
-    /// (P-2 provenance) and marks them with the panel's own plain-text
+    /// (provenance is kept) and marks them with the panel's own plain-text
     /// `(ephemeral)` recipe part so they read distinctly from persistent
     /// subagents -- ASCII only, so a copied transcript line keeps the
     /// marker.

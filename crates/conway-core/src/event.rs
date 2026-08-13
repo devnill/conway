@@ -70,7 +70,7 @@ pub enum Event {
         /// Whether this child is an ephemeral `/ask`-style aside (decision
         /// 01KYD1TWXMZD4BT842CMJT1AED): stamped from the child's
         /// `SessionMeta::ephemeral` at `attach` time. `#[serde(default)]`
-        /// keeps old JSON logs readable (C-04): a missing key deserializes to
+        /// keeps old JSON logs readable: a missing key deserializes to
         /// `false`, matching the pre-ephemeral semantics every non-ask fork/
         /// spawn/root already had.
         #[serde(default)]
@@ -86,7 +86,7 @@ pub enum Event {
     /// consumer can tell a genuine typed-in prompt (`Provenance::UserPrompt`)
     /// apart from a merged `/ask` question folded back in by `Conway::
     /// pull_in` (`Provenance::MergedAsk`) without any string-matching
-    /// (GP-10, P-2) -- the envelope's own `agent`/`seq`/`ts` already say
+    /// -- the envelope's own `agent`/`seq`/`ts` already say
     /// which agent and which position in that agent's log this turn is, so
     /// no separate turn-number field is needed here.
     ///
@@ -121,7 +121,7 @@ pub enum Event {
     /// no fields of its own — the envelope's `agent` names the promoted
     /// agent and its `session` that agent's own session. Fieldless, so old
     /// and new logs agree on its shape; additive under `#[non_exhaustive]`
-    /// (C-04: a new variant never disturbs existing ones' deserialization).
+    /// (a new variant never disturbs existing ones' deserialization).
     AgentPromoted {},
 
     TurnStarted {
@@ -520,7 +520,7 @@ mod tests {
         }
     }
 
-    /// C-04 backward-compat: an old JSON log line for `agent_spawned` (and,
+    /// Backward-compat: an old JSON log line for `agent_spawned` (and,
     /// symmetrically, `agent_finished`) written before `ephemeral` existed
     /// deserializes with `ephemeral: false`, and a round trip of an
     /// ephemeral-flagged value preserves it.

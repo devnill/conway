@@ -25,12 +25,12 @@
 //!    and its presence is not precedent for adding another.
 //!
 //! Kinds 2 and 3 are alike in exactly one respect: both are unconditionally
-//! available rather than gated behind `feature = "fakes"`, and neither
-//! performs I/O. Kind 3 is unconditional for a specific reason rather than a
-//! general one -- `conway`'s `[dependencies]` never enables `fakes` (only its
-//! `[dev-dependencies]` do), so a gated constructor would be unreachable by
-//! the third-party author it exists to serve (GP-03/P-6). Every other
-//! implementation lives in a dedicated crate.
+//! available rather than gated behind `feature = "fakes"`, and neither performs
+//! I/O. Kind 3 is unconditional for a specific reason rather than a general one
+//! -- `conway`'s `[dependencies]` never enables `fakes` (only its
+//! `[dev-dependencies]` do), so a gated constructor would be unreachable by the
+//! third-party author it exists to serve -- a built-in gets no privileged API.
+//! Every other implementation lives in a dedicated crate.
 
 mod artifact;
 mod backend;

@@ -61,9 +61,9 @@ pub struct App {
     conway: Conway,
     /// The TUI's resolved color/style table (T1): built once at startup from
     /// `[tui.theme]` config (defaults when the key is absent or a value is
-    /// malformed -- P-10) and passed by reference into `view::draw` every
-    /// frame. Decision D-T1: threaded as `&Theme`, not re-fetched via a
-    /// call-site accessor or a global `Lazy`.
+    /// malformed -- config is untrusted input) and passed by reference into
+    /// `view::draw` every frame. Decision D-T1: threaded as `&Theme`, not
+    /// re-fetched via a call-site accessor or a global `Lazy`.
     theme: Theme,
     /// `/ask` (B5) spawns a `tokio::spawn`ed task per question (fork-ask,
     /// then drain the child's single turn to completion via
@@ -77,15 +77,15 @@ pub struct App {
     /// `run`, and polled there as an extra `tokio::select!` arm.
     modal_ask_tx: mpsc::UnboundedSender<ModalAskOutcome>,
     modal_ask_rx: Option<mpsc::UnboundedReceiver<ModalAskOutcome>>,
-    /// T8: where [`Self::submit`] persists `state.history` to after every
-    /// push -- `~/.conway/history` (or `$XDG_CONFIG_HOME/conway/history`
-    /// when set), resolved once at `App::new` via
-    /// `conway::config::discovery::history_file_path`. `None` only when
-    /// that resolution itself fails (no resolvable home directory --
-    /// `directories::BaseDirs::new()` returned `None`), in which case
-    /// history still works for the running session (in-memory, via
-    /// `AppState::history`), it just never round-trips to disk. P-10: this
-    /// is a degrade, never a startup failure.
+    /// T8: where [`Self::submit`] persists `state.history` to after every push
+    /// -- `~/.conway/history` (or `$XDG_CONFIG_HOME/conway/history` when set),
+    /// resolved once at `App::new` via
+    /// `conway::config::discovery::history_file_path`. `None` only when that
+    /// resolution itself fails (no resolvable home directory --
+    /// `directories::BaseDirs::new()` returned `None`), in which case history
+    /// still works for the running session (in-memory, via
+    /// `AppState::history`), it just never round-trips to disk. The history
+    /// file is untrusted input: this is a degrade, never a startup failure.
     history_path: Option<std::path::PathBuf>,
 }
 
@@ -126,10 +126,11 @@ impl App {
     /// `oneshot::resolve_session`, which has no equivalent for the TUI to
     /// share).
     ///
-    /// Board item 01KZGRXFSY4ZB7NCA9NS2AGFS5: `--model` used to be accepted
-    /// by the parser and then never read here at all, despite the same flag
-    /// being genuinely wired in one-shot mode -- a renderer-only gap (P-8),
-    /// closed by reusing one-shot's own `--model` parser
+    /// Board item 01KZGRXFSY4ZB7NCA9NS2AGFS5: `--model` used to be accepted by
+    /// the parser and then never read here at all, despite the same flag being
+    /// genuinely wired in one-shot mode -- a renderer-only gap -- every
+    /// capability lands in the facade, so a difference between modes is a
+    /// renderer bug, closed by reusing one-shot's own `--model` parser
     /// (`crate::model_pin::parse_model_pin`) rather than a second one that
     /// could fail a malformed value a different way.
     ///
@@ -184,22 +185,22 @@ impl App {
         let mut state = AppState::new(handle.root());
         // T1: build the theme once from the loaded `[tui.theme]` config
         // (defaults when the section is absent; malformed values fall back
-        // to per-slot defaults -- P-10, never a panic). `Theme::from_config`
+        // to per-slot defaults -- untrusted input, never a panic). `Theme::from_config`
         // is infallible by construction.
         let theme = Theme::from_config(&conway.config().tui.theme);
         // T3: status-line field order/visibility from `[tui.status_line]`
         // (defaults to the Lean line when absent; unknown field names are
-        // dropped at render time -- P-10, never a panic).
+        // dropped at render time -- untrusted input, never a panic).
         state.status_line_config = conway.config().tui.status_line.clone();
         // T5: collapsed tool-preview line cap from
-        // `[tui.tool_preview_lines]` (default 3). P-10: the config is
-        // untrusted -- `clamp_tool_preview_lines` clamps to `1..=200` and
+        // `[tui.tool_preview_lines]` (default 3). The config is untrusted
+        // input -- `clamp_tool_preview_lines` clamps to `1..=200` and
         // falls back to the default of 3 on a missing/out-of-range value.
         // Never a panic, no `unwrap`/`expect`/indexing on the config value.
         state.tool_preview_lines =
             super::state::clamp_tool_preview_lines(conway.config().tui.tool_preview_lines);
         // T8: input-history cap from `[tui.history_size]` (default 500,
-        // clamped the same P-10 way as `tool_preview_lines` just above),
+        // clamped the same way as `tool_preview_lines` just above),
         // then load whatever history already exists on disk -- best-effort
         // (`history::load` degrades to an empty history on a missing,
         // unreadable, or corrupt file, never a panic/startup failure -- see
@@ -257,7 +258,7 @@ impl App {
                 .transcript
                 .push(super::state::Entry::Notice { text: notice });
         }
-        // P-12: a rule that fails registration (today: `command_prefix`
+        // A rule that fails registration (today: `command_prefix`
         // against a Structured-render tool, a rule that can never match
         // reliably) is the silent-inert rule these typed errors exist to
         // flag -- producing the error and then dropping it would recreate
@@ -294,21 +295,22 @@ impl App {
         }
         // Board item 01KZ803DJW8Y1H4FXTM8D3PYMY: `Conway::warnings()`
         // (currently only `WarningCode::HeadroomExceedsContext`, pushed by
-        // `config::merge::validate` when a role's effective headroom is
-        // `>=` the smallest context window reachable through its chain --
-        // every request routed to that model would be rejected outright by
-        // the context-window gate) had zero callers workspace-wide before
-        // this. `main.rs` prints the SAME warnings to stderr for every
-        // non-interactive target, but a stray stderr write here would land
-        // on top of the drawn UI once the terminal is in raw/alternate-
-        // screen mode -- so the TUI's own surface is the transcript instead,
-        // exactly the two-surfaces answer GP-05/C-03 asks for. Rendered
+        // `config::merge::validate` when a role's effective headroom is `>=`
+        // the smallest context window reachable through its chain -- every
+        // request routed to that model would be rejected outright by the
+        // context-window gate) had zero callers workspace-wide before this.
+        // `main.rs` prints the SAME warnings to stderr for every
+        // non-interactive target, but a stray stderr write here would land on
+        // top of the drawn UI once the terminal is in raw/alternate- screen
+        // mode -- so the TUI's own surface is the transcript instead, exactly
+        // the two-surfaces answer the
+        // interactive-first-but-every-mode-reachable rule asks for. Rendered
         // through the SAME `Entry::Error { fatal: false }` channel
-        // `report.registration_errors` uses just above, not `Entry::Notice`:
-        // a misconfigured headroom is not a routine notice, it is a
-        // standing routing failure for that role, and `fatal: false`'s
-        // whole purpose is to keep exactly that kind of message from being
-        // camouflaged as ordinary cyan chatter.
+        // `report.registration_errors` uses just above, not `Entry::Notice`: a
+        // misconfigured headroom is not a routine notice, it is a standing
+        // routing failure for that role, and `fatal: false`'s whole purpose is
+        // to keep exactly that kind of message from being camouflaged as
+        // ordinary cyan chatter.
         for warning in conway.warnings() {
             state.transcript.push(super::state::Entry::Error {
                 text: format!("config warning: {}", warning.message),
@@ -905,16 +907,16 @@ impl App {
     /// command: neither ever reaches `commands::parse` as an "unknown
     /// command" error, and neither is ever sent to the model as a prompt.
     async fn submit(&mut self, text: String) -> conway::Result<SubmitOutcome> {
-        // T8: every submitted line (prompt or slash command) is recorded
-        // into the history FIFO before dispatch, so a slash command that
-        // changes `self.handle`/exits the loop still recorded exactly what
-        // the user typed. `AppState::push_history` is pure/in-memory and
-        // bounds the deque to `state.history_cap` itself; persisting the
-        // updated deque to disk is a SEPARATE, best-effort step (P-10: a
-        // failed WRITE must never fail the submit it was recording, so the
+        // T8: every submitted line (prompt or slash command) is recorded into
+        // the history FIFO before dispatch, so a slash command that changes
+        // `self.handle`/exits the loop still recorded exactly what the user
+        // typed. `AppState::push_history` is pure/in-memory and bounds the
+        // deque to `state.history_cap` itself; persisting the updated deque to
+        // disk is a SEPARATE, best-effort step (the history file is untrusted:
+        // a failed WRITE must never fail the submit it was recording, so the
         // `io::Result` is swallowed here, not `?`-propagated). Run on the
-        // blocking pool -- same reasoning `App::new`'s `read_git_branch`
-        // uses -- so a slow/contended filesystem never stalls the app loop.
+        // blocking pool -- same reasoning `App::new`'s `read_git_branch` uses
+        // -- so a slow/contended filesystem never stalls the app loop.
         self.state.push_history(text.clone());
         if let Some(path) = self.history_path.clone() {
             let history = self.state.history.clone();
@@ -983,8 +985,9 @@ impl App {
                             // B3: surface each registration error through the
                             // SAME `Entry::Error { fatal: false }` channel
                             // `load_permission_files`'s `registration_errors`
-                            // uses (P-12) -- a `paths_under` rule the broker
-                            // dropped as uncanonicalizable must not be
+                            // uses, so it reaches the operator rather than
+                            // being discarded -- a `paths_under` rule the
+                            // broker dropped as uncanonicalizable must not be
                             // camouflaged as a routine notice.
                             for err in report.registration_errors {
                                 self.state.transcript.push(super::state::Entry::Error {
@@ -1165,11 +1168,12 @@ impl App {
         if self.state.block_message_if_focused_agent_finished() {
             return Ok(SubmitOutcome::Continue);
         }
-        // This item (typed `Event::UserTurn`, closing the P-8 gap): no
-        // local `Entry::User` push here anymore. `Runtime::prompt` (reached
-        // via `prompt_agent` below) now emits `Event::UserTurn` live on the
-        // SAME event stream this app's run loop already polls, and `state.
-        // rs`'s `apply` builds the `Entry::User` bubble from that envelope
+        // This item (typed `Event::UserTurn`, closing the gap where one mode
+        // had a capability the facade did not): no local `Entry::User` push
+        // here anymore. `Runtime::prompt` (reached via `prompt_agent` below)
+        // now emits `Event::UserTurn` live on the SAME event stream this app's
+        // run loop already polls, and `state. rs`'s `apply` builds the
+        // `Entry::User` bubble from that envelope
         // -- the one path both this TUI and a library embedder watching the
         // bare `EventStream` now share. Pushing it here too would double it
         // (the exact regression this item's own tests guard against); NOT
@@ -1439,7 +1443,7 @@ impl App {
     /// loop. If the `/ask` modal is open -- OR parked behind a permission
     /// prompt in `pending_ask_modal` (the two compete for the one modal
     /// slot, so at most one is present) -- its child is purged via
-    /// `Conway::purge`. Quitting IS the discard fate (P-2/GP-10: purge
+    /// `Conway::purge`. Quitting IS the discard fate (purge
     /// only ever happens by an explicit user action, and quitting with the
     /// modal open is one). Best-effort: the process is exiting anyway, so
     /// a purge failure only leaves residue the NEXT startup's crash sweep
@@ -1513,7 +1517,7 @@ async fn run_modal_ask(handle: SessionHandle, question: String) -> ModalAskOutco
 /// repo, `git` not on `PATH`, non-zero exit, non-UTF8 output, or a spawn
 /// error. Never panics, never blocks startup on a hung `git`: the command
 /// runs on the blocking pool and its output is bounded by `Command::output`
-/// (which reads stdout into a buffer and waits for the child). C-04: no new
+/// (which reads stdout into a buffer and waits for the child). No new
 /// deps -- `std::process::Command` only.
 /// V2b: appends `rule` to the permission file at `path`, best-effort.
 ///
@@ -1746,7 +1750,7 @@ mod tests {
         );
     }
 
-    /// A1 (P-12, GP-14): a permission rule that fails registration is
+    /// A1: a permission rule that fails registration is
     /// OPERATOR-VISIBLE at load time. The assertion is on the observable
     /// transcript/rendered screen -- what the operator actually reads --
     /// NOT on `report.registration_errors` (the field the producer writes;
@@ -1870,7 +1874,7 @@ mod tests {
         );
     }
 
-    /// A3 (P-12): a deny or prompt rule shipped by an UNTRUSTED project
+    /// A3: a deny or prompt rule shipped by an UNTRUSTED project
     /// checkout applies immediately (that asymmetry is the sound part of
     /// the model -- `permission_trust_seam.rs` proves the application
     /// half) -- and the operator can SEE it in `/settings`, with its
@@ -2094,7 +2098,7 @@ mod tests {
     /// OBSERVABLE OUTCOME -- the rendered transcript TEXT `App::new`
     /// produces for a REAL misconfigured fixture -- not the return value of
     /// `conway.warnings()`, which is checked only as a sanity precondition
-    /// below, never as a substitute (GP-14's own warning against asserting
+    /// below, never as a substitute (the standing warning against asserting
     /// the intermediate signal).
     ///
     /// Reached through the REAL `config::load` path

@@ -36,7 +36,7 @@ pub const DEFAULT_SUMMARY_LIMIT: usize = 2000;
 /// context/prompt the orchestrator may want to feed onward -- whereas
 /// `AskOutcome::text` carries the entire reply, untruncated. `transcript_ref`
 /// names the ephemeral child session so the orchestrator's
-/// `ToolResultRecord` can point at it (P-2 provenance reachability).
+/// `ToolResultRecord` can point at it, which is what keeps provenance reachable.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AskOutcome {
     /// The FULL concatenated `TextDelta` reply -- NOT `AgentResult::summary`
@@ -161,7 +161,8 @@ impl Default for Budget {
 }
 
 /// The complete specification for spawning or forking a subagent. `fork` and
-/// `spawn` are the only two subagent modes (GP-02); `mode` is
+/// `spawn` are the only two subagent modes, and they are never blurred into one
+/// parameterized operation; `mode` is
 /// [`SubagentMode`], re-exported above.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SubagentSpec {
@@ -189,8 +190,8 @@ pub struct SubagentSpec {
     /// `ephemeral` is a [`crate::log::SessionMeta`] listing-visibility bit,
     /// NOT a mode -- it filters the child out of default session catalog
     /// listings and the TUI `/agents` panel while keeping it attached to the
-    /// live [`AgentTreeSnapshot`] for provenance (P-2). This is not a third
-    /// subagent primitive (P-1): `ask` is fork+await-text, not a new mode.
+    /// live [`AgentTreeSnapshot`] for provenance. This is not a third
+    /// subagent primitive: `ask` is fork+await-text, not a new mode.
     /// Defaults `false` via the `fork`/`spawn` constructors below, preserving
     /// the pre-existing non-ephemeral fork/spawn behavior unchanged.
     pub ephemeral: bool,
@@ -224,7 +225,8 @@ pub struct SubagentSpec {
     /// still escapes it. The permission gate remains the actual enforcement
     /// layer.
     ///
-    /// `#[serde(default)]` (C-04): a `SubagentSpec` serialized before this
+    /// `#[serde(default)]` keeps already-persisted data readable: a
+    /// `SubagentSpec` serialized before this
     /// field existed still deserializes, as `None` -- the pre-existing
     /// inherit-the-parent's-cwd behavior for every such spec.
     #[serde(default)]
@@ -241,7 +243,8 @@ pub struct SubagentSpec {
     ///
     /// `None` (the `fork`/`spawn` constructors' default, and the ONLY shape
     /// the facade's `ForkSpec` can express -- a fork inherits the forker's
-    /// ENTIRE context, GP-02, so a root override there would be incoherent
+    /// ENTIRE context -- a fork inherits all of it or none -- so a root override
+    /// there would be incoherent
     /// with the context the child actually sees) means "inherit the
     /// parent's root, unchanged" -- including when the parent itself is
     /// unconfined (`root: None`), which stays `None` all the way down until
@@ -259,14 +262,15 @@ pub struct SubagentSpec {
     /// not canonicalize, or whose child `cwd` (inherited or overridden)
     /// would fall outside it, also fails the spawn.
     ///
-    /// This field is **not itself enforcement** (P-10/out of scope for this
+    /// This field is **not itself enforcement** (out of scope for this
     /// item): nothing yet checks a tool call's arguments against it. It is
     /// carried and validated end-to-end -- resolved once, persisted onto the
     /// child's own `crate::log::SessionMeta::root` -- so a later slice can
     /// wire the actual confinement check without this plumbing changing
     /// shape.
     ///
-    /// `#[serde(default)]` (C-04): a `SubagentSpec` serialized before this
+    /// `#[serde(default)]` keeps already-persisted data readable: a
+    /// `SubagentSpec` serialized before this
     /// field existed still deserializes, as `None` -- the pre-existing
     /// unconfined behavior for every such spec.
     #[serde(default)]
@@ -302,7 +306,8 @@ pub struct SubagentSpec {
     /// constructors below: this item scopes the surface to `ContextHookCtx`
     /// only (`PermissionRequest` is a documented follow-on, not built here).
     ///
-    /// `#[serde(default)]` (C-04): a `SubagentSpec` serialized before this
+    /// `#[serde(default)]` keeps already-persisted data readable: a
+    /// `SubagentSpec` serialized before this
     /// field existed still deserializes, as `None` -- no tag, exactly the
     /// pre-existing behavior for every such spec.
     #[serde(default)]
@@ -425,9 +430,9 @@ pub struct AgentNode {
     /// 01KYD1TWXMZD4BT842CMJT1AED), projected from the attached node's
     /// `ephemeral` flag at `snapshot` time (the same source
     /// `Event::AgentSpawned::ephemeral` is stamped from). The snapshot keeps
-    /// ephemeral children (P-2 provenance); this flag is what lets a
+    /// ephemeral children, so their provenance survives; this flag is what lets a
     /// consumer tell them apart from persistent subagents. `#[serde(default)]`
-    /// keeps old serialized snapshots readable (C-04): a missing key
+    /// keeps old serialized snapshots readable: a missing key
     /// deserializes to `false`, matching the pre-ephemeral semantics.
     #[serde(default)]
     pub ephemeral: bool,
@@ -787,7 +792,7 @@ mod tests {
 
     /// (b) C1's own acceptance test: a `SubagentSpec` in the shape it had
     /// before this item -- no `cwd` key at all, exactly what pre-C1 code (or
-    /// any external caller/persisted snapshot -- C-04) produced -- still
+    /// any external caller/persisted snapshot) produced -- still
     /// deserializes, with `cwd` landing on its `None` default rather than
     /// failing or requiring the key.
     #[test]
@@ -854,8 +859,9 @@ mod tests {
     #[test]
     fn subagent_spec_fork_and_spawn_default_ephemeral_false() {
         // Regression: existing fork/spawn is non-ephemeral. `ephemeral` is a
-        // listing-visibility bit, NOT a mode (P-2), and defaults `false` via
-        // both constructors so pre-existing fork/spawn behavior is unchanged.
+        // listing-visibility bit, NOT a mode -- provenance is unaffected -- and
+        // defaults `false` via both constructors so pre-existing fork/spawn
+        // behavior is unchanged.
         let fork = SubagentSpec::fork("x", Budget::default());
         assert!(!fork.ephemeral);
         let spawn = SubagentSpec::spawn("x", AgentDefRef("r".into()), Budget::default());
@@ -929,7 +935,7 @@ mod tests {
 
     #[test]
     fn agent_node_without_ephemeral_key_deserializes_to_false() {
-        // C-04 backward compat: a snapshot serialized before the `ephemeral`
+        // Backward compat: a snapshot serialized before the `ephemeral`
         // field existed has no key for it; `#[serde(default)]` must read it
         // back as `false` (the pre-ephemeral semantics), never fail.
         let json = r#"{

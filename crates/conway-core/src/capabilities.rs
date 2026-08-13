@@ -62,9 +62,9 @@ impl PartialOrd for ToolCallSupport {
     }
 }
 
-/// How a backend caches shared prompt prefixes. Never correctness-bearing
-/// (GP-06): an adapter MAY ignore any hint derived from this without
-/// changing assembled request content.
+/// How a backend caches shared prompt prefixes. Caching is economics, never
+/// correctness-bearing: an adapter MAY ignore any hint derived from this
+/// without changing assembled request content.
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -249,7 +249,7 @@ impl RequiredCaps {
 
     /// How far `total_required(est_tokens)` exceeds `caps.max_context_tokens`
     /// (`0` if it does not exceed it). Saturating. Delegates to
-    /// `Admission::shortfall_tokens` (P-14: the headroom arithmetic itself
+    /// `Admission::shortfall_tokens` (the headroom arithmetic itself, in one place
     /// lives in exactly one place, `conway_core::ports::check_admission`'s
     /// `Admission`, not restated here).
     pub fn shortfall(&self, caps: &Capabilities, est_tokens: u32) -> u32 {
@@ -289,7 +289,7 @@ impl RequiredCaps {
         }
 
         // Context: headroom-aware, the load-bearing check. The fit
-        // comparison itself is `Admission::fits`/`shortfall_tokens` (P-14:
+        // comparison itself is `Admission::fits`/`shortfall_tokens` (
         // one headroom arithmetic in the workspace, `conway_core::ports::
         // check_admission`) -- this method's own contribution is only its
         // distinct message wording/ordering, which `capability.rs`

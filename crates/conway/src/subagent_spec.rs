@@ -1,7 +1,8 @@
 //! `ForkSpec`/`SpawnSpec`: the library-consumer-facing request shapes for
 //! [`crate::SessionHandle::fork`]/[`crate::SessionHandle::spawn`] (WI-102).
 //!
-//! GP-02 (the project's centerpiece): **fork** inherits the forker's entire
+//! The project's centerpiece, and the two are never blurred into one
+//! parameterized operation: **fork** inherits the forker's entire
 //! context plus an additional directive; **spawn** is clean-slate. The two
 //! specs below are kept as distinct types -- not one type with a mode flag
 //! -- so that distinction is visible at the call site, even though
@@ -82,9 +83,9 @@ pub struct ForkSpec {
     /// own default and preserving the existing autonomous, one-shot fork
     /// behavior unchanged. Set via [`ForkSpec::keep_alive`].
     pub keep_alive: bool,
-    /// A `SessionMeta`-listing-visibility bit (P-2 provenance is unaffected
+    /// A `SessionMeta`-listing-visibility bit (provenance is unaffected
     /// -- the child stays attached to the live `AgentTreeSnapshot`
-    /// regardless), NOT a third subagent mode (P-1: `ask` is fork+await-text,
+    /// regardless), NOT a third subagent mode (`ask` is fork+await-text,
     /// built on top of fork, never a new primitive). Defaults `false` via
     /// [`ForkSpec::new`], preserving the pre-existing non-ephemeral fork
     /// behavior unchanged. Set via [`ForkSpec::ephemeral`]. Mirrors
@@ -93,7 +94,7 @@ pub struct ForkSpec {
     /// Which `/ask`-style path is creating this child, stamped verbatim
     /// into the child's durable `SessionMeta::ask_origin`. `None` (the
     /// [`ForkSpec::new`] default) is the ordinary, non-ask fork path.
-    /// **Ask is fork-only (P-1)**: `SpawnSpec` deliberately has no matching
+    /// **Ask is fork-only**: `SpawnSpec` deliberately has no matching
     /// field at all, so a caller cannot express "spawn with an ask origin"
     /// -- an incoherent combination the type system rules out rather than
     /// rejecting at runtime. Set via [`ForkSpec::ask_origin`]. Mirrors
@@ -184,7 +185,7 @@ impl From<ForkSpec> for SubagentSpec {
             ephemeral: spec.ephemeral,
             ask_origin: spec.ask_origin,
             // Deliberately NOT exposed on `ForkSpec` (C1): a fork inherits
-            // the forker's ENTIRE context (GP-02), so a `ForkSpec` field
+            // the forker's ENTIRE context -- all of it or none -- so a `ForkSpec` field
             // saying "but scope tools to this other directory" would be
             // incoherent with the context the child actually sees -- the
             // child's own transcript would keep describing the forker's
@@ -263,7 +264,7 @@ pub struct SpawnSpec {
     /// (S3) Scopes the spawned child's confinement root, independent of (but
     /// validated against) `cwd` above -- the embedder-only surface for the
     /// "root plumbing" slice: `conway_fork`/`conway_spawn` (the
-    /// model-invoked tools) gain no equivalent argument (GP-04), exactly as
+    /// model-invoked tools) gain no equivalent argument, exactly as
     /// they have none for `cwd` today. `None` (the [`SpawnSpec::new`]
     /// default) preserves the pre-existing "inherit the parent's root"
     /// behavior unchanged -- including staying unconfined when the parent
@@ -439,7 +440,7 @@ mod tests {
         assert!(converted.keep_alive);
     }
 
-    /// The ephemeral-ask shape (P-1: `ask` is fork+await-text, not a third
+    /// The ephemeral-ask shape (`ask` is fork+await-text, not a third
     /// primitive) round-trips through `From<ForkSpec> for SubagentSpec`:
     /// `ephemeral: true` plus a concrete `ask_origin` both survive the
     /// conversion unchanged, and each defaults to today's non-ask behavior

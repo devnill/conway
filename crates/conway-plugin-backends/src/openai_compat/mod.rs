@@ -63,7 +63,7 @@ impl OpenAiCompatBackend {
         if let Some(path) = &config.metadata_path {
             models = models.merge(ModelMetadataStore::load(path)?);
         }
-        // P-10: `profile.chat_path` is untrusted (a user-supplied profile
+        // `profile.chat_path` is untrusted (a user-supplied profile
         // file can set it to anything), so this validates it composes to a
         // real URL *now* — a typed, named error at construction — rather
         // than deferring to a panic the first time a request is sent.
@@ -174,7 +174,8 @@ impl Backend for OpenAiCompatBackend {
     /// OpenAI-compatible server this crate targets even exposes a
     /// count-tokens endpoint), then calls the ONE shared arithmetic helper,
     /// [`check_admission`], for the fits/shortfall comparison rather than
-    /// restating it (P-14).
+    /// restating it -- one implementation of the headroom arithmetic, never a
+    /// second copy.
     fn admit(
         &self,
         req: &GenerateRequest,

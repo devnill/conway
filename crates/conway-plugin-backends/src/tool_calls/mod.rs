@@ -132,10 +132,10 @@ pub enum ToolCallStyle {
 }
 
 impl Default for ToolCallStyle {
-    /// The most permissive parser and no inline-text scanning — the safe
-    /// choice for a profile that does not name a style explicitly (P-10: a
-    /// missing field must never silently enable behavior a provider didn't
-    /// ask for, and `Tolerant` is a superset of `Structured`'s accepted
+    /// The most permissive parser and no inline-text scanning — the safe choice
+    /// for a profile that does not name a style explicitly (untrusted profile
+    /// input: a missing field must never silently enable behavior a provider
+    /// didn't ask for, and `Tolerant` is a superset of `Structured`'s accepted
     /// shapes).
     fn default() -> Self {
         ToolCallStyle::Tolerant

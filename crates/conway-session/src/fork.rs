@@ -78,7 +78,7 @@ use crate::store::JsonlSessionStore;
 /// completes first — the head check then fails `NotFound` on the removal
 /// tombstone — or starts after this fork returns, in which case the
 /// remove's children check sees the new child and refuses. The pair can
-/// never produce an orphaned child with dangling provenance (P-2, review
+/// never produce an orphaned child with dangling provenance (review
 /// F-1). `create_inner` is called directly because `SessionStore::create`
 /// would re-take the non-reentrant `lifecycle` mutex and self-deadlock.
 ///

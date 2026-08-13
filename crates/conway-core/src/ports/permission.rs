@@ -5,8 +5,9 @@ use async_trait::async_trait;
 use crate::agent::{PermissionDecision, PermissionRequest};
 
 /// Approves or denies one tool call. Always implemented by the consumer
-/// (CLI/IDE/embedder) — there is no built-in privileged bypass; GP-08: no
-/// worktree/sandbox logic anywhere in the harness.
+/// (CLI/IDE/embedder) — there is no built-in privileged bypass; isolation
+/// belongs to tools, not the harness, so no worktree/sandbox logic anywhere in
+/// the harness.
 ///
 /// The gate may block indefinitely: the runtime holds the tool call pending
 /// and emits `Event::PermissionRequested` while it waits. Gate cancellation

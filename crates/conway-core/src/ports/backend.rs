@@ -14,7 +14,7 @@ use crate::ids::{BackendId, ModelId, PrefixKey};
 use crate::routing::ModelOverrides;
 use crate::segment::PromptSegment;
 
-/// The numbers behind an admission verdict (P-4/P-9 amendment, decision
+/// The numbers behind an admission verdict (headroom-and-refusal amendment, decision
 /// 01KZDBYTKFYTVD9R2NA10QJNJE, board item 01KZDC4DKVC4JC3W4KN1WMC43N):
 /// `est_tokens` as measured by whichever `Backend::admit` implementation
 /// produced this (its own dialect's local estimate -- never a network round
@@ -55,15 +55,18 @@ impl Admission {
     }
 }
 
-/// THE headroom arithmetic and fit comparison (P-14, P-4's "what stays
-/// shared" clause): every `Backend::admit` implementation -- the default
+/// THE headroom arithmetic and fit comparison -- one implementation, never
+/// restated per caller, which is the "what stays shared" clause: every
+/// `Backend::admit` implementation -- the default
 /// below, and both shipped `conway-plugin-backends` dialects -- calls this rather
 /// than restating `est_tokens + headroom_tokens <= max_context_tokens`
 /// itself. Only the estimate feeding `est_tokens` may legitimately differ
-/// per dialect (that is the "tokenizer as the injected seam" P-4 asks for);
+/// per dialect (that is the "tokenizer as the injected seam" the routing rule
+/// asks for);
 /// the comparison itself must never be restated, since two backends
 /// growing slightly different notions of "fits" -- one of which quietly
-/// omits a check -- is precisely the drift P-14 exists to prevent.
+/// omits a check -- is precisely the drift a single implementation exists to
+/// prevent.
 pub fn check_admission(
     model: ModelId,
     est_tokens: u32,
@@ -151,24 +154,26 @@ pub trait Backend: Send + Sync + 'static {
     async fn probe(&self) -> Result<ProbeReport, BackendError>;
 
     /// Whether `req` fits inside its own `req.model`'s context window,
-    /// reserving `headroom_tokens` for output/reasoning (P-4/P-9 amendment,
-    /// decision 01KZDBYTKFYTVD9R2NA10QJNJE, board item
+    /// reserving `headroom_tokens` for output/reasoning (headroom-and-refusal
+    /// amendment, decision 01KZDBYTKFYTVD9R2NA10QJNJE, board item
     /// 01KZDC4DKVC4JC3W4KN1WMC43N). Headroom the NUMBER stays declarative
-    /// configuration -- a default plus a per-role override -- resolved by
-    /// the caller and passed in here; only who *reads* it moved.
+    /// configuration -- a default plus a per-role override -- resolved by the
+    /// caller and passed in here; only who *reads* it moved.
     ///
     /// Synchronous and MUST NOT perform network I/O: an implementation that
     /// needs a round trip (e.g. a provider's own count-tokens endpoint) to
     /// answer this is using the wrong API. Estimate locally with your own
     /// dialect's tokenization, reconciled after the fact against reported
-    /// usage if you choose to calibrate it (GP-12; not required here).
+    /// usage if you choose to calibrate it (measure a baseline before optimising; not
+    /// required here).
     ///
     /// `Ok(admission)` when it fits, `Err(BackendError::ContextTooLarge)`
     /// when it does not -- the numbers travel with the verdict either way,
     /// never a bare boolean. A caller that receives `Err` must relay the
     /// refusal rather than work around it: no trimming the request, no
-    /// silently retrying against a larger model (P-9 -- core's remaining
-    /// commitment once the arithmetic itself moved here).
+    /// silently retrying against a larger model -- core refuses an oversized
+    /// context rather than working around it, and that is its remaining
+    /// commitment once the arithmetic itself moved here.
     ///
     /// The default estimates `req`'s size with a dialect-neutral heuristic
     /// over its assembled segments and tool schemas. A real dialect adapter
@@ -176,7 +181,7 @@ pub trait Backend: Send + Sync + 'static {
     /// framing overhead) -- see `conway-plugin-backends`'s Anthropic and
     /// OpenAI-compatible adapters. Every override, and this default, MUST
     /// call [`check_admission`] for the arithmetic rather than restating it
-    /// (P-14: ONE implementation of "fits", not one per dialect).
+    /// (ONE implementation of "fits", not one per dialect).
     ///
     /// **THE production admission path** (board item
     /// 01KZFBZHTWDF11TH7G0H613ERE): `conway_runtime::attempt::AttemptEngine
@@ -271,13 +276,13 @@ pub struct BackendBuildContext {
     /// hands over data a `RouterFactory` is trusted to use, not data it is
     /// mechanically checked against.
     pub id: BackendId,
-    /// `[backends.<id>].base_url`, unparsed. Raw rather than a parsed URL
-    /// type: `conway-core` depends on nothing that could parse or validate
-    /// one (no new dependency, C-04), and the two shipped adapters do not
-    /// even agree with each other on how to treat an empty value (Anthropic
-    /// substitutes a hardcoded default; OpenAI-compatible requires one) --
-    /// a third kind is entitled to its own policy here too, not one this
-    /// context would otherwise impose on it.
+    /// `[backends.<id>].base_url`, unparsed. Raw rather than a parsed URL type:
+    /// `conway-core` depends on nothing that could parse or validate one (no
+    /// new dependency -- this tree stays release-ready), and the two shipped
+    /// adapters do not even agree with each other on how to treat an empty
+    /// value (Anthropic substitutes a hardcoded default; OpenAI-compatible
+    /// requires one) -- a third kind is entitled to its own policy here too,
+    /// not one this context would otherwise impose on it.
     pub base_url: String,
     /// The resolved secret: a literal `api_key`, or an `api_key_env`
     /// variable already read from the process environment, or `None` when
@@ -403,7 +408,7 @@ pub trait BackendFactory: Send + Sync {
     /// Builds one backend instance from `ctx`. Deferred (invoked only once
     /// `ctx` can actually be assembled) and fallible, returning
     /// [`ConwayError`] -- `conway-core`'s own existing crate-level error
-    /// enum, reused rather than inventing a new one (C-04), the same choice
+    /// enum, reused rather than inventing a new one, the same choice
     /// [`crate::ports::routing::RouterFactory::build`] already makes for
     /// the identical reason: a factory's construction failure is exactly
     /// the shape `ConwayError::Config`/`ConwayError::Parse` already exist to
@@ -433,7 +438,7 @@ pub trait BackendFactory: Send + Sync {
     /// `probe_capabilities` implementation may therefore report everything
     /// it genuinely observed with no filtering of its own; it can never, by
     /// returning a map, make an undeclared `(backend, model)` pair routable
-    /// (GP-07: no opaque auto-selection in the core) -- keeping this
+    /// (no opaque auto-selection in the core) -- keeping this
     /// enforcement in one place, applied to every kind (built-in or
     /// third-party) the same way, is the entire reason it is not delegated
     /// to each implementation to get right on its own.
@@ -441,11 +446,11 @@ pub trait BackendFactory: Send + Sync {
     /// MUST NOT perform network I/O asynchronously relative to the caller --
     /// like [`Self::build`], this is a synchronous method; an implementation
     /// that needs a real round trip bridges it itself (e.g. a dedicated
-    /// blocking `tokio` runtime, the same pattern `ConwayBuilder::build`'s
-    /// own private `block_on` helper uses for its own async lower-crate
-    /// calls), exactly as any third-party kind is free to do too -- nothing
-    /// about this being a first-party kind reaches a private hook a
-    /// third-party implementation could not also use (GP-03/P-6).
+    /// blocking `tokio` runtime, the same pattern `ConwayBuilder::build`'s own
+    /// private `block_on` helper uses for its own async lower-crate calls),
+    /// exactly as any third-party kind is free to do too -- nothing about this
+    /// being a first-party kind reaches a private hook a third-party
+    /// implementation could not also use -- a built-in gets no privileged API.
     fn probe_capabilities(&self, _ctx: &BackendBuildContext) -> BTreeMap<ModelId, Capabilities> {
         BTreeMap::new()
     }

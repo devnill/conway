@@ -8,7 +8,8 @@
 //! split out of the string by guessing where the id ends, since a plugin id
 //! may itself be chosen freely by whoever wrote the plugin.
 //!
-//! **GP-14 forward declaration — this function has no caller yet.** Two
+//! **Forward declaration — this function has no caller yet.** Nothing may
+//! claim to be reached that isn't, so this says so plainly. Two
 //! later items each own one call site, and neither has wired it up:
 //! - the `[hooks]` schema item's already-landed `HookEntry::event`
 //!   (`crates/conway/src/config/schema.rs`, `merge.rs` check 9) is the

@@ -22,7 +22,7 @@
 //! Every fallible `ctx.subagents` call site maps its `SubagentError` straight
 //! to `ToolError` via `.map_err(ToolError::from)` -- `conway-core`'s own
 //! `From<SubagentError> for ToolError` (the ONE place that mapping is
-//! implemented, P-14) -- rather than through a crate-local forwarding
+//! implemented once) -- rather than through a crate-local forwarding
 //! function (board item C2 deleted this module's own such function; its
 //! flatten-everything-to-`Internal` policy predates `SubagentError` and is
 //! superseded by that per-variant `From`).
@@ -193,7 +193,7 @@ pub(super) fn config_u32(config: &PluginConfig, key: &str) -> Option<u32> {
 /// The largest `deadline_secs` accepted from a model/config-supplied budget.
 /// Well under `chrono::Duration::seconds`' i64 nanosecond bound (~9.2e9s /
 /// ~292y), and well over any sane deadline for a single subagent/ephemeral run
-/// (~50y). Larger values are rejected as `InvalidArguments` (P-10: model-
+/// (~50y). Larger values are rejected as `InvalidArguments` (model-
 /// supplied numeric args are range-checked, never panic) rather than
 /// saturating -- the previous `i64::try_from(..).unwrap_or(i64::MAX)` saturated
 /// straight into `Duration::seconds`' overflow panic (cycle-3 review SIG-1;
@@ -202,7 +202,8 @@ pub(super) fn config_u32(config: &PluginConfig, key: &str) -> Option<u32> {
 pub(super) const MAX_DEADLINE_SECS: u64 = 1_576_800_000; // 50 * 365 * 86_400
 
 /// Builds the `deadline` `DateTime` from a model/config-supplied `deadline_secs`,
-/// range-checking per P-10. Out-of-range -> `ToolError::InvalidArguments`
+/// range-checking, since model arguments are untrusted. Out-of-range ->
+/// `ToolError::InvalidArguments`
 /// (never a panic). Shared by `conway_fork`, `conway_spawn`, and `conway_ask`.
 pub(super) fn deadline_from_secs(secs: u64) -> Result<chrono::DateTime<chrono::Utc>, ToolError> {
     if secs > MAX_DEADLINE_SECS {
@@ -315,7 +316,7 @@ async fn start_and_maybe_await(
         budget: resolve_budget(req.budget, &ctx.config)?,
         result_contract,
         // The model-invoked `conway_fork`/`conway_spawn` tools are always
-        // the autonomous, one-shot fork/spawn primitives (P-1: "exactly two
+        // the autonomous, one-shot fork/spawn primitives ("exactly two
         // subagent primitives") -- `keep_alive` is an opt-in only the
         // interactive-session facade paths (`conway`'s `SpawnSpec`/
         // `ForkSpec::keep_alive`, the TUI's bare `/spawn`/`/fork`) ever
@@ -331,7 +332,7 @@ async fn start_and_maybe_await(
         // not either tool's own args schema) -- inherit the parent's,
         // unchanged.
         cwd: None,
-        // (S3) Likewise, neither tool has a `root` argument (GP-04:
+        // (S3) Likewise, neither tool has a `root` argument (
         // embedder-only for this first slice) -- inherit the parent's
         // root, unchanged, for both fork and spawn.
         root: None,
@@ -388,8 +389,9 @@ impl Tool for ForkTool {
             description: "Fork this agent: start a new child continuing from this agent's full context, plus a directive for what it should do next. `agent_def` is optional: name one to set the child's system prompt/tools/model, or omit it to inherit this agent's role and model.".into(),
             schema: schemars::schema_for!(ForkArgs),
             category: ToolCategory::Delegate,
-            // Starting a child grants it the capability to itself perform arbitrary tool
-            // calls, transitively — the same risk class as `bash`, one hop removed.
+            // Starting a child grants it the capability to itself perform
+            // arbitrary tool calls, transitively — the same risk class as
+            // `bash`, one hop removed.
             permission: PermissionClass::Dangerous,
         }
     }
@@ -436,8 +438,9 @@ impl Tool for SpawnTool {
             description: "Spawn a new, independent child agent with none of this agent's context, plus a complete statement of its task. `agent_def` is optional: name one to set the child's system prompt/tools/model, or omit it to inherit this agent's role and model.".into(),
             schema: schemars::schema_for!(SpawnArgs),
             category: ToolCategory::Delegate,
-            // Starting a child grants it the capability to itself perform arbitrary tool
-            // calls, transitively — the same risk class as `bash`, one hop removed.
+            // Starting a child grants it the capability to itself perform
+            // arbitrary tool calls, transitively — the same risk class as
+            // `bash`, one hop removed.
             permission: PermissionClass::Dangerous,
         }
     }

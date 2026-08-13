@@ -713,7 +713,7 @@ fn tool_pattern_matches(pattern: &str, tool: &str) -> bool {
 }
 
 /// A typed registration error for a [`Rule`] loaded from config, surfaced to
-/// the operator (P-10: untrusted input -> typed errors, never panics). A rule
+/// the operator (untrusted input -> typed errors, never panics). A rule
 /// that can never match is a lie the operator will not notice (the mirror of
 /// the `read:*`-matched-nothing bug fixed in `68ea9b1`); this type is how the
 /// loader refuses to install one silently.
@@ -744,16 +744,17 @@ pub enum RuleRegistrationReason {
     /// `paths_under` predicate can never be satisfied for such a tool, so the
     /// rule is silently inert. For `Unconfinable` that inertness is fail-OPEN
     /// -- the command can still reach the prefix, so the call the operator
-    /// expected to be refused instead goes through (P-13). For `None` the
-    /// rule is a no-op rather than fail-open (the tool takes no paths, so it
-    /// cannot reach the prefix), but the loader still refuses to install it
-    /// silently so the operator learns the rule does nothing -- a no-op deny
-    /// is a trap worth surfacing. In both cases the loader surfaces this
-    /// error so the operator can rewrite the rule (e.g. scope it to the
-    /// tool's `command_prefix`, or drop the unconfinable tool from the
-    /// select). For `then: allow` the same inertness is fail-CLOSED (the
-    /// broker simply never matches it and the call falls through to the
-    /// operator's gate), so this is NOT raised for allow rules.
+    /// expected to be refused instead goes through -- a narrowing rule must
+    /// fail closed, never silently match nothing. For `None` the rule is a
+    /// no-op rather than fail-open (the tool takes no paths, so it cannot reach
+    /// the prefix), but the loader still refuses to install it silently so the
+    /// operator learns the rule does nothing -- a no-op deny is a trap worth
+    /// surfacing. In both cases the loader surfaces this error so the operator
+    /// can rewrite the rule (e.g. scope it to the tool's `command_prefix`, or
+    /// drop the unconfinable tool from the select). For `then: allow` the same
+    /// inertness is fail-CLOSED (the broker simply never matches it and the
+    /// call falls through to the operator's gate), so this is NOT raised for
+    /// allow rules.
     PathsUnderOnUnconfinedTool,
     /// `when: paths_under` named a prefix that FAILS to canonicalize -- the
     /// directory does not exist on disk (a typo, or a repo/subdirectory not
@@ -1405,18 +1406,17 @@ pub struct PermissionFile {
     #[serde(default)]
     pub deny: Vec<String>,
     /// F12: structured rules, each carrying its own `then` (`allow`/`prompt`/
-    /// `deny`). The flat `allow`/`deny` lists above are the surface syntax
-    /// for the `Tools([t]) + (Always | CommandPrefix) + (Allow | Deny)`
-    /// subset; this array is the superset, expressing `paths_under`,
-    /// `categories`, `category_in`, and the `prompt` effect the flat form
-    /// has no syntax for. `allow` entries from this array are subject to the
-    /// SAME trust decision as the flat `allow` list (a project file's
-    /// `then: allow` rules install only once the caller confirms trust);
-    /// `deny` and `prompt` entries apply immediately, trusted or not, the
-    /// same asymmetry the flat `deny` list has always had. A structurally
-    /// malformed entry is dropped, not guessed at (P-10); a rule whose
-    /// `then` is an unrecognized variant is dropped the same way
-    /// (`#[non_exhaustive]` fail-closed).
+    /// `deny`). The flat `allow`/`deny` lists above are the surface syntax for
+    /// the `Tools([t]) + (Always | CommandPrefix) + (Allow | Deny)` subset;
+    /// this array is the superset, expressing `paths_under`, `categories`,
+    /// `category_in`, and the `prompt` effect the flat form has no syntax for.
+    /// `allow` entries from this array are subject to the SAME trust decision
+    /// as the flat `allow` list (a project file's `then: allow` rules install
+    /// only once the caller confirms trust); `deny` and `prompt` entries apply
+    /// immediately, trusted or not, the same asymmetry the flat `deny` list has
+    /// always had. A structurally malformed entry is dropped, not guessed at --
+    /// the file is untrusted input; a rule whose `then` is an unrecognized
+    /// variant is dropped the same way (`#[non_exhaustive]` fail-closed).
     #[serde(default)]
     pub rules: Vec<Rule>,
 }
@@ -1492,21 +1492,21 @@ struct ParsedPermissionFile {
     unknown_keys: Vec<String>,
 }
 
-/// Parses the top-level shape of a permissions file, **failing closed on
-/// every error** (P-10). Still returns `Result` (not just the parsed value)
-/// because a `serde_json::Error` is possible for two reasons this function's
-/// callers must keep telling apart: content that is not valid JSON at all,
-/// and a type mismatch on a RECOGNIZED field (`"allow": "not-an-array"`) --
-/// both keep the existing SILENT fail-closed posture. A misspelled key is
-/// NOT one of those `Err` cases any more: it is reported structurally, via
-/// [`ParsedPermissionFile::unknown_keys`], not by matching a
+/// Parses the top-level shape of a permissions file, **failing closed on every
+/// error** -- the file is untrusted input. Still returns `Result` (not just the
+/// parsed value) because a `serde_json::Error` is possible for two reasons this
+/// function's callers must keep telling apart: content that is not valid JSON
+/// at all, and a type mismatch on a RECOGNIZED field (`"allow":
+/// "not-an-array"`) -- both keep the existing SILENT fail-closed posture. A
+/// misspelled key is NOT one of those `Err` cases any more: it is reported
+/// structurally, via [`ParsedPermissionFile::unknown_keys`], not by matching a
 /// `serde_json::Error`'s message text -- see
-/// [`permission_file_unknown_field_error`]'s own doc for why the string
-/// match this replaced was fragile (board item 01KZHVDDQQ7XT0RK3JVNM2YV83).
+/// [`permission_file_unknown_field_error`]'s own doc for why the string match
+/// this replaced was fragile (board item 01KZHVDDQQ7XT0RK3JVNM2YV83).
 ///
 /// Parses `rules` as an array of opaque JSON values, then deserializes each
 /// one individually: a single structurally malformed `rules` entry is
-/// DROPPED, not guessed at (P-10), and the rest of the array plus the flat
+/// DROPPED, not guessed at, and the rest of the array plus the flat
 /// `allow`/`deny` lists survive. Parsing the whole document as
 /// `PermissionFile` (whose `rules: Vec<Rule>` is all-or-nothing under serde)
 /// would reject the entire file on one bad `rules` entry -- a louder but
@@ -1603,15 +1603,16 @@ fn parse_permission_file(contents: &str) -> Result<ParsedPermissionFile, serde_j
 /// top-level key this schema does not recognize (`"denys"` for `"deny"`, or
 /// any other typo) -- board item 01KZHVDDQQ7XT0RK3JVNM2YV83.
 ///
-/// Deliberately narrower than "any parse failure": content that is not
-/// valid JSON at all, or that names the RIGHT key with the WRONG shape
-/// (`"allow": "not-an-array"`), keeps the existing SILENT fail-closed
-/// posture [`parse_rules`]/[`parse_deny_rules`]/[`parse_prompt_rules`] have
-/// always had for those cases (P-10's floor: a bad file authorizes/denies/
-/// prompts nothing, which costs at most an extra prompt). A MISSPELLED key
-/// is a different failure in kind, not degree: it is not "malformed input"
-/// but an operator who wrote a `deny` rule, typo'd the one word that makes
-/// it apply, and would otherwise never learn the rule was never installed
+/// Deliberately narrower than "any parse failure": content that is not valid
+/// JSON at all, or that names the RIGHT key with the WRONG shape (`"allow":
+/// "not-an-array"`), keeps the existing SILENT fail-closed posture
+/// [`parse_rules`]/[`parse_deny_rules`]/[`parse_prompt_rules`] have always had
+/// for those cases (the floor for untrusted input: a bad file
+/// authorizes/denies/ prompts nothing, which costs at most an extra prompt). A
+/// MISSPELLED key is a different failure in kind, not degree: it is not
+/// "malformed input" but an operator who wrote a `deny` rule, typo'd the one
+/// word that makes it apply, and would otherwise never learn the rule was never
+/// installed
 /// -- exactly the asymmetry this module's own doc states (`allow` requires
 /// trust; `deny` always applies, so a `deny` that silently never matches is
 /// the specific failure mode that guarantee exists to rule out).
@@ -1719,7 +1720,7 @@ mod store_tests {
         assert_eq!(rules[1].to_wire(), "read:*");
     }
 
-    /// P-10, with the bias that matters here: a corrupt file must fail
+    /// Untrusted input, with the bias that matters here: a corrupt file must fail
     /// CLOSED. The worst outcome of an unreadable permissions file is
     /// extra prompting -- never a missed prompt.
     #[test]
@@ -1800,7 +1801,8 @@ mod store_tests {
     /// key, so `Conway::load_permission_files` can refuse the whole file
     /// loudly instead of quietly enforcing nothing.
     ///
-    /// P-15: this is paired with `a_correctly_spelled_deny_key_installs_the_
+    /// A check is not established until it has been shown to fail, so this is
+    /// paired with `a_correctly_spelled_deny_key_installs_the_
     /// rule_the_typo_would_have_dropped`, a CONTROL case whose deny list is
     /// non-empty on success -- so "zero rules installed" here is evidence
     /// of the typo being caught, not evidence the fixture never had any
@@ -1825,7 +1827,8 @@ mod store_tests {
         );
     }
 
-    /// The control case P-15 requires: the SAME rule, correctly spelled,
+    /// The control case that makes the guard above a real check: the SAME
+    /// rule, correctly spelled,
     /// actually installs -- proving the typo test above is distinguishing
     /// "silently dropped" from "there was nothing to install", not just
     /// asserting an empty `Vec` that would be empty either way.
@@ -2298,7 +2301,7 @@ mod f12_tests {
     }
 
     /// A structurally malformed `rules` entry is dropped, not guessed at
-    /// (P-10) -- the rest of the array and the flat lists survive.
+    /// (untrusted input) -- the rest of the array and the flat lists survive.
     #[test]
     fn a_malformed_structured_entry_is_dropped_and_the_rest_kept() {
         let contents = r#"{

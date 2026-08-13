@@ -85,7 +85,7 @@ async fn resume_or_usage_error(
     })
 }
 
-/// The primitive that created a session (GP-02: fork and spawn are distinct
+/// The primitive that created a session (fork and spawn are distinct
 /// and must never be blurred into one label) -- `"fork"` or `"spawn"`,
 /// matching `SubagentMode`'s own `snake_case` serde rendering.
 fn mode_str(mode: SubagentMode) -> &'static str {

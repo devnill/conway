@@ -1,6 +1,6 @@
 //! `PromptSegment`: one piece of assembled context, always tagged with the
 //! [`Provenance`] that explains why it is present, plus the cache-hint types
-//! that make caching an economics-only concern (GP-06).
+//! that make caching an economics-only concern, never correctness-bearing.
 
 use serde::{Deserialize, Serialize};
 
@@ -29,7 +29,7 @@ pub struct PromptSegment {
     pub content: Vec<ContentBlock>,
     /// Required: every segment must say why it exists. No `Default`.
     pub provenance: Provenance,
-    /// Caching is never correctness-bearing (GP-06): stripping every
+    /// Caching is never correctness-bearing: stripping every
     /// `cache_hint` from a `Vec<PromptSegment>` must not change the
     /// assembled request content bytes. See [`strip_cache_hints`].
     pub cache_hint: Option<CacheHint>,
@@ -71,7 +71,7 @@ pub struct CacheHint {
 }
 
 /// Strip every `cache_hint` from `segments` in place, so downstream tests
-/// can mechanically assert the GP-06 invariant: doing this must never change
+/// can mechanically assert the invariant: doing this must never change
 /// the assembled request's content bytes.
 pub fn strip_cache_hints(segments: &mut [PromptSegment]) {
     for segment in segments {
@@ -128,7 +128,7 @@ mod tests {
     // Compile-time regression guard for the WI-003 criterion: if any future
     // change adds `#[derive(Default)]` (or a manual `Default`) to
     // `PromptSegment`, compilation of the test suite fails here — a segment
-    // must never be constructible without stated provenance (GP-10).
+    // must never be constructible without stated provenance.
     static_assertions::assert_not_impl_any!(PromptSegment: Default);
 
     #[test]

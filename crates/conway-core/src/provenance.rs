@@ -1,4 +1,5 @@
-//! GP-10's typed provenance enum: every [`PromptSegment`](crate::segment::PromptSegment)
+//! The typed provenance enum that makes context composition inspectable:
+//! every [`PromptSegment`](crate::segment::PromptSegment)
 //! carries one of these variants so the IDE's provenance tree and
 //! `ContextBuilder`'s fixed segment ordering (architecture §5.3) can both
 //! render and reason about *why* a byte of context is present.
@@ -13,7 +14,7 @@ use crate::ids::{AgentId, LogSeq, SegmentId, SeqRange, SessionId, ToolName};
 
 /// Why a segment of assembled context exists.
 ///
-/// Eleven variants: the original nine of architecture §5.3 (GP-10), plus
+/// Eleven variants: the original nine of architecture §5.3, plus
 /// [`Provenance::MergedAsk`] (board item B4), plus
 /// [`Provenance::ChildResult`] (board item 01KZQHY6RTMYR4BRDTMQFP9J9R).
 /// Adding another is a breaking wire-format change and must be treated as
@@ -50,7 +51,7 @@ pub enum Provenance {
     /// child's `ForkDirective` head record (and any genuine `UserTurn`s in
     /// the child) lands in the parent as a `UserTurn` re-stamped with this
     /// variant, so the merge origin — the purged child's `SessionId` —
-    /// stays explicit and inspectable (P-2/GP-10) even after the child's
+    /// stays explicit and inspectable even after the child's
     /// own session file is gone.
     MergedAsk { from: SessionId },
     /// A child's terminal `AgentResult`, recorded into the PARENT's own log
@@ -58,7 +59,7 @@ pub enum Provenance {
     /// `AgentMessage::Result` produces `DrainEffect::Persist` --
     /// `LogRecord::ChildResultRecord` is the record. `from` is the
     /// finishing child's `AgentId`. Exists so a child's own output is never
-    /// misattributed as parent-authored (P-2): a `ChildResult` segment is
+    /// misattributed as parent-authored: a `ChildResult` segment is
     /// unambiguously marked as having come from elsewhere in the tree, the
     /// same way `ParentSteer` marks a steer as not self-authored.
     ChildResult { from: AgentId },

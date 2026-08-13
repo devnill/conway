@@ -50,7 +50,7 @@
 //!
 //! No classifier, embedding model, or other learned component may be linked
 //! into this crate, at MVP or ever, absent an explicit decision reversal
-//! (GP-07).
+//! predictable and answerable.
 
 mod breaker;
 mod capability;
