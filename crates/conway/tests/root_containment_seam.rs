@@ -361,6 +361,78 @@ async fn read_outside_root_is_denied() {
 }
 
 // ---------------------------------------------------------------------
+// 2a. Board item 01KZVZ56SBPSTZHAXXGYCNETNX: a path argument carrying a NUL
+// byte is denied at `PermissionBroker::check_root` -- the production
+// callsite for `conway_runtime::permission::resolve_like_the_tool_will`,
+// itself now a thin wrapper over the ONE shared implementation,
+// `conway_core::containment::resolve_candidate`. Driven end to end (real
+// `ReadTool`, real broker, real gate double) rather than unit-testing the
+// resolver in isolation -- exactly the discriminating shape this item's own
+// acceptance criteria require: a test of the shared function alone proves
+// nothing about whether THIS callsite still reaches it.
+// ---------------------------------------------------------------------
+#[tokio::test]
+async fn read_with_nul_byte_path_under_root_is_denied_not_bypassed() {
+    let root_dir = TempDir::new().unwrap();
+    std::fs::write(root_dir.path().join("file.txt"), b"hello from inside").unwrap();
+
+    let gate = RecordingGate::new(PermissionDecision::AllowOnce);
+    let conway = build_conway(
+        vec![
+            // A NUL byte embedded in an otherwise ordinary relative path --
+            // untrusted, model-influenced input. `resolve_like_the_tool_will`
+            // must refuse to resolve it (`None`), which `check_root` turns
+            // into an outright denial, never an `Undecidable`/`Outside`
+            // containment answer computed against a bogus candidate.
+            ScriptedTurn::Respond(read_call("file.txt\0/etc/passwd")),
+            ScriptedTurn::Respond(text_response("done")),
+        ],
+        gate.clone() as Arc<dyn PermissionGate>,
+    );
+
+    let handle = conway
+        .new_session(SessionSpec::default())
+        .await
+        .expect("new_session");
+    let spec = SpawnSpec::new("read the file")
+        .root(root_dir.path())
+        .cwd(root_dir.path());
+    let records = spawn_and_await(&handle, spec).await;
+
+    let result = tool_result(&records);
+    assert!(
+        result.is_error,
+        "a NUL-carrying path argument must be denied, not silently resolved: {:?}",
+        blocks_text(&result.blocks)
+    );
+    // Asserting `is_error` alone is not the discriminating check: even with
+    // `resolve_like_the_tool_will`'s NUL guard disabled, the candidate it
+    // would produce (`root_dir/file.txt\0/etc/passwd`) still fails to
+    // canonicalize at the OS level inside `CanonicalRoot::contains`
+    // (`Containment::Undecidable`), which `check_root` ALSO denies -- a
+    // second, coincidental line of defense that would make a bare
+    // `is_error` assertion pass whether or not THIS callsite's typed guard
+    // ever fired (the exact trap `subagent_fork_spawn.rs`'s own NUL test
+    // names). The persisted error text must therefore name the guard's own
+    // distinctive wording ("cannot be resolved to a filesystem path" --
+    // `check_root`'s `RootDecision::Denied` arm for a `None` from
+    // `resolve_like_the_tool_will`), not the different wording
+    // `Containment::Outside`/`Undecidable` produces ("resolves to ...,
+    // which is outside this agent's confinement root").
+    assert!(
+        blocks_text(&result.blocks).contains("cannot be resolved to a filesystem path"),
+        "the denial must be THIS callsite's typed NUL guard, not a downstream containment \
+         answer computed against a bogus NUL-carrying candidate: {:?}",
+        blocks_text(&result.blocks)
+    );
+    assert!(
+        gate.requests().is_empty(),
+        "a NUL-carrying path argument must never reach the operator's gate: {:?}",
+        gate.requests()
+    );
+}
+
+// ---------------------------------------------------------------------
 // 2b. `cd` out of the root -> denied, by the SAME generic mechanism.
 //
 // `CdTool` contains no root-specific code whatsoever. It is confined

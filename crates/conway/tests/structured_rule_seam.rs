@@ -1191,6 +1191,107 @@ async fn a_paths_under_allow_rule_with_a_prefix_that_cannot_canonicalize_surface
     );
 }
 
+/// **Board item 01KZVZ56SBPSTZHAXXGYCNETNX.** A `paths_under` prefix
+/// carrying a NUL byte (JSON's `\u0000` escape, legal, decodes to a real embedded
+/// NUL) hits `canonicalize_when`'s call to `resolve_like_the_tool_will` --
+/// now a thin wrapper over the ONE shared implementation,
+/// `conway_core::containment::resolve_candidate`. This is a SECOND,
+/// distinct production callsite from the plain `check_root` path-argument
+/// resolution `read_with_nul_byte_path_under_root_is_denied_not_bypassed`
+/// (in `root_containment_seam.rs`) exercises -- `resolve_like_the_tool_will`
+/// has (at least) two call sites inside `PermissionBroker`, and each must
+/// independently reach the guard, not just one. Same fail-closed shape as
+/// B3's nonexistent-directory case: the rule is dropped, surfaced as a
+/// typed `PathsUnderPrefixUncanonicalizable` registration error, and the
+/// call it would have auto-authorized instead reaches the operator's gate.
+///
+/// **Disclosed asymmetry with `root_containment_seam.rs`'s sibling test:**
+/// unlike `check_root`'s per-call candidate (resolved via
+/// `CanonicalRoot::contains`'s walk-up-then-rejoin-the-nonexistent-tail
+/// algorithm, which can rejoin a NUL-carrying TAIL onto an already-canonical
+/// prefix without ever re-canonicalizing it), THIS callsite hands the
+/// resolved candidate straight to `CanonicalRoot::new`, which canonicalizes
+/// the WHOLE path in one `fs::canonicalize` call with no tail to skip. A
+/// NUL byte anywhere in that call unconditionally fails at the OS level
+/// (`CString::new` cannot represent an interior NUL), so removing
+/// `resolve_candidate`'s own guard does NOT turn this test red: the
+/// unconditional OS-level rejection inside `CanonicalRoot::new` is an
+/// independent, airtight backstop for a full-path canonicalize, and this
+/// test's persisted result (`PathsUnderPrefixUncanonicalizable`) is
+/// identical either way. The guard is still correct to keep here (a
+/// faster, filesystem-free, more specific typed rejection, and "call the
+/// shared implementation rather than restate it" per this item's own
+/// mandate) -- but this specific callsite's mutation test cannot be the
+/// proof of a security regression the way `check_root`'s sibling test is;
+/// that proof lives in `root_containment_seam.rs`, whose walk-up shape
+/// genuinely CAN diverge without the explicit guard.
+#[tokio::test]
+async fn a_paths_under_allow_rule_with_a_nul_byte_in_its_prefix_surfaces_a_registration_error() {
+    let project = TempDir::new().expect("tempdir");
+    std::fs::write(project.path().join("file.txt"), b"inside the project")
+        .expect("write fixture file");
+    let (xdg, env) = isolated_env();
+    // JSON's `\u0000` escape is legal; serde_json decodes it to a real NUL
+    // byte inside the parsed `String` -- untrusted config content, not a
+    // Rust source literal quirk.
+    write_global_permissions(
+        &xdg,
+        r#"{"rules":[{"select":{"tools":["read"]},"when":{"paths_under":"bad-\u0000-prefix"},"then":"allow"}]}"#,
+    );
+
+    let gate = RecordingGate::new(PermissionDecision::AllowOnce);
+    let conway = build_conway(
+        project.path(),
+        vec![
+            ScriptedTurn::Respond(read_call_response(
+                &project.path().join("file.txt").display().to_string(),
+            )),
+            ScriptedTurn::Respond(text_response("done")),
+        ],
+        gate.clone() as Arc<dyn PermissionGate>,
+    );
+    let report = conway.load_permission_files(
+        project.path(),
+        &env,
+        PermissionScope::Session,
+        AgentId::new(),
+    );
+
+    assert_eq!(
+        report.registration_errors.len(),
+        1,
+        "a `paths_under` allow rule whose prefix contains a NUL byte must surface exactly one \
+         typed registration error -- a NUL-carrying prefix that silently resolved would be the \
+         defect this item exists to prevent: {:?}",
+        report.registration_errors
+    );
+    assert_eq!(
+        report.registration_errors[0].reason,
+        RuleRegistrationReason::PathsUnderPrefixUncanonicalizable,
+        "the NUL-carrying prefix must fail via the SAME reason the nonexistent-directory case \
+         does -- canonicalize_when's `resolve_like_the_tool_will` call returning `None` is folded \
+         into the same fail-closed outcome as `CanonicalRoot::new` failing"
+    );
+
+    // The rule was NOT installed, so the read reaches the operator's gate
+    // (fail-closed) rather than being silently auto-authorized against a
+    // NUL-carrying boundary nobody could actually have granted.
+    let handle = conway
+        .new_session(SessionSpec::default())
+        .await
+        .expect("new_session");
+    let turn = handle.prompt("read the file").await.expect("prompt");
+    let _ = tokio::time::timeout(Duration::from_secs(10), turn.result())
+        .await
+        .expect("turn must not hang");
+    assert_eq!(
+        gate.requests().len(),
+        1,
+        "with the NUL-prefix allow rule NOT installed, the read reaches the operator's gate: {:?}",
+        gate.requests()
+    );
+}
+
 /// **B3, pinned -- the deny and prompt arms.** A `paths_under` DENY or
 /// PROMPT rule whose prefix does not exist on disk is dropped by the broker
 /// (`remember_deny_rule`/`remember_prompt_rule` return `false`). The hazard
