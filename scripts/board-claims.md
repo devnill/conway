@@ -119,8 +119,8 @@ present: rule\.event == "pre_tool_use"
 -->
 
 <!-- claim-check
-board_item: UNFILED
-note: no open board item names the first-party plugin tier's remaining four capabilities. PHILOSOPHY.md §5 lists "dynamic routing, context compaction, memory, skills, MCP support" as the tier's members ("You get them by choosing them"), and §6 states in the present tense "there is a first-party compaction plugin to install or fork." Neither is true for compaction, memory, skills, or MCP -- only routing and provider adapters (a separate page claim) exist. This is real, current debt, found while retiring philosophy-debt.md, and it has no tracking item; filing one and swapping in its id is a follow-up this migration could not close (no board-write access).
+board_item: 01KZYM81YFE08ASM225A1R5H5X
+note: filed 2026-08-13, closing the one UNFILED gap this migration surfaced. PHILOSOPHY.md §5 lists "dynamic routing, context compaction, memory, skills, MCP support" as the first-party tier's members ("You get them by choosing them"), and §6 goes further, stating in the present tense that "there is a first-party compaction plugin to install or fork." Only routing and the provider adapters exist. The migration worker had no board-write access, marked this UNFILED rather than silently dropping real debt, and surfaced it on every run -- which is how it got filed within the hour. The item covers the §6 wording decision and the decomposition into one item per surviving capability; it is deliberately NOT a charter that builds all four, which would recreate the defect 01KZVZ6XCZVHD2YFVJQEGC61YV exists to fix.
 claim: four of the five named first-party-plugin-tier capabilities -- compaction, memory, skills, MCP -- are unbuilt, so nothing installs one
 paths: crates/conway-cli/src crates/conway/src
 absent: conway\.(compaction|memory|skills|mcp)
