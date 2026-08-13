@@ -274,7 +274,7 @@ pub struct Runtime {
     /// the tool batch; this handle is what `start_root` and
     /// `impl SubagentHost for Runtime`'s `start` use for the other two, and
     /// what `set_observation_hooks` writes config onto.
-    observation: Arc<crate::observation::ObservationDispatcher>,
+    hooks: Arc<crate::hook_dispatch::HookDispatcher>,
     loop_deps: Arc<LoopDeps>,
     agents: RwLock<HashMap<AgentId, AgentHandle>>,
     tree: Arc<AgentTree>,
@@ -346,7 +346,7 @@ impl Runtime {
         // `ToolRunner`, while `session_starting` and `child_spawned` fire from
         // `Runtime`'s own methods, and all three must see the same injected
         // runner and subscription lists (board item 01KZS019NHG11RVQYSVT7RG0P5).
-        let observation = tool_runner.observation();
+        let hooks = tool_runner.hooks();
         let attempt = Arc::new(AttemptEngine::new(backends, health, event_bus.clone()));
         let builder = Arc::new(ContextBuilder::new());
         let plugin_config = Arc::new(PluginConfig::default());
@@ -382,7 +382,7 @@ impl Runtime {
                 agent_defs,
                 registry,
                 broker,
-                observation,
+                hooks,
                 loop_deps,
                 agents: RwLock::new(HashMap::new()),
                 tree,
@@ -401,8 +401,8 @@ impl Runtime {
     /// `impl SubagentHost for Runtime` (board item 01KZS019NHG11RVQYSVT7RG0P5).
     /// `pub(crate)` for the same reason [`Self::loop_deps`] is: an internal
     /// seam between two files of one crate, not public surface.
-    pub(crate) fn observation_dispatcher(&self) -> &Arc<crate::observation::ObservationDispatcher> {
-        &self.observation
+    pub(crate) fn observation_dispatcher(&self) -> &Arc<crate::hook_dispatch::HookDispatcher> {
+        &self.hooks
     }
 
     pub(crate) fn loop_deps(&self) -> &Arc<LoopDeps> {
@@ -485,18 +485,18 @@ impl Runtime {
         &self,
         runner: Option<Arc<dyn conway_core::ports::HookRunner>>,
     ) {
-        self.observation.set_runner(runner);
+        self.hooks.set_runner(runner);
     }
 
     /// Replaces the observation tier's subscription lists wholesale, keyed by
     /// event name -- the observation counterpart of
     /// [`Self::set_pre_tool_use_hooks`]. See
-    /// [`crate::observation::ObservationDispatcher::set_hooks`].
+    /// [`crate::hook_dispatch::HookDispatcher::set_hooks`].
     pub fn set_observation_hooks(
         &self,
-        hooks: std::collections::BTreeMap<String, Vec<crate::observation::ObservationHookSpec>>,
+        hooks: std::collections::BTreeMap<String, Vec<crate::hook_dispatch::HookSpec>>,
     ) {
-        self.observation.set_hooks(hooks);
+        self.hooks.set_hooks(hooks);
     }
 
     pub fn set_pre_tool_use_hooks(&self, hooks: Vec<PreToolUseHookSpec>) {
@@ -671,6 +671,36 @@ impl Runtime {
     pub async fn start_root(&self, spec: RootSpec) -> Result<AgentId, RuntimeError> {
         let agent_id = AgentId::new();
         let session_id = spec.session.unwrap_or_default();
+
+        // `prompt_submitted` for a session's FIRST prompt (board item
+        // 01KZS01ZBNEY12DBDNW2Y861SQ). Dispatched here, at the very top,
+        // rather than beside `session_starting` at the bottom: a denial must
+        // prevent the prompt from ever reaching the agent loop, and doing it
+        // before any store append or tree attach means a refused prompt leaves
+        // NOTHING half-created. The ids above are minted first only so the
+        // payload can name them.
+        //
+        // A prompt-less root (the interactive TUI, which idles until the user
+        // types) submits no text, so there is nothing to submit and nothing
+        // fires -- the event is about a prompt, not about a session, and
+        // `session_starting` is the one that says a session began.
+        if let Some(text) = spec.prompt.as_deref() {
+            if let Some(reason) = self
+                .hooks
+                .dispatch_deny_only(
+                    crate::hook_dispatch::PROMPT_SUBMITTED,
+                    serde_json::json!({
+                        "text": text,
+                        "agent_id": agent_id,
+                        "session": session_id,
+                        "first_prompt": true,
+                    }),
+                )
+                .await
+            {
+                return Err(RuntimeError::PromptDenied { reason });
+            }
+        }
 
         let agent_def = spec
             .agent_def
@@ -961,12 +991,12 @@ impl Runtime {
         // -- resuming an existing session is not starting one, and conflating
         // them would make the event fire twice for one session's lifetime.
         if self
-            .observation
-            .will_dispatch(crate::observation::SESSION_STARTING)
+            .hooks
+            .will_dispatch(crate::hook_dispatch::SESSION_STARTING)
         {
-            self.observation
+            self.hooks
                 .dispatch(
-                    crate::observation::SESSION_STARTING,
+                    crate::hook_dispatch::SESSION_STARTING,
                     serde_json::json!({
                         "agent_id": agent_id,
                         "session": session_id,
@@ -1284,6 +1314,32 @@ impl Runtime {
                 .ok_or(RuntimeError::AgentNotFound { agent })?;
             (handle.session, handle.prompt_notify.clone())
         };
+
+        // `prompt_submitted` for a FOLLOW-UP prompt on a live session (board
+        // item 01KZS01ZBNEY12DBDNW2Y861SQ). After the session is resolved, so
+        // the payload can name it, but BEFORE the `store.append` below -- a
+        // denied prompt must leave no record behind, exactly as if it had
+        // never been typed.
+        //
+        // `text` is passed by reference and returned to the caller untouched.
+        // Nothing here can rewrite it: `dispatch_deny_only` reads only
+        // `HookPermissionVerdict`, which has no field capable of carrying
+        // replacement text (`.design/extension-architecture.md` §5.8).
+        if let Some(reason) = self
+            .hooks
+            .dispatch_deny_only(
+                crate::hook_dispatch::PROMPT_SUBMITTED,
+                serde_json::json!({
+                    "text": text,
+                    "agent_id": agent,
+                    "session": session,
+                    "first_prompt": false,
+                }),
+            )
+            .await
+        {
+            return Err(RuntimeError::PromptDenied { reason });
+        }
         // See `start_root`'s note: `append`'s `assign_seq` always overwrites
         // this placeholder with the store's own next value, so no
         // `store.head` round trip is needed first.

@@ -50,7 +50,7 @@ use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken as TokioCancellationToken;
 
 use crate::events::{BusSink, EventBus};
-use crate::observation::{self, ObservationDispatcher};
+use crate::hook_dispatch::{self, HookDispatcher};
 use crate::permission::{
     AgentRoot, AuthorizedCall, PermissionBroker, PermissionCtx, PermissionOutcome,
 };
@@ -143,9 +143,9 @@ pub struct ToolRunner {
     /// `post_tool_use` dispatch (board item 01KZS019NHG11RVQYSVT7RG0P5).
     /// Constructed here rather than taken as a parameter so `new` keeps its
     /// arity -- five test call sites build a `ToolRunner` directly -- and
-    /// read back by `Runtime::new` via [`Self::observation`] so the runtime
+    /// read back by `Runtime::new` via [`Self::hooks`] so the runtime
     /// and this runner share one interior-mutable dispatcher.
-    observation: Arc<ObservationDispatcher>,
+    hooks: Arc<HookDispatcher>,
 }
 
 impl ToolRunner {
@@ -158,15 +158,15 @@ impl ToolRunner {
             registry,
             broker,
             bus,
-            observation: Arc::new(ObservationDispatcher::new()),
+            hooks: Arc::new(HookDispatcher::new()),
         }
     }
 
     /// The `post_tool_use` dispatcher this runner will consult, so
     /// `Runtime::new` can hold the same one and wire config onto it. Until
     /// something injects a runner into it, every dispatch is a no-op.
-    pub fn observation(&self) -> Arc<ObservationDispatcher> {
-        self.observation.clone()
+    pub fn hooks(&self) -> Arc<HookDispatcher> {
+        self.hooks.clone()
     }
 
     /// Dispatches every call in `calls`, bounding concurrent tool
@@ -204,7 +204,7 @@ impl ToolRunner {
             let subagents = ctx.subagents.clone();
             let plugin_config = ctx.plugin_config.clone();
             let root = ctx.root.clone();
-            let observation = self.observation.clone();
+            let hooks = self.hooks.clone();
             let call_id_for_panic = call.call_id.clone();
             let tool_for_panic = call.name.clone();
 
@@ -219,7 +219,7 @@ impl ToolRunner {
                     registry,
                     broker,
                     bus,
-                    observation,
+                    hooks,
                     semaphore,
                     batch_cancel,
                     agent_id,
@@ -278,7 +278,7 @@ async fn execute_one(
     registry: Arc<PluginRegistry>,
     broker: Arc<PermissionBroker>,
     bus: Arc<EventBus>,
-    observation: Arc<ObservationDispatcher>,
+    hooks: Arc<HookDispatcher>,
     semaphore: Arc<Semaphore>,
     batch_cancel: TokioCancellationToken,
     agent_id: AgentId,
@@ -450,10 +450,10 @@ async fn execute_one(
     // observed -- `outcome` below is returned unchanged either way. There is
     // deliberately no denial path here; the call has already run, so there is
     // nothing left to deny.
-    if observation.will_dispatch(observation::POST_TOOL_USE) {
-        observation
+    if hooks.will_dispatch(hook_dispatch::POST_TOOL_USE) {
+        hooks
             .dispatch(
-                observation::POST_TOOL_USE,
+                hook_dispatch::POST_TOOL_USE,
                 serde_json::json!({
                     "call_id": call_id,
                     "tool": tool_name.as_str(),
