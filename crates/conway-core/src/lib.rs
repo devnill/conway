@@ -2,9 +2,24 @@
 
 //! conway-core: domain types and port traits for the conway agent harness.
 //!
-//! This crate performs no I/O. Every public type is `Serialize + Deserialize`.
-//! Implementations of the port traits live in dedicated crates; the only
-//! implementations permitted here are test fakes behind `feature = "fakes"`.
+//! Every public type is `Serialize + Deserialize`. Implementations of the
+//! port traits live in dedicated crates.
+//!
+//! **FORWARD DECLARATION — this crate does NOT yet perform no I/O.** One
+//! module breaks it: [`containment`] calls `std::fs::canonicalize` at
+//! `CanonicalRoot::new` and again in its walk-up loop. That is the whole of
+//! the exception today, pinned by the `t2_core_io_is_confined_to_the_one_
+//! known_file` guard in `crates/conway/tests/architecture_invariants.rs`, so
+//! a second offender fails CI. Board item 01KZDC30CBY9CPJ8YEM7HSRV0Y
+//! ("Retire the harness-level confinement root once conway.fs enforces its
+//! own", under Stage 1.5) closes it by moving confinement out of this crate,
+//! and **must delete this label when it lands.**
+//!
+//! **FORWARD DECLARATION — test doubles ship here today.** `feature =
+//! "fakes"` compiles [`fakes`], a full set of port doubles, into this
+//! contract crate. Board item 01KZVYWNA24EYMPVW3NPGBW51M ("Extract
+//! conway-testkit", Stage 1b) moves them to their own crate, and **must
+//! delete this label when it lands.**
 
 pub mod agent;
 pub mod capabilities;

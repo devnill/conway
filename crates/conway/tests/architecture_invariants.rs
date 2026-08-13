@@ -157,7 +157,10 @@ fn t1_core_depends_on_no_workspace_crate() {
 /// `containment.rs` calls `canonicalize()`, while the crate's own module doc
 /// opens by claiming the crate performs no I/O. Stage 1.5
 /// (01KZVYJ0MH5D4DKJBCY1XEXSJY) closes this by moving confinement into
-/// `conway.fs`, where the check and the open become one step.
+/// `conway.fs`, where the check and the open become one step -- specifically
+/// its child 01KZDC30CBY9CPJ8YEM7HSRV0Y, "Retire the harness-level
+/// confinement root once conway.fs enforces its own", which is the item the
+/// forward-declaration labels name and the one that must delete them.
 ///
 /// Pinned as: exactly one file does I/O. Fails if a second one starts.
 #[test]
@@ -256,9 +259,12 @@ fn t4_runtime_has_exactly_the_one_known_adapter_edge() {
 /// `conway-session` unconditionally, turning the feature off does not unlink
 /// the JSONL crate. It governs default *wiring*, not linkage.
 ///
-/// So this guard pins the shape, and the fiction is fixed by Stage 1a rather
-/// than here. The two are deliberately coupled: when T4 flips, this becomes
-/// true without being touched.
+/// So this guard pins the shape, and the fiction is fixed by Stage 1a
+/// (01KZVYVTVWRH20R6VJ6G3SWTJ6) rather than here. The two are deliberately
+/// coupled: when T4 flips, this becomes true without being touched. That
+/// item also owns deleting the forward-declaration labels the feature now
+/// carries in `crates/conway/Cargo.toml`, `src/builder.rs`, and
+/// `src/session_handle.rs`.
 #[test]
 fn t5_facade_gates_its_adapters_behind_features() {
     let m = manifest("conway");
@@ -306,11 +312,20 @@ fn t5_facade_gates_its_adapters_behind_features() {
 /// **T6: the facade exposes no `conway-runtime` type publicly. FALSE TODAY.**
 ///
 /// `crates/conway/src/lib.rs` re-exports `conway_runtime::permission::
-/// GrantScope` roughly forty lines below a module doc that denies doing
+/// GrantScope` roughly forty lines below a module doc that used to deny doing
 /// exactly this -- one file contradicting itself. Stage 2b
 /// (01KZVYZM7BZRQ54RRB8P814KV9) resolves it the tree's way: the re-export
 /// goes, because an audit resolves a mismatch in the code rather than the
 /// page.
+///
+/// **But not by deletion alone** (board item 01KZVYS0E0H0SKPZ9BM9WYXHTB
+/// settled this; decision 01KZWRZRS9NT929S1WFYWEPMST). The re-export has a
+/// real consumer: `conway-cli` names `conway::GrantScope` at eight sites to
+/// label and revoke a structured-allow rule, and cannot reach it another way
+/// (`no_forbidden_deps`). `conway::PermissionScope` is not a substitute --
+/// it carries no `AgentId`. Stage 2b must land a facade- or core-owned
+/// replacement and move those call sites in the same change;
+/// 01KZWRZ4JBAVCRCZ99BFZFF01K owns that half.
 ///
 /// Pinned as: exactly one such re-export, and it is that one. Fails on a
 /// second -- which would turn a single known contradiction into a pattern.
