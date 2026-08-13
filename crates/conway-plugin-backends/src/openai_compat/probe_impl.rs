@@ -31,7 +31,13 @@
 //! is down" (WI-124). No production code currently consumes
 //! `Backend::probe` at all — `conway_plugin_routing`'s periodic health
 //! prober, formerly this classification's only consumer, was retired (board
-//! item `01KZ802GSF692EKYKQ2TTVCJB8`); this method and `Backend::probe`
+//! item `01KZ802GSF692EKYKQ2TTVCJB8`, which is done: that citation is
+//! provenance for how the consumer went away, not an open thread).
+//!
+//! **What remains open is what to do about the port method now.** That is
+//! board item `01KZVQRWRRT8NTRKHHXYZ5ZQ7S` — "retiring the prober left
+//! `Backend::probe` with no production consumer, decide whether the port
+//! method stays". Until it is decided, this method and `Backend::probe`
 //! itself are unaffected and remain part of the `Backend` port's public
 //! contract, exercised directly by this crate's own tests.
 

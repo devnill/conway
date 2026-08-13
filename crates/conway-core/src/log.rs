@@ -255,14 +255,21 @@ pub enum LogRecord {
     /// keeps that invariant intact.
     ///
     /// **Not yet implemented**: nothing in this tree constructs this
-    /// variant yet. `conway-session`'s fork-ancestry resolver
+    /// variant. `conway-session`'s fork-ancestry resolver
     /// (`apply_context_mask`) is wired to READ and honor one if it
     /// existed, but no tool or operator surface can append one -- so no
     /// record is ever actually excluded from an outgoing LLM payload
-    /// today, despite the doc above. Tracked by board item
-    /// `01KYTQWD2SBW33YPNGY0YBN9WY`; allowlisted with a reason in
-    /// `crates/conway/tests/enum_variant_construction_guard.rs` until a
-    /// producer exists.
+    /// today, despite the doc above.
+    ///
+    /// **That is a deliberate deferral, not pending work.** The board item
+    /// filed for it was cancelled, and decision
+    /// `01KZT3XF73Z5WBC09FSWD51RT7` rules that compaction is explicitly out
+    /// of scope: its value is empirical and depends on model, workload and
+    /// transcript shape, so conway ships the seam and leaves the policy to
+    /// the consumer. The same decision states what it does NOT rule -- this
+    /// variant is not to be deleted, and the missing-producer observation
+    /// was not wrong. Allowlisted with a reason in
+    /// `crates/conway/tests/enum_variant_construction_guard.rs`.
     ContextMask {
         seq: LogSeq,
         ts: DateTime<Utc>,
