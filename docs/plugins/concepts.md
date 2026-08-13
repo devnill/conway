@@ -17,17 +17,29 @@ already been decided; what remains is implementation.
 
 **What exists today, in one list**, so you don't have to extract it from the
 labels below: a plugin is an in-process `Arc<dyn Plugin>` (built-in or
-supplied via `ConwayBuilder::with_plugin`/`conway::plugin`) that registers
-tools; `ContextHook` (`before_request`/`on_overflow`) and `PermissionGate`
-are real, invoked ports with no built-in policy — you supply your own; and
-project-file trust (keyed on path + content digest) is real and enforced.
-Everything else this page describes — hooks as a generalized registration
-surface, the observer/participant point vocabulary, an out-of-process
-transport, script-dispatched hooks, and digest-keyed *plugin* trust — is
-decided design, not yet implemented. See
+supplied via `ConwayBuilder::with_plugin`/`conway::plugin`, or selected by
+id via `ConwayBuilder::install_selected`) that registers tools, and — since
+board items `01KZYBFTK4QPB45AJT9M57P60W`/`01KZS03BFE720EQZG7Q2768N2H` — may
+also register TUI `commands()` and declare/fire its own `events()`;
+`ContextHook` (`before_request`/`on_overflow`) and `PermissionGate` are
+real, invoked ports with no built-in policy — you supply your own; project-
+file trust (keyed on path + content digest) is real and enforced; and, as of
+board item `01KZYAWQ6011Q6CJVG6CCMQPF1`, a **declarative** `[hooks].rules[]`
+block in `settings.json` — no Rust required — really is dispatched: all
+seven core events, narrowable to one tool by a `match` field, given a
+`HookRunner` injected (`docs/plugins/authoring.md`'s "Ten minutes to a
+working hook" walks through it end to end). What's still decided design, not
+implemented: the generalized observer/participant point vocabulary and
+composition rule (today there is exactly one `ContextHook` and one
+`PermissionGate` per embedder, never a composed set), an out-of-process
+transport, a *plugin*-authored script-dispatching hook (the dispatching
+above is the runtime's own built-in `ProcessHookRunner`, not something a
+third-party `Plugin` provides), and digest-keyed *plugin* trust. See
 [`docs/permissions.md`](../permissions.md#limits) for the same boundary
 stated from the operator's side: "conway's only extension mechanism today is
-in-process."
+in-process" — still true of every *plugin* (in-process, compiled into a
+specific binary), even though a declarative hook's *command* is an
+out-of-process script.
 
 ## Hook-first
 
@@ -47,15 +59,26 @@ If you're carrying a mental model from that earlier material, or from a
 tool-plugin system in general, put the tool at the edge and the hook at the
 center.
 
-**Not yet implemented as a generalized surface.** Today, `Plugin::manifest()`
-declares identity and `Plugin::tools()` declares tools
-(`crates/conway-core/src/ports/plugin.rs`) — there is no `hooks()` method and
-no way for a `Plugin` to register a hook through the trait itself.
-`ContextHook` and `PermissionGate` are real, but they are separate ports the
-embedder wires in directly (`ConwayBuilder`), not something a `Plugin`
-registers. The first rung of hook-first — a declarative `hooks` block that
-fires a configured command on a named event — is open, board item
-`01KZDC0RDRMMMJHX7SAFMM2Q5A`.
+**Partially implemented as a generalized surface — and this correction
+matters more here than anywhere else in the set.** `Plugin::manifest()`
+declares identity, `Plugin::tools()` declares tools, `Plugin::commands()`
+declares TUI slash commands, and `Plugin::events()` declares hook events a
+plugin may itself fire (`crates/conway-core/src/ports/plugin.rs`) — but
+there is still no `hooks()` method, and still no way for a `Plugin` to
+register a *script-dispatched* hook through the trait itself; `ContextHook`
+and `PermissionGate` are real, separate ports the embedder wires in directly
+(`ConwayBuilder`), not something a `Plugin` registers. **The first rung of
+hook-first that this section used to call open is now built**: a
+declarative `[hooks].rules[]` block in `settings.json` fires a configured
+command on a named event, narrowed to one tool by `match` — board item
+`01KZYAWQ6011Q6CJVG6CCMQPF1`, dispatching all seven core events plus any
+plugin-declared one (`docs/plugins/hooks.md` point 13's Status row is
+normative; `docs/plugins/authoring.md` is the executed walkthrough). What
+remains open under the same umbrella tracking item
+(`01KZDC0RDRMMMJHX7SAFMM2Q5A`): a *plugin* registering a hook through the
+`Plugin` trait itself (as opposed to an operator writing a `[hooks].rules[]`
+entry by hand), and the generalized observer/participant composition rule
+the next section describes.
 
 ## Observers vs participants
 
@@ -211,13 +234,22 @@ it. Tracked under `01KZDC0RDRMMMJHX7SAFMM2Q5A`.
 
 ## Language choice
 
-A hook may fire a script written in any language, not only Rust. This does
-not add a second extension mechanism: the script
-surface is provided *by a plugin* — one that dispatches to a configured
-script per event — so a script-backed hook is still, from the runtime's
-point of view, an ordinary hook registered by an ordinary plugin. The script
-path layers on top of the one extension mechanism; it does not sit beside
-it.
+A hook may fire a script written in any language, not only Rust. **The
+user-visible capability this section describes is now real, built
+differently than this section originally proposed — a reconciliation, not
+a claim that stands unchanged.** The design's original shape was a
+script-dispatching *plugin*: an ordinary `Arc<dyn Plugin>` whose own
+implementation shells out per event, so a script-backed hook would still be,
+from the runtime's point of view, an ordinary hook registered by an ordinary
+plugin. **What actually shipped (board item `01KZRZY1MNM872BZ6AKEBG3SKE`) is
+the runtime's own built-in `HookRunner` port**
+(`conway_tools::hook_runner::ProcessHookRunner`) consulted directly by a
+`[hooks].rules[]` entry's `command` — no `Plugin` in between at all. The
+observable result for an author is identical to what this section always
+promised (write a script in any language, name it in config, it runs on the
+event); the mechanism underneath is not the one originally sketched.
+`docs/plugins/authoring.md`'s "Ten minutes to a working hook" is the
+executed walkthrough of the shipped path.
 
 State the cost honestly, because "any language" reads as free and isn't:
 spawning a process per invocation costs roughly 10–50 ms for a shell script
@@ -225,10 +257,14 @@ and 200–400 ms for a Python one, and that cost compounds across a batch of
 tool calls running in parallel. Fine for a hook that fires occasionally —
 wrong for one wired to every tool call.
 
-**Not yet implemented.** No script-dispatching plugin exists in the tree.
-Tracked under `01KZDC0RDRMMMJHX7SAFMM2Q5A`, the same item that would add the
-declarative `hooks` configuration surface a script-backed hook would be
-declared through.
+**Still not yet implemented, and this is the part of the original design
+that remains open:** a script-dispatching *plugin* in the originally-sketched
+sense — a third-party `Plugin` whose own `tools()`/`commands()`/`events()`
+happen to be backed by a script, distinct from the runtime's own built-in
+runner. Nothing today lets a `Plugin` implementor delegate its *own* trait
+methods to an external script the way `[hooks].rules[]` delegates a core
+event; a plugin author still writes Rust. Tracked under
+`01KZDC0RDRMMMJHX7SAFMM2Q5A`.
 
 ## Trust, in one paragraph
 
@@ -263,12 +299,14 @@ trust build specifically yet; it depends on the out-of-process transport
 
 - **Plugin** — the unit of registration: an implementor of the `Plugin` trait
   (`crates/conway-core/src/ports/plugin.rs`), in-process today, out-of-process
-  in the design. Declares an identity and, today, its tools.
+  in the design. Declares an identity and, today, its tools, its TUI
+  `commands()`, and the hook `events()` it may itself fire.
 - **Manifest** — a plugin's static identity: `PluginManifest { id, version,
   tools, required_host_caps }`.
-- **Hook** — an attachment point where a plugin's behavior runs. Concrete,
-  built examples: `ContextHook`, `PermissionGate`. See "Hook-first" above for
-  what's still design.
+- **Hook** — an attachment point where behavior runs. Concrete, built
+  examples: `ContextHook`, `PermissionGate`, and, declaratively, a
+  `[hooks].rules[]` entry naming a core or plugin-declared event. See
+  "Hook-first" above for what's still design.
 - **Point** — the design's name for a named, wire-addressable hook (`tool/1`,
   `permission.policy/1`, `context.hook/1`, `observe/1`). Not yet built; see
   "Observers vs participants" above.

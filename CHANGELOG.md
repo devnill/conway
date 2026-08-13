@@ -47,6 +47,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   new (narrow) capability in place of the bound they previously described as
   a hard wall.
 
+- **`docs/plugins/authoring.md` rewritten around the declarative hook
+  surface, executed rather than reasoned about** (board item
+  `01KZYAYWRQKZ41Y7AHZ2QWVJ8X`, the 1.0-beta acceptance test — same genre
+  and rigour as `.design/getting-started-default-build-walkthrough.md`).
+  The page's own opening claim — "the declarative surface is decided, not
+  built" — went false the same day two other beta items landed
+  (`01KZYAWQ6011Q6CJVG6CCMQPF1`'s `match` field, `01KZVZ1TDBHS7S604PQB5RZDM3`'s
+  `ConwayBuilder::install_selected`), and this item is what actually ran the
+  page against both, not merely read them. "Ten minutes to a working hook"
+  is now the declarative `[hooks].rules[]` path — narrowed with `match`, no
+  Rust, no compiling — proven by a real local-Ollama session where a
+  matcher-narrowed `post_tool_use` rule fires for `bash` and, in a
+  counterfactual run with `match` pointed elsewhere, correctly does not.
+  The old in-process `ContextHook` walkthrough is preserved verbatim as
+  "Going further," reframed as the only path with edit/drop/replace
+  authority. "Writing a Rust plugin" is rebuilt around
+  `ConwayBuilder::install_selected` with a real, executed end-to-end
+  example (a plugin's tool actually invoked by a real model), states
+  plainly that installing a plugin requires building a binary today (no
+  runtime plugin host exists; the future is `01KZY8PATND84AKY0J376E3DWV`),
+  names `Plugin::commands()`/`Plugin::events()`, and documents a real
+  gotcha this walkthrough hit and `docs/embedding.md`'s own illustrative
+  example doesn't warn about: `install_selected`'s `[plugins].install`
+  resolution unions in `[plugins].default_backends` (default `["anthropic",
+  "openai-compat"]`), so a facade-only binary linking only one dialect
+  factory fails with `plugins.install names unknown id 'anthropic'` unless
+  it also narrows `default_backends`. `concepts.md`'s "Hook-first" and
+  "Language choice" sections, which made the identical now-false "decided,
+  not built" claim about the same surface, are corrected in the same
+  change. Full transcript, every divergence found (fixed on the page or
+  enumerated), and the steps-to-first-visible-result measurement for both
+  halves: `.design/authoring-walkthrough-evidence.md`.
+
 - **A plugin can now declare and fire its own custom hook event** (board item
   01KZS03BFE720EQZG7Q2768N2H) -- the open-vocabulary half of `PHILOSOPHY.md`
   §5's hooks claim: "A plugin declares the events it emits... Those events
