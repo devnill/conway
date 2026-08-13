@@ -7,8 +7,8 @@
 //! `classify`, and the retry-loop wiring for the status-driven rows is
 //! covered by the wiremock tests inside `src/http.rs`.
 
-use conway_plugin_backends::error::{classify, classify_malformed_body};
 use conway_core::error::BackendError;
+use conway_plugin_backends::error::{classify, classify_malformed_body};
 
 #[test]
 fn row_401_403_maps_to_auth() {

@@ -14,11 +14,6 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use conway_plugin_backends::anthropic::AnthropicBackend;
-use conway_plugin_backends::config::{
-    AnthropicConfig, Dialect, ModelOverrides, OpenAiCompatConfig, SecretString,
-};
-use conway_plugin_backends::openai_compat::OpenAiCompatBackend;
 use conway_core::content::{
     ContentBlock, PermissionClass, Role, SamplingParams, ToolCategory, ToolSpec,
 };
@@ -27,6 +22,11 @@ use conway_core::ids::{BackendId, ModelId, ToolName};
 use conway_core::ports::{Backend, GenerateRequest};
 use conway_core::provenance::Provenance;
 use conway_core::segment::PromptSegment;
+use conway_plugin_backends::anthropic::AnthropicBackend;
+use conway_plugin_backends::config::{
+    AnthropicConfig, Dialect, ModelOverrides, OpenAiCompatConfig, SecretString,
+};
+use conway_plugin_backends::openai_compat::OpenAiCompatBackend;
 use serde_json::json;
 use wiremock::MockServer;
 

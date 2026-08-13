@@ -243,7 +243,10 @@ mod tests {
         );
         // The other statuses delegate to the shared per-status mapping and
         // match their pre-T1 colors.
-        assert_eq!(status_style(NodeStatus::Running, &theme), theme.agent_running);
+        assert_eq!(
+            status_style(NodeStatus::Running, &theme),
+            theme.agent_running
+        );
         assert_eq!(
             status_style(NodeStatus::Cancelled, &theme),
             theme.agent_cancelled
@@ -273,7 +276,9 @@ mod tests {
     fn rendered(state: &AppState, width: u16, height: u16) -> String {
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal.draw(|f| draw(f, f.area(), state, &Theme::default())).expect("draw");
+        terminal
+            .draw(|f| draw(f, f.area(), state, &Theme::default()))
+            .expect("draw");
         terminal
             .backend()
             .buffer()
@@ -290,7 +295,9 @@ mod tests {
 
         let backend = TestBackend::new(40, 10);
         let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal.draw(|f| draw(f, f.area(), &state, &Theme::default())).expect("draw");
+        terminal
+            .draw(|f| draw(f, f.area(), &state, &Theme::default()))
+            .expect("draw");
 
         let buffer = terminal.backend().buffer();
         assert!(buffer.content().iter().any(|cell| cell.symbol() != " "));
@@ -352,7 +359,9 @@ mod tests {
 
         let backend = TestBackend::new(40, 10);
         let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal.draw(|f| draw(f, f.area(), &state, &Theme::default())).expect("draw");
+        terminal
+            .draw(|f| draw(f, f.area(), &state, &Theme::default()))
+            .expect("draw");
 
         let any_reversed = terminal
             .backend()
@@ -628,7 +637,9 @@ mod tests {
 
         let backend = TestBackend::new(80, 10);
         let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal.draw(|f| draw(f, f.area(), &state, &Theme::default())).expect("draw");
+        terminal
+            .draw(|f| draw(f, f.area(), &state, &Theme::default()))
+            .expect("draw");
 
         let any_reversed = terminal
             .backend()

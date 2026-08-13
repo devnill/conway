@@ -179,7 +179,9 @@ fn governing_prompt(state: &AppState, effective_scroll: u16, width: u16) -> Opti
         return None;
     }
     let starts = transcript::entry_row_starts(state, width, effective_scroll);
-    let top_entry = starts.partition_point(|&s| s <= effective_scroll).saturating_sub(1);
+    let top_entry = starts
+        .partition_point(|&s| s <= effective_scroll)
+        .saturating_sub(1);
 
     let (user_idx, text) = state.transcript[..=top_entry]
         .iter()
@@ -366,7 +368,9 @@ mod tests {
     #[test]
     fn sticky_prompt_shows_the_current_turns_prompt_once_it_scrolls_off_and_hides_once_visible() {
         let mut state = AppState::new(TestAgentId::new());
-        state.transcript.push(Entry::User("what is the plan for today".to_string()));
+        state
+            .transcript
+            .push(Entry::User("what is the plan for today".to_string()));
         for i in 0..40 {
             state.transcript.push(Entry::Assistant {
                 text: format!("reply line {i}"),
@@ -407,7 +411,9 @@ mod tests {
     #[test]
     fn sticky_prompt_shows_the_governing_prompt_not_the_most_recent_one() {
         let mut state = AppState::new(TestAgentId::new());
-        state.transcript.push(Entry::User("first question".to_string()));
+        state
+            .transcript
+            .push(Entry::User("first question".to_string()));
         for i in 0..20 {
             state.transcript.push(Entry::Assistant {
                 text: format!("first reply {i}"),
@@ -416,14 +422,18 @@ mod tests {
                 ts: None,
             });
         }
-        state.transcript.push(Entry::User("second question".to_string()));
+        state
+            .transcript
+            .push(Entry::User("second question".to_string()));
         state.transcript.push(Entry::Assistant {
             text: "second reply".to_string(),
             model: None,
             summary: None,
             ts: None,
         });
-        state.transcript.push(Entry::User("third question".to_string()));
+        state
+            .transcript
+            .push(Entry::User("third question".to_string()));
         state.transcript.push(Entry::Assistant {
             text: "third reply".to_string(),
             model: None,
@@ -461,7 +471,9 @@ mod tests {
     #[test]
     fn sticky_prompt_shows_while_following_the_tail_of_a_response_taller_than_the_viewport() {
         let mut state = AppState::new(TestAgentId::new());
-        state.transcript.push(Entry::User("what is the plan for today".to_string()));
+        state
+            .transcript
+            .push(Entry::User("what is the plan for today".to_string()));
         for i in 0..40 {
             state.transcript.push(Entry::Assistant {
                 text: format!("reply line {i}"),
@@ -487,7 +499,9 @@ mod tests {
     fn sticky_prompt_still_works_after_a_focus_switch() {
         let root = TestAgentId::new();
         let mut state = AppState::new(root);
-        state.transcript.push(Entry::User("root prompt".to_string()));
+        state
+            .transcript
+            .push(Entry::User("root prompt".to_string()));
         for i in 0..10 {
             state.transcript.push(Entry::Assistant {
                 text: format!("root reply {i}"),
@@ -499,9 +513,14 @@ mod tests {
 
         let child = TestAgentId::new();
         state.focus_agent(child);
-        assert!(state.transcript.is_empty(), "focus_agent clears the transcript");
+        assert!(
+            state.transcript.is_empty(),
+            "focus_agent clears the transcript"
+        );
 
-        state.transcript.push(Entry::User("child prompt".to_string()));
+        state
+            .transcript
+            .push(Entry::User("child prompt".to_string()));
         for i in 0..40 {
             state.transcript.push(Entry::Assistant {
                 text: format!("child reply {i}"),
@@ -556,7 +575,9 @@ mod tests {
         use crate::tui::view;
 
         let mut with_overlay = AppState::new(TestAgentId::new());
-        with_overlay.transcript.push(Entry::User("prompt".to_string()));
+        with_overlay
+            .transcript
+            .push(Entry::User("prompt".to_string()));
         for i in 0..40 {
             with_overlay.transcript.push(Entry::Assistant {
                 text: format!("line {i}"),
@@ -794,10 +815,7 @@ mod tests {
         state.scroll = 0;
 
         let scrolled_up = render_text(&state, 60, 8);
-        assert!(
-            scrolled_up.contains("lines above tail"),
-            "{scrolled_up}"
-        );
+        assert!(scrolled_up.contains("lines above tail"), "{scrolled_up}");
 
         state.follow_tail = true;
         let following = render_text(&state, 60, 8);

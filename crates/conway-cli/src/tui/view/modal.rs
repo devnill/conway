@@ -302,7 +302,10 @@ mod tests {
     fn zero_height_transcript_area_degrades_to_a_zero_rect_without_panicking() {
         let area = transcript(0);
         let rect = modal_area(area, 500, 3, DEFAULT_CAP_DENOMINATOR);
-        assert_eq!(rect.height, 0, "no room at all must degrade to nothing, not panic");
+        assert_eq!(
+            rect.height, 0,
+            "no room at all must degrade to nothing, not panic"
+        );
     }
 
     #[test]
@@ -312,7 +315,10 @@ mod tests {
         // (non-panicking) range.
         let area = transcript(2);
         let rect = modal_area(area, 50, 3, DEFAULT_CAP_DENOMINATOR);
-        assert!(rect.height <= area.height, "must never exceed what's actually there");
+        assert!(
+            rect.height <= area.height,
+            "must never exceed what's actually there"
+        );
     }
 
     #[test]
@@ -330,7 +336,10 @@ mod tests {
                     h,
                     content
                 );
-                assert!(rect.y >= area.y, "must stay within the transcript area's own bounds");
+                assert!(
+                    rect.y >= area.y,
+                    "must stay within the transcript area's own bounds"
+                );
             }
         }
     }

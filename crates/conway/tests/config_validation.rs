@@ -103,7 +103,9 @@ fn misspelled_well_known_backend_key_is_accepted_and_passed_through() {
         cli_overrides: CliOverrides::default(),
         model_metadata_refresh: false,
     })
-    .expect("a misspelled backend key must not fail to load -- it is silently captured, not rejected");
+    .expect(
+        "a misspelled backend key must not fail to load -- it is silently captured, not rejected",
+    );
 
     let anthropic = outcome
         .config

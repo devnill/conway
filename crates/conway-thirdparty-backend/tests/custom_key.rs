@@ -58,9 +58,8 @@ async fn a_different_extra_value_produces_a_different_reply() {
     let config_b = fixture::write_settings_with_greeting(&dir_b, "bob");
 
     async fn turn_text(dir: &std::path::Path, config_path: &std::path::Path) -> String {
-        let conway = build_conway(dir, config_path).expect(
-            "build should succeed: a real settings.json-derived thirdparty-stub backend",
-        );
+        let conway = build_conway(dir, config_path)
+            .expect("build should succeed: a real settings.json-derived thirdparty-stub backend");
         let handle = conway
             .new_session(conway::SessionSpec::default())
             .await

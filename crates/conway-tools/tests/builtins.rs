@@ -171,7 +171,8 @@ fn bash_declares_itself_unconfinable_yet_offers_cwd_as_checkable() {
     match tool.path_args() {
         conway_core::ports::PathArgs::Unconfinable { checkable } => {
             assert_eq!(
-                checkable, &["cwd"],
+                checkable,
+                &["cwd"],
                 "bash's cwd is resolved and handed to Command::current_dir, so it is checkable"
             );
         }
@@ -702,14 +703,8 @@ async fn truncation_matches_the_documented_table_per_tool() {
             },
         ),
         ("report", TruncationPolicy::None),
-        (
-            "conway_fork",
-            TruncationPolicy::Tail { max_bytes: 16_384 },
-        ),
-        (
-            "conway_spawn",
-            TruncationPolicy::Tail { max_bytes: 16_384 },
-        ),
+        ("conway_fork", TruncationPolicy::Tail { max_bytes: 16_384 }),
+        ("conway_spawn", TruncationPolicy::Tail { max_bytes: 16_384 }),
         ("conway_ask", TruncationPolicy::Tail { max_bytes: 16_384 }),
         ("conway_steer", TruncationPolicy::Tail { max_bytes: 16_384 }),
         ("conway_await", TruncationPolicy::Tail { max_bytes: 16_384 }),

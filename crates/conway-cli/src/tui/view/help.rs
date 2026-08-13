@@ -236,7 +236,8 @@ const GROUPS: &[Group] = &[
 
 /// The freeform note about the mouse wheel -- prose, deliberately never a
 /// [`Binding`] row (see this module's own doc).
-pub(super) const MOUSE_NOTE: &str = "note: mouse wheel scrolling is your terminal's own scrollback, not \
+pub(super) const MOUSE_NOTE: &str =
+    "note: mouse wheel scrolling is your terminal's own scrollback, not \
                             a Conway binding -- Conway does not capture the mouse, so your \
                             terminal's native click-drag text selection keeps working. Use \
                             PageUp/PageDown or Home/End instead.";

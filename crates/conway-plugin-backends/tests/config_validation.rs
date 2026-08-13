@@ -26,8 +26,7 @@ fn any_non_empty_key_shape_parses_via_json() {
 #[test]
 fn any_non_empty_key_shape_parses_via_toml() {
     let toml_src = r#"api_key = "sk-ant-oat01-abc""#;
-    let cfg: AnthropicConfig =
-        toml::from_str(toml_src).expect("key shape must not be inspected");
+    let cfg: AnthropicConfig = toml::from_str(toml_src).expect("key shape must not be inspected");
     assert_eq!(cfg.api_key.expose_secret(), "sk-ant-oat01-abc");
 }
 

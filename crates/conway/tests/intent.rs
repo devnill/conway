@@ -128,9 +128,7 @@ fn build_conway(
         // registered factory to construct (then be overwritten by the
         // injected `backend` above), the same as every other config-
         // derived `openai-compat`/`anthropic` fixture in this suite.
-        .with_backend_factory(Arc::new(
-            conway_plugin_backends::OpenAiCompatBackendFactory,
-        ))
+        .with_backend_factory(Arc::new(conway_plugin_backends::OpenAiCompatBackendFactory))
         .build()
         .expect("build should succeed with every port injected")
 }
@@ -349,7 +347,11 @@ async fn classify_strips_a_hallucinated_agent_def_but_keeps_recipe_and_prompt() 
 
     let intent = tokio::time::timeout(
         CLASSIFY_TIMEOUT,
-        conway.classify_agent_intent(parent.root(), SubagentMode::Spawn, "have someone review this"),
+        conway.classify_agent_intent(
+            parent.root(),
+            SubagentMode::Spawn,
+            "have someone review this",
+        ),
     )
     .await
     .expect("classify must not hang")

@@ -14,9 +14,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use conway::config::schema::{
-    AgentsConfig, ConwayConfig, HealthSection, LimitsConfig, ModelsConfig, PermissionsConfig,
-    HooksConfig, PluginsConfig,
-    RoleEntry, RoutingSection, SessionConfig, ToolsConfig, TuiSection,
+    AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
+    PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
+    TuiSection,
 };
 use conway::{AskOrigin, Conway, ConwayBuilder, ConwayError, SessionHandle, SessionSpec};
 use conway_core::agent::PermissionDecision;
@@ -89,9 +89,7 @@ fn build_conway_with_backend(store: Arc<dyn SessionStore>, backend: Arc<dyn Back
 /// and the ephemeral child's `(AgentId, SessionId)` (mirrors
 /// `pull_in.rs`'s helper: the modal only offers fates for a COMPLETED
 /// ask).
-async fn live_session_with_completed_ask(
-    conway: &Conway,
-) -> (SessionHandle, AgentId, SessionId) {
+async fn live_session_with_completed_ask(conway: &Conway) -> (SessionHandle, AgentId, SessionId) {
     let handle = conway
         .new_session(SessionSpec {
             keep_alive: true,
@@ -252,9 +250,8 @@ async fn purge_a_still_running_child_is_refused() {
     let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
     // The child's only scripted turn never resolves, so the ask child is
     // deterministically mid-turn (non-terminal) when purge is called.
-    let backend = Arc::new(
-        ScriptedBackend::new(vec![ScriptedTurn::Pending]).with_id(BackendId::new("fake")),
-    );
+    let backend =
+        Arc::new(ScriptedBackend::new(vec![ScriptedTurn::Pending]).with_id(BackendId::new("fake")));
     let conway = build_conway_with_backend(store.clone(), backend);
 
     let handle = conway
@@ -336,7 +333,11 @@ async fn sweep_reaps_modal_ask_residue_but_never_tool_ask_or_untagged_sessions()
     // A tool-ask-shaped ephemeral session, stamped directly at the store
     // layer exactly the way `conway-tools`' `AskTool` has the runtime stamp
     // its children (AskOrigin::ToolAsk).
-    let root_session = modal_meta.origin.as_ref().expect("the child has an origin").parent;
+    let root_session = modal_meta
+        .origin
+        .as_ref()
+        .expect("the child has an origin")
+        .parent;
     let root_head = store.head(&root_session).await.expect("head");
     let tool_ask_meta = SessionMeta {
         id: SessionId::new(),
@@ -444,7 +445,10 @@ async fn sweep_skips_a_modal_ask_child_that_is_still_live_in_the_tree() {
         .await
         .expect("the sweep must succeed");
 
-    assert_eq!(purged, 0, "a live modal-ask child must be skipped, not reaped");
+    assert_eq!(
+        purged, 0,
+        "a live modal-ask child must be skipped, not reaped"
+    );
     store
         .meta(&child_session)
         .await
@@ -461,9 +465,7 @@ async fn sweep_skips_a_modal_ask_child_that_is_still_live_in_the_tree() {
 /// so the leftover child is residue to it. This is the "crashed process
 /// left a modal-ask child behind, a new TUI starts against the same store"
 /// shape, without the time cost of a real restart.
-async fn restarted_with_modal_ask_residue(
-    store: Arc<dyn SessionStore>,
-) -> (Conway, SessionId) {
+async fn restarted_with_modal_ask_residue(store: Arc<dyn SessionStore>) -> (Conway, SessionId) {
     let backend = Arc::new(
         ScriptedBackend::new(vec![
             ScriptedTurn::Respond(text_response("parent ack")),
@@ -562,7 +564,10 @@ async fn sweep_reaps_when_no_live_owner_marker_is_present() {
         .sweep_stale_modal_asks()
         .await
         .expect("the sweep must succeed");
-    assert_eq!(purged, 1, "with no live owner the modal-ask residue is reaped");
+    assert_eq!(
+        purged, 1,
+        "with no live owner the modal-ask residue is reaped"
+    );
     store
         .meta(&child_session)
         .await

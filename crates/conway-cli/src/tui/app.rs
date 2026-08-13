@@ -196,9 +196,8 @@ impl App {
         // untrusted -- `clamp_tool_preview_lines` clamps to `1..=200` and
         // falls back to the default of 3 on a missing/out-of-range value.
         // Never a panic, no `unwrap`/`expect`/indexing on the config value.
-        state.tool_preview_lines = super::state::clamp_tool_preview_lines(
-            conway.config().tui.tool_preview_lines,
-        );
+        state.tool_preview_lines =
+            super::state::clamp_tool_preview_lines(conway.config().tui.tool_preview_lines);
         // T8: input-history cap from `[tui.history_size]` (default 500,
         // clamped the same P-10 way as `tool_preview_lines` just above),
         // then load whatever history already exists on disk -- best-effort
@@ -207,8 +206,7 @@ impl App {
         // that function's own doc). `history_file_path` itself can return
         // `None` (no resolvable home directory); the session still runs
         // with in-memory-only history in that case.
-        state.history_cap =
-            super::state::clamp_history_size(conway.config().tui.history_size);
+        state.history_cap = super::state::clamp_history_size(conway.config().tui.history_size);
         let history_path = conway::config::discovery::history_file_path(
             &std::env::vars().collect::<std::collections::HashMap<_, _>>(),
         );
@@ -920,8 +918,8 @@ impl App {
         self.state.push_history(text.clone());
         if let Some(path) = self.history_path.clone() {
             let history = self.state.history.clone();
-            let _ = tokio::task::spawn_blocking(move || super::history::save(&path, &history))
-                .await;
+            let _ =
+                tokio::task::spawn_blocking(move || super::history::save(&path, &history)).await;
         }
         // V2b: refresh the grant mirror before `/settings` renders its
         // review list. The broker is the authority; this copy exists so
@@ -980,8 +978,7 @@ impl App {
                         path,
                         conway::PermissionScope::Session,
                         root_agent,
-                    )
-                    {
+                    ) {
                         Ok(report) => {
                             // B3: surface each registration error through the
                             // SAME `Entry::Error { fatal: false }` channel
@@ -1301,7 +1298,12 @@ impl App {
                         .model_max_context
                         .get(&name)
                         .copied()
-                        .or_else(|| self.state.model_max_context.get(model.model.as_str()).copied());
+                        .or_else(|| {
+                            self.state
+                                .model_max_context
+                                .get(model.model.as_str())
+                                .copied()
+                        });
                     self.state.focused_model = Some(name);
                     self.state.focused_model_max_context = max;
                 }
@@ -1358,11 +1360,7 @@ impl App {
     /// mutations with a page of 1, so the clamping and follow-tail
     /// re-engagement rules are literally the same code as the page-sized
     /// scroll -- one line is just a smaller page.
-    fn line_scroll<B: Backend>(
-        &mut self,
-        terminal: &Terminal<B>,
-        up: bool,
-    ) -> conway::Result<()> {
+    fn line_scroll<B: Backend>(&mut self, terminal: &Terminal<B>, up: bool) -> conway::Result<()> {
         let size = terminal.size().map_err(conway::ConwayError::Io)?;
         let area = ratatui::layout::Rect::new(0, 0, size.width, size.height);
         let max = view::max_scroll(&self.state, area);
@@ -1648,8 +1646,7 @@ mod tests {
     /// exactly the last user-role segment's text, so a submitted prompt's
     /// round trip is deterministic and needs no real network/model.
     fn build_conway_with_echo_backend() -> Conway {
-        let backend: Arc<dyn conway::Backend> =
-            Arc::new(FakeBackend::echo(BackendId::new("fake")));
+        let backend: Arc<dyn conway::Backend> = Arc::new(FakeBackend::echo(BackendId::new("fake")));
         let gate: Arc<dyn PermissionGate> = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
         let router: Arc<dyn conway::Router> = Arc::new(FakeRouter::single(conway::ModelRef {
             backend: BackendId::new("fake"),
@@ -1702,7 +1699,9 @@ mod tests {
     async fn submit_renders_the_prompt_exactly_once_not_zero_not_twice() {
         let conway = build_conway_with_echo_backend();
         let cli = minimal_cli();
-        let mut app = App::new(&cli, &conway).await.expect("App::new should succeed");
+        let mut app = App::new(&cli, &conway)
+            .await
+            .expect("App::new should succeed");
 
         // Subscribed BEFORE `submit`, exactly like `App::run`'s own `events`
         // local -- the live `Event::UserTurn` `Runtime::prompt` emits (this
@@ -1775,7 +1774,9 @@ mod tests {
         let conway = build_conway_with_echo_backend();
         let mut cli = minimal_cli();
         cli.cwd = Some(project.path().to_path_buf());
-        let app = App::new(&cli, &conway).await.expect("App::new should succeed");
+        let app = App::new(&cli, &conway)
+            .await
+            .expect("App::new should succeed");
 
         let errors: Vec<&str> = app
             .state
@@ -1837,7 +1838,9 @@ mod tests {
         let conway = build_conway_with_echo_backend();
         let mut cli = minimal_cli();
         cli.cwd = Some(project.path().to_path_buf());
-        let app = App::new(&cli, &conway).await.expect("App::new should succeed");
+        let app = App::new(&cli, &conway)
+            .await
+            .expect("App::new should succeed");
 
         let errors: Vec<&str> = app
             .state
@@ -1909,7 +1912,9 @@ mod tests {
         let conway = build_conway_with_echo_backend();
         let mut cli = minimal_cli();
         cli.cwd = Some(project.path().to_path_buf());
-        let mut app = App::new(&cli, &conway).await.expect("App::new should succeed");
+        let mut app = App::new(&cli, &conway)
+            .await
+            .expect("App::new should succeed");
 
         let outcome = app
             .submit("/settings".to_string())
@@ -1939,17 +1944,12 @@ mod tests {
         // both render -- the count, not just presence, since they share a
         // description.
         assert_eq!(
-            joined
-                .matches("[bash, read] (any call)")
-                .count(),
+            joined.matches("[bash, read] (any call)").count(),
             2,
             "the structured deny AND the structured prompt must each appear: {joined}"
         );
         // And they are read-only rows, never selectable ones.
-        let deny_prompt_rows: Vec<_> = rows
-            .iter()
-            .filter(|r| r.label.contains(&origin))
-            .collect();
+        let deny_prompt_rows: Vec<_> = rows.iter().filter(|r| r.label.contains(&origin)).collect();
         assert_eq!(deny_prompt_rows.len(), 4, "{joined}");
         for row in deny_prompt_rows {
             assert_eq!(
@@ -1973,7 +1973,6 @@ mod tests {
         }
     }
 
-
     /// Acceptance test: "focus-switching to an agent with history shows its
     /// prompts as user turns." Spawns a real child with a real prompt,
     /// lets its one-shot turn finish (so `try_focus_agent`'s replay batch
@@ -1984,11 +1983,16 @@ mod tests {
     async fn focus_switch_replays_a_spawned_childs_prompt_as_a_user_turn() {
         let conway = build_conway_with_echo_backend();
         let cli = minimal_cli();
-        let mut app = App::new(&cli, &conway).await.expect("App::new should succeed");
+        let mut app = App::new(&cli, &conway)
+            .await
+            .expect("App::new should succeed");
 
         let child = app
             .handle
-            .spawn(app.handle.root(), conway::SpawnSpec::new("child's own prompt"))
+            .spawn(
+                app.handle.root(),
+                conway::SpawnSpec::new("child's own prompt"),
+            )
             .await
             .expect("spawn should succeed");
         let _ = tokio::time::timeout(
@@ -2017,10 +2021,9 @@ mod tests {
             app.state.transcript
         );
         assert!(
-            !app.state
-                .transcript
-                .iter()
-                .any(|e| matches!(e, Entry::Notice { text } if text.contains("child's own prompt"))),
+            !app.state.transcript.iter().any(
+                |e| matches!(e, Entry::Notice { text } if text.contains("child's own prompt"))
+            ),
             "the child's replayed prompt must NOT fall back to a Notice, got {:?}",
             app.state.transcript
         );
@@ -2039,11 +2042,16 @@ mod tests {
     async fn focus_switch_shows_real_model_and_ctx_total_with_no_live_turn_required() {
         let conway = build_conway_with_echo_backend();
         let cli = minimal_cli();
-        let mut app = App::new(&cli, &conway).await.expect("App::new should succeed");
+        let mut app = App::new(&cli, &conway)
+            .await
+            .expect("App::new should succeed");
 
         let child = app
             .handle
-            .spawn(app.handle.root(), conway::SpawnSpec::new("hi from the child"))
+            .spawn(
+                app.handle.root(),
+                conway::SpawnSpec::new("hi from the child"),
+            )
             .await
             .expect("spawn should succeed");
         let _ = tokio::time::timeout(
@@ -2141,8 +2149,7 @@ mod tests {
         )
         .expect("write conway.json");
 
-        let backend: Arc<dyn conway::Backend> =
-            Arc::new(FakeBackend::echo(BackendId::new("fake")));
+        let backend: Arc<dyn conway::Backend> = Arc::new(FakeBackend::echo(BackendId::new("fake")));
         let gate: Arc<dyn PermissionGate> = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
         let router: Arc<dyn conway::Router> = Arc::new(FakeRouter::single(conway::ModelRef {
             backend: BackendId::new("fake"),
@@ -2160,9 +2167,7 @@ mod tests {
             // function's own doc), so both factories are registered here,
             // matching the real binary's own always-both default.
             .with_backend_factory(Arc::new(conway_plugin_backends::AnthropicBackendFactory))
-            .with_backend_factory(Arc::new(
-                conway_plugin_backends::OpenAiCompatBackendFactory,
-            ))
+            .with_backend_factory(Arc::new(conway_plugin_backends::OpenAiCompatBackendFactory))
             .build()
             .expect("build should succeed with every I/O port injected");
 
@@ -2172,7 +2177,9 @@ mod tests {
 
         let mut cli = minimal_cli();
         cli.config = Some(config_path);
-        let app = App::new(&cli, &conway).await.expect("App::new should succeed");
+        let app = App::new(&cli, &conway)
+            .await
+            .expect("App::new should succeed");
 
         let rendered: Vec<&str> = app
             .state

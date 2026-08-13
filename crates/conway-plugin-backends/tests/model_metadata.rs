@@ -5,12 +5,12 @@
 
 use std::path::Path;
 
+use conway_core::capabilities::ReliabilityTier;
+use conway_core::ids::ModelId;
 use conway_plugin_backends::config::ConfigError;
 use conway_plugin_backends::model_metadata::{
     ModelMetadata, ModelMetadataStore, StructuredOutputSpec, ToolCallSupportSpec,
 };
-use conway_core::capabilities::ReliabilityTier;
-use conway_core::ids::ModelId;
 
 fn fixture_path() -> &'static Path {
     Path::new(concat!(

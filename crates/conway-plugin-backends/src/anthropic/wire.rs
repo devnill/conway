@@ -628,9 +628,7 @@ mod tests {
             ),
             PromptSegment::new(
                 Role::User,
-                vec![ContentBlock::Text {
-                    text: "hi".into(),
-                }],
+                vec![ContentBlock::Text { text: "hi".into() }],
                 Provenance::UserPrompt,
             ),
         ];

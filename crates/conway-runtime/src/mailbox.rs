@@ -361,15 +361,17 @@ pub fn classify(msg: AgentMessage) -> DrainEffect {
         // carried at the top level too, mirroring `ParentSteer`, so a
         // reader can identify the originating child without reaching into
         // `result`.
-        AgentMessage::Result { from, result } => DrainEffect::Persist(LogRecord::ChildResultRecord {
-            // `SessionStore::append`'s `assign_seq` always overwrites this
-            // placeholder -- see the identical comment on the `Steer` arm
-            // above.
-            seq: LogSeq::ZERO,
-            ts: Utc::now(),
-            result,
-            prov: Provenance::ChildResult { from },
-        }),
+        AgentMessage::Result { from, result } => {
+            DrainEffect::Persist(LogRecord::ChildResultRecord {
+                // `SessionStore::append`'s `assign_seq` always overwrites this
+                // placeholder -- see the identical comment on the `Steer` arm
+                // above.
+                seq: LogSeq::ZERO,
+                ts: Utc::now(),
+                result,
+                prov: Provenance::ChildResult { from },
+            })
+        }
         _ => DrainEffect::Unknown,
     }
 }
@@ -497,7 +499,9 @@ mod tests {
             from: child,
             result: result.clone(),
         }) {
-            DrainEffect::Persist(LogRecord::ChildResultRecord { result: r, prov, .. }) => {
+            DrainEffect::Persist(LogRecord::ChildResultRecord {
+                result: r, prov, ..
+            }) => {
                 assert_eq!(r.agent_id, child);
                 assert_eq!(r, result);
                 match prov {

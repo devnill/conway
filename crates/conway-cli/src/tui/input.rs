@@ -248,7 +248,10 @@ fn activate_settings_selection(state: &mut AppState) -> Option<Action> {
             menu.toggle_group_at_selection();
             let now_expanded = menu.rows().iter().any(|r| {
                 r.label == label
-                    && matches!(r.kind, super::view::menu::MenuRowKind::Group { expanded: true })
+                    && matches!(
+                        r.kind,
+                        super::view::menu::MenuRowKind::Group { expanded: true }
+                    )
             });
             if now_expanded {
                 state.settings_collapsed_groups.remove(&label);
@@ -524,12 +527,10 @@ fn handle_permission_key(state: &mut AppState, key: KeyEvent) -> Action {
         // carrying metacharacters no offer is made and this key does
         // nothing rather than granting something the gate would refuse to
         // honor anyway.
-        KeyCode::Char('p') | KeyCode::Char('P') => {
-            match state.offered_permission_rule() {
-                Some(rule) => Action::GrantPermissionPattern(rule, state.permission_grant_scope),
-                None => Action::None,
-            }
-        }
+        KeyCode::Char('p') | KeyCode::Char('P') => match state.offered_permission_rule() {
+            Some(rule) => Action::GrantPermissionPattern(rule, state.permission_grant_scope),
+            None => Action::None,
+        },
         KeyCode::Char('n') | KeyCode::Char('N') => {
             Action::PermissionDecision(PermissionDecision::Deny {
                 reason: "user denied".to_string(),
@@ -909,10 +910,7 @@ fn move_cursor_line(state: &mut AppState, delta: isize) -> bool {
     let new_col = col.min(target_len);
     // The char-index start of `target_line`: the sum of every earlier
     // line's length plus one char for the `\n` that follows it.
-    let target_start: usize = lines[..target_line]
-        .iter()
-        .map(|l| char_count(l) + 1)
-        .sum();
+    let target_start: usize = lines[..target_line].iter().map(|l| char_count(l) + 1).sum();
     state.cursor = target_start + new_col;
     true
 }
@@ -1132,14 +1130,8 @@ mod tests {
             Action::ScrollLineUp,
             "bare Up must scroll, not recall history -- this is the wheel path"
         );
-        assert!(
-            state.scroll > 0,
-            "Up must move `scroll` off the bottom"
-        );
-        assert!(
-            !state.follow_tail,
-            "scrolling up disengages auto-follow"
-        );
+        assert!(state.scroll > 0, "Up must move `scroll` off the bottom");
+        assert!(!state.follow_tail, "scrolling up disengages auto-follow");
 
         // And back down again, one line at a time.
         let before = state.scroll;
@@ -1482,7 +1474,10 @@ mod tests {
             AgentVisibility::ActiveOnly,
             AgentVisibility::All,
         ] {
-            assert_eq!(handle_key(&mut state, key(KeyCode::Char('v'))), Action::None);
+            assert_eq!(
+                handle_key(&mut state, key(KeyCode::Char('v'))),
+                Action::None
+            );
             assert_eq!(state.agent_visibility, expected);
             assert!(
                 state.input.is_empty(),
@@ -1726,7 +1721,10 @@ mod tests {
             ts: None,
         });
 
-        assert_eq!(handle_key(&mut state, key(KeyCode::Char('e'))), Action::None);
+        assert_eq!(
+            handle_key(&mut state, key(KeyCode::Char('e'))),
+            Action::None
+        );
         assert_eq!(state.input, "e", "bare `e` must type into the input box");
         // The tool entry is untouched.
         match &state.transcript[0] {
@@ -1818,16 +1816,17 @@ mod tests {
     #[test]
     fn the_pattern_grant_action_carries_the_cycled_scope() {
         let mut state = AppState::new(AgentId::new());
-        let (prompt, _rx) = crate::tui::gate::PendingPrompt::new_for_test(conway::PermissionRequest {
-            agent_id: AgentId::new(),
-            agent_path: Vec::new(),
-            tool: conway::ToolName::new("bash"),
-            category: conway::ToolCategory::Execute,
-            arguments: serde_json::json!({}),
-            rendered: "git status --short".to_string(),
-            call_id: "tc_1".to_string(),
-            render_kind: conway::RenderKind::ShellCommand,
-        });
+        let (prompt, _rx) =
+            crate::tui::gate::PendingPrompt::new_for_test(conway::PermissionRequest {
+                agent_id: AgentId::new(),
+                agent_path: Vec::new(),
+                tool: conway::ToolName::new("bash"),
+                category: conway::ToolCategory::Execute,
+                arguments: serde_json::json!({}),
+                rendered: "git status --short".to_string(),
+                call_id: "tc_1".to_string(),
+                render_kind: conway::RenderKind::ShellCommand,
+            });
         state.mode = Mode::AwaitingPermission(prompt);
 
         handle_permission_key(&mut state, key(KeyCode::Char('s')));
@@ -1852,16 +1851,17 @@ mod tests {
     fn the_grant_scope_resets_to_session_for_each_new_prompt() {
         use crate::tui::state::AppState;
         let mut state = AppState::new(AgentId::new());
-        let (first, _rx1) = crate::tui::gate::PendingPrompt::new_for_test(conway::PermissionRequest {
-            agent_id: AgentId::new(),
-            agent_path: Vec::new(),
-            tool: conway::ToolName::new("bash"),
-            category: conway::ToolCategory::Execute,
-            arguments: serde_json::json!({}),
-            rendered: "git status".to_string(),
-            call_id: "tc_1".to_string(),
-            render_kind: conway::RenderKind::ShellCommand,
-        });
+        let (first, _rx1) =
+            crate::tui::gate::PendingPrompt::new_for_test(conway::PermissionRequest {
+                agent_id: AgentId::new(),
+                agent_path: Vec::new(),
+                tool: conway::ToolName::new("bash"),
+                category: conway::ToolCategory::Execute,
+                arguments: serde_json::json!({}),
+                rendered: "git status".to_string(),
+                call_id: "tc_1".to_string(),
+                render_kind: conway::RenderKind::ShellCommand,
+            });
         state.offer_prompt(first);
         handle_permission_key(&mut state, key(KeyCode::Char('s')));
         assert_eq!(state.permission_grant_scope, PermissionScope::Agent);
@@ -1898,16 +1898,17 @@ mod tests {
     fn permission_decision_keys_ignore_modifier_chords() {
         use crate::tui::state::AppState;
         let mut state = AppState::new(AgentId::new());
-        let (prompt, _rx) = crate::tui::gate::PendingPrompt::new_for_test(conway::PermissionRequest {
-            agent_id: AgentId::new(),
-            agent_path: Vec::new(),
-            tool: conway::ToolName::new("bash"),
-            category: conway::ToolCategory::Execute,
-            arguments: serde_json::json!({}),
-            rendered: "git status".to_string(),
-            call_id: "tc_chord".to_string(),
-            render_kind: conway::RenderKind::ShellCommand,
-        });
+        let (prompt, _rx) =
+            crate::tui::gate::PendingPrompt::new_for_test(conway::PermissionRequest {
+                agent_id: AgentId::new(),
+                agent_path: Vec::new(),
+                tool: conway::ToolName::new("bash"),
+                category: conway::ToolCategory::Execute,
+                arguments: serde_json::json!({}),
+                rendered: "git status".to_string(),
+                call_id: "tc_chord".to_string(),
+                render_kind: conway::RenderKind::ShellCommand,
+            });
         state.offer_prompt(prompt);
 
         for code in ['y', 'a', 's', 'p', 'n'] {
@@ -2038,7 +2039,10 @@ mod tests {
         assert!(state.modal_scroll > 0);
 
         let after_down = state.modal_scroll;
-        assert_eq!(handle_help_key(&mut state, key(KeyCode::PageUp)), Action::None);
+        assert_eq!(
+            handle_help_key(&mut state, key(KeyCode::PageUp)),
+            Action::None
+        );
         assert!(state.modal_scroll < after_down);
     }
 
@@ -2579,16 +2583,17 @@ mod tests {
         let mut state = AppState::new(AgentId::new());
         state.input = "before".to_string();
         state.cursor = 6;
-        let (prompt, _rx) = crate::tui::gate::PendingPrompt::new_for_test(conway::PermissionRequest {
-            agent_id: AgentId::new(),
-            agent_path: Vec::new(),
-            tool: conway::ToolName::new("bash"),
-            category: conway::ToolCategory::Execute,
-            arguments: serde_json::json!({}),
-            rendered: "bash: ls".to_string(),
-            call_id: "tc_1".to_string(),
-            render_kind: conway::RenderKind::ShellCommand,
-        });
+        let (prompt, _rx) =
+            crate::tui::gate::PendingPrompt::new_for_test(conway::PermissionRequest {
+                agent_id: AgentId::new(),
+                agent_path: Vec::new(),
+                tool: conway::ToolName::new("bash"),
+                category: conway::ToolCategory::Execute,
+                arguments: serde_json::json!({}),
+                rendered: "bash: ls".to_string(),
+                call_id: "tc_1".to_string(),
+                render_kind: conway::RenderKind::ShellCommand,
+            });
         state.mode = Mode::AwaitingPermission(prompt);
 
         handle_paste(&mut state, "sneaky");
@@ -2799,16 +2804,17 @@ mod tests {
     fn help_overlay_does_not_intercept_keys_while_a_permission_prompt_is_active() {
         let mut state = AppState::new(AgentId::new());
         state.open_help();
-        let (prompt, _rx) = crate::tui::gate::PendingPrompt::new_for_test(conway::PermissionRequest {
-            agent_id: AgentId::new(),
-            agent_path: Vec::new(),
-            tool: conway::ToolName::new("bash"),
-            category: conway::ToolCategory::Execute,
-            arguments: serde_json::json!({}),
-            rendered: "bash: ls".to_string(),
-            call_id: "tc_1".to_string(),
-            render_kind: conway::RenderKind::ShellCommand,
-        });
+        let (prompt, _rx) =
+            crate::tui::gate::PendingPrompt::new_for_test(conway::PermissionRequest {
+                agent_id: AgentId::new(),
+                agent_path: Vec::new(),
+                tool: conway::ToolName::new("bash"),
+                category: conway::ToolCategory::Execute,
+                arguments: serde_json::json!({}),
+                rendered: "bash: ls".to_string(),
+                call_id: "tc_1".to_string(),
+                render_kind: conway::RenderKind::ShellCommand,
+            });
         state.mode = Mode::AwaitingPermission(prompt);
 
         let action = handle_key(&mut state, key(KeyCode::Char('y')));
@@ -2848,7 +2854,10 @@ mod tests {
             handle_key(&mut state, ctrl_key(KeyCode::Char('d'))),
             Action::Quit
         );
-        assert!(state.settings_open, "no live resource to purge -- stays open");
+        assert!(
+            state.settings_open,
+            "no live resource to purge -- stays open"
+        );
     }
 
     /// Acceptance: toggling through the menu produces the SAME state change
@@ -2873,10 +2882,16 @@ mod tests {
         );
 
         handle_key(&mut state, key(KeyCode::Enter));
-        assert!(!state.show_reasoning, "the SAME toggle /thinking used to drive");
+        assert!(
+            !state.show_reasoning,
+            "the SAME toggle /thinking used to drive"
+        );
 
         handle_key(&mut state, key(KeyCode::Enter));
-        assert!(state.show_reasoning, "toggles back, an involution exactly like before");
+        assert!(
+            state.show_reasoning,
+            "toggles back, an involution exactly like before"
+        );
     }
 
     /// Same acceptance, for the `show_timestamps` row (was `/timestamps`).
@@ -2899,10 +2914,16 @@ mod tests {
         );
 
         handle_key(&mut state, key(KeyCode::Enter));
-        assert!(state.show_timestamps, "the SAME toggle /timestamps used to drive");
+        assert!(
+            state.show_timestamps,
+            "the SAME toggle /timestamps used to drive"
+        );
 
         handle_key(&mut state, key(KeyCode::Enter));
-        assert!(!state.show_timestamps, "toggles back, an involution exactly like before");
+        assert!(
+            !state.show_timestamps,
+            "toggles back, an involution exactly like before"
+        );
     }
 
     /// Acceptance: the numeric setting can actually be changed (Left/Right)
@@ -2937,7 +2958,10 @@ mod tests {
         for _ in 0..10 {
             handle_key(&mut state, key(KeyCode::Left));
         }
-        assert_eq!(state.tool_preview_lines, 1, "must clamp at the floor, never below");
+        assert_eq!(
+            state.tool_preview_lines, 1,
+            "must clamp at the floor, never below"
+        );
     }
 
     /// Left/Right must be a no-op while the cursor is on a boolean row or a
@@ -2952,7 +2976,10 @@ mod tests {
         handle_key(&mut state, key(KeyCode::Right));
         handle_key(&mut state, key(KeyCode::Left));
 
-        assert_eq!(state.tool_preview_lines, 3, "Left/Right off the numeric row must not change it");
+        assert_eq!(
+            state.tool_preview_lines, 3,
+            "Left/Right off the numeric row must not change it"
+        );
     }
 
     /// `Enter` on a group row expands/collapses it (V1's `MenuState::
@@ -3104,9 +3131,8 @@ mod tests {
             when: conway::When::Always,
             then: conway::Then::Allow,
         };
-        let origin = conway::PatternOrigin::File(std::path::PathBuf::from(
-            "/repo/.conway/permissions.json",
-        ));
+        let origin =
+            conway::PatternOrigin::File(std::path::PathBuf::from("/repo/.conway/permissions.json"));
         state.structured_allow_rules =
             vec![(rule.clone(), origin.clone(), conway::GrantScope::Session)];
 
@@ -3134,16 +3160,17 @@ mod tests {
     fn settings_menu_does_not_intercept_keys_while_a_permission_prompt_is_active() {
         let mut state = AppState::new(AgentId::new());
         state.open_settings();
-        let (prompt, _rx) = crate::tui::gate::PendingPrompt::new_for_test(conway::PermissionRequest {
-            agent_id: AgentId::new(),
-            agent_path: Vec::new(),
-            tool: conway::ToolName::new("bash"),
-            category: conway::ToolCategory::Execute,
-            arguments: serde_json::json!({}),
-            rendered: "bash: ls".to_string(),
-            call_id: "tc_1".to_string(),
-            render_kind: conway::RenderKind::ShellCommand,
-        });
+        let (prompt, _rx) =
+            crate::tui::gate::PendingPrompt::new_for_test(conway::PermissionRequest {
+                agent_id: AgentId::new(),
+                agent_path: Vec::new(),
+                tool: conway::ToolName::new("bash"),
+                category: conway::ToolCategory::Execute,
+                arguments: serde_json::json!({}),
+                rendered: "bash: ls".to_string(),
+                call_id: "tc_1".to_string(),
+                render_kind: conway::RenderKind::ShellCommand,
+            });
         state.mode = Mode::AwaitingPermission(prompt);
 
         let action = handle_key(&mut state, key(KeyCode::Char('y')));

@@ -979,7 +979,10 @@ fn render_tree_snapshot(state: &mut AppState) {
             } else {
                 format!(" {}", parts.join(" "))
             };
-            format!("{indent}{} {label}{recipe} [{:?}]", node.agent_id, node.status)
+            format!(
+                "{indent}{} {label}{recipe} [{:?}]",
+                node.agent_id, node.status
+            )
         })
         .collect();
     for line in lines {
@@ -1644,7 +1647,11 @@ mod tests {
     // end-to-end effect is covered by the `conway` crate's own C1 tests.
     // ---------------------------------------------------------------
 
-    fn scripted_intent(recipe: SubagentMode, agent_def: Option<&str>, prompt: &str) -> conway::AgentIntent {
+    fn scripted_intent(
+        recipe: SubagentMode,
+        agent_def: Option<&str>,
+        prompt: &str,
+    ) -> conway::AgentIntent {
         conway::AgentIntent {
             recipe,
             agent_def: agent_def.map(str::to_string),
@@ -1904,11 +1911,7 @@ mod tests {
         )
         .await;
 
-        assert_eq!(
-            host.calls(),
-            vec!["fork"],
-            "bare /fork must skip classify"
-        );
+        assert_eq!(host.calls(), vec!["fork"], "bare /fork must skip classify");
         assert!(!matches!(state.mode, Mode::IntentConfirm(_)));
     }
 
@@ -1916,7 +1919,11 @@ mod tests {
     // C2: execute_intent_confirm -- the three choices' facade dispatch.
     // ---------------------------------------------------------------
 
-    fn card_in_state(intent: conway::AgentIntent, default_recipe: SubagentMode, raw_text: &str) -> AppState {
+    fn card_in_state(
+        intent: conway::AgentIntent,
+        default_recipe: SubagentMode,
+        raw_text: &str,
+    ) -> AppState {
         let mut state = AppState::new(AgentId::new());
         state.offer_intent_confirm(IntentConfirm {
             intent,
@@ -1934,7 +1941,11 @@ mod tests {
         // those, ignoring the raw text and the original `/fork` default.
         let root = AgentId::new();
         let mut state = card_in_state(
-            scripted_intent(SubagentMode::Spawn, Some("reviewer"), "review the diff carefully"),
+            scripted_intent(
+                SubagentMode::Spawn,
+                Some("reviewer"),
+                "review the diff carefully",
+            ),
             SubagentMode::Fork, // user typed /fork, classifier cross-classified to spawn
             "review the diff",
         );
@@ -2008,9 +2019,13 @@ mod tests {
         // pre-classification flow, verbatim.
         let root = AgentId::new();
         let mut state = card_in_state(
-            scripted_intent(SubagentMode::Spawn, Some("reviewer"), "review the diff carefully"),
+            scripted_intent(
+                SubagentMode::Spawn,
+                Some("reviewer"),
+                "review the diff carefully",
+            ),
             SubagentMode::Fork, // user typed /fork
-            "review the diff",   // raw text
+            "review the diff",  // raw text
         );
         let mut host = FakeHost::new(root);
         host.fork_child = Some(AgentId::new());
@@ -2053,12 +2068,12 @@ mod tests {
         let host = FakeHost::new(root);
         let effect = execute_intent_confirm(IntentChoice::Edit, &mut state, &host).await;
 
-        assert!(
-            host.calls().is_empty(),
-            "Edit must not call any facade op"
-        );
+        assert!(host.calls().is_empty(), "Edit must not call any facade op");
         assert!(matches!(effect, Effect::None));
-        assert_eq!(state.input, "review the diff carefully", "the input line is untouched");
+        assert_eq!(
+            state.input, "review the diff carefully",
+            "the input line is untouched"
+        );
     }
 
     #[tokio::test]
@@ -2350,7 +2365,10 @@ mod tests {
 
         assert!(state.settings_open, "/settings must open the menu");
         assert!(matches!(effect, Effect::None));
-        assert!(host.calls().is_empty(), "no facade call at all -- a pure state flip");
+        assert!(
+            host.calls().is_empty(),
+            "no facade call at all -- a pure state flip"
+        );
     }
 
     #[tokio::test]

@@ -189,7 +189,10 @@ mod tests {
             .on_event(&envelope(
                 session,
                 agent,
-                Event::AgentFinished { result, ephemeral: false },
+                Event::AgentFinished {
+                    result,
+                    ephemeral: false,
+                },
             ))
             .unwrap();
 

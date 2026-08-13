@@ -230,7 +230,11 @@ pub(crate) fn non_size_missing(caps: &Capabilities, required: &RequiredCaps) -> 
 /// Saturating: `u32::MAX` inputs produce a rejection, never a wrap or panic.
 /// Inclusive bound: `est_tokens + headroom_tokens == max_context_tokens`
 /// fits (`None`).
-pub(crate) fn size_missing(caps: &Capabilities, est_tokens: u32, headroom_tokens: u32) -> Option<String> {
+pub(crate) fn size_missing(
+    caps: &Capabilities,
+    est_tokens: u32,
+    headroom_tokens: u32,
+) -> Option<String> {
     let admission = Admission {
         est_tokens,
         headroom_tokens,

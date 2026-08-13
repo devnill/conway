@@ -242,7 +242,9 @@ impl Default for Theme {
         Self {
             user: Style::default().add_modifier(Modifier::BOLD),
             assistant: Style::default(),
-            assistant_marker: Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+            assistant_marker: Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
             reasoning: Style::default()
                 .add_modifier(Modifier::DIM)
                 .add_modifier(Modifier::ITALIC),
@@ -266,15 +268,21 @@ impl Default for Theme {
             selected: Style::default().add_modifier(Modifier::REVERSED),
             emphasized: Style::default().add_modifier(Modifier::BOLD),
             border_normal: Style::default(),
-            border_warning: Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            border_warning: Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
             border_danger: Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-            border_accent: Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            border_accent: Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
             status_mode: Style::default().add_modifier(Modifier::REVERSED),
             status_dim: Style::default().add_modifier(Modifier::DIM),
             spinner: Style::default().fg(Color::Yellow),
             header: Style::default().add_modifier(Modifier::REVERSED),
             scroll_footer: Style::default().add_modifier(Modifier::DIM),
-            help_border: Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD),
+            help_border: Style::default()
+                .fg(Color::Blue)
+                .add_modifier(Modifier::BOLD),
             help_key: Style::default().add_modifier(Modifier::BOLD),
         }
     }
@@ -291,8 +299,7 @@ impl Theme {
         let mut theme = Self::default();
         theme.user = overlay(theme.user, config.user.as_ref());
         theme.assistant = overlay(theme.assistant, config.assistant.as_ref());
-        theme.assistant_marker =
-            overlay(theme.assistant_marker, config.assistant_marker.as_ref());
+        theme.assistant_marker = overlay(theme.assistant_marker, config.assistant_marker.as_ref());
         theme.reasoning = overlay(theme.reasoning, config.reasoning.as_ref());
         theme.timestamp = overlay(theme.timestamp, config.timestamp.as_ref());
         theme.tool_proposed = overlay(theme.tool_proposed, config.tool_proposed.as_ref());
@@ -368,9 +375,7 @@ fn parse_color(raw: &str) -> Option<Color> {
         "magenta" => Some(Color::Magenta),
         "cyan" => Some(Color::Cyan),
         "gray" | "grey" => Some(Color::Gray),
-        "dark_gray" | "dark-gray" | "dark-grey" | "darkgrey" | "darkgray" => {
-            Some(Color::DarkGray)
-        }
+        "dark_gray" | "dark-gray" | "dark-grey" | "darkgrey" | "darkgray" => Some(Color::DarkGray),
         "light_red" | "light-red" | "lightred" => Some(Color::LightRed),
         "light_green" | "light-green" | "lightgreen" => Some(Color::LightGreen),
         "light_yellow" | "light-yellow" | "lightyellow" => Some(Color::LightYellow),
@@ -533,7 +538,10 @@ mod tests {
     #[test]
     fn default_selected_is_reversed() {
         let t = Theme::default();
-        assert_eq!(t.selected, Style::default().add_modifier(Modifier::REVERSED));
+        assert_eq!(
+            t.selected,
+            Style::default().add_modifier(Modifier::REVERSED)
+        );
     }
 
     #[test]
@@ -542,7 +550,9 @@ mod tests {
         assert_eq!(t.border_normal, Style::default());
         assert_eq!(
             t.border_warning,
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
         );
         assert_eq!(
             t.border_danger,
@@ -550,14 +560,19 @@ mod tests {
         );
         assert_eq!(
             t.border_accent,
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
         );
     }
 
     #[test]
     fn default_status_mode_is_reversed() {
         let t = Theme::default();
-        assert_eq!(t.status_mode, Style::default().add_modifier(Modifier::REVERSED));
+        assert_eq!(
+            t.status_mode,
+            Style::default().add_modifier(Modifier::REVERSED)
+        );
     }
 
     // ---- new accent styles have sensible defaults ----
@@ -567,7 +582,9 @@ mod tests {
         let t = Theme::default();
         assert_eq!(
             t.assistant_marker,
-            Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD)
         );
     }
 
@@ -597,7 +614,10 @@ mod tests {
     #[test]
     fn default_scroll_footer_is_dim_no_fg() {
         let t = Theme::default();
-        assert_eq!(t.scroll_footer, Style::default().add_modifier(Modifier::DIM));
+        assert_eq!(
+            t.scroll_footer,
+            Style::default().add_modifier(Modifier::DIM)
+        );
     }
 
     #[test]
@@ -614,7 +634,10 @@ mod tests {
                 .add_modifier(Modifier::REVERSED)
         );
         // Untouched slot keeps its default.
-        assert_eq!(t.scroll_footer, Style::default().add_modifier(Modifier::DIM));
+        assert_eq!(
+            t.scroll_footer,
+            Style::default().add_modifier(Modifier::DIM)
+        );
     }
 
     #[test]
@@ -624,7 +647,11 @@ mod tests {
             ..Default::default()
         };
         let t = Theme::from_config(&cfg);
-        assert_eq!(t.header, Style::default().add_modifier(Modifier::REVERSED), "P-10: no panic");
+        assert_eq!(
+            t.header,
+            Style::default().add_modifier(Modifier::REVERSED),
+            "P-10: no panic"
+        );
     }
 
     // ---- T7: /help keybinding overlay ----
@@ -634,7 +661,9 @@ mod tests {
         let t = Theme::default();
         assert_eq!(
             t.help_border,
-            Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Blue)
+                .add_modifier(Modifier::BOLD)
         );
     }
 
@@ -676,7 +705,9 @@ mod tests {
         let t = Theme::from_config(&cfg);
         assert_eq!(
             t.help_border,
-            Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Blue)
+                .add_modifier(Modifier::BOLD),
             "P-10: no panic"
         );
     }
@@ -938,7 +969,11 @@ mod tests {
             ..Default::default()
         };
         let t = Theme::from_config(&cfg);
-        assert_eq!(t.spinner, Style::default().fg(Color::Yellow), "P-10: no panic");
+        assert_eq!(
+            t.spinner,
+            Style::default().fg(Color::Yellow),
+            "P-10: no panic"
+        );
     }
 
     // ---- T1 acceptance: no inline `Style::default().fg(Color::…)` remains
@@ -1009,5 +1044,4 @@ mod tests {
         });
         assert_eq!(overridden.spinner, Style::default().fg(Color::Cyan));
     }
-
 }

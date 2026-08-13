@@ -5,12 +5,12 @@ mod support;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use conway::config::schema::BackendEntry;
 use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
     PermissionMode, PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig,
     ToolsConfig, TuiSection,
 };
-use conway::config::schema::BackendEntry;
 use conway::{Conway, ConwayBuilder, ConwayError, SessionSpec};
 // Only named by the `builtin-tools`-gated tests below.
 #[cfg(feature = "builtin-tools")]
@@ -21,10 +21,10 @@ use conway_core::capabilities::{
 };
 use conway_core::content::{StopReason, Usage};
 use conway_core::fakes::{FakeBackend, FakeGate, FakeRouter, FakeStore};
-use conway_core::ids::{BackendId, RoleAlias};
-use conway_core::ports::{GenerateResponse, SessionStore};
 #[cfg(feature = "builtin-tools")]
 use conway_core::ids::ToolName;
+use conway_core::ids::{BackendId, RoleAlias};
+use conway_core::ports::{GenerateResponse, SessionStore};
 #[cfg(feature = "builtin-tools")]
 use conway_core::ports::{Plugin, PluginManifest, RenderKind, Tool};
 
@@ -496,9 +496,10 @@ fn explicit_opt_in_via_builder_registers_the_bash_tool() {
 #[cfg(feature = "builtin-tools")]
 #[test]
 fn explicit_opt_in_via_only_naming_shell_registers_the_bash_tool() {
-    let conway = build_conway_with_selection(Some(PluginSelection::Only(vec![
-        "conway.shell".to_string(),
-    ])));
+    let conway =
+        build_conway_with_selection(Some(PluginSelection::Only(
+            vec!["conway.shell".to_string()],
+        )));
 
     assert_eq!(
         conway.tool_render_kind(&ToolName::new("bash")),
