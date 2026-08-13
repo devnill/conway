@@ -17,11 +17,17 @@ License: **AGPL-3.0-only** (see [Licensing](#licensing)).
   full context, frozen at the fork point) or **spawn** (a child starts from a
   clean slate). Context flows one way only — there is no bleed back into the
   parent; cross-agent communication is explicit (steer / report envelopes).
-- **Capability-based routing.** Requests route to a model by role and by the
-  model's declared capabilities (context window, tool-calling, reasoning),
-  with a per-endpoint **circuit breaker** and an ordered fallback chain; a
-  failed candidate degrades to the next one in the chain rather than
-  failing the request.
+- **Role-based routing with ordered fallback — capability filtering and
+  breakers when you install them.** A default build resolves a role to its
+  configured chain and walks that chain in order: a candidate whose backend
+  refuses the request is skipped and the next one serves it, so a failed
+  candidate degrades to the next rather than failing the request. A default
+  build does **not** filter candidates on declared capabilities, track
+  endpoint health, or open circuit breakers. Those arrive with the routing
+  plugin (`crates/conway-plugin-routing`, installed by naming
+  `conway.routing` in `[plugins].install`), which adds pre-flight capability
+  filtering on context window, tool-calling and reasoning, plus a
+  per-endpoint **circuit breaker**.
 - **Pluggable tools behind a permission gate.** Tools are plugins; every call
   passes an explicit `PermissionGate` (allow once / allow always / deny /
   deny-with-feedback). Tool *announcement* (what the model is told about) is
