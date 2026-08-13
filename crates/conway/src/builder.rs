@@ -131,7 +131,7 @@ use conway_core::ports::{
 };
 use conway_core::routing::{AlwaysClosedHealthRegistry, MinimalRouter, ModelOverrides};
 use conway_runtime::events::EventBus;
-use conway_runtime::observation::{ObservationHookSpec, OBSERVATION_EVENTS};
+use conway_runtime::hook_dispatch::{HookSpec, DISPATCHED_EVENTS};
 use conway_runtime::permission::PreToolUseHookSpec;
 use conway_runtime::runtime::{Runtime, RuntimeDeps};
 
@@ -1003,20 +1003,22 @@ impl ConwayBuilder {
                 timeout_ms: rule.timeout_ms,
             })
             .collect();
-        // Board item 01KZS019NHG11RVQYSVT7RG0P5: the same three-line shape for
-        // the observation tier, grouped by event name. `post_tool_use`,
-        // `session_starting` and `child_spawned` are dispatched; every other
-        // `event` value still parses, validates and does nothing.
+        // Board items 01KZS019NHG11RVQYSVT7RG0P5 and 01KZS01ZBNEY12DBDNW2Y861SQ:
+        // the same shape for every event dispatched outside the permission
+        // broker, grouped by event name. `post_tool_use`, `session_starting`
+        // and `child_spawned` observe; `prompt_submitted` may deny but never
+        // modify. Every other `event` value still parses, validates and does
+        // nothing.
         //
         // The SAME runner feeds both tiers, so an embedder that injects one
         // gets every dispatched event rather than having to opt in twice.
-        let mut observation_specs: BTreeMap<String, Vec<ObservationHookSpec>> = BTreeMap::new();
+        let mut observation_specs: BTreeMap<String, Vec<HookSpec>> = BTreeMap::new();
         for rule in config.hooks.rules.iter().filter(|r| r.enabled) {
-            if OBSERVATION_EVENTS.contains(&rule.event.as_str()) {
+            if DISPATCHED_EVENTS.contains(&rule.event.as_str()) {
                 observation_specs
                     .entry(rule.event.clone())
                     .or_default()
-                    .push(ObservationHookSpec {
+                    .push(HookSpec {
                         id: rule.id.clone(),
                         command: rule.command.clone(),
                         timeout_ms: rule.timeout_ms,

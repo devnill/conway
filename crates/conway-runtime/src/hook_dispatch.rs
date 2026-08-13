@@ -1,12 +1,25 @@
-//! Dispatch for the OBSERVATION-ONLY hook events (board item
-//! 01KZS019NHG11RVQYSVT7RG0P5): `post_tool_use`, `session_starting`, and
-//! `child_spawned`.
+//! Hook dispatch for every event OUTSIDE the permission broker, in two tiers
+//! with deliberately different failure postures.
 //!
-//! **These events cannot say no, and that is the whole point of them.** Not
-//! every useful hook needs to block something — an operator wanting a log
-//! line per command, or a notification when a child starts, needs to be told
-//! a thing happened and nothing more. Each of the three fires at a place that
-//! already knows the moment has passed.
+//! # The two tiers
+//!
+//! **Observation-only** (board item 01KZS019NHG11RVQYSVT7RG0P5):
+//! `post_tool_use`, `session_starting`, `child_spawned`. These cannot say no,
+//! and that is the whole point of them — an operator wanting a log line per
+//! command, or a notification when a child starts, needs to be told a thing
+//! happened and nothing more. Each fires at a place that already knows the
+//! moment has passed. [`HookDispatcher::dispatch`] serves them and returns
+//! `()`.
+//!
+//! **Deny-capable but never modifying** (board item 01KZS01ZBNEY12DBDNW2Y861SQ):
+//! `prompt_submitted`. It fires BEFORE the prompt is processed, so a hook
+//! here CAN refuse — but it may never rewrite a word of what the user typed.
+//! [`HookDispatcher::dispatch_deny_only`] serves it and returns
+//! `Option<String>`: the denial reason, or `None` to proceed.
+//!
+//! **The module is named for the dispatch, not for one tier**, because a
+//! module called `observation` hosting a deny-capable event would be a
+//! declaration that does not match what it contains.
 //!
 //! # Why this is not on `PermissionBroker`
 //!
@@ -18,12 +31,12 @@
 //! against is an observation event acquiring denial-shaped side effects by
 //! proximity.
 //!
-//! # Failure never propagates, and this is the invariant to preserve
+//! # The two tiers fail in OPPOSITE directions, on purpose
 //!
-//! A hook that errors, times out, or returns garbage produces a
-//! `tracing::warn` and nothing else. A failing `post_tool_use` hook must not
+//! Observation-only fails OPEN. A hook that errors, times out, or returns
+//! garbage produces a `tracing::warn` and nothing else. A failing `post_tool_use` hook must not
 //! fail the tool call it observed; a failing `child_spawned` hook must not
-//! fail the spawn. [`ObservationDispatcher::dispatch`] therefore returns `()`
+//! fail the spawn. [`HookDispatcher::dispatch`] therefore returns `()`
 //! rather than a `Result` — the failure-does-not-propagate property is
 //! structural, not a discipline a future caller has to remember, and there is
 //! no value a caller could accidentally `?` on.
@@ -34,6 +47,31 @@
 //! closed would mean breaking a working operation because a log script was
 //! misconfigured. The two events differ in kind, and the difference is
 //! deliberate rather than an inconsistency.
+//!
+//! `prompt_submitted` fails CLOSED, like `pre_tool_use` and for the same
+//! reason: it fires before anything has happened, so refusing on a broken
+//! hook denies an action rather than breaking a completed one. A missing,
+//! timing-out or unparseable script denies the prompt.
+//!
+//! # `prompt_submitted` may never touch the text
+//!
+//! `.design/extension-architecture.md` §5.8 forbids any participant, hook
+//! included, from editing a user's submitted prompt. That is stricter than
+//! the tool-call-arguments rule elsewhere: there, the argument against
+//! rewriting rests partly on a human having approved a specific rendered
+//! string, and here there is no equivalent approval step to fall back on.
+//! The user's own words are the one thing in the pipeline nothing gets to
+//! launder.
+//!
+//! **That is enforced by the TYPE, not by not wiring a path.**
+//! [`dispatch_deny_only`](HookDispatcher::dispatch_deny_only) reads only
+//! [`HookPermissionVerdict`], whose entire vocabulary is `NoOpinion` and
+//! `Deny { reason }` — there is no variant and no field capable of carrying
+//! replacement text back. `HookAnswer::context` is ignored here and
+//! documented as ignored: a `ContextDelta` is about assembled context, not
+//! about the submitted prompt, and no observation or prompt event may edit
+//! context. The `reason` on a denial is surfaced to the CALLER as an error;
+//! it is never substituted for the prompt.
 //!
 //! # `child_spawned` and denial — an open question, deliberately deferred
 //!
@@ -52,7 +90,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
-use conway_core::hook::{HookEvent, HookInvocation};
+use conway_core::hook::{HookEvent, HookInvocation, HookPermissionVerdict};
 use conway_core::ports::HookRunner;
 
 /// One configured observation hook: the operator's own id for it, plus what
@@ -65,7 +103,7 @@ use conway_core::ports::HookRunner;
 /// different purposes, and collapsing them would invite a future field that
 /// only makes sense for one to appear on both.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ObservationHookSpec {
+pub struct HookSpec {
     /// The rule's `HookEntry::id`, used to name the hook in a warning so an
     /// operator can tell WHICH script failed rather than only that one did.
     pub id: String,
@@ -80,16 +118,29 @@ pub const SESSION_STARTING: &str = "session_starting";
 /// The event name every `child_spawned` subscription is keyed on.
 pub const CHILD_SPAWNED: &str = "child_spawned";
 
+/// The deny-capable-but-never-modifying event (board item
+/// 01KZS01ZBNEY12DBDNW2Y861SQ). Fires at both prompt-submission call sites.
+pub const PROMPT_SUBMITTED: &str = "prompt_submitted";
+
 /// Every observation event this tier dispatches, in one place so a caller
 /// wiring config can iterate the supported set rather than restating it.
 pub const OBSERVATION_EVENTS: &[&str] = &[POST_TOOL_USE, SESSION_STARTING, CHILD_SPAWNED];
+
+/// Every event this module dispatches at all, observation and deny-capable
+/// alike -- what `ConwayBuilder::build` filters `[hooks].rules[]` against.
+pub const DISPATCHED_EVENTS: &[&str] = &[
+    POST_TOOL_USE,
+    SESSION_STARTING,
+    CHILD_SPAWNED,
+    PROMPT_SUBMITTED,
+];
 
 /// Holds the injected [`HookRunner`] and the per-event subscription lists,
 /// and invokes them.
 ///
 /// Shared by `Arc` between [`crate::runtime::Runtime`] and
 /// [`crate::tools::ToolRunner`] — `ToolRunner::new` constructs one and the
-/// runtime reads it back via [`crate::tools::ToolRunner::observation`], so
+/// runtime reads it back via [`crate::tools::ToolRunner::hooks`], so
 /// both see the same interior-mutable state and `ToolRunner::new` keeps its
 /// existing arity (five test call sites construct it directly).
 ///
@@ -103,14 +154,14 @@ pub const OBSERVATION_EVENTS: &[&str] = &[POST_TOOL_USE, SESSION_STARTING, CHILD
 /// onto every implementor. Reports whether a runner is installed and the
 /// subscribed event names, which is what a debug print is wanted for.
 #[derive(Default)]
-pub struct ObservationDispatcher {
+pub struct HookDispatcher {
     runner: RwLock<Option<Arc<dyn HookRunner>>>,
-    hooks: RwLock<BTreeMap<String, Vec<ObservationHookSpec>>>,
+    hooks: RwLock<BTreeMap<String, Vec<HookSpec>>>,
 }
 
-impl std::fmt::Debug for ObservationDispatcher {
+impl std::fmt::Debug for HookDispatcher {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ObservationDispatcher")
+        f.debug_struct("HookDispatcher")
             .field(
                 "runner_installed",
                 &self
@@ -133,7 +184,7 @@ impl std::fmt::Debug for ObservationDispatcher {
     }
 }
 
-impl ObservationDispatcher {
+impl HookDispatcher {
     pub fn new() -> Self {
         Self::default()
     }
@@ -155,7 +206,7 @@ impl ObservationDispatcher {
     /// to the enabled rules whose `event` is one of [`OBSERVATION_EVENTS`].
     /// An event with no subscribers, or an absent key, is the same no-op as
     /// no runner at all.
-    pub fn set_hooks(&self, hooks: BTreeMap<String, Vec<ObservationHookSpec>>) {
+    pub fn set_hooks(&self, hooks: BTreeMap<String, Vec<HookSpec>>) {
         *self.hooks.write().expect("observation hooks lock poisoned") = hooks;
     }
 
@@ -220,6 +271,68 @@ impl ObservationDispatcher {
             }
         }
     }
+
+    /// Invokes every hook subscribed to `event` and returns the FIRST denial,
+    /// or `None` to proceed. Serves `prompt_submitted`.
+    ///
+    /// **Fails CLOSED**, unlike [`Self::dispatch`]: a hook that errors, times
+    /// out, or returns an unparseable answer denies, because this fires before
+    /// anything has happened and refusing is the safe direction there.
+    ///
+    /// **Reads only [`HookPermissionVerdict`], which structurally cannot carry
+    /// replacement text** -- see the module doc. `HookAnswer::context` is
+    /// deliberately IGNORED: a `ContextDelta` describes assembled context, not
+    /// the submitted prompt, and honouring one here would be a text-editing
+    /// path arriving through a side door.
+    ///
+    /// Order-independent for the boolean outcome: a deny beats a no-opinion
+    /// however many hooks run, so which hook is consulted first only changes
+    /// whose `reason` is reported.
+    pub async fn dispatch_deny_only(
+        &self,
+        event: &str,
+        payload: serde_json::Value,
+    ) -> Option<String> {
+        let runner = self
+            .runner
+            .read()
+            .expect("observation runner lock poisoned")
+            .clone()?;
+        let hooks = self
+            .hooks
+            .read()
+            .expect("observation hooks lock poisoned")
+            .get(event)
+            .cloned()
+            .unwrap_or_default();
+
+        for hook in &hooks {
+            let invocation = HookInvocation {
+                command: hook.command.clone(),
+                timeout_ms: hook.timeout_ms,
+                event: HookEvent {
+                    name: event.to_string(),
+                    payload: payload.clone(),
+                },
+            };
+            match runner.run(&invocation).await {
+                // NOTE the binding: only `answer.permission` is read. There is
+                // deliberately no `answer.context` arm -- see the module doc.
+                Ok(answer) => {
+                    if let HookPermissionVerdict::Deny { reason } = answer.permission {
+                        return Some(format!("`{event}` hook `{}`: {reason}", hook.id));
+                    }
+                }
+                Err(failure) => {
+                    return Some(format!(
+                        "`{event}` hook `{}` failed ({failure}) -- fail-closed",
+                        hook.id
+                    ));
+                }
+            }
+        }
+        None
+    }
 }
 
 #[cfg(test)]
@@ -252,20 +365,20 @@ mod tests {
         }
     }
 
-    fn spec(id: &str) -> ObservationHookSpec {
-        ObservationHookSpec {
+    fn spec(id: &str) -> HookSpec {
+        HookSpec {
             id: id.to_string(),
             command: vec!["/bin/true".to_string()],
             timeout_ms: 1_000,
         }
     }
 
-    fn wired(fail: bool) -> (ObservationDispatcher, Arc<RecordingRunner>) {
+    fn wired(fail: bool) -> (HookDispatcher, Arc<RecordingRunner>) {
         let runner = Arc::new(RecordingRunner {
             fail,
             ..Default::default()
         });
-        let d = ObservationDispatcher::new();
+        let d = HookDispatcher::new();
         d.set_runner(Some(runner.clone()));
         d.set_hooks(BTreeMap::from([(
             POST_TOOL_USE.to_string(),
@@ -277,7 +390,7 @@ mod tests {
     /// The default: no runner, no hooks, nothing spawned.
     #[tokio::test]
     async fn dispatch_is_a_no_op_with_no_runner_installed() {
-        let d = ObservationDispatcher::new();
+        let d = HookDispatcher::new();
         assert!(!d.will_dispatch(POST_TOOL_USE));
         d.dispatch(POST_TOOL_USE, serde_json::json!({})).await;
     }
@@ -313,7 +426,7 @@ mod tests {
             fail: true,
             ..Default::default()
         });
-        let d = ObservationDispatcher::new();
+        let d = HookDispatcher::new();
         d.set_runner(Some(runner.clone()));
         d.set_hooks(BTreeMap::from([(
             POST_TOOL_USE.to_string(),
