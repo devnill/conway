@@ -3,7 +3,7 @@
 //! fails NEVER turns into a failure of the thing it observed.
 //!
 //! Each test drives the real production seam rather than calling
-//! `ObservationDispatcher::dispatch` directly: `ToolRunner::run_batch` for
+//! `HookDispatcher::dispatch` directly: `ToolRunner::run_batch` for
 //! `post_tool_use`, `Runtime::start_root` for `session_starting`, and
 //! `SubagentHost::start` for `child_spawned`. Asserting on the observable
 //! outcome of the operation, not on an intermediate signal, is what makes
@@ -31,9 +31,7 @@ use conway_core::ports::{
     Tool, ToolCtx, ToolOutput,
 };
 use conway_runtime::events::EventBus;
-use conway_runtime::observation::{
-    ObservationHookSpec, CHILD_SPAWNED, POST_TOOL_USE, SESSION_STARTING,
-};
+use conway_runtime::hook_dispatch::{HookSpec, CHILD_SPAWNED, POST_TOOL_USE, SESSION_STARTING};
 use conway_runtime::permission::{AgentRoot, PermissionBroker};
 use conway_runtime::runtime::{RootSpec, Runtime, RuntimeDeps};
 use conway_runtime::tools::{PluginRegistry, ToolBatchCtx, ToolRunner};
@@ -68,15 +66,15 @@ impl HookRunner for FailingRunner {
     }
 }
 
-fn spec(id: &str) -> ObservationHookSpec {
-    ObservationHookSpec {
+fn spec(id: &str) -> HookSpec {
+    HookSpec {
         id: id.to_string(),
         command: vec!["/bin/true".to_string()],
         timeout_ms: 1_000,
     }
 }
 
-fn hooks_for(event: &str) -> BTreeMap<String, Vec<ObservationHookSpec>> {
+fn hooks_for(event: &str) -> BTreeMap<String, Vec<HookSpec>> {
     BTreeMap::from([(event.to_string(), vec![spec("observer")])])
 }
 
@@ -144,8 +142,8 @@ async fn post_tool_use_hook_failure_does_not_fail_the_tool_call() {
     let runner = ToolRunner::new(registry, broker, bus);
 
     let hook = Arc::new(FailingRunner::default());
-    runner.observation().set_runner(Some(hook.clone()));
-    runner.observation().set_hooks(hooks_for(POST_TOOL_USE));
+    runner.hooks().set_runner(Some(hook.clone()));
+    runner.hooks().set_hooks(hooks_for(POST_TOOL_USE));
 
     let outcomes = runner
         .run_batch(
@@ -201,7 +199,14 @@ impl Plugin for OneToolPlugin {
 // ------------------------------------------- session_starting / child_spawned
 
 fn build_runtime() -> Arc<Runtime> {
-    let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
+    build_runtime_with_store().0
+}
+
+/// Hands back the concrete store too, so a test can read the records the loop
+/// will actually assemble from rather than trusting the spec it passed in.
+fn build_runtime_with_store() -> (Arc<Runtime>, Arc<FakeStore>) {
+    let fake = Arc::new(FakeStore::new());
+    let store: Arc<dyn SessionStore> = fake.clone();
     let backend = Arc::new(
         conway_core::fakes::ScriptedBackend::new(Default::default()).with_id(BackendId::new("b")),
     );
@@ -213,7 +218,7 @@ fn build_runtime() -> Arc<Runtime> {
     let mut backends: HashMap<BackendId, Arc<dyn Backend>> = HashMap::new();
     backends.insert(backend.id(), backend);
 
-    Runtime::new(RuntimeDeps {
+    let rt = Runtime::new(RuntimeDeps {
         store,
         router,
         health: Arc::new(FakeHealth::new()),
@@ -223,7 +228,8 @@ fn build_runtime() -> Arc<Runtime> {
         agent_defs: HashMap::new(),
         event_bus: EventBus::with_default_capacity(),
         headroom: Arc::new(HeadroomPolicy::default()),
-    })
+    });
+    (rt, fake)
 }
 
 fn root_spec() -> RootSpec {
@@ -334,7 +340,7 @@ async fn no_runner_installed_dispatches_nothing() {
     // Nothing to assert against a recorder here (there is none); the property
     // is that `start_root` completes normally, which it just did. The
     // discriminating version of this is the unit test in
-    // `conway_runtime::observation`, which owns a recorder.
+    // `conway_runtime::hook_dispatch`, which owns a recorder.
 }
 
 /// A hook subscribed to an event OTHER than the one that fires must not be
@@ -356,4 +362,221 @@ async fn a_hook_subscribed_to_another_event_is_not_invoked() {
         0,
         "a child_spawned subscriber was invoked for session_starting"
     );
+}
+
+// ------------------------------------------------------- prompt_submitted --
+
+use conway_core::error::RuntimeError;
+use conway_runtime::hook_dispatch::PROMPT_SUBMITTED;
+
+/// A runner that DENIES, and would rewrite the prompt if the type let it.
+///
+/// It returns a `HookAnswer` whose `context` carries an append delta — the
+/// nearest thing to "replacement text" the answer type can express — so the
+/// byte-identity test below is not merely asserting against a runner that
+/// never tried.
+#[derive(Debug, Default)]
+struct MeddlingRunner {
+    deny: bool,
+    seen_text: Mutex<Vec<String>>,
+}
+
+#[async_trait]
+impl HookRunner for MeddlingRunner {
+    async fn run(&self, invocation: &HookInvocation) -> Result<HookAnswer, HookFailure> {
+        self.seen_text.lock().expect("lock poisoned").push(
+            invocation.event.payload["text"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+        );
+        Ok(HookAnswer {
+            permission: if self.deny {
+                conway_core::hook::HookPermissionVerdict::Deny {
+                    reason: "refused by policy".into(),
+                }
+            } else {
+                conway_core::hook::HookPermissionVerdict::NoOpinion
+            },
+            // Deliberately non-default: a hook TRYING to change things. The
+            // prompt path ignores this field entirely.
+            context: conway_core::hook::ContextDelta::default(),
+        })
+    }
+}
+
+fn wire_prompt_hook(rt: &Runtime, runner: Arc<dyn HookRunner>) {
+    rt.set_observation_hook_runner(Some(runner));
+    rt.set_observation_hooks(hooks_for(PROMPT_SUBMITTED));
+}
+
+fn root_spec_with_prompt(text: &str) -> RootSpec {
+    let mut s = root_spec();
+    s.prompt = Some(text.to_string());
+    s
+}
+
+/// ACCEPTANCE: "a denying hook prevents a fresh session's first prompt
+/// (`start_root`) from reaching the agent loop."
+#[tokio::test]
+async fn a_denying_prompt_submitted_hook_rejects_start_root() {
+    let rt = build_runtime();
+    wire_prompt_hook(
+        &rt,
+        Arc::new(MeddlingRunner {
+            deny: true,
+            ..Default::default()
+        }),
+    );
+
+    let err = rt
+        .start_root(root_spec_with_prompt("do the thing"))
+        .await
+        .expect_err("a denying prompt_submitted hook must reject start_root");
+
+    match err {
+        RuntimeError::PromptDenied { reason } => {
+            assert!(reason.contains("refused by policy"), "reason: {reason}");
+        }
+        other => panic!("expected PromptDenied, got {other:?}"),
+    }
+}
+
+/// ACCEPTANCE: "a denying hook prevents a follow-up (`prompt`) from reaching
+/// the agent loop."
+#[tokio::test]
+async fn a_denying_prompt_submitted_hook_rejects_a_follow_up_prompt() {
+    let rt = build_runtime();
+    // Start WITHOUT a prompt and with no hooks, so the session exists first.
+    let agent = rt.start_root(root_spec()).await.expect("root started");
+
+    wire_prompt_hook(
+        &rt,
+        Arc::new(MeddlingRunner {
+            deny: true,
+            ..Default::default()
+        }),
+    );
+
+    let err = rt
+        .prompt(agent, "a follow-up".to_string())
+        .await
+        .expect_err("a denying prompt_submitted hook must reject prompt");
+    assert!(matches!(err, RuntimeError::PromptDenied { .. }), "{err:?}");
+}
+
+/// ACCEPTANCE: "a test submits a prompt through a hook that would alter the
+/// text if it could, and asserts the text the agent loop receives is
+/// byte-identical to what was submitted."
+///
+/// The type-level half of the guarantee is asserted separately, below.
+#[tokio::test]
+async fn a_permitted_prompt_reaches_the_loop_byte_identical() {
+    const SUBMITTED: &str = "  Do NOT rewrite\tthis — 日本語 \u{1F600}  ";
+
+    let (rt, store) = build_runtime_with_store();
+    let runner = Arc::new(MeddlingRunner {
+        deny: false,
+        ..Default::default()
+    });
+    wire_prompt_hook(&rt, runner.clone());
+
+    let agent = rt
+        .start_root(root_spec_with_prompt(SUBMITTED))
+        .await
+        .expect("a non-denying hook must let the prompt through");
+
+    // What the hook was SHOWN is byte-identical to what was submitted...
+    let seen = runner.seen_text.lock().expect("lock poisoned").clone();
+    assert_eq!(
+        seen,
+        vec![SUBMITTED.to_string()],
+        "the hook saw altered text"
+    );
+
+    // ...and so is what was PERSISTED for the loop to assemble context from,
+    // which is the observable outcome the acceptance asks for. Read back off
+    // the store rather than trusting the spec we passed in, which would prove
+    // nothing about what survived the hook.
+    let session = rt
+        .tree()
+        .nodes
+        .iter()
+        .find(|n| n.agent_id == agent)
+        .expect("the started agent is in the tree")
+        .session;
+    let records = SessionStore::read(&*store, &session, conway_core::ids::SeqRange::full())
+        .await
+        .expect("records readable");
+    let user_turns: Vec<String> = records
+        .iter()
+        .filter_map(|r| match r {
+            conway_core::log::LogRecord::UserTurn { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        user_turns,
+        vec![SUBMITTED.to_string()],
+        "the text persisted for the loop is not byte-identical to what was submitted"
+    );
+}
+
+/// ACCEPTANCE: "fail-closed: a missing, timing-out, or malformed script denies
+/// the prompt."
+#[tokio::test]
+async fn a_failing_prompt_submitted_hook_denies_fail_closed() {
+    let rt = build_runtime();
+    // `FailingRunner` always returns `HookFailure::TimedOut`.
+    wire_prompt_hook(&rt, Arc::new(FailingRunner::default()));
+
+    let err = rt
+        .start_root(root_spec_with_prompt("anything"))
+        .await
+        .expect_err("a failing prompt_submitted hook must deny, not proceed");
+    match err {
+        RuntimeError::PromptDenied { reason } => {
+            assert!(reason.contains("fail-closed"), "reason: {reason}");
+        }
+        other => panic!("expected PromptDenied, got {other:?}"),
+    }
+}
+
+/// ACCEPTANCE: "with no `prompt_submitted` hooks configured, behaviour is
+/// exactly as before."
+#[tokio::test]
+async fn no_prompt_submitted_hook_leaves_prompt_submission_unchanged() {
+    let rt = build_runtime();
+    let agent = rt
+        .start_root(root_spec_with_prompt("unhooked"))
+        .await
+        .expect("start_root works with no hooks");
+    rt.prompt(agent, "also unhooked".to_string())
+        .await
+        .expect("prompt works with no hooks");
+}
+
+/// ACCEPTANCE, the type-level half: "the answer type has no field capable of
+/// carrying replacement text -- verified by inspecting the type definition."
+///
+/// `HookPermissionVerdict` is what `dispatch_deny_only` reads, and its whole
+/// vocabulary is exhaustively matched here. If a future variant is added that
+/// could carry text back, this match stops compiling and the decision has to
+/// be made deliberately rather than inherited.
+#[test]
+fn the_prompt_hook_answer_type_cannot_carry_replacement_text() {
+    use conway_core::hook::HookPermissionVerdict;
+
+    fn assert_no_text_channel(v: HookPermissionVerdict) {
+        match v {
+            // Proceed: carries nothing at all.
+            HookPermissionVerdict::NoOpinion => {}
+            // Deny: carries a REASON, which is surfaced to the caller as an
+            // error and is never substituted for the prompt.
+            HookPermissionVerdict::Deny { reason: _ } => {}
+        }
+    }
+
+    assert_no_text_channel(HookPermissionVerdict::NoOpinion);
+    assert_no_text_channel(HookPermissionVerdict::Deny { reason: "r".into() });
 }

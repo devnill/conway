@@ -359,7 +359,15 @@ fn translate(err: RuntimeError) -> SubagentError {
         | RuntimeError::Routing(_)
         | RuntimeError::Store(_)
         | RuntimeError::Tool(_)
-        | RuntimeError::ForkContextOverflow { .. } => SubagentError::Host { detail: rendered },
+        | RuntimeError::ForkContextOverflow { .. }
+        // `PromptDenied` is not reachable through this port today: a subagent
+        // is started via `SubagentHost::start`, which submits no user prompt,
+        // and `prompt_submitted` fires only at `Runtime::prompt`/`start_root`.
+        // Mapped to `Host` rather than given a `SubagentError` variant of its
+        // own precisely because it is a caller-facing condition, not a
+        // tool-facing one -- if a future path does surface it here, `Host` is
+        // the honest answer rather than inventing a subagent semantic for it.
+        | RuntimeError::PromptDenied { .. } => SubagentError::Host { detail: rendered },
     }
 }
 
