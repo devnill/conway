@@ -568,6 +568,12 @@ impl Runtime {
         // into its spawned task below, so `Runtime::prompt` has something to
         // notify.
         let prompt_notify = agent_loop.resume_gate.notify.clone();
+        // Board item 01KZYAXSGDS8AP7YK1CN7H680G: read out BEFORE
+        // `agent_loop` moves into the spawned task below -- `AgentId` is
+        // `Copy` (`ids.rs`'s `ulid_id!`), so this is an ordinary copy, not
+        // a partial move that would make the later whole-struct move
+        // illegal.
+        let parent = agent_loop.parent;
 
         self.tree.attach(node)?;
 
@@ -581,6 +587,8 @@ impl Runtime {
             deadline,
             grace: supervisor::DEFAULT_GRACE,
             task,
+            hooks: self.hooks.clone(),
+            parent,
         });
 
         let handle = AgentHandle {
@@ -966,6 +974,11 @@ impl Runtime {
             deadline: spec.budget.deadline,
             grace: supervisor::DEFAULT_GRACE,
             task,
+            hooks: self.hooks.clone(),
+            // A root has no parent for a `child_reported` result to cross
+            // back to (`AgentLoop::finish`'s identical check, and this
+            // agent's own `parent: None` a few lines above).
+            parent: None,
         });
 
         let handle = AgentHandle {

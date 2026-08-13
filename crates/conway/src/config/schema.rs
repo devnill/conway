@@ -921,16 +921,39 @@ pub struct ThemeStyleConfig {
 ///   that is a TYPE guarantee rather than an unwired path: the dispatch
 ///   reads only `HookPermissionVerdict`, which has no variant capable of
 ///   carrying replacement text.
-/// - **`request_assembled` and `child_reported`: still forward-declared.**
-///   Nothing in this crate, or anywhere else in the tree, spawns a process
-///   or dispatches an event for these two. Writing one gets you a config
-///   that parses and rejects a typo'd key exactly like every other section
-///   -- and, for now, nothing more. **01KZRZY1MNM872BZ6AKEBG3SKE** is the
-///   general script-runner port ([`crate::plugin::HookRunner`]) every
-///   dispatched event above shares: a later item wiring one of these two
-///   reuses the same runner and the same
-///   [`HookEntry::timeout_ms`]/[`HookEntry::enabled`] enforcement, and adds
-///   only its own event-specific dispatch call site.
+/// - **`request_assembled` and `child_reported`: DISPATCHED,
+///   observation-only** (board item 01KZYAXSGDS8AP7YK1CN7H680G). Same
+///   injected-runner precondition and same fail-OPEN posture as
+///   `post_tool_use`/`session_starting`/`child_spawned` immediately above --
+///   dispatched by the identical
+///   `conway_runtime::hook_dispatch::HookDispatcher::dispatch`, through the
+///   SAME runner. `request_assembled` fires once per turn, from
+///   `conway_runtime::agent_loop::AgentLoop::run_inner`, after
+///   `ContextBuilder::build` (and, if one is registered, `ContextHook::
+///   before_request`'s own edit -- WI-126) and before that turn's route/
+///   attempt call; its payload is a SUMMARY (segment count, estimated
+///   tokens, tokenizer name, turn, an unrouted model pin if one is set),
+///   never the full assembled segment content -- shipping a verbatim
+///   context dump on every turn is a performance/privacy decision this item
+///   does not make unilaterally. `child_reported` fires once per agent that
+///   HAS a parent (never for a root's own finish), for both a normal
+///   completion (`AgentLoop::finish`) and a supervisor-synthesized terminal
+///   result (`conway_runtime::supervisor`: a panic, or a task still
+///   unresponsive past its grace window) -- gated on the same publish-race
+///   winner `Event::AgentFinished` already uses at each site, so it fires
+///   exactly once per agent regardless of which side wins.
+///
+///   **Both are observation-only, like their three siblings, not a lesser
+///   version of something else.** `request_assembled` sits at the exact
+///   seam `ContextHook::before_request` already edits the assembled request
+///   at, so it would be reasonable to expect this hook to edit too -- it
+///   structurally cannot: [`crate::plugin::HookRunner::run`]'s answer is
+///   read only by the dispatch tiers documented as consulting it, and this
+///   event's dispatch discards `HookAnswer::context`/`permission` exactly as
+///   `post_tool_use`'s does. A configured script editing assembled context
+///   append-only, without breaking the prompt cache, is a SEPARATE, still-
+///   open board item (01KZRZZP6A4A27R3EN0HQAENBS) that this one does not
+///   build and does not foreclose.
 ///
 /// **Default: an empty rule list.** This is the part of that rule which
 /// is easiest to get backwards (its own named precedent, `probe_enabled`,
@@ -1001,6 +1024,60 @@ pub struct HookEntry {
     /// `merge::validate`, validating this field against whatever vocabulary
     /// it settles on). Not blocked on here.
     pub event: String,
+    /// The tool-name matcher this rule fires for (board item
+    /// 01KZYAWQ6011Q6CJVG6CCMQPF1). `"match"` on the wire -- the exact
+    /// spelling `PHILOSOPHY.md` §5's own example uses
+    /// (`{"match": "bash", "run": "..."}`) -- while the Rust field is
+    /// `match_tool` because `match` is a reserved word; that item's own "A
+    /// design decision you must make and record" explicitly names
+    /// `match_tool` as an acceptable choice.
+    ///
+    /// **The config-shape decision, recorded here rather than left
+    /// ambiguous across two documents:** `PHILOSOPHY.md` is the 1.0
+    /// specification (ruling of 2026-08-13) and the tree converges toward
+    /// it, but convergence is field-by-field, not a wholesale reshape onto
+    /// the page's illustrative event-keyed JSON. `HooksConfig::rules`
+    /// stays a FLAT list keyed by an `event` field per entry (unchanged --
+    /// see this struct's own doc) rather than moving to the page's nested
+    /// `{"pre_tool_use": [...], "post_tool_use": [...]}` map, and `command`
+    /// stays an argv `Vec<String>` rather than the page's single `run`
+    /// shell string -- that argv-vs-`run` divergence was already a
+    /// DELIBERATE, previously-recorded decision (see `command`'s own doc,
+    /// immediately below) predating this item, not something this item
+    /// reopens. What this item DOES converge is the part that was a true
+    /// GAP rather than a considered divergence: the page's vocabulary had
+    /// no matcher counterpart in the shipped schema at all
+    /// (`pre_tool_use`/`post_tool_use` fired for every tool, unconditionally
+    /// -- unusable for the page's own canonical example, "run the formatter
+    /// after a write"). Adding `match` with the page's own spelling, while
+    /// leaving the flat/argv shape as-is, is the smallest change that turns
+    /// the gap into parity without a breaking reshape of every existing
+    /// `[hooks]` block -- a full move to the nested shape remains available
+    /// as later, purely additive work if a future item makes the case for
+    /// it; nothing here forecloses it.
+    ///
+    /// `None` (the field omitted, the default) preserves TODAY's
+    /// fire-for-every-tool-call behavior byte-for-byte -- an existing
+    /// `settings.json` with no `match` key behaves identically before and
+    /// after this item, which is the compatibility half of the ACCEPTANCE.
+    /// `Some(pattern)` NARROWS which calls consult this rule; there is no
+    /// way to WIDEN past "every call for this event", matching every other
+    /// hook-narrowing guarantee in this section (`HookPermissionVerdict` has
+    /// no `Allow` variant, for the identical reason).
+    ///
+    /// Applies only to `event`s that carry a tool name --
+    /// `"pre_tool_use"`/`"post_tool_use"` -- enforced by `merge::validate`'s
+    /// hooks check: a rule that sets `match` on any OTHER `event` is a
+    /// surfaced, typed config error naming the rule's `id`, never silently
+    /// ignored. `conway_core::hook::tool_matcher_matches` is the actual
+    /// matching function this field's value is checked with once dispatch
+    /// reads it (`conway_runtime::permission::PreToolUseHookSpec::matcher`,
+    /// `conway_runtime::hook_dispatch::HookSpec::matcher`) -- exact string
+    /// equality, or (if `pattern` contains `*`) a `*`-only glob against the
+    /// tool's whole name; see that function's own doc for why exact-plus-
+    /// glob is the full vocabulary and a regex dialect was declined.
+    #[serde(rename = "match")]
+    pub match_tool: Option<String>,
     /// The command to run, as an argv vector (program, then its arguments)
     /// -- never a single shell string, so no shell-quoting ambiguity exists
     /// in config. Contrast `crates/conway-tools/src/shell/bash.rs`'s
@@ -1055,6 +1132,7 @@ impl Default for HookEntry {
         Self {
             id: String::new(),
             event: String::new(),
+            match_tool: None,
             command: Vec::new(),
             timeout_ms: default_hook_timeout_ms(),
             enabled: default_hook_enabled(),
@@ -1083,6 +1161,7 @@ mod tests {
           {
             "id": "audit-bash",
             "event": "pre_tool_use",
+            "match": "bash",
             "command": ["/usr/local/bin/audit-hook", "--strict"],
             "timeout_ms": 3000,
             "enabled": true
@@ -1093,7 +1172,10 @@ mod tests {
     "#;
 
     /// ACCEPTANCE: a well-formed `[hooks]` block with one entry parses and
-    /// round-trips (serialize back, re-parse, equal).
+    /// round-trips (serialize back, re-parse, equal). Includes `"match"`
+    /// (board item 01KZYAWQ6011Q6CJVG6CCMQPF1), spelled exactly as
+    /// `PHILOSOPHY.md` §5's own example spells it, decoding into
+    /// `HookEntry::match_tool`.
     #[test]
     fn hooks_block_round_trips() {
         let cfg: ConwayConfig = serde_json::from_str(HOOKS_BLOCK).expect("must parse");
@@ -1101,6 +1183,7 @@ mod tests {
         let rule = &cfg.hooks.rules[0];
         assert_eq!(rule.id, "audit-bash");
         assert_eq!(rule.event, "pre_tool_use");
+        assert_eq!(rule.match_tool.as_deref(), Some("bash"));
         assert_eq!(
             rule.command,
             vec![
@@ -1112,8 +1195,54 @@ mod tests {
         assert!(rule.enabled);
 
         let reserialized = serde_json::to_string(&cfg).expect("must serialize");
+        assert!(
+            reserialized.contains("\"match\""),
+            "the wire key must be literally \"match\", matching PHILOSOPHY.md §5's own \
+             spelling: {reserialized}"
+        );
         let cfg2: ConwayConfig = serde_json::from_str(&reserialized).expect("must re-parse");
         assert_eq!(cfg, cfg2);
+    }
+
+    /// ACCEPTANCE: an absent `"match"` preserves today's fire-for-every-tool
+    /// behavior -- `match_tool` defaults to `None`, not `Some("")` or any
+    /// other value that could accidentally narrow anything.
+    #[test]
+    fn hook_entry_with_no_match_key_defaults_to_none() {
+        let json = r#"
+        {
+          "default_role": "coder",
+          "roles": { "coder": { "chain": [] } },
+          "hooks": {
+            "rules": [
+              { "id": "x", "event": "post_tool_use", "command": ["echo", "hi"] }
+            ]
+          }
+        }
+        "#;
+        let cfg: ConwayConfig = serde_json::from_str(json).expect("must parse");
+        assert_eq!(cfg.hooks.rules[0].match_tool, None);
+    }
+
+    /// A glob `"match"` (`*`) round-trips exactly like an exact one --
+    /// `HookEntry::match_tool` itself does not distinguish the two shapes;
+    /// that distinction lives entirely in
+    /// `conway_core::hook::tool_matcher_matches`.
+    #[test]
+    fn hook_entry_glob_match_round_trips() {
+        let json = r#"
+        {
+          "default_role": "coder",
+          "roles": { "coder": { "chain": [] } },
+          "hooks": {
+            "rules": [
+              { "id": "x", "event": "post_tool_use", "match": "fs.*", "command": ["cargo", "fmt"] }
+            ]
+          }
+        }
+        "#;
+        let cfg: ConwayConfig = serde_json::from_str(json).expect("must parse");
+        assert_eq!(cfg.hooks.rules[0].match_tool.as_deref(), Some("fs.*"));
     }
 
     /// ACCEPTANCE: a typo'd key INSIDE an entry (`"evnet"`, `"comand"`)

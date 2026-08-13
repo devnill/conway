@@ -1001,14 +1001,21 @@ impl ConwayBuilder {
                 id: rule.id.clone(),
                 command: rule.command.clone(),
                 timeout_ms: rule.timeout_ms,
+                // Board item 01KZYAWQ6011Q6CJVG6CCMQPF1: carried through
+                // unchanged -- `PermissionBroker::pre_tool_use_hook_denial`
+                // is where `None` vs `Some` actually decides anything.
+                matcher: rule.match_tool.clone(),
             })
             .collect();
-        // Board items 01KZS019NHG11RVQYSVT7RG0P5 and 01KZS01ZBNEY12DBDNW2Y861SQ:
-        // the same shape for every event dispatched outside the permission
-        // broker, grouped by event name. `post_tool_use`, `session_starting`
-        // and `child_spawned` observe; `prompt_submitted` may deny but never
-        // modify. Every other `event` value still parses, validates and does
-        // nothing.
+        // Board items 01KZS019NHG11RVQYSVT7RG0P5, 01KZS01ZBNEY12DBDNW2Y861SQ,
+        // and 01KZYAXSGDS8AP7YK1CN7H680G: the same shape for every event
+        // dispatched outside the permission broker, grouped by event name.
+        // `post_tool_use`, `session_starting`, `child_spawned`,
+        // `request_assembled`, and `child_reported` observe; `prompt_submitted`
+        // may deny but never modify. Every event NOT in `DISPATCHED_EVENTS`
+        // (a plugin-declared event, or a typo) still parses, validates, and
+        // does nothing -- see `schema::HooksConfig`'s own per-event
+        // reachability doc for the exhaustive, currently-dispatched list.
         //
         // The SAME runner feeds both tiers, so an embedder that injects one
         // gets every dispatched event rather than having to opt in twice.
@@ -1022,6 +1029,13 @@ impl ConwayBuilder {
                         id: rule.id.clone(),
                         command: rule.command.clone(),
                         timeout_ms: rule.timeout_ms,
+                        // Board item 01KZYAWQ6011Q6CJVG6CCMQPF1: carried
+                        // through unchanged -- only meaningful for
+                        // `post_tool_use` (`HookSpec::matcher`'s own doc);
+                        // `merge::validate` already refuses to load a
+                        // config pairing `match` with any other dispatched
+                        // event.
+                        matcher: rule.match_tool.clone(),
                     });
             }
         }
