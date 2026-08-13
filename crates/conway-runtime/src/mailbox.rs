@@ -293,6 +293,29 @@ impl MailboxReceiver {
 /// (`AgentLoop::drain_inbox`, architecture §6.2). Kept here, not inlined in
 /// `agent_loop.rs`, so the exact same classification backs both the real
 /// loop and `tests/steering.rs`'s direct, `AgentLoop`-free coverage of it.
+// `Persist(LogRecord)` is ~288 bytes against a 24-byte second-largest variant,
+// which trips `clippy::large_enum_variant`. Boxing it is NOT the right answer
+// here, and this is a deliberate ruling rather than a suppression of
+// convenience.
+//
+// The lint is about performance, and the cost it names is not on a hot path.
+// `AgentLoop::drain_inbox` runs once per turn, and `classify` once per queued
+// message inside it; a message is a steer, a cancel or a progress note from a
+// parent, arriving at a turn boundary. That is zero or one construction per
+// turn in ordinary use, of a value that lives for microseconds on the stack.
+// Boxing would trade that for a heap allocation per steer.
+//
+// This project's rule is to measure a baseline before an efficiency change and
+// gate the change on it demonstrating value, and to treat "cannot be measured"
+// as an argument against shipping rather than a reason to skip the step. There
+// is no benchmark here and no measurement showing the stack size matters, so
+// boxing would be exactly the unmeasured optimization that rule forbids.
+//
+// REOPEN THIS if `DrainEffect` acquires a construction site inside a hot loop
+// -- per-token, per-tool-call, or per-agent in a wide fan-out -- or if a
+// measurement shows the stack cost is real. Board item
+// 01KZW92NWQNSR4SYZ2RXQ18XKG records the reasoning and what would change it.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum DrainEffect {
     /// Persist as `LogRecord::ParentSteer` -- appended by the caller before
