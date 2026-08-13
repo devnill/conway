@@ -250,9 +250,10 @@ mod tests {
     }
 
     /// Two DIFFERENT plugins whose id/bare-name split lands on the
-    /// IDENTICAL assembled full string (`my` + `.plugin.x`, vs. `my.plugin`
-    /// + `x`) are each individually valid per this function -- the actual
-    /// ambiguity is a full-name COLLISION, caught elsewhere
+    /// IDENTICAL assembled full string (id `my` with bare name
+    /// `plugin.x`, versus id `my.plugin` with bare name `x`) are each
+    /// individually valid per this function -- the actual ambiguity is a
+    /// full-name COLLISION, caught elsewhere
     /// (`conway_runtime::hook_dispatch::declared_plugin_events`'s duplicate
     /// check), never here, since this function only ever validates one
     /// `(name, declaring_plugin)` pair at a time and has no visibility into
