@@ -17,6 +17,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 
+use conway_core::event_name::validate_event_name;
 use conway_core::ids::{ModelRef, RoleAlias};
 use conway_runtime::hook_dispatch::EVENTS_WITHOUT_TOOL_NAME;
 use serde_json::{Map, Value};
@@ -780,6 +781,32 @@ pub fn validate(
                          \"post_tool_use\"",
                         rule.id, rule.event
                     ),
+                });
+            }
+        }
+    }
+
+    // 11. Every [hooks].rules[] `event` is a WELL-FORMED name -- bare
+    //     (core-shaped) or `plugin_id.event_name` -- per
+    //     `conway_core::event_name::validate_event_name`'s subscriber-side
+    //     rule (`declaring_plugin: None`). Board item 01KZS03BFE720EQZG7Q2768N2H:
+    //     this closes the FOLLOW-UP `schema::HookEntry::event`'s own doc
+    //     comment used to name ("a sibling board item is deciding that
+    //     rule" -- this is that item).
+    //
+    //     This checks SHAPE only, never membership: whether a well-formed
+    //     namespaced `event` names an event some INSTALLED plugin actually
+    //     declares needs the resolved plugin set, which this function has
+    //     no access to -- that check is `ConwayBuilder::build`'s own (see
+    //     `schema::HooksConfig`'s reachability doc for the tolerant
+    //     "unknown -- never dispatched, not an error" rule that applies
+    //     there, identical to a typo'd core event name today).
+    {
+        for rule in &config.hooks.rules {
+            if let Err(reason) = validate_event_name(&rule.event, None) {
+                return Err(ConwayError::Config {
+                    path: None,
+                    message: format!("hooks.rules[]: rule '{}': {reason}", rule.id),
                 });
             }
         }

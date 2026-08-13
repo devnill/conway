@@ -43,7 +43,7 @@ use conway_core::event::Event;
 use conway_core::ids::{AgentId, SessionId, ToolName};
 use conway_core::ports::{
     CancellationToken as CoreCancellationToken, CwdHandle, EventSinkHandle, PluginConfig,
-    SubagentHandle, SubagentHost, Tool, ToolCtx, ToolOutput,
+    PluginEventEmitter, PluginEventHandle, SubagentHandle, SubagentHost, Tool, ToolCtx, ToolOutput,
 };
 use futures::FutureExt;
 use tokio::sync::Semaphore;
@@ -407,6 +407,19 @@ async fn execute_one(
                 // agent (structural -- see `SubagentHandle`'s own
                 // doc).
                 subagents: SubagentHandle::new(subagents.clone(), agent_id),
+                // Board item 01KZS03BFE720EQZG7Q2768N2H: bound to THIS
+                // call's own resolved tool's declaring plugin id, never a
+                // different one -- `hooks` (this runner's own
+                // `HookDispatcher`, already shared with `Runtime::
+                // set_observation_hooks`) is the SAME fan-out layer
+                // `post_tool_use` etc. dispatch through (`impl
+                // PluginEventEmitter for HookDispatcher`,
+                // `hook_dispatch.rs`) -- "one dispatch path", not a second
+                // one built just for this.
+                plugin_events: PluginEventHandle::new(
+                    hooks.clone() as Arc<dyn PluginEventEmitter>,
+                    resolved.plugin_id.to_string(),
+                ),
                 config: plugin_config.clone(),
             };
 

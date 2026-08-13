@@ -292,6 +292,12 @@ pub mod plugin {
     /// own doc for why it has no `Allow` variant).
     pub use conway_core::hook::{HookAnswer, HookEvent, HookInvocation, HookPermissionVerdict};
     pub use conway_core::ids::ToolName;
+    /// Board item 01KZS03BFE720EQZG7Q2768N2H: [`Plugin::events`]'s own
+    /// return type -- a plugin author constructs one of these per custom
+    /// event it declares, the SAME `name`+`summary` shape [`CommandSpec`]
+    /// establishes for commands, plus `carries_tool_name` (whether a
+    /// `[hooks].rules[]` entry may pair this event with `match`).
+    pub use conway_core::ports::EventDecl;
     pub use conway_core::ports::{
         ArtifactWriteHandle, ArtifactWriter, CancellationToken, Command, CommandCtx,
         CommandOutcome, CommandSpec, ContextHook, ContextHookCtx, ContextPayload, HookRunner,

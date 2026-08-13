@@ -954,6 +954,21 @@ pub struct ThemeStyleConfig {
 ///   append-only, without breaking the prompt cache, is a SEPARATE, still-
 ///   open board item (01KZRZZP6A4A27R3EN0HQAENBS) that this one does not
 ///   build and does not foreclose.
+/// - **A namespaced `event` (`plugin_id.event_name`): DISPATCHED,
+///   observation-only, IF AND ONLY IF an installed plugin actually
+///   declares it** (board item 01KZS03BFE720EQZG7Q2768N2H --
+///   `PHILOSOPHY.md` §5's open vocabulary: "A plugin declares the events
+///   it emits"). `ConwayBuilder::build` resolves every installed plugin's
+///   own declared events (`conway_runtime::hook_dispatch::
+///   declared_plugin_events`) and unions the well-formed, ACTUALLY-DECLARED
+///   ones into the same dispatch table `post_tool_use` etc. already use --
+///   same runner precondition, same fail-open posture, never deny-capable
+///   (there is no plugin-event equivalent of `pre_tool_use`). A `match` on
+///   a plugin event whose OWN declaration says its payload carries no tool
+///   name is the identical typed, build-time error a core event without
+///   one already gets. A namespaced `event` naming no installed plugin's
+///   declared event parses, validates, and is silently never dispatched --
+///   the SAME gap a typo'd core event name has always had.
 ///
 /// **Default: an empty rule list.** This is the part of that rule which
 /// is easiest to get backwards (its own named precedent, `probe_enabled`,
@@ -1016,13 +1031,19 @@ pub struct HookEntry {
     /// list is reordered, so it is never `Option<String>` and never
     /// inferred from an index.
     pub id: String,
-    /// The event name this rule fires on (e.g. `"pre_tool_use"`).
-    ///
-    /// FOLLOW-UP LANDING SPOT: this item does NOT validate the
-    /// bare-vs-namespaced event-name convention -- a sibling board item is
-    /// deciding that rule. When it lands, its check belongs here (or in
-    /// `merge::validate`, validating this field against whatever vocabulary
-    /// it settles on). Not blocked on here.
+    /// The event name this rule fires on -- either a bare core event (e.g.
+    /// `"pre_tool_use"`) or, as of board item 01KZS03BFE720EQZG7Q2768N2H, a
+    /// plugin-declared `"plugin_id.event_name"` (`PHILOSOPHY.md` §5: "That
+    /// list is open rather than fixed"). `merge::validate`'s own event-shape
+    /// check enforces the bare-vs-namespaced convention itself
+    /// (`conway_core::event_name::validate_event_name(event, None)`) --
+    /// this crate has no access to the resolved plugin set at that point,
+    /// so whether a namespaced `event` names an ACTUALLY-declared plugin
+    /// event is checked separately, at `ConwayBuilder::build`, which does.
+    /// A namespaced `event` naming no installed plugin's declared event is
+    /// tolerated exactly like a typo'd core event name always was: the
+    /// rule parses, validates, and is silently never dispatched -- see
+    /// [`HooksConfig`]'s own reachability doc.
     pub event: String,
     /// The tool-name matcher this rule fires for (board item
     /// 01KZYAWQ6011Q6CJVG6CCMQPF1). `"match"` on the wire -- the exact

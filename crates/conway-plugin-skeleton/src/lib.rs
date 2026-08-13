@@ -13,7 +13,13 @@
 //! first-party plugin gets no privileged API: if this crate ever needed to
 //! reach past that surface, that would
 //! be a defect in the plugin API, not a reason to give this crate a
-//! private door.
+//! private door. As of board item 01KZS03BFE720EQZG7Q2768N2H, that
+//! includes declaring and firing a custom event
+//! ([`PONG_DISPATCHED_EVENT`]): `SkeletonPlugin::events` declares it and
+//! `SkeletonPingTool::invoke` fires it on every call, unconditionally --
+//! the open-vocabulary half of `PHILOSOPHY.md` §5's hooks claim, proven
+//! end to end against a real configured hook in
+//! `tests/skeleton_end_to_end.rs` rather than asserted in prose.
 //!
 //! **What this crate is not.** Dynamic routing is built
 //! (`conway-plugin-routing`); context compaction, memory, skills, and MCP
@@ -36,9 +42,9 @@
 use std::sync::Arc;
 
 use conway::plugin::{
-    async_trait, Command, CommandCtx, CommandOutcome, CommandSpec, ContentBlock, PathArgs,
-    PermissionClass, Plugin, PluginManifest, RenderKind, Tool, ToolCall, ToolCategory, ToolCtx,
-    ToolError, ToolName, ToolOutput, ToolSpec, TruncationPolicy,
+    async_trait, Command, CommandCtx, CommandOutcome, CommandSpec, ContentBlock, EventDecl,
+    PathArgs, PermissionClass, Plugin, PluginManifest, RenderKind, Tool, ToolCall, ToolCategory,
+    ToolCtx, ToolError, ToolName, ToolOutput, ToolSpec, TruncationPolicy,
 };
 
 /// This plugin's manifest id: the string an operator names in
@@ -48,6 +54,15 @@ pub const PLUGIN_ID: &str = "conway.plugin_skeleton";
 
 /// The one tool this plugin provides.
 pub const TOOL_NAME: &str = "skeleton_ping";
+
+/// This plugin's own custom event (board item 01KZS03BFE720EQZG7Q2768N2H:
+/// the open-vocabulary half of `PHILOSOPHY.md` §5's hooks claim, "A plugin
+/// declares the events it emits"). BARE here -- reachable in an operator's
+/// `[hooks].rules[].event` as `"{PLUGIN_ID}.{PONG_DISPATCHED_EVENT}"` once
+/// `ConwayBuilder::build` namespaces it (`conway_runtime::hook_dispatch::
+/// declared_plugin_events`), the identical division of labor
+/// [`COMMAND_NAME`] already establishes for this plugin's command.
+pub const PONG_DISPATCHED_EVENT: &str = "pong_dispatched";
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct PingArgs {
@@ -93,6 +108,21 @@ impl Tool for SkeletonPingTool {
             Some(message) => format!("skeleton pong: {message}"),
             None => "skeleton pong".to_string(),
         };
+        // The worked example's event half (board item
+        // 01KZS03BFE720EQZG7Q2768N2H): fires this plugin's OWN declared
+        // event, through the SAME `ToolCtx` capability every third-party
+        // plugin gets -- nothing privileged. `ctx.plugin_events` is bound
+        // to this tool's own declaring plugin id (`PLUGIN_ID`), so this
+        // call can only ever produce
+        // `"{PLUGIN_ID}.{PONG_DISPATCHED_EVENT}"`, never another plugin's
+        // namespace. Fires unconditionally, whether or not any operator
+        // has wired a hook to it -- an event a plugin declares and never
+        // fires is the same defect as a tool that does nothing
+        // (`PHILOSOPHY.md` §5), so this proves the FIRING half, not only
+        // the declaration.
+        ctx.plugin_events
+            .emit(PONG_DISPATCHED_EVENT, serde_json::json!({ "reply": text }))
+            .await;
         Ok(ToolOutput {
             blocks: vec![ContentBlock::Text { text }],
             is_error: false,
@@ -175,6 +205,16 @@ impl Plugin for SkeletonPlugin {
     fn commands(&self) -> Vec<Arc<dyn Command>> {
         vec![Arc::new(SkeletonPingCommand)]
     }
+
+    fn events(&self) -> Vec<EventDecl> {
+        vec![EventDecl {
+            name: PONG_DISPATCHED_EVENT.to_string(),
+            summary: "fires once per skeleton_ping call, carrying the exact reply text \
+                      the call produced; payload has no \"tool\" field."
+                .to_string(),
+            carries_tool_name: false,
+        }]
+    }
 }
 
 #[cfg(test)]
@@ -215,5 +255,14 @@ mod command_tests {
         let commands = plugin.commands();
         assert_eq!(commands.len(), 1);
         assert_eq!(commands[0].spec().name, COMMAND_NAME);
+    }
+
+    #[test]
+    fn plugin_declares_the_pong_event_under_its_bare_name() {
+        let plugin = SkeletonPlugin;
+        let events = plugin.events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].name, PONG_DISPATCHED_EVENT);
+        assert!(!events[0].carries_tool_name);
     }
 }
