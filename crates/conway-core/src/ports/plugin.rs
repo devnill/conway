@@ -1500,10 +1500,7 @@ mod tests {
 
     /// The load-bearing property: firing a bare name reaches the emitter
     /// with the FULL `plugin_id.bare_name` -- the namespaced form an
-    /// operator's `[hooks].rules[].event` actually subscribes to. `plugin_id`
-    /// deliberately contains no `.` itself here -- see
-    /// `validate_event_name`'s own rule (a plugin id containing the
-    /// separator is excluded outright, tested separately below).
+    /// operator's `[hooks].rules[].event` actually subscribes to.
     #[test]
     fn emit_assembles_the_full_namespaced_name() {
         let emitter = Arc::new(RecordingEmitter::default());
@@ -1517,18 +1514,21 @@ mod tests {
         assert_eq!(seen[0].1["model"], "x");
     }
 
-    /// A `plugin_id` containing the namespace separator can never assemble
-    /// into a validly-namespaced full name (`validate_event_name`'s own
-    /// exclusion rule) -- every `emit` on such a handle is silently
-    /// dropped, the same fail-open posture as an empty bare name.
+    /// A `plugin_id` containing the namespace separator (every real
+    /// built-in plugin id in this workspace, e.g. `conway.plugin_skeleton`)
+    /// emits exactly like any other -- see `validate_event_name`'s own doc
+    /// ("§16.6 point 3 is reconsidered here") for why this is a deliberate
+    /// reversal of an earlier draft, not an oversight.
     #[test]
-    fn a_plugin_id_containing_the_separator_can_never_emit() {
+    fn a_plugin_id_containing_the_separator_emits_normally() {
         let emitter = Arc::new(RecordingEmitter::default());
         let handle = PluginEventHandle::new(emitter.clone(), "acme.routing");
 
         block_on(handle.emit("candidate_chosen", serde_json::json!(null)));
 
-        assert!(emitter.seen.lock().expect("seen lock poisoned").is_empty());
+        let seen = emitter.seen.lock().expect("seen lock poisoned").clone();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].0, "acme.routing.candidate_chosen");
     }
 
     /// Structural namespace guarantee: `emit`'s only parameters are the

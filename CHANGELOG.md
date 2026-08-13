@@ -9,6 +9,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A plugin can now declare and fire its own custom hook event** (board item
+  01KZS03BFE720EQZG7Q2768N2H) -- the open-vocabulary half of `PHILOSOPHY.md`
+  §5's hooks claim: "A plugin declares the events it emits... Those events
+  sit at the same level as the ones conway emits." `Plugin::events()` is the
+  new declaration surface, added on the exact same precedent as its sibling
+  `Plugin::commands()` (which shipped earlier the same day): a bare
+  `EventDecl { name, summary, carries_tool_name }`, host-prefixed with the
+  declaring plugin's own manifest id, never chosen by the plugin itself.
+  `ToolCtx` gains a `plugin_events: PluginEventHandle` capability, bound at
+  construction to the invoked tool's own declaring plugin id, so a call to
+  `.emit(bare_name, payload)` can only ever produce that plugin's own
+  namespaced event -- never another's. A plugin-declared event dispatches
+  through the IDENTICAL observation-only `HookDispatcher::dispatch` every
+  core event (`post_tool_use`, `session_starting`, ...) already uses --
+  fails open, cannot deny; there is no second, deny-capable tier for plugin
+  events (YAGNI: nothing needs one yet). `conway_runtime::hook_dispatch::
+  declared_plugin_events` namespaces and validates every installed plugin's
+  declared events with the same shared `validate_event_name` validator
+  `Plugin::commands()`'s own registrar already uses for command names -- and
+  doubles as the answer to "how does an operator discover what is hookable
+  given what they have installed": an embedder already holding its own
+  plugin list can call this function directly, before `build()`, with no new
+  registry. `ConwayBuilder::build` unions the result into the same dispatch
+  table `[hooks].rules[]` already feeds, and gives a named, build-time error
+  for a `match` on a plugin event whose own declaration says its payload
+  carries no tool name -- the plugin-event extension of the identical check
+  a core event without one has always gotten. `merge::validate` also now
+  enforces the subscriber-side event-name shape (bare or
+  `plugin_id.event_name`) on every `[hooks].rules[]` entry, closing a
+  FOLLOW-UP `schema::HookEntry::event`'s own doc comment had left open since
+  the `[hooks]` schema first landed.
+
+  **Also reconsiders, disclosed rather than silently reversed, an earlier
+  design decision that a plugin id must never contain the namespace
+  separator** (`.design/extension-architecture.md` §16.6 point 3): every
+  real built-in plugin id in this workspace (`conway.fs`, `conway.shell`,
+  `conway.report`, `conway.subagent`, `conway.plugin_skeleton`) already
+  contains it, and the declaration-side validator never recovers a plugin's
+  id by splitting the assembled name apart -- the misattribution hazard the
+  original exclusion existed to prevent cannot occur there by construction.
+  A genuine full-name collision between two different declarations is still
+  caught, as a duplicate, at `declared_plugin_events`.
+
+  `conway-plugin-skeleton` proves the whole path end to end, exactly as the
+  item requires: `SkeletonPlugin::events()` declares `pong_dispatched`, and
+  `SkeletonPingTool::invoke` fires it, unconditionally, on every call
+  (`PHILOSOPHY.md` §5: "An event a plugin declares and never fires is the
+  same defect as a tool that does nothing"). A new test wires a real
+  `HookRunner` double through `ConwayBuilder::with_hook_runner`, configures a
+  `[hooks].rules[]` entry naming the skeleton's namespaced event, drives a
+  real turn through a real `Conway`, and asserts the hook fired exactly once
+  with the exact reply text the tool actually produced.
+  (`crates/conway-core/src/ports/plugin.rs`,
+  `crates/conway-core/src/event_name.rs`,
+  `crates/conway-runtime/src/hook_dispatch.rs`,
+  `crates/conway-runtime/src/tools/registry.rs`,
+  `crates/conway-runtime/src/tools/runner.rs`,
+  `crates/conway/src/builder.rs`, `crates/conway/src/config/schema.rs`,
+  `crates/conway/src/config/merge.rs`, `crates/conway/src/lib.rs`,
+  `crates/conway-plugin-skeleton/src/lib.rs`,
+  `crates/conway-plugin-skeleton/tests/skeleton_end_to_end.rs`,
+  `crates/conway-tools/src/testing.rs`, `crates/conway-tools/tests/subagent.rs`,
+  `crates/conway/tests/config_validation.rs`, `docs/plugins/hooks.md`)
+
 - **A way to load config while ignoring the ambient user layer** (board item
   01KZYCKF3Z1XBCS50N7EWWVPEQ). Every config load merges five sources --
   `default < XDG < project < env < CLI` -- and `LoadOptions::explicit_path`
