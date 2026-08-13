@@ -31,7 +31,7 @@ pub enum BackendError {
         required_tokens: u32,
         max_context_tokens: u32,
     },
-    /// `Backend::admit`'s rejection (P-4/P-9 amendment, decision
+    /// `Backend::admit`'s rejection (headroom-and-refusal amendment, decision
     /// 01KZDBYTKFYTVD9R2NA10QJNJE, board item 01KZDC4DKVC4JC3W4KN1WMC43N):
     /// this backend's own local, pre-flight estimate of `req`'s size, plus
     /// the resolved headroom, exceeds `model`'s declared window --
@@ -40,7 +40,7 @@ pub enum BackendError {
     /// request that was already sent). Distinct variant, deliberately: the
     /// two are different failure modes with different remediation, and
     /// collapsing them would blur which one actually happened. Terminal --
-    /// no truncation or escalation is performed by core (P-9); every number
+    /// no truncation or escalation is performed by core; every number
     /// behind the verdict travels with it rather than being collapsed into
     /// a bare boolean.
     #[error("context too large: {est_tokens} input tokens + {headroom_tokens} headroom = {required_tokens} exceeds {model}'s window of {max_context_tokens} tokens (short by {shortfall_tokens}); not trimmed or escalated")]
@@ -69,7 +69,7 @@ impl BackendError {
     /// `ContextTooLarge` is included alongside `ContextOverflow`: both name
     /// a candidate this specific request does not fit, which is exactly
     /// the shape a fallback chain (an operator-configured list, not a
-    /// silent escalation) exists to route past. What P-9 forbids is core
+    /// silent escalation) exists to route past. What is forbidden is core
     /// inventing a substitute on its own initiative -- advancing to the
     /// NEXT entry the operator already declared is not that.
     pub fn is_failover_worthy(&self) -> bool {
@@ -160,7 +160,7 @@ pub enum HookFailure {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
 pub enum CwdError {
     /// Some other clone of the same [`crate::ports::CwdHandle`] panicked
-    /// while holding the write lock inside a prior `set` call (P-10: this is
+    /// while holding the write lock inside a prior `set` call (untrusted input: this is
     /// reported, never allowed to propagate as a panic here).
     #[error("cwd handle's lock was poisoned by a panic in a prior `set` call")]
     Poisoned,
@@ -173,13 +173,13 @@ pub enum CwdError {
 /// **`OutsideRoot` is not a corner case -- it is the guard this whole port
 /// exists to enforce.** See [`crate::ports::ArtifactWriteHandle`]'s own doc
 /// for the resolution rule (mirrors `conway_runtime::permission::
-/// resolve_like_the_tool_will` exactly -- P-14, one implementation) that
+/// resolve_like_the_tool_will` exactly -- one implementation, never restated) that
 /// decides when this fires.
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
 pub enum ArtifactWriteError {
     /// The hook-supplied name could not be resolved into a candidate path
-    /// at all (P-10: a NUL byte, which the OS path APIs cannot represent --
+    /// at all (untrusted input: a NUL byte, which the OS path APIs cannot represent --
     /// the same rejection `conway_tools::common::resolve_path` gives a
     /// tool's own path argument for the identical input). Distinct from
     /// [`Self::OutsideRoot`]: this candidate was never even evaluated
@@ -343,31 +343,30 @@ pub enum RuntimeError {
         max_context_tokens: u32,
         shortfall_tokens: u32,
     },
-    /// P-1: `SubagentHost::ask` is fork-only — enforced HERE, at the trait
+    /// `SubagentHost::ask` is fork-only — enforced HERE, at the trait
     /// boundary, not only at the `conway_ask` tool callsite (a
     /// `debug_assert!` alone compiles to nothing in release builds and
     /// leaves the invariant unenforced for any caller other than that one
     /// tool; see `conway-runtime`'s `subagent.rs` `ask` impl). A malformed
-    /// `SubagentSpec::mode` reaching `ask` is a typed error (P-10), never a
+    /// `SubagentSpec::mode` reaching `ask` is a typed error, never a
     /// panic.
-    #[error("ask requires SubagentMode::Fork (P-1: ask is fork+await-text, not a third primitive); got {mode:?}")]
+    #[error("ask requires SubagentMode::Fork (ask is fork+await-text, not a third primitive); got {mode:?}")]
     AskRequiresFork { mode: SubagentMode },
-    /// P-1 (board item 01KYT8TS0EBKJHYNJRF6S88NRH, extended by board item
-    /// 01KYTP0PGKJ4VCJP5TD39A1WHF): `steer`/`await_result`/`cancel`/`start`/
-    /// `ask` may act only on an agent within the CALLER's own subtree
-    /// (itself, or any descendant) -- enforced HERE, at the `SubagentHost`
-    /// trait boundary (see that trait's own doc), not only at the
+    /// Board item 01KYT8TS0EBKJHYNJRF6S88NRH, extended by board item
+    /// 01KYTP0PGKJ4VCJP5TD39A1WHF: `steer`/`await_result`/`cancel`/`start`/
+    /// `ask` may act only on an agent within the CALLER's own subtree (itself,
+    /// or any descendant) -- enforced HERE, at the `SubagentHost` trait
+    /// boundary (see that trait's own doc), not only at the
     /// `conway_steer`/`conway_await`/`conway_cancel`/`conway_fork`/
     /// `conway_spawn`/`conway_ask` tool callsites, so no other caller can
     /// bypass it (mirrors `AskRequiresFork`'s shape). A sibling (or any
-    /// non-ancestor, non-self) `AgentId` a caller merely SAW -- in tool
-    /// output, on the event stream, in `conway_fork`/`conway_spawn`'s own
-    /// return value, or via
-    /// `tree()` (which, post-01KYTP0PGKJ4VCJP5TD39A1WHF, only ever shows the
-    /// caller's own subtree in the first place) -- is not enough to act on
-    /// it. `target` (named `parent` on `start`/`ask`) is known to this
-    /// runtime (an unknown one is [`RuntimeError::AgentNotFound`] instead);
-    /// `caller` is who attempted the operation. P-10: a typed error, never a
+    /// non-ancestor, non-self) `AgentId` a caller merely SAW -- in tool output,
+    /// on the event stream, in `conway_fork`/`conway_spawn`'s own return value,
+    /// or via `tree()` (which, post-01KYTP0PGKJ4VCJP5TD39A1WHF, only ever shows
+    /// the caller's own subtree in the first place) -- is not enough to act on
+    /// it. `target` (named `parent` on `start`/`ask`) is known to this runtime
+    /// (an unknown one is [`RuntimeError::AgentNotFound`] instead); `caller` is
+    /// who attempted the operation. Untrusted ids give a typed error, never a
     /// panic -- both ids may be model-supplied.
     #[error("agent {caller} may not act on agent {target}: it is outside {caller}'s own subtree")]
     AgentNotInSubtree { caller: AgentId, target: AgentId },
@@ -417,12 +416,12 @@ pub enum SubagentError {
     #[error("unknown agent: {agent}")]
     UnknownAgent { agent: AgentId },
     /// [`RuntimeError::AgentNotInSubtree`]: `target` exists but is outside
-    /// `caller`'s own subtree (P-1). `caller` here is always the handle's
+    /// `caller`'s own subtree. `caller` here is always the handle's
     /// own baked-in agent id -- see [`crate::ports::SubagentHandle`]'s own
     /// doc for why a tool has no way to supply a different one.
     #[error("agent {caller} may not act on agent {target}: it is outside {caller}'s own subtree")]
     NotInSubtree { caller: AgentId, target: AgentId },
-    /// [`RuntimeError::AskRequiresFork`]: P-1 -- `ask` is fork+await-text,
+    /// [`RuntimeError::AskRequiresFork`]: `ask` is fork+await-text,
     /// not a third primitive; a malformed `SubagentSpec::mode` reaching it
     /// is a typed error here, never a panic.
     #[error("ask requires SubagentMode::Fork (ask is fork+await-text, not a third primitive); got {mode:?}")]
@@ -442,13 +441,14 @@ pub enum SubagentError {
     Host { detail: String },
 }
 
-/// The ONE place [`SubagentError`] becomes a [`ToolError`] (P-14): every
-/// `conway-tools` subagent tool maps through this, never restating the
-/// mapping per call site. `UnknownAgent`/`NotInSubtree`/`AskRequiresFork`/
-/// `InvalidSpec` are caller mistakes a model can correct, so they become
-/// `ToolError::InvalidArguments` -- not `Internal`, which is how
-/// `conway-tools`' pre-existing `host_error` helper flattened every
-/// `RuntimeError` (see [`SubagentError`]'s own doc). [`SubagentError::Host`]
+/// The ONE place [`SubagentError`] becomes a [`ToolError`] -- one
+/// implementation, never restated: every `conway-tools` subagent tool maps
+/// through this, never restating the mapping per call site.
+/// `UnknownAgent`/`NotInSubtree`/`AskRequiresFork`/ `InvalidSpec` are caller
+/// mistakes a model can correct, so they become `ToolError::InvalidArguments`
+/// -- not `Internal`, which is how `conway-tools`' pre-existing `host_error`
+/// helper flattened every `RuntimeError` (see [`SubagentError`]'s own doc).
+/// [`SubagentError::Host`]
 /// -- genuine infrastructure -- maps to `ToolError::Internal`, unchanged.
 impl From<SubagentError> for ToolError {
     fn from(err: SubagentError) -> Self {
@@ -822,7 +822,7 @@ mod tests {
             .contains("the runtime has already been dropped"));
     }
 
-    /// The From<SubagentError> for ToolError mapping (P-14: the ONE place
+    /// The From<SubagentError> for ToolError mapping (the ONE place
     /// this happens) for the three caller-mistake variants:
     /// `UnknownAgent`/`NotInSubtree`/`AskRequiresFork` must all become
     /// `ToolError::InvalidArguments`, carrying the variant's own rendered

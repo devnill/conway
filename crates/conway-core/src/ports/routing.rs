@@ -20,7 +20,8 @@ use super::{Backend, CapabilityIndex};
 /// Resolves a routing role to an ordered list of candidates.
 pub trait Router: Send + Sync {
     /// MUST be pure with respect to request content: `RouteRequest` carries
-    /// no prompt text by construction (GP-07), so purity here is a
+    /// no prompt text by construction -- routing is content-blind and
+    /// predictable -- so purity here is a
     /// consequence of the input type, not just a convention. MUST NOT
     /// mutate breaker state — `resolve` only reads it via `HealthRegistry`.
     ///
@@ -36,7 +37,7 @@ pub trait Router: Send + Sync {
     /// because its headroom-adjusted `max_context_tokens` does not cover
     /// `req.est_tokens`, `resolve` returns `RoutingError::ContextTooLarge`
     /// naming the input size, the resolved headroom, and the largest window
-    /// among the rejected candidates (P-9's "typed error naming input
+    /// among the rejected candidates (the "typed error naming input
     /// tokens, headroom, and the largest window").
     ///
     /// A rejection that is NOT attributable to context size alone --
@@ -46,7 +47,7 @@ pub trait Router: Send + Sync {
     /// prose inside `considered`.
     ///
     /// This split is SETTLED DESIGN, not a simplification awaiting a fix
-    /// (P-9 as amended 2026-08-01; decision `01KYY4D6R5KH1S02XWAJKP7531`).
+    /// (as amended 2026-08-01; decision `01KYY4D6R5KH1S02XWAJKP7531`).
     /// A chain in which every candidate's window is too small, but at least
     /// one ALSO fails another requirement, deliberately yields
     /// `NoCandidate`. Reporting it as `ContextTooLarge` would attribute the
@@ -62,7 +63,7 @@ pub trait Router: Send + Sync {
     /// of a candidate that failed only on headroom. Widening that hook's
     /// trigger -- not widening this error -- is the change to consider if it
     /// ever matters; it exposes the seam without moving routing policy into
-    /// core (GP-11).
+    /// core, which ships the seam and leaves the policy to a hook.
     fn resolve(&self, req: &RouteRequest) -> Result<Vec<Route>, RoutingError>;
 }
 
@@ -114,7 +115,7 @@ pub trait RoutingExplainer: Send + Sync {
 /// [`crate::routing::MinimalRouter`] already provides -- `Conway::
 /// explain_routing` falls back to that degenerate answer in exactly the
 /// same way it already does for a router injected via `ConwayBuilder::
-/// with_router` (GP-14: no report claims more than it can back).
+/// with_router` -- no report claims more than it can back.
 ///
 /// `health` REPLACES whatever `HealthRegistry` the caller would otherwise
 /// have constructed -- the router and the runtime it serves MUST continue
@@ -150,7 +151,7 @@ impl std::fmt::Debug for RouterBundle {
 /// Every field type here is already defined in `conway-core` itself
 /// (`RoutingConfig`, `HeadroomPolicy`, [`Backend`], [`CapabilityIndex`]) --
 /// none of it reaches into a sibling crate, so this port stays constructible
-/// with no new dependency (C-04).
+/// with no new dependency.
 ///
 /// **`capability_index` (board item 01KZFC43J1J06BM4CCWKCKHSNV, amending
 /// this struct's original shape):** the struct originally omitted this
@@ -184,7 +185,7 @@ pub struct RouterBuildContext<'a> {
     /// (config-derived, then injected via `with_backend`, merged by id) --
     /// a factory reads `Backend::capabilities()` off these directly, never
     /// a second, independently-recomputed notion of what a backend can do
-    /// (P-14).
+    /// (one implementation, never restated).
     pub backends: &'a [Arc<dyn Backend>],
     /// The SAME index `ConwayBuilder::build` itself would consult -- built
     /// from `.conway/models.json` via `CapabilityIndex::from_backends`,

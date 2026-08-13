@@ -207,7 +207,7 @@ fn flatten(line: &Line) -> String {
 
 /// One orderable status-line field (T3). The configured `fields` list
 /// (from `[tui.status_line]`) is parsed into this enum at render time;
-/// unknown names are dropped (P-10: never a panic).
+/// unknown names are dropped (never a panic on untrusted config).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StatusLineField {
     /// **NEW** (this item). `session <id>` -- see this module's own doc.
@@ -227,7 +227,7 @@ enum StatusLineField {
 
 impl StatusLineField {
     /// Parses one configured field name. Unknown names return `None`
-    /// (P-10: the caller drops them silently -- never a panic).
+    /// (the caller drops them silently -- never a panic).
     fn parse(name: &str) -> Option<Self> {
         match name.trim() {
             "session" => Some(Self::Session),
@@ -246,9 +246,9 @@ impl StatusLineField {
 }
 
 /// Resolves the configured `fields` list into an ordered, validated
-/// `Vec<StatusLineField>`, dropping unknown names (P-10). Falls back to
-/// the default Lean order when the configured list is empty (an empty
-/// `fields = []` would otherwise render a blank line -- treat that as
+/// `Vec<StatusLineField>`, dropping unknown names rather than panicking on
+/// them. Falls back to the default Lean order when the configured list is empty
+/// (an empty `fields = []` would otherwise render a blank line -- treat that as
 /// "user wanted defaults" rather than "user wanted nothing").
 ///
 /// **Adversarial review finding 1 (critical).** `mode_ladder`'s width
@@ -288,7 +288,7 @@ fn resolve_fields(
         .collect();
     if parsed.is_empty() {
         // Empty / all-unknown config: fall back to the Lean order rather
-        // than rendering a blank line (P-10: bad input never produces a
+        // than rendering a blank line (bad input never produces a
         // broken UI -- it falls back to defaults). The Lean order already
         // includes `mode`, so the forced-in step below is a no-op here.
         return resolve_fields(
@@ -405,7 +405,7 @@ pub fn status_line_spans(state: &AppState, theme: &Theme, width: u16) -> Line<'s
 /// actually did, and the real overflow landed on whichever field ended up
 /// last in the assembled text (see `clamp_to_width`'s doc for what used to
 /// happen to that overflow). Fixed by summing each span's own `.width()`
-/// (ratatui's built-in display-width helper, C-04: no new dependency)
+/// (ratatui's built-in display-width helper: no new dependency)
 /// instead of its character count.
 fn ladder_width(ladders: &[Vec<Vec<Span<'static>>>], rung: &[usize]) -> usize {
     let mut non_empty = 0usize;
@@ -827,17 +827,17 @@ enum LineageDetail {
 }
 
 /// Builds the off-root `agent` field at `detail`'s verbosity (V5, relocated
-/// here by this item -- see the module doc). `Bare` never touches the tree
-/// at all (guaranteed cheap, and the guaranteed-fits fallback). `Full`/
-/// `Compact` walk [`agents::ancestor_chain`] (bounded, P-10) and label each
-/// hop with [`agents::hop_label`] -- the SAME provenance text
-/// `view/agents.rs`'s panel row already shows for that node, so the
-/// breadcrumb and the panel can never disagree about how a given agent came
-/// to exist. A node with `kind: None` (the root itself, or one seeded
-/// out-of-band via `ensure_agent_tracked`, which never saw a spawn event)
-/// has no recipe text to show; `hop_label` already falls back to that
-/// node's own short id there, so it renders as "here's WHO" rather than
-/// being mislabeled as a fork or a spawn it never was.
+/// here by this item -- see the module doc). `Bare` never touches the tree at
+/// all (guaranteed cheap, and the guaranteed-fits fallback). `Full`/ `Compact`
+/// walk [`agents::ancestor_chain`] (bounded, so untrusted depth cannot run
+/// away) and label each hop with [`agents::hop_label`] -- the SAME provenance
+/// text `view/agents.rs`'s panel row already shows for that node, so the
+/// breadcrumb and the panel can never disagree about how a given agent came to
+/// exist. A node with `kind: None` (the root itself, or one seeded out-of-band
+/// via `ensure_agent_tracked`, which never saw a spawn event) has no recipe
+/// text to show; `hop_label` already falls back to that node's own short id
+/// there, so it renders as "here's WHO" rather than being mislabeled as a fork
+/// or a spawn it never was.
 ///
 /// **Never the ancestor's actual transcript content, only metadata** -- a
 /// spawn child inherits nothing from its parent, and rendering parent
@@ -875,7 +875,7 @@ fn agent_field(state: &AppState, detail: LineageDetail) -> String {
     // The chain's own head reads as literal "root" when it actually IS the
     // session root (the overwhelmingly common case, and already named by
     // the status line's own leading `session <id>` field) -- otherwise (the
-    // walk was cut short by the P-10 bound or a missing node) it gets the
+    // walk was cut short by that bound or a missing node) it gets the
     // same hop treatment as everything after it, so a truncated chain
     // still names what it actually reached instead of silently claiming
     // "root".
@@ -1394,7 +1394,7 @@ mod tests {
 
     #[test]
     fn unknown_field_names_are_dropped_silently() {
-        // P-10: unknown names never panic; the known ones still render.
+        // Unknown names never panic; the known ones still render.
         let mut state = AppState::new(AgentId::new());
         state.status_line_config = cfg(&["mode", "bogus", "nonsense", "activity"]);
         let line = status_line(&state);
@@ -1405,7 +1405,7 @@ mod tests {
 
     #[test]
     fn empty_fields_falls_back_to_default_order() {
-        // P-10: an empty `fields` list falls back to the Lean order rather
+        // An empty `fields` list falls back to the Lean order rather
         // than rendering a blank line.
         let mut state = AppState::new(AgentId::new());
         state.status_line_config = cfg(&[]);
@@ -2034,7 +2034,7 @@ mod tests {
         );
     }
 
-    /// P-10: the width-aware assembly never panics, at any width including
+    /// The width-aware assembly never panics, at any width including
     /// 0, for the default field order.
     #[test]
     fn status_line_spans_never_panics_at_any_width() {

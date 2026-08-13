@@ -38,7 +38,7 @@
 //! `ConwayBuilder::with_backend_factory` -- the identical public builder
 //! channel `conway-plugin-backends`' own
 //! `tests/builder_end_to_end.rs` installs the shipped `openai-compat`
-//! factory through (GP-03/P-6: first-party and third-party share one
+//! factory through (first-party and third-party share one
 //! mechanism). `tests/end_to_end.rs` asserts on the completed turn's own
 //! **returned text**, not on `ThirdPartyBackendFactory::build` having been
 //! called -- a factory invoked and discarded produces the same call count
@@ -233,7 +233,7 @@ impl Backend for ThirdPartyBackend {
 
     /// Overridden (not left at the trait's default), and calls
     /// [`check_admission`] for the fits/shortfall arithmetic rather than
-    /// restating it (P-14) -- the property `crates/conway/tests/
+    /// restating it -- one implementation -- the property `crates/conway/tests/
     /// backend_parity.rs`'s own `StubBackend::admit` already establishes,
     /// re-proven here from a crate that genuinely cannot see
     /// `conway-core::ports::backend::default_estimate_tokens` at all.

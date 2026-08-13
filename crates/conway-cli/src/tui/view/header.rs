@@ -254,7 +254,7 @@ fn sticky_prompt_text(prompt: &str, width: u16) -> String {
 
 /// Truncates `text` to at most `budget` characters, replacing the tail with
 /// a single `…` sentinel once it doesn't fit whole -- never panics on any
-/// input (P-10: a 100KB pasted prompt, a pure-emoji prompt, or `budget == 0`
+/// input (untrusted: a 100KB pasted prompt, a pure-emoji prompt, or `budget == 0`
 /// all degrade to *something*, never a crash and never a mid-byte split).
 fn truncate_chars_with_ellipsis(text: &str, budget: usize) -> String {
     if text.chars().count() <= budget {
@@ -621,7 +621,7 @@ mod tests {
         for width in [0u16, 1, 2, 5, 20, 200] {
             let text = sticky_prompt_text(&emoji_prompt, width);
             // Must be valid UTF-8 (guaranteed by `String`, but assert the
-            // call itself never panics across every width, P-10).
+            // call itself never panics across every width).
             let _ = text.len();
         }
 
@@ -654,7 +654,7 @@ mod tests {
         assert!(text.chars().count() <= 40, "{}", text.chars().count());
     }
 
-    /// P-10: a zero-width/zero-height terminal never panics.
+    /// A zero-width/zero-height terminal never panics.
     #[test]
     fn sticky_prompt_never_panics_on_a_zero_size_viewport() {
         let mut state = AppState::new(TestAgentId::new());

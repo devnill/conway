@@ -1,12 +1,13 @@
-//! `impl SubagentHost for Runtime` (WI-084, architecture §4.6, §5.1, §5.2):
-//! the cycle-breaking fork/spawn entry point every tool call and developer
-//! API goes through (decision 2). Fork and spawn are both, mechanically,
-//! "create a child session, resolve its starting context, attach it to the
-//! tree, and launch its `AgentLoop`" — the only real difference between
-//! them is *how* the starting context is resolved: a fork's `InheritedPrefix`
-//! is the parent's own effective transcript up to the fork point (GP-02:
-//! the ENTIRE context up to the fork point, not a truncated slice); a
-//! spawn's context has no inherited prefix at all, by design.
+//! `impl SubagentHost for Runtime` (WI-084, architecture §4.6, §5.1, §5.2): the
+//! cycle-breaking fork/spawn entry point every tool call and developer API goes
+//! through (decision 2). Fork and spawn are both, mechanically, "create a child
+//! session, resolve its starting context, attach it to the tree, and launch its
+//! `AgentLoop`" — the only real difference between them is *how* the starting
+//! context is resolved: a fork's `InheritedPrefix` is the parent's own
+//! effective transcript up to the fork point (a fork inherits the WHOLE
+//! context, never part of it: the ENTIRE context up to the fork point, not a
+//! truncated slice); a spawn's context has no inherited prefix at all, by
+//! design.
 //!
 //! ## `InheritedPrefix` and sibling sharing
 //!
@@ -42,24 +43,23 @@
 //! ## `InheritedPrefix::from` at fork depth >= 2
 //!
 //! A grandchild's (or deeper descendant's) `InheritedPrefix.records` is the
-//! WHOLE effective transcript up to the fork point (GP-02) — the root's
-//! own records, then every intermediate ancestor's own records in turn, up
-//! to and including the immediate parent's — concatenated in order, per
-//! `TranscriptResolver`'s "local units everywhere, the inherited prefix
-//! always flows through in full" contract (that module's own docs). The
-//! bundle is nonetheless stamped with a SINGLE `InheritedPrefix.from`: the
-//! immediate parent's session id. That field means "who handed me this
-//! context" — not "who originally authored each record" — and
-//! `ContextBuilder` (`context/builder.rs`) carries that same single `from`
+//! WHOLE effective transcript up to the fork point — a fork inherits all of it
+//! or none, never a slice — the root's own records, then every intermediate
+//! ancestor's own records in turn, up to and including the immediate parent's —
+//! concatenated in order, per `TranscriptResolver`'s "local units everywhere,
+//! the inherited prefix always flows through in full" contract (that module's
+//! own docs). The bundle is nonetheless stamped with a SINGLE
+//! `InheritedPrefix.from`: the immediate parent's session id. That field means
+//! "who handed me this context" — not "who originally authored each record" —
+//! and `ContextBuilder` (`context/builder.rs`) carries that same single `from`
 //! onto every `Provenance::Inherited` segment it produces from `records`,
-//! regardless of which ancestor a given record actually originated in.
-//! This is a deliberate, coordinator-ruled semantic (WI-084 rework), not an
-//! oversight: recovering true per-record authorship at arbitrary depth
-//! would require per-record session tracking that does not exist upstream
-//! — neither `conway_core::log::LogRecord` nor `conway_session`'s resolver
-//! carries an originating-session field per record — which is out of this
-//! item's scope. It is queued as a refinement question rather than
-//! attempted here.
+//! regardless of which ancestor a given record actually originated in. This is
+//! a deliberate, coordinator-ruled semantic (WI-084 rework), not an oversight:
+//! recovering true per-record authorship at arbitrary depth would require
+//! per-record session tracking that does not exist upstream — neither
+//! `conway_core::log::LogRecord` nor `conway_session`'s resolver carries an
+//! originating-session field per record — which is out of this item's scope. It
+//! is queued as a refinement question rather than attempted here.
 //!
 //! Once resolved, the `InheritedPrefix` is stored once on the child's
 //! `AgentLoop` (`agent_loop::AgentLoop::inherited`) and never recomputed —
@@ -185,7 +185,7 @@ impl SubagentHost for Runtime {
         parent: AgentId,
         mut spec: SubagentSpec,
     ) -> Result<AgentId, RuntimeError> {
-        // P-1 (board item 01KYTP0PGKJ4VCJP5TD39A1WHF): `caller` must own
+        // Board item 01KYTP0PGKJ4VCJP5TD39A1WHF: `caller` must own
         // `parent` -- checked BEFORE anything else runs, exactly like
         // `steer`/`await_result`/`cancel`'s own `ensure_own_subtree` call --
         // so no cwd/root resolution, store I/O, or child attach happens for
@@ -241,7 +241,7 @@ impl SubagentHost for Runtime {
         //
         // `spec.root: None` (still what `SubagentSpec::fork`/`::spawn`
         // produce, and the ONLY shape the facade's `ForkSpec` can express --
-        // P-1: fork always inherits, never overrides) means "inherit the
+        // fork always inherits, never overrides) means "inherit the
         // parent's root, unchanged", including an unconfined parent, which
         // stays unconfined. `Some(requested)` resolves relative paths
         // against the PARENT's cwd (same base `child_cwd` above uses) and
@@ -278,12 +278,13 @@ impl SubagentHost for Runtime {
                 None => None,
             },
             Some(requested) => {
-                // Min-1 (P-14): resolve via the SHARED rule (absolute ->
-                // as-is, relative -> join base, NUL -> None) instead of
-                // inlining two-thirds of it and silently dropping the NUL
-                // guard. A relative root resolves against the parent's cwd,
-                // exactly as before. A non-UTF-8 or NUL-carrying root is a
-                // typed config rejection (P-10), never a panic.
+                // Min-1: resolve via the SHARED rule, the single implementation
+                // every root check calls (absolute -> as-is, relative -> join
+                // base, NUL -> None) instead of inlining two-thirds of it and
+                // silently dropping the NUL guard. A relative root resolves
+                // against the parent's cwd, exactly as before. A non-UTF-8 or
+                // NUL-carrying root is a typed config rejection -- untrusted
+                // input, never a panic.
                 let requested_str = requested.to_str().ok_or_else(|| {
                     invalid_spec(ConwayError::Config {
                         detail: format!("subagent root {} is not valid UTF-8", requested.display()),
@@ -395,7 +396,7 @@ impl SubagentHost for Runtime {
         //
         // This supersedes the near-identical fill `ask` (below) used to
         // perform on the parent's `agent_def` before calling this method:
-        // `ask` is fork-only (P-1: the `spec.mode != Fork` guard at the top
+        // `ask` is fork-only (the `spec.mode != Fork` guard at the top
         // of that method), so this Fork arm now covers every path that used
         // to need it, and the second copy was deleted rather than kept in
         // sync by hand.
@@ -480,7 +481,7 @@ impl SubagentHost for Runtime {
         // (`AskOrigin::ModalAsk`) and the `conway_ask` tool
         // (`AskOrigin::ToolAsk`) -- and `None` for every `conway_fork`/
         // `conway_spawn` call, model-invoked or embedder-invoked, that
-        // reaches this SAME `start` (P-1: `ask` composes `start`, it is not
+        // reaches this SAME `start` (`ask` composes `start`, it is not
         // a third primitive, so this is the one place both an `ask` and an
         // ordinary fork/spawn spec converge). It is therefore the correct
         // signal to gate on here, RELIABLY, without adding a parallel
@@ -491,24 +492,23 @@ impl SubagentHost for Runtime {
         // `structured` at all -- `SubagentHost::ask` returns `AskOutcome`
         // (`text`/`usage`/`status`/`transcript_ref` only, no `structured`
         // field, `conway-core`'s `agent.rs`), and `SessionHandle::ask`'s
-        // `TurnHandle` is driven the same way. A def-declared
-        // `result_contract` can therefore only ever turn a good prose
-        // answer into a validation failure for an ask child -- it can never
-        // satisfy anything a caller reads back -- so it is NEVER sourced
-        // from the def here, regardless of what the spawning def declares.
-        // An EXPLICIT call-site contract on an ask spec (not reachable from
-        // either shipped ask entry point today -- both always pass
-        // `result_contract: None` -- but `SubagentSpec` is a public library
-        // type an embedder could construct by hand with `ask_origin: Some`
-        // AND `result_contract: Some` set directly) is rejected with a
-        // typed error (P-10: never silently ignored) rather than accepted
-        // and then structurally unsatisfiable. Reuses `RuntimeError::
-        // InvalidSpec` via the `invalid_spec` helper already used at every
-        // other "reject the caller's own spec" site in this file (see the
-        // module doc's "`RuntimeError::InvalidSpec` (rejected specs)"
-        // section) rather than minting a new variant paralleling
-        // `AskRequiresFork`'s shape one-for-one: `InvalidSpec` already
-        // routes identically through `conway_core::ports::subagent::
+        // `TurnHandle` is driven the same way. A def-declared `result_contract`
+        // can therefore only ever turn a good prose answer into a validation
+        // failure for an ask child -- it can never satisfy anything a caller
+        // reads back -- so it is NEVER sourced from the def here, regardless of
+        // what the spawning def declares. An EXPLICIT call-site contract on an
+        // ask spec (not reachable from either shipped ask entry point today --
+        // both always pass `result_contract: None` -- but `SubagentSpec` is a
+        // public library type an embedder could construct by hand with
+        // `ask_origin: Some` AND `result_contract: Some` set directly) is
+        // rejected with a typed error -- untrusted input is never silently
+        // ignored -- rather than accepted and then structurally unsatisfiable.
+        // Reuses `RuntimeError:: InvalidSpec` via the `invalid_spec` helper
+        // already used at every other "reject the caller's own spec" site in
+        // this file (see the module doc's "`RuntimeError::InvalidSpec`
+        // (rejected specs)" section) rather than minting a new variant
+        // paralleling `AskRequiresFork`'s shape one-for-one: `InvalidSpec`
+        // already routes identically through `conway_core::ports::subagent::
         // translate` -> `SubagentError::InvalidSpec` ->
         // `ToolError::InvalidArguments`, so a dedicated variant would add a
         // second, structurally identical path for zero behavioral gain.
@@ -810,7 +810,7 @@ impl SubagentHost for Runtime {
 
     /// Delivers `text` into `target`'s mailbox as an `AgentMessage::Steer`,
     /// landing at `target`'s next turn boundary (WI-085, architecture
-    /// §6.2). P-1 (board item 01KYT8TS0EBKJHYNJRF6S88NRH): `caller` must be
+    /// §6.2). Board item 01KYT8TS0EBKJHYNJRF6S88NRH: `caller` must be
     /// `target` itself or one of its ancestors (`ensure_own_subtree`,
     /// below) -- a sibling (or any other unrelated agent) is rejected with
     /// `RuntimeError::AgentNotInSubtree` before the mailbox is even
@@ -851,7 +851,7 @@ impl SubagentHost for Runtime {
     /// Delegates to [`crate::tree::AgentTree::await_result`], which already
     /// provides every guarantee this method needs (unknown agent ->
     /// `AgentNotFound`; a finished agent's result returned immediately; no
-    /// tree lock held across the await). P-1: `caller` must own `target`
+    /// tree lock held across the await). `caller` must own `target`
     /// (`ensure_own_subtree`, below) -- checked BEFORE delegating, so a
     /// sibling can never block on, or read the result of, another branch's
     /// run.
@@ -871,7 +871,7 @@ impl SubagentHost for Runtime {
     /// `AgentMessage::Cancel { hard: false, .. }` into `target`'s own
     /// mailbox -- the same three-step shape `steer` (above) already uses
     /// (`ensure_own_subtree` -> `agent_mailbox` -> `mailbox.send`), just
-    /// with a `Cancel` message instead of a `Steer` one. P-1: `caller` must
+    /// with a `Cancel` message instead of a `Steer` one. `caller` must
     /// own `target` (`ensure_own_subtree`, below) -- checked BEFORE either
     /// path, so a sibling can never destroy another branch's work, hard or
     /// soft.
@@ -942,7 +942,7 @@ impl SubagentHost for Runtime {
         }
     }
 
-    /// The real `Runtime::ask` impl: fork+await-text (P-1 -- `ask` is exactly
+    /// The real `Runtime::ask` impl: fork+await-text (`ask` is exactly
     /// the two existing primitives composed, NOT a third one). Mirrors
     /// `conway`'s facade `SessionHandle::ask`/`TurnHandle::text`/`result`
     /// (`crates/conway/src/session_handle.rs:165`, `:985-1050`) but uses the
@@ -953,7 +953,7 @@ impl SubagentHost for Runtime {
     ///
     /// `Runtime::subscribe` (which delegates to `self.bus.subscribe()`) is
     /// called BEFORE `self.start(parent, spec)` so the child's first
-    /// `Event::TextDelta` cannot be missed (GP-01: the full text is what the
+    /// `Event::TextDelta` cannot be missed (the full text is what the
     /// orchestrator feeds onward; a missed first delta would silently truncate
     /// it). This is the same ordering `SessionHandle::prompt_agent` uses
     /// (subscribe before append/launch).
@@ -990,14 +990,14 @@ impl SubagentHost for Runtime {
     ///
     /// The child's `SessionId` is resolved via `Runtime::agent_session`, the
     /// same agent-to-session lookup `start` itself uses (via `agents` map,
-    /// populated by `launch_agent`). P-2: carried in `AskOutcome` so the
-    /// orchestrator's `ToolResultRecord` can name the ephemeral child
-    /// session.
+    /// populated by `launch_agent`). Provenance is mandatory, so it is carried
+    /// in `AskOutcome` and the orchestrator's `ToolResultRecord` can name the
+    /// ephemeral child session.
     ///
     /// ## `caller` (board item 01KYTP0PGKJ4VCJP5TD39A1WHF)
     ///
     /// `ask` performs no subtree check of its own -- it composes `start`
-    /// (P-1: "`ask` is fork+await-text, not a third primitive"), so passing
+    /// (`ask` is fork+await-text, not a third subagent primitive), so passing
     /// `caller` straight through to `self.start(caller, parent, spec)` below
     /// is what enforces "`caller` must own `parent`" here too, reusing
     /// `start`'s own `ensure_own_subtree` call rather than duplicating it.
@@ -1013,7 +1013,7 @@ impl SubagentHost for Runtime {
         parent: AgentId,
         spec: SubagentSpec,
     ) -> Result<AskOutcome, RuntimeError> {
-        // P-1: `ask` is fork+await-text -- the fork-only invariant is
+        // `ask` is fork+await-text -- the fork-only invariant is
         // enforced here at the trait boundary (not only at the `conway_ask`
         // tool callsite, which happens to always construct `Fork` itself),
         // so no other caller -- including a future out-of-process plugin
@@ -1021,12 +1021,12 @@ impl SubagentHost for Runtime {
         // it with a `Spawn` spec. A real (non-`debug_assert!`) check: a
         // `debug_assert!` compiles to nothing in release builds, which is
         // every binary a user runs, so it left this invariant unenforced
-        // outside debug. P-10: a malformed spec is a typed error, never a
+        // outside debug. A malformed spec is untrusted input: a typed error, never a
         // panic -- `assert!`/`unwrap`/`expect` are not used here.
         if spec.mode != SubagentMode::Fork {
             return Err(RuntimeError::AskRequiresFork { mode: spec.mode });
         }
-        // P-1/board item 01KZC8DD9C74BSTP8BQDJKYNFR, MOVED (decision
+        // Board item 01KZC8DD9C74BSTP8BQDJKYNFR, MOVED (decision
         // 01KZHEWXDZWPWMEAQ01XY2RDCB): the `conway_ask` tool
         // (`crates/conway-tools/src/subagent/ask.rs`) always builds its
         // `SubagentSpec` with `agent_def: None` -- it has no
@@ -1058,17 +1058,17 @@ impl SubagentHost for Runtime {
         // 1. Subscribe BEFORE launch so the first TextDelta is not missed.
         let mut stream = Runtime::subscribe(self);
         // 2. Launch the child (fork per `spec.mode`; `ask` is fork-only --
-        //    P-1). `caller` flows straight through: `start`'s own
-        //    `ensure_own_subtree(caller, parent)` is this method's ONLY
-        //    ownership check -- see this method's own doc. `spec.ask_origin`
-        //    is set by the caller (`ToolAsk`/`ModalAsk`) before it reaches
-        //    here -- `start`'s own `ask_origin.is_some()` carve-out (see
-        //    that method's `result_contract` computation) is what keeps a
-        //    def-declared `result_contract`, now reachable via `start`'s own
-        //    Fork-only `agent_def` inheritance fill, from ever governing
-        //    this child.
+        // there is no third primitive). `caller` flows straight through:
+        // `start`'s own `ensure_own_subtree(caller, parent)` is this method's
+        // ONLY ownership check -- see this method's own doc. `spec.ask_origin`
+        // is set by the caller (`ToolAsk`/`ModalAsk`) before it reaches here --
+        // `start`'s own `ask_origin.is_some()` carve-out (see that method's
+        // `result_contract` computation) is what keeps a def-declared
+        // `result_contract`, now reachable via `start`'s own Fork-only
+        // `agent_def` inheritance fill, from ever governing this child.
         let child_agent = self.start(caller, parent, spec).await?;
-        // 3. Resolve the child's SessionId for `transcript_ref` (P-2). The
+        // 3. Resolve the child's SessionId for `transcript_ref`, which is
+        //    what keeps the child's provenance resolvable. The
         //    child is already attached (start -> launch_agent -> tree.attach
         //    -> agents map populated), so this lookup cannot miss.
         let child_session = self.agent_session(child_agent)?;
@@ -1127,7 +1127,7 @@ impl SubagentHost for Runtime {
 }
 
 impl Runtime {
-    /// P-1 (board item 01KYT8TS0EBKJHYNJRF6S88NRH): the descendancy check
+    /// Board item 01KYT8TS0EBKJHYNJRF6S88NRH: the descendancy check
     /// `steer`/`await_result`/`cancel` share -- see `SubagentHost`'s own
     /// doc for the root/operator-exemption mechanism (there is none; the
     /// check below is uniform for every caller, and a root-originated call
@@ -1147,7 +1147,7 @@ impl Runtime {
     /// `cancel` via `Runtime::cancel`, all resolve the same lookup this
     /// check performs first, so an unknown id is diagnosed identically
     /// either way). `target` known but outside `caller`'s subtree ->
-    /// `RuntimeError::AgentNotInSubtree`, never a panic (P-10: both ids may
+    /// `RuntimeError::AgentNotInSubtree`, never a panic (both ids are untrusted and may
     /// be model-supplied).
     fn ensure_own_subtree(&self, caller: AgentId, target: AgentId) -> Result<(), RuntimeError> {
         let path = self.tree_ref().path(target);
@@ -1251,8 +1251,9 @@ impl SubagentHost for WeakRuntimeHost {
     }
 
     /// Delegates to the real `Runtime` impl. The `ask` primitive is
-    /// fork+await-text (P-1), surfaced on the same `SubagentHost` trait
-    /// every consumer uses (P-6: built-ins have no privileged API).
+    /// fork+await-text, not a third primitive, surfaced on the same
+    /// `SubagentHost` trait every consumer uses -- a built-in gets no
+    /// privileged API a third-party plugin lacks.
     async fn ask(
         &self,
         caller: AgentId,

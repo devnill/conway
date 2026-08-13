@@ -1,6 +1,6 @@
 //! Process-group execution primitives shared by every consumer in this
 //! crate that spawns a child process and must guarantee no orphaned
-//! grandchild survives a timeout or cancellation (P-14: ONE implementation,
+//! grandchild survives a timeout or cancellation (ONE implementation,
 //! callers call it rather than restating it).
 //!
 //! Extracted from `crates/conway-tools/src/shell/bash.rs`'s private `unix`

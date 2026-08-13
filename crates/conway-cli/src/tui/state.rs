@@ -218,7 +218,7 @@ pub struct TreeNode {
     /// Fork provenance: the parent's log position the child inherited up
     /// to, from `Event::AgentSpawned::inherited_upto`.
     pub inherited_upto: Option<LogSeq>,
-    /// Whether this is an ephemeral `/ask`-style aside (P-2: it stays in
+    /// Whether this is an ephemeral `/ask`-style aside (it stays in
     /// the tree with its provenance attached; draw-time visibility
     /// filtering is a separate concern).
     pub ephemeral: bool,
@@ -247,10 +247,11 @@ impl NodeStatus {
 
 /// The `/agents` panel's draw-time visibility filter (item A2): which tree
 /// nodes the panel's ROWS show. Lives entirely at draw time -- the
-/// `AgentTreeView` itself stays unfiltered (P-2: finished agents are hidden,
-/// never removed), so the predicate is a pure function of the node and the
-/// mode (GP-04), unit-testable with no terminal, and flipping the mode never
-/// mutates the tree. Cycled by `v` while the panel is open (`input.rs`).
+/// `AgentTreeView` itself stays unfiltered -- provenance is never destroyed, so
+/// finished agents are hidden, never removed. The predicate is a pure function
+/// of the node and the mode, unit-testable with no terminal, and flipping the
+/// mode never mutates the tree. Cycled by `v` while the panel is open
+/// (`input.rs`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentVisibility {
     /// Terminal-status nodes (Finished/Failed/Cancelled) are hidden, so the
@@ -293,7 +294,7 @@ impl AgentVisibility {
         }
     }
 
-    /// The pure filter predicate (GP-04): tree node + mode -> visible?
+    /// The pure filter predicate: tree node + mode -> visible?
     pub fn shows(self, node: &TreeNode) -> bool {
         match self {
             Self::ActiveOnly => !node.status.is_terminal(),
@@ -346,15 +347,15 @@ pub struct AskModal {
     pub error: Option<String>,
 }
 
-/// One of the three forced fates closing the `/ask` modal (B5) -- exactly
-/// one of these runs; there is no fourth way out (quitting with the modal
-/// open purges, wired in `app.rs`'s quit path). Each maps to exactly one
-/// facade op (`commands::apply_ask_fate`): `Fork` -> `Conway::promote`
-/// (B3: keep -- the node loses its `(ephemeral)` marking and becomes a
-/// session in its own right), `PullIn` -> `Conway::pull_in` (B4: the
-/// question+answer merge into the parent's own log, child purged),
-/// `Discard` -> `Conway::purge` (the explicit P-2/GP-10 exception: the
-/// answer is thrown away).
+/// One of the three forced fates closing the `/ask` modal (B5) -- exactly one
+/// of these runs; there is no fourth way out (quitting with the modal open
+/// purges, wired in `app.rs`'s quit path). Each maps to exactly one facade op
+/// (`commands::apply_ask_fate`): `Fork` -> `Conway::promote` (B3: keep -- the
+/// node loses its `(ephemeral)` marking and becomes a session in its own
+/// right), `PullIn` -> `Conway::pull_in` (B4: the question+answer merge into
+/// the parent's own log, child purged), `Discard` -> `Conway::purge` (the
+/// explicit exception to provenance being permanent and visible: the answer is
+/// thrown away).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AskFate {
     Fork,
@@ -362,17 +363,17 @@ pub enum AskFate {
     Discard,
 }
 
-/// The confirmation card's three ways out (C2 -- the trust gate for
-/// classified `/fork`/`/spawn` intent, P-10). Each maps to exactly one
-/// outcome the app loop carries out (`commands::execute_intent_confirm`):
-/// `Confirm` runs the classified recipe as-is, `Edit` drops the classified
-/// prompt into the input line for the user to re-shape and resubmit, and
-/// `Manual` falls back to today's pre-classification flow with the original
-/// raw text. There is no fourth way out: quitting with the card open
-/// (`Ctrl-C`/`Ctrl-D`) is the manual fallback -- nothing has been created
-/// yet (unlike the `/ask` modal, which has a live child to purge), so the
-/// quit keys simply pass through and the app loop never reaches
-/// `execute_intent_confirm` for them.
+/// The confirmation card's three ways out (C2 -- the trust gate for classified
+/// `/fork`/`/spawn` intent, which is untrusted and validated rather than
+/// trusted). Each maps to exactly one outcome the app loop carries out
+/// (`commands::execute_intent_confirm`): `Confirm` runs the classified recipe
+/// as-is, `Edit` drops the classified prompt into the input line for the user
+/// to re-shape and resubmit, and `Manual` falls back to today's
+/// pre-classification flow with the original raw text. There is no fourth way
+/// out: quitting with the card open (`Ctrl-C`/`Ctrl-D`) is the manual fallback
+/// -- nothing has been created yet (unlike the `/ask` modal, which has a live
+/// child to purge), so the quit keys simply pass through and the app loop never
+/// reaches `execute_intent_confirm` for them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IntentChoice {
     Confirm,
@@ -381,10 +382,10 @@ pub enum IntentChoice {
 }
 
 /// The confirmation card's state (C2): one classified [`AgentIntent`] (the
-/// output of `Conway::classify_agent_intent`, P-8) waiting for the user to
-/// confirm, edit, or discard before ANY agent is created -- inference must
-/// never silently choose (P-10). The card is a single modal slot like
-/// [`AskModal`].
+/// output of `Conway::classify_agent_intent`, so every mode shares one
+/// classification) waiting for the user to confirm, edit, or discard before ANY
+/// agent is created -- inference must never silently choose on the user's
+/// behalf. The card is a single modal slot like [`AskModal`].
 ///
 /// Besides the classified `intent` itself, the card carries everything the
 /// executor needs to act on `Confirm`/`Manual`:
@@ -814,7 +815,7 @@ pub struct AppState {
     /// while `expanded` is `true`. The stored `preview` is NEVER truncated
     /// -- the cap is render-time only. Set at `App::new` from
     /// `conway.config().tui.tool_preview_lines` via
-    /// [`clamp_tool_preview_lines`] (P-10: clamped to `1..=200` with a
+    /// [`clamp_tool_preview_lines`] (config is untrusted: clamped to `1..=200` with a
     /// fallback to the default of 3 on a missing/out-of-range/bad value,
     /// never a panic).
     pub tool_preview_lines: u32,
@@ -853,7 +854,7 @@ pub struct AppState {
     pub show_timestamps: bool,
     /// T8: the persisted input-history FIFO, oldest entry at the front.
     /// Loaded once at `App::new` from the history file (best-effort -- see
-    /// `history::load`'s own doc, P-10) and appended to by
+    /// `history::load`'s own doc -- the file is untrusted input) and appended to by
     /// [`Self::push_history`] on every submit; `App::submit` persists the
     /// updated deque back to disk after each push (also best-effort -- a
     /// failed WRITE must never fail the submit that triggered it). Bounded
@@ -1356,9 +1357,9 @@ impl AppState {
 
     /// The panel's visible rows under the current [`Self::agent_visibility`]
     /// filter (item A2), in tree insertion order. This is the ONLY thing the
-    /// filter affects -- `tree.nodes` itself stays unfiltered (P-2) -- and it
-    /// is what the panel's row count, selection clamping, and Enter-to-focus
-    /// all index into.
+    /// filter affects -- `tree.nodes` itself stays unfiltered, so provenance
+    /// survives -- and it is what the panel's row count, selection clamping,
+    /// and Enter-to-focus all index into.
     pub fn visible_agent_nodes(&self) -> impl Iterator<Item = &TreeNode> {
         let mode = self.agent_visibility;
         self.tree.nodes.iter().filter(move |n| mode.shows(n))
@@ -1865,8 +1866,8 @@ impl AppState {
             } => {
                 // Ephemeral `/ask`-style forks flow through
                 // `apply_agent_spawned` like any other agent: they enter
-                // the tree with `ephemeral: true` on their node (P-2
-                // provenance stays attached); only the inline
+                // the tree with `ephemeral: true` on their node (provenance
+                // is kept, not erased); only the inline
                 // `Entry::Agent` transcript push is suppressed for them
                 // (inside `apply_agent_spawned`).
                 self.apply_agent_spawned(
@@ -1938,7 +1939,7 @@ impl AppState {
             // This item: the SINGLE path that renders a prompt bubble now --
             // `app.rs`'s `submit`/`deliver_first_message` used to push
             // `Entry::User` locally, synchronously, before ever calling the
-            // facade; they no longer do (P-8: a behavioral difference
+            // facade; they no longer do (a behavioral difference
             // between the TUI and a library consumer watching the same
             // `EventStream` is a renderer bug, and pushing locally was
             // exactly that -- a library embedder never saw the prompt at
@@ -2107,7 +2108,7 @@ impl AppState {
             // arm). Rendered as a dim `-> {note}` line between the args line
             // and the output block. A no-op if no matching tool entry exists
             // (e.g. a progress event for a call whose `ToolCallProposed` was
-            // never seen -- never panics; P-10).
+            // never seen -- never panics on untrusted input).
             Event::ToolProgress { call_id, note } => {
                 self.append_tool_progress(call_id, note);
             }
@@ -2344,7 +2345,7 @@ impl AppState {
     /// in-flight [`Entry::Tool`] by `call_id` (previously dropped by the
     /// wildcard arm). Joined with `\n` -- the renderer emits each as a dim
     /// `-> {note}` line. A no-op if no tool entry with that `call_id` exists
-    /// (never panics; P-10).
+    /// (never panics on untrusted input).
     fn append_tool_progress(&mut self, call_id: &str, note: &str) {
         for entry in self.transcript.iter_mut().rev() {
             if let Entry::Tool {
@@ -2395,7 +2396,7 @@ impl AppState {
     /// same fallback to an interactive stepper would make pressing Left at
     /// the floor (1) bounce UP to 3 instead of simply stopping, which reads
     /// as broken, not as a safety net. Both functions still share the ONE
-    /// range constant (P-10: no independently-typed-in second bounds check
+    /// range constant (no independently-typed-in second bounds check
     /// that could silently drift from it) -- only the OUT-OF-RANGE behavior
     /// differs, matched to what each caller actually needs. Never panics on
     /// any `delta` (`saturating_add` on a widened `i64` before the final
@@ -2519,7 +2520,7 @@ fn compact_tokens(n: u64) -> String {
 /// (matching [`crate::tui::view::status::spent_tokens`]); the cache hit
 /// rate is `cache_read / (input + cache_read + cache_write)`, omitted when
 /// the denominator is zero or no cache read occurred (same formula as the
-/// status line's `tokens` field). Never panics (P-10): no division by zero
+/// status line's `tokens` field). Never panics on untrusted input: no division by zero
 /// -- the cache % is only computed when `denom != 0`.
 fn format_turn_summary(elapsed_secs: u64, usage: &Usage) -> String {
     let elapsed = if elapsed_secs >= 60 {
@@ -2550,7 +2551,7 @@ fn format_turn_summary(elapsed_secs: u64, usage: &Usage) -> String {
 /// which falls back to the built-in default on ANY out-of-range value) and
 /// [`AppState::adjust_tool_preview_lines`] (the `/settings` menu's
 /// interactive stepper, which floors/caps at the boundary instead) share
-/// ONE source of truth for the bound -- P-10: no second, independently
+/// ONE source of truth for the bound -- no second, independently
 /// typed-in bounds check that could silently drift from this one. The
 /// `1..=200` range itself keeps the cap meaningful (a cap of 0 would
 /// collapse every preview to zero content lines + the affordance; a cap of
@@ -2561,8 +2562,8 @@ const TOOL_PREVIEW_LINES_RANGE: std::ops::RangeInclusive<u32> = 1..=200;
 /// render-time cap. `None` (the serde default for the `Option<u32>` field)
 /// -> the built-in default of 3. A value in [`TOOL_PREVIEW_LINES_RANGE`] is
 /// kept as-is. Any other value (0, > 200, or a value that failed to parse
-/// as `u32` and so arrived as `None`) falls back to the default of 3. P-10:
-/// config is untrusted input -- this function never panics, and there is no
+/// as `u32` and so arrived as `None`) falls back to the default of 3.
+/// Config is untrusted input -- this function never panics, and there is no
 /// `unwrap`/`expect`/indexing on the config value (the `?`-shaped
 /// `and_then` + `unwrap_or` chain is the entire bound on `n`).
 pub fn clamp_tool_preview_lines(n: Option<u32>) -> u32 {
@@ -2582,9 +2583,9 @@ pub fn clamp_tool_preview_lines(n: Option<u32>) -> u32 {
 pub const DEFAULT_HISTORY_SIZE: usize = 500;
 
 /// T8: clamps a loaded `[tui.history_size]` config value into a safe
-/// history-cap, the same shape as [`clamp_tool_preview_lines`] (P-10:
-/// config is untrusted input, never a panic, no `unwrap`/`expect`/indexing
-/// on the value). `None` -> [`DEFAULT_HISTORY_SIZE`]. A value in
+/// history-cap, the same shape as [`clamp_tool_preview_lines`]: config is
+/// untrusted input, so never a panic and no `unwrap`/`expect`/indexing on
+/// the value. `None` -> [`DEFAULT_HISTORY_SIZE`]. A value in
 /// `1..=100_000` is kept as-is (converted to `usize`, infallible on every
 /// platform this project targets). Any other value (`0`, `> 100_000`) falls
 /// back to the default -- `0` is technically a valid cap
@@ -4032,7 +4033,7 @@ mod tests {
     }
 
     // ---- /agents surface rework item A1: ephemeral `/ask`-style forks
-    // ENTER the tree like any other agent (P-2 provenance stays attached;
+    // ENTER the tree like any other agent (provenance stays attached;
     // draw-time visibility filtering is item A2, NOT here) carrying their
     // spawn metadata (`kind`/`inherited_upto`/`ephemeral`) on the
     // `TreeNode`. The ONLY thing an ephemeral spawn suppresses is the
@@ -4196,7 +4197,7 @@ mod tests {
     fn ephemeral_spawn_event_does_not_affect_other_tree_nodes() {
         // `AppState::tree` is unfiltered at the data-structure level: a
         // node `insert`ed directly (mimicking what the runtime `tree()`
-        // snapshot would carry, P-2) must survive an unrelated ephemeral
+        // snapshot would carry) must survive an unrelated ephemeral
         // spawn event flowing through `apply`.
         let session = SessionId::new();
         let root = AgentId::new();
@@ -4243,10 +4244,10 @@ mod tests {
     }
 
     // ---- /agents surface rework item A2: draw-time visibility filter.
-    // The filter is a pure function over (tree node, mode) (GP-04); the
-    // tree itself is NEVER filtered (P-2: finished agents are hidden, not
-    // removed); selection indexes the filtered rows and is re-clamped when
-    // the filter changes. ----
+    // The filter is a pure function over (tree node, mode); the tree itself is
+    // NEVER filtered -- provenance is never destroyed, so finished agents are
+    // hidden, not removed. Selection indexes the filtered rows and is
+    // re-clamped when the filter changes. ----
 
     fn tracked_node(state: &mut AppState, parent: AgentId, status: NodeStatus) -> AgentId {
         let id = AgentId::new();
@@ -4371,8 +4372,8 @@ mod tests {
 
     #[test]
     fn filtering_never_changes_the_tree_itself() {
-        // P-2: finished agents are HIDDEN, not removed -- cycling through
-        // every mode must leave `tree.nodes` exactly as it was.
+        // Finished agents are HIDDEN, not removed -- provenance survives --
+        // cycling through every mode must leave `tree.nodes` exactly as it was.
         let root = AgentId::new();
         let mut state = AppState::new(root);
         tracked_node(&mut state, root, NodeStatus::Finished);
@@ -5435,7 +5436,7 @@ mod tests {
         assert_eq!(state.tool_preview_lines, 3);
     }
 
-    // ---- T5 P-10: `clamp_tool_preview_lines` never panics on bad input ----
+    // ---- T5: `clamp_tool_preview_lines` never panics on bad input ----
 
     #[test]
     fn clamp_none_falls_back_to_default_3() {
@@ -5549,8 +5550,8 @@ mod tests {
         }
     }
 
-    /// `ToolProgress` for an unknown `call_id` is a no-op (never panics;
-    /// P-10).
+    /// `ToolProgress` for an unknown `call_id` is a no-op (never panics on
+    /// an id it has no record of).
     #[test]
     fn tool_progress_for_unknown_call_id_is_a_noop() {
         let mut state = AppState::new(AgentId::new());
@@ -5854,7 +5855,7 @@ mod tests {
         assert_eq!(state.adjust_tool_preview_lines(-2), 3);
     }
 
-    /// P-10: stepping below the floor stops AT the floor -- it must not
+    /// Stepping below the floor stops AT the floor -- it must not
     /// bounce up to `clamp_tool_preview_lines`'s config-validation fallback
     /// (3), which would read as broken for an interactive stepper.
     #[test]
@@ -6084,7 +6085,7 @@ mod tests {
         assert_eq!(state.input, "second");
     }
 
-    // ---- T8 P-10: `clamp_history_size` never panics on bad input ----
+    // ---- T8: `clamp_history_size` never panics on bad input ----
 
     #[test]
     fn clamp_history_size_none_falls_back_to_default() {

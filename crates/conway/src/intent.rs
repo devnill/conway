@@ -2,9 +2,10 @@
 //! classification for the TUI's `/fork` and `/spawn` commands, run as an
 //! EPHEMERAL one-turn session routed under the declarative `intent` role.
 //!
-//! The facade capability lives here (P-8); rendering the result is the
+//! The facade capability lives here, so every mode consumes the same one;
+//! rendering the result is the
 //! TUI's concern (C2), and classification is deliberately NOT a new
-//! subagent primitive (P-1) — it is one ordinary ephemeral spawn, one turn,
+//! subagent primitive — it is one ordinary ephemeral spawn, one turn,
 //! then a purge.
 //!
 //! ## Configuration (purely declarative — ZERO router code, no models.json)
@@ -92,7 +93,7 @@
 //! an "unconfigured role". Every OTHER error (store I/O, def loading,
 //! backend/routing failure inside the turn) propagates unchanged.
 //!
-//! ## P-10 validation policy (model output is untrusted)
+//! ## Validation policy (model output is untrusted)
 //!
 //! The reply is parsed STRICTLY and every field is validated before it can
 //! reach the caller ([`parse_reply`]):
@@ -200,7 +201,8 @@ pub struct AgentIntent {
     /// module invents.
     pub recipe: SubagentMode,
     /// The configured agent def the new agent should run under, validated
-    /// against `agents.dir` (P-10): a name the model hallucinated is
+    /// against `agents.dir`, because model output is untrusted: a name the model
+    /// hallucinated is
     /// stripped to `None` here, never passed through.
     pub agent_def: Option<String>,
     /// The prompt for the new agent — the classifier's self-contained
@@ -210,8 +212,8 @@ pub struct AgentIntent {
 }
 
 /// The verbatim passthrough: today's command behavior, used for the
-/// unconfigured-role fallback and every untrusted-output degradation (see
-/// the module doc's P-10 policy).
+/// unconfigured-role fallback and every degradation the module doc's
+/// untrusted-output policy calls for.
 fn passthrough(default_recipe: SubagentMode, raw_text: &str) -> AgentIntent {
     AgentIntent {
         recipe: default_recipe,
@@ -239,7 +241,7 @@ pub(crate) async fn classify(
     }
 
     // The configured agent defs ground BOTH the instructions (the model can
-    // only pick from names it is shown) and the P-10 validation below.
+    // only pick from names it is shown) and the validation below.
     // Loaded with the same loader the builder used; a load failure is an
     // "other error" and propagates.
     let known_defs = crate::agents::load_agent_defs(&resolve_agents_dir(config))?;
@@ -272,7 +274,7 @@ pub(crate) async fn classify(
     // Subscribe BEFORE `start` so the child's first `TextDelta` cannot race
     // past the drain (the same ordering `SessionHandle::ask` documents).
     let live = rt.subscribe();
-    // P-1 (board item 01KYTP0PGKJ4VCJP5TD39A1WHF): `caller` and `parent` are
+    // Board item 01KYTP0PGKJ4VCJP5TD39A1WHF: `caller` and `parent` are
     // both `parent` -- classification always spawns a child of the caller's
     // OWN focused agent (this function's `parent` argument), never a
     // different one, so there is no separate caller identity to thread
@@ -400,7 +402,7 @@ struct RawIntent {
 }
 
 /// Parses and validates the classifier's reply into an [`AgentIntent`],
-/// applying the module doc's P-10 policy. Total by construction: every
+/// applying the module doc's untrusted-output policy. Total by construction: every
 /// degradation returns the verbatim passthrough (or, for `agent_def` only,
 /// strips the untrusted field), so this function never fails.
 fn parse_reply(

@@ -97,7 +97,7 @@
 //!   is enforced HERE, in [`ConwayBuilder::build`]'s own step 5, identically
 //!   for every kind's discovered map**, not delegated to each
 //!   `BackendFactory::probe_capabilities` implementation to get right on its
-//!   own (GP-07: no opaque auto-selection in the core — a model becoming
+//!   own (no opaque auto-selection in the core — a model becoming
 //!   routable because a server mentioned it, with no operator declaration
 //!   behind it, is not a "route" a user could have predicted from
 //!   `models.json` alone). A pair a factory's probe observed but
@@ -156,7 +156,7 @@ const EVENT_BUS_CAPACITY: usize = 1024;
 ///
 /// **This is a generic, id-keyed predicate over a *bundle* of candidate
 /// plugins -- it is not bash-specific and carries no built-in-vs-third-party
-/// distinction of its own** (GP-03: "a third-party plugin and a built-in
+/// distinction of its own** ("a third-party plugin and a built-in
 /// must be selectable the same way"). `build()` applies it to exactly one
 /// bundle today -- `presets::builtin_plugins()`'s four candidates -- but
 /// nothing about the type restricts it to that bundle: an embedder shipping
@@ -167,7 +167,8 @@ const EVENT_BUS_CAPACITY: usize = 1024;
 ///
 /// **Plugins injected via [`ConwayBuilder::with_plugin`] are never filtered
 /// by this type.** Calling `with_plugin` IS already the explicit,
-/// per-plugin declaration GP-03 requires of a third party -- nothing about
+/// per-plugin declaration the one extension mechanism requires of a third
+/// party -- nothing about
 /// that call is privileged or automatic. What this item corrects is the
 /// other direction: conway's own built-ins were the ONE bundle that
 /// installed itself with no equivalent declaration, `bash` included. This
@@ -380,7 +381,7 @@ impl ConwayBuilder {
     /// call as [`crate::ConwayError::Build`], naming this factory's own
     /// [`BackendFactory::id`] and the underlying message** -- never silently
     /// swallowed, never a fallback that drops the kind and proceeds with
-    /// whatever other backends exist (GP-14: a registered factory that
+    /// whatever other backends exist (a registered factory that
     /// silently produced nothing would be a configuration key an operator
     /// set and got nothing for).
     ///
@@ -446,7 +447,8 @@ impl ConwayBuilder {
     /// [`build()`](Self::build) raises when a `[backends.<id>]` entry names a
     /// `kind` no registered factory claims: a kind in this list gets a
     /// **declined-kind** error naming it as such, distinguishable from the
-    /// **unknown-kind** error every other unresolved `kind` still gets (GP-14
+    /// **unknown-kind** error every other unresolved `kind` still gets
+    /// (nothing may claim to be reached that isn't
     /// -- an operator who deliberately declined a dialect deserves that
     /// diagnosis, not "conway has never heard of this," which is a different,
     /// worse-fitting claim about what happened). Not called at all (the
@@ -497,7 +499,7 @@ impl ConwayBuilder {
     /// the dispatcher `conway_runtime::permission::PermissionBroker::decide`
     /// invokes, at its deny tier, for every enabled `[hooks].rules[]` entry
     /// whose `event` is `"pre_tool_use"`. Mirrors [`Self::with_permission_
-    /// gate`]/[`Self::with_context_hook`]'s own shape exactly (GP-03/P-6: a
+    /// gate`]/[`Self::with_context_hook`]'s own shape exactly (a
     /// third party supplies a runner on the identical surface a built-in
     /// uses) -- this facade never constructs a concrete `HookRunner`
     /// itself; `conway_tools::hook_runner::ProcessHookRunner` is the one
@@ -532,7 +534,8 @@ impl ConwayBuilder {
     /// verbatim everywhere. Contrast the general port itself, which stays
     /// exactly as general as before: a third party wanting its OWN
     /// `HookRunner` still calls `with_hook_runner` directly, on the
-    /// identical surface a built-in uses (GP-03/P-6) -- this method is not
+    /// identical surface a built-in uses, since a built-in gets no privileged
+    /// API -- this method is not
     /// where that capability lives, and the two are deliberately kept
     /// separate rather than collapsed into one (calling this method twice,
     /// or this method then `with_hook_runner`, behaves exactly like calling
@@ -1070,7 +1073,7 @@ fn resolve_api_key(id: &str, entry: &BackendEntry) -> Result<String> {
 /// [`ConwayError::Config`] listing every kind this build actually
 /// recognises -- the same disclosure shape
 /// `crates/conway-cli/src/first_party_plugins.rs`'s unknown-id error already
-/// produces for plugin ids (GP-14: a silently ignored `kind` is exactly the
+/// produces for plugin ids (a silently ignored `kind` is exactly the
 /// failure that check exists to prevent).
 ///
 /// **Two distinct diagnoses for that same failure** (board item

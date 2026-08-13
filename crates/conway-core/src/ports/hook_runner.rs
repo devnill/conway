@@ -35,7 +35,8 @@ use crate::hook::{HookAnswer, HookInvocation};
 /// The seam is exactly what this doc used to promise, now real:
 /// `ConwayBuilder::with_hook_runner` injects an `Arc<dyn HookRunner>` on
 /// the identical surface `with_permission_gate`/`with_context_hook` already
-/// use (GP-03/P-6), `conway`'s `plugin` extension-surface module re-exports
+/// use -- a built-in gets no privileged API -- `conway`'s `plugin`
+/// extension-surface module re-exports
 /// this trait (and the domain types its signature names) so a third party
 /// can implement it without depending on `conway-core` directly, and
 /// `conway-runtime` reaches this port ONLY through `conway_core::ports` --

@@ -18,7 +18,7 @@ use crate::content::{ContentBlock, StopReason, ToolResult, Usage};
 use crate::ids::{AgentId, LogSeq, ModelRef, RoleAlias, SessionId};
 use crate::provenance::{ContextReport, Provenance};
 
-/// Fork vs spawn: the only two subagent modes (GP-02).
+/// Fork vs spawn: the only two subagent modes, never blurred into one.
 ///
 /// Defined here because [`ForkOrigin`] persists it; re-exported from
 /// `agent` (WI-005) as the canonical public location.
@@ -45,7 +45,7 @@ pub struct ForkOrigin {
 /// `SessionHandle::ask`) after a crash left them behind — but must NEVER
 /// purge a `conway_ask` TOOL child, whose `EphemeralSessionRef` artifact in
 /// the calling agent's persisted `ToolOutput` would be left dangling
-/// (P-2: that artifact is the only durable provenance the tool call ever
+/// (that artifact is the only durable provenance the tool call ever
 /// had). Both paths build an identical ephemeral fork through
 /// `SubagentHost::start`; this tag is the only thing that tells them apart
 /// after the fact, which is why it lives on the durable header rather than
@@ -95,15 +95,15 @@ pub struct SessionMeta {
     #[serde(default)]
     pub ephemeral: bool,
     /// Which `/ask`-style path created this ephemeral session (B5) — see
-    /// [`AskOrigin`]'s own doc for why this distinction is load-bearing
-    /// (the TUI's crash-residue sweep purges `ModalAsk` residue but must
-    /// never touch a `ToolAsk` child). `None` for every non-`/ask` session
-    /// (roots, plain forks/spawns) and — via `#[serde(default)]`, C-04 —
-    /// for every header written before this field existed, which the sweep
-    /// correctly treats as "not modal-ask residue" (never purged). Set at
-    /// creation only, from `SubagentSpec::ask_origin` in `conway-runtime`'s
-    /// `SubagentHost::start`; like `ephemeral` itself there is no sanctioned
-    /// later mutation.
+    /// [`AskOrigin`]'s own doc for why this distinction is load-bearing (the
+    /// TUI's crash-residue sweep purges `ModalAsk` residue but must never touch
+    /// a `ToolAsk` child). `None` for every non-`/ask` session (roots, plain
+    /// forks/spawns) and — via `#[serde(default)]`, so already-persisted
+    /// headers stay readable — for every header written before this field
+    /// existed, which the sweep correctly treats as "not modal-ask residue"
+    /// (never purged). Set at creation only, from `SubagentSpec::ask_origin` in
+    /// `conway-runtime`'s `SubagentHost::start`; like `ephemeral` itself there
+    /// is no sanctioned later mutation.
     #[serde(default)]
     pub ask_origin: Option<AskOrigin>,
     /// (S3) This session's confinement root, canonicalized once by
@@ -132,11 +132,11 @@ pub struct SessionMeta {
     /// enforced/intended at spawn time.
     ///
     /// This field is **not itself enforcement** -- nothing yet checks a tool
-    /// call against it (a later slice adds that); it is carried and
-    /// validated end-to-end so that slice does not have to touch this
-    /// plumbing. `#[serde(default)]` (C-04): a header written before this
-    /// field existed still decodes, as `None` -- the pre-existing unconfined
-    /// behavior for every such session.
+    /// call against it (a later slice adds that); it is carried and validated
+    /// end-to-end so that slice does not have to touch this plumbing.
+    /// `#[serde(default)]` keeps old data readable: a header written before
+    /// this field existed still decodes, as `None` -- the pre-existing
+    /// unconfined behavior for every such session.
     #[serde(default)]
     pub root: Option<PathBuf>,
 }
@@ -225,7 +225,7 @@ pub enum LogRecord {
     ///
     /// `prov` is always `Provenance::ChildResult { from }` (never
     /// `Provenance::SystemNote` or anything parent-authored) so the
-    /// child's output is never misattributed as the parent's own (P-2).
+    /// child's output is never misattributed as the parent's own.
     #[serde(rename = "child_result")]
     ChildResultRecord {
         seq: LogSeq,
@@ -616,7 +616,7 @@ mod tests {
         }
     }
 
-    /// C-04: a header written before `ask_origin` existed (the same
+    /// A header written before `ask_origin` existed still reads (the same
     /// pre-field wire shape the ephemeral default test above uses) must
     /// decode with `ask_origin: None` -- which the crash-residue sweep
     /// correctly reads as "not modal-ask residue" (never purged).
@@ -666,7 +666,7 @@ mod tests {
         }
     }
 
-    /// (S3) C-04: a header written before `root` existed (no `root` key at
+    /// (S3) A header written before `root` existed still reads (no `root` key at
     /// all) must still decode -- as `None`, matching pre-existing (unconfined)
     /// behavior -- not fail. Mirrors `session_meta_ephemeral_defaults_false_
     /// when_absent_from_wire`.
@@ -684,7 +684,7 @@ mod tests {
         }
     }
 
-    /// C-04, in reverse of the usual direction: `SessionMeta` used to carry
+    /// Back-compat in reverse of the usual direction: `SessionMeta` used to carry
     /// a `status` field (`SessionStatus::Active`/`Completed`/`Failed`/
     /// `Cancelled`), removed because only `Active` was ever written anywhere
     /// in the workspace and nothing ever read it back meaningfully. A header

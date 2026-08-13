@@ -732,7 +732,7 @@ impl AgentLoop {
         // Board item 01KZ84437RMKHP5DJX7RMHH7JY: the write-location
         // capability a registered `ContextHook` sees on `ContextHookCtx::
         // artifacts`, built from the SAME `chdir`/`root` pair immediately
-        // above -- never a second, independent reconstruction (P-14). See
+        // above -- never a second, independent reconstruction. See
         // `crate::artifact_store`'s own doc.
         let artifacts = ArtifactWriteHandle::new(
             Arc::new(crate::artifact_store::AgentArtifactWriter::new(

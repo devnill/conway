@@ -4,7 +4,7 @@
 //! These are the only trait implementations `conway-core` contains (every
 //! other implementation lives in a dedicated crate). They exist so
 //! `conway-runtime` (and any other consumer) can be developed and tested
-//! end-to-end with zero network and zero filesystem access (GP-04).
+//! end-to-end with zero network and zero filesystem access.
 //!
 //! **FORWARD DECLARATION — this module is in the wrong crate, and it is
 //! scheduled to leave.** A contract crate that presents itself as ports and

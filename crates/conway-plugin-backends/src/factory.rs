@@ -287,14 +287,14 @@ impl BackendFactory for OpenAiCompatBackendFactory {
 
 /// Runs `fut` to completion on a fresh OS thread with its own throwaway
 /// current-thread `tokio` runtime -- the identical bridge `crates/conway/
-/// src/builder.rs`'s own private `block_on` helper uses (that module's own
-/// doc explains why: `Handle::current().block_on` panics when called from
-/// inside an already-running `tokio` task, which `ConwayBuilder::build`
-/// commonly is). Duplicated here rather than shared across the crate
-/// boundary because [`BackendFactory::probe_capabilities`] is, like
-/// [`BackendFactory::build`], a synchronous method a third-party kind is
-/// equally free to bridge this same way (GP-03/P-6) -- nothing about this
-/// being a first-party kind reaches a private mechanism.
+/// src/builder.rs`'s own private `block_on` helper uses (that module's own doc
+/// explains why: `Handle::current().block_on` panics when called from inside an
+/// already-running `tokio` task, which `ConwayBuilder::build` commonly is).
+/// Duplicated here rather than shared across the crate boundary because
+/// [`BackendFactory::probe_capabilities`] is, like [`BackendFactory::build`], a
+/// synchronous method a third-party kind is equally free to bridge this same
+/// way, since a built-in gets no privileged API -- nothing about this being a
+/// first-party kind reaches a private mechanism.
 fn block_on<F>(fut: F) -> F::Output
 where
     F: std::future::Future + Send,

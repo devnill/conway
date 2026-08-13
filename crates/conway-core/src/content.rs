@@ -86,7 +86,7 @@ pub struct TruncationRecord {
 }
 
 /// How oversized tool output is truncated. A truncation is a context-affecting
-/// event: the runtime records it in the log (GP-10).
+/// event: the runtime records it in the log, so where it came from stays answerable.
 ///
 /// **There is deliberately no spill-to-file variant.** An earlier `Artifact`
 /// variant promised to spill the full output to an [`Artifact`] and keep a
@@ -94,7 +94,7 @@ pub struct TruncationRecord {
 /// handled it identically to `None` -- the inverse of the promise (board item
 /// `01KYTN3A9SPDMRG610YSB5QQXX`). It was removed rather than implemented:
 /// where to spill, when, the retention/cleanup policy, and whether the
-/// preview is head/tail/summary are workload-specific opinions, and GP-11
+/// preview is head/tail/summary are workload-specific opinions, and policy of that kind
 /// puts opinions like that in a hook or plugin, not in this enum.
 /// `ToolOutput::artifacts` and [`Artifact`] already give a plugin the type
 /// surface to report a spilled file; the seam a spill plugin still needs is
@@ -169,7 +169,7 @@ pub enum ArtifactKind {
     Value,
     Log,
     /// A reference to an ephemeral child session created by `SubagentHost::ask`
-    /// (P-2 provenance): the artifact points at the ephemeral child's
+    /// (provenance): the artifact points at the ephemeral child's
     /// `SessionId` so the orchestrator's `ToolResultRecord` can name it.
     EphemeralSessionRef,
 }
