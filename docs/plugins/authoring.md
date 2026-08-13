@@ -265,10 +265,10 @@ not overlooked, per `crates/conway/src/lib.rs`'s own doc comment on `pub mod
 plugin`:
 
 - **`SubagentSpec`** — a third-party fork/spawn goes through this crate's own
-  `ForkSpec`/`SpawnSpec` instead (the visibly-distinct-types shape P-1/GP-02
-  require), which convert into `SubagentSpec` via `From` but are never
-  themselves that type. You have no reason to construct or match
-  `SubagentSpec` directly.
+  `ForkSpec`/`SpawnSpec` instead — kept as visibly distinct types so fork and
+  spawn stay two separate primitives, never blurred into one — which convert
+  into `SubagentSpec` via `From` but are never themselves that type. You have
+  no reason to construct or match `SubagentSpec` directly.
 - **`RuntimeError`** — `ToolCtx.subagents`'s fallible methods return
   `SubagentError`, never `RuntimeError`; there is no reachable call site for
   `RuntimeError` from this facade's surface at all.
@@ -313,8 +313,9 @@ code ever sees.
 ## Testing your hook
 
 **A unit test on your hook's transform logic is not proof the hook is
-reached in a real run.** This is not a stylistic preference — it's GP-14/
-P-15's rule, sharpened by this exact codebase's own history: five separate
+reached in a real run.** This is not a stylistic preference: nothing may
+claim to be reached that isn't, and a check isn't proven until something has
+been shown to fail it — sharpened by this exact codebase's own history: five separate
 mechanisms shipped, documented, and unit-tested in 2026-07-30/31 while never
 being called from any production path (`read:*` pattern grants inert for 12
 of 13 tools, `Plugin::on_init` never invoked, prompt caching hardcoded off,
@@ -333,10 +334,10 @@ What this means for you, concretely:
    on the observable outcome, not an intermediate signal**: a hook that
    silently no-ops and a hook that's correctly wired but has nothing to do
    both produce "nothing changed" — pick an assertion that a broken wiring
-   genuinely cannot satisfy (P-15's own worked example: the `AutoAllow` deny
-   test asserts on the persisted `ToolResult` text, not on gate-call count,
-   because a correct refusal and a silent full bypass both produce zero gate
-   calls).
+   genuinely cannot satisfy (a worked example elsewhere in this tree: the
+   `AutoAllow` deny test asserts on the persisted `ToolResult` text, not on
+   gate-call count, because a correct refusal and a silent full bypass both
+   produce zero gate calls).
 3. **Simulate failure deliberately, don't just hope you never hit it.** The
    biggest surprise waiting for you here: `ContextHook::before_request` and
    `on_overflow` have **no `Result` in their signatures** (`hooks.md` point

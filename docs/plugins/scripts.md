@@ -80,7 +80,7 @@ guessed at:**
 - **Decided:** the command receives structured input on stdin and answers
   through its exit status plus what it writes back (`hooks.md` point 13's
   "Receives / May return" row). A hook that can deny a call is
-  security-bearing, so P-13 applies in full: it **fails closed** on error,
+  security-bearing: it **fails closed** on error,
   timeout, or an unreadable response — never treated as an allow — and every
   active rule is individually visible and revocable (the umbrella item's own
   "Security properties" section).
@@ -188,7 +188,7 @@ rather than the script catching the error and answering `allow`. That crash
 is exactly the signal the fail-closed contract above is built to treat as a
 denial, not as consent — confirmed here by actually breaking the script and
 watching it die loudly, the same break-the-guard discipline this project
-holds security-bearing mechanisms to generally (GP-14/P-15).
+holds security-bearing mechanisms to generally.
 
 Any language that can read stdin, write stdout, and set a process exit code
 qualifies — these two are chosen because they're the two most likely
@@ -214,9 +214,9 @@ no per-invocation process-spawn cost at all.
 
 A script-backed hook is not a second extension API sitting beside the plugin
 core — it's **an ordinary plugin whose own implementation happens to
-dispatch to a configured script per event** (GP-03: "lower-barrier extension
+dispatch to a configured script per event**. Lower-barrier extension
 surfaces may be layered on top of the plugin core over time; they are
-additions over the stable interface, never replacements for it"). The script
+additions over the stable interface, never replacements for it. The script
 runner registers against `tool/1`/`context.hook/1`/`permission.policy/1`
 like any other out-of-process plugin would; what's unusual about it is only
 that its own `invoke`/`before_request`/`check` implementation execs a

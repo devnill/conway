@@ -30,7 +30,7 @@ context-mask hook deciding what's safe to durably exclude.
 This is the author's choice to make, and it's sharper than it looks:
 
 - **Fork** — the hook's subagent inherits the calling agent's entire
-  ancestry context as an immutable prefix (GP-02). Informed: the hook sees
+  ancestry context as an immutable prefix. Informed: the hook sees
   everything the parent saw. Expensive, in both token cost and exposure.
 - **Spawn** — a clean slate. The hook's subagent gets none of the parent's
   transcript. Cheap, and *structurally* cannot leak it — there's nothing to

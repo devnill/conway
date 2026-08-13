@@ -57,8 +57,8 @@ embedding path you're on:
   with_backend_factory(Arc::new(conway_plugin_backends::
   AnthropicBackendFactory))` (and/or the OpenAI-compatible one) before
   `build()` — the identical mechanism a third-party kind uses, since a
-  first-party backend gets exactly the surface a third party gets (GP-03/
-  P-6). `conway` itself never does this for you.
+  first-party backend gets exactly the surface a third party gets.
+  `conway` itself never does this for you.
 
 **Declining a shipped dialect means something observable, not just a
 smaller install (board item 01KZHF2W8Y1KBM7PJH7R4QQJA0).** Removing a kind
@@ -442,7 +442,7 @@ for a crate it doesn't compile. Stated here because unstated, they bind
 nobody:
 
 - **A cache hint must not change request bytes.** Caching is economics,
-  never correctness (GP-06): the request your adapter sends with every
+  never correctness: the request your adapter sends with every
   cache hint stripped must be byte-identical to the request it sends with
   hints applied. `conway-plugin-backends`'s own Anthropic dialect carries a
   test for exactly this —
@@ -572,7 +572,7 @@ impl ThirdPartyBackend {
 
 The `Backend` implementation — all five methods, `admit` overridden and
 calling `check_admission` rather than restating the fits/shortfall
-arithmetic itself (P-14):
+arithmetic itself, which conway keeps in exactly one place:
 
 ```rust,ignore
 #[async_trait]

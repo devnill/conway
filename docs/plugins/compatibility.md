@@ -1,7 +1,7 @@
 # Compatibility
 
 What an author may rely on across conway versions, and what they may not.
-This is contract documentation, not narrative — the amended P-11's ban on
+This is contract documentation, not narrative — this project's ban on
 version references in `docs/` forbids "added in 0.x" feature-history, not
 stating the compatibility rules themselves, and this page is entirely the
 latter.
@@ -79,7 +79,7 @@ points, through the SAME `Entry::Error { fatal: false }` transcript
 severity (`crates/conway-cli/src/tui/app.rs`). `permission_pattern.rs`'s
 own test suite pins the typo case
 (`a_misspelled_deny_key_is_reported_rather_than_silently_installing_nothing`)
-and, per P-15, a CONTROL case with the key correctly spelled
+and a CONTROL case with the key correctly spelled
 (`a_correctly_spelled_deny_key_installs_the_rule_the_typo_would_have_dropped`)
 so an empty result is evidence of the catch, not of an empty fixture; the
 same pairing is repeated at the real production seam in
@@ -242,9 +242,9 @@ elsewhere, not an exercised procedure:
   definition**, and the versioning rules above put a breaking change behind
   a major bump only — never a minor, regardless of how unused the thing
   being removed appears to be. A minor release only ever adds.
-- **A retirement is announced the same way any user-facing change is, per
-  the amended P-11: a `CHANGELOG.md` entry under the section for the
-  release that removes it.** P-11 is explicit that version references and
+- **A retirement is announced the same way any user-facing change is:
+  a `CHANGELOG.md` entry under the section for the
+  release that removes it.** That rule is explicit that version references and
   "added in 0.x"-shaped history do not belong in `docs/` — `CHANGELOG.md` is
   release metadata, the one place that framing is correct, and it stays the
   single place a reader looks for "what changed and when," never inline in
@@ -265,5 +265,5 @@ elsewhere, not an exercised procedure:
 If a stronger commitment — a stated minimum warning period, a runtime
 deprecation notice a plugin author can detect programmatically — is wanted,
 it needs its own decision; this section states what already follows from
-P-11 and the versioning rules above, not a ruling this page is positioned to
+that rule and the versioning rules above, not a ruling this page is positioned to
 make on its own.
