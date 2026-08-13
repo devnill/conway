@@ -104,6 +104,41 @@ never injects a runner parses, validates, and is never consulted.
   revocation today means editing `enabled` in the config file rather than
   revoking a rule the operator can see.
 
+<!-- claim-check
+entry: Declarative hooks
+claim: every event other than pre_tool_use dispatches nothing
+paths: crates/conway/src crates/conway-runtime/src crates/conway-tools/src crates/conway-cli/src
+absent: "(post_tool_use|prompt_submitted|request_assembled|child_forked|child_spawned|child_reported|session_started)"
+-->
+
+<!-- claim-check
+entry: Declarative hooks
+claim: there is no tool-name matcher; a pre_tool_use rule fires for every tool call
+paths: crates/conway/src/config/schema.rs
+absent: pub matcher
+-->
+
+<!-- claim-check
+entry: Declarative hooks
+claim: the plugin-event namespace rule is encoded but nothing calls it, on either side
+paths: crates/conway/src crates/conway-runtime/src crates/conway-tools/src crates/conway-cli/src crates/conway-plugin-routing/src crates/conway-plugin-backends/src
+absent: validate_event_name\(
+-->
+
+<!-- claim-check
+entry: Declarative hooks
+claim: no operator surface lists the active hook rules, so revocation means editing the config file
+paths: crates/conway-cli/src/tui/view/settings.rs
+absent: [Hh]ook
+-->
+
+<!-- claim-check
+entry: Declarative hooks
+claim: pre_tool_use IS dispatched -- the shipped half, which must not silently regress
+paths: crates/conway/src/builder.rs
+present: rule\.event == "pre_tool_use"
+-->
+
 **Already met, and not to be rebuilt:** a liveness test per the discipline in
 [`CONTRIBUTING.md`](../CONTRIBUTING.md#3-a-check-is-not-established-until-it-has-been-shown-to-fail)
 covers the shipped path — `crates/conway-cli/tests/hook_runner_wiring.rs`
@@ -283,6 +318,13 @@ had a name, and the page now commits to considerably more than examples.
 
 ---
 
+<!-- claim-check
+entry: The first-party plugin tier
+claim: four of the five named capabilities -- compaction, memory, skills, MCP -- are unbuilt, so nothing installs one
+paths: crates/conway-cli/src crates/conway/src
+absent: conway\.(compaction|memory|skills|mcp)
+-->
+
 ## 3. Path confinement moves into `conway.fs`
 
 **Claimed:** [Constraining a child](../PHILOSOPHY.md#constraining-a-child-its-tool-set)
@@ -319,6 +361,27 @@ declare path arguments, whereas a root on `conway.fs` covers exactly what
   `SubagentSpec::root`, unless the item below keeps a version of it.
 - `--root` and `with_root` either become configuration for `conway.fs` or go
   away in favour of it.
+
+<!-- claim-check
+entry: Path confinement moves into conway.fs
+claim: confinement is still harness-level -- PathArgs and the broker's pre-gate root check have not retired
+paths: crates/conway-core/src/ports
+present: PathArgs
+-->
+
+<!-- claim-check
+entry: Path confinement moves into conway.fs
+claim: CanonicalRoot still lives in conway-core, which is also why that crate still does I/O
+paths: crates/conway-core/src/containment.rs
+present: canonicalize\(\)
+-->
+
+<!-- claim-check
+entry: Path confinement moves into conway.fs
+claim: conway.fs does not yet enforce a root of its own
+paths: crates/conway-tools/src/fs
+absent: (AgentRoot|CanonicalRoot)
+-->
 
 **The open question, and it is the real one: per-child narrowing.**
 `SubagentSpec::root` is parent-set and narrowing-only, so a parent can spawn a
