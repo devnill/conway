@@ -9,6 +9,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A plugin command can now fork its own calling session and hand the TUI
+  the child to drive** (board item 01KZYH37WNDKDWSMWQQPRFKKXC) -- the answer
+  to what `conway-core` must expose for `/rewind` to be a plugin at all, per
+  the owner's ruling that "features like /rewind, /checkout, etc are to be
+  plugins... not core functionality." `CommandOutcome` gains a third variant,
+  `ForkSession { at_seq: LogSeq, directive: String }`, alongside the existing
+  `Output`/`Error`: the plugin RETURNS a request rather than being handed a
+  live handle, and the host (`conway-cli`'s `App`) performs the fork with its
+  own already-live `Conway::fork_from`, then swaps its driven `SessionHandle`
+  for the child and resubscribes -- the same declare/return-an-effect shape
+  `ContextHook`/`status.declare/1` already use, chosen deliberately over
+  giving the plugin a fork-capable handle (a strictly smaller capability to
+  hand out). `CommandCtx` gains a fourth field, `session_id`, the calling
+  session's own id.
+
+  **Bound to the invoking session, structurally, not by convention.**
+  `ForkSession` carries no session identifier of its own -- there is no
+  field through which a command could name a session other than the one it
+  was invoked from, the same "acts on its own session, never one it names"
+  property board item 01KYTP0PGKJ4VCJP5TD39A1WHF's `SubagentHandle`
+  established for tools. `conway-cli`'s host resolves every `ForkSession`
+  against the `CommandCtx::session_id` it captured AT INVOCATION time, never
+  against whatever session it happens to be driving once the reply arrives
+  (the two can legitimately differ under a `/resume` race) -- proven by a
+  new adversarial test that simulates exactly that race against a real
+  `Conway`, and shows the fork lands on the correct session while the one
+  the host raced onto stays byte-for-byte untouched. The parent session's
+  own log is never mutated by a fork (`Conway::fork_from`'s existing
+  zero-copy contract), verified directly.
+
+  No dependency was added from `conway-core` to `conway` -- the architecture
+  tests (`crates/conway/tests/architecture_invariants.rs`) pass unchanged --
+  and `no_forbidden_deps` (`crates/conway-cli/tests/cli_surface.rs`) still
+  passes: no plugin reaches a `conway-cli` internal. `docs/plugins/hooks.md`
+  point 15 and `docs/plugins/trust-and-security.md` are updated to state the
+  new (narrow) capability in place of the bound they previously described as
+  a hard wall.
+
 - **A plugin can now declare and fire its own custom hook event** (board item
   01KZS03BFE720EQZG7Q2768N2H) -- the open-vocabulary half of `PHILOSOPHY.md`
   §5's hooks claim: "A plugin declares the events it emits... Those events

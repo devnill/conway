@@ -225,6 +225,7 @@ mod command_tests {
         CommandCtx {
             focused_agent: conway::AgentId::new(),
             root_agent: conway::AgentId::new(),
+            session_id: conway::SessionId::new(),
             args: args.to_string(),
         }
     }
