@@ -276,31 +276,42 @@ plugin lands in it. Instead:
 
 `ConwayConfig::plugins.install` (`PluginsConfig`) carries this list, but
 this crate never itself acts on it — the same relationship `[tui]` already
-has with `conway-cli`'s TUI. Whatever binary or embedder actually links a
-given first-party plugin crate reads the list itself, via
-[`ConwayBuilder::config`], and calls `with_plugin` (or, for a future
-plugin-supplied backend or router, `with_backend`/`with_router` — nothing
-about this mechanism is tool-specific) for every id it recognizes, before
-calling `build()`:
+has with `conway-cli`'s TUI. [`ConwayBuilder::install_selected`] is the one
+call every binary or embedder makes instead of resolving that list by hand:
+hand it the plugins, router factories, and backend factories **you** link —
+already constructed, as `Vec`s — and it resolves `plugins.install` (unioned
+with `plugins.default_backends` for the backend arm; see "Installing a
+backend" below) against exactly those three bundles, calling
+`with_plugin`/`with_router_factory`/`with_backend_factory` for every id it
+recognizes and raising a typed config error naming every id it does not. An
+id that resolved to nothing would be a silent lie, and is never an
+acceptable outcome.
+
+`conway` (this facade crate) still maps no id to a crate itself — see
+"Where they live" above. It only matches an id string against whatever you
+already constructed and handed it:
 
 ```rust,ignore
-let wanted = builder.config().plugins.install.clone();
-if wanted.iter().any(|id| id == conway_plugin_skeleton::PLUGIN_ID) {
-    builder = builder.with_plugin(Arc::new(conway_plugin_skeleton::SkeletonPlugin));
-}
-let conway = builder.build()?;
+let conway = ConwayBuilder::from_parts(config)
+    .install_selected(
+        vec![Arc::new(conway_plugin_skeleton::SkeletonPlugin)],
+        vec![], // no RouterFactory this binary links
+        vec![], // no BackendFactory this binary links
+    )?
+    .build()?;
 ```
 
 `crates/conway-cli/src/first_party_plugins.rs` is the shipped version of
-exactly this: the CLI binary links `conway-plugin-skeleton`, resolves
-`plugins.install` against its own small bundle for every dispatch target
+exactly this: the CLI binary links `conway-plugin-skeleton`,
+`conway-plugin-routing`, and `conway-plugin-backends`, constructs its own
+three bundles, and calls `install_selected` once for every dispatch target
 (TUI, one-shot `-p`, `sessions`, `routes` — they share one `build_conway`
-choke point), and raises a typed config error for an id it does not
-recognize rather than installing nothing silently. A library
-embedder wanting the same plugin depends on `conway-plugin-skeleton`
-directly and writes the snippet above — there is no facade-level shortcut
-that spares an embedder from linking the crate, because that link is the
-whole reason the facade itself stays independent of it.
+choke point). A library embedder wanting the same plugin depends on
+`conway-plugin-skeleton` directly and writes the snippet above — there is no
+facade-level shortcut that spares an embedder from linking the crate,
+because that link is the whole reason the facade itself stays independent of
+it. `install_selected` only spares you from re-deriving the resolution loop
+that used to be `conway-cli`'s alone.
 
 **What compatibility they promise.** Versioned with the workspace
 (`version.workspace = true`, identical to every crate in this tree), not
@@ -391,7 +402,8 @@ message — never silently swallowed, never a silent fallback to
 
 **Wiring it in, as `[plugins].install`:** exactly the same shape as a
 plugin id, resolved against a binary's own linked bundle of router
-factories in the SAME pass as its linked plugins
+factories in the SAME pass as its linked plugins and backend factories —
+[`ConwayBuilder::install_selected`]'s second `Vec` argument
 (`crates/conway-cli/src/first_party_plugins.rs`'s `router_bundle`, beside
 its existing `bundle`):
 
@@ -582,9 +594,11 @@ a first-party plugin (board item 01KZHF270T3W8GZ7NM6DSNQ4MM) — see
 embedder using `conway` alone depends on `conway-plugin-backends` directly
 and calls `with_backend_factory` for each dialect it wants, before
 `build()`. The shipped `conway` binary is the one place this happens
-without you writing it: `conway-cli` links the crate and attaches both
-factories by default (`[plugins].default_backends`, default
-`["anthropic", "openai-compat"]`) — the one first-party mechanism that
+without you writing it: `conway-cli` links the crate and hands both
+factories to [`ConwayBuilder::install_selected`]'s third `Vec` argument,
+which attaches by default (`[plugins].default_backends`, default
+`["anthropic", "openai-compat"]`, unioned into the resolved id set inside
+`install_selected` itself) — the one first-party mechanism that
 attaches with no `[plugins].install` entry at all, since a backend, unlike
 a router or a tool plugin, has no honest degenerate fallback (an install
 with none attached cannot reach a model). `conway` (the facade) never does
