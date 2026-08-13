@@ -345,31 +345,94 @@ simply inherit once built.
 | Field | Value |
 |---|---|
 | Kind | Declarative (`Plugin::commands()`, consulted once, at TUI startup) + Participant (`Command::invoke`, an operator-triggered call the host runs and shows the result of) |
-| Receives | `Command::spec()` is consulted with nothing live, at registry construction, and returns a [`CommandSpec`] (`name`, `summary`). `Command::invoke` receives a [`CommandCtx`]: `focused_agent`, `root_agent`, and `args` (everything typed after the command word, verbatim — the same "consume the remainder verbatim" rule every other slash command's free-text argument follows) |
-| May return | A [`CommandOutcome`]: `Output(Vec<String>)` (lines appended to the transcript verbatim, each its own entry) or `Error(String)` (shown as an ordinary `Notice`, the same severity a failing built-in command gets) |
-| On error | `invoke` returning `CommandOutcome::Error` is not a failure of the *host* — it is the command's own reported outcome, rendered as a `Notice` and nothing more. A **panic** inside `invoke` is isolated: the host runs it inside a `tokio::spawn`, and a panicking task cannot bring down the process or the TUI's render/input loop — its `JoinError` is converted into an ordinary `CommandOutcome::Error` naming the panic, delivered through the same reply channel a normal return uses |
+| Receives | `Command::spec()` is consulted with nothing live, at registry construction, and returns a [`CommandSpec`] (`name`, `summary`). `Command::invoke` receives a [`CommandCtx`]: `focused_agent`, `root_agent`, `session_id` (the CALLING session's own id — board item 01KZYH37WNDKDWSMWQQPRFKKXC), and `args` (everything typed after the command word, verbatim — the same "consume the remainder verbatim" rule every other slash command's free-text argument follows) |
+| May return | A [`CommandOutcome`]: `Output(Vec<String>)` (lines appended to the transcript verbatim, each its own entry), `Error(String)` (shown as an ordinary `Notice`, the same severity a failing built-in command gets), or `ForkSession { at_seq, directive }` (board item 01KZYH37WNDKDWSMWQQPRFKKXC — asks the HOST to fork the calling session at `at_seq` and drive the resulting child; see this point's own "Forking the calling session" subsection below) |
+| On error | `invoke` returning `CommandOutcome::Error` is not a failure of the *host* — it is the command's own reported outcome, rendered as a `Notice` and nothing more. A **panic** inside `invoke` is isolated: the host runs it inside a `tokio::spawn`, and a panicking task cannot bring down the process or the TUI's render/input loop — its `JoinError` is converted into an ordinary `CommandOutcome::Error` naming the panic, delivered through the same reply channel a normal return uses. A `ForkSession` whose `at_seq` is out of range for the calling session (`Conway::fork_from`'s own bounds check) becomes the identical `Notice`-shaped failure, never a panic |
 | On timeout | None imposed. A command that never completes leaves its reply channel silent forever, but never blocks anything else — see "When absent"/Ordering below for why this is structural, not a convention an implementation must remember |
 | On garbage | Not applicable to `invoke` (it receives typed Rust values, not wire input). At *registration*, a malformed `CommandSpec::name` (empty, containing whitespace, or failing `conway::plugin::validate_command_name` once namespaced) is a **named, install-time error** — the TUI refuses to start rather than installing a command that could never be typed or that malforms its own namespace |
 | When absent | No `Plugin::commands()` override means no commands (the trait's own default returns `Vec::new()`) — every existing `Plugin` implementor, built-in or third-party, keeps compiling and behaving identically. With the declaring plugin not installed at all, its command's full name is simply unknown — `commands::parse` recognizes the *shape* of a plugin-looking word (containing conway-core's event/command namespace separator, `.`) but resolution against the installed registry happens only in `execute`, so an uninstalled plugin's command produces the ordinary "unknown command" notice, never a stub or a special case |
-| Ordering | **The render/input loop never calls a plugin, and never blocks on one — the same hard-won property point 12 (`status.declare/1`/`status/1`) establishes for the status line, reused here for the same reason.** `commands::execute` resolves a command (a synchronous `HashMap` lookup) and returns an `Effect::RunPluginCommand` describing it, without ever calling `invoke`; `App` (`conway-cli`) spawns the actual call on its own task, off the `select!` loop that drives rendering and key handling, and receives the reply on a channel exactly like `/ask`'s own modal-answer plumbing (`ModalAskOutcome`/`run_modal_ask`). A hanging command therefore degrades to "the operator doesn't see a reply yet," never to a frozen terminal |
-| Status | **Implemented.** `conway_core::ports::plugin::{Command, CommandCtx, CommandOutcome, CommandSpec}` and `Plugin::commands()`'s default (`crates/conway-core/src/ports/plugin.rs`); dispatch through `conway_cli::tui::commands::{SlashCommand::Plugin, CommandRegistry, Host::resolve_command}` and `conway_cli::tui::app::App::spawn_plugin_command`/`apply_plugin_command_done`. `conway-plugin-skeleton`'s `SkeletonPingCommand` (`/{plugin id}.ping`) is the worked example. Board item 01KZYBFTK4QPB45AJT9M57P60W |
+| Ordering | **The render/input loop never calls a plugin, and never blocks on one — the same hard-won property point 12 (`status.declare/1`/`status/1`) establishes for the status line, reused here for the same reason.** `commands::execute` resolves a command (a synchronous `HashMap` lookup) and returns an `Effect::RunPluginCommand` describing it, without ever calling `invoke`; `App` (`conway-cli`) spawns the actual call on its own task, off the `select!` loop that drives rendering and key handling, and receives the reply on a channel exactly like `/ask`'s own modal-answer plumbing (`ModalAskOutcome`/`run_modal_ask`). A hanging command therefore degrades to "the operator doesn't see a reply yet," never to a frozen terminal. Applying a `ForkSession` reply (`App::apply_plugin_command_done`) DOES run on that loop, same as `host.fork`/`host.resume` already do for the built-in commands that swap sessions — the property that must never block is `Command::invoke` itself, already complete by the time a reply exists |
+| Status | **Implemented.** `conway_core::ports::plugin::{Command, CommandCtx, CommandOutcome, CommandSpec}` and `Plugin::commands()`'s default (`crates/conway-core/src/ports/plugin.rs`); dispatch through `conway_cli::tui::commands::{SlashCommand::Plugin, CommandRegistry, Host::resolve_command}` and `conway_cli::tui::app::App::spawn_plugin_command`/`apply_plugin_command_done`. `conway-plugin-skeleton`'s `SkeletonPingCommand` (`/{plugin id}.ping`) is the worked example of `Output`. Board item 01KZYBFTK4QPB45AJT9M57P60W; `ForkSession` lands with board item 01KZYH37WNDKDWSMWQQPRFKKXC |
 
 **Why this is narrower than a hook that can touch a live session, and
 deliberately so.** [`CommandCtx`] carries read-only identity and the raw
-argument text — nothing that reaches a live `Conway`/`SessionHandle`. Unlike
-every OTHER point in this table, `Plugin`/`Command` live in `conway-core`,
-which structurally cannot depend on `conway` (the facade crate one layer up,
-where session-manipulation capability like `Conway::fork_from` lives) without
-a dependency cycle. The natural bridge — mirroring how [`ToolCtx::subagents`]
-narrows fork/spawn into a running tool call via a `conway-core`-native port —
-would need a NEW port of that shape (a "which session is this command allowed
-to touch, and how" capability), threaded through `conway-runtime`/
-`ConwayBuilder`, that no item has built. Rather than design that capability
-speculatively, this point ships the largest grant possible without it — read
-identity, print output — and the gap is disclosed, not silently worked
-around: a command needing more than this is, in this project's own words
-about the tool surface (point 7's own precedent), "a bug report against the
-plugin API," not a reason to reach past `conway-core`'s own layering.
+argument text — nothing that reaches a live `Conway`/`SessionHandle`, and
+never will. Unlike every OTHER point in this table, `Plugin`/`Command` live
+in `conway-core`, which structurally cannot depend on `conway` (the facade
+crate one layer up, where session-manipulation capability like `Conway::
+fork_from` lives) without a dependency cycle — a command can never hold a
+live handle onto its own session, let alone another one.
+
+### Forking the calling session — `CommandOutcome::ForkSession` (board item 01KZYH37WNDKDWSMWQQPRFKKXC)
+
+The gap this point originally disclosed — "a plugin command cannot fork,
+resume, steer, or swap the session the TUI is driving" — blocked `/rewind`
+being a plugin, which the owner ruled it must be ("features like /rewind,
+/checkout, etc are to be plugins, to fit into the philosophy; they are not
+core functionality"). This closes exactly the slice `/rewind` needs — fork
+the calling session at a sequence, drive the child — and nothing wider
+(YAGNI; `/checkout`/`ContextMask` are a later item with their own consumer).
+
+**The shape: an outcome variant the host acts on, not a handle the plugin
+exercises.** Two designs were weighed: (1) hand `Command::invoke` a
+`conway-core`-native handle that can fork/retarget directly (mirroring
+[`ToolCtx::subagents`]'s `SubagentHandle`), or (2) add a third
+`CommandOutcome` variant asking the HOST to retarget. (2) was chosen: it
+keeps the plugin declarative, leaves the host in control of its own focus,
+composes with this point's own "the render/input loop never blocks on a
+plugin" rule, and is a strictly smaller capability to hand out — a request
+the host can refuse or reinterpret, never a capability the plugin exercises
+itself. This is the SAME declare/return-an-effect shape point 12's
+`status.declare/1` already uses.
+
+**Bound to the invoking session, structurally.** `CommandOutcome::
+ForkSession { at_seq, directive }` carries NO session identifier of its own
+— there is no field through which a command could name a session other than
+the one it was invoked from. `conway_cli::tui::app::App` resolves `at_seq`/
+`directive` against the SAME `CommandCtx::session_id` it captured when it
+spawned the invocation, never against whatever session it happens to be
+driving by the time the reply arrives — the two can legitimately differ
+(an operator's `/resume` racing a slow plugin command). This is the "a
+command acts on its own session, never one it names" property board item
+01KYTP0PGKJ4VCJP5TD39A1WHF's `SubagentHandle` precedent established for
+tools, applied to commands the only way it can be given this variant carries
+no live handle at all: by construction of the type, not a runtime check that
+could be forgotten. `conway_core::ports::plugin::tests::
+fork_session_outcome_carries_no_session_field_at_all` is the unit-level
+proof; `conway_cli::tui::app::tests::
+a_fork_session_outcome_is_resolved_against_the_invoking_session_even_if_the_host_has_since_moved_on`
+is the adversarial, real-`Conway` proof (a `/resume`-race simulation whose
+correct-target log stays untouched, and where forking the WRONG session
+directly is shown to fail for a distinguishable, concrete reason —
+`StoreError::SeqOutOfRange`).
+
+**What the host does, mechanically:** `Conway::fork_from(session_id, at_seq,
+ForkSpec::new(directive))` — zero-copy by reference (`SessionStore::fork`'s
+own O(1) contract), so the PARENT session's log is never mutated — then
+swaps its own driven `SessionHandle` for the returned child and
+resubscribes its event stream, the same mechanism `SlashCommand::Resume`'s
+`Effect::Resumed` already uses for an unrelated reason (swapping which
+session the TUI drives).
+
+**`/rewind`'s fork-and-drive half is now buildable as a pure plugin; its own
+"which sequence" half is a separate, disclosed gap this item does not
+close.** A command whose operator syntax names a `LogSeq` directly (`/acme.
+rewind 42`) needs nothing more than `ctx.args.parse()` and this variant — the
+`conway-plugin-skeleton`-shaped fixture `conway_core::ports::plugin::tests::
+RewindCommand`/`conway_cli::tui::app::tests::RewindCommandFixture` prove
+exactly that path end to end. A command whose operator syntax is natural
+language ("rewind to before I asked about X") needs to RESOLVE that request
+against the session's own history first — and `CommandCtx` grants no way to
+read a transcript at all, on purpose (this point's own narrowing: no live
+`Conway`/`SessionHandle`, ever). That resolution problem belongs to
+`/rewind`'s own item (01KZY8Q1CMMNVSF54CTC270N3H), not this one — it may need a
+further, separately-justified read-only capability (a history-browsing port,
+scoped the same "conway-core-native, bound at construction" way this item's
+own precedent demands), or it may turn out `/rewind`'s UI can defer sequence
+selection to the operator some other way (an explicit `@seq` argument, a
+picker built from data the TUI already has). Either way, nothing about
+resolving a target reaches `conway-cli` internals, and nothing here widens
+`CommandCtx` beyond the one new read-only field this item adds.
 
 **Namespacing is mandatory, and shadowing a built-in is impossible by
 construction, not merely checked.** `CommandRegistry::build` (the one
