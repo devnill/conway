@@ -143,6 +143,78 @@ pub struct ContextDelta {
     pub excludes: Vec<String>,
 }
 
+/// Whether `tool` satisfies a `pre_tool_use`/`post_tool_use` rule's `match`
+/// pattern (board item 01KZYAWQ6011Q6CJVG6CCMQPF1; `"match"` on the wire --
+/// see `crates/conway/src/config/schema.rs`'s `HookEntry::match_tool`,
+/// which is the only producer of `pattern` in practice).
+///
+/// **Two forms, deliberately no more** (that item's own ACCEPTANCE: "exact
+/// plus glob covers the page's two [`PHILOSOPHY.md` §5] examples... do not
+/// build a regex dialect without a stated need"):
+/// - `pattern` contains no `*`: exact string equality against `tool`. This
+///   is the only form either of `PHILOSOPHY.md`'s own examples (`"bash"`,
+///   `"fs.write"`) needs.
+/// - `pattern` contains `*`: a shell-style glob where `*` matches any run of
+///   zero or more characters (any number of `*`s, no other wildcard
+///   syntax -- no `?`, no character classes) against the WHOLE of `tool`,
+///   not a substring search. `tool` itself can never legitimately contain a
+///   literal `*` (`conway_core::ids::ToolName` is a plugin-chosen
+///   identifier, never operator input), so there is no ambiguity to guard
+///   against the way [`crate::permission_pattern`]'s shell-metacharacter
+///   gate has to for a rendered command string.
+///
+/// An empty `pattern` matches only an empty `tool` (exact-equality
+/// fallthrough) -- `merge::validate` rejects an empty `HookEntry::id`, but
+/// nothing here assumes `pattern` itself is non-empty, since this function
+/// has no access to the rule it came from to report a config error; a
+/// pattern that can never usefully match is the caller's problem to have
+/// prevented, not this function's to special-case.
+pub fn tool_matcher_matches(pattern: &str, tool: &str) -> bool {
+    if !pattern.contains('*') {
+        return pattern == tool;
+    }
+    glob_match(pattern.as_bytes(), tool.as_bytes())
+}
+
+/// The classic two-pointer wildcard matcher (`*` only, no `?`): tracks the
+/// most recent `*` seen (`star`) and the text position it last committed to
+/// consuming from (`match_from`), backtracking there -- one character
+/// further each time -- whenever a later literal fails to match, rather than
+/// exploring every possible split with recursion. `O(pattern.len() +
+/// tool.len())` amortized, no allocation.
+fn glob_match(pattern: &[u8], text: &[u8]) -> bool {
+    let (mut p, mut t) = (0usize, 0usize);
+    let mut star: Option<usize> = None;
+    let mut match_from = 0usize;
+
+    while t < text.len() {
+        if p < pattern.len() && (pattern[p] == b'*' || pattern[p] == text[t]) {
+            if pattern[p] == b'*' {
+                star = Some(p);
+                match_from = t;
+                p += 1;
+            } else {
+                p += 1;
+                t += 1;
+            }
+        } else if let Some(star_p) = star {
+            // Backtrack: the last `*` swallows one more character than it
+            // did last time, and matching resumes right after it.
+            p = star_p + 1;
+            match_from += 1;
+            t = match_from;
+        } else {
+            return false;
+        }
+    }
+    // Any trailing `*`s match the empty remainder; anything else pending in
+    // `pattern` does not.
+    while p < pattern.len() && pattern[p] == b'*' {
+        p += 1;
+    }
+    p == pattern.len()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -255,5 +327,46 @@ mod tests {
         // Anything else -- including a hypothetical `"allow"` -- is a
         // deserialize error, not a silently-accepted third variant.
         assert!(serde_json::from_str::<HookPermissionVerdict>("\"allow\"").is_err());
+    }
+
+    /// ACCEPTANCE (board item 01KZYAWQ6011Q6CJVG6CCMQPF1): both of
+    /// `PHILOSOPHY.md` §5's own example patterns are exact matches, and each
+    /// matches only its own tool.
+    #[test]
+    fn tool_matcher_matches_exact_names_from_the_philosophy_examples() {
+        assert!(tool_matcher_matches("bash", "bash"));
+        assert!(!tool_matcher_matches("bash", "fs.write"));
+        assert!(tool_matcher_matches("fs.write", "fs.write"));
+        assert!(!tool_matcher_matches("fs.write", "fs.read"));
+    }
+
+    #[test]
+    fn tool_matcher_matches_a_prefix_glob() {
+        assert!(tool_matcher_matches("fs.*", "fs.write"));
+        assert!(tool_matcher_matches("fs.*", "fs.read"));
+        assert!(!tool_matcher_matches("fs.*", "bash"));
+        // `fs.` alone, no trailing anything, still satisfies `fs.*` -- `*`
+        // matches zero characters too.
+        assert!(tool_matcher_matches("fs.*", "fs."));
+    }
+
+    #[test]
+    fn tool_matcher_matches_a_suffix_and_infix_glob() {
+        assert!(tool_matcher_matches("*.write", "fs.write"));
+        assert!(!tool_matcher_matches("*.write", "fs.read"));
+        assert!(tool_matcher_matches("*write*", "fs.write.tmp"));
+    }
+
+    #[test]
+    fn tool_matcher_bare_star_matches_every_tool_including_empty() {
+        assert!(tool_matcher_matches("*", "bash"));
+        assert!(tool_matcher_matches("*", ""));
+    }
+
+    #[test]
+    fn tool_matcher_multiple_stars_backtrack_correctly() {
+        assert!(tool_matcher_matches("*a*b*", "xaxbx"));
+        assert!(tool_matcher_matches("*a*b*", "ab"));
+        assert!(!tool_matcher_matches("*a*b*", "ba"));
     }
 }

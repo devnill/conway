@@ -1,0 +1,21 @@
+{
+  "default_role": "coder",
+  "roles": {
+    "coder": { "chain": ["anthropic/claude-sonnet-4-6"] }
+  },
+  "backends": {
+    "anthropic": { "kind": "anthropic" }
+  },
+  "hooks": {
+    "rules": [
+      {
+        "id": "format-on-write",
+        "event": "post_tool_use",
+        "match": "fs.write",
+        "command": ["cargo", "fmt", "--"],
+        "timeout_ms": 3000,
+        "enabled": true
+      }
+    ]
+  }
+}

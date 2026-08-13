@@ -13,6 +13,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 
 use conway_core::ids::{ModelRef, RoleAlias};
+use conway_runtime::hook_dispatch::EVENTS_WITHOUT_TOOL_NAME;
 use serde_json::{Map, Value};
 
 use crate::config::model_metadata::ModelMetadata;
@@ -673,6 +674,48 @@ pub fn validate(
                     message: format!(
                         "hooks.rules[]: duplicate id '{}' -- every rule's id must be unique",
                         rule.id
+                    ),
+                });
+            }
+        }
+    }
+
+    // 10. A rule's `match` (board item 01KZYAWQ6011Q6CJVG6CCMQPF1) only
+    //     applies to an `event` whose payload actually names a tool --
+    //     `"pre_tool_use"`/`"post_tool_use"`. `EVENTS_WITHOUT_TOOL_NAME`
+    //     names every OTHER event `conway-runtime` dispatches on this
+    //     item's own list (`session_starting`, `child_spawned`,
+    //     `request_assembled`, `child_reported`, `prompt_submitted`);
+    //     `"pre_tool_use"` itself is added here rather than to that shared
+    //     list because `conway-runtime`'s `hook_dispatch` module does not
+    //     dispatch it (`crate::permission::PermissionBroker` does) -- see
+    //     `EVENTS_WITHOUT_TOOL_NAME`'s own doc.
+    //
+    //     This is a SURFACED, TYPED error naming the rule's `id` -- per this
+    //     item's own ACCEPTANCE, "an error, not silence": a `match` an
+    //     operator wrote in good faith that can never fire (because the
+    //     event it is paired with never carries a tool name) must not
+    //     silently parse into a rule that quietly does nothing extra,
+    //     exactly the class of defect check 9's own comment names.
+    {
+        const PRE_TOOL_USE: &str = "pre_tool_use";
+        for rule in &config.hooks.rules {
+            if rule.match_tool.is_none() {
+                continue;
+            }
+            if rule.event == PRE_TOOL_USE
+                || rule.event == conway_runtime::hook_dispatch::POST_TOOL_USE
+            {
+                continue;
+            }
+            if EVENTS_WITHOUT_TOOL_NAME.contains(&rule.event.as_str()) {
+                return Err(ConwayError::Config {
+                    path: None,
+                    message: format!(
+                        "hooks.rules[]: rule '{}' sets \"match\" on event \"{}\", which carries \
+                         no tool name -- \"match\" only applies to \"pre_tool_use\"/\
+                         \"post_tool_use\"",
+                        rule.id, rule.event
                     ),
                 });
             }

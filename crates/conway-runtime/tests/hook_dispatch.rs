@@ -13,10 +13,23 @@
 //! Every runner installed here is scripted to FAIL. That is deliberate: the
 //! failure path is the one with a real chance of being wrong, and a test that
 //! only ever exercises a succeeding hook proves nothing about propagation.
+//!
+//! **The matcher section (board item 01KZYAWQ6011Q6CJVG6CCMQPF1) below is
+//! the one deliberate exception.** Its question is "did the RIGHT hook run
+//! for the RIGHT tool", which a failing runner cannot answer -- only a
+//! runner that records what it was actually invoked with can, so
+//! `RecordingRunner` (never failing) is used there instead. The
+//! `request_assembled`/`child_reported` section (board item
+//! 01KZYAXSGDS8AP7YK1CN7H680G) further down uses the SAME failing-runner
+//! discipline as every other observation event above it -- those two are
+//! ordinary observation-tier dispatch, and their own propagation guarantee
+//! (a failing hook must not fail the turn/finish it observed) is exactly
+//! what this file's opening claim is about.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use conway_core::agent::{Budget, PermissionDecision, SubagentSpec};
@@ -31,7 +44,9 @@ use conway_core::ports::{
     Tool, ToolCtx, ToolOutput,
 };
 use conway_runtime::events::EventBus;
-use conway_runtime::hook_dispatch::{HookSpec, CHILD_SPAWNED, POST_TOOL_USE, SESSION_STARTING};
+use conway_runtime::hook_dispatch::{
+    HookSpec, CHILD_REPORTED, CHILD_SPAWNED, POST_TOOL_USE, REQUEST_ASSEMBLED, SESSION_STARTING,
+};
 use conway_runtime::permission::{AgentRoot, PermissionBroker};
 use conway_runtime::runtime::{RootSpec, Runtime, RuntimeDeps};
 use conway_runtime::tools::{PluginRegistry, ToolBatchCtx, ToolRunner};
@@ -71,6 +86,7 @@ fn spec(id: &str) -> HookSpec {
         id: id.to_string(),
         command: vec!["/bin/true".to_string()],
         timeout_ms: 1_000,
+        matcher: None,
     }
 }
 
@@ -194,6 +210,128 @@ impl Plugin for OneToolPlugin {
     fn tools(&self) -> Vec<Arc<dyn Tool>> {
         vec![self.tool.clone()]
     }
+}
+
+// -------------------------------------------------------------- matcher --
+
+/// A `HookRunner` that records every event name AND payload it saw, and
+/// always succeeds -- unlike every other runner in this file (module doc):
+/// the matcher's question is "did the right hook run for the right call",
+/// which only a recording, succeeding runner can answer.
+#[derive(Debug, Default)]
+struct RecordingRunner {
+    seen: Mutex<Vec<(String, serde_json::Value)>>,
+}
+
+impl RecordingRunner {
+    fn tool_calls(&self, tool: &str) -> usize {
+        self.seen
+            .lock()
+            .expect("seen lock poisoned")
+            .iter()
+            .filter(|(_, payload)| payload["tool"] == tool)
+            .count()
+    }
+}
+
+#[async_trait]
+impl HookRunner for RecordingRunner {
+    async fn run(&self, invocation: &HookInvocation) -> Result<HookAnswer, HookFailure> {
+        self.seen.lock().expect("seen lock poisoned").push((
+            invocation.event.name.clone(),
+            invocation.event.payload.clone(),
+        ));
+        Ok(HookAnswer::default())
+    }
+}
+
+/// **VERIFICATION ANCHOR** (board item 01KZYAWQ6011Q6CJVG6CCMQPF1): two
+/// `post_tool_use` rules, one matching `read` and one matching `edit`,
+/// driven through a session (`ToolRunner::run_batch`, the real production
+/// seam -- module doc) that calls both tools; each script runs EXACTLY ONCE,
+/// for the right call. Shown to fail by removing `HookSpec::applies_to`'s
+/// filter in `HookDispatcher::dispatch`, which makes both specs fire for
+/// both calls (4 invocations instead of 2).
+#[tokio::test]
+async fn a_post_tool_use_matcher_fires_only_for_its_own_tool_through_run_batch() {
+    let read_name = ToolName::new("read");
+    let edit_name = ToolName::new("edit");
+    let registry = Arc::new(
+        PluginRegistry::from_plugins(vec![
+            Arc::new(OneToolPlugin {
+                id: "read-plugin".into(),
+                tool: Arc::new(OkTool(read_name.clone())),
+            }) as Arc<dyn Plugin>,
+            Arc::new(OneToolPlugin {
+                id: "edit-plugin".into(),
+                tool: Arc::new(OkTool(edit_name.clone())),
+            }) as Arc<dyn Plugin>,
+        ])
+        .expect("registry"),
+    );
+    let bus = EventBus::new(1024);
+    let broker = Arc::new(PermissionBroker::new(
+        Arc::new(FakeGate::new(PermissionDecision::AllowOnce)),
+        bus.clone(),
+    ));
+    let runner = ToolRunner::new(registry, broker, bus);
+
+    let hook = Arc::new(RecordingRunner::default());
+    runner.hooks().set_runner(Some(hook.clone()));
+    runner.hooks().set_hooks(BTreeMap::from([(
+        POST_TOOL_USE.to_string(),
+        vec![
+            HookSpec {
+                id: "read-watcher".into(),
+                command: vec!["/bin/true".to_string()],
+                timeout_ms: 1_000,
+                matcher: Some("read".to_string()),
+            },
+            HookSpec {
+                id: "edit-watcher".into(),
+                command: vec!["/bin/true".to_string()],
+                timeout_ms: 1_000,
+                matcher: Some("edit".to_string()),
+            },
+        ],
+    )]));
+
+    let outcomes = runner
+        .run_batch(
+            &tool_batch_ctx(),
+            vec![
+                ToolCall {
+                    call_id: "c1".into(),
+                    name: read_name,
+                    arguments: serde_json::json!({}),
+                },
+                ToolCall {
+                    call_id: "c2".into(),
+                    name: edit_name,
+                    arguments: serde_json::json!({}),
+                },
+            ],
+        )
+        .await;
+    assert_eq!(outcomes.len(), 2);
+
+    assert_eq!(
+        hook.tool_calls("read"),
+        1,
+        "the read-matching hook must fire exactly once, for `read`: {:?}",
+        hook.seen.lock().expect("seen lock poisoned")
+    );
+    assert_eq!(
+        hook.tool_calls("edit"),
+        1,
+        "the edit-matching hook must fire exactly once, for `edit`: {:?}",
+        hook.seen.lock().expect("seen lock poisoned")
+    );
+    assert_eq!(
+        hook.seen.lock().expect("seen lock poisoned").len(),
+        2,
+        "exactly 2 invocations total, not 4 -- each rule must fire for its own tool only"
+    );
 }
 
 // ------------------------------------------- session_starting / child_spawned
@@ -579,4 +717,114 @@ fn the_prompt_hook_answer_type_cannot_carry_replacement_text() {
 
     assert_no_text_channel(HookPermissionVerdict::NoOpinion);
     assert_no_text_channel(HookPermissionVerdict::Deny { reason: "r".into() });
+}
+
+// -------------------------------------------- request_assembled / child_reported --
+
+/// Polls `predicate` (cooperatively yielding between checks, never sleeping
+/// a fixed duration) until it is `true` or 2s elapse. `request_assembled`/
+/// `child_reported` dispatch from INSIDE a `tokio::spawn`'d agent task
+/// (`AgentLoop::run`), unlike `session_starting`/`child_spawned`/
+/// `prompt_submitted` above, which all dispatch from a directly-`.await`ed
+/// `Runtime` method body -- a caller here has no single call whose `.await`
+/// resolving already proves the dispatch happened, only the terminal
+/// `AgentResult` (`SubagentHost::await_result`), which this crate's own
+/// `AgentTree::publish_result` doc places BEFORE the hook dispatch in
+/// program order (`AgentLoop::finish`: publish, then dispatch). This poll
+/// removes any dependence on exactly how the executor happens to interleave
+/// the two tasks.
+async fn wait_until(mut predicate: impl FnMut() -> bool) {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !predicate() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("condition was not met within 2s");
+}
+
+/// ACCEPTANCE (board item 01KZYAXSGDS8AP7YK1CN7H680G): `request_assembled`
+/// fires once per turn, before routing -- asserted by a hook script (here,
+/// `FailingRunner`, recording then failing per this file's own discipline)
+/// that records it, not by the dispatch function having been called
+/// directly. Shown to fail by removing either of this item's two dispatch
+/// call sites (`agent_loop.rs`'s `request_assembled` dispatch, or
+/// `supervisor.rs`'s `child_reported` dispatch below).
+#[tokio::test]
+async fn request_assembled_fires_once_per_turn_before_routing() {
+    let rt = build_runtime();
+    let hook = Arc::new(FailingRunner::default());
+    rt.set_observation_hook_runner(Some(hook.clone()));
+    rt.set_observation_hooks(hooks_for(REQUEST_ASSEMBLED));
+
+    let agent = rt
+        .start_root(root_spec_with_prompt("hello"))
+        .await
+        .expect("root started");
+
+    // The scripted backend's script is empty (`build_runtime`'s own doc),
+    // so the turn errors immediately after routing -- well after
+    // `request_assembled` has already fired -- and the agent reaches a
+    // terminal (`Failed`) result quickly either way.
+    wait_until(|| hook.count(REQUEST_ASSEMBLED) >= 1).await;
+
+    let _ = rt.await_result(agent, agent).await;
+    assert_eq!(
+        hook.count(REQUEST_ASSEMBLED),
+        1,
+        "request_assembled must fire exactly once for the one turn run, not once per \
+         backend retry or not at all"
+    );
+    assert_eq!(
+        hook.names()
+            .iter()
+            .filter(|n| *n != REQUEST_ASSEMBLED)
+            .count(),
+        0,
+        "an unrelated event dispatched: {:?}",
+        hook.names()
+    );
+}
+
+/// ACCEPTANCE: `child_reported` fires for a child that completes normally
+/// (here, "normally" includes a fast `Failed` terminus via
+/// `AgentLoop::finish_error` -- the point is that THIS agent's own
+/// `AgentLoop::finish` ran, not that it succeeded; the supervisor-synthesis
+/// path below is the OTHER half of this criterion). Never fires for a
+/// ROOT's own finish -- a root has no parent for a result to cross back to.
+#[tokio::test]
+async fn child_reported_fires_for_a_normal_child_finish_but_never_for_a_root() {
+    let rt = build_runtime();
+    let hook = Arc::new(FailingRunner::default());
+    rt.set_observation_hook_runner(Some(hook.clone()));
+    rt.set_observation_hooks(hooks_for(CHILD_REPORTED));
+
+    // A root's OWN finish must never fire `child_reported` -- proven first,
+    // before a child exists at all, so a later false positive from the
+    // child below cannot be mistaken for the root having fired.
+    let parent = rt.start_root(root_spec()).await.expect("root started");
+
+    let child = rt
+        .start(
+            parent,
+            parent,
+            SubagentSpec::fork("do a thing", Budget::default()),
+        )
+        .await
+        .expect("child spawned");
+
+    wait_until(|| hook.count(CHILD_REPORTED) >= 1).await;
+    let _ = rt.await_result(parent, child).await;
+
+    assert_eq!(
+        hook.count(CHILD_REPORTED),
+        1,
+        "child_reported must fire exactly once for the child's own finish"
+    );
+    let seen = hook.names();
+    assert_eq!(
+        seen.iter().filter(|n| *n == CHILD_REPORTED).count(),
+        1,
+        "child_reported must never fire a second time (e.g. for the root): {seen:?}"
+    );
 }

@@ -95,6 +95,16 @@ pub struct PreToolUseHookSpec {
     pub id: String,
     pub command: Vec<String>,
     pub timeout_ms: u64,
+    /// The rule's `HookEntry::match_tool` (board item
+    /// 01KZYAWQ6011Q6CJVG6CCMQPF1), carried through untouched. `None` (the
+    /// config default) consults this hook for every `pre_tool_use` call,
+    /// unchanged from before this field existed -- see
+    /// [`crate::hook_dispatch::HookSpec::matcher`]'s own doc for the
+    /// identical rule applied to the observation tier's `post_tool_use`.
+    /// `pre_tool_use` always carries a tool name (`AuthorizedCall::tool`),
+    /// so unlike that sibling field there is no "payload with no tool"
+    /// case to defend against here.
+    pub matcher: Option<String>,
 }
 
 /// This agent's confinement root (S3's `SessionMeta.root`/`SubagentSpec.
@@ -1263,7 +1273,14 @@ impl PermissionBroker {
             "cwd": ctx.cwd,
         });
 
-        for hook in &hooks {
+        for hook in hooks.iter().filter(|hook| {
+            // Board item 01KZYAWQ6011Q6CJVG6CCMQPF1: a matcher only
+            // NARROWS which calls consult this hook -- absent (`None`) is
+            // the pre-existing "fire for every call" behavior, unchanged.
+            hook.matcher.as_deref().is_none_or(|pattern| {
+                conway_core::hook::tool_matcher_matches(pattern, call.tool.as_str())
+            })
+        }) {
             let invocation = HookInvocation {
                 command: hook.command.clone(),
                 timeout_ms: hook.timeout_ms,
@@ -1748,6 +1765,14 @@ mod tests {
             id: id.to_string(),
             command: vec!["/usr/bin/env".to_string(), "true".to_string()],
             timeout_ms: 1_000,
+            matcher: None,
+        }
+    }
+
+    fn hook_spec_matching(id: &str, matcher: &str) -> PreToolUseHookSpec {
+        PreToolUseHookSpec {
+            matcher: Some(matcher.to_string()),
+            ..hook_spec(id)
         }
     }
 
@@ -1772,6 +1797,21 @@ mod tests {
                 checkable: &["cwd"],
             },
             render_kind: RenderKind::ShellCommand,
+        }
+    }
+
+    /// Sibling of [`bash_call`] for a non-`bash` tool -- the matcher tests
+    /// need to prove a rule fires for one tool and not another, and `bash`
+    /// alone cannot show that.
+    fn call_for_tool(call_id: &str, tool: &str) -> AuthorizedCall {
+        AuthorizedCall {
+            call_id: call_id.into(),
+            tool: ToolName::new(tool),
+            category: ToolCategory::Read,
+            arguments: serde_json::json!({}),
+            rendered: format!("{tool}({{}})"),
+            path_args: PathArgs::None,
+            render_kind: RenderKind::Structured,
         }
     }
 
@@ -2039,5 +2079,68 @@ mod tests {
             "an 'allow'-shaped permission payload must not parse as any HookPermissionVerdict \
              variant"
         );
+    }
+
+    // ---------------------------------------------------------------- matcher --
+
+    /// ACCEPTANCE (board item 01KZYAWQ6011Q6CJVG6CCMQPF1): a matcher on a
+    /// `pre_tool_use` rule narrows which tool calls consult it -- a denying
+    /// hook matching `read` never runs for a `bash` call.
+    #[tokio::test]
+    async fn a_matching_pre_tool_use_hook_denies_only_its_own_tool() {
+        let gate = RecordingGate::new();
+        let broker = PermissionBroker::new(gate.clone(), EventBus::new(64));
+        let runner = ScriptedHookRunner::deny("reads are refused");
+        broker.set_hook_runner(Some(runner.clone()));
+        broker.set_pre_tool_use_hooks(vec![hook_spec_matching("read-guard", "read")]);
+        let session = SessionId::new();
+        let agent = AgentId::new();
+        let ctx = test_ctx(agent, session);
+
+        // The matching tool is denied, and the hook never reaches the gate.
+        let denied = broker.decide(&ctx, &call_for_tool("c1", "read")).await;
+        assert!(
+            matches!(denied, PermissionOutcome::Deny { .. }),
+            "a matching hook must still deny: {denied:?}"
+        );
+        assert_eq!(runner.call_count(), 1);
+
+        // A DIFFERENT tool never consults this hook at all -- proceeds
+        // straight through to the gate, unaffected.
+        let allowed = broker.decide(&ctx, &bash_call("c2", "git status")).await;
+        assert_eq!(allowed, PermissionOutcome::Allow);
+        assert_eq!(
+            runner.call_count(),
+            1,
+            "the hook must not have been consulted a second time for a non-matching tool"
+        );
+        assert_eq!(
+            gate.call_count(),
+            1,
+            "only the non-matching call reaches the gate"
+        );
+    }
+
+    /// Sibling of `decide_is_unchanged_when_no_hook_runner_is_installed`: an
+    /// ABSENT matcher (not merely an absent runner) preserves today's
+    /// fire-for-every-tool behavior -- a hook with no `matcher` set still
+    /// denies every tool, exactly as before this field existed.
+    #[tokio::test]
+    async fn an_absent_matcher_denies_every_tool() {
+        let gate = RecordingGate::new();
+        let broker = PermissionBroker::new(gate.clone(), EventBus::new(64));
+        let runner = ScriptedHookRunner::deny("no tool is exempt");
+        broker.set_hook_runner(Some(runner.clone()));
+        broker.set_pre_tool_use_hooks(vec![hook_spec("guard")]);
+        let session = SessionId::new();
+        let agent = AgentId::new();
+        let ctx = test_ctx(agent, session);
+
+        let read_outcome = broker.decide(&ctx, &call_for_tool("c1", "read")).await;
+        let bash_outcome = broker.decide(&ctx, &bash_call("c2", "git status")).await;
+
+        assert!(matches!(read_outcome, PermissionOutcome::Deny { .. }));
+        assert!(matches!(bash_outcome, PermissionOutcome::Deny { .. }));
+        assert_eq!(gate.call_count(), 0);
     }
 }
