@@ -49,9 +49,25 @@ able to allow, deny, or deny with a reason the model reads. The page also says
 the event vocabulary is open, with plugins declaring events of their own that
 sit at the same level as the core's.
 
-**Exists today: the configured rung ships, for exactly one event.** A `[hooks]`
-block in `settings.json` is discovered on the existing precedence chain, parsed,
-and validated. A rule whose `event` is `pre_tool_use` is then dispatched for
+**Exists today: the configured rung ships, for four of its seven events.** A
+`[hooks]` block in `settings.json` is discovered on the existing precedence
+chain, parsed, and validated. Four events then dispatch for real:
+`pre_tool_use`, plus the three OBSERVATION-ONLY events `post_tool_use`,
+`session_starting` and `child_spawned` (board item
+01KZS019NHG11RVQYSVT7RG0P5), which fire at `ToolRunner`'s own
+`ToolCallFinished` seam, at `Runtime::start_root`, and at the single
+`SubagentHost::start` both subagent modes share.
+
+**The two tiers differ in kind, deliberately.** `pre_tool_use` fails CLOSED —
+a broken hook denies the call, because that is the safe direction for a
+permission decision. The three observation events cannot deny at all and
+fail OPEN: `ObservationDispatcher::dispatch` returns `()`, so a hook that
+errors or times out is logged and the operation it observed is unaffected.
+Whether `child_spawned` may ever deny is an open question, deliberately
+deferred and recorded at its dispatch site rather than settled by the shape of
+a return type.
+
+A rule whose `event` is `pre_tool_use` is dispatched for
 real — `ConwayBuilder::build` filters `[hooks].rules[]` to the enabled
 `pre_tool_use` entries, and `PermissionBroker::decide` invokes each through an
 injected `HookRunner` at the deny tier, ahead of the mode gate, the grant cache,
@@ -78,12 +94,10 @@ never injects a runner parses, validates, and is never consulted.
 
 **Needed to make it true:**
 
-- Dispatch at the other events the page's vocabulary implies: `post_tool_use`,
-  prompt submitted, request assembled, child forked or spawned, child reported,
-  session started. **None of these dispatches today** — no crate names any of
-  them, and a rule carrying one parses, validates, and does nothing. The runner
-  port they will reuse already exists; each needs only its own dispatch call
-  site.
+- Dispatch at the three events still left: prompt submitted, request assembled,
+  and child reported. A rule carrying one of those parses, validates, and does
+  nothing. The runner port they will reuse already exists; each needs only its
+  own dispatch call site.
 - A tool-name matcher. `HookEntry` is `id`, `event`, `command`, `timeout_ms`,
   `enabled` — there is no matcher field, so a `pre_tool_use` rule fires for
   *every* tool call and a hook wanting to act on one tool must filter for
@@ -106,9 +120,16 @@ never injects a runner parses, validates, and is never consulted.
 
 <!-- claim-check
 entry: Declarative hooks
-claim: every event other than pre_tool_use dispatches nothing
+claim: the three remaining events -- prompt submitted, request assembled, child reported -- dispatch nothing
 paths: crates/conway/src crates/conway-runtime/src crates/conway-tools/src crates/conway-cli/src
-absent: "(post_tool_use|prompt_submitted|request_assembled|child_forked|child_spawned|child_reported|session_started)"
+absent: "(prompt_submitted|request_assembled|child_reported)"
+-->
+
+<!-- claim-check
+entry: Declarative hooks
+claim: the three observation-only events ARE dispatched -- the shipped half, which must not silently regress
+paths: crates/conway-runtime/src/observation.rs
+present: pub const SESSION_STARTING
 -->
 
 <!-- claim-check
