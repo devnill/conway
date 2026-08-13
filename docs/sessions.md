@@ -241,8 +241,8 @@ A few things worth knowing before you rely on the output:
   found" and "malformed id" the same way.
 - **The `ORIGIN` column reads `fork@<seq> <parent>` or `spawn@<seq>
   <parent>`**, matching the persisted `SessionMeta.origin.mode` — a forked
-  child inherited its parent's entire context, a spawned one is clean-slate
-  (GP-02), and this column, not the `ROLE` column, is where that
+  child inherited its parent's entire context, a spawned one is clean-slate,
+  and this column, not the `ROLE` column, is where that
   distinction shows up. `sessions list --json`'s `origin` object carries the
   same distinction as a `"mode": "fork"`/`"mode": "spawn"` field.
 - Values passed to `--session`/`--resume`/`--fork-from` and
