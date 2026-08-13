@@ -59,9 +59,22 @@ use common::mock_backend::{Chunk, MockBackend, Script};
 /// Opens a fresh, read-only `Conway` against `fixture`'s on-disk session
 /// store -- the same store the compiled binary's subprocess runs wrote to.
 ///
-/// Two deviations from just calling `ConwayBuilder::from_config(..).build()`,
-/// both required only because this helper builds a `Conway` directly rather
-/// than going through `main.rs`'s own construction path:
+/// Uses `ConwayBuilder::from_config_only` (board item
+/// 01KZYCKF3Z1XBCS50N7EWWVPEQ), not `from_config`: this helper runs
+/// in-process, in the *test* process, not a subprocess -- `common::command`'s
+/// own `XDG_CONFIG_HOME` isolation only reaches the compiled `conway` binary
+/// it spawns, never this test binary's own calls into the `conway` library.
+/// `from_config` would read this test binary's ambient
+/// `~/.conway/settings.json` unconditionally and deep-merge it into the
+/// fixture config, which is what made this suite fail against any operator
+/// config naming an unregistered backend kind (the facade links no backend
+/// adapters -- see the module-level history above `open_conway`'s own
+/// callers for the reproduction).
+///
+/// Two deviations from just calling
+/// `ConwayBuilder::from_config_only(..).build()`, both required only because
+/// this helper builds a `Conway` directly rather than going through
+/// `main.rs`'s own construction path:
 /// - `CliOverrides::cwd` is set explicitly to `fixture.dir.path()` rather
 ///   than relying on `ConwayConfig`'s own `default_cwd()` (a serde default
 ///   evaluated at JSON-parse time against *this test process's* cwd, which
@@ -82,7 +95,7 @@ use common::mock_backend::{Chunk, MockBackend, Script};
 ///   `build`'s validation.
 async fn open_conway(fixture: &Fixture) -> Conway {
     let gate: Arc<dyn PermissionGate> = Arc::new(AllowListGate::new(Vec::new(), Vec::new()));
-    ConwayBuilder::from_config(&fixture.config_path)
+    ConwayBuilder::from_config_only(&fixture.config_path)
         .expect("load fixture config")
         .with_cli_overrides(CliOverrides {
             cwd: Some(fixture.dir.path().to_path_buf()),
