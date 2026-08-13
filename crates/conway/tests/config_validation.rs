@@ -190,6 +190,46 @@ fn well_formed_hooks_block_loads_through_the_full_load_path() {
     assert!(rule.enabled);
 }
 
+/// ACCEPTANCE (board item 01KZYAWQ6011Q6CJVG6CCMQPF1): a `match` pattern on
+/// `post_tool_use` loads through the full `load` path and is not silently
+/// dropped.
+#[test]
+fn well_formed_matcher_loads_through_the_full_load_path() {
+    let dir = support::unique_temp_dir("hooks-matcher-well-formed");
+    let outcome = load(LoadOptions {
+        cwd: dir,
+        explicit_path: Some(support::fixtures_dir().join("hooks_matcher_well_formed.json")),
+        env: support::isolated_env(),
+        cli_overrides: CliOverrides::default(),
+        model_metadata_refresh: false,
+    })
+    .expect("a well-formed matcher must load");
+
+    let rule = &outcome.config.hooks.rules[0];
+    assert_eq!(rule.event, "post_tool_use");
+    assert_eq!(rule.match_tool.as_deref(), Some("fs.write"));
+}
+
+/// ACCEPTANCE: "a matcher naming an event that carries no tool name is a
+/// surfaced, typed config error naming the rule id" -- not silently
+/// accepted, and not silently ignored.
+#[test]
+fn matcher_on_a_toolless_event_is_rejected() {
+    let dir = support::unique_temp_dir("hooks-match-toolless");
+    let result = load(LoadOptions {
+        cwd: dir,
+        explicit_path: Some(support::fixtures_dir().join("hooks_match_on_toolless_event.json")),
+        env: support::isolated_env(),
+        cli_overrides: CliOverrides::default(),
+        model_metadata_refresh: false,
+    });
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("stray-match") && err.contains("session_starting") && err.contains("match"),
+        "error must name the rule id, the offending event, and \"match\": {err}"
+    );
+}
+
 /// The Kimi coding-plan config block published in
 /// `docs/providers.md` must actually load. A copy-pasteable
 /// example that does not parse is worse than no example, and this is the

@@ -8,21 +8,97 @@
 //! wiring is WI-084's job) so the supervision guarantee itself is proven
 //! independent of any particular agent implementation.
 
-use std::sync::Arc;
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use async_trait::async_trait;
 use chrono::Utc;
 use conway_core::agent::{AgentResult, AgentStatus, Budget, ResultStatus, SubagentMode};
-use conway_core::error::RuntimeError;
+use conway_core::error::{HookFailure, RuntimeError};
 use conway_core::event::{Envelope, Event};
+use conway_core::hook::{HookAnswer, HookInvocation};
 use conway_core::ids::{AgentId, RoleAlias, SessionId};
+use conway_core::ports::HookRunner;
 use conway_runtime::events::EventBus;
+use conway_runtime::hook_dispatch::{HookDispatcher, HookSpec, CHILD_REPORTED};
 use conway_runtime::supervisor::{self, SuperviseArgs};
 use conway_runtime::tree::{AgentNode, AgentTree};
 use futures::future::FutureExt;
 use futures::StreamExt;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+
+/// An unwired dispatcher (no runner installed) is a byte-for-byte no-op,
+/// matching every other observation-tier default -- the right default for
+/// every test in this file that is not itself about `child_reported`
+/// (board item 01KZYAXSGDS8AP7YK1CN7H680G).
+fn no_hooks() -> Arc<HookDispatcher> {
+    Arc::new(HookDispatcher::new())
+}
+
+/// A `HookRunner` that records every event name it saw and always succeeds
+/// -- the `child_reported` tests below need to know THAT it ran, not to
+/// prove failure propagation (already proven for the observation tier by
+/// `crates/conway-runtime/tests/hook_dispatch.rs`).
+#[derive(Debug, Default)]
+struct RecordingRunner {
+    seen: Mutex<Vec<String>>,
+}
+
+impl RecordingRunner {
+    fn count(&self, event: &str) -> usize {
+        self.seen
+            .lock()
+            .expect("seen lock poisoned")
+            .iter()
+            .filter(|n| n.as_str() == event)
+            .count()
+    }
+}
+
+#[async_trait]
+impl HookRunner for RecordingRunner {
+    async fn run(&self, invocation: &HookInvocation) -> Result<HookAnswer, HookFailure> {
+        self.seen
+            .lock()
+            .expect("seen lock poisoned")
+            .push(invocation.event.name.clone());
+        Ok(HookAnswer::default())
+    }
+}
+
+fn child_reported_hooks(runner: Arc<RecordingRunner>) -> Arc<HookDispatcher> {
+    let hooks = Arc::new(HookDispatcher::new());
+    hooks.set_runner(Some(runner));
+    hooks.set_hooks(BTreeMap::from([(
+        CHILD_REPORTED.to_string(),
+        vec![HookSpec {
+            id: "watcher".to_string(),
+            command: vec!["/bin/true".to_string()],
+            timeout_ms: 1_000,
+            matcher: None,
+        }],
+    )]));
+    hooks
+}
+
+/// Polls (cooperatively yielding, never a fixed sleep) until `predicate` is
+/// `true` or 2s elapse -- the `Synthesized` branch's `child_reported`
+/// dispatch happens inside the SAME `tokio::spawn`'d supervising task that
+/// publishes the result `await_result` resolves from, in program order
+/// AFTER the publish (`supervisor.rs`'s own module doc) -- this removes any
+/// dependence on exactly how the executor happens to interleave the two
+/// tasks once `await_result` resolves.
+async fn wait_until(mut predicate: impl FnMut() -> bool) {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !predicate() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("condition was not met within 2s");
+}
 
 /// Builds a minimal [`AgentNode`] for a test; `role`/`agent_def` are fixed
 /// filler since no criterion in this file exercises them.
@@ -258,6 +334,8 @@ async fn panic_in_task_resolves_failed_mentioning_panic_within_1s() {
         deadline: None,
         grace: Duration::from_millis(50),
         task,
+        hooks: no_hooks(),
+        parent: None,
     });
 
     let result = tokio::time::timeout(Duration::from_secs(1), tree.await_result(agent))
@@ -275,6 +353,124 @@ async fn panic_in_task_resolves_failed_mentioning_panic_within_1s() {
     // Exactly one terminal result was ever published; the underlying task
     // (already finished) cannot race a second publish here.
     assert!(!tree.publish_result(agent, result).unwrap());
+}
+
+// ---------------------------------------------------------------------
+// `child_reported` on the `Synthesized` branch (board item 01KZYAXSGDS8AP7YK1CN7H680G)
+// ---------------------------------------------------------------------
+
+/// ACCEPTANCE: "`child_reported` fires ... for one that is cancelled or
+/// panics, since the supervisor synthesizes a terminal result in those
+/// cases." A caught panic is exactly the `Outcome::Synthesized` case this
+/// module's own doc names -- the task never reaches `AgentLoop::finish`'s
+/// OWN dispatch, so this module's `won`-gated dispatch is the ONLY place
+/// this terminal result is ever reported. Shown to fail by removing the
+/// dispatch call from the `Synthesized` branch in `supervisor.rs`.
+#[tokio::test]
+async fn synthesized_panic_dispatches_child_reported_when_a_parent_exists() {
+    let bus = EventBus::new(64);
+    let tree = Arc::new(AgentTree::new(bus.clone()));
+    let parent = AgentId::new();
+    let agent = AgentId::new();
+    let session = SessionId::new();
+
+    tree.attach(mk_node(
+        parent,
+        None,
+        session,
+        Budget::default(),
+        CancellationToken::new(),
+        None,
+    ))
+    .unwrap();
+    tree.attach(mk_node(
+        agent,
+        Some(parent),
+        session,
+        Budget::default(),
+        CancellationToken::new(),
+        Some(SubagentMode::Fork),
+    ))
+    .unwrap();
+
+    let runner = Arc::new(RecordingRunner::default());
+    let hooks = child_reported_hooks(runner.clone());
+
+    let task: JoinHandle<AgentResult> = tokio::spawn(async { panic!("boom") });
+    supervisor::supervise(SuperviseArgs {
+        tree: tree.clone(),
+        bus: bus.clone(),
+        agent,
+        session,
+        cancel: CancellationToken::new(),
+        deadline: None,
+        grace: Duration::from_millis(50),
+        task,
+        hooks,
+        parent: Some(parent),
+    });
+
+    tokio::time::timeout(Duration::from_secs(1), tree.await_result(agent))
+        .await
+        .expect("await_result did not resolve within 1s")
+        .expect("await_result errored");
+    wait_until(|| runner.count(CHILD_REPORTED) >= 1).await;
+
+    assert_eq!(
+        runner.count(CHILD_REPORTED),
+        1,
+        "child_reported must fire exactly once for a synthesized (panicked) result"
+    );
+}
+
+/// Sibling of the test above: a synthesized result for an agent with NO
+/// parent (`parent: None`, the shape `Runtime::start_root`'s own
+/// `SuperviseArgs` construction always passes) never dispatches
+/// `child_reported` -- a root has no parent for a result to cross back to.
+#[tokio::test]
+async fn synthesized_panic_does_not_dispatch_child_reported_with_no_parent() {
+    let bus = EventBus::new(64);
+    let tree = Arc::new(AgentTree::new(bus.clone()));
+    let agent = AgentId::new();
+    let session = SessionId::new();
+
+    tree.attach(mk_node(
+        agent,
+        None,
+        session,
+        Budget::default(),
+        CancellationToken::new(),
+        None,
+    ))
+    .unwrap();
+
+    let runner = Arc::new(RecordingRunner::default());
+    let hooks = child_reported_hooks(runner.clone());
+
+    let task: JoinHandle<AgentResult> = tokio::spawn(async { panic!("boom") });
+    supervisor::supervise(SuperviseArgs {
+        tree: tree.clone(),
+        bus: bus.clone(),
+        agent,
+        session,
+        cancel: CancellationToken::new(),
+        deadline: None,
+        grace: Duration::from_millis(50),
+        task,
+        hooks,
+        parent: None,
+    });
+
+    tokio::time::timeout(Duration::from_secs(1), tree.await_result(agent))
+        .await
+        .expect("await_result did not resolve within 1s")
+        .expect("await_result errored");
+
+    assert_eq!(
+        runner.count(CHILD_REPORTED),
+        0,
+        "a root (no parent) must never dispatch child_reported"
+    );
 }
 
 #[tokio::test]
@@ -309,6 +505,8 @@ async fn deadline_elapsed_while_blocked_resolves_budget_exceeded() {
         deadline: Some(deadline),
         grace: Duration::from_millis(50),
         task,
+        hooks: no_hooks(),
+        parent: None,
     });
 
     let result = tokio::time::timeout(Duration::from_secs(2), tree.await_result(agent))
@@ -347,6 +545,8 @@ async fn hard_cancel_resolves_cancelled() {
         deadline: None,
         grace: Duration::from_millis(50),
         task,
+        hooks: no_hooks(),
+        parent: None,
     });
 
     tokio::time::sleep(Duration::from_millis(10)).await;
@@ -417,6 +617,8 @@ async fn cancelling_parent_cancels_entire_subtree_and_every_descendant_terminate
         deadline: None,
         grace: Duration::from_millis(50),
         task: child_task,
+        hooks: no_hooks(),
+        parent: None,
     });
     supervisor::supervise(SuperviseArgs {
         tree: tree.clone(),
@@ -427,6 +629,8 @@ async fn cancelling_parent_cancels_entire_subtree_and_every_descendant_terminate
         deadline: None,
         grace: Duration::from_millis(50),
         task: grandchild_task,
+        hooks: no_hooks(),
+        parent: None,
     });
 
     tree.cancel(root, "shutdown".to_string()).unwrap();
@@ -544,6 +748,8 @@ async fn agent_spawned_precedes_and_exactly_one_agent_finished_follows() {
         deadline: None,
         grace: Duration::from_millis(50),
         task,
+        hooks: no_hooks(),
+        parent: None,
     });
 
     let mut collected = Vec::new();
@@ -661,6 +867,8 @@ async fn concurrent_task_completion_and_grace_synthesis_never_double_emit_agent_
             deadline: None,
             grace,
             task,
+            hooks: no_hooks(),
+            parent: None,
         });
         // Trips the supervisor's cancel-arm almost immediately, so its
         // grace window starts well before most trials' blocking work ends.
