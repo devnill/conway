@@ -50,6 +50,7 @@ use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken as TokioCancellationToken;
 
 use crate::events::{BusSink, EventBus};
+use crate::observation::{self, ObservationDispatcher};
 use crate::permission::{
     AgentRoot, AuthorizedCall, PermissionBroker, PermissionCtx, PermissionOutcome,
 };
@@ -139,6 +140,12 @@ pub struct ToolRunner {
     registry: Arc<PluginRegistry>,
     broker: Arc<PermissionBroker>,
     bus: Arc<EventBus>,
+    /// `post_tool_use` dispatch (board item 01KZS019NHG11RVQYSVT7RG0P5).
+    /// Constructed here rather than taken as a parameter so `new` keeps its
+    /// arity -- five test call sites build a `ToolRunner` directly -- and
+    /// read back by `Runtime::new` via [`Self::observation`] so the runtime
+    /// and this runner share one interior-mutable dispatcher.
+    observation: Arc<ObservationDispatcher>,
 }
 
 impl ToolRunner {
@@ -151,7 +158,15 @@ impl ToolRunner {
             registry,
             broker,
             bus,
+            observation: Arc::new(ObservationDispatcher::new()),
         }
+    }
+
+    /// The `post_tool_use` dispatcher this runner will consult, so
+    /// `Runtime::new` can hold the same one and wire config onto it. Until
+    /// something injects a runner into it, every dispatch is a no-op.
+    pub fn observation(&self) -> Arc<ObservationDispatcher> {
+        self.observation.clone()
     }
 
     /// Dispatches every call in `calls`, bounding concurrent tool
@@ -189,6 +204,7 @@ impl ToolRunner {
             let subagents = ctx.subagents.clone();
             let plugin_config = ctx.plugin_config.clone();
             let root = ctx.root.clone();
+            let observation = self.observation.clone();
             let call_id_for_panic = call.call_id.clone();
             let tool_for_panic = call.name.clone();
 
@@ -203,6 +219,7 @@ impl ToolRunner {
                     registry,
                     broker,
                     bus,
+                    observation,
                     semaphore,
                     batch_cancel,
                     agent_id,
@@ -261,6 +278,7 @@ async fn execute_one(
     registry: Arc<PluginRegistry>,
     broker: Arc<PermissionBroker>,
     bus: Arc<EventBus>,
+    observation: Arc<ObservationDispatcher>,
     semaphore: Arc<Semaphore>,
     batch_cancel: TokioCancellationToken,
     agent_id: AgentId,
@@ -320,7 +338,9 @@ async fn execute_one(
     };
     let perm_ctx = PermissionCtx {
         agent_id,
-        agent_path,
+        // Cloned rather than moved: `post_tool_use`'s payload below names the
+        // same path, and the two consumers are on opposite sides of the call.
+        agent_path: agent_path.clone(),
         session: session_id,
         cwd: cwd.clone(),
         root,
@@ -409,15 +429,43 @@ async fn execute_one(
         } => outcome,
     };
 
+    let preview = preview_text(&outcome.blocks);
+
     bus.emit(
         session_id,
         agent_id,
         Event::ToolCallFinished {
             call_id: call_id.clone(),
             is_error: outcome.is_error,
-            preview: preview_text(&outcome.blocks),
+            preview: preview.clone(),
         },
     );
+
+    // `post_tool_use` (board item 01KZS019NHG11RVQYSVT7RG0P5), dispatched at
+    // the same seam that emits `ToolCallFinished` because that is the point
+    // which already knows the call finished and what it produced.
+    //
+    // OBSERVATION ONLY, and structurally so: `dispatch` returns `()`, so a
+    // hook that fails or times out cannot turn into a failure of the call it
+    // observed -- `outcome` below is returned unchanged either way. There is
+    // deliberately no denial path here; the call has already run, so there is
+    // nothing left to deny.
+    if observation.will_dispatch(observation::POST_TOOL_USE) {
+        observation
+            .dispatch(
+                observation::POST_TOOL_USE,
+                serde_json::json!({
+                    "call_id": call_id,
+                    "tool": tool_name.as_str(),
+                    "is_error": outcome.is_error,
+                    "preview": preview,
+                    "agent_id": agent_id,
+                    "agent_path": agent_path,
+                    "session": session_id,
+                }),
+            )
+            .await;
+    }
 
     outcome
 }

@@ -805,6 +805,42 @@ impl SubagentHost for Runtime {
                 },
             );
         }
+
+        // `child_spawned` (board item 01KZS019NHG11RVQYSVT7RG0P5), fired after
+        // the child exists and is attached, for BOTH modes -- this method is
+        // the single entry point for fork and spawn alike, which is why the
+        // event is wired here rather than at either caller.
+        //
+        // STRICTLY OBSERVE-ONLY, AND WHETHER IT MAY EVER DENY IS AN OPEN
+        // QUESTION, DELIBERATELY DEFERRED. Unlike `post_tool_use` -- where the
+        // call has already run, so there is nothing left to refuse -- nothing
+        // structurally prevents a spawn from being refused. It is not refusable
+        // here because refusing raises questions that item did not scope: what
+        // does the parent agent see when its own spawn is denied, a tool error
+        // or a silent no-op? Does the caller need new error handling? Those are
+        // not answered by giving this dispatch a denial-shaped return type and
+        // leaving the semantics to whoever meets it first. `dispatch` returns
+        // `()`, so a failing hook cannot fail the spawn, and the deferral is
+        // recorded rather than made by omission -- the same reasoning that
+        // keeps `PluginManifest` free of an unwired `on_init`.
+        if self
+            .observation_dispatcher()
+            .will_dispatch(crate::observation::CHILD_SPAWNED)
+        {
+            self.observation_dispatcher()
+                .dispatch(
+                    crate::observation::CHILD_SPAWNED,
+                    serde_json::json!({
+                        "child_id": agent_id,
+                        "parent": parent,
+                        "caller": caller,
+                        "mode": spec.mode,
+                        "session": session_id,
+                    }),
+                )
+                .await;
+        }
+
         Ok(agent_id)
     }
 
