@@ -133,6 +133,20 @@ present: pub const SESSION_STARTING
 
 <!-- claim-check
 entry: Declarative hooks
+claim: no declaration anywhere re-asserts that only pre_tool_use dispatches
+paths: crates/conway/src/config/schema.rs docs/plugins/scripts.md docs/plugins/hooks.md
+absent: (nothing dispatches a rule|Every OTHER .event. value: still forward-declared|value other than .pre_tool_use. remains exactly)
+-->
+
+<!-- claim-check
+entry: Declarative hooks
+claim: the config schema's own reachability contract names the dispatched events
+paths: crates/conway/src/config/schema.rs
+present: child_spawned.*DISPATCHED
+-->
+
+<!-- claim-check
+entry: Declarative hooks
 claim: prompt_submitted IS dispatched, deny-capable and fail-closed
 paths: crates/conway-runtime/src/hook_dispatch.rs
 present: pub const PROMPT_SUBMITTED
