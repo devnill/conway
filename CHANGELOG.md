@@ -197,6 +197,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`ConwayBuilder::install_selected(plugins, router_factories,
+  backend_factories)` — plugin assembly is now a facade capability, not a
+  CLI privilege** (board item 01KZVZ1TDBHS7S604PQB5RZDM3). Before this,
+  `crates/conway-cli/src/first_party_plugins.rs` carried ~70 lines of
+  hand-rolled resolution -- matching `[plugins].install` (unioned with
+  `[plugins].default_backends` for the backend arm) against whichever
+  plugin/router-factory/backend-factory crates the CLI binary happened to
+  link -- and it was the *only* place that logic existed: every other
+  embedder wanting the same "declare an id in config, attach the matching
+  implementation" mechanism had to reimplement it from scratch, and
+  `docs/embedding.md` taught them to by showing a hand-rolled `if
+  wanted.iter().any(...)` loop. `install_selected` is that resolution,
+  moved onto `ConwayBuilder` and generalized to any caller-supplied
+  bundles. `conway-cli`'s own resolution collapses to constructing its
+  three `Vec`s and calling it -- the ~70 lines are gone from the CLI, not
+  duplicated. **The facade still depends on no plugin crate**
+  (`crates/conway/Cargo.toml` names none, unchanged, asserted by the
+  workspace's own architecture guards): the three bundles are
+  caller-supplied, already-constructed values: `install_selected` matches
+  each entry's own identity (`Plugin::manifest().id`, `RouterFactory::
+  id()`, `BackendFactory::id()`) against a configured id string, and never
+  maps an id to a crate itself -- this class of shortcut has been tried and
+  reverted twice in this repository before, each time caught by an
+  architecture test rather than review. The three installable shapes stay
+  distinct, never flattened into one: a `Plugin`/`Tool` and a
+  `RouterFactory` both resolve from `[plugins].install`, but a
+  `RouterFactory` is selected before construction and capped at one match
+  (a build has exactly one router); a `BackendFactory` resolves from the
+  separate, default-on `[plugins].default_backends`, where an operator
+  opts *out* rather than in (a build with zero backends cannot reach a
+  model at all, unlike an absent plugin or router). An id resolving to
+  nothing in any of the three supplied bundles is a hard, named
+  `ConwayError::Config` -- never a silent no-op -- matching the CLI's own
+  pre-existing unknown-id diagnosis. Proven reachable by a genuinely
+  out-of-workspace crate (a scratch crate authoring its own `Plugin`,
+  `RouterFactory`, and `BackendFactory` against `conway::plugin`/
+  `conway::backend`/`conway::` alone, installing all three through one
+  `install_selected` call, and completing a real turn), not merely by an
+  in-workspace test.
+
 - **Four more `[hooks]` events now dispatch, in two tiers that fail in
   opposite directions** (board items 01KZS019NHG11RVQYSVT7RG0P5 and
   01KZS01ZBNEY12DBDNW2Y861SQ). `post_tool_use`, `session_starting` and
