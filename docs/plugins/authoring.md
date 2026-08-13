@@ -369,13 +369,25 @@ What this means for you, concretely:
   silently matches nothing.** `.design/extension-architecture.md` §9.3 calls
   this out directly as another harness's documented failure — a hook
   declared against a pattern that happens to match zero calls looks, from
-  the outside, identical to a hook that correctly decided not to act. The
-  in-process surface you're building against today sidesteps the matcher
-  half of this (there's no declarative pattern language yet to mismatch
-  against), but the *shape* of the mistake still applies: double-check that
-  the `ContextHook` you registered is the one actually reaching
-  `AgentLoop::run_inner` for the session you're testing, not a second
-  builder instance you constructed and never used.
+  the outside, identical to a hook that correctly decided not to act.
+
+  **This is now a live hazard rather than a cautionary tale.** Configured
+  `[hooks].rules[]` entries take a `match` field (exact tool name, or a
+  `*`-glob), and a `match` naming a tool nothing ever calls fires never,
+  quietly. Two things narrow the blast radius, and neither removes it: a
+  `match` on an event that carries no tool name at all
+  (`session_starting`, `child_spawned`, `request_assembled`,
+  `child_reported`, `prompt_submitted`) is a typed config error naming your
+  rule's `id` rather than silent inertness; and omitting `match` entirely
+  means *fire for every call*, which is loud and therefore self-correcting.
+  A `match` that is merely misspelled is the case with no safety net —
+  check the tool's registered name, not the name you remember.
+
+  The same *shape* of mistake applies to the in-process `ContextHook` you
+  are building here, with no matcher involved: double-check that the hook
+  you registered is the one actually reaching `AgentLoop::run_inner` for
+  the session you're testing, not a second builder instance you constructed
+  and never used.
 - **No `Result`, remember.** If your hook is silently doing nothing and you
   expected an error somewhere, re-read "Testing your hook" above — there is
   no error channel for `before_request`/`on_overflow` to use. "Nothing
