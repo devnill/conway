@@ -10,7 +10,7 @@
 
 use std::time::{Duration, Instant};
 
-use conway::{Conway, RoleAlias, SessionHandle, SessionSpec, ToolSelector};
+use conway::{Conway, ForkSpec, RoleAlias, SessionHandle, SessionId, SessionSpec, ToolSelector};
 use futures::StreamExt;
 use ratatui::backend::Backend;
 use ratatui::crossterm::event::{Event as CEvent, EventStream as CrosstermEventStream};
@@ -48,6 +48,19 @@ struct ModalAskOutcome {
 /// returned an error" and "the plugin's task panicked").
 struct PluginCommandDone {
     full_name: String,
+    /// Board item 01KZYH37WNDKDWSMWQQPRFKKXC: the session THIS invocation's
+    /// `CommandCtx::session_id` was stamped with -- captured by
+    /// [`App::spawn_plugin_command`] before the outer task is spawned, so it
+    /// reflects whatever session was live at INVOCATION time, never
+    /// whatever `self.handle` has since become (e.g. an operator's
+    /// `/resume` racing a slow plugin command). [`App::
+    /// apply_plugin_command_done`]'s `ForkSession` arm resolves against
+    /// THIS field, not `self.handle.id()` -- the structural binding that
+    /// makes "a command cannot act on a session it was not invoked from"
+    /// hold even under that race; see `tests::a_fork_session_outcome_is_
+    /// resolved_against_the_invoking_session_even_if_the_host_has_since_
+    /// resumed_elsewhere` for the adversarial proof.
+    session_id: SessionId,
     outcome: conway::plugin::CommandOutcome,
 }
 
@@ -540,7 +553,13 @@ impl App {
                 // arm is ready first, exactly like every other arm here.
                 maybe_plugin_cmd = plugin_cmd_rx.recv() => {
                     if let Some(done) = maybe_plugin_cmd {
-                        self.apply_plugin_command_done(done);
+                        // Board item 01KZYH37WNDKDWSMWQQPRFKKXC: a
+                        // `ForkSession` outcome swaps `self.handle` --
+                        // resubscribe `events` exactly like `SubmitOutcome::
+                        // Resubscribe`'s own call site does.
+                        if self.apply_plugin_command_done(done).await {
+                            events = self.handle.events();
+                        }
                         dirty = true;
                     }
                 }
@@ -1454,6 +1473,12 @@ impl App {
             command,
             ctx,
         } = invocation;
+        // Board item 01KZYH37WNDKDWSMWQQPRFKKXC: captured HERE, before `ctx`
+        // is moved into the spawned task -- see `PluginCommandDone::
+        // session_id`'s own doc for why this specific capture point (not a
+        // later read of `self.handle.id()`) is what makes the binding
+        // structural rather than merely usually-correct.
+        let session_id = ctx.session_id;
         let tx = self.plugin_cmd_tx.clone();
         let panic_name = full_name.clone();
         tokio::spawn(async move {
@@ -1468,7 +1493,11 @@ impl App {
             // exited -- nothing left to notify, so a send failure here is
             // silently dropped, mirroring `/ask`'s own `run_modal_ask` send
             // site exactly.
-            let _ = tx.send(PluginCommandDone { full_name, outcome });
+            let _ = tx.send(PluginCommandDone {
+                full_name,
+                session_id,
+                outcome,
+            });
         });
     }
 
@@ -1476,7 +1505,23 @@ impl App {
     /// out of `Self::run`'s own `plugin_cmd_rx.recv()` arm so it is directly
     /// callable from a test with no real terminal/`select!` loop needed
     /// (mirrors this file's own `drain_and_apply` test helper's reasoning).
-    fn apply_plugin_command_done(&mut self, done: PluginCommandDone) {
+    ///
+    /// Returns `true` when `self.handle` was swapped (only the
+    /// `ForkSession` arm on success does this) -- the caller (`Self::run`'s
+    /// `plugin_cmd_rx.recv()` arm) must then resubscribe its `events` local,
+    /// exactly like `SubmitOutcome::Resubscribe`'s own call site.
+    ///
+    /// **Now `async`** (this item, board 01KZYH37WNDKDWSMWQQPRFKKXC): the
+    /// `ForkSession` arm awaits `Conway::fork_from`, the SAME facade call
+    /// `/rewind` needs and the reason this method could not stay
+    /// synchronous. This does NOT reopen the hang-safety property point 15
+    /// establishes -- `fork_from` runs on THIS loop's own async task, same
+    /// as every other facade call `Self::run`'s `select!` already awaits
+    /// directly (`host.fork`, `host.resume`, ...); the property that must
+    /// never block is `Command::invoke` itself, which is already complete
+    /// by the time a `PluginCommandDone` exists at all (see `Self::
+    /// spawn_plugin_command`'s own doc).
+    async fn apply_plugin_command_done(&mut self, done: PluginCommandDone) -> bool {
         match done.outcome {
             conway::plugin::CommandOutcome::Output(lines) => {
                 for line in lines {
@@ -1484,11 +1529,53 @@ impl App {
                         .transcript
                         .push(super::state::Entry::Notice { text: line });
                 }
+                false
             }
             conway::plugin::CommandOutcome::Error(message) => {
                 self.state.transcript.push(super::state::Entry::Notice {
                     text: format!("/{}: {message}", done.full_name),
                 });
+                false
+            }
+            // Board item 01KZYH37WNDKDWSMWQQPRFKKXC: `/rewind`'s own
+            // capability. `done.session_id` -- NOT `self.handle.id()` -- is
+            // what this resolves against: see `PluginCommandDone::
+            // session_id`'s own doc for why that specific field is what
+            // keeps this bound to the session the command was actually
+            // invoked from, even if `self.handle` has since changed.
+            conway::plugin::CommandOutcome::ForkSession { at_seq, directive } => {
+                match self
+                    .conway
+                    .fork_from(done.session_id, at_seq, ForkSpec::new(directive))
+                    .await
+                {
+                    Ok(handle) => {
+                        // Mirrors `SlashCommand::Resume`'s own reset
+                        // exactly (`commands::execute`'s `Resume` arm): a
+                        // full, fresh `AppState` scoped to the child's own
+                        // root, with the process-lifetime plugin command
+                        // list carried across by hand (the one field that
+                        // is NOT session-scoped).
+                        let plugin_commands = self.state.plugin_commands.clone();
+                        let child_root = handle.root();
+                        self.handle = handle;
+                        self.state = AppState::new(child_root);
+                        self.state.plugin_commands = plugin_commands;
+                        self.state.transcript.push(super::state::Entry::Notice {
+                            text: format!(
+                                "/{}: forked session at seq {} -- now driving {child_root}",
+                                done.full_name, at_seq.0
+                            ),
+                        });
+                        true
+                    }
+                    Err(e) => {
+                        self.state.transcript.push(super::state::Entry::Notice {
+                            text: format!("/{}: fork failed: {e}", done.full_name),
+                        });
+                        false
+                    }
+                }
             }
         }
     }
@@ -2100,7 +2187,7 @@ mod tests {
             .await
             .expect("the spawned command task must reply");
         assert_eq!(done.full_name, "acme.greet");
-        app.apply_plugin_command_done(done);
+        app.apply_plugin_command_done(done).await;
 
         assert!(
             app.state.transcript.iter().any(|e| matches!(
@@ -2200,6 +2287,285 @@ mod tests {
         // the background exactly as a real hang would be; the process exits
         // when the test binary does, same as any other orphaned test-scoped
         // `tokio::spawn`.
+    }
+
+    // -----------------------------------------------------------------
+    // CommandOutcome::ForkSession (board item 01KZYH37WNDKDWSMWQQPRFKKXC)
+    // -- the VERIFICATION ANCHOR: a fixture plugin command that forks its
+    // own calling session and returns; the TUI ends up driving the child,
+    // and the parent's log is byte-identical to before. Paired with a
+    // negative test proving the fork is resolved against the session the
+    // command was actually invoked from, never whatever session the host
+    // happens to be driving by the time the reply is applied.
+    // -----------------------------------------------------------------
+
+    /// This crate's own `/rewind`-shaped fixture: forks the calling session
+    /// at whatever sequence number the operator typed. Mirrors
+    /// `GreetCommandFixture`'s own shape (a fixed reply plus the operator's
+    /// argument) one level up -- here the "reply" is a request, not output.
+    struct RewindCommandFixture;
+
+    #[async_trait::async_trait]
+    impl conway::plugin::Command for RewindCommandFixture {
+        fn spec(&self) -> conway::plugin::CommandSpec {
+            conway::plugin::CommandSpec {
+                name: "rewind".to_string(),
+                summary: "forks the calling session at a sequence".to_string(),
+            }
+        }
+
+        async fn invoke(&self, ctx: conway::plugin::CommandCtx) -> conway::plugin::CommandOutcome {
+            let at_seq = ctx.args.trim().parse::<u64>().unwrap_or(0);
+            conway::plugin::CommandOutcome::ForkSession {
+                at_seq: conway::LogSeq(at_seq),
+                directive: String::new(),
+            }
+        }
+    }
+
+    struct RewindPluginFixture;
+
+    impl conway::plugin::Plugin for RewindPluginFixture {
+        fn manifest(&self) -> conway::plugin::PluginManifest {
+            conway::plugin::PluginManifest {
+                id: "acme".to_string(),
+                version: "0.1.0".to_string(),
+                tools: vec![],
+                required_host_caps: vec![],
+            }
+        }
+
+        fn tools(&self) -> Vec<Arc<dyn conway::plugin::Tool>> {
+            vec![]
+        }
+
+        fn commands(&self) -> Vec<Arc<dyn conway::plugin::Command>> {
+            vec![Arc::new(RewindCommandFixture)]
+        }
+    }
+
+    /// The verification anchor's positive half: `/acme.rewind <seq>` forks
+    /// the REAL calling session (real history, real store) and the app ends
+    /// up driving a genuinely different, genuinely drivable child -- while
+    /// the parent's own log is untouched, proven by its head staying
+    /// identical before and after (append-only, zero-copy fork: `Conway::
+    /// fork_from`'s own contract).
+    #[tokio::test]
+    async fn fork_session_outcome_forks_the_calling_session_and_drives_the_child() {
+        let conway = build_conway_with_echo_backend();
+        let cli = minimal_cli();
+        let plugin: Arc<dyn conway::plugin::Plugin> = Arc::new(RewindPluginFixture);
+        let mut app = App::new(&cli, &conway, &[plugin])
+            .await
+            .expect("App::new should succeed");
+
+        let parent_sid = app.handle.id();
+        // `app.handle.prompt(..).await?.text().await?` -- NOT `app.submit`
+        // -- drives a turn to full completion (waits for the assistant's
+        // reply, not merely the `UserTurn`) so `session_head` below reads a
+        // deterministic, fully-persisted count rather than racing the
+        // agent loop's own async write.
+        app.handle
+            .prompt("first")
+            .await
+            .expect("prompt 1 should not error")
+            .text()
+            .await
+            .expect("turn 1 should complete");
+        app.handle
+            .prompt("second")
+            .await
+            .expect("prompt 2 should not error")
+            .text()
+            .await
+            .expect("turn 2 should complete");
+
+        let head_before = app
+            .conway
+            .session_head(parent_sid)
+            .await
+            .expect("session_head should succeed");
+        assert!(
+            head_before.0 > 0,
+            "the parent session must have real history to fork from, got head {head_before:?}"
+        );
+
+        let outcome = app
+            .submit(format!("/acme.rewind {}", head_before.0))
+            .await
+            .expect("submit should not error");
+        assert!(matches!(outcome, SubmitOutcome::Continue));
+
+        let done = app
+            .plugin_cmd_rx
+            .as_mut()
+            .expect("plugin_cmd_rx is set by App::new")
+            .recv()
+            .await
+            .expect("the spawned command task must reply");
+        assert_eq!(done.full_name, "acme.rewind");
+        assert_eq!(
+            done.session_id, parent_sid,
+            "CommandCtx::session_id (and therefore PluginCommandDone::session_id) must be \
+             the CALLING session's own id"
+        );
+
+        let resubscribe = app.apply_plugin_command_done(done).await;
+        assert!(
+            resubscribe,
+            "a successful ForkSession must ask the caller to resubscribe its event stream"
+        );
+
+        // The TUI is now driving a genuinely different session...
+        let child_sid = app.handle.id();
+        assert_ne!(child_sid, parent_sid);
+
+        // ...and that session is genuinely drivable, not merely a fresh,
+        // inert handle -- the "TUI drives the result" property.
+        let child_prompt_err = app
+            .handle
+            .prompt("hello from the child")
+            .await
+            .err()
+            .map(|e| e.to_string());
+        assert!(
+            child_prompt_err.is_none(),
+            "the forked child must be drivable: {child_prompt_err:?}"
+        );
+
+        // The parent's own log is append-only and was never mutated by the
+        // fork.
+        let head_after = app
+            .conway
+            .session_head(parent_sid)
+            .await
+            .expect("session_head should succeed");
+        assert_eq!(
+            head_before, head_after,
+            "forking must never mutate the parent session's own log"
+        );
+
+        assert!(
+            app.state.transcript.iter().any(|e| matches!(
+                e,
+                Entry::Notice { text } if text.contains("acme.rewind") && text.contains("forked")
+            )),
+            "a successful fork must be surfaced as a transcript notice: {:?}",
+            app.state.transcript
+        );
+    }
+
+    /// The verification anchor's negative half, and the discriminating
+    /// observable this whole item exists to prove: **a command cannot act
+    /// on a session it was not invoked from.**
+    ///
+    /// Adversarial timing: the plugin command is invoked while the host is
+    /// driving `invoking_sid` (which stamps `CommandCtx::session_id` /
+    /// `PluginCommandDone::session_id` to it) -- but by the time its reply
+    /// is APPLIED, the host has since started driving a totally different,
+    /// already-existing session (`other_sid`, simulating an operator's
+    /// `/resume` racing a slow plugin command). The fork must still land on
+    /// `invoking_sid`, never `other_sid` -- proven not just by "no crash"
+    /// but by `other_sid`'s own log staying byte-for-byte untouched, and,
+    /// for contrast, by showing forking `other_sid` DIRECTLY at the same
+    /// `at_seq` genuinely fails (its log is empty, so that seq is out of
+    /// range for it) -- the "fails for the right reason, not incidentally"
+    /// half of the acceptance criterion.
+    #[tokio::test]
+    async fn a_fork_session_outcome_is_resolved_against_the_invoking_session_even_if_the_host_has_since_moved_on(
+    ) {
+        let conway = build_conway_with_echo_backend();
+        let cli = minimal_cli();
+        let plugin: Arc<dyn conway::plugin::Plugin> = Arc::new(RewindPluginFixture);
+        let mut app = App::new(&cli, &conway, &[plugin])
+            .await
+            .expect("App::new should succeed");
+
+        let invoking_sid = app.handle.id();
+        // Full-completion drive (see the previous test's own comment for
+        // why `app.handle.prompt(..).text()`, not `app.submit`).
+        app.handle
+            .prompt("first")
+            .await
+            .expect("prompt should not error")
+            .text()
+            .await
+            .expect("turn should complete");
+        let invoking_head = app
+            .conway
+            .session_head(invoking_sid)
+            .await
+            .expect("session_head should succeed");
+        assert!(invoking_head.0 > 0);
+
+        // Invoked while `self.handle` is still `invoking_sid` -- this is
+        // what stamps `CommandCtx::session_id` to it.
+        let outcome = app
+            .submit(format!("/acme.rewind {}", invoking_head.0))
+            .await
+            .expect("submit should not error");
+        assert!(matches!(outcome, SubmitOutcome::Continue));
+        let done = app
+            .plugin_cmd_rx
+            .as_mut()
+            .expect("plugin_cmd_rx is set by App::new")
+            .recv()
+            .await
+            .expect("the spawned command task must reply");
+        assert_eq!(done.session_id, invoking_sid);
+
+        // SIMULATE THE RACE: a completely separate, freshly created session
+        // (empty log) becomes the one the host is driving, as if `/resume`
+        // had landed while the plugin command was still in flight.
+        let other = conway
+            .new_session(App::session_spec(&cli).expect("session_spec"))
+            .await
+            .expect("new_session should succeed");
+        let other_sid = other.id();
+        assert_ne!(other_sid, invoking_sid);
+        let other_head_before = conway
+            .session_head(other_sid)
+            .await
+            .expect("session_head should succeed");
+        app.handle = other;
+
+        // Applying the ALREADY-CAPTURED reply must still resolve against
+        // `invoking_sid` -- never `other_sid`.
+        let resubscribed = app.apply_plugin_command_done(done).await;
+        assert!(resubscribed);
+        let driven_sid = app.handle.id();
+        assert_ne!(
+            driven_sid, other_sid,
+            "must not have forked the session the host happened to be driving at apply time"
+        );
+
+        // `other_sid`'s own log is completely untouched -- not merely "no
+        // crash", but genuinely never reached.
+        let other_head_after = conway
+            .session_head(other_sid)
+            .await
+            .expect("session_head should succeed");
+        assert_eq!(other_head_before, other_head_after);
+
+        // For contrast: forking `other_sid` DIRECTLY at the SAME `at_seq`
+        // that just succeeded against `invoking_sid` fails outright --
+        // `other_sid`'s log is empty, so that seq is out of range for it.
+        // This is the concrete, distinguishable failure a naive
+        // `self.handle.id()`-at-apply-time implementation would have
+        // produced by accident; the correct, bound implementation never
+        // gets near it, because it never asks.
+        let would_have_failed = conway
+            .fork_from(
+                other_sid,
+                conway::LogSeq(invoking_head.0),
+                ForkSpec::new(""),
+            )
+            .await;
+        assert!(
+            would_have_failed.is_err(),
+            "sanity: at_seq must genuinely be out of range for `other_sid`, or this test \
+             proves nothing"
+        );
     }
 
     /// A1: a permission rule that fails registration is
