@@ -12,9 +12,9 @@
 //!
 //! # Accumulation model
 //!
-//! [`ToolCallAccumulator`] holds one [`Slot`] per in-flight tool call, keyed
+//! [`ToolCallAccumulator`] holds one `Slot` per in-flight tool call, keyed
 //! by `u32` in a [`BTreeMap`] so `finish` drains them in ascending —
-//! i.e. arrival — order. A delta is routed to a slot by [`resolve_key`]:
+//! i.e. arrival — order. A delta is routed to a slot by `resolve_key`:
 //!
 //! - When the delta carries an `index`, that index IS the key (the
 //!   canonical OpenAI/vLLM shape).
@@ -31,7 +31,7 @@
 //!   name AND a syntactically complete argument buffer — i.e. only when the
 //!   current slot looks finished. Any other delta appends to the current
 //!   slot. "Syntactically complete" is operationalized as "parses as a
-//!   complete `serde_json::Value`" ([`is_complete_json`]) — an
+//!   complete `serde_json::Value`" (`is_complete_json`) — an
 //!   implementation choice within the spec's "syntactically complete"
 //!   wording, since the accumulator has no independent signal (e.g. a
 //!   provider-declared fragment count) to consult.
@@ -48,10 +48,10 @@
 //! # Style dispatch
 //!
 //! `push_delta` dispatches to a style-specific parser that turns one raw
-//! provider delta object into style-independent [`DeltaParts`]:
-//! [`openai::parse_delta`] for the OpenAI-canonical shape, reused unchanged
+//! provider delta object into style-independent `DeltaParts`:
+//! `openai::parse_delta` for the OpenAI-canonical shape, reused unchanged
 //! for `ToolCallStyle::HermesTextFallback`'s structured (non-text) tool-call
-//! path; and [`ollama::parse_delta`], a tolerant superset parser, for
+//! path; and `ollama::parse_delta`, a tolerant superset parser, for
 //! `ToolCallStyle::Tolerant`.
 //!
 //! # Declarative provider profiles: `ToolCallStyle`
@@ -76,7 +76,7 @@
 //! `<tool_call>{"name":...,"arguments":{...}}</tool_call>`, with no
 //! `tool_calls` field on the delta at all. [`ToolCallAccumulator::push_content_delta`]
 //! is the entry point for that path: it routes `delta.content` text
-//! through [`hermes::HermesTextScanner`] while `style` is
+//! through `hermes::HermesTextScanner` while `style` is
 //! `HermesTextFallback` and no structured `delta.tool_calls` entry has
 //! arrived yet (`structured_seen`) — the "structured-path passthrough when
 //! structured tool_calls appear" rule. Every other style (and
@@ -114,12 +114,12 @@ use validate::SchemaValidator;
 #[serde(rename_all = "snake_case")]
 pub enum ToolCallStyle {
     /// OpenAI-canonical structured `delta.tool_calls` parsing
-    /// ([`openai::parse_delta`]); no inline-text fallback. Also the right
+    /// (`openai::parse_delta`); no inline-text fallback. Also the right
     /// choice for a server whose structured tool-calls otherwise follow the
     /// canonical shape but whose provider is otherwise undocumented (e.g. a
     /// new provider profile with no observed quirks yet).
     Structured,
-    /// A tolerant superset parser ([`ollama::parse_delta`]) that
+    /// A tolerant superset parser (`ollama::parse_delta`) that
     /// additionally accepts a complete-object `arguments` value instead of
     /// only a string fragment (ollama#12557, codex#7517); no inline-text
     /// fallback. The conservative default for an unfamiliar server.

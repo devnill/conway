@@ -15,7 +15,7 @@
 //! wholesale to `attach`. Two changes from that sketch:
 //! - **`result_tx` is tree-owned, not caller-supplied.** `attach` creates
 //!   the `watch::channel` itself and keeps the `Sender` in its own
-//!   bookkeeping ([`TreeEntry`]), never handing it back out; callers get a
+//!   bookkeeping (`TreeEntry`), never handing it back out; callers get a
 //!   result only through [`AgentTree::await_result`] or
 //!   [`AgentTree::snapshot`]. This is what lets [`AgentTree::publish_result`]
 //!   be the *only* place a result is ever written -- if the caller held the
@@ -159,7 +159,7 @@ impl AgentTree {
 
     /// Attaches `node`. Errors [`RuntimeError::AgentNotFound`] if
     /// `node.parent` is `Some` and not already attached; errors (see
-    /// [`already_attached`]) if `node.id` is already present.
+    /// `already_attached`) if `node.id` is already present.
     ///
     /// When `node.kind` is `Some(mode)`, emits exactly one
     /// `Event::AgentSpawned` before returning -- see the module doc for why
@@ -252,7 +252,7 @@ impl AgentTree {
     /// parent's, this structurally cancels the entire subtree in one call.
     ///
     /// `reason` is recorded (via `tracing`, unchanged) AND stashed on
-    /// `agent`'s own [`TreeEntry`] *before* the token below is tripped,
+    /// `agent`'s own `TreeEntry` *before* the token below is tripped,
     /// readable back via [`Self::cancel_reason`] -- board item
     /// 01KZDDCN747FEZ3GM3NS0ANE7G: `agent_loop.rs`'s loop-boundary
     /// cancellation checks (`AgentLoop::finish_cancelled`) read it back from

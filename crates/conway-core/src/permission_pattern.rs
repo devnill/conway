@@ -49,7 +49,7 @@
 //! every third-party tool's wildcard matched nothing, ever.
 //!
 //! [`PatternRule::matches_render`] therefore takes the tool's own
-//! [`conway_core::ports::RenderKind`] declaration (`conway_core::ports::
+//! [`crate::ports::RenderKind`] declaration (`conway_core::ports::
 //! Tool::render_kind`) and applies the metacharacter gate only when that
 //! declaration says the rendered text IS a shell command. [`PatternRule::
 //! matches`] (no `RenderKind` parameter) is the conservative convenience
@@ -57,7 +57,7 @@
 //! hand can still reach -- it always gates, exactly as this module behaved
 //! before this distinction existed. Every production caller
 //! (`conway_runtime::permission::PermissionBroker`) uses
-//! [`Self::matches_render`], fed the real tool's real declaration, so a
+//! [`PatternRule::matches_render`], fed the real tool's real declaration, so a
 //! chained shell command is gated exactly as before while a `read`/`write`/
 //! `edit`/... wildcard now actually grants.
 //!
@@ -188,7 +188,7 @@ const SHELL_METACHARACTERS: &[char] = &[
 /// heuristic.
 ///
 /// Disqualifies three classes, all in the "re-prompt too often" direction:
-/// the [`SHELL_METACHARACTERS`] themselves; any control character (so an
+/// the `SHELL_METACHARACTERS` themselves; any control character (so an
 /// UNSANITIZED string carrying a raw `\n`/`\x1b` is caught here even if it
 /// never passed through a sanitizer); and [`SANITIZED_CONTROL_PLACEHOLDER`]
 /// (so a SANITIZED string whose control char was already rewritten is
@@ -200,12 +200,12 @@ const SHELL_METACHARACTERS: &[char] = &[
 /// sanitized for display safety BEFORE it reaches [`PatternRule::matches`]:
 /// that sanitization (now `conway_core::text::sanitize_control_chars`, the
 /// shared home this gate and the runtime's `rendered` seam both call)
-/// rewrites `\n`/`\r` -- two of the [`SHELL_METACHARACTERS`] above -- into
+/// rewrites `\n`/`\r` -- two of the `SHELL_METACHARACTERS` above -- into
 /// [`SANITIZED_CONTROL_PLACEHOLDER`]. Without this gate treating the
 /// placeholder as disqualifying, `git status \n rm -rf /` would arrive as
 /// `git status <U+FFFD> rm -rf /`: the newline evidence destroyed, the gate
 /// satisfied, and the replacement char consumed as its own
-/// whitespace-delimited token by [`prefix_matches`] -- silently
+/// whitespace-delimited token by `prefix_matches` -- silently
 /// auto-approving a chained command under a `bash:git status` grant. The
 /// constant lives in `conway_core::text` so the sanitizer and this gate
 /// literally share one source of truth.
@@ -343,14 +343,14 @@ impl PatternRule {
     /// it is the evidence a correct comparison needs being destroyed
     /// upstream, so a naive prefix comparison sees nothing wrong.
     ///
-    /// [`rendered_evidence_is_untrustworthy`] catches this: `rendered`
+    /// `rendered_evidence_is_untrustworthy` catches this: `rendered`
     /// carrying a raw control character (in case a caller ever hands this
     /// method an unsanitized string directly) or the sanitizer's
     /// placeholder is treated as MATCHING any deny rule for this tool,
     /// rather than as failing to match -- fail TOWARD the deny, never
     /// away from it. This is deliberately narrower than
     /// [`contains_shell_metacharacters`]: it does NOT fire on
-    /// [`SHELL_METACHARACTERS`] (`;`, `&`, `|`, ...), which are real,
+    /// `SHELL_METACHARACTERS` (`;`, `&`, `|`, ...), which are real,
     /// visible shell syntax `prefix_matches` already reads correctly.
     /// Firing on those too would silently "fix" -- i.e. narrow away --
     /// this module's own DOCUMENTED prefix-match limit (`deny bash:git

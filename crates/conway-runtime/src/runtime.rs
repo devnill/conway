@@ -913,7 +913,7 @@ impl Runtime {
     /// `RuntimeError::Store(StoreError::NotFound { .. })` — already a typed
     /// `RuntimeError` via `#[from]`, not a panic and not a `create` — for an
     /// unknown or record-less session id) and registers it into
-    /// `Runtime.agents`/`AgentTree` through the same [`Runtime::launch_agent`]
+    /// `Runtime.agents`/`AgentTree` through the same `Runtime::launch_agent`
     /// path `start_root` uses, so `prompt`/`cancel`/`tree`/`context_report`
     /// all work on the returned `AgentId` exactly as they do for a
     /// `start_root` agent.
@@ -1302,7 +1302,7 @@ impl Runtime {
     /// than the live `last_report` slot -- history only exists in the
     /// store, since the slot only ever holds the most recent turn. This is
     /// also what makes the method work across a process restart: it
-    /// resolves `agent`'s `SessionId` via [`Runtime::resolve_session`],
+    /// resolves `agent`'s `SessionId` via `Runtime::resolve_session`,
     /// which falls back to a store scan when `agent` is unknown to this
     /// `Runtime` instance's in-memory `agents` map (e.g. a fresh `Runtime`
     /// over the same store). An out-of-range `turn` returns a typed error

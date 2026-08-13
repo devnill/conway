@@ -426,7 +426,7 @@ pub struct ToolOutput {
 /// segment) and the tool set announced to the model for this turn.
 ///
 /// **Tool announcement vs. execution (WI-126):** `tools` here is what the
-/// model is TOLD it may call -- distinct from [`PermissionGate`], which
+/// model is TOLD it may call -- distinct from [`crate::ports::PermissionGate`], which
 /// governs whether a call the model actually makes is allowed to run.
 /// Narrowing `tools` hides a tool from the model entirely (it can never
 /// propose calling it this turn); `PermissionGate` still gates every

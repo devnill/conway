@@ -152,7 +152,7 @@ impl SessionHandle {
     /// `Runtime::prompt(agent, text)` already accepts any agent id (WI-118's
     /// generalization, unmodified by this item) -- this method is a thin
     /// wrapper that additionally resolves `agent`'s owning `SessionId` (via
-    /// [`Self::resolve_agent_session`], the same resolution
+    /// `Self::resolve_agent_session`, the same resolution
     /// [`Self::agent_events`] uses) so the returned [`TurnHandle`] is scoped
     /// correctly, and subscribes to the live bus BEFORE appending the
     /// prompt -- the same subscribe-before-act ordering [`Self::prompt`]'s
@@ -308,7 +308,7 @@ impl SessionHandle {
 
     /// Replays persisted envelopes for this session from `seq` onward, then
     /// switches to the live broadcast. See
-    /// [`EventStream::replay_then_live`] and [`record_to_event`] for the
+    /// `EventStream::replay_then_live` and `record_to_event` for the
     /// disclosed reconciliations this method's replay batch depends on --
     /// in particular, what the replay/live junction does and does not
     /// guarantee about duplicates.
@@ -366,7 +366,7 @@ impl SessionHandle {
     /// generalized from "this handle's own root" to an arbitrary `agent`
     /// this handle's tree can reach: subscribe to the live bus BEFORE
     /// reading the persisted store, so nothing broadcast in between is
-    /// missed, then let [`EventStream::replay_then_live`]'s junction-dedup
+    /// missed, then let `EventStream::replay_then_live`'s junction-dedup
     /// drop the resulting duplicate. See that method's doc for the
     /// mechanism and its disclosed residual gap; see `record_to_event`'s
     /// doc for the (also disclosed) `LogRecord` -> `Event` mapping the
@@ -378,7 +378,7 @@ impl SessionHandle {
     /// be implemented as written. Resolving `agent` to its owning
     /// `SessionId` (an as-yet-not-necessarily-live agent may belong to a
     /// DIFFERENT session than `self.session` -- see
-    /// [`SessionHandle::resolve_agent_session`]) and reading its own
+    /// `SessionHandle::resolve_agent_session`) and reading its own
     /// records both require `SessionStore` I/O, which is `async` and
     /// fallible (`Err` on an unknown/foreign `agent`, exactly like
     /// [`SessionHandle::transcript`]). This method is `pub async fn ... ->
@@ -406,7 +406,7 @@ impl SessionHandle {
     /// read [`Self::session_usage`] already performs, and for the same
     /// reason that method's doc explains: an inherited fork/spawn prefix is
     /// the PARENT's own prior conversation, not this agent's. Building the
-    /// replay from [`Self::effective_transcript`] (as this method used to)
+    /// replay from `Self::effective_transcript` (as this method used to)
     /// prepended that parent conversation ahead of the focused agent's own
     /// records, so switching focus to a spawned or forked child appeared to
     /// show "the previous chat log" -- the parent's, not the child's. This
@@ -542,7 +542,7 @@ impl SessionHandle {
     /// agent's. Summing the effective transcript here would double-count
     /// the same tokens under two different agents' cumulative totals, so
     /// this reads only `agent`'s own session records, `[0, head)`, the same
-    /// way [`Self::effective_transcript`]'s inner read does for one link of
+    /// way `Self::effective_transcript`'s inner read does for one link of
     /// the chain -- just without walking `SessionMeta.origin` at all.
     ///
     /// **Not [`Self::context_report`]'s `total_tokens_est`:** that number is

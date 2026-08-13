@@ -170,7 +170,7 @@ impl Backend for OpenAiCompatBackend {
     /// shape, and any per-provider quirks `wire::build_request_body`
     /// applies — distinct from `AnthropicBackend`'s native Messages body,
     /// estimates its size locally with
-    /// [`crate::admission::estimate_wire_tokens`] (no network I/O; no
+    /// `crate::admission::estimate_wire_tokens` (no network I/O; no
     /// OpenAI-compatible server this crate targets even exposes a
     /// count-tokens endpoint), then calls the ONE shared arithmetic helper,
     /// [`check_admission`], for the fits/shortfall comparison rather than

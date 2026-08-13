@@ -32,7 +32,7 @@ struct GlobArgs {
 }
 
 /// Finds files under a search root matching a glob pattern. Walks
-/// gitignore-aware (via [`crate::fs::walk_files`]); results are ordered by
+/// gitignore-aware (via `crate::fs::walk_files`); results are ordered by
 /// file mtime descending, ties broken lexicographically by relative path.
 #[derive(Debug, Default)]
 pub struct GlobTool;

@@ -18,7 +18,7 @@ fn boundary_index(segments: &[PromptSegment]) -> Option<usize> {
 }
 
 /// `blake3(model_id ‖ canonical_bytes(segments[0..=B]))`, where `B` is
-/// [`boundary_index`] (architecture §5.3).
+/// `boundary_index` (architecture §5.3).
 ///
 /// Deliberately excludes each segment's `id` and `cache_hint`: `id` is
 /// derived per-agent (so sibling agents forked at the same point get

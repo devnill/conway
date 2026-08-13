@@ -131,7 +131,7 @@ pub use conway_core::error::ConwayError as CoreConwayError;
 /// The extension surface -- there is exactly one extension mechanism, and
 /// this is it: every type a crate depending only on
 /// `conway` needs to implement [`Plugin`], [`Tool`], [`ContextHook`], and
-/// (board item 01KZS00JP5QNBJSSHNFP9C47GM) [`HookRunner`] against the
+/// (board item 01KZS00JP5QNBJSSHNFP9C47GM) [`plugin::HookRunner`] against the
 /// public API.
 ///
 /// WHY A MODULE, NOT FLAT ROOT RE-EXPORTS (F8 decide-and-state): the root

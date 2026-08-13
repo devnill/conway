@@ -29,7 +29,7 @@
 //! error.rs` is out of this item's file scope. Following the same
 //! "closest fit" convention `tree.rs`'s `already_attached` established for
 //! the identical situation (a gap this crate cannot add a variant for),
-//! [`turn_out_of_range`] maps to `RuntimeError::Tool(ToolError::Internal {
+//! `turn_out_of_range` maps to `RuntimeError::Tool(ToolError::Internal {
 //! detail })`, with `detail` naming the valid turn range in text --
 //! satisfying the criterion's "typed error naming the valid range" without
 //! adding a variant to a crate outside this item's scope. (`subagent.rs`'s

@@ -753,7 +753,7 @@ impl SessionStore for JsonlSessionStore {
         Ok(sf.head)
     }
 
-    /// Delegates verbatim to [`crate::fork::fork_impl`] (WI-048), which
+    /// Delegates verbatim to `crate::fork::fork_impl` (WI-048), which
     /// implements fork-by-reference: a single header write that references
     /// `parent` by `(parent, at_seq, mode)` and copies zero records.
     async fn fork(

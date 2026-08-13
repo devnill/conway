@@ -687,7 +687,7 @@ impl PermissionBroker {
     /// failure; the broker itself never panics on untrusted input.
     ///
     /// `base` is the directory a RELATIVE `paths_under` prefix resolves
-    /// against (B2 -- see [`canonicalize_when`]`s own doc for why this is an
+    /// against (B2 -- see `canonicalize_when``s own doc for why this is an
     /// explicit parameter and never an implicit process-cwd read). It is
     /// ignored for every other `when` clause, and for an absolute prefix.
     pub fn remember_pattern_rule(

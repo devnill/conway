@@ -9,8 +9,8 @@
 //! human-readable one-liner from the tool" — `conway_core::ports::Tool` now
 //! has exactly that method (`Tool::render`, with a default reproducing the
 //! old generic `name(args)` shape for any tool that doesn't need something
-//! more specific). [`render_call`] calls it on the resolved tool instance
-//! and sanitizes the result ([`sanitize_rendered`]) before it becomes
+//! more specific). `render_call` calls it on the resolved tool instance
+//! and sanitizes the result (`sanitize_rendered`) before it becomes
 //! `AuthorizedCall::rendered` — the single seam every consumer of
 //! `rendered` (the permission prompt, `Event::PermissionRequested`,
 //! `PatternRule` prefix matching) shares. Previously this synthesized a
