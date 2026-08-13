@@ -253,4 +253,21 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, ToolError::Cancelled));
     }
+
+    /// Board item 01KZVZ56SBPSTZHAXXGYCNETNX: driven through this tool's
+    /// production `invoke` entry point, not `resolve_path` in isolation --
+    /// `path` is optional here, so this also proves the `Some(p)` branch
+    /// actually reaches the shared resolver.
+    #[tokio::test]
+    async fn invoke_rejects_nul_byte_in_path() {
+        let (ctx, _h) = test_ctx(PathBuf::from("/tmp"));
+        let err = GrepTool::new()
+            .invoke(
+                call(serde_json::json!({"pattern": "fn", "path": "a\0b"})),
+                ctx,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ToolError::InvalidArguments { .. }));
+    }
 }

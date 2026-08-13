@@ -227,4 +227,18 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, ToolError::Cancelled));
     }
+
+    /// Board item 01KZVZ56SBPSTZHAXXGYCNETNX: a NUL byte in `path` is
+    /// rejected reaching THIS tool's production `invoke` entry point, not
+    /// merely by `resolve_path` in isolation -- proving `read` actually
+    /// calls the shared resolver rather than restating it.
+    #[tokio::test]
+    async fn invoke_rejects_nul_byte_in_path() {
+        let (ctx, _h) = test_ctx(PathBuf::from("/tmp"));
+        let err = ReadTool::new()
+            .invoke(call(serde_json::json!({"path": "a\0b"})), ctx)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ToolError::InvalidArguments { .. }));
+    }
 }
