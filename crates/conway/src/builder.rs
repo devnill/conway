@@ -898,7 +898,11 @@ impl ConwayBuilder {
         };
 
         // 8. Store: injected, else JsonlSessionStore::open (jsonl-store
-        //    feature), else a Build error.
+        //    feature), else a Build error. NOTE the feature decides only
+        //    whether THIS default is available -- `conway-session` is linked
+        //    either way, via `conway-runtime`'s unconditional dependency on
+        //    it (forward declaration, board 01KZVYVTVWRH20R6VJ6G3SWTJ6; see
+        //    `Cargo.toml`'s own comment on the feature).
         let store: Arc<dyn SessionStore> = match store {
             Some(store) => store,
             None => build_default_store(&cwd, &config.session.root)?,
@@ -1223,6 +1227,11 @@ fn build_default_store(cwd: &Path, root: &Path) -> Result<Arc<dyn SessionStore>>
     Ok(Arc::new(store))
 }
 
+/// The `jsonl-store`-off arm. Reached when the feature is disabled and no
+/// store was injected -- note this is the ONLY thing the feature changes.
+/// `conway-session` is still linked (via `conway-runtime`); what is gone is
+/// this crate's ability to name `conway_session::JsonlSessionStore` and wire
+/// it by default. Forward declaration, board 01KZVYVTVWRH20R6VJ6G3SWTJ6.
 #[cfg(not(feature = "jsonl-store"))]
 fn build_default_store(_cwd: &Path, _root: &Path) -> Result<Arc<dyn SessionStore>> {
     Err(ConwayError::Build {

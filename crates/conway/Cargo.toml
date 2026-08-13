@@ -18,6 +18,21 @@ description = "Embeddable facade over the conway agent harness: config, builder,
 # should not be something you recompile to get a backend from).
 default = ["builtin-tools", "jsonl-store"]
 builtin-tools = ["dep:conway-tools"]
+# FORWARD DECLARATION -- read this before concluding what turning it off does.
+# `jsonl-store` governs DEFAULT WIRING, not linkage. Turning it off stops
+# `ConwayBuilder::build` from constructing a `JsonlSessionStore` for you (you
+# must then call `with_session_store` yourself, and the build error says so),
+# but it does NOT unlink the JSONL crate: `conway-runtime` depends on
+# `conway-session` unconditionally (`crates/conway-runtime/Cargo.toml`), so it
+# is compiled into every build of this facade regardless of this feature. A
+# reader on default features -- which is everyone who has not thought about
+# it -- would reasonably conclude the opposite from the name.
+#
+# Board item 01KZVYVTVWRH20R6VJ6G3SWTJ6 ("Cut the runtime's dependency on the
+# JSONL adapter", Stage 1a) makes the name true by moving `TranscriptResolver`
+# and the provenance helpers into core, and must delete this comment when it
+# lands. Pinned meanwhile by the T5 guard in
+# `crates/conway/tests/architecture_invariants.rs`.
 jsonl-store = ["dep:conway-session"]
 # Empty on purpose (WI-097 scope: config schema/discovery/merge only, no
 # HTTP client). Declared so `#[cfg(feature = "metadata-refresh")]` in

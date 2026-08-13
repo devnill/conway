@@ -9,6 +9,12 @@ description = "Domain types and port traits for the conway agent harness"
 
 [features]
 default = []
+# FORWARD DECLARATION: `fakes` compiles test doubles for every port into this
+# contract crate, which the crate's own description ("Domain types and port
+# traits") does not lead a reader to expect. It is also unreachable by a third
+# party -- the `conway` facade enables it only under `[dev-dependencies]`.
+# Board item 01KZVYWNA24EYMPVW3NPGBW51M extracts them into `conway-testkit`
+# and must delete this feature and this comment when it lands.
 fakes = []
 
 [dependencies]

@@ -573,8 +573,12 @@ impl SessionHandle {
     /// **Reconciliation (disclosed):** this item's binding notes name
     /// `conway_session::TranscriptResolver` as the mechanism. It cannot be
     /// used directly here: `crates/conway/Cargo.toml` (WI-096, out of this
-    /// item's file scope) gates the `conway-session` dependency behind the
-    /// optional `jsonl-store` feature, but `SessionHandle` is core surface
+    /// item's file scope) gates this crate's own direct `conway-session`
+    /// dependency behind the optional `jsonl-store` feature -- which is a
+    /// gate on NAMING `conway_session::` from this crate, not on linking it,
+    /// since `conway-runtime` depends on it unconditionally (forward
+    /// declaration, board 01KZVYVTVWRH20R6VJ6G3SWTJ6). The reconciliation
+    /// below is unaffected either way: `SessionHandle` is core surface
     /// and must stay feature-independent (this item's own test matrix runs
     /// `--no-default-features`). Depending on `conway_session::` here
     /// unconditionally would not compile under that configuration; gating

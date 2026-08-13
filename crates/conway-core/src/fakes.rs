@@ -1,10 +1,20 @@
 //! In-crate test doubles for every port trait, gated behind `feature =
 //! "fakes"`.
 //!
-//! These are the only trait implementations `conway-core` is permitted to
-//! contain (every other implementation lives in a dedicated crate). They
-//! exist so `conway-runtime` (and any other consumer) can be developed and
-//! tested end-to-end with zero network and zero filesystem access (GP-04).
+//! These are the only trait implementations `conway-core` contains (every
+//! other implementation lives in a dedicated crate). They exist so
+//! `conway-runtime` (and any other consumer) can be developed and tested
+//! end-to-end with zero network and zero filesystem access (GP-04).
+//!
+//! **FORWARD DECLARATION — this module is in the wrong crate, and it is
+//! scheduled to leave.** A contract crate that presents itself as ports and
+//! domain types should not also ship the doubles for those ports; today it
+//! does. The gap is not only tidiness: because `conway`'s facade enables
+//! `fakes` on `conway-core` under `[dev-dependencies]` only, a third party
+//! depending on `conway` cannot reach any of these at all, so they serve
+//! this workspace and nobody else. Board item 01KZVYWNA24EYMPVW3NPGBW51M
+//! ("Extract conway-testkit", Stage 1b) moves them to a crate of their own
+//! and makes them reachable, and **must delete this label when it lands.**
 //!
 //! All state is `std::sync::{Mutex, RwLock}` — no tokio, no async runtime
 //! primitives. `#[async_trait]` methods do their work synchronously inside

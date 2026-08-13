@@ -43,7 +43,8 @@ port trait; every other crate is either an adapter implementing those ports,
 or a consumer wiring adapters together.
 
 ```
-conway-core        domain types + port traits. No I/O, no tokio-net. Also
+conway-core        domain types + port traits. No tokio-net. No I/O *except*
+                    `containment.rs` (see below). Also
                     where `MinimalRouter` lives — the config-only `Router`
                     a default build resolves roles with (§3.3); there is no
                     dedicated routing crate, and no dedicated backend-adapter
@@ -54,6 +55,24 @@ conway-runtime     The agent loop, context assembly, fork/spawn orchestration.
 conway             The public facade: ConwayBuilder, Conway, SessionHandle.
 conway-cli         The `conway` binary: one-shot mode and the TUI.
 ```
+
+**Two forward declarations in that first row.** Both are labeled at their
+declaration sites in `conway-core` itself, and both are scheduled:
+
+- **`conway-core` does I/O today, in exactly one file.**
+  `crates/conway-core/src/containment.rs` calls `std::fs::canonicalize` when
+  constructing a `CanonicalRoot` and again in its walk-up loop — a
+  symlink-aware containment check cannot be pure computation. Exactly one
+  file, pinned by a CI guard
+  (`crates/conway/tests/architecture_invariants.rs`, T2) that fails if a
+  second one starts. Board item 01KZDC30CBY9CPJ8YEM7HSRV0Y moves confinement
+  into `conway.fs` and closes it.
+- **`conway-core` ships test doubles.** `feature = "fakes"` compiles a full
+  set of port doubles into the contract crate. Board item
+  01KZVYWNA24EYMPVW3NPGBW51M extracts them into `conway-testkit`, which also
+  makes them reachable by a third party — today they are unreachable outside
+  this workspace, since the facade enables `fakes` only under
+  `[dev-dependencies]`.
 
 This is the fixed core layout; it does not include the first-party plugin
 tier (§2b), whose crate count grows independently of it — notably
