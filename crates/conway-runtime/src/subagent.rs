@@ -74,7 +74,7 @@
 //! variant for exactly this: a caller-supplied `SubagentSpec` (or
 //! `ResumeSpec`) that fails a runtime-side consistency check
 //! `SubagentSpec::validate` cannot perform itself (that method does no I/O).
-//! [`invalid_spec`] below is the one place this crate constructs it, reused
+//! `invalid_spec` below is the one place this crate constructs it, reused
 //! by both `start` (this file) and `runtime.rs`'s `resume_root` (the
 //! resumed-`cwd` x persisted-`root` check) so every spec-shaped rejection in
 //! this crate goes through the same helper. `conway_core::ports::subagent::

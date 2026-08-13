@@ -95,7 +95,7 @@
 //! terminal path. The tool-outcome loop also runs every dispatched call
 //! through a [`crate::step_digest::StepDigest`], emitting `Event::RepeatedStep`
 //! plus an injected `SystemNote` the instant a `(tool, canonical-args)`
-//! digest is seen a 3rd time. Both are locals inside [`Self::run_inner`],
+//! digest is seen a 3rd time. Both are locals inside `AgentLoop::run_inner`,
 //! not new fields on `AgentLoop`/[`AgentSpec`] -- see `result.rs`'s module
 //! doc for why (both structs are constructed via field literals in files
 //! outside this item's original scope: `runtime.rs`, `subagent.rs`, and
@@ -111,7 +111,7 @@
 //! construct `AgentSpec` by field literal -- a file-scope extension the
 //! coordinator explicitly authorized (this item's Self-Check) after the
 //! initial implementation flagged the conflict rather than silently
-//! expanding scope. The natural-completion branch of [`Self::run_inner`]
+//! expanding scope. The natural-completion branch of `AgentLoop::run_inner`
 //! enforces the contract when present: `Ok` proceeds to `Completed`;
 //! the first failure appends a `SystemNote { reason:
 //! "result_contract_violation" }` and gives the agent one more turn
@@ -248,14 +248,14 @@ pub struct LoopDeps {
     /// `LoopDeps` construction time -- `Runtime::set_context_hook` (a new,
     /// purely additive method) sets this post-construction, before any
     /// agent starts running, and every turn reads it fresh via
-    /// [`AgentLoop::context_hook`]. `None` (the default every existing
+    /// `AgentLoop::context_hook`. `None` (the default every existing
     /// construction site gets, unchanged) means this loop never invokes
     /// anything named `ContextHook` at all -- not even a no-op call -- so
     /// `run_inner`'s assembly, routing, and overflow handling stay
     /// byte-identical to pre-WI-126 behavior. `Some` is invoked once per
     /// turn (`ContextHook::before_request`) and, only on a T-1
-    /// `ContextTooLarge`, up to [`MAX_OVERFLOW_ATTEMPTS`] additional times
-    /// (`ContextHook::on_overflow`) -- see [`AgentLoop::route_and_attempt`].
+    /// `ContextTooLarge`, up to `MAX_OVERFLOW_ATTEMPTS` additional times
+    /// (`ContextHook::on_overflow`) -- see `AgentLoop::route_and_attempt`.
     pub context_hook: RwLock<Option<Arc<dyn ContextHook>>>,
 }
 
@@ -299,7 +299,7 @@ pub struct AgentLoop {
     /// `conway-session`, not here).
     pub inherited: Option<InheritedPrefix>,
     /// This agent's own inbox (WI-085). Drained exactly once per turn
-    /// boundary by [`Self::drain_inbox`] -- never read anywhere else, which
+    /// boundary by `Self::drain_inbox` -- never read anywhere else, which
     /// is what makes the turn-boundary landing guarantee hold by
     /// construction.
     pub inbox: MailboxReceiver,
@@ -310,7 +310,7 @@ pub struct AgentLoop {
     pub parent_mailbox: Option<MailboxSender>,
     /// Set by a drained `AgentMessage::Cancel { hard: false, .. }`;
     /// consumed (and cleared) by the top-of-turn cancel check in
-    /// [`Self::run_inner`], which is what gives a soft cancel its
+    /// `Self::run_inner`, which is what gives a soft cancel its
     /// turn-boundary semantics. A hard cancel never touches this field --
     /// it trips `cancel` directly at enqueue time instead (see
     /// `mailbox.rs`'s module doc). Every constructor should set this to
@@ -348,7 +348,7 @@ pub struct AgentLoop {
 /// exactly the bug a `keep_alive` session hits without this gate: its task
 /// would `finish(Completed)` and end after the first turn, so a SECOND
 /// `Runtime::prompt` on the same live session finds no task left to notify
-/// (see `Runtime::prompt`'s doc). [`AgentLoop::run_inner`]'s
+/// (see `Runtime::prompt`'s doc). `AgentLoop::run_inner`'s
 /// natural-completion branch sets `awaiting_prompt: true` and `continue`s
 /// instead of returning when `AgentSpec::keep_alive` is `true`, landing in
 /// the exact same top-of-loop wait `resume_root` already gates its first
@@ -356,7 +356,7 @@ pub struct AgentLoop {
 ///
 /// `start_root` with `keep_alive: false` (and every fork/spawn child built
 /// by `subagent.rs`) leaves this at its `Default` --
-/// `awaiting_prompt: false` -- so [`AgentLoop::run_inner`]'s gate is skipped
+/// `awaiting_prompt: false` -- so `AgentLoop::run_inner`'s gate is skipped
 /// entirely on the very first check and every turn behaves exactly as it did
 /// before WI-118. `Runtime::resume_root` sets `awaiting_prompt: true` up
 /// front; a `keep_alive` agent starts with it `false` (its first turn runs
@@ -688,7 +688,7 @@ impl AgentLoop {
     /// Runs turns until a terminal result is produced. Infallible in return
     /// type: every internal failure (store I/O, routing, backend, budget,
     /// cancellation) is folded into a non-`Completed` [`AgentResult`] by
-    /// [`Self::finish`]/[`Self::finish_error`] rather than propagated.
+    /// `Self::finish`/`Self::finish_error` rather than propagated.
     pub async fn run(mut self) -> AgentResult {
         match self.run_inner().await {
             Ok(result) => result,

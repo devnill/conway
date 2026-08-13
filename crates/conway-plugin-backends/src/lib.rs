@@ -8,13 +8,13 @@
 //! [`openai_compat::OpenAiCompatBackend`] adapters, plus, since this item,
 //! the [`BackendFactory`](conway_core::ports::BackendFactory)
 //! implementations ([`AnthropicBackendFactory`], [`OpenAiCompatBackendFactory`]
-//! — see [`factory`]'s own module doc for exactly what makes each attach by
+//! — see `factory`'s own module doc for exactly what makes each attach by
 //! default) that used to be `crates/conway/src/builder.rs`'s own
 //! `build_anthropic`/`build_openai_compat`/`resolve_profile`/
 //! `load_provider_profiles`/`probe_openai_compat_backends` — relocated here,
 //! not reimplemented. This crate performs no routing/policy decisions and no
 //! retry across backends: a single `generate`/`stream` call targets one
-//! endpoint, and the bounded transport-retry policy in [`http`] retries at
+//! endpoint, and the bounded transport-retry policy in `http` retries at
 //! most twice against that same endpoint (module boundary rule).
 //!
 //! [`openai_compat`] (WI-019) was the first adapter; [`anthropic`] (WI-021)

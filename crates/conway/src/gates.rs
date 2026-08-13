@@ -190,12 +190,12 @@ fn matched_value(arguments: &serde_json::Value) -> String {
 /// `DenyWithFeedback` (not `Deny`) is used for every rejection so the model
 /// can see and adapt to the denial in structured output.
 ///
-/// See [`matched_value`] for a caveat on which tools a `denied` glob pattern
+/// See `matched_value` for a caveat on which tools a `denied` glob pattern
 /// reliably matches against.
 ///
 /// An **allowed** `tool_name(pattern)` entry never matches a value carrying
 /// a shell metacharacter (`;`, `|`, `&`, backtick, ...) when the tool's own
-/// `render_kind` is `ShellCommand` -- see [`ArgMatcher::allows`]. A **bare**
+/// `render_kind` is `ShellCommand` -- see `ArgMatcher::allows`. A **bare**
 /// `tool_name` entry is unaffected: it already grants unrestricted access to
 /// that tool, so there is nothing narrower for the metacharacter check to
 /// protect.
@@ -209,7 +209,7 @@ impl AllowListGate {
     /// `tool_name(arg_glob)`.
     ///
     /// This constructor cannot fail: a malformed glob pattern degrades to a
-    /// literal match on that exact pattern string (see [`ArgMatcher::Literal`])
+    /// literal match on that exact pattern string (see `ArgMatcher::Literal`)
     /// rather than returning `Err` or panicking, so `allowed`/`denied` built
     /// from untrusted config never abort startup.
     pub fn new(allowed: Vec<String>, denied: Vec<String>) -> AllowListGate {

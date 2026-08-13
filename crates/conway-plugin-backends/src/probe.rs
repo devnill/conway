@@ -157,7 +157,7 @@ pub struct CapabilityProbe {
 impl CapabilityProbe {
     /// `timeout` sizes the underlying `HttpClient`'s base client timeout;
     /// every individual discovery request additionally caps itself at
-    /// [`DISCOVERY_TIMEOUT`] regardless of this value.
+    /// `DISCOVERY_TIMEOUT` regardless of this value.
     pub fn new(
         base: Url,
         profile: Profile,

@@ -61,7 +61,7 @@
 //!    `Conway::resume` now returns a drivable handle, and
 //!    `Conway::fork_from`'s child is registered live too (genuinely
 //!    inheriting the parent's context via the shared `TranscriptResolver`
-//!    walk). [`resolve_session`] now drives all three flags for real:
+//!    walk). `resolve_session` now drives all three flags for real:
 //!    - `--session <new-id>`: `conway.new_session(SessionSpec { id: Some(sid), .. })`
 //!      creates exactly that id (an existence probe via `conway.resume`
 //!      first turns a collision into a usage error naming `--resume`
@@ -90,9 +90,9 @@
 //!      a silent drop.
 //!
 //!    Every arm now returns a live [`SessionHandle`] straight from
-//!    [`resolve_session`], which is why the flag-free default arm and
+//!    `resolve_session`, which is why the flag-free default arm and
 //!    these three no longer need to diverge in [`run`]'s own driving loop
-//!    -- the now-single-outcome-shape [`resolve_session`] dropped its
+//!    -- the now-single-outcome-shape `resolve_session` dropped its
 //!    former `SessionOutcome::Done` branch entirely (nothing produces it
 //!    any more).
 

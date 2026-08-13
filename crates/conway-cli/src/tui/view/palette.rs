@@ -1,7 +1,8 @@
 //! The slash-command palette (WI-127 criterion 3): a static, hand-kept
 //! command table plus a pure prefix-filter over it. Typing `/` in the input
 //! line shows every command; each further character narrows the list live,
-//! since [`matches`] is called fresh on every render off the live
+//! since `matches` (the function in this module, not the std macro) is
+//! called fresh on every render off the live
 //! `AppState::input` -- there is no separate "palette is open" flag to fall
 //! out of sync.
 //!

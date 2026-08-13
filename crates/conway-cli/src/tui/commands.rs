@@ -49,7 +49,7 @@ pub enum SlashCommand {
     /// `agent` is `None` for a BARE `/fork`/`/fork <directive>` (WI "bare
     /// /spawn & /fork open an interactive session"): the child is created
     /// as a fresh, interactive KEEP-ALIVE session forked from the FOCUSED
-    /// agent -- see [`execute`]'s own `Fork` arm and [`parse_fork`] for the
+    /// agent -- see [`execute`]'s own `Fork` arm and `parse_fork` for the
     /// exact forms this covers. `agent` is `Some` only for the explicit-
     /// target form `/fork @<agent> <directive>` (this item's generalization
     /// of the pre-existing `/fork <agent> <directive>`, unchanged in
@@ -575,7 +575,7 @@ async fn bare_spawn<H: Host>(
 ///   `SlashCommand`, which would re-classify the free text and loop). The
 ///   recipe may have been cross-classified (user typed `/fork`, classifier
 ///   said `spawn`); `intent.agent_def` is honored only for `Spawn`
-///   ([`bare_fork`] builds its `ForkSpec` with `agent_def` always unset --
+///   (`bare_fork` builds its `ForkSpec` with `agent_def` always unset --
 ///   see that function's own body -- so a classifier-returned `agent_def`
 ///   on a `Fork` recipe is ignored, matching `AgentIntent`'s own doc: the
 ///   def is the OPTIONAL garnish; the child still inherits whatever def the

@@ -319,13 +319,30 @@ open-source release, so code hygiene, licensing, and dependencies must be
 release-ready throughout, with no proprietary or unlicensable dependencies.
 `docs/` is the public face and is held to that standard.
 
-> **Unsettled, flagged rather than papered over.** That constraint's text
-> forbids only *unlicensable* dependencies, but it is routinely cited as
-> forbidding *new* dependencies at all, and the practice is uniformly the strict
-> reading. Either the constraint should say what everyone cites it for, or those
-> citations are wrong. Both cannot stand, and it has not been ruled on. Until it
-> is, treat the strict reading as operative and justify any new dependency
-> against the zero-dependency path.
+**Dependency minimalism is operative, and it is now the rule rather than a
+practice.** This was flagged as unsettled from 2026-08-06: the constraint's text
+forbade only *unlicensable* dependencies, while it was routinely cited as
+forbidding *new* ones, and the practice was uniformly the strict reading. Ruled
+on 2026-08-12 in favour of the strict reading, so the two now agree:
+
+- **Any new dependency is justified against the zero-dependency path**, in the
+  change that adds it. "What would it cost to not have this?" is the question,
+  and for a harness this small the answer is often "less than you think" — the
+  worked examples are `directories` (kept: XDG precedence is a real
+  cross-platform contract, not arithmetic) and the several places a helper was
+  written inline instead, each noted at its own site.
+- **Expect the answer to be no.** The bar is not "this crate is good"; it is
+  "the zero-dependency path is worse, and here is why".
+- **Tooling whose purpose is enforcing licensing or dependency policy is
+  exempt.** Without this carve-out the rule forbids its own enforcement:
+  `cargo-deny` is a new dependency, and under the strict reading with no
+  exception the tool that checks the constraint would be forbidden by it. The
+  exemption is narrow — it covers tools that *check* the policy, not tools that
+  are merely useful to have.
+
+The exemption is not a general "CI tools are free" clause. A dependency added
+under it must be a policy checker, must run in CI rather than ship in the
+binary, and must be named here or in the change that adds it.
 
 **Publishing to crates.io is deferred with intent**, not refused and not
 undecided. It will happen; it is not a priority now, and it has no connection to

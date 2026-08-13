@@ -1092,7 +1092,7 @@ impl Conway {
     /// asymmetry above exists to rule out -- an unenforceable narrowing rule
     /// denies rather than silently matching nothing.
     ///
-    /// `scope` is the [`PermissionScope`] every installed ALLOW rule is
+    /// `scope` is the [`crate::PermissionScope`] every installed ALLOW rule is
     /// remembered at (`deny`/`prompt` rules are unscoped by design -- they
     /// only ever narrow, so they apply to every requester). The TUI passes
     /// `Session`; an embedder that loads a file on behalf of ONE agent (or
@@ -1248,7 +1248,7 @@ impl Conway {
     /// [`TrustPermissionReport`] carrying the number of allow rules
     /// ACTUALLY installed by the broker AND any typed registration errors
     /// for rules the broker refused to install (B3: a `paths_under` prefix
-    /// that fails to canonicalize). `scope` is the [`PermissionScope`] the
+    /// that fails to canonicalize). `scope` is the [`crate::PermissionScope`] the
     /// rules are remembered at, exactly as in
     /// [`Self::load_permission_files`].
     ///
@@ -2111,7 +2111,7 @@ impl Conway {
     /// **Cross-process liveness (S1 follow-up):** BEFORE reaping, the sweep
     /// asks the store for its cross-process liveness marker
     /// ([`SessionStore::live_owner`]). If a marker is present AND its
-    /// `heartbeat` is within [`SWEEP_LIVE_THRESHOLD`] (60s) of now, ANOTHER
+    /// `heartbeat` is within `SWEEP_LIVE_THRESHOLD` (60s) of now, ANOTHER
     /// process is actively using this store directory, so the sweep returns
     /// `Ok(0)` immediately — it defers ENTIRELY rather than risk purging
     /// that process's open modal-ask child (which is not in THIS runtime's

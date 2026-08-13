@@ -127,7 +127,7 @@ pub struct CapabilityInputs<'a> {
 /// the three fields `ModelOverrides` can set, so those three follow the
 /// full `overrides > metadata > dialect_defaults` chain (with
 /// `reliability_tier` additionally falling back to
-/// [`quantization_tier_hint`] between `metadata`'s explicit tier and the
+/// `quantization_tier_hint` between `metadata`'s explicit tier and the
 /// dialect default, per `ModelMetadata::quantization`'s documented
 /// heuristic). `tool_calling`, `structured_output`, and `reasoning` have no
 /// override field, so they resolve as `metadata > dialect_defaults` (with
