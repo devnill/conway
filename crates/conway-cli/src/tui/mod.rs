@@ -11,7 +11,7 @@
 //! terminal never emits `Event::Paste` at all, and a pasted block arrives as
 //! a flood of ordinary key events instead of one atomic paste (`app.rs`'s
 //! `CEvent::Paste` arm handles the event; THIS is what makes the terminal
-//! send it in the first place). Disabled in [`restore_terminal`] alongside
+//! send it in the first place). Disabled in `restore_terminal` alongside
 //! raw mode and the alternate screen, on every exit path.
 
 pub mod app;

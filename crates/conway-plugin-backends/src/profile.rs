@@ -10,7 +10,7 @@
 //! already grouped. [`Profile`] is that struct. The five dialects this
 //! crate shipped before this item (`openai`, `ollama`, `vllm_hermes`,
 //! `lm_studio`, `llama_cpp_server`) are now [`Profile`] values embedded as
-//! data ([`BUILT_IN_PROFILES`]) rather than Rust match arms, plus a sixth,
+//! data (`BUILT_IN_PROFILES`) rather than Rust match arms, plus a sixth,
 //! `kimi` (the Moonshot platform API — distinct from the already-shipped
 //! Kimi Code Anthropic-compatible path, see `docs/providers.md`).
 //! `crate::config::Dialect` is kept as a small, `Copy`, five-variant
@@ -30,7 +30,7 @@
 //! name must be a loud, typed error naming the field rather than a silently
 //!-defaulted behavior change. Those two requirements point at different
 //! knobs — `#[serde(default)]` on every field solves the first; rejecting
-//! *unrecognized* fields solves the second. [`ProfileRaw`] (the wire shape
+//! *unrecognized* fields solves the second. `ProfileRaw` (the wire shape
 //! [`Profile`] deserializes through, mirroring `AnthropicConfigRaw`'s
 //! `TryFrom` pattern in `config.rs`) sets `#[serde(deny_unknown_fields)]` for
 //! exactly this reason: a field this binary doesn't recognize is far more
@@ -207,7 +207,7 @@ impl TryFrom<ProfileRaw> for Profile {
 /// what used to be a `Dialect` match arm in `dialect.rs`/`wire.rs`/
 /// `tool_calls/mod.rs` plus a `capabilities.rs` `*_defaults()` function.
 ///
-/// Constructed only via [`ProfileRaw`]'s `TryFrom` (`#[serde(try_from =
+/// Constructed only via `ProfileRaw`'s `TryFrom` (`#[serde(try_from =
 /// "ProfileRaw")]`), so a `Profile` value can never carry an empty `id`.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(try_from = "ProfileRaw")]
@@ -297,7 +297,7 @@ struct ProfileFile {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProfileOrigin {
     /// One of the profiles embedded in this crate at compile time
-    /// ([`BUILT_IN_PROFILES`]).
+    /// (`BUILT_IN_PROFILES`).
     BuiltIn,
     /// Loaded from a file at this path (project- or global-scoped
     /// `.conway/profiles.toml`; see `conway::config::discovery`).
@@ -454,7 +454,7 @@ kind = "implicit_prefix"
 min_prefix_tokens = 256
 "#;
 
-/// A resolved set of [`Profile`]s: the compile-time [`BUILT_IN_PROFILES`]
+/// A resolved set of [`Profile`]s: the compile-time `BUILT_IN_PROFILES`
 /// plus zero or more user-supplied files layered over them, each entry
 /// tracking its [`ProfileOrigin`] — the "what is loaded" inspection surface
 /// (`list`).
@@ -465,7 +465,7 @@ pub struct ProfileStore {
 
 impl ProfileStore {
     /// The compile-time-embedded built-in profiles (see
-    /// [`BUILT_IN_PROFILES`]), every entry's origin `ProfileOrigin::BuiltIn`.
+    /// `BUILT_IN_PROFILES`), every entry's origin `ProfileOrigin::BuiltIn`.
     ///
     /// Panics only if the embedded TOML itself fails to parse — a
     /// compile-time-fixed invariant this module's own tests cover, never a

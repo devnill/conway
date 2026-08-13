@@ -34,7 +34,7 @@
 //! by project: a file's path IS project-scoped) -- and flattens away the
 //! `kind` tag and the `projects` nesting layer that would only ever hold
 //! one key today. Adding a `plugin` kind later is a new top-level map
-//! alongside `permission_files` in [`TrustFile`], not a redesign of this
+//! alongside `permission_files` in `TrustFile`, not a redesign of this
 //! module: the two load-bearing properties D4 cares about -- per-subject
 //! granularity and digest-not-directory -- are already exactly what it
 //! specifies.
@@ -84,15 +84,15 @@
 //! `deny_unknown_fields` under this item because `permissions.json` is a
 //! HAND-AUTHORED file where a typo'd key (`"denys"` for `"deny"`) silently
 //! drops a safety rule the operator believes is in effect -- the fail-
-//! closed floor. `TrustFile`/[`TrustedRecord`] are a different kind of
+//! closed floor. `TrustFile`/`TrustedRecord` are a different kind of
 //! file entirely: nobody types a key into `trust.json` by hand. It is
 //! written exclusively by [`TrustStore::trust`] and read back exclusively
 //! by [`TrustStore::load`] -- both this crate, across whatever two conway
 //! builds an operator happens to run before and after an upgrade. That
 //! makes its realistic failure mode VERSION SKEW, not a typo: a future
-//! build adds a field to [`TrustedRecord`] (say, a digest algorithm tag),
+//! build adds a field to `TrustedRecord` (say, a digest algorithm tag),
 //! and an OLDER build reads that file back. Under `deny_unknown_fields`
-//! that read becomes `Err`, and [`TrustStore::load_from_path`] already
+//! that read becomes `Err`, and `TrustStore::load_from_path` already
 //! treats any parse error as "trust.json is corrupt" -- which zeroes EVERY
 //! recorded trust decision in the file, not just the one entry with the
 //! new field. An operator who trusted ten projects would have to re-run

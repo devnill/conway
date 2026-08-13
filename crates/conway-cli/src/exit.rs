@@ -49,7 +49,7 @@
 //! re-export list) -- and this crate's manifest is machine-checked to
 //! depend on no other workspace crate (`tests/cli_surface.rs::no_forbidden_deps`),
 //! so neither `from_error` nor `from_result` can name those inner types to
-//! match on them directly. [`classify_runtime_or_routing`] therefore
+//! match on them directly. `classify_runtime_or_routing` therefore
 //! matches on `Display` substrings rather than types. Every substring it
 //! looks for is pinned by a `conway-core/src/error.rs` test (named at the
 //! match site), so a wording change upstream fails a test upstream instead

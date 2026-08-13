@@ -192,7 +192,7 @@ impl Backend for AnthropicBackend {
     /// builds the exact `/v1/messages` wire body `generate`/`stream` would
     /// send (Anthropic's message envelope, its system-prompt handling, its
     /// tool-schema shape — all distinct from `OpenAiCompatBackend`'s),
-    /// estimates its size locally with [`crate::admission::estimate_wire_tokens`]
+    /// estimates its size locally with `crate::admission::estimate_wire_tokens`
     /// (no network I/O — not even Anthropic's own `/v1/messages/count_tokens`),
     /// then calls the ONE shared arithmetic helper,
     /// [`check_admission`], for the fits/shortfall comparison rather than

@@ -29,7 +29,7 @@
 //! the full story and the exact trigger.
 //!
 //! Neither of `header.rs`'s two widgets reserves a layout row: both are
-//! drawn straight onto the frame after `transcript::draw`, so [`layout`]
+//! drawn straight onto the frame after `transcript::draw`, so `layout`
 //! itself no longer needs to predict scroll-driven overflow (a real
 //! transcript-vs-reserved-row feedback loop T6 originally had to work
 //! around with a fixed-point trick -- gone along with the row it used to

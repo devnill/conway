@@ -1,7 +1,8 @@
 //! `conway`: the CLI binary (WI-111).
 //!
 //! `main` never uses `?`: every fallible step is matched explicitly and
-//! converted to an [`exit::ExitCode`] via [`exit::ExitCode::from_error`], so
+//! converted to an [`conway_cli::exit::ExitCode`] via
+//! [`conway_cli::exit::ExitCode::from_error`], so
 //! there is exactly one place (the bottom of this file) that turns an
 //! `ExitCode` into a process exit status.
 

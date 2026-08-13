@@ -14,7 +14,7 @@
 //! `build` calls). This builder therefore **overwrites every segment's id**
 //! with a value deterministically derived from `blake3(agent_id ‖ ordinal
 //! ‖ provenance_discriminant ‖ content_hash)`, reinterpreted as a
-//! `ulid::Ulid` (see [`derive_segment_id`]). The hash input never includes
+//! `ulid::Ulid` (see `derive_segment_id`). The hash input never includes
 //! `cache_mode`, so cache-neutrality holds by construction, not by
 //! coincidence.
 //!

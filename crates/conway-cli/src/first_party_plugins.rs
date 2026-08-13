@@ -22,25 +22,25 @@
 //! sequencing note) and each adds its own entry here when it lands --
 //! through `ConwayBuilder::with_backend_factory`/`with_router_factory` too,
 //! not only `with_plugin`, since nothing about `[plugins].install` itself
-//! is tool-specific -- [`router_bundle`] and [`backend_bundle`] below are
+//! is tool-specific -- `router_bundle` and `backend_bundle` below are
 //! exactly those other two channels.
 //!
 //! Resolution below matches an id against each candidate's own identity.
 //! `Backend` carries an `id()` of its own (`conway_core::ports::backend`),
 //! but that is a CONFIGURED INSTANCE's identity, not a KIND's -- the same
 //! reason `Router` has none at all (see the paragraph below): a
-//! `BackendFactory`'s own `id()` is what [`backend_bundle`] resolves
-//! against, mirroring [`router_bundle`] one line over. `Router`
+//! `BackendFactory`'s own `id()` is what `backend_bundle` resolves
+//! against, mirroring `router_bundle` one line over. `Router`
 //! (`conway_core::ports::routing`) has NO id-bearing method at all --
 //! board item 01KZFC2MD1FVNA674YJ9A19T8E answered this, settling that a
 //! router's identity lives on a separate `RouterFactory` trait instead
 //! (`RouterFactory::id`), never on `Router` itself: router SELECTION
 //! (naming a kind) must precede router CONSTRUCTION, which needs backends
 //! and a capability picture that do not exist until much later in
-//! startup, well after `[plugins].install` is read. [`router_bundle`]/
-//! [`backend_bundle`] below are this binary's linked `RouterFactory`/
+//! startup, well after `[plugins].install` is read. `router_bundle`/
+//! `backend_bundle` below are this binary's linked `RouterFactory`/
 //! `BackendFactory` lists, resolved in the SAME pass ([`install`]) as
-//! [`bundle`] -- an id may name a plugin, a router factory, or a backend
+//! `bundle` -- an id may name a plugin, a router factory, or a backend
 //! factory, never more than one of the three, and naming more than one
 //! router factory is rejected (a build has exactly one router).
 //!
@@ -53,7 +53,7 @@
 //! matching `BackendFactory` has no such fallback -- `ConwayBuilder::build`
 //! hard-errors ("no backends configured") when the backend map ends up
 //! empty, and even a single unresolvable entry fails the whole build. So
-//! [`build_conway`] (`main.rs`)'s `wanted` list is not `[plugins].install`
+//! `build_conway` (`main.rs`)'s `wanted` list is not `[plugins].install`
 //! alone: it is `[plugins].install` UNIONED with `[plugins].
 //! default_backends` (`conway::config::schema::PluginsConfig`'s own doc --
 //! default `["anthropic", "openai-compat"]`, owner decision
@@ -127,8 +127,8 @@ fn backend_bundle() -> Vec<Arc<dyn BackendFactory>> {
 
 /// Applies `wanted` (`main.rs`'s `build_conway`: `[plugins].install`
 /// UNIONED with `[plugins].default_backends`, deduplicated, in that order --
-/// see this module's own doc) against [`bundle`], [`router_bundle`], and
-/// [`backend_bundle`] together, in one pass: for each id, in the order
+/// see this module's own doc) against `bundle`, `router_bundle`, and
+/// `backend_bundle` together, in one pass: for each id, in the order
 /// `wanted` names them, calls `ConwayBuilder::with_plugin` for a recognized
 /// plugin id, `ConwayBuilder::with_router_factory` for a recognized
 /// router-factory id, or `ConwayBuilder::with_backend_factory` for a
@@ -150,7 +150,7 @@ fn backend_bundle() -> Vec<Arc<dyn BackendFactory>> {
 ///
 /// **Also calls `ConwayBuilder::with_declined_backend_kinds`** (board item
 /// 01KZHF2W8Y1KBM7PJH7R4QQJA0), unconditionally and before anything else
-/// below, naming every id in [`backend_bundle`] that `wanted` does NOT
+/// below, naming every id in `backend_bundle` that `wanted` does NOT
 /// name -- purely diagnostic (that method's own doc): it changes no attach
 /// behavior, only which of the two messages `ConwayBuilder::build` raises
 /// for a `[backends.<id>]` entry naming an unresolved `kind` -- **declined**

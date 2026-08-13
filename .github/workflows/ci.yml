@@ -69,6 +69,92 @@ jobs:
       - name: cargo test --workspace --all-features
         run: cargo test --workspace --all-features --no-fail-fast
 
+  # The MSRV declared in the workspace manifest, built on that exact toolchain.
+  # `rust-version` used to be set to 1.94.0 -- the same version the toolchain
+  # file pins -- which is a claim nothing had ever tested, and the most
+  # conservative possible one. Measured instead: 1.87 fails (`darling`,
+  # `ignore` and `instability` all require 1.88), 1.88 builds the workspace and
+  # compiles every test target. So 1.88.0 is what the tree genuinely supports
+  # and what it now declares.
+  #
+  # `--no-run` for the test targets, matching `feature-matrix` below: the point
+  # is that everything COMPILES on the MSRV, not that the suite runs twice.
+  msrv:
+    name: cargo build (MSRV 1.88.0)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.88.0"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo build --workspace --all-features
+        run: cargo build --workspace --all-features
+
+      - name: cargo test --workspace --all-features --no-run
+        run: cargo test --workspace --all-features --no-run
+
+  # Licence and dependency policy, per `CONTRIBUTING.md` §6. The licence half is
+  # the load-bearing one: it was shown to fail on a scratch commit adding a
+  # GPL-2.0 dependency, which it rejected by name and line.
+  #
+  # `cargo-deny` is the one dependency admitted under §6's carve-out for tooling
+  # that enforces the dependency policy itself. It is installed here rather than
+  # vendored, and never linked into any conway binary.
+  deny:
+    name: cargo deny check
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.94.0"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked --version ^0.20
+
+      - name: cargo deny check
+        run: cargo deny check
+
+  # Rustdoc with warnings denied. This is not cosmetic: the run that introduced
+  # it found ~75 real defects, almost all public documentation linking to a
+  # PRIVATE item -- a link that silently renders as plain text for the reader
+  # who needed it most, the one outside this workspace.
+  #
+  # `--no-deps` because a warning in somebody else's crate is not actionable
+  # here. The `output filename collision` cargo warning (rust-lang/cargo#6313,
+  # the `conway` bin target vs the `conway` lib target) is a cargo warning
+  # rather than a rustdoc lint, so `-D warnings` does not turn it into an
+  # error; it is expected output, not a failure.
+  doc:
+    name: cargo doc (-D warnings)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.94.0"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo doc --workspace --no-deps
+        run: cargo doc --workspace --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: -D warnings
+
   clippy:
     name: cargo clippy (-D warnings)
     runs-on: ubuntu-latest

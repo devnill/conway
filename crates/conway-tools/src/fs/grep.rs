@@ -37,7 +37,7 @@ struct GrepArgs {
 }
 
 /// Searches file contents under a search root for lines matching a regex.
-/// Walks gitignore-aware (via [`crate::fs::walk_files`]); results are
+/// Walks gitignore-aware (via `crate::fs::walk_files`); results are
 /// grouped by path in walk order, one line per match.
 #[derive(Debug, Default)]
 pub struct GrepTool;
