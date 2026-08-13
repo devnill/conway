@@ -408,6 +408,96 @@ those") — a plugin command is discoverable exactly the way a built-in one
 is, through the one surface that already lists commands, not duplicated into
 a second listing that could drift from it.
 
+### 16. Plugin-declared custom event — `Plugin::events()` / `PluginEventHandle::emit`
+
+| Field | Value |
+|---|---|
+| Kind | Declarative (`Plugin::events()`, consulted once, at `ConwayBuilder::build`) + Observer (`PluginEventHandle::emit`, fire-and-forget, no reply channel, cannot deny — dispatched through the identical `HookDispatcher::dispatch` point 13's five observation events use) |
+| Receives | `Plugin::events()` is consulted with nothing live and returns zero or more [`EventDecl`] (`name`, `summary`, `carries_tool_name`). `PluginEventHandle::emit(bare_name, payload)` — reachable from `ToolCtx::plugin_events`, bound at construction to the resolved tool's own declaring plugin id — takes a BARE name (never the namespaced form) and an arbitrary `serde_json::Value` payload the plugin itself defines; there is no core-imposed shape beyond "valid JSON", mirroring `HookEvent::payload`'s own "event-specific, decided by whoever wires a concrete event" contract |
+| May return | Not applicable — `emit` returns nothing, and a plugin cannot observe whether any hook was actually subscribed |
+| On error | `emit`'s only failure mode is a malformed assembled name (only reachable via an empty `bare_name`, since the declaring plugin's own id is validated once at registration) — dropped silently, never a panic, matching `HookDispatcher::dispatch`'s own posture for a failing hook downstream of it |
+| On timeout | None imposed on `emit` itself; a subscribed hook's own timeout is the SAME `timeout_ms` every `[hooks].rules[]` entry declares (point 13) |
+| On garbage | At *registration* (`ConwayBuilder::build`), a malformed declaration (an empty bare name, or two events landing on the identical namespaced full name — from the same plugin or two different ones) is a **named, build-time error**, mirroring point 15's identical registration-time refusal for a malformed `CommandSpec::name` |
+| When absent | No `Plugin::events()` override means no declared events (the trait's own default returns `Vec::new()`) — every existing `Plugin` implementor, built-in or third-party, keeps compiling and behaving identically. A `[hooks].rules[].event` naming no installed plugin's declared event parses, validates, and is silently never dispatched — the SAME tolerance a typo'd core event name has always had |
+| Ordering | Every hook subscribed to the SAME namespaced event name runs, in configured order, exactly like point 13's five observation events (this is literally the same dispatch table, unioned) — a failure never stops a later hook from running |
+| Status | **Implemented.** `conway_core::ports::{EventDecl, PluginEventEmitter, PluginEventHandle}` and `Plugin::events()`'s default (`crates/conway-core/src/ports/plugin.rs`); `conway_runtime::hook_dispatch::declared_plugin_events` (namespacing/validation) and `impl PluginEventEmitter for HookDispatcher` (dispatch, reusing point 13's own fan-out); `ConwayBuilder::build` unions the result into the SAME dispatch table `[hooks].rules[]` already feeds. `conway-plugin-skeleton`'s `pong_dispatched` event is the worked example: `SkeletonPlugin::events()` declares it, `SkeletonPingTool::invoke` fires it unconditionally on every call, and `conway-plugin-skeleton/tests/skeleton_end_to_end.rs`'s `a_configured_hook_fires_when_the_skeletons_declared_event_is_dispatched` proves a real configured `[hooks].rules[]` entry actually receives it. Board item 01KZS03BFE720EQZG7Q2768N2H |
+
+**The declaration/firing split, and why an undeclared-but-fired (or
+declared-but-never-fired) event is a defect, not a shrug.** `PHILOSOPHY.md`
+§5: "An event a plugin declares and never fires is the same defect as a tool
+that does nothing, and is treated as one." `Plugin::events()` ships only the
+declaration; nothing enforces that a plugin author who declares an event
+also calls `emit` for it anywhere — that discipline is on the plugin author,
+exactly as "a tool that does nothing" is never mechanically detectable
+either. What IS enforced structurally: `PluginEventHandle::emit` can only
+ever produce a name under the SAME plugin id the handle was constructed
+with (`conway_core::ports::PluginEventHandle`'s own doc) — there is no
+parameter through which a call could fire under a different plugin's
+namespace, so an operator wiring a hook to `"acme.routing.candidate_chosen"`
+is trusting a name only the plugin whose manifest id is `acme` can ever
+actually produce.
+
+**Namespacing, and why the "plugin id containing the separator" exclusion
+this point's own validator used to state no longer holds.**
+`declared_plugin_events` always registers an event as `{plugin manifest
+id}.{event's own bare name}`, via `conway_core::event_name::
+validate_event_name` — the SAME shared validator point 15 uses for command
+names (`conway::plugin::validate_command_name`), one implementation,
+differing only in which noun the error text names. An earlier draft of this
+rule (`.design/extension-architecture.md` §16.6 point 3) additionally
+excluded a plugin id that itself contains the separator, reasoning from a
+SUBSCRIBER-side hazard (recovering `id` by splitting `name` on the first
+`.` could misattribute an event to the wrong plugin). This item is the
+"whichever item first validates a `PluginManifest` at registration time"
+that section named as owing the resolution, and it resolves the OTHER way:
+every real built-in plugin id in this workspace (`conway.fs`,
+`conway.shell`, `conway.plugin_skeleton`, ...) already contains the
+separator, so the exclusion would make this point unreachable for all of
+them. `validate_event_name`'s own doc comment (`crates/conway-core/src/
+event_name.rs`) carries the disclosed reasoning for why the hazard cannot
+occur on the declaration side by construction (`id` is always supplied out
+of band, never recovered by splitting), and why a genuine full-name
+collision is still caught — as a duplicate, at `declared_plugin_events` —
+regardless of why two declarations landed on the same string.
+
+**Discovery: no new registry, the SAME mechanism point 15 already
+established for commands.** `declared_plugin_events(plugins: &[Arc<dyn
+Plugin>])` is a free function, not a method on a live `Conway`/`Runtime` —
+an embedder already holding the exact plugin list it is about to hand
+`ConwayBuilder` can call it directly, before `build()`, and read back every
+plugin event's full namespaced name, one-line `summary`, and
+`carries_tool_name`. `ConwayBuilder::build` calls this SAME function to
+decide what `[hooks].rules[]` may actually dispatch — one implementation,
+not a parallel "validate" path and a separate "enumerate" path that could
+drift apart. No `conway-cli` surface lists this yet (mirroring point 13's
+own disclosed gap for `[hooks].rules[]` visibility) — the mechanism exists
+and is reachable; a TUI/settings presentation of it is later, additive
+work.
+
+**`match` on a plugin event.** A rule's `match` (point 13) narrows which
+occurrences of an event fire a hook, and only makes sense against a payload
+that names a tool. `EventDecl::carries_tool_name` is the plugin's own
+declaration of whether that is true for ITS event — the plugin, not the
+core, is the one party that actually knows its payload's shape. A `match`
+paired with a plugin event whose own declaration says `carries_tool_name:
+false` is a named, build-time error (`ConwayBuilder::build`), the identical
+class of defect point 13's `merge::validate` check already gives a CORE
+event without a tool name — just discoverable only once the installed
+plugin set is known, since `merge::validate` itself has no access to it.
+
+**Why observation-only, never a second deny-capable tier.** `PHILOSOPHY.md`
+§5's own routing/compaction examples ("a routing plugin can offer a point
+before it commits to a candidate") could plausibly want to deny, not merely
+observe. This point ships only the observation tier — reusing point 13's
+`HookDispatcher::dispatch` exactly, fails open, cannot deny — deliberately:
+a second, deny-capable tier for plugin events raises the identical class of
+open questions point 13's own `child_spawned` section defers (what does the
+plugin see when its own request is denied — a `Result`, a silent no-op? does
+every caller need new error handling?), and answering those by the shape of
+`emit`'s return type, ahead of a real consumer that needs it, is exactly the
+trap this document's own point 14 and `PluginManifest`'s retired `on_init`
+warn against.
+
 ## The permission decision ordering
 
 This is the ordering most likely to be reasoned about incorrectly, so it is
