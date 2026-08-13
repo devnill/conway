@@ -181,19 +181,36 @@ proposed it directly, the same way typing a command in a shell they already
 trust needs no per-invocation confirmation.
 
 **What this narrows the blast radius to, deliberately.** `Command::invoke`
-receives a [`CommandCtx`] carrying only read-only agent-identity fields and
-the raw text the operator typed after the command word — no live
-`Conway`/`SessionHandle`, no filesystem/network/exec capability beyond
-whatever the plugin's own process already has as an ordinary program (the
-same "conway does not sandbox" limit stated above, restated: this trust
-model does not narrow the MACHINE-level capability, only conway's OWN
-domain objects). A command cannot fork, resume, or steer a session, read or
-write a file through conway's own mediation, or reach the permission
-broker — see `hooks.md` point 15's own doc for why (a `conway-core`/`conway`
-layering constraint, not a policy choice held back deliberately), and note
-that gap is itself disclosed there as a finding, not a control: nothing
-stops a command's OWN Rust code from doing arbitrary I/O outside conway's
-mediation entirely, exactly as a tool's `invoke` already can.
+receives a [`CommandCtx`] carrying only read-only agent-identity fields
+(`focused_agent`, `root_agent`, `session_id`) and the raw text the operator
+typed after the command word — no live `Conway`/`SessionHandle`, no
+filesystem/network/exec capability beyond whatever the plugin's own process
+already has as an ordinary program (the same "conway does not sandbox" limit
+stated above, restated: this trust model does not narrow the MACHINE-level
+capability, only conway's OWN domain objects). A command cannot resume a
+DIFFERENT session, steer any agent, read or write a file through conway's
+own mediation, or reach the permission broker — see `hooks.md` point 15's
+own doc for why (a `conway-core`/`conway` layering constraint, not a policy
+choice held back deliberately), and note that gap is itself disclosed there
+as a finding, not a control: nothing stops a command's OWN Rust code from
+doing arbitrary I/O outside conway's mediation entirely, exactly as a tool's
+`invoke` already can.
+
+**The one narrow exception, and why it does not widen this control (board
+item 01KZYH37WNDKDWSMWQQPRFKKXC).** A command CAN ask the host to fork its
+OWN calling session at a sequence and drive the child (`CommandOutcome::
+ForkSession` — `hooks.md` point 15's own "Forking the calling session"
+subsection has the full mechanism). This is not a live handle: the command
+never touches `Conway`/`SessionHandle` itself, only RETURNS a request the
+host — still the one actually holding the trusted facade — chooses to
+honor. And it cannot reach past the session it was invoked from: the
+returned request carries no session identifier at all, so there is nothing
+for a command, malicious or buggy, to name a foreign session with. The
+trust boundary this section opens with is unaffected: the operator who
+typed the command already had full privileges over their own session (they
+could have typed `/resume`/quit-and-restart with `--fork-from` themselves);
+this merely lets a plugin offer that same operator-privileged action as a
+named command instead of a manual multi-step workaround.
 
 ## Backends and routers: the same install pass, and one hands over more
 

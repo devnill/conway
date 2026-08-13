@@ -424,6 +424,14 @@ pub struct PluginCommandInvocation {
 #[async_trait::async_trait]
 pub trait Host {
     fn root(&self) -> AgentId;
+    /// The CALLING session's own id (board item 01KZYH37WNDKDWSMWQQPRFKKXC):
+    /// what [`SlashCommand::Plugin`]'s dispatch arm below stamps into
+    /// [`conway::plugin::CommandCtx::session_id`] -- the one identity a
+    /// `CommandOutcome::ForkSession` reply is ever resolved against (see
+    /// that variant's own doc). `LiveHost::session_id` is a thin passthrough
+    /// to `SessionHandle::id`, exactly like [`Self::root`]'s own passthrough
+    /// to `SessionHandle::root`.
+    fn session_id(&self) -> SessionId;
     /// A thin passthrough to `SessionHandle::context_report_current` (T3
     /// follow-up) -- NOT the plain `SessionHandle::context_report`: the
     /// `_current` variant closes that method's documented resumed-session
@@ -507,6 +515,10 @@ pub struct LiveHost<'a> {
 impl Host for LiveHost<'_> {
     fn root(&self) -> AgentId {
         self.handle.root()
+    }
+
+    fn session_id(&self) -> SessionId {
+        self.handle.id()
     }
 
     async fn context_report(&self, agent: AgentId) -> conway::Result<ContextReport> {
@@ -1118,6 +1130,7 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
                 ctx: CommandCtx {
                     focused_agent: state.focused_agent,
                     root_agent: host.root(),
+                    session_id: host.session_id(),
                     args,
                 },
             }),
@@ -1677,6 +1690,11 @@ mod tests {
     struct FakeHost {
         calls: Mutex<Vec<&'static str>>,
         root: AgentId,
+        /// Board item 01KZYH37WNDKDWSMWQQPRFKKXC: the fixed session id this
+        /// fake `Host` reports -- lets a test assert `execute`'s
+        /// `SlashCommand::Plugin` arm stamps THIS value (never a fresh one,
+        /// never the focused/root agent) into `CommandCtx::session_id`.
+        session: SessionId,
         context: Option<ContextReport>,
         /// When `Some`, `fork`/`spawn` succeed with this child id instead of
         /// the default `fake_error()` -- lets a test exercise the
@@ -1717,6 +1735,7 @@ mod tests {
             Self {
                 calls: Mutex::new(Vec::new()),
                 root,
+                session: SessionId::new(),
                 context: None,
                 fork_child: None,
                 spawn_child: None,
@@ -1751,6 +1770,10 @@ mod tests {
     impl Host for FakeHost {
         fn root(&self) -> AgentId {
             self.root
+        }
+
+        fn session_id(&self) -> SessionId {
+            self.session
         }
 
         async fn context_report(&self, _agent: AgentId) -> conway::Result<ContextReport> {
@@ -1920,6 +1943,7 @@ mod tests {
         assert_eq!(invocation.ctx.args, "world");
         assert_eq!(invocation.ctx.root_agent, root);
         assert_eq!(invocation.ctx.focused_agent, state.focused_agent);
+        assert_eq!(invocation.ctx.session_id, host.session_id());
         // `execute` resolved the command but did NOT run it -- proven
         // directly by actually invoking it now, outside `execute`'s own
         // call, and checking the fixture's own behavior fires.

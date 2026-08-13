@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use crate::content::{Artifact, ContentBlock, ToolCall, ToolSpec, TruncationPolicy};
 use crate::error::{CwdError, ToolError};
 use crate::event_name::{validate_event_name, EVENT_NAMESPACE_SEPARATOR};
-use crate::ids::{AgentId, ModelRef, SessionId, ToolName};
+use crate::ids::{AgentId, LogSeq, ModelRef, SessionId, ToolName};
 use crate::ports::{ArtifactWriteHandle, EventSinkHandle, SubagentHandle};
 use crate::segment::PromptSegment;
 
@@ -148,20 +148,36 @@ pub struct EventDecl {
 /// 01KZYBFTK4QPB45AJT9M57P60W): a plugin's own [`CommandSpec`] plus the
 /// async handler `conway-cli` invokes when the operator types it.
 ///
-/// **Deliberately narrow.** [`CommandCtx`] carries read-only identity and the
-/// raw argument text -- nothing that reaches a live `Conway`/`SessionHandle`.
-/// This is a scoping decision, not an oversight: `Plugin`/`Command` live in
+/// **Deliberately narrow -- still true after board item
+/// 01KZYH37WNDKDWSMWQQPRFKKXC.** [`CommandCtx`] carries read-only identity
+/// and the raw argument text -- nothing that reaches a live
+/// `Conway`/`SessionHandle`, and never will: `Plugin`/`Command` live in
 /// `conway-core`, which cannot depend on `conway` (the facade, where
-/// `Conway::fork_from` and session-swap capability live) without a cycle, and
-/// the natural bridge point for a live facade handle (mirroring how
-/// [`ToolCtx::subagents`] narrows fork/spawn into a running tool call) would
-/// need a new port threaded through `conway-runtime`/`ConwayBuilder` that no
-/// item has built yet. A command that can only read identity and print is
-/// the largest capability grantable without either of those -- see
-/// `docs/plugins/hooks.md` point 12's own "declare, then push; the render
-/// path never blocks on a plugin" precedent, which this mirrors for the
-/// SAME reason: an extension point earns a wider grant only once a real
-/// consumer needs it, not ahead of one (YAGNI).
+/// `Conway::fork_from` and session-swap capability live) without a cycle, so
+/// a command can never hold a live handle onto its own session, let alone
+/// another one.
+///
+/// **What DID change: [`CommandOutcome::ForkSession`].** A command that
+/// wants to fork its own calling session (the capability `/rewind` needs,
+/// per the owner's ruling that session-history features are plugins, not
+/// core functionality) does not reach for a handle at all -- it RETURNS a
+/// request, and the HOST (`conway-cli`'s `App`, which already holds a live
+/// `Conway`) performs the fork with its own facade capability. This is the
+/// declare/return-an-effect shape [`ContextHook`]'s own `before_request` and
+/// `docs/plugins/hooks.md` point 12's "declare, then push; the render path
+/// never blocks on a plugin" precedent both already establish -- applied
+/// here to close the ONE gap board item 01KZYBFTK4QPB45AJT9M57P60W
+/// deliberately left open (see [`CommandOutcome::ForkSession`]'s own doc for
+/// the full binding argument: nothing about this variant lets a command name
+/// a session other than the one that invoked it -- there is no field to put
+/// one in).
+///
+/// Everything else about the narrowing stands: a command still cannot
+/// resume a DIFFERENT session, steer any agent, read/write a file through
+/// conway's own mediation, or reach the permission broker. An extension
+/// point earns a wider grant only once a real consumer needs it, not ahead
+/// of one (YAGNI) -- `/rewind`, the item that asked this question first, is
+/// that consumer for forking; nothing wider is built here.
 #[async_trait]
 pub trait Command: Send + Sync + 'static {
     /// This command's bare name (no leading `/`, no plugin-id prefix -- the
@@ -203,6 +219,18 @@ pub struct CommandCtx {
     pub focused_agent: AgentId,
     /// This session's root agent (`SessionHandle::root`).
     pub root_agent: AgentId,
+    /// The CALLING session's own id -- board item 01KZYH37WNDKDWSMWQQPRFKKXC.
+    /// Read-only identity, the same tier as [`Self::focused_agent`]/
+    /// [`Self::root_agent`]: a command cannot use this to reach another
+    /// session (there is no live handle on this type at all, for any
+    /// session -- see [`Command`]'s own doc), but it is what the HOST
+    /// captures, at invocation time, as the one session
+    /// [`CommandOutcome::ForkSession`] is ever resolved against, regardless
+    /// of which session the host happens to be driving by the time this
+    /// command's async `invoke` actually completes (e.g. a `/resume` racing
+    /// a slow plugin command). See that variant's own doc for the full
+    /// binding argument.
+    pub session_id: SessionId,
     /// Everything typed after the command word, left-trimmed, verbatim --
     /// the same "consume the remainder verbatim, no re-tokenization" rule
     /// `conway_cli::tui::commands::parse` applies to every other command's
@@ -224,6 +252,66 @@ pub enum CommandOutcome {
     /// (see `conway_cli::tui::app`'s dispatch), but an implementation should
     /// still prefer returning this variant over panicking.
     Error(String),
+    /// Asks the host to fork the CALLING session at `at_seq` and drive the
+    /// resulting child in place of the parent (board item
+    /// 01KZYH37WNDKDWSMWQQPRFKKXC) -- the answer to "what must `conway-core`
+    /// expose for `/rewind` to be a plugin at all", per the owner's ruling
+    /// that session-history features are plugins, not core functionality.
+    ///
+    /// **Design choice, stated because a handle-based alternative was
+    /// weighed and rejected.** The considered alternative was giving
+    /// [`Command::invoke`] a `conway-core`-native handle that could fork and
+    /// retarget directly (mirroring [`ToolCtx::subagents`]'s
+    /// [`SubagentHandle`]). This variant instead asks the HOST to perform
+    /// the fork with its own already-live `Conway`/`SessionHandle` -- the
+    /// SAME declare/return-an-effect shape [`ContextHook::before_request`]
+    /// and `docs/plugins/hooks.md` point 12's "declare, then push" precedent
+    /// both already use, chosen because it keeps the plugin declarative,
+    /// leaves the host in control of its own focus, and is a strictly
+    /// smaller capability to hand out than a live handle would be (a
+    /// request the host can refuse or reinterpret, not a capability the
+    /// plugin exercises directly).
+    ///
+    /// **Bound to the invoking session, structurally, not by convention.**
+    /// This variant carries NO session identifier of its own -- there is no
+    /// field here through which a command could name a session other than
+    /// the one it was invoked from. `conway_cli::tui::app::App` (the one
+    /// production host) resolves `at_seq`/`directive` against the SAME
+    /// [`CommandCtx::session_id`] it captured when it spawned this
+    /// invocation's `Command::invoke` call, never against whatever session
+    /// it happens to be driving by the time the reply arrives (the two can
+    /// legitimately differ -- e.g. an operator typed `/resume` while a slow
+    /// plugin command was still running). This is the "a command acts on
+    /// its own session, never one it names" property board item
+    /// 01KYTP0PGKJ4VCJP5TD39A1WHF's [`SubagentHandle`] precedent
+    /// established for tools, applied here to commands the only way it CAN
+    /// be applied given this variant carries no live handle at all: by
+    /// construction of the type, not by a runtime check that could be
+    /// forgotten.
+    ///
+    /// **What the host actually does with this, disclosed here since this
+    /// crate performs none of it:** `Conway::fork_from(session_id, at_seq,
+    /// ForkSpec::new(directive))` -- zero-copy by reference
+    /// (`SessionStore::fork`'s own O(1) contract), so the PARENT session's
+    /// log is untouched; the host then swaps its own driven `SessionHandle`
+    /// for the returned child and resubscribes its event stream, the SAME
+    /// mechanism `SlashCommand::Resume`'s `Effect::Resumed` already uses for
+    /// an unrelated reason (swapping which session the TUI drives).
+    ForkSession {
+        /// The sequence, within the CALLING session's own local log, to
+        /// fork at -- `Conway::fork_from`'s own `at: LogSeq` parameter,
+        /// which accepts any point up to and including the session's
+        /// current head, not merely "fork at head." An `at_seq` past the
+        /// session's actual head is a host-side error (`Conway::fork_from`'s
+        /// own bounds check), never a panic here -- this crate performs no
+        /// I/O and cannot know the session's head to validate against.
+        at_seq: LogSeq,
+        /// Becomes the child's `LogRecord::ForkDirective` text -- see
+        /// `conway::ForkSpec::directive`'s own doc. Empty is legal (an
+        /// undirected rewind: the child simply resumes from `at_seq` with no
+        /// additional instruction).
+        directive: String,
+    },
 }
 
 /// One invocable tool: aligned with ACP's tool-call categories (`ToolCategory`
@@ -1367,6 +1455,7 @@ mod tests {
         CommandCtx {
             focused_agent: AgentId::new(),
             root_agent: AgentId::new(),
+            session_id: SessionId::new(),
             args: args.to_string(),
         }
     }
@@ -1396,6 +1485,114 @@ mod tests {
         fn assert_object_safe(_: &dyn Command) {}
         let command = GreetCommand;
         assert_object_safe(&command);
+    }
+
+    // ---- CommandOutcome::ForkSession (board item 01KZYH37WNDKDWSMWQQPRFKKXC) ----
+
+    /// A `/rewind`-shaped fixture command: asks the host to fork at whatever
+    /// `at_seq` the operator typed. Deliberately reads NOTHING from
+    /// `CommandCtx` other than `args` to build the outcome -- there is no
+    /// field on this type it COULD read to name a session other than
+    /// `ctx.session_id` itself (see `command_outcome_fork_session_carries_no_
+    /// session_field_at_all` below for the structural proof of that).
+    struct RewindCommand;
+
+    #[async_trait]
+    impl Command for RewindCommand {
+        fn spec(&self) -> CommandSpec {
+            CommandSpec {
+                name: "rewind".to_string(),
+                summary: "forks the calling session at a sequence".to_string(),
+            }
+        }
+
+        async fn invoke(&self, ctx: CommandCtx) -> CommandOutcome {
+            match ctx.args.parse::<u64>() {
+                Ok(n) => CommandOutcome::ForkSession {
+                    at_seq: LogSeq(n),
+                    directive: String::new(),
+                },
+                Err(_) => CommandOutcome::Error(format!("not a sequence number: {}", ctx.args)),
+            }
+        }
+    }
+
+    #[test]
+    fn fork_session_outcome_round_trips_through_invoke() {
+        let command = RewindCommand;
+        let outcome = block_on(command.invoke(command_ctx("3")));
+        assert_eq!(
+            outcome,
+            CommandOutcome::ForkSession {
+                at_seq: LogSeq(3),
+                directive: String::new(),
+            }
+        );
+    }
+
+    /// **The discriminating observable this item exists to prove.**
+    /// `CommandOutcome::ForkSession` carries no session identifier of its
+    /// own -- checkable directly, by destructuring: this pattern binds only
+    /// `at_seq`/`directive`, and would fail to COMPILE if a third field
+    /// existed for a command to smuggle a foreign session id through. A
+    /// command therefore structurally cannot express "act on a session I
+    /// was not invoked from" -- there is nowhere in this type to write one
+    /// down. The host resolves every `ForkSession` against
+    /// [`CommandCtx::session_id`], captured once, at invocation time (see
+    /// [`CommandOutcome::ForkSession`]'s own doc); `conway_cli::tui::app`'s
+    /// own tests drive the live, end-to-end version of this property
+    /// (including under a `/resume` race) against a real `Conway`.
+    #[test]
+    fn fork_session_outcome_carries_no_session_field_at_all() {
+        let outcome = CommandOutcome::ForkSession {
+            at_seq: LogSeq(1),
+            directive: "hi".to_string(),
+        };
+        let CommandOutcome::ForkSession { at_seq, directive } = outcome else {
+            panic!("constructed a ForkSession, so this arm must match");
+        };
+        assert_eq!(at_seq, LogSeq(1));
+        assert_eq!(directive, "hi");
+    }
+
+    /// Two commands invoked with DIFFERENT `CommandCtx::session_id`s each
+    /// produce a `ForkSession` outcome scoped only by whatever `ctx` THEY
+    /// individually received -- there is no way for one invocation to
+    /// influence what session another's outcome resolves against, since
+    /// neither outcome carries a session id for either to share.
+    #[test]
+    fn independently_invoked_commands_each_see_only_their_own_ctx() {
+        let command = RewindCommand;
+        let ctx_a = CommandCtx {
+            focused_agent: AgentId::new(),
+            root_agent: AgentId::new(),
+            session_id: SessionId::new(),
+            args: "1".to_string(),
+        };
+        let ctx_b = CommandCtx {
+            focused_agent: AgentId::new(),
+            root_agent: AgentId::new(),
+            session_id: SessionId::new(),
+            args: "2".to_string(),
+        };
+        assert_ne!(ctx_a.session_id, ctx_b.session_id);
+
+        let outcome_a = block_on(command.invoke(ctx_a.clone()));
+        let outcome_b = block_on(command.invoke(ctx_b.clone()));
+        assert_eq!(
+            outcome_a,
+            CommandOutcome::ForkSession {
+                at_seq: LogSeq(1),
+                directive: String::new(),
+            }
+        );
+        assert_eq!(
+            outcome_b,
+            CommandOutcome::ForkSession {
+                at_seq: LogSeq(2),
+                directive: String::new(),
+            }
+        );
     }
 
     /// A `Plugin` implementor that DOES declare a command -- proves
