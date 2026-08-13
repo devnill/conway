@@ -73,6 +73,12 @@ pub enum Action {
     /// the mirror for display only; the revoke key is `(rule, origin)`,
     /// exactly as the flat path's is.
     RevokeStructuredAllowRule(conway::Rule, conway::PatternOrigin, conway::GrantScope),
+    /// Board item 01KZS02HYXGTW42R8G4HP10GHX: revoke exactly ONE hook-backed
+    /// rule, carrying the same `(event, id)` identity the settings row
+    /// itself rendered -- never a bare index, so the app loop's call into
+    /// `Conway::revoke_hook_rule` can never address a different rule than
+    /// the one the operator actually selected.
+    RevokeHookRule(String, String),
     /// `End` (T6): snap the transcript straight to its own tail --
     /// re-engages `follow_tail`. Fires only while the input line is empty
     /// (mirroring the dual-meaning precedent `Enter`'s empty-input arm
@@ -306,6 +312,17 @@ fn activate_settings_selection(state: &mut AppState) -> Option<Action> {
                         origin.clone(),
                         *scope,
                     ));
+                }
+            } else if let Some(idx) = id
+                .strip_prefix(super::view::settings::LEAF_REVOKE_HOOK_PREFIX)
+                .and_then(|rest| rest.parse::<usize>().ok())
+            {
+                // Board item 01KZS02HYXGTW42R8G4HP10GHX: resolved against
+                // `state.hook_rules` in the SAME call that built this
+                // tree, exactly like the two grant prefixes above -- the
+                // index cannot have drifted.
+                if let Some(rule) = state.hook_rules.get(idx) {
+                    return Some(Action::RevokeHookRule(rule.event.clone(), rule.id.clone()));
                 }
             }
             // `LEAF_TOOL_PREVIEW_LINES`: Enter has nothing to activate on
@@ -3032,6 +3049,48 @@ mod tests {
         assert_eq!(state.settings_selected, 2);
         handle_key(&mut state, key(KeyCode::Up));
         assert_eq!(state.settings_selected, 1);
+    }
+
+    /// Board item 01KZS02HYXGTW42R8G4HP10GHX: `Enter` on a hook-rule row
+    /// resolves to `Action::RevokeHookRule` carrying that EXACT row's
+    /// `(event, id)` -- never a bare index -- resolved against
+    /// `state.hook_rules` in the same call that built the tree, mirroring
+    /// how the grant/structured-allow prefixes already resolve.
+    #[test]
+    fn enter_on_a_hook_row_yields_revoke_hook_rule_with_its_event_and_id() {
+        let mut state = AppState::new(AgentId::new());
+        state.open_settings();
+        state.hook_rules = vec![
+            conway::HookRuleView {
+                id: "deny-writes".to_string(),
+                event: "pre_tool_use".to_string(),
+                match_tool: Some("fs.write".to_string()),
+                origin: "settings.json (merged config)".to_string(),
+            },
+            conway::HookRuleView {
+                id: "deny-prompts".to_string(),
+                event: "prompt_submitted".to_string(),
+                match_tool: None,
+                origin: "settings.json (merged config)".to_string(),
+            },
+        ];
+
+        let rows = crate::tui::view::settings::build_tree(&state).rows();
+        let idx = rows
+            .iter()
+            .position(|r| r.label.contains("deny-prompts"))
+            .expect("the second hook row must render");
+        state.settings_selected = idx;
+
+        let action = activate_settings_selection(&mut state);
+        assert_eq!(
+            action,
+            Some(Action::RevokeHookRule(
+                "prompt_submitted".to_string(),
+                "deny-prompts".to_string(),
+            )),
+            "must name the SECOND row's own event/id, not the first"
+        );
     }
 
     /// Acceptance: transcript line-scroll (V3's bare Up/Down wheel path)

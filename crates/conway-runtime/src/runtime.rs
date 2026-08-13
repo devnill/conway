@@ -503,6 +503,27 @@ impl Runtime {
         self.broker.set_pre_tool_use_hooks(hooks);
     }
 
+    /// Every currently-installed `pre_tool_use` hook spec -- the review-list
+    /// counterpart of [`Self::set_pre_tool_use_hooks`] (board item
+    /// 01KZS02HYXGTW42R8G4HP10GHX). See
+    /// [`PermissionBroker::active_pre_tool_use_hooks`]'s own doc.
+    pub fn pre_tool_use_hooks(&self) -> Vec<PreToolUseHookSpec> {
+        self.broker.active_pre_tool_use_hooks()
+    }
+
+    /// The observation tier's whole subscription map -- the review-list
+    /// counterpart of [`Self::set_observation_hooks`] (board item
+    /// 01KZS02HYXGTW42R8G4HP10GHX), including `prompt_submitted`'s own
+    /// entry (the deny-capable event this tier also dispatches -- see
+    /// `crate::hook_dispatch`'s own module doc). See
+    /// [`crate::hook_dispatch::HookDispatcher::hooks_snapshot`]'s own doc
+    /// for why this returns the WHOLE map rather than one event's list.
+    pub fn observation_hooks(
+        &self,
+    ) -> std::collections::BTreeMap<String, Vec<crate::hook_dispatch::HookSpec>> {
+        self.hooks.hooks_snapshot()
+    }
+
     /// Test-only accessor (mirrors `conway_session::TranscriptResolver::
     /// peek_prefix`'s own `#[doc(hidden)] pub` test seam): lets integration
     /// tests assert `Arc::ptr_eq` sibling-fork sharing directly against the

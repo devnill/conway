@@ -36,12 +36,14 @@
 //!
 //! Three top-level [`MenuNode::Group`]s -- "display" (the two booleans),
 //! "tool output" (the one numeric setting), and "permissions" (the mode,
-//! plus allow/deny/prompt rule review as three SUB-groups -- see
-//! [`build_tree`]'s own doc for why they are separate sections and why
-//! deny/prompt rows are read-only [`MenuNode::Static`] rows) -- rather
-//! than one flat group or several separate ones: this is genuinely the
-//! shape a further settings category (say, session history) would extend
-//! later, not artificial nesting invented only to exercise the primitive.
+//! plus allow/deny/prompt/hooks rule review as FOUR SUB-groups -- see
+//! [`build_tree`]'s own doc for why they are separate sections, why
+//! deny/prompt rows are read-only [`MenuNode::Static`] rows, and why hooks
+//! (board item 01KZS02HYXGTW42R8G4HP10GHX) get a fourth section rather than
+//! folding into allow) -- rather than one flat group or several separate
+//! ones: this is genuinely the shape a further settings category (say,
+//! session history) would extend later, not artificial nesting invented
+//! only to exercise the primitive.
 //!
 //! ## Interaction
 //!
@@ -112,6 +114,13 @@ pub(crate) const LEAF_REVOKE_GRANT_PREFIX: &str = "revoke_grant:";
 /// OWN mirror in the same call that built this tree, exactly as the flat
 /// path does -- see that function's own doc).
 pub(crate) const LEAF_REVOKE_STRUCTURED_ALLOW_PREFIX: &str = "revoke_structured_allow:";
+/// Board item 01KZS02HYXGTW42R8G4HP10GHX: prefix for one hook-backed rule's
+/// own leaf id, `"{LEAF_REVOKE_HOOK_PREFIX}{index}"` where `index` is the
+/// row's position in `state.hook_rules` at the moment this tree was built --
+/// a DISTINCT id space from the two prefixes above, resolved against its own
+/// mirror the same way `input::activate_settings_selection` already resolves
+/// the other two.
+pub(crate) const LEAF_REVOKE_HOOK_PREFIX: &str = "revoke_hook:";
 
 /// The two top-level group labels (see this module's own doc, "Grouping").
 /// `pub(crate)` for the same reason the leaf ids are -- `input.rs` and this
@@ -128,6 +137,17 @@ const PERMISSIONS_GROUP: &str = "permissions";
 const ALLOW_GROUP: &str = "allow";
 const DENY_GROUP: &str = "deny";
 const PROMPT_GROUP: &str = "prompt";
+/// The fourth review-list sub-section (board item 01KZS02HYXGTW42R8G4HP10GHX):
+/// every hook-backed rule that can currently deny a call (`pre_tool_use`,
+/// `prompt_submitted`) -- its own section, not merged into `ALLOW_GROUP`/
+/// `DENY_GROUP`/`PROMPT_GROUP`, because a hook rule composes by a DIFFERENT
+/// mechanism than a pattern rule (it runs an operator-configured command and
+/// answers `Deny`/`no_opinion`, not a `When`/`Then` match) and revoking one
+/// only ever drops it for the rest of THIS session (`Conway::
+/// revoke_hook_rule`'s own doc) -- unlike a flat/structured allow grant,
+/// which can also persist to a file. See [`build_tree`]'s own doc for why
+/// it appears here rather than being folded into an existing section.
+const HOOKS_GROUP: &str = "hooks";
 
 /// The footer's session-only disclosure (this item's decision record: no
 /// `settings.json` writer exists, and inventing one raises a "which layer"
@@ -293,6 +313,41 @@ pub(crate) fn build_tree(state: &AppState) -> MenuState {
                         prompt.push(MenuNode::static_row("no active prompt rules"));
                     }
                     prompt
+                }),
+                // Board item 01KZS02HYXGTW42R8G4HP10GHX: the fourth
+                // review list -- every hook-backed rule that can currently
+                // DENY a call, selectable and revocable exactly like an
+                // allow-grant row (unlike deny/prompt's read-only rows: a
+                // hook rule an operator wants OFF should be one keystroke
+                // away, same as an allow grant, not permanently locked the
+                // way a safety-rule deny pattern deliberately is -- see
+                // `Conway::revoke_hook_rule`'s own doc for why this is
+                // always session-scoped, never a file rewrite). Each row
+                // names its id, event, matcher, and origin so an operator
+                // can tell WHICH rule they are about to turn off.
+                group_node(HOOKS_GROUP, state, {
+                    if state.hook_rules.is_empty() {
+                        vec![MenuNode::static_row("no active hook rules")]
+                    } else {
+                        state
+                            .hook_rules
+                            .iter()
+                            .enumerate()
+                            .map(|(i, rule)| {
+                                let matcher = match &rule.match_tool {
+                                    Some(pattern) => format!("matching `{pattern}`"),
+                                    None => "every call".to_string(),
+                                };
+                                MenuNode::leaf(
+                                    format!(
+                                        "hook: [{}] `{}` on `{}`, {matcher} (Enter to revoke)",
+                                        rule.origin, rule.id, rule.event
+                                    ),
+                                    format!("{LEAF_REVOKE_HOOK_PREFIX}{i}"),
+                                )
+                            })
+                            .collect()
+                    }
                 }),
             ];
             rows
@@ -849,5 +904,111 @@ mod tests {
         );
         assert!(text.contains("[bash, read] (any call)"), "{text}");
         assert!(text.contains("revoke all grants"), "{text}");
+    }
+
+    // ---- Hooks review section: visible AND revocable (board item 01KZS02HYXGTW42R8G4HP10GHX) ----
+
+    fn a_hook_rule(id: &str, event: &str, match_tool: Option<&str>) -> conway::HookRuleView {
+        conway::HookRuleView {
+            id: id.to_string(),
+            event: event.to_string(),
+            match_tool: match_tool.map(str::to_string),
+            origin: "settings.json (merged config)".to_string(),
+        }
+    }
+
+    /// The hooks section exists, is its own group distinct from allow/deny/
+    /// prompt, and an empty list says so honestly rather than rendering
+    /// nothing (mirroring the deny/prompt empty states).
+    #[test]
+    fn the_hooks_group_has_an_honest_empty_state() {
+        let mut state = AppState::new(AgentId::new());
+        state.open_settings();
+
+        let rows = build_tree(&state).rows();
+        assert!(
+            rows.iter()
+                .any(|r| r.label == "hooks" && matches!(r.kind, menu::MenuRowKind::Group { .. })),
+            "the hooks section must be its own group: {rows:?}"
+        );
+        let empty_row = rows
+            .iter()
+            .find(|r| r.label == "no active hook rules")
+            .expect("an empty hook list must say so honestly");
+        assert_eq!(empty_row.kind, menu::MenuRowKind::Static);
+    }
+
+    /// A `pre_tool_use` rule and a `prompt_submitted` rule -- one with a
+    /// matcher, one without -- each render as a SELECTABLE, revocable leaf
+    /// naming its id, event, matcher, and origin, addressed by its own
+    /// index-keyed leaf id (mirroring the allow section's revocable rows).
+    #[test]
+    fn hook_rules_render_as_revocable_leaves_naming_id_event_match_and_origin() {
+        let mut state = AppState::new(AgentId::new());
+        state.open_settings();
+        state.hook_rules = vec![
+            a_hook_rule("deny-writes", "pre_tool_use", Some("fs.write")),
+            a_hook_rule("deny-prompts", "prompt_submitted", None),
+        ];
+
+        let rows = build_tree(&state).rows();
+        let hook_rows: Vec<_> = rows
+            .iter()
+            .filter(|r| r.label.starts_with("hook:"))
+            .collect();
+        assert_eq!(hook_rows.len(), 2, "{rows:?}");
+
+        assert!(
+            hook_rows[0].label.contains("deny-writes")
+                && hook_rows[0].label.contains("pre_tool_use")
+                && hook_rows[0].label.contains("fs.write")
+                && hook_rows[0].label.contains("settings.json (merged config)")
+                && hook_rows[0].label.contains("(Enter to revoke)"),
+            "{}",
+            hook_rows[0].label
+        );
+        assert_eq!(
+            hook_rows[0].kind,
+            menu::MenuRowKind::Leaf {
+                id: format!("{LEAF_REVOKE_HOOK_PREFIX}0")
+            }
+        );
+
+        // The second row (no matcher) says so honestly rather than
+        // omitting the field or claiming a pattern that isn't there.
+        assert!(
+            hook_rows[1].label.contains("deny-prompts")
+                && hook_rows[1].label.contains("prompt_submitted")
+                && hook_rows[1].label.contains("every call"),
+            "{}",
+            hook_rows[1].label
+        );
+        assert_eq!(
+            hook_rows[1].kind,
+            menu::MenuRowKind::Leaf {
+                id: format!("{LEAF_REVOKE_HOOK_PREFIX}1")
+            }
+        );
+    }
+
+    /// A hook row is never `MenuNode::Static` -- unlike deny/prompt rows,
+    /// a hook rule IS revocable from this menu (`Conway::revoke_hook_rule`'s
+    /// own doc: session-scoped, never a file rewrite, so there is no
+    /// safety-rule reason to lock it the way a deny PATTERN is).
+    #[test]
+    fn a_hook_row_is_selectable_not_static() {
+        let mut state = AppState::new(AgentId::new());
+        state.open_settings();
+        state.hook_rules = vec![a_hook_rule("deny-writes", "pre_tool_use", None)];
+
+        let rows = build_tree(&state).rows();
+        let row = rows
+            .iter()
+            .find(|r| r.label.starts_with("hook:"))
+            .expect("the hook row must render");
+        assert!(
+            !matches!(row.kind, menu::MenuRowKind::Static),
+            "a revocable hook row must not be read-only: {row:?}"
+        );
     }
 }

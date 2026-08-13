@@ -231,16 +231,33 @@ active-only); `Esc` (or `/agents` again) closes it. The status markers:
 traces, show timestamps), **tool output** (how many lines a folded tool
 call shows before `Ctrl-E` is needed), and **permissions** (cycle the
 permission mode; review or revoke individual grants under **allow** —
-flat and structured alike; and
-read-only **deny** and **prompt** sections listing every rule — flat or
-structured — that any permissions file, trusted or not, has put in force,
-each with the file it came from). `Up`/`Down`
-navigate, `Enter` toggles a boolean or expands/collapses a group,
-`Left`/`Right` step the numeric tool-preview setting, `Esc` closes. The
-two display toggles and the permission-mode cycle apply to this session
-only; the tool-preview line count persists to `[tui.tool_preview_lines]`
-in `settings.json` when you step it. Permission-mode and grant details are
+flat and structured alike; read-only **deny** and **prompt** sections
+listing every rule — flat or structured — that any permissions file,
+trusted or not, has put in force, each with the file it came from; and
+**hooks**, a fourth, revocable review list). `Up`/`Down`
+navigate, `Enter` toggles a boolean, expands/collapses a group, or revokes
+a selected grant/hook row, `Left`/`Right` step the numeric tool-preview
+setting, `Esc` closes. The two display toggles, the permission-mode
+cycle, and every revoke action apply to this session only; the
+tool-preview line count persists to `[tui.tool_preview_lines]` in
+`settings.json` when you step it. Permission-mode and grant details are
 covered in [`permissions.md`](permissions.md).
+
+The **hooks** section lists every configured `[hooks].rules[]` entry whose
+event can currently deny something — `pre_tool_use` (narrows a tool call)
+and `prompt_submitted` (narrows a submitted prompt) — each row naming its
+`id`, its event, its tool matcher (`match`, or "every call" when unset),
+and where it was configured. A rule still appears here even if its
+script is broken or missing: that is exactly the moment you most need to
+see and revoke it, since a broken script denies everything it matches
+until you do (fail-closed). Selecting a row and pressing `Enter` revokes
+it for the rest of this session only — the same session-only rule every
+other `/settings` toggle follows, since there is no `settings.json`
+writer for hooks either. Observation-only hook events (`post_tool_use`,
+`session_starting`, `child_spawned`, `request_assembled`,
+`child_reported`) do not appear in this list: they cannot deny a call, so
+there is nothing here for them to silently keep authorizing by staying
+enabled — to turn one off, edit its `enabled` field in `settings.json`.
 
 ## The status line
 

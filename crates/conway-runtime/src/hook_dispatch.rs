@@ -302,6 +302,23 @@ impl HookDispatcher {
         *self.hooks.write().expect("observation hooks lock poisoned") = hooks;
     }
 
+    /// The whole subscription map, cloned -- the review-list counterpart of
+    /// [`Self::set_hooks`] (board item 01KZS02HYXGTW42R8G4HP10GHX). Cloning
+    /// the WHOLE map, not one event's list, is deliberate: `Self::set_hooks`
+    /// replaces every event's subscriptions wholesale, so a caller that
+    /// wants to remove one hook from one event (e.g. `prompt_submitted`,
+    /// the deny-capable event this item's own review list revokes) must
+    /// read back every OTHER event's subscriptions too, mutate only the one
+    /// list it means to change, and write the whole map back -- otherwise
+    /// every sibling event's hooks would be silently dropped by the
+    /// wholesale replace.
+    pub fn hooks_snapshot(&self) -> BTreeMap<String, Vec<HookSpec>> {
+        self.hooks
+            .read()
+            .expect("observation hooks lock poisoned")
+            .clone()
+    }
+
     /// True when `event` has at least one subscriber AND a runner exists —
     /// i.e. when [`Self::dispatch`] would actually spawn something. Lets a
     /// caller skip assembling a payload it would only throw away.
