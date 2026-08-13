@@ -23,13 +23,18 @@ conway = { path = "../conway" }
 
 - **`ConwayBuilder`** assembles a validated config plus any ports you inject
   (backends, plugins, a permission gate, a session store, a router, a
-  context hook) into a live `Conway`. Three constructors: `discover()`
+  context hook) into a live `Conway`. Four constructors: `discover()`
   (the CLI's own default — walks up from the current directory for
   `.conway/settings.json`, same precedence as `getting-started.md`
   describes), `from_config(path)` (an explicit path, still layered under
-  the same precedence), and `from_parts(ConwayConfig)` (build the config
-  yourself, no discovery, no env, no warnings — see the minimal example
-  below).
+  the same precedence — including the ambient
+  `$XDG_CONFIG_HOME/conway/settings.json`/`~/.conway/settings.json` layer,
+  which always merges in regardless of `path`), `from_config_only(path)`
+  (identical, except that ambient user layer is never read — `path` plus
+  env plus any `CliOverrides` is the *entire* input; see "Loading config
+  without the ambient user layer" below), and `from_parts(ConwayConfig)`
+  (build the config yourself, no discovery, no env, no warnings — see the
+  minimal example below).
 - **`Conway`** is the built harness: `new_session`/`resume`/`fork_from` open
   a `SessionHandle`; it also owns permission-pattern grant/revoke, config
   warnings, and `explain_routing`.
@@ -117,6 +122,37 @@ instead of a config-file entry, `ConwayBuilder::with_backend(Arc<dyn
 Backend>)` takes precedence over any config-derived backend with the same
 `Backend::id()` — this is how the minimal example supplies its fake backend
 with no `[backends]` table at all.
+
+### Loading config without the ambient user layer
+
+`discover()` and `from_config(path)` both read
+`$XDG_CONFIG_HOME/conway/settings.json` (falling back to
+`~/.conway/settings.json`) unconditionally, deep-merged in *before* whatever
+`discover()`/`path` finds — `explicit_path` in `LoadOptions` only ever
+replaces the project-scoped layer, never the user-scoped one. For a `conway`
+CLI invocation that is the intended behavior: an operator's own global
+settings should apply everywhere. For a host application embedding `conway`
+as a library, it is usually not: the invoking user's own
+`~/.conway/settings.json` (which may declare backends, credentials, or
+routing that has nothing to do with your application) has no business
+merging into your program's config, and neither does a test fixture that
+wants to assert against exactly the config it wrote.
+
+`ConwayBuilder::from_config_only(path)` is that seam: identical to
+`from_config`, except the XDG/user layer is never read — the merge becomes
+`default < path < env < CliOverrides`, four sources instead of five.
+`conway::config::load_ignoring_xdg` is the underlying `config::load`
+sibling, for callers who want the lower-level `LoadOutcome` (config plus
+warnings) rather than a `ConwayBuilder`.
+
+**This suppresses the XDG layer only — not `env`.** `CONWAY_*` environment
+variables are how CI and container entrypoints hand a specific invocation
+its credentials and overrides; they are supplied by the caller of *this*
+invocation, not left over from someone else's home directory, so
+`from_config_only`/`load_ignoring_xdg` merge them in exactly as `from_config`
+does. A caller that also wants an env-free load already has the tool for
+that: build `LoadOptions` with a hand-assembled (possibly empty) `env` map,
+or use `from_parts(ConwayConfig)` directly.
 
 ### Layering flag-shaped overrides: `CliOverrides`
 
