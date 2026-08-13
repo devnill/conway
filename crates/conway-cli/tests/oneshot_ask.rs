@@ -72,10 +72,14 @@ fn long_brief() -> String {
 /// store (mirrors `continuity.rs::open_conway` -- same `CliOverrides.cwd`
 /// and empty-`AllowListGate` rationales apply: the fixture's session.root
 /// resolves relative to the fixture dir, and `build` needs a non-`prompt`
-/// gate).
+/// gate). Uses `ConwayBuilder::from_config_only`, not `from_config` --
+/// see `continuity.rs::open_conway`'s own doc for why: this helper runs
+/// in-process, so `common::command`'s `XDG_CONFIG_HOME` isolation (which
+/// only reaches the spawned `conway` binary) does not cover it (board item
+/// 01KZYCKF3Z1XBCS50N7EWWVPEQ).
 async fn open_conway(fixture: &Fixture) -> Conway {
     let gate: Arc<dyn PermissionGate> = Arc::new(AllowListGate::new(Vec::new(), Vec::new()));
-    ConwayBuilder::from_config(&fixture.config_path)
+    ConwayBuilder::from_config_only(&fixture.config_path)
         .expect("load fixture config")
         .with_cli_overrides(CliOverrides {
             cwd: Some(fixture.dir.path().to_path_buf()),

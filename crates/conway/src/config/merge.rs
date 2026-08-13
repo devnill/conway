@@ -2,6 +2,11 @@
 //! `CONWAY_*` environment mapping, and `ConwayConfig` semantic validation
 //! (the headroom checks and structural consistency checks).
 //!
+//! [`load_ignoring_xdg`] is the one seam that opts out of a source entirely
+//! (board item 01KZYCKF3Z1XBCS50N7EWWVPEQ) — see its own doc for why XDG
+//! alone, not `env` too, and why it is a sibling function rather than a new
+//! `LoadOptions` field.
+//!
 //! Merge happens on `serde_json::Value` (tables union by key, arrays and
 //! scalars replace wholesale), and only the final merged document is
 //! deserialized into [`ConwayConfig`] — this is what makes
@@ -117,11 +122,69 @@ pub struct CliOverrides {
 
 /// The full five-source load: default < XDG < project < env < CLI.
 pub fn load(options: LoadOptions) -> Result<LoadOutcome> {
+    load_impl(options, IncludeXdgLayer::Yes)
+}
+
+/// Identical to [`load`], except the XDG/user layer
+/// (`$XDG_CONFIG_HOME/conway/settings.json`, or `~/.conway/settings.json`)
+/// is never read — the merge becomes `default < project < env < CLI`, four
+/// sources instead of five (board item 01KZYCKF3Z1XBCS50N7EWWVPEQ).
+///
+/// [`load`] reads the XDG layer unconditionally, *before* the
+/// `explicit_path`/discovered project layer, regardless of whether
+/// `options.explicit_path` is set — so a caller who wants isolation (a test
+/// fixture, or an embedder that wants to use its own configuration rather
+/// than whatever is in the invoking user's home directory) has had no way
+/// to get it. This function is that seam. See
+/// [`crate::builder::ConwayBuilder::from_config_only`] for the builder-level
+/// entry point most callers want instead of calling this directly.
+///
+/// **A sibling function, not a new `LoadOptions` field, deliberately:**
+/// `LoadOptions` is constructed via full struct-literal syntax (naming
+/// every field, no `..LoadOptions::default()` base) at call sites in other
+/// crates across this workspace (`crates/conway-cli/src/tui/view/status.rs`,
+/// `crates/conway-thirdparty-backend/src/lib.rs`) — outside this seam's own
+/// file lane. Growing `LoadOptions`'s field set would silently break every
+/// one of those at compile time for a capability they have no reason to
+/// opt into; a same-shaped sibling function costs them nothing.
+///
+/// **XDG only, not `env` too — decided, not left implicit:** `CONWAY_*`
+/// environment variables differ from the XDG layer in the one way that
+/// matters here — they are how a *caller* (CI, a container entrypoint, an
+/// embedder's own process supervisor) explicitly hands *this* invocation
+/// its credentials and overrides, at the moment `options.env` is
+/// constructed and passed in. The XDG layer, by contrast, is a *file on
+/// disk*, written independently of any particular invocation and
+/// discovered by walking the filesystem rather than supplied by the
+/// caller — exactly the ambient "invoking user's home directory" state this
+/// function exists to bypass. Suppressing `env` here would break the
+/// CI/embedder credential-passing use case this seam serves, for no
+/// isolation benefit: a caller that also wants an env-free load already has
+/// the tool for that — pass a hand-built (possibly empty) `env` map, the
+/// same mechanism every hermetic test in this workspace already uses (see
+/// `crates/conway/tests/support/mod.rs::isolated_env`).
+pub fn load_ignoring_xdg(options: LoadOptions) -> Result<LoadOutcome> {
+    load_impl(options, IncludeXdgLayer::No)
+}
+
+/// Whether [`load_impl`] reads the XDG/user layer — a private, two-variant
+/// enum rather than a bare `bool` so `load`/`load_ignoring_xdg`'s own call
+/// sites stay self-documenting at the call site, not `load_impl(options,
+/// true)`/`load_impl(options, false)` with no indication of which way
+/// `true` goes.
+enum IncludeXdgLayer {
+    Yes,
+    No,
+}
+
+fn load_impl(options: LoadOptions, include_xdg: IncludeXdgLayer) -> Result<LoadOutcome> {
     let mut merged = default_document();
 
-    if let Some(path) = discovery::xdg_config_path(&options.env) {
-        if let Some(layer) = read_json_layer(&path)? {
-            merge_values(&mut merged, layer);
+    if matches!(include_xdg, IncludeXdgLayer::Yes) {
+        if let Some(path) = discovery::xdg_config_path(&options.env) {
+            if let Some(layer) = read_json_layer(&path)? {
+                merge_values(&mut merged, layer);
+            }
         }
     }
 
