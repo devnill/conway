@@ -35,8 +35,9 @@
 use std::sync::Arc;
 
 use conway::plugin::{
-    async_trait, ContentBlock, PathArgs, PermissionClass, Plugin, PluginManifest, RenderKind, Tool,
-    ToolCall, ToolCategory, ToolCtx, ToolError, ToolName, ToolOutput, ToolSpec, TruncationPolicy,
+    async_trait, Command, CommandCtx, CommandOutcome, CommandSpec, ContentBlock, PathArgs,
+    PermissionClass, Plugin, PluginManifest, RenderKind, Tool, ToolCall, ToolCategory, ToolCtx,
+    ToolError, ToolName, ToolOutput, ToolSpec, TruncationPolicy,
 };
 
 /// This plugin's manifest id: the string an operator names in
@@ -108,6 +109,46 @@ impl Tool for SkeletonPingTool {
     }
 }
 
+/// The bare name [`SkeletonPingCommand`] registers under -- reachable in the
+/// TUI as `/{PLUGIN_ID}.{COMMAND_NAME}` (`conway_cli::tui::commands::
+/// CommandRegistry::build` prefixes it with this plugin's own manifest id;
+/// see that function's own doc for why an author never picks their own
+/// namespace).
+pub const COMMAND_NAME: &str = "ping";
+
+/// `/{PLUGIN_ID}.ping`: the worked example's command half (board item
+/// 01KZYBFTK4QPB45AJT9M57P60W), proving a plugin can give the OPERATOR
+/// something to type, not only the model something to call --
+/// [`SkeletonPingTool`] above is this same worked example's tool half.
+/// Deliberately the smallest useful thing: replies with a fixed sentence
+/// plus whatever the operator typed after the command word, echoed back
+/// verbatim -- proves a call reached this plugin's own `Command::invoke`
+/// through the real TUI dispatch path (`commands::parse` ->
+/// `commands::execute` -> `App::spawn_plugin_command`) and nothing more.
+struct SkeletonPingCommand;
+
+#[async_trait]
+impl Command for SkeletonPingCommand {
+    fn spec(&self) -> CommandSpec {
+        CommandSpec {
+            name: COMMAND_NAME.to_string(),
+            summary: "First-party plugin tier skeleton: replies with a fixed message. Not \
+                      registered by default -- installed via `[plugins].install` or \
+                      `ConwayBuilder::with_plugin`."
+                .to_string(),
+        }
+    }
+
+    async fn invoke(&self, ctx: CommandCtx) -> CommandOutcome {
+        let text = if ctx.args.is_empty() {
+            "skeleton pong".to_string()
+        } else {
+            format!("skeleton pong: {}", ctx.args)
+        };
+        CommandOutcome::Output(vec![text])
+    }
+}
+
 /// The plugin itself. `Default` so a caller (this crate's own tests,
 /// `conway-cli`'s first-party bundle) constructs it with no arguments,
 /// matching every built-in's own zero-config construction.
@@ -128,5 +169,50 @@ impl Plugin for SkeletonPlugin {
 
     fn tools(&self) -> Vec<Arc<dyn Tool>> {
         vec![Arc::new(SkeletonPingTool)]
+    }
+
+    fn commands(&self) -> Vec<Arc<dyn Command>> {
+        vec![Arc::new(SkeletonPingCommand)]
+    }
+}
+
+#[cfg(test)]
+mod command_tests {
+    use super::*;
+
+    fn ctx(args: &str) -> CommandCtx {
+        CommandCtx {
+            focused_agent: conway::AgentId::new(),
+            root_agent: conway::AgentId::new(),
+            args: args.to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn ping_command_replies_with_a_fixed_message() {
+        let command = SkeletonPingCommand;
+        let outcome = command.invoke(ctx("")).await;
+        assert_eq!(
+            outcome,
+            CommandOutcome::Output(vec!["skeleton pong".to_string()])
+        );
+    }
+
+    #[tokio::test]
+    async fn ping_command_echoes_its_argument() {
+        let command = SkeletonPingCommand;
+        let outcome = command.invoke(ctx("hello")).await;
+        assert_eq!(
+            outcome,
+            CommandOutcome::Output(vec!["skeleton pong: hello".to_string()])
+        );
+    }
+
+    #[test]
+    fn plugin_declares_the_ping_command_under_its_bare_name() {
+        let plugin = SkeletonPlugin;
+        let commands = plugin.commands();
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].spec().name, COMMAND_NAME);
     }
 }

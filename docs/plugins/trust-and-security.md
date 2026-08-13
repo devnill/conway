@@ -159,6 +159,42 @@ Two things this bears on directly, so a reader does not have to infer them:
   that header from the same commit — a disclosure without the caveat reads
   as a guarantee.
 
+## TUI slash commands: no permission gate at all, by design
+
+`docs/plugins/hooks.md` point 15 (`Plugin::commands()`/`Command::invoke`)
+is a DIFFERENT trust shape from a `Tool` call, worth stating separately
+because a reader could otherwise assume it inherits the same gate.
+
+**A `Tool` call is proposed by the model and passes through
+`PermissionGate`/`PermissionBroker` before it runs — a `Command::invoke` is
+typed directly by the OPERATOR and runs immediately, with no gate at all.**
+There is nothing to gate: the operator who just typed `/acme.greet` is the
+same trust boundary a bare shell alias or a script in their `$PATH` already
+crosses with no prompt, every time, and a slash command is held to the
+identical standard, not a stricter one. This is consistent with — not an
+exception to — this page's opening claim: **installing** the plugin is
+the entire control (§"What trust is"); once installed, both its tools and
+its commands run with the operator's full privileges, a tool gated per call
+because the MODEL proposed it (an untrusted-in-the-small-sense caller even
+inside a trusted plugin), a command not gated at all because the OPERATOR
+proposed it directly, the same way typing a command in a shell they already
+trust needs no per-invocation confirmation.
+
+**What this narrows the blast radius to, deliberately.** `Command::invoke`
+receives a [`CommandCtx`] carrying only read-only agent-identity fields and
+the raw text the operator typed after the command word — no live
+`Conway`/`SessionHandle`, no filesystem/network/exec capability beyond
+whatever the plugin's own process already has as an ordinary program (the
+same "conway does not sandbox" limit stated above, restated: this trust
+model does not narrow the MACHINE-level capability, only conway's OWN
+domain objects). A command cannot fork, resume, or steer a session, read or
+write a file through conway's own mediation, or reach the permission
+broker — see `hooks.md` point 15's own doc for why (a `conway-core`/`conway`
+layering constraint, not a policy choice held back deliberately), and note
+that gap is itself disclosed there as a finding, not a control: nothing
+stops a command's OWN Rust code from doing arbitrary I/O outside conway's
+mediation entirely, exactly as a tool's `invoke` already can.
+
 ## Backends and routers: the same install pass, and one hands over more
 
 Everything above states the plugin case by name. It applies unmodified to

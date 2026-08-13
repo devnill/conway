@@ -49,6 +49,108 @@ pub trait Plugin: Send + Sync + 'static {
     fn manifest(&self) -> PluginManifest;
 
     fn tools(&self) -> Vec<Arc<dyn Tool>>;
+
+    /// Zero or more TUI slash commands this plugin contributes (board item
+    /// 01KZYBFTK4QPB45AJT9M57P60W). The default returns none, so every
+    /// existing `Plugin` implementor -- every built-in, every first-party
+    /// plugin, every third party's -- keeps compiling unmodified.
+    ///
+    /// **Why this exists at all.** Before this method, `Plugin::manifest`/
+    /// `Plugin::tools` was the WHOLE trait: a plugin could give the *model* a
+    /// tool, but had no way to give the *operator* anything to type. That made
+    /// the TUI's closed `SlashCommand` enum the last genuinely privileged
+    /// surface in the harness (`PHILOSOPHY.md` §5's own membership test says
+    /// built-ins are unprivileged "in the way that nothing in `/bin` is
+    /// privileged over a program you wrote yourself" -- true for tools, true
+    /// for backends, false for commands, until this). See
+    /// `conway_cli::tui::commands`'s own module doc for the dispatch seam
+    /// this feeds (`SlashCommand::Plugin`, resolved through the ordinary
+    /// `parse`/`execute` path -- never a second, parser-bypassing surface).
+    fn commands(&self) -> Vec<Arc<dyn Command>> {
+        Vec::new()
+    }
+}
+
+/// One plugin-declared TUI slash command (board item
+/// 01KZYBFTK4QPB45AJT9M57P60W): a plugin's own [`CommandSpec`] plus the
+/// async handler `conway-cli` invokes when the operator types it.
+///
+/// **Deliberately narrow.** [`CommandCtx`] carries read-only identity and the
+/// raw argument text -- nothing that reaches a live `Conway`/`SessionHandle`.
+/// This is a scoping decision, not an oversight: `Plugin`/`Command` live in
+/// `conway-core`, which cannot depend on `conway` (the facade, where
+/// `Conway::fork_from` and session-swap capability live) without a cycle, and
+/// the natural bridge point for a live facade handle (mirroring how
+/// [`ToolCtx::subagents`] narrows fork/spawn into a running tool call) would
+/// need a new port threaded through `conway-runtime`/`ConwayBuilder` that no
+/// item has built yet. A command that can only read identity and print is
+/// the largest capability grantable without either of those -- see
+/// `docs/plugins/hooks.md` point 12's own "declare, then push; the render
+/// path never blocks on a plugin" precedent, which this mirrors for the
+/// SAME reason: an extension point earns a wider grant only once a real
+/// consumer needs it, not ahead of one (YAGNI).
+#[async_trait]
+pub trait Command: Send + Sync + 'static {
+    /// This command's bare name (no leading `/`, no plugin-id prefix -- the
+    /// host prefixes it with the declaring plugin's own
+    /// [`PluginManifest::id`] before registering it, so an author never
+    /// picks their own namespace) and a one-line summary for `/help`/the `/`
+    /// palette.
+    fn spec(&self) -> CommandSpec;
+
+    /// Runs this command. **Must be safe to run on a spawned task**: the
+    /// host never awaits this directly on its render/input loop (see this
+    /// trait's own doc), so a slow implementation degrades to "the operator
+    /// doesn't see the result yet," never to a frozen terminal -- but an
+    /// implementation should still honor ordinary async hygiene (no
+    /// unbounded blocking I/O without `spawn_blocking`) since a hung task is
+    /// still a leaked task, even though it cannot hang the UI.
+    async fn invoke(&self, ctx: CommandCtx) -> CommandOutcome;
+}
+
+/// A plugin command's declared identity (module doc: [`Command::spec`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommandSpec {
+    /// Bare name, e.g. `"greet"` for a plugin whose manifest id is
+    /// `"acme.tools"`, reachable as `/acme.tools.greet`. Must be non-empty
+    /// and contain no whitespace -- the host rejects (named error, at
+    /// registration) anything that would be unreachable through
+    /// `commands::parse`'s own whitespace-splitting rule.
+    pub name: String,
+    /// One line, shown in `/help`'s pointer to the `/` palette and as the
+    /// palette row's own description.
+    pub summary: String,
+}
+
+/// Read-only invocation context handed to [`Command::invoke`] -- see
+/// [`Command`]'s own doc for why this is deliberately narrow.
+#[derive(Clone, Debug)]
+pub struct CommandCtx {
+    /// The agent the TUI's transcript is currently showing.
+    pub focused_agent: AgentId,
+    /// This session's root agent (`SessionHandle::root`).
+    pub root_agent: AgentId,
+    /// Everything typed after the command word, left-trimmed, verbatim --
+    /// the same "consume the remainder verbatim, no re-tokenization" rule
+    /// `conway_cli::tui::commands::parse` applies to every other command's
+    /// free-text argument. Empty when the operator supplied none.
+    pub args: String,
+}
+
+/// What a [`Command::invoke`] call produced.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CommandOutcome {
+    /// Zero or more lines appended to the transcript verbatim, each as its
+    /// own entry -- the same shape a built-in command's own successful
+    /// notice takes.
+    Output(Vec<String>),
+    /// The command failed; `message` is shown the same way any other slash
+    /// command's failure is (`conway_cli::tui::commands`'s own rule: "a
+    /// failing slash command must never terminate the TUI"). Never a panic
+    /// bubbling out of `invoke` -- the host also isolates a genuine panic
+    /// (see `conway_cli::tui::app`'s dispatch), but an implementation should
+    /// still prefer returning this variant over panicking.
+    Error(String),
 }
 
 /// One invocable tool: aligned with ACP's tool-call categories (`ToolCategory`
@@ -998,5 +1100,126 @@ mod tests {
         let weird = PathBuf::from(OsStr::from_bytes(b"/not/\xFFutf8"));
         handle.set(weird.clone()).unwrap();
         assert_eq!(handle.current(), weird);
+    }
+
+    // ---- Plugin::commands (board item 01KZYBFTK4QPB45AJT9M57P60W) ----
+
+    /// A third-party `Plugin` implementor that accepts the trait's default
+    /// `commands` untouched -- same proof shape as `Tool`'s own default-method
+    /// tests above -- must compile and return an empty list: adding this
+    /// method must not break any existing `Plugin` implementor in or out of
+    /// this workspace.
+    struct NoCommandsPlugin;
+
+    impl Plugin for NoCommandsPlugin {
+        fn manifest(&self) -> PluginManifest {
+            PluginManifest {
+                id: "test.no_commands".into(),
+                version: "0.1.0".into(),
+                tools: vec![],
+                required_host_caps: vec![],
+            }
+        }
+
+        fn tools(&self) -> Vec<Arc<dyn Tool>> {
+            vec![]
+        }
+    }
+
+    #[test]
+    fn default_commands_is_empty() {
+        let plugin = NoCommandsPlugin;
+        assert!(plugin.commands().is_empty());
+    }
+
+    /// A greeting command whose `invoke` echoes its `args` back -- the
+    /// smallest real implementation, used to prove `Command` is genuinely
+    /// invocable and object-safe, not merely declarable.
+    struct GreetCommand;
+
+    #[async_trait]
+    impl Command for GreetCommand {
+        fn spec(&self) -> CommandSpec {
+            CommandSpec {
+                name: "greet".to_string(),
+                summary: "echoes back its argument".to_string(),
+            }
+        }
+
+        async fn invoke(&self, ctx: CommandCtx) -> CommandOutcome {
+            if ctx.args.is_empty() {
+                CommandOutcome::Output(vec!["hello!".to_string()])
+            } else {
+                CommandOutcome::Output(vec![format!("hello, {}!", ctx.args)])
+            }
+        }
+    }
+
+    fn command_ctx(args: &str) -> CommandCtx {
+        CommandCtx {
+            focused_agent: AgentId::new(),
+            root_agent: AgentId::new(),
+            args: args.to_string(),
+        }
+    }
+
+    #[test]
+    fn command_invoke_reaches_the_implementation() {
+        let command = GreetCommand;
+        let outcome = block_on(command.invoke(command_ctx("world")));
+        assert_eq!(
+            outcome,
+            CommandOutcome::Output(vec!["hello, world!".to_string()])
+        );
+    }
+
+    #[test]
+    fn command_invoke_handles_empty_args() {
+        let command = GreetCommand;
+        let outcome = block_on(command.invoke(command_ctx("")));
+        assert_eq!(outcome, CommandOutcome::Output(vec!["hello!".to_string()]));
+    }
+
+    /// `Command` must remain object-safe: a plugin returns
+    /// `Vec<Arc<dyn Command>>`, and the host stores/dispatches through the
+    /// trait object.
+    #[test]
+    fn command_is_object_safe() {
+        fn assert_object_safe(_: &dyn Command) {}
+        let command = GreetCommand;
+        assert_object_safe(&command);
+    }
+
+    /// A `Plugin` implementor that DOES declare a command -- proves
+    /// `commands()` round-trips a real `Arc<dyn Command>` through the trait,
+    /// the shape every consumer (the TUI's registry, a future embedder)
+    /// depends on.
+    struct GreetPlugin;
+
+    impl Plugin for GreetPlugin {
+        fn manifest(&self) -> PluginManifest {
+            PluginManifest {
+                id: "test.greet".into(),
+                version: "0.1.0".into(),
+                tools: vec![],
+                required_host_caps: vec![],
+            }
+        }
+
+        fn tools(&self) -> Vec<Arc<dyn Tool>> {
+            vec![]
+        }
+
+        fn commands(&self) -> Vec<Arc<dyn Command>> {
+            vec![Arc::new(GreetCommand)]
+        }
+    }
+
+    #[test]
+    fn plugin_commands_carries_a_real_declared_command() {
+        let plugin = GreetPlugin;
+        let commands = plugin.commands();
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].spec().name, "greet");
     }
 }

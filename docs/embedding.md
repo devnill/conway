@@ -258,8 +258,10 @@ without special-casing. `conway` (this facade crate) does not, and must
 never, depend on any of them: doing so would put a first-party plugin back
 on the exact footing the tier exists to avoid. `crates/conway-plugin-skeleton`
 is the worked example this item ships — a `SkeletonPlugin` registering one
-`skeleton_ping` tool, written entirely against `conway::plugin`, proving
-nothing beyond the mechanism below.
+`skeleton_ping` tool and (board item 01KZYBFTK4QPB45AJT9M57P60W) one
+`/conway.plugin_skeleton.ping` TUI slash command, both written entirely
+against `conway::plugin`, proving nothing beyond the mechanism below and
+[`docs/plugins/hooks.md`](plugins/hooks.md) point 15.
 
 **How one is installed — deliberately a distinct key from
 `tools.builtin_plugins`.** That key names a *closed* candidate set (the four
