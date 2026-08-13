@@ -9,7 +9,7 @@
 //! the OS, spawn failure, an unreachable `SubagentHost`) return
 //! `Err(ToolError::..)`. Every tool in this crate follows this rule.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use serde::de::DeserializeOwned;
 
@@ -26,18 +26,25 @@ use conway_core::ports::{ToolCtx, ToolOutput};
 /// Performs **no** containment or escape checks (no sandboxing in
 /// this layer) and does **not** canonicalize (canonicalizing would fail for
 /// paths that don't exist yet, e.g. a `write` target).
+///
+/// **A thin wrapper around the one shared implementation,
+/// [`conway_core::containment::resolve_candidate`] -- board item
+/// 01KZVZ56SBPSTZHAXXGYCNETNX.** This function used to carry its own
+/// restated copy of "absolute -> as-is, relative -> join cwd, NUL -> reject"
+/// -- kept in sync with `conway_runtime::permission::
+/// resolve_like_the_tool_will`'s identical copy only by a doc comment
+/// demanding lockstep edits, never enforced by the compiler. It is now a
+/// direct call into the shared core function, only translating `None` into
+/// this crate's own `ToolError`, so the two crates' wrappers can no longer
+/// independently drift (two inlined copies of this exact rule already
+/// dropped the NUL guard once, in `conway-runtime` -- board item
+/// 01KZ00VV3F3EBZ9WQSB292TBJZ).
 pub fn resolve_path(ctx: &ToolCtx, path: &str) -> Result<PathBuf, ToolError> {
-    if path.contains('\0') {
-        return Err(ToolError::InvalidArguments {
+    conway_core::containment::resolve_candidate(&ctx.cwd, path).ok_or_else(|| {
+        ToolError::InvalidArguments {
             detail: format!("path contains a NUL byte: {path:?}"),
-        });
-    }
-    let candidate = Path::new(path);
-    if candidate.is_absolute() {
-        Ok(candidate.to_path_buf())
-    } else {
-        Ok(ctx.cwd.join(candidate))
-    }
+        }
+    })
 }
 
 /// Deserializes a tool call's `arguments` into `T`. A shape mismatch is a

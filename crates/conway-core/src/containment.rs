@@ -167,6 +167,48 @@ impl CanonicalRoot {
     }
 }
 
+/// Resolves a possibly-untrusted, model- or config-supplied path string
+/// against `cwd`, exactly as the tool call or root check that ultimately
+/// acts on it needs it resolved: an absolute `raw` passes through
+/// unchanged; a relative `raw` joins onto `cwd`. Returns `None` for a `raw`
+/// containing a NUL byte — the OS path APIs cannot represent one
+/// (`CString::new` fails on an interior NUL), so any resolution that
+/// returned `Some` here would hand the caller a candidate no later
+/// filesystem call could act on either.
+///
+/// **The one implementation every root-enforcement site in this tree
+/// shares — board item 01KZVZ56SBPSTZHAXXGYCNETNX.** This exact operation
+/// (join-or-pass-through, NUL rejected) was independently restated at least
+/// three times in this tree before it was collapsed here: two inlined
+/// copies in `conway-runtime` (`subagent.rs`'s spawn-time confinement-root
+/// resolution and `runtime.rs`'s root-agent resolution) each independently
+/// **dropped the NUL guard** — the defect board item 01KZ00VV3F3EBZ9WQSB292TBJZ
+/// fixed by pointing both at `conway_runtime::permission::
+/// resolve_like_the_tool_will` — and a third, `conway_tools::common::
+/// resolve_path`, carried the guard but as a byte-for-byte separate
+/// function, kept in sync only by a doc comment demanding lockstep edits,
+/// not by the compiler.
+///
+/// `conway-runtime`'s `resolve_like_the_tool_will` and `conway-tools`'
+/// `resolve_path` each keep their own thin, same-signature, same-crate
+/// wrapper around this function (crate layering runs `conway-runtime ->
+/// conway-core` and `conway-tools -> conway-core` only, never
+/// `conway-runtime -> conway-tools`, so neither crate can call the other's
+/// wrapper directly, and neither may gain a new cross-crate dependency just
+/// for this) — but the wrapper's BODY is now this one call, never a
+/// restatement, so the two can no longer independently drop the guard.
+pub fn resolve_candidate(cwd: &Path, raw: &str) -> Option<PathBuf> {
+    if raw.contains('\0') {
+        return None;
+    }
+    let candidate = Path::new(raw);
+    if candidate.is_absolute() {
+        Some(candidate.to_path_buf())
+    } else {
+        Some(cwd.join(candidate))
+    }
+}
+
 /// Finds the deepest ancestor of `candidate` that exists on the real
 /// filesystem, canonicalizing it (resolving any real symlinks and any
 /// `..`/`.` along the way), and returns `(canonical_existing_prefix,
@@ -413,6 +455,39 @@ mod tests {
 
         let candidate = repo.join("a").join("b").join("c").join("d.txt");
         assert_eq!(root.contains(&candidate), Containment::Inside);
+    }
+
+    // ---- resolve_candidate: the single resolution rule every
+    // root-enforcement site shares (board item 01KZVZ56SBPSTZHAXXGYCNETNX) ----
+
+    #[test]
+    fn resolve_candidate_joins_relative_onto_cwd() {
+        let cwd = Path::new("/tmp/x");
+        assert_eq!(
+            resolve_candidate(cwd, "a/b"),
+            Some(PathBuf::from("/tmp/x/a/b"))
+        );
+    }
+
+    #[test]
+    fn resolve_candidate_passes_absolute_through_unchanged() {
+        let cwd = Path::new("/tmp/x");
+        assert_eq!(
+            resolve_candidate(cwd, "/etc/hosts"),
+            Some(PathBuf::from("/etc/hosts"))
+        );
+    }
+
+    #[test]
+    fn resolve_candidate_rejects_nul_byte_in_relative_input() {
+        let cwd = Path::new("/tmp/x");
+        assert_eq!(resolve_candidate(cwd, "a\0b"), None);
+    }
+
+    #[test]
+    fn resolve_candidate_rejects_nul_byte_in_absolute_input() {
+        let cwd = Path::new("/tmp/x");
+        assert_eq!(resolve_candidate(cwd, "/a\0b"), None);
     }
 
     #[test]
