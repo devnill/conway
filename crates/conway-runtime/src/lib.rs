@@ -19,6 +19,7 @@ pub mod context;
 pub mod error;
 pub mod events;
 pub mod mailbox;
+pub mod observation;
 pub mod permission;
 pub mod result;
 pub mod runtime;
