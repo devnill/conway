@@ -131,6 +131,7 @@ use conway_core::ports::{
 };
 use conway_core::routing::{AlwaysClosedHealthRegistry, MinimalRouter, ModelOverrides};
 use conway_runtime::events::EventBus;
+use conway_runtime::observation::{ObservationHookSpec, OBSERVATION_EVENTS};
 use conway_runtime::permission::PreToolUseHookSpec;
 use conway_runtime::runtime::{Runtime, RuntimeDeps};
 
@@ -1002,8 +1003,31 @@ impl ConwayBuilder {
                 timeout_ms: rule.timeout_ms,
             })
             .collect();
-        rt.set_hook_runner(hook_runner);
+        // Board item 01KZS019NHG11RVQYSVT7RG0P5: the same three-line shape for
+        // the observation tier, grouped by event name. `post_tool_use`,
+        // `session_starting` and `child_spawned` are dispatched; every other
+        // `event` value still parses, validates and does nothing.
+        //
+        // The SAME runner feeds both tiers, so an embedder that injects one
+        // gets every dispatched event rather than having to opt in twice.
+        let mut observation_specs: BTreeMap<String, Vec<ObservationHookSpec>> = BTreeMap::new();
+        for rule in config.hooks.rules.iter().filter(|r| r.enabled) {
+            if OBSERVATION_EVENTS.contains(&rule.event.as_str()) {
+                observation_specs
+                    .entry(rule.event.clone())
+                    .or_default()
+                    .push(ObservationHookSpec {
+                        id: rule.id.clone(),
+                        command: rule.command.clone(),
+                        timeout_ms: rule.timeout_ms,
+                    });
+            }
+        }
+
+        rt.set_hook_runner(hook_runner.clone());
         rt.set_pre_tool_use_hooks(pre_tool_use_specs);
+        rt.set_observation_hook_runner(hook_runner);
+        rt.set_observation_hooks(observation_specs);
 
         Ok(Conway::new(
             rt,

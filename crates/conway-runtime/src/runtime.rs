@@ -268,6 +268,13 @@ pub struct Runtime {
     registry: Arc<PluginRegistry>,
     #[allow(dead_code)]
     broker: Arc<PermissionBroker>,
+    /// The observation-only hook tier (`post_tool_use`, `session_starting`,
+    /// `child_spawned`) -- board item 01KZS019NHG11RVQYSVT7RG0P5. Shared with
+    /// `LoopDeps.tool_runner`, which dispatches `post_tool_use` from inside
+    /// the tool batch; this handle is what `start_root` and
+    /// `impl SubagentHost for Runtime`'s `start` use for the other two, and
+    /// what `set_observation_hooks` writes config onto.
+    observation: Arc<crate::observation::ObservationDispatcher>,
     loop_deps: Arc<LoopDeps>,
     agents: RwLock<HashMap<AgentId, AgentHandle>>,
     tree: Arc<AgentTree>,
@@ -334,6 +341,12 @@ impl Runtime {
             broker.clone(),
             event_bus.clone(),
         ));
+        // Read back rather than constructed here, so the runtime and the tool
+        // runner share ONE dispatcher: `post_tool_use` fires from inside
+        // `ToolRunner`, while `session_starting` and `child_spawned` fire from
+        // `Runtime`'s own methods, and all three must see the same injected
+        // runner and subscription lists (board item 01KZS019NHG11RVQYSVT7RG0P5).
+        let observation = tool_runner.observation();
         let attempt = Arc::new(AttemptEngine::new(backends, health, event_bus.clone()));
         let builder = Arc::new(ContextBuilder::new());
         let plugin_config = Arc::new(PluginConfig::default());
@@ -369,6 +382,7 @@ impl Runtime {
                 agent_defs,
                 registry,
                 broker,
+                observation,
                 loop_deps,
                 agents: RwLock::new(HashMap::new()),
                 tree,
@@ -383,6 +397,14 @@ impl Runtime {
     /// any field's visibility, so `Runtime`'s actual public surface (the
     /// thing the WI-084 criterion "no additional public methods" on the
     /// trait impl is protecting) is unaffected.
+    /// The shared observation-hook dispatcher, for `subagent.rs`'s
+    /// `impl SubagentHost for Runtime` (board item 01KZS019NHG11RVQYSVT7RG0P5).
+    /// `pub(crate)` for the same reason [`Self::loop_deps`] is: an internal
+    /// seam between two files of one crate, not public surface.
+    pub(crate) fn observation_dispatcher(&self) -> &Arc<crate::observation::ObservationDispatcher> {
+        &self.observation
+    }
+
     pub(crate) fn loop_deps(&self) -> &Arc<LoopDeps> {
         &self.loop_deps
     }
@@ -453,6 +475,30 @@ impl Runtime {
     /// "pre_tool_use" && enabled` before any session starts. Not called at
     /// all (the default, an empty list) is the same no-op
     /// `Self::set_hook_runner(None)` is.
+    /// Injects the same `HookRunner` into the observation tier
+    /// (`post_tool_use`, `session_starting`, `child_spawned`) that
+    /// [`Self::set_hook_runner`] gives the permission broker. Board item
+    /// 01KZS019NHG11RVQYSVT7RG0P5; `conway::ConwayBuilder::build` calls both
+    /// with the same runner, so an operator injecting one gets every event.
+    /// Not called at all leaves every observation dispatch a no-op.
+    pub fn set_observation_hook_runner(
+        &self,
+        runner: Option<Arc<dyn conway_core::ports::HookRunner>>,
+    ) {
+        self.observation.set_runner(runner);
+    }
+
+    /// Replaces the observation tier's subscription lists wholesale, keyed by
+    /// event name -- the observation counterpart of
+    /// [`Self::set_pre_tool_use_hooks`]. See
+    /// [`crate::observation::ObservationDispatcher::set_hooks`].
+    pub fn set_observation_hooks(
+        &self,
+        hooks: std::collections::BTreeMap<String, Vec<crate::observation::ObservationHookSpec>>,
+    ) {
+        self.observation.set_hooks(hooks);
+    }
+
     pub fn set_pre_tool_use_hooks(&self, hooks: Vec<PreToolUseHookSpec>) {
         self.broker.set_pre_tool_use_hooks(hooks);
     }
@@ -904,6 +950,31 @@ impl Runtime {
             .write()
             .expect("agents lock poisoned")
             .insert(agent_id, handle);
+
+        // `session_starting` (board item 01KZS019NHG11RVQYSVT7RG0P5), fired
+        // ONCE per `start_root` -- not per turn and not per tool call. This is
+        // the last statement before the id is returned, so every id the
+        // payload names already exists and the agent is fully attached.
+        //
+        // OBSERVATION ONLY: `dispatch` returns `()`, so a failing hook cannot
+        // fail the session start. `resume_root` deliberately does NOT fire it
+        // -- resuming an existing session is not starting one, and conflating
+        // them would make the event fire twice for one session's lifetime.
+        if self
+            .observation
+            .will_dispatch(crate::observation::SESSION_STARTING)
+        {
+            self.observation
+                .dispatch(
+                    crate::observation::SESSION_STARTING,
+                    serde_json::json!({
+                        "agent_id": agent_id,
+                        "session": session_id,
+                        "cwd": spec.cwd,
+                    }),
+                )
+                .await;
+        }
 
         Ok(agent_id)
     }
