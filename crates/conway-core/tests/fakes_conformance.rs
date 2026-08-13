@@ -344,7 +344,9 @@ fn fake_store_set_ephemeral_enforces_the_one_way_promote_guard() {
     meta.ephemeral = true;
     let sid = block_on(store.create(meta)).unwrap();
     assert!(
-        block_on(store.list(SessionFilter::default())).unwrap().is_empty(),
+        block_on(store.list(SessionFilter::default()))
+            .unwrap()
+            .is_empty(),
         "precondition: the ephemeral session is catalog-hidden"
     );
     block_on(store.set_ephemeral(&sid, false)).unwrap();
@@ -353,7 +355,9 @@ fn fake_store_set_ephemeral_enforces_the_one_way_promote_guard() {
         "meta must show the flipped flag"
     );
     assert_eq!(
-        block_on(store.list(SessionFilter::default())).unwrap().len(),
+        block_on(store.list(SessionFilter::default()))
+            .unwrap()
+            .len(),
         1,
         "the promoted session must now appear in the default listing"
     );

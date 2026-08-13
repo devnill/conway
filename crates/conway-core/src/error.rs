@@ -199,9 +199,7 @@ pub enum ArtifactWriteError {
     /// (`conway_runtime::permission::AgentRoot::Broken`). Fails closed,
     /// exactly like every other root-relevant call this agent makes while
     /// its root is broken -- never silently downgraded to unconfined.
-    #[error(
-        "artifact write refused: this agent's confinement root could not be re-established"
-    )]
+    #[error("artifact write refused: this agent's confinement root could not be re-established")]
     RootBroken,
     /// The path resolved and passed containment, but the actual filesystem
     /// operation (creating parent directories, or writing the file itself)

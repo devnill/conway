@@ -284,22 +284,19 @@ impl SubagentHost for Runtime {
                 // guard. A relative root resolves against the parent's cwd,
                 // exactly as before. A non-UTF-8 or NUL-carrying root is a
                 // typed config rejection (P-10), never a panic.
-                let requested_str =
-                    requested
-                        .to_str()
-                        .ok_or_else(|| invalid_spec(ConwayError::Config {
-                            detail: format!(
-                                "subagent root {} is not valid UTF-8",
-                                requested.display()
-                            ),
-                        }))?;
-                let resolved = crate::permission::resolve_like_the_tool_will(
-                    &parent_meta.cwd,
-                    requested_str,
-                )
-                .ok_or_else(|| invalid_spec(ConwayError::Config {
-                    detail: "subagent root contains a NUL byte the OS cannot resolve".to_string(),
-                }))?;
+                let requested_str = requested.to_str().ok_or_else(|| {
+                    invalid_spec(ConwayError::Config {
+                        detail: format!("subagent root {} is not valid UTF-8", requested.display()),
+                    })
+                })?;
+                let resolved =
+                    crate::permission::resolve_like_the_tool_will(&parent_meta.cwd, requested_str)
+                        .ok_or_else(|| {
+                            invalid_spec(ConwayError::Config {
+                                detail: "subagent root contains a NUL byte the OS cannot resolve"
+                                    .to_string(),
+                            })
+                        })?;
                 let canonical_requested = CanonicalRoot::new(&resolved).map_err(|err| {
                     invalid_spec(ConwayError::Config {
                         detail: format!(

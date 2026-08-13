@@ -179,7 +179,11 @@ fn a_healthy_headroom_prints_no_warning() {
         .output()
         .expect("run conway binary");
 
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         !stderr.contains("conway: warning:"),

@@ -150,9 +150,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use conway::config::schema::{
-    AgentsConfig, BackendEntry, ConwayConfig, HealthSection, LimitsConfig, ModelsConfig,
-    PermissionsConfig, HooksConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
-    TuiSection,
+    AgentsConfig, BackendEntry, ConwayConfig, HealthSection, HooksConfig, LimitsConfig,
+    ModelsConfig, PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig,
+    ToolsConfig, TuiSection,
 };
 use conway::{Conway, ConwayBuilder, SessionSpec};
 use conway_core::agent::{PermissionDecision, ResultStatus};
@@ -303,9 +303,7 @@ fn build_conway(config: ConwayConfig) -> Conway {
         .with_session_store(store)
         .with_permission_gate(gate)
         .with_router_factory(Arc::new(conway_plugin_routing::RoutingRouterFactory))
-        .with_backend_factory(Arc::new(
-            conway_plugin_backends::OpenAiCompatBackendFactory,
-        ))
+        .with_backend_factory(Arc::new(conway_plugin_backends::OpenAiCompatBackendFactory))
         .build()
         .expect(
             "build should succeed: a probe failure/degraded result is a warning, never a hard \
@@ -419,10 +417,10 @@ async fn probe_narrower_than_the_operator_configured_window_still_admits_and_cal
 /// equal outputs -- any divergence is exactly the bug this item fixes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn explain_reported_window_matches_backend_capabilities_for_the_same_pair() {
-    use conway_plugin_backends::config::{Dialect, OpenAiCompatConfig};
-    use conway_plugin_backends::openai_compat::OpenAiCompatBackend;
     use conway_core::ports::Backend as _;
     use conway_core::routing::ModelOverrides;
+    use conway_plugin_backends::config::{Dialect, OpenAiCompatConfig};
+    use conway_plugin_backends::openai_compat::OpenAiCompatBackend;
 
     let server = MockServer::start().await;
     mount_probe_response(&server, HUGE_PROBED_WINDOW).await;
@@ -465,8 +463,7 @@ async fn explain_reported_window_matches_backend_capabilities_for_the_same_pair(
         metadata_path: None,
         models: overrides,
     };
-    let independent_backend =
-        OpenAiCompatBackend::new(cfg).expect("valid config must construct");
+    let independent_backend = OpenAiCompatBackend::new(cfg).expect("valid config must construct");
     let direct = independent_backend.capabilities(&ModelId::new("tiny-model"));
 
     assert_eq!(
@@ -793,12 +790,12 @@ async fn t1_backstops_a_backend_that_shrinks_its_own_window_after_build() {
         .with_backend(backend.clone())
         .with_session_store(store)
         .with_permission_gate(gate)
-        .with_backend_factory(Arc::new(
-            conway_plugin_backends::OpenAiCompatBackendFactory,
-        ))
+        .with_backend_factory(Arc::new(conway_plugin_backends::OpenAiCompatBackendFactory))
         .build()
-        .expect("build should succeed: real ContextBuilder/DeclarativeRouter/AttemptEngine \
-                 wiring from valid config");
+        .expect(
+            "build should succeed: real ContextBuilder/DeclarativeRouter/AttemptEngine \
+                 wiring from valid config",
+        );
 
     // AFTER build(): the router's CapabilityIndex has already snapshotted
     // the large window above and cannot see this. Shrink the LIVE backend's
@@ -858,9 +855,7 @@ async fn t1_backstop_control_admits_when_the_live_window_never_shrinks() {
         .with_backend(backend.clone())
         .with_session_store(store)
         .with_permission_gate(gate)
-        .with_backend_factory(Arc::new(
-            conway_plugin_backends::OpenAiCompatBackendFactory,
-        ))
+        .with_backend_factory(Arc::new(conway_plugin_backends::OpenAiCompatBackendFactory))
         .build()
         .expect("build should succeed");
 

@@ -92,8 +92,8 @@ mod tests {
     /// `i64::try_from(..).unwrap_or(i64::MAX)` saturation caused.
     #[test]
     fn deadline_from_secs_accepts_sane_and_rejects_overflow_as_invalid_arguments() {
-        use conway_core::error::ToolError;
         use super::tools::{deadline_from_secs, MAX_DEADLINE_SECS};
+        use conway_core::error::ToolError;
 
         // A sane deadline is accepted and resolves to a future instant.
         let sane = deadline_from_secs(120).expect("120s deadline accepted");

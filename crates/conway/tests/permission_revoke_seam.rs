@@ -22,9 +22,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use conway::config::schema::{
-    AgentsConfig, ConwayConfig, HealthSection, LimitsConfig, ModelsConfig, PermissionsConfig,
-    HooksConfig, PluginsConfig,
-    RoleEntry, RoutingSection, SessionConfig, ToolsConfig, TuiSection,
+    AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
+    PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
+    TuiSection,
 };
 use conway::permission_pattern::{PatternOrigin, PatternRule};
 use conway::{Conway, ConwayBuilder, PluginSelection, RevokeOutcome, SessionSpec};
@@ -153,8 +153,11 @@ async fn run_one_bash_call(conway: &Conway) {
 fn project_dir_with_permissions(contents: &str) -> TempDir {
     let dir = TempDir::new().expect("tempdir");
     std::fs::create_dir_all(dir.path().join(".conway")).expect("mkdir .conway");
-    std::fs::write(dir.path().join(".conway").join("permissions.json"), contents)
-        .expect("write permissions.json");
+    std::fs::write(
+        dir.path().join(".conway").join("permissions.json"),
+        contents,
+    )
+    .expect("write permissions.json");
     dir
 }
 
@@ -251,15 +254,18 @@ async fn revoking_one_pattern_leaves_the_other_in_force() {
 /// the re-trust-after-rewrite decision actually works end to end.
 #[tokio::test]
 async fn revoking_a_trusted_project_rule_persists_and_keeps_the_file_trusted() {
-    let project = project_dir_with_permissions(
-        r#"{"allow": ["bash:git status", "bash:cargo test"]}"#,
-    );
+    let project =
+        project_dir_with_permissions(r#"{"allow": ["bash:git status", "bash:cargo test"]}"#);
     let (_xdg, env) = isolated_env();
     let path = project.path().join(".conway").join("permissions.json");
     let agent = AgentId::new();
 
     let gate = RecordingGate::new();
-    let conway = build_conway(project.path(), vec![], gate.clone() as Arc<dyn PermissionGate>);
+    let conway = build_conway(
+        project.path(),
+        vec![],
+        gate.clone() as Arc<dyn PermissionGate>,
+    );
     conway
         .trust_permission_file(&env, &path, PermissionScope::Session, agent)
         .expect("trust succeeds");
@@ -296,7 +302,8 @@ async fn revoking_a_trusted_project_rule_persists_and_keeps_the_file_trusted() {
         ],
         gate2.clone() as Arc<dyn PermissionGate>,
     );
-    let report = restarted.load_permission_files(project.path(), &env, PermissionScope::Session, agent);
+    let report =
+        restarted.load_permission_files(project.path(), &env, PermissionScope::Session, agent);
     assert!(
         report.notices.is_empty(),
         "the file must still be trusted after the rewrite -- re-trust must have \

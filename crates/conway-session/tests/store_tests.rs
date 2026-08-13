@@ -577,7 +577,11 @@ async fn live_marker_round_trip_touch_read_clear() {
 
     // A second touch refreshes the heartbeat (and a different pid).
     store.touch_live_owner(43).await.unwrap();
-    let owner = store.live_owner().await.unwrap().expect("marker still present");
+    let owner = store
+        .live_owner()
+        .await
+        .unwrap()
+        .expect("marker still present");
     assert_eq!(owner.pid, 43);
     assert!(
         owner.heartbeat >= first_beat,

@@ -84,9 +84,7 @@ async fn open_conway(fixture: &Fixture) -> Conway {
         .with_permission_gate(gate)
         // Board item 01KZHF270T3W8GZ7NM6DSNQ4MM: see `continuity.rs::
         // open_conway`'s identical addition.
-        .with_backend_factory(Arc::new(
-            conway_plugin_backends::OpenAiCompatBackendFactory,
-        ))
+        .with_backend_factory(Arc::new(conway_plugin_backends::OpenAiCompatBackendFactory))
         .build()
         .expect("build conway against the fixture's own store")
 }
@@ -163,12 +161,7 @@ async fn conway_p_drives_conway_ask_then_conway_spawn() {
     // fail-closed, so without this the tool calls would be denied with feedback
     // and the run would loop until `max_steps`).
     let out = run_conway(
-        &[
-            "-p",
-            PROMPT,
-            "--allowed-tools",
-            "conway_ask,conway_spawn",
-        ],
+        &["-p", PROMPT, "--allowed-tools", "conway_ask,conway_spawn"],
         &fixture,
     );
     assert!(

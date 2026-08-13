@@ -6,10 +6,6 @@
 
 use std::collections::BTreeMap;
 
-use conway_plugin_backends::capabilities::{build_capabilities, CapabilityInputs};
-use conway_plugin_backends::config::{Dialect, OpenAiCompatConfig};
-use conway_plugin_backends::model_metadata::ModelMetadataStore;
-use conway_plugin_backends::openai_compat::OpenAiCompatBackend;
 use conway_core::content::{
     ContentBlock, PermissionClass, SamplingParams, StopReason, ToolCategory, ToolSpec,
 };
@@ -18,6 +14,10 @@ use conway_core::ids::{BackendId, ModelId, ToolName};
 use conway_core::ports::{Backend, GenerateRequest};
 use conway_core::provenance::Provenance;
 use conway_core::segment::PromptSegment;
+use conway_plugin_backends::capabilities::{build_capabilities, CapabilityInputs};
+use conway_plugin_backends::config::{Dialect, OpenAiCompatConfig};
+use conway_plugin_backends::model_metadata::ModelMetadataStore;
+use conway_plugin_backends::openai_compat::OpenAiCompatBackend;
 use serde_json::json;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};

@@ -128,7 +128,12 @@ fn headroom_default_participates_in_the_full_five_source_precedence_chain() {
     // bare `HashMap::new()`): the point of this stage is "no source names a
     // value," not "read whatever real settings.json this machine has" (see
     // `support::isolated_env`'s doc comment).
-    let outcome = load(opts(empty_dir, support::isolated_env(), CliOverrides::default())).unwrap();
+    let outcome = load(opts(
+        empty_dir,
+        support::isolated_env(),
+        CliOverrides::default(),
+    ))
+    .unwrap();
     assert_eq!(outcome.config.headroom_for(&role), DEFAULT_HEADROOM_TOKENS);
 }
 

@@ -46,7 +46,13 @@ pub const SANITIZED_CONTROL_PLACEHOLDER: char = '\u{FFFD}';
 pub fn sanitize_control_chars(input: &str) -> String {
     input
         .chars()
-        .map(|c| if c.is_control() { SANITIZED_CONTROL_PLACEHOLDER } else { c })
+        .map(|c| {
+            if c.is_control() {
+                SANITIZED_CONTROL_PLACEHOLDER
+            } else {
+                c
+            }
+        })
         .collect()
 }
 
@@ -56,7 +62,10 @@ mod tests {
 
     #[test]
     fn ordinary_text_is_unchanged() {
-        assert_eq!(sanitize_control_chars("git status --short"), "git status --short");
+        assert_eq!(
+            sanitize_control_chars("git status --short"),
+            "git status --short"
+        );
     }
 
     #[test]
@@ -64,10 +73,7 @@ mod tests {
         let sanitized = sanitize_control_chars("git status\x1b[31m; rm -rf /\x1b[0m");
         // Replace, not filter: the ESC bytes become U+FFFD rather than
         // vanishing, preserving one output char per input char.
-        assert_eq!(
-            sanitized,
-            "git status\u{FFFD}[31m; rm -rf /\u{FFFD}[0m"
-        );
+        assert_eq!(sanitized, "git status\u{FFFD}[31m; rm -rf /\u{FFFD}[0m");
         assert!(sanitized.chars().all(|c| !c.is_control()));
     }
 

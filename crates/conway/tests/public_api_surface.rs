@@ -10,8 +10,8 @@ use conway::{
     ConwayError, EntryOutcome, Envelope, Event, ExplainEntry, ExplainReport, HealthRegistry,
     LogRecord, LogSeq, ModelRef, PermissionDecision, PermissionDecisionKind, PermissionGate,
     PermissionRequest, PermissionScope, Plugin, Provenance, Result, ResultStatus, RoleAlias,
-    Router, RoutingReason, SessionFilter, SessionId, SessionMeta, SessionStore, SubagentMode,
-    Tool, ToolCategory, ToolName,
+    Router, RoutingReason, SessionFilter, SessionId, SessionMeta, SessionStore, SubagentMode, Tool,
+    ToolCategory, ToolName,
 };
 
 /// Every re-exported *type* must be nameable at this path. The function is

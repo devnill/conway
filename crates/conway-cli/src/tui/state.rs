@@ -501,8 +501,7 @@ pub struct AppState {
     /// `rule.describe()`/`origin.describe()`) and ADDRESS it for per-rule
     /// revocation — a formatted string alone could show a grant but never
     /// name it to `Conway::revoke_permission_pattern`.
-    pub permission_grants:
-        Vec<(conway::PatternRule, conway::PatternOrigin)>,
+    pub permission_grants: Vec<(conway::PatternRule, conway::PatternOrigin)>,
     /// The structured ALLOW rules the flat form cannot express (F12's
     /// `Rule { select, when, then }` -- `paths_under`, `categories`,
     /// `category_in`, multi-tool), mirrored from the broker's
@@ -514,8 +513,7 @@ pub struct AppState {
     /// collapses every structured rule to `None`, which is why these rows
     /// exist as their own leaf-id space). Refreshed alongside
     /// `permission_grants` when `/settings` opens and after any revoke.
-    pub structured_allow_rules:
-        Vec<(conway::Rule, conway::PatternOrigin, conway::GrantScope)>,
+    pub structured_allow_rules: Vec<(conway::Rule, conway::PatternOrigin, conway::GrantScope)>,
     /// The active DENY rules (flat form), mirrored from the broker's
     /// `active_deny_patterns()` for `/settings`' read-only deny section.
     /// Deny rules install from ANY permissions file, trusted or not (D4 §3)
@@ -527,24 +525,20 @@ pub struct AppState {
     /// unlike `permission_grants` these pairs are never used to ADDRESS a
     /// revocation -- only to label a row. Refreshed alongside
     /// `permission_grants` when `/settings` opens.
-    pub permission_denies:
-        Vec<(conway::PatternRule, conway::PatternOrigin)>,
+    pub permission_denies: Vec<(conway::PatternRule, conway::PatternOrigin)>,
     /// The active PROMPT rules (flat form), mirrored from the broker's
     /// `active_prompt_patterns()` -- the prompt half of the same read-only
     /// inspection surface as [`Self::permission_denies`].
-    pub permission_prompts:
-        Vec<(conway::PatternRule, conway::PatternOrigin)>,
+    pub permission_prompts: Vec<(conway::PatternRule, conway::PatternOrigin)>,
     /// The structured deny rules the flat form cannot express (F12's
     /// `Rule { select, when, then }`), mirrored from the broker's
     /// `active_structured_deny_rules()`. Rendered in the same read-only
     /// deny section as [`Self::permission_denies`] via `Rule::describe()`.
-    pub structured_deny_rules:
-        Vec<(conway::Rule, conway::PatternOrigin)>,
+    pub structured_deny_rules: Vec<(conway::Rule, conway::PatternOrigin)>,
     /// The structured prompt rules the flat form cannot express, mirrored
     /// from the broker's `active_structured_prompt_rules()` -- the
     /// structured half of [`Self::permission_prompts`].
-    pub structured_prompt_rules:
-        Vec<(conway::Rule, conway::PatternOrigin)>,
+    pub structured_prompt_rules: Vec<(conway::Rule, conway::PatternOrigin)>,
     /// The scope the permission prompt's remembered-grant keys (`a` and
     /// `p`) grant at: `Session` (the default, and the only scope the prompt
     /// offered before this item), `Agent` (only the agent whose call is
@@ -1912,10 +1906,7 @@ impl AppState {
                     node.ephemeral = false;
                 } else {
                     self.transcript.push(Entry::Notice {
-                        text: format!(
-                            "agent {} was promoted but is not in the tree",
-                            env.agent
-                        ),
+                        text: format!("agent {} was promoted but is not in the tree", env.agent),
                     });
                 }
             }
@@ -2006,12 +1997,14 @@ impl AppState {
             } => {
                 if env.agent == self.focused_agent {
                     if self.turn_started_at.is_some() {
-                        self.turn_running_tokens =
-                            self.turn_running_tokens.saturating_add(u64::from(*tokens_est));
+                        self.turn_running_tokens = self
+                            .turn_running_tokens
+                            .saturating_add(u64::from(*tokens_est));
                     }
                     if self.focused_seen_segments.insert(*segment) {
-                        self.focused_ctx_tokens =
-                            self.focused_ctx_tokens.saturating_add(u64::from(*tokens_est));
+                        self.focused_ctx_tokens = self
+                            .focused_ctx_tokens
+                            .saturating_add(u64::from(*tokens_est));
                     }
                 }
             }
@@ -2028,21 +2021,22 @@ impl AppState {
             Event::ModelDecision { chosen, .. } => {
                 if env.agent == self.focused_agent {
                     let name = chosen.to_string();
-                    let max = self
-                        .model_max_context
-                        .get(&name)
-                        .copied()
-                        .or_else(|| {
-                            // Fall back to a bare `model` lookup (no
-                            // backend prefix) -- some metadata files key
-                            // on the model id alone.
-                            self.model_max_context.get(chosen.model.as_str()).copied()
-                        });
+                    let max = self.model_max_context.get(&name).copied().or_else(|| {
+                        // Fall back to a bare `model` lookup (no
+                        // backend prefix) -- some metadata files key
+                        // on the model id alone.
+                        self.model_max_context.get(chosen.model.as_str()).copied()
+                    });
                     self.focused_model = Some(name);
                     self.focused_model_max_context = max;
                 }
             }
-            Event::ToolCallProposed { call_id, tool, args, .. } => {
+            Event::ToolCallProposed {
+                call_id,
+                tool,
+                args,
+                ..
+            } => {
                 // T4: store the call's `args` (previously discarded via
                 // `..`). Serialized to a compact JSON string at apply time
                 // (a `serde_json::Value` is not `Clone`-cheap to keep on the
@@ -4232,7 +4226,11 @@ mod tests {
         ));
 
         assert!(
-            state.tree.nodes.iter().any(|n| n.agent_id == ephemeral_in_tree),
+            state
+                .tree
+                .nodes
+                .iter()
+                .any(|n| n.agent_id == ephemeral_in_tree),
             "a directly-seeded ephemeral node must stay"
         );
         let other_node = state
@@ -4294,9 +4292,7 @@ mod tests {
         let finished = tracked_node(&mut state, root, NodeStatus::Finished);
 
         assert!(
-            state
-                .visible_agent_nodes()
-                .any(|n| n.agent_id == finished),
+            state.visible_agent_nodes().any(|n| n.agent_id == finished),
             "a Finished node must still be represented under the default filter"
         );
     }
@@ -4548,8 +4544,8 @@ mod tests {
     }
 
     fn permission_prompt(rendered: &str) -> crate::tui::gate::PendingPrompt {
-        let (prompt, _rx) = crate::tui::gate::PendingPrompt::new_for_test(
-            conway::PermissionRequest {
+        let (prompt, _rx) =
+            crate::tui::gate::PendingPrompt::new_for_test(conway::PermissionRequest {
                 agent_id: AgentId::new(),
                 agent_path: Vec::new(),
                 tool: ToolName::new("bash"),
@@ -4558,8 +4554,7 @@ mod tests {
                 rendered: rendered.to_string(),
                 call_id: "tc_1".to_string(),
                 render_kind: conway::RenderKind::ShellCommand,
-            },
-        );
+            });
         prompt
     }
 
@@ -4874,7 +4869,10 @@ mod tests {
 
         state.begin_intent_confirm_edit();
 
-        assert_eq!(state.input, "keep me", "a no-card edit must not touch the input line");
+        assert_eq!(
+            state.input, "keep me",
+            "a no-card edit must not touch the input line"
+        );
         assert!(matches!(state.mode, Mode::Normal));
     }
 
@@ -5077,10 +5075,9 @@ mod tests {
     fn model_decision_sets_focused_model_and_max_context() {
         let root = AgentId::new();
         let mut state = AppState::new(root);
-        state.model_max_context.insert(
-            "anthropic/claude-sonnet-4-6".to_string(),
-            200_000,
-        );
+        state
+            .model_max_context
+            .insert("anthropic/claude-sonnet-4-6".to_string(), 200_000);
 
         state.apply(&model_decision_env(root, "anthropic/claude-sonnet-4-6"));
 
@@ -5388,7 +5385,9 @@ mod tests {
     #[test]
     fn toggle_does_not_touch_scroll_or_follow_tail() {
         let mut state = AppState::new(AgentId::new());
-        state.transcript.push(tool_entry("c1", "a\nb\nc\nd\ne", false));
+        state
+            .transcript
+            .push(tool_entry("c1", "a\nb\nc\nd\ne", false));
         state.scroll = 7;
         state.follow_tail = false;
 
@@ -5398,10 +5397,7 @@ mod tests {
             state.scroll, 7,
             "toggle must not change `scroll` -- the render clamp re-clamps"
         );
-        assert!(
-            !state.follow_tail,
-            "toggle must not change `follow_tail`"
-        );
+        assert!(!state.follow_tail, "toggle must not change `follow_tail`");
     }
 
     /// T5 default: a freshly-constructed `Entry::Tool` (via `apply`'s
@@ -5582,8 +5578,14 @@ mod tests {
 
         match state.transcript.last() {
             Some(Entry::Tool { args, .. }) => {
-                assert!(args.contains("\"command\":\"ls\""), "args stored compact: {args}");
-                assert!(args.contains("\"path\":\"/tmp\""), "args stored compact: {args}");
+                assert!(
+                    args.contains("\"command\":\"ls\""),
+                    "args stored compact: {args}"
+                );
+                assert!(
+                    args.contains("\"path\":\"/tmp\""),
+                    "args stored compact: {args}"
+                );
             }
             other => panic!("expected a Tool entry, got {other:?}"),
         }
@@ -5669,7 +5671,10 @@ mod tests {
                 let s = summary.as_ref().expect("summary stamped");
                 assert!(s.contains("5s"), "elapsed in seconds form: {s}");
                 // No cache read -> no "(n% cached)" suffix.
-                assert!(!s.contains("cached"), "no cache pct when no cache read: {s}");
+                assert!(
+                    !s.contains("cached"),
+                    "no cache pct when no cache read: {s}"
+                );
             }
             other => panic!("expected a Reasoning entry, got {other:?}"),
         }
@@ -5857,7 +5862,11 @@ mod tests {
         let mut state = AppState::new(AgentId::new());
         state.tool_preview_lines = 1;
 
-        assert_eq!(state.adjust_tool_preview_lines(-1), 1, "must stop at the floor");
+        assert_eq!(
+            state.adjust_tool_preview_lines(-1),
+            1,
+            "must stop at the floor"
+        );
         assert_eq!(
             state.adjust_tool_preview_lines(-1000),
             1,
@@ -5870,7 +5879,11 @@ mod tests {
         let mut state = AppState::new(AgentId::new());
         state.tool_preview_lines = 200;
 
-        assert_eq!(state.adjust_tool_preview_lines(1), 200, "must stop at the cap");
+        assert_eq!(
+            state.adjust_tool_preview_lines(1),
+            200,
+            "must stop at the cap"
+        );
         assert_eq!(
             state.adjust_tool_preview_lines(1_000_000),
             200,
@@ -5976,7 +5989,10 @@ mod tests {
         let mut state = AppState::new(AgentId::new());
         state.input = "typing".to_string();
         assert!(!state.history_recall_prev());
-        assert_eq!(state.input, "typing", "an empty history must not touch input");
+        assert_eq!(
+            state.input, "typing",
+            "an empty history must not touch input"
+        );
     }
 
     #[test]

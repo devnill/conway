@@ -448,8 +448,7 @@ impl AttemptEngine {
                 .into_iter()
                 .max_by_key(|(_, err)| match err {
                     BackendError::ContextTooLarge {
-                        max_context_tokens,
-                        ..
+                        max_context_tokens, ..
                     } => *max_context_tokens,
                     _ => 0,
                 });

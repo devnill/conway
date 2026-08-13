@@ -203,7 +203,9 @@ mod tests {
                 "merged_ask",
             ),
             (
-                Provenance::ChildResult { from: AgentId::new() },
+                Provenance::ChildResult {
+                    from: AgentId::new(),
+                },
                 "child_result",
             ),
         ]
@@ -261,9 +263,15 @@ mod tests {
             seq_range: SeqRange::full(),
         }
         .is_static());
-        assert!(!Provenance::ChildResult { from: AgentId::new() }.is_static());
+        assert!(!Provenance::ChildResult {
+            from: AgentId::new()
+        }
+        .is_static());
         assert_eq!(
-            Provenance::ChildResult { from: AgentId::new() }.tier(),
+            Provenance::ChildResult {
+                from: AgentId::new()
+            }
+            .tier(),
             SegmentTier::Volatile
         );
 

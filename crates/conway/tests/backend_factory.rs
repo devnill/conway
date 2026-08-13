@@ -269,10 +269,7 @@ async fn factory_built_backend_serves_a_turn() {
         .new_session(SessionSpec::default())
         .await
         .expect("new_session must succeed");
-    let turn = session
-        .prompt("hi")
-        .await
-        .expect("prompt must succeed");
+    let turn = session.prompt("hi").await.expect("prompt must succeed");
     let text = turn.text().await.expect("text must succeed");
 
     assert_eq!(
@@ -326,10 +323,7 @@ async fn injected_backend_wins_over_factory_built_backend_sharing_its_id() {
         .new_session(SessionSpec::default())
         .await
         .expect("new_session must succeed");
-    let turn = session
-        .prompt("hi")
-        .await
-        .expect("prompt must succeed");
+    let turn = session.prompt("hi").await.expect("prompt must succeed");
     let text = turn.text().await.expect("text must succeed");
 
     assert_eq!(
@@ -415,7 +409,10 @@ fn factory_build_error_surfaces_as_build_error() {
         .with_backend_factory(factory)
         .build();
 
-    let err = expect_build_err(result, "a factory build() error must fail the whole build()");
+    let err = expect_build_err(
+        result,
+        "a factory build() error must fail the whole build()",
+    );
     match err {
         ConwayError::Build { message } => {
             assert!(

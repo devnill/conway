@@ -197,22 +197,16 @@ pub(crate) fn build_tree(state: &AppState) -> MenuState {
         group_node(PERMISSIONS_GROUP, state, {
             let rows = vec![
                 MenuNode::leaf(
-                    format!(
-                        "mode -- {} (Enter to cycle)",
-                        state.permission_mode.label()
-                    ),
+                    format!("mode -- {} (Enter to cycle)", state.permission_mode.label()),
                     LEAF_PERMISSION_MODE,
                 ),
                 group_node(ALLOW_GROUP, state, {
                     let mut allow = Vec::new();
-                    if state.permission_grants.is_empty()
-                        && state.structured_allow_rules.is_empty()
+                    if state.permission_grants.is_empty() && state.structured_allow_rules.is_empty()
                     {
                         allow.push(MenuNode::static_row("no active grants"));
                     } else {
-                        for (i, (rule, origin)) in
-                            state.permission_grants.iter().enumerate()
-                        {
+                        for (i, (rule, origin)) in state.permission_grants.iter().enumerate() {
                             allow.push(MenuNode::leaf(
                                 format!(
                                     "granted: [{}] {} (Enter to revoke)",
@@ -273,11 +267,7 @@ pub(crate) fn build_tree(state: &AppState) -> MenuState {
                         })
                         .collect();
                     deny.extend(state.structured_deny_rules.iter().map(|(rule, origin)| {
-                        MenuNode::static_row(format!(
-                            "[{}] {}",
-                            origin.describe(),
-                            rule.describe()
-                        ))
+                        MenuNode::static_row(format!("[{}] {}", origin.describe(), rule.describe()))
                     }));
                     if deny.is_empty() {
                         deny.push(MenuNode::static_row("no active deny rules"));
@@ -296,15 +286,9 @@ pub(crate) fn build_tree(state: &AppState) -> MenuState {
                             ))
                         })
                         .collect();
-                    prompt.extend(state.structured_prompt_rules.iter().map(
-                        |(rule, origin)| {
-                            MenuNode::static_row(format!(
-                                "[{}] {}",
-                                origin.describe(),
-                                rule.describe()
-                            ))
-                        },
-                    ));
+                    prompt.extend(state.structured_prompt_rules.iter().map(|(rule, origin)| {
+                        MenuNode::static_row(format!("[{}] {}", origin.describe(), rule.describe()))
+                    }));
                     if prompt.is_empty() {
                         prompt.push(MenuNode::static_row("no active prompt rules"));
                     }
@@ -612,9 +596,7 @@ mod tests {
     /// structured prompt, all from the same project file.
     fn populate_deny_and_prompt(state: &mut AppState) {
         let file = || {
-            conway::PatternOrigin::File(std::path::PathBuf::from(
-                "/repo/.conway/permissions.json",
-            ))
+            conway::PatternOrigin::File(std::path::PathBuf::from("/repo/.conway/permissions.json"))
         };
         state.permission_denies = vec![(
             conway::PatternRule::parse("bash:curl").expect("valid rule"),
@@ -661,9 +643,9 @@ mod tests {
         // The sections exist as their own groups, distinct from allow's.
         for section in ["allow", "deny", "prompt"] {
             assert!(
-                rows.iter()
-                    .any(|r| r.label == section
-                        && matches!(r.kind, menu::MenuRowKind::Group { .. })),
+                rows.iter().any(
+                    |r| r.label == section && matches!(r.kind, menu::MenuRowKind::Group { .. })
+                ),
                 "the {section} section must be its own group: {text}"
             );
         }
@@ -763,9 +745,7 @@ mod tests {
         )];
         state.structured_allow_rules = vec![(
             a_structured_allow_rule(),
-            conway::PatternOrigin::File(std::path::PathBuf::from(
-                "/repo/.conway/permissions.json",
-            )),
+            conway::PatternOrigin::File(std::path::PathBuf::from("/repo/.conway/permissions.json")),
             conway::GrantScope::Session,
         )];
 
@@ -870,5 +850,4 @@ mod tests {
         assert!(text.contains("[bash, read] (any call)"), "{text}");
         assert!(text.contains("revoke all grants"), "{text}");
     }
-
 }

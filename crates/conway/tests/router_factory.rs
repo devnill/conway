@@ -28,15 +28,18 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use conway::config::schema::{
-    AgentsConfig, ConwayConfig, HealthSection, LimitsConfig, ModelsConfig, PermissionsConfig,
-    HooksConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig, TuiSection,
+    AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
+    PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
+    TuiSection,
 };
 use conway::{
     Conway, ConwayBuilder, ConwayError, HealthRegistry, Router, RouterBuildContext, RouterBundle,
     RouterFactory,
 };
 use conway_core::agent::PermissionDecision;
-use conway_core::capabilities::{Capabilities, CacheMode, ReliabilityTier, StructuredOutput, ToolCallSupport};
+use conway_core::capabilities::{
+    CacheMode, Capabilities, ReliabilityTier, StructuredOutput, ToolCallSupport,
+};
 use conway_core::content::{StopReason, Usage};
 use conway_core::error::ConwayError as CoreConwayError;
 use conway_core::fakes::{FakeBackend, FakeGate, FakeHealth, FakeRouter, FakeStore};
@@ -261,7 +264,10 @@ fn factory_build_error_surfaces_as_build_error() {
         .with_router_factory(factory)
         .build();
 
-    let err = expect_build_err(result, "a factory build() error must fail the whole build()");
+    let err = expect_build_err(
+        result,
+        "a factory build() error must fail the whole build()",
+    );
     match err {
         ConwayError::Build { message } => {
             assert!(

@@ -50,7 +50,9 @@ use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken as TokioCancellationToken;
 
 use crate::events::{BusSink, EventBus};
-use crate::permission::{AgentRoot, AuthorizedCall, PermissionBroker, PermissionCtx, PermissionOutcome};
+use crate::permission::{
+    AgentRoot, AuthorizedCall, PermissionBroker, PermissionCtx, PermissionOutcome,
+};
 
 use super::registry::PluginRegistry;
 
@@ -670,11 +672,7 @@ mod tests {
         // Carries a newline, a carriage return, and a full ANSI SGR escape
         // sequence (`\x1b[31m...\x1b[0m`) -- the three vectors the spec names.
         let message = "denied: path 'p\x1b[31m/evil\x1b[0m'\nsecond line\rfinal";
-        let outcome = ToolOutcome::error(
-            "call_x".into(),
-            ToolName::new("bash"),
-            message,
-        );
+        let outcome = ToolOutcome::error("call_x".into(), ToolName::new("bash"), message);
         let text = match outcome.blocks.as_slice() {
             [ContentBlock::Text { text }] => text.clone(),
             other => panic!("expected one Text block, got {other:?}"),
@@ -686,7 +684,10 @@ mod tests {
         // Replace, not drop: each control char becomes evidence (U+FFFD),
         // so the gate's laundering-recognition still sees it if this text
         // is ever fed back through a render/match path.
-        assert!(text.contains('\u{FFFD}'), "must replace, not drop: {text:?}");
+        assert!(
+            text.contains('\u{FFFD}'),
+            "must replace, not drop: {text:?}"
+        );
         // No raw ESC, no raw newline, no raw CR survived.
         assert!(!text.contains('\x1b'), "no raw ESC: {text:?}");
         assert!(!text.contains('\n'), "no raw newline: {text:?}");

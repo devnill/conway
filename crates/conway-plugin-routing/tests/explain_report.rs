@@ -112,7 +112,8 @@ fn explain_report_serde_round_trips() {
     let report = RoutingExplain::new(&router).explain(&request("planner", 1_000));
 
     let json = serde_json::to_string(&report).expect("serialize");
-    let back: conway_plugin_routing::ExplainReport = serde_json::from_str(&json).expect("deserialize");
+    let back: conway_plugin_routing::ExplainReport =
+        serde_json::from_str(&json).expect("deserialize");
     assert_eq!(report, back);
 }
 

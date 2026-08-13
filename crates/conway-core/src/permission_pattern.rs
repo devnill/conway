@@ -1006,8 +1006,7 @@ mod tests {
     /// token by themselves.
     #[test]
     fn a_structured_tools_prefix_rule_matches_token_wise_despite_json_syntax() {
-        let rule =
-            PatternRule::parse(r#"report:report({"summary":"build"#).expect("valid rule");
+        let rule = PatternRule::parse(r#"report:report({"summary":"build"#).expect("valid rule");
 
         assert!(
             rule.matches_render(
@@ -1053,11 +1052,7 @@ mod tests {
     #[test]
     fn structured_render_kind_only_widens_the_gate_not_the_matching_rules() {
         let rule = PatternRule::parse("read:*").expect("valid rule");
-        assert!(!rule.matches_render(
-            "write",
-            r#"write({"path":"a"})"#,
-            RenderKind::Structured,
-        ));
+        assert!(!rule.matches_render("write", r#"write({"path":"a"})"#, RenderKind::Structured,));
 
         let prefix_rule = PatternRule::parse("read:read(specific)").expect("valid rule");
         assert!(!prefix_rule.matches_render(
@@ -1650,7 +1645,11 @@ pub fn permission_file_unknown_field_error(contents: &str) -> Option<String> {
         .collect();
     Some(format!(
         "unknown field{} {}, expected one of `allow`, `deny`, `rules`",
-        if file.unknown_keys.len() == 1 { "" } else { "s" },
+        if file.unknown_keys.len() == 1 {
+            ""
+        } else {
+            "s"
+        },
         quoted.join(", "),
     ))
 }
@@ -2010,7 +2009,6 @@ mod store_tests {
         assert!(suggested_rule("bash", "git status && rm -rf /", kind).is_none());
         assert!(suggested_rule("bash", "git status --short", kind).is_some());
     }
-
 }
 
 // =====================================================================
@@ -2031,7 +2029,9 @@ mod f12_tests {
     /// on a `Structured` tool is a registration error.
     #[test]
     fn wildcard_flat_rule_desugars_to_always() {
-        let r = PatternRule::parse("read:*").expect("valid").to_rule(Then::Allow);
+        let r = PatternRule::parse("read:*")
+            .expect("valid")
+            .to_rule(Then::Allow);
         assert_eq!(r.select, Select::Tools(vec!["read".to_string()]));
         assert_eq!(r.when, When::Always);
         assert_eq!(r.then, Then::Allow);
@@ -2039,7 +2039,9 @@ mod f12_tests {
 
     #[test]
     fn prefix_flat_rule_desugars_to_command_prefix() {
-        let r = PatternRule::parse("bash:git status").expect("valid").to_rule(Then::Deny);
+        let r = PatternRule::parse("bash:git status")
+            .expect("valid")
+            .to_rule(Then::Deny);
         assert_eq!(r.select, Select::Tools(vec!["bash".to_string()]));
         assert_eq!(r.when, When::CommandPrefix("git status".to_string()));
         assert_eq!(r.then, Then::Deny);
@@ -2131,16 +2133,76 @@ mod f12_tests {
         // subcommand mismatches, chained commands (gated), Structured
         // wildcards, a non-wildcard prefix on a Structured tool.
         let cases: &[(&str, &str, &str, RenderKind, ToolCategory)] = &[
-            ("bash:git status", "bash", "git status", RenderKind::ShellCommand, ToolCategory::Execute),
-            ("bash:git status", "bash", "git status --short", RenderKind::ShellCommand, ToolCategory::Execute),
-            ("bash:git status", "bash", "git push --force", RenderKind::ShellCommand, ToolCategory::Execute),
-            ("bash:git status", "bash", "git status && rm -rf /", RenderKind::ShellCommand, ToolCategory::Execute),
-            ("bash:git status", "bash", "git status\nrm -rf /", RenderKind::ShellCommand, ToolCategory::Execute),
-            ("bash:*", "bash", "ls -la", RenderKind::ShellCommand, ToolCategory::Execute),
-            ("bash:*", "bash", "ls -la && rm -rf /", RenderKind::ShellCommand, ToolCategory::Execute),
-            ("read:*", "read", r#"read({"path":"a.rs"})"#, RenderKind::Structured, ToolCategory::Read),
-            ("read:*", "write", r#"write({"path":"a.rs"})"#, RenderKind::Structured, ToolCategory::Edit),
-            (r#"report:report({"summary":"build"#, "report", r#"report({"summary":"build finished"})"#, RenderKind::Structured, ToolCategory::Think),
+            (
+                "bash:git status",
+                "bash",
+                "git status",
+                RenderKind::ShellCommand,
+                ToolCategory::Execute,
+            ),
+            (
+                "bash:git status",
+                "bash",
+                "git status --short",
+                RenderKind::ShellCommand,
+                ToolCategory::Execute,
+            ),
+            (
+                "bash:git status",
+                "bash",
+                "git push --force",
+                RenderKind::ShellCommand,
+                ToolCategory::Execute,
+            ),
+            (
+                "bash:git status",
+                "bash",
+                "git status && rm -rf /",
+                RenderKind::ShellCommand,
+                ToolCategory::Execute,
+            ),
+            (
+                "bash:git status",
+                "bash",
+                "git status\nrm -rf /",
+                RenderKind::ShellCommand,
+                ToolCategory::Execute,
+            ),
+            (
+                "bash:*",
+                "bash",
+                "ls -la",
+                RenderKind::ShellCommand,
+                ToolCategory::Execute,
+            ),
+            (
+                "bash:*",
+                "bash",
+                "ls -la && rm -rf /",
+                RenderKind::ShellCommand,
+                ToolCategory::Execute,
+            ),
+            (
+                "read:*",
+                "read",
+                r#"read({"path":"a.rs"})"#,
+                RenderKind::Structured,
+                ToolCategory::Read,
+            ),
+            (
+                "read:*",
+                "write",
+                r#"write({"path":"a.rs"})"#,
+                RenderKind::Structured,
+                ToolCategory::Edit,
+            ),
+            (
+                r#"report:report({"summary":"build"#,
+                "report",
+                r#"report({"summary":"build finished"})"#,
+                RenderKind::Structured,
+                ToolCategory::Think,
+            ),
         ];
         for (wire, tool, rendered, rk, cat) in cases {
             let flat = PatternRule::parse(wire).expect("valid");
@@ -2159,11 +2221,36 @@ mod f12_tests {
     #[test]
     fn flat_and_structured_produce_byte_identical_deny_decisions() {
         let cases: &[(&str, &str, &str, ToolCategory)] = &[
-            ("bash:curl", "bash", "curl https://example.com", ToolCategory::Execute),
-            ("bash:curl", "bash", "curl x; rm -rf /", ToolCategory::Execute),
-            ("bash:curl", "bash", "\tcurl http://evil", ToolCategory::Execute),
-            ("bash:*", "bash", "ls -la && rm -rf /", ToolCategory::Execute),
-            ("write:*", "write", r#"write({"path":"/etc/passwd"})"#, ToolCategory::Edit),
+            (
+                "bash:curl",
+                "bash",
+                "curl https://example.com",
+                ToolCategory::Execute,
+            ),
+            (
+                "bash:curl",
+                "bash",
+                "curl x; rm -rf /",
+                ToolCategory::Execute,
+            ),
+            (
+                "bash:curl",
+                "bash",
+                "\tcurl http://evil",
+                ToolCategory::Execute,
+            ),
+            (
+                "bash:*",
+                "bash",
+                "ls -la && rm -rf /",
+                ToolCategory::Execute,
+            ),
+            (
+                "write:*",
+                "write",
+                r#"write({"path":"/etc/passwd"})"#,
+                ToolCategory::Edit,
+            ),
         ];
         for (wire, tool, rendered, cat) in cases {
             let flat = PatternRule::parse(wire).expect("valid");
@@ -2194,8 +2281,11 @@ mod f12_tests {
         let allow = parse_rules(contents);
         assert_eq!(allow.len(), 3, "flat allow + two structured allow");
         assert!(allow.iter().any(|r| r.to_wire() == "bash:git status"));
-        assert!(allow.iter().any(|r| matches!(r.when, When::Always) && matches!(r.select, Select::Tools(ref t) if t == &["read".to_string()])));
-        assert!(allow.iter().any(|r| matches!(r.when, When::CommandPrefix(_))));
+        assert!(allow.iter().any(|r| matches!(r.when, When::Always)
+            && matches!(r.select, Select::Tools(ref t) if t == &["read".to_string()])));
+        assert!(allow
+            .iter()
+            .any(|r| matches!(r.when, When::CommandPrefix(_))));
 
         let deny = parse_deny_rules(contents);
         assert_eq!(deny.len(), 1, "one structured deny");
@@ -2242,7 +2332,10 @@ mod f12_tests {
         assert!(!tool_pattern_matches("bash", "bashfoo"));
         assert!(tool_pattern_matches("re*", "read"));
         assert!(tool_pattern_matches("re*", "report"));
-        assert!(!tool_pattern_matches("re*", "grep"), "trailing * is a prefix, not infix");
+        assert!(
+            !tool_pattern_matches("re*", "grep"),
+            "trailing * is a prefix, not infix"
+        );
         assert!(tool_pattern_matches("*", "anything"));
         // An embedded `*` (not trailing) is literal, not a wildcard.
         assert!(!tool_pattern_matches("a*b", "axb"));

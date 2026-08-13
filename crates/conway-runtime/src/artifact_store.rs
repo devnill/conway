@@ -140,7 +140,8 @@ mod tests {
         std::fs::create_dir(&outside).unwrap();
 
         let root = CanonicalRoot::new(&repo).unwrap();
-        let writer = AgentArtifactWriter::new(CwdHandle::new(repo.clone()), AgentRoot::Confined(root));
+        let writer =
+            AgentArtifactWriter::new(CwdHandle::new(repo.clone()), AgentRoot::Confined(root));
         let handle = ArtifactWriteHandle::new(Arc::new(writer), AgentId::new());
 
         let err = handle
@@ -163,7 +164,8 @@ mod tests {
         std::fs::create_dir(&outside).unwrap();
 
         let root = CanonicalRoot::new(&repo).unwrap();
-        let writer = AgentArtifactWriter::new(CwdHandle::new(repo.clone()), AgentRoot::Confined(root));
+        let writer =
+            AgentArtifactWriter::new(CwdHandle::new(repo.clone()), AgentRoot::Confined(root));
         let handle = ArtifactWriteHandle::new(Arc::new(writer), AgentId::new());
 
         let escaped = outside.join("escaped.txt").to_string_lossy().into_owned();
@@ -177,7 +179,8 @@ mod tests {
     #[tokio::test]
     async fn write_with_broken_root_is_always_denied() {
         let tmp = TempDir::new().unwrap();
-        let writer = AgentArtifactWriter::new(CwdHandle::new(tmp.path().to_path_buf()), AgentRoot::Broken);
+        let writer =
+            AgentArtifactWriter::new(CwdHandle::new(tmp.path().to_path_buf()), AgentRoot::Broken);
         let handle = ArtifactWriteHandle::new(Arc::new(writer), AgentId::new());
 
         let err = handle.write("f.txt", b"hi".to_vec()).await.unwrap_err();
