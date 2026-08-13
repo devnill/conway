@@ -62,6 +62,58 @@ pub struct PermissionLoadReport {
     pub parse_errors: Vec<String>,
 }
 
+/// The event name [`Conway::active_deny_capable_hook_rules`]/
+/// [`Conway::revoke_hook_rule`] use to identify a `pre_tool_use` row --
+/// exactly `conway_core::hook::HookEvent::name`'s own wire spelling for that
+/// event, and `crate::config::schema::HookEntry::event`'s expected value.
+/// `conway_runtime::hook_dispatch` does not export a sibling constant for
+/// this event (it is dispatched by the permission broker, a different
+/// module -- see that module's own "Why this is not on `PermissionBroker`"
+/// doc), so this crate names it once here rather than repeating the string
+/// literal at both this constant's call sites.
+const PRE_TOOL_USE_EVENT: &str = "pre_tool_use";
+
+/// [`HookRuleView::origin`]'s value for every row [`Conway::
+/// active_deny_capable_hook_rules`] returns. A hook rule, unlike a pattern
+/// ALLOW/DENY/PROMPT rule, has no per-rule [`conway_core::permission_pattern
+/// ::PatternOrigin`] to report: `[hooks].rules` is a single array that
+/// replaces WHOLESALE per config layer (`crate::config::merge`'s own module
+/// doc, "arrays and scalars replace wholesale"), never a union of several
+/// files' entries the way a `permissions.json` grant's provenance is -- so
+/// there is exactly one place every hook rule can ever have come from: the
+/// final merged config. Reporting a specific layer name (default/XDG/
+/// project/env/CLI) would need knowing which layer's `[hooks]` table
+/// actually won, which nothing downstream of `config::merge::load` still
+/// tracks once the merge is done; this label says what IS known, honestly,
+/// rather than fabricating a per-rule path no mechanism here can attribute.
+const HOOK_ORIGIN_LABEL: &str = "settings.json (merged config)";
+
+/// One row [`Conway::active_deny_capable_hook_rules`] hands the `/settings`
+/// review surface (board item 01KZS02HYXGTW42R8G4HP10GHX) -- a hook-backed
+/// rule that can currently deny a call, addressed for revocation by its
+/// `(event, id)` pair via [`Conway::revoke_hook_rule`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HookRuleView {
+    /// The rule's operator-chosen `HookEntry::id`.
+    pub id: String,
+    /// The event this rule fires on -- always [`PRE_TOOL_USE_EVENT`] or
+    /// [`conway_runtime::hook_dispatch::PROMPT_SUBMITTED`], the only two
+    /// events this list ever reports (see [`Conway::
+    /// active_deny_capable_hook_rules`]'s own doc for why).
+    pub event: String,
+    /// The rule's `HookEntry::match_tool` (board item
+    /// 01KZYAWQ6011Q6CJVG6CCMQPF1). `None` fires this rule for every call
+    /// this event dispatches; `Some(pattern)` narrows to calls whose tool
+    /// name satisfies `pattern` (exact match, or a `*`-glob) -- only ever
+    /// meaningful for `pre_tool_use` (`prompt_submitted`'s payload carries
+    /// no tool name at all, so `merge::validate` refuses to load a config
+    /// pairing `match` with it in the first place).
+    pub match_tool: Option<String>,
+    /// Always [`HOOK_ORIGIN_LABEL`] today -- see that constant's own doc
+    /// for why a hook rule has no finer-grained provenance to report.
+    pub origin: String,
+}
+
 /// The result of [`Conway::trust_permission_file`] (board item
 /// 01KYZYA4HQAFN6SQ1T08JABYAD) -- the trust-path parallel of
 /// [`PermissionLoadReport`]. Carries the count of allow rules actually
@@ -697,6 +749,118 @@ impl Conway {
         conway_core::permission_pattern::PatternOrigin,
     )> {
         self.rt.permission_broker().active_structured_prompt_rules()
+    }
+
+    /// Every currently-installed DENY-CAPABLE hook-backed rule (board item
+    /// 01KZS02HYXGTW42R8G4HP10GHX): every `pre_tool_use` hook, then every
+    /// `prompt_submitted` subscriber, in that order.
+    ///
+    /// **Scoped to the two DENY-CAPABLE events, deliberately, not every
+    /// dispatched event.** `PHILOSOPHY.md` §5's own guarantee ("[a hook]
+    /// appears wherever other permission rules appear, and it is
+    /// individually revocable") is about PERMISSION rules -- a rule that
+    /// can say no to a call. `pre_tool_use` (narrows a tool call) and
+    /// `prompt_submitted` (narrows a submitted prompt,
+    /// `conway_runtime::hook_dispatch`'s own module doc) are the only two
+    /// events [`conway_core::hook::HookPermissionVerdict`] is ever read
+    /// for; every other configured event -- `post_tool_use`,
+    /// `session_starting`, `child_spawned`, `request_assembled`,
+    /// `child_reported` -- is observation-only and cannot silently widen
+    /// what this session allows by staying enabled, so admitting them here
+    /// would blur this list's own contract ("a rule that can currently
+    /// block a call") with a DIFFERENT, still-open concern: that an
+    /// observation hook still runs an arbitrary command with the
+    /// operator's own privileges is real, but it is not a permission-rule
+    /// visibility gap, and a general hook-inventory surface for that
+    /// concern is not this item's to build.
+    ///
+    /// A hook installs here regardless of whether its script currently
+    /// resolves -- see [`conway_runtime::permission::PermissionBroker::
+    /// active_pre_tool_use_hooks`]'s own doc: a broken/missing script is
+    /// not detected until invocation, so it is never silently absent from
+    /// this list.
+    pub fn active_deny_capable_hook_rules(&self) -> Vec<HookRuleView> {
+        let mut rows: Vec<HookRuleView> = self
+            .rt
+            .pre_tool_use_hooks()
+            .into_iter()
+            .map(|hook| HookRuleView {
+                id: hook.id,
+                event: PRE_TOOL_USE_EVENT.to_string(),
+                match_tool: hook.matcher,
+                origin: HOOK_ORIGIN_LABEL.to_string(),
+            })
+            .collect();
+        rows.extend(
+            self.rt
+                .observation_hooks()
+                .remove(conway_runtime::hook_dispatch::PROMPT_SUBMITTED)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|hook| HookRuleView {
+                    id: hook.id,
+                    event: conway_runtime::hook_dispatch::PROMPT_SUBMITTED.to_string(),
+                    match_tool: hook.matcher,
+                    origin: HOOK_ORIGIN_LABEL.to_string(),
+                }),
+        );
+        rows
+    }
+
+    /// Revokes exactly ONE hook-backed rule (board item
+    /// 01KZS02HYXGTW42R8G4HP10GHX), addressed by its `(event, id)` pair --
+    /// the same identity [`Self::active_deny_capable_hook_rules`] hands the
+    /// review surface. `event` must be exactly `"pre_tool_use"` or
+    /// `"prompt_submitted"`; any other value (including an observation-only
+    /// event, which this review surface never lists in the first place)
+    /// returns `false` without touching anything.
+    ///
+    /// **Session-scoped only, never persisted -- matching every other
+    /// `/settings` toggle** (`conway_cli::tui::view::settings`'s own module
+    /// doc: "Conway's config load ... has no writer anywhere outside test
+    /// fixtures ... persisting a runtime toggle would mean inventing one").
+    /// Unlike a pattern ALLOW grant, a hook rule has no `PatternOrigin` at
+    /// all -- it is never addressable to a specific file the way a
+    /// `permissions.json` rule is (`[hooks].rules` replaces wholesale per
+    /// config layer, `crate::config::merge`'s own module doc: "arrays and
+    /// scalars replace wholesale") -- so there is no file-rewrite branch to
+    /// choose between here the way [`Self::revoke_permission_pattern`] has;
+    /// this always takes the `PatternOrigin::Interactive`-shaped path:
+    /// drop it from the broker/dispatcher's in-memory list, nothing else.
+    ///
+    /// Returns `true` if a rule with that `(event, id)` was actually
+    /// installed and is now gone; `false` if it was already absent (the
+    /// same "was already gone" outcome the other revoke actions surface as
+    /// a notice rather than an error).
+    pub fn revoke_hook_rule(&self, event: &str, id: &str) -> bool {
+        match event {
+            PRE_TOOL_USE_EVENT => {
+                let mut hooks = self.rt.pre_tool_use_hooks();
+                let before = hooks.len();
+                hooks.retain(|hook| hook.id != id);
+                let changed = hooks.len() != before;
+                if changed {
+                    self.rt.set_pre_tool_use_hooks(hooks);
+                }
+                changed
+            }
+            conway_runtime::hook_dispatch::PROMPT_SUBMITTED => {
+                let mut hooks = self.rt.observation_hooks();
+                let changed = match hooks.get_mut(conway_runtime::hook_dispatch::PROMPT_SUBMITTED) {
+                    Some(subscribers) => {
+                        let before = subscribers.len();
+                        subscribers.retain(|hook| hook.id != id);
+                        subscribers.len() != before
+                    }
+                    None => false,
+                };
+                if changed {
+                    self.rt.set_observation_hooks(hooks);
+                }
+                changed
+            }
+            _ => false,
+        }
     }
 
     /// Drops every pattern ALLOW grant and cached `AllowAlways`, returning

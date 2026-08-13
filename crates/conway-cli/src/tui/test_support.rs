@@ -104,7 +104,8 @@ pub(crate) fn press(state: &mut AppState, event: KeyEvent, area: Rect) -> Action
         | Action::CyclePermissionMode
         | Action::RevokePermissionGrants
         | Action::RevokePermissionPattern(_, _)
-        | Action::RevokeStructuredAllowRule(_, _, _) => {}
+        | Action::RevokeStructuredAllowRule(_, _, _)
+        | Action::RevokeHookRule(_, _) => {}
         Action::ScrollLineUp => apply_line_scroll(state, area, true),
         Action::ScrollLineDown => apply_line_scroll(state, area, false),
         Action::JumpToTop => {

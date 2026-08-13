@@ -623,6 +623,25 @@ impl PermissionBroker {
             .expect("pre_tool_use hooks lock poisoned") = hooks;
     }
 
+    /// Every currently-installed `pre_tool_use` hook spec, in dispatch order
+    /// -- the review-list counterpart of [`Self::set_pre_tool_use_hooks`],
+    /// mirroring [`Self::active_patterns`]'s own shape (board item
+    /// 01KZS02HYXGTW42R8G4HP10GHX: a hook that can silently deny a call is a
+    /// permission rule, and an operator cannot revoke what they cannot see).
+    /// A rule installs here regardless of whether its command actually
+    /// resolves at invocation time, so a hook whose script is broken or
+    /// missing -- and which is therefore currently denying every matching
+    /// call, per `Self::pre_tool_use_hook_denial`'s fail-closed posture --
+    /// still appears rather than being silently omitted; this method has no
+    /// way to know a hook's script is broken without running it, and does
+    /// not try.
+    pub fn active_pre_tool_use_hooks(&self) -> Vec<PreToolUseHookSpec> {
+        self.pre_tool_use_hooks
+            .read()
+            .expect("pre_tool_use hooks lock poisoned")
+            .clone()
+    }
+
     /// The current mode. Cheap enough to call per render -- the status
     /// line reads it every frame so the operator can never be uncertain
     /// which mode they are in.

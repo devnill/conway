@@ -552,6 +552,17 @@ pub struct AppState {
     /// from the broker's `active_structured_prompt_rules()` -- the
     /// structured half of [`Self::permission_prompts`].
     pub structured_prompt_rules: Vec<(conway::Rule, conway::PatternOrigin)>,
+    /// Board item 01KZS02HYXGTW42R8G4HP10GHX: the fourth review list --
+    /// every currently-installed DENY-CAPABLE hook-backed rule
+    /// (`pre_tool_use` and `prompt_submitted`; see [`conway::Conway::
+    /// active_deny_capable_hook_rules`]'s own doc for why observation-only
+    /// events are excluded), mirrored from the broker/dispatcher for the
+    /// same reason `permission_grants` is: the menu builder stays a pure
+    /// function of `AppState`. Revocable, addressed by each row's own
+    /// `(event, id)` identity via `Conway::revoke_hook_rule` -- refreshed
+    /// alongside `permission_grants` when `/settings` opens and after any
+    /// revoke, on the same seam.
+    pub hook_rules: Vec<conway::HookRuleView>,
     /// The scope the permission prompt's remembered-grant keys (`a` and
     /// `p`) grant at: `Session` (the default, and the only scope the prompt
     /// offered before this item), `Agent` (only the agent whose call is
@@ -1013,6 +1024,7 @@ impl AppState {
             permission_prompts: Vec::new(),
             structured_deny_rules: Vec::new(),
             structured_prompt_rules: Vec::new(),
+            hook_rules: Vec::new(),
             permission_grant_scope: conway::PermissionScope::Session,
             scroll: 0,
             follow_tail: true,
