@@ -11,7 +11,9 @@ use std::sync::Arc;
 use crate::capabilities::HeadroomPolicy;
 use crate::error::{ConwayError, RoutingError};
 use crate::ids::EndpointId;
-use crate::routing::{BreakerState, ExplainReport, Observation, Route, RouteRequest, RoutingConfig};
+use crate::routing::{
+    BreakerState, ExplainReport, Observation, Route, RouteRequest, RoutingConfig,
+};
 
 use super::{Backend, CapabilityIndex};
 

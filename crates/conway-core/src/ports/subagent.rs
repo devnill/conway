@@ -289,7 +289,8 @@ impl SubagentHandle {
     /// call sites keeps its exact prior semantics without needing to name a
     /// mode.
     pub async fn cancel(&self, target: AgentId, reason: String) -> Result<(), SubagentError> {
-        self.cancel_with(target, reason, CancelMode::Immediate).await
+        self.cancel_with(target, reason, CancelMode::Immediate)
+            .await
     }
 
     /// Cancels `target` with `reason`, in `mode` (board item

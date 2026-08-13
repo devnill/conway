@@ -256,8 +256,12 @@ pub(super) fn entry_row_starts(state: &AppState, width: u16, scroll_row: u16) ->
             // identical hide-check), so `row` does not advance.
             continue;
         }
-        let mut lines =
-            entry_lines(entry, state.tool_preview_lines, state.show_timestamps, &theme);
+        let mut lines = entry_lines(
+            entry,
+            state.tool_preview_lines,
+            state.show_timestamps,
+            &theme,
+        );
         if (streaming_assistant && Some(i) == last_assistant_idx)
             || (streaming_reasoning && Some(i) == last_reasoning_idx)
         {
@@ -341,10 +345,7 @@ pub fn entry_lines(
             lines
         }
         Entry::Reasoning {
-            text,
-            summary,
-            ts,
-            ..
+            text, summary, ts, ..
         } => {
             let mut lines = reasoning_lines(text, theme);
             if let Some(s) = summary {
@@ -364,14 +365,7 @@ pub fn entry_lines(
             ..
         } => {
             let mut lines = tool_lines(
-                name,
-                *status,
-                preview,
-                args,
-                progress,
-                *expanded,
-                tool_cap,
-                theme,
+                name, *status, preview, args, progress, *expanded, tool_cap, theme,
             );
             stamp_first(&mut lines, ts.as_ref(), show_timestamps, theme);
             lines
@@ -388,7 +382,11 @@ pub fn entry_lines(
         // still a real failure, distinct from `theme.notice`'s routine cyan,
         // just one step down from the bold escalation.
         Entry::Error { text, fatal } => {
-            let style = if *fatal { theme.fatal_error } else { theme.error };
+            let style = if *fatal {
+                theme.fatal_error
+            } else {
+                theme.error
+            };
             text.split('\n')
                 .map(|line| Line::from(Span::styled(line.to_string(), style)))
                 .collect()
@@ -413,10 +411,7 @@ fn assistant_lines(text: &str, model: Option<&str>, theme: &Theme) -> Vec<Line<'
             // style is untouched.
             let body = std::mem::take(first);
             let body_spans = body.spans;
-            let mut spans = vec![Span::styled(
-                format!("[{name}]> "),
-                theme.assistant_marker,
-            )];
+            let mut spans = vec![Span::styled(format!("[{name}]> "), theme.assistant_marker)];
             spans.extend(body_spans);
             first.spans = spans;
         }
@@ -656,9 +651,7 @@ pub(super) fn node_status_style(status: NodeStatus, theme: &Theme) -> (&'static 
     match status {
         NodeStatus::Starting => ("starting", theme.agent_starting),
         NodeStatus::Running => ("running", theme.agent_running),
-        NodeStatus::AwaitingPermission => {
-            ("awaiting permission", theme.agent_awaiting)
-        }
+        NodeStatus::AwaitingPermission => ("awaiting permission", theme.agent_awaiting),
         NodeStatus::Finished => ("done", theme.agent_finished),
         NodeStatus::Failed => ("failed", theme.agent_failed),
         NodeStatus::Cancelled => ("cancelled", theme.agent_cancelled),
@@ -731,7 +724,12 @@ mod tests {
 
     #[test]
     fn user_entry_keeps_the_you_prefix() {
-        let lines = entry_lines(&Entry::User("hello".to_string()), 3, false, &Theme::default());
+        let lines = entry_lines(
+            &Entry::User("hello".to_string()),
+            3,
+            false,
+            &Theme::default(),
+        );
         assert_eq!(lines.len(), 1);
         assert!(plain_text(&lines[0]).starts_with("you> hello"));
     }
@@ -744,16 +742,18 @@ mod tests {
         let root = AgentId::new();
         let mut state = AppState::new(root);
         state.transcript.push(Entry::Assistant {
-                text: "hello".to_string(),
-                model: None,
-                summary: None,
-                ts: None,
-            });
+            text: "hello".to_string(),
+            model: None,
+            summary: None,
+            ts: None,
+        });
         let before = format!("{:?}", state.transcript);
 
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal.draw(|f| draw(f, f.area(), &state, &Theme::default())).expect("draw");
+        terminal
+            .draw(|f| draw(f, f.area(), &state, &Theme::default()))
+            .expect("draw");
 
         assert_eq!(format!("{:?}", state.transcript), before);
     }
@@ -771,15 +771,17 @@ mod tests {
         let mut state = AppState::new(root);
         state.transcript.push(Entry::User("hi".to_string()));
         state.transcript.push(Entry::Assistant {
-                text: "hello".to_string(),
-                model: None,
-                summary: None,
-                ts: None,
-            });
+            text: "hello".to_string(),
+            model: None,
+            summary: None,
+            ts: None,
+        });
 
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal.draw(|f| draw(f, f.area(), &state, &Theme::default())).expect("draw");
+        terminal
+            .draw(|f| draw(f, f.area(), &state, &Theme::default()))
+            .expect("draw");
 
         let buffer = terminal.backend().buffer();
         for cell in buffer.content() {
@@ -815,7 +817,9 @@ mod tests {
 
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal.draw(|f| draw(f, f.area(), state, &Theme::default())).expect("draw");
+        terminal
+            .draw(|f| draw(f, f.area(), state, &Theme::default()))
+            .expect("draw");
         terminal
             .backend()
             .buffer()
@@ -1088,11 +1092,11 @@ mod tests {
 
         let mut state = AppState::new(AgentId::new());
         state.transcript.push(Entry::Assistant {
-                text: "line one\nline two\nline three".to_string(),
-                model: None,
-                summary: None,
-                ts: None,
-            });
+            text: "line one\nline two\nline three".to_string(),
+            model: None,
+            summary: None,
+            ts: None,
+        });
 
         let rows = test_support::render(&state, 80, 24);
 
@@ -1166,11 +1170,11 @@ mod tests {
     fn streaming_cursor_present_on_last_assistant_line_while_responding() {
         let mut state = AppState::new(AgentId::new());
         state.transcript.push(Entry::Assistant {
-                text: "streaming live".to_string(),
-                model: None,
-                summary: None,
-                ts: None,
-            });
+            text: "streaming live".to_string(),
+            model: None,
+            summary: None,
+            ts: None,
+        });
         state.activity = Activity::Responding;
 
         let lines = build_lines(&state, &Theme::default());
@@ -1190,11 +1194,11 @@ mod tests {
     fn streaming_cursor_absent_when_not_responding() {
         let mut state = AppState::new(AgentId::new());
         state.transcript.push(Entry::Assistant {
-                text: "settled line".to_string(),
-                model: None,
-                summary: None,
-                ts: None,
-            });
+            text: "settled line".to_string(),
+            model: None,
+            summary: None,
+            ts: None,
+        });
 
         // Idle: no cursor.
         state.activity = Activity::Idle;
@@ -1236,17 +1240,17 @@ mod tests {
     fn streaming_cursor_lands_on_the_last_physical_line_of_the_last_assistant_entry() {
         let mut state = AppState::new(AgentId::new());
         state.transcript.push(Entry::Assistant {
-                text: "earlier\nmulti\nline".to_string(),
-                model: None,
-                summary: None,
-                ts: None,
-            });
+            text: "earlier\nmulti\nline".to_string(),
+            model: None,
+            summary: None,
+            ts: None,
+        });
         state.transcript.push(Entry::Assistant {
-                text: "live\nsecond".to_string(),
-                model: None,
-                summary: None,
-                ts: None,
-            });
+            text: "live\nsecond".to_string(),
+            model: None,
+            summary: None,
+            ts: None,
+        });
         state.activity = Activity::Responding;
 
         let lines = build_lines(&state, &Theme::default());
@@ -1277,11 +1281,11 @@ mod tests {
     #[test]
     fn entry_lines_itself_never_emits_the_streaming_cursor() {
         let entry = Entry::Assistant {
-                text: "hello".to_string(),
-                model: None,
-                summary: None,
-                ts: None,
-            };
+            text: "hello".to_string(),
+            model: None,
+            summary: None,
+            ts: None,
+        };
         for line in entry_lines(&entry, 3, false, &Theme::default()) {
             let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
             assert!(
@@ -1301,11 +1305,11 @@ mod tests {
 
         let mut state = AppState::new(AgentId::new());
         state.transcript.push(Entry::Assistant {
-                text: "streaming live".to_string(),
-                model: None,
-                summary: None,
-                ts: None,
-            });
+            text: "streaming live".to_string(),
+            model: None,
+            summary: None,
+            ts: None,
+        });
         state.activity = Activity::Responding;
 
         let backend = TestBackend::new(80, 24);
@@ -1332,11 +1336,11 @@ mod tests {
 
         let mut state = AppState::new(AgentId::new());
         state.transcript.push(Entry::Assistant {
-                text: "settled line".to_string(),
-                model: None,
-                summary: None,
-                ts: None,
-            });
+            text: "settled line".to_string(),
+            model: None,
+            summary: None,
+            ts: None,
+        });
         // activity stays Idle (the default).
 
         let backend = TestBackend::new(80, 24);
@@ -1530,7 +1534,10 @@ mod tests {
         let lines = entry_lines(&entry, 3, false, &Theme::default());
         // The last line is the `-` rule; the second-to-last is blank.
         let last = plain_text(lines.last().expect("at least the separator"));
-        assert_eq!(last, "-", "the separator must be a single plain `-`: {last:?}");
+        assert_eq!(
+            last, "-",
+            "the separator must be a single plain `-`: {last:?}"
+        );
         let second_last = plain_text(&lines[lines.len() - 2]);
         assert_eq!(
             second_last, "",
@@ -1560,7 +1567,11 @@ mod tests {
             ts: None,
         };
         let lines = entry_lines(&entry, 3, false, &Theme::default());
-        assert_eq!(lines.len(), 1, "empty preview -> just the header line: {lines:?}");
+        assert_eq!(
+            lines.len(),
+            1,
+            "empty preview -> just the header line: {lines:?}"
+        );
         assert!(
             !lines.iter().any(|l| plain_text(l) == "-"),
             "no separator for an empty preview"
@@ -1972,7 +1983,11 @@ mod tests {
         });
 
         let starts = entry_row_starts(&state, 80, 10);
-        assert_eq!(starts, vec![0, 1, 1], "the hidden reasoning entry (index 1) must not advance the row counter: {starts:?}");
+        assert_eq!(
+            starts,
+            vec![0, 1, 1],
+            "the hidden reasoning entry (index 1) must not advance the row counter: {starts:?}"
+        );
     }
 
     /// `entry_row_starts` and `build_lines` must measure the SAME thing, or

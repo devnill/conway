@@ -215,7 +215,10 @@ mod tests {
 
     #[test]
     fn default_hook_permission_verdict_is_no_opinion() {
-        assert_eq!(HookPermissionVerdict::default(), HookPermissionVerdict::NoOpinion);
+        assert_eq!(
+            HookPermissionVerdict::default(),
+            HookPermissionVerdict::NoOpinion
+        );
     }
 
     #[test]

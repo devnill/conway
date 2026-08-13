@@ -118,11 +118,13 @@ use conway_core::config::{AgentDef, DEFAULT_MAX_PARALLEL_TOOLS};
 use conway_core::containment::{CanonicalRoot, Containment};
 use conway_core::error::{ConwayError, RuntimeError};
 use conway_core::event::Event;
-use conway_core::ids::{AgentId, BackendId, LogSeq, ModelRef, RoleAlias, SeqRange, SessionId, ToolName};
+use conway_core::ids::{
+    AgentId, BackendId, LogSeq, ModelRef, RoleAlias, SeqRange, SessionId, ToolName,
+};
 use conway_core::log::{ForkOrigin, LogRecord, SessionFilter, SessionMeta, SubagentMode};
 use conway_core::ports::{
-    Backend, ContextHook, HealthRegistry, HookRunner, PermissionGate, Plugin, PluginConfig,
-    Router, SessionStore, SubagentHost,
+    Backend, ContextHook, HealthRegistry, HookRunner, PermissionGate, Plugin, PluginConfig, Router,
+    SessionStore, SubagentHost,
 };
 use conway_core::provenance::{ContextReport, Provenance};
 use conway_core::segment::CacheTtl;
@@ -682,16 +684,15 @@ impl Runtime {
                         ),
                     })
                 })?;
-                let resolved = crate::permission::resolve_like_the_tool_will(
-                    &spec.cwd,
-                    requested_str,
-                )
-                .ok_or_else(|| {
-                    crate::subagent::invalid_spec(ConwayError::Config {
-                        detail: "root agent's root contains a NUL byte the OS cannot resolve"
-                            .to_string(),
-                    })
-                })?;
+                let resolved =
+                    crate::permission::resolve_like_the_tool_will(&spec.cwd, requested_str)
+                        .ok_or_else(|| {
+                            crate::subagent::invalid_spec(ConwayError::Config {
+                                detail:
+                                    "root agent's root contains a NUL byte the OS cannot resolve"
+                                        .to_string(),
+                            })
+                        })?;
                 let canonical_root = CanonicalRoot::new(&resolved).map_err(|err| {
                     crate::subagent::invalid_spec(ConwayError::Config {
                         detail: format!(
@@ -1347,20 +1348,25 @@ impl Runtime {
             let handle = agents
                 .get(&agent)
                 .ok_or(RuntimeError::AgentNotFound { agent })?;
-            let report = handle.last_report.lock().expect("report lock poisoned").clone();
+            let report = handle
+                .last_report
+                .lock()
+                .expect("report lock poisoned")
+                .clone();
             report
         };
         if let Some(report) = live {
             return Ok(report);
         }
         let session = self.resolve_session(agent).await?;
-        let reports = conway_session::provenance::load_all_context_reports(
-            self.store.as_ref(),
-            &session,
-        )
-        .await
-        .map_err(RuntimeError::Store)?;
-        Ok(reports.into_iter().last().unwrap_or_else(|| empty_report(agent)))
+        let reports =
+            conway_session::provenance::load_all_context_reports(self.store.as_ref(), &session)
+                .await
+                .map_err(RuntimeError::Store)?;
+        Ok(reports
+            .into_iter()
+            .last()
+            .unwrap_or_else(|| empty_report(agent)))
     }
 
     /// Resolves `agent`'s `SessionId`: first from this instance's

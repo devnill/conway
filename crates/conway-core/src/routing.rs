@@ -885,20 +885,30 @@ mod tests {
         ));
         for entry in &report.entries {
             assert_eq!(entry.capabilities, None);
-            assert_eq!(entry.breaker, BreakerSnapshot { state: BreakerState::Closed });
+            assert_eq!(
+                entry.breaker,
+                BreakerSnapshot {
+                    state: BreakerState::Closed
+                }
+            );
         }
     }
 
     #[test]
     fn minimal_router_resolve_returns_configured_chain_in_order() {
         let router = MinimalRouter::new(two_entry_chain_config());
-        let routes = router.resolve(&request("planner")).expect("configured role resolves");
+        let routes = router
+            .resolve(&request("planner"))
+            .expect("configured role resolves");
         assert_eq!(routes.len(), 2);
         assert!(matches!(
             routes[0].reason,
             RoutingReason::AliasPrimary { .. }
         ));
-        assert!(matches!(routes[1].reason, RoutingReason::Fallback { position: 1, .. }));
+        assert!(matches!(
+            routes[1].reason,
+            RoutingReason::Fallback { position: 1, .. }
+        ));
     }
 
     #[test]

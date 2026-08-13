@@ -342,7 +342,10 @@ pub fn status_line_spans(state: &AppState, theme: &Theme, width: u16) -> Line<'s
     let mut rung = vec![0usize; fields.len()];
     let budget = width as usize;
     while ladder_width(&ladders, &rung) > budget {
-        match give_up_order.iter().find(|&&i| rung[i] + 1 < ladders[i].len()) {
+        match give_up_order
+            .iter()
+            .find(|&&i| rung[i] + 1 < ladders[i].len())
+        {
             Some(&i) => rung[i] += 1,
             // Nothing left to shrink -- every field is already at its own
             // floor. This is the defined "cannot fit even the most
@@ -1183,7 +1186,9 @@ mod tests {
         state.focused_ctx_tokens = 50_000; // 25%
         state.git_branch = Some("main".to_string());
         state.cwd_display = Some("/home/user/conway".to_string());
-        state.status_line_config = cfg(&["cwd", "git", "hint", "activity", "tokens", "ctx", "model", "mode"]);
+        state.status_line_config = cfg(&[
+            "cwd", "git", "hint", "activity", "tokens", "ctx", "model", "mode",
+        ]);
 
         let line = status_line(&state);
         let cwd = line.find("/home/user/conway").unwrap();
@@ -1485,7 +1490,6 @@ mod tests {
             "the braille frame must still advance -- motion is the liveness cue: {glyphs:?}"
         );
     }
-
 
     /// V2: auto-allow must never be ambiguous. An operator who has
     /// forgotten they are in it, and believes they are still being asked,
@@ -2016,8 +2020,9 @@ mod tests {
     fn mode_survives_narrow_width_even_with_a_custom_field_order() {
         let mut state = AppState::new(AgentId::new());
         state.permission_mode = PermissionMode::Plan;
-        state.status_line_config =
-            cfg(&["session", "hint", "activity", "tokens", "ctx", "model", "mode"]);
+        state.status_line_config = cfg(&[
+            "session", "hint", "activity", "tokens", "ctx", "model", "mode",
+        ]);
         state.activity = Activity::Thinking;
         state.turn_running_tokens = 999;
 

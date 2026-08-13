@@ -423,7 +423,9 @@ mod tests {
                         crate::agent::ResultStatus::Completed,
                         "child done",
                     ),
-                    prov: Provenance::ChildResult { from: AgentId::new() },
+                    prov: Provenance::ChildResult {
+                        from: AgentId::new(),
+                    },
                 },
                 "child_result",
             ),

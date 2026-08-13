@@ -19,9 +19,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use conway::config::schema::{
-    AgentsConfig, ConwayConfig, HealthSection, LimitsConfig, ModelsConfig, PermissionsConfig,
-    HooksConfig, PluginsConfig,
-    RoleEntry, RoutingSection, SessionConfig, ToolsConfig, TuiSection,
+    AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
+    PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
+    TuiSection,
 };
 use conway::{
     CancelMode, Conway, ConwayBuilder, ConwayError, ForkSpec, Plugin, SessionHandle, SessionId,
@@ -1714,8 +1714,7 @@ async fn graceful_cancel_through_the_facade_lets_the_in_flight_tool_finish_then_
         .with_id(BackendId::new("fake")),
     );
     let store = Arc::new(FakeStore::new());
-    let conway =
-        build_conway_with_plugin(backend.clone(), store, Arc::new(SlowToolPlugin(tool)));
+    let conway = build_conway_with_plugin(backend.clone(), store, Arc::new(SlowToolPlugin(tool)));
     let handle = new_handle(&conway).await;
 
     let child = handle
@@ -1786,8 +1785,7 @@ async fn default_cancel_through_the_facade_stops_immediately_without_waiting_for
         .with_id(BackendId::new("fake")),
     );
     let store = Arc::new(FakeStore::new());
-    let conway =
-        build_conway_with_plugin(backend.clone(), store, Arc::new(SlowToolPlugin(tool)));
+    let conway = build_conway_with_plugin(backend.clone(), store, Arc::new(SlowToolPlugin(tool)));
     let handle = new_handle(&conway).await;
 
     let child = handle
@@ -1886,9 +1884,8 @@ async fn default_cancel_through_the_facade_stops_immediately_without_waiting_for
 /// `ScriptedTurn::Pending`-polling pattern for the same reason).
 #[tokio::test]
 async fn cancel_reason_reaches_the_result_when_observed_mid_request() {
-    let backend = Arc::new(
-        ScriptedBackend::new(vec![ScriptedTurn::Pending]).with_id(BackendId::new("fake")),
-    );
+    let backend =
+        Arc::new(ScriptedBackend::new(vec![ScriptedTurn::Pending]).with_id(BackendId::new("fake")));
     let store = Arc::new(FakeStore::new());
     let conway = build_conway(backend.clone(), store);
     let handle = new_handle(&conway).await;
@@ -2082,10 +2079,7 @@ async fn graceful_cancel_on_a_parent_does_not_touch_a_live_childs_terminal_resul
                 "slow_tool_parent",
                 serde_json::json!({}),
             )),
-            ScriptedTurn::Respond(tool_call_response(
-                "slow_tool_child",
-                serde_json::json!({}),
-            )),
+            ScriptedTurn::Respond(tool_call_response("slow_tool_child", serde_json::json!({}))),
             ScriptedTurn::Respond(GenerateResponse {
                 content: vec![ContentBlock::Text {
                     text: "child done".to_string(),

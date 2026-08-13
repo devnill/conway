@@ -55,8 +55,8 @@ use std::sync::{Arc, RwLock};
 
 use chrono::Utc;
 use conway_core::agent::{
-    AgentNode as CoreAgentNode, AgentResult, AgentStatus, AgentTreeSnapshot, Budget,
-    DEFAULT_SUMMARY_LIMIT, ResultStatus, SubagentMode,
+    AgentNode as CoreAgentNode, AgentResult, AgentStatus, AgentTreeSnapshot, Budget, ResultStatus,
+    SubagentMode, DEFAULT_SUMMARY_LIMIT,
 };
 use conway_core::error::{RuntimeError, ToolError};
 use conway_core::event::Event;

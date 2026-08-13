@@ -209,8 +209,7 @@ pub fn install(
             continue;
         }
         let known_plugins: Vec<String> = bundle.iter().map(|p| p.manifest().id).collect();
-        let known_routers: Vec<String> =
-            router_bundle.iter().map(|f| f.id().to_string()).collect();
+        let known_routers: Vec<String> = router_bundle.iter().map(|f| f.id().to_string()).collect();
         let known_backends: Vec<String> =
             backend_bundle.iter().map(|f| f.id().to_string()).collect();
         return Err(ConwayError::Config {
@@ -326,7 +325,10 @@ mod tests {
     /// position.
     #[test]
     fn wanted_ids_unions_install_and_default_backends_deduplicated() {
-        let install = vec!["conway.plugin_skeleton".to_string(), "anthropic".to_string()];
+        let install = vec![
+            "conway.plugin_skeleton".to_string(),
+            "anthropic".to_string(),
+        ];
         let default_backends = vec!["anthropic".to_string(), "openai-compat".to_string()];
         assert_eq!(
             wanted_ids(&install, &default_backends),

@@ -54,16 +54,17 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use conway::config::schema::{
-    AgentsConfig, ConwayConfig, HealthSection, LimitsConfig, ModelsConfig, PermissionsConfig,
-    HooksConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig, TuiSection,
+    AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
+    PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
+    TuiSection,
 };
 use conway::{Conway, ConwayBuilder, SessionSpec};
-use conway_plugin_backends::anthropic::AnthropicBackend;
-use conway_plugin_backends::config::{AnthropicConfig, SecretString};
 use conway_core::agent::{PermissionDecision, ResultStatus};
 use conway_core::fakes::{FakeGate, FakeRouter, FakeStore};
 use conway_core::ids::{BackendId, ModelId, ModelRef, RoleAlias};
 use conway_core::ports::Backend;
+use conway_plugin_backends::anthropic::AnthropicBackend;
+use conway_plugin_backends::config::{AnthropicConfig, SecretString};
 use serde_json::{json, Value};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -260,9 +261,7 @@ async fn n_siblings_forked_from_one_point_share_a_byte_identical_leading_run_on_
     // three-tool_use fan-out turn.
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_raw(fanout_sse(), "text/event-stream"),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_raw(fanout_sse(), "text/event-stream"))
         .up_to_n_times(1)
         .with_priority(1)
         .mount(&server)
@@ -271,9 +270,7 @@ async fn n_siblings_forked_from_one_point_share_a_byte_identical_leading_run_on_
     // parent's follow-up turn once all three fork results return).
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_raw(plain_ok_sse(), "text/event-stream"),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_raw(plain_ok_sse(), "text/event-stream"))
         .mount(&server)
         .await;
 

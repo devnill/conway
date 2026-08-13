@@ -905,8 +905,7 @@ mod estimator_tests {
         let one = estimate_tool_schemas_tokens(&[sample_tool("read")]);
         assert!(one > 0, "a non-empty tool set must estimate > 0 tokens");
 
-        let two =
-            estimate_tool_schemas_tokens(&[sample_tool("read"), sample_tool("write")]);
+        let two = estimate_tool_schemas_tokens(&[sample_tool("read"), sample_tool("write")]);
         assert!(
             two > one,
             "a larger tool set must estimate more tokens ({two} vs {one})"
@@ -954,9 +953,7 @@ mod estimator_tests {
             skills: vec![],
             tools: tools.clone(),
             inherited: None,
-            head: HeadSegment::Prompt {
-                text: "hi".into(),
-            },
+            head: HeadSegment::Prompt { text: "hi".into() },
             own: Arc::from(vec![]),
             cache_ttl: CacheTtl::FiveMinutes,
         };
@@ -1059,8 +1056,7 @@ mod own_segment_provenance_tests {
             segments
                 .iter()
                 .all(|s| s.provenance != Provenance::UserPrompt
-                    || s.content
-                        == merged_prompt_content(&input)),
+                    || s.content == merged_prompt_content(&input)),
             "no segment may mislabel the merged turn as UserPrompt"
         );
     }

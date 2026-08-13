@@ -65,8 +65,8 @@ use conway::backend::{
 };
 use conway::plugin::{PermissionClass, Role};
 use conway::{
-    BackendBuildContext, BackendFactory, CoreConwayError, ModelOverrides, Provenance,
-    ToolCategory, ToolName,
+    BackendBuildContext, BackendFactory, CoreConwayError, ModelOverrides, Provenance, ToolCategory,
+    ToolName,
 };
 
 /// The marker this test's own "please call a tool" scenario looks for in
@@ -101,9 +101,8 @@ fn estimate_tokens(req: &GenerateRequest) -> u32 {
     for segment in &req.segments {
         for block in &segment.content {
             if let ContentBlock::Text { text } = block {
-                total = total.saturating_add(
-                    u32::try_from(text.len()).unwrap_or(u32::MAX).div_ceil(4),
-                );
+                total =
+                    total.saturating_add(u32::try_from(text.len()).unwrap_or(u32::MAX).div_ceil(4));
             }
         }
     }
@@ -553,7 +552,9 @@ async fn factory_build_reads_every_context_field_and_produces_a_working_backend(
     // through `probe()`'s `detail`, not merely stored and dropped (see
     // `StubBackend::probe`'s own comment).
     let report = backend.probe().await.expect("probe must succeed");
-    let detail = report.detail.expect("detail must be Some: three fields were set on ctx");
+    let detail = report
+        .detail
+        .expect("detail must be Some: three fields were set on ctx");
     assert!(detail.contains("base_url=https://example.invalid"));
     assert!(detail.contains("dialect=stub-dialect"));
     assert!(detail.contains("api_key_set=true"));

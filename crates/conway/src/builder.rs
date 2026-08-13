@@ -123,12 +123,12 @@ use std::sync::Arc;
 
 use conway_core::capabilities::{HeadroomPolicy, ReliabilityTier};
 use conway_core::ids::{BackendId, ModelRef};
+use conway_core::ports::CapabilityIndex;
 use conway_core::ports::{
     Backend, BackendBuildContext, BackendFactory, ContextHook, HealthRegistry, HookRunner,
     PermissionGate, Plugin, Router, RouterBuildContext, RouterBundle, RouterFactory,
     RoutingExplainer, SessionStore,
 };
-use conway_core::ports::CapabilityIndex;
 use conway_core::routing::{AlwaysClosedHealthRegistry, MinimalRouter, ModelOverrides};
 use conway_runtime::events::EventBus;
 use conway_runtime::permission::PreToolUseHookSpec;

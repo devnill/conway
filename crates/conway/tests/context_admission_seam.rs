@@ -218,9 +218,7 @@ fn build_conway(
         // `kind = "openai-compat"` entry (overwritten by the injected
         // `backend` above, but still resolved by `build()` before that
         // overwrite happens) needs a registered factory.
-        .with_backend_factory(Arc::new(
-            conway_plugin_backends::OpenAiCompatBackendFactory,
-        ))
+        .with_backend_factory(Arc::new(conway_plugin_backends::OpenAiCompatBackendFactory))
         .build()
         .expect(
             "build should succeed: real ContextBuilder/DeclarativeRouter/AttemptEngine wiring \

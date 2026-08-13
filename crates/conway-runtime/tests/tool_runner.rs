@@ -847,7 +847,13 @@ async fn concurrent_calls_in_one_batch_see_the_identical_snapshot_despite_a_raci
     let ctx = batch_ctx_with_chdir(2, chdir.clone());
 
     let calls = (0..4)
-        .map(|i| call(&format!("c{i}"), &format!("racer{i}"), serde_json::json!({})))
+        .map(|i| {
+            call(
+                &format!("c{i}"),
+                &format!("racer{i}"),
+                serde_json::json!({}),
+            )
+        })
         .collect();
     let outcomes = runner.run_batch(&ctx, calls).await;
 

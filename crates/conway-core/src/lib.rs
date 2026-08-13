@@ -14,9 +14,9 @@ pub mod content;
 pub mod error;
 pub mod event;
 pub mod event_name;
+pub mod failure;
 #[cfg(feature = "fakes")]
 pub mod fakes;
-pub mod failure;
 pub mod hook;
 pub mod ids;
 pub mod log;

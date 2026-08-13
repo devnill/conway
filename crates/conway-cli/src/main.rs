@@ -140,7 +140,11 @@ async fn main() -> std::process::ExitCode {
 /// default: every built-in except bash) -- an operator turns bash on for
 /// the TUI by adding `"conway.shell"` to that `settings.json` array (see
 /// `docs/interactive.md`).
-fn build_conway(cli: &Cli, gate: Option<Arc<dyn PermissionGate>>, is_tui: bool) -> conway::Result<Conway> {
+fn build_conway(
+    cli: &Cli,
+    gate: Option<Arc<dyn PermissionGate>>,
+    is_tui: bool,
+) -> conway::Result<Conway> {
     let builder = match &cli.config {
         Some(path) => ConwayBuilder::from_config(path)?,
         None => ConwayBuilder::discover()?,
@@ -184,10 +188,8 @@ fn build_conway(cli: &Cli, gate: Option<Arc<dyn PermissionGate>>, is_tui: bool) 
     // the SAME choke point, so the property holds for the TUI and every
     // one-shot/subcommand invocation identically.
     let plugins_config = &builder.config().plugins;
-    let wanted = first_party_plugins::wanted_ids(
-        &plugins_config.install,
-        &plugins_config.default_backends,
-    );
+    let wanted =
+        first_party_plugins::wanted_ids(&plugins_config.install, &plugins_config.default_backends);
     let builder = first_party_plugins::install(builder, &wanted)?;
     builder.build()
 }

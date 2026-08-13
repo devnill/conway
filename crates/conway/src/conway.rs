@@ -466,14 +466,12 @@ impl Conway {
                         // `Unconfinable` or `None` (or any future
                         // `#[non_exhaustive]` variant): a `paths_under` rule
                         // can never confine this tool -- fail closed.
-                        Some(_) => {
-                            Some(RegistrationCheck::Reject(
-                                conway_core::permission_pattern::RuleRegistrationError {
-                                    rule: rule.clone(),
-                                    reason: RuleRegistrationReason::PathsUnderOnUnconfinedTool,
-                                },
-                            ))
-                        }
+                        Some(_) => Some(RegistrationCheck::Reject(
+                            conway_core::permission_pattern::RuleRegistrationError {
+                                rule: rule.clone(),
+                                reason: RuleRegistrationReason::PathsUnderOnUnconfinedTool,
+                            },
+                        )),
                     }
                 })
             }
@@ -810,7 +808,11 @@ impl Conway {
             }
         };
 
-        Self::persist_revoke_outcome(env, path, Self::rewrite_permission_file_removing(path, rule))
+        Self::persist_revoke_outcome(
+            env,
+            path,
+            Self::rewrite_permission_file_removing(path, rule),
+        )
     }
 
     /// Revokes exactly ONE STRUCTURED allow rule (board item A2) -- the
@@ -893,9 +895,8 @@ impl Conway {
                 error: e.to_string(),
             },
             Ok(()) => {
-                let global_path = crate::config::discovery::xdg_config_path(env).and_then(
-                    |settings| settings.parent().map(|dir| dir.join("permissions.json")),
-                );
+                let global_path = crate::config::discovery::xdg_config_path(env)
+                    .and_then(|settings| settings.parent().map(|dir| dir.join("permissions.json")));
                 let is_global = global_path.as_deref() == Some(path);
                 let retrust_warning = if is_global {
                     None
@@ -1490,13 +1491,15 @@ impl Conway {
         match &self.router_explain {
             Some(explainer) => explainer.explain(&req),
             None => {
-                let routing_config = self.config.routing().unwrap_or_else(|_| {
-                    conway_core::routing::RoutingConfig {
-                        roles: std::collections::BTreeMap::new(),
-                        health: conway_core::routing::HealthConfig::default(),
-                        default_headroom_tokens: conway_core::capabilities::DEFAULT_HEADROOM_TOKENS,
-                    }
-                });
+                let routing_config =
+                    self.config
+                        .routing()
+                        .unwrap_or_else(|_| conway_core::routing::RoutingConfig {
+                            roles: std::collections::BTreeMap::new(),
+                            health: conway_core::routing::HealthConfig::default(),
+                            default_headroom_tokens:
+                                conway_core::capabilities::DEFAULT_HEADROOM_TOKENS,
+                        });
                 MinimalRouter::new(routing_config).explain(&req)
             }
         }
@@ -1883,18 +1886,23 @@ impl Conway {
         // 1+2. Live-tree resolution and the parent liveness guard, from one
         // snapshot (nodes never detach, so this cannot race stale).
         let snapshot = self.rt.tree();
-        let child_node = snapshot
-            .nodes
-            .iter()
-            .find(|n| n.agent_id == child)
-            .ok_or(ConwayError::Runtime(RuntimeError::AgentNotFound { agent: child }))?;
+        let child_node =
+            snapshot
+                .nodes
+                .iter()
+                .find(|n| n.agent_id == child)
+                .ok_or(ConwayError::Runtime(RuntimeError::AgentNotFound {
+                    agent: child,
+                }))?;
         let child_session = child_node.session;
-        let parent_agent = child_node.parent.ok_or(ConwayError::Store(
-            StoreError::NotRemovable {
-                session: child_session,
-                reason: "pull_in: the child has no parent in the live tree to merge into".into(),
-            },
-        ))?;
+        let parent_agent =
+            child_node
+                .parent
+                .ok_or(ConwayError::Store(StoreError::NotRemovable {
+                    session: child_session,
+                    reason: "pull_in: the child has no parent in the live tree to merge into"
+                        .into(),
+                }))?;
         let parent_node = snapshot
             .nodes
             .iter()
@@ -2201,7 +2209,14 @@ impl Conway {
         default_recipe: SubagentMode,
         text: &str,
     ) -> Result<AgentIntent> {
-        crate::intent::classify(&self.rt, &self.store, &self.config, parent, default_recipe, text)
-            .await
+        crate::intent::classify(
+            &self.rt,
+            &self.store,
+            &self.config,
+            parent,
+            default_recipe,
+            text,
+        )
+        .await
     }
 }

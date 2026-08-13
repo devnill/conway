@@ -7,12 +7,6 @@ name: CI
 # (`conway_ask.rs` ungated, and a `plugin_surface.rs` test gated on the wrong
 # feature) sat broken and invisible until board item 01KZ7KAEJ0EZG4P8BJAQC95Z6C
 # retired the backend feature flags and exposed them.
-#
-# NOTE, deliberately: there is NO `cargo fmt --check` job. This repository is
-# not fmt-clean (337 files differ as of 2026-08-06), so a formatting gate would
-# be red on arrival and stay red. Reformatting is its own decision with its own
-# enormous diff; it is not a CI question. Do not add one without doing that
-# work first.
 
 on:
   push:
@@ -31,6 +25,33 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # First because it is the cheapest signal in the workflow: rustfmt parses and
+  # reprints, it never compiles, so this reports in well under a minute while
+  # the other three jobs are still building.
+  #
+  # The workspace was reformatted in 5bf6635 (115 files) and `rustfmt.toml`
+  # pins `style_edition` so an edition bump cannot silently reformat the tree
+  # and undo it. Before that, this gate would have been red on arrival, which
+  # is why it did not exist.
+  fmt:
+    name: cargo fmt (--check)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.94.0"
+          components: rustfmt
+
+      # No Swatinem/rust-cache here on purpose: nothing is compiled, so there
+      # is no build output worth restoring and the cache round trip would cost
+      # more than the check.
+      - name: cargo fmt --all --check
+        run: cargo fmt --all --check
+
   test:
     name: cargo test (workspace, all features)
     runs-on: ubuntu-latest

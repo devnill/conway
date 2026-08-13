@@ -50,9 +50,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use conway::config::schema::{
-    AgentsConfig, ConwayConfig, HealthSection, LimitsConfig, ModelsConfig, PermissionsConfig,
-    HooksConfig, PluginsConfig,
-    RoleEntry, RoutingSection, SessionConfig, ToolsConfig, TuiSection,
+    AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
+    PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
+    TuiSection,
 };
 use conway::{Conway, ConwayBuilder, SessionSpec};
 use conway_core::agent::PermissionDecision;
@@ -441,9 +441,7 @@ async fn conway_ask_end_to_end_slice_through_the_real_runtime() {
         .await
         .expect("default list should succeed");
     assert!(
-        !default_listing
-            .iter()
-            .any(|m| m.id == ask_child_session),
+        !default_listing.iter().any(|m| m.id == ask_child_session),
         "the ephemeral ask child must NOT appear in the default (exclude-ephemeral) listing"
     );
     assert!(

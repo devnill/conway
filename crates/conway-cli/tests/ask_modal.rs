@@ -11,8 +11,7 @@
 /// Reads one TUI source file from the crate under test.
 fn tui_src(rel: &str) -> String {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/tui/");
-    std::fs::read_to_string(format!("{path}{rel}"))
-        .unwrap_or_else(|e| panic!("read {rel}: {e}"))
+    std::fs::read_to_string(format!("{path}{rel}")).unwrap_or_else(|e| panic!("read {rel}: {e}"))
 }
 
 #[test]

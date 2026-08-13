@@ -75,7 +75,10 @@ async fn set_ephemeral_flips_header_on_disk_and_index_preserves_records_and_surv
         store.create(meta(sid, true)).await.unwrap();
         // Append two records first, so the handle is WARM and the rewrite
         // must preserve real record bytes.
-        store.append(&sid, turn(0, "scratch question")).await.unwrap();
+        store
+            .append(&sid, turn(0, "scratch question"))
+            .await
+            .unwrap();
         store.append(&sid, turn(1, "scratch answer")).await.unwrap();
         records_before = raw_session_bytes(&root, sid);
 
@@ -139,7 +142,10 @@ async fn set_ephemeral_flips_header_on_disk_and_index_preserves_records_and_surv
         // instance (warm handle) must land in the renamed file, not the
         // detached old inode — without the `sf.file` swap this record would
         // be silently lost while `append` reported success.
-        store.append(&sid, turn(2, "post-promote turn")).await.unwrap();
+        store
+            .append(&sid, turn(2, "post-promote turn"))
+            .await
+            .unwrap();
         let head = store.head(&sid).await.unwrap();
         assert_eq!(head.0, 3);
         let raw_final = raw_session_bytes(&root, sid);
@@ -248,7 +254,9 @@ async fn set_ephemeral_refuses_a_non_ephemeral_noop() {
 #[tokio::test]
 async fn set_ephemeral_unknown_session_is_not_found() {
     let dir = tempfile::tempdir().unwrap();
-    let store = JsonlSessionStore::open(dir.path().to_path_buf()).await.unwrap();
+    let store = JsonlSessionStore::open(dir.path().to_path_buf())
+        .await
+        .unwrap();
     let sid = SessionId::new();
     let err = store.set_ephemeral(&sid, false).await.unwrap_err();
     assert!(

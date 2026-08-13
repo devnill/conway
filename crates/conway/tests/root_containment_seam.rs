@@ -49,11 +49,11 @@ use conway::{
 };
 use conway_core::agent::{PermissionDecision, PermissionRequest, PermissionScope};
 use conway_core::content::{ContentBlock, StopReason, ToolCall, ToolResult, Usage};
+use conway_core::fakes::{FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
 use conway_core::ids::{AgentId, BackendId, ModelId, ModelRef, RoleAlias, ToolName};
 use conway_core::log::LogRecord;
 use conway_core::permission_mode::PermissionMode;
 use conway_core::ports::{Backend, GenerateResponse, PermissionGate};
-use conway_core::fakes::{FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
 use tempfile::TempDir;
 
 fn fake_router() -> Arc<dyn conway_core::ports::Router> {
@@ -395,7 +395,9 @@ async fn cd_out_of_the_root_is_denied_by_the_generic_path_arg_check() {
         .new_session(SessionSpec::default())
         .await
         .expect("new_session");
-    let spec = SpawnSpec::new("leave the root").root(&root_dir).cwd(&root_dir);
+    let spec = SpawnSpec::new("leave the root")
+        .root(&root_dir)
+        .cwd(&root_dir);
     let records = spawn_and_await(&handle, spec).await;
 
     let result = tool_result(&records);
@@ -1150,7 +1152,11 @@ async fn a_spawned_childs_root_cannot_widen_a_confined_root_agents_own_root() {
     std::fs::create_dir(&sideways_root).unwrap();
 
     let gate = RecordingGate::new(PermissionDecision::AllowOnce);
-    let conway = build_conway_with_root(vec![], gate.clone() as Arc<dyn PermissionGate>, &parent_root);
+    let conway = build_conway_with_root(
+        vec![],
+        gate.clone() as Arc<dyn PermissionGate>,
+        &parent_root,
+    );
 
     let handle = conway
         .new_session(SessionSpec {

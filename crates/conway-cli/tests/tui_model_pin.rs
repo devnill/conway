@@ -119,7 +119,11 @@ async fn malformed_model_fails_identically_in_both_modes() {
     let mock = MockBackend::start(Script(vec![])).await;
     let fixture = write_fixture(&mock, 10);
     let out = run_conway(&["-p", "hi", "--model", "not-a-valid-ref"], &fixture);
-    assert_eq!(out.status.code(), Some(2), "one-shot's own exit code for a malformed --model");
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "one-shot's own exit code for a malformed --model"
+    );
     let oneshot_err = String::from_utf8_lossy(&out.stderr).to_string();
     assert!(
         mock.requests().is_empty(),

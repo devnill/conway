@@ -10,14 +10,16 @@
 /// Reads one TUI source file from the crate under test.
 fn tui_src(rel: &str) -> String {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/tui/");
-    std::fs::read_to_string(format!("{path}{rel}"))
-        .unwrap_or_else(|e| panic!("read {rel}: {e}"))
+    std::fs::read_to_string(format!("{path}{rel}")).unwrap_or_else(|e| panic!("read {rel}: {e}"))
 }
 
 #[test]
 fn the_intent_confirm_surface_is_present() {
     let state = tui_src("state.rs");
-    assert!(state.contains("Mode::IntentConfirm"), "Mode::IntentConfirm must exist");
+    assert!(
+        state.contains("Mode::IntentConfirm"),
+        "Mode::IntentConfirm must exist"
+    );
     assert!(
         state.contains("pub struct IntentConfirm"),
         "IntentConfirm state struct must exist"
