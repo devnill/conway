@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::content::{Artifact, ContentBlock, ToolCall, ToolSpec, TruncationPolicy};
 use crate::error::{CwdError, ToolError};
+use crate::event_name::{validate_event_name, EVENT_NAMESPACE_SEPARATOR};
 use crate::ids::{AgentId, ModelRef, SessionId, ToolName};
 use crate::ports::{ArtifactWriteHandle, EventSinkHandle, SubagentHandle};
 use crate::segment::PromptSegment;
@@ -69,6 +70,78 @@ pub trait Plugin: Send + Sync + 'static {
     fn commands(&self) -> Vec<Arc<dyn Command>> {
         Vec::new()
     }
+
+    /// Zero or more custom events this plugin may fire (board item
+    /// 01KZS03BFE720EQZG7Q2768N2H, `PHILOSOPHY.md` §5: "That list is open
+    /// rather than fixed. A plugin declares the events it emits, so
+    /// installing one brings hook points along with whatever else it
+    /// provides... Those events sit at the same level as the ones conway
+    /// emits"). The default returns none, so every existing `Plugin`
+    /// implementor keeps compiling unmodified -- the SAME zero-cost-default
+    /// precedent [`Self::commands`] established immediately above.
+    ///
+    /// **Follows that exact precedent, not a new pattern.** [`EventDecl`]
+    /// is constructed the same way [`CommandSpec`] is: `name` is BARE, and
+    /// the host -- not the plugin -- prefixes it with this plugin's own
+    /// [`PluginManifest::id`] before it is ever reachable in an operator's
+    /// `[hooks].rules[].event`, so a plugin can never pick its own
+    /// namespace (mirrors [`Self::commands`]'s own "an author never picks
+    /// their own namespace" rule). `conway_runtime::hook_dispatch::
+    /// declared_plugin_events` performs that prefixing and validates the
+    /// result with [`crate::event_name::validate_event_name`] -- the SAME
+    /// shared validator [`Self::commands`]' registrar
+    /// (`conway_cli::tui::commands::CommandRegistry::build`) already uses
+    /// for command names (see that function's own doc, and
+    /// [`crate::event_name::validate_namespaced`]'s "A third consumer,
+    /// same rule, different vocabulary").
+    ///
+    /// **An event declared here and never fired is the same defect as a
+    /// tool that does nothing** (`PHILOSOPHY.md` §5, verbatim) -- this
+    /// method only ships the DECLARATION half; a plugin fires one of its
+    /// own declared events from inside [`Tool::invoke`] via
+    /// [`ToolCtx::plugin_events`] ([`PluginEventHandle::emit`]), the
+    /// SAME `plugin_id.bare_name` shape this method's own `name` fields
+    /// become.
+    fn events(&self) -> Vec<EventDecl> {
+        Vec::new()
+    }
+}
+
+/// One custom event a plugin declares it may emit -- the event-vocabulary
+/// sibling of [`CommandSpec`] (see [`Plugin::events`]'s own doc for why
+/// this mirrors that type's exact shape rather than inventing a new one).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EventDecl {
+    /// Bare name, e.g. `"candidate_chosen"` for a plugin whose manifest id
+    /// is `"acme.routing"` -- reachable in `[hooks].rules[].event` as
+    /// `"acme.routing.candidate_chosen"` once the host prefixes it (see
+    /// [`Plugin::events`]'s own doc). Must be non-empty; enforced where the
+    /// prefixing happens (`conway_runtime::hook_dispatch::
+    /// declared_plugin_events`), not by this type itself, matching
+    /// [`CommandSpec::name`]'s own identical division of labor.
+    pub name: String,
+    /// One line describing when this event fires and what its payload
+    /// carries -- the answer to "how does an operator discover what is
+    /// hookable given what they have installed" (`PHILOSOPHY.md` §5's own
+    /// "an open vocabulary nobody can enumerate is worse than a closed
+    /// one" concern): an embedder already holding the `&[Arc<dyn Plugin>]`
+    /// it is about to pass to `ConwayBuilder` can call
+    /// `conway_runtime::hook_dispatch::declared_plugin_events` itself and
+    /// read this field for every event every installed plugin declares --
+    /// no separate registry, no new port, the identical mechanism
+    /// [`Plugin::commands`] already exposes for command discovery.
+    pub summary: String,
+    /// Whether this event's payload carries a `"tool"` string field --
+    /// decides whether an operator's `[hooks].rules[]` entry may pair this
+    /// event with `match` (board item 01KZYAWQ6011Q6CJVG6CCMQPF1's rule,
+    /// extended to plugin-declared events by this type). `false` here
+    /// makes a rule's `match` on this event the SAME typed, build-time
+    /// error `crates/conway/src/config/merge.rs`'s check 10 already gives
+    /// a core event without a tool name -- see
+    /// `crates/conway/src/builder.rs`'s own plugin-event validation pass
+    /// for where that is enforced (this crate performs no config
+    /// validation itself).
+    pub carries_tool_name: bool,
 }
 
 /// One plugin-declared TUI slash command (board item
@@ -438,6 +511,128 @@ impl CwdHandle {
     }
 }
 
+/// Accepts a plugin-declared event for dispatch to whatever hook an
+/// operator has configured for it (board item 01KZS03BFE720EQZG7Q2768N2H).
+///
+/// **A PORT, not a concrete type**, for the identical reason
+/// [`crate::ports::HookRunner`] is one: a real implementation performs I/O
+/// (spawning a hook's configured command), and this crate performs none.
+/// It is the fan-out-layer sibling of `HookRunner` (which invokes ONE hook
+/// command) -- `conway_runtime::hook_dispatch::HookDispatcher::dispatch`,
+/// the SAME dispatch path every core observation event (`post_tool_use`,
+/// `session_starting`, ...) already goes through, implements this trait
+/// directly. **This is this item's own "one dispatch path" YAGNI, made
+/// structural**: a plugin-declared event is dispatched exactly like
+/// `post_tool_use` -- observation-only, fails open (a broken hook is
+/// logged and skipped, never propagated) -- never through a second,
+/// deny-capable tier this crate would have to invent and justify. Nothing
+/// here lets a plugin's own control flow observe whether anything ran.
+#[async_trait]
+pub trait PluginEventEmitter: Send + Sync + 'static {
+    /// Dispatches `name` (an ALREADY-namespaced, ALREADY-validated
+    /// `plugin_id.event_name` -- [`PluginEventHandle::emit`] is the only
+    /// caller and performs both steps before ever reaching this method)
+    /// with `payload` to every hook subscribed to it. Returns nothing:
+    /// mirrors `HookDispatcher::dispatch`'s own contract exactly, so a
+    /// plugin's behavior never depends on whether an operator happened to
+    /// wire a hook to this event.
+    async fn emit(&self, name: &str, payload: serde_json::Value);
+}
+
+/// A [`PluginEventEmitter`] bound to ONE declaring plugin -- the
+/// `ToolCtx`-facing capability a plugin's own [`Tool::invoke`] gets, in
+/// place of a raw `Arc<dyn PluginEventEmitter>`. Mirrors the same
+/// caller-baking narrowing [`SubagentHandle`] performs for
+/// `SubagentHost` and [`CwdHandle`] performs for the cwd cell.
+///
+/// **Bakes `plugin_id` in structurally.** [`Self::emit`] takes only a BARE
+/// event name -- there is no parameter through which a call could name a
+/// DIFFERENT plugin's namespace, so one plugin cannot fire an event that
+/// looks like it came from another. An operator's hook, once wired to
+/// `"acme.routing.candidate_chosen"`, is trusting that name because only
+/// the plugin whose manifest id is `acme.routing` can ever produce it --
+/// unlike `SubagentHandle`'s `agent_id` (which guards against
+/// MODEL-supplied forgery), `plugin_id` here is Rust-code-supplied by the
+/// plugin author, never model-influenced; the guarantee this baking
+/// provides is for the OPERATOR trusting a hook's provenance, not for
+/// resisting a live attacker.
+#[derive(Clone)]
+pub struct PluginEventHandle {
+    emitter: Arc<dyn PluginEventEmitter>,
+    plugin_id: String,
+}
+
+impl std::fmt::Debug for PluginEventHandle {
+    // Manual impl: `Arc<dyn PluginEventEmitter>` carries no `Debug` bound --
+    // mirrors `SubagentHandle`'s own manual `Debug` exactly.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PluginEventHandle")
+            .field("plugin_id", &self.plugin_id)
+            .field("emitter", &"<dyn PluginEventEmitter>")
+            .finish()
+    }
+}
+
+impl PluginEventHandle {
+    /// Wraps `emitter`, baking `plugin_id` in as the one namespace every
+    /// [`Self::emit`] call uses -- see this type's own doc for why nothing
+    /// here lets that identity be overridden per call.
+    pub fn new(emitter: Arc<dyn PluginEventEmitter>, plugin_id: impl Into<String>) -> Self {
+        Self {
+            emitter,
+            plugin_id: plugin_id.into(),
+        }
+    }
+
+    /// A handle that discards every event it is asked to fire -- for a
+    /// tool whose `invoke` never calls [`Self::emit`] (every built-in, and
+    /// most third-party tools) and every test fixture that constructs a
+    /// [`ToolCtx`] without caring about this capability. Mirrors
+    /// [`crate::ports::ArtifactWriteHandle::noop`]'s own precedent and
+    /// rationale exactly: a no-op implementation performs no I/O either
+    /// way, so it carries none of the risk that gates this crate's other
+    /// test doubles behind the `fakes` feature, and is reachable from
+    /// every crate in the workspace (`conway`'s facade does not forward
+    /// `fakes` to its own dependents).
+    pub fn noop(plugin_id: impl Into<String>) -> Self {
+        Self::new(Arc::new(NoopPluginEventEmitter), plugin_id)
+    }
+
+    /// Fires `bare_name` (this plugin's OWN event, never another's -- see
+    /// this type's own doc) with `payload`. Assembles the full
+    /// `plugin_id.bare_name` and validates it with
+    /// [`validate_event_name`] before dispatching -- the only way this can
+    /// fail is an empty `bare_name` (`plugin_id` was already validated,
+    /// once, at plugin registration: `conway_runtime::hook_dispatch::
+    /// declared_plugin_events`), and an invalid full name can never be the
+    /// key of any hook subscription an operator could have configured
+    /// (the SAME validator gates the subscriber side too -- `crates/
+    /// conway/src/config/merge.rs`), so dispatching it would reach no
+    /// subscriber regardless. This method therefore drops it silently
+    /// rather than panicking or returning an error a caller would have to
+    /// remember to check -- matching every other observation-tier failure
+    /// posture in this codebase (`HookDispatcher::dispatch`'s own doc).
+    pub async fn emit(&self, bare_name: &str, payload: serde_json::Value) {
+        let full_name = format!("{}{EVENT_NAMESPACE_SEPARATOR}{bare_name}", self.plugin_id);
+        if validate_event_name(&full_name, Some(&self.plugin_id)).is_err() {
+            return;
+        }
+        self.emitter.emit(&full_name, payload).await;
+    }
+}
+
+/// The private implementation behind [`PluginEventHandle::noop`]. Not
+/// itself exported -- mirrors `ports::artifact`'s own private
+/// `NoopArtifactWriter` exactly, including why a name that exists purely
+/// for tests stays behind a constructor rather than a second top-level
+/// name.
+struct NoopPluginEventEmitter;
+
+#[async_trait]
+impl PluginEventEmitter for NoopPluginEventEmitter {
+    async fn emit(&self, _name: &str, _payload: serde_json::Value) {}
+}
+
 /// Per-invocation context handed to `Tool::invoke`.
 ///
 /// `Clone` (every field is an `Arc`, `Copy`, or otherwise cheap to clone).
@@ -449,7 +644,8 @@ impl CwdHandle {
 /// **Deliberately NOT `#[non_exhaustive]`, and that is a decision, not an
 /// oversight.** Adding a field here is a breaking change for any external
 /// struct-literal construction, so the question comes up every time one is
-/// added (`chdir` was the most recent). The reasons to leave it off:
+/// added (`plugin_events` is the most recent, `chdir` before it). The
+/// reasons to leave it off:
 ///
 /// - `#[non_exhaustive]` would not merely warn about literal construction,
 ///   it would *forbid* it outside this crate even with every field named,
@@ -494,6 +690,17 @@ pub struct ToolCtx {
     /// this narrowed it: the same widening `chdir` underwent for the cwd
     /// capability.
     pub subagents: SubagentHandle,
+    /// Fires THIS call's own declaring plugin's custom events (board item
+    /// 01KZS03BFE720EQZG7Q2768N2H, [`Plugin::events`]) -- a
+    /// [`PluginEventHandle`] bound to the plugin that registered the tool
+    /// being invoked, so there is no parameter through which a call could
+    /// fire under a DIFFERENT plugin's namespace (see that type's own
+    /// doc). `conway_runtime::tools::runner` is the one production
+    /// construction site and binds this to the resolved tool's own
+    /// `plugin_id`; every other construction site (this crate's own
+    /// tests, `conway-tools`' fixtures) that does not care about this
+    /// capability uses [`PluginEventHandle::noop`].
+    pub plugin_events: PluginEventHandle,
     pub config: Arc<PluginConfig>,
 }
 
@@ -507,6 +714,7 @@ impl std::fmt::Debug for ToolCtx {
             .field("cancel", &self.cancel)
             .field("events", &"<dyn EventSink>")
             .field("subagents", &self.subagents)
+            .field("plugin_events", &self.plugin_events)
             .field("config", &self.config)
             .finish()
     }
@@ -1221,5 +1429,162 @@ mod tests {
         let commands = plugin.commands();
         assert_eq!(commands.len(), 1);
         assert_eq!(commands[0].spec().name, "greet");
+    }
+
+    // ---- Plugin::events (board item 01KZS03BFE720EQZG7Q2768N2H) ----
+
+    /// Same proof shape as `default_commands_is_empty` immediately above:
+    /// a third-party `Plugin` implementor that accepts the trait's default
+    /// `events` untouched must compile and return an empty list.
+    #[test]
+    fn default_events_is_empty() {
+        let plugin = NoCommandsPlugin;
+        assert!(plugin.events().is_empty());
+    }
+
+    /// A `Plugin` implementor that DOES declare an event -- proves
+    /// `events()` round-trips a real `EventDecl` through the trait, the
+    /// same way `plugin_commands_carries_a_real_declared_command` proves
+    /// it for `commands()`.
+    struct EventDeclaringPlugin;
+
+    impl Plugin for EventDeclaringPlugin {
+        fn manifest(&self) -> PluginManifest {
+            PluginManifest {
+                id: "test.events".into(),
+                version: "0.1.0".into(),
+                tools: vec![],
+                required_host_caps: vec![],
+            }
+        }
+
+        fn tools(&self) -> Vec<Arc<dyn Tool>> {
+            vec![]
+        }
+
+        fn events(&self) -> Vec<EventDecl> {
+            vec![EventDecl {
+                name: "pong_dispatched".to_string(),
+                summary: "fires once per skeleton_ping call".to_string(),
+                carries_tool_name: false,
+            }]
+        }
+    }
+
+    #[test]
+    fn plugin_events_carries_a_real_declared_event() {
+        let plugin = EventDeclaringPlugin;
+        let events = plugin.events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].name, "pong_dispatched");
+        assert!(!events[0].carries_tool_name);
+    }
+
+    // ---- PluginEventEmitter / PluginEventHandle ----
+
+    /// Records every `(name, payload)` it was asked to dispatch.
+    #[derive(Default)]
+    struct RecordingEmitter {
+        seen: std::sync::Mutex<Vec<(String, serde_json::Value)>>,
+    }
+
+    #[async_trait]
+    impl PluginEventEmitter for RecordingEmitter {
+        async fn emit(&self, name: &str, payload: serde_json::Value) {
+            self.seen
+                .lock()
+                .expect("seen lock poisoned")
+                .push((name.to_string(), payload));
+        }
+    }
+
+    /// The load-bearing property: firing a bare name reaches the emitter
+    /// with the FULL `plugin_id.bare_name` -- the namespaced form an
+    /// operator's `[hooks].rules[].event` actually subscribes to.
+    #[test]
+    fn emit_assembles_the_full_namespaced_name() {
+        let emitter = Arc::new(RecordingEmitter::default());
+        let handle = PluginEventHandle::new(emitter.clone(), "acme_routing");
+
+        block_on(handle.emit("candidate_chosen", serde_json::json!({"model": "x"})));
+
+        let seen = emitter.seen.lock().expect("seen lock poisoned").clone();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].0, "acme_routing.candidate_chosen");
+        assert_eq!(seen[0].1["model"], "x");
+    }
+
+    /// A `plugin_id` containing the namespace separator (every real
+    /// built-in plugin id in this workspace, e.g. `conway.plugin_skeleton`)
+    /// emits exactly like any other -- see `validate_event_name`'s own doc
+    /// ("§16.6 point 3 is reconsidered here") for why this is a deliberate
+    /// reversal of an earlier draft, not an oversight.
+    #[test]
+    fn a_plugin_id_containing_the_separator_emits_normally() {
+        let emitter = Arc::new(RecordingEmitter::default());
+        let handle = PluginEventHandle::new(emitter.clone(), "acme.routing");
+
+        block_on(handle.emit("candidate_chosen", serde_json::json!(null)));
+
+        let seen = emitter.seen.lock().expect("seen lock poisoned").clone();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].0, "acme.routing.candidate_chosen");
+    }
+
+    /// Structural namespace guarantee: `emit`'s only parameters are the
+    /// BARE name and the payload -- there is no argument through which a
+    /// caller could name a different plugin's namespace. This test drives
+    /// that through two independently constructed handles and shows each
+    /// can only ever produce names under its OWN baked-in `plugin_id`.
+    #[test]
+    fn a_handle_can_never_fire_under_a_different_plugins_namespace() {
+        let emitter = Arc::new(RecordingEmitter::default());
+        let acme = PluginEventHandle::new(emitter.clone(), "acme");
+        let other = PluginEventHandle::new(emitter.clone(), "other");
+
+        block_on(acme.emit("thing_happened", serde_json::json!(null)));
+        block_on(other.emit("thing_happened", serde_json::json!(null)));
+
+        let seen: Vec<String> = emitter
+            .seen
+            .lock()
+            .expect("seen lock poisoned")
+            .iter()
+            .map(|(name, _)| name.clone())
+            .collect();
+        assert_eq!(seen, vec!["acme.thing_happened", "other.thing_happened"]);
+    }
+
+    /// An empty bare name cannot assemble into anything a subscriber could
+    /// ever be configured against -- dropped silently, never dispatched,
+    /// never a panic.
+    #[test]
+    fn emit_with_an_empty_bare_name_is_silently_dropped() {
+        let emitter = Arc::new(RecordingEmitter::default());
+        let handle = PluginEventHandle::new(emitter.clone(), "acme");
+
+        block_on(handle.emit("", serde_json::json!(null)));
+
+        assert!(emitter.seen.lock().expect("seen lock poisoned").is_empty());
+    }
+
+    /// [`PluginEventHandle::noop`] discards every event -- the default a
+    /// tool that never calls `emit`, and every test fixture that does not
+    /// care about this capability, gets.
+    #[test]
+    fn noop_handle_discards_every_event() {
+        let handle = PluginEventHandle::noop("acme");
+        // Nothing to assert against a recorder (there is none) -- the
+        // property under test is that this does not panic and completes.
+        block_on(handle.emit("anything", serde_json::json!({"a": 1})));
+    }
+
+    /// `PluginEventEmitter` must remain object-safe: `PluginEventHandle`
+    /// holds it as `Arc<dyn PluginEventEmitter>`.
+    #[test]
+    fn plugin_event_emitter_is_object_safe() {
+        fn assert_object_safe(_: &dyn PluginEventEmitter) {}
+        let emitter = RecordingEmitter::default();
+        assert_object_safe(&emitter);
     }
 }

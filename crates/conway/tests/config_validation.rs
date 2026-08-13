@@ -230,6 +230,50 @@ fn matcher_on_a_toolless_event_is_rejected() {
     );
 }
 
+/// ACCEPTANCE (board item 01KZS03BFE720EQZG7Q2768N2H): `merge::validate`'s
+/// event-shape check closes the FOLLOW-UP `schema::HookEntry::event`'s own
+/// doc comment used to name -- a malformed `event` (here, a leading `.`
+/// with an empty prefix) is a surfaced, typed config error, not silently
+/// accepted.
+#[test]
+fn hooks_rule_with_malformed_event_shape_is_rejected() {
+    let dir = support::unique_temp_dir("hooks-malformed-event-shape");
+    let result = load(LoadOptions {
+        cwd: dir,
+        explicit_path: Some(support::fixtures_dir().join("hooks_malformed_event_shape.json")),
+        env: support::isolated_env(),
+        cli_overrides: CliOverrides::default(),
+        model_metadata_refresh: false,
+    });
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("malformed") && err.contains("hooks.rules"),
+        "error must name the offending rule id: {err}"
+    );
+}
+
+/// ACCEPTANCE: a well-formed PLUGIN-namespaced `event`
+/// (`plugin_id.event_name`) loads through the full `load` path -- this is
+/// the shape-only check `merge::validate` performs; whether `acme` is an
+/// installed plugin that actually declares `pong_dispatched` is
+/// `ConwayBuilder::build`'s own, separate concern (`schema::HooksConfig`'s
+/// own reachability doc), not exercised by a bare config load.
+#[test]
+fn well_formed_plugin_namespaced_event_loads_through_the_full_load_path() {
+    let dir = support::unique_temp_dir("hooks-plugin-event-well-formed");
+    let outcome = load(LoadOptions {
+        cwd: dir,
+        explicit_path: Some(support::fixtures_dir().join("hooks_plugin_event_well_formed.json")),
+        env: support::isolated_env(),
+        cli_overrides: CliOverrides::default(),
+        model_metadata_refresh: false,
+    })
+    .expect("a well-formed plugin-namespaced event must load");
+
+    assert_eq!(outcome.config.hooks.rules.len(), 1);
+    assert_eq!(outcome.config.hooks.rules[0].event, "acme.pong_dispatched");
+}
+
 /// The Kimi coding-plan config block published in
 /// `docs/providers.md` must actually load. A copy-pasteable
 /// example that does not parse is worse than no example, and this is the

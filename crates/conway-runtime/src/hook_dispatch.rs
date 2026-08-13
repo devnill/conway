@@ -104,12 +104,49 @@
 //! wired: an unwired lifecycle hook costs an implementer a debugging session.
 //! **If that question is settled later, the change is deliberate and visible;
 //! it is not settled here by omission.**
+//!
+//! # Plugin-declared events (board item 01KZS03BFE720EQZG7Q2768N2H)
+//!
+//! `PHILOSOPHY.md` §5 is explicit that the event vocabulary above is open,
+//! not closed: "A plugin declares the events it emits... Those events sit
+//! at the same level as the ones conway emits." A plugin's own
+//! `Plugin::events` declares zero or more [`EventDecl`]s;
+//! [`declared_plugin_events`] namespaces and validates them
+//! (`plugin_id.bare_name`, via [`validate_event_name`] -- the SAME shared
+//! validator `conway_cli::tui::commands::CommandRegistry::build` already
+//! uses for plugin-declared TUI commands); `ConwayBuilder::build` unions
+//! the result into what [`HookDispatcher::dispatch`] will actually fire
+//! for.
+//!
+//! **One dispatch path, deliberately, not a second tier.** A plugin-declared
+//! event is dispatched through the IDENTICAL observation-only
+//! [`HookDispatcher::dispatch`] every core observation event above already
+//! uses -- fails open, cannot deny. This module's own `impl
+//! PluginEventEmitter for HookDispatcher` (below) IS the fan-out layer a
+//! plugin's own `PluginEventHandle::emit` call reaches. Building a second,
+//! deny-capable tier for plugin events -- something PHILOSOPHY's
+//! routing/compaction examples could plausibly want ("a routing plugin can
+//! offer a point before it commits to a candidate") -- is explicitly left
+//! for a later item to justify with a real consumer, not built ahead of one
+//! (this item's own YAGNI).
+//!
+//! **The one structural difference from a core event: WHO fires it.** Every
+//! core event above dispatches from a fixed seam in this workspace's own
+//! code (`ToolRunner`, `Runtime::start_root`, `SubagentHost::start`, ...).
+//! A plugin-declared event has no such seam -- only the plugin's own code
+//! knows when "before committing to a candidate" happens -- so it fires
+//! from inside that plugin's own [`conway_core::ports::Tool::invoke`],
+//! through the [`conway_core::ports::PluginEventHandle`] threaded onto its
+//! [`conway_core::ports::ToolCtx`], bound to that tool's own declaring
+//! plugin id so it can never fire under a different plugin's namespace
+//! (see that type's own doc).
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
+use conway_core::event_name::{validate_event_name, EVENT_NAMESPACE_SEPARATOR};
 use conway_core::hook::{tool_matcher_matches, HookEvent, HookInvocation, HookPermissionVerdict};
-use conway_core::ports::HookRunner;
+use conway_core::ports::{EventDecl, HookRunner, Plugin, PluginEventEmitter};
 
 /// One configured observation hook: the operator's own id for it, plus what
 /// to spawn and how long it may take.
@@ -454,6 +491,69 @@ impl HookDispatcher {
     }
 }
 
+/// The fan-out layer a plugin's own `PluginEventHandle::emit` call reaches
+/// (module doc, "Plugin-declared events"): dispatching a plugin-declared
+/// event is [`Self::dispatch`], unconditionally -- the identical
+/// observation-only path, same failure posture, same subscriber map, no
+/// separate bookkeeping for "core" vs. "plugin" once an event has reached
+/// this method. `name` here is already the FULL `plugin_id.bare_name` --
+/// `PluginEventHandle::emit` performed the namespacing and validation
+/// before calling this.
+#[async_trait::async_trait]
+impl PluginEventEmitter for HookDispatcher {
+    async fn emit(&self, name: &str, payload: serde_json::Value) {
+        self.dispatch(name, payload).await;
+    }
+}
+
+/// Collects every installed plugin's own declared events (`Plugin::
+/// events`), namespaced with its declaring plugin's manifest id and
+/// validated with [`validate_event_name`] -- the SAME bare-name-plus-
+/// host-prefixing pattern `conway_cli::tui::commands::CommandRegistry::
+/// build` already established for [`conway_core::ports::Command`] (see
+/// that function's own doc, and [`EventDecl`]'s own doc, "A third
+/// consumer, same rule, different vocabulary").
+///
+/// **This is also the answer to "how does an operator discover what is
+/// hookable given what they have installed"** (module doc): no separate
+/// registry, no new port -- an embedder holding the exact
+/// `&[Arc<dyn Plugin>]` it is about to hand `ConwayBuilder` can call this
+/// function itself, before `build()`, and read back every plugin event's
+/// full name, one-line summary, and whether it carries a tool name.
+/// `ConwayBuilder::build` calls this SAME function to decide what
+/// `[hooks].rules[]` may subscribe to -- one implementation, not a
+/// parallel one for "validate" vs. "enumerate".
+///
+/// Returns a map keyed by full name (`plugin_id.bare_name`); [`BTreeMap`]'s
+/// own sorted-key iteration order is deterministic regardless of the input
+/// `Vec`'s order, mirroring `conway_runtime::tools::PluginRegistry::specs`'s
+/// own "stable across runs" rationale.
+///
+/// Errors on: a bare name that fails [`validate_event_name`] once
+/// prefixed (empty, or -- structurally unreachable in practice, since a
+/// plugin's own manifest id is Rust-code-supplied -- a plugin id
+/// containing [`EVENT_NAMESPACE_SEPARATOR`]), or two events (from the same
+/// plugin or different ones) landing on the identical full name.
+pub fn declared_plugin_events(
+    plugins: &[Arc<dyn Plugin>],
+) -> Result<BTreeMap<String, EventDecl>, String> {
+    let mut events: BTreeMap<String, EventDecl> = BTreeMap::new();
+    for plugin in plugins {
+        let manifest = plugin.manifest();
+        for decl in plugin.events() {
+            let full_name = format!("{}{EVENT_NAMESPACE_SEPARATOR}{}", manifest.id, decl.name);
+            validate_event_name(&full_name, Some(&manifest.id))?;
+            if events.contains_key(&full_name) {
+                return Err(format!(
+                    "duplicate plugin event '{full_name}' -- declared more than once"
+                ));
+            }
+            events.insert(full_name, decl);
+        }
+    }
+    Ok(events)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -645,6 +745,157 @@ mod tests {
         )]));
 
         d.dispatch(SESSION_STARTING, serde_json::json!({})).await;
+        assert!(runner.seen.lock().expect("seen lock poisoned").is_empty());
+    }
+
+    // -------------------------------------- declared_plugin_events --
+
+    use conway_core::ports::{PluginManifest, Tool};
+
+    /// A minimal `Plugin` double declaring whatever `EventDecl`s it is
+    /// constructed with -- this module's own tests only need `manifest`
+    /// and `events`, never `tools`.
+    struct EventOnlyPlugin {
+        id: &'static str,
+        decls: Vec<EventDecl>,
+    }
+
+    impl Plugin for EventOnlyPlugin {
+        fn manifest(&self) -> PluginManifest {
+            PluginManifest {
+                id: self.id.to_string(),
+                version: "0.1.0".to_string(),
+                tools: vec![],
+                required_host_caps: vec![],
+            }
+        }
+
+        fn tools(&self) -> Vec<Arc<dyn Tool>> {
+            vec![]
+        }
+
+        fn events(&self) -> Vec<EventDecl> {
+            self.decls.clone()
+        }
+    }
+
+    fn decl(name: &str, carries_tool_name: bool) -> EventDecl {
+        EventDecl {
+            name: name.to_string(),
+            summary: "test event".to_string(),
+            carries_tool_name,
+        }
+    }
+
+    #[test]
+    fn declared_plugin_events_is_empty_for_a_plugin_with_no_events() {
+        let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(EventOnlyPlugin {
+            id: "acme",
+            decls: vec![],
+        })];
+        assert!(declared_plugin_events(&plugins).unwrap().is_empty());
+    }
+
+    /// The load-bearing shape check: a declared bare name comes back
+    /// namespaced under its OWN declaring plugin's id, with the declared
+    /// metadata preserved.
+    #[test]
+    fn declared_plugin_events_namespaces_and_preserves_the_declaration() {
+        let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(EventOnlyPlugin {
+            id: "acme_routing",
+            decls: vec![decl("candidate_chosen", true)],
+        })];
+        let events = declared_plugin_events(&plugins).unwrap();
+        assert_eq!(events.len(), 1);
+        let found = events
+            .get("acme_routing.candidate_chosen")
+            .expect("full name must be plugin_id + separator + bare name");
+        assert_eq!(found.name, "candidate_chosen");
+        assert!(found.carries_tool_name);
+    }
+
+    /// ACCEPTANCE: two plugins, each declaring events, both come back
+    /// correctly namespaced -- proves this is a per-plugin fold, not a
+    /// single-plugin-only path.
+    #[test]
+    fn declared_plugin_events_collects_across_multiple_plugins() {
+        let plugins: Vec<Arc<dyn Plugin>> = vec![
+            Arc::new(EventOnlyPlugin {
+                id: "acme",
+                decls: vec![decl("thing_a", false)],
+            }),
+            Arc::new(EventOnlyPlugin {
+                id: "other",
+                decls: vec![decl("thing_b", false)],
+            }),
+        ];
+        let events = declared_plugin_events(&plugins).unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(events.contains_key("acme.thing_a"));
+        assert!(events.contains_key("other.thing_b"));
+    }
+
+    /// An empty bare name fails `validate_event_name` once prefixed --
+    /// surfaced as a named error, not silently dropped or panicking.
+    #[test]
+    fn declared_plugin_events_rejects_an_empty_bare_name() {
+        let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(EventOnlyPlugin {
+            id: "acme",
+            decls: vec![decl("", false)],
+        })];
+        let err = declared_plugin_events(&plugins).expect_err("empty bare name must be rejected");
+        assert!(err.contains("acme"), "{err}");
+    }
+
+    /// Two events landing on the identical full name -- here, the SAME
+    /// plugin declaring the same bare name twice -- is a named collision
+    /// error, mirroring `CommandRegistry::build`'s own duplicate-command
+    /// check.
+    #[test]
+    fn declared_plugin_events_rejects_a_duplicate_full_name() {
+        let plugins: Vec<Arc<dyn Plugin>> = vec![Arc::new(EventOnlyPlugin {
+            id: "acme",
+            decls: vec![decl("thing", false), decl("thing", true)],
+        })];
+        let err = declared_plugin_events(&plugins).expect_err("duplicate full name must error");
+        assert!(err.contains("acme.thing"), "{err}");
+    }
+
+    // -------------------------------------- PluginEventEmitter for HookDispatcher --
+
+    /// The load-bearing wiring proof: `HookDispatcher` implementing
+    /// `PluginEventEmitter` reaches the SAME subscriber map `dispatch`
+    /// itself reads -- a hook subscribed to a plugin-namespaced event name
+    /// fires when that name is `emit`ted through the trait, exactly as it
+    /// would through a direct `dispatch` call.
+    #[tokio::test]
+    async fn hook_dispatcher_as_plugin_event_emitter_reaches_a_subscribed_hook() {
+        let (d, runner) = wired(false);
+        d.set_hooks(BTreeMap::from([(
+            "acme.candidate_chosen".to_string(),
+            vec![spec("routing-watcher")],
+        )]));
+
+        let emitter: &dyn PluginEventEmitter = &d;
+        emitter
+            .emit("acme.candidate_chosen", serde_json::json!({"model": "x"}))
+            .await;
+
+        let seen = runner.seen.lock().expect("seen lock poisoned").clone();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].0, "acme.candidate_chosen");
+        assert_eq!(seen[0].1["model"], "x");
+    }
+
+    /// The SAME fail-open posture as every other observation dispatch: an
+    /// unsubscribed plugin event name is a no-op, not an error.
+    #[tokio::test]
+    async fn hook_dispatcher_as_plugin_event_emitter_is_a_no_op_with_no_subscriber() {
+        let (d, runner) = wired(false);
+        let emitter: &dyn PluginEventEmitter = &d;
+        emitter
+            .emit("nobody.subscribed", serde_json::json!({}))
+            .await;
         assert!(runner.seen.lock().expect("seen lock poisoned").is_empty());
     }
 }

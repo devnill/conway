@@ -8,30 +8,38 @@
 //! split out of the string by guessing where the id ends, since a plugin id
 //! may itself be chosen freely by whoever wrote the plugin.
 //!
-//! **Forward declaration — this function has no caller yet.** Nothing may
-//! claim to be reached that isn't, so this says so plainly. Two
-//! later items each own one call site, and neither has wired it up:
-//! - the `[hooks]` schema item's already-landed `HookEntry::event`
-//!   (`crates/conway/src/config/schema.rs`, `merge.rs` check 9) is the
-//!   *subscriber* side — `validate_event_name(event, None)` checks an
-//!   operator-written `event` string is well-formed;
-//! - the plugin-declared-events item (board item
-//!   01KZS03BFE720EQZG7Q2768N2H, "Let a plugin declare and fire its own
-//!   custom event") is the *declaration* side —
-//!   `validate_event_name(name, Some(&manifest.id))` checks a plugin
-//!   actually prefixed its own emitted event with its own id.
+//! **Both call sites now exist (board item 01KZS03BFE720EQZG7Q2768N2H
+//! wired the second one; this doc used to say neither did).**
+//! - the `[hooks]` schema's `HookEntry::event` is the *subscriber* side —
+//!   `crates/conway/src/config/merge.rs`'s own event-shape check calls
+//!   `validate_event_name(event, None)` to confirm an operator-written
+//!   `event` string is well-formed (bare, or `plugin_id.event_name`);
+//! - `conway_runtime::hook_dispatch::declared_plugin_events` is the
+//!   *declaration* side — for every plugin's own [`crate::ports::
+//!   Plugin::events`], it assembles `plugin_id.bare_name` and calls
+//!   `validate_event_name(&full_name, Some(&manifest.id))`, the same
+//!   pattern `conway_cli::tui::commands::CommandRegistry::build` already
+//!   established for [`crate::ports::Command`] names via
+//!   [`validate_command_name`].
 //!
-//! Nothing in this crate, or anywhere else in the tree, calls this function.
-//! Writing it now gives those two items an unambiguous rule to wire up
-//! rather than a paragraph of prose to re-derive into code by hand — see
-//! §16.6 for the full reasoning, including why the reserved core set is an
-//! open structural rule rather than a hardcoded list, and why a plugin id
-//! containing the separator is excluded outright rather than resolved by
-//! splitting on the first occurrence (unlike
-//! [`crate::permission_pattern::PatternRule::parse`]'s `tool:prefix`, where
-//! that split is safe only because `tool` is drawn from a small, closed,
-//! engine-known vocabulary that never needs the separator in the first
-//! place).
+//! See §16.6 for the full reasoning behind the rule itself, including why
+//! the reserved core set is an open structural rule rather than a
+//! hardcoded list.
+//!
+//! **§16.6 point 3 (a plugin id containing the separator is excluded
+//! outright) is RECONSIDERED here, disclosed rather than silently
+//! reversed — board item 01KZS03BFE720EQZG7Q2768N2H is the very item that
+//! section named as the follow-up owed to "first validate a
+//! `PluginManifest` at registration time".** Every real built-in plugin id
+//! in this workspace (`conway.fs`, `conway.shell`, `conway.report`,
+//! `conway.subagent`, `conway.plugin_skeleton`) already contains `.`, so
+//! excluding it outright would make [`Plugin::events`](crate::ports::
+//! Plugin::events)/[`Plugin::commands`](crate::ports::Plugin::commands)
+//! unreachable for every one of them. [`validate_namespaced`]'s own
+//! `Some(id)` branch now documents exactly why the splitting hazard §16.6
+//! point 3 raised cannot occur there (`id` is always supplied out of
+//! band, never recovered by splitting `name` apart) — see that function's
+//! doc comment for the full argument, not restated twice.
 //!
 //! **A third consumer, same rule, different vocabulary.** Board item
 //! 01KZYBFTK4QPB45AJT9M57P60W (plugin-declared TUI slash commands) needs the
@@ -127,14 +135,39 @@ fn validate_namespaced(
             // a non-empty remainder. Checked by direct prefix comparison
             // against the known `id`, never by splitting `name` apart --
             // see this module's own doc for why splitting is unsafe here.
+            //
+            // **`id` MAY contain the separator, deliberately -- a reversal
+            // from an earlier draft of this rule (`.design/extension-
+            // architecture.md` §16.6 point 3), recorded here rather than
+            // silently changed.** That draft excluded a separator-bearing
+            // `id` outright, reasoning from a SUBSCRIBER-side hazard: a
+            // hypothetical parser trying to RECOVER `id` by splitting
+            // `name` on the first `.` could misattribute
+            // `my.plugin.compaction_decided` to a plugin literally named
+            // `my`. But nothing in this codebase ever performs that
+            // recovery -- this branch is only ever reached with `id`
+            // ALREADY KNOWN (`PluginManifest::id`, supplied by the caller,
+            // never parsed out of `name`), and matching a fired event
+            // against a configured subscription is always exact-string
+            // equality (`declared_plugin_events`'s `BTreeMap` key,
+            // `HookDispatcher::dispatch`'s lookup) -- never a re-split.
+            // The hazard the exclusion existed to prevent cannot occur on
+            // THIS branch by construction, and every real built-in plugin
+            // id in this workspace (`conway.fs`, `conway.shell`,
+            // `conway.report`, `conway.subagent`, `conway.plugin_skeleton`)
+            // already contains the separator -- the original draft's own
+            // caveat ("no plugin ids exist in the tree yet to break by
+            // adding it") was already false the day it was written. Two
+            // DIFFERENT plugins whose ids and bare names happen to collide
+            // on the assembled full string (`my` + `.plugin.x` producing
+            // the identical `my.plugin.x` a plugin literally named
+            // `my.plugin` declaring bare `x` would also produce) are still
+            // caught -- not here, but as a duplicate full name at
+            // `conway_runtime::hook_dispatch::declared_plugin_events`,
+            // which is where two events landing on one string is already
+            // an error regardless of why they collided.
             if id.is_empty() {
                 return Err("declaring plugin id must not be empty".to_string());
-            }
-            if id.contains(EVENT_NAMESPACE_SEPARATOR) {
-                return Err(format!(
-                    "plugin id '{id}' contains '{EVENT_NAMESPACE_SEPARATOR}', the namespace \
-                     separator -- plugin ids must not contain it"
-                ));
             }
             let after_id = name
                 .strip_prefix(id)
@@ -200,17 +233,42 @@ mod tests {
         );
     }
 
-    /// Acceptance criterion: "a plugin id containing the separator behaves
-    /// per whichever splitting rule was chosen" -- §16.6 point 3 chose
-    /// exclusion, not splitting, so this must be rejected regardless of
-    /// what `name` says.
+    /// Acceptance criterion, RECONSIDERED (see this module's own doc, "§16.6
+    /// point 3 is reconsidered here"): a plugin id containing the separator
+    /// is ACCEPTED on the declaration side -- `id` is always known out of
+    /// band here, never recovered by splitting `name` apart, so the
+    /// misattribution hazard the original exclusion existed to prevent
+    /// cannot occur on this branch. Every real built-in plugin id in this
+    /// workspace (`conway.fs`, `conway.plugin_skeleton`, ...) needs exactly
+    /// this to be true.
     #[test]
-    fn validate_event_name_rejects_plugin_id_containing_the_separator() {
-        let err = validate_event_name("my.plugin.compaction_decided", Some("my.plugin"))
-            .expect_err("a plugin id containing the separator must be rejected, not split");
-        assert!(
-            err.contains("my.plugin"),
-            "error should name the offending id: {err}"
+    fn validate_event_name_accepts_a_plugin_id_containing_the_separator() {
+        assert_eq!(
+            validate_event_name("my.plugin.compaction_decided", Some("my.plugin")),
+            Ok(())
+        );
+    }
+
+    /// Two DIFFERENT plugins whose id/bare-name split lands on the
+    /// IDENTICAL assembled full string (id `my` with bare name
+    /// `plugin.x`, versus id `my.plugin` with bare name `x`) are each
+    /// individually valid per this function -- the actual ambiguity is a
+    /// full-name COLLISION, caught elsewhere
+    /// (`conway_runtime::hook_dispatch::declared_plugin_events`'s duplicate
+    /// check), never here, since this function only ever validates one
+    /// `(name, declaring_plugin)` pair at a time and has no visibility into
+    /// what any OTHER plugin declared.
+    #[test]
+    fn validate_event_name_accepts_both_halves_of_a_would_be_full_name_collision() {
+        assert_eq!(
+            validate_event_name("my.plugin.x", Some("my")),
+            Ok(()),
+            "plugin 'my' declaring bare 'plugin.x' is independently well-formed"
+        );
+        assert_eq!(
+            validate_event_name("my.plugin.x", Some("my.plugin")),
+            Ok(()),
+            "plugin 'my.plugin' declaring bare 'x' is independently well-formed"
         );
     }
 
@@ -275,9 +333,14 @@ mod tests {
         );
     }
 
+    /// RECONSIDERED alongside `validate_event_name`'s own sibling test --
+    /// see this module's own doc, "§16.6 point 3 is reconsidered here":
+    /// `conway_cli::tui::commands::CommandRegistry::build` needs this to be
+    /// `Ok` for every real built-in plugin id in this workspace
+    /// (`conway.plugin_skeleton`, whose own shipped command is `ping`).
     #[test]
-    fn validate_command_name_rejects_plugin_id_containing_the_separator() {
-        assert!(validate_command_name("my.plugin.greet", Some("my.plugin")).is_err());
+    fn validate_command_name_accepts_a_plugin_id_containing_the_separator() {
+        assert!(validate_command_name("my.plugin.greet", Some("my.plugin")).is_ok());
     }
 
     #[test]

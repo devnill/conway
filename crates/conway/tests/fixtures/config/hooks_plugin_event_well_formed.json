@@ -1,0 +1,14 @@
+{
+  "default_role": "coder",
+  "roles": {
+    "coder": { "chain": ["anthropic/claude-sonnet-4-6"] }
+  },
+  "backends": {
+    "anthropic": { "kind": "anthropic" }
+  },
+  "hooks": {
+    "rules": [
+      { "id": "watch-pong", "event": "acme.pong_dispatched", "command": ["echo", "hi"] }
+    ]
+  }
+}
