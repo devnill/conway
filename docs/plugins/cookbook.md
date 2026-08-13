@@ -282,11 +282,24 @@ channel back to the runtime is the `ContextPayload` it *returns* for the
 current request — an edit that lasts exactly one request, never persisted.
 `hooks.md` states this precisely: *"No hook can express 'mask this durably'
 today; every `ContextHook` edit is ephemeral, scoped to one request, and
-invisible on the next turn unless the hook repeats it."* No board item names
-this gap specifically yet — the closest tracked work is
+invisible on the next turn unless the hook repeats it."*
+
+**This is a deliberate deferral, not an unfiled gap.** An item was filed for
+it (`01KZJ8FVYH25A7GT4P68WTPZZP`) and then **cancelled**: decision
+`01KZT3XF73Z5WBC09FSWD51RT7` rules that compaction is explicitly out of
+scope and stays deferred. The reasoning is that compaction's value is
+entirely empirical — when to fold, how much to keep, what to summarise, and
+whether any of it helps depends on model, workload, provider and transcript
+shape — so a harness that ships an opinion about it ships one that will be
+wrong for most users. conway's existing primitives (fork, the context hook
+seam, the session log) are enough for a consumer to implement the policy
+their own workload needs. Do not read the absence of a producer as an
+oversight waiting to be corrected.
+
+What that decision does **not** rule is that `ContextMask` should be deleted,
+or that the missing-producer observation was wrong. The nearest live work is
 `01KZ844ZXZMVRWC7ZANT7PSM6X` (the `context.hook/1` replace-primitive gap),
-not a perfect match, so treat "produce a durable mask from a hook" as an
-open, unfiled gap until someone files it.
+which is adjacent rather than the same question.
 
 **What *is* real and runnable today is the ephemeral form**, and it still
 delivers on two of the three things the durable form promises: the

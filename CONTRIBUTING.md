@@ -144,7 +144,31 @@ something nobody intended. Even then the bar is that the edit makes the
 requirement clearer, never that it makes the requirement easier to satisfy. If
 you cannot tell which you are doing, you are doing the second one.
 
----
+### Citing a board item, and keeping the citation honest
+
+The tree cites board items by id in roughly 920 places. Two rules:
+
+- **A citation that implies pending work must name something that is actually
+  open.** "Tracked under `01K…`", "deferred to `01K…`", "`01K…` tracks that" —
+  each is a promise that a reader can follow to live work. Pointing one at a
+  `done` or `cancelled` item is a dangling promise, and pointing it at a
+  *decision* is a category error: a decision is a settled ruling, not trackable
+  work.
+- **A citation naming a closed item is fine as provenance.** "Implemented by
+  `01K…`", "the prober was retired (`01K…`)" — these say why the code is the
+  shape it is, and closing the item is what makes them true. Do not "fix" these.
+
+`scripts/check-board-citations.py` enforces the distinction. It resolves every
+cited id against **both** id namespaces — the work board and the record store —
+because they share an id shape and a resolver that checked only one would report
+half the tree as dangling.
+
+**It is not a CI job, and that is a limitation rather than a design choice.**
+Both stores are local-only tooling state excluded by `.gitignore`, so CI and a
+plain clone have nothing to resolve against. When the stores are missing the
+script exits **2** and prints `SKIPPED` — never 0, because a run that verified
+nothing must not report success. Run it on a maintainer checkout when you add or
+retire a citation, and when you close a board item that the tree cites.
 
 ## 3. A check is not established until it has been shown to fail
 
