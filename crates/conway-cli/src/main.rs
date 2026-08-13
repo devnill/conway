@@ -180,18 +180,16 @@ fn build_conway(
     // from the same config, with no target-specific carve-out the way
     // `is_tui`'s built-in selection above has one.
     //
-    // Board item 01KZHF270T3W8GZ7NM6DSNQ4MM: `wanted` is not `[plugins].
-    // install` alone -- `first_party_plugins::wanted_ids` unions it with
-    // `[plugins].default_backends` (default: both provider-adapter dialect
-    // kind ids) BEFORE `install` resolves anything, which is what makes a
-    // default install reach a model with no `[plugins]` section in
-    // `settings.json` at all. Every dispatch target sees this union from
-    // the SAME choke point, so the property holds for the TUI and every
-    // one-shot/subcommand invocation identically.
-    let plugins_config = &builder.config().plugins;
-    let wanted =
-        first_party_plugins::wanted_ids(&plugins_config.install, &plugins_config.default_backends);
-    let builder = first_party_plugins::install(builder, &wanted)?;
+    // Board item 01KZHF270T3W8GZ7NM6DSNQ4MM / 01KZVZ1TDBHS7S604PQB5RZDM3:
+    // the resolved id set is not `[plugins].install` alone --
+    // `ConwayBuilder::install_selected` (which `first_party_plugins::install`
+    // calls) unions it with `[plugins].default_backends` (default: both
+    // provider-adapter dialect kind ids) internally, before resolving
+    // anything, which is what makes a default install reach a model with no
+    // `[plugins]` section in `settings.json` at all. Every dispatch target
+    // sees this union from the SAME choke point, so the property holds for
+    // the TUI and every one-shot/subcommand invocation identically.
+    let builder = first_party_plugins::install(builder)?;
     builder.build()
 }
 
