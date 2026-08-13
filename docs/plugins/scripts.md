@@ -13,10 +13,10 @@ differs from this page's original illustrative sketch. `01KZRZY1MNM872BZ6AKEBG3S
 with `event: "pre_tool_use"` and `enabled: true` really does spawn `command`
 and can really deny a tool call, PROVIDED a binary or embedder also calls
 `ConwayBuilder::with_hook_runner` (not automatic — see `hooks.md` point 13's
-"Status" row for that exact precondition). Every event OTHER than
-`pre_tool_use` remains exactly the still-designed convention this page
-describes below — nothing dispatches a `session_start`/`context.hook`/etc.
-example on this page yet. `hooks.md` point 13 is the normative status row —
+"Status" row for that exact precondition). Four more events now dispatch
+too — `post_tool_use`, `session_starting`, `child_spawned` and
+`prompt_submitted` — so this page no longer states a per-event boundary of
+its own. `hooks.md` point 13 is the normative status row —
 read it for the precise per-event boundary; this page is the how-it-works
 tutorial built on top of that boundary, not a second source of truth for it.
 

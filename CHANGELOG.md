@@ -164,6 +164,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Four more `[hooks]` events now dispatch, in two tiers that fail in
+  opposite directions** (board items 01KZS019NHG11RVQYSVT7RG0P5 and
+  01KZS01ZBNEY12DBDNW2Y861SQ). `post_tool_use`, `session_starting` and
+  `child_spawned` are OBSERVATION-ONLY: they cannot deny anything and they
+  fail OPEN, so a hook that errors or times out is logged and the operation
+  it observed is unaffected. That is the opposite of `pre_tool_use` and it
+  is deliberate -- the observed thing has already happened, so breaking a
+  working tool call because a logging script misfired would be the wrong
+  direction. `prompt_submitted` is the third shape: it fires at both
+  prompt-submission sites before the text reaches the agent loop, it may
+  DENY, and it may never MODIFY. The no-modification half is a type
+  guarantee rather than an unwired path -- the dispatch reads only a verdict
+  enum with no variant capable of carrying replacement text, because the
+  user's own words are the one thing in the pipeline nothing gets to
+  launder. A denial surfaces to the CALLER as `RuntimeError::PromptDenied`,
+  never to a model as a tool error, since there is no model turn yet to
+  report into. Whether `child_spawned` may ever deny a spawn is an open
+  question, deliberately deferred and recorded at its dispatch site rather
+  than settled by the shape of a return type. Two events remain
+  forward-declared: `request_assembled` and `child_reported`.
+
 - **A parent that fans out several children (`await: false`) now observes
   each child's completion on its own very next turn, without ever calling
   `conway_await` on it** (board item 01KZQHY6RTMYR4BRDTMQFP9J9R). A child's
@@ -1263,6 +1284,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `crates/conway/tests/plugin_surface.rs`)
 
 ### Fixed
+
+- **Setting both `keep_alive` and a `result_contract` on one child no longer
+  hangs the caller** (board item 01KZS38F5TN3DEYHWG3VC0FZ9R). The two
+  compose into a hang: a contract is checked when a child finishes and its
+  validated answer is handed back, and `keep_alive` is precisely the
+  instruction never to finish -- so the answer was validated and then had
+  nowhere to go, and `await_result` never resolved. A hang is the worst
+  available failure shape because it is indistinguishable from a child that
+  is simply still working, and neither flag's documentation said so. The
+  combination is now refused by `SubagentSpec::validate` with a typed error
+  naming both fields, at the single chokepoint every subagent path already
+  passes through. Delivering a kept-alive child's result remains a real
+  feature and stays open; rejecting forecloses only the silent version of
+  it, and nothing could depend on the old behaviour because the old
+  behaviour was a hang.
 
 - **A modal `/ask` against a session whose agent def declares a
   `result_contract` no longer fails on every call, and an `ask` child now
