@@ -99,16 +99,18 @@ present: pub const PROMPT_SUBMITTED
 
 <!-- claim-check
 board_item: 01KZS03BFE720EQZG7Q2768N2H
-claim: the plugin-event namespace rule is encoded but nothing calls it, on either side -- registration for plugin-declared events is still unbuilt
-paths: crates/conway/src crates/conway-runtime/src crates/conway-tools/src crates/conway-cli/src crates/conway-plugin-routing/src crates/conway-plugin-backends/src
-absent: validate_event_name\(
+claim: plugin-declared events are wired -- validate_event_name has callers on BOTH sides, the operator-written subscriber side and the plugin declaration side
+note: inverted from absent to present 2026-08-13 when the capability shipped. The absent form was written hours earlier during the ledger migration and was falsified by the very item it names; the checker caught it on the next run, which is the mechanism working. As a present guard it now protects the shipped capability against silent removal.
+paths: crates/conway-runtime/src/hook_dispatch.rs
+present: validate_event_name\(
 -->
 
 <!-- claim-check
 board_item: 01KZS02HYXGTW42R8G4HP10GHX
-claim: no operator surface lists the active hook rules, so revocation means editing the config file
+claim: /settings lists deny-capable hook rules as a fourth revocable group, so revocation no longer means hand-editing the config file
+note: inverted from absent to present 2026-08-13 when the capability shipped, same day and same reason as the sibling above. The bare [Hh]ook pattern was a coarse absence probe; as a present guard it is pinned to the specific revoke-action constant instead, which is what would actually disappear if the feature were removed.
 paths: crates/conway-cli/src/tui/view/settings.rs
-absent: [Hh]ook
+present: LEAF_REVOKE_HOOK_PREFIX
 -->
 
 <!-- claim-check
