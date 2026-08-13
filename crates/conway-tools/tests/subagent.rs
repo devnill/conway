@@ -21,8 +21,8 @@ use conway_core::error::{RuntimeError, ToolError};
 use conway_core::ids::{AgentId, SessionId, ToolName};
 use conway_core::log::SubagentMode;
 use conway_core::ports::{
-    CancellationToken, CwdHandle, EventSinkHandle, Plugin, PluginConfig, SubagentHandle,
-    SubagentHost, Tool, ToolCtx, ToolOutput,
+    CancellationToken, CwdHandle, EventSinkHandle, Plugin, PluginConfig, PluginEventHandle,
+    SubagentHandle, SubagentHost, Tool, ToolCtx, ToolOutput,
 };
 use conway_tools::subagent::{
     AskTool, AwaitTool, CancelTool, ForkTool, SpawnTool, SteerTool, SubagentPlugin,
@@ -1049,6 +1049,7 @@ async fn cancel_during_blocked_await_cancels_child_and_returns_cancelled() {
         cancel: cancel.clone(),
         events: Arc::new(RecordingEventSink::new()) as EventSinkHandle,
         subagents: SubagentHandle::new(host, caller),
+        plugin_events: PluginEventHandle::noop("test"),
         config: Arc::new(PluginConfig::default()),
     };
 

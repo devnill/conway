@@ -29,8 +29,8 @@ use conway_core::error::RuntimeError;
 use conway_core::event::Event;
 use conway_core::ids::{AgentId, SessionId};
 use conway_core::ports::{
-    CancellationToken, CwdHandle, EventSink, EventSinkHandle, PluginConfig, SubagentHandle,
-    SubagentHost, ToolCtx,
+    CancellationToken, CwdHandle, EventSink, EventSinkHandle, PluginConfig, PluginEventHandle,
+    SubagentHandle, SubagentHost, ToolCtx,
 };
 
 /// An in-memory [`SubagentHost`] that only records calls and plays back
@@ -306,6 +306,12 @@ pub fn test_ctx(cwd: PathBuf) -> (ToolCtx, TestHandles) {
         cancel: cancel.clone(),
         events: events.clone() as EventSinkHandle,
         subagents: SubagentHandle::new(subagents.clone() as Arc<dyn SubagentHost>, agent_id),
+        // No test in this crate exercises a plugin's own custom-event
+        // firing (board item 01KZS03BFE720EQZG7Q2768N2H owns that end to
+        // end, in `conway-plugin-skeleton`) -- `noop` discards whatever a
+        // tool under test fires, same as every other capability here that
+        // no `conway-tools` test needs to script.
+        plugin_events: PluginEventHandle::noop("test"),
         config: Arc::new(PluginConfig::default()),
     };
     let handles = TestHandles {

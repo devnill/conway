@@ -43,6 +43,12 @@ pub struct PluginRegistry {
 pub(crate) struct ResolvedTool<'a> {
     pub(crate) tool: Arc<dyn Tool>,
     pub(crate) spec: &'a ToolSpec,
+    /// The manifest id of the plugin that registered this tool -- board
+    /// item 01KZS03BFE720EQZG7Q2768N2H: `conway_runtime::tools::runner`
+    /// binds a `ToolCtx::plugin_events` handle to THIS id, so a call's own
+    /// declaring plugin (never a different one) is who a fired custom
+    /// event's namespace resolves to.
+    pub(crate) plugin_id: &'a str,
     validator: &'a jsonschema::Validator,
 }
 
@@ -153,6 +159,7 @@ impl PluginRegistry {
         self.tools.get(name).map(|registered| ResolvedTool {
             tool: registered.tool.clone(),
             spec: &registered.spec,
+            plugin_id: registered.plugin_id.as_str(),
             validator: &registered.validator,
         })
     }

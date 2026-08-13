@@ -131,7 +131,7 @@ use conway_core::ports::{
 };
 use conway_core::routing::{AlwaysClosedHealthRegistry, MinimalRouter, ModelOverrides};
 use conway_runtime::events::EventBus;
-use conway_runtime::hook_dispatch::{HookSpec, DISPATCHED_EVENTS};
+use conway_runtime::hook_dispatch::{declared_plugin_events, HookSpec, DISPATCHED_EVENTS};
 use conway_runtime::permission::PreToolUseHookSpec;
 use conway_runtime::runtime::{Runtime, RuntimeDeps};
 
@@ -1165,6 +1165,24 @@ impl ConwayBuilder {
             resolved_plugins.push(plugin);
         }
 
+        // 10b. Every installed plugin's own declared custom events (board
+        //      item 01KZS03BFE720EQZG7Q2768N2H, `PHILOSOPHY.md` §5's open
+        //      vocabulary: "A plugin declares the events it emits...
+        //      Those events sit at the same level as the ones conway
+        //      emits") -- namespaced and validated
+        //      (`conway_runtime::hook_dispatch::declared_plugin_events`,
+        //      the SAME shared `validate_event_name` the [hooks] event-
+        //      shape check above already uses). Computed here, borrowing
+        //      `resolved_plugins`, BEFORE it is moved into `RuntimeDeps`
+        //      below. A malformed declaration (an empty bare name, or two
+        //      events landing on the same full name) is a build-time error
+        //      naming the offender -- "an event a plugin declares and
+        //      never fires is the same defect as a tool that does
+        //      nothing" starts with the declaration itself being
+        //      well-formed.
+        let plugin_events = declared_plugin_events(&resolved_plugins)
+            .map_err(|message| ConwayError::Build { message })?;
+
         // 11. Agent defs.
         let agents_dir = resolve_path(&cwd, &config.agents.dir);
         let agent_defs = agents::load_agent_defs(&agents_dir)?;
@@ -1216,36 +1234,61 @@ impl ConwayBuilder {
             })
             .collect();
         // Board items 01KZS019NHG11RVQYSVT7RG0P5, 01KZS01ZBNEY12DBDNW2Y861SQ,
-        // and 01KZYAXSGDS8AP7YK1CN7H680G: the same shape for every event
-        // dispatched outside the permission broker, grouped by event name.
-        // `post_tool_use`, `session_starting`, `child_spawned`,
-        // `request_assembled`, and `child_reported` observe; `prompt_submitted`
-        // may deny but never modify. Every event NOT in `DISPATCHED_EVENTS`
-        // (a plugin-declared event, or a typo) still parses, validates, and
-        // does nothing -- see `schema::HooksConfig`'s own per-event
-        // reachability doc for the exhaustive, currently-dispatched list.
+        // 01KZYAXSGDS8AP7YK1CN7H680G, and 01KZS03BFE720EQZG7Q2768N2H: the
+        // same shape for every event dispatched outside the permission
+        // broker, grouped by event name. `post_tool_use`, `session_starting`,
+        // `child_spawned`, `request_assembled`, `child_reported`, and every
+        // ACTUALLY-DECLARED plugin event (`plugin_events`, computed at step
+        // 10b above) observe; `prompt_submitted` may deny but never modify.
+        // A namespaced `event` naming no installed plugin's declared event
+        // still parses, validates, and does nothing -- the SAME tolerance a
+        // typo'd core event name has always had (see `schema::HooksConfig`'s
+        // own per-event reachability doc for the exhaustive dispatched
+        // list).
         //
         // The SAME runner feeds both tiers, so an embedder that injects one
         // gets every dispatched event rather than having to opt in twice.
         let mut observation_specs: BTreeMap<String, Vec<HookSpec>> = BTreeMap::new();
         for rule in config.hooks.rules.iter().filter(|r| r.enabled) {
-            if DISPATCHED_EVENTS.contains(&rule.event.as_str()) {
-                observation_specs
-                    .entry(rule.event.clone())
-                    .or_default()
-                    .push(HookSpec {
-                        id: rule.id.clone(),
-                        command: rule.command.clone(),
-                        timeout_ms: rule.timeout_ms,
-                        // Board item 01KZYAWQ6011Q6CJVG6CCMQPF1: carried
-                        // through unchanged -- only meaningful for
-                        // `post_tool_use` (`HookSpec::matcher`'s own doc);
-                        // `merge::validate` already refuses to load a
-                        // config pairing `match` with any other dispatched
-                        // event.
-                        matcher: rule.match_tool.clone(),
-                    });
+            let plugin_decl = plugin_events.get(&rule.event);
+            if !DISPATCHED_EVENTS.contains(&rule.event.as_str()) && plugin_decl.is_none() {
+                continue;
             }
+            // Board item 01KZS03BFE720EQZG7Q2768N2H: the plugin-event
+            // extension of check 10's own rule (`merge::validate`, core
+            // events only -- that function has no access to the resolved
+            // plugin set). A `match` on a plugin event whose OWN
+            // declaration says its payload carries no tool name is the
+            // identical typed error, just discoverable only here, once the
+            // plugin set is known.
+            if let (Some(_matcher), Some(decl)) = (&rule.match_tool, plugin_decl) {
+                if !decl.carries_tool_name {
+                    return Err(ConwayError::Build {
+                        message: format!(
+                            "hooks.rules[]: rule '{}' sets \"match\" on event \"{}\", whose \
+                             declaration says its payload carries no tool name -- \"match\" \
+                             only applies to an event whose payload names one",
+                            rule.id, rule.event
+                        ),
+                    });
+                }
+            }
+            observation_specs
+                .entry(rule.event.clone())
+                .or_default()
+                .push(HookSpec {
+                    id: rule.id.clone(),
+                    command: rule.command.clone(),
+                    timeout_ms: rule.timeout_ms,
+                    // Board item 01KZYAWQ6011Q6CJVG6CCMQPF1: carried
+                    // through unchanged -- only meaningful for
+                    // `post_tool_use` and a `carries_tool_name` plugin
+                    // event (`HookSpec::matcher`'s own doc); `merge::
+                    // validate` and the check immediately above together
+                    // refuse to load/build a config pairing `match` with
+                    // any toolless event, core or plugin.
+                    matcher: rule.match_tool.clone(),
+                });
         }
 
         rt.set_hook_runner(hook_runner.clone());
