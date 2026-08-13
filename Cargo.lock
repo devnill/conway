@@ -539,7 +539,7 @@ dependencies = [
  "conway-session",
  "futures",
  "jsonschema",
- "lru",
+ "lru 0.18.2",
  "schemars",
  "serde",
  "serde_json",
@@ -559,7 +559,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "conway-core",
- "lru",
+ "lru 0.18.2",
  "proptest",
  "serde",
  "serde_json",
@@ -1607,6 +1607,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "lru"
+version = "0.18.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5d2f2f9b4ba7e6b24d95e7e899329d35be83bcded72c8540cdd5368932d1d90a"
+dependencies = [
+ "hashbrown 0.17.1",
+]
+
+[[package]]
 name = "lru-slab"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2090,7 +2099,7 @@ dependencies = [
  "indoc",
  "instability",
  "itertools",
- "lru",
+ "lru 0.12.5",
  "paste",
  "strum 0.26.3",
  "unicode-segmentation",

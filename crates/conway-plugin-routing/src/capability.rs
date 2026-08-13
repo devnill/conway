@@ -258,9 +258,9 @@ pub(crate) fn size_missing(
 /// requirement holds, else `Err` listing **every** unmet requirement in the
 /// fixed order: tool_calling, structured_output, parallel_tool_calls,
 /// reasoning, reliability_tier, min_context, context (headroom gate last) --
-/// a thin composition of [`non_size_missing`] and [`size_missing`], appended
+/// a thin composition of `non_size_missing` and `size_missing`, appended
 /// in that same fixed order (CONTRACT: the context entry is always last,
-/// with the exact string [`size_missing`] documents).
+/// with the exact string `size_missing` documents).
 ///
 /// The caller (the router, WI-034) resolves the effective headroom once per
 /// role and passes it in — headroom policy lives in exactly one place.

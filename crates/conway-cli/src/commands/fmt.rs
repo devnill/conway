@@ -13,7 +13,7 @@ const MAX_CELL_CHARS: usize = 48;
 
 /// Renders a left-aligned table: a two-space gutter between columns, each
 /// column sized to the widest cell in it (header included), overlong cells
-/// truncated to [`MAX_CELL_CHARS`]. Always renders the header row, even
+/// truncated to `MAX_CELL_CHARS`. Always renders the header row, even
 /// with zero data rows -- this is what makes `sessions list`'s "empty store
 /// prints header only" contract hold without a special case at the call
 /// site.

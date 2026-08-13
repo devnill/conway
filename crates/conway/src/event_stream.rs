@@ -35,7 +35,7 @@ use futures_core::Stream;
 /// forwarded regardless of the session/agent filter -- tree lifecycle is a
 /// global concern, and a subagent's own lifecycle events are stamped with
 /// its OWN, freshly-minted session/agent id, not its parent's. See
-/// [`EventStream::accept`]'s doc for the full rationale and the
+/// `EventStream::accept`'s doc for the full rationale and the
 /// `TurnHandle`-safety note this depends on. [`Event::AgentPromoted`]
 /// (B3) gets the same passthrough -- see `accept`.
 pub struct EventStream {

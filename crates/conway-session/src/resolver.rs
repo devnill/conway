@@ -52,7 +52,7 @@
 //! ## Cycle / depth guard
 //!
 //! While walking upward, a `SessionId` repeated in the current walk, or a
-//! walk exceeding [`MAX_ANCESTRY_DEPTH`] hops, is reported as corrupt
+//! walk exceeding `MAX_ANCESTRY_DEPTH` hops, is reported as corrupt
 //! ancestry rather than looping or overflowing the stack. `conway-core`'s
 //! `StoreError` has no `CorruptAncestry` variant (the spec names one that
 //! was never added to the core error enum); this is reported instead as

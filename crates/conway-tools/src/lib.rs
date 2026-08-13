@@ -16,7 +16,7 @@
 //! - [`report`] — `report` (`ReportPlugin`)
 //!
 //! [`common`] holds the shared helper layer every tool builds on.
-//! [`process`] holds the process-group spawn/kill primitives [`shell`] and
+//! `process` holds the process-group spawn/kill primitives [`shell`] and
 //! [`hook_runner`] both build on -- one implementation, never restated.
 //! [`hook_runner`] is `conway_core::ports::HookRunner`'s one-shot exec
 //! implementation (board item 01KZRZY1MNM872BZ6AKEBG3SKE) -- not a

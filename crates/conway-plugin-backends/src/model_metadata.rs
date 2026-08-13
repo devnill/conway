@@ -39,7 +39,7 @@ pub struct ModelMetadata {
     pub reliability_tier: Option<ReliabilityTier>,
     /// e.g. `"Q4_K_M"`. Informational, and — only when `reliability_tier`
     /// itself is absent — a fallback tier heuristic; see
-    /// [`quantization_tier_hint`].
+    /// `quantization_tier_hint`.
     #[serde(default)]
     pub quantization: Option<String>,
 }
@@ -222,7 +222,7 @@ impl ModelMetadataStore {
         }
     }
 
-    /// The bundled compile-time defaults (see [`DEFAULTS`]).
+    /// The bundled compile-time defaults (see `DEFAULTS`).
     pub fn defaults() -> Self {
         Self::parse(DEFAULTS).expect("bundled DEFAULTS model metadata must parse")
     }
@@ -270,7 +270,7 @@ impl ModelMetadataStore {
     }
 
     /// Looks up `model`, trying (in order): the exact id as given, then the
-    /// [normalized](normalize_model_id) id, then `None`.
+    /// normalized (`normalize_model_id`) id, then `None`.
     pub fn get(&self, model: &ModelId) -> Option<&ModelMetadata> {
         let raw = model.as_str();
         if let Some(entry) = self.entries.get(raw) {

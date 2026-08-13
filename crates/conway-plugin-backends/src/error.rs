@@ -7,7 +7,7 @@
 //! status code, a raw response body, and a raw `Retry-After` header value
 //! (not `reqwest::StatusCode`/`HeaderMap`), so it compiles and is testable
 //! independently of the HTTP transport, with no HTTP client of its own.
-//! [`http`](crate::http) is the caller that extracts these primitives from a
+//! `http` (this crate's private module) is the caller that extracts these primitives from a
 //! `reqwest::Response`.
 //!
 //! Two rows of the classification table have no HTTP status at all —

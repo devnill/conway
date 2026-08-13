@@ -7,7 +7,7 @@
 //! plugin protocol uses: requiring that would mean no plain shell script
 //! could be a hook.
 //!
-//! Reuses [`crate::process::unix::kill_group`] -- the identical
+//! Reuses `crate::process::unix::kill_group` -- the identical
 //! process-group-kill machinery `crate::shell::bash`'s `unix::run` uses --
 //! so a hook that backgrounds a grandchild before exiting does not outlive
 //! its own timeout -- one implementation, never restated.

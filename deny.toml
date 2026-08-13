@@ -1,0 +1,112 @@
+# cargo-deny configuration.
+#
+# WHY THIS TOOL IS HERE AT ALL, since the rule it enforces would otherwise
+# forbid it. `CONTRIBUTING.md` §6 requires every new dependency to be justified
+# against the zero-dependency path, and carves out exactly one exception:
+# tooling whose purpose is enforcing licensing or dependency policy. Without
+# that carve-out the constraint forbids its own enforcement. `cargo-deny` is the
+# carve-out's first and so far only user: it is a CI tool, never linked into the
+# binary, and it exists to check the constraint rather than to be useful in it.
+#
+# The zero-dependency alternative was a hand-maintained list of dependency
+# licences checked by eye at review time. That is what the tree had, and it is
+# how a GPL-incompatible transitive dependency would arrive unnoticed: nobody
+# reads 500 transitive crates on a version bump.
+
+[graph]
+# Check every target the workspace actually supports rather than only the host,
+# so a Windows-only or wasm-only transitive dependency cannot slip a licence in
+# on a platform CI does not happen to run on.
+all-features = true
+
+[licenses]
+# Every licence present in the dependency graph today, each compatible with
+# this workspace's own AGPL-3.0-only. Adding to this list is a licensing
+# decision, not a build fix: an entry here asserts the licence may be combined
+# with AGPL-3.0-only and distributed. Do not append one to make CI green.
+allow = [
+    "AGPL-3.0-only",          # the workspace's own crates
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "LGPL-2.1-or-later",      # r-efi; weak copyleft, combinable with AGPL
+    "MIT",
+    "MIT-0",
+    "MPL-2.0",               # option-ext; file-level copyleft, GPL-compatible
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+
+# `Apache-2.0 WITH LLVM-exception` is an exception expression rather than a bare
+# licence id, so it is granted here rather than in `allow` above.
+exceptions = [
+    { name = "blake3", allow = ["Apache-2.0 WITH LLVM-exception"] },
+    { name = "linux-raw-sys", allow = ["Apache-2.0 WITH LLVM-exception"] },
+    { name = "rustix", allow = ["Apache-2.0 WITH LLVM-exception"] },
+    { name = "wasi", allow = ["Apache-2.0 WITH LLVM-exception"] },
+    { name = "wasip2", allow = ["Apache-2.0 WITH LLVM-exception"] },
+    { name = "wit-bindgen", allow = ["Apache-2.0 WITH LLVM-exception"] },
+]
+
+# A crate whose licence cannot be determined from its metadata is a failure, not
+# a warning: "we could not tell" is exactly the state this check exists to stop
+# shipping.
+unused-allowed-license = "allow"
+confidence-threshold = 0.8
+
+[advisories]
+# Security advisories (vulnerabilities) are always a hard failure -- that is
+# cargo-deny's default and nothing here relaxes it. This section only sets the
+# two knobs that have a judgement call in them.
+#
+# `unmaintained = "workspace"` reports an unmaintained crate the workspace
+# depends on DIRECTLY and stays quiet about one that arrives transitively. The
+# line is responsibility, not convenience: a direct dependency is a choice this
+# project made and can revisit, while a transitive one is the upstream's choice
+# and no pull request here can fix it. A gate that is red for something a
+# contributor cannot act on gets bypassed, and a bypassed gate protects nothing.
+#
+# WHAT THAT MEANS TODAY, stated rather than left for someone to discover:
+# `ratatui` 0.29 pins `lru = "0.12.0"`, so `lru` 0.12.5 stays in the graph via
+# that path even though the workspace's own `lru` is 0.18.2. It carries two
+# `informational = "unsound"` advisories (RUSTSEC-2026-0253, RUSTSEC-2026-0002)
+# and `ratatui` also pulls the unmaintained `paste`. Neither is reported under
+# this setting. Board item 01KZWWVKT9M13E306ZW29P0W9D tracks the ratatui
+# upgrade that clears both; do not read "advisories ok" as "no advisory
+# anywhere in the tree".
+#
+# `ignore` is empty ON PURPOSE. An entry here silences a specific advisory, so
+# each one must carry a written reason and the condition that removes it. Not a
+# place to quiet a red build.
+yanked = "deny"
+unmaintained = "workspace"
+ignore = []
+
+[bans]
+# Duplicate versions are common and mostly harmless in a tree this size
+# (`thiserror` 1 and 2 both appear via different dependents), so this warns
+# rather than fails. It is here to be visible, not to block.
+multiple-versions = "warn"
+# A wildcard version requirement on a crates.io dependency is a real hazard --
+# any future release satisfies it. The workspace's own `{ path = ... }`
+# dependencies have no version requirement at all and cargo-deny counts those
+# as wildcards too, which is why the path exemption is on: `publish = false`
+# across the workspace means they are never resolved from a registry, so there
+# is no "any future release" to be surprised by.
+wildcards = "deny"
+allow-wildcard-paths = true
+# `highlight` only affects how a duplicate is reported.
+highlight = "all"
+
+[sources]
+# Everything must come from crates.io. A git or path dependency on an outside
+# repository would bypass both the licence check above and crates.io's own
+# yank/ownership machinery.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

@@ -6,7 +6,7 @@
 //! returned to the caller instead.
 //!
 //! `AppState::cursor` is a *char* index into `input`, not a byte offset --
-//! [`byte_index`] converts to the corresponding byte offset (always on a
+//! `byte_index` converts to the corresponding byte offset (always on a
 //! char boundary, since it walks `char_indices`) right before any `String`
 //! mutation, so multi-byte UTF-8 input can never split a character.
 
@@ -855,7 +855,7 @@ fn insert_newline(state: &mut AppState) {
 /// input line is inert there exactly as it is for ordinary typing (see
 /// `handle_ask_modal_key`/`handle_intent_confirm_key`'s own "input line is
 /// inert" docs) -- and, T7, while the `/help` overlay is open, for the same
-/// reason [`handle_help_key`] swallows ordinary keys.
+/// reason `handle_help_key` swallows ordinary keys.
 ///
 /// One `String::insert_str` call, not a loop over `handle_key` per
 /// character: looping would (a) fire `sync_palette_stem`/history-adjacent

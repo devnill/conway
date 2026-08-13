@@ -62,14 +62,14 @@ pub enum Entry {
     /// - `model` is the serving model's display name (e.g.
     ///   `anthropic/claude-sonnet-4-6`), stamped from
     ///   [`AppState::focused_model`] at the time the entry is created by
-    ///   `TextDelta` -> [`AppState::append_assistant_text`]. `None` for
+    ///   `TextDelta` -> `AppState::append_assistant_text`. `None` for
     ///   replayed entries (`record_to_event` maps a stored `Assistant` record
     ///   to a bare `TextDelta` carrying no model -- see that function's own
     ///   doc); the renderer then omits the `[modelname]> ` marker so a
     ///   replayed bubble renders as it originally streamed.
     /// - `summary` is the turn-end summary line (`1m 6s · 1.4k tok (88%
     ///   cached)`), stamped onto the last assistant/reasoning entry by
-    ///   `TurnFinished` -> [`AppState::stamp_turn_summary`]. `None` until
+    ///   `TurnFinished` -> `AppState::stamp_turn_summary`. `None` until
     ///   the turn ends (and stays `None` if no assistant/reasoning block
     ///   exists to attach to).
     /// - `ts` is the per-entry timestamp, stamped from the envelope's `ts`
@@ -84,8 +84,8 @@ pub enum Entry {
     },
     /// T4: reasoning-trace text, fed by `Event::ThinkingDelta` (previously
     /// dropped by `apply`'s wildcard arm -- only `activity` was flipped to
-    /// `Thinking`). Mirrors [`Entry::Assistant`]: `ThinkingDelta` -> [
-    /// `AppState::append_reasoning_text`] creates-or-appends, stamping the
+    /// `Thinking`). Mirrors [`Entry::Assistant`]: `ThinkingDelta` ->
+    /// `AppState::append_reasoning_text` creates-or-appends, stamping the
     /// current serving model + envelope timestamp onto a freshly-created
     /// entry. Rendered dim+italic with a `thinking` prefix, EXPANDED by
     /// default (the `show_reasoning` flag -- toggled from the `/settings`
@@ -547,7 +547,7 @@ pub struct AppState {
     /// Cycled by the prompt's `s` key (`input.rs::handle_permission_key`),
     /// rendered by `view/mod.rs::draw_permission_overlay`, and reset to
     /// `Session` every time a NEW prompt becomes the active one (see
-    /// [`Self::offer_prompt`]/[`Self::promote_next_surface`]) -- a scope
+    /// [`Self::offer_prompt`]/`Self::promote_next_surface`) -- a scope
     /// chosen for one call must never silently carry over to the next,
     /// exactly the same reason `modal_scroll` resets per surface.
     pub permission_grant_scope: conway::PermissionScope,
@@ -673,7 +673,7 @@ pub struct AppState {
     /// scroll position out of this one field. Reset to 0 whenever a NEW
     /// surface becomes the active one, so a leftover scroll position from a
     /// previous, unrelated surface's content never carries over: see
-    /// [`Self::offer_prompt`], [`Self::promote_next_surface`],
+    /// [`Self::offer_prompt`], `Self::promote_next_surface`,
     /// [`Self::offer_ask_modal`], [`Self::offer_intent_confirm`], and
     /// [`Self::open_help`].
     pub modal_scroll: u16,
@@ -709,7 +709,7 @@ pub struct AppState {
     pub turn_running_tokens: u64,
     /// T4: the transcript length at the moment the focused agent's current
     /// turn started (`Event::TurnStarted`) -- the watermark that bounds
-    /// [`Self::stamp_turn_summary`]'s reverse scan to entries THIS turn
+    /// `Self::stamp_turn_summary`'s reverse scan to entries THIS turn
     /// produced.
     ///
     /// Without it the scan walks the whole transcript, so a turn that emits
@@ -1275,7 +1275,7 @@ impl AppState {
     /// the back (newest), then the front is evicted until the deque is back
     /// within [`Self::history_cap`] -- the circular-buffer behavior the
     /// item spec asks for. Always resets browsing state
-    /// ([`Self::history_index`]/[`Self::history_draft`]) so the NEXT `Up`
+    /// (`Self::history_index`/`Self::history_draft`) so the NEXT `Up`
     /// starts a fresh recall from the newest entry, not wherever a previous
     /// (now-stale) browse left off. `App::submit` calls this before
     /// dispatching the text, then persists `history` to disk (best-effort --
@@ -1295,7 +1295,7 @@ impl AppState {
 
     /// `Up` while composing (T8): recalls the previous (older) history
     /// entry into `input`, saving whatever was already typed as
-    /// [`Self::history_draft`] the FIRST time this starts browsing (`Up`
+    /// `Self::history_draft` the FIRST time this starts browsing (`Up`
     /// from `history_index == None`) so [`Self::history_recall_next`] can
     /// restore it later. Returns whether it fired -- `false` (no mutation)
     /// when `history` is empty, letting the caller's `Up` fall through to
@@ -1514,7 +1514,7 @@ impl AppState {
     /// permission prompt, an intent confirmation card, or another ask
     /// modal) currently owns `mode` -- mirroring [`Self::offer_prompt`]'s
     /// own queue-if-busy behavior, so the modal-bearing surfaces never
-    /// stack. [`Self::promote_next_surface`] opens the parked modal once
+    /// stack. `Self::promote_next_surface` opens the parked modal once
     /// the surface ahead of it clears.
     pub fn offer_ask_modal(&mut self, modal: AskModal) {
         if matches!(self.mode, Mode::Normal) {
@@ -1541,7 +1541,7 @@ impl AppState {
 
     /// Closes the `/ask` modal after a fate SUCCEEDED (B5 --
     /// `commands::apply_ask_fate`'s success path), promoting the next
-    /// parked/queued surface via [`Self::promote_next_surface`] (a queued
+    /// parked/queued surface via `Self::promote_next_surface` (a queued
     /// permission prompt, a parked intent card, or a parked ask -- in that
     /// priority order). A no-op when no ask modal is open.
     pub fn close_ask_modal(&mut self) {
@@ -1567,7 +1567,7 @@ impl AppState {
     /// `pending_intent_confirm` instead whenever another modal surface (a
     /// permission prompt or an `/ask` modal) currently owns `mode` --
     /// mirroring [`Self::offer_ask_modal`]'s parking behavior, so the
-    /// modal-bearing surfaces never stack. [`Self::promote_next_surface`]
+    /// modal-bearing surfaces never stack. `Self::promote_next_surface`
     /// opens the parked card once the surface ahead of it clears. Called
     /// by `commands::execute`'s free-text `/fork`/`/spawn` arm right after
     /// `Conway::classify_agent_intent` returns `Ok`.
@@ -1596,7 +1596,7 @@ impl AppState {
 
     /// Closes the intent confirmation card (C2) after a `Confirm` or
     /// `Manual` choice, promoting the next parked/queued surface via
-    /// [`Self::promote_next_surface`]. A no-op when no card is open.
+    /// `Self::promote_next_surface`. A no-op when no card is open.
     /// `Edit` does NOT call this -- [`Self::begin_intent_confirm_edit`]
     /// drops the classified prompt into the input line and then closes the
     /// card via this same method, but with the input line populated so the
@@ -1817,7 +1817,7 @@ impl AppState {
     ///
     /// Idempotent and safe against a later real `AgentSpawned` for the same
     /// agent: if the node already exists this is a no-op, and
-    /// [`Self::apply_agent_spawned`] itself no-ops (only refreshes status)
+    /// `Self::apply_agent_spawned` itself no-ops (only refreshes status)
     /// when the tree already contains the agent. No transcript entry is
     /// pushed -- unlike `apply_agent_spawned`, which would push an inline
     /// `Entry::Agent` under the (about-to-be-unfocused) parent, only for
@@ -2388,7 +2388,7 @@ impl AppState {
 
     /// V4: adjusts `tool_preview_lines` by `delta` -- the `/settings` menu's
     /// Left(`-1`)/Right(`+1`) numeric stepper for the one non-boolean
-    /// setting. Floors/caps at [`TOOL_PREVIEW_LINES_RANGE`]'s own bounds
+    /// setting. Floors/caps at `TOOL_PREVIEW_LINES_RANGE`'s own bounds
     /// rather than routing the stepped value through
     /// [`clamp_tool_preview_lines`] directly: that function's job is
     /// validating an untrusted CONFIG value, where out-of-range means
@@ -2560,7 +2560,7 @@ const TOOL_PREVIEW_LINES_RANGE: std::ops::RangeInclusive<u32> = 1..=200;
 
 /// T5: clamps a loaded `[tui.tool_preview_lines]` config value into a safe
 /// render-time cap. `None` (the serde default for the `Option<u32>` field)
-/// -> the built-in default of 3. A value in [`TOOL_PREVIEW_LINES_RANGE`] is
+/// -> the built-in default of 3. A value in `TOOL_PREVIEW_LINES_RANGE` is
 /// kept as-is. Any other value (0, > 200, or a value that failed to parse
 /// as `u32` and so arrived as `None`) falls back to the default of 3.
 /// Config is untrusted input -- this function never panics, and there is no
