@@ -2570,9 +2570,9 @@ rest are decisions with stated reasons.
 > §13, is a non-goals list for the OUT-OF-PROCESS design (§13.1 WASM, §13.2
 > process sandboxing, §13.3 the host inference callback) — the subprocess +
 > JSON-RPC transport of §2, not in-process Rust registration through
-> `ConwayBuilder`. `docs/embedding.md` and `.design/philosophy-debt.md` had
-> both cited this clause as though it settled the in-process question too,
-> which it never posed. **For the OUT-OF-PROCESS transport this section
+> `ConwayBuilder`. `docs/embedding.md` and the (since-retired) philosophy debt
+> ledger had both cited this clause as though it settled the in-process
+> question too, which it never posed. **For the OUT-OF-PROCESS transport this section
 > actually governs, all six exclusions stand exactly as reasoned in §4's
 > "Ports deliberately not reachable"** — `Router`/`HealthRegistry`
 > structurally (a synchronous port cannot be crossed by async RPC without
@@ -3203,14 +3203,16 @@ absent — it is a promise of parity the design did not keep.
 ### 16.6 Event name namespace — bare core vs `plugin_id.event` (board item
 01KZRZWXQP9QXP6BYN636Z3DCZ)
 
-`[hooks].rules[].event` (`crates/conway/src/config/schema.rs`) and
-`philosophy-debt.md` §1's "registration for plugin-declared events" both name
+`[hooks].rules[].event` (`crates/conway/src/config/schema.rs`) and the
+"registration for plugin-declared events" claim in
+`scripts/board-claims.md` (owned by board item 01KZS03BFE720EQZG7Q2768N2H;
+formerly `philosophy-debt.md` §1 before the 2026-08-13 retirement) both name
 the same open string, `event: String`, with no rule yet keeping a plugin's
 choice out of conway's own vocabulary. This section is that rule, decided
 before either the runner (`01KZRZY1MNM872BZ6AKEBG3SKE`) or the
 plugin-declared-events item (board item 01KZS03BFE720EQZG7Q2768N2H, which
-also carries the `philosophy-debt.md` §1 "registration for plugin-declared
-events" bullet) has to guess at it.
+also carries that `board-claims.md` "registration for plugin-declared events"
+predicate) has to guess at it.
 **Design only — no dispatch exists yet; see §16.0's status line.**
 
 **The convention, stated once, for a reader who has not seen the rest of
@@ -3306,8 +3308,8 @@ sites, two different items, stated so neither has to guess:
   actually dispatches" (that closed-vocabulary check needs the runner,
   per point 2 above).
 - **The plugin-declared-events item** (board item
-  01KZS03BFE720EQZG7Q2768N2H, which also carries `philosophy-debt.md` §1's
-  "registration for plugin-declared events" bullet; its own acceptance
+  01KZS03BFE720EQZG7Q2768N2H, which also carries `board-claims.md`'s
+  "registration for plugin-declared events" predicate; its own acceptance
   requires rejecting a manifest that declares a namespace-violating name,
   per this section) enforces the *declaration* side: when a plugin
   registers an event

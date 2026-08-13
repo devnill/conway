@@ -15,11 +15,12 @@
 //! be a defect in the plugin API, not a reason to give this crate a
 //! private door.
 //!
-//! **What this crate is not.** Dynamic routing, context compaction,
-//! memory, skills, and MCP support are each a separate, later board item
-//! (`.design/philosophy-debt.md` entry 2's own sequencing note) — this
-//! crate performs no real work of its own and is not a template any of
-//! them must literally follow, only a proof that the tier's install
+//! **What this crate is not.** Dynamic routing is built
+//! (`conway-plugin-routing`); context compaction, memory, skills, and MCP
+//! support are not, each separate, later work with no board item yet as of
+//! 2026-08-13 (`scripts/board-claims.md`'s `UNFILED` entry records the gap)
+//! — this crate performs no real work of its own and is not a template any
+//! of them must literally follow, only a proof that the tier's install
 //! mechanism holds together end to end.
 //!
 //! **`conway` (the facade) does not, and must never, depend on this

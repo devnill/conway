@@ -120,24 +120,39 @@ whatever happened to get built.
 
 It is an exemption for that page's prose and nothing else. The conditions:
 
-- Every present-tense claim that is not yet true is listed in
-  [`.design/philosophy-debt.md`](.design/philosophy-debt.md), with what exists
-  today and what would make the claim true. A claim absent from that ledger is
-  expected to be true right now.
+- **Every present-tense claim that is not yet true is an open board item
+  carrying a falsifiable predicate.** This replaced a prose ledger,
+  `.design/philosophy-debt.md`, on 2026-08-13 (board items
+  `01KZYAHSXDXFDY9FX5MXPRZ4M1`, `01KZY8TEE2FDWQMHEKJDDC3SG9`) — the owner's
+  ruling was that `PHILOSOPHY.md` should describe the ideal 1.0 state, not
+  carry the debt required to get there, and that the debt belongs on the board
+  instead. The ledger's load-bearing sentence survives in the new form: **a
+  claim not carried by an open board item is expected to be true right now.**
+  The mechanical, falsifiable part of what the ledger tracked — an `absent`
+  pattern for "not built yet", a `present` pattern for "this exists", each
+  failing the moment it stops being true — moved to
+  [`scripts/board-claims.md`](scripts/board-claims.md), evaluated by
+  [`scripts/check-design-claims.py`](scripts/check-design-claims.py) and gated
+  in CI on every change; the narrative each claim used to carry as ledger prose
+  now lives on the board item that owns it. Board items have ids, not numbers,
+  so the renumbering-on-clearance problem the ledger carried (see its own git
+  history) does not recur.
 - Nothing else inherits it. `docs/`, `CHANGELOG.md`, doc comments, config keys,
   and defaults are governed by this section in full. A settings key that exists
   and does nothing is rung 1 regardless of what the philosophy page says.
-- An entry is cleared by building it or by amending the page. An entry that sits
-  unexamined stops being design intent and becomes the thing this section is
-  about.
+- A gap is cleared by building it (close the board item, and the predicate that
+  names it starts failing until someone updates or removes it in the same
+  change) or by amending the page. A gap that sits open unexamined stops being
+  design intent and becomes the thing this section is about.
 
 **An audit resolves a mismatch in the code, not in the page.** The page states
 what conway is meant to be; the tree is what it currently is. When they
 disagree, the finding is against the tree by default, and the fix is a work
 item. Editing the page to describe what the code happens to do turns a
-requirement into a mirror, and it destroys the ledger's contract in the process:
-a claim quietly softened to match the tree never appears in the ledger, so the
-gap it recorded stops existing without anyone deciding it should.
+requirement into a mirror, and it destroys the completeness contract in the
+process: a claim quietly softened to match the tree, with no board item filed
+for the gap it used to name, means the gap stops existing without anyone
+deciding it should.
 
 The page may be edited when it is internally inconsistent, or when it says
 something nobody intended. Even then the bar is that the edit makes the

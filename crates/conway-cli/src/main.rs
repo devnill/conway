@@ -278,7 +278,8 @@ mod tracing_target_tests {
     //! never been renamed) the pre-rename crate name too -- an event on
     //! that OLD target (the `conway-routing` crate's module-path spelling,
     //! not written out verbatim here since this crate no longer exists --
-    //! see `.design/philosophy-debt.md` entry 5) was verified, empirically,
+    //! it was relocated to `conway-plugin-routing`, board item
+    //! 01KZDC5BJWSWZZJQ7HHS11S97H) was verified, empirically,
     //! to still pass this exact directive string even with every trace of
     //! that name gone from the source. The specific `conway_plugin_routing={level}`
     //! clause this item's spec worried would "silently stop matching after

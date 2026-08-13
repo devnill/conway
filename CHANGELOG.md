@@ -720,8 +720,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   behavior change this item exists to make, not an oversight. See
   [`docs/routing.md`](docs/routing.md#installing-a-different-router) for
   what changes (and does not) between the absent and installed
-  configurations, and `.design/philosophy-debt.md`'s (renumbered) entry 4,
-  now cleared.
+  configurations, and the philosophy debt ledger's (renumbered) entry 4,
+  now cleared (that ledger was retired to the board on 2026-08-13; see
+  `CONTRIBUTING.md` §2).
   (`crates/conway-plugin-routing/` (renamed from `crates/conway-routing/`,
   `git mv`, history preserved; `src/factory.rs` new),
   `crates/conway-core/src/ports/routing.rs`, `crates/conway/src/lib.rs`,
@@ -939,9 +940,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `.design/extension-architecture.md` §13.5 gains a dated status note.
   That section is a non-goals list for the **out-of-process** subprocess
   transport, not for in-process registration through `ConwayBuilder` — and
-  both `docs/embedding.md` and `.design/philosophy-debt.md` had been citing
-  it as though it settled the latter, which is the mis-citation that would
-  have made this recur. For the out-of-process transport all six
+  both `docs/embedding.md` and the (since-retired) philosophy debt ledger had
+  been citing it as though it settled the latter, which is the mis-citation
+  that would have made this recur. For the out-of-process transport all six
   exclusions stand as originally reasoned. In-process, `Backend` and
   `Router` each gained a real answer that did not exist when the section
   was written; `SessionStore`, `HealthRegistry`, `SubagentHost`, and
@@ -2068,7 +2069,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `crates/conway/src/config/schema.rs`, `crates/conway/src/config/merge.rs`,
   `crates/conway/tests/config_precedence.rs`,
   `crates/conway-cli/src/commands/routes.rs`, `docs/routing.md`,
-  `ARCHITECTURE.md`, `.design/philosophy-debt.md`; deleted
+  `ARCHITECTURE.md`, the philosophy debt ledger (since retired to the board,
+  2026-08-13); deleted
   `crates/conway-plugin-routing/src/prober.rs`)
 
 ## [0.8.0] — 2026-08-06
