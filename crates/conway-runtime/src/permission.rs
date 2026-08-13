@@ -188,37 +188,28 @@ enum RootDecision {
 /// containing a NUL byte (the OS path APIs cannot represent it, so the tool
 /// itself would fail to resolve it too).
 ///
-/// **DUPLICATED, DELIBERATELY.** This mirrors `conway_tools::common::
-/// resolve_path` byte-for-byte, but cannot call it: crate layering runs
-/// `conway-tools -> conway-core` only, and `conway-runtime` (this crate)
-/// must not gain a dependency on `conway-tools` just for this. If
-/// `resolve_path`'s resolution rule ever changes, THIS copy must change
-/// with it in the same commit, or a path could resolve one way at
-/// permission-check time and a different way when the tool actually runs it
-/// -- exactly the kind of bypass this slice exists to prevent. (Precedent:
-/// `conway_core::permission_pattern` and `conway_core::text` share the
-/// replace-semantics sanitizer so the gate and the runtime's `rendered`
-/// seam cannot drift; the path-resolution rule below is duplicated for the
-/// same reason -- `conway-runtime` cannot depend on `conway-tools`.)
+/// **A thin, same-crate wrapper around the one shared implementation,
+/// [`conway_core::containment::resolve_candidate`] -- board item
+/// 01KZVZ56SBPSTZHAXXGYCNETNX.** This function used to carry its own
+/// restated copy of the resolution rule (kept in sync with `conway_tools::
+/// common::resolve_path` only by a doc comment demanding lockstep edits,
+/// never enforced by the compiler); it is now a direct call, so the two
+/// crates' wrappers cannot independently drift or independently drop the
+/// NUL guard the way two inlined copies already did once (board item
+/// 01KZ00VV3F3EBZ9WQSB292TBJZ). It still cannot simply BE `resolve_path`:
+/// crate layering runs `conway-tools -> conway-core` and `conway-runtime ->
+/// conway-core` only, never `conway-runtime -> conway-tools`, so this crate
+/// must keep its own `pub(crate)` entry point into the shared core function
+/// rather than gaining a dependency on `conway-tools` just for this.
 ///
 /// `pub(crate)` so the crate's OTHER path-resolution consumers -- the
 /// spawn-time confinement-root resolution in `subagent.rs` and `runtime.rs` --
 /// call THIS one rule -- one implementation, never restated (Min-1, board item
 /// 01KZ00VV3F3EBZ9WQSB292TBJZ) instead of inlining "absolute -> as-is, relative
 /// -> join cwd" and silently dropping the NUL guard, as both did until that
-/// item. Within `conway-runtime` this is the single resolution rule; the
-/// `conway-tools` copy is the deliberate cross-crate mirror the paragraph above
-/// obligates to change in lockstep.
+/// item.
 pub(crate) fn resolve_like_the_tool_will(cwd: &Path, raw: &str) -> Option<PathBuf> {
-    if raw.contains('\0') {
-        return None;
-    }
-    let candidate = Path::new(raw);
-    if candidate.is_absolute() {
-        Some(candidate.to_path_buf())
-    } else {
-        Some(cwd.join(candidate))
-    }
+    conway_core::containment::resolve_candidate(cwd, raw)
 }
 
 /// Canonicalizes a [`When::PathsUnder`] prefix once, at install, so the
