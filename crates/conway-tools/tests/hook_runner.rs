@@ -34,6 +34,50 @@ fn fixture(dir: &Path, name: &str, script: &str) -> PathBuf {
     path
 }
 
+/// Runs `invocation`, retrying a bounded number of times if the spawn loses a
+/// race that this test binary creates for itself.
+///
+/// `fixture` writes an executable script and a test then execs it. That is
+/// safe in isolation -- `std::fs::write` closes its handle before returning,
+/// and Rust opens with `O_CLOEXEC`. It is NOT safe under `cargo test`'s
+/// parallelism: while thread A holds a write fd to the script for an instant,
+/// thread B may `fork` for its own spawn, and `fork` duplicates every open fd
+/// into the child. Until that child reaches its `exec`, the script's inode is
+/// open-for-write in another process, and exec'ing it returns `ETXTBSY`
+/// ("Text file busy"). `O_CLOEXEC` narrows that window; it cannot close it.
+/// Same race as golang/go#22315.
+///
+/// THE RETRY IS DELIBERATELY HERE AND NOT IN `ProcessHookRunner`. An operator
+/// whose hook script is genuinely being rewritten as conway spawns it should
+/// get exactly what the runner returns today: a fail-closed `Spawn` error. It
+/// is not conway's job to paper over a script changing underneath it, and
+/// adding a retry to a security-adjacent path to fix a test problem would be
+/// the wrong trade. The ETXTBSY seen here is manufactured by this binary's own
+/// threading and is not the behaviour any of these tests are about.
+///
+/// Bounded, and it panics loudly when exhausted rather than looping until the
+/// harness times out. Board item 01KZWGMDPAKQ3DFNSKYFM7ZEVD.
+async fn run_retrying_spawn_race(
+    runner: &ProcessHookRunner,
+    invocation: &HookInvocation,
+) -> Result<HookAnswer, HookFailure> {
+    const ATTEMPTS: u32 = 10;
+    for attempt in 0..ATTEMPTS {
+        let result = runner.run(invocation).await;
+        match &result {
+            Err(HookFailure::Spawn { detail }) if detail.contains("Text file busy") => {
+                tokio::time::sleep(Duration::from_millis(20 * u64::from(attempt + 1))).await;
+            }
+            _ => return result,
+        }
+    }
+    panic!(
+        "spawn lost the ETXTBSY race {ATTEMPTS} times in a row for {:?}; that is no longer a \
+         race, investigate rather than raising the bound",
+        invocation.command
+    );
+}
+
 fn invocation(command: Vec<String>, timeout_ms: u64, payload: serde_json::Value) -> HookInvocation {
     HookInvocation {
         command,
@@ -111,7 +155,9 @@ esac
         serde_json::json!({"marker": "marker-8f2c1a"}),
     );
 
-    let answer = runner.run(&invocation).await.expect("hook should succeed");
+    let answer = run_retrying_spawn_race(&runner, &invocation)
+        .await
+        .expect("hook should succeed");
     assert_eq!(
         answer,
         HookAnswer {
@@ -138,7 +184,9 @@ async fn empty_stdout_on_success_is_the_default_answer() {
         serde_json::json!(null),
     );
 
-    let answer = runner.run(&invocation).await.expect("hook should succeed");
+    let answer = run_retrying_spawn_race(&runner, &invocation)
+        .await
+        .expect("hook should succeed");
     assert_eq!(answer, HookAnswer::default());
 }
 
@@ -249,9 +297,12 @@ while true; do sleep 1; done
         serde_json::json!(null),
     );
 
-    let result = tokio::time::timeout(Duration::from_secs(20), runner.run(&invocation))
-        .await
-        .expect("the runner must return within 20s even though the script traps SIGTERM");
+    let result = tokio::time::timeout(
+        Duration::from_secs(20),
+        run_retrying_spawn_race(&runner, &invocation),
+    )
+    .await
+    .expect("the runner must return within 20s even though the script traps SIGTERM");
 
     assert_eq!(
         result,
@@ -293,9 +344,12 @@ while true; do sleep 1; done
         serde_json::json!(null),
     );
 
-    let result = tokio::time::timeout(Duration::from_secs(20), runner.run(&invocation))
-        .await
-        .expect("the runner must return within 20s");
+    let result = tokio::time::timeout(
+        Duration::from_secs(20),
+        run_retrying_spawn_race(&runner, &invocation),
+    )
+    .await
+    .expect("the runner must return within 20s");
     assert_eq!(result, Err(HookFailure::TimedOut { after_ms: 2_000 }));
 
     // The backgrounded `sleep 300 &` inherited the same pgid as the script
