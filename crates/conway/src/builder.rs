@@ -641,6 +641,176 @@ impl ConwayBuilder {
         self
     }
 
+    /// Installs the id-selected subset of three CALLER-SUPPLIED bundles
+    /// against `self.config().plugins` in one pass -- the facade's own
+    /// version of the ~70-line resolution `crates/conway-cli/src/
+    /// first_party_plugins.rs`'s `install` used to hand-roll (board item
+    /// 01KZDC3JQ7W4DY1MG6MBCVB2DV; this method itself lands under board item
+    /// 01KZVZ1TDBHS7S604PQB5RZDM3), now reachable by any embedder, not only
+    /// this workspace's own CLI binary.
+    ///
+    /// **The facade still depends on no plugin crate -- `plugins`,
+    /// `router_factories`, and `backend_factories` are CALLER-SUPPLIED,
+    /// already-constructed values.** This method matches each bundle
+    /// entry's own identity (`Plugin::manifest().id`, `RouterFactory::id()`,
+    /// `BackendFactory::id()`) against a configured id string; it never maps
+    /// an id to a crate itself, and never could -- `crates/conway/Cargo.toml`
+    /// names no plugin crate, and the workspace's `no_forbidden_deps`/
+    /// architecture guards exist specifically to keep that true (this class
+    /// of shortcut -- resolving an id to a crate from inside the facade --
+    /// has been tried and reverted before; see `crates/conway-cli/tests/
+    /// cli_surface.rs`'s own `no_forbidden_deps` comment for the record of
+    /// it). A caller that wants a third-party OR first-party plugin/router/
+    /// backend still has to name and construct it and hand it into ONE of
+    /// the three `Vec`s below -- this method is a resolution convenience
+    /// over [`Self::with_plugin`]/[`Self::with_router_factory`]/
+    /// [`Self::with_backend_factory`] (which it calls internally), not a
+    /// fourth injection mechanism with different rules.
+    ///
+    /// **The ids resolved are `self.config().plugins.install` UNIONED with
+    /// `self.config().plugins.default_backends`**, deduplicated,
+    /// order-preserving (an id present in both appears once, at `install`'s
+    /// position) -- see `[plugins].install`'s own doc and
+    /// `PluginsConfig::default_backends`'s own doc
+    /// ([`crate::config::schema::PluginsConfig`]) for why the union exists:
+    /// it is what lets an operator's `[backends.<id>]` entries keep
+    /// resolving against a shipped dialect kind id with no `[plugins]`
+    /// section in `settings.json` at all, while every other kind of id stays
+    /// opt-in through `install` alone.
+    ///
+    /// **The three installable shapes stay distinct -- never flattened into
+    /// one -- and are matched, per id, in this order:**
+    /// 1. `Plugin`/`Tool`: an id matching a `plugins` entry's own
+    ///    `PluginManifest::id` is installed via [`Self::with_plugin`].
+    /// 2. `RouterFactory`: an id matching a `router_factories` entry's own
+    ///    `RouterFactory::id()` is installed via
+    ///    [`Self::with_router_factory`]. **At most one id may resolve to a
+    ///    router factory** -- a build has exactly one router, so a second
+    ///    router-factory id is a hard error naming both, never a silent
+    ///    "last one wins" -- router SELECTION (naming a kind here) must
+    ///    precede router CONSTRUCTION (`build()`'s own later step), which is
+    ///    the reason this is a `RouterFactory`, not a `Router`, in the first
+    ///    place.
+    /// 3. `BackendFactory`: an id matching a `backend_factories` entry's own
+    ///    `BackendFactory::id()` is installed via
+    ///    [`Self::with_backend_factory`]. No cardinality limit -- a build
+    ///    has a SET of backends, not one.
+    ///
+    /// An id present in more than one bundle under the same string resolves
+    /// to whichever of the three comes first in that order.
+    ///
+    /// **Also calls [`Self::with_declined_backend_kinds`] unconditionally,
+    /// before anything else below**, naming every id in `backend_factories`
+    /// the resolved id set does NOT select -- purely diagnostic (that
+    /// method's own doc): it changes no attach behavior, only which of the
+    /// two messages `build()` raises for a `[backends.<id>]` entry naming an
+    /// unresolved `kind` later (**declined** vs **unknown**).
+    ///
+    /// **An id resolving to nothing in any of the three bundles is a hard
+    /// [`ConwayError::Config`], never a silent no-op** -- an id in the
+    /// config that resolves to nothing is user-facing configuration that
+    /// lies (nothing may claim to be reached that isn't). The error names
+    /// the offending id and lists every id the three supplied bundles
+    /// actually carry, so a caller can tell a typo from a bundle that
+    /// genuinely does not include what they named -- matching the
+    /// unknown-id diagnosis `first_party_plugins::install` already gave the
+    /// CLI, extended to name whichever bundles THIS caller supplied rather
+    /// than assuming the CLI's own first-party set.
+    ///
+    /// **The resolved id set being empty is not itself an error** -- this
+    /// method returns `Ok(self)` right after the `with_declined_backend_
+    /// kinds` call above, with none of the three bundles consulted further
+    /// (an empty `[plugins].install` and an operator-emptied
+    /// `[plugins].default_backends` together are a legitimate, if unusual,
+    /// configuration). Whether `build()` later fails with "no backends
+    /// configured" depends on `backend_factories`/`with_backend`/
+    /// `[backends.<id>]` alone, unrelated to this method's own return.
+    pub fn install_selected(
+        mut self,
+        plugins: Vec<Arc<dyn Plugin>>,
+        router_factories: Vec<Arc<dyn RouterFactory>>,
+        backend_factories: Vec<Arc<dyn BackendFactory>>,
+    ) -> Result<Self> {
+        // [plugins].install UNIONED with [plugins].default_backends,
+        // deduplicated, order-preserving -- see this method's own doc.
+        let mut seen: HashSet<&str> = HashSet::new();
+        let wanted: Vec<String> = self
+            .config
+            .plugins
+            .install
+            .iter()
+            .chain(self.config.plugins.default_backends.iter())
+            .filter(|id| seen.insert(id.as_str()))
+            .cloned()
+            .collect();
+
+        // Board item 01KZHF2W8Y1KBM7PJH7R4QQJA0: every supplied
+        // backend-factory id `wanted` does NOT name is a DECLINED kind, not
+        // an unknown one -- computed and handed to the builder before the
+        // early return below, so the diagnosis is accurate even when
+        // `wanted` is empty (declining every supplied dialect at once).
+        let declined_backend_kinds: Vec<String> = backend_factories
+            .iter()
+            .map(|f| f.id().to_string())
+            .filter(|id| !wanted.iter().any(|w| w == id))
+            .collect();
+        self = self.with_declined_backend_kinds(declined_backend_kinds);
+
+        if wanted.is_empty() {
+            return Ok(self);
+        }
+
+        let mut router_factory_installed: Option<String> = None;
+        for id in &wanted {
+            if let Some(plugin) = plugins.iter().find(|p| &p.manifest().id == id) {
+                self = self.with_plugin(plugin.clone());
+                continue;
+            }
+            if let Some(factory) = router_factories.iter().find(|f| f.id() == id.as_str()) {
+                if let Some(already) = &router_factory_installed {
+                    return Err(ConwayError::Config {
+                        path: None,
+                        message: format!(
+                            "plugins.install names more than one router factory ('{already}' \
+                             and '{id}'); a build has exactly one router, so at most one \
+                             router-factory id may appear in plugins.install."
+                        ),
+                    });
+                }
+                router_factory_installed = Some(id.clone());
+                self = self.with_router_factory(factory.clone());
+                continue;
+            }
+            if let Some(factory) = backend_factories.iter().find(|f| f.id() == id.as_str()) {
+                self = self.with_backend_factory(factory.clone());
+                continue;
+            }
+            let known_plugins: Vec<String> = plugins.iter().map(|p| p.manifest().id).collect();
+            let known_routers: Vec<String> = router_factories
+                .iter()
+                .map(|f| f.id().to_string())
+                .collect();
+            let known_backends: Vec<String> = backend_factories
+                .iter()
+                .map(|f| f.id().to_string())
+                .collect();
+            return Err(ConwayError::Config {
+                path: None,
+                message: format!(
+                    "plugins.install names unknown id '{id}'; linked plugins: [{}]; linked \
+                     router factories: [{}]; linked backend factories: [{}]. A plugin, router, \
+                     or backend not among these caller-supplied bundles is installed directly, \
+                     before build(), via ConwayBuilder::with_plugin/with_router_factory/\
+                     with_backend_factory.",
+                    known_plugins.join(", "),
+                    known_routers.join(", "),
+                    known_backends.join(", ")
+                ),
+            });
+        }
+        Ok(self)
+    }
+
     /// Sets CLI-sourced overrides, applied (and fully re-validated,
     /// including OAuth-token rejection) at `build()` time.
     pub fn with_cli_overrides(mut self, cli: CliOverrides) -> Self {
