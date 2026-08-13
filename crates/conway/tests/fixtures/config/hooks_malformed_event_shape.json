@@ -1,0 +1,14 @@
+{
+  "default_role": "coder",
+  "roles": {
+    "coder": { "chain": ["anthropic/claude-sonnet-4-6"] }
+  },
+  "backends": {
+    "anthropic": { "kind": "anthropic" }
+  },
+  "hooks": {
+    "rules": [
+      { "id": "malformed", "event": ".compaction_decided", "command": ["echo", "hi"] }
+    ]
+  }
+}
