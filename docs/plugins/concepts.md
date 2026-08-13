@@ -6,7 +6,7 @@ per-point reference), doc 3 (trust in depth), doc 4 (authoring), or doc 5
 a participant is, what a plugin may touch, or how trust works.
 
 **Status of this page.** conway's plugin architecture is being documented
-ahead of being fully built, deliberately — per the amended GP-14, a labeled
+ahead of being fully built, deliberately — a labeled
 forward declaration is a respectable state, and the alternative (silence
 until the last piece lands) would leave feature development without the
 normative spec it needs to build against. Every section below says plainly
@@ -212,7 +212,7 @@ it. Tracked under `01KZDC0RDRMMMJHX7SAFMM2Q5A`.
 ## Language choice
 
 A hook may fire a script written in any language, not only Rust. This does
-not add a second extension mechanism (GP-03 stays satisfied): the script
+not add a second extension mechanism: the script
 surface is provided *by a plugin* — one that dispatches to a configured
 script per event — so a script-backed hook is still, from the runtime's
 point of view, an ordinary hook registered by an ordinary plugin. The script
