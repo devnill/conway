@@ -9,6 +9,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **`ratatui` upgraded 0.29 -> 0.30, clearing the transitive `lru`
+  use-after-free/`IterMut` advisories and the unmaintained `paste` crate from
+  the dependency graph** (board item 01KZWWVKT9M13E306ZW29P0W9D). Filed by
+  board item 01KZVYND5JPG3Z8WHR1AMNAY01 when `cargo-deny` was introduced: that
+  item's `deny.toml` set `unmaintained = "workspace"`, which correctly reports
+  an unmaintained crate the workspace depends on directly but stays quiet
+  about one that only arrives transitively -- so `ratatui` 0.29's pin of
+  `lru = "0.12.0"` (RUSTSEC-2026-0253, RUSTSEC-2026-0002, both
+  `informational = "unsound"`, patched at `>= 0.18.2` and `>= 0.16.3`
+  respectively) and its pull of the unmaintained `paste` sat in the graph
+  unreported. `ratatui` 0.30 drops both: `lru` now resolves to the single
+  workspace-pinned 0.18.2 everywhere (`cargo tree -i lru@0.12.5` and
+  `cargo tree -i paste` both error "did not match any packages"), confirmed
+  clean even with `unmaintained` temporarily flipped to `"all"` -- the setting
+  that would have reported `paste` -- rather than merely unreported under the
+  narrower default. The upgrade forced one mechanical, non-behavioral fix:
+  ratatui 0.30 widened `Backend::Error` from the fixed `std::io::Error` it was
+  in 0.29 to `type Error: core::error::Error` (so `TestBackend`'s own
+  `Infallible` can implement it too), so the four `conway-cli` call sites that
+  mapped a `Backend::Error` straight into `conway::ConwayError::Io` needed an
+  explicit `.into()` behind a new `B::Error: Into<std::io::Error>` bound --
+  satisfied trivially by `CrosstermBackend`, the only backend this crate ever
+  instantiates those methods with. The workspace's own `crossterm` pin moved
+  0.28 -> 0.29 alongside it, to stay the same resolved instance ratatui's
+  crossterm backend now defaults to -- otherwise `conway-cli`'s direct
+  `crossterm` dependency (present solely to turn on the `bracketed-paste`
+  feature via Cargo's same-version feature unification; the crate is never
+  named directly in `conway-cli` source, everything goes through
+  `ratatui::crossterm::*`) would have silently stopped reaching the crossterm
+  instance ratatui actually renders through. (`Cargo.toml`, `Cargo.lock`,
+  `deny.toml`, `crates/conway-cli/src/tui/app.rs`)
+
 - **A `pre_tool_use` hook written in a `settings.json` now actually runs
   under the CLI** (board item 01KZVTTP492R3BDY33FAGYWDNW). Board item
   01KZS00JP5QNBJSSHNFP9C47GM built the enforcement -- a hook script that
