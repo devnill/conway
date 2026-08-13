@@ -958,3 +958,268 @@ fn agent_result_serializes_only_the_bounded_field_set_no_raw_transcript() {
     assert_eq!(json["transcript_ref"], serde_json::json!(session));
     assert!(json["transcript_ref"].is_string());
 }
+
+// ---------------------------------------------------------------------
+// keep_alive + result_contract: the two halves, pinned separately
+// ---------------------------------------------------------------------
+
+/// Builds the same loop as [`build_loop_with_contract`] but KEPT ALIVE.
+///
+/// Deliberately bypasses `SubagentSpec::validate`, which now rejects this
+/// combination outright (board item 01KZS38F5TN3DEYHWG3VC0FZ9R). These two
+/// tests pin the RUNTIME behaviour the rejection exists to prevent, so that
+/// if anyone later removes the rejection believing it unnecessary, the
+/// behaviour it was guarding is still described here in executable form.
+#[allow(clippy::too_many_arguments)]
+fn build_kept_alive_loop_with_contract(
+    session: SessionId,
+    agent: AgentId,
+    store: Arc<dyn SessionStore>,
+    backend: Arc<dyn Backend>,
+    tools: Vec<Arc<dyn Tool>>,
+    router: Arc<dyn Router>,
+    budget: Budget,
+    result_contract: Option<schemars::schema::RootSchema>,
+) -> AgentLoop {
+    let mut agent_loop = build_loop_with_contract(
+        session,
+        agent,
+        store,
+        backend,
+        tools,
+        router,
+        budget,
+        result_contract,
+    );
+    agent_loop.spec.keep_alive = true;
+    agent_loop
+}
+
+/// HALF ONE — validation RUNS under `keep_alive`.
+///
+/// The spec this item was filed with claimed the contract "is never
+/// evaluated" for a kept-alive agent. That was false, and asserting it would
+/// have failed. Positive evidence is required here rather than the absence of
+/// a violation note: absence is equally consistent with "never evaluated",
+/// which is exactly the conflation this item was filed with. So the response
+/// VIOLATES the contract, and the corrective `SystemNote` it produces is
+/// proof the evaluation ran.
+#[tokio::test]
+async fn keep_alive_still_evaluates_its_result_contract() {
+    let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
+    let (session, agent) = seed_prompt(&*store, "hello").await;
+    let backend = scripted(vec![
+        ScriptedTurn::Respond(report_call("tc_1", serde_json::json!({}))),
+        ScriptedTurn::Respond(text_response("still working")),
+    ]);
+    let tool: Arc<dyn Tool> = Arc::new(FakeReportTool);
+
+    let agent_loop = build_kept_alive_loop_with_contract(
+        session,
+        agent,
+        store.clone(),
+        backend,
+        vec![tool],
+        route(),
+        Budget::default(),
+        Some(schema_requiring("ok")),
+    );
+
+    // The loop never returns (that is half two), so it is driven under a
+    // timeout and the assertion is on what it PERSISTED, not on its return.
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), agent_loop.run()).await;
+
+    let records = store
+        .read(&session, conway_core::ids::SeqRange::full())
+        .await
+        .unwrap();
+    let violations = records
+        .iter()
+        .filter(|r| matches!(r, LogRecord::SystemNote { reason, .. } if reason == "result_contract_violation"))
+        .count();
+    assert!(
+        violations >= 1,
+        "a kept-alive agent must still evaluate its result_contract -- no \
+         corrective note means the contract was skipped, which is the claim \
+         this item was originally filed with and which is false"
+    );
+}
+
+/// HALF TWO — delivery does NOT happen under `keep_alive`.
+///
+/// The contract PASSES here, so there is a validated result. A non-kept-alive
+/// agent would return it and `await_result` would resolve. This one does not
+/// return at all: `finish` is never reached, so no `AgentMessage::Result` is
+/// ever sent and no caller can ever receive the value.
+///
+/// The assertion is that `run()` does NOT complete. That is the hang, stated
+/// as an observable: a test that merely checked for the absence of a
+/// violation note would pass just as happily against a build that never
+/// evaluated the contract at all.
+#[tokio::test]
+async fn keep_alive_validates_its_contract_but_never_resolves_await_result() {
+    let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
+    let (session, agent) = seed_prompt(&*store, "hello").await;
+    let backend = scripted(vec![
+        ScriptedTurn::Respond(report_call("tc_1", serde_json::json!({"ok": true}))),
+        ScriptedTurn::Respond(text_response("done")),
+    ]);
+    let tool: Arc<dyn Tool> = Arc::new(FakeReportTool);
+
+    let agent_loop = build_kept_alive_loop_with_contract(
+        session,
+        agent,
+        store.clone(),
+        backend,
+        vec![tool],
+        route(),
+        Budget::default(),
+        Some(schema_requiring("ok")),
+    );
+
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(3), agent_loop.run()).await;
+
+    assert!(
+        outcome.is_err(),
+        "a kept-alive agent with a PASSING contract must not return -- if it \
+         did, the delivery gap this item exists for is closed and the \
+         rejection in SubagentSpec::validate should be revisited"
+    );
+
+    // And the contract really did pass: no corrective note was written, so
+    // the non-return above is the delivery gap rather than a rejection loop.
+    let records = store
+        .read(&session, conway_core::ids::SeqRange::full())
+        .await
+        .unwrap();
+    assert!(
+        !records.iter().any(
+            |r| matches!(r, LogRecord::SystemNote { reason, .. } if reason == "result_contract_violation")
+        ),
+        "this half pins the PASSING path -- a violation note means the script \
+         no longer satisfies the contract and the test is measuring the wrong \
+         thing"
+    );
+}
+
+/// The FIX, at the type boundary: the combination is refused outright.
+///
+/// `SubagentSpec::validate` is the single chokepoint every subagent path
+/// already passes through -- `SubagentHost::start` calls it before any cwd
+/// resolution, store I/O or tree attach -- so one rejection covers the
+/// model-invoked tools, the facade's `ForkSpec`/`SpawnSpec`, and any direct
+/// library caller alike. Enforcing at one tool callsite instead would leave
+/// every other caller able to construct the hang.
+#[test]
+fn keep_alive_with_a_result_contract_is_rejected_by_validate() {
+    let mut spec = conway_core::agent::SubagentSpec::fork("go", Budget::default());
+    spec.keep_alive = true;
+    spec.result_contract = Some(schema_requiring("ok"));
+
+    let err = spec
+        .validate()
+        .expect_err("keep_alive + result_contract must not validate");
+
+    let rendered = err.to_string();
+    // The message must name BOTH flags: a caller who set two things and got
+    // one word back has to guess which one to change.
+    assert!(
+        rendered.contains("keep_alive") && rendered.contains("result_contract"),
+        "the error must name both flags, got: {rendered}"
+    );
+}
+
+/// Each flag ALONE still validates -- the rejection is about the combination,
+/// not about either feature, and a guard that rejected too much would be a
+/// regression wearing a fix's clothes.
+#[test]
+fn either_flag_alone_still_validates() {
+    let mut kept_alive = conway_core::agent::SubagentSpec::fork("go", Budget::default());
+    kept_alive.keep_alive = true;
+    kept_alive
+        .validate()
+        .expect("keep_alive alone is a supported shape");
+
+    let mut contracted = conway_core::agent::SubagentSpec::fork("go", Budget::default());
+    contracted.result_contract = Some(schema_requiring("ok"));
+    contracted
+        .validate()
+        .expect("result_contract alone is a supported shape");
+
+    conway_core::agent::SubagentSpec::fork("go", Budget::default())
+        .validate()
+        .expect("neither flag is obviously fine");
+}
+
+/// THE OBSERVABLE OUTCOME: a real caller gets a typed error instead of a hang.
+///
+/// The `validate` test above proves the TYPE refuses the combination. This
+/// proves the refusal actually reaches someone -- `SubagentHost::start`
+/// surfaces it as `RuntimeError::InvalidSpec`, which the tool boundary in
+/// turn maps to a model-correctable `ToolError::InvalidArguments`. Asserting
+/// only at the type would leave "the runtime swallows it" untested, and this
+/// item exists precisely because a failure nobody surfaced looked like
+/// success.
+///
+/// Reuses the same two-role router harness as the enforcement test above so
+/// the parent and child never contend over one scripted queue.
+#[tokio::test]
+async fn keep_alive_with_a_result_contract_is_refused_by_subagent_host() {
+    let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
+    let health: Arc<dyn HealthRegistry> = Arc::new(conway_core::fakes::FakeHealth::new());
+    let parent_backend = Arc::new(
+        ScriptedBackend::new(vec![ScriptedTurn::Respond(text_response("ok"))])
+            .with_id(BackendId::new("parent"))
+            .with_capabilities(caps_ok()),
+    );
+    let mut backends: std::collections::HashMap<BackendId, Arc<dyn Backend>> =
+        std::collections::HashMap::new();
+    backends.insert(parent_backend.id(), parent_backend);
+    let router: Arc<dyn Router> = Arc::new(FakeRouter::single(ModelRef {
+        backend: BackendId::new("parent"),
+        model: ModelId::new("m"),
+    }));
+
+    let runtime = Runtime::new(RuntimeDeps {
+        store,
+        router,
+        health,
+        backends,
+        plugins: vec![],
+        gate: Arc::new(FakeGate::new(PermissionDecision::AllowOnce)),
+        agent_defs: std::collections::HashMap::new(),
+        event_bus: EventBus::new(1024),
+        headroom: Arc::new(HeadroomPolicy::default()),
+    });
+
+    let parent = runtime
+        .start_root(RootSpec {
+            session: None,
+            agent_def: None,
+            role: Some(RoleAlias::new("parent")),
+            tools: None,
+            budget: Budget::default(),
+            cwd: PathBuf::from("/tmp"),
+            root: None,
+            prompt: Some("go".to_string()),
+            keep_alive: false,
+            model: None,
+        })
+        .await
+        .expect("root starts");
+
+    let mut spec = SubagentSpec::fork("hold open and validate", Budget::default());
+    spec.keep_alive = true;
+    spec.result_contract = Some(schema_requiring("ok"));
+
+    let err = SubagentHost::start(&*runtime, parent, parent, spec)
+        .await
+        .expect_err("the combination must be refused, not started and then hung");
+
+    let rendered = err.to_string();
+    assert!(
+        rendered.contains("keep_alive") && rendered.contains("result_contract"),
+        "the surfaced error must name both flags so a caller knows which to \
+         change, got: {rendered}"
+    );
+}

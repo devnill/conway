@@ -172,6 +172,17 @@ pub struct SubagentSpec {
     pub role: Option<RoleAlias>,
     pub tools: Option<ToolSelector>,
     pub budget: Budget,
+    /// A schema the child's final answer must satisfy. Evaluated on a
+    /// completing turn; a violation appends a `SystemNote` with reason
+    /// `result_contract_violation` and grants one corrective turn.
+    ///
+    /// **Cannot be combined with [`Self::keep_alive`]** -- the pair is
+    /// rejected by [`Self::validate`] (board item
+    /// 01KZS38F5TN3DEYHWG3VC0FZ9R). A kept-alive agent never finishes, so a
+    /// result it validated has nowhere to be delivered and the caller's
+    /// `await_result` would hang forever. See `validate`'s own doc for the
+    /// mechanism and for why this is a rejection rather than a delivery
+    /// feature.
     pub result_contract: Option<schemars::schema::RootSchema>,
     /// Opt-in interactive keep-alive (mirrors `conway_runtime`'s
     /// `agent_loop::AgentSpec::keep_alive`/`runtime::RootSpec::keep_alive`):
@@ -186,6 +197,13 @@ pub struct SubagentSpec {
     /// wanting a fresh, interactive, re-promptable session (the TUI's bare
     /// `/spawn`/`/fork`) constructs via `conway`'s `SpawnSpec::keep_alive`/
     /// `ForkSpec::keep_alive`.
+    ///
+    /// **Cannot be combined with [`Self::result_contract`]** -- the pair is
+    /// rejected by [`Self::validate`] (board item
+    /// 01KZS38F5TN3DEYHWG3VC0FZ9R). Keeping the child open is precisely what
+    /// stops its validated result from ever being delivered, so the two
+    /// requests contradict each other; asking for both used to hang the
+    /// caller silently.
     pub keep_alive: bool,
     /// `ephemeral` is a [`crate::log::SessionMeta`] listing-visibility bit,
     /// NOT a mode -- it filters the child out of default session catalog
@@ -325,7 +343,50 @@ impl SubagentSpec {
     /// inheriting resolution. Kept as a method (rather than removed
     /// outright) since it remains the natural place for any future
     /// spec-shape validation.
+    ///
+    /// **Rejects `keep_alive` combined with a `result_contract`** (board item
+    /// 01KZS38F5TN3DEYHWG3VC0FZ9R). The two are individually sound and
+    /// individually documented; together they produce a HANG, which is the
+    /// worst failure shape available because it is indistinguishable from a
+    /// child that is simply still working.
+    ///
+    /// The mechanism, in one sentence: a contract is evaluated on a
+    /// completing turn, but a kept-alive agent does not return on a
+    /// completing turn -- `AgentLoop`'s `if self.spec.keep_alive` branch
+    /// re-arms the resume gate and continues, so `finish` is never reached,
+    /// and `finish` is the only sender of `AgentMessage::Result`. The result
+    /// is validated and then has nowhere to go: `await_result` never
+    /// resolves. Validation is not the casualty; delivery is.
+    ///
+    /// **Why rejection rather than delivery.** Making a kept-alive child's
+    /// result reachable is a real feature and remains open -- it needs a
+    /// mid-flight report channel, and `AgentMessage::Progress` already exists
+    /// for exactly that shape with no production sender (board item
+    /// 01KZQHZ18MXR7WYVPMTGM5DHT0). Building it was declined here in favour
+    /// of removing the hang now: nothing can depend on the current behaviour,
+    /// because the current behaviour is a hang. Turning it into an immediate,
+    /// typed error is a strict improvement and does not foreclose the feature
+    /// -- it forecloses only the silent version of it.
+    ///
+    /// Enforced HERE rather than at a tool callsite because this method is
+    /// the single chokepoint every subagent path already passes through
+    /// (`SubagentHost::start` calls it before anything else), matching the
+    /// rule that a mode restriction belongs at the trait boundary and not at
+    /// one caller, where any other caller would bypass it.
+    ///
+    /// Stays a pure internal-consistency check performing no I/O: this is a
+    /// cross-field comparison of two values already in hand.
     pub fn validate(&self) -> Result<(), ConwayError> {
+        if self.keep_alive && self.result_contract.is_some() {
+            return Err(ConwayError::Config {
+                detail: "`keep_alive` and `result_contract` cannot be combined on one \
+                         subagent: a kept-alive agent never finishes, so its validated \
+                         result is never delivered and `await_result` would hang. Set \
+                         `keep_alive: false` to receive the validated result, or drop \
+                         `result_contract` to keep the agent open."
+                    .to_string(),
+            });
+        }
         Ok(())
     }
 

@@ -100,6 +100,16 @@ your next `prompt_agent` call after each turn instead of finishing once its
 directive/prompt is answered — see [`sessions.md`](sessions.md)'s keep-alive
 section for when to set it and what changes.
 
+**`keep_alive` and `result_contract` cannot be combined**, and setting both is
+a startup error naming both fields rather than a silent failure. They ask for
+opposite things: a contract is checked when the child finishes and its
+validated answer is handed back, and `keep_alive` is precisely the instruction
+never to finish — so the answer would be validated and then have nowhere to go,
+leaving your `await` hanging forever. Drop `keep_alive` to receive the
+validated result, or drop `result_contract` to keep the child open. (The
+model-invoked `conway_fork`/`conway_spawn` tools never set `keep_alive`, so
+this only affects a library caller building a `ForkSpec`/`SpawnSpec`.)
+
 ### A model tool call
 
 `conway_fork` and `conway_spawn` are two separate tools, not one call with a
