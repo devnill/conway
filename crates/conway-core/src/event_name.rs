@@ -15,9 +15,9 @@
 //!   (`crates/conway/src/config/schema.rs`, `merge.rs` check 9) is the
 //!   *subscriber* side — `validate_event_name(event, None)` checks an
 //!   operator-written `event` string is well-formed;
-//! - the plugin-declared-events item (not yet a board item; tracked in
-//!   `.design/philosophy-debt.md` §1's "registration for plugin-declared
-//!   events" bullet) is the *declaration* side —
+//! - the plugin-declared-events item (board item
+//!   01KZS03BFE720EQZG7Q2768N2H, "Let a plugin declare and fire its own
+//!   custom event") is the *declaration* side —
 //!   `validate_event_name(name, Some(&manifest.id))` checks a plugin
 //!   actually prefixed its own emitted event with its own id.
 //!

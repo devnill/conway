@@ -4,33 +4,36 @@ This directory is a record of how and why conway was built — including
 alternatives that were considered and rejected, and status banners marking
 what has since been superseded or landed.
 
-## Claim-bearing documents, and the check over them
+## Claim-bearing predicates, and the check over them
 
 Most of what is here **cannot go stale**, and is deliberately ungated: a
 rejected alternative stays rejected, and `extension-architecture.md`'s
 thousands of unbuilt lines are not a defect because this directory is declared
 non-authoritative and that document is labelled design-not-implementation.
 
-A small subset is different. A document is **claim-bearing** when it asserts
-*what is true of the tree right now* — not how a decision was reached, but what
-the code does or does not do today. Those claims rot, and a reader has no way
-to tell a current one from a stale one by looking.
+Until 2026-08-13 one document was different: `philosophy-debt.md` asserted
+*what is true of the tree right now* rather than how a decision was reached,
+with a stated contract that a claim *absent* from it was expected to be true
+right now. That is what made `PHILOSOPHY.md`'s present-tense exemption safe. It
+was retired that day (board items `01KZYAHSXDXFDY9FX5MXPRZ4M1`,
+`01KZY8TEE2FDWQMHEKJDDC3SG9`): the *predicates* — the falsifiable `absent`/
+`present` patterns that made the contract checkable — moved to
+[`../scripts/board-claims.md`](../scripts/board-claims.md), and the *narrative*
+each one used to carry as ledger prose moved to the open board item that now
+owns it (see that file's header for the reasoning, including why the
+predicates live in a git-tracked file rather than inside a board item's row).
+The completeness contract survives in the new form: every gap between
+`PHILOSOPHY.md` and the tree is now an open board item carrying a falsifiable
+predicate, stated in `CONTRIBUTING.md` §2.
 
-The subset, today:
-
-| Document | Why it is claim-bearing |
-| --- | --- |
-| [`philosophy-debt.md`](philosophy-debt.md) | Its own contract is that a claim *absent* from it is expected to be true right now. That makes `PHILOSOPHY.md`'s present-tense exemption safe, and makes an error in it unsafe in whichever direction the error runs. |
-
-Nothing else in this directory is covered, and adding a document to the subset
-is a deliberate act: edit `CLAIM_BEARING` in
-[`scripts/check-design-claims.py`](../scripts/check-design-claims.py).
-
-**How the check works.** A claim-bearing document declares, beside each claim,
-the predicate that would falsify it — an `absent` pattern for "this is not
-built yet" or a `present` pattern for "this exists". `check-design-claims.py`
-evaluates them and fails naming the document, the entry, and the claim's own
-words. So when a capability the ledger calls unbuilt actually ships, the
+**How the check works.** `scripts/board-claims.md` declares, beside each
+claim, the predicate that would falsify it — an `absent` pattern for "this is
+not built yet" or a `present` pattern for "this exists" — and the `board_item:`
+that owns it. `check-design-claims.py` evaluates the predicates (unconditionally,
+including in CI) and, on a maintainer checkout where `.ideate-work/board.db` is
+reachable, additionally resolves each `board_item:` read-only and reports its
+live status. It fails naming the board item, the claim, and the claim's own
+words. So when a capability a predicate calls unbuilt actually ships, the
 predicate starts matching and the check goes red in the same change.
 
 That shape was chosen over the obvious alternative — failing when a commit
@@ -40,9 +43,10 @@ tweak near the hooks code. This one is quiet until a claim is actually false.
 
 **What it does not catch**, stated because a gate with unstated blind spots is
 the same defect one level up: a claim with no predicate, or with a predicate
-narrower than its prose; a claim wrong in a way no pattern expresses; and rot
-in the reasoning around a still-true mechanical fact. The script's own module
-doc carries this list too.
+narrower than its prose; a claim wrong in a way no pattern expresses; rot in
+the reasoning around a still-true mechanical fact; and a `board_item:` citation
+that has gone stale, which only a maintainer checkout with the board reachable
+can catch. The script's own module doc carries this list too.
 
 It is **not** user documentation and is not maintained as such. If you are
 looking for docs on using conway, go to [`docs/`](../docs/) instead.
