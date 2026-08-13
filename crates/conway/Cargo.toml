@@ -53,6 +53,11 @@ chrono = { workspace = true }
 blake3 = { workspace = true }
 
 [dev-dependencies]
+# Board item 01KZVYMMZJPPTFNQT3AEMJMEFH: `tests/architecture_invariants.rs`
+# parses workspace manifests to pin the dependency-shaped invariants (T1, T4,
+# T5). Already a workspace dependency used by four other crates, so this adds
+# nothing new to the tree.
+toml = { workspace = true }
 conway-core = { path = "../conway-core", features = ["fakes"] }
 # Board item 01KZFC43J1J06BM4CCWKCKHSNV: `conway` itself no longer depends on
 # the routing engine ([dependencies], above, has no such edge -- that's the
