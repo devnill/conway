@@ -249,12 +249,18 @@ const ALLOWLIST: &[Allowlisted] = &[
         reason: "WI-125's persisted context-exclusion overlay is READ by \
                  the fork-ancestry resolver (`apply_context_mask`), but \
                  nothing appends one -- there is no tool or operator \
-                 surface that can mask a record, so it cannot yet serve \
-                 the purpose its doc comment describes. Worse than \"no \
+                 surface that can mask a record. Worse than \"no \
                  producer\": a naive guard that treated resolver.rs's \
                  read as evidence of construction would have missed this \
-                 entirely.",
-        board_item: "01KYTQWD2SBW33YPNGY0YBN9WY",
+                 entirely. RESOLVED AS A DELIBERATE DEFERRAL, not an open \
+                 gap: the item filed for it was cancelled, and decision \
+                 01KZT3XF73Z5WBC09FSWD51RT7 rules compaction explicitly \
+                 out of scope -- its value is empirical and workload- \
+                 dependent, so the harness ships the seam and leaves the \
+                 policy outside. That decision also states what it does \
+                 NOT rule: `ContextMask` is not to be deleted, and this \
+                 allowlist entry stays until something changes it.",
+        board_item: "01KZJ8FVYH25A7GT4P68WTPZZP",
     },
     // -- Newly flagged by THIS guard (board item 01KYTXTXJ6DCE84ZRB06BHRGJW
     // itself), reported in that item's completion rather than fixed --
