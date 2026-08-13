@@ -8,30 +8,199 @@ against the tree as it stands — not the tree the design corpus describes.
 
 **Read `concepts.md` first**, specifically "Hook-first," "Observers vs
 participants," and "The value-class boundary" — this page assumes that
-vocabulary and does not re-explain it.
+vocabulary and does not re-explain it. **Then read
+[`trust-and-security.md`](trust-and-security.md)** before you wire anything
+in for real: a hook and a plugin both run with *your own* operator
+privileges the moment they're registered — there is no sandbox between a
+configured hook command (or an in-process `Tool`/`ContextHook`) and
+everything you yourself can touch. This page shows you how to build
+something that works; it does not repeat what that thing is allowed to do
+to you.
 
 ## The one thing to get straight before you start
 
-`concepts.md`'s own opening line matters more here than anywhere else in the
-set: *"conway's plugin architecture is being documented ahead of being fully
-built."* The declarative surface — a `hooks` block in `settings.json` naming
-an event and a command, no Rust required — is **decided, not built** (board
-item `01KZDC0RDRMMMJHX7SAFMM2Q5A`). If that's what you came here for, there is
-nothing to install yet.
+**This section used to say the declarative surface was "decided, not
+built." That was true when this page was first written and is false now —
+executed, not just read, as this set's own standing rule requires.**
+`[hooks].rules[]` in `settings.json` dispatches all seven core events
+(`hooks.md` point 13's Status row: "All SEVEN core events are real; nothing
+is design-only here anymore"), and a rule's `match` field (board item
+`01KZYAWQ6011Q6CJVG6CCMQPF1`) narrows a `pre_tool_use`/`post_tool_use` rule
+to one tool name or a `*`-glob, exactly as `PHILOSOPHY.md` §5 spells it.
+There are genuinely **two** ways to build a working hook today, not one:
 
-What you *can* build today, and what this page teaches, is an **in-process
-Rust hook**: you implement `Tool`, `Plugin`, and/or `ContextHook` against the
-curated `conway::plugin` facade, and wire it in through `ConwayBuilder`. This
-is real, F8 (board item `01KYTJC4S3Q7ZMH4EDRKNNN5G5`) landed 2026-08-01, and
-`crates/conway/tests/plugin_surface.rs` is a complete, compile-guarded worked
-example of exactly this shape — every snippet below is lifted from it or from
+1. **A declarative hook** — a `[hooks].rules[]` entry naming an `event`, an
+   optional tool `match`, and a `command` (an argv `Vec<String>`) to run. No
+   Rust, no compiling your own crate — the shipped `conway` binary already
+   does the dispatching. This is what "Ten minutes to a working hook" below
+   teaches, because it genuinely is the fastest path now — it wasn't when
+   this page last said otherwise.
+2. **An in-process Rust hook** — implement `Tool`, `Plugin`, and/or
+   `ContextHook` against the curated `conway::plugin` facade, and wire it in
+   through `ConwayBuilder`. This is what "Going further: an in-process Rust
+   hook" below teaches. It is still the *only* way to **edit** what the
+   model sees — a declarative hook's `HookPermissionVerdict` can only
+   `deny` (and only for `pre_tool_use`/`prompt_submitted`); it structurally
+   cannot rewrite a segment the way `ContextHook::before_request` can
+   (`concepts.md`'s value-class boundary table, "Context: Edit, drop,
+   replace, mask" — no declarative counterpart exists for that row).
+
+What's still genuinely true from the old framing, so you don't overcorrect:
+there is still no `hooks()` method on the `Plugin` trait itself — a `Plugin`
+you write contributes `tools()`, `commands()`, and `events()`, never a
+`[hooks]`-consulted script of its own — and there is still no
+script-dispatching *plugin* (`concepts.md`'s "Language choice"); the
+dispatching in mechanism 1 above is the runtime's own, built-in
+`ProcessHookRunner`, not something a third-party `Plugin` implementation
+provides. F8 (board item `01KYTJC4S3Q7ZMH4EDRKNNN5G5`, 2026-08-01) is still
+what makes mechanism 2 real, and `crates/conway/tests/plugin_surface.rs` is
+still a complete, compile-guarded worked example of it — every snippet in
+that section is lifted from it or from
 `crates/conway/examples/minimal_session.rs`, not invented for this page.
 
 ## Ten minutes to a working hook
 
-The fastest way to see a hook do something visible, in three steps: write it,
-prove it transforms a payload with no session or network involved, then wire
-it into a real (but fake-backed, no-credentials) session and watch it fire.
+The fastest way to see a hook do something visible: no crate, no compiling
+your own code, just three lines of JSON and a script. Write the rule
+(narrowed to one tool with `match`, so it isn't the "fires on every call"
+hook nobody wants), then watch it fire in a real session against a real
+model.
+
+### 1. Get a `conway` binary that dispatches hooks
+
+**A declarative rule is only ever consulted if the binary running it has a
+`HookRunner` injected** — `hooks.md` point 13 states this precisely: parsing
+and validating a `[hooks].rules[]` entry happens unconditionally, but
+*dispatching* it does not. The shipped CLI does this for you unconditionally
+(`conway-cli::build_conway` calls `ConwayBuilder::with_default_hook_runner`,
+board item `01KZVTTP492R3BDY33FAGYWDNW`) — if you're working inside a
+checkout of this repository and don't already have a `conway` binary:
+
+```console
+cargo build -p conway-cli --release
+```
+
+A facade-only embedder (writing their *own* thin binary rather than using
+the shipped CLI) gets nothing dispatched unless they call
+`ConwayBuilder::with_hook_runner`/`with_default_hook_runner` themselves — see
+"Writing a Rust plugin" below for what a from-scratch binary already has to
+set up, and note that a `[hooks]` block in that binary's config is otherwise
+silently inert, not an error.
+
+### 2. Write the rule, narrowed with `match`
+
+A rule that fires on every tool call is not the first hook anyone wants —
+`match` (board item `01KZYAWQ6011Q6CJVG6CCMQPF1`) is what narrows one. This
+rule logs one line every time (and only when) `bash` runs, in
+`~/.conway/settings.json` (or `$XDG_CONFIG_HOME/conway/settings.json` if
+that's set — see "Where things live" below for the exact discovery order):
+
+```json
+{
+  "default_role": "coder",
+  "backends": { "local": { "kind": "openai-compat", "dialect": "ollama", "base_url": "http://localhost:11434/v1" } },
+  "roles": { "coder": { "chain": ["local/qwen3:4b"] } },
+  "hooks": {
+    "rules": [
+      {
+        "id": "log-bash-calls",
+        "event": "post_tool_use",
+        "match": "bash",
+        "command": ["/bin/sh", "-c", "echo bash-hook-fired >> /path/to/hook.log"],
+        "timeout_ms": 3000
+      }
+    ]
+  }
+}
+```
+
+`match` is spelled `"match"` on the wire (exact tool name, or a `*`-glob
+against the tool's whole name — `"fs.*"` matches every `fs.*` tool) even
+though the Rust field behind it is `match_tool` (`match` is a reserved
+word). It only applies to `pre_tool_use`/`post_tool_use`, the two events
+that carry a tool name at all; setting it on any other event (e.g.
+`session_starting`) is a load-time config error naming this rule's `id`, not
+a silently-inert rule — narrower feedback than a misspelled tool name gets,
+which fires never, quietly, and is the one mistake with no safety net (check
+the tool's *registered* name, not the name you remember). Omitting `match`
+entirely fires the rule for every occurrence of `event`, unchanged from
+before this field existed — loud, and therefore self-correcting, but not
+what you want for a first hook.
+
+`post_tool_use` here is an **observation** event: it cannot deny anything,
+only react after the fact (`hooks.md` point 13's Status row). A
+`pre_tool_use` rule is the participant shape — its `HookAnswer.permission`
+can `deny { reason }` the call outright, which is the shape
+`crates/conway-cli/tests/hook_runner_wiring.rs`'s own end-to-end test
+exercises. Both share the exact same `match` narrowing.
+
+### 3. See it fire — and confirm the narrowing is real, not assumed
+
+Run a real turn against a real backend that can call `bash` (a local Ollama
+model, in this walkthrough's own evidence — no cloud credentials needed;
+see the evidence transcript for the full commands), and watch the log file:
+
+```console
+$ conway -p "List the files in this directory using the bash tool (run: ls)." --allowed-tools bash
+...
+The files in the current directory are:
+- ...
+$ cat hook.log
+bash-hook-fired
+```
+
+Bash is opt-in, not on by default (`docs/embedding.md`'s "Built-in plugin
+selection" section) — add `"tools": {"builtin_plugins": ["conway.fs",
+"conway.subagent", "conway.report", "conway.shell"]}` to `settings.json` if
+`bash` isn't already in your `builtin_plugins` list, or the model has
+nothing to call. `--allowed-tools bash` grants the one-shot `-p` run's own
+default-deny allow-list (`docs/scripting.md`'s permission-mode table)
+permission to actually run it — the hook fires downstream of that decision,
+never in place of it.
+
+**Prove the narrowing, don't just trust the field name exists.** Change
+`match` to `"fs.write"` (a tool this prompt never calls) and rerun the exact
+same prompt: `bash` still runs (the transcript still lists the files), but
+`hook.log` stays empty — the rule parsed, validated, and was consulted, and
+decided not to act, which is the *whole point* of a matcher and the exact
+failure mode (`hooks.md`, `.design/extension-architecture.md` §9.3) that's
+otherwise indistinguishable from "the hook isn't wired at all."
+
+## Where things live
+
+**Correcting this page's own earlier claim: there is now a config file to
+point you at.** `.conway/settings.json`'s `[hooks].rules[]`, discovered by
+the same walk-up-from-cwd, project-then-global precedence
+`docs/getting-started.md`'s "Configure a provider" section documents for
+everything else in that file (`.conway/settings.json` found by walking up
+from your current directory takes precedence over `~/.conway/settings.json`
+— or `$XDG_CONFIG_HOME/conway/settings.json` if that variable is set,
+*instead of* `~/.conway/settings.json`, not in addition to it). What's still
+true from before: **there is no runtime inventory surface.** `hooks.md`
+names this directly: other harnesses' documented failure mode is "a rule set
+nobody can inspect," and conway's own `/plugins` display — a place to list
+what hooks are active and whether each is healthy — is itself designed, not
+built (`hooks.md` point 12, `.design/extension-architecture.md` §9.4). Today,
+"what's active" is answered by reading `settings.json`'s own `[hooks].rules[]`
+list directly (for a declarative hook) or your own `ConwayBuilder` call — the
+`.with_plugin(..)`/`.with_context_hook(..)`/`.with_permission_gate(..)`
+chain *is* the inventory for an in-process one, because it's the only place
+registration happens.
+
+## Going further: an in-process Rust hook
+
+Everything above covers the declarative surface, which can observe and
+(for `pre_tool_use`/`prompt_submitted`) deny, but never rewrite what the
+model sees. When you need to **edit** context — narrow a tool's output,
+fold old turns, redact something — you need the other real mechanism: an
+in-process `ContextHook`, implemented against the curated `conway::plugin`
+facade and wired in through `ConwayBuilder`. This is what "Writing your
+first hook" originally meant before the declarative surface existed, and it
+is still the only path with edit/drop/replace authority
+(`concepts.md`'s value-class boundary table). It has no `match` field —
+narrowing which segments it acts on is your hook's own logic, inspecting
+`ContextPayload` yourself (see the cookbook's spill-to-file and compaction
+examples for worked cases of exactly that).
 
 ### 1. Depend on `conway`
 
@@ -190,68 +359,164 @@ let conway = ConwayBuilder::from_parts(minimal_config())
 The confinement root, backend routing, and event pipeline this now runs
 through are the real ones — only the backend and router are fakes standing in
 for a network call. This is the honest meaning of "see it in the UI" for a
-facade-only author today: there is no `/plugins` panel and no TUI surface for
-a hook that isn't a declarative one (`concepts.md`'s "Hook-first" section —
-no `hooks()` method exists on `Plugin` yet), so "the UI" is whatever your own
-binary prints from the session — the transcript (`turn.text().await`), or the
-raw event stream (`docs/embedding.md`'s "Consuming the event stream"
-section), or the session log itself. If you build the actual `conway`
-CLI/TUI experience with your hook wired in, you're building your own thin
-binary around `ConwayBuilder` the same way `conway-cli` does — there is no
-way to load an in-process Rust plugin into the shipped `conway` binary
-without recompiling it, because a plugin is `Arc<dyn Plugin>`, linked into
-the binary before the process starts (`concepts.md`'s "What exists today"
-list).
+facade-only author today: there is still no `/plugins` inventory panel for
+*either* mechanism (`hooks.md` point 12, unchanged) — a `ContextHook`
+specifically has no TUI surface of its own at all, unlike a `Plugin`'s
+`commands()`, which does register a real `/{plugin_id}.{name}` the TUI can
+run (see "Writing a Rust plugin" below) — so "the UI" for a `ContextHook` is
+whatever your own binary prints from the session — the transcript
+(`turn.text().await`), or the raw event stream (`docs/embedding.md`'s
+"Consuming the event stream" section), or the session log itself. If you
+build the actual `conway` CLI/TUI experience with your hook wired in,
+you're building your own thin binary around `ConwayBuilder` the same way
+`conway-cli` does — there is no way to load an in-process Rust plugin into
+the shipped `conway` binary without recompiling it, because a plugin is
+`Arc<dyn Plugin>`, linked into the binary before the process starts
+(`concepts.md`'s "What exists today" list).
 
-**Steps 1-3 of this walkthrough were executed verbatim** against a scratch
+**Steps 1-3 of this section were executed verbatim** against a scratch
 crate outside the workspace whose only conway dependency is `conway`
 itself, and the test passes. Running it is what caught the missing
 `artifacts` handle above: the snippet previously left that field as a
 comment, which is not valid Rust, so the page did not compile as written.
 
-## Where things live
-
-There is no config file to point you at yet, because the declarative surface
-that would read one doesn't exist (`concepts.md`'s "Hook-first," "Not yet
-implemented as a generalized surface"). Two things to know about "where":
-
-- **Project-then-global precedence is real, but it's for permissions, not
-  hooks.** `.conway/settings.json`, discovered by walking up from your
-  current directory, takes precedence over `~/.conway/settings.json`
-  (`docs/getting-started.md`'s "Configure a provider"). Nothing in that file
-  configures a hook today — `permissions.json` and `settings.json`'s
-  `[permissions]`/`[backends]`/`[roles]` sections are the only discovered
-  config surfaces a hook-adjacent author interacts with right now (for
-  example, to grant your plugin's tools through the pattern-rule mechanism
-  `hooks.md` point 6 documents).
-- **There is no runtime inventory surface.** `hooks.md` names this directly:
-  other harnesses' documented failure mode is "a rule set nobody can
-  inspect," and conway's own `/plugins` display — a place to list what
-  hooks are active and whether each is healthy — is itself designed, not
-  built (`hooks.md` point 12, `.design/extension-architecture.md` §9.4).
-  Today, "what's active" is answered by reading your own `ConwayBuilder`
-  call — the `.with_plugin(..)`/`.with_context_hook(..)`/
-  `.with_permission_gate(..)` chain *is* the inventory, because it's the
-  only place registration happens.
-
 ## Writing a Rust plugin
 
-The facade path taught above is the real, current answer to "how do I write
-a plugin," not a stopgap. `conway::plugin` re-exports everything you need to
-implement `Tool`, `Plugin`, and `ContextHook`: the three traits, their
-method-argument and return types, and the field types of the structs you
-construct. `docs/embedding.md`'s "Writing a plugin" section is the canonical
-list of what's exported and why each name is there — this page doesn't
-duplicate that list, only the shape of using it. Register through the
-builder:
+**Stated plainly, because it is the single most important correction on
+this page: installing a plugin requires building a binary, today, always.**
+There is no runtime plugin host — every `Plugin` is `Arc<dyn Plugin>`,
+linked into a specific binary in Rust before the process starts
+(`concepts.md`'s "What exists today" list). `[plugins].install` in
+`settings.json` does not reach out and fetch a plugin by name from
+anywhere; it *selects*, by id, among whatever plugins that specific binary's
+own `main()` already constructed and handed to
+`ConwayBuilder::install_selected` (or `with_plugin`) — a closed set fixed at
+compile time, never open at runtime. An id `[plugins].install` names that no
+linked bundle recognizes is a hard, named config error (see below), not "not
+found, so nothing happens." The honest framing for this beta is "add your
+crate to a binary and build" — never "drop a file somewhere and conway
+picks it up." A runtime, out-of-process plugin host is real design work with
+its own item, not this page's scope: `01KZY8PATND84AKY0J376E3DWV`.
+
+`conway::plugin` re-exports everything you need to implement `Tool`,
+`Plugin`, and `ContextHook`: the three traits, their method-argument and
+return types, and the field types of the structs you construct.
+`docs/embedding.md`'s "Writing a plugin" section is the canonical list of
+what's exported and why each name is there — this page doesn't duplicate
+that list, only the shape of using it.
+
+**Two new things on `Plugin` since this page was last written, worth
+knowing even if this walkthrough doesn't exercise them itself:**
+`Plugin::commands()` lets a plugin contribute a `/command` to the TUI,
+namespaced `/{plugin_id}.{name}` (never the author's own choice of
+namespace — the host prefixes it, closing the collision risk two plugins
+picking the same bare name would otherwise have), and `Plugin::events()`
+lets a plugin declare and fire its **own** hook event, reachable in a
+`[hooks].rules[].event` as `"{plugin_id}.{event_name}"` and narrowable by
+`match` the identical way a core event is, gated on the plugin's own
+declaration of whether its payload even carries a tool name to match
+against. Both default to an empty `Vec` — every existing `Plugin`
+implementor, including every snippet on this page, keeps compiling
+unmodified. `crates/conway-plugin-skeleton` is the shipped worked example of
+both, proven end to end rather than merely declared:
+`SkeletonPlugin::commands()`/`events()` register a real `/ping` command and
+a real `pong_dispatched` event, and `conway-plugin-skeleton/tests/
+skeleton_end_to_end.rs` drives a real configured `[hooks].rules[]` entry
+that actually receives the fired event.
+
+**A worked, executed example: your own thin binary, exactly like
+`conway-cli`'s own shape**, using `ConwayBuilder::install_selected`
+(`docs/embedding.md`'s "First-party plugin tier" section teaches this same
+call; this page had not been updated to use it before this walkthrough) —
+hand it every plugin, router, and backend factory *your* binary links, and
+it resolves `[plugins].install` against exactly those, calling `with_plugin`
+for each id it recognizes and raising a named config error for one it
+doesn't:
 
 ```rust,ignore
-let conway = ConwayBuilder::from_parts(config)
-    .with_plugin(Arc::new(MyPlugin))
-    .with_context_hook(Arc::new(MyHook))
-    .with_permission_gate(Arc::new(MyGate))
-    .build()?;
+use std::sync::Arc;
+
+use conway::plugin::{
+    async_trait, ContentBlock, PathArgs, PermissionClass, Plugin, PluginManifest, RenderKind,
+    Tool, ToolCall, ToolCategory, ToolCtx, ToolError, ToolName, ToolOutput, ToolSpec,
+    TruncationPolicy,
+};
+use conway::{BackendFactory, ConwayBuilder, SessionSpec};
+use conway_plugin_backends::OpenAiCompatBackendFactory;
+
+struct GreetTool;
+
+#[async_trait]
+impl Tool for GreetTool {
+    fn spec(&self) -> ToolSpec { /* ... */ }
+    async fn invoke(&self, call: ToolCall, _ctx: ToolCtx) -> Result<ToolOutput, ToolError> {
+        // ... (an ordinary Tool, nothing new here -- hooks.md point 2)
+    }
+    fn path_args(&self) -> PathArgs { PathArgs::None }
+    fn render_kind(&self) -> RenderKind { RenderKind::Structured }
+}
+
+#[derive(Default)]
+struct MyFirstPlugin;
+
+impl Plugin for MyFirstPlugin {
+    fn manifest(&self) -> PluginManifest {
+        PluginManifest {
+            id: "my.first_plugin".to_string(),
+            version: "0.1.0".to_string(),
+            tools: vec![ToolName::new("greet")],
+            required_host_caps: vec![],
+        }
+    }
+    fn tools(&self) -> Vec<Arc<dyn Tool>> { vec![Arc::new(GreetTool)] }
+}
+
+#[tokio::main]
+async fn main() -> conway::Result<()> {
+    let conway = ConwayBuilder::discover()?
+        .install_selected(
+            vec![Arc::new(MyFirstPlugin) as Arc<dyn Plugin>],
+            vec![], // no RouterFactory this binary links
+            vec![Arc::new(OpenAiCompatBackendFactory) as Arc<dyn BackendFactory>],
+        )?
+        .build()?;
+    let session = conway.new_session(SessionSpec::default()).await?;
+    let turn = session.prompt("Use the greet tool to greet someone named Ada.").await?;
+    println!("model said -> {}", turn.text().await?);
+    Ok(())
+}
 ```
+
+with `settings.json`'s `[plugins].install: ["my.first_plugin"]` naming it.
+
+**Executed against the real thing, not sketched:** the exact shape above (the
+`spec()`/`invoke()` bodies are elided here for length only — the scratch
+crate's own `GreetTool` is a complete, ordinary `Tool` impl, nothing hidden)
+compiled and ran as its own scratch binary outside the workspace, driven
+against a real local Ollama backend, and the model called `greet` —
+`AgentResult.summary` came back `"hello, Ada, from my-first-plugin!"`, this
+walkthrough's own tool text, reachable only if the call actually went
+through this plugin's own `Tool::invoke`. See the evidence transcript
+(`.design/authoring-walkthrough-evidence.md`) for the full commands, the
+full unelided source, and the output.
+
+**A gotcha this walkthrough hit, and `docs/embedding.md`'s own example
+doesn't warn you about because its `install_selected` snippet is
+illustrative only (`rust,ignore`, empty bundles):** `install_selected`
+resolves `[plugins].install` **unioned with** `[plugins].default_backends`
+(default `["anthropic", "openai-compat"]`) against your three bundles —
+every id in that union must resolve to *something* you linked, or `build()`
+fails naming the unresolved id. A binary that links only
+`OpenAiCompatBackendFactory` (as above) and never touches
+`[plugins].default_backends` fails with `plugins.install names unknown id
+'anthropic'` — not because anything about your plugin is wrong, but because
+the default backend-kind list still names a dialect this binary never
+linked. Either link `conway_plugin_backends::AnthropicBackendFactory` too,
+or narrow `"plugins": {"default_backends": ["openai-compat"]}` in
+`settings.json` to only the kind(s) your binary actually has. This was
+caught by running the snippet above, not by reading `install_selected`'s
+own doc comment, which states the union rule correctly but doesn't call out
+this specific failure mode.
 
 **The known boundary, stated without smoothing it.** The facade parity gap
 board item `01KYYB2T8AHB4SJFHNG4ZETYN8` opened naming four types a plugin
@@ -399,9 +664,11 @@ What this means for you, concretely:
 ## Where to go next
 
 [`docs/plugins/README.md`](README.md) routes the rest of the set.
-[`scripts.md`](scripts.md) covers the any-language script convention (a
-different authoring surface, layered on the same mechanism, not yet built
-either). [`inference-hooks.md`](inference-hooks.md) covers a hook whose
+[`scripts.md`](scripts.md) covers the any-language script convention in
+depth — the same `[hooks].rules[].command` mechanism "Ten minutes to a
+working hook" above uses, in full: any language, not just `/bin/sh`, and
+the exact per-event boundary of what's dispatched today.
+[`inference-hooks.md`](inference-hooks.md) covers a hook whose
 decision is made by a model rather than by code.
 [`cookbook.md`](cookbook.md) carries worked, end-to-end examples beyond
 this page's single demo hook — five of them, each labeled
