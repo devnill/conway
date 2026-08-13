@@ -30,6 +30,19 @@
 //! for regression coverage, and that test's own doc for why the exact
 //! winning interleaving cannot be forced deterministically from outside
 //! tokio's scheduler.
+//!
+//! ## `child_reported` rides the identical gate (board item 01KZYAXSGDS8AP7YK1CN7H680G)
+//!
+//! `AgentLoop::finish`'s own `is_first`-gated dispatch of `child_reported`
+//! covers a normal completion, INCLUDING a client-observed cancellation
+//! (`finish_cancelled` routes through the same `finish`). It does NOT cover
+//! a task this module itself had to synthesize a result for -- a caught
+//! panic, or a task still unresponsive past `grace` and `abort()`'d -- since
+//! that task never reached its own `finish()` through this path. The
+//! `Synthesized` branch below dispatches the same event under the identical
+//! `won` gate `Event::AgentFinished` already uses, so a hook subscribed to
+//! `child_reported` sees every terminal result that crosses back to a
+//! parent, exactly once, regardless of which side of the race produced it.
 
 use std::future::pending;
 use std::sync::Arc;
@@ -43,6 +56,7 @@ use tokio::task::{JoinError, JoinHandle};
 use tokio_util::sync::CancellationToken;
 
 use crate::events::EventBus;
+use crate::hook_dispatch::{HookDispatcher, CHILD_REPORTED};
 use crate::tree::AgentTree;
 
 /// Grace window given to a task that is mid-shutdown (deadline elapsed or
@@ -60,6 +74,20 @@ pub struct SuperviseArgs {
     pub deadline: Option<DateTime<Utc>>,
     pub grace: Duration,
     pub task: JoinHandle<AgentResult>,
+    /// Board item 01KZYAXSGDS8AP7YK1CN7H680G: the SAME `HookDispatcher`
+    /// `Runtime`/`ToolRunner` share for every other observation event
+    /// (`crate::runtime::Runtime`'s own `hooks` field doc) -- this module's
+    /// only use of it is `child_reported`, dispatched on the `Synthesized`
+    /// branch below. Both `Runtime::launch_agent` and `Runtime::start_root`
+    /// pass `self.hooks.clone()`, so an embedder who never wires a runner
+    /// leaves this a no-op, unchanged from every other dispatch site.
+    pub hooks: Arc<HookDispatcher>,
+    /// This agent's parent, if any -- `None` for a root
+    /// (`crate::runtime::Runtime::start_root`'s own `SuperviseArgs`
+    /// construction). `child_reported`'s own doc: "never fires for a root's
+    /// own finish", so this module skips dispatching entirely when `None`,
+    /// mirroring `AgentLoop::finish`'s identical `self.parent` check.
+    pub parent: Option<AgentId>,
 }
 
 /// Whether the produced `AgentResult` came from the task itself (preferred:
@@ -98,6 +126,8 @@ pub fn supervise(args: SuperviseArgs) -> JoinHandle<()> {
         deadline,
         grace,
         mut task,
+        hooks,
+        parent,
     } = args;
 
     tokio::spawn(async move {
@@ -176,9 +206,32 @@ pub fn supervise(args: SuperviseArgs) -> JoinHandle<()> {
                     bus.emit_pruning(
                         session,
                         agent,
-                        Event::AgentFinished { result, ephemeral },
+                        Event::AgentFinished {
+                            result: result.clone(),
+                            ephemeral,
+                        },
                         prune,
                     );
+                    // `child_reported` (board item 01KZYAXSGDS8AP7YK1CN7H680G)
+                    // -- see this module's own doc ("`child_reported` rides
+                    // the identical gate") for why this is the ONE place a
+                    // synthesized terminal result needs its own dispatch,
+                    // separate from `AgentLoop::finish`'s.
+                    if let Some(parent) = &parent {
+                        if hooks.will_dispatch(CHILD_REPORTED) {
+                            hooks
+                                .dispatch(
+                                    CHILD_REPORTED,
+                                    serde_json::json!({
+                                        "agent_id": agent,
+                                        "parent": parent,
+                                        "session": session,
+                                        "result": result,
+                                    }),
+                                )
+                                .await;
+                        }
+                    }
                 }
             }
         }

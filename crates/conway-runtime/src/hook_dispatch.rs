@@ -3,13 +3,31 @@
 //!
 //! # The two tiers
 //!
-//! **Observation-only** (board item 01KZS019NHG11RVQYSVT7RG0P5):
-//! `post_tool_use`, `session_starting`, `child_spawned`. These cannot say no,
-//! and that is the whole point of them — an operator wanting a log line per
-//! command, or a notification when a child starts, needs to be told a thing
-//! happened and nothing more. Each fires at a place that already knows the
-//! moment has passed. [`HookDispatcher::dispatch`] serves them and returns
-//! `()`.
+//! **Observation-only** (board item 01KZS019NHG11RVQYSVT7RG0P5, joined by
+//! board item 01KZYAXSGDS8AP7YK1CN7H680G's `request_assembled`/
+//! `child_reported`): `post_tool_use`, `session_starting`, `child_spawned`,
+//! `request_assembled`, `child_reported`. These cannot say no, and that is
+//! the whole point of them — an operator wanting a log line per command, or
+//! a notification when a child starts, needs to be told a thing happened
+//! and nothing more. Each fires at a place that already knows the moment has
+//! passed. [`HookDispatcher::dispatch`] serves them and returns `()`.
+//!
+//! **`request_assembled`/`child_reported` are observation-only by the SAME
+//! reasoning as their three siblings above, not a new decision.**
+//! `request_assembled` sits at the seam `ContextHook::before_request`
+//! (`agent_loop.rs`, WI-126) already edits the assembled payload at, so a
+//! reader could reasonably expect this hook to edit too — it cannot, and
+//! this doc says so rather than leaving that a surprise. A SEPARATE,
+//! still-open board item (01KZRZZP6A4A27R3EN0HQAENBS) covers a configured
+//! script editing assembled context append-only without breaking the prompt
+//! cache; this item does not build that, and shipping `request_assembled`
+//! as observation-only does not foreclose it -- widening `HookAnswer`'s
+//! vocabulary later is additive, never a breaking change to what already
+//! shipped. `child_reported` fires for BOTH a normal completion
+//! (`AgentLoop::finish`) and a supervisor-synthesized terminal result (a
+//! panic, or a task unresponsive past `supervisor::DEFAULT_GRACE` --
+//! `supervisor.rs`), because a hook that only sees the happy path is
+//! misleading about what "a child reporting" means.
 //!
 //! **Deny-capable but never modifying** (board item 01KZS01ZBNEY12DBDNW2Y861SQ):
 //! `prompt_submitted`. It fires BEFORE the prompt is processed, so a hook
@@ -90,7 +108,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
-use conway_core::hook::{HookEvent, HookInvocation, HookPermissionVerdict};
+use conway_core::hook::{tool_matcher_matches, HookEvent, HookInvocation, HookPermissionVerdict};
 use conway_core::ports::HookRunner;
 
 /// One configured observation hook: the operator's own id for it, plus what
@@ -109,6 +127,42 @@ pub struct HookSpec {
     pub id: String,
     pub command: Vec<String>,
     pub timeout_ms: u64,
+    /// The rule's `HookEntry::match_tool` (board item
+    /// 01KZYAWQ6011Q6CJVG6CCMQPF1), carried through untouched. `None`
+    /// (the config-default) fires this hook for every event it is
+    /// subscribed to, unchanged from before this field existed. `Some`
+    /// only ever NARROWS which of `event`'s occurrences invoke this hook --
+    /// see [`Self::applies_to`].
+    ///
+    /// Only meaningful for [`POST_TOOL_USE`]: it is the only event this
+    /// tier dispatches whose payload names a tool
+    /// (`crates/conway-runtime/src/tools/runner.rs`'s `"tool"` key). For
+    /// every OTHER event this tier dispatches, `merge::validate` refuses to
+    /// load a config that set `match` on that rule in the first place, so a
+    /// `Some` here for a non-`post_tool_use` event is a state the loader
+    /// already rejected -- [`Self::applies_to`] handles it defensively
+    /// anyway (never matches, rather than panicking or matching everything)
+    /// for any caller that constructs a `HookSpec` directly rather than
+    /// through the loader (e.g. this module's own tests).
+    pub matcher: Option<String>,
+}
+
+impl HookSpec {
+    /// Whether this hook should run for `payload`: `true` when no matcher
+    /// is set, or when one is set and `payload`'s `"tool"` string field
+    /// satisfies it (`conway_core::hook::tool_matcher_matches`). A matcher
+    /// set on a payload with no `"tool"` field at all (every dispatched
+    /// event except [`POST_TOOL_USE`]) never matches -- see this field's
+    /// own doc for why that state should not occur past config load.
+    fn applies_to(&self, payload: &serde_json::Value) -> bool {
+        match &self.matcher {
+            None => true,
+            Some(pattern) => payload
+                .get("tool")
+                .and_then(|v| v.as_str())
+                .is_some_and(|tool| tool_matcher_matches(pattern, tool)),
+        }
+    }
 }
 
 /// The event name every `post_tool_use` subscription is keyed on.
@@ -117,6 +171,22 @@ pub const POST_TOOL_USE: &str = "post_tool_use";
 pub const SESSION_STARTING: &str = "session_starting";
 /// The event name every `child_spawned` subscription is keyed on.
 pub const CHILD_SPAWNED: &str = "child_spawned";
+/// The event name every `request_assembled` subscription is keyed on
+/// (board item 01KZYAXSGDS8AP7YK1CN7H680G). Fired once per turn by
+/// `AgentLoop::run_inner`, after `ContextBuilder::build` (and, if
+/// registered, `ContextHook::before_request`'s own edit) and before that
+/// turn's route/attempt call.
+pub const REQUEST_ASSEMBLED: &str = "request_assembled";
+/// The event name every `child_reported` subscription is keyed on (board
+/// item 01KZYAXSGDS8AP7YK1CN7H680G). Fired for every terminal `AgentResult`
+/// that crosses back to a parent -- both a normal completion
+/// (`AgentLoop::finish`) and a supervisor-synthesized one (`supervisor.rs`,
+/// a panic or a task unresponsive past `supervisor::DEFAULT_GRACE`) --
+/// gated on the SAME publish-race winner as `Event::AgentFinished` at each
+/// site, so this fires exactly once per agent, from whichever side won.
+/// Never fires for a ROOT agent's own finish: a root has no parent for a
+/// result to cross back to.
+pub const CHILD_REPORTED: &str = "child_reported";
 
 /// The deny-capable-but-never-modifying event (board item
 /// 01KZS01ZBNEY12DBDNW2Y861SQ). Fires at both prompt-submission call sites.
@@ -124,7 +194,13 @@ pub const PROMPT_SUBMITTED: &str = "prompt_submitted";
 
 /// Every observation event this tier dispatches, in one place so a caller
 /// wiring config can iterate the supported set rather than restating it.
-pub const OBSERVATION_EVENTS: &[&str] = &[POST_TOOL_USE, SESSION_STARTING, CHILD_SPAWNED];
+pub const OBSERVATION_EVENTS: &[&str] = &[
+    POST_TOOL_USE,
+    SESSION_STARTING,
+    CHILD_SPAWNED,
+    REQUEST_ASSEMBLED,
+    CHILD_REPORTED,
+];
 
 /// Every event this module dispatches at all, observation and deny-capable
 /// alike -- what `ConwayBuilder::build` filters `[hooks].rules[]` against.
@@ -132,6 +208,22 @@ pub const DISPATCHED_EVENTS: &[&str] = &[
     POST_TOOL_USE,
     SESSION_STARTING,
     CHILD_SPAWNED,
+    REQUEST_ASSEMBLED,
+    CHILD_REPORTED,
+    PROMPT_SUBMITTED,
+];
+
+/// Every event whose payload never carries a `"tool"` name -- what
+/// `crates/conway/src/config/merge.rs`'s hooks check refuses to let a rule
+/// pair `match` with. `pre_tool_use` (this module does not dispatch it --
+/// see `crate::permission::PermissionBroker`) belongs on this same
+/// semantic list; it is enumerated separately by that check because it is
+/// not one of THIS module's own dispatched events.
+pub const EVENTS_WITHOUT_TOOL_NAME: &[&str] = &[
+    SESSION_STARTING,
+    CHILD_SPAWNED,
+    REQUEST_ASSEMBLED,
+    CHILD_REPORTED,
     PROMPT_SUBMITTED,
 ];
 
@@ -213,6 +305,14 @@ impl HookDispatcher {
     /// True when `event` has at least one subscriber AND a runner exists —
     /// i.e. when [`Self::dispatch`] would actually spawn something. Lets a
     /// caller skip assembling a payload it would only throw away.
+    ///
+    /// **Per-EVENT, not per-matcher.** A subscriber whose
+    /// [`HookSpec::matcher`] would reject the specific call this event fires
+    /// for still counts as "at least one subscriber" here -- this method has
+    /// no `tool` argument to check a matcher against, only `event`'s name.
+    /// [`Self::dispatch`] itself is where a matcher can still decide, per
+    /// hook, to run nothing; this remains a coarse, cheap precheck, not a
+    /// guarantee that a spawn follows.
     pub fn will_dispatch(&self, event: &str) -> bool {
         self.runner
             .read()
@@ -226,7 +326,9 @@ impl HookDispatcher {
                 .is_some_and(|h| !h.is_empty())
     }
 
-    /// Invokes every hook subscribed to `event`, in configured order.
+    /// Invokes every hook subscribed to `event` whose [`HookSpec::matcher`]
+    /// (board item 01KZYAWQ6011Q6CJVG6CCMQPF1) is unset or satisfied by
+    /// `payload`'s `"tool"` field, in configured order.
     ///
     /// **Returns `()` on purpose** — see the module doc. A hook that fails,
     /// times out, or returns an unparseable answer is logged and skipped; the
@@ -250,7 +352,7 @@ impl HookDispatcher {
             .cloned()
             .unwrap_or_default();
 
-        for hook in &hooks {
+        for hook in hooks.iter().filter(|hook| hook.applies_to(&payload)) {
             let invocation = HookInvocation {
                 command: hook.command.clone(),
                 timeout_ms: hook.timeout_ms,
@@ -370,6 +472,14 @@ mod tests {
             id: id.to_string(),
             command: vec!["/bin/true".to_string()],
             timeout_ms: 1_000,
+            matcher: None,
+        }
+    }
+
+    fn spec_matching(id: &str, matcher: &str) -> HookSpec {
+        HookSpec {
+            matcher: Some(matcher.to_string()),
+            ..spec(id)
         }
     }
 
@@ -447,6 +557,77 @@ mod tests {
         d.set_runner(None);
         assert!(!d.will_dispatch(POST_TOOL_USE));
         d.dispatch(POST_TOOL_USE, serde_json::json!({})).await;
+        assert!(runner.seen.lock().expect("seen lock poisoned").is_empty());
+    }
+
+    // ---------------------------------------------------------------- matcher --
+
+    /// ACCEPTANCE (board item 01KZYAWQ6011Q6CJVG6CCMQPF1): a `post_tool_use`
+    /// rule matching one tool fires for that tool and does NOT fire for
+    /// another -- the VERIFICATION ANCHOR, at the unit level (the
+    /// integration-level version drives this through a real `ToolRunner`;
+    /// see `crates/conway-runtime/tests/hook_dispatch.rs`).
+    #[tokio::test]
+    async fn a_matcher_fires_only_for_its_own_tool() {
+        let runner = Arc::new(RecordingRunner::default());
+        let d = HookDispatcher::new();
+        d.set_runner(Some(runner.clone()));
+        d.set_hooks(BTreeMap::from([(
+            POST_TOOL_USE.to_string(),
+            vec![
+                spec_matching("read-watcher", "read"),
+                spec_matching("edit-watcher", "edit"),
+            ],
+        )]));
+
+        d.dispatch(POST_TOOL_USE, serde_json::json!({"tool": "read"}))
+            .await;
+        d.dispatch(POST_TOOL_USE, serde_json::json!({"tool": "edit"}))
+            .await;
+
+        let seen = runner.seen.lock().expect("seen lock poisoned").clone();
+        let ids_for = |tool: &str| -> usize {
+            seen.iter()
+                .filter(|(_, payload)| payload["tool"] == tool)
+                .count()
+        };
+        assert_eq!(
+            seen.len(),
+            2,
+            "each matcher must fire exactly once: {seen:?}"
+        );
+        assert_eq!(ids_for("read"), 1);
+        assert_eq!(ids_for("edit"), 1);
+    }
+
+    /// Shown to fail by removing the matcher check (VERIFICATION ANCHOR):
+    /// with no `matcher` set, a rule fires for every tool, unchanged from
+    /// before this field existed -- an existing config with no `match` key
+    /// behaves identically.
+    #[tokio::test]
+    async fn an_absent_matcher_fires_for_every_tool() {
+        let (d, runner) = wired(false);
+        d.dispatch(POST_TOOL_USE, serde_json::json!({"tool": "read"}))
+            .await;
+        d.dispatch(POST_TOOL_USE, serde_json::json!({"tool": "edit"}))
+            .await;
+        assert_eq!(runner.seen.lock().expect("seen lock poisoned").len(), 2);
+    }
+
+    /// A matcher set on an event whose payload carries no `"tool"` key never
+    /// matches -- the defensive fallback `HookSpec::applies_to`'s own doc
+    /// describes for a state `merge::validate` already refuses to load.
+    #[tokio::test]
+    async fn a_matcher_on_a_toolless_payload_never_fires() {
+        let runner = Arc::new(RecordingRunner::default());
+        let d = HookDispatcher::new();
+        d.set_runner(Some(runner.clone()));
+        d.set_hooks(BTreeMap::from([(
+            SESSION_STARTING.to_string(),
+            vec![spec_matching("stray", "bash")],
+        )]));
+
+        d.dispatch(SESSION_STARTING, serde_json::json!({})).await;
         assert!(runner.seen.lock().expect("seen lock poisoned").is_empty());
     }
 }

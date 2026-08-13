@@ -904,6 +904,57 @@ impl AgentLoop {
                 }
             }
 
+            // `request_assembled` (board item 01KZYAXSGDS8AP7YK1CN7H680G):
+            // fires once per turn, here -- after `ContextBuilder::build` AND
+            // (if one is registered) `ContextHook::before_request`'s own
+            // edit immediately above, so a subscriber sees the FINAL
+            // assembled request, never the pre-hook one -- and before
+            // `route_and_attempt` below, exactly as `schema::HooksConfig`'s
+            // own doc states.
+            //
+            // OBSERVATION-ONLY, like `post_tool_use`/`session_starting`/
+            // `child_spawned`: `HookDispatcher::dispatch` returns `()` and
+            // discards `HookAnswer::context`/`permission` unread, so a
+            // failing or slow hook here cannot affect this turn -- there is
+            // no denial path and no edit path, on purpose (see
+            // `crate::hook_dispatch`'s module doc for why, and the
+            // still-open board item that covers the editing case).
+            //
+            // A SUMMARY payload, not a full segment dump: `report.segments`
+            // already carries the ordered content this turn is made of, and
+            // shipping it verbatim on every turn is a performance/privacy
+            // decision this item does not make unilaterally -- the same
+            // token/segment-count figures `Event::ContextSegmentAdded`
+            // already publishes above, plus `model_pin` (the model this
+            // agent is PINNED to, if any -- routing has not run yet, so no
+            // resolved model exists to report).
+            //
+            // Reached through `LoopDeps::tool_runner` rather than a new
+            // `LoopDeps` field: `ToolRunner::hooks()` is the SAME shared
+            // `HookDispatcher` `Runtime::new` already wires `post_tool_use`/
+            // `session_starting`/`child_spawned`/`prompt_submitted` through
+            // (`tools/runner.rs`'s own doc on `ToolRunner::hooks`), so
+            // wiring one runner reaches every dispatched event -- no new
+            // machinery, only this call site.
+            let hooks = self.deps.tool_runner.hooks();
+            if hooks.will_dispatch(crate::hook_dispatch::REQUEST_ASSEMBLED) {
+                hooks
+                    .dispatch(
+                        crate::hook_dispatch::REQUEST_ASSEMBLED,
+                        serde_json::json!({
+                            "agent_id": self.agent_id,
+                            "agent_path": self.agent_path,
+                            "session": self.session,
+                            "turn": state.turn,
+                            "model_pin": self.spec.pin.as_ref().map(|pin| pin.model.clone()),
+                            "segment_count": report.segments.len(),
+                            "total_tokens_est": report.total_tokens_est,
+                            "tokenizer": report.tokenizer.clone(),
+                        }),
+                    )
+                    .await;
+            }
+
             let headroom = resolve_headroom(&self.spec, &self.deps.headroom);
 
             // WI-126: `route_and_attempt` owns routing, the attempt call,
@@ -1526,6 +1577,38 @@ impl AgentLoop {
                     from: self.agent_id,
                     result: result.clone(),
                 });
+            }
+            // `child_reported` (board item 01KZYAXSGDS8AP7YK1CN7H680G):
+            // observation-only, gated on the SAME `is_first` publish-race
+            // winner as the `Event::AgentFinished` emit and the mailbox
+            // delivery immediately above -- so this fires exactly once per
+            // agent, never once per race participant. Only when this agent
+            // HAS a parent: a root's own finish is not "a child reporting"
+            // (`self.parent_mailbox` is `None` for every root -- see that
+            // field's own construction in `runtime.rs`/`subagent.rs` --
+            // deliberately checked on `self.parent`, the SAME condition,
+            // rather than re-deriving it).
+            //
+            // `supervisor.rs`'s `Outcome::Synthesized` branch dispatches the
+            // IDENTICAL event, under the identical `won`/`is_first`-shaped
+            // gate, for the one case that can race THIS call out from under
+            // itself: a panic, or a task still unresponsive past
+            // `supervisor::DEFAULT_GRACE` -- see that module's own doc.
+            if let Some(parent) = self.parent {
+                let hooks = self.deps.tool_runner.hooks();
+                if hooks.will_dispatch(crate::hook_dispatch::CHILD_REPORTED) {
+                    hooks
+                        .dispatch(
+                            crate::hook_dispatch::CHILD_REPORTED,
+                            serde_json::json!({
+                                "agent_id": self.agent_id,
+                                "parent": parent,
+                                "session": self.session,
+                                "result": result,
+                            }),
+                        )
+                        .await;
+                }
             }
         }
         result

@@ -7,6 +7,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`[hooks].rules[]` entries can now target one tool instead of firing for
+  every call** (board item 01KZYAWQ6011Q6CJVG6CCMQPF1). A `pre_tool_use` or
+  `post_tool_use` rule with no `match` fires for every tool, exactly as
+  before this item; a rule with `match` set narrows to calls whose tool
+  satisfies it -- an exact name (`"bash"`) or a `*`-glob against the tool's
+  whole name (`"fs.*"`), the two shapes `PHILOSOPHY.md` §5's own canonical
+  example needs and no more (no regex dialect). Before this item, the
+  canonical example on that page -- run the formatter after a write -- was
+  unwriteable: the rule would fire on every read, every glob, every bash
+  call, and the script itself would have to parse the payload to find out
+  whether it should do anything. `match` closes that gap. **The wire
+  spelling is literally `"match"`**, matching the page exactly (the Rust
+  field is `match_tool`, since `match` is a reserved word) -- the config
+  shape otherwise stays the flat, per-entry-`event` list it already was;
+  see `crates/conway/src/config/schema.rs`'s `HookEntry::match_tool` for the
+  full config-shape decision this item records. Setting `match` on any
+  event that carries no tool name (`session_starting`, `child_spawned`,
+  `request_assembled`, `child_reported`, `prompt_submitted`) is a load-time
+  config error naming the offending rule's `id`, never a silently-inert
+  rule.
+  (`crates/conway-core/src/hook.rs`, `crates/conway-runtime/src/permission.rs`,
+  `crates/conway-runtime/src/hook_dispatch.rs`,
+  `crates/conway/src/config/schema.rs`, `crates/conway/src/config/merge.rs`,
+  `crates/conway/src/builder.rs`, `crates/conway-runtime/tests/hook_dispatch.rs`,
+  `crates/conway/tests/config_validation.rs`, `docs/plugins/hooks.md`)
+
+- **The last two `[hooks]` events -- `request_assembled` and
+  `child_reported` -- now dispatch** (board item 01KZYAXSGDS8AP7YK1CN7H680G),
+  closing the gap the previous `[hooks]` dispatch entry below left open ("Two
+  events remain forward-declared"). Both are OBSERVATION-ONLY, joining
+  `post_tool_use`/`session_starting`/`child_spawned` rather than becoming a
+  fourth shape: they cannot deny anything and a failing hook is logged and
+  swallowed, never propagated. No new machinery was needed -- both reuse the
+  identical `HookRunner` port and `HookDispatcher` the three earlier
+  observation events already run through; this item adds only its own two
+  dispatch call sites. `request_assembled` fires once per turn, from
+  `AgentLoop::run_inner`, after `ContextBuilder::build` and (if one is
+  registered) `ContextHook::before_request`'s own edit, and before that
+  turn's route/attempt call -- the FINAL assembled request, never the
+  pre-hook one. Its payload is a SUMMARY (segment count, estimated tokens,
+  tokenizer, turn, an unrouted model pin if one is set), not a full segment
+  dump: shipping the whole assembled context verbatim on every turn is a
+  performance/privacy decision this item does not make unilaterally.
+  **Observation-only despite sitting at the exact seam
+  `ContextHook::before_request` already edits the assembled request at** --
+  a reasonable thing to expect it to edit too, so this is stated rather than
+  left a surprise; a configured script editing assembled context
+  append-only without breaking the prompt cache is a separate, still-open
+  board item (01KZRZZP6A4A27R3EN0HQAENBS) this one does not build and does
+  not foreclose. `child_reported` fires for every terminal `AgentResult`
+  that crosses back to a parent -- both a normal completion
+  (`AgentLoop::finish`) and a supervisor-synthesized one (`supervisor.rs`: a
+  panic, or a task unresponsive past its grace window) -- from TWO dispatch
+  call sites gated on the identical publish-race winner `Event::AgentFinished`
+  already uses at each site, so it fires exactly once per agent regardless
+  of which side wins; it never fires for a root's own finish, since a root
+  has no parent for a result to cross back to.
+  (`crates/conway-runtime/src/hook_dispatch.rs`,
+  `crates/conway-runtime/src/agent_loop.rs`,
+  `crates/conway-runtime/src/supervisor.rs`, `crates/conway-runtime/src/runtime.rs`,
+  `crates/conway/src/config/schema.rs`, `crates/conway-runtime/tests/hook_dispatch.rs`,
+  `crates/conway-runtime/tests/supervisor.rs`, `docs/plugins/hooks.md`)
+
 ### Security
 
 - **`ratatui` upgraded 0.29 -> 0.30, clearing the transitive `lru`
