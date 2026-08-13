@@ -3,8 +3,9 @@
 This page covers pointing conway at the models you actually have access
 to: what each provider kind needs, and how to add a provider conway
 doesn't already know about without waiting for a code change. For the
-five-minute path to a first working session (including the mandatory
-`.conway/models.json` file every backend needs), see
+five-minute path to a first working session (including where
+`.conway/models.json` fits — optional on a default build, required once the
+routing plugin is installed), see
 [`getting-started.md`](getting-started.md); this page goes deeper on the
 provider side. For controlling *which* configured model actually serves a
 given request, see [`routing.md`](routing.md).

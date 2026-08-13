@@ -86,8 +86,9 @@ println!("prompt -> {}", turn.text().await?);
 let _ = turn.result().await?;
 ```
 
-For a **real** session — a real backend, real capability-based routing, a
-real store — drop the fake wiring and start from `ConwayBuilder::discover()`
+For a **real** session — a real backend, real role routing over an ordered
+fallback chain, a real store — drop the fake wiring and start from
+`ConwayBuilder::discover()`
 or `from_config(path)` instead; those bring everything `conway new_session`
 would need, the same construction the CLI itself uses (see
 `crates/conway-cli/src/main.rs`'s `build_conway`).

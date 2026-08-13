@@ -27,29 +27,44 @@ over conway's built-in defaults). At minimum, `settings.json` needs a
 `[roles.<alias>]` entry (named by `default_role`) whose model chain points
 at that backend.
 
-**A second file is required alongside it.** conway only routes to a model
-if that exact `"backend/model"` pair has a capability entry in
-`.conway/models.json` (the file named by `[models.metadata_path]`, which
-defaults to `.conway/models.json`). This applies to every backend kind,
-including Anthropic — it's not optional. Skip it and you'll see a routing
-error before conway ever contacts your provider:
+That is enough to run. **A second file, `.conway/models.json`, is optional
+on a default build and worth adding anyway** — it declares each
+`"backend/model"` pair's capabilities (the file is named by
+`[models.metadata_path]`, which defaults to `.conway/models.json`).
+
+Without it, a default build still routes and still serves turns: it resolves
+your role to its configured chain and walks that chain in order. What you
+lose is the TUI's context-window percentage — the status line falls back to
+a raw token count (`ctx 12.3k` instead of `ctx 42%`), because nothing has
+told conway how large the window is. Startup is not blocked and no error is
+raised.
+
+**It stops being optional once you install the routing plugin**
+(`conway.routing` — see "Installing a first-party plugin" below). That
+plugin filters candidates on their declared capabilities before any request
+goes out, and a pair it has no entry for is not a candidate:
 
 ```text
 routing error: no candidate for role coder (1 considered): anthropic/claude-sonnet-4-6: capability: capabilities: unknown (backend, model) pair
 ```
 
+That error comes from the routing plugin and cannot occur without it. If
+you are following this page on a default build and looking for it, it will
+not appear.
+
 If you've set `[models].probe_on_startup` for an `openai-compat` backend,
-that startup probe cannot fill this gap for you: it may only confirm and
+that startup probe cannot fill the gap for you: it may only confirm and
 narrow the capabilities of a pair `models.json` already lists, never add a
 pair on its own — a server reporting a model it serves is not the same as
 you declaring it, and conway never routes to a model on the strength of
 the server's own say-so alone.
 
 Each entry needs four fields; `max_context_tokens` and `reliability_tier`
-affect routing and the TUI's context-window display, `tool_calling` and
-`reasoning` are currently informational.
+affect the TUI's context-window display, and feed capability filtering once
+the routing plugin is installed. `tool_calling` and `reasoning` are
+currently informational.
 
-Create both files under `.conway/` in your project directory (or under
+Create the files under `.conway/` in your project directory (or under
 `~/.conway/` — or `$XDG_CONFIG_HOME/conway/` if that's set — for a config
 that follows you across projects).
 
