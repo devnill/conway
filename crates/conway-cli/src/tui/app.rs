@@ -38,6 +38,19 @@ struct ModalAskOutcome {
     reply: conway::Result<String>,
 }
 
+/// The result of one spawned plugin-command task (board item
+/// 01KZYBFTK4QPB45AJT9M57P60W) -- see [`App`]'s own `plugin_cmd_tx`/
+/// `plugin_cmd_rx` doc and [`commands::Effect::RunPluginCommand`]'s.
+/// `outcome` is already a [`conway::plugin::CommandOutcome::Error`] when the
+/// spawned task panicked (`App::run`'s own `Effect::RunPluginCommand` arm
+/// converts a `JoinError` into this variant before sending -- the receiving
+/// `select!` arm never needs to know the difference between "the plugin
+/// returned an error" and "the plugin's task panicked").
+struct PluginCommandDone {
+    full_name: String,
+    outcome: conway::plugin::CommandOutcome,
+}
+
 /// How long a lone `Ctrl-C` remains "armed" -- a second `Ctrl-C` within this
 /// window exits 130; after it, a `Ctrl-C` is treated as a fresh first press
 /// (module notes: "second within 2 s exits with 130").
@@ -77,6 +90,23 @@ pub struct App {
     /// `run`, and polled there as an extra `tokio::select!` arm.
     modal_ask_tx: mpsc::UnboundedSender<ModalAskOutcome>,
     modal_ask_rx: Option<mpsc::UnboundedReceiver<ModalAskOutcome>>,
+    /// Board item 01KZYBFTK4QPB45AJT9M57P60W: the installed plugin commands,
+    /// built once at [`Self::new`] from the plugin list the caller (`tui::run`,
+    /// ultimately `main.rs`) was handed -- the SAME list installed into the
+    /// `Conway` this `App` already holds, so a plugin command reaches only a
+    /// plugin actually installed this run (see `commands::CommandRegistry::
+    /// build`'s own doc). `Arc` so [`commands::LiveHost`] can borrow it
+    /// per-call the same way it borrows `handle`/`conway`.
+    command_registry: std::sync::Arc<commands::CommandRegistry>,
+    /// Mirrors `modal_ask_tx`/`modal_ask_rx` exactly, for the SAME reason
+    /// (module notes on those two fields): a plugin command's `invoke` is
+    /// spawned off this loop (`Self::run`'s own `Effect::RunPluginCommand`
+    /// arm), never awaited directly on it -- see that arm's own doc, and
+    /// `commands::Effect::RunPluginCommand`'s, for why this is the
+    /// structural guarantee behind this item's hang/panic-safety acceptance
+    /// criterion.
+    plugin_cmd_tx: mpsc::UnboundedSender<PluginCommandDone>,
+    plugin_cmd_rx: Option<mpsc::UnboundedReceiver<PluginCommandDone>>,
     /// T8: where [`Self::submit`] persists `state.history` to after every push
     /// -- `~/.conway/history` (or `$XDG_CONFIG_HOME/conway/history` when set),
     /// resolved once at `App::new` via
@@ -178,11 +208,35 @@ impl App {
         })
     }
 
-    /// Creates the interactive session.
-    pub async fn new(cli: &Cli, conway: &Conway) -> conway::Result<Self> {
+    /// Creates the interactive session. `plugins` (board item
+    /// 01KZYBFTK4QPB45AJT9M57P60W) is the SAME plugin list the caller
+    /// installed into `conway` -- this is what lets [`commands::
+    /// CommandRegistry::build`] resolve exactly the plugin commands that
+    /// were actually installed this run (never a plugin merely LINKED into
+    /// the binary but not selected via `[plugins].install`), without
+    /// `App`/`conway-cli` reaching past `conway`/`conway-core`'s own
+    /// layering to ask the already-built `Conway`/`Runtime` which plugins it
+    /// holds (no such accessor exists, and building one is out of this
+    /// item's file lane -- see this crate's `first_party_plugins::
+    /// installed_plugins`, the one production caller, for how the caller
+    /// resolves this list from the same `[plugins].install` config
+    /// `install_selected` itself reads).
+    pub async fn new(
+        cli: &Cli,
+        conway: &Conway,
+        plugins: &[std::sync::Arc<dyn conway::plugin::Plugin>],
+    ) -> conway::Result<Self> {
+        let command_registry =
+            std::sync::Arc::new(commands::CommandRegistry::build(plugins).map_err(|e| {
+                conway::ConwayError::Config {
+                    path: None,
+                    message: e.to_string(),
+                }
+            })?);
         let spec = Self::session_spec(cli)?;
         let handle = conway.new_session(spec).await?;
         let mut state = AppState::new(handle.root());
+        state.plugin_commands = std::sync::Arc::new(command_registry.palette_entries());
         // T1: build the theme once from the loaded `[tui.theme]` config
         // (defaults when the section is absent; malformed values fall back
         // to per-slot defaults -- untrusted input, never a panic). `Theme::from_config`
@@ -354,6 +408,7 @@ impl App {
         // a hung `git` or a slow filesystem.
         state.git_branch = read_git_branch().await;
         let (modal_ask_tx, modal_ask_rx) = mpsc::unbounded_channel();
+        let (plugin_cmd_tx, plugin_cmd_rx) = mpsc::unbounded_channel();
         Ok(Self {
             handle,
             state,
@@ -361,6 +416,9 @@ impl App {
             theme,
             modal_ask_tx,
             modal_ask_rx: Some(modal_ask_rx),
+            command_registry,
+            plugin_cmd_tx,
+            plugin_cmd_rx: Some(plugin_cmd_rx),
             history_path,
         })
     }
@@ -400,6 +458,15 @@ impl App {
             .modal_ask_rx
             .take()
             .expect("modal_ask_rx is set in App::new and taken exactly once, here");
+        // Board item 01KZYBFTK4QPB45AJT9M57P60W: mirrors `modal_ask_rx`
+        // exactly, same reasoning (this `select!`'s own `plugin_cmd_rx.recv()`
+        // arm below and the other arms' `&mut self.state` borrows don't
+        // conflict once this is a local rather than a field borrowed in
+        // place).
+        let mut plugin_cmd_rx = self
+            .plugin_cmd_rx
+            .take()
+            .expect("plugin_cmd_rx is set in App::new and taken exactly once, here");
 
         loop {
             tokio::select! {
@@ -462,6 +529,21 @@ impl App {
                         dirty = true;
                     }
                 }
+                // Board item 01KZYBFTK4QPB45AJT9M57P60W: the reply side of
+                // `Effect::RunPluginCommand`'s spawned task (this loop's own
+                // arm below) -- mirrors `modal_ask_rx.recv()` immediately
+                // above in every structural respect (a spawned task's
+                // eventual reply, never awaited directly here), which is the
+                // load-bearing property behind "a hanging/panicking plugin
+                // command cannot freeze the TUI": this `select!` iteration
+                // never blocks on the plugin's own code, only on whichever
+                // arm is ready first, exactly like every other arm here.
+                maybe_plugin_cmd = plugin_cmd_rx.recv() => {
+                    if let Some(done) = maybe_plugin_cmd {
+                        self.apply_plugin_command_done(done);
+                        dirty = true;
+                    }
+                }
                 maybe_env = events.next() => {
                     match maybe_env {
                         Some(env) => {
@@ -503,6 +585,7 @@ impl App {
                                 let host = commands::LiveHost {
                                     handle: &self.handle,
                                     conway: &self.conway,
+                                    commands: &self.command_registry,
                                 };
                                 if let Ok(usage) =
                                     host.session_usage(self.state.focused_agent).await
@@ -776,6 +859,7 @@ impl App {
                                     let host = commands::LiveHost {
                                         handle: &self.handle,
                                         conway: &self.conway,
+                                        commands: &self.command_registry,
                                     };
                                     commands::apply_ask_fate(fate, &mut self.state, &host).await;
                                 }
@@ -795,6 +879,7 @@ impl App {
                                     let host = commands::LiveHost {
                                         handle: &self.handle,
                                         conway: &self.conway,
+                                        commands: &self.command_registry,
                                     };
                                     match commands::execute_intent_confirm(
                                         choice,
@@ -834,6 +919,26 @@ impl App {
                                                     self.deliver_first_message(child, text).await;
                                                 }
                                             }
+                                        }
+                                        // Structurally unreachable from THIS
+                                        // call site today -- `execute_intent_
+                                        // confirm` only ever returns
+                                        // `Effect::None`/`FocusNewSession`
+                                        // (it dispatches via `bare_fork`/
+                                        // `bare_spawn` directly, never through
+                                        // `execute`'s own `SlashCommand::
+                                        // Plugin` arm, the only place this
+                                        // variant is constructed). Handled
+                                        // anyway, correctly, rather than with
+                                        // a wildcard drop: `Effect` is one
+                                        // enum shared by every dispatch site,
+                                        // and a silently dropped plugin
+                                        // command would be the exact "silent
+                                        // loss" this item's own acceptance
+                                        // criterion forbids, should a future
+                                        // change ever route one here.
+                                        Effect::RunPluginCommand(invocation) => {
+                                            self.spawn_plugin_command(invocation);
                                         }
                                     }
                                 }
@@ -1129,6 +1234,7 @@ impl App {
                     let host = commands::LiveHost {
                         handle: &self.handle,
                         conway: &self.conway,
+                        commands: &self.command_registry,
                     };
                     match commands::execute(cmd, &mut self.state, &host).await {
                         Effect::None => {}
@@ -1147,6 +1253,15 @@ impl App {
                                 parent,
                                 first_message,
                             });
+                        }
+                        // Board item 01KZYBFTK4QPB45AJT9M57P60W: `execute`
+                        // itself never ran a byte of the plugin's own code
+                        // (see `Effect::RunPluginCommand`'s own doc) -- THIS
+                        // is where it actually runs. See
+                        // `Self::spawn_plugin_command`'s own doc for the
+                        // hang/panic-isolation mechanism.
+                        Effect::RunPluginCommand(invocation) => {
+                            self.spawn_plugin_command(invocation);
                         }
                     }
                 }
@@ -1287,6 +1402,69 @@ impl App {
     /// first message was ALSO dropped, rather than silently losing it with
     /// no trace in the transcript. `None` for the plain `Action::FocusAgent`
     /// call site, which has no message riding along.
+    /// Runs a resolved plugin command (board item 01KZYBFTK4QPB45AJT9M57P60W)
+    /// off this loop's own `select!`, never on it -- the mechanism behind
+    /// this item's "a hanging or panicking plugin command does not freeze
+    /// the TUI" acceptance criterion.
+    ///
+    /// **Two nested `tokio::spawn`s, not one.** The OUTER task is what
+    /// neither `Self::submit` nor `Self::run`'s `select!` ever awaits, so
+    /// nothing on this call stack can block on `command.invoke` -- a hang
+    /// inside it just leaves the outer task parked forever, with zero effect
+    /// on rendering or key handling (`Self::run`'s `plugin_cmd_rx.recv()` arm
+    /// simply never fires for THIS invocation; every other arm keeps
+    /// running). The INNER `tokio::spawn` + its own `JoinHandle` is what lets
+    /// the outer task tell a genuine panic apart from an ordinary return:
+    /// `tokio::spawn` isolates a panicking task (unwinding it does NOT abort
+    /// the process, unlike an unwind on the calling thread would), so
+    /// `inner.await`'s `Err(JoinError)` arm converts that into an ordinary
+    /// `CommandOutcome::Error` -- the receiving `plugin_cmd_rx.recv()` arm
+    /// handles it exactly like any other command failure, never a crash.
+    fn spawn_plugin_command(&self, invocation: commands::PluginCommandInvocation) {
+        let commands::PluginCommandInvocation {
+            full_name,
+            command,
+            ctx,
+        } = invocation;
+        let tx = self.plugin_cmd_tx.clone();
+        let panic_name = full_name.clone();
+        tokio::spawn(async move {
+            let inner = tokio::spawn(async move { command.invoke(ctx).await });
+            let outcome = match inner.await {
+                Ok(outcome) => outcome,
+                Err(join_err) => conway::plugin::CommandOutcome::Error(format!(
+                    "plugin command `/{panic_name}` panicked: {join_err}"
+                )),
+            };
+            // The receiver only goes away when `App::run`'s loop has already
+            // exited -- nothing left to notify, so a send failure here is
+            // silently dropped, mirroring `/ask`'s own `run_modal_ask` send
+            // site exactly.
+            let _ = tx.send(PluginCommandDone { full_name, outcome });
+        });
+    }
+
+    /// Applies one [`PluginCommandDone`] reply to `self.state` -- factored
+    /// out of `Self::run`'s own `plugin_cmd_rx.recv()` arm so it is directly
+    /// callable from a test with no real terminal/`select!` loop needed
+    /// (mirrors this file's own `drain_and_apply` test helper's reasoning).
+    fn apply_plugin_command_done(&mut self, done: PluginCommandDone) {
+        match done.outcome {
+            conway::plugin::CommandOutcome::Output(lines) => {
+                for line in lines {
+                    self.state
+                        .transcript
+                        .push(super::state::Entry::Notice { text: line });
+                }
+            }
+            conway::plugin::CommandOutcome::Error(message) => {
+                self.state.transcript.push(super::state::Entry::Notice {
+                    text: format!("/{}: {message}", done.full_name),
+                });
+            }
+        }
+    }
+
     async fn try_focus_agent(
         &mut self,
         agent: conway::AgentId,
@@ -1298,6 +1476,7 @@ impl App {
                 let host = commands::LiveHost {
                     handle: &self.handle,
                     conway: &self.conway,
+                    commands: &self.command_registry,
                 };
                 if let Ok(usage) = host.session_usage(agent).await {
                     self.state.focused_agent_usage = usage;
@@ -1736,7 +1915,7 @@ mod tests {
     async fn submit_renders_the_prompt_exactly_once_not_zero_not_twice() {
         let conway = build_conway_with_echo_backend();
         let cli = minimal_cli();
-        let mut app = App::new(&cli, &conway)
+        let mut app = App::new(&cli, &conway, &[])
             .await
             .expect("App::new should succeed");
 
@@ -1783,6 +1962,218 @@ mod tests {
         );
     }
 
+    // -----------------------------------------------------------------
+    // Plugin-declared TUI commands (board item 01KZYBFTK4QPB45AJT9M57P60W)
+    // -- the VERIFICATION ANCHOR: a fixture plugin declaring `/greet`,
+    // driven through the real `App::submit` -> spawned task -> channel ->
+    // `apply_plugin_command_done` pipeline (`Self::run`'s own path, minus
+    // the real terminal), asserted against the observable transcript.
+    // -----------------------------------------------------------------
+
+    /// Mirrors `conway_plugin_skeleton`'s own shipped example in shape (a
+    /// fixed reply plus the caller's argument echoed back) -- this crate's
+    /// own equivalent of that crate's `SkeletonPingTool`, for a command
+    /// rather than a tool.
+    struct GreetCommandFixture;
+
+    #[async_trait::async_trait]
+    impl conway::plugin::Command for GreetCommandFixture {
+        fn spec(&self) -> conway::plugin::CommandSpec {
+            conway::plugin::CommandSpec {
+                name: "greet".to_string(),
+                summary: "greets the operator".to_string(),
+            }
+        }
+
+        async fn invoke(&self, ctx: conway::plugin::CommandCtx) -> conway::plugin::CommandOutcome {
+            conway::plugin::CommandOutcome::Output(vec![format!("hello, {}!", ctx.args)])
+        }
+    }
+
+    /// Never resolves -- see `commands::tests::HangingCommand`'s own doc for
+    /// why this exists and how it is safely used (never `.await`ed to
+    /// completion by any test).
+    struct HangCommandFixture;
+
+    #[async_trait::async_trait]
+    impl conway::plugin::Command for HangCommandFixture {
+        fn spec(&self) -> conway::plugin::CommandSpec {
+            conway::plugin::CommandSpec {
+                name: "hang".to_string(),
+                summary: "never returns".to_string(),
+            }
+        }
+
+        async fn invoke(&self, _ctx: conway::plugin::CommandCtx) -> conway::plugin::CommandOutcome {
+            std::future::pending::<()>().await;
+            unreachable!("pending() never resolves")
+        }
+    }
+
+    struct GreetPluginFixture;
+
+    impl conway::plugin::Plugin for GreetPluginFixture {
+        fn manifest(&self) -> conway::plugin::PluginManifest {
+            conway::plugin::PluginManifest {
+                id: "acme".to_string(),
+                version: "0.1.0".to_string(),
+                tools: vec![],
+                required_host_caps: vec![],
+            }
+        }
+
+        fn tools(&self) -> Vec<Arc<dyn conway::plugin::Tool>> {
+            vec![]
+        }
+
+        fn commands(&self) -> Vec<Arc<dyn conway::plugin::Command>> {
+            vec![Arc::new(GreetCommandFixture), Arc::new(HangCommandFixture)]
+        }
+    }
+
+    /// The verification anchor's positive half: with the fixture plugin
+    /// installed, `/acme.greet <args>` reaches `GreetCommandFixture::invoke`
+    /// and its output lands in the transcript, driven through the SAME
+    /// `submit` -> spawn -> channel path `App::run` uses (only the terminal
+    /// itself is stubbed out -- `apply_plugin_command_done` is `Self::run`'s
+    /// own method, called here exactly as its `select!` arm calls it).
+    #[tokio::test]
+    async fn plugin_command_end_to_end_reaches_the_transcript() {
+        let conway = build_conway_with_echo_backend();
+        let cli = minimal_cli();
+        let plugin: Arc<dyn conway::plugin::Plugin> = Arc::new(GreetPluginFixture);
+        let mut app = App::new(&cli, &conway, &[plugin])
+            .await
+            .expect("App::new should succeed");
+
+        // Also proves discovery: the fixture's command shows up in
+        // `/help`'s own pointer surface, the `/` palette's backing data.
+        assert!(
+            app.state
+                .plugin_commands
+                .iter()
+                .any(|c| c.name == "/acme.greet"),
+            "the installed plugin's command must appear in the palette-backing \
+             list: {:?}",
+            app.state.plugin_commands
+        );
+
+        let outcome = app
+            .submit("/acme.greet world".to_string())
+            .await
+            .expect("submit should not error");
+        assert!(matches!(outcome, SubmitOutcome::Continue));
+
+        let done = app
+            .plugin_cmd_rx
+            .as_mut()
+            .expect("plugin_cmd_rx is set by App::new")
+            .recv()
+            .await
+            .expect("the spawned command task must reply");
+        assert_eq!(done.full_name, "acme.greet");
+        app.apply_plugin_command_done(done);
+
+        assert!(
+            app.state.transcript.iter().any(|e| matches!(
+                e,
+                Entry::Notice { text } if text == "hello, world!"
+            )),
+            "the plugin's own output must reach the transcript: {:?}",
+            app.state.transcript
+        );
+    }
+
+    /// The verification anchor's negative half, at the SAME `App`/`submit`
+    /// layer: with the plugin NOT installed, the identical input is simply
+    /// an unknown command -- shown to fail (a bare `Effect::None` +
+    /// `Notice`, never a stub, never a special case) when the positive test
+    /// above's fixture is absent, which is what proves that test is not
+    /// vacuous.
+    #[tokio::test]
+    async fn plugin_command_is_unknown_when_the_plugin_is_not_installed() {
+        let conway = build_conway_with_echo_backend();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[]) // no plugins installed
+            .await
+            .expect("App::new should succeed");
+
+        assert!(app.state.plugin_commands.is_empty());
+
+        let outcome = app
+            .submit("/acme.greet world".to_string())
+            .await
+            .expect("submit should not error");
+        assert!(matches!(outcome, SubmitOutcome::Continue));
+
+        assert!(
+            app.state.transcript.iter().any(|e| matches!(
+                e,
+                Entry::Notice { text }
+                    if text.contains("unknown command") && text.contains("acme.greet")
+            )),
+            "an unresolved plugin-shaped command must become an ordinary \
+             unknown-command notice: {:?}",
+            app.state.transcript
+        );
+    }
+
+    /// **Hang-safety, at the `App`/`submit` layer.** A command whose
+    /// `invoke` never completes must not block `submit` itself, and the app
+    /// must stay fully usable afterward -- an ordinary prompt submitted
+    /// right after still works. Wrapped in a generous timeout so a
+    /// regression that made `submit` actually await the hang fails this
+    /// test rather than hanging the whole suite.
+    #[tokio::test]
+    async fn a_hanging_plugin_command_does_not_block_submit_or_leave_the_app_unusable() {
+        let conway = build_conway_with_echo_backend();
+        let cli = minimal_cli();
+        let plugin: Arc<dyn conway::plugin::Plugin> = Arc::new(GreetPluginFixture);
+        let mut app = App::new(&cli, &conway, &[plugin])
+            .await
+            .expect("App::new should succeed");
+        let mut events = app.handle.events();
+
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            app.submit("/acme.hang".to_string()),
+        )
+        .await
+        .expect(
+            "submit must return promptly even though the plugin command's \
+             invoke() never completes",
+        )
+        .expect("submit should not error");
+        assert!(matches!(outcome, SubmitOutcome::Continue));
+
+        // The app is still fully responsive: an ordinary prompt submitted
+        // right after the hang still works, proving the hang did not wedge
+        // `App` (its `handle`, its facade, or `submit` itself) in any way.
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            app.submit("hello after the hang".to_string()),
+        )
+        .await
+        .expect("submit must still work after a plugin command hangs in the background")
+        .expect("submit should not error");
+        assert!(matches!(outcome, SubmitOutcome::Continue));
+        drain_and_apply(&mut events, &mut app.state);
+        assert!(
+            app.state
+                .transcript
+                .iter()
+                .any(|e| matches!(e, Entry::User(text) if text == "hello after the hang")),
+            "an ordinary prompt must still reach the transcript after a \
+             plugin command hangs: {:?}",
+            app.state.transcript
+        );
+        // The hung task's own reply, if it ever arrived, would be a
+        // `CommandOutcome` this test never needs -- it is left running in
+        // the background exactly as a real hang would be; the process exits
+        // when the test binary does, same as any other orphaned test-scoped
+        // `tokio::spawn`.
+    }
+
     /// A1: a permission rule that fails registration is
     /// OPERATOR-VISIBLE at load time. The assertion is on the observable
     /// transcript/rendered screen -- what the operator actually reads --
@@ -1811,7 +2202,7 @@ mod tests {
         let conway = build_conway_with_echo_backend();
         let mut cli = minimal_cli();
         cli.cwd = Some(project.path().to_path_buf());
-        let app = App::new(&cli, &conway)
+        let app = App::new(&cli, &conway, &[])
             .await
             .expect("App::new should succeed");
 
@@ -1875,7 +2266,7 @@ mod tests {
         let conway = build_conway_with_echo_backend();
         let mut cli = minimal_cli();
         cli.cwd = Some(project.path().to_path_buf());
-        let app = App::new(&cli, &conway)
+        let app = App::new(&cli, &conway, &[])
             .await
             .expect("App::new should succeed");
 
@@ -1949,7 +2340,7 @@ mod tests {
         let conway = build_conway_with_echo_backend();
         let mut cli = minimal_cli();
         cli.cwd = Some(project.path().to_path_buf());
-        let mut app = App::new(&cli, &conway)
+        let mut app = App::new(&cli, &conway, &[])
             .await
             .expect("App::new should succeed");
 
@@ -2020,7 +2411,7 @@ mod tests {
     async fn focus_switch_replays_a_spawned_childs_prompt_as_a_user_turn() {
         let conway = build_conway_with_echo_backend();
         let cli = minimal_cli();
-        let mut app = App::new(&cli, &conway)
+        let mut app = App::new(&cli, &conway, &[])
             .await
             .expect("App::new should succeed");
 
@@ -2079,7 +2470,7 @@ mod tests {
     async fn focus_switch_shows_real_model_and_ctx_total_with_no_live_turn_required() {
         let conway = build_conway_with_echo_backend();
         let cli = minimal_cli();
-        let mut app = App::new(&cli, &conway)
+        let mut app = App::new(&cli, &conway, &[])
             .await
             .expect("App::new should succeed");
 
@@ -2214,7 +2605,7 @@ mod tests {
 
         let mut cli = minimal_cli();
         cli.config = Some(config_path);
-        let app = App::new(&cli, &conway)
+        let app = App::new(&cli, &conway, &[])
             .await
             .expect("App::new should succeed");
 

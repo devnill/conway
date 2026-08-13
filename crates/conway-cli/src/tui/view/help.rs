@@ -22,6 +22,16 @@
 //! already earns the `/ask` modal / intent-confirm card / permission
 //! prompt's own keys a "modal keys" group below.
 //!
+//! **Board item 01KZYBFTK4QPB45AJT9M57P60W (plugin-declared TUI commands)
+//! does not change this.** A plugin-declared command is a genuine slash
+//! *command*, exactly like `/steer` or `/fork` -- it belongs in
+//! `view/palette.rs` (which now merges the static built-in table with
+//! `AppState::plugin_commands`, the installed plugin command list) alongside
+//! every other command, never duplicated into this keybindings-only overlay.
+//! This overlay's own footer text ("`/help` does not list slash commands;
+//! see `/` for those") already covers a plugin command with zero changes
+//! needed here.
+//!
 //! **No hotkey opens this overlay.** Conway is always in input-typing mode,
 //! so a bare printable key (`?`, `F1`, ...) can never be a binding --
 //! `/help` is the only way in, and `Esc` is the only way out.

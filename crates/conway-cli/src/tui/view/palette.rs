@@ -6,27 +6,39 @@
 //! `AppState::input` -- there is no separate "palette is open" flag to fall
 //! out of sync.
 //!
-//! **Disclosed duplication:** `commands.rs` (out of this item's file scope
-//! -- see the work item's file-scope note) owns the authoritative
+//! **Disclosed duplication:** `commands.rs` owns the authoritative
 //! `SlashCommand` parser. This table is a second, independent listing so
 //! the palette can discover `/ask` and `/agents` (handled directly in
 //! `app.rs`, never reaching `commands.rs` -- see that module's `submit`
 //! doc) alongside the commands `commands.rs` already parses. A future
 //! change to either can drift from the other; unifying them requires
-//! touching `commands.rs`, which is out of scope here.
+//! touching `commands.rs`.
 //!
 //! T7 removed `commands.rs`'s OWN second listing (`HELP_LINES`, formerly
 //! dumped into the transcript by `/help`) entirely rather than reconciling
 //! it with this one -- `/help` now opens a keybinding-only overlay
 //! (`view/help.rs`) that never lists a slash command at all, so this
-//! table (commands) is the only place command usage/description text lives
-//! outside `commands.rs`'s own parser.
+//! table (commands) is the only place BUILT-IN command usage/description
+//! text lives outside `commands.rs`'s own parser.
+//!
+//! **Plugin commands (board item 01KZYBFTK4QPB45AJT9M57P60W) are the one
+//! entry this module does NOT hand-keep.** They cannot be: which commands
+//! exist is resolved at TUI startup from whichever plugins were installed,
+//! not known at compile time. [`matches`]/[`draw_overlay`] both take an
+//! additional `plugin_commands: &[PluginCommandEntry]` slice
+//! (`AppState::plugin_commands`, built once by `commands::CommandRegistry::
+//! palette_entries`) and merge it with [`COMMANDS`] at call time, AFTER the
+//! static table -- so a plugin command is discoverable through the exact
+//! SAME surface a built-in is, and `/help`'s own "see / for those" pointer
+//! (`view/help.rs`) covers it too, with no separate listing to keep in sync.
 
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem};
 use ratatui::Frame;
+
+use crate::tui::state::PluginCommandEntry;
 
 /// One palette entry: a command name, its usage form, and a one-line
 /// description.
@@ -103,19 +115,49 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
 ];
 
-/// Every [`CommandSpec`] whose name starts with `input`, in [`COMMANDS`]
-/// order. Empty for input not starting with `/` (module notes: the caller
+/// One palette row, borrowed uniformly from either [`COMMANDS`] (`'static`)
+/// or a caller's `plugin_commands` slice (board item 01KZYBFTK4QPB45AJT9M57P60W)
+/// -- [`matches`]'s own return type, so a caller never has to case on where
+/// a row came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PaletteRow<'a> {
+    pub name: &'a str,
+    pub usage: &'a str,
+    pub description: &'a str,
+}
+
+/// Every command (built-in, from [`COMMANDS`], THEN every installed plugin
+/// command, from `plugin_commands`, in that order) whose name starts with
+/// `input`. Empty for input not starting with `/` (module notes: the caller
 /// only shows the palette at all when `AppState::input` starts with `/`,
 /// but `matches` is total over any `&str` so it never panics if called
 /// otherwise).
-pub fn matches(input: &str) -> Vec<&'static CommandSpec> {
+pub fn matches<'a>(input: &str, plugin_commands: &'a [PluginCommandEntry]) -> Vec<PaletteRow<'a>> {
     if !input.starts_with('/') {
         return Vec::new();
     }
-    COMMANDS
+    let builtins = COMMANDS
         .iter()
         .filter(|c| c.name.starts_with(input))
-        .collect()
+        .map(|c| PaletteRow {
+            name: c.name,
+            usage: c.usage,
+            description: c.description,
+        });
+    let plugins = plugin_commands
+        .iter()
+        .filter(|c| c.name.starts_with(input))
+        .map(|c| PaletteRow {
+            name: &c.name,
+            // A plugin command declares only a name + one-line summary
+            // (`conway::plugin::CommandSpec`'s own doc: deliberately no
+            // separate usage-shape field) -- its own name doubles as its
+            // usage form, exactly like a bare built-in (`/help`, `/quit`)
+            // already does above.
+            usage: &c.name,
+            description: &c.description,
+        });
+    builtins.chain(plugins).collect()
 }
 
 /// Draws the live-filtered palette as a floating list directly above
@@ -127,8 +169,14 @@ pub fn matches(input: &str) -> Vec<&'static CommandSpec> {
 /// [`crate::tui::state::AppState::palette_source`]); `selected`, when
 /// `Some(i)`, is the arrow-navigated row to highlight -- clamped here so a
 /// shrinking match list can never index out of range.
-pub fn draw_overlay(frame: &mut Frame, input_area: Rect, stem: &str, selected: Option<usize>) {
-    let candidates = matches(stem);
+pub fn draw_overlay(
+    frame: &mut Frame,
+    input_area: Rect,
+    stem: &str,
+    selected: Option<usize>,
+    plugin_commands: &[PluginCommandEntry],
+) {
+    let candidates = matches(stem, plugin_commands);
     if candidates.is_empty() {
         return;
     }
@@ -185,25 +233,25 @@ mod tests {
 
     #[test]
     fn as_prefix_filters_to_ask_only() {
-        let found = matches("/as");
+        let found = matches("/as", &[]);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].name, "/ask");
     }
 
     #[test]
     fn slash_alone_lists_every_command() {
-        assert_eq!(matches("/").len(), COMMANDS.len());
+        assert_eq!(matches("/", &[]).len(), COMMANDS.len());
     }
 
     #[test]
     fn a_prefix_matches_both_ask_and_agents() {
-        let names: Vec<&str> = matches("/a").iter().map(|c| c.name).collect();
+        let names: Vec<&str> = matches("/a", &[]).iter().map(|c| c.name).collect();
         assert_eq!(names, vec!["/ask", "/agents"]);
     }
 
     #[test]
     fn unknown_prefix_yields_no_matches() {
-        assert!(matches("/zzz").is_empty());
+        assert!(matches("/zzz", &[]).is_empty());
     }
 
     // Item A3: `/tree` is demoted to a hidden alias -- it still parses
@@ -211,7 +259,7 @@ mod tests {
     // it as completion.
     #[test]
     fn tree_is_a_hidden_alias_not_a_palette_entry() {
-        assert!(matches("/tree").is_empty());
+        assert!(matches("/tree", &[]).is_empty());
         assert!(!COMMANDS.iter().any(|c| c.name == "/tree"));
     }
 
@@ -223,26 +271,26 @@ mod tests {
     fn thinking_and_timestamps_are_gone_from_the_palette() {
         assert!(!COMMANDS.iter().any(|c| c.name == "/thinking"));
         assert!(!COMMANDS.iter().any(|c| c.name == "/timestamps"));
-        assert!(matches("/thinking").is_empty());
-        assert!(matches("/timestamps").is_empty());
+        assert!(matches("/thinking", &[]).is_empty());
+        assert!(matches("/timestamps", &[]).is_empty());
     }
 
     #[test]
     fn non_slash_input_yields_no_matches() {
-        assert!(matches("hello").is_empty());
-        assert!(matches("").is_empty());
+        assert!(matches("hello", &[]).is_empty());
+        assert!(matches("", &[]).is_empty());
     }
 
     #[test]
     fn exact_command_name_still_matches_itself() {
-        let found = matches("/quit");
+        let found = matches("/quit", &[]);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].name, "/quit");
     }
 
     #[test]
     fn exit_is_listed_as_an_alias_for_quit() {
-        let found = matches("/exit");
+        let found = matches("/exit", &[]);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].name, "/exit");
         assert!(found[0].description.contains("/quit"));
@@ -264,7 +312,7 @@ mod tests {
         let any_reversed = |selected: Option<usize>| {
             let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
             terminal
-                .draw(|f| draw_overlay(f, input_area, "/a", selected))
+                .draw(|f| draw_overlay(f, input_area, "/a", selected, &[]))
                 .unwrap();
             terminal
                 .backend()
@@ -284,5 +332,41 @@ mod tests {
             !any_reversed(None),
             "no row should be reversed when nothing is selected"
         );
+    }
+
+    // ---- plugin commands (board item 01KZYBFTK4QPB45AJT9M57P60W) ----
+
+    fn fixture_plugin_commands() -> Vec<PluginCommandEntry> {
+        vec![PluginCommandEntry {
+            name: "/acme.greet".to_string(),
+            description: "greets the operator".to_string(),
+        }]
+    }
+
+    #[test]
+    fn plugin_commands_appear_in_the_palette_alongside_builtins() {
+        let plugins = fixture_plugin_commands();
+        let found = matches("/", &plugins);
+        assert_eq!(found.len(), COMMANDS.len() + 1);
+        assert!(found.iter().any(|c| c.name == "/acme.greet"));
+    }
+
+    #[test]
+    fn plugin_command_prefix_filters_correctly() {
+        let plugins = fixture_plugin_commands();
+        let found = matches("/acme", &plugins);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].name, "/acme.greet");
+        assert_eq!(found[0].description, "greets the operator");
+    }
+
+    /// The verification anchor's own negative half, restated at the palette
+    /// layer: with no plugin commands supplied, nothing plugin-shaped
+    /// appears -- proves the merge is additive, never conjuring an entry
+    /// from nowhere.
+    #[test]
+    fn no_plugin_commands_means_no_plugin_rows() {
+        assert_eq!(matches("/", &[]).len(), COMMANDS.len());
+        assert!(matches("/acme", &[]).is_empty());
     }
 }

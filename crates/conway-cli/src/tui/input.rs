@@ -803,7 +803,7 @@ fn handle_normal_key(state: &mut AppState, key: KeyEvent) -> Action {
 /// selection means "not navigating yet": the first `Down` lands on the first
 /// match, the first `Up` on the last; further presses wrap.
 fn palette_navigate(state: &mut AppState, delta: isize) -> bool {
-    let candidates = super::view::palette::matches(state.palette_source());
+    let candidates = super::view::palette::matches(state.palette_source(), &state.plugin_commands);
     let len = candidates.len();
     if len == 0 {
         return false;

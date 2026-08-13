@@ -183,6 +183,31 @@ prompt. An unrecognized `/command` is reported as an error rather than
 sent to the model. `/trust permissions` doesn't appear in the `/` palette
 list above (typing it in full still works) — every other command does.
 
+### Plugin-declared commands
+
+An installed plugin can contribute its own slash command — an operator-facing
+capability distinct from a tool (which the *model* calls; a command is
+something *you* type). A plugin command's name is always namespaced with its
+declaring plugin's own id, `/<plugin id>.<command name>` (e.g.
+`/conway.plugin_skeleton.ping`, the shipped worked example — install it with
+`"conway.plugin_skeleton"` in `[plugins].install`, see
+[`embedding.md`](embedding.md)) — never a bare name, so an installed plugin
+can never shadow a built-in command. A plugin command shows up in the `/`
+palette exactly like a built-in one, alongside its one-line description; type
+it and press `Enter` like any other command. Its argument text (everything
+after the command word) is passed to the plugin verbatim.
+
+A plugin command runs with your full privileges, the same trust posture as
+every other part of an installed plugin — see
+[`docs/plugins/trust-and-security.md`](plugins/trust-and-security.md#tui-slash-commands-no-permission-gate-at-all-by-design)
+for exactly what that does and does not mean, including why (unlike a tool
+call) there is no permission prompt: you typed it yourself. See
+[`docs/plugins/hooks.md`](plugins/hooks.md) point 15 for the full contract an
+author implements against, including what a command may and may not do (it
+cannot fork, resume, or otherwise drive your session — narrower than a tool)
+and the guarantee that a slow or hanging one degrades to "no reply yet,"
+never a frozen terminal.
+
 ## The agent panel (`/agents`)
 
 `/agents` opens a panel below the transcript listing every agent in the
