@@ -25,10 +25,26 @@
 //! `event_stream`) is added by its own owning work item, each of which
 //! appends its own `mod` declaration here.
 //!
-//! No type from `conway-runtime` is re-exported here: this crate's public
-//! surface is defined in terms of `conway-core`'s domain types and port
-//! traits, plus the facade's own `ConwayBuilder`/`Conway`/`SessionHandle`
-//! wrappers added by later work items.
+//! This crate's public surface is defined in terms of `conway-core`'s domain
+//! types and port traits, plus the facade's own `ConwayBuilder`/`Conway`/
+//! `SessionHandle` wrappers added by later work items.
+//!
+//! **FORWARD DECLARATION — one `conway-runtime` type IS re-exported here.**
+//! This paragraph used to state flatly that none was. `pub use
+//! conway_runtime::permission::GrantScope;` appears about forty lines below,
+//! and it is load-bearing: `conway-cli` names it at eight sites to label and
+//! revoke a structured-allow rule in `/settings`, and cannot reach it any
+//! other way (`no_forbidden_deps` in `crates/conway-cli/tests/cli_surface.
+//! rs` forbids that crate depending on `conway-runtime`). Exactly one such
+//! re-export exists, pinned by the `t6_facade_has_exactly_the_one_known_
+//! runtime_reexport` guard in `crates/conway/tests/architecture_invariants.
+//! rs`, so a second fails CI.
+//!
+//! Board item 01KZVYZM7BZRQ54RRB8P814KV9 (Stage 2b) closes it, together with
+//! 01KZWRZ4JBAVCRCZ99BFZFF01K, which owns the consumer half — deleting the
+//! re-export alone breaks the build, so a replacement type carrying the
+//! `AgentId` has to land in the same change (decision
+//! 01KZWRZRS9NT929S1WFYWEPMST). **Those items must delete this label.**
 
 pub mod agents;
 mod builder;
@@ -65,6 +81,19 @@ pub use conway_core::permission_pattern::{
 /// surfaces one per rule) -- re-exported so `conway-cli` can label a
 /// structured-allow review row without depending on `conway-runtime`
 /// (`no_forbidden_deps`).
+///
+/// **FORWARD DECLARATION — this is the one re-export the crate root doc's
+/// label names, and it is the whole of that contradiction.** It is not
+/// vestigial: eight `conway-cli` sites name it through the `conway::` path
+/// (`tui/input.rs`, `tui/state.rs`, `tui/view/settings.rs`), and
+/// `conway::PermissionScope` is not a substitute -- it is a bare
+/// `Session`/`Agent`/`AgentSubtree` enum, while this type is `Session |
+/// Agent(AgentId) | Subtree(AgentId)`, and the review row exists to tell an
+/// operator WHICH agent a per-agent grant covers. Board items
+/// 01KZVYZM7BZRQ54RRB8P814KV9 (Stage 2b) and 01KZWRZ4JBAVCRCZ99BFZFF01K
+/// (its consumer half) replace it with a type this facade owns and **must
+/// delete this label**; decision 01KZWRZRS9NT929S1WFYWEPMST records the
+/// evidence and the condition that would reopen it.
 pub use conway_runtime::permission::GrantScope;
 /// V2b: `conway-cli` reaches `parse_rules` through here (it cannot depend
 /// on `conway-core` directly -- `no_forbidden_deps`).

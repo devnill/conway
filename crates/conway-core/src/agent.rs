@@ -4,8 +4,11 @@
 //! the flat agent tree snapshot, the parent<->child message enum, and the
 //! permission request/decision types.
 //!
-//! This crate performs no I/O: `SubagentSpec::validate` only checks internal
-//! consistency, and the `fork`/`spawn` constructors only set field defaults.
+//! Nothing in this module performs I/O: `SubagentSpec::validate` only checks
+//! internal consistency, and the `fork`/`spawn` constructors only set field
+//! defaults. The crate-wide claim is narrower than that — see the crate root
+//! doc's forward-declaration label for `containment`, the one module that
+//! does I/O today (board item 01KZDC30CBY9CPJ8YEM7HSRV0Y closes it).
 
 use std::path::PathBuf;
 
@@ -228,8 +231,10 @@ pub struct SubagentSpec {
     pub cwd: Option<PathBuf>,
     /// (S3) The child's confinement root, independent of (but validated
     /// against) `cwd` above -- placed beside it for the same reason `cwd`
-    /// itself was: this crate performs no I/O (`SubagentSpec::validate`
-    /// stays a pure consistency check), so resolution, canonicalization, and
+    /// itself was: nothing in this module performs I/O (`SubagentSpec::
+    /// validate` stays a pure consistency check; the crate-wide claim has
+    /// one live exception, labeled at the crate root), so resolution,
+    /// canonicalization, and
     /// containment enforcement all happen at `conway_runtime`'s
     /// `SubagentHost::start` instead. See that method's own doc for the
     /// full "inheritance algebra" this implements.

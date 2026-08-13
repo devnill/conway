@@ -67,10 +67,17 @@
 //! # No I/O elsewhere in `conway-core`
 //!
 //! This module is the one exception to "conway-core performs no I/O"
-//! (see the crate root doc comment): a filesystem-symlink-aware
+//! (see the crate root doc comment, which carries the forward-declaration
+//! label this module is the subject of): a filesystem-symlink-aware
 //! containment check fundamentally cannot be pure-computation-only. It
 //! remains dependency-free (`std` only, no `ToolCtx`/broker/runtime) and
 //! is exhaustively tested against real tempdirs and real symlinks.
+//!
+//! **The exception is temporary, and it is this module that goes.** Board
+//! item 01KZDC30CBY9CPJ8YEM7HSRV0Y ("Retire the harness-level confinement
+//! root once conway.fs enforces its own", under Stage 1.5) moves confinement
+//! into `conway.fs`, where the check and the open become one step. That item
+//! must delete the crate root's label along with this module.
 
 use std::io;
 use std::path::{Component, Path, PathBuf};
