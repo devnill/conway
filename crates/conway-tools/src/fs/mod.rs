@@ -93,7 +93,9 @@ impl FsPlugin {
 }
 
 impl Default for FsPlugin {
-    fn default() -> Self {    Self::new()   }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Plugin for FsPlugin {
