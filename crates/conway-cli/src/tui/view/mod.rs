@@ -1583,7 +1583,7 @@ mod tests {
         );
     }
 
-    // ---- P-10: every ported modal degrades without panicking on a
+    // ---- every ported modal degrades without panicking on a
     // terminal too small for it. ----
 
     #[test]

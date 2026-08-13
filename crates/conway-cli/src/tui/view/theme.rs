@@ -17,7 +17,7 @@
 //! the view files used pre-T1, so an unconfigured TUI renders identically
 //! (visual parity is an acceptance criterion for this refactor).
 //!
-//! ## P-10: config is untrusted input
+//! ## Config is untrusted input
 //!
 //! [`Theme::from_config`] never panics on a malformed `[tui.theme]` value: an
 //! unparseable color name, an unknown modifier, or an out-of-range hex code
@@ -293,7 +293,7 @@ impl Theme {
     /// on the built-in defaults. Each slot's override is applied
     /// independently; a malformed value (unknown color name, unparseable
     /// hex, unknown modifier) falls back to that slot's default for the
-    /// affected channel -- never a panic (P-10). `None` overrides are
+    /// affected channel -- never a panic on untrusted config. `None` overrides are
     /// no-ops, so an empty `ThemeConfig` yields `Theme::default()`.
     pub fn from_config(config: &ThemeConfig) -> Self {
         let mut theme = Self::default();
@@ -339,7 +339,7 @@ impl Theme {
 /// `default` style. `fg`/`bg` strings that don't parse to a ratatui `Color`
 /// are silently skipped (the default for that channel is kept); each
 /// modifier string that doesn't parse to a ratatui `Modifier` is silently
-/// skipped too. `None` returns `default` unchanged. Never panics (P-10).
+/// skipped too. `None` returns `default` unchanged. Never panics on untrusted config.
 fn overlay(default: Style, cfg: Option<&ThemeStyleConfig>) -> Style {
     let Some(cfg) = cfg else {
         return default;
@@ -362,7 +362,7 @@ fn overlay(default: Style, cfg: Option<&ThemeStyleConfig>) -> Style {
 /// Parses a config-supplied color string into a ratatui `Color`. Accepts the
 /// 16 named ratatui colors (case-insensitive, `snake_case` or `kebab-case`),
 /// `"reset"`, and `#rrggbb` / `#rgb` hex codes. Returns `None` for anything
-/// else (P-10: the caller falls back to the default -- never a panic, no
+/// else (the caller falls back to the default -- never a panic, no
 /// `unwrap`/`expect`/indexing on the config value).
 fn parse_color(raw: &str) -> Option<Color> {
     let lower = raw.trim().to_ascii_lowercase();
@@ -389,7 +389,8 @@ fn parse_color(raw: &str) -> Option<Color> {
 }
 
 /// Parses `#rrggbb` (6 digits) or `#rgb` (3 digits) hex into a ratatui
-/// `Color::Rgb`. Returns `None` for any other shape (P-10).
+/// `Color::Rgb`. Returns `None` for any other shape, rather than panicking on
+/// untrusted config.
 fn parse_hex_color(lower: &str) -> Option<Color> {
     let hex = lower.strip_prefix('#')?;
     if hex.len() != 6 && hex.len() != 3 {
@@ -416,7 +417,7 @@ fn parse_hex_color(lower: &str) -> Option<Color> {
 
 /// Parses a config-supplied modifier tag into a ratatui `Modifier`.
 /// Case-insensitive, `snake_case` or `kebab-case`. Returns `None` for an
-/// unknown tag (P-10: the caller skips it -- never a panic).
+/// unknown tag (the caller skips it -- never a panic).
 fn parse_modifier(raw: &str) -> Option<Modifier> {
     let lower = raw.trim().to_ascii_lowercase();
     Some(match lower.as_str() {
@@ -650,7 +651,7 @@ mod tests {
         assert_eq!(
             t.header,
             Style::default().add_modifier(Modifier::REVERSED),
-            "P-10: no panic"
+            "untrusted config must not panic"
         );
     }
 
@@ -708,7 +709,7 @@ mod tests {
             Style::default()
                 .fg(Color::Blue)
                 .add_modifier(Modifier::BOLD),
-            "P-10: no panic"
+            "untrusted config must not panic"
         );
     }
 
@@ -790,7 +791,7 @@ mod tests {
         assert_eq!(t.notice, Style::default().fg(Color::Rgb(0xff, 0x88, 0x00)));
     }
 
-    // ---- P-10: malformed overrides fall back to defaults, no panic ----
+    // ---- malformed overrides fall back to defaults, no panic ----
 
     #[test]
     fn malformed_fg_falls_back_to_default_for_that_slot() {
@@ -972,7 +973,7 @@ mod tests {
         assert_eq!(
             t.spinner,
             Style::default().fg(Color::Yellow),
-            "P-10: no panic"
+            "untrusted config must not panic"
         );
     }
 

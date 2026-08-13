@@ -184,7 +184,7 @@ impl SessionHandle {
     /// self.root)`, `inherited_upto: Some(<fork-point seq>)` -- and
     /// `AgentTree::attach` emits `Event::AgentSpawned { kind: Fork,
     /// parent: Some(asker), ephemeral: true, .. }` on the live bus, so the
-    /// TUI's tree view shows the node (P-2: ephemeral children stay
+    /// TUI's tree view shows the node (ephemeral children stay
     /// attached and visible to provenance; never-attach was rejected). The
     /// old path attached the child as a `kind: None` root with no
     /// `AgentSpawned` at all.
@@ -278,7 +278,7 @@ impl SessionHandle {
         // Subscribe BEFORE `start` so the child's first events cannot race
         // past this handle's stream (see the doc above).
         let live = self.rt.subscribe();
-        // P-1 (board item 01KYTP0PGKJ4VCJP5TD39A1WHF): `caller` and `parent`
+        // Board item 01KYTP0PGKJ4VCJP5TD39A1WHF: `caller` and `parent`
         // are both `self.root` -- a modal `/ask` always forks the SESSION's
         // own root, mirroring `steer`/`await_agent`/`cancel`'s own
         // root/operator-exemption doc below.
@@ -683,12 +683,12 @@ impl SessionHandle {
 // ---------------------------------------------------------------------
 // WI-102: subagent surface (fork/spawn/steer/await_agent/cancel).
 //
-// Pure delegation to `Runtime`'s `impl SubagentHost` (conway-runtime,
-// WI-084) -- see `crate::subagent_spec` for `ForkSpec`/`SpawnSpec` and
-// their `From` conversions into `conway_core::agent::SubagentSpec`. GP-02:
-// `fork` inherits the forker's entire context plus a directive; `spawn` is
-// clean-slate -- kept as distinct methods/types rather than one
-// mode-flagged call, matching `ForkSpec`/`SpawnSpec`'s own split.
+// Pure delegation to `Runtime`'s `impl SubagentHost` (conway-runtime, WI-084)
+// -- see `crate::subagent_spec` for `ForkSpec`/`SpawnSpec` and their `From`
+// conversions into `conway_core::agent::SubagentSpec`. Fork and spawn stay
+// visibly distinct types: `fork` inherits the forker's entire context plus a
+// directive; `spawn` is clean-slate -- kept as distinct methods/types rather
+// than one mode-flagged call, matching `ForkSpec`/`SpawnSpec`'s own split.
 //
 // This block intentionally names none of the four storage/tree-internal
 // port and helper types fork/spawn *logic* would touch (the session-log
@@ -705,7 +705,7 @@ impl SessionHandle {
 // concern this item has nothing to do with.
 // ---------------------------------------------------------------------
 impl SessionHandle {
-    /// Forks a live agent: GP-02's "inherit everything, plus a directive"
+    /// Forks a live agent: the "inherit everything, plus a directive"
     /// mode. Delegates to `Runtime::start` (`impl SubagentHost`) with
     /// `spec.into()` unmodified beyond the `ForkSpec` -> `SubagentSpec`
     /// conversion itself.
@@ -748,7 +748,7 @@ impl SessionHandle {
             .map_err(ConwayError::Runtime)
     }
 
-    /// Spawns a fresh agent: GP-02's clean-slate mode. Delegates to
+    /// Spawns a fresh agent: the clean-slate mode. Delegates to
     /// `Runtime::start` (`impl SubagentHost`) with `spec.into()` unmodified
     /// beyond the `SpawnSpec` -> `SubagentSpec` conversion itself.
     ///
@@ -1088,7 +1088,7 @@ fn record_to_event(record: &LogRecord) -> Option<(LogSeq, DateTime<Utc>, Event)>
             Event::AgentFinished {
                 result: result.clone(),
                 // Replay synthesis: a persisted `AgentResultRecord` does not
-                // carry the `ephemeral` flag (P-2: provenance is preserved via
+                // carry the `ephemeral` flag (provenance is preserved via
                 // the session store, not via this replayed event). Default
                 // `false` to match the pre-ephemeral replay semantics -- the
                 // live `Event::AgentFinished` at finish time carries the true

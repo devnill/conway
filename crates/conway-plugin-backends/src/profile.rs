@@ -23,8 +23,8 @@
 //!
 //! # Why every field is `#[serde(default)]`
 //!
-//! A hand-authored or embedded profile file is untrusted, evolving input
-//! (P-10): a profile written against today's field set must still load
+//! A hand-authored or embedded profile file is untrusted, evolving input:
+//! one written against today's field set must still load
 //! unchanged after a later conway version adds a new field (the missing
 //! field takes its documented, conservative default), and a typo in a field
 //! name must be a loud, typed error naming the field rather than a silently

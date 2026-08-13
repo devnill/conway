@@ -2,7 +2,7 @@
 //!
 //! Contains no logic beyond delegation and defaults — no plugin registered
 //! here is privileged over one an embedder supplies via
-//! `ConwayBuilder::with_plugin` (GP-03).
+//! `ConwayBuilder::with_plugin` -- the one extension mechanism.
 
 use crate::config::schema::{PermissionMode, PermissionsConfig};
 
@@ -30,7 +30,7 @@ pub fn builtin_plugins() -> Vec<std::sync::Arc<dyn conway_core::ports::Plugin>> 
 
 /// Every built-in plugin id an operator may legitimately name in
 /// `tools.builtin_plugins`, derived from the candidates themselves rather
-/// than restated (P-14). A second hand-maintained list would drift the day
+/// than restated. A second hand-maintained list would drift the day
 /// a built-in is added or renamed, and the drift would be silent: a valid
 /// id rejected as unknown, or a stale one accepted and then never matched.
 ///

@@ -384,7 +384,7 @@ async fn execute_one(
                 // (`conway-core` fakes and `conway-tools` test doubles are
                 // the only other construction sites, board item C1). No
                 // tool this handle reaches can ever act as a different
-                // agent (P-1, structural -- see `SubagentHandle`'s own
+                // agent (structural -- see `SubagentHandle`'s own
                 // doc).
                 subagents: SubagentHandle::new(subagents.clone(), agent_id),
                 config: plugin_config.clone(),
@@ -430,7 +430,7 @@ fn render_call(tool: &dyn Tool, args: &serde_json::Value) -> String {
     sanitize_rendered(&tool.render(args))
 }
 
-/// P-10: a tool's rendering is derived from model-supplied arguments and is
+/// A tool's rendering is derived from model-supplied arguments and is
 /// therefore UNTRUSTED. Replaces every Unicode control character (`Cc`:
 /// `\x00`-`\x1F`, `\x7F`, and the C1 controls `\x80`-`\x9F`) with the
 /// Unicode replacement character, so a model-supplied argument containing
@@ -607,7 +607,7 @@ mod tests {
         );
     }
 
-    /// P-10: the concrete threat this exists for — a model-supplied
+    /// The concrete threat this exists for — a model-supplied
     /// argument smuggling an ANSI escape sequence into the permission
     /// prompt must not reach the terminal as a raw ESC byte.
     #[test]

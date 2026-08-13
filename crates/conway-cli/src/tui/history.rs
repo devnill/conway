@@ -6,7 +6,7 @@
 //! the project's own `.conway/` directory: history follows the user, not
 //! the checkout.
 //!
-//! P-10 (config/the history file are both untrusted input): [`load`]
+//! Config and the history file are both untrusted input: [`load`]
 //! degrades to an empty history on a missing, unreadable, or corrupt file
 //! -- never a panic, never a startup failure -- and skips individual
 //! malformed lines rather than discarding the whole file over one bad
@@ -21,7 +21,7 @@
 //! One JSON-string-encoded entry per line, not a bare newline-delimited
 //! line per entry -- a submitted line can itself contain embedded `\n`
 //! (T8's multi-line input, Alt/Shift-Enter), which a bare-newline format
-//! could not round-trip. `serde_json` is already a dependency (C-04: no new
+//! could not round-trip. `serde_json` is already a dependency (no new
 //! dependency needed for the escaping).
 
 use std::collections::VecDeque;
@@ -30,7 +30,7 @@ use std::path::Path;
 /// Reads the history file at `path` into a `VecDeque` in on-disk (oldest
 /// first) order. Never errors: a missing/unreadable file yields an empty
 /// history, and each line is decoded independently -- a corrupt line is
-/// skipped, not fatal to the rest of the file (P-10).
+/// skipped, not fatal to the rest of the file -- the file is untrusted input.
 pub fn load(path: &Path) -> VecDeque<String> {
     let Ok(contents) = std::fs::read_to_string(path) else {
         return VecDeque::new();
@@ -50,10 +50,10 @@ pub fn load(path: &Path) -> VecDeque<String> {
 /// Writes `history` to `path`, one JSON-string-encoded entry per line, via a
 /// `.tmp` sibling + atomic `rename` (mirrors
 /// `conway-session::index::SessionIndex::persist_full`'s write-then-rename
-/// shape). Creates the parent directory if it does not exist yet. Returns
-/// an `io::Result` so the caller can decide how to treat a failure -- P-10:
-/// this function itself never panics, and the caller (`App::submit`) never
-/// lets a failure here fail the submit it was recording.
+/// shape). Creates the parent directory if it does not exist yet. Returns an
+/// `io::Result` so the caller can decide how to treat a failure -- the file is
+/// untrusted input: this function itself never panics, and the caller
+/// (`App::submit`) never lets a failure here fail the submit it was recording.
 pub fn save(path: &Path, history: &VecDeque<String>) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -61,8 +61,8 @@ pub fn save(path: &Path, history: &VecDeque<String>) -> std::io::Result<()> {
     let mut buf = String::new();
     for entry in history {
         // `String`/`&str` serialization to JSON cannot fail; the
-        // `unwrap_or_default` is P-10 belt-and-braces, not a real fallback
-        // path.
+        // `unwrap_or_default` is belt-and-braces against untrusted input,
+        // not a real fallback path.
         buf.push_str(&serde_json::to_string(entry).unwrap_or_default());
         buf.push('\n');
     }

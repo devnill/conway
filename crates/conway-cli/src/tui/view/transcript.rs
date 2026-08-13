@@ -441,7 +441,7 @@ fn reasoning_lines(text: &str, theme: &Theme) -> Vec<Line<'static>> {
 /// T4: prepends an `HH:MM ` timestamp prefix (styled with
 /// `theme.timestamp`) to the first of `lines` when `show` is `true` and
 /// `ts` is `Some`. A no-op otherwise. The prefix is its own `Span` so the
-/// body spans' styles are untouched. Never panics (P-10).
+/// body spans' styles are untouched. Never panics on untrusted input.
 fn stamp_first(
     lines: &mut Vec<Line<'static>>,
     ts: Option<&DateTime<Utc>>,
@@ -535,7 +535,7 @@ fn tool_lines(
     // `args:` label followed by pretty-printed multi-line JSON (each
     // physical line its own `Line`). Pretty-printing parses the stored
     // compact JSON; a parse failure (impossible for `Value::to_string`
-    // output, but P-10: never panic) falls back to the raw string split
+    // output, but never panic) falls back to the raw string split
     // on `\n`.
     if !args.is_empty() {
         if expanded {
@@ -1578,7 +1578,7 @@ mod tests {
         );
     }
 
-    /// `cap.max(1)` guard: a cap of 0 (which P-10 prevents at the config
+    /// `cap.max(1)` guard: a cap of 0 (which the config clamp prevents at the
     /// boundary, but the render path must still never divide-by-zero or
     /// emit zero capped lines) degrades to a 1-line cap.
     #[test]

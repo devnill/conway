@@ -45,7 +45,7 @@ pub struct PermissionLoadReport {
     /// a tool whose `render_kind` is `Structured` (a rule that can never
     /// reliably match). Surfaced as a typed value, not folded into
     /// `notices`, so the caller can render it distinctly and a test can
-    /// pin it (P-10: untrusted input -> typed errors). The rule is carried
+    /// pin it (untrusted input -> typed errors, never a panic). The rule is carried
     /// whole so the operator sees exactly what was rejected.
     pub registration_errors: Vec<conway_core::permission_pattern::RuleRegistrationError>,
     /// Board item 01KZHVDDQQ7XT0RK3JVNM2YV83: one human-readable message per
@@ -77,8 +77,10 @@ pub struct TrustPermissionReport {
     /// broker dropped are NOT counted -- distinct from the raw parse count).
     pub installed: usize,
     /// Typed registration errors for rules the broker refused to install --
-    /// surfaced to the operator through the SAME `Entry::Error { fatal: false }`
-    /// channel `PermissionLoadReport::registration_errors` uses (P-12).
+    /// surfaced to the operator through the SAME `Entry::Error { fatal: false
+    /// }` channel `PermissionLoadReport::registration_errors` uses, so a
+    /// registration failure reaches the operator instead of being produced and
+    /// discarded.
     pub registration_errors: Vec<conway_core::permission_pattern::RuleRegistrationError>,
     /// A4: operator-visible notices for rules the broker DID install but
     /// that are partially inert (today: a `command_prefix` rule selecting a
@@ -173,8 +175,8 @@ const SWEEP_LIVE_THRESHOLD: ChronoDuration = ChronoDuration::seconds(60);
 /// fully-inert all-`Structured` case (a hard reject -- no working member to
 /// preserve) from the mixed `Structured`+`ShellCommand` case (a notice --
 /// the `ShellCommand` members install and the operator is warned the
-/// `Structured` members are inert). P-10: both arms are typed values, never
-/// panics; P-12: both are operator-visible (one as a transcript error, one
+/// `Structured` members are inert). Both arms are typed values, never
+/// panics on untrusted input; both are operator-visible (one as a transcript error, one
 /// as a transcript notice).
 enum RegistrationCheck {
     Reject(conway_core::permission_pattern::RuleRegistrationError),
@@ -440,18 +442,19 @@ impl Conway {
             // gate), so it is NOT raised here.
             //
             // Multi-tool / mixed Select: fire when ANY exactly-named selected
-            // tool resolves to a non-`Named` `PathArgs` (P-13: fail closed --
-            // if any tool in the select can't be path-confined, the deny/prompt
-            // rule is silently inert for that tool, which is the hazard; the
-            // operator is informed and can split the rule). A trailing-`*`
-            // wildcard pattern is NOT resolvable to a single tool here (no
-            // tool is named `*`), so it is skipped at install time -- the
-            // decision-time fail-closed in `rule_denies_or_prompts` covers it.
-            // An unknown tool (`path_args == None`) is skipped too, mirroring
-            // the CommandPrefix check's load-order-hazard reasoning. A
-            // `Select::Categories` is not inspectable at install time (its
-            // member tools may register later in the same session), so it is
-            // left to the decision-time fail-closed as well.
+            // tool resolves to a non-`Named` `PathArgs` (an unenforceable deny
+            // rule fails closed -- if any tool in the select can't be
+            // path-confined, the deny/prompt rule is silently inert for that
+            // tool, which is the hazard; the operator is informed and can split
+            // the rule). A trailing-`*` wildcard pattern is NOT resolvable to a
+            // single tool here (no tool is named `*`), so it is skipped at
+            // install time -- the decision-time fail-closed in
+            // `rule_denies_or_prompts` covers it. An unknown tool (`path_args
+            // == None`) is skipped too, mirroring the CommandPrefix check's
+            // load-order-hazard reasoning. A `Select::Categories` is not
+            // inspectable at install time (its member tools may register later
+            // in the same session), so it is left to the decision-time
+            // fail-closed as well.
             (Select::Tools(ts), When::PathsUnder(_))
                 if rule.then == conway_core::permission_pattern::Then::Deny
                     || rule.then == conway_core::permission_pattern::Then::Prompt =>
@@ -1075,18 +1078,19 @@ impl Conway {
     ///   that names a recognized key with the wrong shape).
     ///
     /// **One deliberate exception to that silent posture** (board item
-    /// 01KZHVDDQQ7XT0RK3JVNM2YV83): a file naming a top-level key this
-    /// schema does not recognize -- `"denys"` for `"deny"`, or any other
-    /// typo -- is checked FIRST, via `conway_core::permission_pattern::
-    /// permission_file_unknown_field_error`, before any rule from that file
-    /// is parsed. When it fires, the file contributes NOTHING (not even its
+    /// 01KZHVDDQQ7XT0RK3JVNM2YV83): a file naming a top-level key this schema
+    /// does not recognize -- `"denys"` for `"deny"`, or any other typo -- is
+    /// checked FIRST, via `conway_core::permission_pattern::
+    /// permission_file_unknown_field_error`, before any rule from that file is
+    /// parsed. When it fires, the file contributes NOTHING (not even its
     /// correctly-spelled rules) and a message naming the offending key is
-    /// pushed to [`PermissionLoadReport::parse_errors`] -- LOUD, unlike
-    /// every other condition here. This is the one case where silence would
-    /// be the defect rather than the safety margin: `deny`'s whole point is
-    /// that it always applies regardless of trust, so a `deny` rule that
-    /// silently never installs because of a typo is exactly the fail-open
-    /// outcome the asymmetry above exists to rule out (P-13).
+    /// pushed to [`PermissionLoadReport::parse_errors`] -- LOUD, unlike every
+    /// other condition here. This is the one case where silence would be the
+    /// defect rather than the safety margin: `deny`'s whole point is that it
+    /// always applies regardless of trust, so a `deny` rule that silently never
+    /// installs because of a typo is exactly the fail-open outcome the
+    /// asymmetry above exists to rule out -- an unenforceable narrowing rule
+    /// denies rather than silently matching nothing.
     ///
     /// `scope` is the [`PermissionScope`] every installed ALLOW rule is
     /// remembered at (`deny`/`prompt` rules are unscoped by design -- they
@@ -1474,7 +1478,8 @@ impl Conway {
     /// at all -- `router_explain` is `None`. This used to fall back to a
     /// fabricated-empty report (`entries: vec![]`), which `conway routes
     /// explain` then misread as "unknown role" for a perfectly valid one
-    /// (GP-14: a silent inversion, board item 01KZFC1KNGQ51TZ0BG7P7RAY9H).
+    /// (a silent inversion of what the surface claimed, board item
+    /// 01KZFC1KNGQ51TZ0BG7P7RAY9H).
     /// It now falls back to `conway_core::routing::MinimalRouter`,
     /// projected over this `Conway`'s own resolved `RoutingConfig` -- an
     /// honestly degenerate answer (no capability filtering, no health
@@ -1737,7 +1742,7 @@ impl Conway {
     /// of: the durable session-header rewrite, the live-tree flag flip, and
     /// the `Event::AgentPromoted` emission that tells UIs to update. After
     /// B2, promotion is a flag flip ONLY — no re-parenting, no record
-    /// rewriting beyond the header's `ephemeral` bit (P-2: the child's
+    /// rewriting beyond the header's `ephemeral` bit (the child's
     /// entire transcript, origin, and provenance are preserved verbatim).
     ///
     /// **Failure ordering (binding): header first, then tree, then
@@ -1769,7 +1774,7 @@ impl Conway {
     /// later flip cannot race stale: nodes are never detached from
     /// `AgentTree`, so presence cannot go stale between the two.
     ///
-    /// P-1: promote is a lifecycle operation on an existing agent, NOT a
+    /// Promote is a lifecycle operation on an existing agent, NOT a
     /// new subagent primitive — no fork, no spawn, no new session.
     ///
     /// Errors: `ConwayError::Runtime(RuntimeError::AgentNotFound)` when
@@ -1817,11 +1822,11 @@ impl Conway {
     /// - the child's `ForkDirective` head record, materialized as a
     ///   `UserTurn` (text = the directive's text, `ts` preserved) re-stamped
     ///   `Provenance::MergedAsk { from: child_session }` — so the merge
-    ///   origin stays explicit and inspectable (P-2/GP-10) even after the
+    ///   origin stays explicit and inspectable even after the
     ///   child's own session file is purged;
     /// - the child's `Assistant` records, copied VERBATIM — real `model`,
     ///   `route_reason`, `usage`, `stop`, `content`, `ts` all pass through
-    ///   untouched (P-10: these are untrusted model-produced fields; this
+    ///   untouched (these are untrusted model-produced fields; this
     ///   method never fabricates synthetic values for them);
     /// - any genuine `UserTurn` records in the child (defensive: older or
     ///   other ask shapes), copied verbatim except `prov` re-stamped to
@@ -1876,10 +1881,10 @@ impl Conway {
     ///
     /// The child's tree node is NOT detached (`AgentTree` never detaches —
     /// the same invariant [`Conway::promote`] relies on), so the tree keeps
-    /// a provenance record that the ask happened (P-2) even though the
+    /// a provenance record that the ask happened even though the
     /// session behind it is gone.
     ///
-    /// P-1: pull-in is a lifecycle operation on two existing agents' logs,
+    /// Pull-in is a lifecycle operation on two existing agents' logs,
     /// NOT a new subagent primitive — no fork, no spawn, no new session is
     /// created here.
     pub async fn pull_in(&self, child: AgentId) -> Result<()> {
@@ -1984,7 +1989,7 @@ impl Conway {
                         },
                     });
                 }
-                // VERBATIM (P-10): real model/route_reason/usage/stop/ts —
+                // VERBATIM: real model/route_reason/usage/stop/ts —
                 // passed through, never fabricated.
                 assistant @ LogRecord::Assistant { .. } => merged.push(assistant),
                 LogRecord::UserTurn { seq, ts, text, .. } => merged.push(LogRecord::UserTurn {
@@ -2019,7 +2024,7 @@ impl Conway {
     /// forced fate when the TUI quits with the modal open). The semantic
     /// opposite of [`Conway::pull_in`]: the user has explicitly chosen to
     /// throw the answer away, which is the single sanctioned exception to
-    /// mandatory provenance retention (P-2/GP-10 — discard only ever happens
+    /// mandatory provenance retention (discard only ever happens
     /// via this explicit choice, never silently).
     ///
     /// **Guard matrix (mirrors the facade-layer checks [`Conway::promote`]
@@ -2049,7 +2054,7 @@ impl Conway {
     /// though the session behind it is gone — same invariant
     /// [`Conway::pull_in`] documents.
     ///
-    /// P-1: purge is a lifecycle operation on an existing agent's session,
+    /// Purge is a lifecycle operation on an existing agent's session,
     /// NOT a new subagent primitive.
     pub async fn purge(&self, agent: AgentId) -> Result<()> {
         // 1. Live-tree resolution (see the doc above).
@@ -2092,9 +2097,9 @@ impl Conway {
     /// the tag exists — see `conway_core::log::AskOrigin`'s doc): a
     /// `conway_ask` tool child's transcript is referenced by an
     /// `EphemeralSessionRef` artifact in the calling agent's persisted
-    /// `ToolOutput`, and purging it would leave that artifact dangling
-    /// (P-2). Untagged (`None`) ephemeral sessions — every header written
-    /// before the tag existed — are likewise never swept.
+    /// `ToolOutput`, and purging it would leave that artifact dangling so
+    /// provenance survives it. Untagged (`None`) ephemeral sessions — every
+    /// header written before the tag existed — are likewise never swept.
     ///
     /// **Not-live caution (the same one B1's `remove` guard matrix assigns
     /// to the facade layer):** a session whose agent IS live in
@@ -2191,7 +2196,7 @@ impl Conway {
     /// session under the declarative `intent` role, then purging that
     /// session before returning — on every exit path. The full design
     /// (session shape, prompt-prefix system prompt, the unconfigured-role
-    /// passthrough fallback, the P-10 reply-validation policy, and every
+    /// passthrough fallback, the untrusted-reply validation policy, and every
     /// disclosed residual) lives in the `intent` module's doc; this is
     /// the one-method delegation this item is scoped to add here.
     ///

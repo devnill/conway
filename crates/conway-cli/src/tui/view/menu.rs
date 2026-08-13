@@ -328,7 +328,7 @@ fn selectable(row: &MenuRow) -> bool {
 /// -- [`MenuState::rows`] and this lookup always walk the SAME `roots`
 /// between calls with no mutation in between other than through
 /// [`MenuState`]'s own methods), handled defensively rather than assumed
-/// (P-10: no `unwrap`/indexing panic on a path that could in principle be
+/// (no `unwrap`/indexing panic on a path that could in principle be
 /// stale).
 fn node_at_mut<'a>(nodes: &'a mut [MenuNode], path: &[usize]) -> Option<&'a mut MenuNode> {
     let (first, rest) = path.split_first()?;
@@ -573,7 +573,7 @@ mod tests {
         );
     }
 
-    // ---- P-10: an empty tree never panics ----
+    // ---- an empty tree never panics ----
 
     #[test]
     fn an_empty_tree_never_panics_on_navigation_or_lookup() {

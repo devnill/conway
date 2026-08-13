@@ -96,7 +96,8 @@ pub struct ConwayConfig {
     /// supplies this workspace's own in-tree default; every other `event` is
     /// still parsed and validated only.** That precondition is stated here
     /// rather than only in [`HooksConfig`] because this is the declaration
-    /// site, and GP-14 treats a declaration site as ONE artifact: a reader
+    /// site, and a declaration site is ONE artifact -- nothing may claim to be
+    /// reached that isn't: a reader
     /// who stops at this field must not come away believing a rule they
     /// write here will run. `conway-cli` DOES inject a runner (board item
     /// 01KZVTTP492R3BDY33FAGYWDNW: `build_conway` calls `with_default_
@@ -275,7 +276,8 @@ pub enum PermissionMode {
 /// now (`conway_plugin_backends::factory`'s two `BackendFactory`s, attached
 /// by default -- see [`PluginsConfig::default_backends`]'s own doc for what
 /// makes them attach with no `settings.json` change). An unrecognised name
-/// is a hard, named `build()` error, never a silent no-op (GP-14).
+/// is a hard, named `build()` error, never a silent no-op -- a key that
+/// claims to install something must install it.
 ///
 /// **Kind-specific keys: the catch-all shape, chosen over its two
 /// alternatives, with its cost stated rather than papered over.** Three
@@ -305,7 +307,8 @@ pub enum PermissionMode {
 ///    `{"kind": "foo", "config": {...}}`), leaving the top level closed and
 ///    `deny_unknown_fields` intact. Rejected because it reintroduces
 ///    exactly the privileged-built-in asymmetry this item exists to
-///    remove (GP-03): the five built-in-shaped keys would sit at one level
+///    remove, since there is exactly one extension mechanism: the five
+///    built-in-shaped keys would sit at one level
 ///    and a third party's own keys at another, a structural "built-ins are
 ///    first-class, everyone else is a guest" distinction with no technical
 ///    justification.
@@ -616,10 +619,10 @@ impl Default for ToolsConfig {
 /// (`config::merge::validate`'s check 8). A first-party plugin (dynamic
 /// routing, compaction, memory, skills, MCP — the six named in
 /// `PHILOSOPHY.md`) is never such a candidate: THIS crate does not, and
-/// must never, depend on any of them (GP-03/P-6 — a first-party plugin
+/// must never, depend on any of them — a first-party plugin
 /// sits on the exact same footing as a third-party one from `conway`'s own
 /// point of view, never a privileged one folded into the built-in
-/// candidate set). Folding the two lists together would make
+/// candidate set. Folding the two lists together would make
 /// `builtin_plugins`'s existing name a lie in the other direction the
 /// first day a real first-party plugin lands in it.
 ///
@@ -634,7 +637,8 @@ impl Default for ToolsConfig {
 /// `crates/conway-cli/src/first_party_plugins.rs` for the worked example
 /// this item ships (`conway-cli` links `conway-plugin-skeleton` and
 /// resolves ids from this list against it). An id the reading binary does
-/// not recognize is that binary's own config error to raise (GP-14): a
+/// not recognize is that binary's own config error to raise, since nothing may claim to
+/// be reached that isn't: a
 /// name silently doing nothing here would be exactly the rung-1 lie
 /// CONTRIBUTING's declaration rule exists to prevent.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -710,7 +714,7 @@ pub struct TuiSection {
     /// visibility. `fields` is the ordered list of field names to render; a
     /// field absent from the list is hidden, and the list's order is the
     /// render order. Unknown names are silently dropped at render time
-    /// (P-10: config is untrusted input, never a panic). Default = the
+    /// (config is untrusted input, never a panic). Default = the
     /// Lean line
     /// `["session","lineage","mode","model","ctx","tokens","activity","hint"]`.
     /// See `docs/interactive.md`'s "The status line" section for the
@@ -725,7 +729,7 @@ pub struct TuiSection {
     /// The stored preview is never truncated -- the cap is render-time only.
     /// `None` (the default) means the TUI's built-in default of 3. The TUI
     /// clamps a loaded value to `1..=200` with a fallback to 3 on a
-    /// missing/out-of-range/bad value (P-10: config is untrusted input,
+    /// missing/out-of-range/bad value (config is untrusted input,
     /// never a panic). `CONWAY_TUI__TOOL_PREVIEW_LINES=10` overrides via
     /// env.
     #[serde(default)]
@@ -737,7 +741,7 @@ pub struct TuiSection {
     /// once the cap is exceeded. `None` (the default) means the TUI's
     /// built-in default of 500. The TUI clamps a loaded value to
     /// `1..=100_000` with a fallback to 500 on a missing/out-of-range/bad
-    /// value (P-10: config is untrusted input, never a panic).
+    /// value (config is untrusted input, never a panic).
     /// `CONWAY_TUI__HISTORY_SIZE=1000` overrides via env.
     #[serde(default)]
     pub history_size: Option<u32>,
@@ -747,7 +751,7 @@ pub struct TuiSection {
 /// (T3). The `fields` list is the ordered set of field names the TUI
 /// renders, left to right; a field not in the list is hidden, and the list
 /// order is the render order. Unknown names are dropped at render time
-/// (P-10: never a panic). Defaults to the Lean line
+/// (config is untrusted input: never a panic). Defaults to the Lean line
 /// `["session","lineage","mode","model","ctx","tokens","activity","hint"]`.
 ///
 /// `session`/`lineage` were added by the item that corrected a requirement
@@ -792,7 +796,7 @@ impl Default for StatusLineConfig {
 /// "use the TUI's built-in default for this named style"; `Some` overlays
 /// `fg`/`bg`/`modifiers` on top of the default. The TUI resolves the
 /// strings to ratatui `Color`/`Modifier` values and maps any unparseable
-/// or out-of-range value back to the default for that slot (P-10: config
+/// or out-of-range value back to the default for that slot (config
 /// is untrusted input, never a panic). Every field is `Option` so a user
 /// can override just one named style without restating the rest.
 ///
@@ -852,7 +856,7 @@ pub struct ThemeConfig {
 /// parses `fg`/`bg` as ratatui color names (`"cyan"`, `"dark_gray"`,
 /// `"#ff00ff"`, ...) and `modifiers` as ratatui modifier names
 /// (`"bold"`, `"dim"`, `"italic"`, `"reversed"`, ...); any unrecognized
-/// value falls back to the default (P-10), never a panic.
+/// value falls back to the default -- config is untrusted input -- never a panic.
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct ThemeStyleConfig {
@@ -867,7 +871,8 @@ pub struct ThemeStyleConfig {
 /// hooks"; see `docs/plugins/hooks.md` point 13 and `docs/plugins/scripts.md`
 /// for the design this shape is drawn from).
 ///
-/// **GP-14 disclosure, PER EVENT -- read this before adding a rule.** This
+/// **Reachability disclosure, PER EVENT -- read this before adding a rule.**
+/// Nothing here may claim to be reached that isn't. This
 /// section itself, and every type it names, always parses and validates
 /// (that part was never event-conditional). Whether a rule actually RUNS is:
 ///
@@ -912,7 +917,7 @@ pub struct ThemeStyleConfig {
 ///   [`HookEntry::timeout_ms`]/[`HookEntry::enabled`] enforcement, and adds
 ///   only its own event-specific dispatch call site.
 ///
-/// **Default: an empty rule list.** This is the part of GP-14's rule that
+/// **Default: an empty rule list.** This is the part of that rule which
 /// is easiest to get backwards (its own named precedent, `probe_enabled`,
 /// got exactly this wrong -- see [`HealthSection`]'s doc comment): the
 /// default here must not assert that any dispatch happens, and an empty

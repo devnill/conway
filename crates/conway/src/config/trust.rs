@@ -61,7 +61,7 @@
 //! TUI's `/trust permissions` command, wired in `conway-cli::tui::app`) --
 //! never automatic, never a side effect of starting a session.
 //!
-//! ## Failure posture (P-10)
+//! ## Failure posture: the trust file is untrusted input
 //!
 //! Every failure mode here yields FEWER trusted subjects, never more:
 //! - `trust.json` missing -> every project file is untrusted (empty store).
@@ -70,7 +70,7 @@
 //! - (unix only) `trust.json` is group- or world-writable -> refused and
 //!   treated as unreadable, the same way `ssh` refuses a loose private
 //!   key. A no-op on non-unix hosts, matching `conway_tools::bash`'s own
-//!   `#[cfg(not(unix))]` precedent (C-04: no new dependency for this --
+//!   `#[cfg(not(unix))]` precedent (no new dependency for this --
 //!   `std::os::unix::fs::PermissionsExt` is already in `std`).
 //! - a digest computed from the file on disk right now mismatches the
 //!   recorded digest -> untrusted. Mirrors how `Containment::Undecidable`
@@ -83,7 +83,7 @@
 //! `conway_core::permission_pattern`'s internal `RawPermissionFile` gained
 //! `deny_unknown_fields` under this item because `permissions.json` is a
 //! HAND-AUTHORED file where a typo'd key (`"denys"` for `"deny"`) silently
-//! drops a safety rule the operator believes is in effect -- P-13's fail-
+//! drops a safety rule the operator believes is in effect -- the fail-
 //! closed floor. `TrustFile`/[`TrustedRecord`] are a different kind of
 //! file entirely: nobody types a key into `trust.json` by hand. It is
 //! written exclusively by [`TrustStore::trust`] and read back exclusively
@@ -154,7 +154,7 @@ pub struct TrustStore {
 
 /// `blake3` is already a workspace dependency (`conway-core`,
 /// `conway-runtime`'s `PermissionBroker::CacheKey` both use it) -- reused
-/// here rather than reaching for a new dependency (C-04).
+/// here rather than reaching for a new dependency.
 fn content_digest(contents: &str) -> String {
     format!("blake3:{}", blake3::hash(contents.as_bytes()).to_hex())
 }
@@ -174,9 +174,10 @@ impl TrustStore {
             .and_then(|settings| settings.parent().map(|dir| dir.join("trust.json")))
     }
 
-    /// Loads the trust record, failing closed on every error path (P-10):
-    /// a missing, unreadable, corrupt, or (on unix) loosely-permissioned
-    /// file all produce an EMPTY store, which trusts nothing.
+    /// Loads the trust record, failing closed on every error path, since the
+    /// file is untrusted input: a missing, unreadable, corrupt, or (on unix)
+    /// loosely-permissioned file all produce an EMPTY store, which trusts
+    /// nothing.
     pub fn load(env: &HashMap<String, String>) -> Self {
         match Self::path(env) {
             Some(path) => Self::load_from_path(&path),
@@ -388,7 +389,7 @@ mod tests {
         );
     }
 
-    /// P-10: a missing `trust.json` trusts nothing.
+    /// A missing `trust.json` trusts nothing.
     #[test]
     fn a_missing_trust_file_trusts_nothing() {
         let xdg = tempfile_dir();
@@ -397,7 +398,7 @@ mod tests {
         assert!(!store.is_trusted(Path::new("/does/not/matter"), "anything"));
     }
 
-    /// P-10: a corrupt `trust.json` is treated as empty, never partially
+    /// A corrupt `trust.json` is treated as empty, never partially
     /// applied and never a panic.
     #[test]
     fn a_corrupt_trust_file_is_treated_as_empty() {

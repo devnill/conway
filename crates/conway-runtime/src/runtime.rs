@@ -669,13 +669,14 @@ impl Runtime {
         let root: Option<PathBuf> = match &spec.root {
             None => None,
             Some(requested) => {
-                // Min-1 (P-14): resolve via the SHARED rule (absolute ->
-                // as-is, relative -> join base, NUL -> None) instead of
-                // inlining two-thirds of it and silently dropping the NUL
-                // guard -- the same call `subagent.rs`'s spawn-time root
-                // resolution now makes. A relative root resolves against
-                // `spec.cwd`, exactly as before. A non-UTF-8 or NUL-carrying
-                // root is a typed config rejection (P-10), never a panic.
+                // Min-1: resolve via the SHARED rule -- one implementation,
+                // never restated (absolute -> as-is, relative -> join base, NUL
+                // -> None) instead of inlining two-thirds of it and silently
+                // dropping the NUL guard -- the same call `subagent.rs`'s
+                // spawn-time root resolution now makes. A relative root
+                // resolves against `spec.cwd`, exactly as before. A non-UTF-8
+                // or NUL-carrying root is a typed config rejection -- untrusted
+                // input -- never a panic.
                 let requested_str = requested.to_str().ok_or_else(|| {
                     crate::subagent::invalid_spec(ConwayError::Config {
                         detail: format!(
@@ -1191,7 +1192,7 @@ impl Runtime {
     /// (persist-before-act), then emits the live `Event::UserTurn` twin (this
     /// item) so a subscriber on the event stream sees the SAME occurrence
     /// live that replay would later reconstruct from the log -- closing the
-    /// P-8 gap where only the TUI (via its own local `Entry::User` push) ever
+    /// The gap where only the TUI (via its own local `Entry::User` push) ever
     /// showed a prompt. Ordering-safe for every caller of this method: `agent`
     /// must already be a KEY of `self.agents` (looked up just below) to reach
     /// the emit at all, and the only way an agent id becomes a key is
@@ -1267,7 +1268,7 @@ impl Runtime {
     /// ever actually named in this call -- a descendant's own result falls
     /// back to a generic "cancelled" reason, since attributing `reason` to
     /// an agent that was never told it would misrepresent where it came
-    /// from (P-2). Whether the subtree collapse itself should carry a
+    /// from. Whether the subtree collapse itself should carry a
     /// reason down to every descendant is a separate, open question (board
     /// item 01KZDDCBGXNYTNM31PHW46R1SP), not decided here.
     pub fn cancel(&self, agent: AgentId, reason: String) -> Result<(), RuntimeError> {

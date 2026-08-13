@@ -14,10 +14,10 @@
 //! agent can steer/await/cancel any other agent" (previously, these three
 //! methods took only `target`, with nothing checking who was asking).
 //! Violating this MUST return [`RuntimeError::AgentNotInSubtree`], never a
-//! panic (P-10: both ids may be model-supplied) -- an unknown `target`
+//! panic (both ids may be model-supplied, so untrusted) -- an unknown `target`
 //! stays [`RuntimeError::AgentNotFound`], distinct from a known-but-foreign
 //! one. This mirrors [`RuntimeError::AskRequiresFork`]'s shape: enforced at
-//! THIS trait boundary (P-1), not only at the `conway_steer`/
+//! THIS trait boundary, not only at the `conway_steer`/
 //! `conway_await`/`conway_cancel` tool callsites, so no other caller --
 //! including a future out-of-process plugin -- can bypass it.
 //!
@@ -47,11 +47,11 @@
 //! cross-tree exfiltration in one call: `tree()` to discover a sibling's
 //! `AgentId` (an ordinary, unprivileged read every tool already had), then
 //! `ask(sibling, SubagentSpec { mode: Fork, .. })` to fork that sibling's
-//! ENTIRE context (GP-02: a fork inherits everything up to the fork point)
+//! ENTIRE context (a fork inherits everything up to the fork point, never a slice)
 //! and read the reply back as plain model output.
 //!
 //! This item closes all three with the SAME mechanism `674bb65` already
-//! established, not a second one (P-1, GP-02 -- no third subagent
+//! established, not a second one (there is no third subagent
 //! primitive, no bypass flag):
 //!
 //! - `start`/`ask` gain a `caller: AgentId` parameter, checked against
@@ -59,7 +59,7 @@
 //!   `await_result`/`cancel` already use -- `parent` outside `caller`'s own
 //!   subtree is [`RuntimeError::AgentNotInSubtree`], an unknown `parent` is
 //!   [`RuntimeError::AgentNotFound`]. `ask` performs no separate check of
-//!   its own: it composes `start` (P-1's own "ask is fork+await-text, not a
+//!   its own: it composes `start` ("ask is fork+await-text, not a
 //!   third primitive" rule), so passing `caller` straight through to its
 //!   internal `start(caller, parent, spec)` call is what enforces this for
 //!   `ask` too -- exactly the same "one check, reused" shape `674bb65`
@@ -93,12 +93,12 @@ use crate::ids::AgentId;
 
 #[async_trait]
 pub trait SubagentHost: Send + Sync + 'static {
-    /// `caller` must own `parent` (`parent` is `caller` itself, or a
-    /// descendant of `caller` -- see this module's own doc, "`caller` on
+    /// `caller` must own `parent` (`parent` is `caller` itself, or a descendant
+    /// of `caller` -- see this module's own doc, "`caller` on
     /// `start`/`ask`/`tree`"). A `parent` outside `caller`'s own subtree is
     /// [`RuntimeError::AgentNotInSubtree`]; an unknown `parent` is
-    /// [`RuntimeError::AgentNotFound`]. Never a panic (P-10: both ids may be
-    /// model-supplied).
+    /// [`RuntimeError::AgentNotFound`]. Never a panic (both ids may be
+    /// model-supplied, so untrusted, and model-supplied).
     async fn start(
         &self,
         caller: AgentId,
@@ -156,7 +156,7 @@ pub trait SubagentHost: Send + Sync + 'static {
     /// `launch_agent` so the first `TextDelta` is not missed, and MUST
     /// agent-id-check the child's `AgentFinished` so a sibling finishing
     /// does not resolve the drain. `ask` is fork+await-text, NOT a third
-    /// subagent primitive (P-1): no mode parameter. `caller` must own
+    /// subagent primitive: no mode parameter. `caller` must own
     /// `parent`, exactly as `start` requires -- see this module's own doc.
     ///
     /// **Agent-def inheritance (board items 01KZGX1RR0VXN2YH3P75SBE9SA/
@@ -192,7 +192,7 @@ pub trait SubagentHost: Send + Sync + 'static {
 /// convention.** Every method below takes NO `caller` (or, for
 /// [`Self::start`]/[`Self::ask`], `parent`) parameter at all: the id
 /// supplied to [`Self::new`] is used for every one of them, always. This is
-/// P-1 ("an agent may only act within its own subtree") made structural at
+/// "An agent may only act within its own subtree", made structural at
 /// the tool surface rather than merely enforced by convention at every call
 /// site: today, every `conway-tools` subagent tool call already passes
 /// `ToolCtx::agent_id` as `caller` (and, for `start`/`ask`, also as
@@ -208,7 +208,7 @@ pub trait SubagentHost: Send + Sync + 'static {
 /// the identity of the ACTOR is fixed.
 ///
 /// **Translates [`RuntimeError`] -> [`SubagentError`] at this boundary, and
-/// only here (P-14: one implementation).** [`SubagentHost`]'s five fallible
+/// only here -- one implementation, never restated.** [`SubagentHost`]'s five fallible
 /// methods return `RuntimeError` -- the host-tier taxonomy, `#[non_exhaustive]`
 /// and shared with every other runtime concern (routing, backends, the
 /// store, ...). A tool has no business matching on any of that; every
@@ -332,8 +332,9 @@ impl SubagentHandle {
 }
 
 /// The ONE place a [`RuntimeError`] a wrapped [`SubagentHost`] call returns
-/// becomes a [`SubagentError`] (P-14) -- every [`SubagentHandle`] method
-/// funnels through this, rather than restating the mapping per method.
+/// becomes a [`SubagentError`] -- one implementation, and every
+/// [`SubagentHandle`] method funnels through this, rather than restating the
+/// mapping per method.
 ///
 /// Deliberately exhaustive over `RuntimeError`'s current variant set, with
 /// no wildcard arm: `RuntimeError` is `#[non_exhaustive]` only to crates

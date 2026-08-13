@@ -56,22 +56,21 @@
 //! as before.
 //!
 //! What WAS missing (board item 01KZQHY6RTMYR4BRDTMQFP9J9R): a parent that
-//! started several children and never blocked on any one of them by id had
-//! no way to learn that any had finished -- the child's `AgentMessage::
-//! Result` landed in the parent's mailbox, got classified, and was
-//! discarded. `classify` now maps `AgentMessage::Result` to
-//! [`DrainEffect::Persist`] carrying a fresh `LogRecord::
-//! ChildResultRecord` -- the exact same path `AgentMessage::Steer` already
-//! takes to become `LogRecord::ParentSteer` (see this module's own
-//! `AgentMessage::Steer` arm, and `AgentLoop::drain_inbox`'s single
-//! `DrainEffect::Persist` arm, which needed no change at all). The parent
-//! observes the child's completion on its own very next turn's ordinary
-//! `SessionStore::read` -- `context::builder`'s `own_segment` turns the
-//! record into a `Role::System` segment tagged `Provenance::ChildResult {
-//! from }`, never anything parent-authored (P-2). No new primitive, no
-//! public signature change, and `await_result`'s blocking path is entirely
-//! untouched -- this is purely an ADDITIONAL, non-blocking notification
-//! path for the case `await_result` was never built to cover.
+//! started several children and never blocked on any one of them by id had no
+//! way to learn that any had finished -- the child's `AgentMessage:: Result`
+//! landed in the parent's mailbox, got classified, and was discarded.
+//! `classify` now maps `AgentMessage::Result` to [`DrainEffect::Persist`]
+//! carrying a fresh `LogRecord:: ChildResultRecord` -- the exact same path
+//! `AgentMessage::Steer` already takes to become `LogRecord::ParentSteer` (see
+//! this module's own `AgentMessage::Steer` arm, and `AgentLoop::drain_inbox`'s
+//! single `DrainEffect::Persist` arm, which needed no change at all). The
+//! parent observes the child's completion on its own very next turn's ordinary
+//! `SessionStore::read` -- `context::builder`'s `own_segment` turns the record
+//! into a `Role::System` segment tagged `Provenance::ChildResult { from }`,
+//! never anything parent-authored, so provenance stays exact. No new primitive,
+//! no public signature change, and `await_result`'s blocking path is entirely
+//! untouched -- this is purely an ADDITIONAL, non-blocking notification path
+//! for the case `await_result` was never built to cover.
 //!
 //! ## Overflow policy: only an evicted `Steer` is `Event::SteerDropped`
 //!
@@ -508,7 +507,7 @@ mod tests {
     /// Board item 01KZQHY6RTMYR4BRDTMQFP9J9R: the persisted record carries
     /// the originating child's id (both at the top level and inside
     /// `result`) and its provenance is `ChildResult`, never anything that
-    /// would misattribute the child's output as parent-authored (P-2).
+    /// would misattribute the child's output as parent-authored.
     #[test]
     fn result_classifies_to_a_child_result_record_naming_the_child() {
         let child = AgentId::new();

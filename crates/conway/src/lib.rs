@@ -128,7 +128,8 @@ pub use conway_core::ports::{
 /// this item's own, is the first such test either factory port has had).
 pub use conway_core::error::ConwayError as CoreConwayError;
 
-/// The GP-03 extension surface: every type a crate depending only on
+/// The extension surface -- there is exactly one extension mechanism, and
+/// this is it: every type a crate depending only on
 /// `conway` needs to implement [`Plugin`], [`Tool`], [`ContextHook`], and
 /// (board item 01KZS00JP5QNBJSSHNFP9C47GM) [`HookRunner`] against the
 /// public API.
@@ -136,7 +137,7 @@ pub use conway_core::error::ConwayError as CoreConwayError;
 /// WHY A MODULE, NOT FLAT ROOT RE-EXPORTS (F8 decide-and-state): the root
 /// is already a flat collection of session/config/routing domain types,
 /// and twenty-odd extension-authoring names there would bury the signal
-/// that this set is the one GP-03 makes a commitment about.
+/// that this set is the one the extension mechanism makes a commitment about.
 /// `use conway::plugin::...` reads as intent, and the facade already has
 /// the curated-submodule precedent (`pub mod permission_pattern` above).
 /// The port traits stay flat at the root where they always were; this
@@ -150,7 +151,7 @@ pub use conway_core::error::ConwayError as CoreConwayError;
 /// one type would remove functionality. Exporting the trait completes the
 /// port list instead.
 ///
-/// RESOLVED (GP-14, board item 01KYYB2T8AHB4SJFHNG4ZETYN8): this surface
+/// RESOLVED (board item 01KYYB2T8AHB4SJFHNG4ZETYN8): this surface
 /// used to name a gap here — the report tool's `Fact`, the cd tool's
 /// `CwdError`, and (once `SubagentHandle` landed, C1) `SubagentHandle`'s own
 /// `SubagentError` were constructible/matchable only inside this crate's own
@@ -163,12 +164,12 @@ pub use conway_core::error::ConwayError as CoreConwayError;
 /// `conway::` paths alone and fails to COMPILE if any of this surface
 /// regresses — `plugin_surface.rs` pins the types, that file demonstrates
 /// they are sufficient. Deliberately NOT widened alongside
-/// them, and this is the closed set (GP-14 cuts both ways — no reach claimed
+/// them, and this is the closed set (the rule cuts both ways — no reach claimed
 /// that isn't real):
 ///
 /// - `SubagentSpec` (`conway_core::agent::SubagentSpec`) — a third-party
 ///   fork/spawn goes through this crate's own `ForkSpec`/`SpawnSpec`
-///   instead (GP-02's visibly-distinct-types requirement), which convert
+///   instead (fork and spawn stay visibly distinct types), which convert
 ///   into `SubagentSpec` via `From` but are never themselves that type; a
 ///   plugin author has no reason to construct or match `SubagentSpec`
 ///   directly.
@@ -323,10 +324,10 @@ pub mod plugin {
 /// implementation eventually gets installed.
 ///
 /// Every name below is justified by appearing in `Backend`'s own method
-/// signatures (`crates/conway-core/src/ports/backend.rs`) or in a public
-/// field of one of those signatures' types — GP-14 cuts both ways, so see
-/// "Deliberately NOT here" below for the names one level further down that
-/// are NOT duplicated a third time:
+/// signatures (`crates/conway-core/src/ports/backend.rs`) or in a public field
+/// of one of those signatures' types — the no-unreached-claims rule cuts both
+/// ways, so see "Deliberately NOT here" below for the names one level further
+/// down that are NOT duplicated a third time:
 ///
 /// - `Backend` — already re-exported at this crate's root; duplicated here
 ///   (matching `Tool`/`Plugin`/`ContextHook`'s identical dual export inside
@@ -364,7 +365,7 @@ pub mod plugin {
 /// - `ProbeReport` — `Backend::probe`'s `Ok` type.
 /// - `BackendError` — every method's `Err` type.
 /// - `Admission`, `check_admission` — `Backend::admit`'s `Ok` type and the
-///   ONE arithmetic implementation (P-14) every override — including this
+///   ONE arithmetic implementation every override — including this
 ///   module's own parity test's — MUST call rather than restating
 ///   `est_tokens + headroom_tokens <= max_context_tokens` itself.
 ///   `check_admission` is not decoration: an author who cannot name it
@@ -427,19 +428,20 @@ pub use conway_core::routing::{
     BreakerSnapshot, CapabilitySummary, EntryOutcome, ExplainEntry, ExplainReport,
 };
 
-// Board item 01KZFC2MD1FVNA674YJ9A19T8E, GP-03/P-6: `RouterFactory` joins the
+// Board item 01KZFC2MD1FVNA674YJ9A19T8E: `RouterFactory` joins the
 // extension surface above, so the field types of what its `build` receives
 // must be nameable by a crate depending only on `conway`. Without these two,
 // a third-party factory could read `ctx.routing.roles` and call
 // `ctx.headroom.resolve(..)` but could not write a helper taking
 // `&RoutingConfig` or `&HeadroomPolicy` as a parameter -- it would have to
 // depend on `conway-core` directly, which is exactly the privileged-interface
-// asymmetry P-6 forbids. A port whose context cannot be spelled through the
+// asymmetry the no-privileged-built-ins rule forbids. A port whose context
+// cannot be spelled through the
 // public facade is only half-installed.
 pub use conway_core::capabilities::HeadroomPolicy;
 pub use conway_core::routing::RoutingConfig;
 
-// Board item 01KZHF0RBKJZZC68F7GPFB347Q, same GP-03/P-6 reasoning one line
+// Board item 01KZHF0RBKJZZC68F7GPFB347Q, same reasoning one line
 // up: `BackendFactory` joins the extension surface too, and
 // `BackendBuildContext::models` names `ModelOverrides` in its own field
 // type -- without this re-export, a third-party factory could read

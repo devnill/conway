@@ -30,7 +30,8 @@
 //! [`crate::ports::SubagentHost`]/[`crate::ports::SubagentHandle`], the
 //! CONTRACT lives here and the CONCRETE resolution+write logic lives in
 //! `conway-runtime` (`conway_runtime::permission`), reusing -- never
-//! restating (P-14) -- the identical `AgentRoot`/`CanonicalRoot`/
+//! restating -- one implementation of the resolution rule -- the identical
+//! `AgentRoot`/`CanonicalRoot`/
 //! `resolve_like_the_tool_will` machinery `PermissionBroker::check_root`
 //! already uses to confine a tool's own path arguments. A hook's artifact
 //! lands under the SAME root a tool's `write` call would be confined to,
@@ -50,7 +51,7 @@
 //!    re-implement "resolve the candidate against cwd, then
 //!    `CanonicalRoot::contains`, then handle `Unconfined`/`Broken`"
 //!    themselves -- restating exactly the kind of safety-critical
-//!    resolution logic P-14 exists to keep singular. This is not
+//!    resolution logic that must stay singular. This is not
 //!    hypothetical: two INLINED copies of this crate's own path-resolution
 //!    rule have already independently dropped the NUL-byte guard (see
 //!    `conway_runtime::permission::resolve_like_the_tool_will`'s own doc).
@@ -58,7 +59,7 @@
 //!    degree: `CwdHandle` tracks a freely mutable "where am I" location with
 //!    NO containment semantics of its own -- its own doc is explicit that
 //!    `set` performs no root/containment check, because "cwd was never the
-//!    boundary" (GP-13's cwd-vs-root split: cwd is where I am, freely
+//!    boundary" (the cwd-vs-root split: cwd is where I am, freely
 //!    mutable, never a security boundary; root is what I can reach,
 //!    parent-set, narrow-only). Exposing a `CwdHandle` to a hook wanting to
 //!    WRITE safely would just relocate the exact guess-and-hope problem
@@ -86,11 +87,11 @@ use crate::ids::AgentId;
 /// land inside the root.
 ///
 /// Implemented once, in `conway-runtime`, atop the same `AgentRoot`/
-/// `CanonicalRoot` machinery `PermissionBroker::check_root` uses (P-14).
-/// `conway-core` ships no implementation (nothing in this crate writes
-/// files; the crate's one I/O exception, `containment`, only reads path
-/// metadata and is labeled at the crate root); see this module's own doc for
-/// why the contract lives here regardless.
+/// `CanonicalRoot` machinery `PermissionBroker::check_root` uses -- one
+/// implementation, never restated. `conway-core` ships no implementation
+/// (nothing in this crate writes files; the crate's one I/O exception,
+/// `containment`, only reads path metadata and is labeled at the crate root);
+/// see this module's own doc for why the contract lives here regardless.
 #[async_trait]
 pub trait ArtifactWriter: Send + Sync + 'static {
     /// `name` is resolved exactly as a tool's own path argument would be:
@@ -99,7 +100,7 @@ pub trait ArtifactWriter: Send + Sync + 'static {
     /// resolve_like_the_tool_will`, the one implementation of that rule
     /// this reuses. Returns the resolved, written-to path on success.
     ///
-    /// P-10: `name` may be model-influenced (e.g. echoed from a tool's own
+    /// `name` may be model-influenced, so untrusted (e.g. echoed from a tool's own
     /// output). This must never panic on any input, including a `name`
     /// containing `..`, a NUL byte, or an absolute path naming a location
     /// entirely outside the root -- every one of those is a refusal
@@ -157,7 +158,7 @@ impl ArtifactWriteHandle {
     /// hook author's only path was to hand-roll one: an `#[async_trait] impl
     /// ArtifactWriter` returning `Ok(PathBuf::from(name))`, plus the `Arc`/
     /// `PathBuf` imports that come with it -- exactly what `conway-core`'s
-    /// own `ports::plugin` tests did privately (GP-03/P-6: a capability a
+    /// own `ports::plugin` tests did privately (a capability a
     /// built-in needs belongs on the shared surface, not kept private).
     ///
     /// **Not gated behind `feature = "fakes"`, unlike this crate's other test

@@ -114,7 +114,8 @@ fn router_bundle() -> Vec<Arc<dyn RouterFactory>> {
 /// kinds attach..."). Absent BOTH ids (an operator who edited
 /// `default_backends` down to `[]` or removed a specific one), a
 /// `[backends.<id>]` entry naming that kind fails `build()` -- there is no
-/// silent fallback, by design (GP-14): the whole point of this pair
+/// silent fallback, by design: nothing may claim to be reached that isn't,
+/// and the whole point of this pair
 /// shipping attached by default is that an operator has to take a
 /// deliberate action to lose the capability, not merely omit one.
 fn backend_bundle() -> Vec<Arc<dyn BackendFactory>> {
@@ -134,19 +135,18 @@ fn backend_bundle() -> Vec<Arc<dyn BackendFactory>> {
 /// recognized backend-factory id, and returns a descriptive error for the
 /// first id this binary recognizes as none of the three.
 ///
-/// GP-14: an id in `wanted` that silently did nothing would be exactly the
-/// rung-1 lie CONTRIBUTING's declaration rule exists to prevent, so an
-/// unknown name is a hard error here -- mirroring
-/// `config::merge::validate`'s own closed-set check for
-/// `tools.builtin_plugins` (that check lives in the facade because the
-/// facade owns that candidate set; this one lives here because only this
-/// binary knows this one -- see `PluginsConfig`'s own doc for why the
-/// facade cannot perform it itself). An id resolving to MORE THAN ONE
-/// router factory is also a hard error: a build has exactly one router, so
-/// naming two would be a request this binary cannot honor either way, and
-/// picking one silently would be exactly the kind of unstated choice GP-14
-/// forbids. A backend factory carries no such cardinality limit (a build
-/// has a SET of backends -- `BackendFactory::id`'s own doc).
+/// An id in `wanted` that silently did nothing would be exactly the rung-1 lie
+/// CONTRIBUTING's declaration rule exists to prevent, so an unknown name is a
+/// hard error here -- mirroring `config::merge::validate`'s own closed-set
+/// check for `tools.builtin_plugins` (that check lives in the facade because
+/// the facade owns that candidate set; this one lives here because only this
+/// binary knows this one -- see `PluginsConfig`'s own doc for why the facade
+/// cannot perform it itself). An id resolving to MORE THAN ONE router factory
+/// is also a hard error: a build has exactly one router, so naming two would be
+/// a request this binary cannot honor either way, and picking one silently
+/// would be exactly the kind of unstated choice the no-unreached-claims rule
+/// forbids. A backend factory carries no such cardinality limit (a build has a
+/// SET of backends -- `BackendFactory::id`'s own doc).
 ///
 /// **Also calls `ConwayBuilder::with_declined_backend_kinds`** (board item
 /// 01KZHF2W8Y1KBM7PJH7R4QQJA0), unconditionally and before anything else

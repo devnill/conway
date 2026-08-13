@@ -102,7 +102,7 @@ impl Tool for CdTool {
             },
             // `CwdError` is `#[non_exhaustive]`: a future variant must map
             // to a typed `ToolError` deliberately, not fall through to a
-            // panic (P-10).
+            // panic on untrusted input.
             other => ToolError::Internal {
                 detail: format!("cwd handle set failed: {other}"),
             },

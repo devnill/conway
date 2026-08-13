@@ -19,7 +19,8 @@
 //! `est_tokens + headroom_tokens <= max_context_tokens`: both
 //! [`size_missing`] here and `RequiredCaps::satisfied_by`'s own context
 //! check build a `conway_core::ports::Admission` and read its
-//! `fits`/`required_tokens`/`shortfall_tokens` (P-14). What still
+//! `fits`/`required_tokens`/`shortfall_tokens` -- one implementation, never
+//! restated here. What still
 //! legitimately differs between the two -- and is why a single surviving
 //! function did not replace both -- is per-field MESSAGE rendering (routing
 //! is bound to the amendment's exact CLI-facing strings; core's own public
@@ -217,7 +218,7 @@ pub(crate) fn non_size_missing(caps: &Capabilities, required: &RequiredCaps) -> 
 }
 
 /// The size half of the capability predicate, expressed through
-/// `conway_core::ports::Admission` (P-14: the headroom arithmetic itself --
+/// `conway_core::ports::Admission` (the headroom arithmetic itself, in one place --
 /// `fits`/`required_tokens`/`shortfall_tokens` -- lives in exactly one
 /// place, not restated here). `Some(entry)` is the CONTRACT golden string
 /// (amendment ordering: `"context: needs {est_tokens} input +
@@ -295,7 +296,7 @@ mod tests {
     /// property of these functions. If someone splits the context entry
     /// into two strings, this test fails here rather than silently turning
     /// every headroom-only rejection back into a `NoCandidate` (board item
-    /// `01KYXNAHN64YMADZPQDQC0CPTJ`, P-9).
+    /// `01KYXNAHN64YMADZPQDQC0CPTJ`).
     #[test]
     fn headroom_only_failure_is_non_size_empty_and_size_some() {
         let fits_everything_but_context = caps(40_000);
@@ -342,7 +343,8 @@ mod tests {
 
     /// The MIXED case: both halves fail at once -- `non_size_missing(..)`
     /// non-empty AND `size_missing(..)` `Some` -- which `check_candidate`
-    /// must NOT classify as headroom-only (P-9's mixed-rejection rule).
+    /// must NOT classify as headroom-only -- a mixed rejection is reported as
+    /// such, since core surfaces a refusal rather than routing around it.
     #[test]
     fn mixed_failure_is_neither_non_size_empty_nor_size_none() {
         let weak_and_small = Capabilities {

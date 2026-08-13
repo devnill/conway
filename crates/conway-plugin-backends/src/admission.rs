@@ -9,20 +9,21 @@
 //! different byte sequences (different field names, message envelope,
 //! system-prompt handling, tool-schema shape). Each adapter builds ITS OWN
 //! wire body (`wire::build_request_body`) before calling this — that is the
-//! "tokenizer as the injected seam" P-4 asks for. This function is only the
+//! "tokenizer as the injected seam" the routing contract asks for. This
+//! function is only the
 //! "count the bytes" tail end of that seam, shared because there is nothing
 //! dialect-specific left to say once the body is already built.
 //!
 //! The headroom arithmetic and fit comparison this estimate feeds is a
-//! SEPARATE, single implementation — [`conway_core::ports::check_admission`]
-//! — that both adapters also call. This module never performs that
-//! comparison itself (P-14: grep for `max_context_tokens` in this file and
+//! SEPARATE, single implementation — [`conway_core::ports::check_admission`] —
+//! that both adapters also call. This module never performs that comparison
+//! itself (one implementation: grep for `max_context_tokens` in this file and
 //! find nothing).
 //!
 //! Same heuristic shape `conway-runtime`'s `ContextBuilder` documents as
 //! `"heuristic-chars4"` (`docs/routing.md`): roughly `ceil(chars / 4)`.
-//! Calibrating this against a response's reported `input_tokens` is GP-12's
-//! job (P-4 amendment's own text), not this one's.
+//! Calibrating this against a response's reported `input_tokens` is the job
+//! of a measured baseline (the headroom amendment's own text), not this one's.
 
 pub(crate) fn estimate_wire_tokens(body: &serde_json::Value) -> u32 {
     let rendered = body.to_string();

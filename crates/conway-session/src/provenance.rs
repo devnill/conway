@@ -1,5 +1,5 @@
 //! Per-turn context provenance persistence (architecture, Internal Design
-//! Notes: "provenance survives process restart", decision 9; GP-10).
+//! Notes: "provenance survives process restart", decision 9).
 //!
 //! WI-051 implements `append_context_report`, `load_context_report`, and
 //! `load_all_context_reports` on top of the ordinary

@@ -196,7 +196,8 @@ impl Backend for AnthropicBackend {
     /// (no network I/O — not even Anthropic's own `/v1/messages/count_tokens`),
     /// then calls the ONE shared arithmetic helper,
     /// [`check_admission`], for the fits/shortfall comparison rather than
-    /// restating it (P-14).
+    /// restating it -- one implementation of the headroom arithmetic, never a
+    /// second copy.
     fn admit(
         &self,
         req: &GenerateRequest,

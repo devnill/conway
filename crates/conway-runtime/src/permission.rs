@@ -59,14 +59,15 @@ pub struct AuthorizedCall {
     pub category: ToolCategory,
     pub arguments: serde_json::Value,
     pub rendered: String,
-    /// S5: the resolved tool's own [`Tool::path_args`](conway_core::ports::Tool::path_args)
-    /// declaration, read straight from the resolved tool instance at the
-    /// same call site that already produces `rendered` (`ToolRunner::
-    /// execute_one`) — a plain, static, `'static`-lifetime enum copy, no
-    /// I/O and no re-resolution of the tool by name. This is how the
-    /// broker's decision point (which has no `PluginRegistry` access, and
-    /// must not gain one just for this) learns which of `arguments`' fields
-    /// carry filesystem paths without duplicating tool resolution.
+    /// S5: the resolved tool's own
+    /// [`Tool::path_args`](conway_core::ports::Tool::path_args) declaration,
+    /// read straight from the resolved tool instance at the same call site that
+    /// already produces `rendered` (`ToolRunner:: execute_one`) — a plain,
+    /// static, `'static`-lifetime enum copy, no I/O and no re-resolution of the
+    /// tool by name. This is how the broker's decision point (which has no
+    /// `PluginRegistry` access, and must not gain one just for this) learns
+    /// which of `arguments`' fields carry filesystem paths without duplicating
+    /// tool resolution.
     pub path_args: PathArgs,
     /// Board item 01KYT3NSWRHMPEAXVXRJ73KDYR: the resolved tool's own
     /// [`Tool::render_kind`](conway_core::ports::Tool::render_kind)
@@ -191,13 +192,13 @@ enum RootDecision {
 /// same reason -- `conway-runtime` cannot depend on `conway-tools`.)
 ///
 /// `pub(crate)` so the crate's OTHER path-resolution consumers -- the
-/// spawn-time confinement-root resolution in `subagent.rs` and
-/// `runtime.rs` -- call THIS one rule (Min-1 / P-14, board item
-/// 01KZ00VV3F3EBZ9WQSB292TBJZ) instead of inlining "absolute -> as-is,
-/// relative -> join cwd" and silently dropping the NUL guard, as both did
-/// until that item. Within `conway-runtime` this is the single resolution
-/// rule; the `conway-tools` copy is the deliberate cross-crate mirror the
-/// paragraph above obligates to change in lockstep.
+/// spawn-time confinement-root resolution in `subagent.rs` and `runtime.rs` --
+/// call THIS one rule -- one implementation, never restated (Min-1, board item
+/// 01KZ00VV3F3EBZ9WQSB292TBJZ) instead of inlining "absolute -> as-is, relative
+/// -> join cwd" and silently dropping the NUL guard, as both did until that
+/// item. Within `conway-runtime` this is the single resolution rule; the
+/// `conway-tools` copy is the deliberate cross-crate mirror the paragraph above
+/// obligates to change in lockstep.
 pub(crate) fn resolve_like_the_tool_will(cwd: &Path, raw: &str) -> Option<PathBuf> {
     if raw.contains('\0') {
         return None;
@@ -219,7 +220,7 @@ pub(crate) fn resolve_like_the_tool_will(cwd: &Path, raw: &str) -> Option<PathBu
 ///
 /// B2: a RELATIVE prefix resolves against `base` -- via the SAME
 /// [`resolve_like_the_tool_will`] helper the per-call check resolves path
-/// arguments with (P-14: one resolution rule, not a third copy) -- never
+/// arguments with (one resolution rule, not a third copy) -- never
 /// against the process's cwd, which is what a bare `Path::canonicalize`
 /// would use. The process cwd is wherever the operator happened to launch
 /// conway from and has no relationship to the project the rule was written
@@ -351,16 +352,16 @@ fn rule_denies_or_prompts(
             // B1: decision-time fail-closed for the cases the install-time
             // registration check CANNOT see -- a `Select::Categories` (whose
             // member tools may register after the rule is loaded) or a
-            // trailing-`*` wildcard `Select::Tools` (no tool is named `*`).
-            // For an `Unconfinable` tool (e.g. `bash`) `paths_under_match`
-            // returns `false` -- correct for ALLOW (fail-closed: don't
-            // auto-allow) but fail-OPEN for deny/prompt: the operator wrote a
-            // deny rule expecting the call to be refused, and silently NOT
-            // matching it lets the call through. Mirror `check_root`'s
-            // `Unconfinable { checkable }` posture -- a tool the broker
-            // cannot statically confine can never be PROVEN to be outside the
-            // prefix either -- so the deny/prompt rule MATCHES (fail-toward-
-            // deny, P-13). The install-time `PathsUnderOnUnconfinedTool`
+            // trailing-`*` wildcard `Select::Tools` (no tool is named `*`). For
+            // an `Unconfinable` tool (e.g. `bash`) `paths_under_match` returns
+            // `false` -- correct for ALLOW (fail-closed: don't auto-allow) but
+            // fail-OPEN for deny/prompt: the operator wrote a deny rule
+            // expecting the call to be refused, and silently NOT matching it
+            // lets the call through. Mirror `check_root`'s `Unconfinable {
+            // checkable }` posture -- a tool the broker cannot statically
+            // confine can never be PROVEN to be outside the prefix either -- so
+            // the deny/prompt rule MATCHES (fail-toward- deny -- a narrowing
+            // rule fails closed). The install-time `PathsUnderOnUnconfinedTool`
             // error is the primary fix for the common `Select::Tools` case;
             // this is the fallback for the shapes it cannot inspect.
             match call.path_args {
@@ -683,7 +684,7 @@ impl PermissionBroker {
     /// boundary is dropped, not stored inert -- a rule that can never match
     /// is a lie the operator will not notice, the mirror of the
     /// `68ea9b1` `read:*`-matched-nothing bug). The caller surfaces that
-    /// failure; the broker itself never panics on untrusted input (P-10).
+    /// failure; the broker itself never panics on untrusted input.
     ///
     /// `base` is the directory a RELATIVE `paths_under` prefix resolves
     /// against (B2 -- see [`canonicalize_when`]`s own doc for why this is an
@@ -708,12 +709,12 @@ impl PermissionBroker {
         // A4: a plugin-contributed rule may only NARROW (`deny`/`prompt`) --
         // extension-architecture.md §5.5 stage 1, "allow is operator-owned."
         // Today no plugin transport exists, so this guard is unreachable in
-        // production; it is encoded HERE, at the broker boundary, so a
-        // future transport that reuses `PatternOrigin::Plugin` to call the
-        // allow path with `Then::Allow` hits a STRUCTURAL refusal rather
-        // than silently installing a durable grant the operator never
-        // authorized. The invariant rests on a guard, not on the absence of
-        // a transport. P-10: a typed `false` (the existing rejection shape
+        // production; it is encoded HERE, at the broker boundary, so a future
+        // transport that reuses `PatternOrigin::Plugin` to call the allow path
+        // with `Then::Allow` hits a STRUCTURAL refusal rather than silently
+        // installing a durable grant the operator never authorized. The
+        // invariant rests on a guard, not on the absence of a transport.
+        // Untrusted input gives a typed `false` (the existing rejection shape
         // the other `remember_*_rule` callers already honor), never a panic.
         if matches!(origin, PatternOrigin::Plugin) {
             return false;
@@ -1209,7 +1210,7 @@ impl PermissionBroker {
     /// above) for a call shape a plugin author can identify statically, or
     /// the hook script itself simply choosing not to run in "blocking" mode.
     /// `HookPermissionVerdict` (this method's own answer type) has no
-    /// `Prompt` variant for the identical reason `decide()`'s GP-13 bound
+    /// `Prompt` variant for the identical reason `decide()`'s isolation-tooling bound
     /// applies to this whole item: one narrowing-only chain step, a FIXED
     /// amount of mechanism, not a variable one -- adding a second
     /// `must_reach_gate` source here, with different provenance than
@@ -1961,7 +1962,7 @@ mod tests {
     /// `HookFailure::UnparseableAnswer` (its own parse rule, exercised for
     /// real in `conway-tools`' test suite); this test proves `decide()`
     /// treats that failure signal as a denial exactly like every other one,
-    /// via the SAME code path (P-15: proven by the observable outcome, not
+    /// via the SAME code path (proven by the observable outcome, not
     /// by asserting a config field defaulted).
     #[tokio::test]
     async fn a_hook_with_malformed_output_denies_the_call() {

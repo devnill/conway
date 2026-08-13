@@ -139,7 +139,7 @@ impl EventBus {
     /// contract. Any later `emit`/`emit_pruning` for that same `session`
     /// (which, per the module doc, should not happen for a reclaimed
     /// session) would simply re-seed its counter at 0 via the `entry` call
-    /// above rather than panic -- a benign, typed degradation (P-10), not a
+    /// above rather than panic -- a benign, typed degradation, not a
     /// new failure mode.
     pub fn emit_pruning(
         &self,
@@ -329,7 +329,7 @@ mod tests {
     /// Acceptance: a spawn/fork child that was never ephemeral (an ordinary
     /// `conway_fork`/`conway_spawn` -- see `AgentTree::is_prunable_on_finish`,
     /// `tree.rs`) has its `seqs` entry reclaimed too, via `emit_pruning`'s
-    /// explicit `prune` flag -- the item's own motivating case (GP-05: a
+    /// explicit `prune` flag -- the item's own motivating case (
     /// long-lived embedder driving many such children, with no way to
     /// reclaim this before this item).
     #[tokio::test]
