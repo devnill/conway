@@ -70,7 +70,7 @@ struct CompiledRole {
 
 /// Declarative, config-driven `Router` implementation: pin -> capability
 /// (headroom-aware) -> health -> chain order, with no I/O and no request
-/// content ever inspected (GP-07).
+/// content ever inspected, so routing stays content-blind and predictable.
 pub struct DeclarativeRouter {
     roles: BTreeMap<RoleAlias, CompiledRole>,
     /// `HeadroomPolicy::default_headroom_tokens`, used for a pinned request
@@ -416,7 +416,7 @@ impl Router for DeclarativeRouter {
         if all_headroom_only {
             if let Some((model_ref, max_context_tokens)) = largest_window {
                 // The derived numbers come from `Admission` rather than being
-                // restated here (P-14: ONE implementation of the headroom
+                // restated here (ONE implementation of the headroom
                 // arithmetic). This site is the aggregate -- the whole
                 // request's refusal after every candidate refused -- and it
                 // must report the same `required`/`shortfall` a per-candidate

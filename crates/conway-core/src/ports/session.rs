@@ -63,7 +63,7 @@ pub trait SessionStore: Send + Sync + 'static {
     /// Permanently deletes a session and its backing storage — the purge
     /// primitive consumed by `/ask` modal discard, pull-in, and NL-intent
     /// classification. Purge is the single user-explicit exception to
-    /// mandatory provenance retention (P-2/GP-10), so implementations
+    /// mandatory provenance retention, so implementations
     /// enforce a narrow guard matrix:
     ///
     /// - REFUSES (`StoreError::NotRemovable`) unless the session's header
@@ -101,7 +101,7 @@ pub trait SessionStore: Send + Sync + 'static {
     /// - REFUSES (`StoreError::NotPromotable`) any `ephemeral: true`
     ///   request. Demotion (persistent→ephemeral) does not exist: promotion
     ///   is one-way, so a persistent record can never silently become
-    ///   purge-eligible scratchpad (P-2).
+    ///   purge-eligible scratchpad.
     /// - REFUSES (`NotPromotable`) when the session is not currently
     ///   ephemeral — a false→false no-op would silently mask a double
     ///   promote or a caller bug.

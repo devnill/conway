@@ -284,7 +284,7 @@ impl AgentTree {
             .get(&agent)
             .ok_or(RuntimeError::AgentNotFound { agent })?;
         tracing::info!(agent = %agent, reason = %reason, "AgentTree::cancel");
-        // P-10: `reason` is model-supplied (a tool argument, `conway_cancel`)
+        // `reason` is model-supplied, so untrusted (a tool argument, `conway_cancel`)
         // and, from this item on, reaches a persisted `AgentResult` on the
         // immediate path (`cancel_reason`, read back by both
         // `AgentLoop::finish_cancelled` and, since board item
@@ -459,7 +459,7 @@ impl AgentTree {
                     budget: entry.node.budget.clone(),
                     // Same source `Event::AgentSpawned::ephemeral` is stamped
                     // from (see `attach`); ephemeral children stay IN the
-                    // snapshot (P-2 provenance) -- this flag is how a
+                    // snapshot (provenance) -- this flag is how a
                     // consumer distinguishes them from persistent subagents.
                     ephemeral: entry.node.ephemeral,
                 }
@@ -485,7 +485,7 @@ impl AgentTree {
     }
 }
 
-/// Truncates `reason` (a model-supplied `conway_cancel` argument, P-10) to at
+/// Truncates `reason` (a model-supplied `conway_cancel` argument, so untrusted) to at
 /// most [`DEFAULT_SUMMARY_LIMIT`] `char`s, on a character boundary --
 /// mirrors [`AgentResult::new`]'s own identical `summary` truncation, whose
 /// private helper this crate has no access to (`conway_core::agent`'s

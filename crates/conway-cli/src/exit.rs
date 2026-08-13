@@ -8,7 +8,7 @@
 //! Every declared variant is reachable from a live `conway -p` invocation,
 //! and `tests/oneshot.rs` proves it by driving the real compiled binary and
 //! asserting the observed process exit status -- a unit test of the mapping
-//! functions below is not evidence a code is live (GP-14). Two entries in
+//! functions below is not evidence a code is live. Two entries in
 //! that contract history are worth recording here because they shaped this
 //! module:
 //!
@@ -158,7 +158,8 @@ impl ExitCode {
 /// every candidate's window are the same outcome from a script's side --
 /// routing could not supply any model for the turn, so nothing could
 /// proceed. (`DeclarativeRouter` distinguishes `ContextTooLarge` from
-/// `NoCandidate` only for mixed rejections, per amended P-9; that split is
+/// `NoCandidate` only for mixed rejections, since core surfaces a refusal
+/// rather than routing around it; that split is
 /// about error *detail*, and both remain routing rejections here.)
 /// `RuntimeError::ForkContextOverflow` shares `ContextTooLarge`'s exact
 /// `Display` wording and is the same outcome at the fork boundary, so it

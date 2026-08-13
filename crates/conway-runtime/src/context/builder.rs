@@ -85,20 +85,19 @@ pub struct SkillFragment {
 /// (architecture §5.1, §5.2).
 #[derive(Clone, Debug)]
 pub struct InheritedPrefix {
-    /// The IMMEDIATE ancestor this bundle was inherited from — "who handed
-    /// me this context" — NOT the original author of every record in
-    /// `records`. At fork depth >= 2, `records` is the WHOLE effective
-    /// transcript up to the fork point (GP-02: root's own records, then
-    /// every intermediate ancestor's own records in turn, through the
-    /// immediate parent's), per `conway_session::TranscriptResolver`'s
-    /// "inherited prefix always flows through in full" contract — but
-    /// every one of those records, however deep its true origin, is
-    /// stamped with this single `from` when `ContextBuilder` turns
-    /// `records` into `Provenance::Inherited` segments (see this crate's
-    /// `subagent.rs` module doc, "`InheritedPrefix::from` at fork depth >=
-    /// 2", for the full rationale). Recovering true per-record authorship
-    /// at arbitrary depth would require per-record session tracking that
-    /// does not exist upstream (in `conway_core::log::LogRecord` or in
+    /// The IMMEDIATE ancestor this bundle was inherited from — "who handed me
+    /// this context" — NOT the original author of every record in `records`. At
+    /// fork depth >= 2, `records` is the WHOLE effective transcript up to the
+    /// fork point (a fork inherits all of it: root's own records, then every
+    /// intermediate ancestor's own records in turn, through the immediate
+    /// parent's), per `conway_session::TranscriptResolver`'s "inherited prefix
+    /// always flows through in full" contract — but every one of those records,
+    /// however deep its true origin, is stamped with this single `from` when
+    /// `ContextBuilder` turns `records` into `Provenance::Inherited` segments
+    /// (see this crate's `subagent.rs` module doc, "`InheritedPrefix::from` at
+    /// fork depth >= 2", for the full rationale). Recovering true per-record
+    /// authorship at arbitrary depth would require per-record session tracking
+    /// that does not exist upstream (in `conway_core::log::LogRecord` or in
     /// `conway_session`'s resolver) — out of this item's scope; queued as a
     /// refinement question rather than attempted here (coordinator ruling,
     /// WI-084 rework).
@@ -143,7 +142,8 @@ pub struct ContextInput {
 /// share across agents.
 ///
 /// `PromptSegment` cannot be constructed without stating its
-/// [`Provenance`] — there is no `Default` impl to fall back on (GP-10;
+/// [`Provenance`] — there is no `Default` impl to fall back on, so where a segment came
+/// from is always answerable (
 /// enforced in `conway-core` by a `static_assertions` guard on
 /// `PromptSegment`). The following fails to compile:
 ///
@@ -195,21 +195,22 @@ impl ContextBuilder {
         // [2] ToolSchemas — unconditional; breakpoint A attaches here.
         //
         // NO SCHEMA TEXT LIVES IN THIS SEGMENT'S `content` (board item
-        // 01KYTMJA0JHT5SAPYDGV251V17). Every request already carries the
-        // full tool-schema set once as the native `tools` array the
-        // provider actually consumes (`conway-plugin-backends`'s `openai_compat`/
+        // 01KYTMJA0JHT5SAPYDGV251V17). Every request already carries the full
+        // tool-schema set once as the native `tools` array the provider
+        // actually consumes (`conway-plugin-backends`'s `openai_compat`/
         // `anthropic` wire modules, built straight from `ContextInput.tools`
         // via `AttemptEngine::build_request`, independent of `segments`
-        // entirely). A `Role::System` segment holding the SAME canonical
-        // JSON used to be pushed here too, as a `ToolSpec`-serializing
-        // superset (name, description, schema, **and** the harness-internal
+        // entirely). A `Role::System` segment holding the SAME canonical JSON
+        // used to be pushed here too, as a `ToolSpec`-serializing superset
+        // (name, description, schema, **and** the harness-internal
         // `category`/`permission` fields the model never needed) — a full
-        // second copy of every tool's schema, paid on every turn and, via
-        // fork inheritance (GP-02), at every fork depth for every sibling.
-        // Measured against a representative 14-tool built-in set
-        // (`conway-tools::builtin_plugins`), that duplicate text ran
-        // ~13.7KB / ~3.4K estimated tokens — on the close order of, and
-        // often larger than, everything else in a single turn (GP-12).
+        // second copy of every tool's schema, paid on every turn and, via fork
+        // inheritance -- a fork takes the whole prefix -- at every fork depth
+        // for every sibling. Measured against a representative 14-tool built-in
+        // set (`conway-tools::builtin_plugins`), that duplicate text ran
+        // ~13.7KB / ~3.4K estimated tokens — on the close order of, and often
+        // larger than, everything else in a single turn; this was measured
+        // rather than assumed.
         //
         // Investigated rather than assumed: Anthropic's Messages API DOES
         // support `cache_control` directly on the `tools` array — "Tool
@@ -334,7 +335,7 @@ impl ContextBuilder {
         // cost the way it would if this were left at the generic 0.
         segments[a_index].tokens_est = Some(estimate_tool_schemas_tokens(&input.tools));
 
-        // Cache hints — never correctness-bearing (GP-06).
+        // Cache hints — economics, never correctness-bearing.
         let key = prefix::prefix_key(&input.model, &segments);
         attach_cache_hints(
             &mut segments,
@@ -490,11 +491,11 @@ fn own_segment(record: &LogRecord) -> Option<(Role, Vec<ContentBlock>, Provenanc
             // record kind alone — a `Conway::pull_in`-merged `/ask` question
             // is a `UserTurn` whose `prov` is `Provenance::MergedAsk { from
             // }`, and kind-derivation mislabeled it `UserPrompt` in
-            // `/context`, erasing the merge origin (P-2/GP-10). Records
+            // `/context`, erasing the merge origin, which must stay answerable. Records
             // written before `MergedAsk` existed all carry
             // `Provenance::UserPrompt` here (the field is mandatory on the
             // wire), so old-record behavior is preserved by construction
-            // (C-04).
+            // (kept readable for already-persisted records).
             Some((Role::User, text_block(text), prov.clone()))
         }
         LogRecord::Assistant { content, .. } => Some((
@@ -543,7 +544,7 @@ fn own_segment(record: &LogRecord) -> Option<(Role, Vec<ContentBlock>, Provenanc
         // ordinary re-read -- exactly like `ParentSteer` above. `prov` is
         // the STORED `Provenance::ChildResult` (never re-derived, never
         // `SystemNote`), so the segment is unambiguously marked as having
-        // come from a child, not this agent itself (P-2).
+        // come from a child, not this agent itself, and provenance says so.
         LogRecord::ChildResultRecord { result, prov, .. } => Some((
             Role::System,
             text_block(&child_result_text(result)),
@@ -1005,7 +1006,7 @@ mod own_segment_provenance_tests {
         assert_eq!(prov, Provenance::MergedAsk { from });
     }
 
-    /// C-04 back-compat: records written before `MergedAsk` existed all
+    /// Back-compat: records written before `MergedAsk` existed all
     /// carry `Provenance::UserPrompt` in their (mandatory) `prov` field, so
     /// honoring the stored provenance reproduces the old kind-derived
     /// behavior for them exactly.

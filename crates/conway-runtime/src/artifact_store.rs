@@ -4,14 +4,15 @@
 //! for a `ContextHook` to spill content to disk).
 //!
 //! **Reuses, never restates, the exact machinery `PermissionBroker::
-//! check_root` already confines every tool's own path arguments with
-//! (P-14):** `crate::permission::resolve_like_the_tool_will` for name
-//! resolution, and `AgentRoot`'s three-way match (`Unconfined` proceeds,
-//! `Broken` fails closed, `Confined(root)` checks `CanonicalRoot::
-//! contains`) for the containment decision itself. `AgentLoop::run_inner`
-//! constructs one of these per agent, from the SAME `CwdHandle`/`AgentRoot`
-//! it already builds for that agent's tool calls (see that method's own
-//! doc) -- never a second, independent reconstruction.
+//! check_root` already confines every tool's own path arguments with one
+//! implementation, never restated:**
+//! `crate::permission::resolve_like_the_tool_will` for name resolution, and
+//! `AgentRoot`'s three-way match (`Unconfined` proceeds, `Broken` fails closed,
+//! `Confined(root)` checks `CanonicalRoot:: contains`) for the containment
+//! decision itself. `AgentLoop::run_inner` constructs one of these per agent,
+//! from the SAME `CwdHandle`/`AgentRoot` it already builds for that agent's
+//! tool calls (see that method's own doc) -- never a second, independent
+//! reconstruction.
 
 use std::path::PathBuf;
 
@@ -63,7 +64,7 @@ impl ArtifactWriter for AgentArtifactWriter {
         // THE GUARD (board item 01KZ84437RMKHP5DJX7RMHH7JY): the identical
         // three-way match `PermissionBroker::check_root` applies to a
         // tool's own declared path arguments, reused verbatim rather than
-        // restated (P-14).
+        // restated -- one implementation.
         match &self.root {
             AgentRoot::Unconfined => {}
             AgentRoot::Broken => return Err(ArtifactWriteError::RootBroken),

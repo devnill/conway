@@ -44,7 +44,7 @@ pub fn xdg_config_path(env: &HashMap<String, String>) -> Option<PathBuf> {
 /// filename `history` instead. Deliberately NOT the project-scoped
 /// `.conway/` directory `discover` looks in: history follows the user
 /// across every project, not the checkout. `conway-cli` has no direct
-/// `directories` dependency of its own (C-04: no new dependencies), so it
+/// `directories` dependency of its own (no new dependencies), so it
 /// reaches this resolution through the facade the same way it already
 /// reaches `xdg_config_path`'s directory choice.
 pub fn history_file_path(env: &HashMap<String, String>) -> Option<PathBuf> {

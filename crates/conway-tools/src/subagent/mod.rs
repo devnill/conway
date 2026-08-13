@@ -87,7 +87,8 @@ mod tests {
 
     /// SIG-1 regression: `deadline_from_secs` (shared by `conway_ask`,
     /// `conway_fork`, and `conway_spawn`) range-checks the model-supplied
-    /// deadline per P-10 -- out-of-range maps to a typed `InvalidArguments`,
+    /// deadline, since model arguments are untrusted -- out-of-range maps to
+    /// a typed `InvalidArguments`,
     /// never the `Duration::seconds` overflow panic the previous
     /// `i64::try_from(..).unwrap_or(i64::MAX)` saturation caused.
     #[test]

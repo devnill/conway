@@ -34,7 +34,7 @@ pub const SANITIZED_CONTROL_PLACEHOLDER: char = '\u{FFFD}';
 
 /// Replaces every Unicode control character with [`SANITIZED_CONTROL_PLACEHOLDER`].
 ///
-/// P-10: applied to text derived from untrusted (model-/attacker-influenced)
+/// Applied to text derived from untrusted (model-/attacker-influenced)
 /// input before it flows into model context or the operator's TUI, so a raw
 /// ANSI escape sequence (`\x1b[...`), a smuggled newline, or any other `Cc`
 /// byte cannot reach a terminal as a live control byte. Never panics: the

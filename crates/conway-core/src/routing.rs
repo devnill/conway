@@ -1,4 +1,5 @@
-//! The content-free routing request/response contract (GP-07), the routing
+//! The content-free routing request/response contract -- routing is
+//! content-blind and predictable -- plus the routing
 //! reason vocabulary, health/breaker state, the declarative routing config
 //! types, the "why did this model run" explain-report shape, and a minimal
 //! config-only `Router`/`RoutingExplainer` fallback (`MinimalRouter`) usable
@@ -32,10 +33,10 @@ fn default_headroom_tokens() -> u32 {
 /// A request to resolve a routing role to an ordered candidate list.
 ///
 /// Deliberately has no field of type `String`, `Vec<ContentBlock>`,
-/// `PromptSegment`, or `Message` that could carry prompt text (GP-07).
-/// Reasoning-headroom rides on `required.headroom_tokens`, not as a separate
-/// top-level field, so this five-field guarantee stays mechanically
-/// checkable.
+/// `PromptSegment`, or `Message` that could carry prompt text, so routing
+/// cannot become content-aware by accident. Reasoning-headroom rides on
+/// `required.headroom_tokens`, not as a separate top-level field, so this
+/// five-field guarantee stays mechanically checkable.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RouteRequest {
     pub role: RoleAlias,
@@ -215,7 +216,7 @@ pub struct ExplainEntry {
 /// `DeclarativeRouter` -- so a `Router` supplied from outside that crate
 /// (`ConwayBuilder::with_router`) had no way to produce one, and
 /// `Conway::explain_routing` fell back to a fabricated-empty report that
-/// `conway routes explain` then misread as "unknown role" (GP-14: a silent
+/// `conway routes explain` then misread as "unknown role" (a silent
 /// inversion, not an honest degradation -- the bug this move exists to
 /// close). It now lives here, where both `conway-routing::RoutingExplain`
 /// (the rich, capability- and health-filtered answer) and `MinimalRouter`
@@ -234,7 +235,7 @@ pub struct ExplainReport {
     /// check at all, so its value here is only the role's configured floor
     /// plus resolved headroom (`RoutingConfig::required_caps_for`) --
     /// informational, not a claim that any entry was actually verified
-    /// against it (GP-14).
+    /// against it, so nothing claims a reach it does not have.
     pub required: RequiredCaps,
     pub headroom_tokens: u32,
     pub entries: Vec<ExplainEntry>,
@@ -405,7 +406,7 @@ pub struct RoleConfig {
 /// (it goes half-open on a clock read, and the next real request retries),
 /// so the prober fixed no correctness gap; it would only have shaved latency
 /// off the first request after an outage, which made wiring it an
-/// optimization requiring a GP-12 measured baseline that neither existed nor
+/// optimization requiring a measured baseline that neither existed nor
 /// was scheduled. **Breaking:** a `settings.json`/`RoutingConfig` document
 /// naming any of the four removed keys under `[health]` now fails to
 /// deserialize (`#[serde(deny_unknown_fields)]` on the facade's
@@ -502,14 +503,15 @@ impl HealthRegistry for AlwaysClosedHealthRegistry {
 }
 
 /// A minimal, config-only `Router` + `RoutingExplainer`: no capability
-/// filtering, no health filtering, no invented values (GP-14). `resolve`
-/// returns a role's configured chain in order (or a pin's single-element
-/// chain); `explain` answers with one degenerate `ExplainEntry` per chain
-/// entry -- the first `Selected`, the rest `Skipped`, `capabilities: None`
-/// (this type indexes no capabilities) and `breaker: BreakerSnapshot {
-/// state: Closed }` (paired with [`AlwaysClosedHealthRegistry`] -- this type
-/// tracks no real breaker state either). See the module-note above this
-/// section for why these two live in `conway-core` at all.
+/// filtering, no health filtering, no invented values -- nothing claims a
+/// capability it does not have. `resolve` returns a role's configured chain in
+/// order (or a pin's single-element chain); `explain` answers with one
+/// degenerate `ExplainEntry` per chain entry -- the first `Selected`, the rest
+/// `Skipped`, `capabilities: None` (this type indexes no capabilities) and
+/// `breaker: BreakerSnapshot { state: Closed }` (paired with
+/// [`AlwaysClosedHealthRegistry`] -- this type tracks no real breaker state
+/// either). See the module-note above this section for why these two live in
+/// `conway-core` at all.
 #[derive(Clone, Debug)]
 pub struct MinimalRouter {
     config: RoutingConfig,

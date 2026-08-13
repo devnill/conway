@@ -18,8 +18,8 @@ use crate::tui::state::{AppState, NodeStatus, TreeNode};
 
 pub fn draw(frame: &mut Frame, area: Rect, state: &AppState, theme: &Theme) {
     // Item A2: the visibility filter lives entirely HERE, at draw time --
-    // `state.tree` itself is never filtered (P-2: finished agents are
-    // hidden, not removed), so `visible` is the only place the
+    // `state.tree` itself is never filtered -- provenance survives -- so
+    // finished agents are hidden, not removed. `visible` is the only place the
     // `AgentVisibility` mode takes effect. Row indices (selection, focus)
     // are indices into this filtered list.
     let visible: Vec<&TreeNode> = state.visible_agent_nodes().collect();
@@ -84,7 +84,7 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState, theme: &Theme) {
 
 /// Item A2: the recipe-label parts for a row -- what context recipe this
 /// agent was spawned with, composed from the A1 `TreeNode` fields
-/// (`kind`/`inherited_upto`/`ephemeral`). A pure function (GP-04) so the
+/// (`kind`/`inherited_upto`/`ephemeral`). A pure function so the
 /// label formatting is unit-testable with no terminal. Root/legacy nodes
 /// (`kind: None`) get no recipe label; an ephemeral node always carries the
 /// `(ephemeral)` marker. ASCII, single-line, copy-paste friendly.
@@ -145,14 +145,14 @@ pub(crate) fn short_agent_id(id: conway::AgentId) -> String {
     id.to_string().chars().take(8).collect()
 }
 
-/// V5: a defensive bound on the ancestry walk (P-10 -- a cycle in `parent`
-/// should be impossible, but must never hang or overflow if it somehow
-/// happened). Generous for any tree this TUI will realistically show.
+/// V5: a defensive bound on the ancestry walk (untrusted structure -- a cycle
+/// in `parent` should be impossible, but must never hang or overflow if it
+/// somehow happened). Generous for any tree this TUI will realistically show.
 const MAX_ANCESTOR_CHAIN: usize = 64;
 
 /// The root-first ancestry chain for `agent`, `agent` itself included as the
 /// LAST element -- e.g. `[root, child, grandchild]` for `grandchild`. Shared
-/// bounded walk (P-10, [`MAX_ANCESTOR_CHAIN`]) behind both [`ancestor_depth`]
+/// bounded walk ([`MAX_ANCESTOR_CHAIN`]) behind both [`ancestor_depth`]
 /// (the panel's own indent rule) and V5's lineage breadcrumb
 /// (`view/status.rs`), so there is exactly one cycle-safe tree walk rather
 /// than two copies that could disagree. A node missing from `state.tree`
@@ -176,7 +176,7 @@ pub(crate) fn ancestor_chain(state: &AppState, agent: conway::AgentId) -> Vec<co
             }
             // No parent (reached the root), or `p` is already in the
             // chain -- a cycle, which should be impossible but must not
-            // hang the walk (P-10).
+            // hang the walk.
             _ => break,
         }
     }
@@ -697,7 +697,7 @@ mod tests {
         assert_eq!(ancestor_chain(&state, stray), vec![stray]);
     }
 
-    /// P-10: a cycle in `parent` should be impossible, but the walk must
+    /// A cycle in `parent` should be impossible, but the walk must
     /// never hang or overflow if one somehow existed. Two nodes pointing at
     /// each other as their own "parent".
     #[test]

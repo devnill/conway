@@ -23,7 +23,7 @@ use conway_core::ports::{ToolCtx, ToolOutput};
 /// unchanged. A path containing a NUL byte is rejected as a host-level
 /// `InvalidArguments` error (the OS path APIs cannot represent it).
 ///
-/// Performs **no** containment or escape checks (GP-08: no sandboxing in
+/// Performs **no** containment or escape checks (no sandboxing in
 /// this layer) and does **not** canonicalize (canonicalizing would fail for
 /// paths that don't exist yet, e.g. a `write` target).
 pub fn resolve_path(ctx: &ToolCtx, path: &str) -> Result<PathBuf, ToolError> {

@@ -49,7 +49,7 @@ struct BashArgs {
 /// backgrounded children — on cancellation or timeout.
 ///
 /// No sandboxing, no command allow/deny list, no argument sanitization
-/// (GP-08: process-group setup here is execution plumbing, not a security
+/// (process-group setup here is execution plumbing, not a security
 /// boundary; the `PermissionGate` is the control point).
 #[derive(Debug, Default)]
 pub struct BashTool;
@@ -140,7 +140,7 @@ impl Tool for BashTool {
     /// command prefix (`conway_core::permission_pattern`), which is only
     /// legible when `rendered` IS the command a person would type.
     ///
-    /// `args` is untrusted, model-supplied JSON (P-10): a missing or
+    /// `args` is untrusted, model-supplied JSON: a missing or
     /// non-string `command` falls back to the trait's default rendering
     /// rather than panicking (no `unwrap`/`expect`/indexing).
     fn render(&self, args: &serde_json::Value) -> String {
@@ -383,7 +383,7 @@ mod tests {
         assert_eq!(rendered, "ls -la");
     }
 
-    /// P-10: `args` is untrusted and may not even have a string `command`
+    /// `args` is untrusted and may not even have a string `command`
     /// (a caller invoking `render` ahead of/without schema validation, or a
     /// future validator bug) -- this must degrade to the generic rendering,
     /// never panic.

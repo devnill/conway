@@ -10,7 +10,7 @@
 //! Reuses [`crate::process::unix::kill_group`] -- the identical
 //! process-group-kill machinery `crate::shell::bash`'s `unix::run` uses --
 //! so a hook that backgrounds a grandchild before exiting does not outlive
-//! its own timeout (P-14: one implementation).
+//! its own timeout -- one implementation, never restated.
 
 use async_trait::async_trait;
 
@@ -19,7 +19,8 @@ use conway_core::hook::{HookAnswer, HookInvocation};
 use conway_core::ports::HookRunner;
 
 /// One-shot, process-spawning [`HookRunner`]. No sandboxing, no allow/deny
-/// list, no argument sanitization here (GP-08: this is execution plumbing,
+/// list, no argument sanitization here (isolation belongs to tools, not the harness:
+/// this is execution plumbing,
 /// not a security boundary) -- mirrors `crate::shell::bash::BashTool`'s own
 /// "no sandboxing" note. An operator's review of `[hooks].rules[].command`
 /// (or a future permission point over it) is the control point, not this

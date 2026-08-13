@@ -1,8 +1,8 @@
 //! `conway_ask`: run a prompt in an ephemeral fork of this agent, returning
 //! the child's full reply text. A pure wrapper over
-//! `ToolCtx::subagents.ask` (P-1: `ask` composes the underlying `ask`
+//! `ToolCtx::subagents.ask` (`ask` composes the underlying `ask`
 //! primitive `SubagentHandle` wraps, it is NOT a third primitive --
-//! fork+await-text, no mode parameter, GP-02).
+//! fork+await-text, no mode parameter, and never a third primitive).
 //!
 //! Fork-only (v1): the child inherits this agent's full context and
 //! effective role (fork semantics; role via the runtime's parent-role
@@ -25,7 +25,8 @@
 //! it -- it selects what is announced to the child, not what the child may
 //! execute; the permission gate and confinement root are the capability
 //! boundary (decision 01KZHH9N313T5BTDR8281QDWHC). Returns the
-//! full reply text (GP-01) so the model can compose a fresh spawn
+//! full reply text so the caller's own context stays lean and the model can
+//! compose a fresh spawn
 //! out-of-band, keeping the curation reasoning out of this agent's context
 //! window.
 
@@ -71,7 +72,8 @@ pub(super) struct AskArgs {
     /// the model is offered, it is NOT a capability restriction, so it can
     /// name a tool an inherited def excludes -- the permission gate and the
     /// confinement root are what actually bound what the child may execute.
-    /// Optional (C-04): absent means the child inherits the full set, as
+    /// Optional, so an older serialized call still reads: absent means the
+    /// child inherits the full set, as
     /// before.
     #[serde(default)]
     tools: Option<Vec<String>>,
@@ -97,10 +99,11 @@ fn resolve_ask_budget(arg: Option<BudgetArg>, config: &PluginConfig) -> Result<B
 
     Ok(Budget {
         max_steps,
-        // P-10: range-check the model-supplied deadline rather than saturate
-        // (the prior `unwrap_or(i64::MAX)` saturated into a `Duration::seconds`
-        // overflow panic -- cycle-3 review SIG-1). Out-of-range -> a typed
-        // `InvalidArguments` error via `deadline_from_secs`.
+        // Range-check the model-supplied deadline -- it is untrusted -- rather
+        // than saturate (the prior `unwrap_or(i64::MAX)` saturated into a
+        // `Duration::seconds` overflow panic -- cycle-3 review SIG-1).
+        // Out-of-range -> a typed `InvalidArguments` error via
+        // `deadline_from_secs`.
         deadline: Some(deadline_from_secs(deadline_secs)?),
         max_tokens,
         max_tool_calls: None,
@@ -157,7 +160,7 @@ impl Tool for AskTool {
             prompt: args.prompt,
             // `None` here is not "no agent_def" -- `ToolCtx` has no
             // `SessionMeta`/`AgentDef` lookup surface for this tool to
-            // resolve the parent's own def itself (P-1: that lookup belongs
+            // resolve the parent's own def itself (that lookup belongs
             // at the `SubagentHost` trait boundary, not duplicated at a
             // single tool callsite). `Runtime::ask`
             // (`conway_runtime::subagent`) fills this from the parent's
@@ -195,7 +198,7 @@ impl Tool for AskTool {
 
         let outcome = ctx.subagents.ask(spec).await.map_err(ToolError::from)?;
 
-        // P-2: the persisted ToolOutput names the child session via an
+        // The persisted ToolOutput names the child session via an
         // `EphemeralSessionRef` artifact pointing at the child's
         // `transcript_ref`. The model sees only the clean reply text.
         let artifact = Artifact {

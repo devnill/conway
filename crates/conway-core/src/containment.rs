@@ -2,10 +2,10 @@
 //! this root?" (S0 of the cwd-aware-agents charter).
 //!
 //! Nothing else in the tree answers this question safely.
-//! `conway-tools::common::resolve_path` explicitly does not (GP-08: no
-//! sandboxing in that layer). A later slice wires this primitive into
-//! `PermissionBroker::decide`; this module is deliberately pure and
-//! unwired.
+//! `conway-tools::common::resolve_path` explicitly does not (isolation belongs
+//! to tools, not the harness: no sandboxing in that layer). A later slice wires
+//! this primitive into `PermissionBroker::decide`; this module is deliberately
+//! pure and unwired.
 //!
 //! # Why a naive check is wrong
 //!

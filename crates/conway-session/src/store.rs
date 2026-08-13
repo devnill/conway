@@ -147,22 +147,20 @@ pub struct RawSessionHandle(Arc<AsyncMutex<SessionFile>>);
 /// acquired and released synchronously — so there is no lock-ordering
 /// inversion.
 ///
-/// `lifecycle` is taken only by `create`/`fork`/`remove`/`set_ephemeral`
-/// and is held
-/// across remove's guard-check-plus-delete AND across fork's
-/// head-check-plus-create (and plain `create`'s file-write-plus-index-
-/// record — the spawn path in `conway-runtime` creates children through
-/// `create` directly, so fork-only serialization would leave the same
-/// orphan window open there) — and across `set_ephemeral`'s guard-check-
-/// plus-header-rewrite (so a promote and a purge of the same session
-/// linearize: the purge fails `NotFound`, or the promote lands first and
-/// the purge fails `NotRemovable` on the flipped header). This closes the TOCTOU in which a remove's
-/// children check could miss a concurrently created child, orphaning it
-/// with dangling provenance (P-2, review F-1), and serializes
-/// `SessionIndex::remove`'s `persist_full` rewrite against a concurrent
-/// `record_header` append (review F-2). The hot path (`append`/`read`/
-/// `head`/`meta`) never touches `lifecycle`, preserving per-session
-/// append concurrency.
+/// `lifecycle` is taken only by `create`/`fork`/`remove`/`set_ephemeral` and is
+/// held across remove's guard-check-plus-delete AND across fork's
+/// head-check-plus-create (and plain `create`'s file-write-plus-index- record —
+/// the spawn path in `conway-runtime` creates children through `create`
+/// directly, so fork-only serialization would leave the same orphan window open
+/// there) — and across `set_ephemeral`'s guard-check- plus-header-rewrite (so a
+/// promote and a purge of the same session linearize: the purge fails
+/// `NotFound`, or the promote lands first and the purge fails `NotRemovable` on
+/// the flipped header). This closes the TOCTOU in which a remove's children
+/// check could miss a concurrently created child, orphaning it with dangling
+/// provenance (review F-1), and serializes `SessionIndex::remove`'s
+/// `persist_full` rewrite against a concurrent `record_header` append (review
+/// F-2). The hot path (`append`/`read`/ `head`/`meta`) never touches
+/// `lifecycle`, preserving per-session append concurrency.
 pub struct JsonlSessionStore {
     root: PathBuf,
     handles: Arc<AsyncRwLock<HashMap<SessionId, Handle>>>,
@@ -824,12 +822,12 @@ impl SessionStore for JsonlSessionStore {
         // list below sees the new child and refuses) or starts after (for
         // `fork`, the parent head check fails `NotFound` on the tombstone)
         // — the pair can never produce an orphaned child with dangling
-        // provenance (P-2, review F-1). The same hold orders
+        // provenance (review F-1). The same hold orders
         // `SessionIndex::remove`'s `persist_full` against a concurrent
         // `record_header` append (review F-2).
         let _lifecycle = self.lifecycle.lock().await;
 
-        // Guard 1: purge is for ephemeral sessions only (P-2/GP-10's single
+        // Guard 1: purge is for ephemeral sessions only (the single
         // explicit exception to mandatory provenance retention).
         let meta = self.meta(sid).await?;
         if !meta.ephemeral {
@@ -949,7 +947,7 @@ impl SessionStore for JsonlSessionStore {
 
         // Guard 0: demotion (persistent -> ephemeral) does not exist —
         // promotion is one-way, so a persistent record can never silently
-        // become purge-eligible scratchpad (P-2).
+        // become purge-eligible scratchpad, since provenance must survive.
         if ephemeral {
             return Err(StoreError::NotPromotable {
                 session: *sid,
@@ -998,7 +996,7 @@ impl SessionStore for JsonlSessionStore {
         // The header rewrite, crash-atomic via tmp + fsync + rename — the
         // same discipline `SessionIndex::persist_full` uses for
         // `index.jsonl`. The new line 0 is followed by every record byte
-        // copied VERBATIM from the live file (P-2: promotion rewrites
+        // copied VERBATIM from the live file (promotion rewrites
         // nothing except the flag — record lines are not even re-encoded).
         // An in-place overwrite of line 0 is impossible here: the promoted
         // header serializes one byte LONGER than the ephemeral one

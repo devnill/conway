@@ -1,7 +1,7 @@
 //! The `Plugin`/`Tool` ports (architecture §4.2) and the `CancellationToken`
 //! used to interrupt an in-flight tool call.
 //!
-//! **There is exactly one extension mechanism (GP-03).** Built-in
+//! **There is exactly one extension mechanism: the plugin API.** Built-in
 //! read/write/edit/bash and the subagent tool are `Plugin` implementations
 //! registered by default in `ConwayBuilder`; nothing about them is
 //! privileged. MVP plugins are in-process `Arc<dyn Plugin>` (Tension T-8).
@@ -77,8 +77,8 @@ pub trait Tool: Send + Sync + 'static {
     /// against.
     ///
     /// PRE: `args` has already been validated against `self.spec().schema`
-    /// by the caller. It is nonetheless UNTRUSTED, model-supplied content
-    /// (P-10): an implementation MUST NOT panic on any `serde_json::Value`
+    /// by the caller. It is nonetheless UNTRUSTED, model-supplied content:
+    /// an implementation MUST NOT panic on any `serde_json::Value`
     /// shape (no `unwrap`/`expect`/indexing into `args`), since a caller
     /// that skips validation, or a future validator bug, must not turn a
     /// bad render into a crash. Callers additionally sanitize the returned
@@ -103,13 +103,14 @@ pub trait Tool: Send + Sync + 'static {
     /// later permission-broker root-containment check. **This slice ships
     /// only the declaration** -- no `PermissionCtx`/broker reads this yet.
     ///
-    /// PRE (mirrors `render`'s own PRE, P-10): a caller MUST NOT rely on
+    /// PRE (mirrors `render`'s own PRE): a caller MUST NOT rely on
     /// this to be internally consistent with untrusted `args` at runtime --
     /// it is static, call-independent metadata about the tool's *schema*,
     /// not a computation over one call's actual JSON. (A method that
     /// inspected `args` to compute paths would need an extra RPC round trip
     /// for an out-of-process plugin; a field-name list survives the wire
-    /// intact — GP-03/GP-11's "core ships mechanism + declarative config".)
+    /// intact — core ships mechanism plus declarative config, and policy
+    /// attaches as a plugin.)
     ///
     /// The default is [`PathArgs::Unconfinable`], **not** "no declared
     /// paths": "no paths" defaulting to "nothing to check, therefore allow"
@@ -310,7 +311,7 @@ impl CwdHandle {
     /// fails. If some other clone of this handle poisoned the lock (a panic
     /// while holding [`Self::set`]'s write guard), the last successfully
     /// written value is recovered rather than the poison being propagated
-    /// (P-10): a read has no natural failure mode, and inventing one here
+    /// A read has no natural failure mode, and inventing one here
     /// would force every caller -- including the runtime's per-batch
     /// snapshot -- to handle an error this operation should never surface.
     pub fn current(&self) -> PathBuf {
@@ -324,7 +325,7 @@ impl CwdHandle {
     /// root/containment check on `path` (see the item's "out of scope":
     /// confinement does not exist yet, and cwd was never the boundary).
     ///
-    /// P-10: `path` is model-influenced. This never panics on any input --
+    /// `path` is model-influenced, so untrusted. This never panics on any input --
     /// `path` is stored, never inspected or parsed -- and the one failure
     /// mode this can hit (a poisoned lock) is reported as a typed error
     /// rather than propagated as a panic or silently swallowed.
@@ -372,13 +373,13 @@ pub struct ToolCtx {
     /// existing consumer (`read`/`write`/`edit`/`glob`/`grep`/`bash`, every
     /// third-party tool) keeps reading this exactly as before.
     pub cwd: PathBuf,
-    /// S1: the `cd` capability. Calling `chdir.set(path)` changes the
-    /// working directory the NEXT batch snapshots into `cwd` -- never this
-    /// call's own `cwd`, and never any other call already dispatched in the
-    /// same batch (see [`CwdHandle`]'s doc). No built-in tool calls this
-    /// yet; it lands on every [`Tool`] implementation uniformly (P-6), so a
-    /// future `cd` tool needs no privileged access this type doesn't already
-    /// expose to every plugin.
+    /// S1: the `cd` capability. Calling `chdir.set(path)` changes the working
+    /// directory the NEXT batch snapshots into `cwd` -- never this call's own
+    /// `cwd`, and never any other call already dispatched in the same batch
+    /// (see [`CwdHandle`]'s doc). No built-in tool calls this yet; it lands on
+    /// every [`Tool`] implementation uniformly -- a built-in gets no privileged
+    /// API -- so a future `cd` tool needs no privileged access this type
+    /// doesn't already expose to every plugin.
     pub chdir: CwdHandle,
     pub cancel: CancellationToken,
     /// Progress reporting; see [`EventSinkHandle`].
@@ -386,7 +387,7 @@ pub struct ToolCtx {
     /// The cycle-breaker for the fork/spawn tool: a [`SubagentHandle`] bound
     /// to [`Self::agent_id`] -- the same underlying host the developer API
     /// (`SessionHandle::fork`/`spawn`) calls, narrowed to a caller-bound
-    /// handle with no way to act as a different agent (P-1, structural --
+    /// handle with no way to act as a different agent (structural --
     /// see [`SubagentHandle`]'s own doc). Was `Arc<dyn SubagentHost>` until
     /// this narrowed it: the same widening `chdir` underwent for the cwd
     /// capability.
@@ -706,13 +707,13 @@ mod tests {
     }
 
     /// `ArtifactWriteHandle::noop` (board item 01KZJ5S3ZC8SPWTX94C4HTEC2R)
-    /// replaces what used to be a hand-rolled private `ArtifactWriter`
-    /// double here -- this module's own fixtures are exactly the boilerplate
-    /// that constructor exists to remove (P-14: reuse, don't restate). The
-    /// REAL containment guarantee is exercised by `conway-runtime`'s
-    /// `artifact_store` tests, against a real `AgentArtifactWriter` and a
-    /// real filesystem; this module's own fixtures exercise
-    /// `before_request`/`on_overflow` transforms unrelated to artifact
+    /// replaces what used to be a hand-rolled private `ArtifactWriter` double
+    /// here -- this module's own fixtures are exactly the boilerplate that
+    /// constructor exists to remove -- one implementation, reused rather than
+    /// restated. The REAL containment guarantee is exercised by
+    /// `conway-runtime`'s `artifact_store` tests, against a real
+    /// `AgentArtifactWriter` and a real filesystem; this module's own fixtures
+    /// exercise `before_request`/`on_overflow` transforms unrelated to artifact
     /// writing.
     fn artifacts_handle() -> crate::ports::ArtifactWriteHandle {
         crate::ports::ArtifactWriteHandle::noop(AgentId::new())
@@ -850,10 +851,11 @@ mod tests {
 
     // ---- Tool::render's default implementation ----
 
-    /// A tool that accepts the trait's default `render` untouched -- proves
-    /// a third-party `Tool` implementor (`ConwayBuilder::with_plugin`, GP-03)
-    /// keeps compiling without implementing the new method (the widening
-    /// this trait underwent to fix the "pattern grants are inert" bug).
+    /// A tool that accepts the trait's default `render` untouched -- proves a
+    /// third-party `Tool` implementor (`ConwayBuilder::with_plugin`, the one
+    /// extension mechanism) keeps compiling without implementing the new method
+    /// (the widening this trait underwent to fix the "pattern grants are inert"
+    /// bug).
     struct DefaultRenderTool;
 
     #[async_trait]
@@ -950,7 +952,7 @@ mod tests {
         assert_eq!(handle.current(), PathBuf::from("/b"));
     }
 
-    /// P-10 adversarial case: a poisoned lock must not panic. Poisons the
+    /// Adversarial case: a poisoned lock must not panic. Poisons the
     /// cell by panicking (via `catch_unwind`, so the test process itself
     /// survives) while holding the write guard directly -- reaching the
     /// private `inner` field is legitimate here since this test lives in
@@ -984,7 +986,7 @@ mod tests {
     }
 
     /// A weird-but-legal `PathBuf` (non-UTF8 on Unix) must not panic `set`
-    /// -- it is stored, never parsed (P-10: no `unwrap`/`expect` on the
+    /// -- it is stored, never parsed (untrusted: no `unwrap`/`expect` on the
     /// supplied path).
     #[test]
     #[cfg(unix)]

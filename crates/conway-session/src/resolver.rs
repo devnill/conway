@@ -10,7 +10,7 @@
 //! level's `upto` — is a LOCAL index into that session's OWN records (the
 //! same units as `store.head` and `fork`'s range check), never an index
 //! into the effective transcript. The inherited prefix always flows
-//! through in full (GP-02: a fork inherits the forker's ENTIRE context up
+//! through in full (a fork inherits the forker's ENTIRE context up
 //! to the fork point). Conceptually:
 //!
 //! ```text
@@ -39,11 +39,11 @@
 //!
 //! ## Memoization
 //!
-//! Cache key: `(SessionId, LogSeq)`, where the `LogSeq` is the *exclusive
-//! upper bound* of the resolved prefix, measured in LOCAL units over the
-//! session's OWN records (matching `store.head`). A full resolve of `sid` at local head `H` is exactly
-//! the prefix entry `(sid, H)` — one keyspace serves both "full transcript"
-//! and "prefix" lookups; there is no separate "full" sentinel.
+//! Cache key: `(SessionId, LogSeq)`, where the `LogSeq` is the *exclusive upper
+//! bound* of the resolved prefix, measured in LOCAL units over the session's
+//! OWN records (matching `store.head`). A full resolve of `sid` at local head
+//! `H` is exactly the prefix entry `(sid, H)` — one keyspace serves both "full
+//! transcript" and "prefix" lookups; there is no separate "full" sentinel.
 //! Entries are immutable snapshots and are never invalidated by a parent's
 //! later appends: appending to `sid` only makes new, higher-bound keys
 //! reachable, so an already-memoized `(sid, at_seq)` stays correct forever

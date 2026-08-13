@@ -56,7 +56,7 @@ impl Default for LoadOptions {
 /// `LoadOptions::cli_overrides` or `ConwayBuilder::with_cli_overrides` gets
 /// exactly the precedence and validation this module promises.
 ///
-/// **What it is not (corrected — GP-14):** despite its name and this
+/// **What it is not (corrected):** despite its name and this
 /// struct's original doc comment, `conway-cli` does not construct or pass
 /// one of these. `grep -rn "with_cli_overrides" crates/` finds exactly three
 /// hits: this struct's definition, and two test files
@@ -64,7 +64,7 @@ impl Default for LoadOptions {
 /// `crates/conway-cli/tests/continuity.rs`) — zero production call sites.
 /// `conway-cli`'s actual flag-to-config wiring is separate, bespoke code in
 /// that crate, not this struct. The previous wording ("mirrored here (not
-/// in `conway-cli`) so the library is the source of truth (C-03)") read as
+/// in `conway-cli`) so the library is the source of truth") read as
 /// a claim that CLI flag values flow through this exact struct in
 /// production; they do not, and the next person to add a field here on the
 /// strength of that claim would reasonably expect it to reach a real `conway`
@@ -93,7 +93,7 @@ pub struct CliOverrides {
     /// no CLI form for a per-role override — a CLI-supplied value is a
     /// session-wide floor.
     ///
-    /// Not a C-03 reachability violation despite no `conway-cli` flag
+    /// Not a mode-reachability violation despite no `conway-cli` flag
     /// setting it through this struct (see the struct doc comment):
     /// headroom is independently reachable today via `settings.json`
     /// (`[routing].default_headroom_tokens`, `[roles.<alias>].headroom_tokens`)
@@ -599,7 +599,7 @@ pub fn validate(
     // errors on an undefined default_role: the candidate set is closed and
     // known at compile time, so an unrecognized id is unambiguously a typo,
     // never a forward reference. And the failure it prevents is the one
-    // GP-14 ranks WORST -- user-facing configuration that silently does
+    // This ranks WORST -- user-facing configuration that silently does
     // nothing. `builtin_plugins` is how an operator turns `bash` back on;
     // `"conway.shel"` would leave it off with no signal, and the operator
     // would believe they had enabled it. Silence there is indistinguishable
@@ -654,7 +654,7 @@ pub fn validate(
     //    silently target the wrong rule.
     //
     // Note: `[hooks]` itself only parses and validates today -- see
-    // `schema::HooksConfig`'s own GP-14 disclosure. This check runs
+    // `schema::HooksConfig`'s own per-event reachability disclosure. This check runs
     // regardless of whether any rule is ever dispatched, exactly like every
     // other structural check in this function runs on config that may
     // never be exercised at runtime.

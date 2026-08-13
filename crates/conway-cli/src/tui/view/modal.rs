@@ -74,7 +74,7 @@
 //! same restraint, even though the exact cap fraction had to be re-measured
 //! for the modal's own, smaller reference frame (see "The cap" above).
 //!
-//! ## P-10: never panics on a tiny terminal
+//! ## Never panics on a tiny terminal
 //!
 //! [`modal_area`] clamps its own minimum to whatever is actually available
 //! (`transcript_area.height`), all the way down to a zero-height `Rect` on a
@@ -121,15 +121,15 @@ const BORDER_ROWS: u16 = 2;
 ///   see this module's own doc for why `3`, not the spec's own suggested
 ///   `2`).
 ///
-/// The returned height is `desired` (content + border + footer) clamped
-/// between a P-10 floor (`BORDER_ROWS + footer_rows + 1`, i.e. "at least one
-/// row of body is visible", itself never exceeding what `transcript_area`
-/// actually has) and the cap (also never exceeding what's actually there).
-/// Both clamp bounds are independently `.min(transcript_area.height)`, so the
-/// floor can never exceed the ceiling and `u16::clamp` can never be asked for
-/// an invalid `min > max` range — this is what makes the function P-10 safe
-/// even at `transcript_area.height == 0` (both bounds collapse to `0` and the
-/// modal simply renders nothing, never panicking).
+/// The returned height is `desired` (content + border + footer) clamped between
+/// a floor (`BORDER_ROWS + footer_rows + 1`, i.e. "at least one row of body is
+/// visible", itself never exceeding what `transcript_area` actually has) and
+/// the cap (also never exceeding what's actually there). Both clamp bounds are
+/// independently `.min(transcript_area.height)`, so the floor can never exceed
+/// the ceiling and `u16::clamp` can never be asked for an invalid `min > max`
+/// range — this is what makes the function safe against any terminal size even
+/// at `transcript_area.height == 0` (both bounds collapse to `0` and the modal
+/// simply renders nothing, never panicking).
 pub fn modal_area(
     transcript_area: Rect,
     content_rows: u16,
@@ -296,7 +296,7 @@ mod tests {
         );
     }
 
-    // ---- P-10: never panics, degrades gracefully on a tiny/zero terminal ----
+    // ---- never panics, degrades gracefully on a tiny/zero terminal ----
 
     #[test]
     fn zero_height_transcript_area_degrades_to_a_zero_rect_without_panicking() {
@@ -323,7 +323,7 @@ mod tests {
 
     #[test]
     fn modal_area_never_exceeds_the_transcript_area_height_across_a_size_sweep() {
-        // P-10 sweep: no combination of a tiny terminal + huge content ever
+        // Sweep: no combination of a tiny terminal + huge content ever
         // produces a `Rect` taller than what's actually available.
         for h in 0..=30u16 {
             for content in [0u16, 1, 5, 50, 5000] {

@@ -264,7 +264,7 @@ const CAP_DENOMINATOR: u16 = 1;
 /// rather than clipping. No other `AppState` is needed -- every line of
 /// content here is static.
 ///
-/// P-10: never panics on a tiny area -- [`modal::modal_area`]'s own clamp
+/// Never panics on a tiny area -- [`modal::modal_area`]'s own clamp
 /// covers that; see its doc for why the floor can never exceed the ceiling.
 pub fn draw(frame: &mut Frame, transcript_area: Rect, scroll: u16, theme: &Theme) {
     let mut body_lines: Vec<Line> = Vec::new();

@@ -25,7 +25,7 @@ fn boundary_index(segments: &[PromptSegment]) -> Option<usize> {
 /// distinct ids despite byte-identical static+inherited content), and
 /// `cache_hint` is attached *after* this key is computed. Excluding both is
 /// what makes the key stable across siblings and neutral to caching
-/// (GP-06).
+/// never correctness-bearing.
 pub fn prefix_key(model: &ModelId, segments: &[PromptSegment]) -> PrefixKey {
     let slice: &[PromptSegment] = match boundary_index(segments) {
         Some(boundary) => &segments[..=boundary],

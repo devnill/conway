@@ -9,8 +9,9 @@
 //! register a real tool and be called through all three consumption modes
 //! (library, TUI, one-shot) — while staying completely invisible when
 //! nobody asks for it. It is written entirely against `conway::plugin`,
-//! the identical public surface a third-party plugin author gets (GP-03,
-//! P-6): if this crate ever needed to reach past that surface, that would
+//! the identical public surface a third-party plugin author gets -- a
+//! first-party plugin gets no privileged API: if this crate ever needed to
+//! reach past that surface, that would
 //! be a defect in the plugin API, not a reason to give this crate a
 //! private door.
 //!

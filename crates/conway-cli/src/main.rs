@@ -78,21 +78,21 @@ async fn main() -> std::process::ExitCode {
 
     // Board item 01KZ803DJW8Y1H4FXTM8D3PYMY: `Conway::warnings()` (a real,
     // populated mechanism -- `config::merge::validate` pushes a
-    // `WarningCode::HeadroomExceedsContext` when a role's effective headroom
-    // is `>=` the smallest context window reachable through its chain) had
-    // zero callers workspace-wide before this. Every non-interactive target
-    // (`sessions`, `routes`, one-shot `-p`) shares this one choke point, so
-    // a misconfiguration is visible on stderr no matter which of those the
-    // operator runs -- exactly the same "one seam, every dispatch target"
-    // shape `build_conway`'s own `[plugins].install` note already relies
-    // on. The interactive TUI does NOT print here: once `tui::run` puts the
-    // terminal in raw/alternate-screen mode, a stray stderr write lands on
-    // top of the drawn UI rather than in the operator's scrollback, so the
-    // TUI instead renders the same warnings into its own transcript
-    // (`tui::app::App::new`) where they stay visible for the life of the
-    // session -- the two interactive surfaces GP-05/C-03 asks about, each
-    // getting the shape that actually reaches its user, not one carve-out
-    // covering only the easier surface.
+    // `WarningCode::HeadroomExceedsContext` when a role's effective headroom is
+    // `>=` the smallest context window reachable through its chain) had zero
+    // callers workspace-wide before this. Every non-interactive target
+    // (`sessions`, `routes`, one-shot `-p`) shares this one choke point, so a
+    // misconfiguration is visible on stderr no matter which of those the
+    // operator runs -- exactly the same "one seam, every dispatch target" shape
+    // `build_conway`'s own `[plugins].install` note already relies on. The
+    // interactive TUI does NOT print here: once `tui::run` puts the terminal in
+    // raw/alternate-screen mode, a stray stderr write lands on top of the drawn
+    // UI rather than in the operator's scrollback, so the TUI instead renders
+    // the same warnings into its own transcript (`tui::app::App::new`) where
+    // they stay visible for the life of the session -- the two interactive
+    // surfaces the every-mode-reachable rule asks about, each getting the shape
+    // that actually reaches its user, not one carve-out covering only the
+    // easier surface.
     if !is_tui {
         for warning in conway.warnings() {
             diag::warn(&warning.message);
