@@ -86,11 +86,40 @@ class Claim:
         self.paths = fields.get("paths", "")
 
     def evaluate(self) -> tuple[bool, str]:
-        """Returns (holds, evidence)."""
-        cmd = ["grep", "-rEn", "--include=*.rs", "--include=*.toml", self.pattern]
+        """Returns (holds, evidence).
+
+        **A MISSING PATH IS A HARD ERROR, NOT AN ABSENT MATCH.** grep over a
+        path that does not exist prints nothing to stdout and exits non-zero
+        -- on BSD grep, with an EMPTY stderr, so there is no diagnostic to
+        notice in a CI log either. Reading only stdout would make a stale
+        `paths:` value indistinguishable from a genuinely-absent pattern, and
+        report "holds" for a claim nothing scanned. That is the exact
+        silent-staleness failure this whole script exists to prevent, and it
+        would fire precisely on the rename scenario the module doc cites as
+        its motivating incident. So paths are checked before grep runs, and
+        a grep exit status outside {0 = matched, 1 = no match} is fatal.
+        """
+        missing = [p for p in self.paths.split() if not (ROOT / p).exists()]
+        if missing:
+            print(
+                f"{self.doc}:{self.lineno}: BROKEN CLAIM in entry \"{self.entry}\"\n"
+                f"    its `paths:` names something that does not exist: {' '.join(missing)}\n"
+                f"    Nothing was scanned, so this claim is unverified rather than true.\n"
+                f"    Repoint the path, or delete the claim if its subject is gone."
+            )
+            sys.exit(2)
+
+        cmd = ["grep", "-rEn", "--include=*.rs", "--include=*.toml", "--include=*.md"]
+        cmd += [self.pattern]
         cmd += [str(ROOT / p) for p in self.paths.split()]
-        out = subprocess.run(cmd, capture_output=True, text=True).stdout.strip()
-        hits = [l for l in out.split("\n") if l]
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode not in (0, 1):
+            print(
+                f"{self.doc}:{self.lineno}: grep failed for entry \"{self.entry}\" "
+                f"(exit {proc.returncode}): {proc.stderr.strip()}"
+            )
+            sys.exit(2)
+        hits = [l for l in proc.stdout.strip().split("\n") if l]
         if self.kind == "absent":
             return (not hits, "\n".join(f"      {h[len(str(ROOT)) + 1:]}" for h in hits[:5]))
         return (bool(hits), "      (no match anywhere in: " + self.paths + ")")

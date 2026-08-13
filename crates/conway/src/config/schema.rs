@@ -905,15 +905,30 @@ pub struct ThemeStyleConfig {
 ///   parses, validates, and is silently never consulted -- exactly the same
 ///   gap this doc used to disclose for the whole section, now narrowed to
 ///   that one precondition.
-/// - **Every OTHER `event` value: still forward-declared, unchanged.**
-///   Nothing in this crate, or anywhere else in the tree, spawns a process,
-///   dispatches an event, or otherwise acts on a rule whose `event` is not
-///   `"pre_tool_use"`. Writing one gets you a config that parses and
-///   rejects a typo'd key exactly like every other section -- and, for
-///   now, nothing more. **01KZRZY1MNM872BZ6AKEBG3SKE** is the general
-///   script-runner port ([`crate::plugin::HookRunner`]) this item's
-///   `pre_tool_use` dispatch is the FIRST consumer of, not the last: a
-///   later item wiring a second event reuses the same runner, the same
+/// - **`post_tool_use`, `session_starting`, `child_spawned`: DISPATCHED,
+///   observation-only** (board item 01KZS019NHG11RVQYSVT7RG0P5). Same
+///   injected-runner precondition as `pre_tool_use` above. These cannot
+///   deny anything and they fail OPEN: a hook that errors or times out is
+///   logged and the operation it observed is unaffected, which is the
+///   opposite of `pre_tool_use` and is deliberate — the observed thing has
+///   already happened, so breaking it because a logging script misfired
+///   would be the wrong direction. Dispatched by
+///   `conway_runtime::hook_dispatch::HookDispatcher::dispatch`.
+/// - **`prompt_submitted`: DISPATCHED, may DENY but never MODIFY** (board
+///   item 01KZS01ZBNEY12DBDNW2Y861SQ). Fires at both prompt-submission
+///   sites before the text reaches the agent loop, and fails CLOSED like
+///   `pre_tool_use`. It cannot rewrite a word of what the user typed, and
+///   that is a TYPE guarantee rather than an unwired path: the dispatch
+///   reads only `HookPermissionVerdict`, which has no variant capable of
+///   carrying replacement text.
+/// - **`request_assembled` and `child_reported`: still forward-declared.**
+///   Nothing in this crate, or anywhere else in the tree, spawns a process
+///   or dispatches an event for these two. Writing one gets you a config
+///   that parses and rejects a typo'd key exactly like every other section
+///   -- and, for now, nothing more. **01KZRZY1MNM872BZ6AKEBG3SKE** is the
+///   general script-runner port ([`crate::plugin::HookRunner`]) every
+///   dispatched event above shares: a later item wiring one of these two
+///   reuses the same runner and the same
 ///   [`HookEntry::timeout_ms`]/[`HookEntry::enabled`] enforcement, and adds
 ///   only its own event-specific dispatch call site.
 ///
