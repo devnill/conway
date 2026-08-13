@@ -13,10 +13,12 @@ hypothetical.
 
 ## 0. How to read this, and why it exists
 
-The five source specs are still worth reading for their argument; they are
-committed at `.design/d1-transport.md` through `d5-template-
-instrumentation.md`. This document is the one that is *true* where they
-conflict.
+This document synthesises five source specs (D1–D5) and is the one that is
+*true* where they conflict. Three of the five — `d2-extension-points.md`,
+`d5-template-instrumentation.md`, and the later `d7-repetition-resistant-tool-
+calls.md` — were removed on 2026-08-13 as fully superseded here and cited by
+nothing; they remain in git history. `d1-transport.md` and `d4-trust-model.md`
+are still committed and still worth reading for their argument.
 
 **If you are about to re-open a settled question, read §11 first.** That
 section is a ledger of every disagreement found between the five slices, the
@@ -3182,7 +3184,7 @@ duplicate of the reasoning it points at.
 |---|---|---|---|
 | 1 | `context.append/1`, append-only | §4 (table), §5.8, §7.3, §7.6 rule 4, §12 F28, §5.5 | `context.hook/1`, specified below |
 | 2 | §5.8/§13.4's "no rewriting, ever, by anything" read as covering context | §5.8, §13.4 | Scoped explicitly to arguments and permission verdicts; context is a third value class (§5.9) |
-| 3 | D2 §1's R1 ("one authority per value") read as binding context | `d2-extension-points.md` top banner | Context is not an authority; R1 governs arguments and verdicts (§5.9) |
+| 3 | D2 §1's R1 ("one authority per value") read as binding context | D2's top banner (`d2-extension-points.md`, removed 2026-08-13 as superseded by this document; in git history) | Context is not an authority; R1 governs arguments and verdicts (§5.9) |
 | 4 | §13.6 "no compaction events" | §13.6 | No compaction *policy* still ships; a producer path for the persisted exclusion now does (§16.4) |
 | 5 | §8.3's shell-command status-variable closure, and the v0.3.0 deferral it closed | §8.3 | The scripts axis answers the original trust objection (`d917ba2`'s digest-keyed trust decisions); the script runner is itself a plugin (GP-03), so the surface layers on top of, not beside, the one extension mechanism |
 

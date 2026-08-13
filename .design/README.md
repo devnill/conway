@@ -55,13 +55,20 @@ open it to learn *why* something is the way it is, never to learn what to
 build against. Where a page here and a page there disagree, `docs/plugins/`
 wins.
 
-`extension-architecture.md` is the synthesis of `d1-transport.md` through
-`d5-template-instrumentation.md` and supersedes those five specs where they
-disagree with it.
+`extension-architecture.md` is the synthesis of the original `d1`–`d5` spike
+specs and supersedes them where they disagree with it.
 
-`d7-repetition-resistant-tool-calls.md` is a captured design direction
-(out of scope for implementation as of 2026-08-03): solving the
-repeated-tool-call loop class by idiomatic tool-result design rather than
-detection. It is the framing for any future revisit of the
-[`docs/whitepaper.md`](../docs/whitepaper.md) §4.5 vs WI-086 (in-core
-`StepDigest`) question.
+Three of those spikes were **removed on 2026-08-13**: `d2-extension-points.md`
+and `d5-template-instrumentation.md`, both fully superseded by the synthesis,
+and `d7-repetition-resistant-tool-calls.md`, a design direction recorded as out
+of scope and never picked up. Together they were 11,680 words that nothing in
+`crates/`, `docs/`, or the root pages cited. They are in git history if the
+reasoning is ever wanted again; recovering one is `git show`, and reconstructing
+it from the synthesis is usually easier than reading it.
+
+That deletion is the standing policy for this directory, not a one-off:
+**a spike doc survives here only while something still reads it.** Design
+material that is still load-bearing belongs in `docs/`, where
+`CONTRIBUTING.md` §1 gates it against going stale. Work that still needs doing
+belongs on the board, which has a lifecycle. This directory is for the record of
+how a decision was reached — and a record nobody consults is not a record.
