@@ -443,10 +443,7 @@ pub trait BackendFactory: Send + Sync {
     /// calls), exactly as any third-party kind is free to do too -- nothing
     /// about this being a first-party kind reaches a private hook a
     /// third-party implementation could not also use (GP-03/P-6).
-    fn probe_capabilities(
-        &self,
-        _ctx: &BackendBuildContext,
-    ) -> BTreeMap<ModelId, Capabilities> {
+    fn probe_capabilities(&self, _ctx: &BackendBuildContext) -> BTreeMap<ModelId, Capabilities> {
         BTreeMap::new()
     }
 }

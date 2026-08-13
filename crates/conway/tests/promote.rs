@@ -19,9 +19,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use conway::config::schema::{
-    AgentsConfig, ConwayConfig, HealthSection, LimitsConfig, ModelsConfig, PermissionsConfig,
-    HooksConfig, PluginsConfig,
-    RoleEntry, RoutingSection, SessionConfig, ToolsConfig, TuiSection,
+    AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
+    PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
+    TuiSection,
 };
 use conway::{Conway, ConwayBuilder, ConwayError, SessionSpec};
 use conway_core::agent::PermissionDecision;
@@ -94,7 +94,9 @@ fn build_conway_with_backend(store: Arc<dyn SessionStore>, backend: Arc<dyn Back
 
 /// Drives a session with one parent turn plus one completed `/ask`,
 /// returning the handle and the ephemeral child's `(AgentId, SessionId)`.
-async fn session_with_completed_ask(conway: &Conway) -> (conway::SessionHandle, AgentId, SessionId) {
+async fn session_with_completed_ask(
+    conway: &Conway,
+) -> (conway::SessionHandle, AgentId, SessionId) {
     let handle = conway
         .new_session(SessionSpec::default())
         .await
@@ -197,7 +199,10 @@ async fn promote_flips_header_tree_and_listing_and_emits_agent_promoted() {
         .meta(&child_session)
         .await
         .expect("meta should succeed");
-    assert!(!meta.ephemeral, "the session header must show ephemeral: false");
+    assert!(
+        !meta.ephemeral,
+        "the session header must show ephemeral: false"
+    );
     assert_eq!(
         meta.origin.as_ref().map(|o| o.parent),
         Some(handle.id()),

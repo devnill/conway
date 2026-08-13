@@ -313,10 +313,7 @@ mod tests {
 
     fn env_for(xdg: &Path) -> HashMap<String, String> {
         let mut env = HashMap::new();
-        env.insert(
-            "XDG_CONFIG_HOME".to_string(),
-            xdg.display().to_string(),
-        );
+        env.insert("XDG_CONFIG_HOME".to_string(), xdg.display().to_string());
         env
     }
 

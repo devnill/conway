@@ -918,9 +918,7 @@ impl PermissionBroker {
             // `categories`, `category_in`, multiple tools) is NOT returned
             // here; it is returned by [`Self::active_structured_allow_rules`]
             // so the review surface can list it without a type widening.
-            .filter_map(|(rule, _, _, origin)| {
-                rule.to_pattern_rule().map(|p| (p, origin.clone()))
-            })
+            .filter_map(|(rule, _, _, origin)| rule.to_pattern_rule().map(|p| (p, origin.clone())))
             .collect()
     }
 
@@ -955,9 +953,7 @@ impl PermissionBroker {
             .read()
             .expect("permission deny patterns poisoned")
             .iter()
-            .filter_map(|(rule, _, origin)| {
-                rule.to_pattern_rule().map(|p| (p, origin.clone()))
-            })
+            .filter_map(|(rule, _, origin)| rule.to_pattern_rule().map(|p| (p, origin.clone())))
             .collect()
     }
 
@@ -983,9 +979,7 @@ impl PermissionBroker {
             .read()
             .expect("permission prompt patterns poisoned")
             .iter()
-            .filter_map(|(rule, _, origin)| {
-                rule.to_pattern_rule().map(|p| (p, origin.clone()))
-            })
+            .filter_map(|(rule, _, origin)| rule.to_pattern_rule().map(|p| (p, origin.clone())))
             .collect()
     }
 

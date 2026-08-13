@@ -1083,7 +1083,10 @@ mod tests {
         assert_eq!(rule.event, "pre_tool_use");
         assert_eq!(
             rule.command,
-            vec!["/usr/local/bin/audit-hook".to_string(), "--strict".to_string()]
+            vec![
+                "/usr/local/bin/audit-hook".to_string(),
+                "--strict".to_string()
+            ]
         );
         assert_eq!(rule.timeout_ms, 3000);
         assert!(rule.enabled);
@@ -1111,7 +1114,9 @@ mod tests {
         }
         "#;
         let result: Result<ConwayConfig, _> = serde_json::from_str(json);
-        let err = result.expect_err("typo'd entry key must be rejected").to_string();
+        let err = result
+            .expect_err("typo'd entry key must be rejected")
+            .to_string();
         // Assert on the field NAME specifically, not on the generic phrase.
         // An `|| err.contains("unknown field")` fallback would still pass if a
         // future serde dropped the offending key from the message, which is the

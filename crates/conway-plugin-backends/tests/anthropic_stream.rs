@@ -3,8 +3,6 @@
 
 use std::collections::BTreeMap;
 
-use conway_plugin_backends::anthropic::AnthropicBackend;
-use conway_plugin_backends::config::{AnthropicConfig, SecretString};
 use conway_core::content::{
     ContentBlock, PermissionClass, Role, SamplingParams, StopReason, ToolCategory, ToolSpec,
 };
@@ -13,6 +11,8 @@ use conway_core::ids::{ModelId, ToolName};
 use conway_core::ports::{Backend, GenerateRequest, StreamChunk};
 use conway_core::provenance::Provenance;
 use conway_core::segment::PromptSegment;
+use conway_plugin_backends::anthropic::AnthropicBackend;
+use conway_plugin_backends::config::{AnthropicConfig, SecretString};
 use futures::StreamExt;
 use serde_json::{json, Value};
 use wiremock::matchers::{method, path};

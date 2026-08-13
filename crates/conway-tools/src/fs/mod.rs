@@ -27,12 +27,22 @@ pub(crate) struct WalkEntry {
     pub absolute: PathBuf,
 }
 
-/// Walks `root` gitignore-aware and single-threaded, in the `ignore` crate's
-/// deterministic depth-first order, yielding files only (directories are
-/// skipped, `.git` is never descended into). Polls `cancel` every 64 entries
-/// visited and aborts with `Err(ToolError::Cancelled)`; any other walk
-/// failure (e.g. an unreadable directory) is a host-level
-/// `Err(ToolError::Io)`.
+/// Walks `root` gitignore-aware and single-threaded, depth-first, yielding
+/// files only (directories are skipped, `.git` is never descended into).
+/// Polls `cancel` every 64 entries visited and aborts with
+/// `Err(ToolError::Cancelled)`; any other walk failure (e.g. an unreadable
+/// directory) is a host-level `Err(ToolError::Io)`.
+///
+/// **Order is deterministic because this function sorts, not because the
+/// walker does.** `ignore::WalkBuilder` defaults to `sorter: None` and yields
+/// entries in `read_dir` order, which is filesystem- and inode-dependent; the
+/// explicit `sort_by_file_path` below is what makes repeated walks over the
+/// same tree agree. An earlier version of this comment claimed the `ignore`
+/// crate's order was itself deterministic. It is not, and the difference was
+/// user-visible: `grep` and `glob` output order could change between identical
+/// runs, and the test asserting walk order passed locally and on one CI run
+/// while failing on another with no code change in between (board item
+/// 01KZW91RQ26JP8N8PJTN34WZVT).
 ///
 /// This function is synchronous and does blocking I/O; callers on the async
 /// path MUST invoke it inside `tokio::task::spawn_blocking`. Shared by
@@ -50,6 +60,13 @@ pub(crate) fn walk_files(
         .git_global(false)
         .parents(false)
         .filter_entry(|entry| entry.file_name() != std::ffi::OsStr::new(".git"))
+        // Sorts siblings within each directory, which is what makes the whole
+        // walk reproducible. By path rather than by file name: both agree for
+        // siblings (they share a parent, so the paths differ only in the final
+        // component), but comparing the full path is a total order on the thing
+        // the doc above actually promises, and does not rely on that
+        // equivalence continuing to hold.
+        .sort_by_file_path(|a, b| a.cmp(b))
         .build();
 
     for (i, result) in walker.enumerate() {

@@ -126,7 +126,10 @@ fn plugin_has_six_tools_all_delegate_category() {
 /// schema's `required` list is `prompt` alone, on both.
 #[test]
 fn fork_and_spawn_schemas_require_prompt_only_no_mode() {
-    for schema in [ForkTool::new().spec().schema, SpawnTool::new().spec().schema] {
+    for schema in [
+        ForkTool::new().spec().schema,
+        SpawnTool::new().spec().schema,
+    ] {
         let json = serde_json::to_value(schema).unwrap();
         let required: Vec<&str> = json["required"]
             .as_array()
@@ -214,7 +217,10 @@ async fn spawn_without_agent_def_starts_with_agent_def_none() {
     };
 
     let out = SpawnTool::new()
-        .invoke(call("conway_spawn", serde_json::json!({"prompt": "p"})), ctx)
+        .invoke(
+            call("conway_spawn", serde_json::json!({"prompt": "p"})),
+            ctx,
+        )
         .await
         .unwrap();
     assert!(!out.is_error);

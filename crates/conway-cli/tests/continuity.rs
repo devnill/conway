@@ -94,9 +94,7 @@ async fn open_conway(fixture: &Fixture) -> Conway {
         // in -- the same factory `main.rs`'s own `build_conway` attaches by
         // default, registered explicitly here since this helper builds a
         // `Conway` directly rather than going through that choke point.
-        .with_backend_factory(Arc::new(
-            conway_plugin_backends::OpenAiCompatBackendFactory,
-        ))
+        .with_backend_factory(Arc::new(conway_plugin_backends::OpenAiCompatBackendFactory))
         .build()
         .expect("build conway against the fixture's own store")
 }

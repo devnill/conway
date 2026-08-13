@@ -861,11 +861,7 @@ impl SessionStore for JsonlSessionStore {
         // from the map nor from a cold-open that raced the delete and
         // opened the file just before `remove_file` unlinks it (see
         // `Handle::Removed`).
-        let prev = self
-            .handles
-            .write()
-            .await
-            .insert(*sid, Handle::Removed);
+        let prev = self.handles.write().await.insert(*sid, Handle::Removed);
 
         // An append that cloned the handle Arc before the tombstone can
         // still reach the per-session mutex. Mark the session removed
@@ -957,9 +953,8 @@ impl SessionStore for JsonlSessionStore {
         if ephemeral {
             return Err(StoreError::NotPromotable {
                 session: *sid,
-                reason:
-                    "demotion (ephemeral false -> true) is not supported; promotion is one-way"
-                        .into(),
+                reason: "demotion (ephemeral false -> true) is not supported; promotion is one-way"
+                    .into(),
             });
         }
 

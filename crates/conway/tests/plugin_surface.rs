@@ -30,9 +30,9 @@ use std::sync::Arc;
 
 #[cfg(feature = "jsonl-store")]
 use conway::config::schema::{
-    AgentsConfig, BackendEntry, ConwayConfig, HealthSection, LimitsConfig, ModelsConfig,
-    PermissionMode, PermissionsConfig, HooksConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig,
-    ToolsConfig, TuiSection,
+    AgentsConfig, BackendEntry, ConwayConfig, HealthSection, HooksConfig, LimitsConfig,
+    ModelsConfig, PermissionMode, PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection,
+    SessionConfig, ToolsConfig, TuiSection,
 };
 use conway::plugin::{
     async_trait, Artifact, ArtifactKind, ArtifactWriteError, ArtifactWriteHandle, ArtifactWriter,
@@ -85,8 +85,8 @@ impl Tool for EchoTool {
             return Err(ToolError::Cancelled);
         }
         let _cwd = &ctx.cwd;
-        let args: EchoArgs = serde_json::from_value(call.arguments)
-            .map_err(|e| ToolError::InvalidArguments {
+        let args: EchoArgs =
+            serde_json::from_value(call.arguments).map_err(|e| ToolError::InvalidArguments {
                 detail: e.to_string(),
             })?;
         Ok(ToolOutput {
@@ -168,7 +168,11 @@ struct MarkerHook;
 
 #[async_trait]
 impl ContextHook for MarkerHook {
-    async fn before_request(&self, ctx: &ContextHookCtx, mut payload: ContextPayload) -> ContextPayload {
+    async fn before_request(
+        &self,
+        ctx: &ContextHookCtx,
+        mut payload: ContextPayload,
+    ) -> ContextPayload {
         let _ = (ctx.turn, ctx.estimated_tokens);
         payload.segments.retain(|segment| {
             !segment.content.iter().any(|block| match block {
@@ -238,7 +242,10 @@ impl HookRunner for NeverOpinionatedHookRunner {
 
 // Only used by the `jsonl-store`-gated test below; see that test's own doc.
 #[cfg(feature = "jsonl-store")]
-fn facade_only_config(session_root: std::path::PathBuf, metadata_path: std::path::PathBuf) -> ConwayConfig {
+fn facade_only_config(
+    session_root: std::path::PathBuf,
+    metadata_path: std::path::PathBuf,
+) -> ConwayConfig {
     let mut roles = BTreeMap::new();
     roles.insert(
         "coder".to_string(),
@@ -451,8 +458,15 @@ async fn authored_hook_transforms_payloads() {
     };
 
     let out = hook.before_request(&ctx, payload).await;
-    assert_eq!(out.segments.len(), 2, "masked segment dropped, hook segment appended");
-    assert!(matches!(out.segments[1].provenance, Provenance::SystemNote { .. }));
+    assert_eq!(
+        out.segments.len(),
+        2,
+        "masked segment dropped, hook segment appended"
+    );
+    assert!(matches!(
+        out.segments[1].provenance,
+        Provenance::SystemNote { .. }
+    ));
 
     let retry = hook
         .on_overflow(
@@ -471,7 +485,10 @@ async fn authored_hook_transforms_payloads() {
     // C-family liveness: `ContextHookCtx::artifacts` is drivable, not just
     // nameable -- a hook can actually call `.write()` through the facade
     // type and observe the write reach the underlying `ArtifactWriter`.
-    let written = ctx.artifacts.write("spill.txt", b"overflow content".to_vec()).await;
+    let written = ctx
+        .artifacts
+        .write("spill.txt", b"overflow content".to_vec())
+        .await;
     assert_eq!(written.unwrap(), std::path::PathBuf::from("spill.txt"));
     assert_eq!(
         writer.last_write.lock().unwrap().as_ref(),

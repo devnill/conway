@@ -48,9 +48,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use conway::config::schema::{
-    AgentsConfig, ConwayConfig, HealthSection, LimitsConfig, ModelsConfig, PermissionsConfig,
-    HooksConfig, PluginsConfig,
-    RoleEntry, RoutingSection, SessionConfig, ToolsConfig, TuiSection,
+    AgentsConfig, ConwayConfig, HealthSection, HooksConfig, LimitsConfig, ModelsConfig,
+    PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
+    TuiSection,
 };
 use conway::{Conway, ConwayBuilder, PluginSelection, RuleRegistrationReason, SessionSpec};
 use conway_core::agent::{PermissionDecision, PermissionRequest, PermissionScope};
@@ -225,8 +225,11 @@ fn write_project_permissions(project: &TempDir, contents: &str) {
 #[tokio::test]
 async fn a_paths_under_allow_rule_authorizes_an_in_root_read_without_the_gate() {
     let root_dir = TempDir::new().expect("tempdir");
-    std::fs::write(root_dir.path().join("file.txt"), b"hello from inside the root")
-        .expect("write fixture file");
+    std::fs::write(
+        root_dir.path().join("file.txt"),
+        b"hello from inside the root",
+    )
+    .expect("write fixture file");
     let root_canon = root_dir.path().canonicalize().expect("canonicalize root");
 
     let (xdg, env) = isolated_env();
@@ -249,7 +252,12 @@ async fn a_paths_under_allow_rule_authorizes_an_in_root_read_without_the_gate() 
         ],
         gate.clone() as Arc<dyn PermissionGate>,
     );
-    let report = conway.load_permission_files(root_dir.path(), &env, PermissionScope::Session, AgentId::new());
+    let report = conway.load_permission_files(
+        root_dir.path(),
+        &env,
+        PermissionScope::Session,
+        AgentId::new(),
+    );
     assert!(
         report.registration_errors.is_empty(),
         "no registration errors expected: {:?}",
@@ -285,7 +293,11 @@ async fn a_paths_under_allow_rule_lets_an_out_of_root_read_reach_the_gate() {
     let outside_dir = TempDir::new().expect("tempdir");
     std::fs::write(outside_dir.path().join("secret.txt"), b"TOP SECRET").expect("write secret");
     let root_canon = root_dir.path().canonicalize().expect("canonicalize root");
-    let secret_canon = outside_dir.path().join("secret.txt").canonicalize().expect("canonicalize secret");
+    let secret_canon = outside_dir
+        .path()
+        .join("secret.txt")
+        .canonicalize()
+        .expect("canonicalize secret");
 
     let (xdg, env) = isolated_env();
     write_global_permissions(
@@ -296,7 +308,9 @@ async fn a_paths_under_allow_rule_lets_an_out_of_root_read_reach_the_gate() {
         ),
     );
 
-    let gate = RecordingGate::new(PermissionDecision::Deny { reason: "operator said no".into() });
+    let gate = RecordingGate::new(PermissionDecision::Deny {
+        reason: "operator said no".into(),
+    });
     let conway = build_conway(
         root_dir.path(),
         vec![
@@ -305,7 +319,12 @@ async fn a_paths_under_allow_rule_lets_an_out_of_root_read_reach_the_gate() {
         ],
         gate.clone() as Arc<dyn PermissionGate>,
     );
-    conway.load_permission_files(root_dir.path(), &env, PermissionScope::Session, AgentId::new());
+    conway.load_permission_files(
+        root_dir.path(),
+        &env,
+        PermissionScope::Session,
+        AgentId::new(),
+    );
 
     let handle = conway
         .new_session(SessionSpec::default())
@@ -361,12 +380,11 @@ async fn a_paths_under_rule_reads_arguments_not_rendered_so_a_traversal_path_rea
     // the non-canonical `root_dir`) makes the naive-check-falsely-matches
     // property hold on every platform, independent of OS symlink quirks
     // (e.g. macOS `/var` -> `/private/var`).
-    let traversal = format!(
-        "{}/../outside/secret.txt",
-        root_canon.display()
-    );
+    let traversal = format!("{}/../outside/secret.txt", root_canon.display());
 
-    let gate = RecordingGate::new(PermissionDecision::Deny { reason: "operator said no".into() });
+    let gate = RecordingGate::new(PermissionDecision::Deny {
+        reason: "operator said no".into(),
+    });
     let conway = build_conway(
         root_dir.as_path(),
         vec![
@@ -375,13 +393,21 @@ async fn a_paths_under_rule_reads_arguments_not_rendered_so_a_traversal_path_rea
         ],
         gate.clone() as Arc<dyn PermissionGate>,
     );
-    conway.load_permission_files(root_dir.as_path(), &env, PermissionScope::Session, AgentId::new());
+    conway.load_permission_files(
+        root_dir.as_path(),
+        &env,
+        PermissionScope::Session,
+        AgentId::new(),
+    );
 
     let handle = conway
         .new_session(SessionSpec::default())
         .await
         .expect("new_session");
-    let turn = handle.prompt("read through the traversal").await.expect("prompt");
+    let turn = handle
+        .prompt("read through the traversal")
+        .await
+        .expect("prompt");
     let _ = tokio::time::timeout(Duration::from_secs(10), turn.result())
         .await
         .expect("turn must not hang");
@@ -393,7 +419,9 @@ async fn a_paths_under_rule_reads_arguments_not_rendered_so_a_traversal_path_rea
          outside it must reach the gate -- `paths_under` reads arguments, not rendered"
     );
     assert!(
-        gate.requests()[0].rendered.contains(&root_canon.display().to_string()),
+        gate.requests()[0]
+            .rendered
+            .contains(&root_canon.display().to_string()),
         "the rendered string DOES contain the rule's canonical prefix (so a rendered-based \
          or naive string-prefix check would falsely match): {:?}",
         gate.requests()[0].rendered
@@ -429,8 +457,11 @@ async fn a_paths_under_rule_reads_arguments_not_rendered_so_a_traversal_path_rea
 async fn a_relative_paths_under_prefix_resolves_against_the_project_not_the_process_cwd() {
     let project = TempDir::new().expect("tempdir");
     std::fs::create_dir(project.path().join("src")).expect("mkdir <project>/src");
-    std::fs::write(project.path().join("src").join("file.txt"), b"inside the project src")
-        .expect("write fixture");
+    std::fs::write(
+        project.path().join("src").join("file.txt"),
+        b"inside the project src",
+    )
+    .expect("write fixture");
 
     let (_xdg, env) = isolated_env();
     write_project_permissions(
@@ -463,8 +494,12 @@ async fn a_relative_paths_under_prefix_resolves_against_the_project_not_the_proc
 
     // The project file's allow rule is held for trust (never silently
     // installed), then installed by the real trust path.
-    let report =
-        conway.load_permission_files(project.path(), &env, PermissionScope::Session, AgentId::new());
+    let report = conway.load_permission_files(
+        project.path(),
+        &env,
+        PermissionScope::Session,
+        AgentId::new(),
+    );
     assert!(
         report.registration_errors.is_empty(),
         "a relative paths_under prefix is structurally valid: {:?}",
@@ -478,7 +513,12 @@ async fn a_relative_paths_under_prefix_resolves_against_the_project_not_the_proc
     );
     let project_file = project.path().join(".conway").join("permissions.json");
     let installed = conway
-        .trust_permission_file(&env, &project_file, PermissionScope::Session, AgentId::new())
+        .trust_permission_file(
+            &env,
+            &project_file,
+            PermissionScope::Session,
+            AgentId::new(),
+        )
         .expect("trust the project file");
     assert_eq!(
         installed.installed, 1,
@@ -523,7 +563,10 @@ async fn a_relative_paths_under_prefix_resolves_against_the_project_not_the_proc
         .new_session(SessionSpec::default())
         .await
         .expect("new_session");
-    let turn = handle.prompt("read the other src file").await.expect("prompt");
+    let turn = handle
+        .prompt("read the other src file")
+        .await
+        .expect("prompt");
     let _ = tokio::time::timeout(Duration::from_secs(10), turn.result())
         .await
         .expect("turn must not hang");
@@ -550,8 +593,11 @@ async fn a_relative_paths_under_prefix_resolves_against_the_project_not_the_proc
 async fn a_relative_paths_under_deny_confines_to_the_project_not_the_process_cwd() {
     let project = TempDir::new().expect("tempdir");
     std::fs::create_dir(project.path().join("src")).expect("mkdir <project>/src");
-    std::fs::write(project.path().join("src").join("secret.txt"), b"repo secret")
-        .expect("write fixture");
+    std::fs::write(
+        project.path().join("src").join("secret.txt"),
+        b"repo secret",
+    )
+    .expect("write fixture");
 
     let (_xdg, env) = isolated_env();
     write_project_permissions(
@@ -585,8 +631,12 @@ async fn a_relative_paths_under_deny_confines_to_the_project_not_the_process_cwd
     );
 
     // The deny installs unconditionally at load -- no trust decision (D4 §3).
-    let report =
-        conway.load_permission_files(project.path(), &env, PermissionScope::Session, AgentId::new());
+    let report = conway.load_permission_files(
+        project.path(),
+        &env,
+        PermissionScope::Session,
+        AgentId::new(),
+    );
     assert!(
         report.registration_errors.is_empty(),
         "a relative paths_under prefix is structurally valid: {:?}",
@@ -617,7 +667,10 @@ async fn a_relative_paths_under_deny_confines_to_the_project_not_the_process_cwd
         .new_session(SessionSpec::default())
         .await
         .expect("new_session");
-    let turn = handle.prompt("read the other src file").await.expect("prompt");
+    let turn = handle
+        .prompt("read the other src file")
+        .await
+        .expect("prompt");
     let _ = tokio::time::timeout(Duration::from_secs(10), turn.result())
         .await
         .expect("turn must not hang");
@@ -643,7 +696,11 @@ async fn a_relative_paths_under_prefix_in_an_ancestor_file_resolves_against_the_
     std::fs::create_dir(&subdir).expect("mkdir subdir");
     std::fs::create_dir(ancestor.path().join("src")).expect("mkdir ancestor/src");
     std::fs::create_dir(subdir.join("src")).expect("mkdir subdir/src");
-    std::fs::write(ancestor.path().join("src").join("file.txt"), b"ancestor src").expect("write");
+    std::fs::write(
+        ancestor.path().join("src").join("file.txt"),
+        b"ancestor src",
+    )
+    .expect("write");
     std::fs::write(subdir.join("src").join("file.txt"), b"subdir src").expect("write");
 
     // `discover` finds the project via the nearest `.conway/settings.json`
@@ -666,7 +723,12 @@ async fn a_relative_paths_under_prefix_in_an_ancestor_file_resolves_against_the_
         vec![
             // Turn 1: ancestor/src -- under the rule's boundary (gate bypassed).
             ScriptedTurn::Respond(read_call_response(
-                &ancestor.path().join("src").join("file.txt").display().to_string(),
+                &ancestor
+                    .path()
+                    .join("src")
+                    .join("file.txt")
+                    .display()
+                    .to_string(),
             )),
             ScriptedTurn::Respond(text_response("done")),
             // Turn 2: subdir/src -- where a cwd-relative base would point it; must ask.
@@ -687,7 +749,12 @@ async fn a_relative_paths_under_prefix_in_an_ancestor_file_resolves_against_the_
     );
     let ancestor_file = conway_dir.join("permissions.json");
     let installed = conway
-        .trust_permission_file(&env, &ancestor_file, PermissionScope::Session, AgentId::new())
+        .trust_permission_file(
+            &env,
+            &ancestor_file,
+            PermissionScope::Session,
+            AgentId::new(),
+        )
         .expect("trust the ancestor file");
     assert_eq!(
         installed.installed, 1,
@@ -700,7 +767,10 @@ async fn a_relative_paths_under_prefix_in_an_ancestor_file_resolves_against_the_
         .new_session(SessionSpec::default())
         .await
         .expect("new_session");
-    let turn = handle.prompt("read the ancestor file").await.expect("prompt");
+    let turn = handle
+        .prompt("read the ancestor file")
+        .await
+        .expect("prompt");
     let _ = tokio::time::timeout(Duration::from_secs(10), turn.result())
         .await
         .expect("turn must not hang");
@@ -751,7 +821,9 @@ async fn an_unconfinable_tool_never_satisfies_paths_under_so_bash_reaches_the_ga
         ),
     );
 
-    let gate = RecordingGate::new(PermissionDecision::Deny { reason: "operator said no".into() });
+    let gate = RecordingGate::new(PermissionDecision::Deny {
+        reason: "operator said no".into(),
+    });
     let conway = build_conway(
         root_dir.path(),
         vec![
@@ -760,7 +832,12 @@ async fn an_unconfinable_tool_never_satisfies_paths_under_so_bash_reaches_the_ga
         ],
         gate.clone() as Arc<dyn PermissionGate>,
     );
-    let report = conway.load_permission_files(root_dir.path(), &env, PermissionScope::Session, AgentId::new());
+    let report = conway.load_permission_files(
+        root_dir.path(),
+        &env,
+        PermissionScope::Session,
+        AgentId::new(),
+    );
     assert!(
         report.registration_errors.is_empty(),
         "a paths_under bash rule is structurally valid (Unconfinable is not a registration \
@@ -808,13 +885,20 @@ async fn command_prefix_on_a_structured_tool_is_a_registration_error() {
         r#"{"rules":[{"select":{"tools":["read"]},"when":{"command_prefix":"read"},"then":"allow"}]}"#,
     );
 
-    let gate = RecordingGate::new(PermissionDecision::Deny { reason: "unused".into() });
+    let gate = RecordingGate::new(PermissionDecision::Deny {
+        reason: "unused".into(),
+    });
     let conway = build_conway(
         project.path(),
         vec![ScriptedTurn::Respond(text_response("no call needed"))],
         gate.clone() as Arc<dyn PermissionGate>,
     );
-    let report = conway.load_permission_files(project.path(), &env, PermissionScope::Session, AgentId::new());
+    let report = conway.load_permission_files(
+        project.path(),
+        &env,
+        PermissionScope::Session,
+        AgentId::new(),
+    );
 
     assert_eq!(
         report.registration_errors.len(),
@@ -863,7 +947,10 @@ async fn command_prefix_on_a_structured_tool_is_a_registration_error() {
 #[tokio::test]
 async fn a_paths_under_deny_rule_on_an_unconfinable_tool_is_a_registration_error() {
     let project = TempDir::new().expect("tempdir");
-    let root_canon = project.path().canonicalize().expect("canonicalize project root");
+    let root_canon = project
+        .path()
+        .canonicalize()
+        .expect("canonicalize project root");
     let (xdg, env) = isolated_env();
     // A GLOBAL file (trusted-by-authorship) so the deny rule's registration
     // check runs (deny rules install from every file, but the registration
@@ -885,7 +972,12 @@ async fn a_paths_under_deny_rule_on_an_unconfinable_tool_is_a_registration_error
         ],
         gate.clone() as Arc<dyn PermissionGate>,
     );
-    let report = conway.load_permission_files(project.path(), &env, PermissionScope::Session, AgentId::new());
+    let report = conway.load_permission_files(
+        project.path(),
+        &env,
+        PermissionScope::Session,
+        AgentId::new(),
+    );
 
     assert_eq!(
         report.registration_errors.len(),
@@ -944,9 +1036,13 @@ async fn a_paths_under_deny_rule_on_an_unconfinable_tool_is_a_registration_error
 /// category must refuse it BEFORE the gate (zero gate requests), proving the
 /// decision-time guard fired through the real seam.
 #[tokio::test]
-async fn a_paths_under_deny_rule_on_a_category_with_an_unconfinable_tool_refuses_at_decision_time() {
+async fn a_paths_under_deny_rule_on_a_category_with_an_unconfinable_tool_refuses_at_decision_time()
+{
     let project = TempDir::new().expect("tempdir");
-    let root_canon = project.path().canonicalize().expect("canonicalize project root");
+    let root_canon = project
+        .path()
+        .canonicalize()
+        .expect("canonicalize project root");
     let (xdg, env) = isolated_env();
     write_global_permissions(
         &xdg,
@@ -967,7 +1063,12 @@ async fn a_paths_under_deny_rule_on_a_category_with_an_unconfinable_tool_refuses
         ],
         gate.clone() as Arc<dyn PermissionGate>,
     );
-    let report = conway.load_permission_files(project.path(), &env, PermissionScope::Session, AgentId::new());
+    let report = conway.load_permission_files(
+        project.path(),
+        &env,
+        PermissionScope::Session,
+        AgentId::new(),
+    );
     assert!(
         report.registration_errors.is_empty(),
         "a category select is not inspectable at install time (load-order hazard); it is NOT a \
@@ -1014,7 +1115,8 @@ async fn a_paths_under_deny_rule_on_a_category_with_an_unconfinable_tool_refuses
 /// `68ea9b1` `read:*`-matched-nothing bug: a rule that can never match is a
 /// lie the operator will not notice.
 #[tokio::test]
-async fn a_paths_under_allow_rule_with_a_prefix_that_cannot_canonicalize_surfaces_a_registration_error() {
+async fn a_paths_under_allow_rule_with_a_prefix_that_cannot_canonicalize_surfaces_a_registration_error(
+) {
     let project = TempDir::new().expect("tempdir");
     // A real file to read -- the call is observable through the real
     // `ReadTool` -> `PermissionBroker::decide` seam.
@@ -1040,7 +1142,12 @@ async fn a_paths_under_allow_rule_with_a_prefix_that_cannot_canonicalize_surface
         ],
         gate.clone() as Arc<dyn PermissionGate>,
     );
-    let report = conway.load_permission_files(project.path(), &env, PermissionScope::Session, AgentId::new());
+    let report = conway.load_permission_files(
+        project.path(),
+        &env,
+        PermissionScope::Session,
+        AgentId::new(),
+    );
 
     assert_eq!(
         report.registration_errors.len(),
@@ -1123,7 +1230,12 @@ async fn paths_under_deny_and_prompt_rules_with_a_bad_prefix_each_surface_a_regi
         ],
         gate.clone() as Arc<dyn PermissionGate>,
     );
-    let report = conway.load_permission_files(project.path(), &env, PermissionScope::Session, AgentId::new());
+    let report = conway.load_permission_files(
+        project.path(),
+        &env,
+        PermissionScope::Session,
+        AgentId::new(),
+    );
 
     let deny_errs: Vec<_> = report
         .registration_errors
@@ -1213,7 +1325,8 @@ async fn paths_under_deny_and_prompt_rules_with_a_bad_prefix_each_surface_a_regi
 /// channel the load path uses). The rule is NOT installed, so a matching
 /// read still reaches the gate.
 #[tokio::test]
-async fn trusting_a_project_file_with_a_bad_prefix_does_not_count_the_dropped_rule_and_informs_the_operator() {
+async fn trusting_a_project_file_with_a_bad_prefix_does_not_count_the_dropped_rule_and_informs_the_operator(
+) {
     let project = TempDir::new().expect("tempdir");
     std::fs::write(project.path().join("file.txt"), b"inside the project")
         .expect("write fixture file");
@@ -1238,8 +1351,12 @@ async fn trusting_a_project_file_with_a_bad_prefix_does_not_count_the_dropped_ru
     // Load: the project file's allow rule is held for trust (not installed
     // yet), so no registration error at startup -- the bad prefix is not
     // even probed until the rule is trusted and installed.
-    let report =
-        conway.load_permission_files(project.path(), &env, PermissionScope::Session, AgentId::new());
+    let report = conway.load_permission_files(
+        project.path(),
+        &env,
+        PermissionScope::Session,
+        AgentId::new(),
+    );
     assert!(
         report.registration_errors.is_empty(),
         "an untrusted project file's allow rules are not installed yet, so no bad-prefix \
@@ -1257,7 +1374,12 @@ async fn trusting_a_project_file_with_a_bad_prefix_does_not_count_the_dropped_ru
     // surfaced -- NOT counted as installed.
     let project_file = project.path().join(".conway").join("permissions.json");
     let trust_report = conway
-        .trust_permission_file(&env, &project_file, PermissionScope::Session, AgentId::new())
+        .trust_permission_file(
+            &env,
+            &project_file,
+            PermissionScope::Session,
+            AgentId::new(),
+        )
         .expect("trust the project file");
     assert_eq!(
         trust_report.installed, 0,
@@ -1349,7 +1471,8 @@ async fn flat_and_structured_command_prefix_produce_byte_identical_gate_decision
     let exact = run_bash_and_count_gate(&xdg_flat, &env_flat, "git status").await;
     let subcmd = run_bash_and_count_gate(&xdg_flat, &env_flat, "git status --short").await;
     let different = run_bash_and_count_gate(&xdg_flat, &env_flat, "git push --force").await;
-    let chained = run_bash_and_count_gate(&xdg_flat, &env_flat, "git status && rm -rf /tmp/x").await;
+    let chained =
+        run_bash_and_count_gate(&xdg_flat, &env_flat, "git status && rm -rf /tmp/x").await;
     assert_eq!(exact, 0, "exact match auto-allows");
     assert_eq!(subcmd, 0, "subcommand prefix match auto-allows");
     assert_eq!(different, 1, "a different command reaches the gate");
@@ -1370,7 +1493,9 @@ async fn run_bash_and_count_gate(
     command: &str,
 ) -> usize {
     let cwd = TempDir::new().expect("tempdir");
-    let gate = RecordingGate::new(PermissionDecision::Deny { reason: "operator said no".into() });
+    let gate = RecordingGate::new(PermissionDecision::Deny {
+        reason: "operator said no".into(),
+    });
     let conway = build_conway(
         cwd.path(),
         vec![
@@ -1418,7 +1543,12 @@ async fn a_structured_deny_rule_from_an_untrusted_project_file_refuses_before_th
         ],
         gate.clone() as Arc<dyn PermissionGate>,
     );
-    let report = conway.load_permission_files(project.path(), &env, PermissionScope::Session, AgentId::new());
+    let report = conway.load_permission_files(
+        project.path(),
+        &env,
+        PermissionScope::Session,
+        AgentId::new(),
+    );
     assert!(
         report.registration_errors.is_empty(),
         "a bash command_prefix deny rule is structurally valid: {:?}",
@@ -1468,7 +1598,9 @@ async fn a_structured_prompt_rule_from_an_untrusted_project_file_forces_the_gate
         r#"{"rules":[{"select":{"tools":["bash"]},"when":{"command_prefix":"rm"},"then":"prompt"}]}"#,
     );
 
-    let gate = RecordingGate::new(PermissionDecision::Deny { reason: "operator said no".into() });
+    let gate = RecordingGate::new(PermissionDecision::Deny {
+        reason: "operator said no".into(),
+    });
     let conway = build_conway(
         project.path(),
         vec![
@@ -1477,7 +1609,12 @@ async fn a_structured_prompt_rule_from_an_untrusted_project_file_forces_the_gate
         ],
         gate.clone() as Arc<dyn PermissionGate>,
     );
-    conway.load_permission_files(project.path(), &env, PermissionScope::Session, AgentId::new());
+    conway.load_permission_files(
+        project.path(),
+        &env,
+        PermissionScope::Session,
+        AgentId::new(),
+    );
 
     let handle = conway
         .new_session(SessionSpec::default())
@@ -1686,7 +1823,9 @@ async fn a_command_prefix_rule_on_an_all_structured_multi_tool_select_is_a_regis
         ]}"#,
     );
 
-    let gate = RecordingGate::new(PermissionDecision::Deny { reason: "unused".into() });
+    let gate = RecordingGate::new(PermissionDecision::Deny {
+        reason: "unused".into(),
+    });
     let conway = build_conway(
         project.path(),
         vec![ScriptedTurn::Respond(text_response("no call needed"))],
@@ -1720,7 +1859,8 @@ async fn a_command_prefix_rule_on_an_all_structured_multi_tool_select_is_a_regis
 /// `report` (both `Structured` in the builtin registry). Pinned through the
 /// real load seam.
 #[tokio::test]
-async fn a_command_prefix_rule_on_a_wildcard_selecting_only_structured_tools_is_a_registration_error() {
+async fn a_command_prefix_rule_on_a_wildcard_selecting_only_structured_tools_is_a_registration_error(
+) {
     let project = TempDir::new().expect("tempdir");
     let (xdg, env) = isolated_env();
     write_global_permissions(
@@ -1730,7 +1870,9 @@ async fn a_command_prefix_rule_on_a_wildcard_selecting_only_structured_tools_is_
         ]}"#,
     );
 
-    let gate = RecordingGate::new(PermissionDecision::Deny { reason: "unused".into() });
+    let gate = RecordingGate::new(PermissionDecision::Deny {
+        reason: "unused".into(),
+    });
     let conway = build_conway(
         project.path(),
         vec![ScriptedTurn::Respond(text_response("no call needed"))],
@@ -1773,7 +1915,9 @@ async fn a_command_prefix_rule_on_a_category_of_only_structured_tools_is_a_regis
         ]}"#,
     );
 
-    let gate = RecordingGate::new(PermissionDecision::Deny { reason: "unused".into() });
+    let gate = RecordingGate::new(PermissionDecision::Deny {
+        reason: "unused".into(),
+    });
     let conway = build_conway(
         project.path(),
         vec![ScriptedTurn::Respond(text_response("no call needed"))],
@@ -1810,7 +1954,10 @@ async fn a_command_prefix_rule_on_a_category_of_only_structured_tools_is_a_regis
 #[tokio::test]
 async fn broadening_command_prefix_check_does_not_regress_paths_under_arms() {
     let project = TempDir::new().expect("tempdir");
-    let root_canon = project.path().canonicalize().expect("canonicalize project root");
+    let root_canon = project
+        .path()
+        .canonicalize()
+        .expect("canonicalize project root");
     let (xdg, env) = isolated_env();
     write_global_permissions(
         &xdg,
@@ -1906,8 +2053,12 @@ async fn revoking_a_structured_allow_rule_removes_only_it_and_the_call_asks_agai
         ],
         gate.clone() as Arc<dyn PermissionGate>,
     );
-    let report =
-        conway.load_permission_files(root_dir.path(), &env, PermissionScope::Session, AgentId::new());
+    let report = conway.load_permission_files(
+        root_dir.path(),
+        &env,
+        PermissionScope::Session,
+        AgentId::new(),
+    );
     assert!(
         report.registration_errors.is_empty(),
         "no registration errors expected: {:?}",
@@ -2069,7 +2220,12 @@ async fn revoking_a_structured_allow_rule_that_does_not_exist_returns_not_found(
         ],
         gate.clone() as Arc<dyn PermissionGate>,
     );
-    conway.load_permission_files(root_dir.path(), &env, PermissionScope::Session, AgentId::new());
+    conway.load_permission_files(
+        root_dir.path(),
+        &env,
+        PermissionScope::Session,
+        AgentId::new(),
+    );
     assert_eq!(conway.active_structured_allow_rules().len(), 1);
 
     let never_installed = conway::Rule {

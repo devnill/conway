@@ -341,3 +341,64 @@ async fn grep_cancelled_from_another_task_mid_walk_returns_cancelled() {
 
     assert!(matches!(result, Err(ToolError::Cancelled)), "{result:?}");
 }
+
+// ------------------------------------------------------- walk determinism ----
+
+/// The ordering assertion in
+/// `grep_finds_matching_lines_grouped_by_path_in_walk_order` above cannot
+/// actually detect an unsorted walk: it creates `a.rs` before `sub/`, so
+/// `read_dir` order and sorted order usually agree and it passes either way.
+/// That is why an unsorted `walk_files` survived until it failed in CI on a
+/// run with no code change (board item 01KZW91RQ26JP8N8PJTN34WZVT).
+///
+/// This case is built to fail without the sort: every entry is CREATED in the
+/// reverse of its sorted order, so a walker yielding creation/inode order
+/// produces exactly the reversed list, and only a real sort produces the
+/// expected one.
+#[tokio::test]
+async fn grep_walk_order_is_sorted_not_merely_filesystem_order() {
+    let dir = TempDir::new().unwrap();
+
+    // Created last-to-first on purpose. `z_` and `m_` sort after `a_`, and the
+    // subdirectory sorts between them, so no accident of creation order
+    // reproduces the expected sequence.
+    std::fs::create_dir_all(dir.path().join("mid")).unwrap();
+    std::fs::write(dir.path().join("z_last.rs"), "fn z() {}\n").unwrap();
+    std::fs::write(dir.path().join("mid/m_two.rs"), "fn m2() {}\n").unwrap();
+    std::fs::write(dir.path().join("mid/m_one.rs"), "fn m1() {}\n").unwrap();
+    std::fs::write(dir.path().join("a_first.rs"), "fn a() {}\n").unwrap();
+
+    let (ctx, _h) = test_ctx(dir.path().to_path_buf());
+
+    let out = GrepTool::new()
+        .invoke(call("grep", serde_json::json!({"pattern": r"fn \w+"})), ctx)
+        .await
+        .unwrap();
+
+    assert!(!out.is_error);
+    let text = text_of(&out);
+    let lines: Vec<&str> = text.lines().filter(|l| l.contains(':')).collect();
+
+    // Sorted by full path: root entries and the directory interleave by name.
+    assert_eq!(
+        lines,
+        vec![
+            "a_first.rs:1:fn a() {}",
+            "mid/m_one.rs:1:fn m1() {}",
+            "mid/m_two.rs:1:fn m2() {}",
+            "z_last.rs:1:fn z() {}",
+        ],
+        "walk order must be sorted by path, not whatever order the filesystem \
+         happens to return -- this list is the exact reverse of creation order"
+    );
+}
+
+// `glob` deliberately has NO equivalent test. It shares `walk_files` with
+// `grep`, but `GlobTool` re-sorts its own results (mtime descending, ties
+// broken lexicographically -- see `fs/glob.rs`), so its output order does not
+// depend on walk order at all and a test asserting otherwise would pass for
+// the wrong reason. An earlier draft of this file HAD such a test: it passed
+// with the sort removed from `walk_files`, because the fixture created files
+// in reverse-alphabetical order, which made mtime-descending coincide with
+// alphabetical. It was asserting glob's own sort while claiming to assert the
+// walker's. Removed rather than shipped.

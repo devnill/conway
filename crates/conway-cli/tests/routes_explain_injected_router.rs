@@ -26,7 +26,7 @@ use conway::config::schema::{
     ToolsConfig, TuiSection,
 };
 use conway::{Conway, ConwayBuilder, PermissionGate};
-use conway_cli::commands::routes::{run, RoutesArgs, RoutesAction};
+use conway_cli::commands::routes::{run, RoutesAction, RoutesArgs};
 use conway_cli::exit::ExitCode;
 use conway_core::agent::PermissionDecision;
 use conway_core::fakes::{FakeBackend, FakeGate, FakeRouter, FakeStore};

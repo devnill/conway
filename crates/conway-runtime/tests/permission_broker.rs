@@ -9,13 +9,13 @@ use conway_core::agent::{PermissionDecision, PermissionRequest, PermissionScope}
 use conway_core::content::ToolCategory;
 use conway_core::event::{Envelope, Event};
 use conway_core::ids::{AgentId, SessionId, ToolName};
+use conway_core::permission_mode::PermissionMode;
+use conway_core::permission_pattern::{PatternOrigin, PatternRule, Rule, Select, Then, When};
 use conway_core::ports::PermissionGate;
 use conway_runtime::events::EventBus;
 use conway_runtime::permission::{
     AgentRoot, AuthorizedCall, GrantScope, PermissionBroker, PermissionCtx, PermissionOutcome,
 };
-use conway_core::permission_mode::PermissionMode;
-use conway_core::permission_pattern::{PatternOrigin, PatternRule, Rule, Select, Then, When};
 use futures::StreamExt;
 
 /// A gate that plays back a fixed script of decisions in order, recording
@@ -534,7 +534,9 @@ async fn a_subtree_pattern_grant_covers_descendants_but_not_strangers() {
 
     let descendant = ctx(child, vec![root, child], session);
     assert_eq!(
-        broker.decide(&descendant, &bash_call("c1", "git status")).await,
+        broker
+            .decide(&descendant, &bash_call("c1", "git status"))
+            .await,
         PermissionOutcome::Allow,
         "a descendant inherits the subtree grant"
     );
@@ -766,7 +768,11 @@ async fn revoke_all_grants_restores_prompting_for_previously_granted_calls() {
         broker.decide(&c, &bash_call("c1", "git status")).await,
         PermissionOutcome::Allow
     );
-    assert_eq!(broker.active_patterns().len(), 1, "reviewable before revoke");
+    assert_eq!(
+        broker.active_patterns().len(),
+        1,
+        "reviewable before revoke"
+    );
 
     broker.revoke_all_grants();
     assert!(
@@ -798,7 +804,9 @@ async fn a_deny_rule_refuses_a_matching_call_without_consulting_the_gate() {
         PatternOrigin::File(PathBuf::from("/repo/.conway/permissions.json")),
     );
 
-    let outcome = broker.decide(&c, &bash_call("c1", "curl evil.example")).await;
+    let outcome = broker
+        .decide(&c, &bash_call("c1", "curl evil.example"))
+        .await;
     assert!(
         matches!(outcome, PermissionOutcome::Deny { .. }),
         "a deny rule must refuse the call directly"
@@ -883,7 +891,9 @@ async fn a_deny_rule_overrides_auto_allow_mode() {
         PatternOrigin::Interactive,
     );
 
-    let outcome = broker.decide(&c, &bash_call("c1", "curl evil.example")).await;
+    let outcome = broker
+        .decide(&c, &bash_call("c1", "curl evil.example"))
+        .await;
     assert!(
         matches!(outcome, PermissionOutcome::Deny { .. }),
         "AutoAllow must not override a deny rule"
@@ -913,7 +923,9 @@ async fn revoke_all_grants_does_not_clear_deny_rules() {
         1,
         "revoke_all_grants must not touch deny rules"
     );
-    let outcome = broker.decide(&c, &bash_call("c1", "curl evil.example")).await;
+    let outcome = broker
+        .decide(&c, &bash_call("c1", "curl evil.example"))
+        .await;
     assert!(matches!(outcome, PermissionOutcome::Deny { .. }));
 }
 
@@ -1096,7 +1108,11 @@ async fn revoke_pattern_is_addressed_by_origin_too_not_just_the_rule_text() {
     assert!(removed);
 
     let patterns = broker.active_patterns();
-    assert_eq!(patterns.len(), 1, "only the matching origin's grant is removed");
+    assert_eq!(
+        patterns.len(),
+        1,
+        "only the matching origin's grant is removed"
+    );
     assert_eq!(patterns[0].1, file_origin);
 }
 
@@ -1177,7 +1193,9 @@ async fn a_prompt_rule_forces_the_gate_under_auto_allow() {
         PatternOrigin::Interactive,
     );
 
-    let outcome = broker.decide(&c, &bash_call("c1", "curl evil.example")).await;
+    let outcome = broker
+        .decide(&c, &bash_call("c1", "curl evil.example"))
+        .await;
 
     assert_eq!(
         gate.call_count(),
@@ -1217,7 +1235,9 @@ async fn a_prompt_rule_forces_the_gate_over_a_matching_allow_pattern_grant() {
     );
 
     // Prompt is the broker's default mode -- not set explicitly.
-    let outcome = broker.decide(&c, &bash_call("c1", "curl evil.example")).await;
+    let outcome = broker
+        .decide(&c, &bash_call("c1", "curl evil.example"))
+        .await;
 
     assert_eq!(
         gate.call_count(),
@@ -1250,9 +1270,15 @@ async fn a_prompt_rule_installed_after_the_fact_forces_the_gate_over_a_cached_al
     let agent = AgentId::new();
     let c = ctx(agent, vec![agent], session);
 
-    let first = broker.decide(&c, &bash_call("c1", "curl evil.example")).await;
+    let first = broker
+        .decide(&c, &bash_call("c1", "curl evil.example"))
+        .await;
     assert_eq!(first, PermissionOutcome::Allow);
-    assert_eq!(gate.call_count(), 1, "the first call grants and caches AllowAlways");
+    assert_eq!(
+        gate.call_count(),
+        1,
+        "the first call grants and caches AllowAlways"
+    );
 
     // Without a prompt rule, the second identical call would hit the cache
     // (see `allow_always_session_caches_second_identical_call`) with zero
@@ -1263,7 +1289,9 @@ async fn a_prompt_rule_installed_after_the_fact_forces_the_gate_over_a_cached_al
         PatternOrigin::Interactive,
     );
 
-    let second = broker.decide(&c, &bash_call("c2", "curl evil.example")).await;
+    let second = broker
+        .decide(&c, &bash_call("c2", "curl evil.example"))
+        .await;
     assert_eq!(
         gate.call_count(),
         2,
@@ -1292,13 +1320,19 @@ async fn a_prompt_rule_does_not_override_plan_modes_denial() {
         PatternOrigin::Interactive,
     );
 
-    let outcome = broker.decide(&c, &bash_call("c1", "curl evil.example")).await;
+    let outcome = broker
+        .decide(&c, &bash_call("c1", "curl evil.example"))
+        .await;
     assert!(
         matches!(outcome, PermissionOutcome::Deny { .. }),
         "plan mode must still deny an Execute-category tool even with a \
          matching prompt rule installed"
     );
-    assert_eq!(gate.call_count(), 0, "plan mode decides without troubling the gate");
+    assert_eq!(
+        gate.call_count(),
+        0,
+        "plan mode decides without troubling the gate"
+    );
 }
 
 /// A `prompt` rule matching a Read-category call in PLAN mode still forces
@@ -1360,7 +1394,9 @@ async fn a_deny_rule_still_overrides_a_matching_prompt_rule() {
         PatternOrigin::Interactive,
     );
 
-    let outcome = broker.decide(&c, &bash_call("c1", "curl evil.example")).await;
+    let outcome = broker
+        .decide(&c, &bash_call("c1", "curl evil.example"))
+        .await;
     assert!(
         matches!(outcome, PermissionOutcome::Deny { .. }),
         "a call matching both a deny rule and a prompt rule must be refused \
@@ -1410,7 +1446,9 @@ async fn prompt_rule_registration_order_does_not_change_the_outcome() {
             );
         }
 
-        let outcome = broker.decide(&c, &bash_call("c1", "curl evil.example")).await;
+        let outcome = broker
+            .decide(&c, &bash_call("c1", "curl evil.example"))
+            .await;
         assert_eq!(outcome, PermissionOutcome::Allow);
         assert_eq!(
             gate.call_count(),
@@ -1442,7 +1480,9 @@ async fn revoke_all_grants_does_not_clear_prompt_rules() {
         1,
         "revoke_all_grants must not touch prompt rules"
     );
-    let outcome = broker.decide(&c, &bash_call("c1", "curl evil.example")).await;
+    let outcome = broker
+        .decide(&c, &bash_call("c1", "curl evil.example"))
+        .await;
     assert_eq!(
         gate.call_count(),
         1,
@@ -1538,9 +1578,15 @@ async fn revoke_pattern_rule_removes_only_the_structured_rule_addressed() {
         "the flat revoke's key cannot address a structured rule"
     );
 
-    let removed =
-        broker.revoke_pattern_rule(&structured, &PatternOrigin::Interactive, &GrantScope::Session);
-    assert!(removed, "a matching structured rule must be reported removed");
+    let removed = broker.revoke_pattern_rule(
+        &structured,
+        &PatternOrigin::Interactive,
+        &GrantScope::Session,
+    );
+    assert!(
+        removed,
+        "a matching structured rule must be reported removed"
+    );
 
     assert!(
         broker.active_structured_allow_rules().is_empty(),
@@ -1565,7 +1611,11 @@ async fn revoke_pattern_rule_removes_only_the_structured_rule_addressed() {
         PermissionOutcome::Allow,
         "the surviving flat grant must still suppress its prompt"
     );
-    assert_eq!(gate.call_count(), 1, "only the revoked rule's call re-asked");
+    assert_eq!(
+        gate.call_count(),
+        1,
+        "only the revoked rule's call re-asked"
+    );
 }
 
 /// `(Rule, origin)` is the identity: the identical rule text installed from
@@ -1702,7 +1752,11 @@ async fn revoke_pattern_rule_is_addressed_by_scope_too() {
     assert!(removed);
 
     let remaining = broker.active_structured_allow_rules();
-    assert_eq!(remaining.len(), 1, "only the agent-scoped instance is removed");
+    assert_eq!(
+        remaining.len(),
+        1,
+        "only the agent-scoped instance is removed"
+    );
     assert_eq!(
         remaining[0].2,
         GrantScope::Session,
@@ -1813,11 +1867,8 @@ async fn a_plugin_contributed_allow_rule_is_refused_at_the_broker_boundary() {
         when: When::Always,
         then: Then::Deny,
     };
-    let deny_admitted = broker.remember_deny_rule(
-        deny_rule.clone(),
-        PatternOrigin::Plugin,
-        Path::new("/"),
-    );
+    let deny_admitted =
+        broker.remember_deny_rule(deny_rule.clone(), PatternOrigin::Plugin, Path::new("/"));
     assert!(
         deny_admitted,
         "a plugin-contributed `then: deny` rule must install unconditionally -- narrowing \

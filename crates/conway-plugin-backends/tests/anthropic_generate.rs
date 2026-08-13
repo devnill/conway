@@ -9,10 +9,6 @@
 
 use std::collections::BTreeMap;
 
-use conway_plugin_backends::anthropic::AnthropicBackend;
-use conway_plugin_backends::capabilities::{anthropic_defaults, build_capabilities, CapabilityInputs};
-use conway_plugin_backends::config::{AnthropicConfig, SecretString};
-use conway_plugin_backends::model_metadata::ModelMetadataStore;
 use conway_core::capabilities::{CacheMode, ToolCallSupport};
 use conway_core::content::{
     ContentBlock, PermissionClass, Role, SamplingParams, StopReason, ToolCategory, ToolSpec,
@@ -22,6 +18,12 @@ use conway_core::ids::{ModelId, ToolName};
 use conway_core::ports::{Backend, GenerateRequest};
 use conway_core::provenance::Provenance;
 use conway_core::segment::PromptSegment;
+use conway_plugin_backends::anthropic::AnthropicBackend;
+use conway_plugin_backends::capabilities::{
+    anthropic_defaults, build_capabilities, CapabilityInputs,
+};
+use conway_plugin_backends::config::{AnthropicConfig, SecretString};
+use conway_plugin_backends::model_metadata::ModelMetadataStore;
 use serde_json::json;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};

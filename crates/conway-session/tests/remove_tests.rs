@@ -553,10 +553,7 @@ async fn fork_racing_remove_never_produces_an_orphaned_child() {
             // Remove serialized first: fork must have failed NotFound and
             // left nothing behind.
             (Err(StoreError::NotFound { .. }), Ok(())) => {
-                assert!(
-                    !parent_file.exists(),
-                    "round {round}: parent must be gone"
-                );
+                assert!(!parent_file.exists(), "round {round}: parent must be gone");
                 assert!(
                     !child_file.exists(),
                     "round {round}: failed fork must leave no child file"
@@ -604,7 +601,11 @@ async fn append_in_flight_across_remove_never_reports_success_after_removal() {
     const APPENDERS: usize = 50;
 
     let dir = tempfile::tempdir().unwrap();
-    let store = Arc::new(JsonlSessionStore::open(dir.path().to_path_buf()).await.unwrap());
+    let store = Arc::new(
+        JsonlSessionStore::open(dir.path().to_path_buf())
+            .await
+            .unwrap(),
+    );
     let sid = SessionId::new();
     store.create(ephemeral_meta(sid)).await.unwrap();
     // Warm the handle so every appender clones the same Arc.
@@ -792,9 +793,10 @@ async fn remove_of_an_externally_deleted_file_succeeds_and_evicts_the_index() {
     // An outside actor deletes the file before the purge.
     std::fs::remove_file(root.join(format!("{sid}.jsonl"))).unwrap();
 
-    store.remove(&sid).await.unwrap_or_else(|e| {
-        panic!("remove must treat ENOENT from remove_file as success: {e:?}")
-    });
+    store
+        .remove(&sid)
+        .await
+        .unwrap_or_else(|e| panic!("remove must treat ENOENT from remove_file as success: {e:?}"));
 
     assert!(store.is_removal_tombstoned(&sid).await);
     assert!(matches!(

@@ -646,8 +646,7 @@ fn write_contract_asker_agent_def(dir: &std::path::Path) {
 /// field at all, so a contract governing an ask child could only ever
 /// break a good answer, never validate one.
 #[tokio::test]
-async fn ask_child_completes_with_prose_despite_a_def_declared_result_contract_it_cannot_satisfy()
-{
+async fn ask_child_completes_with_prose_despite_a_def_declared_result_contract_it_cannot_satisfy() {
     let agents_dir = support::unique_temp_dir("ask-contract-carveout");
     write_contract_asker_agent_def(&agents_dir);
 
@@ -781,10 +780,9 @@ async fn ask_child_emits_agent_finished_with_ephemeral_true() {
 
     let finished = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            let envelope =
-                std::future::poll_fn(|cx| std::pin::Pin::new(&mut events).poll_next(cx))
-                    .await
-                    .expect("event stream open");
+            let envelope = std::future::poll_fn(|cx| std::pin::Pin::new(&mut events).poll_next(cx))
+                .await
+                .expect("event stream open");
             if let Event::AgentFinished { ephemeral, .. } = envelope.event {
                 if envelope.agent == child_id {
                     return ephemeral;
@@ -847,10 +845,7 @@ async fn ask_child_attaches_as_ephemeral_fork_child_of_the_asker() {
 
     // The fork point: the parent's head at the moment of `ask` -- what
     // `AgentSpawned::inherited_upto` must name.
-    let fork_point = store
-        .head(&handle.id())
-        .await
-        .expect("head should succeed");
+    let fork_point = store.head(&handle.id()).await.expect("head should succeed");
 
     // Subscribe BEFORE `ask` so the child's `AgentSpawned` cannot race past
     // the subscriber. `handle.events()` is session-scoped to the parent, but
@@ -866,10 +861,9 @@ async fn ask_child_attaches_as_ephemeral_fork_child_of_the_asker() {
     // 1. The live `AgentSpawned` for the child, with the full B2 field set.
     let (child_agent, spawned) = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            let envelope =
-                std::future::poll_fn(|cx| std::pin::Pin::new(&mut events).poll_next(cx))
-                    .await
-                    .expect("event stream open");
+            let envelope = std::future::poll_fn(|cx| std::pin::Pin::new(&mut events).poll_next(cx))
+                .await
+                .expect("event stream open");
             if let Event::AgentSpawned {
                 kind,
                 parent,
@@ -881,10 +875,7 @@ async fn ask_child_attaches_as_ephemeral_fork_child_of_the_asker() {
                 // The only fork child spawned in this test is the ask
                 // child; the root itself never emits `AgentSpawned`
                 // (`kind: None` roots are re-started, not spawned).
-                return (
-                    envelope.agent,
-                    (kind, parent, ephemeral, inherited_upto),
-                );
+                return (envelope.agent, (kind, parent, ephemeral, inherited_upto));
             }
         }
     })
@@ -933,10 +924,7 @@ async fn ask_child_attaches_as_ephemeral_fork_child_of_the_asker() {
         Some(SubagentMode::Fork),
         "the tree node must record the fork mode"
     );
-    assert!(
-        node.ephemeral,
-        "the tree node must project ephemeral: true"
-    );
+    assert!(node.ephemeral, "the tree node must project ephemeral: true");
 
     // Drive the child's turn to completion so the test leaves no live task
     // running past its assertions (and proves the returned TurnHandle still

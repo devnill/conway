@@ -124,10 +124,14 @@ pub struct MenuRow {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum MenuRowKind {
-    Leaf { id: String },
+    Leaf {
+        id: String,
+    },
     /// A read-only row the cursor never lands on (see [`MenuNode::Static`]).
     Static,
-    Group { expanded: bool },
+    Group {
+        expanded: bool,
+    },
 }
 
 /// The tree's navigation state: which roots exist, and which flattened row
@@ -450,7 +454,11 @@ mod tests {
         state.toggle_group_at_selection(); // collapse
         state.toggle_group_at_selection(); // expand again (involution)
 
-        assert_eq!(state.rows().len(), 6, "re-expanding must restore every child row");
+        assert_eq!(
+            state.rows().len(),
+            6,
+            "re-expanding must restore every child row"
+        );
     }
 
     #[test]
@@ -472,7 +480,11 @@ mod tests {
         for _ in 0..20 {
             state.move_selection(1);
         }
-        assert_eq!(state.selected_index(), 5, "must clamp at the last visible row, not wrap");
+        assert_eq!(
+            state.selected_index(),
+            5,
+            "must clamp at the last visible row, not wrap"
+        );
     }
 
     #[test]
@@ -482,7 +494,11 @@ mod tests {
         for _ in 0..20 {
             state.move_selection(-1);
         }
-        assert_eq!(state.selected_index(), 0, "must clamp at the first row, not go negative");
+        assert_eq!(
+            state.selected_index(),
+            0,
+            "must clamp at the first row, not go negative"
+        );
     }
 
     // ---- V4: `set_selected` restores a cursor onto a freshly built tree ----

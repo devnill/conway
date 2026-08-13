@@ -165,7 +165,11 @@ fn config_naming(metadata_path: PathBuf) -> ConwayConfig {
 /// `with_router_factory` for these assertions to mean anything (absent it,
 /// `conway_core::routing::MinimalRouter` performs no capability filtering at
 /// all, and the backend would be called regardless of `reliability_tier`).
-fn build_conway(config: ConwayConfig, backend: Arc<dyn Backend>, store: Arc<dyn SessionStore>) -> Conway {
+fn build_conway(
+    config: ConwayConfig,
+    backend: Arc<dyn Backend>,
+    store: Arc<dyn SessionStore>,
+) -> Conway {
     let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
     ConwayBuilder::from_parts(config)
         .with_backend(backend)
@@ -174,9 +178,7 @@ fn build_conway(config: ConwayConfig, backend: Arc<dyn Backend>, store: Arc<dyn 
         .with_router_factory(Arc::new(conway_plugin_routing::RoutingRouterFactory))
         // Board item 01KZHF270T3W8GZ7NM6DSNQ4MM: `conway` no longer
         // compiles the `kind = "openai-compat"` fixture entry above in.
-        .with_backend_factory(Arc::new(
-            conway_plugin_backends::OpenAiCompatBackendFactory,
-        ))
+        .with_backend_factory(Arc::new(conway_plugin_backends::OpenAiCompatBackendFactory))
         .build()
         .expect(
             "build should succeed: real ContextBuilder/DeclarativeRouter/AttemptEngine wiring \
@@ -191,11 +193,13 @@ async fn undercapable_model_is_never_called_and_turn_fails() {
     let config = config_naming(metadata_path);
 
     let backend = Arc::new(
-        ScriptedBackend::new(vec![ScriptedTurn::Respond(text_response("should never run"))])
-            .with_id(BackendId::new("fake"))
-            // Below the configured floor (`verified`): `Community` ranks
-            // lower than `Verified`.
-            .with_capabilities(caps(ReliabilityTier::Community)),
+        ScriptedBackend::new(vec![ScriptedTurn::Respond(text_response(
+            "should never run",
+        ))])
+        .with_id(BackendId::new("fake"))
+        // Below the configured floor (`verified`): `Community` ranks
+        // lower than `Verified`.
+        .with_capabilities(caps(ReliabilityTier::Community)),
     );
     let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
     let conway = build_conway(config, backend.clone(), store);

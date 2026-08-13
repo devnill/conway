@@ -147,7 +147,11 @@ impl Backend for RecordingBackend {
     /// dialect-neutral estimator's real (tiny) count of this file's fixture
     /// segments. Still calls the ONE shared arithmetic, `check_admission`
     /// (P-14) -- only the estimate is test-controlled, not the comparison.
-    fn admit(&self, req: &GenerateRequest, headroom_tokens: u32) -> Result<Admission, BackendError> {
+    fn admit(
+        &self,
+        req: &GenerateRequest,
+        headroom_tokens: u32,
+    ) -> Result<Admission, BackendError> {
         check_admission(
             req.model.clone(),
             self.est_tokens,
@@ -1059,7 +1063,10 @@ async fn t1_mixed_candidates_skips_small_attempts_large() {
                 "got: {missing:?}"
             );
             for needle in ["30000", "4000", "34000", "32768", "1232"] {
-                assert!(missing[0].contains(needle), "missing {needle} in {missing:?}");
+                assert!(
+                    missing[0].contains(needle),
+                    "missing {needle} in {missing:?}"
+                );
             }
         }
         other => panic!("expected CapabilitySkip, got {other:?}"),

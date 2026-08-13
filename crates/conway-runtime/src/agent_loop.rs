@@ -1379,7 +1379,11 @@ impl AgentLoop {
     async fn finish_error(&self, state: LoopState, err: RuntimeError) -> AgentResult {
         let builder = ResultBuilder::new();
         if let RuntimeError::Cancelled { reason, .. } = err {
-            let reason = self.deps.tree.cancel_reason(self.agent_id).unwrap_or(reason);
+            let reason = self
+                .deps
+                .tree
+                .cancel_reason(self.agent_id)
+                .unwrap_or(reason);
             return self
                 .finish(
                     ResultStatus::Cancelled { reason },

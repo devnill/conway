@@ -831,7 +831,8 @@ impl SessionHandle {
     /// caller of this method keeps its exact prior semantics without
     /// needing to name a mode.
     pub async fn cancel(&self, target: AgentId, reason: &str) -> Result<()> {
-        self.cancel_with(target, reason, CancelMode::Immediate).await
+        self.cancel_with(target, reason, CancelMode::Immediate)
+            .await
     }
 
     /// Cancels `target` with `reason`, in `mode` (board item
@@ -874,12 +875,7 @@ impl SessionHandle {
     /// (the inherent method has no such mode at all), so this is named
     /// explicitly rather than left to an incidental method-resolution
     /// tie-break either way.
-    pub async fn cancel_with(
-        &self,
-        target: AgentId,
-        reason: &str,
-        mode: CancelMode,
-    ) -> Result<()> {
+    pub async fn cancel_with(&self, target: AgentId, reason: &str, mode: CancelMode) -> Result<()> {
         self.ensure_agent_in_session(target)?;
         SubagentHost::cancel(
             self.rt.as_ref(),
@@ -1114,14 +1110,13 @@ fn record_to_event(record: &LogRecord) -> Option<(LogSeq, DateTime<Utc>, Event)>
         // faithful `AgentFinished` (that event describes the RECORD-OWNING
         // agent's own finish, and this record's owning agent is the
         // parent, still running).
-        LogRecord::ChildResultRecord { seq, ts, result, .. } => Some((
+        LogRecord::ChildResultRecord {
+            seq, ts, result, ..
+        } => Some((
             *seq,
             *ts,
             Event::AgentProgress {
-                note: format!(
-                    "child {} finished: {}",
-                    result.agent_id, result.summary
-                ),
+                note: format!("child {} finished: {}", result.agent_id, result.summary),
             },
         )),
         _ => None,

@@ -27,9 +27,8 @@ mod result_contract_via_def {
     use std::path::PathBuf;
     use std::sync::Arc;
 
-    use conway_core::agent::{
-        AgentDefRef, Budget, PermissionDecision, ResultStatus, SubagentSpec,
-    };
+    use conway_core::agent::{AgentDefRef, Budget, PermissionDecision, ResultStatus, SubagentSpec};
+    use conway_core::capabilities::HeadroomPolicy;
     use conway_core::capabilities::{
         CacheMode, Capabilities, ReliabilityTier, StructuredOutput, ToolCallSupport,
     };
@@ -41,7 +40,6 @@ mod result_contract_via_def {
     use conway_core::ports::{
         Backend, GenerateResponse, HealthRegistry, Plugin, Router, SessionStore, SubagentHost,
     };
-    use conway_core::capabilities::HeadroomPolicy;
     use conway_core::routing::{Route, RouteRequest, RoutingReason};
     use conway_runtime::events::EventBus;
     use conway_runtime::runtime::{RootSpec, Runtime, RuntimeDeps};
@@ -238,7 +236,10 @@ mod result_contract_via_def {
                 // spawn with no call-site contract of its own would have no
                 // contract to fail and would instead `Completed` on its
                 // very first turn.
-                assert!(!missing.is_empty(), "missing must be non-empty: {missing:?}");
+                assert!(
+                    !missing.is_empty(),
+                    "missing must be non-empty: {missing:?}"
+                );
             }
             other => panic!(
                 "expected the def-declared result_contract to reject this child's undeclared \

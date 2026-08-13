@@ -137,7 +137,9 @@ mod tests {
 
         let backend = TestBackend::new(40, 5);
         let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal.draw(|f| draw(f, f.area(), &state, &Theme::default())).expect("draw");
+        terminal
+            .draw(|f| draw(f, f.area(), &state, &Theme::default()))
+            .expect("draw");
 
         let buffer = terminal.backend().buffer();
         assert!(buffer.content().iter().any(|cell| cell.symbol() != " "));
@@ -149,7 +151,9 @@ mod tests {
 
         let backend = TestBackend::new(60, 5);
         let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal.draw(|f| draw(f, f.area(), &state, &Theme::default())).expect("draw");
+        terminal
+            .draw(|f| draw(f, f.area(), &state, &Theme::default()))
+            .expect("draw");
 
         let buffer = terminal.backend().buffer();
         let text: String = buffer.content().iter().map(|c| c.symbol()).collect();

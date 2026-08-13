@@ -106,16 +106,9 @@ pub struct TruncationRecord {
 #[serde(tag = "policy", rename_all = "snake_case")]
 pub enum TruncationPolicy {
     None,
-    Head {
-        max_bytes: u64,
-    },
-    Tail {
-        max_bytes: u64,
-    },
-    HeadTail {
-        head_bytes: u64,
-        tail_bytes: u64,
-    },
+    Head { max_bytes: u64 },
+    Tail { max_bytes: u64 },
+    HeadTail { head_bytes: u64, tail_bytes: u64 },
 }
 
 /// A tool's registration record: name, description, JSON Schema, category,

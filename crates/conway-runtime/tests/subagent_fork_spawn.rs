@@ -2772,11 +2772,7 @@ async fn fork_child_inherits_the_parents_agent_def_and_cannot_widen_its_tool_set
     let child_call = calls
         .last()
         .expect("the child must have made at least one generate call");
-    let offered: Vec<String> = child_call
-        .tools
-        .iter()
-        .map(|t| t.name.0.clone())
-        .collect();
+    let offered: Vec<String> = child_call.tools.iter().map(|t| t.name.0.clone()).collect();
     assert_eq!(
         offered,
         vec!["marker".to_string()],
@@ -2803,10 +2799,9 @@ async fn fork_child_inherits_the_parents_agent_def_and_cannot_widen_its_tool_set
 
     let report = runtime.context_report(child).unwrap();
     assert!(
-        report
-            .segments
-            .iter()
-            .any(|e| matches!(&e.provenance, Provenance::AgentDef { name } if name == "restricted")),
+        report.segments.iter().any(
+            |e| matches!(&e.provenance, Provenance::AgentDef { name } if name == "restricted")
+        ),
         "the child's own context must carry a Provenance::AgentDef segment for the inherited \
          def, got: {:?}",
         report.segments
@@ -2994,11 +2989,7 @@ async fn fork_child_explicit_tools_argument_replaces_rather_than_narrows_the_inh
     let child_call = calls
         .last()
         .expect("the child must have made at least one generate call");
-    let offered: Vec<String> = child_call
-        .tools
-        .iter()
-        .map(|t| t.name.0.clone())
-        .collect();
+    let offered: Vec<String> = child_call.tools.iter().map(|t| t.name.0.clone()).collect();
     assert_eq!(
         offered,
         vec!["secret".to_string()],
@@ -3135,11 +3126,7 @@ async fn spawn_child_declines_the_parents_agent_def_even_though_a_fork_would_inh
     let child_call = calls
         .last()
         .expect("the child must have made at least one generate call");
-    let mut offered: Vec<String> = child_call
-        .tools
-        .iter()
-        .map(|t| t.name.0.clone())
-        .collect();
+    let mut offered: Vec<String> = child_call.tools.iter().map(|t| t.name.0.clone()).collect();
     offered.sort();
     assert_eq!(
         offered,
@@ -3213,7 +3200,11 @@ impl RecordingContextHook {
 
 #[async_trait]
 impl ContextHook for RecordingContextHook {
-    async fn before_request(&self, ctx: &ContextHookCtx, payload: ContextPayload) -> ContextPayload {
+    async fn before_request(
+        &self,
+        ctx: &ContextHookCtx,
+        payload: ContextPayload,
+    ) -> ContextPayload {
         let segments = payload
             .segments
             .iter()

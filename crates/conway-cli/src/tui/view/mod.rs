@@ -640,7 +640,9 @@ mod tests {
 
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal.draw(|f| draw(&state, f, &Theme::default())).expect("draw");
+        terminal
+            .draw(|f| draw(&state, f, &Theme::default()))
+            .expect("draw");
 
         let buffer = terminal.backend().buffer();
         let non_blank = buffer.content().iter().any(|cell| cell.symbol() != " ");
@@ -656,7 +658,9 @@ mod tests {
         let state = AppState::new(root);
         let backend = TestBackend::new(40, 10);
         let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal.draw(|f| draw(&state, f, &Theme::default())).expect("draw");
+        terminal
+            .draw(|f| draw(&state, f, &Theme::default()))
+            .expect("draw");
         let buffer = terminal.backend().buffer();
         assert!(buffer.content().iter().any(|cell| cell.symbol() != " "));
     }
@@ -673,7 +677,9 @@ mod tests {
         let state = AppState::new(root);
         let backend = TestBackend::new(40, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal.draw(|f| draw(&state, f, &Theme::default())).expect("draw");
+        terminal
+            .draw(|f| draw(&state, f, &Theme::default()))
+            .expect("draw");
         let buffer = terminal.backend().buffer();
         let text: String = buffer.content().iter().map(|c| c.symbol()).collect();
         assert!(
@@ -689,7 +695,9 @@ mod tests {
         let state = AppState::new(root);
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal.draw(|f| draw(&state, f, &Theme::default())).expect("draw");
+        terminal
+            .draw(|f| draw(&state, f, &Theme::default()))
+            .expect("draw");
         let buffer = terminal.backend().buffer();
         let text: String = buffer.content().iter().map(|c| c.symbol()).collect();
         assert!(!text.contains("agents ("));
@@ -702,7 +710,9 @@ mod tests {
         state.toggle_agent_view();
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal.draw(|f| draw(&state, f, &Theme::default())).expect("draw");
+        terminal
+            .draw(|f| draw(&state, f, &Theme::default()))
+            .expect("draw");
         let buffer = terminal.backend().buffer();
         let text: String = buffer.content().iter().map(|c| c.symbol()).collect();
         assert!(text.contains("agents ("));
@@ -715,7 +725,9 @@ mod tests {
         state.input = "/as".to_string();
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal.draw(|f| draw(&state, f, &Theme::default())).expect("draw");
+        terminal
+            .draw(|f| draw(&state, f, &Theme::default()))
+            .expect("draw");
         let buffer = terminal.backend().buffer();
         let text: String = buffer.content().iter().map(|c| c.symbol()).collect();
         assert!(text.contains("/ask"));
@@ -728,7 +740,9 @@ mod tests {
         state.input = "hello".to_string();
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal.draw(|f| draw(&state, f, &Theme::default())).expect("draw");
+        terminal
+            .draw(|f| draw(&state, f, &Theme::default()))
+            .expect("draw");
         let buffer = terminal.backend().buffer();
         let text: String = buffer.content().iter().map(|c| c.symbol()).collect();
         // The status line's own "/ for commands" hint always contains the
@@ -1002,12 +1016,22 @@ mod tests {
 
     #[test]
     fn intent_confirm_card_renders_recipe_def_prompt_and_footer() {
-        let state = intent_confirm_state(conway::SubagentMode::Spawn, Some("reviewer"), "review the diff carefully");
+        let state = intent_confirm_state(
+            conway::SubagentMode::Spawn,
+            Some("reviewer"),
+            "review the diff carefully",
+        );
 
         let text = render_text(&state, 80, 24);
 
-        assert!(text.contains("recipe: spawn"), "the classified recipe must render: {text}");
-        assert!(text.contains("agent_def: reviewer"), "the classified agent_def must render: {text}");
+        assert!(
+            text.contains("recipe: spawn"),
+            "the classified recipe must render: {text}"
+        );
+        assert!(
+            text.contains("agent_def: reviewer"),
+            "the classified agent_def must render: {text}"
+        );
         assert!(
             text.contains("review the diff carefully"),
             "the classified prompt must render: {text}"
@@ -1268,7 +1292,10 @@ mod tests {
 
         let text = render_text(&state, 100, 60);
 
-        assert!(text.contains("you asked: q"), "the ask modal must win: {text}");
+        assert!(
+            text.contains("you asked: q"),
+            "the ask modal must win: {text}"
+        );
         assert!(!text.contains(" HELP "), "{text}");
     }
 
@@ -1279,7 +1306,10 @@ mod tests {
 
         let text = render_text(&state, 100, 60);
 
-        assert!(text.contains("recipe: spawn"), "the intent card must win: {text}");
+        assert!(
+            text.contains("recipe: spawn"),
+            "the intent card must win: {text}"
+        );
         assert!(!text.contains(" HELP "), "{text}");
     }
 
@@ -1295,7 +1325,10 @@ mod tests {
         state.resolve_current_prompt(PermissionDecision::AllowOnce);
 
         assert!(matches!(state.mode, Mode::Normal));
-        assert!(state.help_open, "help_open was never touched by the prompt resolving");
+        assert!(
+            state.help_open,
+            "help_open was never touched by the prompt resolving"
+        );
         assert!(
             render_text(&state, 100, 60).contains(" HELP "),
             "the overlay must reappear once mode returns to Normal"
@@ -1329,7 +1362,10 @@ mod tests {
 
         let text = render_text(&state, 100, 60);
 
-        assert!(text.contains("you asked: q"), "the ask modal must win: {text}");
+        assert!(
+            text.contains("you asked: q"),
+            "the ask modal must win: {text}"
+        );
         assert!(!text.contains(" SETTINGS "), "{text}");
     }
 
@@ -1340,7 +1376,10 @@ mod tests {
 
         let text = render_text(&state, 100, 60);
 
-        assert!(text.contains("recipe: spawn"), "the intent card must win: {text}");
+        assert!(
+            text.contains("recipe: spawn"),
+            "the intent card must win: {text}"
+        );
         assert!(!text.contains(" SETTINGS "), "{text}");
     }
 
@@ -1375,12 +1414,18 @@ mod tests {
 
         let text = render_text(&state, 100, 60);
         assert!(text.contains(" SETTINGS "), "{text}");
-        assert!(!text.contains(" HELP "), "opening settings must close help: {text}");
+        assert!(
+            !text.contains(" HELP "),
+            "opening settings must close help: {text}"
+        );
 
         state.open_help();
         let text = render_text(&state, 100, 60);
         assert!(text.contains(" HELP "), "{text}");
-        assert!(!text.contains(" SETTINGS "), "opening help must close settings: {text}");
+        assert!(
+            !text.contains(" SETTINGS "),
+            "opening help must close settings: {text}"
+        );
     }
 
     // ---- V1: the shared modal primitive -- every ported surface is
@@ -1393,7 +1438,8 @@ mod tests {
     /// overlay no longer claims "nearly the whole transcript area" the way
     /// the pre-V1 permission overlay's own doc used to describe.
     fn top_border_row(rows: &[String]) -> Option<usize> {
-        rows.iter().position(|row| row.trim_start().starts_with('┌'))
+        rows.iter()
+            .position(|row| row.trim_start().starts_with('┌'))
     }
 
     #[test]
@@ -1733,5 +1779,4 @@ mod tests {
             "a third `s` press wraps back to the session default"
         );
     }
-
 }

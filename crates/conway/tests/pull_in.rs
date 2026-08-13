@@ -24,7 +24,9 @@ use conway_core::agent::PermissionDecision;
 use conway_core::content::ContentBlock;
 use conway_core::error::{RuntimeError, StoreError};
 use conway_core::fakes::{FakeGate, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn};
-use conway_core::ids::{AgentId, BackendId, LogSeq, ModelId, ModelRef, RoleAlias, SeqRange, SessionId};
+use conway_core::ids::{
+    AgentId, BackendId, LogSeq, ModelId, ModelRef, RoleAlias, SeqRange, SessionId,
+};
 use conway_core::log::{LogRecord, SessionFilter, SessionMeta};
 use conway_core::ports::{Backend, GenerateResponse, SessionStore};
 
@@ -90,9 +92,7 @@ fn build_conway_with_backend(store: Arc<dyn SessionStore>, backend: Arc<dyn Back
 /// `AgentStatus` — for `pull_in`'s guard) through one parent turn plus one
 /// completed `/ask`, returning the handle and the ephemeral child's
 /// `(AgentId, SessionId)`.
-async fn live_session_with_completed_ask(
-    conway: &Conway,
-) -> (SessionHandle, AgentId, SessionId) {
+async fn live_session_with_completed_ask(conway: &Conway) -> (SessionHandle, AgentId, SessionId) {
     let handle = conway
         .new_session(SessionSpec {
             keep_alive: true,
@@ -215,25 +215,19 @@ async fn pull_in_merges_the_ask_child_verbatim_then_purges_it() {
     // The answer landed VERBATIM: every untrusted model-produced field
     // (P-10) — content, model, route_reason, usage, stop — plus ts is
     // field-for-field the child's original record; only the seq moved.
-    let (
-        merged_content,
-        merged_model,
-        merged_route,
-        merged_usage,
-        merged_stop,
-        merged_ts,
-    ) = match &parent_records[before + 1] {
-        LogRecord::Assistant {
-            content,
-            model,
-            route_reason,
-            usage,
-            stop,
-            ts,
-            ..
-        } => (content, model, route_reason, usage, stop, ts),
-        other => panic!("expected the merged answer as an Assistant record, got: {other:?}"),
-    };
+    let (merged_content, merged_model, merged_route, merged_usage, merged_stop, merged_ts) =
+        match &parent_records[before + 1] {
+            LogRecord::Assistant {
+                content,
+                model,
+                route_reason,
+                usage,
+                stop,
+                ts,
+                ..
+            } => (content, model, route_reason, usage, stop, ts),
+            other => panic!("expected the merged answer as an Assistant record, got: {other:?}"),
+        };
     match child_assistants[0] {
         LogRecord::Assistant {
             content,
@@ -516,9 +510,8 @@ async fn pull_in_refuses_a_still_running_child() {
     let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
     // The child's only scripted turn never resolves, so the ask child is
     // deterministically mid-turn (non-terminal) when pull_in is called.
-    let backend = Arc::new(
-        ScriptedBackend::new(vec![ScriptedTurn::Pending]).with_id(BackendId::new("fake")),
-    );
+    let backend =
+        Arc::new(ScriptedBackend::new(vec![ScriptedTurn::Pending]).with_id(BackendId::new("fake")));
     let conway = build_conway_with_backend(store.clone(), backend);
 
     // keep_alive root, NO parent prompt: the parent is live (idle), and the
