@@ -293,4 +293,17 @@ mod tests {
         // NEXT batch's snapshot would pick up).
         assert_eq!(ctx.chdir.current(), dir.path().join("sub"));
     }
+
+    /// Board item 01KZVZ56SBPSTZHAXXGYCNETNX: driven through this tool's
+    /// production `invoke` entry point, not `resolve_path` in isolation.
+    #[tokio::test]
+    async fn invoke_rejects_nul_byte_in_path() {
+        let dir = TempDir::new().unwrap();
+        let (ctx, _h) = test_ctx(dir.path().to_path_buf());
+        let err = CdTool::new()
+            .invoke(call(serde_json::json!({"path": "a\0b"})), ctx)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ToolError::InvalidArguments { .. }));
+    }
 }
