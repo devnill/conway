@@ -248,6 +248,19 @@ pub struct PatternRule {
     pub command_prefix: String,
 }
 
+/// The `category` [`Self::matches_render`]/[`Self::matches_deny`] pass to
+/// [`Rule::matches_allow_render`]/[`Rule::matches_deny_render`] on behalf of
+/// a flat rule, which carries no category of its own. Any variant would do
+/// -- [`Self::to_rule`] only ever produces `Select::Tools` (whose
+/// `select_matches` arm never reads `category`) paired with `When::Always`
+/// or `When::CommandPrefix` (neither of whose match arms read it either);
+/// `When::CategoryIn` and `Select::Categories`, the only places `category`
+/// matters, are structured-only and never reachable from a desugared flat
+/// rule. `Execute` is picked arbitrarily; the choice is pinned as truly
+/// inert (not merely "happens not to matter for `Execute`") by
+/// `flat_matches_render_result_is_independent_of_the_placeholder_category`.
+const FLAT_FORM_CATEGORY_PLACEHOLDER: ToolCategory = ToolCategory::Execute;
+
 impl PatternRule {
     /// Parses the wire form `tool:prefix` (e.g. `bash:git status`,
     /// `read:*`). Returns `None` for anything malformed -- an unparseable
@@ -299,20 +312,32 @@ impl PatternRule {
     /// all: "any invocation of this tool" still must not mean "any
     /// invocation, including chained ones" for a tool whose rendering
     /// genuinely is a shell command.
+    ///
+    /// **A thin delegate, not a restatement -- board item
+    /// 01KZVZ4KF72ECHTT14EDEZQQW3.** This used to carry its own full copy
+    /// of the gate-then-prefix logic, kept "in sync" with
+    /// [`Rule::matches_allow_render`] only by a doc comment claiming
+    /// byte-identical behavior and a test pinning that claim (see this
+    /// module's own byte-identical-decisions test) -- but NO production
+    /// caller ever reached this copy (`PermissionBroker` only ever
+    /// installs the desugared [`Rule`], via [`Self::to_rule`], before
+    /// `decide()` sees it), so a future edit to the gate here could drift
+    /// from `Rule::matches_allow_render` with every existing test of
+    /// *this* function still green -- the exact "restated, not called"
+    /// shape this item exists to close. `category` has no real value for a
+    /// flat rule ([`Self::to_rule`] always desugars to `Select::Tools` +
+    /// `When::Always`/`CommandPrefix`, and NEITHER `select_matches`'
+    /// `Tools` arm nor those two `when` arms ever read it); this passes a
+    /// fixed placeholder, pinned as truly inert by
+    /// `flat_matches_render_result_is_independent_of_the_placeholder_category`
+    /// below.
     pub fn matches_render(&self, tool: &str, rendered: &str, render_kind: RenderKind) -> bool {
-        if self.tool != tool {
-            return false;
-        }
-        // The hard gate. Deliberately first, and deliberately applied to
-        // the wildcard case as well -- but only when this tool's own
-        // rendering could ever reach a shell.
-        if render_kind == RenderKind::ShellCommand && contains_shell_metacharacters(rendered) {
-            return false;
-        }
-        if self.command_prefix == "*" {
-            return true;
-        }
-        prefix_matches(&self.command_prefix, rendered)
+        self.to_rule(Then::Allow).matches_allow_render(
+            tool,
+            FLAT_FORM_CATEGORY_PLACEHOLDER,
+            rendered,
+            render_kind,
+        )
     }
 
     /// Whether this rule, used as a `deny` rule, refuses `tool` running
@@ -357,17 +382,19 @@ impl PatternRule {
     /// push` not catching `foo; git push`, this module's own doc, "a
     /// seatbelt, not a boundary"), which this item deliberately leaves
     /// alone.
+    ///
+    /// **A thin delegate, not a restatement -- board item
+    /// 01KZVZ4KF72ECHTT14EDEZQQW3.** Same shape and same reasoning as
+    /// [`Self::matches_render`]'s own doc: this used to carry its own full
+    /// copy of the ungated, laundering-aware comparison, reachable by NO
+    /// production caller (`PermissionBroker::deny_matches`/`prompt_matches`
+    /// only ever see the desugared [`Rule`]), so it could drift from
+    /// [`Rule::matches_deny_render`] with every test of *this* function
+    /// still green. `category`'s placeholder is inert for the identical
+    /// reason given there.
     pub fn matches_deny(&self, tool: &str, rendered: &str) -> bool {
-        if self.tool != tool {
-            return false;
-        }
-        if self.command_prefix == "*" {
-            return true;
-        }
-        if rendered_evidence_is_untrustworthy(rendered) {
-            return true;
-        }
-        prefix_matches(&self.command_prefix, rendered)
+        self.to_rule(Then::Deny)
+            .matches_deny_render(tool, FLAT_FORM_CATEGORY_PLACEHOLDER, rendered)
     }
 
     /// A human-readable description of what this rule permits, for the
@@ -2125,11 +2152,12 @@ mod f12_tests {
 
     /// THE headline proof: a flat `PatternRule` and its desugared `Rule`
     /// produce byte-identical ALLOW decisions across a matrix of calls and
-    /// render kinds. This is the strongest available evidence there is one
-    /// evaluator and not two -- both reach `Rule::matches_allow_render`
-    /// (the flat form via `PatternRule::matches_render`'s identical
-    /// primitives; the structured form via `to_rule().matches_allow_render`)
-    /// and cannot drift.
+    /// render kinds. Board item 01KZVZ4KF72ECHTT14EDEZQQW3 turned this from
+    /// an OBSERVED equivalence (two independent implementations, pinned by
+    /// this test) into a STRUCTURAL one: `PatternRule::matches_render` now
+    /// literally calls `Rule::matches_allow_render` (via `to_rule`), so this
+    /// test is now a tautology by construction -- kept anyway as a
+    /// regression guard against a future edit un-inlining the delegation.
     #[test]
     fn flat_and_structured_produce_byte_identical_allow_decisions() {
         // A matrix of (rule, tool, rendered, render_kind): ordinary matches,
@@ -2220,7 +2248,9 @@ mod f12_tests {
 
     /// The deny/prompt side: `PatternRule::matches_deny` and the desugared
     /// `Rule::matches_deny_render` agree across the same matrix -- the
-    /// ungated, laundering-aware evaluator is one, not two.
+    /// ungated, laundering-aware evaluator is one, not two. Same
+    /// tautology-by-construction note as the allow-side test above applies
+    /// here: `matches_deny` now literally calls `matches_deny_render`.
     #[test]
     fn flat_and_structured_produce_byte_identical_deny_decisions() {
         let cases: &[(&str, &str, &str, ToolCategory)] = &[
@@ -2263,6 +2293,58 @@ mod f12_tests {
                 structured.matches_deny_render(tool, *cat, rendered),
                 "flat and structured deny must agree: {wire:?} vs {rendered:?}"
             );
+        }
+    }
+
+    /// Pins `FLAT_FORM_CATEGORY_PLACEHOLDER`'s own justification: for every
+    /// shape `PatternRule::to_rule` can ever produce (`Select::Tools` +
+    /// `When::Always`/`CommandPrefix`), `matches_render`/`matches_deny`'s
+    /// result must not depend on WHICH `ToolCategory` the delegation passes
+    /// through -- if it ever did, the placeholder would be silently wrong
+    /// for at least one category, and this is the test that would catch it.
+    #[test]
+    fn flat_matches_render_result_is_independent_of_the_placeholder_category() {
+        let all_categories = [
+            ToolCategory::Read,
+            ToolCategory::Edit,
+            ToolCategory::Delete,
+            ToolCategory::Move,
+            ToolCategory::Search,
+            ToolCategory::Execute,
+            ToolCategory::Think,
+            ToolCategory::Fetch,
+            ToolCategory::Delegate,
+        ];
+        let cases: &[(&str, &str, &str, RenderKind)] = &[
+            ("bash:git status", "bash", "git status", RenderKind::ShellCommand),
+            (
+                "bash:git status",
+                "bash",
+                "git status && rm -rf /",
+                RenderKind::ShellCommand,
+            ),
+            ("read:*", "read", r#"read({"path":"a.rs"})"#, RenderKind::Structured),
+        ];
+        for (wire, tool, rendered, rk) in cases {
+            let rule = PatternRule::parse(wire).expect("valid");
+            let allow = rule.to_rule(Then::Allow);
+            let deny = rule.to_rule(Then::Deny);
+            let expected_allow = allow.matches_allow_render(tool, ToolCategory::Read, rendered, *rk);
+            let expected_deny = deny.matches_deny_render(tool, ToolCategory::Read, rendered);
+            for cat in all_categories {
+                assert_eq!(
+                    allow.matches_allow_render(tool, cat, rendered, *rk),
+                    expected_allow,
+                    "allow decision for {wire:?} vs {rendered:?} must not depend on category \
+                     ({cat:?} disagreed)"
+                );
+                assert_eq!(
+                    deny.matches_deny_render(tool, cat, rendered),
+                    expected_deny,
+                    "deny decision for {wire:?} vs {rendered:?} must not depend on category \
+                     ({cat:?} disagreed)"
+                );
+            }
         }
     }
 

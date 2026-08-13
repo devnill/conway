@@ -641,8 +641,13 @@ impl PermissionBroker {
     /// for the review surface (board item 01KYT8SGX32CP56PRJNG72V2W5).
     ///
     /// Note this does NOT pre-validate the rule against metacharacters:
-    /// the gate lives in `PatternRule::matches_render`, applied to the
-    /// incoming COMMAND at decision time. Filtering at creation time
+    /// `rule` is desugared to a [`Rule`] immediately below (`to_rule`), and
+    /// the gate lives in [`Rule::matches_allow_render`] -- the ONE evaluator
+    /// [`Self::pattern_allows`] consults at decision time (board item
+    /// 01KZVZ4KF72ECHTT14EDEZQQW3: `PatternRule::matches_render` is never
+    /// reached from here or anywhere else in this broker -- it is a public,
+    /// test-facing convenience that itself now delegates to the same
+    /// evaluator, not a second decision path). Filtering at creation time
     /// instead would be the wrong shape -- it would let a rule created
     /// before the gate existed, or loaded from a file, slip past.
     ///

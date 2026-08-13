@@ -483,6 +483,73 @@ async fn a_chained_command_still_reaches_the_operator_despite_a_matching_pattern
     );
 }
 
+/// **The structured-form sibling of the test immediately above -- board item
+/// 01KZVZ4KF72ECHTT14EDEZQQW3's own discriminating test.**
+///
+/// Identical scenario, installed as a structured [`Rule`]
+/// (`remember_pattern_rule`) instead of a flat [`PatternRule`]
+/// (`remember_pattern`). Before this item, `PatternRule::matches_render`
+/// and `Rule::matches_allow_render` were two independent implementations of
+/// the SAME metacharacter gate, kept in sync only by a doc comment and a
+/// unit test pinning their outputs -- and only the structured evaluator was
+/// ever reached from `decide()` (`remember_pattern` desugars to a `Rule`
+/// immediately, before `pattern_allows` ever runs). This test and its flat
+/// sibling now exercise the identical evaluator either way; asserted on the
+/// PERSISTED `PermissionOutcome`, never a bare gate-call count, so a broken
+/// gate that silently allows (zero gate calls) cannot be confused with a
+/// broken gate that silently denies (also zero gate calls, per the
+/// `ScriptedGate::check` exhausted-script default).
+#[tokio::test]
+async fn a_chained_command_still_reaches_the_operator_despite_a_matching_structured_pattern() {
+    let gate = ScriptedGate::new(vec![PermissionDecision::Deny {
+        reason: "operator said no".into(),
+    }]);
+    let (broker, _bus) = broker(gate.clone());
+    let session = SessionId::new();
+    let agent = AgentId::new();
+    let c = ctx(agent, vec![agent], session);
+
+    let installed = broker.remember_pattern_rule(
+        Rule {
+            select: Select::Tools(vec!["bash".to_string()]),
+            when: When::CommandPrefix("git status".to_string()),
+            then: Then::Allow,
+        },
+        PermissionScope::Session,
+        agent,
+        PatternOrigin::Interactive,
+        // B2: no `paths_under` on this rule, so `base` is never consulted.
+        Path::new("/"),
+    );
+    assert!(installed, "a structured CommandPrefix allow rule installs");
+
+    // The plain granted command is authorized without troubling the gate --
+    // byte-identical to the flat-form test above.
+    let plain = broker.decide(&c, &bash_call("c1", "git status")).await;
+    assert_eq!(plain, PermissionOutcome::Allow);
+    assert_eq!(
+        gate.call_count(),
+        0,
+        "the granted command must not re-prompt"
+    );
+
+    // The chained one must fall through to the operator -- the SAME
+    // metacharacter gate that guards `remember_pattern`'s flat form.
+    let chained = broker
+        .decide(&c, &bash_call("c2", "git status && rm -rf /"))
+        .await;
+    assert!(
+        matches!(chained, PermissionOutcome::Deny { .. }),
+        "a chained command must not be authorized by a structured prefix grant either"
+    );
+    assert_eq!(
+        gate.call_count(),
+        1,
+        "the chained command must actually REACH the operator's gate through the structured \
+         form too -- being silently denied would be almost as wrong as being allowed"
+    );
+}
+
 /// Adversarial: a grant for one subcommand must not cover another.
 #[tokio::test]
 async fn a_pattern_grant_does_not_cover_a_different_subcommand() {
