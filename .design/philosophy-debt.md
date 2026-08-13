@@ -49,39 +49,66 @@ able to allow, deny, or deny with a reason the model reads. The page also says
 the event vocabulary is open, with plugins declaring events of their own that
 sit at the same level as the core's.
 
-**Exists today:** the in-process Rust seams only. `ContextHook` (`before_request`
-and `on_overflow`) is a core port with no default implementation, and the
-permission gate is a consumer-supplied trait. Both require Rust and a rebuild,
-which is exactly the cost the hooks rung claims to remove.
+**Exists today: the configured rung ships, for exactly one event.** A `[hooks]`
+block in `settings.json` is discovered on the existing precedence chain, parsed,
+and validated. A rule whose `event` is `pre_tool_use` is then dispatched for
+real — `ConwayBuilder::build` filters `[hooks].rules[]` to the enabled
+`pre_tool_use` entries, and `PermissionBroker::decide` invokes each through an
+injected `HookRunner` at the deny tier, ahead of the mode gate, the grant cache,
+pattern allows and `AutoAllow`, so a hook denial is a real denial under every
+permission mode. `conway_tools::hook_runner::ProcessHookRunner` spawns the
+command as a one-shot subprocess with the documented JSON payload on stdin, and
+the denial reason reaches the model in the tool result. No Rust and no rebuild
+are involved on that path.
+
+The in-process Rust seams remain alongside it, unchanged and still Rust-only:
+`ContextHook` (`before_request` and `on_overflow`) is a core port with no
+default implementation, and the permission gate is a consumer-supplied trait.
+They are no longer the whole of what exists.
+
+**The embedder asymmetry is deliberate.** `conway-cli`'s `build_conway` calls
+`ConwayBuilder::with_default_hook_runner` unconditionally, so a `pre_tool_use`
+rule in a `settings.json` driving the CLI fires. A third party linking the
+facade directly gets no dispatch until it calls `with_hook_runner` or
+`with_default_hook_runner` itself. `HookRunner` is an optional port like
+`with_permission_gate` and `with_context_hook` — not called at all is the
+default, and `conway-runtime` must not reach a concrete runner on its own
+(decision 01KZT642CEZ20K92DYWBTPE2XZ). A rule declared by an embedder that
+never injects a runner parses, validates, and is never consulted.
 
 **Needed to make it true:**
 
-- A `hooks` block in `settings.json`, discovered on the existing precedence
-  chain, with per-event lists and a tool-name matcher.
-- Dispatch at the events the core emits: `pre_tool_use`, `post_tool_use`, prompt
-  submitted, request assembled, child forked or spawned, child reported, session
-  started.
+- Dispatch at the other events the page's vocabulary implies: `post_tool_use`,
+  prompt submitted, request assembled, child forked or spawned, child reported,
+  session started. **None of these dispatches today** — no crate names any of
+  them, and a rule carrying one parses, validates, and does nothing. The runner
+  port they will reuse already exists; each needs only its own dispatch call
+  site.
+- A tool-name matcher. `HookEntry` is `id`, `event`, `command`, `timeout_ms`,
+  `enabled` — there is no matcher field, so a `pre_tool_use` rule fires for
+  *every* tool call and a hook wanting to act on one tool must filter for
+  itself from the payload.
 - Registration for plugin-declared events, which is the part with no precedent
   in the design being borrowed from and the part most likely to be deferred into
-  never. It needs a namespace so a plugin's events cannot collide with the
-  core's or each other, a way for an operator to discover what is hookable given
-  what they have installed, and a payload contract the plugin defines rather
-  than the core guessing at. Design it alongside the core events; retrofitting
-  an open vocabulary onto a closed one means changing the config shape after
-  people have written hooks against it.
-- Subprocess execution with a documented stdin payload per event, and a
-  documented protocol for the response, including how a denial reason reaches
-  the model.
-- `pre_tool_use` wired into the permission broker rather than beside it, so a
-  hook denial is a real denial on every path.
-- The security properties the page asserts, which are not free: fails closed
-  when a hook errors, times out, or is unreadable; every active hook rule
-  visible in the operator surface; each individually revocable.
-- A liveness test per the discipline in
-  [`CONTRIBUTING.md`](../CONTRIBUTING.md#3-a-check-is-not-established-until-it-has-been-shown-to-fail),
-  driving a production entry point and asserting on the observable outcome. A
-  security-bearing hook that silently never fires is the worst rung of the harm
-  ladder.
+  never. The namespace rule itself is settled and encoded —
+  `conway_core::event_name::validate_event_name` implements it — but **nothing
+  calls it**, on either the subscriber or the declaration side, and no plugin
+  can declare an event. Still needed: a way for an operator to discover what is
+  hookable given what they have installed, and a payload contract the plugin
+  defines rather than the core guessing at. Retrofitting an open vocabulary onto
+  a closed one means changing the config shape after people have written hooks
+  against it.
+- The remaining half of the security properties the page asserts. Failing closed
+  ships: a hook that errors, times out, or returns an unparseable answer denies.
+  **Operator visibility does not** — no surface lists the active hook rules, so
+  revocation today means editing `enabled` in the config file rather than
+  revoking a rule the operator can see.
+
+**Already met, and not to be rebuilt:** a liveness test per the discipline in
+[`CONTRIBUTING.md`](../CONTRIBUTING.md#3-a-check-is-not-established-until-it-has-been-shown-to-fail)
+covers the shipped path — `crates/conway-cli/tests/hook_runner_wiring.rs`
+drives the real compiled binary with a real `settings.json` and asserts the
+denial on the persisted tool result. A second event's dispatch owes its own.
 
 **The lineage is the shape, not the vocabulary.** The familiar part is naming an
 event and a command, stdin carrying structured input, and the exit status
