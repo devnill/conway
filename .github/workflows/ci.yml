@@ -69,6 +69,25 @@ jobs:
       - name: cargo test --workspace --all-features
         run: cargo test --workspace --all-features --no-fail-fast
 
+  # The falsifiable claims `.design/philosophy-debt.md` declares about the tree.
+  # That ledger is what makes `PHILOSOPHY.md`'s present-tense exemption safe --
+  # a claim absent from it is expected to be true right now -- and nothing
+  # enforced it until board item 01KZVYR259XN9JC12A6X69CGGD. In August 2026 it
+  # went stale on its highest-traffic entry while `docs/plugins/hooks.md`, which
+  # IS gated, stayed exact. The difference was enforcement, not care.
+  #
+  # Pure Python over the repo, no toolchain and no build: it runs in seconds and
+  # needs nothing but a checkout, which is why it sits first with `fmt`.
+  design-claims:
+    name: design claims (.design ledger)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: python3 scripts/check-design-claims.py
+        run: python3 scripts/check-design-claims.py
+
   # The MSRV declared in the workspace manifest, built on that exact toolchain.
   # `rust-version` used to be set to 1.94.0 -- the same version the toolchain
   # file pins -- which is a claim nothing had ever tested, and the most
