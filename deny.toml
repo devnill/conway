@@ -71,14 +71,16 @@ confidence-threshold = 0.8
 # and no pull request here can fix it. A gate that is red for something a
 # contributor cannot act on gets bypassed, and a bypassed gate protects nothing.
 #
-# WHAT THAT MEANS TODAY, stated rather than left for someone to discover:
-# `ratatui` 0.29 pins `lru = "0.12.0"`, so `lru` 0.12.5 stays in the graph via
-# that path even though the workspace's own `lru` is 0.18.2. It carries two
-# `informational = "unsound"` advisories (RUSTSEC-2026-0253, RUSTSEC-2026-0002)
-# and `ratatui` also pulls the unmaintained `paste`. Neither is reported under
-# this setting. Board item 01KZWWVKT9M13E306ZW29P0W9D tracks the ratatui
-# upgrade that clears both; do not read "advisories ok" as "no advisory
-# anywhere in the tree".
+# Board item 01KZWWVKT9M13E306ZW29P0W9D checked this setting was not quietly
+# hiding anything: `ratatui` 0.29 used to pin `lru = "0.12.0"` (two
+# `informational = "unsound"` advisories, RUSTSEC-2026-0253 and
+# RUSTSEC-2026-0002) and pulled in the unmaintained `paste`, both invisible
+# under this setting because they only ever arrived transitively. The 0.30
+# upgrade drops both -- `lru` now resolves to the single workspace-pinned
+# 0.18.2 everywhere, and `paste` is gone from the graph entirely. Re-verify
+# with `cargo tree -i lru@<old-pinned-version>` / `cargo tree -i paste` (both
+# should error "did not match any packages") before trusting this setting
+# again after any future `ratatui` bump.
 #
 # `ignore` is empty ON PURPOSE. An entry here silences a specific advisory, so
 # each one must carry a written reason and the condition that removes it. Not a

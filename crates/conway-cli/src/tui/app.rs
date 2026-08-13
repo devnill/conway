@@ -372,7 +372,19 @@ impl App {
         mut self,
         terminal: &mut Terminal<B>,
         mut gate_rx: GateReceiver,
-    ) -> conway::Result<ExitCode> {
+    ) -> conway::Result<ExitCode>
+    where
+        // ratatui 0.30 widened `Backend::Error` from the fixed `io::Error` it
+        // was in 0.29 to `B::Error: core::error::Error` (any backend, e.g.
+        // `TestBackend`'s `Infallible`), so `conway::ConwayError::Io`
+        // (`std::io::Error`-typed, not this crate's to widen) needs an
+        // explicit `.into()` at each call site below instead of the old
+        // direct `map_err(ConwayError::Io)`. `CrosstermBackend::Error` is
+        // still `io::Error`, so this bound is satisfied trivially for the
+        // only `B` this crate ever instantiates `run`/the scroll helpers
+        // with.
+        B::Error: Into<std::io::Error>,
+    {
         let mut events = self.handle.events();
         let mut keys = CrosstermEventStream::new();
         let mut ticker = tokio::time::interval(REDRAW_TICK);
@@ -394,7 +406,7 @@ impl App {
                 _ = ticker.tick() => {
                     if dirty {
                         terminal.draw(|f| view::draw(&self.state, f, &self.theme))
-                            .map_err(conway::ConwayError::Io)?;
+                            .map_err(|e| conway::ConwayError::Io(e.into()))?;
                         dirty = false;
                     }
                 }
@@ -1364,8 +1376,15 @@ impl App {
     /// mutations with a page of 1, so the clamping and follow-tail
     /// re-engagement rules are literally the same code as the page-sized
     /// scroll -- one line is just a smaller page.
-    fn line_scroll<B: Backend>(&mut self, terminal: &Terminal<B>, up: bool) -> conway::Result<()> {
-        let size = terminal.size().map_err(conway::ConwayError::Io)?;
+    fn line_scroll<B: Backend>(&mut self, terminal: &Terminal<B>, up: bool) -> conway::Result<()>
+    where
+        // See `run`'s doc on the same bound: ratatui 0.30 widened
+        // `Backend::Error` beyond the fixed `io::Error` it was in 0.29.
+        B::Error: Into<std::io::Error>,
+    {
+        let size = terminal
+            .size()
+            .map_err(|e| conway::ConwayError::Io(e.into()))?;
         let area = ratatui::layout::Rect::new(0, 0, size.width, size.height);
         let max = view::max_scroll(&self.state, area);
         if up {
@@ -1380,8 +1399,15 @@ impl App {
         &mut self,
         terminal: &Terminal<B>,
         page_up: bool,
-    ) -> conway::Result<()> {
-        let size = terminal.size().map_err(conway::ConwayError::Io)?;
+    ) -> conway::Result<()>
+    where
+        // See `run`'s doc on the same bound: ratatui 0.30 widened
+        // `Backend::Error` beyond the fixed `io::Error` it was in 0.29.
+        B::Error: Into<std::io::Error>,
+    {
+        let size = terminal
+            .size()
+            .map_err(|e| conway::ConwayError::Io(e.into()))?;
         let area = ratatui::layout::Rect::new(0, 0, size.width, size.height);
         let transcript_area = view::transcript_area(&self.state, area);
         let max = view::max_scroll(&self.state, area);
@@ -1404,8 +1430,15 @@ impl App {
     /// terminal size at all, so it calls `AppState::jump_to_tail` directly
     /// from the action-dispatch match instead of routing through a method
     /// here.
-    fn jump_to_top<B: Backend>(&mut self, terminal: &Terminal<B>) -> conway::Result<()> {
-        let size = terminal.size().map_err(conway::ConwayError::Io)?;
+    fn jump_to_top<B: Backend>(&mut self, terminal: &Terminal<B>) -> conway::Result<()>
+    where
+        // See `run`'s doc on the same bound: ratatui 0.30 widened
+        // `Backend::Error` beyond the fixed `io::Error` it was in 0.29.
+        B::Error: Into<std::io::Error>,
+    {
+        let size = terminal
+            .size()
+            .map_err(|e| conway::ConwayError::Io(e.into()))?;
         let area = ratatui::layout::Rect::new(0, 0, size.width, size.height);
         let max = view::max_scroll(&self.state, area);
         self.state.jump_to_top(max);
