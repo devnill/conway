@@ -817,6 +817,29 @@ impl App {
                                         .transcript
                                         .push(super::state::Entry::Notice { text });
                                 }
+                                // Board item 01KZS02HYXGTW42R8G4HP10GHX:
+                                // revoke exactly the one hook-backed rule
+                                // the operator selected. `Conway::
+                                // revoke_hook_rule` mutates the broker/
+                                // dispatcher directly and NEVER attempts
+                                // file I/O -- a hook rule has no
+                                // `PatternOrigin` to persist a removal
+                                // into (that method's own doc) -- so, unlike
+                                // the two arms above, there is only one
+                                // outcome to report, not an enum of them.
+                                Action::RevokeHookRule(event, id) => {
+                                    let revoked = self.conway.revoke_hook_rule(&event, &id);
+                                    self.state.hook_rules =
+                                        self.conway.active_deny_capable_hook_rules();
+                                    let text = if revoked {
+                                        format!("revoked hook rule `{id}` on `{event}`")
+                                    } else {
+                                        "that hook rule was already gone".to_string()
+                                    };
+                                    self.state
+                                        .transcript
+                                        .push(super::state::Entry::Notice { text });
+                                }
                                 Action::GrantPermissionPattern(rule, scope) => {
                                     // The granting agent is the one whose
                                     // call is being decided -- NOT
@@ -1065,6 +1088,11 @@ impl App {
             self.state.permission_prompts = self.conway.active_prompt_permission_patterns();
             self.state.structured_deny_rules = self.conway.active_structured_deny_rules();
             self.state.structured_prompt_rules = self.conway.active_structured_prompt_rules();
+            // Board item 01KZS02HYXGTW42R8G4HP10GHX: the fourth mirror,
+            // refreshed on the SAME seam as the four above -- see this
+            // block's own doc for why the refresh lives here rather than
+            // anywhere else.
+            self.state.hook_rules = self.conway.active_deny_capable_hook_rules();
         }
         // Board item 01KYT8SGX32CP56PRJNG72V2W5: the ONLY path that writes
         // a trust record -- an explicit operator action, never automatic,
@@ -2399,6 +2427,120 @@ mod tests {
         ] {
             assert!(text.contains(needle), "missing on screen: {needle}\n{text}");
         }
+    }
+
+    /// Board item 01KZS02HYXGTW42R8G4HP10GHX: the fourth review list --
+    /// every DENY-CAPABLE hook rule (`pre_tool_use` AND `prompt_submitted`)
+    /// refreshes into `state.hook_rules` on the same `/settings` seam as
+    /// the other four mirrors, and renders with its id, event, matcher, and
+    /// origin. An OBSERVATION-only rule (`post_tool_use`) in the SAME
+    /// config must NOT appear -- pinning the scoping decision
+    /// `Conway::active_deny_capable_hook_rules`'s own doc states.
+    #[tokio::test]
+    async fn hook_rules_are_visible_in_settings_scoped_to_deny_capable_events() {
+        use conway::config::schema::HookEntry;
+
+        let mut config = base_config();
+        config.hooks = HooksConfig {
+            rules: vec![
+                HookEntry {
+                    id: "deny-writes".to_string(),
+                    event: "pre_tool_use".to_string(),
+                    match_tool: Some("fs.write".to_string()),
+                    command: vec![
+                        "/bin/sh".to_string(),
+                        "-c".to_string(),
+                        "exit 1".to_string(),
+                    ],
+                    ..Default::default()
+                },
+                HookEntry {
+                    id: "deny-prompts".to_string(),
+                    event: "prompt_submitted".to_string(),
+                    command: vec![
+                        "/bin/sh".to_string(),
+                        "-c".to_string(),
+                        "exit 1".to_string(),
+                    ],
+                    ..Default::default()
+                },
+                HookEntry {
+                    id: "log-every-call".to_string(),
+                    event: "post_tool_use".to_string(),
+                    command: vec!["/bin/sh".to_string(), "-c".to_string(), "true".to_string()],
+                    ..Default::default()
+                },
+            ],
+        };
+
+        let backend: Arc<dyn conway::Backend> = Arc::new(FakeBackend::echo(BackendId::new("fake")));
+        let gate: Arc<dyn PermissionGate> = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
+        let router: Arc<dyn conway::Router> = Arc::new(FakeRouter::single(conway::ModelRef {
+            backend: BackendId::new("fake"),
+            model: ModelId::new("echo-model"),
+        }));
+        let conway = ConwayBuilder::from_parts(config)
+            .with_backend(backend)
+            .with_session_store(Arc::new(FakeStore::new()))
+            .with_permission_gate(gate)
+            .with_router(router)
+            .build()
+            .expect("build should succeed with a hooks config and no runner injected");
+
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[])
+            .await
+            .expect("App::new should succeed");
+
+        let outcome = app
+            .submit("/settings".to_string())
+            .await
+            .expect("submit should not error");
+        assert!(matches!(outcome, SubmitOutcome::Continue));
+
+        assert_eq!(
+            app.state.hook_rules.len(),
+            2,
+            "exactly the two deny-capable rules, not the observation-only \
+             third: {:?}",
+            app.state.hook_rules
+        );
+        let by_id = |id: &str| {
+            app.state
+                .hook_rules
+                .iter()
+                .find(|r| r.id == id)
+                .unwrap_or_else(|| panic!("missing hook rule {id}: {:?}", app.state.hook_rules))
+        };
+        let deny_writes = by_id("deny-writes");
+        assert_eq!(deny_writes.event, "pre_tool_use");
+        assert_eq!(deny_writes.match_tool.as_deref(), Some("fs.write"));
+        let deny_prompts = by_id("deny-prompts");
+        assert_eq!(deny_prompts.event, "prompt_submitted");
+        assert_eq!(deny_prompts.match_tool, None);
+        assert!(
+            app.state
+                .hook_rules
+                .iter()
+                .all(|r| r.id != "log-every-call"),
+            "an observation-only rule must not appear: {:?}",
+            app.state.hook_rules
+        );
+
+        // Renders on the real menu tree AND on screen.
+        let rows = crate::tui::view::settings::build_tree(&app.state).rows();
+        let joined = rows
+            .iter()
+            .map(|r| r.label.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(joined.contains("deny-writes"), "{joined}");
+        assert!(joined.contains("deny-prompts"), "{joined}");
+        assert!(!joined.contains("log-every-call"), "{joined}");
+
+        let text = super::super::test_support::render_text(&app.state, 200, 50);
+        assert!(text.contains("hooks"), "{text}");
+        assert!(text.contains("deny-writes"), "{text}");
     }
 
     /// Acceptance test: "focus-switching to an agent with history shows its

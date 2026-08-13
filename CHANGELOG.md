@@ -9,6 +9,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Hook-backed permission rules are now visible and individually revocable
+  in `/settings`, as a fourth review list alongside allow/deny/prompt**
+  (board item 01KZS02HYXGTW42R8G4HP10GHX). Before this item, a `pre_tool_use`
+  or `prompt_submitted` hook that could silently deny a call had no surface
+  anywhere in the TUI -- turning one off meant hand-editing `enabled` in
+  `settings.json` and restarting, which fails `PHILOSOPHY.md` §5's own
+  security property for hooks ("it appears wherever other permission rules
+  appear, and it is individually revocable"). The new **hooks** section
+  lists every rule for BOTH deny-capable events -- `pre_tool_use` (narrows a
+  tool call) and `prompt_submitted` (narrows a submitted prompt, now that
+  it dispatches) -- naming its `id`, event, tool matcher (`match`, or "every
+  call"), and origin; a rule whose script is broken or missing still
+  appears (fail-closed means it is currently denying everything it
+  matches, which is exactly when an operator most needs to see and revoke
+  it). Observation-only events (`post_tool_use`, `session_starting`,
+  `child_spawned`, `request_assembled`, `child_reported`) are deliberately
+  excluded -- they cannot deny a call, so there is nothing here for them to
+  silently keep authorizing by staying enabled; turning one off is still a
+  config edit. Selecting a row and pressing `Enter` revokes it for the rest
+  of the session, mirroring every other `/settings` toggle's session-only
+  scope (there is still no `settings.json` writer). New facade surface:
+  `Conway::active_deny_capable_hook_rules`/`Conway::revoke_hook_rule`
+  (`crates/conway/src/conway.rs`), backed by new read-only getters on
+  `PermissionBroker`/`HookDispatcher`/`Runtime`
+  (`crates/conway-runtime/src/permission.rs`,
+  `crates/conway-runtime/src/hook_dispatch.rs`,
+  `crates/conway-runtime/src/runtime.rs`) -- no change to either's existing
+  dispatch or fail-closed behavior. Proven end to end against a real
+  `[hooks]` config, a real spawned hook process, and a real `bash` tool call
+  (`crates/conway/tests/hook_revoke_seam.rs`): a denying hook blocks the
+  call, revoking it through the exact facade method the UI action calls
+  lets the next matching call through, in the same session.
+  (`crates/conway-runtime/src/permission.rs`,
+  `crates/conway-runtime/src/hook_dispatch.rs`,
+  `crates/conway-runtime/src/runtime.rs`, `crates/conway/src/conway.rs`,
+  `crates/conway/src/lib.rs`, `crates/conway-cli/src/tui/state.rs`,
+  `crates/conway-cli/src/tui/input.rs`, `crates/conway-cli/src/tui/app.rs`,
+  `crates/conway-cli/src/tui/view/settings.rs`,
+  `crates/conway-cli/src/tui/test_support.rs`,
+  `crates/conway/tests/hook_revoke_seam.rs`, `docs/interactive.md`)
+
 - **A way to load config while ignoring the ambient user layer** (board item
   01KZYCKF3Z1XBCS50N7EWWVPEQ). Every config load merges five sources --
   `default < XDG < project < env < CLI` -- and `LoadOptions::explicit_path`
