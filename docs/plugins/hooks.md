@@ -340,6 +340,74 @@ discussing hook fork/spawn and is not itself hook-specific — it is a
 correction to the fork primitive generally, which a hook's `Fork` mode would
 simply inherit once built.
 
+### 15. TUI slash-command declaration — `Plugin::commands()` / `Command::invoke`
+
+| Field | Value |
+|---|---|
+| Kind | Declarative (`Plugin::commands()`, consulted once, at TUI startup) + Participant (`Command::invoke`, an operator-triggered call the host runs and shows the result of) |
+| Receives | `Command::spec()` is consulted with nothing live, at registry construction, and returns a [`CommandSpec`] (`name`, `summary`). `Command::invoke` receives a [`CommandCtx`]: `focused_agent`, `root_agent`, and `args` (everything typed after the command word, verbatim — the same "consume the remainder verbatim" rule every other slash command's free-text argument follows) |
+| May return | A [`CommandOutcome`]: `Output(Vec<String>)` (lines appended to the transcript verbatim, each its own entry) or `Error(String)` (shown as an ordinary `Notice`, the same severity a failing built-in command gets) |
+| On error | `invoke` returning `CommandOutcome::Error` is not a failure of the *host* — it is the command's own reported outcome, rendered as a `Notice` and nothing more. A **panic** inside `invoke` is isolated: the host runs it inside a `tokio::spawn`, and a panicking task cannot bring down the process or the TUI's render/input loop — its `JoinError` is converted into an ordinary `CommandOutcome::Error` naming the panic, delivered through the same reply channel a normal return uses |
+| On timeout | None imposed. A command that never completes leaves its reply channel silent forever, but never blocks anything else — see "When absent"/Ordering below for why this is structural, not a convention an implementation must remember |
+| On garbage | Not applicable to `invoke` (it receives typed Rust values, not wire input). At *registration*, a malformed `CommandSpec::name` (empty, containing whitespace, or failing `conway::plugin::validate_command_name` once namespaced) is a **named, install-time error** — the TUI refuses to start rather than installing a command that could never be typed or that malforms its own namespace |
+| When absent | No `Plugin::commands()` override means no commands (the trait's own default returns `Vec::new()`) — every existing `Plugin` implementor, built-in or third-party, keeps compiling and behaving identically. With the declaring plugin not installed at all, its command's full name is simply unknown — `commands::parse` recognizes the *shape* of a plugin-looking word (containing conway-core's event/command namespace separator, `.`) but resolution against the installed registry happens only in `execute`, so an uninstalled plugin's command produces the ordinary "unknown command" notice, never a stub or a special case |
+| Ordering | **The render/input loop never calls a plugin, and never blocks on one — the same hard-won property point 12 (`status.declare/1`/`status/1`) establishes for the status line, reused here for the same reason.** `commands::execute` resolves a command (a synchronous `HashMap` lookup) and returns an `Effect::RunPluginCommand` describing it, without ever calling `invoke`; `App` (`conway-cli`) spawns the actual call on its own task, off the `select!` loop that drives rendering and key handling, and receives the reply on a channel exactly like `/ask`'s own modal-answer plumbing (`ModalAskOutcome`/`run_modal_ask`). A hanging command therefore degrades to "the operator doesn't see a reply yet," never to a frozen terminal |
+| Status | **Implemented.** `conway_core::ports::plugin::{Command, CommandCtx, CommandOutcome, CommandSpec}` and `Plugin::commands()`'s default (`crates/conway-core/src/ports/plugin.rs`); dispatch through `conway_cli::tui::commands::{SlashCommand::Plugin, CommandRegistry, Host::resolve_command}` and `conway_cli::tui::app::App::spawn_plugin_command`/`apply_plugin_command_done`. `conway-plugin-skeleton`'s `SkeletonPingCommand` (`/{plugin id}.ping`) is the worked example. Board item 01KZYBFTK4QPB45AJT9M57P60W |
+
+**Why this is narrower than a hook that can touch a live session, and
+deliberately so.** [`CommandCtx`] carries read-only identity and the raw
+argument text — nothing that reaches a live `Conway`/`SessionHandle`. Unlike
+every OTHER point in this table, `Plugin`/`Command` live in `conway-core`,
+which structurally cannot depend on `conway` (the facade crate one layer up,
+where session-manipulation capability like `Conway::fork_from` lives) without
+a dependency cycle. The natural bridge — mirroring how [`ToolCtx::subagents`]
+narrows fork/spawn into a running tool call via a `conway-core`-native port —
+would need a NEW port of that shape (a "which session is this command allowed
+to touch, and how" capability), threaded through `conway-runtime`/
+`ConwayBuilder`, that no item has built. Rather than design that capability
+speculatively, this point ships the largest grant possible without it — read
+identity, print output — and the gap is disclosed, not silently worked
+around: a command needing more than this is, in this project's own words
+about the tool surface (point 7's own precedent), "a bug report against the
+plugin API," not a reason to reach past `conway-core`'s own layering.
+
+**Namespacing is mandatory, and shadowing a built-in is impossible by
+construction, not merely checked.** `CommandRegistry::build` (the one
+constructor) always registers a command as `{plugin manifest id}.{command's
+own bare name}`, via `conway::plugin::validate_command_name` — the EXACT
+same rule `conway_core::event_name::validate_event_name` already enforces
+for plugin-declared events (§16.6), reused rather than reinvented: both share
+one implementation, differing only in which noun their error text names. No
+built-in TUI command word (`help`, `quit`, `fork`, `spawn`, `steer`, `tree`,
+`context`, `why`, `resume`, `settings`, `exit`) contains that separator, so
+no plugin, however it names itself or its command, can ever produce a full
+name equal to a bare built-in's — a plugin declaring a command named `help`
+registers cleanly as its OWN, separately reachable `/{its id}.help`, never as
+`/help`. What registration DOES refuse, with a named error: two commands (one
+plugin declaring the same name twice, or two plugins landing on the identical
+full name) colliding with EACH OTHER — the collision this scheme cannot rule
+out structurally.
+
+**Everything goes through `commands::parse`.** `SlashCommand::Plugin { full_name,
+args }` is an ordinary variant of the same closed enum every built-in command
+is (there is no second, parser-bypassing surface for this point — see
+`crates/conway/tests/architecture_invariants.rs`'s `t9_tui_has_exactly_
+the_four_known_parser_bypasses`, unaffected by this point). `parse` recognizes
+only the SHAPE of a plugin command (a command word containing the namespace
+separator) — staying pure and state-free, consistent with every other arm —
+and defers resolving whether that name is actually installed to `execute`,
+the one place with a `CommandRegistry` to resolve against.
+
+**Discovery.** A declared command appears in the `/` palette
+(`conway_cli::tui::view::palette::matches`/`draw_overlay`, merged with the
+built-in table at call time from `AppState::plugin_commands`) — the SAME
+surface an operator already uses to find every built-in command. `/help`
+(`conway_cli::tui::view::help`) stays keybindings-only by long-standing
+convention (T7/V4: "`/help` does not list slash commands; see `/` for
+those") — a plugin command is discoverable exactly the way a built-in one
+is, through the one surface that already lists commands, not duplicated into
+a second listing that could drift from it.
+
 ## The permission decision ordering
 
 This is the ordering most likely to be reasoned about incorrectly, so it is

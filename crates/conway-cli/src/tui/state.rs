@@ -461,6 +461,18 @@ impl std::fmt::Debug for Mode {
     }
 }
 
+/// One installed plugin command, projected into the shape `/help`'s pointer
+/// to the palette and `view::palette` need (board item
+/// 01KZYBFTK4QPB45AJT9M57P60W): `commands::CommandRegistry::palette_entries`
+/// is the one producer. `name` already carries its leading `/` (e.g.
+/// `"/acme.greet"`), matching `view::palette::CommandSpec::name`'s own
+/// convention.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PluginCommandEntry {
+    pub name: String,
+    pub description: String,
+}
+
 /// The TUI's whole render model. Every mutation goes through [`Self::apply`]
 /// (event-driven) or the app loop's direct field writes for input-driven
 /// state (`input`, `mode`, `scroll`) -- see `input.rs`/`app.rs`.
@@ -959,6 +971,16 @@ pub struct AppState {
     /// entry in `view/settings.rs::build_tree`'s root list. Toggled by
     /// `input::handle_settings_key`'s `Enter` arm on a group row.
     pub settings_collapsed_groups: HashSet<String>,
+    /// The installed plugin commands, for `/help`'s pointer to the palette
+    /// and `view::palette`'s own live-filtered listing (board item
+    /// 01KZYBFTK4QPB45AJT9M57P60W). **NOT reset by `/resume`** despite
+    /// `AppState::new` seeding it empty by default -- this is
+    /// process-lifetime configuration (which plugins `conway-cli` installed
+    /// at startup), not session-scoped state; `commands::execute`'s own
+    /// `Resume` arm carries the pre-reset value across by hand (see that
+    /// arm's own comment). `Arc` so cloning it (every `AppState::new` call,
+    /// the `Resume` carry-across) is a refcount bump, not a `Vec` copy.
+    pub plugin_commands: std::sync::Arc<Vec<PluginCommandEntry>>,
 }
 
 impl AppState {
@@ -1034,6 +1056,13 @@ impl AppState {
             settings_open: false,
             settings_selected: 0,
             settings_collapsed_groups: HashSet::new(),
+            // Board item 01KZYBFTK4QPB45AJT9M57P60W: empty here by default
+            // (mirrors every other collection field's construction-time
+            // default) -- `App::new` overwrites this immediately after
+            // construction with the real, resolved `CommandRegistry::
+            // palette_entries()`; see this field's own doc for why
+            // `/resume` must NOT go through this default a second time.
+            plugin_commands: std::sync::Arc::new(Vec::new()),
         }
     }
 

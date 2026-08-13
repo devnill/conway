@@ -32,9 +32,28 @@
 //! that split is safe only because `tool` is drawn from a small, closed,
 //! engine-known vocabulary that never needs the separator in the first
 //! place).
+//!
+//! **A third consumer, same rule, different vocabulary.** Board item
+//! 01KZYBFTK4QPB45AJT9M57P60W (plugin-declared TUI slash commands) needs the
+//! identical namespace shape for a plugin's *command* names — "a plugin
+//! declaring `/help` must not shadow the built-in" is the exact same problem
+//! §16.6 already solved for events, just one surface over. Rather than a
+//! second, independently-drifting implementation, [`validate_command_name`]
+//! shares [`validate_namespaced`] with [`validate_event_name`]: same
+//! separator constant, same shape rule, only the noun in the error text
+//! differs. This also settles that item's own open question ("bare name
+//! reachable, or always namespaced?") structurally: a plugin command's full
+//! name can never equal a bare built-in command name (no built-in TUI
+//! command name contains [`EVENT_NAMESPACE_SEPARATOR`]), so shadowing a
+//! built-in is impossible by construction, not merely checked at runtime —
+//! see that item's own module docs (`conway_cli::tui::commands`) for the
+//! registration-time check this enables instead (duplicate *plugin* command
+//! names, the collision this structural guarantee does not already rule
+//! out).
 
-/// The separator between a declaring plugin's id and its event's own name.
-/// Decided in §16.6 point 1: dot, not colon (already a different wire form,
+/// The separator between a declaring plugin's id and its event's (or, since
+/// board item 01KZYBFTK4QPB45AJT9M57P60W, command's) own name. Decided in
+/// §16.6 point 1: dot, not colon (already a different wire form,
 /// `PatternRule::parse`'s `tool:prefix`) or slash (reads as a path/URI
 /// hierarchy this design does not intend).
 pub const EVENT_NAMESPACE_SEPARATOR: char = '.';
@@ -57,14 +76,37 @@ pub const EVENT_NAMESPACE_SEPARATOR: char = '.';
 ///
 /// Both branches also reject an empty `name`.
 pub fn validate_event_name(name: &str, declaring_plugin: Option<&str>) -> Result<(), String> {
+    validate_namespaced(name, declaring_plugin, "event")
+}
+
+/// Checks `name` against the SAME core-vs-plugin namespace convention as
+/// [`validate_event_name`] — see this module's own doc ("A third consumer,
+/// same rule, different vocabulary") for why a plugin-declared TUI command's
+/// full name (as typed with its leading `/` stripped, e.g. `acme.greet` for
+/// `/acme.greet`) reuses [`validate_namespaced`] rather than a second,
+/// independent shape check. `declaring_plugin` follows the identical
+/// `None`/`Some` split `validate_event_name` documents.
+pub fn validate_command_name(name: &str, declaring_plugin: Option<&str>) -> Result<(), String> {
+    validate_namespaced(name, declaring_plugin, "command")
+}
+
+/// The shared implementation behind [`validate_event_name`] and
+/// [`validate_command_name`]: identical shape rule, `noun` only changes the
+/// error text ("event"/"command") so a caller of either public function
+/// gets a message about the vocabulary it actually asked about.
+fn validate_namespaced(
+    name: &str,
+    declaring_plugin: Option<&str>,
+    noun: &str,
+) -> Result<(), String> {
     if name.is_empty() {
-        return Err("event name must not be empty".to_string());
+        return Err(format!("{noun} name must not be empty"));
     }
 
     match declaring_plugin {
         None => {
             // A subscriber-side name: bare (core-shaped) or a well-formed
-            // `plugin_id.event_name` are both acceptable; only the
+            // `plugin_id.<noun>_name` are both acceptable; only the
             // structural shape is checked here (§16.6 point 2).
             if !name.contains(EVENT_NAMESPACE_SEPARATOR) {
                 return Ok(());
@@ -74,8 +116,8 @@ pub fn validate_event_name(name: &str, declaring_plugin: Option<&str>) -> Result
                 .expect("contains() just confirmed the separator is present");
             if prefix.is_empty() || rest.is_empty() {
                 return Err(format!(
-                    "event name '{name}' contains '{EVENT_NAMESPACE_SEPARATOR}' but is not a \
-                     well-formed 'plugin_id{EVENT_NAMESPACE_SEPARATOR}event_name'"
+                    "{noun} name '{name}' contains '{EVENT_NAMESPACE_SEPARATOR}' but is not a \
+                     well-formed 'plugin_id{EVENT_NAMESPACE_SEPARATOR}{noun}_name'"
                 ));
             }
             Ok(())
@@ -90,8 +132,8 @@ pub fn validate_event_name(name: &str, declaring_plugin: Option<&str>) -> Result
             }
             if id.contains(EVENT_NAMESPACE_SEPARATOR) {
                 return Err(format!(
-                    "plugin id '{id}' contains '{EVENT_NAMESPACE_SEPARATOR}', the event \
-                     namespace separator -- plugin ids must not contain it (§16.6 point 3)"
+                    "plugin id '{id}' contains '{EVENT_NAMESPACE_SEPARATOR}', the namespace \
+                     separator -- plugin ids must not contain it"
                 ));
             }
             let after_id = name
@@ -100,9 +142,9 @@ pub fn validate_event_name(name: &str, declaring_plugin: Option<&str>) -> Result
             let starts_with_id_dot = matches!(after_id, Some(remainder) if !remainder.is_empty());
             if !starts_with_id_dot {
                 return Err(format!(
-                    "event name '{name}' declared by plugin '{id}' must be prefixed with \
+                    "{noun} name '{name}' declared by plugin '{id}' must be prefixed with \
                      '{id}{EVENT_NAMESPACE_SEPARATOR}' -- a plugin may never declare a bare \
-                     event name, which is reserved for conway's own core events"
+                     {noun} name, which is reserved for conway's own core {noun}s"
                 ));
             }
             Ok(())
@@ -203,5 +245,53 @@ mod tests {
     fn validate_event_name_rejects_empty_name_on_both_branches() {
         assert!(validate_event_name("", None).is_err());
         assert!(validate_event_name("", Some("myplugin")).is_err());
+    }
+
+    // ---- validate_command_name (board item 01KZYBFTK4QPB45AJT9M57P60W) ----
+    // Same shape rule as `validate_event_name`'s own tests above, restated
+    // for the command vocabulary -- proves `validate_namespaced` is
+    // genuinely shared, not two implementations that happen to agree today.
+
+    #[test]
+    fn validate_command_name_accepts_correctly_prefixed_plugin_command() {
+        assert_eq!(validate_command_name("acme.greet", Some("acme")), Ok(()));
+    }
+
+    /// The acceptance-bearing case: a plugin may never declare a bare
+    /// command name -- so a plugin cannot shadow a built-in TUI command
+    /// (`/help`, `/quit`, ...), none of which contain the separator.
+    #[test]
+    fn validate_command_name_rejects_bare_name_declared_by_a_plugin() {
+        let err = validate_command_name("help", Some("acme"))
+            .expect_err("a plugin may never declare a bare command name");
+        assert!(err.contains("acme"), "error should name the plugin: {err}");
+        assert!(
+            err.contains("help"),
+            "error should name the rejected command: {err}"
+        );
+        assert!(
+            err.contains("command"),
+            "error text should say 'command', not 'event': {err}"
+        );
+    }
+
+    #[test]
+    fn validate_command_name_rejects_plugin_id_containing_the_separator() {
+        assert!(validate_command_name("my.plugin.greet", Some("my.plugin")).is_err());
+    }
+
+    #[test]
+    fn validate_command_name_rejects_empty_name_on_both_branches() {
+        assert!(validate_command_name("", None).is_err());
+        assert!(validate_command_name("", Some("acme")).is_err());
+    }
+
+    #[test]
+    fn validate_command_name_accepts_bare_name_with_no_declaring_plugin() {
+        // Subscriber-shaped check (mirrors `validate_event_name`'s own):
+        // used by `CommandRegistry::build` only in the `Some` declaration
+        // branch today, but the `None` branch is exercised here so a future
+        // caller inherits the same tested behavior.
+        assert_eq!(validate_command_name("help", None), Ok(()));
     }
 }
