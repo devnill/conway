@@ -49,14 +49,16 @@ able to allow, deny, or deny with a reason the model reads. The page also says
 the event vocabulary is open, with plugins declaring events of their own that
 sit at the same level as the core's.
 
-**Exists today: the configured rung ships, for four of its seven events.** A
-`[hooks]` block in `settings.json` is discovered on the existing precedence
-chain, parsed, and validated. Four events then dispatch for real:
-`pre_tool_use`, plus the three OBSERVATION-ONLY events `post_tool_use`,
-`session_starting` and `child_spawned` (board item
-01KZS019NHG11RVQYSVT7RG0P5), which fire at `ToolRunner`'s own
-`ToolCallFinished` seam, at `Runtime::start_root`, and at the single
-`SubagentHost::start` both subagent modes share.
+**Exists today: the configured rung ships, for all seven of its events, with a
+tool matcher.** A `[hooks]` block in `settings.json` is discovered on the
+existing precedence chain, parsed, and validated. Every event dispatches for
+real: `pre_tool_use` and `prompt_submitted`, both deny-capable and fail-closed;
+the three OBSERVATION-ONLY events `post_tool_use`, `session_starting` and
+`child_spawned` (board item 01KZS019NHG11RVQYSVT7RG0P5), which fire at
+`ToolRunner`'s own `ToolCallFinished` seam, at `Runtime::start_root`, and at
+the single `SubagentHost::start` both subagent modes share; and, since
+2026-08-13, `request_assembled` and `child_reported` (board item
+01KZYAXSGDS8AP7YK1CN7H680G).
 
 **The two tiers differ in kind, deliberately.** `pre_tool_use` fails CLOSED —
 a broken hook denies the call, because that is the safe direction for a
@@ -92,15 +94,30 @@ default, and `conway-runtime` must not reach a concrete runner on its own
 (decision 01KZT642CEZ20K92DYWBTPE2XZ). A rule declared by an embedder that
 never injects a runner parses, validates, and is never consulted.
 
-**Needed to make it true:**
+**Cleared 2026-08-13, and recorded rather than quietly deleted:**
 
-- Dispatch at the two events still left: request assembled and child reported.
-  A rule carrying either parses, validates, and does nothing. The runner port
-  they will reuse already exists; each needs only its own dispatch call site.
-- A tool-name matcher. `HookEntry` is `id`, `event`, `command`, `timeout_ms`,
-  `enabled` — there is no matcher field, so a `pre_tool_use` rule fires for
-  *every* tool call and a hook wanting to act on one tool must filter for
-  itself from the payload.
+- ~~Dispatch at the two events still left: request assembled and child
+  reported.~~ **All seven core events now dispatch** (board item
+  01KZYAXSGDS8AP7YK1CN7H680G). `request_assembled` fires once per turn from
+  `agent_loop.rs`'s `run_inner`, after `ContextBuilder::build` and any
+  `ContextHook::before_request` edit and before routing, carrying a summary
+  (segment count, token estimate, tokenizer, turn, model pin) rather than a
+  full context dump. `child_reported` fires from two gated sites — `AgentLoop::
+  finish` for normal completion and `supervisor.rs`'s `Outcome::Synthesized`
+  branch for a panic or a task past its grace window — both behind the same
+  publish-race winner `Event::AgentFinished` uses, so it fires exactly once per
+  agent and never for a root's own finish.
+- ~~A tool-name matcher.~~ **Shipped** (board item 01KZYAWQ6011Q6CJVG6CCMQPF1).
+  `HookEntry` gained `match_tool`, wire-spelled `match` to match this page's
+  own §5 example exactly; exact-string or `*`-glob, no new dependency. An
+  absent matcher preserves the previous fire-for-everything behaviour, so
+  existing configs are unaffected. A `match` on an event that carries no tool
+  name is a typed config error naming the rule's `id` — not silently inert.
+  The flat `[hooks].rules[]` list and argv `command` were deliberately kept;
+  only the matcher vocabulary converged toward the page.
+
+**Still needed to make it true:**
+
 - Registration for plugin-declared events, which is the part with no precedent
   in the design being borrowed from and the part most likely to be deferred into
   never. The namespace rule itself is settled and encoded —
@@ -119,9 +136,16 @@ never injects a runner parses, validates, and is never consulted.
 
 <!-- claim-check
 entry: Declarative hooks
-claim: the two remaining events -- request assembled, child reported -- dispatch nothing
-paths: crates/conway/src crates/conway-runtime/src crates/conway-tools/src crates/conway-cli/src
-absent: "(request_assembled|child_reported)"
+claim: all seven core events dispatch -- request_assembled and child_reported were the last two, wired 2026-08-13
+paths: crates/conway-runtime/src/hook_dispatch.rs
+present: "(request_assembled|child_reported)"
+-->
+
+<!-- claim-check
+entry: Declarative hooks
+claim: hook rules carry a tool-name matcher, wire-spelled `match` per PHILOSOPHY.md §5
+paths: crates/conway/src/config/schema.rs
+present: match_tool
 -->
 
 <!-- claim-check
