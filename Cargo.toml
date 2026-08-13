@@ -55,8 +55,8 @@ proptest = "1"
 serde_yaml = "0.9"
 directories = "5"
 clap = "4"
-ratatui = "0.29"
-crossterm = { version = "0.28", features = ["event-stream"] }
+ratatui = "0.30"
+crossterm = { version = "0.29", features = ["event-stream"] }
 assert_cmd = "2"
 predicates = "3"
 httparse = "1"
