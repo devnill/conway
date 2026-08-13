@@ -118,8 +118,11 @@ fn default_estimate_tokens(req: &GenerateRequest) -> u32 {
 /// A boxed, `Send` stream of `T`.
 ///
 /// Defined locally over `futures_core::Stream` so this crate does not need
-/// `futures`/`futures-util` as a dependency — `conway-core` performs no I/O
-/// and the combinator ecosystem those crates provide is unneeded here.
+/// `futures`/`futures-util` as a dependency — `conway-core` does no
+/// stream-driving I/O and the combinator ecosystem those crates provide is
+/// unneeded here. (The crate-wide "performs no I/O" claim has one live
+/// exception, `containment`, labeled at the crate root; it is synchronous
+/// `std::fs` and does not bear on this dependency choice either way.)
 pub type BoxStream<'a, T> = core::pin::Pin<Box<dyn futures_core::Stream<Item = T> + Send + 'a>>;
 
 /// One adapter for one LLM provider dialect (e.g. Anthropic, an

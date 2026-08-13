@@ -87,8 +87,10 @@ use crate::ids::AgentId;
 ///
 /// Implemented once, in `conway-runtime`, atop the same `AgentRoot`/
 /// `CanonicalRoot` machinery `PermissionBroker::check_root` uses (P-14).
-/// `conway-core` ships no implementation (this crate performs no I/O); see
-/// this module's own doc for why the contract lives here regardless.
+/// `conway-core` ships no implementation (nothing in this crate writes
+/// files; the crate's one I/O exception, `containment`, only reads path
+/// metadata and is labeled at the crate root); see this module's own doc for
+/// why the contract lives here regardless.
 #[async_trait]
 pub trait ArtifactWriter: Send + Sync + 'static {
     /// `name` is resolved exactly as a tool's own path argument would be:
@@ -163,7 +165,11 @@ impl ArtifactWriteHandle {
     /// capability a test wants to script (a backend that returns scripted
     /// responses, a store that records what was appended) -- gating them
     /// keeps this crate's "no I/O, except behind an explicit test feature"
-    /// promise legible. A no-op artifact writer scripts nothing and performs
+    /// promise legible. (That promise is itself a forward declaration today
+    /// -- `containment` does unfeatured `std::fs` I/O; see the crate root's
+    /// label and board item 01KZDC30CBY9CPJ8YEM7HSRV0Y. The gating rationale
+    /// below is unaffected: it is about not adding a SECOND exception.)
+    /// A no-op artifact writer scripts nothing and performs
     /// no I/O either way, so it carries none of that risk; gating it would
     /// only have reproduced the exact reachability gap this constructor
     /// exists to close, since `conway`'s facade does not forward `fakes` to
@@ -215,7 +221,9 @@ mod tests {
     /// without touching the real filesystem. Enough to prove
     /// `ArtifactWriteHandle` bakes in `agent_id` and delegates faithfully --
     /// `conway-runtime`'s own tests cover the REAL containment guard (this
-    /// crate performs no I/O, so it cannot construct a real one).
+    /// crate ships no filesystem-writing implementation, so it cannot
+    /// construct a real one -- its one I/O exception, `containment`, only
+    /// resolves paths; see the crate root's label).
     #[derive(Default)]
     struct RecordingWriter {
         result: Mutex<Option<Result<PathBuf, ArtifactWriteError>>>,
