@@ -67,7 +67,7 @@ a pointer in context" while doing neither, was **removed**, not implemented.
 variants today (`None`, `Head`, `Tail`, `HeadTail`) — no `Artifact` case
 exists to be a documented lie anymore. The capability moved to a plugin
 entirely, per that item's own resolution: *"the feature belongs in a
-plugin"* (GP-11).
+plugin"*.
 
 **The architecture verdict, stated directly.** That item's own spec argued
 this case *"fails against the pre-redirect design, which offered only
@@ -97,7 +97,7 @@ rooted subagent. `ContextHookCtx::artifacts` (an
 `ctx.artifacts.write(name, bytes)` resolves `name` the same way a tool's own
 path argument would be resolved and confined
 (`conway_runtime::permission::resolve_like_the_tool_will`, the one
-implementation of that rule, reused rather than restated per P-14) and
+implementation of that rule, reused rather than restated) and
 either returns the path it actually wrote to or a typed
 `ArtifactWriteError` — there is no second, hand-rolled resolution surface a
 hook author could get subtly wrong.
@@ -175,8 +175,8 @@ impl ContextHook for SpillToFileHook {
 ```
 
 **The threshold, the naming scheme, the preview length, and the retention
-policy are all this plugin's own opinions** — exactly GP-11's split ("Policy
-Complexity Lives in Hooks, Not Core"): core ships the seam
+policy are all this plugin's own opinions** — policy complexity lives in
+hooks, not core: core ships the seam
 (`ContextHook`/`ArtifactWriteHandle`), and sophisticated policy attaches as
 a hook. Nothing above is a recommended default; a real deployment tunes
 every one of those four numbers/choices to its own workload.
@@ -269,7 +269,7 @@ the weaker form as if it were the stronger one.
 originals. That buys three things: the session log stays intact and
 append-only (nothing is deleted, ever); the masking is reversible by
 appending a *second* mask record, never by mutating the first; and the
-transformation stays inspectable end to end (GP-10).
+transformation stays inspectable end to end.
 
 **That durable form has no producer anywhere in the tree, and no hook can
 reach it.** `LogRecord::ContextMask` (`crates/conway-core/src/log.rs`) is
@@ -367,8 +367,9 @@ impl ContextHook for CompactOldToolResultsHook {
                     summary_lines.join("\n")
                 ),
             }],
-            // GP-10: attributable, like every other segment -- this one
-            // names itself as a compaction summary, not a real tool output.
+            // Provenance is mandatory: attributable, like every other segment
+            // -- this one names itself as a compaction summary, not a real
+            // tool output.
             Provenance::SystemNote {
                 reason: "compaction: folded earlier tool results".to_string(),
             },
@@ -437,15 +438,16 @@ size was the *sole* thing wrong (`hooks.md` point 4's own boundary section
 has the full citation trail — `AgentLoop::route_and_attempt`'s destructure
 of `RoutingError::ContextTooLarge`).
 
-**GP-12, stated plainly: conway ships no compaction policy, and this is an
+**Stated plainly: conway ships no compaction policy, and this is an
 example, not a recommendation.** Nothing above has been measured against a
 real workload. `arXiv:2607.06906`'s 38% token-reduction figure — the paper
 that originally surfaced this idea — was measured on a single vendor's
 workload with n=22, a deliberately weak baseline, and an undisclosed
 conflict of interest; its own data shows smaller models *regressed* on
-orchestration-heavy tasks. Steering GP-12 blocks shipping a compaction hook
-as a default on the strength of a paper like that one — build the
-measurement against conway's own workload first, then decide.
+orchestration-heavy tasks. This project's own discipline — measure a
+baseline before optimising — blocks shipping a compaction hook as a default
+on the strength of a paper like that one; build the measurement against
+conway's own workload first, then decide.
 
 ### 3. A permission guardrail
 
@@ -713,7 +715,7 @@ in place rather than lose it to a failed write" — same principle
 (never silently drop information), different concrete action, because the
 two hooks fail in different directions for different reasons.
 
-**GP-12, again: this is a plausible efficiency win, not a measured one.**
+**Again: this is a plausible efficiency win, not a measured one.**
 Nothing here has been run against a real workload to show the token savings
 are real net of the extra tool round-trip a model now has to make to fetch
 what it used to get for free. Do not read this section as conway

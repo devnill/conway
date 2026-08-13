@@ -296,7 +296,7 @@ exactly this: the CLI binary links `conway-plugin-skeleton`, resolves
 `plugins.install` against its own small bundle for every dispatch target
 (TUI, one-shot `-p`, `sessions`, `routes` — they share one `build_conway`
 choke point), and raises a typed config error for an id it does not
-recognize rather than installing nothing silently (GP-14). A library
+recognize rather than installing nothing silently. A library
 embedder wanting the same plugin depends on `conway-plugin-skeleton`
 directly and writes the snippet above — there is no facade-level shortcut
 that spares an embedder from linking the crate, because that link is the
@@ -411,7 +411,7 @@ names that this binary does not recognize as either a plugin or a router
 factory is a hard error listing both known sets, mirroring the plugin-only
 unknown-id error this tier already raised.
 
-**No mode asymmetry** (GP-05/C-03): a router installed via
+**No mode asymmetry**: a router installed via
 `[plugins].install` takes effect identically for the TUI, one-shot, and a
 library embedder calling `with_router_factory` directly — all three reach
 the same `ConwayBuilder::build()` router step.
@@ -571,7 +571,7 @@ process environment, else `None`), and `profile_file_paths` the same
 discovered `.conway/profiles.toml` path list every entry receives whether
 or not its kind reads it. A `kind` no registered factory claims fails
 `build()` naming the offending value and every kind this build recognises —
-a misspelled or unregistered kind is never silently ignored (GP-14).
+a misspelled or unregistered kind is never silently ignored.
 
 **The two dialects `conway` used to compile in are now `conway-plugin-backends`,
 a first-party plugin (board item 01KZHF270T3W8GZ7NM6DSNQ4MM) — see
@@ -643,7 +643,7 @@ macro the trait is transformed with.
 `check_admission` is not optional: `Backend::admit`'s contract requires
 every implementation — the trait's own default and every override —
 to call it for the fits/shortfall arithmetic rather than restating
-`est_tokens + headroom_tokens <= max_context_tokens` itself (P-14, one
+`est_tokens + headroom_tokens <= max_context_tokens` itself (one
 implementation of "fits" for the whole workspace). An override that
 cannot name `check_admission` cannot honour that contract.
 

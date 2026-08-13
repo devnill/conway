@@ -160,15 +160,25 @@ When a request fails, you can tell which model served it, why the router
 picked that one, and which layer broke (`conway routes explain`). Adapters
 treat per-model differences in tool-calling reliability, streaming, and
 prompt-caching support as real, instead of flattening every backend into a
-lowest-common-denominator interface. Failover is health-aware: a
-slow-but-alive local server and a genuinely dead one are different states,
-and one transient blip doesn't take out your only configured endpoint.
+lowest-common-denominator interface.
 
-Routing is content-agnostic by default. The router resolves a role to an
-ordered set of candidates on declared capabilities alone, and reads no
-request text to do it. Nothing in the default path decides where a turn goes
-based on what you said, and prompt-cache reuse stays an economics
-optimization and never correctness-bearing.
+A default build resolves a role to its configured chain and walks it in
+order: a candidate whose backend refuses the request is skipped and the next
+one serves it, so one bad candidate degrades to the next rather than failing
+the request. What a default build does **not** do is filter candidates on
+their declared capabilities or track endpoint health — every configured
+candidate is treated as eligible, so a dead endpoint is only discovered by
+trying it. Installing the routing plugin (`conway.routing`) adds both:
+pre-flight capability filtering, so an endpoint missing a required capability
+is skipped before the request goes out, and health-aware failover, where a
+slow-but-alive endpoint and a genuinely dead one are different states, so one
+transient blip doesn't take out your only configured endpoint.
+
+Routing is content-agnostic in both configurations: the request type the
+router resolves against carries no field that can hold prompt text, so
+nothing in the router — installed or not — reads what you said to decide
+where a turn goes. Prompt-cache reuse stays an economics optimization and
+never correctness-bearing.
 
 A role is an alias the caller asks for, and what picks the role sits above
 the router: the calling code, an agent definition, or a plugin that spawns

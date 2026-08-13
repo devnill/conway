@@ -236,9 +236,9 @@ tree can verify a third party's own code.
 ## What conway DOES ship
 
 "No complex sandboxing" is not "no isolation." conway does not acquire
-seccomp, landlock, or a container runtime — that is a large dependency
-against C-04 and a permanent maintenance surface conway has decided not to
-carry. What it does ship is a containment primitive, orthogonal to what the
+seccomp, landlock, or a container runtime — that is a large dependency this
+project won't take on casually, and a permanent maintenance surface conway
+has decided not to carry. What it does ship is a containment primitive, orthogonal to what the
 platform already provides: a confinement root, conway's chroot analogue.
 
 The split that matters: **cwd is *where I am* — freely mutable, never a
@@ -258,8 +258,8 @@ every other permission step and a verified end-to-end transcript, are
 does not repeat them.
 
 **Where this primitive lives is a live, decided-but-not-built redirection,
-not a settled fact of the current tree.** Steering GP-13, amended
-2026-08-07 (decision `01KZDBYTKFYTVD9R2NA10QJNJE`), rules that the boundary
+not a settled fact of the current tree.** A decision made
+2026-08-07 (`01KZDBYTKFYTVD9R2NA10QJNJE`) rules that the boundary
 should relocate from the harness-level check described above into the tool
 that performs the operation — a future `conway.fs` plugin enforcing its own
 root over its own reads and writes, closing the TOCTOU window a

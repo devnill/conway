@@ -178,8 +178,8 @@ report is honestly *degenerate*, not empty and not fabricated-rich: one
 entry per configured chain candidate (position `0` `SELECTED`, the rest
 `SKIPPED`), every `capabilities` field `None`, and every `breaker` field
 `Closed` -- because a `MinimalRouter` genuinely indexes no capabilities and
-tracks no real breaker state, and inventing either would be exactly the
-kind of claim GP-14 forbids. Critically, `conway routes explain` still
+tracks no real breaker state, and inventing either would be claiming a
+capability the harness doesn't have. Critically, `conway routes explain` still
 distinguishes "unknown role" from "configured role, empty report" in this
 configuration: it checks `[roles]` directly against your configuration,
 not whether the report came back with zero entries -- a configured role
