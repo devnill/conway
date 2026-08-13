@@ -25,12 +25,18 @@
 //! returns the ordinary "unknown command" [`ParseError`] for `/thinking`/
 //! `/timestamps` now, the same as any other retired command name.
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use conway::plugin::{Command, CommandCtx};
 use conway::{
     AgentId, AgentIntent, ContextReport, Conway, Event, ForkSpec, ModelRef, Provenance,
     RoutingReason, SessionHandle, SessionId, SpawnSpec, SubagentMode, ToolSelector, Usage,
 };
 
-use super::state::{AppState, AskFate, Entry, IntentChoice, IntentConfirm, Mode};
+use super::state::{
+    AppState, AskFate, Entry, IntentChoice, IntentConfirm, Mode, PluginCommandEntry,
+};
 
 /// One parsed slash command. Agent/session identifiers are still raw
 /// strings here -- prefix resolution against the live tree happens in
@@ -84,6 +90,21 @@ pub enum SlashCommand {
     /// mutation.
     Settings,
     Quit,
+    /// A plugin-declared command (board item 01KZYBFTK4QPB45AJT9M57P60W):
+    /// `full_name` is the command word with its leading `/` AND leading
+    /// whitespace stripped (e.g. `"acme.greet"` for `/acme.greet`), still
+    /// unresolved against any registry -- [`parse`] recognizes only the
+    /// SHAPE (a word containing [`conway::plugin::validate_command_name`]'s
+    /// namespace separator, since no built-in command name ever does),
+    /// staying pure/state-free exactly like every other arm; resolving
+    /// whether `full_name` actually names an installed plugin command is
+    /// [`execute`]'s job, via [`Host::resolve_command`]. `args` is
+    /// everything after the command word, verbatim (module notes' own
+    /// "consume the remainder verbatim" rule).
+    Plugin {
+        full_name: String,
+        args: String,
+    },
 }
 
 /// A malformed slash command. `Display` always names the expected form, so
@@ -154,9 +175,33 @@ pub fn parse(input: &str) -> Result<SlashCommand, ParseError> {
             parse_no_arg(rest, word)?;
             Ok(SlashCommand::Quit)
         }
-        other => Err(ParseError(format!(
-            "unknown command `{other}` -- try /help"
-        ))),
+        other => {
+            // Board item 01KZYBFTK4QPB45AJT9M57P60W: a plugin command's full
+            // name is ALWAYS `plugin_id.command_name` (see `SlashCommand::
+            // Plugin`'s own doc) -- no built-in command word above ever
+            // contains the namespace separator, so recognizing the SHAPE
+            // here is enough to route to plugin dispatch with zero risk of
+            // ever mis-capturing a built-in as a plugin command, and no
+            // registry lookup is needed to stay pure. Whether `full_name`
+            // actually names something installed is `execute`'s job.
+            // '.' here is the identical separator
+            // `conway::plugin::validate_command_name` enforces (re-exported
+            // from `conway_core::event_name::EVENT_NAMESPACE_SEPARATOR`) --
+            // asserted equal, not merely commented, by
+            // `plugin_shape_check_uses_the_same_separator_validate_command_name_enforces`
+            // below, so the two can never silently desync.
+            let bare = other.strip_prefix('/').unwrap_or(other);
+            if bare.contains('.') {
+                Ok(SlashCommand::Plugin {
+                    full_name: bare.to_string(),
+                    args: rest.to_string(),
+                })
+            } else {
+                Err(ParseError(format!(
+                    "unknown command `{other}` -- try /help"
+                )))
+            }
+        }
     }
 }
 
@@ -347,6 +392,30 @@ pub enum Effect {
         parent: AgentId,
         first_message: Option<String>,
     },
+    /// A resolved plugin command is ready to run (board item
+    /// 01KZYBFTK4QPB45AJT9M57P60W). **`execute` never calls
+    /// `command.invoke` itself** -- it only resolves `full_name` against the
+    /// registry and builds `ctx`, both synchronous, bounded-time operations;
+    /// running the plugin's OWN async code is deferred to this effect so the
+    /// caller (`app.rs::App::run`) can spawn it off the render/input loop
+    /// (mirroring the existing `/ask` modal's own `tokio::spawn` +
+    /// channel-reply shape, `run_modal_ask`). This is the load-bearing
+    /// property behind this item's own hang/panic-safety acceptance
+    /// criterion: since `execute` (the thing `App::run`'s `select!` loop
+    /// DOES await directly) never runs a byte of plugin code, a hanging or
+    /// panicking `Command::invoke` cannot block or crash the loop that
+    /// awaits `execute` -- see `commands::tests::
+    /// execute_never_awaits_a_hanging_plugin_command` for the direct proof.
+    RunPluginCommand(PluginCommandInvocation),
+}
+
+/// What [`Effect::RunPluginCommand`] carries: the resolved command object,
+/// its invocation context, and the full name to attribute output/errors to
+/// once it completes.
+pub struct PluginCommandInvocation {
+    pub full_name: String,
+    pub command: Arc<dyn Command>,
+    pub ctx: CommandCtx,
 }
 
 /// The facade surface commands dispatch through -- abstracted behind a
@@ -408,6 +477,17 @@ pub trait Host {
         default_recipe: SubagentMode,
         text: &str,
     ) -> conway::Result<AgentIntent>;
+
+    /// Resolves a plugin command's full name (e.g. `"acme.greet"`, the same
+    /// string [`SlashCommand::Plugin::full_name`] carries) against the
+    /// installed [`CommandRegistry`], or `None` if nothing is registered
+    /// under that name. **Synchronous, not async** -- deliberately: a
+    /// registry lookup is an in-memory `HashMap::get`, and keeping this off
+    /// `async_trait` makes it visible at a glance that resolving a plugin
+    /// command can never itself be the thing that blocks (running the
+    /// resolved command is a SEPARATE step -- see [`Effect::
+    /// RunPluginCommand`]'s own doc).
+    fn resolve_command(&self, full_name: &str) -> Option<Arc<dyn Command>>;
 }
 
 /// The live [`Host`]: pure delegation to a `SessionHandle` + `Conway` pair
@@ -416,6 +496,11 @@ pub trait Host {
 pub struct LiveHost<'a> {
     pub handle: &'a SessionHandle,
     pub conway: &'a Conway,
+    /// The installed plugin commands (board item 01KZYBFTK4QPB45AJT9M57P60W)
+    /// -- `App` builds this once, at construction (`CommandRegistry::
+    /// build`), from the SAME plugin list it was handed; `LiveHost` borrows
+    /// it fresh per call, mirroring `handle`/`conway`'s own borrow shape.
+    pub commands: &'a CommandRegistry,
 }
 
 #[async_trait::async_trait]
@@ -473,6 +558,159 @@ impl Host for LiveHost<'_> {
         self.conway
             .classify_agent_intent(parent, default_recipe, text)
             .await
+    }
+
+    fn resolve_command(&self, full_name: &str) -> Option<Arc<dyn Command>> {
+        self.commands.resolve(full_name)
+    }
+}
+
+/// A registration-time defect (board item 01KZYBFTK4QPB45AJT9M57P60W):
+/// [`CommandRegistry::build`] refuses to install a malformed or colliding
+/// plugin command rather than silently dropping or overwriting it --
+/// "a surfaced, named error at install time, not a silent win or a silent
+/// loss" (this item's own acceptance). `App::new` propagates this as a
+/// startup failure (`ConwayError::Config`), so a defect here stops the TUI
+/// from starting with a clear message, the same severity every OTHER
+/// startup misconfiguration (a malformed permissions file, an unknown
+/// `[plugins].install` id) already gets.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandRegistrationError(String);
+
+impl std::fmt::Display for CommandRegistrationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for CommandRegistrationError {}
+
+/// The resolved set of plugin-declared TUI commands (board item
+/// 01KZYBFTK4QPB45AJT9M57P60W): built once, at TUI startup
+/// (`CommandRegistry::build`), from the same installed plugin list
+/// `conway-cli` fed to `ConwayBuilder`; consulted by [`LiveHost::
+/// resolve_command`] on every `/`-prefixed submit and by `AppState::
+/// plugin_commands` (a derived, `/help`-palette-shaped projection built
+/// once alongside this registry -- see [`Self::palette_entries`]) for
+/// discovery.
+#[derive(Default)]
+pub struct CommandRegistry {
+    entries: HashMap<String, Arc<dyn Command>>,
+    /// Declaration order (plugin order, then each plugin's own `commands()`
+    /// order) -- kept separately from `entries` (a `HashMap`, unordered) so
+    /// `/help`/the palette present a STABLE order across runs rather than
+    /// whatever `HashMap` iteration happens to produce.
+    order: Vec<String>,
+}
+
+impl std::fmt::Debug for CommandRegistry {
+    // Manual impl: `Arc<dyn Command>` carries no `Debug` bound (adding one
+    // to the `Command` trait would burden every plugin author for a
+    // TEST-only convenience -- `unwrap_err`'s own bound is the only
+    // consumer). Lists the registered full names only, in declaration
+    // order, which is exactly what a test failure message needs to name.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CommandRegistry")
+            .field("commands", &self.order)
+            .finish()
+    }
+}
+
+impl CommandRegistry {
+    /// Builds a registry from every installed plugin's own [`conway::plugin::
+    /// Plugin::commands`], namespacing each with its declaring plugin's
+    /// [`conway::plugin::PluginManifest::id`] (`conway::plugin::
+    /// validate_command_name` -- the SAME rule `conway_core::event_name::
+    /// validate_event_name` already enforces for plugin-declared events,
+    /// reused rather than reinvented; see that function's own doc).
+    ///
+    /// **Shadowing a built-in is impossible by construction, not merely
+    /// checked here.** Every registered full name is `plugin_id` +
+    /// [`conway::plugin`]'s namespace separator + the plugin's own bare
+    /// command name, and no built-in `SlashCommand` word (`help`, `quit`,
+    /// `fork`, ...) contains that separator -- so no plugin, however it
+    /// names itself or its command, can ever produce a full name equal to a
+    /// bare built-in's. `commands::tests::
+    /// a_plugin_naming_its_command_help_does_not_shadow_the_built_in_help`
+    /// proves this directly, adversarially, rather than leaving it as an
+    /// assertion in prose.
+    ///
+    /// What CAN still collide under this scheme, and what this DOES check:
+    /// two commands (from the same plugin, or two different ones) landing
+    /// on the identical full name -- refused as a named
+    /// [`CommandRegistrationError`], the collision the "not a silent win or
+    /// a silent loss" acceptance language is actually about once bare-name
+    /// shadowing is structurally excluded.
+    pub fn build(
+        plugins: &[Arc<dyn conway::plugin::Plugin>],
+    ) -> Result<Self, CommandRegistrationError> {
+        let mut entries: HashMap<String, Arc<dyn Command>> = HashMap::new();
+        let mut order: Vec<String> = Vec::new();
+
+        for plugin in plugins {
+            let manifest = plugin.manifest();
+            for command in plugin.commands() {
+                let spec = command.spec();
+                if spec.name.is_empty() || spec.name.chars().any(char::is_whitespace) {
+                    return Err(CommandRegistrationError(format!(
+                        "plugin '{}' declared an invalid command name '{}': a command name \
+                         must be non-empty and contain no whitespace, or it can never be typed \
+                         (`commands::parse` splits on the first whitespace run)",
+                        manifest.id, spec.name
+                    )));
+                }
+                let full_name = format!("{}.{}", manifest.id, spec.name);
+                conway::plugin::validate_command_name(&full_name, Some(&manifest.id))
+                    .map_err(CommandRegistrationError)?;
+                if entries.contains_key(&full_name) {
+                    return Err(CommandRegistrationError(format!(
+                        "duplicate plugin command '/{full_name}' -- declared more than once \
+                         (plugin '{}', command '{}')",
+                        manifest.id, spec.name
+                    )));
+                }
+                entries.insert(full_name.clone(), command);
+                order.push(full_name);
+            }
+        }
+
+        Ok(Self { entries, order })
+    }
+
+    /// Looks up a full name (e.g. `"acme.greet"`, no leading `/`) against
+    /// this registry. `None` for anything not registered -- including a
+    /// shape that merely LOOKS plugin-namespaced (see [`SlashCommand::
+    /// Plugin`]'s own doc: `parse` recognizes the shape, not membership).
+    pub fn resolve(&self, full_name: &str) -> Option<Arc<dyn Command>> {
+        self.entries.get(full_name).cloned()
+    }
+
+    /// A `/help`-palette-shaped projection, in declaration order: one
+    /// [`PluginCommandEntry`] per registered command, `name` already
+    /// carrying its leading `/` (matching `view::palette::CommandSpec::
+    /// name`'s own convention) so the view layer never has to remember to
+    /// add it.
+    pub fn palette_entries(&self) -> Vec<PluginCommandEntry> {
+        self.order
+            .iter()
+            .map(|full_name| {
+                let spec = self.entries[full_name].spec();
+                PluginCommandEntry {
+                    name: format!("/{full_name}"),
+                    description: spec.summary,
+                }
+            })
+            .collect()
+    }
+
+    /// Whether this registry has no declared commands at all -- `App::new`
+    /// uses this only to decide whether constructing the fixture-carrying
+    /// test harness below needs a non-default registry; no production call
+    /// site needs it today (`palette_entries`'s own empty `Vec` already
+    /// degrades correctly wherever it is consumed).
+    #[cfg(test)]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
     }
 }
 
@@ -833,7 +1071,18 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
                     // a clean `AppState` scoped to the new root instead, so
                     // resumed browsing starts from a known-empty transcript
                     // rather than a stale one from the old session.
+                    //
+                    // Board item 01KZYBFTK4QPB45AJT9M57P60W: the installed
+                    // plugin command list is process-lifetime configuration
+                    // (which plugins were installed at startup), not
+                    // session-scoped state -- `AppState::new` seeds it empty
+                    // (every OTHER field reset here genuinely IS
+                    // session-scoped), so it is carried across the reset by
+                    // hand, the one field `/resume` intentionally does not
+                    // clear.
+                    let plugin_commands = state.plugin_commands.clone();
                     *state = AppState::new(handle.root());
+                    state.plugin_commands = plugin_commands;
                     notice(state, format!("resumed session {sid}"));
                     Effect::Resumed(handle)
                 }
@@ -862,6 +1111,24 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
             Effect::None
         }
         SlashCommand::Quit => Effect::Quit,
+        SlashCommand::Plugin { full_name, args } => match host.resolve_command(&full_name) {
+            Some(command) => Effect::RunPluginCommand(PluginCommandInvocation {
+                full_name,
+                command,
+                ctx: CommandCtx {
+                    focused_agent: state.focused_agent,
+                    root_agent: host.root(),
+                    args,
+                },
+            }),
+            None => {
+                notice(
+                    state,
+                    format!("unknown command `/{full_name}` -- try /help"),
+                );
+                Effect::None
+            }
+        },
     }
 }
 
@@ -1084,6 +1351,7 @@ fn render_routing_reason(reason: &RoutingReason) -> String {
 mod tests {
     use std::sync::Mutex;
 
+    use conway::plugin::{CommandOutcome, CommandSpec};
     use conway::{AgentId, ConwayError, SessionId, SubagentMode};
     // Test-only: `ContextReportEntry`/`SegmentId` are not part of this
     // crate's curated `conway` re-export list -- constructing
@@ -1358,6 +1626,51 @@ mod tests {
     }
 
     // ---------------------------------------------------------------
+    // parse() -- plugin commands (board item 01KZYBFTK4QPB45AJT9M57P60W)
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn plugin_shaped_command_parses_into_slash_command_plugin() {
+        assert_eq!(
+            parse("/acme.greet world"),
+            Ok(SlashCommand::Plugin {
+                full_name: "acme.greet".to_string(),
+                args: "world".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn plugin_shaped_command_with_no_args_parses_with_empty_args() {
+        assert_eq!(
+            parse("/acme.greet"),
+            Ok(SlashCommand::Plugin {
+                full_name: "acme.greet".to_string(),
+                args: String::new(),
+            })
+        );
+    }
+
+    /// The shape check `parse` uses (a `.` in the command word) must agree
+    /// with `conway::plugin::validate_command_name`'s own separator -- see
+    /// `parse`'s own comment. Not a redundant assertion: it is what keeps
+    /// the two from silently desyncing if the shared separator ever changes.
+    #[test]
+    fn plugin_shape_check_uses_the_same_separator_validate_command_name_enforces() {
+        assert!(conway::plugin::validate_command_name("acme.greet", Some("acme")).is_ok());
+        assert!(matches!(
+            parse("/acme.greet"),
+            Ok(SlashCommand::Plugin { .. })
+        ));
+    }
+
+    #[test]
+    fn a_word_with_no_dot_still_falls_through_to_unknown_command() {
+        let err = parse("/nope").unwrap_err();
+        assert!(err.to_string().contains("unknown command"));
+    }
+
+    // ---------------------------------------------------------------
     // execute() -- dispatch, via a fake Host
     // ---------------------------------------------------------------
 
@@ -1390,6 +1703,13 @@ mod tests {
         /// shape: they now also see one `classify_agent_intent` call
         /// before the `fork`/`spawn` they already asserted on.
         classify_intent: Option<conway::AgentIntent>,
+        /// Board item 01KZYBFTK4QPB45AJT9M57P60W: a registered-by-hand
+        /// plugin-command table (keyed by full name), so `execute`'s
+        /// `SlashCommand::Plugin` arm is testable with no live
+        /// `CommandRegistry`/plugin at all -- `resolve_command` below is a
+        /// plain lookup into this map, the same shape `LiveHost::
+        /// resolve_command` delegates to `CommandRegistry::resolve`.
+        plugin_commands: HashMap<String, Arc<dyn Command>>,
     }
 
     impl FakeHost {
@@ -1404,11 +1724,19 @@ mod tests {
                 last_spawn_spec: Mutex::new(None),
                 fate_ok: false,
                 classify_intent: None,
+                plugin_commands: HashMap::new(),
             }
         }
 
         fn calls(&self) -> Vec<&'static str> {
             self.calls.lock().unwrap().clone()
+        }
+
+        /// Registers `command` under `full_name`, for a test exercising
+        /// `SlashCommand::Plugin` dispatch.
+        fn with_plugin_command(mut self, full_name: &str, command: Arc<dyn Command>) -> Self {
+            self.plugin_commands.insert(full_name.to_string(), command);
+            self
         }
     }
 
@@ -1512,6 +1840,279 @@ mod tests {
                 }),
             }
         }
+
+        fn resolve_command(&self, full_name: &str) -> Option<Arc<dyn Command>> {
+            self.calls.lock().unwrap().push("resolve_command");
+            self.plugin_commands.get(full_name).cloned()
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // execute() -- SlashCommand::Plugin (board item 01KZYBFTK4QPB45AJT9M57P60W)
+    // ---------------------------------------------------------------
+
+    /// A fixture plugin command that echoes `ctx.args` back, prefixed --
+    /// this module's own equivalent of the item's `/greet` verification
+    /// fixture, used to prove `execute` reaches an installed plugin command
+    /// end to end (not vacuously: `plugin_command_dispatch_is_unknown_when_
+    /// not_registered` below shows the SAME input fails when the fixture is
+    /// absent).
+    struct GreetCommand;
+
+    #[async_trait::async_trait]
+    impl Command for GreetCommand {
+        fn spec(&self) -> CommandSpec {
+            CommandSpec {
+                name: "greet".to_string(),
+                summary: "echoes its argument".to_string(),
+            }
+        }
+
+        async fn invoke(&self, ctx: CommandCtx) -> CommandOutcome {
+            CommandOutcome::Output(vec![format!("hello, {}!", ctx.args)])
+        }
+    }
+
+    /// A fixture plugin command that never resolves -- `Command::invoke`'s
+    /// own `Future` never completes. Used ONLY to prove `execute` never
+    /// awaits a plugin's `invoke` itself (the structural property behind
+    /// this item's hang-safety acceptance criterion); actually running
+    /// this to completion would hang the test process, so no test here
+    /// ever `.await`s the `CommandOutcome` this produces -- only that
+    /// `execute` returns without needing to.
+    struct HangingCommand;
+
+    #[async_trait::async_trait]
+    impl Command for HangingCommand {
+        fn spec(&self) -> CommandSpec {
+            CommandSpec {
+                name: "hang".to_string(),
+                summary: "never returns".to_string(),
+            }
+        }
+
+        async fn invoke(&self, _ctx: CommandCtx) -> CommandOutcome {
+            std::future::pending::<()>().await;
+            unreachable!("pending() never resolves")
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_dispatches_a_resolved_plugin_command_via_run_plugin_command_effect() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let host = FakeHost::new(root).with_plugin_command("acme.greet", Arc::new(GreetCommand));
+
+        let effect = execute(
+            SlashCommand::Plugin {
+                full_name: "acme.greet".to_string(),
+                args: "world".to_string(),
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+
+        let Effect::RunPluginCommand(invocation) = effect else {
+            panic!("expected Effect::RunPluginCommand");
+        };
+        assert_eq!(invocation.full_name, "acme.greet");
+        assert_eq!(invocation.ctx.args, "world");
+        assert_eq!(invocation.ctx.root_agent, root);
+        assert_eq!(invocation.ctx.focused_agent, state.focused_agent);
+        // `execute` resolved the command but did NOT run it -- proven
+        // directly by actually invoking it now, outside `execute`'s own
+        // call, and checking the fixture's own behavior fires.
+        let outcome = invocation.command.invoke(invocation.ctx).await;
+        assert_eq!(
+            outcome,
+            CommandOutcome::Output(vec!["hello, world!".to_string()])
+        );
+    }
+
+    /// The verification anchor's negative half: the identical input fails
+    /// as an unknown command when nothing is registered under that name --
+    /// proves the positive test above is not vacuous.
+    #[tokio::test]
+    async fn plugin_command_dispatch_is_unknown_when_not_registered() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let host = FakeHost::new(root); // no plugin commands registered
+
+        let effect = execute(
+            SlashCommand::Plugin {
+                full_name: "acme.greet".to_string(),
+                args: "world".to_string(),
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+
+        assert!(matches!(effect, Effect::None));
+        assert!(matches!(
+            state.transcript.last(),
+            Some(Entry::Notice { text }) if text.contains("unknown command") && text.contains("acme.greet")
+        ));
+    }
+
+    /// **Hang-safety, direct proof.** `execute` must return promptly even
+    /// when the resolved command's `invoke` would never complete --
+    /// `execute` never calls `invoke` at all (only `Effect::
+    /// RunPluginCommand`'s eventual consumer, `App::spawn_plugin_command`,
+    /// does, off the render/input loop). Wrapped in a generous timeout so a
+    /// regression that DID start awaiting the hang fails this test instead
+    /// of hanging the whole suite.
+    #[tokio::test]
+    async fn execute_never_awaits_a_hanging_plugin_command() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let host = FakeHost::new(root).with_plugin_command("acme.hang", Arc::new(HangingCommand));
+
+        let effect = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            execute(
+                SlashCommand::Plugin {
+                    full_name: "acme.hang".to_string(),
+                    args: String::new(),
+                },
+                &mut state,
+                &host,
+            ),
+        )
+        .await
+        .expect("execute must return promptly, even for a command whose invoke() hangs forever");
+
+        assert!(matches!(effect, Effect::RunPluginCommand(_)));
+    }
+
+    // ---------------------------------------------------------------
+    // CommandRegistry::build (board item 01KZYBFTK4QPB45AJT9M57P60W)
+    // ---------------------------------------------------------------
+
+    struct FixturePlugin {
+        id: &'static str,
+        command_names: Vec<&'static str>,
+    }
+
+    impl conway::plugin::Plugin for FixturePlugin {
+        fn manifest(&self) -> conway::plugin::PluginManifest {
+            conway::plugin::PluginManifest {
+                id: self.id.to_string(),
+                version: "0.1.0".to_string(),
+                tools: vec![],
+                required_host_caps: vec![],
+            }
+        }
+
+        fn tools(&self) -> Vec<Arc<dyn conway::plugin::Tool>> {
+            vec![]
+        }
+
+        fn commands(&self) -> Vec<Arc<dyn Command>> {
+            self.command_names
+                .iter()
+                .map(|name| -> Arc<dyn Command> { Arc::new(NamedCommand(name.to_string())) })
+                .collect()
+        }
+    }
+
+    struct NamedCommand(String);
+
+    #[async_trait::async_trait]
+    impl Command for NamedCommand {
+        fn spec(&self) -> CommandSpec {
+            CommandSpec {
+                name: self.0.clone(),
+                summary: format!("fixture command '{}'", self.0),
+            }
+        }
+
+        async fn invoke(&self, _ctx: CommandCtx) -> CommandOutcome {
+            CommandOutcome::Output(vec![])
+        }
+    }
+
+    #[test]
+    fn command_registry_build_registers_a_namespaced_full_name() {
+        let plugin: Arc<dyn conway::plugin::Plugin> = Arc::new(FixturePlugin {
+            id: "acme",
+            command_names: vec!["greet"],
+        });
+        let registry = CommandRegistry::build(&[plugin]).unwrap();
+        assert!(registry.resolve("acme.greet").is_some());
+        assert!(registry.resolve("greet").is_none());
+    }
+
+    /// The structural shadow-prevention proof: a plugin naming its own
+    /// command "help" -- the exact attempt the acceptance criterion names
+    /// ("a plugin declaring `/help` must not shadow the built-in") -- never
+    /// produces a bare `"help"` entry. It registers cleanly as its own,
+    /// separately reachable, correctly namespaced command instead: not an
+    /// error (there is nothing wrong with a plugin having a command NAMED
+    /// "help"), and not a shadow (the built-in `/help` is a different,
+    /// untouched code path -- `SlashCommand::Help`, matched by `parse`
+    /// BEFORE this shape check ever runs).
+    #[test]
+    fn a_plugin_naming_its_command_help_does_not_shadow_the_built_in_help() {
+        let plugin: Arc<dyn conway::plugin::Plugin> = Arc::new(FixturePlugin {
+            id: "acme",
+            command_names: vec!["help"],
+        });
+        let registry = CommandRegistry::build(&[plugin]).unwrap();
+        assert!(
+            registry.resolve("help").is_none(),
+            "the bare name 'help' must never resolve to a plugin command"
+        );
+        assert!(
+            registry.resolve("acme.help").is_some(),
+            "the plugin's own namespaced command must still register"
+        );
+        // And `parse` itself still routes bare `/help` to the untouched
+        // built-in, never to anything plugin-shaped.
+        assert_eq!(parse("/help"), Ok(SlashCommand::Help));
+    }
+
+    #[test]
+    fn command_registry_build_rejects_a_duplicate_full_name_with_a_named_error() {
+        let plugin: Arc<dyn conway::plugin::Plugin> = Arc::new(FixturePlugin {
+            id: "acme",
+            command_names: vec!["greet", "greet"],
+        });
+        let err = CommandRegistry::build(&[plugin]).unwrap_err();
+        assert!(err.to_string().contains("acme.greet"));
+        assert!(err.to_string().contains("duplicate"));
+    }
+
+    #[test]
+    fn command_registry_build_rejects_a_command_name_with_whitespace() {
+        let plugin: Arc<dyn conway::plugin::Plugin> = Arc::new(FixturePlugin {
+            id: "acme",
+            command_names: vec!["not a valid name"],
+        });
+        let err = CommandRegistry::build(&[plugin]).unwrap_err();
+        assert!(err.to_string().contains("acme"));
+        assert!(err.to_string().contains("whitespace"));
+    }
+
+    #[test]
+    fn command_registry_palette_entries_are_slash_prefixed_and_carry_the_summary() {
+        let plugin: Arc<dyn conway::plugin::Plugin> = Arc::new(FixturePlugin {
+            id: "acme",
+            command_names: vec!["greet"],
+        });
+        let registry = CommandRegistry::build(&[plugin]).unwrap();
+        let entries = registry.palette_entries();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "/acme.greet");
+        assert_eq!(entries[0].description, "fixture command 'greet'");
+    }
+
+    #[test]
+    fn command_registry_build_with_no_plugins_is_empty() {
+        let registry = CommandRegistry::build(&[]).unwrap();
+        assert!(registry.is_empty());
+        assert!(registry.palette_entries().is_empty());
     }
 
     #[tokio::test]

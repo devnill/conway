@@ -208,7 +208,14 @@ async fn dispatch(
         None if cli.print.is_some() => oneshot::run(cli, conway).await,
         None => {
             let gate_rx = tui_gate_rx.expect("tui_gate_rx is constructed whenever is_tui is true");
-            tui::run(cli, conway, gate_rx).await
+            // Board item 01KZYBFTK4QPB45AJT9M57P60W: resolved from the SAME
+            // `[plugins].install` config `build_conway`'s own
+            // `first_party_plugins::install` call already read -- see
+            // `installed_plugins`'s own doc for why this is a second,
+            // independently-correct-by-construction read rather than a
+            // second resolution algorithm.
+            let plugins = first_party_plugins::installed_plugins(&conway);
+            tui::run(cli, conway, gate_rx, &plugins).await
         }
     }
 }

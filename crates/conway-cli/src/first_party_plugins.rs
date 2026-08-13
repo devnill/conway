@@ -160,6 +160,35 @@ pub fn install(builder: ConwayBuilder) -> Result<ConwayBuilder, ConwayError> {
     builder.install_selected(bundle(), router_bundle(), backend_bundle())
 }
 
+/// The subset of [`bundle`] actually selected by `conway`'s own
+/// `[plugins].install` config (board item 01KZYBFTK4QPB45AJT9M57P60W) --
+/// what `tui::run`/`App::new` need to build the plugin command registry,
+/// since neither `Conway` nor `Runtime` exposes the installed `Plugin` list
+/// back out once `[install] handed it to `ConwayBuilder::install_selected`.
+///
+/// **Deliberately re-derives from [`bundle`] + `conway.config().plugins.
+/// install` rather than re-running `install_selected`'s own resolution
+/// logic** (which also unions in `[plugins].default_backends` and enforces
+/// router-factory cardinality -- neither applicable here, since [`bundle`]
+/// holds `Plugin`s only, never a `RouterFactory`/`BackendFactory`, and
+/// `default_backends` names backend kind ids that never collide with a
+/// first-party PLUGIN's own id in practice). Re-running that fuller
+/// resolution would need `ConwayBuilder` itself, which is already spent by
+/// the time `main.rs`'s `build_conway` returns a built `Conway` -- so this
+/// reads back the ONE fact that actually decides plugin membership
+/// (`[plugins].install`, a plain `Vec<String>` `Conway::config()` already
+/// exposes publicly) and filters [`bundle`] by it directly. Two callers
+/// computing "is id X installed" from the SAME public config field can never
+/// disagree about a first-party plugin's own install status, even though
+/// they are, mechanically, two call sites.
+pub fn installed_plugins(conway: &conway::Conway) -> Vec<Arc<dyn Plugin>> {
+    let install = &conway.config().plugins.install;
+    bundle()
+        .into_iter()
+        .filter(|plugin| install.contains(&plugin.manifest().id))
+        .collect()
+}
+
 /// `install` itself is covered end-to-end in `tests/first_party_plugins.rs`,
 /// which drives the real compiled binary: the empty case
 /// (`skeleton_tool_is_absent_from_the_announced_set_without_plugins_install`),

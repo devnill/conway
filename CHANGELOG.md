@@ -197,6 +197,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A plugin can now declare a TUI slash command — the closed `SlashCommand`
+  enum was the last genuinely privileged surface a plugin could not reach**
+  (board item 01KZYBFTK4QPB45AJT9M57P60W). `Plugin::commands()` (new, default
+  empty -- every existing implementor keeps compiling unmodified) returns
+  `Arc<dyn Command>`s; each declares a bare `CommandSpec { name, summary }`
+  and an async `invoke(CommandCtx) -> CommandOutcome` (`Output(Vec<String>)`
+  appended to the transcript, or `Error(String)` shown as an ordinary
+  `Notice`). Registered as `/<plugin manifest id>.<command name>` --
+  **mandatory namespacing, not merely convention**: no built-in command word
+  contains the namespace separator (the exact rule `conway_core::event_name`
+  already enforces for plugin-declared events, reused rather than
+  reinvented), so a plugin declaring a command named `help` registers
+  cleanly as its own `/<its id>.help` and can never shadow the built-in
+  `/help` -- structurally, not by a runtime check that could have a gap. Two
+  commands landing on the identical full name (same plugin twice, or two
+  plugins) IS refused, with a named, install-time error -- the collision
+  namespacing does not already rule out. **Everything goes through
+  `commands::parse`**: a plugin command is an ordinary `SlashCommand::Plugin`
+  variant of the same closed enum every built-in is, not a second dispatch
+  path (`crates/conway/tests/architecture_invariants.rs`'s T9 guard, pinned
+  at exactly four PRE-existing parser bypasses, is unaffected). **A hanging
+  or panicking command cannot freeze the TUI**: `commands::execute` resolves
+  a command (a synchronous lookup) but never calls `invoke` itself --
+  `App::spawn_plugin_command` runs it on its own `tokio::spawn`ed task, off
+  the render/input loop entirely, with its reply delivered through a channel
+  (mirroring `/ask`'s existing modal-answer plumbing) and a panic converted
+  into an ordinary `CommandOutcome::Error` rather than propagating. A
+  declared command appears in the `/` palette alongside every built-in
+  (`/help` itself stays keybindings-only, by the existing T7/V4 convention --
+  "see `/` for those"). **Deliberately narrow capability grant**:
+  `CommandCtx` carries only read-only agent identity and the raw argument
+  text -- no live `Conway`/`SessionHandle`, since `Plugin`/`Command` live in
+  `conway-core`, which cannot depend on the facade crate where session
+  manipulation lives without a cycle; a command cannot fork, resume, or
+  steer a session. `conway-plugin-skeleton` gains `/conway.plugin_skeleton.ping`,
+  the worked example's command half (its tool half, `skeleton_ping`, is
+  unchanged). Documented in `docs/plugins/hooks.md` point 15 (the trust
+  posture -- no permission gate at all, since the OPERATOR typed it directly,
+  unlike a model-proposed tool call -- in `docs/plugins/trust-and-security.md`)
+  and `docs/interactive.md`. (`crates/conway-core/src/ports/plugin.rs`,
+  `crates/conway-core/src/event_name.rs`, `crates/conway/src/lib.rs`,
+  `crates/conway-cli/src/tui/{commands,app,input,state,mod}.rs`,
+  `crates/conway-cli/src/tui/view/{palette,help}.rs`,
+  `crates/conway-cli/src/{first_party_plugins,main}.rs`,
+  `crates/conway-plugin-skeleton/src/lib.rs`)
+
 - **`ConwayBuilder::install_selected(plugins, router_factories,
   backend_factories)` — plugin assembly is now a facade capability, not a
   CLI privilege** (board item 01KZVZ1TDBHS7S604PQB5RZDM3). Before this,

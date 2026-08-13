@@ -51,7 +51,19 @@ use gate::GateReceiver;
 /// matching [`GateReceiver`] half of that same channel as its third
 /// argument so the app loop can service the requests the already-built
 /// `Conway`'s live `Runtime` sends into it.
-pub async fn run(cli: &Cli, conway: Conway, gate_rx: GateReceiver) -> conway::Result<ExitCode> {
+/// `plugins` (board item 01KZYBFTK4QPB45AJT9M57P60W): the installed plugin
+/// list, forwarded verbatim to [`App::new`] so it can build the plugin
+/// command registry -- see that method's own doc for why this is threaded
+/// as a parameter here rather than read back off the already-built `conway`
+/// (no such accessor exists on `Conway`/`Runtime` today). `main.rs`'s
+/// `dispatch` is this parameter's one caller, resolving it via
+/// `first_party_plugins::installed_plugins`.
+pub async fn run(
+    cli: &Cli,
+    conway: Conway,
+    gate_rx: GateReceiver,
+    plugins: &[std::sync::Arc<dyn conway::plugin::Plugin>],
+) -> conway::Result<ExitCode> {
     install_panic_hook(restore_terminal);
 
     // B5 crash-residue sweep, once per startup, BEFORE the session below is
@@ -96,7 +108,7 @@ pub async fn run(cli: &Cli, conway: Conway, gate_rx: GateReceiver) -> conway::Re
         }
     };
 
-    let app = match App::new(cli, &conway).await {
+    let app = match App::new(cli, &conway, plugins).await {
         Ok(app) => app,
         Err(e) => {
             restore_terminal();

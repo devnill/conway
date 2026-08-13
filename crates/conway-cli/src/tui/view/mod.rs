@@ -131,6 +131,7 @@ pub fn draw(state: &AppState, frame: &mut Frame, theme: &Theme) {
             areas.input,
             state.palette_source(),
             state.palette_selected,
+            &state.plugin_commands,
         );
     }
 

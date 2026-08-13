@@ -269,6 +269,19 @@ pub mod plugin {
     pub use conway_core::error::{
         ArtifactWriteError, CwdError, HookFailure, SubagentError, ToolError,
     };
+    /// Board item 01KZYBFTK4QPB45AJT9M57P60W: the SAME core-vs-plugin
+    /// namespace rule `conway_core::event_name::validate_event_name`
+    /// already enforces for plugin-declared events, reused (not
+    /// reinvented) for plugin-declared TUI command names -- see that
+    /// function's own doc for why both share one implementation.
+    /// `conway-cli`'s `CommandRegistry::build` is this function's one
+    /// caller today; re-exported here so a THIRD-PARTY plugin/embedder
+    /// building its own command registry gets the identical rule, not a
+    /// private one `conway-cli` alone can reach (production code outside
+    /// this facade cannot depend on `conway-core` directly --
+    /// `crates/conway-cli/tests/cli_surface.rs`'s `no_forbidden_deps`
+    /// guard).
+    pub use conway_core::event_name::validate_command_name;
     /// Board item 01KZS00JP5QNBJSSHNFP9C47GM: the domain types one
     /// `HookRunner::run` invocation carries in and out -- `HookInvocation`
     /// is the argument, `HookEvent` is its `event` field, and
@@ -278,9 +291,10 @@ pub mod plugin {
     pub use conway_core::hook::{HookAnswer, HookEvent, HookInvocation, HookPermissionVerdict};
     pub use conway_core::ids::ToolName;
     pub use conway_core::ports::{
-        ArtifactWriteHandle, ArtifactWriter, CancellationToken, ContextHook, ContextHookCtx,
-        ContextPayload, HookRunner, OverflowInfo, PathArgs, Plugin, PluginConfig, PluginManifest,
-        RenderKind, Tool, ToolCtx, ToolOutput,
+        ArtifactWriteHandle, ArtifactWriter, CancellationToken, Command, CommandCtx,
+        CommandOutcome, CommandSpec, ContextHook, ContextHookCtx, ContextPayload, HookRunner,
+        OverflowInfo, PathArgs, Plugin, PluginConfig, PluginManifest, RenderKind, Tool, ToolCtx,
+        ToolOutput,
     };
     pub use conway_core::provenance::Provenance;
     pub use conway_core::segment::PromptSegment;

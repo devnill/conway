@@ -192,7 +192,7 @@ async fn session_flags_are_rejected_by_app_new_not_silently_ignored() {
     let mut cli = minimal_cli();
     cli.resume = Some("01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string());
 
-    let err = match App::new(&cli, &conway).await {
+    let err = match App::new(&cli, &conway, &[]).await {
         Ok(_) => panic!("App::new must refuse --resume, not start an interactive session anyway"),
         Err(e) => e,
     };
