@@ -164,7 +164,10 @@ memory, skills, and MCP support are the ones named in
 and each lands as its own crate under `crates/` as it is built — a capability
 being common does not make it neutral, so conway ships these as things you
 install rather than behavior you inherit. Progress against that intent is
-tracked in [`.design/philosophy-debt.md`](.design/philosophy-debt.md).
+tracked on the board: routing (`01KZDC5BJWSWZZJQ7HHS11S97H`, done) and provider
+adapters (`01KZHF270T3W8GZ7NM6DSNQ4MM`, done, a separate page claim) are the
+first two occupants; compaction, memory, skills, and MCP support remain
+unbuilt with no board item yet as of 2026-08-13.
 
 **The tier's shape is settled and demonstrated, with three members shipping
 today:** `crates/conway-plugin-skeleton`, a plugin that registers a single

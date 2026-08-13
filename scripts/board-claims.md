@@ -1,0 +1,148 @@
+# Board-sourced claim-check predicates
+
+This file is data for `scripts/check-design-claims.py`, not a design record.
+It replaced `.design/philosophy-debt.md` on 2026-08-13 (board items
+`01KZYAHSXDXFDY9FX5MXPRZ4M1` and `01KZY8TEE2FDWQMHEKJDDC3SG9`).
+
+**What changed, and what did not.** The `claim-check` predicate shape —
+falsifiable `absent`/`present` patterns evaluated against the tree, exactly as
+`check-design-claims.py`'s own module doc argues for — is unchanged and is the
+genuinely valuable part; nothing about it was weakened. What moved is the
+*narrative*: "what is claimed, what exists today, why" used to live in this
+file's prose, entry by entry, renumbered every time one cleared. That prose now
+lives on the board item each predicate names in `board_item:` — an open item's
+spec for still-open debt, a done item's spec as provenance for a predicate kept
+on as a regression guard. This file carries only the falsifiable fact and
+enough of a `claim:` sentence to make a failure readable without the board open.
+
+**Why predicates live here and not literally inside each board item's spec
+text**, which is where the item retiring this file's predecessor asked for them
+to go ("beside the existing VERIFICATION ANCHOR convention"). The board
+(`.ideate-work/board.db`) is `.gitignore`d local tooling state — CI has no
+access to it, committing it was declined, and a worker in this role has
+read-only access to it by design (the claim/complete/release lifecycle belongs
+to the orchestrating process, not the implementer). A predicate that only
+existed inside a board item's `spec` column could not gate CI at all, which
+would be a regression from the ledger this file replaces — it ran in CI.
+Keeping the pattern itself in a git-tracked file and only the *citation* to the
+board keeps both properties: CI still evaluates every predicate on every
+change, and `board_item:` still makes each one someone's specific, findable,
+closeable work (or, for a shipped one, its provenance). When board.db is
+reachable (a maintainer checkout), the checker additionally resolves each
+`board_item:` and reports its live title and status — read-only, matching
+`scripts/check-board-citations.py`'s own precedent that this is practical —
+and treats a `board_item:` that resolves to nothing as a hard error, the same
+class of defect an unresolved `paths:` is.
+
+**One predicate from the predecessor was dropped rather than migrated:** an
+`absent: pub matcher` claim ("there is no tool-name matcher") that the
+predecessor's own 2026-08-13 edit had already superseded with the `present:
+match_tool` claim below when the matcher shipped, but had not removed. It held
+(vacuously — the shipped field is spelled `match_tool`, not `matcher`) and
+guarded nothing the surviving claim does not already guard, so carrying it
+forward would have been dead weight, not migrated debt.
+
+**`board_item: UNFILED`** is an explicit escape hatch for exactly one case: a
+predicate whose debt is real (discovered while migrating this file's
+predecessor) but which currently has no board item covering it, and this file
+was moved by a worker without board-write access. It says so loudly — in
+`--list` output, in a normal run's summary — rather than silently dropping the
+predicate, because a claim quietly removed from tracking during a migration is
+the exact failure class the predecessor's own contract existed to prevent
+("a claim not in this list is expected to be true right now"). Filing the item
+and swapping in its id is the intended, final state; it is not this file's job
+to invent one.
+
+---
+
+<!-- claim-check
+board_item: 01KZYAXSGDS8AP7YK1CN7H680G
+claim: all seven core events dispatch -- request_assembled and child_reported were the last two, wired 2026-08-13
+paths: crates/conway-runtime/src/hook_dispatch.rs
+present: "(request_assembled|child_reported)"
+-->
+
+<!-- claim-check
+board_item: 01KZYAWQ6011Q6CJVG6CCMQPF1
+claim: hook rules carry a tool-name matcher, wire-spelled `match` per PHILOSOPHY.md §5
+paths: crates/conway/src/config/schema.rs
+present: match_tool
+-->
+
+<!-- claim-check
+board_item: 01KZS019NHG11RVQYSVT7RG0P5
+claim: the three observation-only events ARE dispatched -- post_tool_use, session_starting, child_spawned
+paths: crates/conway-runtime/src/hook_dispatch.rs
+present: pub const SESSION_STARTING
+-->
+
+<!-- claim-check
+board_item: 01KZDC0RDRMMMJHX7SAFMM2Q5A
+claim: no declaration anywhere re-asserts that only pre_tool_use dispatches -- a general regression guard over the whole declarative-hooks charter, not any one child
+paths: crates/conway/src/config/schema.rs docs/plugins/scripts.md docs/plugins/hooks.md
+absent: (nothing dispatches a rule|Every OTHER .event. value: still forward-declared|value other than .pre_tool_use. remains exactly)
+-->
+
+<!-- claim-check
+board_item: 01KZDC0RDRMMMJHX7SAFMM2Q5A
+claim: the config schema's own reachability contract names the dispatched events -- another whole-charter regression guard
+paths: crates/conway/src/config/schema.rs
+present: child_spawned.*DISPATCHED
+-->
+
+<!-- claim-check
+board_item: 01KZS01ZBNEY12DBDNW2Y861SQ
+claim: prompt_submitted IS dispatched, deny-capable and fail-closed
+paths: crates/conway-runtime/src/hook_dispatch.rs
+present: pub const PROMPT_SUBMITTED
+-->
+
+<!-- claim-check
+board_item: 01KZS03BFE720EQZG7Q2768N2H
+claim: the plugin-event namespace rule is encoded but nothing calls it, on either side -- registration for plugin-declared events is still unbuilt
+paths: crates/conway/src crates/conway-runtime/src crates/conway-tools/src crates/conway-cli/src crates/conway-plugin-routing/src crates/conway-plugin-backends/src
+absent: validate_event_name\(
+-->
+
+<!-- claim-check
+board_item: 01KZS02HYXGTW42R8G4HP10GHX
+claim: no operator surface lists the active hook rules, so revocation means editing the config file
+paths: crates/conway-cli/src/tui/view/settings.rs
+absent: [Hh]ook
+-->
+
+<!-- claim-check
+board_item: 01KZS00JP5QNBJSSHNFP9C47GM
+claim: pre_tool_use IS dispatched -- the shipped half, which must not silently regress
+paths: crates/conway/src/builder.rs
+present: rule\.event == "pre_tool_use"
+-->
+
+<!-- claim-check
+board_item: UNFILED
+note: no open board item names the first-party plugin tier's remaining four capabilities. PHILOSOPHY.md §5 lists "dynamic routing, context compaction, memory, skills, MCP support" as the tier's members ("You get them by choosing them"), and §6 states in the present tense "there is a first-party compaction plugin to install or fork." Neither is true for compaction, memory, skills, or MCP -- only routing and provider adapters (a separate page claim) exist. This is real, current debt, found while retiring philosophy-debt.md, and it has no tracking item; filing one and swapping in its id is a follow-up this migration could not close (no board-write access).
+claim: four of the five named first-party-plugin-tier capabilities -- compaction, memory, skills, MCP -- are unbuilt, so nothing installs one
+paths: crates/conway-cli/src crates/conway/src
+absent: conway\.(compaction|memory|skills|mcp)
+-->
+
+<!-- claim-check
+board_item: 01KZDC30CBY9CPJ8YEM7HSRV0Y
+claim: confinement is still harness-level -- PathArgs and the broker's pre-gate root check have not retired
+paths: crates/conway-core/src/ports
+present: PathArgs
+-->
+
+<!-- claim-check
+board_item: 01KZDC30CBY9CPJ8YEM7HSRV0Y
+claim: CanonicalRoot still lives in conway-core, which is also why that crate still does I/O
+paths: crates/conway-core/src/containment.rs
+present: canonicalize\(\)
+-->
+
+<!-- claim-check
+board_item: 01KZDC0269171BZDB3HH00179B
+claim: conway.fs does not yet enforce a root of its own
+paths: crates/conway-tools/src/fs
+absent: (AgentRoot|CanonicalRoot)
+-->
