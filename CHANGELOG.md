@@ -74,6 +74,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Two safety-bearing code duplications collapsed to a single implementation
+  each -- repairs, shipped ungated** (board items 01KZVZ56SBPSTZHAXXGYCNETNX,
+  01KZVZ4KF72ECHTT14EDEZQQW3). Both close the same named failure mode: a guard
+  present in one copy and silently absent from a sibling, which no test of the
+  surviving copy can detect, because the sibling is a different function no
+  assertion about the first one reaches -- **already on the record in this
+  tree**, not theoretical: the NUL guard previously went missing from two
+  inlined path-resolution copies before board item 01KZ00VV3F3EBZ9WQSB292TBJZ
+  pointed both at `conway_runtime::permission::resolve_like_the_tool_will`.
+
+  **Root canonicalization.** That fix left `resolve_like_the_tool_will`
+  (`conway-runtime`) and `conway_tools::common::resolve_path` (`conway-tools`)
+  as two independent, same-behavior implementations, "kept in sync" only by a
+  doc comment demanding lockstep edits -- crate layering (`conway-runtime ->
+  conway-core`, `conway-tools -> conway-core`, never `conway-runtime ->
+  conway-tools`) meant neither crate could call the other's copy directly.
+  Both now delegate to one new shared primitive,
+  `conway_core::containment::resolve_candidate`, so the two wrappers can no
+  longer independently drop the NUL guard. Verified per-callsite, not just
+  against the shared function: a NUL-carrying path argument is rejected
+  driven through the real `read`/`write`/`edit`/`cd`/`glob`/`grep` tools
+  (`crates/conway-tools/src/fs/*.rs`), through `PermissionBroker::check_root`
+  end to end via a real spawned agent (`crates/conway/tests/
+  root_containment_seam.rs`, asserting the persisted `ToolResult` names the
+  guard's own distinctive wording, not a coincidental downstream OS-level
+  rejection), and through a `paths_under` rule's prefix resolution
+  (`crates/conway/tests/structured_rule_seam.rs`). Each test was confirmed to
+  go red with the guard temporarily removed, then restored.
+
+  **The allow/deny/prompt decision path.** Investigated whether the
+  apparent 4-5 sites (a cached grant, a mode gate, a hook verdict, a pattern
+  grant, a deny/prompt rule) were genuinely one computation or only
+  superficially similar -- verdict: **mostly the latter, correctly left
+  alone** (`PermissionBroker::decide`'s eight-step ordering already
+  dispatches each to its own legitimately-distinct route, unchanged by this
+  item). The one genuine restatement found: `PatternRule::matches_render`/
+  `matches_deny` (the flat rule syntax) carried full independent copies of
+  the metacharacter gate and prefix comparison `Rule::matches_allow_render`/
+  `matches_deny_render` (the structured evaluator) already implemented --
+  and NO production caller ever reached the flat copies (`PermissionBroker`
+  desugars every flat rule to a `Rule` via `to_rule` before storing it, so
+  `pattern_allows`/`deny_matches`/`prompt_matches` only ever consult the
+  structured evaluator). The flat methods now delegate to the structured
+  ones directly. Verified by driving both the flat (`remember_pattern`) and
+  structured (`remember_pattern_rule`) installation paths through
+  `PermissionBroker::decide` with an equivalent grant, asserting on the
+  persisted `PermissionOutcome` (never a gate-call count, since a correct
+  refusal and a silent bypass both produce zero gate calls) that a chained
+  shell command defeats the metacharacter gate identically either way
+  (`crates/conway-runtime/tests/permission_broker.rs`), confirmed red with
+  the shared gate temporarily disabled, then restored.
+  (`crates/conway-core/src/containment.rs`, `crates/conway-core/src/
+  permission_pattern.rs`, `crates/conway-runtime/src/permission.rs`,
+  `crates/conway-tools/src/common.rs`, `crates/conway-tools/src/fs/*.rs`,
+  `crates/conway-runtime/tests/permission_broker.rs`, `crates/conway/tests/
+  root_containment_seam.rs`, `crates/conway/tests/structured_rule_seam.rs`)
+
 - **`ratatui` upgraded 0.29 -> 0.30, clearing the transitive `lru`
   use-after-free/`IterMut` advisories and the unmaintained `paste` crate from
   the dependency graph** (board item 01KZWWVKT9M13E306ZW29P0W9D). Filed by

@@ -2316,20 +2316,31 @@ mod f12_tests {
             ToolCategory::Delegate,
         ];
         let cases: &[(&str, &str, &str, RenderKind)] = &[
-            ("bash:git status", "bash", "git status", RenderKind::ShellCommand),
+            (
+                "bash:git status",
+                "bash",
+                "git status",
+                RenderKind::ShellCommand,
+            ),
             (
                 "bash:git status",
                 "bash",
                 "git status && rm -rf /",
                 RenderKind::ShellCommand,
             ),
-            ("read:*", "read", r#"read({"path":"a.rs"})"#, RenderKind::Structured),
+            (
+                "read:*",
+                "read",
+                r#"read({"path":"a.rs"})"#,
+                RenderKind::Structured,
+            ),
         ];
         for (wire, tool, rendered, rk) in cases {
             let rule = PatternRule::parse(wire).expect("valid");
             let allow = rule.to_rule(Then::Allow);
             let deny = rule.to_rule(Then::Deny);
-            let expected_allow = allow.matches_allow_render(tool, ToolCategory::Read, rendered, *rk);
+            let expected_allow =
+                allow.matches_allow_render(tool, ToolCategory::Read, rendered, *rk);
             let expected_deny = deny.matches_deny_render(tool, ToolCategory::Read, rendered);
             for cat in all_categories {
                 assert_eq!(
