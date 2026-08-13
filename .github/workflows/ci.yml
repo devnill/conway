@@ -69,17 +69,22 @@ jobs:
       - name: cargo test --workspace --all-features
         run: cargo test --workspace --all-features --no-fail-fast
 
-  # The falsifiable claims `.design/philosophy-debt.md` declares about the tree.
-  # That ledger is what makes `PHILOSOPHY.md`'s present-tense exemption safe --
-  # a claim absent from it is expected to be true right now -- and nothing
-  # enforced it until board item 01KZVYR259XN9JC12A6X69CGGD. In August 2026 it
-  # went stale on its highest-traffic entry while `docs/plugins/hooks.md`, which
+  # The falsifiable claims `scripts/board-claims.md` declares about the tree,
+  # each owned by an open board item -- the completeness contract that makes
+  # `PHILOSOPHY.md`'s present-tense exemption safe (`CONTRIBUTING.md` §2), and
+  # nothing enforced it until board item 01KZVYR259XN9JC12A6X69CGGD. In August
+  # 2026 the ledger this replaced (`.design/philosophy-debt.md`, retired
+  # 2026-08-13 by 01KZYAHSXDXFDY9FX5MXPRZ4M1/01KZY8TEE2FDWQMHEKJDDC3SG9) went
+  # stale on its highest-traffic entry while `docs/plugins/hooks.md`, which
   # IS gated, stayed exact. The difference was enforcement, not care.
   #
   # Pure Python over the repo, no toolchain and no build: it runs in seconds and
-  # needs nothing but a checkout, which is why it sits first with `fmt`.
+  # needs nothing but a checkout, which is why it sits first with `fmt`. CI has
+  # no `.ideate-work/board.db` (gitignored local tooling state), so the
+  # board_item cross-check this script can also do on a maintainer checkout
+  # does not run here -- the predicate evaluation itself does not need it.
   design-claims:
-    name: design claims (.design ledger)
+    name: design claims (board-sourced predicates)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

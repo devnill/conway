@@ -425,10 +425,10 @@ fn t7_facade_has_exactly_the_four_known_presentation_types() {
 /// `RouteRequest`/`Route`/`RoutingError` stay unexported from the facade. A
 /// router genuinely needs the routing and capability domain that the facade's
 /// curated surface deliberately does not carry -- `Router`/`HealthRegistry`
-/// are on this crate's own "Deliberately NOT here" list, and the
-/// philosophy-debt ledger's first-party-tier entry already recorded the same
-/// thing at length. A third party can INSTALL a router; authoring one means
-/// depending on `conway-core` directly, on purpose.
+/// are on this crate's own "Deliberately NOT here" list, and
+/// `docs/embedding.md`'s "First-party plugin tier" section already recorded
+/// the same thing at length. A third party can INSTALL a router; authoring
+/// one means depending on `conway-core` directly, on purpose.
 ///
 /// So: a future reader must not be able to mistake this for unfinished work,
 /// and equally must not quietly "fix" it by adding the re-export. Both

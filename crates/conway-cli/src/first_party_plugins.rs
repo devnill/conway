@@ -16,10 +16,12 @@
 //! **This bundle is a worked example, not a commitment to any of its
 //! members individually.** Today it contains exactly one plugin entry --
 //! `conway-plugin-skeleton`, itself a skeleton proving nothing beyond the
-//! install mechanism (see that crate's own module doc). Dynamic routing,
-//! context compaction, memory, skills, and MCP support are each a
-//! separate, later board item (`.design/philosophy-debt.md` entry 2's own
-//! sequencing note) and each adds its own entry here when it lands --
+//! install mechanism (see that crate's own module doc). Dynamic routing is
+//! built (`conway-plugin-routing`, resolved through `router_bundle` below,
+//! not this list). Context compaction, memory, skills, and MCP support are
+//! not; each is separate, later work, and none has a board item yet as of
+//! 2026-08-13 (`scripts/board-claims.md`'s `UNFILED` entry records the gap)
+//! -- each adds its own entry here when it lands --
 //! through `ConwayBuilder::with_backend_factory`/`with_router_factory` too,
 //! not only `with_plugin`, since nothing about `[plugins].install` itself
 //! is tool-specific -- `router_bundle` and `backend_bundle` below are
