@@ -9,6 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A way to load config while ignoring the ambient user layer** (board item
+  01KZYCKF3Z1XBCS50N7EWWVPEQ). Every config load merges five sources --
+  `default < XDG < project < env < CLI` -- and `LoadOptions::explicit_path`
+  (and therefore `ConwayBuilder::from_config(path)`) only ever replaces the
+  *project* layer: the XDG/user layer
+  (`$XDG_CONFIG_HOME/conway/settings.json`, or `~/.conway/settings.json`) was
+  read unconditionally, before it, every time -- `from_config`'s own doc
+  comment ("still layered under XDG/env/CLI precedence") was accurate, but
+  there was no way anywhere in the public API to opt OUT of that layer. Two
+  in-process test suites (`crates/conway-cli/tests/continuity.rs`,
+  `oneshot_ask.rs`) failed on any machine whose real
+  `~/.conway/settings.json` named a backend kind the facade under test does
+  not link -- the operator's own config was correct; the gap was that
+  nothing let a caller say "ignore it."
+  `ConwayBuilder::from_config_only(path)` and its underlying
+  `conway::config::load_ignoring_xdg` are the new seam: identical to
+  `from_config`/`load`, except the XDG/user layer is never read (the merge
+  becomes `default < project < env < CLI`, four sources instead of five).
+  `env` is deliberately NOT suppressed by this seam -- `CONWAY_*` variables
+  are how CI and container entrypoints hand a specific invocation its own
+  credentials, not ambient state left over from someone else's home
+  directory; see `load_ignoring_xdg`'s own doc for the full reasoning.
+  `from_config`'s documented behavior is unchanged. A structural guard
+  (`crates/conway/tests/config_isolation_guard.rs`) now fails the suite if a
+  future in-process test starts reading ambient config again.
+  (`crates/conway/src/config/merge.rs`, `crates/conway/src/config/mod.rs`,
+  `crates/conway/src/builder.rs`, `crates/conway-cli/tests/continuity.rs`,
+  `crates/conway-cli/tests/oneshot_ask.rs`,
+  `crates/conway/tests/config_isolation_guard.rs`, `docs/embedding.md`)
+
 - **`[hooks].rules[]` entries can now target one tool instead of firing for
   every call** (board item 01KZYAWQ6011Q6CJVG6CCMQPF1). A `pre_tool_use` or
   `post_tool_use` rule with no `match` fires for every tool, exactly as
