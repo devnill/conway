@@ -60,3 +60,37 @@ crossterm = { version = "0.28", features = ["event-stream"] }
 assert_cmd = "2"
 predicates = "3"
 httparse = "1"
+
+# ---------------------------------------------------------------- profiles ----
+#
+# Debug builds default to full DWARF for the workspace AND every dependency,
+# which is what made `target/` unmanageable: this workspace produces ~131 test
+# binaries, cargo never garbage-collects the stale generations they leave
+# behind, and `target/` reached 175 GiB (1.39M files) by 2026-08-13 -- filling
+# a 460 GiB disk and forcing manual cleanup roughly daily.
+#
+# What is kept and what is given up:
+#
+#   debug = "line-tables-only" for workspace crates keeps FILE AND LINE
+#   NUMBERS in panics and backtraces, which is what this project's debugging
+#   actually rests on -- a failing test prints where it failed, and
+#   `RUST_BACKTRACE=1` still resolves symbols to source positions. What is
+#   given up is variable inspection under a step-debugger (lldb/gdb showing
+#   local values). Nobody working here has needed that; if you do, flip this
+#   line back to `debug = true` locally rather than committing it.
+#
+#   debug = false for dependencies drops their debuginfo entirely. Backtraces
+#   through third-party frames keep function names (those come from symbols,
+#   not DWARF) and lose only the file:line for code that is not ours.
+#
+# Release builds are untouched, so nothing about shipped artifacts changes.
+#
+# Incremental compilation is deliberately LEFT ON despite accounting for 32 GB
+# of the 2026-08-13 total: it is what keeps the edit-test loop fast, and the
+# growth is stale generations rather than active state. Periodic `cargo clean`
+# handles it -- see the operator memory on this.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
