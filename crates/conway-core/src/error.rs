@@ -385,6 +385,20 @@ pub enum RuntimeError {
     /// model-correctable mistake), not `Internal`.
     #[error("invalid subagent spec: {detail}")]
     InvalidSpec { detail: String },
+    /// A `prompt_submitted` hook refused the prompt before it reached the
+    /// agent loop (board item 01KZS01ZBNEY12DBDNW2Y861SQ).
+    ///
+    /// **Surfaced to the CALLER of `start_root`/`prompt`, never to a model as
+    /// a tool error** -- there is no model turn yet to report into, which is
+    /// what distinguishes this from `pre_tool_use`'s denial (that one lands in
+    /// a tool result the model reads).
+    ///
+    /// `reason` is the hook's own explanation, or the fail-closed message when
+    /// a hook errored or timed out. It is a diagnosis for a human, and is
+    /// never substituted for the prompt -- nothing may rewrite what the user
+    /// typed (`.design/extension-architecture.md` §5.8).
+    #[error("prompt denied by hook: {reason}")]
+    PromptDenied { reason: String },
 }
 
 /// Errors produced by [`crate::ports::SubagentHandle`]'s five fallible

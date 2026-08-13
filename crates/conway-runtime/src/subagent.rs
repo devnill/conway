@@ -825,11 +825,11 @@ impl SubagentHost for Runtime {
         // keeps `PluginManifest` free of an unwired `on_init`.
         if self
             .observation_dispatcher()
-            .will_dispatch(crate::observation::CHILD_SPAWNED)
+            .will_dispatch(crate::hook_dispatch::CHILD_SPAWNED)
         {
             self.observation_dispatcher()
                 .dispatch(
-                    crate::observation::CHILD_SPAWNED,
+                    crate::hook_dispatch::CHILD_SPAWNED,
                     serde_json::json!({
                         "child_id": agent_id,
                         "parent": parent,

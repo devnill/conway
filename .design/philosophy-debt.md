@@ -61,7 +61,7 @@ chain, parsed, and validated. Four events then dispatch for real:
 **The two tiers differ in kind, deliberately.** `pre_tool_use` fails CLOSED —
 a broken hook denies the call, because that is the safe direction for a
 permission decision. The three observation events cannot deny at all and
-fail OPEN: `ObservationDispatcher::dispatch` returns `()`, so a hook that
+fail OPEN: `HookDispatcher::dispatch` returns `()`, so a hook that
 errors or times out is logged and the operation it observed is unaffected.
 Whether `child_spawned` may ever deny is an open question, deliberately
 deferred and recorded at its dispatch site rather than settled by the shape of
@@ -94,10 +94,9 @@ never injects a runner parses, validates, and is never consulted.
 
 **Needed to make it true:**
 
-- Dispatch at the three events still left: prompt submitted, request assembled,
-  and child reported. A rule carrying one of those parses, validates, and does
-  nothing. The runner port they will reuse already exists; each needs only its
-  own dispatch call site.
+- Dispatch at the two events still left: request assembled and child reported.
+  A rule carrying either parses, validates, and does nothing. The runner port
+  they will reuse already exists; each needs only its own dispatch call site.
 - A tool-name matcher. `HookEntry` is `id`, `event`, `command`, `timeout_ms`,
   `enabled` — there is no matcher field, so a `pre_tool_use` rule fires for
   *every* tool call and a hook wanting to act on one tool must filter for
@@ -120,16 +119,23 @@ never injects a runner parses, validates, and is never consulted.
 
 <!-- claim-check
 entry: Declarative hooks
-claim: the three remaining events -- prompt submitted, request assembled, child reported -- dispatch nothing
+claim: the two remaining events -- request assembled, child reported -- dispatch nothing
 paths: crates/conway/src crates/conway-runtime/src crates/conway-tools/src crates/conway-cli/src
-absent: "(prompt_submitted|request_assembled|child_reported)"
+absent: "(request_assembled|child_reported)"
 -->
 
 <!-- claim-check
 entry: Declarative hooks
 claim: the three observation-only events ARE dispatched -- the shipped half, which must not silently regress
-paths: crates/conway-runtime/src/observation.rs
+paths: crates/conway-runtime/src/hook_dispatch.rs
 present: pub const SESSION_STARTING
+-->
+
+<!-- claim-check
+entry: Declarative hooks
+claim: prompt_submitted IS dispatched, deny-capable and fail-closed
+paths: crates/conway-runtime/src/hook_dispatch.rs
+present: pub const PROMPT_SUBMITTED
 -->
 
 <!-- claim-check
