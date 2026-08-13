@@ -267,4 +267,20 @@ mod tests {
             "one two three"
         );
     }
+
+    /// Board item 01KZVZ56SBPSTZHAXXGYCNETNX: driven through this tool's
+    /// production `invoke` entry point, not `resolve_path` in isolation.
+    #[tokio::test]
+    async fn invoke_rejects_nul_byte_in_path() {
+        let dir = TempDir::new().unwrap();
+        let (ctx, _h) = test_ctx(dir.path().to_path_buf());
+        let err = EditTool::new()
+            .invoke(
+                call(serde_json::json!({"path": "a\0b", "old_string": "x", "new_string": "y"})),
+                ctx,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ToolError::InvalidArguments { .. }));
+    }
 }
