@@ -53,6 +53,46 @@ by a few sessions. **XL** ≈ a written design, reviewed, before any code.
 
 ---
 
+## Filed on the board, 2026-08-14
+
+Charter: **`01M00QCEK68J1KF5YFCFXZKFYV`** — `[VISION] The context path, the three
+surfaces, and the dogfooding bar`. Eight children, all claimable:
+
+| Item | Covers | Board id |
+| --- | --- | --- |
+| Doctrine | D0-1…D0-7 | `01M00QD5SM21WAPJ0X29H6P5J8` |
+| Design the context path | D1-1 | `01M00QDYK4T5MZNCTQ0ZXEBSZX` |
+| The catalogue | R1 | `01M00QEQ0PVAM2S7Y9EQNZV32F` |
+| PrefixKey ⟹ wire bytes | D1-2b | `01M00QF4WSAD3RYB8PZN7ZKPFB` |
+| Non-Rust binding survey | D5-0 | `01M00QFMV84FTD3F6HVHCJRZN2` |
+| The command line | D4 | `01M00QG7GHHVDKRC0J87NH0FNR` |
+| Configure-down experiment | D5-2 | `01M00QGJEF40GGHP6SAD6Z8Z6H` |
+| Embedding ergonomics | D5-1, D5-4, D5-5 | `01M00QGYR1M8F71HTAA1S3PEKS` |
+
+**The rest of this plan was already tracked** and was referenced rather than
+duplicated — the live board (MCP `work_list`, *not* `.ideate/work-items/*.yaml`,
+which is a dead all-done export) held 32 open items when this was filed:
+
+| Plan item | Existing board id |
+| --- | --- |
+| D2-1 confinement into `conway.fs` | `01KZDC30CBY9CPJ8YEM7HSRV0Y`, charter `01KZVYJ0MH5D4DKJBCY1XEXSJY` |
+| D2-3 extract `conway-testkit` | `01KZVYWNA24EYMPVW3NPGBW51M` |
+| D3a–D3e the plugin shelf | `01KZYM81YFE08ASM225A1R5H5X` |
+| D3c out-of-process host | `01KZY8PATND84AKY0J376E3DWV` |
+| D1-5 reachable `ContextMask` | `01KZY8QRAVVVKCRBZ6HAEGW3GG` |
+| D6-1 / D6-2 split `state.rs` / `app.rs` | `01KZY8RARAGRJYJ202ARA4SYEM` / `01KZY8RV1H64T60WW9N3H4JCT1` |
+| Dogfooding intake | `01KZY8V4MYNZJABZR0X0SJ2G5Y` |
+| Cache degradation across turns | `01KZHDZKQXNYJME2CA3K52RNNY` |
+
+Three of those need their scope amended rather than rewritten — the charter says
+which and why: skills and memory become gating items, compaction becomes a
+cherry-picker rather than a summarizer, and the subprocess host should not commit to
+a protocol before the binding survey lands.
+
+D1-2 through D1-5, D5-3, D6-3, D6-4 and all of D7 are deliberately unfiled: they
+decompose from the path design, and filing them now would be guessing at a boundary
+that has not been drawn yet.
+
 ## The ownership map
 
 **An agent may write only the paths its domain owns.** Anything else is a request
