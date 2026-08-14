@@ -336,6 +336,91 @@ hypothetical, and the design has to answer all five in writing before any code.
 > intervene to produce a sendable request at all, it puts the intervention *in* the
 > record rather than behind it, so a strange turn is explicable from the log instead
 > of mysterious. Every curation mechanism built on paths inherits that obligation.
+>
+> **Where an intervention has to be recorded, precisely:** *wherever the thing it
+> affected is read from.* "In the record" is otherwise ambiguous between the session
+> log, the per-turn context report, and any derived artifact — and an intervention
+> recorded somewhere nobody reads is the same defect as one not recorded at all.
+
+### 5c. A path is identified twice, and conflating the two costs you model changes
+
+*Added 2026-08-14. This section exists because five open questions came out of the
+first path design, and three of them dissolve once this distinction is written down.*
+
+Changing model mid-session is **ordinary**, not exceptional. It is one of the most
+consequential decisions available and people revise it constantly — cheaper model for
+a mechanical stretch, larger window when the work gets big, a different provider when
+one is degraded. A design that makes model changes awkward has failed regardless of
+what else it gets right.
+
+That requirement forces a distinction §5b did not draw. A path has **two identities,
+and they answer different questions**:
+
+| | **Selection** | **Rendering** |
+| --- | --- | --- |
+| Answers | *which records, in what order* | *what bytes go on the wire* |
+| Depends on | nothing but the nodes | model, system prompt, tool set |
+| Kind of fact | curatorial — a judgment someone made | mechanical — derived, recomputable |
+| Lifetime | durable; the thing worth naming and reusing | disposable; a cache key |
+| Who authors it | a person or a curation plugin | the harness |
+
+**`prefix_key` is the second one.** It folds in the `ModelId` and the whole static
+prefix, because it exists to identify a *cacheable wire prefix* — which is exactly
+right for its job and exactly wrong as the identity of a selection.
+
+Three consequences, and the third is the one that matters:
+
+- **Ten siblings share one selection and get N renderings**, one per model they route
+  to. §5b's "one named version, ten heads" is about the selection. Nothing
+  contradicts anything once the layers are named.
+- **A selection is model-free, so it survives a model change.** Switching models
+  invalidates the rendering — which is just the cache, and is *supposed* to be
+  invalidated — and leaves the curation untouched. That is the behaviour anyone would
+  expect, and it is only expressible if the two are separate.
+- **Therefore a session's head must reference a selection, not a rendering.** A head
+  keyed on a model-dependent identity could not survive a model change without being
+  rewritten, and two agents with identical curation but different models would appear
+  to have different paths. That is backwards.
+
+#### Fitting is not a property of a selection
+
+The related trap: a curation decision is usually made *for* something — "drop these
+turns so it fits." Fitting depends on the model, so it is tempting to bake a target
+into the selection.
+
+Do not. **A selection says what belongs in context. Whether it fits is a separate
+question, asked later, and it already has an owner:** admission belongs to the
+backend, because only the thing talking to an endpoint knows that model's real
+window and how that provider counts (`PHILOSOPHY.md` §5).
+
+So the layering is: *selection* (curatorial, durable) → *rendering* (mechanical,
+per-model) → *admission* (backend, per-model). A selection that no longer fits after
+a model change produces a loud refusal naming what did not fit — the behaviour
+`PHILOSOPHY.md` §6 already specifies — and the operator or a plugin curates again.
+Never a silent re-curation, and never a selection that quietly meant something
+different under a different model.
+
+### 5d. What conway constrains, and why — two different things
+
+*Added 2026-08-14.*
+
+§5b says a path can be "freely rearranged." That word is too strong, and the
+overclaim produced a question it should have prevented.
+
+Two kinds of constraint exist and they are not comparable:
+
+- **Constraints a provider requires.** A tool result must follow its call, because a
+  request that violates it is rejected outright. This is not conway having a view; it
+  is the shape of the medium. Such constraints are legitimate, unavoidable, and must
+  be **stated plainly** rather than discovered.
+- **Constraints conway would impose because it has an opinion.** *These are the ones
+  conway refuses to have.* A rule about what belongs in a context, how much is too
+  much, when to summarize — every one of those is a judgment that differs between
+  users, and it belongs in a plugin.
+
+So the accurate claim is: **a path may be rearranged freely, subject only to what the
+wire permits.** Any constraint that cannot be traced to a provider requirement is a
+defect, and any constraint that can be must be documented where a curator will hit it.
 
 ---
 
@@ -552,17 +637,57 @@ Ordered, most important first.
    someone building on conway has to ask "should I do it this way or that way,"
    the guidance was insufficient. Fix the guidance. This is the single most
    important rule on this page, and the reason this page exists.
-2. **The core is agnostic.** Every opinion in the core is a thing an extension
-   has to accommodate or route around, forever.
+2. **The core is agnostic**, and here is how to tell whether something belongs in
+   it. Every opinion in the core is a thing an extension has to accommodate or
+   route around, forever — so the question comes up constantly and needs a test
+   rather than a instinct.
+
+   > **The test: does this encode a judgment that two reasonable people, doing the
+   > same work, could answer differently?** If yes it is policy, and it belongs in
+   > a plugin. If no it is mechanism, and the core may hold it.
+
+   This is deliberately a different test from the one `PHILOSOPHY.md` §5 applies to
+   the *default plugin set* (*does conway still function with nothing filling this
+   role?*). That one decides what must **ship**. This one decides what may live in
+   the **core surface**, and the two were being conflated.
+
+   Worked examples, because the test is only useful if it discriminates. *The
+   ability to bind a name to something* is mechanism — a pointer encodes no
+   judgment, and two people would implement it identically. *Which names exist and
+   what they mean* is policy. *Assembling a context from a stated selection* is
+   mechanism. *Deciding what belongs in that selection* is policy, and it is the
+   single most important instance of this whole rule.
 3. **Nothing happens to your context that you did not ask for.** No silent
    compaction, no silent trimming, no silent model substitution. A loud, typed
    refusal beats a clever recovery.
+
+   Stated as a rule rather than a list, so it settles cases nobody enumerated:
+   **when conway cannot honour a request or a reference exactly, it refuses and
+   names what changed.** The examples above are instances, not the boundary — the
+   same rule covers a referenced configuration that has drifted, a selection that
+   no longer fits after a model change, and whatever the next one turns out to be.
 4. **The idioms are few and clearly stated.** A small number of guiding idioms,
    applied consistently, beats a large number of features.
 5. **Extension is low-friction at every level.** If the cheapest way to change
    behavior is to fork the repo, that is a bug report against the extension
    surface.
-6. **It is genuinely usable on a Tuesday.** This is a tool for doing the work, not
+6. **An invariant belongs to the seam, not to its call sites.** *Added
+   2026-08-14.* When something must be true across an extension point, enforce it
+   at the point itself — a wrapper around the seam — rather than at each place that
+   happens to use it.
+
+   Two reasons, and the second is the one that matters. **Coverage:** checking at
+   call sites means every new consumer has to remember, and a missed one fails
+   silently. That is not hypothetical — it is exactly how `ContextHook::on_overflow`
+   ended up unguarded while `before_request` was the one being discussed.
+   **Opinion:** N call-site checks are N independent judgments that can drift apart;
+   one seam-level check is a single mechanical fact. Scattered enforcement
+   accumulates opinion, and a wrapper reduces it.
+
+   It is also what makes a surface safe to extend at all: a new consumer of the seam
+   inherits the contract instead of re-deriving it, which is the difference between
+   an extension point and a trap.
+7. **It is genuinely usable on a Tuesday.** This is a tool for doing the work, not
    a demonstration of a philosophy. If the philosophy makes the tool unpleasant,
    the philosophy is wrong. The operational form of this rule is §7a: conway's own
    CLI must be good enough to replace the harness currently in daily use, and
