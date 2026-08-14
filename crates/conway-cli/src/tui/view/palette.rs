@@ -24,7 +24,7 @@
 //! **Plugin commands (board item 01KZYBFTK4QPB45AJT9M57P60W) are the one
 //! entry this module does NOT hand-keep.** They cannot be: which commands
 //! exist is resolved at TUI startup from whichever plugins were installed,
-//! not known at compile time. [`matches`]/[`draw_overlay`] both take an
+//! not known at compile time. [`matches()`]/[`draw_overlay`] both take an
 //! additional `plugin_commands: &[PluginCommandEntry]` slice
 //! (`AppState::plugin_commands`, built once by `commands::CommandRegistry::
 //! palette_entries`) and merge it with [`COMMANDS`] at call time, AFTER the
@@ -117,7 +117,7 @@ pub const COMMANDS: &[CommandSpec] = &[
 
 /// One palette row, borrowed uniformly from either [`COMMANDS`] (`'static`)
 /// or a caller's `plugin_commands` slice (board item 01KZYBFTK4QPB45AJT9M57P60W)
-/// -- [`matches`]'s own return type, so a caller never has to case on where
+/// -- [`matches()`]'s own return type, so a caller never has to case on where
 /// a row came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PaletteRow<'a> {

@@ -140,7 +140,7 @@ impl Tool for SkeletonPingTool {
     }
 }
 
-/// The bare name [`SkeletonPingCommand`] registers under -- reachable in the
+/// The bare name `SkeletonPingCommand` registers under -- reachable in the
 /// TUI as `/{PLUGIN_ID}.{COMMAND_NAME}` (`conway_cli::tui::commands::
 /// CommandRegistry::build` prefixes it with this plugin's own manifest id;
 /// see that function's own doc for why an author never picks their own

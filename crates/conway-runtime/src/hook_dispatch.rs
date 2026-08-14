@@ -169,7 +169,7 @@ pub struct HookSpec {
     /// (the config-default) fires this hook for every event it is
     /// subscribed to, unchanged from before this field existed. `Some`
     /// only ever NARROWS which of `event`'s occurrences invoke this hook --
-    /// see [`Self::applies_to`].
+    /// see `Self::applies_to`.
     ///
     /// Only meaningful for [`POST_TOOL_USE`]: it is the only event this
     /// tier dispatches whose payload names a tool
@@ -177,7 +177,7 @@ pub struct HookSpec {
     /// every OTHER event this tier dispatches, `merge::validate` refuses to
     /// load a config that set `match` on that rule in the first place, so a
     /// `Some` here for a non-`post_tool_use` event is a state the loader
-    /// already rejected -- [`Self::applies_to`] handles it defensively
+    /// already rejected -- `Self::applies_to` handles it defensively
     /// anyway (never matches, rather than panicking or matching everything)
     /// for any caller that constructs a `HookSpec` directly rather than
     /// through the loader (e.g. this module's own tests).
