@@ -173,7 +173,7 @@ async fn purge_discards_a_completed_ask_child_without_touching_the_parent() {
     );
 
     // The child's tree node stays attached (AgentTree never detaches -- the
-    // provenance that the ask happened survives the purge, P-2).
+    // provenance that the ask happened survives the purge).
     assert!(
         handle
             .tree()
@@ -358,7 +358,7 @@ async fn sweep_reaps_modal_ask_residue_but_never_tool_ask_or_untagged_sessions()
         .expect("forking a tool-ask-shaped session should succeed");
 
     // An untagged ephemeral session (every header written before the tag
-    // existed decodes this way, C-04) -- also never sweep-eligible.
+    // existed decodes this way) -- also never sweep-eligible.
     let untagged_meta = SessionMeta {
         id: SessionId::new(),
         agent_id: AgentId::new(),

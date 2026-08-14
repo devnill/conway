@@ -1,4 +1,4 @@
-//! The slash-command palette (WI-127 criterion 3): a static, hand-kept
+//! The slash-command palette (criterion 3): a static, hand-kept
 //! command table plus a pure prefix-filter over it. Typing `/` in the input
 //! line shows every command; each further character narrows the list live,
 //! since `matches` (the function in this module, not the std macro) is
@@ -21,7 +21,7 @@
 //! table (commands) is the only place BUILT-IN command usage/description
 //! text lives outside `commands.rs`'s own parser.
 //!
-//! **Plugin commands (board item 01KZYBFTK4QPB45AJT9M57P60W) are the one
+//! **Plugin commands are the one
 //! entry this module does NOT hand-keep.** They cannot be: which commands
 //! exist is resolved at TUI startup from whichever plugins were installed,
 //! not known at compile time. [`matches()`]/[`draw_overlay`] both take an
@@ -116,7 +116,7 @@ pub const COMMANDS: &[CommandSpec] = &[
 ];
 
 /// One palette row, borrowed uniformly from either [`COMMANDS`] (`'static`)
-/// or a caller's `plugin_commands` slice (board item 01KZYBFTK4QPB45AJT9M57P60W)
+/// or a caller's `plugin_commands` slice
 /// -- [`matches()`]'s own return type, so a caller never has to case on where
 /// a row came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -209,7 +209,7 @@ pub fn draw_overlay(
             ]);
             let item = ListItem::new(line);
             if selected == Some(i) {
-                // The arrow-highlighted row (WI-130): reversed so it reads as
+                // The arrow-highlighted row: reversed so it reads as
                 // "this is what Enter/autofill has selected", matching the
                 // agent panel's own selection style.
                 item.style(Style::default().add_modifier(Modifier::REVERSED))
@@ -296,7 +296,7 @@ mod tests {
         assert!(found[0].description.contains("/quit"));
     }
 
-    // WI-134 (finding M1): render-layer coverage of the arrow selection.
+    // an earlier item (finding M1): render-layer coverage of the arrow selection.
     #[test]
     fn draw_overlay_renders_the_selected_row_reversed_and_nothing_otherwise() {
         use ratatui::backend::TestBackend;
@@ -334,7 +334,7 @@ mod tests {
         );
     }
 
-    // ---- plugin commands (board item 01KZYBFTK4QPB45AJT9M57P60W) ----
+    // ---- plugin commands ----
 
     fn fixture_plugin_commands() -> Vec<PluginCommandEntry> {
         vec![PluginCommandEntry {

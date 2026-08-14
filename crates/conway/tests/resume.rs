@@ -1,8 +1,7 @@
-//! Acceptance tests for `Conway::resume`/`::sessions`/`::fork_from` (WI-103,
-//! then WI-119).
+//! Acceptance tests for `Conway::resume`/`::sessions`/`::fork_from` (//! then an earlier item).
 //!
-//! **WI-119 closes the WI-103 gap this file's doc used to disclose here:**
-//! `Runtime::resume_root` (WI-118) now exists, and `Conway::resume`/
+//! **An earlier closes the gap this file's doc used to disclose here:**
+//! `Runtime::resume_root` now exists, and `Conway::resume`/
 //! `::fork_from` both call it (see `crates/conway/src/conway.rs`'s doc for
 //! the full mechanism). `resumed_handle_prompt_succeeds_and_continues_the_
 //! transcript` below exercises the resumed-root criterion in full, and
@@ -146,7 +145,7 @@ fn build_conway_with_backend(store: Arc<dyn SessionStore>, backend: Arc<dyn Back
 #[tokio::test]
 async fn resume_returns_handle_whose_id_and_root_match_the_session_header() {
     // Resuming happens over a SECOND `Conway`/`Runtime`, not the one that
-    // created the session (WI-119): `Runtime::resume_root` re-attaches
+    // created the session: `Runtime::resume_root` re-attaches
     // `meta.agent_id` into `AgentTree`, and attaching an id already live in
     // the SAME tree errors (`"agent ... is already attached to the tree"`,
     // `conway-runtime`'s own `tree::already_attached` -- correct, since the
@@ -256,7 +255,7 @@ async fn resumed_handle_transcript_matches_records_from_before_a_simulated_resta
     );
 }
 
-/// The WI-119 headline criterion: a resumed handle is DRIVABLE. Verified
+/// The an earlier item headline criterion: a resumed handle is DRIVABLE. Verified
 /// end-to-end over a real drop-and-rebuild of `Conway` against the same
 /// store (mirroring `resumed_handle_transcript_matches_records_from_before_a_
 /// simulated_restart` above), with a `ScriptedBackend` so the SECOND
@@ -310,7 +309,7 @@ async fn resumed_handle_prompt_succeeds_and_continues_the_transcript() {
         .expect("resume should succeed after the simulated restart");
 
     // Give the resumed agent's spawned task every chance to run its gated
-    // first iteration before `prompt` is ever called -- pre-WI-118/119, this
+    // first iteration before `prompt` is ever called -- pre- an earlier item, this
     // is exactly the window a would-be spurious turn would run in.
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(
@@ -443,7 +442,7 @@ async fn resume_succeeds_on_a_session_with_a_truncated_trailing_line() {
 }
 
 // ---------------------------------------------------------------------
-// new_session(): SessionSpec::id (WI-119)
+// new_session(): SessionSpec::id
 // ---------------------------------------------------------------------
 
 #[tokio::test]
@@ -565,12 +564,12 @@ async fn context_report_at_errors_typed_for_an_out_of_range_turn() {
 
 /// Builds a bare `SessionMeta` directly, bypassing `Conway::new_session`
 /// entirely: `new_session`'s own committed implementation has a disclosed
-/// gap (`RootSpec`, `conway-runtime`/WI-082, has no field for
+/// gap (`RootSpec`, `conway-runtime`/ an earlier item, has no field for
 /// `SessionSpec::labels`) that silently drops any labels a caller passes
 /// it, which would make a `new_session`-based fixture unable to exercise
 /// this test's label filter at all. `Conway::sessions` is a pure delegation
 /// to `SessionStore::list`, so exercising it against directly-created
-/// `SessionMeta` values -- the same technique WI-101's own test suite uses
+/// `SessionMeta` values -- the same technique its own test suite uses
 /// for its forked-fixture tests -- tests exactly this item's own criterion
 /// without depending on that unrelated, already-disclosed gap.
 fn session_meta_with_labels(labels: Vec<String>) -> conway_core::log::SessionMeta {
@@ -747,7 +746,7 @@ async fn fork_from_at_zero_is_valid_with_an_empty_inherited_prefix() {
     // `SessionStore` (see `Conway::resume`'s doc for the same property
     // applied to a resumed session), so it resolves for a `fork_from`
     // child's agent id regardless of the child's live-registration state
-    // (WI-119: `fork_from` now also registers the child live via
+    // (`fork_from` now also registers the child live via
     // `resume_root`, exercised by the drivability test below -- this test
     // only checks the store-side prefix).
     let transcript = child
@@ -760,10 +759,10 @@ async fn fork_from_at_zero_is_valid_with_an_empty_inherited_prefix() {
     );
 }
 
-/// The full WI-119 `fork_from` criterion, both halves: `prompt` on the
+/// The full an earlier item `fork_from` criterion, both halves: `prompt` on the
 /// child succeeds and the child produces a real completion (DRIVABLE), AND
 /// the child's assembled context contains the parent's inherited prefix
-/// (GP-02: a fork inherits the forker's ENTIRE context up to the fork
+/// (: a fork inherits the forker's ENTIRE context up to the fork
 /// point) -- not a clean-slate spawn in disguise. One `ScriptedBackend`
 /// answers two turns -- the parent's, then the child's -- so the child's
 /// captured request can be inspected directly.
@@ -843,13 +842,13 @@ async fn fork_from_returns_a_drivable_child_whose_prompt_succeeds() {
     );
     assert!(
         child_request_text.contains("parent turn text"),
-        "GP-02: a fork must inherit the forker's entire context up to the fork point -- expected \
+        ": a fork must inherit the forker's entire context up to the fork point -- expected \
          the child's context to contain the parent's pre-fork turn text, got: \
          {child_request_text}"
     );
 }
 
-/// GP-02 at fork depth >= 2: a grandchild forked from a fork child inherits
+/// At fork depth >= 2: a grandchild forked from a fork child inherits
 /// the WHOLE ancestor chain (root's turn, then the intermediate child's own
 /// turn), not just its immediate parent's. Exercises `resume_root`'s
 /// fork-child detection recursively -- resolving the grandchild's
@@ -927,12 +926,12 @@ async fn fork_from_at_depth_two_inherits_the_whole_ancestor_chain() {
     let grandchild_request_text = request_text(&calls[2]);
     assert!(
         grandchild_request_text.contains("root turn text"),
-        "GP-02 at depth 2: the grandchild must inherit the root's turn text through the whole \
+        "at depth 2: the grandchild must inherit the root's turn text through the whole \
          chain, got: {grandchild_request_text}"
     );
     assert!(
         grandchild_request_text.contains("child turn text"),
-        "GP-02 at depth 2: the grandchild must also inherit the intermediate child's own turn \
+        "at depth 2: the grandchild must also inherit the intermediate child's own turn \
          text, got: {grandchild_request_text}"
     );
     assert!(

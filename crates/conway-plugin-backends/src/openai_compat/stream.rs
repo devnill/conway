@@ -1,7 +1,7 @@
 //! SSE streaming for `OpenAiCompatBackend::stream`: drains the
 //! `eventsource_stream::EventStream` on a spawned task, translating each
 //! `choices[0].delta` into `StreamChunk`s and feeding tool-call deltas to a
-//! `ToolCallAccumulator` (WI-018) — the same accumulator type `wire.rs`
+//! `ToolCallAccumulator` — the same accumulator type `wire.rs`
 //! uses for the non-streaming path.
 //!
 //! `spawn` is only ever called with an already-`200`-classified
@@ -127,7 +127,7 @@ async fn drive(
                     // back inline `<tool_call>` text (vllm#31871) and yields
                     // only genuinely-emittable prose; every other dialect
                     // (and Hermes post-structured_seen) is a passthrough
-                    // (WI-022 rework, cycle 1).
+                    // (rework, cycle 1).
                     match accumulator.push_content_delta(text) {
                         Ok(Some(emit)) if !emit.is_empty() => {
                             text_buffer.push_str(&emit);

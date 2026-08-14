@@ -1,4 +1,4 @@
-//! conway-tools: the built-in `Plugin`/`Tool` implementations for
+//! Conway-tools: the built-in `Plugin`/`Tool` implementations for
 //! conway-core's plugin ports (architecture "Module: conway-tools").
 //!
 //! This crate provides no privileged capability: every built-in plugin is a
@@ -19,7 +19,7 @@
 //! `process` holds the process-group spawn/kill primitives [`shell`] and
 //! [`hook_runner`] both build on -- one implementation, never restated.
 //! [`hook_runner`] is `conway_core::ports::HookRunner`'s one-shot exec
-//! implementation (board item 01KZRZY1MNM872BZ6AKEBG3SKE) -- not a
+//! implementation -- not a
 //! `Plugin`/`Tool`, so it is not part of [`builtin_plugins`]; this item
 //! wires no event, so nothing constructs or injects it yet.
 //! [`builtin_plugins`] is the single registration entry point the facade

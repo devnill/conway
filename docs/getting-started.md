@@ -23,14 +23,14 @@ conway reads its configuration from `.conway/settings.json`, discovered by
 walking up from your current directory (so a project-local `.conway/`
 takes precedence over `~/.conway/settings.json`, which takes precedence
 over conway's built-in defaults). At minimum, `settings.json` needs a
-`default_role`, a `[backends.<id>]` entry for your provider, and a
-`[roles.<alias>]` entry (named by `default_role`) whose model chain points
+`default_role`, a `backends.<id>` entry for your provider, and a
+`roles.<alias>` entry (named by `default_role`) whose model chain points
 at that backend.
 
 That is enough to run. **A second file, `.conway/models.json`, is optional
 on a default build and worth adding anyway** — it declares each
 `"backend/model"` pair's capabilities (the file is named by
-`[models.metadata_path]`, which defaults to `.conway/models.json`).
+`models.metadata_path`, which defaults to `.conway/models.json`).
 
 Without it, a default build still routes and still serves turns: it resolves
 your role to its configured chain and walks that chain in order. What you
@@ -52,7 +52,7 @@ That error comes from the routing plugin and cannot occur without it. If
 you are following this page on a default build and looking for it, it will
 not appear.
 
-If you've set `[models].probe_on_startup` for an `openai-compat` backend,
+If you've set `models.probe_on_startup` for an `openai-compat` backend,
 that startup probe cannot fill the gap for you: it may only confirm and
 narrow the capabilities of a pair `models.json` already lists, never add a
 pair on its own — a server reporting a model it serves is not the same as
@@ -230,23 +230,26 @@ conway also ships a small, separate tier of plugins that live in this
 repository but are never registered, even by default — see `README.md`'s
 "First-party plugins" section and
 [`PHILOSOPHY.md`](../PHILOSOPHY.md#first-party-plugins-and-why-they-are-not-defaults)
-for what that tier is for. Turn one on with a distinct `[plugins]` key (not
+for what that tier is for. Turn one on with a distinct `plugins` key (not
 `tools.builtin_plugins`, which names only the four built-ins above):
 
 ```json
 // .conway/settings.json
-{ "plugins": { "install": ["conway.plugin_skeleton", "conway.history"] } }
+{ "plugins": { "install": ["conway.plugin_skeleton", "conway.history", "conway.stepguard"] } }
 ```
 
 `conway.plugin_skeleton` is the tier's own worked example
 (`crates/conway-plugin-skeleton`): it registers one `skeleton_ping` tool
-and does nothing else. `conway.history` (`crates/conway-plugin-history`,
-board item 01KZY8Q1CMMNVSF54CTC270N3H) is `/conway.history.rewind
+and does nothing else. `conway.history` (`crates/conway-plugin-history`) is `/conway.history.rewind
 <seq>`: forks the current session at an explicit, persisted sequence
 number (never free text — see that crate's own module doc for why) and
 switches the TUI to drive the resulting child, with the original session's
 own log untouched. Once installed, the status line's `session <id>`
-field grows to `session <id>@<seq>` so there is something to type. Naming
+field grows to `session <id>@<seq>` so there is something to type.
+`conway.stepguard` (`crates/conway-plugin-stepguard`) notices when an agent
+calls the same tool with the same arguments three times and writes a note
+saying so — the harness holds no such policy of its own, because when a loop
+is a loop depends on what you are doing. Naming
 an id here that the `conway` binary does not recognize is a hard config
 error, not a silent no-op. See
 [`docs/embedding.md`](embedding.md#first-party-plugin-tier) for the full

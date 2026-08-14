@@ -16,8 +16,7 @@ an explicit verdict below, not just a code sample.
 
 **A cookbook containing only what happens to work is a marketing
 document.** Where an example (or a variant of one) cannot be written against
-the tree as it stands, that is stated plainly, the gap is named, and the
-board item tracking it is cited — a documented gap is a required outcome of
+the tree as it stands, that is stated plainly, the gap is named, and the tracking it is cited — a documented gap is a required outcome of
 this page, not a failure of it.
 
 ## How to read this page
@@ -29,7 +28,7 @@ Every example is labeled one of:
 - **Partially implementable today** — one variant works now; a stronger
   variant is designed-not-built, and the gap is named.
 - **Blocked** — designed-not-built; the section shows what exists instead
-  (if anything) and cites the board item.
+  (if anything) and cites the
 
 **Every code block below marked runnable was actually compiled and run**
 against a scratch crate outside this workspace, `cookbook-scratch/`, whose
@@ -59,8 +58,7 @@ against the tree today, named as such rather than left to imply otherwise.
 **Implementable today.** Verdict below.
 
 The operator's own framing, 2026-07-30: *"spill to file is a perfect example
-of a plugin exercised by a well defined hook."* Board item
-`01KYTN3A9SPDMRG610YSB5QQXX` is **done** — `TruncationPolicy::Artifact`, the
+of a plugin exercised by a well defined hook."* is **done** — `TruncationPolicy::Artifact`, the
 core enum variant documented as "spill the full output to an artifact, keep
 a pointer in context" while doing neither, was **removed**, not implemented.
 `crates/conway-core/src/content.rs`'s `TruncationPolicy` has exactly four
@@ -75,9 +73,9 @@ additive context contribution and a plugin providing its own tool. Neither
 lets a plugin narrow another tool's output."* **That claim is now stale
 against HEAD, and this page corrects it at the site.** It was accurate
 against the design this codebase carried before the hook-first redirect
-(decision `01KYTNTRAGX2H72HF4R69XACEX`) landed `ContextHook` with
+ landed `ContextHook` with
 edit/drop/replace authority over the assembled payload — but
-`ContextHook::before_request` has had that authority since WI-126 shipped,
+`ContextHook::before_request` has had that authority since an earlier item shipped,
 independent of anything added for this item. `concepts.md`'s value-class
 boundary table states plainly what a plugin may do to **Context**: "Edit,
 drop, replace, mask" — and its own "What exists today" note confirms
@@ -86,8 +84,7 @@ in-process — this is not a forward declaration". A `ToolResult`-provenance
 segment is a segment like any other; nothing in the trait singles it out as
 append-only.
 
-What *was* genuinely missing until 2026-08-07 (board item
-`01KZ84437RMKHP5DJX7RMHH7JY`, commit `c430ca9`) was **somewhere confinement-
+What *was* genuinely missing until 2026-08-07 (commit `c430ca9`) was **somewhere confinement-
 checked to put the spilled bytes.** `ContextHookCtx` carried no root, no
 cwd, and no write capability at all — a hook wanting to spill had to reach
 for ambient filesystem access and guess a path, or receive one out-of-band
@@ -128,8 +125,7 @@ impl ContextHook for SpillToFileHook {
     async fn before_request(
         &self,
         ctx: &ContextHookCtx,
-        mut payload: ContextPayload,
-    ) -> ContextPayload {
+        mut payload: ContextPayload) -> ContextPayload {
         for segment in &mut payload.segments {
             let Provenance::ToolResult { call_id, tool } = &segment.provenance else {
                 continue;
@@ -153,8 +149,7 @@ impl ContextHook for SpillToFileHook {
                         text: format!(
                             "[{tool} output truncated: {} bytes, full output spilled to {}]\n{preview}...",
                             full_text.len(),
-                            path.display(),
-                        ),
+                            path.display()),
                     }];
                 }
                 Err(err) => {
@@ -247,14 +242,14 @@ subtly wrong.
 written:** building `ContextHookCtx` by hand for a test used to require a
 real `ArtifactWriter` impl even when a hook wrote nothing, and the facade
 shipped no no-op one — the ~15 lines of boilerplate `authoring.md`'s own
-walkthrough hit, tracked as board item `01KZJ5S3ZC8SPWTX94C4HTEC2R`, now
+walkthrough hit, tracked as, now
 closed: `ArtifactWriteHandle::noop(agent_id)` (`authoring.md`'s current step
 3) covers that case. It does **not** cover this example's own test above,
 which keeps its `RecordingArtifactWriter` on purpose — the test asserts on
 the exact name and bytes the hook wrote, something a no-op writer cannot
 record by construction. `noop` and a purpose-built recording double solve two
 different problems (nothing to supply vs. something to observe); this
-example genuinely needs the latter, board item or no.
+example genuinely needs the latter or no.
 
 ### 2. Compaction
 
@@ -285,8 +280,7 @@ today; every `ContextHook` edit is ephemeral, scoped to one request, and
 invisible on the next turn unless the hook repeats it."*
 
 **This is a deliberate deferral, not an unfiled gap.** An item was filed for
-it (`01KZJ8FVYH25A7GT4P68WTPZZP`) and then **cancelled**: decision
-`01KZT3XF73Z5WBC09FSWD51RT7` rules that compaction is explicitly out of
+it and then **cancelled**: rules that compaction is explicitly out of
 scope and stays deferred. The reasoning is that compaction's value is
 entirely empirical — when to fold, how much to keep, what to summarise, and
 whether any of it helps depends on model, workload, provider and transcript
@@ -297,8 +291,7 @@ their own workload needs. Do not read the absence of a producer as an
 oversight waiting to be corrected.
 
 What that decision does **not** rule is that `ContextMask` should be deleted,
-or that the missing-producer observation was wrong. The nearest live work is
-`01KZ844ZXZMVRWC7ZANT7PSM6X` (the `context.hook/1` replace-primitive gap),
+or that the missing-producer observation was wrong. The nearest live work is (the `context.hook/1` replace-primitive gap),
 which is adjacent rather than the same question.
 
 **What *is* real and runnable today is the ephemeral form**, and it still
@@ -332,8 +325,7 @@ impl ContextHook for CompactOldToolResultsHook {
     async fn before_request(
         &self,
         _ctx: &ContextHookCtx,
-        payload: ContextPayload,
-    ) -> ContextPayload {
+        payload: ContextPayload) -> ContextPayload {
         let ContextPayload { segments, tools } = payload;
 
         let result_idxs: Vec<usize> = segments
@@ -372,8 +364,7 @@ impl ContextHook for CompactOldToolResultsHook {
             // tool output.
             Provenance::SystemNote {
                 reason: "compaction: folded earlier tool results".to_string(),
-            },
-        );
+            });
 
         let mut new_segments = Vec::with_capacity(segments.len() - fold_set.len() + 1);
         let mut inserted = false;
@@ -457,7 +448,7 @@ variant is **designed-not-built**.
 A guardrail that narrows without holding authority: it can only make an
 outcome *more* restrictive than the floor already in force, never grant
 anything. `permissions.json`'s structured `{ select, when, then }` rules
-(`hooks.md` point 6, **Implemented**, board item `01KYTJD6CJ1CHJBXZ0GFYMV5MT`
+(`hooks.md` point 6, **Implemented**
 done) are exactly this shape, and `Rule::then` is enforced to only ever be
 `Deny`/`Prompt` for a plugin-contributed rule — `Then::Allow` paired with
 `PatternOrigin::Plugin` is structurally rejected at
@@ -465,7 +456,7 @@ done) are exactly this shape, and `Rule::then` is enforced to only ever be
 author is expected to follow.
 
 **Verified against the tree at writing time, per this set's standing
-rule**: board item `01KYTP1D3XWEZPW4AKPH54FNB3` ("the `prompt` rule effect
+rule**: ("the `prompt` rule effect
 has no slot in the decision ordering") is **done**. `PermissionBroker::
 decide`'s real, eight-step ordering (`hooks.md`'s "The permission decision
 ordering" section) gives `prompt`-pattern rules their own step, ahead of the
@@ -515,7 +506,7 @@ this guardrail "narrows without holding authority": it takes effect the
 moment it is written, with zero ceremony, precisely *because* it structurally
 cannot grant anything.
 
-**The inference-evaluated variant — designed-not-built, `01KZDC0RDRMMMJHX7SAFMM2Q5A`.**
+**The inference-evaluated variant — designed-not-built,.**
 A guardrail is the natural case for judgment-by-model: "deny a commit
 message that plausibly leaks a customer's data" cannot be expressed as a
 prefix match, only judged. `hooks.md` point 8 (`permission.policy/1`) is the
@@ -612,8 +603,7 @@ impl ContextHook for SkillIndexHook {
     async fn before_request(
         &self,
         _ctx: &ContextHookCtx,
-        mut payload: ContextPayload,
-    ) -> ContextPayload {
+        mut payload: ContextPayload) -> ContextPayload {
         for segment in &mut payload.segments {
             let Provenance::Skill { name } = &segment.provenance else { continue };
             if let Some(entry) = find_skill(name) {
@@ -649,8 +639,7 @@ impl Tool for ReadSkillTool {
     async fn invoke(
         &self,
         call: conway::plugin::ToolCall,
-        _ctx: conway::plugin::ToolCtx,
-    ) -> Result<ToolOutput, ToolError> {
+        _ctx: conway::plugin::ToolCtx) -> Result<ToolOutput, ToolError> {
         let args: ReadSkillArgs = serde_json::from_value(call.arguments)
             .map_err(|e| ToolError::InvalidArguments { detail: e.to_string() })?;
         Ok(match find_skill(&args.name) {
@@ -726,10 +715,9 @@ architecture does not stand in the way of building it.
 
 **Blocked.** `hooks.md` point 12 (`status.declare/1`/`status/1`) is
 **designed-not-built**: *"No status-line plugin surface exists in the tree;
-`conway-cli`'s status line reads only conway's own computed state."* No
-board item names this point specifically (checked against `hooks.md`'s own
+`conway-cli`'s status line reads only conway's own computed state."* No names this point specifically (checked against `hooks.md`'s own
 citation for it, which names none) — the closest tracked work is the
-generalized declarative `hooks` surface, `01KZDC0RDRMMMJHX7SAFMM2Q5A`, the
+generalized declarative `hooks` surface,, the
 same umbrella most of `hooks.md`'s unbuilt rows cite.
 
 The operator's framing for this example was deliberate: *"the simplest
@@ -834,9 +822,7 @@ it holds up.
 ## Stale spec instructions found while writing this page
 
 This item's own spec is dated 2026-07-30. Two things it names as open have
-since landed, checked fresh against HEAD for this page:
-
-- Board item `01KYTN3A9SPDMRG610YSB5QQXX` ("`TruncationPolicy::Artifact` is a
+since landed, checked fresh against HEAD for this page: ("`TruncationPolicy::Artifact` is a
   documented lie") is **done**, not open — the spec's conditional
   instruction (*"if it is still open, ... this example's gap analysis is
   part of the deliverable"*) does not trigger; `TruncationPolicy::Artifact`

@@ -1,5 +1,5 @@
 //! Local, network-free model metadata: context windows and capability hints
-//! used to compute headroom warnings and (later, by WI-100's
+//! used to compute headroom warnings and (later, by an earlier item's
 //! `CapabilityIndex`) routing capability floors.
 //!
 //! `load` reads a local JSON file only. The feature-gated, stubbed refresh
@@ -57,7 +57,7 @@ pub fn load(path: &Path) -> Result<ModelMetadata> {
 }
 
 /// Explicit, caller-triggered metadata refresh. Not implemented in this
-/// work item (WI-097 scope is config schema/discovery/merge — an HTTP
+/// work item (scope is config schema/discovery/merge — an HTTP
 /// fetch belongs to a later item that owns the actual client). This stub
 /// exists so the feature-gate, signature, and "never called from `load`"
 /// criteria are satisfiable now without pulling a network-client

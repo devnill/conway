@@ -1,7 +1,7 @@
 //! SSE streaming for `AnthropicBackend::stream`: drains the
 //! `eventsource_stream::EventStream` on a spawned task, translating each
 //! Anthropic `content_block_*`/`message_*` event into `StreamChunk`s and
-//! feeding tool-call deltas to a `ToolCallAccumulator` (WI-018) — the same
+//! feeding tool-call deltas to a `ToolCallAccumulator` — the same
 //! accumulator construction `wire.rs`'s non-streaming path uses.
 //!
 //! Anthropic's streaming tool-call shape differs from OpenAI's: `id`+`name`
@@ -11,7 +11,7 @@
 //! This module synthesizes the `{"index":..,"id":..,"function":{"name":..,
 //! "arguments":..}}` shape `ToolCallStyle::Structured`'s parser expects (`synth_*`
 //! below), so the shared accumulator needs no Anthropic-specific parser and
-//! `src/tool_calls/*` (owned by WI-018/WI-022) is untouched.
+//! `src/tool_calls/*` (owned by an earlier item/ an earlier item) is untouched.
 //!
 //! `spawn` is only ever called with an already-`200`-classified
 //! `reqwest::Response` (see `AnthropicBackend::stream`): a mid-body

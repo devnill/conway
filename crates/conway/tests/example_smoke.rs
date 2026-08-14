@@ -1,5 +1,4 @@
-//! Smoke test for the `minimal_session` example's facade flow (WI-135,
-//! review finding M2). The example itself is only compile-checked by
+//! Smoke test for the `minimal_session` example's facade flow (//! review finding M2). The example itself is only compile-checked by
 //! `cargo build --examples`; this test exercises the same public-facade path
 //! at runtime so a regression in `prompt`/`ask`/persistence cannot slip
 //! through, and asserts the ephemerality property the example demonstrates

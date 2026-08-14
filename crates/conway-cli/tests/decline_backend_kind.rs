@@ -1,5 +1,5 @@
 //! CLI-level acceptance test for declining a shipped backend dialect (board
-//! item 01KZHF2W8Y1KBM7PJH7R4QQJA0), against the REAL compiled `conway`
+//! item), against the REAL compiled `conway`
 //! binary -- the compiled-binary sibling of `conway/tests/builder.rs`'s
 //! `declined_backend_kind_error_is_distinct_from_unknown_backend_kind_error`
 //! (the library-API half of the same property).
@@ -7,7 +7,7 @@
 //! `[plugins].default_backends` (`conway::config::schema::PluginsConfig`,
 //! default `["anthropic", "openai-compat"]`) already lets an operator
 //! decline a shipped dialect by editing `settings.json` -- that field
-//! existed before this item (board item 01KZHF270T3W8GZ7NM6DSNQ4MM). This
+//! existed before this item. This
 //! item's job was making the decline OBSERVABLE: `crates/conway-cli/src/
 //! first_party_plugins.rs`'s `install` now computes every published
 //! backend-factory id this binary links that `wanted` (`[plugins].install`

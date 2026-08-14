@@ -41,14 +41,14 @@ pub struct FakeSubagentHost {
     /// [`Self::with_next_agent_id`].
     next_agent_id: AgentId,
     started: Mutex<Vec<(AgentId, SubagentSpec)>>,
-    /// `(caller, target, text)`, in call order. Board item
-    /// 01KYT8TS0EBKJHYNJRF6S88NRH added `caller` to `SubagentHost::steer`;
+    /// `(caller, target, text)`, in call order.
+    /// added `caller` to `SubagentHost::steer`;
     /// recording it here lets a test confirm the tool layer (`conway_steer`)
     /// actually threads `ToolCtx::agent_id` through as `caller`, not just
     /// that `target`/`text` arrived intact.
     steers: Mutex<Vec<(AgentId, AgentId, String)>>,
     /// `(caller, target, reason, mode)`, in call order -- see `steers`' own
-    /// doc. `mode` (board item 01KZDC2222ARKMZKN8ZE4BYHD6) added alongside
+    /// doc. `mode` added alongside
     /// the trait's new parameter.
     cancels: Mutex<Vec<(AgentId, AgentId, String, CancelMode)>>,
     results: Mutex<HashMap<AgentId, AgentResult>>,
@@ -160,9 +160,9 @@ impl Default for FakeSubagentHost {
 
 #[async_trait]
 impl SubagentHost for FakeSubagentHost {
-    // Board item 01KYTP0PGKJ4VCJP5TD39A1WHF added `caller` to `start`/`ask`
-    // (mirroring the `steer`/`await_result`/`cancel` trio below, board item
-    // 01KYT8TS0EBKJHYNJRF6S88NRH); this fake stays a pure recorder/no-op
+    // added `caller` to `start`/`ask`
+    // (mirroring the `steer`/`await_result`/`cancel` trio below
+    //); this fake stays a pure recorder/no-op
     // (module doc) and does not itself enforce the `caller`-owns-`parent`
     // invariant -- see the real `Runtime` impl's own tests
     // (`crates/conway-runtime/tests/subagent_fork_spawn.rs`) and
@@ -196,7 +196,7 @@ impl SubagentHost for FakeSubagentHost {
     /// for `target`, or `Err(RuntimeError::AgentNotFound)` if none was
     /// configured via [`Self::with_result`]. This fake is a pure
     /// recorder/no-op (module doc, item 1) and does not itself enforce the
-    /// `caller`-owns-`target` invariant board item 01KYT8TS0EBKJHYNJRF6S88NRH
+    /// `caller`-owns-`target` invariant
     /// added to the real `Runtime` impl -- see that item's own tests for
     /// coverage driven against the real trait boundary instead of this
     /// fixture.
@@ -307,7 +307,7 @@ pub fn test_ctx(cwd: PathBuf) -> (ToolCtx, TestHandles) {
         events: events.clone() as EventSinkHandle,
         subagents: SubagentHandle::new(subagents.clone() as Arc<dyn SubagentHost>, agent_id),
         // No test in this crate exercises a plugin's own custom-event
-        // firing (board item 01KZS03BFE720EQZG7Q2768N2H owns that end to
+        // firing ( owns that end to
         // end, in `conway-plugin-skeleton`) -- `noop` discards whatever a
         // tool under test fires, same as every other capability here that
         // no `conway-tools` test needs to script.

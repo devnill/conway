@@ -1,5 +1,5 @@
 //! Acceptance tests for the built-in `PermissionGate` implementations and
-//! preset helpers (WI-098).
+//! preset helpers.
 
 use std::sync::Arc;
 

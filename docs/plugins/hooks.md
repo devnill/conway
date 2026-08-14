@@ -11,11 +11,11 @@ redefine any of those terms, only applies them point by point.
 requirement is truth: every claim below is checked against the tree as of
 this writing, cited by symbol name (never a line number — this codebase's
 line numbers drift), and every point is labeled **Implemented** or
-**designed-not-built** with the board item tracking the gap. A labeled forward declaration is a respectable
+**designed-not-built** with the tracking the gap. A labeled forward declaration is a respectable
 state; an unlabeled one is a trap. **Most of the rows below read designed-not-built.** That is the
 correct outcome of checking, not a defect in this document — the tree ships
 tool registration, one `ContextHook`, one `PermissionGate`, and file-based
-permission rules; almost everything else `.design/extension-architecture.md`
+permission rules; almost everything else the extension design
 describes is decided design, not yet code.
 
 ## How to read a point's table
@@ -32,7 +32,7 @@ Every point gets all nine fields:
 | On garbage | Malformed input or an unknown enum variant crossing this point |
 | When absent | Behavior with nothing registered |
 | Ordering | Whether more than one registration composes, and how |
-| Status | **Implemented** or **designed-not-built**, with the board item for the latter |
+| Status | **Implemented** or **designed-not-built**, with the for the latter |
 
 ## The points
 
@@ -48,7 +48,7 @@ Every point gets all nine fields:
 | On garbage | An unparseable schema is a registration error, not a runtime one; there is no live-request path where a schema can arrive malformed |
 | When absent | A `Plugin` with no `tools()` entries contributes nothing; a session with no plugins beyond the built-ins registers only those |
 | Ordering | Tool names must be unique across every registered plugin; a collision is a build-time error (`ConwayBuilder::build`) naming both plugins, never a silent last-registration-wins |
-| Status | **Implemented.** `Plugin::manifest`/`Plugin::tools` (`crates/conway-core/src/ports/plugin.rs`), exercised by `crates/conway/tests/plugin_surface.rs` and `crates/conway/tests/plugin_builtin_parity.rs`. In-process only — the wire projection `WireManifest`/`tool.spec/1` for an out-of-process plugin is design only (`.design/extension-architecture.md` §4, §6.2), no board item yet names its implementation |
+| Status | **Implemented.** `Plugin::manifest`/`Plugin::tools` (`crates/conway-core/src/ports/plugin.rs`), exercised by `crates/conway/tests/plugin_surface.rs` and `crates/conway/tests/plugin_builtin_parity.rs`. In-process only — the wire projection `WireManifest`/`tool.spec/1` for an out-of-process plugin is design only, no yet names its implementation |
 
 **`required_host_caps` is declared and consulted nowhere.** Every constructor
 of `PluginManifest` in the tree — every built-in tool
@@ -60,9 +60,9 @@ consumers, not a partially-wired capability system: the glossary entry in
 `concepts.md` already states it ("Declared today; not yet consumed anywhere
 in the tree"), and this document confirms it by exhaustive grep, not
 inference. It needs a forward-declaration label of its own distinct from the hook-first
-surface it will eventually gate through — **no board item currently names
+surface it will eventually gate through — **no currently names
 "consume `PluginManifest::required_host_caps`."** The declarative `hooks`
-charter, `01KZDC0RDRMMMJHX7SAFMM2Q5A`, is not it — none of its nine children
+charter,, is not it — none of its nine children
 builds a capability grant/request handshake — so it is not cited here as
 tracked work, only noted as the surface such a handshake would eventually
 need to gate through, whenever an item is filed for it.
@@ -79,13 +79,12 @@ need to gate through, whenever an item is filed for it.
 | On garbage | `PRE: call.arguments has already been validated` — a `Tool::invoke` implementation is entitled to assume schema-valid arguments, but it must still not panic on adversarial values within that schema (`ToolCtx`'s own doc; `Tool::render`'s doc states the identical rule for its own untrusted-input surface) |
 | When absent | The tool is not registered; a call naming it never resolves (`ToolRunner`'s registry lookup fails before invocation, distinct from a running tool erroring) |
 | Ordering | Not applicable — one call resolves to exactly one tool by name; there is no composition question for execution itself |
-| Status | **Implemented**, in-process. The wire form (`tool/1`, the RPC-shaped `ToolCtx` projection in `.design/extension-architecture.md` §6.1) is design only |
+| Status | **Implemented**, in-process. The wire form (`tool/1`, the RPC-shaped `ToolCtx` projection in the extension design) is design only |
 
 **`ToolCtx.subagents` never lets a tool act as a different agent.** It is a
 `SubagentHandle` (`crates/conway-core/src/ports/mod.rs`) bound to
 `ToolCtx.agent_id` at construction, not a raw `Arc<dyn SubagentHost>` a tool
-could redirect — closing the exact cross-tree exfiltration shape board item
-`01KYTP0PGKJ4VCJP5TD39A1WHF` fixed.
+could redirect — closing the exact cross-tree exfiltration shape fixed.
 
 ### 3. Context curation — `ContextHook::before_request`
 
@@ -125,7 +124,7 @@ four levels down reads `ctx.agent_path.len()` (or walks it directly) rather
 than needing a second, redundant lookup against the live tree.
 
 **`ContextHookCtx.tag` is the embedder's own correlation identifier, and
-conway never reads it.** Board item `01KZQJ03ZQ22MPM9H2TW1350ZF`: an
+conway never reads it.** an
 embedder mapping conway agents onto its own domain objects (a file, a job, a
 node in its own tool) sets `SubagentSpec::tag` when it creates the agent
 (`Some(String)`, or `None` for a root agent or a child whose caller left it
@@ -161,8 +160,7 @@ to overstate.** `on_overflow` fires **only** when the router or the attempt
 engine rejects with `RoutingError::ContextTooLarge` — the case where *every*
 candidate in the resolved chain was rejected **solely** on the headroom gate
 (`conway_plugin_routing::router::DeclarativeRouter::resolve`'s own module
-doc, decision `01KYXS3PTYVATWR58JR95AZJYN`, closing board item
-`01KYXNAHN64YMADZPQDQC0CPTJ`). A candidate that fails on headroom **and**
+doc, closing). A candidate that fails on headroom **and**
 something else — a missing tool-calling capability, an unhealthy endpoint —
 is a *mixed* failure, still an ordinary capability skip, and disqualifies the
 whole request from `ContextTooLarge`: resolution falls back to
@@ -181,8 +179,7 @@ where size was the *only* thing wrong. Before the admission cluster landed
 size. Both paths reach `on_overflow` identically today; only the router-side
 gap is new.
 
-**Two designed extensions to this point, neither built.** The redirect (§16.4
-of `.design/extension-architecture.md`) decided `before_request` should also
+**Two designed extensions to this point, neither built.** The redirect decided `before_request` should also
 be able to propose a *durable* mask — a `target_seq` set the runtime diffs
 against `LogRecord::ContextMask` and persists — alongside its existing
 ephemeral, per-request edit. `LogRecord::ContextMask`
@@ -193,7 +190,7 @@ producer anywhere in the tree** — confirmed by search across
 this durably" today; every `ContextHook` edit is ephemeral, scoped to one
 request, and invisible on the next turn unless the hook repeats it. No board
 item currently names this specific gap (durable-mask production from a
-hook) — it is closer in scope to `01KZ844ZXZMVRWC7ZANT7PSM6X` (the
+hook) — it is closer in scope to (the
 `context.hook/1` replace gap) than to anything with its own tracker, and
 should get one before doc 3 or 4 promises the durable form as available.
 
@@ -222,12 +219,11 @@ should get one before doc 3 or 4 promises the durable form as available.
 | On timeout | Not applicable — synchronous file load, no I/O beyond a local read |
 | On garbage | Same as "on error" above — dropped or refused, never guessed at |
 | When absent | No file, no rules of that kind. The permission decision falls through to `PermissionGate::check` (point 5) for every call |
-| Ordering | Two-stage composition (`.design/extension-architecture.md` §5.5, confirmed live in `PermissionBroker::decide`): **admission** — a `deny`/`prompt` rule installs from any file, trusted or not (narrowing has no failure mode worth gating on trust); an `allow` rule from a *project* file installs only once its exact bytes match a recorded trust decision (`TrustStore`, see `concepts.md`'s "Trust" section) — then **most-restrictive-wins** over the admitted set: any `deny` beats every `prompt` beats every `allow`. Registration order (which file, which rule within a file) never changes the outcome, only which single matching rule is reported |
-| Status | **Implemented**, including the structured `{ select, when, then }` form. This corrects the item spec that produced this document: it named the structured rule form (board `01KYTJD6CJ1CHJBXZ0GFYMV5MT`, "F12") as pending at writing time. That item is now **done** — `Rule`/`Select`/`When`/`Then` are real, exercised by `permission_pattern::f12_tests` and the real-stack seam `crates/conway/tests/structured_rule_seam.rs`, and documented operator-facing in `docs/permissions.md`'s "The structured `rules` array" section |
+| Ordering | Two-stage composition (the extension design, confirmed live in `PermissionBroker::decide`): **admission** — a `deny`/`prompt` rule installs from any file, trusted or not (narrowing has no failure mode worth gating on trust); an `allow` rule from a *project* file installs only once its exact bytes match a recorded trust decision (`TrustStore`, see `concepts.md`'s "Trust" section) — then **most-restrictive-wins** over the admitted set: any `deny` beats every `prompt` beats every `allow`. Registration order (which file, which rule within a file) never changes the outcome, only which single matching rule is reported |
+| Status | **Implemented**, including the structured `{ select, when, then }` form. This corrects the item spec that produced this document: it named the structured rule form (board, "F12") as pending at writing time. That item is now **done** — `Rule`/`Select`/`When`/`Then` are real, exercised by `permission_pattern::f12_tests` and the real-stack seam `crates/conway/tests/structured_rule_seam.rs`, and documented operator-facing in `docs/permissions.md`'s "The structured `rules` array" section |
 
 **A second correction, same shape.** The item spec also named the
-convergence of conway's three control-character sanitizers (board
-`01KYTJE5TSJBF01598F3BKJP1X`, "F2/F3") as pending. It too is **done** — a
+convergence of conway's three control-character sanitizers (board, "F2/F3") as pending. It too is **done** — a
 single shared `conway_core::text::sanitize_control_chars` now backs the
 `rendered` seam every `PermissionRequest.rendered` value passes through
 (`runner::sanitize_rendered`) and `ToolOutcome::error`'s construction alike,
@@ -249,32 +245,32 @@ three previously-divergent copies.
 | On garbage | N/A |
 | When absent | This is the current, only state: no `Plugin` implementor has any way to submit a rule. `Plugin::tools()`/`Plugin::manifest()` are the entire trait surface (point 1) — there is no `Plugin::rules()` method or equivalent |
 | Ordering | N/A |
-| Status | **designed-not-built**, but with real, tested guard code already in place ahead of the producer: `PatternOrigin::Plugin` (`crates/conway-core/src/permission_pattern.rs`) exists as a variant, is exercised by `crates/conway-runtime/tests/permission_broker.rs` (proving the allow-rejection holds even though nothing constructs this variant outside tests today), and its own doc names the reason precisely — "the invariant rests on a guard, not on the absence of a transport." **No board item tracks building this producer.** The declarative `hooks` charter, `01KZDC0RDRMMMJHX7SAFMM2Q5A`, does not build it — none of its nine children gives `Plugin` a `rules()` method or constructs `PatternOrigin::Plugin` outside a test; that charter's own spec is scoped to the script-hook surface, a different axis. **Correction (board item 01KZS00JP5QNBJSSHNFP9C47GM, done): this row's forward reference is now only partially right.** `pre_tool_use` IS a real, dispatched capability (point 13 below) — but it does NOT produce `PatternOrigin::Plugin` rules, and its answer shape is not "allow/deny/deny-with-feedback": `HookPermissionVerdict` is `no_opinion` (proceed) or `deny { reason }` ONLY, with no `allow` variant at all, by construction (decision 01KZRZAFD8T3GX407MZC8P1W1E — a hook may only narrow, never widen). `pre_tool_use` dispatch feeds `PermissionBroker::decide` directly, as an independent narrowing-only chain step (exactly one narrowing chain, never configurable policy branching), never through this row's `Plugin::rules()`/`PatternOrigin::Plugin` producer, which remains exactly as unbuilt as before this item |
+| Status | **designed-not-built**, but with real, tested guard code already in place ahead of the producer: `PatternOrigin::Plugin` (`crates/conway-core/src/permission_pattern.rs`) exists as a variant, is exercised by `crates/conway-runtime/tests/permission_broker.rs` (proving the allow-rejection holds even though nothing constructs this variant outside tests today), and its own doc names the reason precisely — "the invariant rests on a guard, not on the absence of a transport." **No tracks building this producer.** The declarative `hooks` charter,, does not build it — none of its nine children gives `Plugin` a `rules()` method or constructs `PatternOrigin::Plugin` outside a test; that charter's own spec is scoped to the script-hook surface, a different axis. **Correction: this row's forward reference is now only partially right.** `pre_tool_use` IS a real, dispatched capability (point 13 below) — but it does NOT produce `PatternOrigin::Plugin` rules, and its answer shape is not "allow/deny/deny-with-feedback": `HookPermissionVerdict` is `no_opinion` (proceed) or `deny { reason }` ONLY, with no `allow` variant at all, by construction (— a hook may only narrow, never widen). `pre_tool_use` dispatch feeds `PermissionBroker::decide` directly, as an independent narrowing-only chain step (exactly one narrowing chain, never configurable policy branching), never through this row's `Plugin::rules()`/`PatternOrigin::Plugin` producer, which remains exactly as unbuilt as before this item |
 
 ### 8. Composed inference-evaluated permission policy — `permission.policy/1`
 
 | Field | Value |
 |---|---|
 | Kind | Participant |
-| Receives | Design only: a `PolicyRequest` carrying `agent_id`, `agent_path`, `session`, `tool`, `category`, raw `arguments`, `rendered`, `render_kind`, `call_id`, `cwd`, `root`, `mode`, `must_reach_gate` (`.design/extension-architecture.md` §5.3) |
+| Receives | Design only: a `PolicyRequest` carrying `agent_id`, `agent_path`, `session`, `tool`, `category`, raw `arguments`, `rendered`, `render_kind`, `call_id`, `cwd`, `root`, `mode`, `must_reach_gate` |
 | May return | Design only: a `NarrowingPolicy` returns `Deny { reason } | Abstain` (no `Allow` variant exists on its type); a `DecidingPolicy` returns `Deny { reason } | Abstain | Allow { reason }` — a type-level split, not a runtime flag, specifically because "may only narrow" must be a property of the return type an inference-evaluated policy cannot talk its way around |
 | On error | Design only: `on_failure`, default `Deny` — **never `Allow`** |
 | On timeout | Design only: a declared `timeout_ms`, clamped by an operator-configured maximum (design default 60 s) |
 | On garbage | Design only: an unparseable verdict is treated as `on_failure`, never guessed at |
 | When absent | Today: nothing is affected, because nothing consults this point — `PermissionBroker::decide`'s real ordering (below) has no policy-chain step at all |
 | Ordering | Design only: most-restrictive-wins, admission gated by trust for the allow half only (identical two-stage shape to point 6) |
-| Status | **designed-not-built.** No `NarrowingPolicy`/`DecidingPolicy` trait exists anywhere in the workspace. `PermissionBroker::decide`'s real, live ordering has exactly eight steps and none of them is a policy chain — see "The permission decision ordering" below. **No board item tracks building this composed chain.** The declarative `hooks` charter, `01KZDC0RDRMMMJHX7SAFMM2Q5A`, is scoped to the script-hook surface (config schema, one-shot runner, the seven core events, plugin-declared events) — none of its nine children names this inference-evaluated policy chain, and it is not cited here for it |
+| Status | **designed-not-built.** No `NarrowingPolicy`/`DecidingPolicy` trait exists anywhere in the workspace. `PermissionBroker::decide`'s real, live ordering has exactly eight steps and none of them is a policy chain — see "The permission decision ordering" below. **No tracks building this composed chain.** The declarative `hooks` charter,, is scoped to the script-hook surface (config schema, one-shot runner, the seven core events, plugin-declared events) — none of its nine children names this inference-evaluated policy chain, and it is not cited here for it |
 
 ### 9. Remote context-editing parity — `context.hook/1`
 
 | Field | Value |
 |---|---|
 | Kind | Participant |
-| Receives | Design only: the wire projection of `ContextHookCtx` plus `ContextPayload` (`.design/extension-architecture.md` §16.5) |
+| Receives | Design only: the wire projection of `ContextHookCtx` plus `ContextPayload` |
 | May return | Design only: `{ appends, excludes, durable_excludes }`, composed across every hook — in-process and remote alike — under the union rule (§16.3, below) |
 | On error / timeout / garbage / absent | Design only — inherits the same shapes as points 3/4 above, projected onto a wire boundary that does not exist yet |
 | Ordering | Design only: exclusion is a set union (order-independent); a same-target *replace* collision between two hooks fails to exclusion rather than picking a winner |
-| Status | **designed-not-built.** Named replacement for the retired `context.append/1` point, which the redirect superseded because it gave a remote plugin strictly *less* than the in-process `ContextHook` already gives (append-only, no edit/drop) — the exact built-in/third-party inversion this project forbids. Even the *specification* of `context.hook/1` has an acknowledged gap: it can append and exclude but has no same-target **replace** primitive, tracked as board item `01KZ844ZXZMVRWC7ZANT7PSM6X`, still `open` as of this writing |
+| Status | **designed-not-built.** Named replacement for the retired `context.append/1` point, which the redirect superseded because it gave a remote plugin strictly *less* than the in-process `ContextHook` already gives (append-only, no edit/drop) — the exact built-in/third-party inversion this project forbids. Even the *specification* of `context.hook/1` has an acknowledged gap: it can append and exclude but has no same-target **replace** primitive, tracked as, still `open` as of this writing |
 
 ### 10. Tool-announcement hiding as a plugin-declared selector — `context.tools/1`
 
@@ -283,10 +279,10 @@ three previously-divergent copies.
 | Kind | Declarative |
 | Receives | Design only: nothing live — a selector naming tools this plugin's own declaration hides from announcement |
 | May return | Design only: a `ToolSelector`-shaped exclusion set |
-| On error / timeout / garbage | Design only: a selector matching nothing is a registration error, per `.design/extension-architecture.md` §4's own row for this point |
+| On error / timeout / garbage | Design only: a selector matching nothing is a registration error, per the extension design's own row for this point |
 | When absent | Today: the only way to narrow `ContextPayload.tools` is an embedder-supplied `ContextHook::before_request` doing it imperatively (point 3) — there is no way for a `Plugin`, as such, to *declare* a static hide-list the way this point would let it |
 | Ordering | Design only: a set union over every plugin's declared hides |
-| Status | **designed-not-built.** No `Plugin` method for declaring a tool-hide selector exists. **No board item tracks it.** The declarative `hooks` charter, `01KZDC0RDRMMMJHX7SAFMM2Q5A`, does not build a `Plugin`-declared tool-hide selector among its nine children — it is a plugin-reachable extension point, not the script-hook surface the charter decomposed |
+| Status | **designed-not-built.** No `Plugin` method for declaring a tool-hide selector exists. **No tracks it.** The declarative `hooks` charter,, does not build a `Plugin`-declared tool-hide selector among its nine children — it is a plugin-reachable extension point, not the script-hook surface the charter decomposed |
 
 ### 11. Event observation by a plugin — `observe/1`
 
@@ -297,28 +293,28 @@ three previously-divergent copies.
 | May return | Nothing — the point has no reply channel, structurally. This is the one place "the shape itself forbids a denial" (see `concepts.md`'s "Observers vs participants") is easiest to see: there is no return type to smuggle a decision through |
 | On error | Ignored — an observer cannot fail the run by construction |
 | On timeout | Not applicable |
-| On garbage | Design only: an unknown `Event` variant is ignored — the one enum-versioning case where "ignore" is the *right* answer, per `.design/extension-architecture.md` §6.3, because an observer changes nothing by definition |
+| On garbage | Design only: an unknown `Event` variant is ignored — the one enum-versioning case where "ignore" is the *right* answer, per the extension design, because an observer changes nothing by definition |
 | When absent | Today: `EventSink::emit` (`crates/conway-core/src/ports/events.rs`) is real and invoked constantly, but it is an **embedder-level** subscription (`conway::EventStream`, `crates/conway/src/event_stream.rs`), not something a `Plugin` implements or registers through the `Plugin` trait. A slow consumer is dropped from delivery and sees `Event::Lagged { skipped }` on its next successful receive rather than stalling the runtime — that guarantee is real and tested today, for the embedder's own stream |
 | Ordering | Independent by construction — multiple subscribers never interact |
-| Status | **designed-not-built**, specifically as a *plugin*-reachable point. The underlying mechanism (`EventSink`, lossy-with-notice delivery) is implemented and load-bearing; what is missing is any way for an in-process or remote `Plugin` to subscribe to it the way an embedder's `EventStream` already can. **No board item tracks it.** This is a plugin *subscribing* to the event stream; the declarative `hooks` charter's ninth child built the opposite direction — a plugin *declaring and firing* its own event (point 16 below) — and its other eight children do not cover subscription either, so `01KZDC0RDRMMMJHX7SAFMM2Q5A` is not cited here |
+| Status | **designed-not-built**, specifically as a *plugin*-reachable point. The underlying mechanism (`EventSink`, lossy-with-notice delivery) is implemented and load-bearing; what is missing is any way for an in-process or remote `Plugin` to subscribe to it the way an embedder's `EventStream` already can. **No tracks it.** This is a plugin *subscribing* to the event stream; the declarative `hooks` charter's ninth child built the opposite direction — a plugin *declaring and firing* its own event (point 16 below) — and its other eight children do not cover subscription either, so is not cited here |
 
 ### 12. UI status contribution — `status.declare/1` / `status/1`
 
 | Field | Value |
 |---|---|
 | Kind | Declarative (`status.declare/1`) + Observer output (`status/1`) |
-| Receives / May return / failure modes | Entirely design (`.design/extension-architecture.md` §8): a plugin declares per-key `{ max_len, ttl_ms }`, then pushes `StatusContribution { key, value }`; a stale value expires at snapshot time and the render path never calls a plugin or blocks on one |
-| Status | **designed-not-built.** No status-line plugin surface exists in the tree; `conway-cli`'s status line reads only conway's own computed state. **No board item tracks it** — not the declarative `hooks` charter (`01KZDC0RDRMMMJHX7SAFMM2Q5A`, a different axis: script-fired events, not a status-contribution surface) or any other item found by id search |
+| Receives / May return / failure modes | Entirely design: a plugin declares per-key `{ max_len, ttl_ms }`, then pushes `StatusContribution { key, value }`; a stale value expires at snapshot time and the render path never calls a plugin or blocks on one |
+| Status | **designed-not-built.** No status-line plugin surface exists in the tree; `conway-cli`'s status line reads only conway's own computed state. **Nothing tracks it** — not the declarative `hooks` charter (a different axis: script-fired events, not a status-contribution surface) or any other item found by id search |
 
 ### 13. Declarative script-fired hooks — the `hooks` configuration block
 
 | Field | Value |
 |---|---|
 | Kind | Declarative (registration) wrapping whatever kind the named event actually is (Observer for a logging hook, Participant for `pre_tool_use`) |
-| Receives / May return | **All SEVEN core events are real; nothing is design-only here anymore.** A rule's command receives `{"name":"<event>","payload":{...}}` on stdin (`conway_core::hook::HookInvocation`/`HookEvent`) and answers on stdout with a JSON `conway_core::hook::HookAnswer`, whose `permission` field (`HookPermissionVerdict`) may be `"no_opinion"` (proceed, the default) or `{"deny":{"reason":...}}` (refuse the call) — read only by `pre_tool_use` and `prompt_submitted`, the two events that can deny; every other event ignores it. **There is no `"allow"` shape — the type has no such variant, by construction** (decision 01KZRZAFD8T3GX407MZC8P1W1E: a hook may only narrow a permission verdict, never widen one). **A rule may additionally narrow WHICH occurrences of `pre_tool_use`/`post_tool_use` it fires for**, via `match` (board item 01KZYAWQ6011Q6CJVG6CCMQPF1): an exact tool name (`"bash"`, `"fs.write"`) or a `*`-glob against the tool's whole name (`"fs.*"`), checked by `conway_core::hook::tool_matcher_matches`. Absent `match` (the default) fires the rule for every occurrence of `event`, unchanged from before this field existed. `match` on any event that carries no tool name (`session_starting`, `child_spawned`, `request_assembled`, `child_reported`, `prompt_submitted`) is a load-time config error naming the rule's `id` (`crate::config::merge::validate`), never silently ignored. |
+| Receives / May return | **All SEVEN core events are real; nothing is design-only here anymore.** A rule's command receives `{"name":"<event>","payload":{...}}` on stdin (`conway_core::hook::HookInvocation`/`HookEvent`) and answers on stdout with a JSON `conway_core::hook::HookAnswer`, whose `permission` field (`HookPermissionVerdict`) may be `"no_opinion"` (proceed, the default) or `{"deny":{"reason":...}}` (refuse the call) — read only by `pre_tool_use` and `prompt_submitted`, the two events that can deny; every other event ignores it. **There is no `"allow"` shape — the type has no such variant, by construction** (: a hook may only narrow a permission verdict, never widen one). **A rule may additionally narrow WHICH occurrences of `pre_tool_use`/`post_tool_use` it fires for**, via `match`: an exact tool name (`"bash"`, `"fs.write"`) or a `*`-glob against the tool's whole name (`"fs.*"`), checked by `conway_core::hook::tool_matcher_matches`. Absent `match` (the default) fires the rule for every occurrence of `event`, unchanged from before this field existed. `match` on any event that carries no tool name (`session_starting`, `child_spawned`, `request_assembled`, `child_reported`, `prompt_submitted`) is a load-time config error naming the rule's `id` (`crate::config::merge::validate`), never silently ignored. |
 | On error / timeout / garbage / absent | **`pre_tool_use`/`prompt_submitted`: fail-closed.** A missing/unexecutable command, a timeout, a nonzero exit, or stdout that fails to parse as `HookAnswer` are ALL `HookFailure` (`conway_core::error::HookFailure`), and the consuming dispatch treats every one of them as a denial — the runner's own failure signal, not a second weaker fail-closed implementation layered on top. **The five observation events fail OPEN**: `post_tool_use`, `session_starting`, `child_spawned`, `request_assembled`, `child_reported` — a failing hook is logged (`tracing::warn`) and the thing it observed is unaffected. |
-| Ordering | `pre_tool_use`/`prompt_submitted`: rules are consulted in the order `ConwayBuilder::build` filtered them from `[hooks].rules[]`; the FIRST denying hook wins (order-independent for the boolean outcome — a `deny` beats a `no_opinion` however many hooks run, so which hook happens to be checked first only changes which hook's `reason` is reported, never whether the call is denied). The five observation events: every subscribed, matcher-satisfying hook runs, in configured order; a failure never stops a later hook from running. |
-| Status | **All SEVEN core events are DISPATCHED.** `pre_tool_use` (board item 01KZS00JP5QNBJSSHNFP9C47GM); the observation-only events `post_tool_use`, `session_starting`, `child_spawned` (board item 01KZS019NHG11RVQYSVT7RG0P5), `request_assembled`, `child_reported` (board item 01KZYAXSGDS8AP7YK1CN7H680G); and `prompt_submitted` (board item 01KZS01ZBNEY12DBDNW2Y861SQ), which may DENY but may never MODIFY. **`prompt_submitted` fires at BOTH submission sites** — `Runtime::start_root` for a session's first prompt and `Runtime::prompt` for a follow-up — before the text reaches the agent loop, with `{text, agent_id, session, first_prompt}`. It fails CLOSED like `pre_tool_use`, and a denial surfaces to the CALLER as `RuntimeError::PromptDenied`, never to a model as a tool error, since there is no model turn yet to report into. **It cannot rewrite a word of what the user typed, and that is a TYPE guarantee rather than an unwired path:** the dispatch reads only `HookPermissionVerdict`, whose whole vocabulary is `no_opinion` and `deny { reason }` — no variant and no field can carry replacement text back, and `HookAnswer.context` is ignored here (`.design/extension-architecture.md` §5.8: the user's own words are the one thing in the pipeline nothing gets to launder). **The observation tier cannot deny and fails OPEN, which is the opposite of `pre_tool_use` and is deliberate:** the thing it observes has already happened (or, for `request_assembled`, has been decided but not yet sent), so breaking a working operation because a logging script timed out would be the wrong direction. `conway_runtime::hook_dispatch::HookDispatcher::dispatch` returns `()`, so a failing observation hook is logged via `tracing::warn` and cannot propagate; `post_tool_use` fires at `ToolRunner`'s `ToolCallFinished` seam with `{call_id, tool, is_error, preview, agent_id, agent_path, session}` and honors `match` against `tool`; `session_starting` fires ONCE per `Runtime::start_root` (never per turn, and never on `resume_root`) with `{agent_id, session, cwd}`; `child_spawned` fires at the single `SubagentHost::start` that BOTH fork and spawn share, with `{child_id, parent, caller, mode, session}`; `request_assembled` fires ONCE per turn, from `AgentLoop::run_inner`, after `ContextBuilder::build` and (if registered) `ContextHook::before_request`'s own edit, and before that turn's route/attempt call, with a SUMMARY payload `{agent_id, agent_path, session, turn, model_pin, segment_count, total_tokens_est, tokenizer}` — never the full assembled segment content, a performance/privacy decision this event's own item does not make unilaterally; and `child_reported` fires for every terminal `AgentResult` that crosses back to a parent — both a normal completion (`AgentLoop::finish`) and a supervisor-synthesized one (`conway_runtime::supervisor`: a panic, or a task unresponsive past its grace window) — with `{agent_id, parent, session, result}`, gated on the same publish-race winner `Event::AgentFinished` already uses at each site so it fires exactly once per agent; it NEVER fires for a root's own finish, since a root has no parent for a result to cross back to. **Both `request_assembled` and `child_reported` are observation-only, like their three siblings, not a lesser version of something else**: `request_assembled` sits at the exact seam `ContextHook::before_request` already edits the assembled request at, so it would be reasonable to expect it to edit too — it structurally cannot, for the identical reason `prompt_submitted` cannot rewrite the prompt (this dispatch tier discards `HookAnswer.context`/`permission` unread). A configured script editing assembled context append-only, without breaking the prompt cache, is a SEPARATE, still-open board item (`01KZRZZP6A4A27R3EN0HQAENBS`) this one does not build and does not foreclose. **Whether `child_spawned` may ever DENY a spawn is an open question, deliberately deferred** and recorded at its dispatch site rather than answered by the shape of a return type. **`pre_tool_use` and `post_tool_use` alone honor `match`** — `PreToolUseHookSpec::matcher`/`crate::hook_dispatch::HookSpec::matcher`, checked against `AuthorizedCall::tool`/the payload's `"tool"` field respectively — the other five events carry no tool name for a matcher to narrow against. The `pre_tool_use` half is otherwise unchanged: `conway_runtime::permission::PermissionBroker::decide` invokes an injected `Arc<dyn HookRunner>` (`ConwayBuilder::with_hook_runner` — mirroring `with_permission_gate`/`with_context_hook`; not called at all is still the default for a third-party embedder, and a `pre_tool_use` rule with no runner injected parses, validates, and is silently never consulted. `conway-cli` DOES inject one, via the `builtin-tools`-gated convenience `ConwayBuilder::with_default_hook_runner` which supplies `conway_tools::hook_runner::ProcessHookRunner` — board item 01KZVTTP492R3BDY33FAGYWDNW — so a rule written in a `settings.json` driving the CLI fires. The CLI's opt-in is not inherited by an embedder linking `conway` directly) once per enabled `[hooks].rules[]` entry whose `event == "pre_tool_use"`, at the SAME tier as a `deny` pattern rule — before the mode gate, the cache, pattern-allow grants, and `AutoAllow`, so a denying hook is enforced under every permission mode including `AutoAllow` (the one mode with no human in the loop to catch what a downstream-of-the-gate check would have missed). `Plugin::manifest()`/`Plugin::tools()` is still the whole `Plugin` trait otherwise; there is still no `hooks()` method, no `subagent_mode` field, and no `hook.fork` capability anywhere in the tree. `01KZRZY1MNM872BZ6AKEBG3SKE`'s `HookRunner` port/`ProcessHookRunner` implementation is the general script-runner mechanism `pre_tool_use` dispatch was the FIRST consumer of, not the last — `request_assembled`/`child_reported` reuse the identical runner and fail-open contract the three earlier observation events already established, adding only their own two dispatch call sites, exactly as `01KZYAXSGDS8AP7YK1CN7H680G`'s own scope stated. All events remain tracked under the umbrella `01KZDC0RDRMMMJHX7SAFMM2Q5A`. **The config shape decision (board item 01KZYAWQ6011Q6CJVG6CCMQPF1), recorded here because it affects every rule an operator writes:** `PHILOSOPHY.md` §5 is the 1.0 specification and this shipped schema converges toward it field-by-field, not via a wholesale reshape onto the page's illustrative nested `{"pre_tool_use": [...], ...}` JSON. `[hooks].rules[]` stays a FLAT list keyed by a per-entry `event` field (unchanged), and `command` stays an argv `Vec<String>` rather than the page's single `run` shell string (a deliberate, previously-recorded divergence predating this item — see `schema::HookEntry::command`'s own doc). What converges is `match`, spelled exactly as the page spells it (`"match"` on the wire; the Rust field is `match_tool` only because `match` is a reserved word) — the smallest change that turns "fires for every tool call, unusable for the page's own canonical example (run the formatter after a write)" into parity, without a breaking reshape of every existing `[hooks]` block. A full move to the page's nested shape remains available as later, purely additive work; nothing here forecloses it. **A script runner is not a second extension mechanism:** the design is explicit that a script-dispatching hook is itself an ordinary `Plugin` whose own implementation happens to shell out per event, layered on top of the one mechanism, never beside it |
+| Ordering | `pre_tool_use`/`prompt_submitted`: rules are consulted in the order `ConwayBuilder::build` filtered them from `hooks.rules[]`; the FIRST denying hook wins (order-independent for the boolean outcome — a `deny` beats a `no_opinion` however many hooks run, so which hook happens to be checked first only changes which hook's `reason` is reported, never whether the call is denied). The five observation events: every subscribed, matcher-satisfying hook runs, in configured order; a failure never stops a later hook from running. |
+| Status | **All SEVEN core events are DISPATCHED.** `pre_tool_use`; the observation-only events `post_tool_use`, `session_starting`, `child_spawned`, `request_assembled`, `child_reported`; and `prompt_submitted`, which may DENY but may never MODIFY. **`prompt_submitted` fires at BOTH submission sites** — `Runtime::start_root` for a session's first prompt and `Runtime::prompt` for a follow-up — before the text reaches the agent loop, with `{text, agent_id, session, first_prompt}`. It fails CLOSED like `pre_tool_use`, and a denial surfaces to the CALLER as `RuntimeError::PromptDenied`, never to a model as a tool error, since there is no model turn yet to report into. **It cannot rewrite a word of what the user typed, and that is a TYPE guarantee rather than an unwired path:** the dispatch reads only `HookPermissionVerdict`, whose whole vocabulary is `no_opinion` and `deny { reason }` — no variant and no field can carry replacement text back, and `HookAnswer.context` is ignored here (the extension design: the user's own words are the one thing in the pipeline nothing gets to launder). **The observation tier cannot deny and fails OPEN, which is the opposite of `pre_tool_use` and is deliberate:** the thing it observes has already happened (or, for `request_assembled`, has been decided but not yet sent), so breaking a working operation because a logging script timed out would be the wrong direction. `conway_runtime::hook_dispatch::HookDispatcher::dispatch` returns `()`, so a failing observation hook is logged via `tracing::warn` and cannot propagate; `post_tool_use` fires at `ToolRunner`'s `ToolCallFinished` seam with `{call_id, tool, is_error, preview, agent_id, agent_path, session}` and honors `match` against `tool`; `session_starting` fires ONCE per `Runtime::start_root` (never per turn, and never on `resume_root`) with `{agent_id, session, cwd}`; `child_spawned` fires at the single `SubagentHost::start` that BOTH fork and spawn share, with `{child_id, parent, caller, mode, session}`; `request_assembled` fires ONCE per turn, from `AgentLoop::run_inner`, after `ContextBuilder::build` and (if registered) `ContextHook::before_request`'s own edit, and before that turn's route/attempt call, with a SUMMARY payload `{agent_id, agent_path, session, turn, model_pin, segment_count, total_tokens_est, tokenizer}` — never the full assembled segment content, a performance/privacy decision this event's own item does not make unilaterally; and `child_reported` fires for every terminal `AgentResult` that crosses back to a parent — both a normal completion (`AgentLoop::finish`) and a supervisor-synthesized one (`conway_runtime::supervisor`: a panic, or a task unresponsive past its grace window) — with `{agent_id, parent, session, result}`, gated on the same publish-race winner `Event::AgentFinished` already uses at each site so it fires exactly once per agent; it NEVER fires for a root's own finish, since a root has no parent for a result to cross back to. **Both `request_assembled` and `child_reported` are observation-only, like their three siblings, not a lesser version of something else**: `request_assembled` sits at the exact seam `ContextHook::before_request` already edits the assembled request at, so it would be reasonable to expect it to edit too — it structurally cannot, for the identical reason `prompt_submitted` cannot rewrite the prompt (this dispatch tier discards `HookAnswer.context`/`permission` unread). A configured script editing assembled context append-only, without breaking the prompt cache, is a SEPARATE, still-open this one does not build and does not foreclose. **Whether `child_spawned` may ever DENY a spawn is an open question, deliberately deferred** and recorded at its dispatch site rather than answered by the shape of a return type. **`pre_tool_use` and `post_tool_use` alone honor `match`** — `PreToolUseHookSpec::matcher`/`crate::hook_dispatch::HookSpec::matcher`, checked against `AuthorizedCall::tool`/the payload's `"tool"` field respectively — the other five events carry no tool name for a matcher to narrow against. The `pre_tool_use` half is otherwise unchanged: `conway_runtime::permission::PermissionBroker::decide` invokes an injected `Arc<dyn HookRunner>` (`ConwayBuilder::with_hook_runner` — mirroring `with_permission_gate`/`with_context_hook`; not called at all is still the default for a third-party embedder, and a `pre_tool_use` rule with no runner injected parses, validates, and is silently never consulted. `conway-cli` DOES inject one, via the `builtin-tools`-gated convenience `ConwayBuilder::with_default_hook_runner` which supplies `conway_tools::hook_runner::ProcessHookRunner` — — so a rule written in a `settings.json` driving the CLI fires. The CLI's opt-in is not inherited by an embedder linking `conway` directly) once per enabled `hooks.rules[]` entry whose `event == "pre_tool_use"`, at the SAME tier as a `deny` pattern rule — before the mode gate, the cache, pattern-allow grants, and `AutoAllow`, so a denying hook is enforced under every permission mode including `AutoAllow` (the one mode with no human in the loop to catch what a downstream-of-the-gate check would have missed). `Plugin::manifest()`/`Plugin::tools()` is still the whole `Plugin` trait otherwise; there is still no `hooks()` method, no `subagent_mode` field, and no `hook.fork` capability anywhere in the tree.'s `HookRunner` port/`ProcessHookRunner` implementation is the general script-runner mechanism `pre_tool_use` dispatch was the FIRST consumer of, not the last — `request_assembled`/`child_reported` reuse the identical runner and fail-open contract the three earlier observation events already established, adding only their own two dispatch call sites, exactly as's own scope stated. All events remain tracked under the umbrella. **The config shape, settled:** a flat `hooks.rules[]` list keyed by a per-entry `event` field, with `command` as an argv `Vec<String>`. `PHILOSOPHY.md` §5 illustrated a nested, event-keyed shape with a single `run` shell string; the page was corrected to match this one rather than the reverse, because a `run` string only becomes a command once something decides where the words break, and deciding that means predicting a shell — exactly what §1 of the same page rejects. `match` is spelled as §5 spells it (`"match"` on the wire; the Rust field is `match_tool` only because `match` is a reserved word). **A script runner is not a second extension mechanism:** the design is explicit that a script-dispatching hook is itself an ordinary `Plugin` whose own implementation happens to shell out per event, layered on top of the one mechanism, never beside it |
 
 ### 14. Fork/spawn declaration for an inference-evaluated hook
 
@@ -329,15 +325,14 @@ three previously-divergent copies.
 | On error | Design only: an operator may refuse a requested `hook.fork` (the hook fails to register if declared required, or is skipped with a status change if optional); an operator may never force `Fork` onto a hook that declared `Spawn`, and a runtime may never silently downgrade a declared `Fork` to `Spawn` and run it anyway — "never guessed at" |
 | On timeout | Design only: §16.2's decision-bearing-call exclusion applies — see "Failure semantics" below |
 | Ordering | Not applicable — a per-registration field, not a composed value |
-| Status | **designed-not-built.** A hook registration surface exists now (point 13's `[hooks].rules[]`, unlike when this row was first written) but registers only one-shot script hooks — decision `01KZRZBQ2ACF40QGK8E9AVGMT3` kept that invocation modality deliberately separable from others, and no *inference-evaluated* hook modality has been built. There is accordingly still nowhere for a `subagent_mode` field to attach: the field belongs to a hook whose own evaluation may fork or spawn a subagent, and no hook evaluates by inference anywhere in the tree. `crates/conway/src/intent.rs`'s `classify` function is the one shipped precedent for the shape `Spawn` mode would reuse — a zero-tool, `SubagentMode::Spawn` judge deciding one narrow question from a prompt alone, with no ancestry and no tool access — but it is not a hook; it backs the TUI's natural-language `/fork`/`/spawn` intent classifier, an unrelated feature that predates this design and happens to need the same shape. **No board item tracks an inference-evaluated hook modality or its `subagent_mode` field** — the declarative `hooks` charter (`01KZDC0RDRMMMJHX7SAFMM2Q5A`) built only the script-runner modality and does not cover this |
+| Status | **designed-not-built.** A hook registration surface exists now (point 13's `hooks.rules[]`, unlike when this row was first written) but registers only one-shot script hooks — kept that invocation modality deliberately separable from others, and no *inference-evaluated* hook modality has been built. There is accordingly still nowhere for a `subagent_mode` field to attach: the field belongs to a hook whose own evaluation may fork or spawn a subagent, and no hook evaluates by inference anywhere in the tree. `crates/conway/src/intent.rs`'s `classify` function is the one shipped precedent for the shape `Spawn` mode would reuse — a zero-tool, `SubagentMode::Spawn` judge deciding one narrow question from a prompt alone, with no ancestry and no tool access — but it is not a hook; it backs the TUI's natural-language `/fork`/`/spawn` intent classifier, an unrelated feature that predates this design and happens to need the same shape. **No tracks an inference-evaluated hook modality or its `subagent_mode` field** — the declarative `hooks` charter built only the script-runner modality and does not cover this |
 
 **Correction to the design corpus this document must make explicit, per the
 brief that produced it:** any future inference-evaluated hook running in
 `Fork` mode will inherit the parent's `agent_def` — and never that def's
 `result_contract` — because that is now how *every* fork in the tree behaves
 (`Runtime::start`'s Fork arm, `crates/conway-runtime/src/subagent.rs`,
-`def_was_inherited`; decision `01KZHEWXDZWPWMEAQ01XY2RDCB`, board
-`01KZGXYSEKMVM4GVG4ZBWC0WSC`). This post-dates every design document
+`def_was_inherited`;, board). This post-dates every design document
 discussing hook fork/spawn and is not itself hook-specific — it is a
 correction to the fork primitive generally, which a hook's `Fork` mode would
 simply inherit once built.
@@ -347,14 +342,14 @@ simply inherit once built.
 | Field | Value |
 |---|---|
 | Kind | Declarative (`Plugin::commands()`, consulted once, at TUI startup) + Participant (`Command::invoke`, an operator-triggered call the host runs and shows the result of) |
-| Receives | `Command::spec()` is consulted with nothing live, at registry construction, and returns a [`CommandSpec`] (`name`, `summary`). `Command::invoke` receives a [`CommandCtx`]: `focused_agent`, `root_agent`, `session_id` (the CALLING session's own id — board item 01KZYH37WNDKDWSMWQQPRFKKXC), and `args` (everything typed after the command word, verbatim — the same "consume the remainder verbatim" rule every other slash command's free-text argument follows) |
-| May return | A [`CommandOutcome`]: `Output(Vec<String>)` (lines appended to the transcript verbatim, each its own entry), `Error(String)` (shown as an ordinary `Notice`, the same severity a failing built-in command gets), or `ForkSession { at_seq, directive }` (board item 01KZYH37WNDKDWSMWQQPRFKKXC — asks the HOST to fork the calling session at `at_seq` and drive the resulting child; see this point's own "Forking the calling session" subsection below) |
+| Receives | `Command::spec()` is consulted with nothing live, at registry construction, and returns a [`CommandSpec`] (`name`, `summary`). `Command::invoke` receives a [`CommandCtx`]: `focused_agent`, `root_agent`, `session_id` (the CALLING session's own id —), and `args` (everything typed after the command word, verbatim — the same "consume the remainder verbatim" rule every other slash command's free-text argument follows) |
+| May return | A [`CommandOutcome`]: `Output(Vec<String>)` (lines appended to the transcript verbatim, each its own entry), `Error(String)` (shown as an ordinary `Notice`, the same severity a failing built-in command gets), or `ForkSession { at_seq, directive }` ( — asks the HOST to fork the calling session at `at_seq` and drive the resulting child; see this point's own "Forking the calling session" subsection below) |
 | On error | `invoke` returning `CommandOutcome::Error` is not a failure of the *host* — it is the command's own reported outcome, rendered as a `Notice` and nothing more. A **panic** inside `invoke` is isolated: the host runs it inside a `tokio::spawn`, and a panicking task cannot bring down the process or the TUI's render/input loop — its `JoinError` is converted into an ordinary `CommandOutcome::Error` naming the panic, delivered through the same reply channel a normal return uses. A `ForkSession` whose `at_seq` is out of range for the calling session (`Conway::fork_from`'s own bounds check) becomes the identical `Notice`-shaped failure, never a panic |
 | On timeout | None imposed. A command that never completes leaves its reply channel silent forever, but never blocks anything else — see "When absent"/Ordering below for why this is structural, not a convention an implementation must remember |
 | On garbage | Not applicable to `invoke` (it receives typed Rust values, not wire input). At *registration*, a malformed `CommandSpec::name` (empty, containing whitespace, or failing `conway::plugin::validate_command_name` once namespaced) is a **named, install-time error** — the TUI refuses to start rather than installing a command that could never be typed or that malforms its own namespace |
 | When absent | No `Plugin::commands()` override means no commands (the trait's own default returns `Vec::new()`) — every existing `Plugin` implementor, built-in or third-party, keeps compiling and behaving identically. With the declaring plugin not installed at all, its command's full name is simply unknown — `commands::parse` recognizes the *shape* of a plugin-looking word (containing conway-core's event/command namespace separator, `.`) but resolution against the installed registry happens only in `execute`, so an uninstalled plugin's command produces the ordinary "unknown command" notice, never a stub or a special case |
 | Ordering | **The render/input loop never calls a plugin, and never blocks on one — the same hard-won property point 12 (`status.declare/1`/`status/1`) establishes for the status line, reused here for the same reason.** `commands::execute` resolves a command (a synchronous `HashMap` lookup) and returns an `Effect::RunPluginCommand` describing it, without ever calling `invoke`; `App` (`conway-cli`) spawns the actual call on its own task, off the `select!` loop that drives rendering and key handling, and receives the reply on a channel exactly like `/ask`'s own modal-answer plumbing (`ModalAskOutcome`/`run_modal_ask`). A hanging command therefore degrades to "the operator doesn't see a reply yet," never to a frozen terminal. Applying a `ForkSession` reply (`App::apply_plugin_command_done`) DOES run on that loop, same as `host.fork`/`host.resume` already do for the built-in commands that swap sessions — the property that must never block is `Command::invoke` itself, already complete by the time a reply exists |
-| Status | **Implemented.** `conway_core::ports::plugin::{Command, CommandCtx, CommandOutcome, CommandSpec}` and `Plugin::commands()`'s default (`crates/conway-core/src/ports/plugin.rs`); dispatch through `conway_cli::tui::commands::{SlashCommand::Plugin, CommandRegistry, Host::resolve_command}` and `conway_cli::tui::app::App::spawn_plugin_command`/`apply_plugin_command_done`. `conway-plugin-skeleton`'s `SkeletonPingCommand` (`/{plugin id}.ping`) is the worked example of `Output`. Board item 01KZYBFTK4QPB45AJT9M57P60W; `ForkSession` lands with board item 01KZYH37WNDKDWSMWQQPRFKKXC; `conway-plugin-history`'s real `/conway.history.rewind <seq>` consumer lands with board item 01KZY8Q1CMMNVSF54CTC270N3H |
+| Status | **Implemented.** `conway_core::ports::plugin::{Command, CommandCtx, CommandOutcome, CommandSpec}` and `Plugin::commands()`'s default (`crates/conway-core/src/ports/plugin.rs`); dispatch through `conway_cli::tui::commands::{SlashCommand::Plugin, CommandRegistry, Host::resolve_command}` and `conway_cli::tui::app::App::spawn_plugin_command`/`apply_plugin_command_done`. `conway-plugin-skeleton`'s `SkeletonPingCommand` (`/{plugin id}.ping`) is the worked example of `Output`.; `ForkSession` lands with; `conway-plugin-history`'s real `/conway.history.rewind <seq>` consumer lands with |
 
 **Why this is narrower than a hook that can touch a live session, and
 deliberately so.** [`CommandCtx`] carries read-only identity and the raw
@@ -365,7 +360,7 @@ crate one layer up, where session-manipulation capability like `Conway::
 fork_from` lives) without a dependency cycle — a command can never hold a
 live handle onto its own session, let alone another one.
 
-### Forking the calling session — `CommandOutcome::ForkSession` (board item 01KZYH37WNDKDWSMWQQPRFKKXC)
+### Forking the calling session — `CommandOutcome::ForkSession`
 
 The gap this point originally disclosed — "a plugin command cannot fork,
 resume, steer, or swap the session the TUI is driving" — blocked `/rewind`
@@ -395,8 +390,7 @@ the one it was invoked from. `conway_cli::tui::app::App` resolves `at_seq`/
 spawned the invocation, never against whatever session it happens to be
 driving by the time the reply arrives — the two can legitimately differ
 (an operator's `/resume` racing a slow plugin command). This is the "a
-command acts on its own session, never one it names" property board item
-01KYTP0PGKJ4VCJP5TD39A1WHF's `SubagentHandle` precedent established for
+command acts on its own session, never one it names" property's `SubagentHandle` precedent established for
 tools, applied to commands the only way it can be given this variant carries
 no live handle at all: by construction of the type, not a runtime check that
 could be forgotten. `conway_core::ports::plugin::tests::
@@ -427,7 +421,7 @@ language ("rewind to before I asked about X") needs to RESOLVE that request
 against the session's own history first — and `CommandCtx` grants no way to
 read a transcript at all, on purpose (this point's own narrowing: no live
 `Conway`/`SessionHandle`, ever). That resolution problem belongs to
-`/rewind`'s own item (01KZY8Q1CMMNVSF54CTC270N3H), not this one — it may need a
+`/rewind`'s own item, not this one — it may need a
 further, separately-justified read-only capability (a history-browsing port,
 scoped the same "conway-core-native, bound at construction" way this item's
 own precedent demands), or it may turn out `/rewind`'s UI can defer sequence
@@ -436,7 +430,7 @@ picker built from data the TUI already has). Either way, nothing about
 resolving a target reaches `conway-cli` internals, and nothing here widens
 `CommandCtx` beyond the one new read-only field this item adds.
 
-**Resolved, this way, by 01KZY8Q1CMMNVSF54CTC270N3H (`conway-plugin-history`,
+**Resolved, this way, by (`conway-plugin-history`,
 `/conway.history.rewind <seq>`):** the second option above — an explicit
 `<seq>` argument, never free text, and NO new `CommandCtx`/`conway-core`
 capability. The "is a seq even operator-visible" question that item was
@@ -495,11 +489,11 @@ a second listing that could drift from it.
 | Receives | `Plugin::events()` is consulted with nothing live and returns zero or more [`EventDecl`] (`name`, `summary`, `carries_tool_name`). `PluginEventHandle::emit(bare_name, payload)` — reachable from `ToolCtx::plugin_events`, bound at construction to the resolved tool's own declaring plugin id — takes a BARE name (never the namespaced form) and an arbitrary `serde_json::Value` payload the plugin itself defines; there is no core-imposed shape beyond "valid JSON", mirroring `HookEvent::payload`'s own "event-specific, decided by whoever wires a concrete event" contract |
 | May return | Not applicable — `emit` returns nothing, and a plugin cannot observe whether any hook was actually subscribed |
 | On error | `emit`'s only failure mode is a malformed assembled name (only reachable via an empty `bare_name`, since the declaring plugin's own id is validated once at registration) — dropped silently, never a panic, matching `HookDispatcher::dispatch`'s own posture for a failing hook downstream of it |
-| On timeout | None imposed on `emit` itself; a subscribed hook's own timeout is the SAME `timeout_ms` every `[hooks].rules[]` entry declares (point 13) |
+| On timeout | None imposed on `emit` itself; a subscribed hook's own timeout is the SAME `timeout_ms` every `hooks.rules[]` entry declares (point 13) |
 | On garbage | At *registration* (`ConwayBuilder::build`), a malformed declaration (an empty bare name, or two events landing on the identical namespaced full name — from the same plugin or two different ones) is a **named, build-time error**, mirroring point 15's identical registration-time refusal for a malformed `CommandSpec::name` |
-| When absent | No `Plugin::events()` override means no declared events (the trait's own default returns `Vec::new()`) — every existing `Plugin` implementor, built-in or third-party, keeps compiling and behaving identically. A `[hooks].rules[].event` naming no installed plugin's declared event parses, validates, and is silently never dispatched — the SAME tolerance a typo'd core event name has always had |
+| When absent | No `Plugin::events()` override means no declared events (the trait's own default returns `Vec::new()`) — every existing `Plugin` implementor, built-in or third-party, keeps compiling and behaving identically. A `hooks.rules[].event` naming no installed plugin's declared event parses, validates, and is silently never dispatched — the SAME tolerance a typo'd core event name has always had |
 | Ordering | Every hook subscribed to the SAME namespaced event name runs, in configured order, exactly like point 13's five observation events (this is literally the same dispatch table, unioned) — a failure never stops a later hook from running |
-| Status | **Implemented.** `conway_core::ports::{EventDecl, PluginEventEmitter, PluginEventHandle}` and `Plugin::events()`'s default (`crates/conway-core/src/ports/plugin.rs`); `conway_runtime::hook_dispatch::declared_plugin_events` (namespacing/validation) and `impl PluginEventEmitter for HookDispatcher` (dispatch, reusing point 13's own fan-out); `ConwayBuilder::build` unions the result into the SAME dispatch table `[hooks].rules[]` already feeds. `conway-plugin-skeleton`'s `pong_dispatched` event is the worked example: `SkeletonPlugin::events()` declares it, `SkeletonPingTool::invoke` fires it unconditionally on every call, and `conway-plugin-skeleton/tests/skeleton_end_to_end.rs`'s `a_configured_hook_fires_when_the_skeletons_declared_event_is_dispatched` proves a real configured `[hooks].rules[]` entry actually receives it. Board item 01KZS03BFE720EQZG7Q2768N2H |
+| Status | **Implemented.** `conway_core::ports::{EventDecl, PluginEventEmitter, PluginEventHandle}` and `Plugin::events()`'s default (`crates/conway-core/src/ports/plugin.rs`); `conway_runtime::hook_dispatch::declared_plugin_events` (namespacing/validation) and `impl PluginEventEmitter for HookDispatcher` (dispatch, reusing point 13's own fan-out); `ConwayBuilder::build` unions the result into the SAME dispatch table `hooks.rules[]` already feeds. `conway-plugin-skeleton`'s `pong_dispatched` event is the worked example: `SkeletonPlugin::events()` declares it, `SkeletonPingTool::invoke` fires it unconditionally on every call, and `conway-plugin-skeleton/tests/skeleton_end_to_end.rs`'s `a_configured_hook_fires_when_the_skeletons_declared_event_is_dispatched` proves a real configured `hooks.rules[]` entry actually receives it. |
 
 **The declaration/firing split, and why an undeclared-but-fired (or
 declared-but-never-fired) event is a defect, not a shrug.** `PHILOSOPHY.md`
@@ -523,7 +517,7 @@ id}.{event's own bare name}`, via `conway_core::event_name::
 validate_event_name` — the SAME shared validator point 15 uses for command
 names (`conway::plugin::validate_command_name`), one implementation,
 differing only in which noun the error text names. An earlier draft of this
-rule (`.design/extension-architecture.md` §16.6 point 3) additionally
+rule additionally
 excluded a plugin id that itself contains the separator, reasoning from a
 SUBSCRIBER-side hazard (recovering `id` by splitting `name` on the first
 `.` could misattribute an event to the wrong plugin). This item is the
@@ -546,10 +540,10 @@ an embedder already holding the exact plugin list it is about to hand
 `ConwayBuilder` can call it directly, before `build()`, and read back every
 plugin event's full namespaced name, one-line `summary`, and
 `carries_tool_name`. `ConwayBuilder::build` calls this SAME function to
-decide what `[hooks].rules[]` may actually dispatch — one implementation,
+decide what `hooks.rules[]` may actually dispatch — one implementation,
 not a parallel "validate" path and a separate "enumerate" path that could
 drift apart. No `conway-cli` surface lists this yet (mirroring point 13's
-own disclosed gap for `[hooks].rules[]` visibility) — the mechanism exists
+own disclosed gap for `hooks.rules[]` visibility) — the mechanism exists
 and is reachable; a TUI/settings presentation of it is later, additive
 work.
 
@@ -644,7 +638,7 @@ guarantee than that.
 
 ### The policy-chain overlay, if points 7 and 8 are ever built
 
-`.design/extension-architecture.md` §5.1 specifies where a composed
+the extension design specifies where a composed
 `NarrowingPolicy`/`DecidingPolicy` chain would sit, argued from the same
 `decide` this section just described: a **deny** half would run for every
 call, including one that must already reach the gate — inserted as a new
@@ -665,8 +659,8 @@ half is live.
 - **Context editing (points 3, 4, 9).** Today there is exactly one
   `ContextHook`, so composition across *multiple* hooks is unreachable — the
   question does not yet arise in the running system. The design's answer,
-  settled by `01KYTP2QYE00FJSQAQQ0E37JZP` and specified in
-  `.design/extension-architecture.md` §16.3, for when it does: **every hook
+  settled by and specified in
+  the extension design, for when it does: **every hook
   is evaluated independently against the same pre-hook payload, never
   against another hook's output** (chaining is rejected outright — it is
   exactly the "no fixed point under two rewriters" hazard restated for
@@ -709,7 +703,7 @@ either denies, drops, or falls through to the strictest available default.
 | Plugin rules (7, designed) | `on_failure`-shaped, design only | Design only, clamped `timeout_ms` | Design only | Design only, never guessed at | Design only | No producer exists; contributes nothing | Design only |
 | Policy chain (8, designed) | `on_failure`, default `Deny`, **never `Allow`** | Clamped `timeout_ms`, design default 60 s; **excluded from any progress-reset rule** — a decision-bearing call's deadline never extends on a progress notification, so a hook that emits progress forever while never deciding cannot stall the session (§16.2d) | Design only | Design only | Design only | No chain exists; unaffected | Design only |
 | `context.hook/1` (9, designed) | Design only | Design only, same clamped-timeout shape as 8 | Design only | Design only | Design only | No wire transport exists | Design only |
-| Declarative hooks (13) | Fail-closed for `pre_tool_use`/`prompt_submitted` (the two that can deny); logged and swallowed (fail-open) for the five observation events | `pre_tool_use`/`prompt_submitted`: fail-closed, same as error. Observation events: logged and swallowed | Runner-reported (`HookFailure`), never a raw process panic reaching the caller | Unparseable `HookAnswer` stdout is a `HookFailure`, handled identically to any other runner error | An unrecognized `HookPermissionVerdict`/`ContextDelta` shape fails to deserialize (`HookAnswer`'s own `deny_unknown_fields` posture on `permission`) — see `conway_core::hook`'s own tests | A `[hooks]` block is parsed, deny-unknown-fields-strict, and validated (board item 01KZRZW5CWMVQ0GPRT4GX4RV5G) whether present or absent. **All seven core events now dispatch** — see point 13's Status row, which is normative — so a rule naming any of them DOES run, given an injected runner; a `match` on an event carrying no tool name is a load-time config error, never a silently-inert rule | Design only |
+| Declarative hooks (13) | Fail-closed for `pre_tool_use`/`prompt_submitted` (the two that can deny); logged and swallowed (fail-open) for the five observation events | `pre_tool_use`/`prompt_submitted`: fail-closed, same as error. Observation events: logged and swallowed | Runner-reported (`HookFailure`), never a raw process panic reaching the caller | Unparseable `HookAnswer` stdout is a `HookFailure`, handled identically to any other runner error | An unrecognized `HookPermissionVerdict`/`ContextDelta` shape fails to deserialize (`HookAnswer`'s own `deny_unknown_fields` posture on `permission`) — see `conway_core::hook`'s own tests | A `hooks` block is parsed, deny-unknown-fields-strict, and validated whether present or absent. **All seven core events now dispatch** — see point 13's Status row, which is normative — so a rule naming any of them DOES run, given an injected runner; a `match` on an event carrying no tool name is a load-time config error, never a silently-inert rule | Design only |
 
 ## Constraints this document keeps
 
@@ -737,9 +731,8 @@ silently and a changelog entry does not.
 Tutorials and worked examples — see doc 4
 ([`authoring.md`](authoring.md)) and doc 5
 ([`cookbook.md`](cookbook.md)). Trust in depth — see doc 3
-(`trust-and-security.md`, `01KYTP78T0NR20A9HV93D7E3AE`); this page states only what each point's
+(`trust-and-security.md`,); this page states only what each point's
 failure table needs ("de-trusted") and defers the mechanism. The wire
-transport itself — `.design/d1-transport.md` is a closed design spike
-(`01KYNN7K02MS59GCM5PKC1JDW9`, done as design, not as code); this page
+transport itself was designed and never built; this page
 describes points and contracts, which are transport-independent, not frame
 formats.

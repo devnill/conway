@@ -1,5 +1,5 @@
-//! The `sessions`/`routes` read-only subcommands (WI-116 fills these in;
-//! WI-111 only establishes the flag surface and stub dispatch).
+//! The `sessions`/`routes` read-only subcommands (fills these in;
+//! only establishes the flag surface and stub dispatch).
 
 pub mod fmt;
 pub mod routes;

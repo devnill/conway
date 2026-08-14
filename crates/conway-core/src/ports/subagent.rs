@@ -5,8 +5,7 @@
 //! mechanically enforced): the tools are thin wrappers with no privileged
 //! access.
 //!
-//! ## `caller` on `steer`/`await_result`/`cancel` (board item
-//! 01KYT8TS0EBKJHYNJRF6S88NRH)
+//! ## `caller` on `steer`/`await_result`/`cancel`
 //!
 //! Every implementation MUST enforce that `caller` may act on `target` only
 //! when `target` is within `caller`'s own subtree (itself, or any
@@ -36,7 +35,7 @@
 //! `caller`, so a model can never forge a wider `caller` than its own true
 //! identity.
 //!
-//! ## `caller` on `start`/`ask`/`tree` (board item 01KYTP0PGKJ4VCJP5TD39A1WHF)
+//! ## `caller` on `start`/`ask`/`tree`
 //!
 //! `674bb65` (the item above) closed `steer`/`await_result`/`cancel` but
 //! left `start`, `ask`, and `tree` unguarded: `start`/`ask` took only
@@ -126,12 +125,12 @@ pub trait SubagentHost: Send + Sync + 'static {
         target: AgentId,
     ) -> Result<AgentResult, RuntimeError>;
 
-    /// `mode` (board item 01KZDC2222ARKMZKN8ZE4BYHD6) selects between
+    /// `mode` selects between
     /// [`CancelMode::Immediate`] (trips the token now, propagates to the
     /// whole subtree structurally) and [`CancelMode::Graceful`] (lands at
     /// `target`'s next turn boundary, stops only `target` itself). See
     /// that type's own doc for the full contract, including the resume-gate
-    /// caveat and (board item 01KZDDCN747FEZ3GM3NS0ANE7G) exactly which
+    /// caveat and exactly which
     /// agent's terminal result `reason` reaches under each mode.
     async fn cancel(
         &self,
@@ -159,8 +158,8 @@ pub trait SubagentHost: Send + Sync + 'static {
     /// subagent primitive: no mode parameter. `caller` must own
     /// `parent`, exactly as `start` requires -- see this module's own doc.
     ///
-    /// **Agent-def inheritance (board items 01KZGX1RR0VXN2YH3P75SBE9SA/
-    /// 01KZC8DD9C74BSTP8BQDJKYNFR):** when `spec.agent_def` is left `None`
+    /// **Agent-def inheritance (/
+    ///):** when `spec.agent_def` is left `None`
     /// (the `conway_ask` tool never sets it), an implementation MUST fill
     /// it from `parent`'s own `SessionMeta::agent_def` before forking --
     /// otherwise the child inherits the parent's ENTIRE transcript (a fork
@@ -293,12 +292,11 @@ impl SubagentHandle {
             .await
     }
 
-    /// Cancels `target` with `reason`, in `mode` (board item
-    /// 01KZDC2222ARKMZKN8ZE4BYHD6) -- the primitive both modes are reachable
+    /// Cancels `target` with `reason`, in `mode` -- the primitive both modes are reachable
     /// through. See [`CancelMode`]'s own doc for what each mode guarantees,
     /// including the resume-gate caveat on `Graceful` -- and note `Graceful`
     /// stops ONLY `target` itself: it does not propagate to `target`'s
-    /// descendants (board item 01KZDDCBGXNYTNM31PHW46R1SP), unlike
+    /// descendants, unlike
     /// `Immediate`.
     pub async fn cancel_with(
         &self,
@@ -398,7 +396,7 @@ mod tests {
         last_steer: Mutex<Option<(AgentId, AgentId)>>,
         last_await: Mutex<Option<(AgentId, AgentId)>>,
         /// `(caller, target, mode)` -- `mode` added alongside the trait's
-        /// new parameter (board item 01KZDC2222ARKMZKN8ZE4BYHD6) so a test
+        /// new parameter so a test
         /// can prove `SubagentHandle::cancel`/`cancel_with` thread it
         /// through unchanged.
         last_cancel: Mutex<Option<(AgentId, AgentId, CancelMode)>>,
@@ -584,8 +582,7 @@ mod tests {
     /// [`SubagentHandle::cancel`] (the two-argument convenience form) always
     /// resolves to [`CancelMode::Immediate`] -- the pre-existing behavior,
     /// preserved exactly -- and [`SubagentHandle::cancel_with`] is the one
-    /// place a caller can reach [`CancelMode::Graceful`] instead (board item
-    /// 01KZDC2222ARKMZKN8ZE4BYHD6).
+    /// place a caller can reach [`CancelMode::Graceful`] instead.
     #[test]
     fn cancel_defaults_immediate_and_cancel_with_carries_the_caller_chosen_mode() {
         let agent_id = AgentId::new();

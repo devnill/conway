@@ -1,4 +1,4 @@
-//! Regression test for board item 01KYNN06B6D2A9JCX1CAENGKTC ("CRITICAL:
+//! Regression test for ("CRITICAL:
 //! pattern grants are inert"): every existing pattern-grant test fed
 //! `PatternRule::matches`/the broker a HAND-WRITTEN `rendered` string --
 //! never the string the production path actually produces
@@ -142,7 +142,7 @@ fn build_conway(backend: Arc<dyn Backend>, gate: Arc<dyn PermissionGate>) -> Con
         .with_session_store(store)
         .with_permission_gate(gate)
         .with_router(fake_router())
-        // Board item (bash ships on by default and cannot be declined):
+        // (bash ships on by default and cannot be declined):
         // this file drives the REAL `bash` tool end to end, so it must now
         // opt in explicitly -- the facade's own default excludes it.
         .with_builtin_plugins(PluginSelection::All)
@@ -292,7 +292,7 @@ async fn a_granted_command_never_reaches_the_operator_through_the_real_render_se
 }
 
 // ---------------------------------------------------------------------
-// Board item 01KYT3NSWRHMPEAXVXRJ73KDYR: "pattern grants are still inert
+// "pattern grants are still inert
 // for every tool except bash". The tests above are all `bash` -- the ONE
 // tool `Tool::render` was overridden for, which is exactly what hid the
 // follow-on bug: `read:*` (the broadest non-`bash` grant the language can

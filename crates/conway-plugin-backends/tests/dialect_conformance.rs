@@ -1,9 +1,9 @@
-//! Conformance tests for the three dialects added by WI-022 —
+//! Conformance tests for the three dialects added by an earlier item —
 //! `VllmHermes`, `LmStudio`, `LlamaCppServer` — completing the five-dialect
-//! matrix on top of WI-019's `OpenAi`/`Ollama` coverage.
+//! matrix on top of an earlier item's `OpenAi`/`Ollama` coverage.
 //!
 //! `ToolCallAccumulator`-level tests exercise the vllm#31871 inline-text
-//! fallback (`push_content_delta`/`stop_override`, WI-022) and the
+//! fallback (`push_content_delta`/`stop_override`) and the
 //! codex#7517 repeated-id/name regression for `LmStudio`; wiremock tests
 //! exercise per-dialect request-body quirks and end-to-end
 //! `generate`/`stream` completion.
@@ -85,7 +85,7 @@ fn fixture_lines(name: &str) -> Vec<String> {
         .collect()
 }
 
-// --- DialectDefaults: distinct, matching the WI-017 table ---------------
+// --- DialectDefaults: distinct, matching the table ---------------
 
 #[test]
 fn vllm_hermes_defaults_is_distinct_and_matches_the_wi017_table() {
@@ -398,7 +398,7 @@ async fn llama_cpp_server_completes_a_text_only_stream() {
     assert_text_only_stream_completes(Dialect::LlamaCppServer).await;
 }
 
-/// WI-022 rework regression (cycle 1): the Hermes inline-text fallback is
+/// Rework regression (cycle 1): the Hermes inline-text fallback is
 /// live in `Backend::stream()` — a real VllmHermes SSE stream carrying a
 /// tool call as inline `<tool_call>` text yields a validated ToolCall and
 /// ToolUse stop, with none of the tag text leaking as TextDelta.

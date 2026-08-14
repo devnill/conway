@@ -11,7 +11,7 @@ kind of mistake this page exists to prevent.
 
 How much you are asked. Every TUI session starts in `Prompt`; change
 it mid-session with `/settings`, which cycles Prompt → Plan → AutoAllow →
-Prompt. (`settings.json`'s own `[permissions.mode]` is a different,
+Prompt. (`settings.json`'s own `permissions.mode` is a different,
 narrower setting — `prompt`/`allowlist`/`deny` — that only matters to a
 library embedder assembling a `Conway` with no gate of its own; the `conway`
 binary's TUI and `-p` one-shot mode both always supply their own gate and

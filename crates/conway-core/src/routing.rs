@@ -5,7 +5,7 @@
 //! config-only `Router`/`RoutingExplainer` fallback (`MinimalRouter`) usable
 //! without depending on `conway-routing` at all.
 //!
-//! `Router::resolve` (defined as a port trait in WI-007) never consults
+//! `Router::resolve` (defined as a port trait in an earlier item) never consults
 //! request *content* — [`RouteRequest`] is constructed so that no field can
 //! carry prompt text. This is a compile-time guarantee, not a convention: a
 //! unit test below asserts the field set is exactly the five documented
@@ -99,7 +99,7 @@ pub struct AttemptFailure {
 ///
 /// A second, independent `Probe` variant — fed by a periodic health prober
 /// decoupled from request traffic — used to exist here. It was retired, not
-/// wired (board item `01KZ802GSF692EKYKQ2TTVCJB8`): the prober that would
+/// wired: the prober that would
 /// have fed it had no production call site anywhere in this tree, and the
 /// Transport breaker alone already handles recovery (a clock read takes it
 /// half-open; the next real request retries), so wiring it would only have
@@ -136,7 +136,7 @@ pub enum BreakerState {
 /// `ContextTooLarge` decisions.
 ///
 /// A `ProbeFail` variant, fed exclusively by the now-retired periodic health
-/// prober (board item `01KZ802GSF692EKYKQ2TTVCJB8`), used to exist here. It
+/// prober, used to exist here. It
 /// was removed along with its only producer rather than left unconstructible
 /// beside a live variant.
 #[non_exhaustive]
@@ -209,7 +209,7 @@ pub struct ExplainEntry {
 /// `RouteRequest`, including the effective headroom reservation used for
 /// the admission check (see the amendment).
 ///
-/// **Moved here from `conway-routing` (board item 01KZFC1KNGQ51TZ0BG7P7RAY9H),
+/// **Moved here from `conway-routing`,
 /// replacing a dead, unreached second `ExplainReport` shape this module used
 /// to declare on its own.** The type used to live only in `conway-routing`,
 /// reachable exclusively through `RoutingExplain`'s projection of a concrete
@@ -399,8 +399,7 @@ pub struct RoleConfig {
 ///
 /// **The `probe_*` fields (`probe_interval_secs`, `probe_timeout_secs`,
 /// `probe_failures_to_open`, `probe_enabled`) that used to configure a
-/// second, independent `Probe` breaker were removed (board item
-/// `01KZ802GSF692EKYKQ2TTVCJB8`), not merely left unwired.** The periodic
+/// second, independent `Probe` breaker were removed , not merely left unwired.** The periodic
 /// health prober that would have fed that breaker had no production call
 /// site anywhere in this tree — the Transport breaker alone handles recovery
 /// (it goes half-open on a clock read, and the next real request retries),
@@ -473,7 +472,7 @@ pub struct ModelOverrides {
 }
 
 // ---------------------------------------------------------------------
-// Minimal fallback implementations (board item 01KZFC1KNGQ51TZ0BG7P7RAY9H).
+// Minimal fallback implementations.
 //
 // `crate::ports`'s own module doc reserves `conway-core` for feature-gated
 // test fakes plus "every other implementation lives in a dedicated crate".
@@ -830,7 +829,7 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
-    // `MinimalRouter`/`ExplainReport` (board item 01KZFC1KNGQ51TZ0BG7P7RAY9H)
+    // `MinimalRouter`/`ExplainReport`
     // -------------------------------------------------------------------
 
     fn model_ref(backend: &str, model: &str) -> ModelRef {

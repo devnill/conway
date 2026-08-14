@@ -2,8 +2,8 @@
 
 A session is one agent's durable history: every turn, tool call, and result
 it has ever produced, recorded as it happens. This page covers what's
-persisted, the repeated-step notices conway writes into a transcript on its
-own initiative, how resuming and forking-from-disk work, keep-alive
+persisted, the notes that can be written into a transcript without you or
+the model asking, how resuming and forking-from-disk work, keep-alive
 sessions, `/ask`'s ephemeral children, where the data lives, and the full
 `conway sessions` command reference.
 
@@ -22,10 +22,10 @@ kinds you'll see:
 | `tool_result` | A tool call's result. |
 | `fork_directive` | The instruction a forking parent attached on top of the inherited prefix — a forked child's first record. |
 | `parent_steer` | A steer message drained from the mailbox at a turn boundary. |
-| `system_note` | A runtime-authored note (e.g. a [repeated-step notice](#repeated-step-notices) or a [result-contract](agents.md#result-contracts) violation) — never something you or the model wrote. |
+| `system_note` | A note written by the harness or by an installed plugin (e.g. a [result-contract](agents.md#result-contracts) violation, or a [repeated-step notice](#repeated-step-notices) if you installed `conway.stepguard`) — never something you or the model wrote. |
 | `agent_result` | The agent's own terminal result: status, summary, facts, artifacts. |
 | `child_result` | A CHILD's terminal result, recorded into the PARENT's own log at the next turn boundary after the child's `AgentMessage::Result` drains from the parent's mailbox — how a fan-out caller (`await: false`) learns a child finished without ever calling `conway_await` on it. See [`agents.md`](agents.md#a-model-tool-call). |
-| `context_report` | What was actually sent to the model that turn: every segment, its provenance, and its estimated token count. |
+| `context_report` | What was actually sent to the model that turn: every segment, its provenance, its estimated token count, and any [tool calls dropped](#dropped-tool-calls) to make the request sendable. |
 | `context_mask` | Marks an earlier record (by its seq) excluded from — or re-included in — a *future fork's inherited prefix*, without touching that record. It has no effect on the owning session's own later turns; nothing in conway today writes one. |
 
 The one qualification to "never rewritten": a session's header line has
@@ -41,13 +41,20 @@ one-way lifecycle flip; it does not otherwise get edited.
 
 ## Repeated-step notices
 
-conway tracks, per agent, every tool call's name and arguments. If the
-exact same call — same tool, same arguments — comes back a 3rd time, conway
-appends one `system_note` to the transcript and moves on; it does not
-refuse or alter the call itself. This is the other mechanism (besides
-[result contracts](agents.md#result-contracts)) that writes into your
-transcript on conway's own initiative, so if you see one and didn't expect
-it, here's what it means.
+**Nothing detects repeated tool calls unless you install something that
+does.** conway itself holds no opinion about an agent that keeps making the
+same call — deciding when a loop is a loop is a judgment about your workload,
+and the harness would be guessing. Install the first-party `conway.stepguard`
+plugin if you want the judgment conway's authors would make:
+
+```json
+{ "plugins": { "install": ["conway.stepguard"] } }
+```
+
+With it installed, it tracks per agent every tool call's name and arguments.
+If the exact same call — same tool, same arguments — comes back a 3rd time, it
+appends one `system_note` to the transcript and moves on; it does not refuse
+or alter the call itself.
 
 "Same call" means the tool name and the canonicalized JSON arguments hash
 identically: object keys are sorted recursively before comparing, so
@@ -57,28 +64,29 @@ different one.
 
 The note fires once per repeated call, on its 3rd occurrence — not the
 4th, 5th, or any later repeat of the same call, and not the 1st or 2nd. It
-reads, verbatim (conway's source format string):
-
-```
-tool `{}` was called with identical arguments 3 times; see the result at seq {}
-```
-
-— the first `{}` is the tool's name and the second is the `seq` of that
-call's *first* result, so the model (or you, reading the transcript) can go
-look at the existing answer instead of running the call again.
+names the tool and the `seq` of that call's *first* result, so the model (or
+you, reading the transcript) can go look at the existing answer instead of
+running the call again. It also fires a `conway.stepguard.repeated_step`
+event, which a [hook](plugins/hooks.md) can subscribe to.
 
 This is **advisory only**: nothing about it blocks, retries, or rejects
 the call — the 3rd (and every later) identical call still runs and
-returns a result exactly as if the note weren't there. It fires for every
+returns a result exactly as if the note weren't there. It applies to every
 agent, including the interactive root agent you're talking to directly,
-not just forked or spawned children. The 3-call threshold and the size of
-the window conway tracks (the most recent 64 distinct calls, oldest
-evicted first) are both fixed — there's no `settings.json` key or facade
-option to change either.
+not just forked or spawned children. Sibling agents are tracked separately,
+so a fan-out where ten children each make the same call once is not
+repetition. The 3-call threshold and the window size (the most recent 64
+distinct calls per agent, oldest evicted first) are the plugin's policy; fork
+the crate if you want different ones.
 
 If you see this note, something is stuck in a loop: point it at the cited
 `seq` instead of repeating the call, or steer/cancel the agent if it
 doesn't stop on its own.
+
+Note that with the plugin installed this becomes the second mechanism
+(besides [result contracts](agents.md#result-contracts)) that writes into
+your transcript without the model or you having asked — which is exactly why
+it is something you turn on rather than something you inherit.
 
 ## Where session data lives on disk
 
@@ -249,6 +257,32 @@ A few things worth knowing before you rely on the output:
   `sessions show|tree|export <id>` must be full ULIDs — the CLI does not
   accept a shortened/prefix id anywhere, even though `list`/`tree`'s own
   table output truncates ids for display.
+
+## Dropped tool calls
+
+There is exactly one thing conway removes from a request without being asked,
+and it exists because the alternative is a request no provider will accept.
+
+A tool call must be accompanied by its result. If a transcript contains a call
+with no answering result anywhere, every provider rejects the whole request
+rather than tolerating it. Two ordinary situations produce one:
+
+- **A fork taken mid-batch.** `conway_fork` runs as a tool call *inside* a
+  batch, so the child's inherited prefix can end on calls whose results did not
+  exist yet when the snapshot was taken.
+- **A session that stopped mid-batch.** Killed between an assistant turn and
+  its tool results, its own log ends the same way — which would otherwise make
+  it unresumable.
+
+conway drops the unanswered calls so the turn can proceed, and **records every
+one it dropped** in that turn's `context_report`, under `dropped`. `/context`
+in the TUI prints them; so does reading the record with `conway sessions show`.
+
+The loss is real and is why it is recorded rather than merely accepted: the
+model no longer sees that it made those calls and may re-issue them. A turn
+that repeats work you thought was already done is explicable from the log
+instead of mysterious. Synthesizing fake results was the alternative and was
+rejected — it would put content in the transcript that no agent ever produced.
 
 ## conway does not compact context
 

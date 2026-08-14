@@ -1,4 +1,4 @@
-//! Board item `01KYXNBKWK2DZ7JE3VRKC5FRJB`: the router's `CapabilityIndex`
+//! The router's `CapabilityIndex`
 //! must agree with `Backend::capabilities()` (and therefore with
 //! `AttemptEngine`'s T-1 gate) for every `(backend, model)` pair
 //! `models.json` lists, in every direction -- never an independently
@@ -6,7 +6,7 @@
 //!
 //! ## History: two corrections, in order
 //!
-//! (Board item 01KZHF270T3W8GZ7NM6DSNQ4MM later relocated `builder.rs`'s
+//! (later relocated `builder.rs`'s
 //! `probe_openai_compat_backends` -- named throughout this history section
 //! below as the mechanism this fix landed in -- into `conway_plugin_backends
 //! ::OpenAiCompatBackendFactory::probe_capabilities`. The property this
@@ -66,7 +66,7 @@
 //! That assertion shape cannot discriminate "T-1 backstopped a wrong index"
 //! from "the index was already correct" -- it was retired for that reason,
 //! not renamed, since renaming it as if it still proved the T-1-backstop
-//! property would leave a passing check that cannot fail (GP-14).
+//! property would leave a passing check that cannot fail ().
 //!
 //! ## The mock HTTP server is loopback-only, not a live network dependency
 //!
@@ -76,7 +76,7 @@
 //! tests this exact mechanism (`CapabilityProbe::discover`/`discover_result`)
 //! against a `wiremock::MockServer` bound to an ephemeral `127.0.0.1` port --
 //! never a real, external endpoint. This file reuses that established,
-//! already-in-tree technique (C-04 forbids live network in tests, not a
+//! already-in-tree technique ( forbids live network in tests, not a
 //! local loopback double of one) to drive the identical mechanism end-to-end
 //! through the real `ConwayBuilder::build`, rather than reaching
 //! `CapabilityProbe` directly the way `capability_probe.rs` does.
@@ -106,7 +106,7 @@
 //!
 //! ## The non-property: T-1 is NOT a backstop against estimator error
 //!
-//! Historical note, ADJUSTED by board item 01KZFBZHTWDF11TH7G0H613ERE: this
+//! Historical note, ADJUSTED by: this
 //! paragraph originally read that both admission gates -- the router's
 //! `satisfies` and `AttemptEngine`'s own pre-flight check -- started from the
 //! IDENTICAL `est_tokens` value the real `ContextBuilder` produced, so
@@ -115,7 +115,7 @@
 //! it now calls `Backend::admit`, which computes its OWN independent
 //! estimate from the actually-built `GenerateRequest` (each dialect's real
 //! wire body), never `ContextBuilder`'s `est_tokens`. The two gates are
-//! deliberately NOT required to agree (decision 01KZF13BAR473X5SXN8HN95T6B;
+//! deliberately NOT required to agree (;
 //! `docs/routing.md`'s "Advisory vs. authoritative" section) -- this file's
 //! fixtures below still avoid pinning any test to a *specific* numeric
 //! estimate from either estimator (the property this note originally warned
@@ -285,13 +285,12 @@ fn config_naming(base_url: String, metadata_path: PathBuf) -> ConwayConfig {
 /// needs for the probe-driven tests is the *HTTP server* the backend and
 /// the probe both talk to, not the `Backend` itself), with the first-party
 /// `conway-plugin-routing` engine installed via `with_router_factory` (board
-/// item 01KZFC43J1J06BM4CCWKCKHSNV: `conway` no longer compiles a capability-
+/// item: `conway` no longer compiles a capability-
 /// /health-filtering `DeclarativeRouter` in by default -- see that item's
 /// own doc for what changes without this call) so this file's assertions
 /// about the router's probe-overlaid `CapabilityIndex` stay meaningful.
 ///
-/// `with_backend_factory(OpenAiCompatBackendFactory)` (board item
-/// 01KZHF270T3W8GZ7NM6DSNQ4MM: `conway` no longer compiles either dialect
+/// `with_backend_factory(OpenAiCompatBackendFactory)` -- `conway` no longer compiles either dialect
 /// in, so `config_naming`'s `kind = "openai-compat"` entry resolves to
 /// nothing without a registered factory) -- the exact same factory
 /// `conway-cli`'s own default-on backend arm links for real (`first_party_
@@ -314,7 +313,7 @@ fn build_conway(config: ConwayConfig) -> Conway {
 /// **3a**: the primary fix proof. The probe observes a huge window from the
 /// live server; `models.json` pins a 1-token window for the SAME listed
 /// model. `Conway::explain_routing`'s `CapabilitySummary` -- the exact
-/// number GP-07 promises an operator can inspect -- must report the
+/// number promises an operator can inspect -- must report the
 /// operator-configured window, never the wider probed one.
 ///
 /// This is the real discriminator the earlier (retired) version of this
@@ -474,7 +473,7 @@ async fn explain_reported_window_matches_backend_capabilities_for_the_same_pair(
     );
 }
 
-/// GP-14 negative control for the fix, unchanged from before this item:
+/// Negative control for the fix, unchanged from before this item:
 /// identical fixture, exactly one field changed -- `models.json`'s
 /// `max_context_tokens` for `MODEL`, widened from `TINY_LIVE_WINDOW` to
 /// `HUGE_PROBED_WINDOW` (the same value the probe already reports). With
@@ -529,7 +528,7 @@ const UNDECLARED_MODEL_NAME: &str = "undeclared-model";
 /// `"probed"` backend [`config_naming`] always configures.
 const UNDECLARED_MODEL: &str = "probed/undeclared-model";
 
-/// **3e**: the RESTRICT-policy proof (board item covering the DECIDED
+/// **3e**: the RESTRICT-policy proof (covering the DECIDED
 /// policy: "the startup capability probe may only confirm models the
 /// operator declared, never introduce new ones"). The live server reports a
 /// model `models.json` never names at all -- `models.json` still lists
@@ -597,7 +596,7 @@ async fn probe_observed_model_absent_from_models_json_is_not_admitted() {
     }
 }
 
-/// GP-14 negative control for 3e: identical fixture, except the role's
+/// Negative control for 3e: identical fixture, except the role's
 /// chain names `MODEL` -- the pair `models.json` actually declares -- so
 /// the SAME probe response (which still reports `UNDECLARED_MODEL_NAME` and
 /// nothing else) has nothing to confirm for `MODEL` beyond metadata/dialect
@@ -834,7 +833,7 @@ async fn t1_backstops_a_backend_that_shrinks_its_own_window_after_build() {
     }
 }
 
-/// GP-14 negative control for 3d: identical fixture, except the backend's
+/// Negative control for 3d: identical fixture, except the backend's
 /// window is never shrunk after `build()`. Both the router's snapshot and
 /// the live value stay large, so the request is admitted and the backend IS
 /// called -- proof the assertion above can fail.

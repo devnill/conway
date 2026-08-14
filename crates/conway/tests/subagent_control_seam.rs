@@ -1,4 +1,4 @@
-//! Regression/acceptance tests for board item 01KYT8TS0EBKJHYNJRF6S88NRH
+//! Regression/acceptance tests for
 //! ("Any agent can steer, await, or cancel any other agent — no descendancy
 //! check") -- the SECURITY-CRITICAL slice.
 //!
@@ -298,7 +298,7 @@ async fn a_sibling_cannot_forge_a_steer_into_another_sibling() {
             Box::new(|| text_response("steer was rejected, as expected")),
         ],
         // AllowOnce, not a denial: the permission gate is orthogonal to this
-        // fix (P-1's check lives INSIDE the tool's own `invoke`, reached
+        // fix ( check lives INSIDE the tool's own `invoke`, reached
         // only once the broker already authorized the call) -- an allowing
         // gate is what proves the rejection below is specifically the
         // trait-boundary subtree check, not a permission denial that would

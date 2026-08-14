@@ -6,10 +6,9 @@
 //! to contain fall into three kinds, and the distinction between the second
 //! and third matters -- do not collapse them:
 //!
-//! 1. The feature-gated test fakes (`feature = "fakes"`, WI-008).
+//! 1. The feature-gated test fakes (`feature = "fakes"`).
 //! 2. PRODUCTION FALLBACKS that answer a real call: `crate::routing`'s
-//!    `MinimalRouter`/`AlwaysClosedHealthRegistry` (board item
-//!    01KZFC1KNGQ51TZ0BG7P7RAY9H), which back `Conway::explain_routing`'s
+//!    `MinimalRouter`/`AlwaysClosedHealthRegistry` , which back `Conway::explain_routing`'s
 //!    honest degenerate answer when a caller supplies its own `Router`
 //!    (`ConwayBuilder::with_router`) and there is no `conway-routing`
 //!    `DeclarativeRouter` left to project an `ExplainReport` through. These
@@ -17,7 +16,7 @@
 //!    compute.
 //! 3. ONE TEST-FIXTURE CONSTRUCTOR: `crate::ports::artifact`'s private
 //!    `NoopArtifactWriter`, reachable only through
-//!    [`ArtifactWriteHandle::noop`] (board item 01KZJ5S3ZC8SPWTX94C4HTEC2R),
+//!    [`ArtifactWriteHandle::noop`],
 //!    which lets a `ContextHookCtx` be built for a test without implementing
 //!    `ArtifactWriter` by hand. It backs NO production call path --
 //!    `conway-runtime`'s `agent_loop` always supplies the real
@@ -37,6 +36,7 @@ mod backend;
 mod capability_index;
 mod events;
 mod hook_runner;
+mod observer;
 mod permission;
 mod plugin;
 mod routing;
@@ -48,6 +48,7 @@ pub use backend::*;
 pub use capability_index::*;
 pub use events::*;
 pub use hook_runner::*;
+pub use observer::*;
 pub use permission::*;
 pub use plugin::*;
 pub use routing::*;
@@ -77,6 +78,7 @@ mod tests {
         _: &dyn ArtifactWriter,
         _: &dyn BackendFactory,
         _: &dyn HookRunner,
+        _: &dyn ToolObserver,
     ) {
     }
 }

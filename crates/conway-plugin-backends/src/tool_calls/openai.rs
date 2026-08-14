@@ -4,7 +4,7 @@
 //! `index` and `id` are present from the first chunk of a well-behaved
 //! OpenAI stream; only `function.arguments` fragments across subsequent
 //! chunks for the same `index`. This parser is also reused, unchanged, for
-//! the `VllmHermes` dialect's structured tool-call path (WI-022): a
+//! the `VllmHermes` dialect's structured tool-call path: a
 //! vLLM/Hermes server that emits well-formed `delta.tool_calls` (rather
 //! than inline `<tool_call>…</tool_call>` text) uses exactly this shape.
 

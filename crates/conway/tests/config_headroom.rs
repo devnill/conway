@@ -1,4 +1,4 @@
-//! WI-097 amendment: the headroom config surface — global default,
+//! Amendment: the headroom config surface — global default,
 //! per-role override, precedence, hard-error validation, and the
 //! deterministic "headroom exceeds context" warning.
 

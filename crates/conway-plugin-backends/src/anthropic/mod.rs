@@ -1,6 +1,6 @@
 //! `AnthropicBackend`: native Anthropic Messages API adapter with explicit
 //! cache-breakpoint mapping (architecture §"Module: conway-backends",
-//! WI-021).
+//! an earlier item).
 //!
 //! `wire.rs` owns the segment↔message and response↔`GenerateResponse`
 //! mapping, `stream.rs` owns SSE streaming and Anthropic's `content_block_*`
@@ -52,7 +52,7 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 /// (`stream.rs`) into the `{"index":..,"id":..,"function":{"name":..,
 /// "arguments":..}}` shape [`ToolCallStyle::Structured`]'s parser expects,
 /// so this reuses `push_delta`/`push_complete` unmodified rather than
-/// touching `src/tool_calls/*` (owned by WI-018/WI-022). Previously spelled
+/// touching `src/tool_calls/*` (owned by an earlier item/ an earlier item). Previously spelled
 /// as `ToolCallAccumulator::new(Dialect::OpenAi, tools)` — the declarative
 /// provider profiles item decoupled `ToolCallAccumulator` from `Dialect`
 /// entirely, which incidentally resolves this function's own prior doc
@@ -188,7 +188,7 @@ impl Backend for AnthropicBackend {
         Ok(stream::spawn(response, req.tools))
     }
 
-    /// Anthropic's own dialect counting (board item 01KZDC4DKVC4JC3W4KN1WMC43N):
+    /// Anthropic's own dialect counting:
     /// builds the exact `/v1/messages` wire body `generate`/`stream` would
     /// send (Anthropic's message envelope, its system-prompt handling, its
     /// tool-schema shape — all distinct from `OpenAiCompatBackend`'s),

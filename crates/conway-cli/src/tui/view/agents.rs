@@ -1,4 +1,4 @@
-//! The below-chat agent-tree panel (WI-127 criterion 4): shown on demand
+//! The below-chat agent-tree panel (criterion 4): shown on demand
 //! (toggled by `/agents`, handled in `app.rs` since `commands.rs` is out of
 //! this item's file scope) rather than as an always-on side pane. Ordinary
 //! subagent lifecycle is ALSO surfaced inline in the conversation stream
@@ -33,7 +33,7 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState, theme: &Theme) {
                 .clone()
                 .unwrap_or_else(|| "agent".to_string());
             let marker = status_marker(node.status);
-            // WI-140: the agent whose conversation the transcript pane
+            // the agent whose conversation the transcript pane
             // currently shows gets an explicit, textual tag -- distinct
             // from `agent_selected`'s own reversed-highlight (the browsing
             // cursor), which ratatui already applies via `ListState`
@@ -71,7 +71,7 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &AppState, theme: &Theme) {
                 .title(title)
                 .border_style(theme.border_normal),
         )
-        // The arrow-selected row (WI-130). Using a `ListState` (rather than
+        // The arrow-selected row. Using a `ListState` (rather than
         // pre-styling one `ListItem`) lets ratatui scroll the selection into
         // view when the tree is taller than the panel.
         .highlight_style(theme.selected);
@@ -339,7 +339,7 @@ mod tests {
         );
     }
 
-    // WI-134 (finding M1): the arrow-selected agent row renders highlighted.
+    // an earlier item (finding M1): the arrow-selected agent row renders highlighted.
     #[test]
     fn draw_highlights_the_selected_agent_row() {
         use ratatui::style::Modifier;
@@ -375,7 +375,7 @@ mod tests {
         );
     }
 
-    // WI-140: the focused agent (distinct from the browsing cursor above)
+    // the focused agent (distinct from the browsing cursor above)
     // gets its own visible tag in the panel.
     #[test]
     fn draw_tags_the_focused_agent_row() {
@@ -508,7 +508,7 @@ mod tests {
 
     // ---- Item A2: draw-time visibility filtering + header mode label ----
 
-    /// root(Starting) + a Running child + a Finished child.
+    /// Root(Starting) + a Running child + a Finished child.
     fn three_node_state() -> (AppState, AgentId, AgentId) {
         let root = AgentId::new();
         let mut state = AppState::new(root);

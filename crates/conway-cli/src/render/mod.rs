@@ -1,4 +1,4 @@
-//! One-shot mode's streaming renderers (WI-112): [`make`] selects one of
+//! One-shot mode's streaming renderers: [`make`] selects one of
 //! [`text::TextRenderer`], [`json::JsonRenderer`], [`jsonl::JsonlRenderer`]
 //! from `--output-format`. Every renderer writes through the same
 //! `Box<dyn Write + Send>` -- `oneshot::run` always hands it a

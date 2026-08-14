@@ -1,5 +1,5 @@
 //! The first-party plugin tier's install mechanism for the CLI binary
-//! (board item 01KZDC3JQ7W4DY1MG6MBCVB2DV): every first-party plugin crate
+//!: every first-party plugin crate
 //! this BINARY happens to link, resolved against `[plugins].install`
 //! (`conway::config::schema::PluginsConfig`) before `ConwayBuilder::build`.
 //!
@@ -17,11 +17,11 @@
 //! members individually.** Today it contains two plugin entries --
 //! `conway-plugin-skeleton`, a skeleton proving nothing beyond the install
 //! mechanism (see that crate's own module doc), and `conway-plugin-history`
-//! (board item 01KZY8Q1CMMNVSF54CTC270N3H), `/conway.history.rewind`'s real
+//!, `/conway.history.rewind`'s real
 //! capability. Dynamic routing is built (`conway-plugin-routing`, resolved
 //! through `router_bundle` below, not this list). Context compaction,
 //! memory, skills, MCP support, and `/checkout`/`ContextMask` are not; each
-//! is separate, later work, and none has a landed board item yet as of
+//! is separate, later work, and none has a landed yet as of
 //! 2026-08-13 (`scripts/board-claims.md`'s `UNFILED` entry records the gap)
 //! -- each adds its own entry here when it lands --
 //! through `ConwayBuilder::with_backend_factory`/`with_router_factory` too,
@@ -36,7 +36,7 @@
 //! `BackendFactory`'s own `id()` is what `backend_bundle` resolves
 //! against, mirroring `router_bundle` one line over. `Router`
 //! (`conway_core::ports::routing`) has NO id-bearing method at all --
-//! board item 01KZFC2MD1FVNA674YJ9A19T8E answered this, settling that a
+//! answered this, settling that a
 //! router's identity lives on a separate `RouterFactory` trait instead
 //! (`RouterFactory::id`), never on `Router` itself: router SELECTION
 //! (naming a kind) must precede router CONSTRUCTION, which needs backends
@@ -44,15 +44,14 @@
 //! startup, well after `[plugins].install` is read. `router_bundle`/
 //! `backend_bundle` below are this binary's linked `RouterFactory`/
 //! `BackendFactory` lists, resolved in the SAME pass as `bundle` by
-//! [`ConwayBuilder::install_selected`] (board item
-//! 01KZVZ1TDBHS7S604PQB5RZDM3) -- an id may name a plugin, a router
+//! [`ConwayBuilder::install_selected`] -- an id may name a plugin, a router
 //! factory, or a backend factory, never more than one of the three, and
 //! naming more than one router factory is rejected (a build has exactly
 //! one router).
 //!
 //! ## What this module used to do, and does not any more
 //!
-//! Before board item 01KZVZ1TDBHS7S604PQB5RZDM3, this file resolved
+//! Before, this file resolved
 //! `[plugins].install` UNIONED with `[plugins].default_backends` against
 //! `bundle`/`router_bundle`/`backend_bundle` itself, in a ~70-line
 //! hand-rolled loop -- the exact resolution logic every OTHER embedder had
@@ -76,7 +75,7 @@
 //! `[plugins].install` alone: it is `[plugins].install` UNIONED with
 //! `[plugins].default_backends` (`conway::config::schema::PluginsConfig`'s
 //! own doc -- default `["anthropic", "openai-compat"]`, owner decision
-//! 01KZHRPZ010R37411R3W1XR5TF) -- computed inside `install_selected` itself
+//!) -- computed inside `install_selected` itself
 //! now, from whatever `ConwayBuilder` it is called on, so "came from
 //! `install`" and "came from `default_backends`" are indistinguishable by
 //! the time an id is resolved, exactly as before this item. This is what
@@ -98,7 +97,7 @@ use conway::{BackendFactory, ConwayBuilder, ConwayError, RouterFactory};
 fn bundle() -> Vec<Arc<dyn Plugin>> {
     vec![
         Arc::new(conway_plugin_skeleton::SkeletonPlugin),
-        // Board item 01KZY8Q1CMMNVSF54CTC270N3H: `/conway.history.rewind`
+        // `/conway.history.rewind`
         // -- the answer to "is /rewind a plugin", per the owner's ruling
         // that session-history features belong in the plugin tier, not
         // core. Resolved through this SAME `[plugins].install` mechanism;
@@ -107,6 +106,13 @@ fn bundle() -> Vec<Arc<dyn Plugin>> {
         // `conway_plugin_skeleton` above -- first-party still means
         // opt-in.
         Arc::new(conway_plugin_history::HistoryPlugin),
+        // `conway.stepguard` -- repeated-tool-call detection, which the agent
+        // loop used to carry unconditionally. `PHILOSOPHY.md` §6 leaves loop
+        // intervention to the operator ("including writing none"), which is
+        // only true if declining it is possible; moving it here is what makes
+        // it so. Opt-in like every other member of this bundle, so a default
+        // build observes nothing.
+        Arc::new(conway_plugin_stepguard::StepGuardPlugin::new()),
     ]
 }
 
@@ -114,7 +120,7 @@ fn bundle() -> Vec<Arc<dyn Plugin>> {
 /// order -- the router-side sibling of `bundle`, resolved against the
 /// SAME `[plugins].install` list, in the same pass ([`install`]).
 ///
-/// **First occupant, board item 01KZFC43J1J06BM4CCWKCKHSNV:**
+/// **First occupant:**
 /// `conway-plugin-routing`'s `RoutingRouterFactory` -- the capability-/
 /// health-filtering `DeclarativeRouter` engine `conway` itself used to
 /// compile in unconditionally, now installed by naming its published
@@ -130,7 +136,7 @@ fn router_bundle() -> Vec<Arc<dyn RouterFactory>> {
 /// backend-side sibling of `bundle`/`router_bundle`, resolved against
 /// the SAME id list, in the same pass ([`install`]).
 ///
-/// **Both occupants, board item 01KZHF270T3W8GZ7NM6DSNQ4MM:**
+/// **Both occupants:**
 /// `conway_plugin_backends`'s `AnthropicBackendFactory`/
 /// `OpenAiCompatBackendFactory` -- the two provider-adapter dialects
 /// `conway` itself used to compile in unconditionally, now installed by
@@ -156,8 +162,7 @@ fn backend_bundle() -> Vec<Arc<dyn BackendFactory>> {
 /// Hands this binary's three linked bundles (`bundle`, `router_bundle`,
 /// `backend_bundle`) to [`ConwayBuilder::install_selected`] -- the
 /// facade's own resolution of `[plugins].install` UNIONED with
-/// `[plugins].default_backends` against exactly those three (board item
-/// 01KZVZ1TDBHS7S604PQB5RZDM3). Every dispatch target (`main.rs`'s
+/// `[plugins].default_backends` against exactly those three. Every dispatch target (`main.rs`'s
 /// `build_conway`) shares this one call, so the TUI, one-shot `-p`,
 /// `sessions`, and `routes` all see the same installed set from the same
 /// config.
@@ -166,7 +171,7 @@ fn backend_bundle() -> Vec<Arc<dyn BackendFactory>> {
 /// hand-rolled resolution this function used to perform (matching each id
 /// against a candidate's own identity, the router-factory cardinality
 /// check, the unknown-id error, the `with_declined_backend_kinds` call)
-/// moved to `install_selected` itself, board item 01KZVZ1TDBHS7S604PQB5RZDM3
+/// moved to `install_selected` itself
 /// -- see this module's own doc, "What this module used to do, and does
 /// not any more". What is left here is exactly the part that is genuinely
 /// CLI-specific: which plugin/router-factory/backend-factory CRATES this
@@ -176,7 +181,7 @@ pub fn install(builder: ConwayBuilder) -> Result<ConwayBuilder, ConwayError> {
 }
 
 /// The subset of `bundle` actually selected by `conway`'s own
-/// `[plugins].install` config (board item 01KZYBFTK4QPB45AJT9M57P60W) --
+/// `[plugins].install` config --
 /// what `tui::run`/`App::new` need to build the plugin command registry,
 /// since neither `Conway` nor `Runtime` exposes the installed `Plugin` list
 /// back out once `[install] handed it to `ConwayBuilder::install_selected`.
@@ -226,7 +231,7 @@ pub fn installed_plugins(conway: &conway::Conway) -> Vec<Arc<dyn Plugin>> {
 /// restatement of `install_selected`'s own resolution-logic unit coverage.
 ///
 /// The `with_declined_backend_kinds` call `install_selected` makes
-/// internally (board item 01KZHF2W8Y1KBM7PJH7R4QQJA0) is covered the same
+/// internally is covered the same
 /// way, separately, in `tests/decline_backend_kind.rs`: declining a shipped
 /// dialect via `[plugins].default_backends` while a `[backends.<id>]`
 /// entry still names it fails the real compiled binary with a message that

@@ -19,7 +19,7 @@
 //!     ++ own_records(sid)[0..upto_local]
 //! ```
 //!
-//! Cycle-1 review (Critical, F-049-1): an earlier draft interpreted these
+//! An earlier review found: an earlier draft interpreted these
 //! bounds as effective-transcript indexes while `fork` range-checked them
 //! as local counts — the units conflation made it impossible for a fork to
 //! capture a non-root parent's true tip (silent truncation of the parent's
@@ -61,7 +61,7 @@
 //! *ancestry link*, not a line, is the defect) and `detail` names the cycle
 //! or the depth bound.
 //!
-//! ## Context mask (WI-125)
+//! ## Context mask
 //!
 //! `LogRecord::ContextMask { target_seq, excluded, .. }` is a persisted
 //! overlay, not a deletion: `target_seq` names another record in the SAME
@@ -118,7 +118,7 @@ fn corrupt_ancestry(session: SessionId, detail: impl Into<String>) -> StoreError
     }
 }
 
-/// Applies WI-125's context-exclusion mask to one session's own records
+/// Applies an earlier item's context-exclusion mask to one session's own records
 /// (never the inherited prefix -- see the call site): `ContextMask::target_seq`
 /// is local to the session that owns both the mask and its target, the same
 /// units this module uses everywhere, so masking only ever needs to look
@@ -128,7 +128,7 @@ fn corrupt_ancestry(session: SessionId, detail: impl Into<String>) -> StoreError
 /// already in seq order, so a linear scan suffices). `ContextMask` records
 /// themselves are left in place -- same precedent as `Header`-adjacent kinds
 /// like `ContextReportRecord`, which already flows through `resolve_prefix`
-/// unfiltered and is dropped downstream (context/builder.rs, WI-126) by kind
+/// unfiltered and is dropped downstream (context/builder.rs) by kind
 /// rather than by the resolver.
 fn apply_context_mask(own: Vec<LogRecord>) -> Vec<LogRecord> {
     let mut excluded: HashSet<LogSeq> = HashSet::new();
@@ -194,7 +194,7 @@ impl TranscriptResolver {
     ///
     /// `upto` for a full resolve is `store.head(sid)` — the session's own
     /// local record count. Bounds are local units everywhere in this
-    /// module (see the module docs and F-049-1): the inherited prefix
+    /// module (see the module docs and): the inherited prefix
     /// flows through in full at each level, so the effective transcript's
     /// length emerges from the recursion rather than being computed here.
     pub async fn resolve<S>(
@@ -213,7 +213,7 @@ impl TranscriptResolver {
     /// LOCAL bound `upto` — `sid`'s own records past `upto` are never read.
     /// `resolve` is just this method called with `upto = store.head(sid)`.
     ///
-    /// Exposed publicly (WI-119) for a caller that needs a session's
+    /// Exposed publicly for a caller that needs a session's
     /// inherited-only prefix as it stood at a specific ancestor bound,
     /// distinct from `resolve`'s "full effective transcript at the current
     /// head" — e.g. resolving a fork child's `InheritedPrefix` when the
@@ -276,7 +276,7 @@ impl TranscriptResolver {
         // originally requested (sid, upto) last.
         let mut prefix = base;
         for (level_sid, level_upto) in chain.into_iter().rev() {
-            // Local units (F-049-1): the whole inherited prefix, then this
+            // Local units: the whole inherited prefix, then this
             // level's own records up to the local bound. Never slice the
             // prefix — the inheritance boundary is the parent's at_seq,
             // already applied one level up.

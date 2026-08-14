@@ -1,4 +1,4 @@
-//! Integration tests for `fork_impl` (WI-048 criteria): single-line child
+//! Integration tests for `fork_impl` (criteria): single-line child
 //! header, `ForkOrigin` population/normalization, zero-copy, O(1) parent
 //! reads, range/existence errors, parent immutability, sibling forks, and
 //! fsync-under-all-policies.
@@ -66,7 +66,7 @@ async fn open_fast_store(root: &std::path::Path) -> JsonlSessionStore {
 // single-line child, O(1), zero-copy
 // ---------------------------------------------------------------------
 
-/// Cycle-1 review M1: prove fork's WRITTEN BYTES decode to the expected
+/// An earlier review found: M1: prove fork's WRITTEN BYTES decode to the expected
 /// ForkOrigin — cold-reopen the store so meta() must parse the header from
 /// disk rather than returning the warm in-memory copy.
 #[tokio::test]
@@ -376,7 +376,7 @@ async fn fork_fsyncs_the_child_header_before_returning_under_all_fsync_policies(
 // Property test: parent bytes are unaffected by fork, and the parent's
 // pre-fork bytes remain an unchanged prefix even after further appends
 // (≥128 cases). The stronger `TranscriptResolver`-level invariant is
-// WI-049's.
+// an earlier item's.
 // ---------------------------------------------------------------------
 
 proptest! {

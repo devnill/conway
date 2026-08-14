@@ -1,5 +1,5 @@
 //! `AppState`: the TUI's render model, derived purely from the same
-//! `EventStream` the one-shot renderers consume (WI-114).
+//! `EventStream` the one-shot renderers consume.
 //!
 //! `apply` is the single mutation entry point -- fed one [`Envelope`] at a
 //! time by the app loop -- so this module can be unit-tested with no
@@ -18,7 +18,7 @@ use conway::{
 use super::gate::PendingPrompt;
 
 /// The focused agent's live activity, rendered as the status line's primary
-/// "is it working?" signal (board item 01KYAGP11FF9YC3G60TWHHKKST).
+/// "is it working?" signal.
 /// Transitions live in [`AppState::apply`], driven by events on the
 /// FOCUSED agent's own stream only (`ThinkingDelta`->`Thinking`,
 /// `TextDelta`->`Responding`, `ToolCallProposed{tool}`->`RunningTool(name)`
@@ -144,7 +144,7 @@ pub enum Entry {
         ts: Option<DateTime<Utc>>,
     },
     /// A subagent's lifecycle, rendered inline in the conversation stream
-    /// (WI-127 criterion: "inline subagent activity in the stream,
+    /// (criterion: "inline subagent activity in the stream,
     /// Claude-Code-style") instead of only being reflected in the
     /// below-chat `/agents` panel. Pushed once at spawn time
     /// (`apply_agent_spawned`) and updated in place at finish time
@@ -157,8 +157,7 @@ pub enum Entry {
     Notice {
         text: String,
     },
-    /// A runtime error surfaced via `Event::Error` (board item
-    /// 01KYND6GCCKYSYD0VDGJD1ZCXG). Kept as its OWN variant rather than a
+    /// A runtime error surfaced via `Event::Error`. Kept as its OWN variant rather than a
     /// field bolted onto [`Entry::Notice`]: a field would still let severity
     /// leak into an existing cyan-styled call site by accident, and (more
     /// concretely) a recon on this item found a field/constructor approach
@@ -462,8 +461,7 @@ impl std::fmt::Debug for Mode {
 }
 
 /// One installed plugin command, projected into the shape `/help`'s pointer
-/// to the palette and `view::palette` need (board item
-/// 01KZYBFTK4QPB45AJT9M57P60W): `commands::CommandRegistry::palette_entries`
+/// to the palette and `view::palette` need -- `commands::CommandRegistry::palette_entries`
 /// is the one producer. `name` already carries its leading `/` (e.g.
 /// `"/acme.greet"`), matching `view::palette::CommandSpec::name`'s own
 /// convention.
@@ -480,7 +478,7 @@ pub struct AppState {
     pub transcript: Vec<Entry>,
     pub tree: AgentTreeView,
     /// The last `Event::ModelDecision` envelope seen, for `/why`. Populated
-    /// by `app.rs`'s run loop on `Event::ModelDecision` (WI-115) and read by
+    /// by `app.rs`'s run loop on `Event::ModelDecision` and read by
     /// `commands::render_why`; `apply` intentionally leaves it untouched so
     /// it stays pure.
     pub last_model_decision: Option<Envelope>,
@@ -508,7 +506,7 @@ pub struct AppState {
     /// V2b: the active pattern ALLOW grants, for the settings review list.
     /// A mirror of the broker's `active_patterns()`, refreshed when
     /// `/settings` opens and after any revoke action — the broker remains
-    /// the authority. Board item 01KYND4WGHSZXW5YQ6ZWHCDDNN: kept as the
+    /// the authority. kept as the
     /// structured `(rule, origin)` pair rather than a pre-formatted string
     /// so `view/settings.rs::build_tree` can both LABEL a row (via
     /// `rule.describe()`/`origin.describe()`) and ADDRESS it for per-rule
@@ -552,7 +550,7 @@ pub struct AppState {
     /// from the broker's `active_structured_prompt_rules()` -- the
     /// structured half of [`Self::permission_prompts`].
     pub structured_prompt_rules: Vec<(conway::Rule, conway::PatternOrigin)>,
-    /// Board item 01KZS02HYXGTW42R8G4HP10GHX: the fourth review list --
+    /// The fourth review list --
     /// every currently-installed DENY-CAPABLE hook-backed rule
     /// (`pre_tool_use` and `prompt_submitted`; see [`conway::Conway::
     /// active_deny_capable_hook_rules`]'s own doc for why observation-only
@@ -593,12 +591,12 @@ pub struct AppState {
     /// into `mode` as each one resolves (module notes: "concurrent requests
     /// queue in arrival order").
     pub queued_prompts: std::collections::VecDeque<PendingPrompt>,
-    /// Whether the below-chat agent-tree panel (WI-127 criterion 4) is
+    /// Whether the below-chat agent-tree panel (criterion 4) is
     /// currently shown. Toggled by `/agents` (handled in `app.rs`, since
     /// `commands.rs` -- out of this item's file scope -- owns no such
     /// command); never an always-on pane.
     pub agent_view_open: bool,
-    /// Arrow-navigated row in the slash-command palette (WI-130), or `None`
+    /// Arrow-navigated row in the slash-command palette, or `None`
     /// when the user has typed a `/` prefix but not yet pressed an arrow. The
     /// arrow keys move this and autofill [`AppState::input`] with the
     /// highlighted command (see `input.rs`); typing resets it to `None`.
@@ -608,7 +606,7 @@ pub struct AppState {
     /// command but leaves this alone, so cycling the list does not collapse
     /// it to the single autofilled entry. Read via [`AppState::palette_source`].
     palette_stem: String,
-    /// Arrow-selected row in the on-demand agent panel (WI-130). An index
+    /// Arrow-selected row in the on-demand agent panel. An index
     /// into the panel's FILTERED rows (`Self::visible_agent_nodes`), not the
     /// raw `tree.nodes` (item A2: the draw-time visibility filter decides
     /// which rows exist); clamped against the filtered count wherever it is
@@ -624,7 +622,7 @@ pub struct AppState {
     /// is never filtered.
     pub agent_visibility: AgentVisibility,
     /// The agent whose conversation the transcript pane currently shows
-    /// (WI-140). Distinct from `agent_selected` -- that field is only the
+    ///. Distinct from `agent_selected` -- that field is only the
     /// `/agents` panel's browsing cursor (which row is highlighted while
     /// navigating with the arrow keys); this is which agent's OWN
     /// transcript+live stream `app.rs` is actually subscribed to and
@@ -635,19 +633,18 @@ pub struct AppState {
     /// at all (the app loop only ever hands `apply` envelopes from whichever
     /// stream it is currently subscribed to).
     pub focused_agent: AgentId,
-    /// The focused agent's current live activity (board item
-    /// 01KYAGP11FF9YC3G60TWHHKKST), rendered by `view/status.rs`. See
+    /// The focused agent's current live activity , rendered by `view/status.rs`. See
     /// [`Activity`]'s own doc for the event-driven transitions.
     pub activity: Activity,
     /// The focused agent's cumulative token spend, rendered alongside
-    /// `activity` in the status line (same board item). This field is
+    /// `activity` in the status line (same). This field is
     /// live-incremented from `Event::TurnFinished{usage}` in
     /// [`Self::apply`] for immediate feedback, but is NOT authoritative on
     /// its own -- `app.rs`'s run loop re-fetches the true total via the
     /// `SessionHandle::session_usage` facade accessor (through the `Host`
     /// trait's `session_usage`) on focus change and after
     /// `TurnFinished`/`AgentFinished` for the focused agent, overwriting
-    /// whatever this field held (replay carries no `Usage` at all -- WI-140's
+    /// whatever this field held (replay carries no `Usage` at all -- an earlier item's
     /// `record_to_event` maps a replayed `Assistant` record to `TextDelta`,
     /// not `TurnFinished` -- so this field alone would silently stay zero
     /// after any focus switch onto an agent with prior turns without that
@@ -655,8 +652,7 @@ pub struct AppState {
     pub focused_agent_usage: Usage,
     /// The persisted head [`LogSeq`] of THIS session's own log -- i.e.
     /// `self.handle.id()`'s log, the calling session `CommandOutcome::
-    /// ForkSession::at_seq`/`Conway::fork_from` resolve against (board item
-    /// 01KZY8Q1CMMNVSF54CTC270N3H, `/conway.history.rewind`'s own item).
+    /// ForkSession::at_seq`/`Conway::fork_from` resolve against (///, `/conway.history.rewind`'s own item).
     /// Deliberately SESSION-scoped, not agent-scoped like
     /// [`Self::focused_agent_usage`] immediately above: `SessionStore` keys
     /// one session per agent, and a fork targets `self.handle`'s OWN
@@ -709,7 +705,7 @@ pub struct AppState {
     pub ask_in_flight: bool,
     /// The shared modal body-scroll offset (V1; originated as the
     /// permission-overlay-only `permission_scroll`, bug fix
-    /// 01KYB0F7V65QAMZWWYH8K7DWDC: "no way to see the entire command" for a
+    ///: "no way to see the entire command" for a
     /// long tool-call argument). Driven by `PageUp`/`PageDown` while any of
     /// the four modal-bearing surfaces is up (`Mode::AwaitingPermission`/
     /// `Mode::AskModal`/`Mode::IntentConfirm`, or the informational `/help`
@@ -1014,8 +1010,7 @@ pub struct AppState {
     /// `input::handle_settings_key`'s `Enter` arm on a group row.
     pub settings_collapsed_groups: HashSet<String>,
     /// The installed plugin commands, for `/help`'s pointer to the palette
-    /// and `view::palette`'s own live-filtered listing (board item
-    /// 01KZYBFTK4QPB45AJT9M57P60W). **NOT reset by `/resume`** despite
+    /// and `view::palette`'s own live-filtered listing. **NOT reset by `/resume`** despite
     /// `AppState::new` seeding it empty by default -- this is
     /// process-lifetime configuration (which plugins `conway-cli` installed
     /// at startup), not session-scoped state; `commands::execute`'s own
@@ -1100,7 +1095,7 @@ impl AppState {
             settings_open: false,
             settings_selected: 0,
             settings_collapsed_groups: HashSet::new(),
-            // Board item 01KZYBFTK4QPB45AJT9M57P60W: empty here by default
+            // empty here by default
             // (mirrors every other collection field's construction-time
             // default) -- `App::new` overwrites this immediately after
             // construction with the real, resolved `CommandRegistry::
@@ -1112,7 +1107,7 @@ impl AppState {
 
     /// The session's own root agent, as recorded in `tree.root` at
     /// construction (`AppState::new`) -- the target [`Self::focus_agent`]
-    /// returns to (WI-140: "Esc, or focusing the root row" both resolve
+    /// returns to ("Esc, or focusing the root row" both resolve
     /// here). Falls back to `focused_agent` itself in the
     /// should-never-happen case that `tree.root` is `None` (only possible if
     /// some future `apply` change clears it -- `AppState::new` always seeds
@@ -1187,7 +1182,7 @@ impl AppState {
         true
     }
 
-    /// Switches the transcript pane to `agent`'s own conversation (WI-140).
+    /// Switches the transcript pane to `agent`'s own conversation.
     /// A pure state transition: clears `transcript` and resets the scroll
     /// position back to a fresh, following view (whatever history was
     /// scrolled to for the PREVIOUS focus has no meaning for a different
@@ -1218,7 +1213,7 @@ impl AppState {
         self.scroll = 0;
         self.follow_tail = true;
         // The activity/usage indicators are about whichever agent is
-        // CURRENTLY focused (board item 01KYAGP11FF9YC3G60TWHHKKST) -- a
+        // CURRENTLY focused -- a
         // freshly focused agent starts with no activity signal until its
         // own next event arrives, and no stale token figure carried over
         // from the previous focus. `app.rs` re-fetches the true cumulative
@@ -1243,7 +1238,7 @@ impl AppState {
         // routing decision yet and no accumulated context figure until its
         // own events arrive, so this zeroing is correct for the instant
         // `focus_agent` itself runs. It does NOT stick, though: replay
-        // still does not repopulate these (`record_to_event` (WI-140) maps
+        // still does not repopulate these (`record_to_event` maps
         // a replayed `Assistant` record to `TextDelta`, never to
         // `ContextSegmentAdded` or `ModelDecision`), but T3 follow-up's
         // `app.rs::try_focus_agent` re-fetches all three authoritatively
@@ -1296,7 +1291,7 @@ impl AppState {
     }
 
     /// The text the slash-command palette's match list is anchored to
-    /// (WI-130): the stem the user last *typed* when set, else the raw
+    ///: the stem the user last *typed* when set, else the raw
     /// `input`. Arrow navigation autofills `input` with a whole command but
     /// leaves the stem alone, so cycling the list does not collapse it; the
     /// `input` fallback keeps the palette visible for callers/tests that set
@@ -1310,14 +1305,14 @@ impl AppState {
     }
 
     /// Re-anchors the palette to whatever the user just typed and clears the
-    /// arrow highlight (WI-130). Called after every edit to `input` in
+    /// arrow highlight. Called after every edit to `input` in
     /// `input.rs`, so typing always re-filters live from the new text.
     pub fn sync_palette_stem(&mut self) {
         self.palette_stem = self.input.clone();
         self.palette_selected = None;
     }
 
-    /// Closes the palette navigation state (WI-130): called when `input` is
+    /// Closes the palette navigation state: called when `input` is
     /// submitted, so a fresh line starts with no stem and no highlight.
     pub fn clear_palette(&mut self) {
         self.palette_stem.clear();
@@ -1460,7 +1455,7 @@ impl AppState {
     }
 
     /// Moves the agent-panel selection by `delta` rows, clamped to the
-    /// FILTERED row list (WI-130 + item A2). No wrap -- a browsing list
+    /// FILTERED row list (+ item A2). No wrap -- a browsing list
     /// stops at its ends.
     pub fn agent_scroll(&mut self, delta: isize) {
         let n = self.visible_agent_nodes().count();
@@ -1472,7 +1467,7 @@ impl AppState {
         self.agent_selected = (cur + delta).clamp(0, max) as usize;
     }
 
-    /// Shows/hides the below-chat agent-tree panel (`/agents`, WI-127
+    /// Shows/hides the below-chat agent-tree panel (`/agents`
     /// criterion 4). A pure toggle -- no facade call, no transcript entry --
     /// so it is unit-testable with no `Host`/`SessionHandle` at all.
     pub fn toggle_agent_view(&mut self) {
@@ -1954,7 +1949,7 @@ impl AppState {
             }
             Event::AgentFinished { result, .. } => {
                 self.apply_agent_finished(env.agent, result);
-                // Board item 01KYAGP11FF9YC3G60TWHHKKST: the focused
+                // the focused
                 // agent's own finish is the terminal "stopped working"
                 // signal -- an unrelated agent (sibling/other subtree)
                 // finishing must not reset an activity indicator that is
@@ -1984,7 +1979,7 @@ impl AppState {
                     });
                 }
             }
-            // Bug 2 fix (01KYAN9EQ5BRZQ0V3DCW590YCZ): without this arm,
+            // Bug 2 fix: without this arm,
             // `TurnStarted` fell into the wildcard below and the whole
             // submit->model-latency window showed `Idle` -- for a
             // non-streaming backend (one full-text `TextDelta` immediately
@@ -2090,7 +2085,7 @@ impl AppState {
             // by this max. `app.rs` already captures the whole
             // `ModelDecision` envelope for `/why` (`last_model_decision`),
             // but that field is intentionally left untouched by `apply`
-            // (WI-115) -- this arm only updates the display-name/max-context
+            // -- this arm only updates the display-name/max-context
             // pair on the focused agent's own stream.
             Event::ModelDecision { chosen, .. } => {
                 if env.agent == self.focused_agent {
@@ -2141,7 +2136,7 @@ impl AppState {
                 }
             }
             Event::TurnFinished { usage, .. } => {
-                // Board item 01KYAGP11FF9YC3G60TWHHKKST: the live-increment
+                // the live-increment
                 // half of the token counter (immediate feedback) -- see
                 // `focused_agent_usage`'s own doc for why `app.rs`'s
                 // authoritative `session_usage` refetch still overwrites
@@ -2197,7 +2192,7 @@ impl AppState {
                     text: "backend degraded".to_string(),
                 });
             }
-            // board item 01KYND6GCCKYSYD0VDGJD1ZCXG: was pushed as an
+            //: was pushed as an
             // `Entry::Notice`, rendering `theme.notice`'s cyan regardless of
             // `fatal` -- a genuine fatal runtime error looked identical to
             // "backend degraded". Now a dedicated `Entry::Error`, styled by
@@ -2213,7 +2208,7 @@ impl AppState {
                     fatal: *fatal,
                 });
             }
-            // WI-140 review fix (finding 1, CRITICAL): this used to fall
+            // review fix (finding 1, CRITICAL): this used to fall
             // into the wildcard arm below, silently dropped. Two producers
             // rely on this now being visible: `record_to_event`'s replay
             // mapping (`UserTurn`/`ForkDirective`/`ParentSteer`/
@@ -2249,7 +2244,7 @@ impl AppState {
             }
             return;
         }
-        // Recognized-parent spawns get an inline `Entry::Agent` (WI-127
+        // Recognized-parent spawns get an inline `Entry::Agent` (
         // criterion 4: "subagent activity appears inline in the stream").
         // The unknown-parent case below is deliberately excluded: it already
         // gets its own `Notice`, and that `Notice` must stay the LAST entry
@@ -2705,7 +2700,7 @@ mod tests {
         }
     }
 
-    // ---- board item 01KYND6GCCKYSYD0VDGJD1ZCXG: `Event::Error` -> `Entry::Error` ----
+    // ----: `Event::Error` -> `Entry::Error` ----
 
     /// `Event::Error { fatal: true }` pushes a dedicated `Entry::Error`
     /// (never `Entry::Notice`), carrying `fatal: true` and the `"fatal "`
@@ -2987,7 +2982,7 @@ mod tests {
         );
     }
 
-    /// WI-127 criterion 4: a recognized-parent spawn must show up inline in
+    /// Criterion 4: a recognized-parent spawn must show up inline in
     /// the conversation stream, not only in `state.tree`.
     #[test]
     fn agent_spawned_with_known_parent_pushes_an_inline_agent_entry() {
@@ -3285,7 +3280,7 @@ mod tests {
         );
     }
 
-    // ---- WI-140: focused-agent switch ----
+    // ---- focused-agent switch ----
 
     #[test]
     fn new_state_focuses_the_root_by_default() {
@@ -3599,7 +3594,7 @@ mod tests {
         );
     }
 
-    // ---- Cycle-3 review fix: an unrelated agent's lifecycle event must not
+    // ---- An earlier review found: fix: an unrelated agent's lifecycle event must not
     // pollute a focused non-root agent's transcript. Lifecycle events bypass
     // the stream's session/agent filter (panel-fix), so `apply` receives the
     // whole tree's spawns/finishes even while focused on one child. ----
@@ -3868,7 +3863,7 @@ mod tests {
         );
     }
 
-    // ---- Board item 01KYAGP11FF9YC3G60TWHHKKST: the live activity
+    // --: the live activity
     // indicator's `apply` transitions, all scoped to the focused agent. ----
 
     #[test]
@@ -4026,7 +4021,7 @@ mod tests {
         assert_eq!(state.activity, Activity::Idle);
     }
 
-    /// Bug 2 fix (01KYAN9EQ5BRZQ0V3DCW590YCZ): `TurnStarted` for the FOCUSED
+    /// Bug 2 fix: `TurnStarted` for the FOCUSED
     /// agent, BEFORE any delta arrives, must already mark the activity
     /// indicator as working -- this is the whole point of the fix (the
     /// submit->model-latency window used to show `Idle` with no `TurnStarted`
@@ -4062,7 +4057,7 @@ mod tests {
         );
     }
 
-    /// The render-level companion (board item 01KYAN75MXECX9M2WJWF4KRYM9's
+    /// The render-level companion ('s
     /// harness): `TurnStarted` fed BEFORE any delta must already show a
     /// working phrase on screen, not "idle" -- this is the actual bug report
     /// ("I only saw ready and awaiting permission"), reproduced through the

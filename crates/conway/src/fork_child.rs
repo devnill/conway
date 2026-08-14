@@ -16,7 +16,7 @@
 //! persisted session at an arbitrary earlier seq (see `fork_from`'s own doc,
 //! which ruled that substitution out for exactly that reason).
 //!
-//! **History (board item B2):** the `/ask` fork-ask flow
+//! **History (B2):** the `/ask` fork-ask flow
 //! (`SessionHandle::ask`) used to share this module, passing
 //! `ephemeral: true`. It no longer does: B2 moved `/ask` onto the runtime's
 //! own attach path (`SubagentHost::start`) so the ephemeral child attaches

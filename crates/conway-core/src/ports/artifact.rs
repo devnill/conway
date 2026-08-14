@@ -1,12 +1,11 @@
 //! The `ArtifactWriter` port: the one safe way an in-process
-//! [`crate::ports::ContextHook`] can spill content to disk (board item
-//! 01KZ84437RMKHP5DJX7RMHH7JY).
+//! [`crate::ports::ContextHook`] can spill content to disk.
 //!
 //! # The problem this closes
 //!
 //! A hook that wants to write oversized tool output to a file (leaving a
 //! short preview plus a pointer in context -- the `TruncationPolicy::
-//! Artifact` shape, board item 01KYTN3A9SPDMRG610YSB5QQXX) has to put that
+//! Artifact` shape) has to put that
 //! file somewhere the agent can later `read` back -- which means somewhere
 //! under the agent's own confinement root, or the subsequent read is denied
 //! by the exact same root-containment check every tool call already goes
@@ -147,7 +146,7 @@ impl ArtifactWriteHandle {
     /// A handle backed by a private [`ArtifactWriter`] that performs no I/O
     /// and always succeeds, returning `name` unchanged (as a [`PathBuf`]) --
     /// for a [`crate::ports::ContextHookCtx`] fixture in a test for a hook
-    /// that never calls [`Self::write`] (board item 01KZJ5S3ZC8SPWTX94C4HTEC2R).
+    /// that never calls [`Self::write`].
     ///
     /// **Why this exists, given `ArtifactWriteHandle::new` already takes any
     /// `Arc<dyn ArtifactWriter>`.** `ContextHookCtx::artifacts` became a
@@ -168,7 +167,7 @@ impl ArtifactWriteHandle {
     /// keeps this crate's "no I/O, except behind an explicit test feature"
     /// promise legible. (That promise is itself a forward declaration today
     /// -- `containment` does unfeatured `std::fs` I/O; see the crate root's
-    /// label and board item 01KZDC30CBY9CPJ8YEM7HSRV0Y. The gating rationale
+    /// label and. The gating rationale
     /// below is unaffected: it is about not adding a SECOND exception.)
     /// A no-op artifact writer scripts nothing and performs
     /// no I/O either way, so it carries none of that risk; gating it would

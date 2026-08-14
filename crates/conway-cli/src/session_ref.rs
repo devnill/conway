@@ -1,11 +1,11 @@
-//! Parsing for the session-continuity flag values (WI-117):
+//! Parsing for the session-continuity flag values:
 //! `--session`/`--resume` each take a bare `SessionId`; `--fork-from` takes
 //! `<session-id>[@<seq>]`. This module owns the string -> typed-value step
 //! only -- what `oneshot::run` does with a parsed value (resume, fork,
 //! reject) lives there.
 //!
 //! `conway_core::ids::SessionId`/`LogSeq` are not depended on directly here
-//! -- `conway-cli`'s `no_forbidden_deps` test (WI-111) restricts this crate
+//! -- `conway-cli`'s `no_forbidden_deps` test restricts this crate
 //! to the `conway` facade -- so every type below is the facade's own
 //! re-export.
 
@@ -46,7 +46,7 @@ impl std::error::Error for ParseError {}
 
 /// Parses a bare `--session`/`--resume` value: a full `SessionId` (ULID),
 /// no `@<seq>` suffix accepted. Per this item's binding notes, prefix
-/// matching is an interactive (WI-115) affordance deliberately not offered
+/// matching is an interactive affordance deliberately not offered
 /// here -- scripts driving `-p` need an unambiguous input.
 pub fn parse_sid(s: &str) -> Result<SessionId, ParseError> {
     s.parse::<SessionId>()
@@ -62,7 +62,7 @@ pub fn parse_fork_ref(s: &str) -> Result<(SessionId, Option<LogSeq>), ParseError
         None => Ok((parse_sid(s)?, None)),
         Some((sid_part, seq_part)) => {
             // Name the FULL ref the user typed in the error, not the bare
-            // sid substring (cycle-1 review M1): `--fork-from @142` should
+            // sid substring: `--fork-from @142` should
             // report `@142`, not an empty string.
             let sid = sid_part
                 .parse::<SessionId>()

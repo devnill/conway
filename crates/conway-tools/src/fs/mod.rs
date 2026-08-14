@@ -41,8 +41,7 @@ pub(crate) struct WalkEntry {
 /// crate's order was itself deterministic. It is not, and the difference was
 /// user-visible: `grep` and `glob` output order could change between identical
 /// runs, and the test asserting walk order passed locally and on one CI run
-/// while failing on another with no code change in between (board item
-/// 01KZW91RQ26JP8N8PJTN34WZVT).
+/// while failing on another with no code change in between.
 ///
 /// This function is synchronous and does blocking I/O; callers on the async
 /// path MUST invoke it inside `tokio::task::spawn_blocking`. Shared by

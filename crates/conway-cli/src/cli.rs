@@ -1,12 +1,12 @@
-//! The complete `conway` clap command surface (WI-111).
+//! The complete `conway` clap command surface.
 //!
 //! Declared once, here, for the whole module: every later work item
-//! (WI-112..WI-117) reads flags off this `Cli`/`Command` but never adds a
+//! (an earlier item.. an earlier item) reads flags off this `Cli`/`Command` but never adds a
 //! new field to them, so the four downstream tracks (one-shot, TUI,
 //! subcommands, continuity flags) can proceed without contending for this
 //! file. `--session`/`--resume`/`--fork-from` are declared here (so
 //! `--help` is complete from the first commit) even though they are only
-//! wired up behaviorally by WI-117 -- their `conflicts_with_all` triple is
+//! wired up behaviorally by an earlier item -- their `conflicts_with_all` triple is
 //! also set up now, since that is the one piece of their contract that
 //! belongs to the flag *declaration* rather than the flag's runtime effect.
 
@@ -20,8 +20,8 @@ use crate::commands::sessions::SessionsArgs;
 /// Adding a flag here? It does **not** reach a running `conway` through
 /// `conway::config::merge::CliOverrides` — that struct is an embedder-facing
 /// config-override API `conway-cli` deliberately does not construct
-/// (decision 01KZGRW3CXEAGMP275P95KGN83, board item
-/// `01KZ8049CVW1GCAA081M7WSVSZ`; see that struct's own doc comment for why
+/// (
+///; see that struct's own doc comment for why
 /// routing this crate's flags through it would be actively breaking, not
 /// merely unwired). This crate reads its own fields off `Cli` directly and
 /// wires them by hand: `oneshot::build_gate`/`oneshot::resolve_session` for
@@ -41,21 +41,37 @@ pub struct Cli {
     )]
     pub print: Option<String>,
 
+    /// How one-shot output is shaped: `text` for model output alone, `json`
+    /// for one object at the end, `jsonl` for one event per line as it
+    /// happens. Ignored by the TUI.
     #[arg(long, value_enum, default_value = "text")]
     pub output_format: OutputFormat,
 
+    /// Tools the agent may call, by exact name, comma-separated. One-shot
+    /// mode cannot ask an operator for permission, so it fails closed:
+    /// leaving this empty denies every tool rather than allowing them all.
     #[arg(long, value_delimiter = ',')]
     pub allowed_tools: Vec<String>,
 
+    /// Tools to refuse regardless of `--allowed-tools`, comma-separated.
+    /// Denial always wins.
     #[arg(long, value_delimiter = ',')]
     pub deny_tools: Vec<String>,
 
+    /// One-shot mode's tool gate: `allowlist` honours `--allowed-tools`,
+    /// `deny` refuses every tool outright. There is no prompting variant
+    /// here because a non-interactive run has nobody to ask.
     #[arg(long, value_enum, default_value = "allowlist")]
     pub permission_mode: PermissionMode,
 
+    /// Run the root agent under this role instead of the configured
+    /// `default_role`. A role is an alias resolved to a model chain by
+    /// `roles.<alias>` in settings -- see `conway routes explain <role>`.
     #[arg(long)]
     pub role_override: Option<String>,
 
+    /// Pin every turn to one model, bypassing the role's chain entirely.
+    /// Spelled `<backend-id>/<model>`, matching what `routes explain` prints.
     #[arg(long)]
     pub model: Option<String>,
 
@@ -71,6 +87,10 @@ pub struct Cli {
     #[arg(long, value_name = "SID[@SEQ]", conflicts_with_all = ["session", "resume"])]
     pub fork_from: Option<String>,
 
+    /// Settings file to use as the project layer, instead of discovering the
+    /// nearest `.conway/settings.json` by walking up from `--cwd`. It does
+    /// not replace your user-scoped settings, which still apply underneath
+    /// (precedence: defaults, then user, then this, then env, then flags).
     #[arg(long, value_name = "PATH")]
     pub config: Option<PathBuf>,
 
@@ -117,7 +137,7 @@ pub enum OutputFormat {
 /// `--permission-mode`: how one-shot mode's tool gate is built. Distinct
 /// from `conway::config`'s own `permissions.mode` (which additionally has a
 /// `Prompt` variant meaningful only to the TUI/an embedder) -- one-shot mode
-/// never prompts (WI-112 notes), so this CLI-facing enum only has the two
+/// never prompts (notes), so this CLI-facing enum only has the two
 /// variants a non-interactive run can actually use.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum PermissionMode {

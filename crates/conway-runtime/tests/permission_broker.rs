@@ -1,4 +1,4 @@
-//! Acceptance tests for `PermissionBroker` (WI-078, architecture §4.3).
+//! Acceptance tests for `PermissionBroker` (architecture §4.3).
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -483,8 +483,8 @@ async fn a_chained_command_still_reaches_the_operator_despite_a_matching_pattern
     );
 }
 
-/// **The structured-form sibling of the test immediately above -- board item
-/// 01KZVZ4KF72ECHTT14EDEZQQW3's own discriminating test.**
+/// **The structured-form sibling of the test immediately above
+///'s own discriminating test.**
 ///
 /// Identical scenario, installed as a structured [`Rule`]
 /// (`remember_pattern_rule`) instead of a flat [`PatternRule`]
@@ -723,7 +723,7 @@ async fn auto_allow_allows_without_prompting_and_can_be_revoked_mid_session() {
 /// containment (confinement roots, scoped `deny`/`prompt` rules, or not
 /// offering `AutoAllow`/`bash` at all), not more policy inside this gate.
 ///
-/// GP-14 requires a liveness test for every security-bearing mechanism,
+/// requires a liveness test for every security-bearing mechanism,
 /// without exception — this path had none. Every neighbouring `AutoAllow`
 /// test exercises a call that SETS `must_reach_gate`
 /// (`a_deny_rule_overrides_auto_allow_mode`,
@@ -745,7 +745,7 @@ async fn auto_allow_permits_a_metacharacter_bearing_bash_call_without_reaching_t
     // `ScriptedGate::check`) would flip `outcome` away from `Allow` below,
     // failing this test. So the assertion is not "the gate was called zero
     // times" (which cannot by itself distinguish an allow-without-gate
-    // from a deny-without-gate, per GP-14) — it is the actual `decide()`
+    // from a deny-without-gate) — it is the actual `decide()`
     // outcome, made impossible to satisfy by coincidence with a gate that
     // was actually reached.
     let gate = ScriptedGate::new(vec![]);
@@ -854,7 +854,7 @@ async fn revoke_all_grants_restores_prompting_for_previously_granted_calls() {
     );
 }
 
-// ---- deny: the asymmetric half (board item 01KYT8SGX32CP56PRJNG72V2W5) ----
+// ---- deny: the asymmetric half ----
 
 /// A `deny` rule refuses a matching call outright, without ever consulting
 /// the gate -- the mirror image of a pattern ALLOW's cache hit.
@@ -996,7 +996,7 @@ async fn revoke_all_grants_does_not_clear_deny_rules() {
     assert!(matches!(outcome, PermissionOutcome::Deny { .. }));
 }
 
-// ---- sanitizer laundering (board item 01KYTMA306JH81R083Y8K9PWCR) ----
+// ---- sanitizer laundering ----
 
 /// In `Prompt` mode, a deny rule that was defeated by laundering used to
 /// silently DEGRADE TO A PROMPT: `deny_matches` missed it, so the call fell
@@ -1096,7 +1096,7 @@ async fn active_patterns_reports_origin() {
     assert_eq!(patterns[0].1, file_origin);
 }
 
-// ---- per-rule revocation (board item 01KYND4WGHSZXW5YQ6ZWHCDDNN) ----
+// ---- per-rule revocation ----
 
 /// The headline property: revoking ONE grant leaves a second, unrelated
 /// grant fully intact -- the revoked pattern must ask again, the surviving
@@ -1226,7 +1226,7 @@ async fn revoke_pattern_does_not_touch_deny_rules() {
     );
 }
 
-// ---- prompt: the second narrowing effect (board item 01KYTP1D3XWEZPW4AKPH54FNB3) ----
+// ---- prompt: the second narrowing effect ----
 //
 // Before this item, `must_reach_gate` was set EXCLUSIVELY by `check_root`,
 // so a plugin-contributed `prompt` rule had nothing evaluating it anywhere
@@ -1576,7 +1576,7 @@ async fn active_prompt_patterns_reports_origin() {
     assert_eq!(patterns[0].1, file_origin);
 }
 
-// ---- structured-allow revocation by Rule identity (board item A2) ----
+// ---- structured-allow revocation by Rule identity (A2) ----
 //
 // `revoke_pattern` is keyed on the flat `to_pattern_rule()` projection,
 // which collapses every structured allow rule (`paths_under`,
@@ -1870,12 +1870,12 @@ async fn active_structured_allow_rules_reports_origin_and_scope() {
 //      operator-owned" (extension-architecture.md §5.5 stage 1).
 // =====================================================================
 
-/// **A4 / GP-14.** A plugin-contributed structured allow rule MUST be
+/// **A4 /.** A plugin-contributed structured allow rule MUST be
 /// refused at the broker boundary. The invariant -- "allow is
 /// operator-owned; a plugin may only NARROW (`deny`/`prompt`)" -- rests on a
 /// structural guard in `PermissionBroker::remember_pattern_rule`, not on
 /// the absence of a plugin transport: a `PatternOrigin::Plugin` rule with
-/// `Then::Allow` is rejected with a typed `false` (P-10: never a panic),
+/// `Then::Allow` is rejected with a typed `false` (: never a panic),
 /// exactly the rejection shape the other `remember_*_rule` callers already
 /// honor, and the rule never enters `active_structured_allow_rules`. Today
 /// no plugin transport exists, so this guard is unreachable in production;
@@ -1906,7 +1906,7 @@ async fn a_plugin_contributed_allow_rule_is_refused_at_the_broker_boundary() {
         Path::new("/"),
     );
 
-    // P-10: a typed `false`, never a panic. The same rejection shape
+    //: a typed `false`, never a panic. The same rejection shape
     // `remember_pattern_rule` already uses for `then != Allow` and an
     // uncanonicalizable `paths_under` prefix.
     assert!(

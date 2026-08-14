@@ -1,6 +1,6 @@
 //! Segment → Anthropic Messages API request mapping (`generate`/`stream`
 //! request bodies) and Messages API response → `GenerateResponse` mapping
-//! (architecture §"Module: conway-backends", WI-021).
+//! (architecture §"Module: conway-backends").
 //!
 //! `build_request_body` never reads `PromptSegment::cache_hint` — that
 //! omission is what makes the byte-identity invariant hold (§4.1):
@@ -11,7 +11,7 @@
 //! re-deriving the segment→JSON mapping itself.
 //!
 //! `Provenance::ToolRegistry` segments never produce a `system` entry (board
-//! item 01KYTMJA0JHT5SAPYDGV251V17): `conway-runtime`'s `ContextBuilder`
+//! item): `conway-runtime`'s `ContextBuilder`
 //! stopped putting the tool-schema JSON in that segment's `content` at all
 //! — the native `tools` array below is the only copy — so
 //! `segments_to_body_parts` skips it entirely and records
@@ -122,11 +122,11 @@ pub(crate) fn build_request_body(
 
 /// Reads a caller-supplied extended-thinking token budget out of
 /// `params.extra["reasoning_budget_tokens"]` and serializes it as
-/// Anthropic's `thinking: {type:"enabled", budget_tokens}` (WI-129).
+/// Anthropic's `thinking: {type:"enabled", budget_tokens}`.
 ///
 /// `GenerateRequest` has no dedicated reasoning-effort/budget field yet —
 /// that caller-facing knob and its plumbing into `params.extra` is a
-/// WI-126/WI-128 concern (`SessionSpec`/runtime wiring), outside this
+/// an earlier item/ an earlier item concern (`SessionSpec`/runtime wiring), outside this
 /// module's scope. `extra` is the only existing field on the request that
 /// reaches this wire layer, so it is the wire contract this key targets.
 fn reasoning_budget_tokens(req: &GenerateRequest) -> Option<u32> {
@@ -270,7 +270,7 @@ fn user_content_blocks(content: &[ContentBlock]) -> Vec<Value> {
 /// one `tool_use` block per `ContentBlock::ToolUse`, in `content` order — a
 /// `Thinking` block without a signature is omitted (Implementation Notes).
 ///
-/// `redacted_thinking` round-trip (WI-129): `ContentBlock` has no dedicated
+/// `redacted_thinking` round-trip: `ContentBlock` has no dedicated
 /// redacted-thinking variant (out of this module's file scope to add one),
 /// so `to_generate_response` below encodes a `redacted_thinking` response
 /// block as `Thinking { text: "", signature: Some(data) }` — empty text is
@@ -362,7 +362,7 @@ pub(crate) enum ResponseBlock {
     /// Anthropic's contract for extended thinking under prompt redaction:
     /// `data` is an opaque, encrypted payload with no plaintext reasoning
     /// — it must be passed back verbatim on the next turn, never inspected
-    /// (WI-129). See `assistant_content_blocks` for the encoding used to
+    ///. See `assistant_content_blocks` for the encoding used to
     /// carry it through `ContentBlock::Thinking` without a dedicated
     /// `ContentBlock` variant.
     RedactedThinking {
@@ -602,7 +602,7 @@ mod tests {
         );
     }
 
-    /// Board item 01KYTMJA0JHT5SAPYDGV251V17: a `Provenance::ToolRegistry`
+    /// A `Provenance::ToolRegistry`
     /// segment contributes NO `system` entry -- the native `tools` array is
     /// the only copy of the schema text -- and its placement is
     /// `BreakpointTarget::Tools`, not `System`, even when (as `build`

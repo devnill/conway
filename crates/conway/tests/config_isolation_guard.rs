@@ -1,4 +1,4 @@
-//! Board item 01KZYCKF3Z1XBCS50N7EWWVPEQ's guard: fails if a future test
+//!'s guard: fails if a future test
 //! starts reading ambient config again.
 //!
 //! ## What "ambient" means here, precisely
@@ -219,8 +219,7 @@ fn no_in_process_test_reads_ambient_config() {
 
     assert!(
         violations.is_empty(),
-        "in-process test(s) read ambient config (board item \
-         01KZYCKF3Z1XBCS50N7EWWVPEQ); every violation must switch to the \
+        "in-process test(s) read ambient config; every violation must switch to the \
          isolated seam instead:\n{}",
         violations.join("\n")
     );

@@ -1,6 +1,5 @@
 //! `AgentArtifactWriter`: the one implementation of
-//! [`conway_core::ports::ArtifactWriter`] (board item
-//! 01KZ84437RMKHP5DJX7RMHH7JY -- the containment guard that makes it safe
+//! [`conway_core::ports::ArtifactWriter`] (//! -- the containment guard that makes it safe
 //! for a `ContextHook` to spill content to disk).
 //!
 //! **Reuses, never restates, the exact machinery `PermissionBroker::
@@ -61,7 +60,7 @@ impl ArtifactWriter for AgentArtifactWriter {
             });
         };
 
-        // THE GUARD (board item 01KZ84437RMKHP5DJX7RMHH7JY): the identical
+        // THE GUARD: the identical
         // three-way match `PermissionBroker::check_root` applies to a
         // tool's own declared path arguments, reused verbatim rather than
         // restated -- one implementation.

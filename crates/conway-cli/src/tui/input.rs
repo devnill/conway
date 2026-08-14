@@ -1,4 +1,4 @@
-//! Key handling (WI-114): translates a `crossterm::event::KeyEvent` into an
+//! Key handling: translates a `crossterm::event::KeyEvent` into an
 //! [`Action`] the app loop (`app.rs`) carries out. Pure with respect to the
 //! input line itself (`AppState::input`/`AppState::cursor` are mutated here
 //! directly, since that's local editing state with no async effect), but
@@ -23,7 +23,7 @@ pub enum Action {
     /// The input line was submitted (`Enter`) -- `SessionHandle::prompt`
     /// text, or (if it starts with `/`) a slash command's raw input. Which
     /// one it is is not this module's concern (module notes: "the dispatch
-    /// hook is defined here, handlers land in WI-115") -- the app loop
+    /// hook is defined here, handlers land in an earlier item") -- the app loop
     /// branches on the leading `/`.
     Submit(String),
     /// A permission prompt was answered.
@@ -58,13 +58,13 @@ pub enum Action {
     CyclePermissionMode,
     /// V2b: drop every pattern grant and cached allow-always.
     RevokePermissionGrants,
-    /// Board item 01KYND4WGHSZXW5YQ6ZWHCDDNN: revoke exactly ONE pattern
+    /// Revoke exactly ONE pattern
     /// grant, carrying the same `(rule, origin)` identity the settings row
     /// itself rendered -- never a bare index, so the app loop's call into
     /// `Conway::revoke_permission_pattern` can never address a different
     /// grant than the one the operator actually selected.
     RevokePermissionPattern(conway::PatternRule, conway::PatternOrigin),
-    /// Board item A2: revoke exactly ONE STRUCTURED allow rule, carrying
+    /// A2: revoke exactly ONE STRUCTURED allow rule, carrying
     /// the same `(rule, origin)` identity the settings row itself rendered
     /// (from `state.structured_allow_rules`) -- the Rule-identity
     /// counterpart to [`Action::RevokePermissionPattern`], which can never
@@ -73,7 +73,7 @@ pub enum Action {
     /// the mirror for display only; the revoke key is `(rule, origin)`,
     /// exactly as the flat path's is.
     RevokeStructuredAllowRule(conway::Rule, conway::PatternOrigin, conway::GrantScope),
-    /// Board item 01KZS02HYXGTW42R8G4HP10GHX: revoke exactly ONE hook-backed
+    /// Revoke exactly ONE hook-backed
     /// rule, carrying the same `(event, id)` identity the settings row
     /// itself rendered -- never a bare index, so the app loop's call into
     /// `Conway::revoke_hook_rule` can never address a different rule than
@@ -91,7 +91,7 @@ pub enum Action {
     /// `Home`'s counterpart to [`Action::JumpToTail`] (T6): jump the
     /// transcript straight to its own top. Same empty-input gating.
     JumpToTop,
-    /// WI-140: switch the transcript pane to `AgentId`'s own conversation.
+    /// Switch the transcript pane to `AgentId`'s own conversation.
     /// Emitted by `Enter` on the `/agents` panel's highlighted row (any
     /// row, including the root's own -- focusing the root row is one of
     /// the two documented ways back), and by `Esc` while focused on a
@@ -284,7 +284,7 @@ fn activate_settings_selection(state: &mut AppState) -> Option<Action> {
                 .strip_prefix(super::view::settings::LEAF_REVOKE_GRANT_PREFIX)
                 .and_then(|rest| rest.parse::<usize>().ok())
             {
-                // Board item 01KYND4WGHSZXW5YQ6ZWHCDDNN: resolved against
+                // resolved against
                 // `state.permission_grants` right here, in the SAME call
                 // that just built the tree this row came from -- so the
                 // index cannot have drifted (nothing mutates
@@ -301,7 +301,7 @@ fn activate_settings_selection(state: &mut AppState) -> Option<Action> {
                 .strip_prefix(super::view::settings::LEAF_REVOKE_STRUCTURED_ALLOW_PREFIX)
                 .and_then(|rest| rest.parse::<usize>().ok())
             {
-                // Board item A2: the structured-allow counterpart of the arm
+                // A2: the structured-allow counterpart of the arm
                 // above, resolved against `state.structured_allow_rules` in
                 // the SAME call that built this tree -- the two prefixes
                 // name disjoint id spaces, so a structured row can never
@@ -317,7 +317,7 @@ fn activate_settings_selection(state: &mut AppState) -> Option<Action> {
                 .strip_prefix(super::view::settings::LEAF_REVOKE_HOOK_PREFIX)
                 .and_then(|rest| rest.parse::<usize>().ok())
             {
-                // Board item 01KZS02HYXGTW42R8G4HP10GHX: resolved against
+                // resolved against
                 // `state.hook_rules` in the SAME call that built this
                 // tree, exactly like the two grant prefixes above -- the
                 // index cannot have drifted.
@@ -456,7 +456,7 @@ fn handle_intent_confirm_key(state: &mut AppState, key: KeyEvent) -> Action {
 }
 
 /// The shared modal body scroll step (originated as the permission
-/// overlay's own step, bug fix 01KYB0F7V65QAMZWWYH8K7DWDC; V1 generalizes it
+/// overlay's own step, bug fix; V1 generalizes it
 /// to every modal-bearing surface via [`adjust_modal_scroll`]):
 /// `PageUp`/`PageDown` doesn't collide with any surface's own decision/fate/
 /// choice keys, so it's free to drive `AppState::modal_scroll` without
@@ -484,7 +484,7 @@ fn adjust_modal_scroll(state: &mut AppState, direction: i8) {
 }
 
 fn handle_permission_key(state: &mut AppState, key: KeyEvent) -> Action {
-    // Bug fix (01KYB0F7V65QAMZWWYH8K7DWDC): a long command's argument
+    // Bug fix: a long command's argument
     // used to clip the decision keys off-screen with no way to see the
     // rest of it. `PageUp`/`PageDown` page the overlay's own command
     // body while the decision keys keep working exactly as below --
@@ -632,7 +632,7 @@ fn handle_normal_key(state: &mut AppState, key: KeyEvent) -> Action {
         }
         KeyCode::Enter => {
             if state.input.is_empty() {
-                // WI-140: with the agent panel open and nothing typed,
+                // with the agent panel open and nothing typed,
                 // Enter focuses the highlighted row's agent instead of
                 // being a pure no-op (its only prior behavior) -- the
                 // input line has nothing else to submit in this state, so
@@ -702,7 +702,7 @@ fn handle_normal_key(state: &mut AppState, key: KeyEvent) -> Action {
                 Action::None
             }
         }
-        // WI-130/bug 3 (01KYAN9XZ6E22NSQ3GS3726XW6): arrows drive the
+        // an earlier item/bug 3: arrows drive the
         // on-demand surfaces, in priority order. The slash-command palette
         // takes priority when it is showing (the user is composing a
         // command); otherwise the arrows scroll the agent panel when it is
@@ -724,7 +724,7 @@ fn handle_normal_key(state: &mut AppState, key: KeyEvent) -> Action {
         // provides -- and enabling that would disable the terminal's own
         // click-drag text selection, which the transcript's clean-copy
         // guarantee exists to protect (see `view/transcript.rs`, and
-        // decision 01KYKDKYJEATSYXM7YS1C17HHA). Given that the two cannot
+        //). Given that the two cannot
         // be separated, the binding goes to the interaction that is both
         // more frequent and more surprising when broken: scrolling.
         //
@@ -758,7 +758,7 @@ fn handle_normal_key(state: &mut AppState, key: KeyEvent) -> Action {
         KeyCode::Esc => {
             // Esc does ONE thing per press, innermost surface first.
             //
-            // WI-130 made Esc close the agent panel; WI-140 separately made
+            // made Esc close the agent panel; an earlier item separately made
             // it return to the root's conversation. Both fired on a single
             // press, so the natural flow -- open `/agents`, focus a child,
             // press Esc to dismiss the panel -- closed the panel AND threw
@@ -810,7 +810,7 @@ fn handle_normal_key(state: &mut AppState, key: KeyEvent) -> Action {
 }
 
 /// Moves the slash-command palette selection by `delta` and autofills
-/// `input` with the newly-highlighted command (WI-130). Returns whether the
+/// `input` with the newly-highlighted command. Returns whether the
 /// palette was active and thus consumed the key.
 ///
 /// The candidate list is anchored to [`AppState::palette_source`] (the stem
@@ -1049,7 +1049,7 @@ mod tests {
         assert!(state.input.is_empty());
     }
 
-    // ---- WI-130: palette arrow navigation + agent-panel scroll ----
+    // ---- palette arrow navigation + agent-panel scroll ----
 
     fn type_str(state: &mut AppState, s: &str) {
         for c in s.chars() {
@@ -1107,7 +1107,7 @@ mod tests {
     // input history -- with an empty history, `history_recall_prev`/`_next`
     // are no-ops, so these tests (empty history, no palette/panel active)
     // still pin the "no transcript scroll" behavior unchanged). bug 3
-    // (01KYAN9XZ6E22NSQ3GS3726XW6)'s palette/panel priority is unchanged --
+    //'s palette/panel priority is unchanged --
     // only the lowest-priority fallback changed. ----
 
     // The small viewport `test_support`'s own PageUp test uses to force the
@@ -1341,7 +1341,7 @@ mod tests {
         assert!(state.follow_tail);
     }
 
-    // ---- WI-140: focused-agent switch ----
+    // ---- focused-agent switch ----
 
     #[test]
     fn enter_on_an_empty_input_with_the_agent_panel_open_focuses_the_highlighted_row() {
@@ -1779,7 +1779,7 @@ mod tests {
         );
     }
 
-    /// Axis B (decision 01KZ1NAXE0KZRSRFBDDJFCPMK8): the prompt can produce
+    /// Axis B: the prompt can produce
     /// a per-agent and a per-subtree grant. The `s` key cycles the scope
     /// and BOTH remembered-grant keys honor it -- `a` through the gate
     /// decision, `p` through the pattern-grant action.
@@ -1953,7 +1953,7 @@ mod tests {
 
     /// Bug fix companion: `PageDown`/`PageUp` while awaiting a permission
     /// decision must page `AppState::modal_scroll` (for a long command's
-    /// overlay, 01KYB0F7V65QAMZWWYH8K7DWDC) instead of falling through to
+    /// overlay,) instead of falling through to
     /// `Action::None` doing nothing, and must never collide with the
     /// `y`/`a`/`n`/`Esc` decision keys tested above.
     #[test]
@@ -3051,7 +3051,7 @@ mod tests {
         assert_eq!(state.settings_selected, 1);
     }
 
-    /// Board item 01KZS02HYXGTW42R8G4HP10GHX: `Enter` on a hook-rule row
+    /// `Enter` on a hook-rule row
     /// resolves to `Action::RevokeHookRule` carrying that EXACT row's
     /// `(event, id)` -- never a bare index -- resolved against
     /// `state.hook_rules` in the same call that built the tree, mirroring
@@ -3127,7 +3127,7 @@ mod tests {
         assert!(state.scroll > 0);
     }
 
-    /// Board item 01KYND4WGHSZXW5YQ6ZWHCDDNN: `Enter` on a grant row must
+    /// `Enter` on a grant row must
     /// resolve to THAT row's own `(rule, origin)` -- not the first grant,
     /// not a bare index the app loop would have to re-resolve (and could
     /// re-resolve against a since-changed list).
@@ -3169,7 +3169,7 @@ mod tests {
         );
     }
 
-    /// Board item A2: `Enter` on a STRUCTURED allow row must resolve to THAT
+    /// A2: `Enter` on a STRUCTURED allow row must resolve to THAT
     /// row's own `(rule, origin)` through the Rule-identity action -- never
     /// into the flat mirror (the two leaf-id prefixes name disjoint index
     /// spaces), and never as a bare index the app loop could re-resolve

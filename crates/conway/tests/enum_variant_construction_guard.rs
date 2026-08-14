@@ -1,18 +1,18 @@
-//! GP-14's enforcement for board item `01KYTXTXJ6DCE84ZRB06BHRGJW`: a
+//! Enforcement for: a
 //! declared-behavior enum variant must either be constructed by production
 //! code somewhere in this tree, or be named on the allowlist below with a
-//! reason (and, where one exists, a board item).
+//! reason (and, where one exists, a).
 //!
 //! ## An inert variant is not automatically a defect
 //!
 //! Declaring a variant before anything constructs it is a legitimate,
 //! ordinary thing to do -- forward compatibility for a `#[non_exhaustive]`
 //! vocabulary, wire/serialization stability for an older peer parsing a
-//! newer message, or a deliberate seam (GP-11: expose it, let policy live
+//! newer message, or a deliberate seam (: expose it, let policy live
 //! outside). This guard does not forbid that. **What it forbids is a
 //! MISMATCH between what a variant's own doc comment promises and what a
 //! reader would get if they declared it today.** `TruncationPolicy::Artifact`
-//! (board item `01KYTN3A9SPDMRG610YSB5QQXX`, since removed rather than
+//! (, since removed rather than
 //! wired -- see `ALLOWLIST`'s comment for that entry) was not a problem
 //! because it was unconstructed; it was a problem because its doc comment
 //! described a behavior ("spill to an Artifact, keep a pointer") that a tool
@@ -31,9 +31,9 @@
 //!
 //! This file does not walk the workspace hunting for "behavior enums":
 //! deciding whether an enum's documentation promises runtime behavior is a
-//! judgment call, not a mechanical property, and C-04 rules out bringing in
+//! judgment call, not a mechanical property, and rules out bringing in
 //! a real parser to approximate one -- that would be exactly the kind of
-//! static-analysis framework GP-04 warns against building to serve one
+//! static-analysis framework warns against building to serve one
 //! guard. Instead [`WATCHED_ENUMS`] names its enums explicitly, and each
 //! entry carries the one-line reason it qualifies under this criterion:
 //!
@@ -47,14 +47,14 @@
 //! When you add or touch a vocabulary enum that meets this bar, add it to
 //! [`WATCHED_ENUMS`] in the same change. The criterion above is what a
 //! reviewer checks a proposed addition against; it is not a promise this
-//! file enforces on itself (C-04 forbids the parser that would take to
+//! file enforces on itself ( forbids the parser that would take to
 //! verify "does this doc comment describe behavior" mechanically).
 //!
 //! ## How a variant is recognized as "constructed"
 //!
 //! For each watched enum, [`extract_variants`] parses `EnumName { ... }`
 //! out of its declaration file (brace-depth text scanning -- no `syn`, per
-//! C-04) to get the variant list and each variant's own doc comment. Then,
+//!) to get the variant list and each variant's own doc comment. Then,
 //! for each variant, this guard searches a **production corpus** built from
 //! every `crates/*/src/**/*.rs` file for a whole-word occurrence of
 //! `EnumName::Variant` that is a genuine value-producing expression, not a
@@ -75,7 +75,7 @@
 //! alternatives -- see `LogRecord::seq`'s multi-variant arm) lands on `=>`
 //! before anything else. Everything else -- a struct literal, a `const`
 //! initializer, a match arm's RHS, a function's tail expression -- counts as
-//! a construction. This is deliberately a heuristic, not a parser (C-04);
+//! a construction. This is deliberately a heuristic, not a parser ();
 //! its known gaps are stated in [`is_pattern_position`]'s own doc, and none
 //! of them are exercised by this tree's current source (verified below and
 //! by hand while writing this guard).
@@ -226,8 +226,9 @@ const WATCHED_ENUMS: &[WatchedEnum] = &[
 struct Allowlisted {
     enum_name: &'static str,
     variant: &'static str,
+    /// Why this variant is allowed to have no producer. Stated in full,
+    /// because this file is the only place a reader can learn it.
     reason: &'static str,
-    board_item: &'static str,
 }
 
 /// The literal substring an allowlisted variant's own doc comment must
@@ -238,40 +239,38 @@ const NOT_YET_IMPLEMENTED_MARKER: &str = "not yet implemented";
 
 const ALLOWLIST: &[Allowlisted] = &[
     // `TruncationPolicy::Artifact`, previously allowlisted here, was
-    // triaged by board item 01KYTN3A9SPDMRG610YSB5QQXX: REMOVED rather than
+    // triaged by: REMOVED rather than
     // wired. Spill-to-file is a workload-specific opinion (where to spill,
-    // when, retention, preview shape) that GP-11 puts in a hook or plugin,
+    // when, retention, preview shape) that puts in a hook or plugin,
     // not in core's `TruncationPolicy`. The variant is gone, so its
     // allowlist entry is gone too.
     Allowlisted {
         enum_name: "LogRecord",
         variant: "ContextMask",
-        reason: "WI-125's persisted context-exclusion overlay is READ by \
+        reason: "an earlier item's persisted context-exclusion overlay is READ by \
                  the fork-ancestry resolver (`apply_context_mask`), but \
                  nothing appends one -- there is no tool or operator \
                  surface that can mask a record. Worse than \"no \
                  producer\": a naive guard that treated resolver.rs's \
                  read as evidence of construction would have missed this \
                  entirely. RESOLVED AS A DELIBERATE DEFERRAL, not an open \
-                 gap: the item filed for it was cancelled, and decision \
-                 01KZT3XF73Z5WBC09FSWD51RT7 rules compaction explicitly \
+                 gap: the item filed for it was cancelled rules compaction explicitly \
                  out of scope -- its value is empirical and workload- \
                  dependent, so the harness ships the seam and leaves the \
                  policy outside. That decision also states what it does \
                  NOT rule: `ContextMask` is not to be deleted, and this \
                  allowlist entry stays until something changes it.",
-        board_item: "01KZJ8FVYH25A7GT4P68WTPZZP",
     },
-    // -- Newly flagged by THIS guard (board item 01KYTXTXJ6DCE84ZRB06BHRGJW
+    // -- Newly flagged by THIS guard (
     // itself), reported in that item's completion rather than fixed --
     // acceptance explicitly says "any newly-flagged variant is reported,
     // do not fix them in this item". None of these two has its own
-    // dedicated board item yet; each `board_item` below says so honestly
+    // dedicated yet; each `board_item` below says so honestly
     // rather than inventing one. Filing dedicated items is a stated
     // follow-up, not silently expanded scope of this item.
     //
     // `LogRecord::ToolCallRecord`, once allowlisted here, was triaged by
-    // board item 01KYXNCKYWKJR3C5X089WCXJPK (decision 01KYXZ25SS2Y95VPZ1NV4T3D4E):
+    //:
     // removed rather than wired, since `ContentBlock::ToolUse` inside the
     // preceding `Assistant` record is the durable shape and nothing else
     // consumes a standalone tool-call record. The variant is gone, so its
@@ -279,7 +278,7 @@ const ALLOWLIST: &[Allowlisted] = &[
     //
     // `PermissionScope::Agent` and `PermissionScope::AgentSubtree`, also
     // allowlisted here from this guard's first run, were triaged by the
-    // grant-prompt scope item (decision 01KZ1NAXE0KZRSRFBDDJFCPMK8: WIRE,
+    // grant-prompt scope item (: WIRE,
     // do not remove): both are now constructed in production -- the TUI
     // prompt's `s` scope key (`conway-cli/src/tui/input.rs`) and the
     // facade's scoped grant methods -- so their entries are gone too.
@@ -480,7 +479,7 @@ struct Variant {
 }
 
 /// Parses `pub enum {enum_name} { ... }` out of `source` (the enum's own
-/// declaration file) via brace-depth text scanning -- no `syn`, per C-04.
+/// declaration file) via brace-depth text scanning -- no `syn`.
 fn extract_variants(source: &str, enum_name: &str) -> Vec<Variant> {
     let needle = format!("enum {enum_name}");
     let decl_start = source
@@ -628,7 +627,7 @@ fn skip_path_and_payload(s: &str) -> usize {
 /// (`(Enum::Variant, Other) => ...`) is not recognized by rule 2, since the
 /// first token after the occurrence's own payload is a bare `,` rather
 /// than `|` or `=>`. Both would need a real parser to close in general;
-/// C-04 rules that out for this guard.
+/// rules that out for this guard.
 fn is_pattern_position(corpus: &str, match_start: usize, match_end: usize) -> bool {
     let before = corpus[..match_start].trim_end();
     let before = before
@@ -743,9 +742,9 @@ fn every_declared_behavior_variant_is_constructed_or_allowlisted() {
                 (true, None) => {} // normal: wired, not on the list.
                 (true, Some(entry)) => {
                     failures.push(format!(
-                        "`{}::{}` is on `ALLOWLIST` (reason: {:?}, board item `{}`) but \
+                        "`{}::{}` is on `ALLOWLIST` (reason: {:?}) but \
                          production code now constructs it -- remove the stale allowlist entry.",
-                        watched.name, variant.name, entry.reason, entry.board_item
+                        watched.name, variant.name, entry.reason
                     ));
                 }
                 (false, None) => {
@@ -756,14 +755,13 @@ fn every_declared_behavior_variant_is_constructed_or_allowlisted() {
                     let doc_lower = variant.doc.to_lowercase();
                     if !doc_lower.contains(NOT_YET_IMPLEMENTED_MARKER) {
                         failures.push(format!(
-                            "`{}::{}` is allowlisted (board item `{}`) but its own doc comment \
+                            "`{}::{}` is allowlisted but its own doc comment \
                              in `{}` does not say \"{}\" -- a reader of the enum declaration who \
                              never sees this guard would still believe the doc's original \
                              claim. Update the variant's doc comment, not just this file's \
                              allowlist entry. Current doc: {:?}",
                             watched.name,
                             variant.name,
-                            entry.board_item,
                             watched.decl_file,
                             NOT_YET_IMPLEMENTED_MARKER,
                             variant.doc

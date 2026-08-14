@@ -4,13 +4,12 @@
 yet.** No hook registration surface exists at all in the tree today
 (`hooks.md` point 13's status row: `Plugin` has no `hooks()` method), so
 there is nowhere for anything this page describes to attach. It's still
-worth writing now rather than after the fact — per decision
-`01KYTNTRAGX2H72HF4R69XACEX`, an inference-evaluated hook is a **first-class
+worth writing now rather than after the fact — per, an inference-evaluated hook is a **first-class
 supported shape**, not a workaround, and the four open questions it left
 (how fork-vs-spawn is declared, cost and attribution, determinism, mask
-production) were settled by decision `01KYTP2QYE00FJSQAQQ0E37JZP` before this
+production) were settled by before this
 set was written. What follows states those settled decisions, sourced from
-the decision record and `.design/extension-architecture.md` §16, never
+the decision record and the extension design, never
 invented for this page.
 
 ## What they are
@@ -53,8 +52,7 @@ into the model's context — so a wider input widens what an attacker's
 injected content can try to launder back out through the hook's own
 verdict.
 
-**The declaration surface, default, and override rule — taken from decision
-`01KYTP2QYE00FJSQAQQ0E37JZP`, not invented here:**
+**The declaration surface, default, and override rule — taken from, not invented here:**
 
 - A hook declares `subagent_mode: Fork | Spawn` **per registration**, not
   per plugin. One plugin may register a classifier needing no ancestry
@@ -93,7 +91,7 @@ what that costs and who pays for it:
   every inference-evaluated hook design applies uniformly — a 60 s default,
   operator-raisable to a configured maximum. This was never
   permission-specific; it's a property of issuing an LLM call from inside a
-  hook, which decision `01KYTP2QYE00FJSQAQQ0E37JZP` confirmed applies to
+  hook, which confirmed applies to
   every inference-evaluated hook kind, not only a permission classifier.
 - **Attribution — whose budget it spends.** For an in-process hook running
   the zero-tool judge shape above, the spend lands under the hook's own

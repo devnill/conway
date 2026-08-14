@@ -1,4 +1,4 @@
-//! Acceptance tests for `SessionHandle`/`TurnHandle`/`EventStream` (WI-101).
+//! Acceptance tests for `SessionHandle`/`TurnHandle`/`EventStream`.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -166,10 +166,10 @@ async fn turn_handle_result_resolves_on_budget_exceeded() {
 // `Event::AgentFinished`, never inspecting `AgentResult.status` -- so the
 // two are structurally identical by construction. An automated test that
 // actually *drives* a `Cancelled` outcome is not constructible from
-// WI-101's own public surface: the only way to trip a hard cancel is
+// its own public surface: the only way to trip a hard cancel is
 // `Runtime::cancel(agent, reason)`, which `SessionHandle` does not expose
-// (that arrives as `SessionHandle::cancel` in WI-102, per the module plan's
-// own dependency edge from WI-102 to WI-101). Disclosed gap, not a silent
+// (that arrives as `SessionHandle::cancel` in an earlier item, per the module plan's
+// own dependency edge from an earlier item to an earlier item). Disclosed gap, not a silent
 // omission.
 
 // ---------------------------------------------------------------------
@@ -536,7 +536,7 @@ async fn transcript_resolves_the_effective_ancestry_of_a_forked_fixture() {
     );
 }
 
-/// S1 regression (F-049-1): `resolve_prefix`'s ancestry walk must be correct
+/// S1 regression: `resolve_prefix`'s ancestry walk must be correct
 /// at depth >= 3 -- a fork off a NON-root parent -- not just the depth-2
 /// (root -> child) case the sibling test above covers. This builds a
 /// three-generation chain (root -> child -> grandchild, the grandchild
@@ -615,7 +615,7 @@ async fn transcript_resolves_a_grandchild_fork_three_generations_deep() {
         .expect("append should succeed");
 
     // Grandchild forks off the CHILD (not the root) after the child's one
-    // own append -- the depth-3, non-root-parent case F-049-1 needs
+    // own append -- the depth-3, non-root-parent case needs
     // coverage for.
     let grandchild_fork_at = LogSeq(1);
     let grandchild_agent = AgentId::new();

@@ -1,4 +1,4 @@
-//! Acceptance tests for `Runtime::resume_root` (WI-118): re-registering an
+//! Acceptance tests for `Runtime::resume_root`: re-registering an
 //! already-persisted session's agent as live, without `store.create`-ing a
 //! new session and without appending an initial prompt.
 //!
@@ -123,7 +123,7 @@ async fn wait_for_agent_finished(
     .expect("agent never finished")
 }
 
-/// The work item's mandatory criterion, now closing the F-118 D-3 race
+/// The work item's mandatory criterion, now closing the D-3 race
 /// (`resume_root` must not run any turn until the caller's own `prompt`
 /// arrives): create a session via `start_root` plus one prompt turn (so the
 /// store holds a real, multi-record transcript), then in a FRESH `Runtime`

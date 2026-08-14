@@ -1,5 +1,5 @@
 //! Integration coverage for `BashTool` and the `ShellPlugin` assembly
-//! (WI-064 criteria).
+//! (criteria).
 //!
 //! Requires the `test-fakes` feature (for `conway_tools::testing::test_ctx`).
 //! Declared with `required-features = ["test-fakes"]` in Cargo.toml, so a
@@ -90,7 +90,7 @@ fn find_pgid(events: &[Event]) -> i32 {
 /// green: if the group genuinely SURVIVED — a real orphaned-process bug —
 /// polling cannot rescue it, because a live `sleep 300` outlives this window
 /// by minutes and every attempt returns `Ok`. Finding
-/// `01KZCMGF323DYRFCQBZRYVQMT5`.
+///.
 #[cfg(unix)]
 fn assert_group_dead(pgid: i32) {
     // Generous relative to reaping (milliseconds) and tiny relative to the

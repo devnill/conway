@@ -1,4 +1,4 @@
-//! Board item 01KZFC43J1J06BM4CCWKCKHSNV: the paired ABSENT/INSTALLED
+//! The paired ABSENT/INSTALLED
 //! configuration proof the item's own acceptance criteria (4, 5, 6) name
 //! explicitly, both driven through a real `ConwayBuilder::build` and a real
 //! `SessionHandle::prompt`, not a hand-constructed `Router`/`RouteRequest`.
@@ -14,14 +14,14 @@
 //!   with `conway-plugin-routing`'s `RoutingRouterFactory` installed via
 //!   `with_router_factory` (the library-embedder shape of the SAME
 //!   `[plugins].install` mechanism `conway-cli`'s `first_party_plugins::
-//!   router_bundle` resolves for the TUI and one-shot -- GP-05/C-03, no
+//!   router_bundle` resolves for the TUI and one-shot --, no
 //!   capability trapped in one mode), a failing primary candidate is
 //!   skipped mid-turn (ordered fallback) for three consecutive turns, its
 //!   Transport breaker opens on the third failure
 //!   (`HealthConfig::transport_failures_to_open`'s default, 3), and a
 //!   FOURTH turn never dials the primary candidate at all -- the router's
 //!   own `HealthSkip` filtering, observed as a call count, not inferred.
-//! - P-15 break-the-guard for the installed half (recorded in this item's
+//! - break-the-guard for the installed half (recorded in this item's
 //!   own completion report, not committed here): stubbing out
 //!   `conway-cli`'s `first_party_plugins::router_bundle` to return `vec![]`
 //!   makes `[plugins].install = ["conway.routing"]` a hard "unknown id"
@@ -156,7 +156,7 @@ async fn absent_configuration_resolves_via_the_core_resolver_and_completes() {
         .with_backend(backend)
         .with_session_store(store)
         .with_permission_gate(gate)
-        // Board item 01KZHF270T3W8GZ7NM6DSNQ4MM: `conway` no longer
+        // `conway` no longer
         // compiles either dialect in -- `base_config`'s `kind =
         // "openai-compat"` entries (overwritten by the injected fakes
         // above) need a registered factory to construct.

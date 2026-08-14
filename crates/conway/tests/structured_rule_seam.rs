@@ -1,4 +1,4 @@
-//! Acceptance tests for board item F12 ("the structured rule form: general
+//! Acceptance tests for F12 ("the structured rule form: general
 //! rules for tool use") -- the REAL-STACK seam tests for the structured
 //! `Rule { select, when, then }` permission form.
 //!
@@ -167,7 +167,7 @@ fn build_conway(cwd: &Path, script: Vec<ScriptedTurn>, gate: Arc<dyn PermissionG
         .with_session_store(store)
         .with_permission_gate(gate)
         .with_router(fake_router())
-        // Board item (bash ships on by default and cannot be declined):
+        // (bash ships on by default and cannot be declined):
         // this file drives the REAL `bash` tool end to end, so it must now
         // opt in explicitly -- the facade's own default excludes it.
         .with_builtin_plugins(PluginSelection::All)
@@ -871,7 +871,7 @@ async fn an_unconfinable_tool_never_satisfies_paths_under_so_bash_reaches_the_ga
 /// token boundaries the operator cannot predict) can never reliably match --
 /// the `68ea9b1` `read:*`-matched-nothing bug, re-imagined for the structured
 /// form. The loader refuses to install it silently; it surfaces a typed
-/// `RuleRegistrationError` in the load report instead (P-10: untrusted input
+/// `RuleRegistrationError` in the load report instead (: untrusted input
 /// -> typed errors, never panics, never a silent inert rule).
 #[tokio::test]
 async fn command_prefix_on_a_structured_tool_is_a_registration_error() {
@@ -933,8 +933,8 @@ async fn command_prefix_on_a_structured_tool_is_a_registration_error() {
 /// bash call the operator expected to be refused instead goes through
 /// (fail-OPEN). The loader refuses to install it silently and surfaces a
 /// typed `PathsUnderOnUnconfinedTool` registration error in the load report
-/// instead (P-12: operator-visible via A1's `registration_errors` channel;
-/// P-10: typed error, never a panic). The rule is NOT installed, so there is
+/// instead (: operator-visible via A1's `registration_errors` channel;
+///: typed error, never a panic). The rule is NOT installed, so there is
 /// no inert deny pattern lying in wait for a call the operator believed was
 /// refused.
 ///
@@ -1107,7 +1107,7 @@ async fn a_paths_under_deny_rule_on_a_category_with_an_unconfinable_tool_refuses
 /// is dropped by the broker: `canonicalize_when` -> `CanonicalRoot::new`
 /// fails, so `remember_pattern_rule` returns `false`. The loader surfaces
 /// that as a typed `PathsUnderPrefixUncanonicalizable` registration error
-/// (P-12: operator-visible via A1's `registration_errors` channel; P-10:
+/// (: operator-visible via A1's `registration_errors` channel:
 /// typed error, never a panic) instead of silently swallowing the `bool`.
 /// The rule is NOT installed, so a `read` call the operator expected to be
 /// auto-authorized instead reaches the operator's gate (fail-CLOSED -- the
@@ -1191,7 +1191,7 @@ async fn a_paths_under_allow_rule_with_a_prefix_that_cannot_canonicalize_surface
     );
 }
 
-/// **Board item 01KZVZ56SBPSTZHAXXGYCNETNX.** A `paths_under` prefix
+/// **** A `paths_under` prefix
 /// carrying a NUL byte (JSON's `\u0000` escape, legal, decodes to a real embedded
 /// NUL) hits `canonicalize_when`'s call to `resolve_like_the_tool_will` --
 /// now a thin wrapper over the ONE shared implementation,
@@ -1389,7 +1389,7 @@ async fn paths_under_deny_and_prompt_rules_with_a_bad_prefix_each_surface_a_regi
         report.registration_errors
     );
 
-    // Fail-closed posture (P-13): the dropped deny/prompt rules were never
+    // Fail-closed posture (): the dropped deny/prompt rules were never
     // installed, so a matching `read` call is neither silently denied (the
     // deny never fired) nor silently allowed -- it reaches the operator's
     // gate. Symmetric with the allow-arm and trust tests' gate assertion;
@@ -1421,7 +1421,7 @@ async fn paths_under_deny_and_prompt_rules_with_a_bad_prefix_each_surface_a_regi
 /// allow rule(s) installed" for a rule the broker dropped as
 /// uncanonicalizable. The fix honors the `bool`: the dropped rule is NOT
 /// counted, and the same `PathsUnderPrefixUncanonicalizable` registration
-/// error is surfaced through the trust report (P-12: operator-visible --
+/// error is surfaced through the trust report (: operator-visible --
 /// the TUI renders each through the same `Entry::Error { fatal: false }`
 /// channel the load path uses). The rule is NOT installed, so a matching
 /// read still reaches the gate.
@@ -1738,10 +1738,10 @@ async fn a_structured_prompt_rule_from_an_untrusted_project_file_forces_the_gate
 // =====================================================================
 // A4: a structured `then: allow` rule from an UNTRUSTED project file does
 //      not take effect -- the structured-allow half of the shared allow
-//      trust invariant (GP-14 liveness corollary).
+//      trust invariant ( liveness corollary).
 // =====================================================================
 
-/// A4 / GP-14: an UNTRUSTED project `permissions.json`'s structured
+/// A4 /: an UNTRUSTED project `permissions.json`'s structured
 /// `then: allow` rule must NOT authorize its call. The trust invariant lives
 /// on the shared allow install path -- pinned for the FLAT allow rule by
 /// `an_untrusted_project_allow_rule_does_not_take_effect` in
@@ -2293,7 +2293,7 @@ async fn revoking_a_structured_allow_rule_removes_only_it_and_the_call_asks_agai
 }
 
 /// Revoking a structured rule that is NOT installed returns
-/// `RevokeOutcome::NotFound` (typed, never a panic -- P-10) and removes
+/// `RevokeOutcome::NotFound` (typed, never a panic --) and removes
 /// nothing: the installed structured rule still authorizes afterward.
 #[tokio::test]
 async fn revoking_a_structured_allow_rule_that_does_not_exist_returns_not_found() {

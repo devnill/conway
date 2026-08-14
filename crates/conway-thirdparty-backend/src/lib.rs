@@ -1,5 +1,4 @@
-//! A third-party-shaped `Backend` + `BackendFactory` (board item
-//! 01KZHF3E1ZG3AZ7F7HHVY324T9): the proof that a stranger outside this
+//! A third-party-shaped `Backend` + `BackendFactory` -- the proof that a stranger outside this
 //! repository can genuinely author a provider adapter, install it the way
 //! a stranger would install one, and answer a real turn -- not merely that
 //! the machinery for doing so compiles inside `conway`'s own test suite.
@@ -84,7 +83,7 @@ use conway::{BackendBuildContext, BackendFactory, CoreConwayError, ModelOverride
 pub const BACKEND_ID: &str = "thirdparty";
 /// The `kind` `fixture::write_settings` names -- an open string
 /// (`ThirdPartyBackendFactory::id()` returns the identical value), never a
-/// closed enum variant (board item 01KZHF1E85MS1VF4YH8CDNCP9Z).
+/// closed enum variant.
 pub const BACKEND_KIND: &str = "thirdparty-stub";
 /// The model id `fixture::write_settings`'s `roles.coder.chain` and
 /// `.conway/models.json` both name.
@@ -100,7 +99,7 @@ pub const REPLY_TEXT: &str =
     "hello from the third-party backend, installed through settings.json alone";
 
 /// The `[backends.<id>]` custom key this stand-in reads out of
-/// [`BackendBuildContext::extra`] (board item 01KZMM8ABQJQGHTDTP5S29P88C) --
+/// [`BackendBuildContext::extra`] --
 /// this crate's proof that a third-party kind's own configuration genuinely
 /// reaches its factory, rather than being captured at config-load time and
 /// discarded before any factory ever sees it (`docs/providers.md`'s
@@ -270,7 +269,7 @@ impl Stream for VecStream {
 
 /// A [`BackendFactory`] whose `id()` matches [`BACKEND_KIND`] and whose
 /// `build` reads [`BackendBuildContext::models`] (the same table a real
-/// config-derived backend's capabilities are projected from, WI-123) for a
+/// config-derived backend's capabilities are projected from) for a
 /// [`MODEL_ID`] override, exactly the way `conway-plugin-backends`' own two
 /// shipped factories do -- proving a genuinely third-party factory reads
 /// the identical context a first-party one does. Also reads
@@ -393,7 +392,7 @@ pub mod fixture {
     /// Same as [`write_settings`], except the `[backends.<id>]` entry also
     /// carries a [`GREETING_KEY`] key beyond `kind` -- one of the keys
     /// `BackendEntry` does not itself recognize, captured into its `extra`
-    /// map and, since board item 01KZMM8ABQJQGHTDTP5S29P88C, handed onward
+    /// map and, since, handed onward
     /// through `BackendBuildContext::extra` to
     /// `ThirdPartyBackendFactory::build`. `tests/custom_key.rs` uses this to
     /// prove the value genuinely reaches the factory-built backend's own

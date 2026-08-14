@@ -52,8 +52,8 @@ impl Tool for ReadTool {
     }
 
     /// `read` never overrides `render`, so its rendering is always the
-    /// trait's own default JSON dump -- never a shell command. Board item
-    /// 01KYT3NSWRHMPEAXVXRJ73KDYR.
+    /// trait's own default JSON dump -- never a shell command.
+    ///.
     fn render_kind(&self) -> RenderKind {
         RenderKind::Structured
     }
@@ -228,7 +228,7 @@ mod tests {
         assert!(matches!(err, ToolError::Cancelled));
     }
 
-    /// Board item 01KZVZ56SBPSTZHAXXGYCNETNX: a NUL byte in `path` is
+    /// A NUL byte in `path` is
     /// rejected reaching THIS tool's production `invoke` entry point, not
     /// merely by `resolve_path` in isolation -- proving `read` actually
     /// calls the shared resolver rather than restating it.

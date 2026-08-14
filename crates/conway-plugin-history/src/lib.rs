@@ -1,5 +1,5 @@
 //! `conway-plugin-history`: `/conway.history.rewind`, a first-party plugin
-//! (board item 01KZY8Q1CMMNVSF54CTC270N3H) proving `/rewind` genuinely IS a
+//! proving `/rewind` genuinely IS a
 //! plugin, per the owner's ruling: "features like /rewind, /checkout, etc
 //! are to be plugins, to fit into the philosophy; they are not core
 //! functionality." Not installed by default -- see
@@ -7,8 +7,7 @@
 //! for the `[plugins].install` opt-in, mirroring
 //! `crates/conway-plugin-skeleton`'s own pattern exactly.
 //!
-//! **What this crate proves.** `CommandOutcome::ForkSession` (board item
-//! 01KZYH37WNDKDWSMWQQPRFKKXC) closed the ONE gap that used to block
+//! **What this crate proves.** `CommandOutcome::ForkSession` closed the ONE gap that used to block
 //! `/rewind` from being a plugin at all: a command could not fork or
 //! retarget the session driving it, because `conway-core` (where `Plugin`/
 //! `Command` live) structurally cannot depend on `conway` (the facade,

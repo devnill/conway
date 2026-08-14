@@ -1,5 +1,4 @@
-//! Pins `conway::backend`'s curated export list (board item
-//! 01KZHEZF8XCD0TMDYZQP06J2KH), mirroring `public_api_surface.rs`'s own
+//! Pins `conway::backend`'s curated export list , mirroring `public_api_surface.rs`'s own
 //! "must be nameable" idiom for the crate root.
 //!
 //! `backend_parity.rs` proves the set is *sufficient* by implementing a

@@ -26,7 +26,7 @@
 //! `Backend::generate`, for a real `Runtime::start_root`/fork call.
 //!
 //! `ScriptedBackend` stands in for `AnthropicBackend` (this crate does not
-//! depend on `conway-plugin-backends`, C-04): its `capabilities()` is set to the
+//! depend on `conway-plugin-backends`): its `capabilities()` is set to the
 //! SAME `CacheMode::ExplicitBreakpoints { max_breakpoints: 4, .. }` value
 //! `anthropic_defaults()` declares, so the mechanism under test —
 //! capability-keyed cache-hint attachment in the attempt layer — runs
@@ -95,7 +95,7 @@ fn text_response(text: &str) -> conway_core::ports::GenerateResponse {
 /// A `Runtime` wired to one `ScriptedBackend` whose declared capability is
 /// `anthropic_like_capabilities()` — an "Anthropic-capability model" for
 /// every purpose the cache-hint post-pass cares about, without this crate
-/// depending on `conway-plugin-backends` (C-04).
+/// depending on `conway-plugin-backends` ().
 fn build_runtime(turns: usize) -> (Arc<Runtime>, Arc<ScriptedBackend>) {
     let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
     let backend = Arc::new(
@@ -277,13 +277,13 @@ async fn a_forked_childs_turn_breakpoints_both_a_and_b() {
             expected
         },
         "a fork child's turn must breakpoint both A (own ToolSchemas) and B \
-         (the inherited prefix, GP-02) -- the case where caching compounds \
+         (the inherited prefix) -- the case where caching compounds \
          most: every sibling forked at the same point shares B's prefix"
     );
 }
 
 // ---------------------------------------------------------------------
-// GP-06: the attempt-layer post-pass may only ever change PRICE, never
+//: the attempt-layer post-pass may only ever change PRICE, never
 // the request the model actually sees.
 // ---------------------------------------------------------------------
 
@@ -315,7 +315,7 @@ fn content_identity(
 /// Two otherwise-identical roots against two otherwise-identical models,
 /// differing ONLY in the resolved capability's `CacheMode` (one
 /// `ExplicitBreakpoints`, one `None`) -- the exact axis
-/// `attach_route_cache_hints` (`attempt.rs`) branches on. GP-06: stripping
+/// `attach_route_cache_hints` (`attempt.rs`) branches on.: stripping
 /// `cache_hint` must make the two requests identical in everything that
 /// reaches the model. This is the widened surface this item adds (a NEW
 /// mutation site, cloning and editing segments post-routing, per attempted
@@ -374,7 +374,7 @@ async fn gp06_stripping_cache_hint_makes_a_cached_and_uncached_route_identical()
     assert_eq!(
         content_identity(&cached_req.segments),
         content_identity(&uncached_req.segments),
-        "GP-06: a cache hint must never be correctness-bearing -- with \
+        ": a cache hint must never be correctness-bearing -- with \
          cache_hint (and the agent-derived segment id) excluded, a cached \
          and an uncached route's requests must be identical"
     );

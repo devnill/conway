@@ -1,6 +1,6 @@
 //! Tolerant parser for the `Ollama` dialect's documented tool-call delta
 //! quirks (research-backends: ollama#12557 and related reports), also
-//! reused unchanged for `LmStudio` and `LlamaCppServer` (WI-022 handoff —
+//! reused unchanged for `LmStudio` and `LlamaCppServer` (handoff —
 //! see `mod.rs`):
 //!
 //! - `index` may be missing.

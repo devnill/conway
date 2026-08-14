@@ -1,14 +1,13 @@
 //! Segment → OpenAI-compatible chat message mapping (`generate`/`stream`
 //! request bodies) and chat-completion response → `GenerateResponse`
-//! mapping (architecture §"Module: conway-backends", WI-019).
+//! mapping (architecture §"Module: conway-backends").
 //!
 //! `PromptSegment.cache_hint` is never read anywhere in this module — that
 //! omission, not a positive check, is what makes `CacheMode::ImplicitPrefix`
 //! a wire no-op (§4.1): stripping every `cache_hint` from a request's
 //! segments cannot change a single byte of the body this module produces.
 //!
-//! `Provenance::ToolRegistry` segments produce no chat message (board item
-//! 01KYTMJA0JHT5SAPYDGV251V17): `conway-runtime`'s `ContextBuilder` stopped
+//! `Provenance::ToolRegistry` segments produce no chat message -- `conway-runtime`'s `ContextBuilder` stopped
 //! putting the tool-schema JSON in that segment's `content` at all — the
 //! native `tools` array below is the only copy. OpenAI-compatible dialects
 //! have no `cache_control` equivalent to redirect a breakpoint to (unlike
@@ -99,12 +98,12 @@ pub(crate) fn build_request_body(
 
 /// Reads a caller-supplied reasoning effort level out of
 /// `params.extra["reasoning_effort"]` and serializes it verbatim as the
-/// OpenAI `reasoning_effort` chat-completion field (WI-129), e.g. `"low"` /
+/// OpenAI `reasoning_effort` chat-completion field, e.g. `"low"` /
 /// `"medium"` / `"high"`.
 ///
 /// `GenerateRequest` has no dedicated reasoning-effort field yet — that
 /// caller-facing knob and its plumbing into `params.extra` is a
-/// WI-126/WI-128 concern, outside this module's scope; `extra` is the only
+/// an earlier item/ an earlier item concern, outside this module's scope; `extra` is the only
 /// existing field that reaches this wire layer. Emitted only when
 /// `profile.sends_reasoning_effort`, mirroring the `parallel_tool_calls`
 /// gating above: other OpenAI-compatible servers 400 on a field they don't
@@ -208,7 +207,7 @@ fn assistant_message(content: &[ContentBlock]) -> Value {
 
     let mut message = Map::new();
     message.insert("role".into(), json!("assistant"));
-    // WI-122: send an empty STRING (never `null`) for a tool-call-only
+    // send an empty STRING (never `null`) for a tool-call-only
     // assistant turn. OpenAI accepts `content: null` when `tool_calls` is
     // present, but Ollama Cloud / glm-5.2 rejects it with
     // `bad request: invalid message content type: <nil>`, which fails every
@@ -261,7 +260,7 @@ pub(crate) struct ResponseMessage {
     /// Reasoning-model dialects (DeepSeek-R1 style, served via vLLM/Ollama/
     /// LM Studio) return the model's reasoning trace here — `stream.rs`
     /// already surfaces the streamed equivalent as `ThinkingDelta`; this is
-    /// its non-streaming counterpart (WI-129). `reasoning` is accepted as
+    /// its non-streaming counterpart. `reasoning` is accepted as
     /// an alias for servers that use that key instead.
     #[serde(default, alias = "reasoning")]
     pub(crate) reasoning_content: Option<String>,
@@ -480,7 +479,7 @@ mod tests {
             {"role": "system", "content": "You are a helpful assistant."},
             {"role": "user", "content": "What's the weather in Paris?"},
             {
-                // WI-122: a tool-call-only assistant turn serializes with an
+                // a tool-call-only assistant turn serializes with an
                 // empty STRING, never `null` -- Ollama Cloud rejects a null
                 // content type on tool-continuation requests.
                 "role": "assistant",
@@ -499,7 +498,7 @@ mod tests {
         assert_eq!(Value::Array(messages), golden);
     }
 
-    /// Board item 01KYTMJA0JHT5SAPYDGV251V17: a `Provenance::ToolRegistry`
+    /// A `Provenance::ToolRegistry`
     /// segment produces no chat message at all -- the native `tools` array
     /// (a separate `GenerateRequest` field, unrelated to `segments`) is the
     /// only copy of the schema text now.

@@ -7,8 +7,7 @@
 //! facade. This module owns only the semantic checks a loaded
 //! `RoutingConfig` must pass.
 //!
-//! **`HeadroomPolicy` moved to `conway_core::capabilities` (board item
-//! 01KZFC0JDMC2Y631FFCXWR37CP)**, beside `DEFAULT_HEADROOM_TOKENS`: checking
+//! **`HeadroomPolicy` moved to `conway_core::capabilities` **, beside `DEFAULT_HEADROOM_TOKENS`: checking
 //! every read of `HeadroomPolicy::resolve` and every construction site found
 //! `DeclarativeRouter::new` (`router.rs`) still takes it as a caller-supplied
 //! sidecar and cross-checks its resolution against
@@ -18,7 +17,7 @@
 //! `HeadroomExceedsBudget` check already used `RoutingConfig::headroom_for`
 //! directly, never `HeadroomPolicy`.
 //!
-//! Divergence note (flagged, not worked around): the WI-031 amendment
+//! Divergence note (flagged, not worked around): the amendment
 //! anticipated `conway-core`'s `RoleConfig` lacking a `headroom_tokens`
 //! field, with this module owning a document-parsing sidecar as the interim
 //! path. The `conway-core` this crate builds against already carries
@@ -317,12 +316,11 @@ mod tests {
     // `probe_interval_secs`/`probe_timeout_secs`/`probe_failures_to_open`/
     // `probe_enabled` (which used to configure a periodic health prober and
     // the independent `Probe` breaker it fed) were removed from
-    // `conway_core::routing::HealthConfig` (board item
-    // `01KZ802GSF692EKYKQ2TTVCJB8`, "retire the health prober") -- the
+    // `conway_core::routing::HealthConfig` (//, "retire the health prober") -- the
     // prober had no production call site anywhere in this tree, and the
     // Transport breaker alone already handles recovery. The two fixtures
     // below were updated in step; the earlier divergence note this comment
-    // block used to carry (WI-031's illustrative `HealthConfig` shape versus
+    // block used to carry (an earlier item's illustrative `HealthConfig` shape versus
     // conway-core's actual one) is moot now that both the doc and the type
     // agree on three fields.
     // -----------------------------------------------------------------

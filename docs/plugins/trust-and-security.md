@@ -26,7 +26,7 @@ subjects recorded grants nothing.
 distinguishing what's being trusted (a `permission_file`, eventually a
 `plugin`), `id` distinguishing multiple subjects of the same kind, and
 `content-digest` pinning the exact bytes the decision covers
-(`.design/d4-trust-model.md` §4).
+.
 
 **What actually ships is narrower, and it is real, tested code, not a
 forward declaration of the full triple.** `TrustStore`
@@ -36,23 +36,23 @@ forward declaration of the full triple.** `TrustStore`
 to disambiguate today. This is the same gap `concepts.md`'s own "Trust"
 section and `docs/permissions.md`'s Limits section both already state: *"no
 on-disk, digest-checked ceremony for trusting a plugin the way one exists
-for a `permissions.json` file."* There is no board item that names building
+for a `permissions.json` file."* There is no that names building
 the full `(kind, id, digest)` model, or a `plugin` trust kind specifically,
 as its own tracked work — confirmed by searching the board for "plugin
 trust" and "digest-keyed" and finding nothing. It depends on the
-out-of-process transport (`.design/d1-transport.md`), which is itself
+out-of-process transport, which is itself
 design-only. If this gap is worth tracking as its own item rather than
 riding along inside the transport work, the item is: *build a `plugin`
 trust-subject kind in `TrustStore` — `(entry_digest, artifact_digest)` per
-`.design/d4-trust-model.md` §4, gated behind whatever loads a plugin
-off-process — once `.design/d1-transport.md` lands enough of the transport
+the trust-model design, gated behind whatever loads a plugin
+off-process — once the out-of-process transport design lands enough of the transport
 to have a plugin artifact to digest.*
 
 **Why the directory form is rejected.** A directory-scoped trust decision
 made about `/repo` stays valid for whatever `/repo` becomes — a `git pull`
 that changes the committed `permissions.json` rides the trust decision made
 about a completely different file's bytes. That stickiness is Claude Code's
-own documented flaw (`.design/d4-trust-model.md` §5), and it is the shape
+own documented flaw, and it is the shape
 that lets *one* component's content change silently re-open the trust
 question for *every other* component nested under the same path. Keying on
 content digest instead means an edit to the trusted bytes is, by
@@ -95,7 +95,7 @@ outcome — de-trust — has to require **zero** human action, precisely
 because a design that required one would eventually not get it.
 
 **What the operator sees instead, as actually shipped**, is narrower than
-`.design/d4-trust-model.md` §9's full design: a one-line transcript notice
+the trust-model design's full design: a one-line transcript notice
 naming the file and how many rules are waiting, and a report line after you
 run `/trust permissions` (`trusted .conway/permissions.json -- 2 allow
 rule(s) installed for this session...`). The design describes the review
@@ -132,7 +132,7 @@ the built-in tools... that would set them apart from a third-party one"*).
 govern what a plugin can make *conway* do — never what it can do to the
 machine.** That is why `fs.read`, `net`, and `exec` are deliberately absent
 from the capability vocabulary (`concepts.md`'s glossary; the design's own
-statement, `.design/extension-architecture.md` §7.3/§13.2). Naming them
+statement, the extension design). Naming them
 would manufacture a false belief: an operator reading `net: none` in a
 review surface would reasonably conclude a plugin cannot reach the network,
 and conway has no mechanism that could make that true for an in-process
@@ -151,7 +151,7 @@ Two things this bears on directly, so a reader does not have to infer them:
   what a plugin can do; today it limits nothing.
 - **No self-reported-intent field exists in the tree today.** The design
   proposes a segregated `disclosures` map on a future manifest
-  (`.design/extension-architecture.md` §7.3) — free text like `"network":
+  — free text like `"network":
   "calls api.example.com to classify commands"` — rendered under a header
   stating verbatim *"Self-reported by the plugin. Conway does not verify or
   enforce these."* `PluginManifest` (`crates/conway-core/src/ports/
@@ -197,7 +197,7 @@ doing arbitrary I/O outside conway's mediation entirely, exactly as a tool's
 `invoke` already can.
 
 **The one narrow exception, and why it does not widen this control (board
-item 01KZYH37WNDKDWSMWQQPRFKKXC).** A command CAN ask the host to fork its
+item).** A command CAN ask the host to fork its
 OWN calling session at a sequence and drive the child (`CommandOutcome::
 ForkSession` — `hooks.md` point 15's own "Forking the calling session"
 subsection has the full mechanism). This is not a live handle: the command
@@ -221,7 +221,7 @@ first and never lands on this page would have no way to know it.
 
 **Same mechanism, same privileges, no separate scrutiny.** conway's CLI
 resolves a `Plugin`, a `RouterFactory`, and a `BackendFactory` id in one
-pass off one list — `[plugins].install`, unioned with `[plugins].
+pass off one list — `plugins.install`, unioned with `plugins.
 default_backends` for the backend arm specifically
 (`crates/conway-cli/src/first_party_plugins.rs`'s `install`; see
 [`docs/providers.md`'s "Where a backend is
@@ -243,10 +243,10 @@ review surface described throughout this page.
 for.** `BackendFactory::build` receives a `BackendBuildContext`
 (`crates/conway-core/src/ports/backend.rs`) whose `api_key` field is not
 an environment variable's *name* — it is the resolved value: a literal
-`[backends.<id>].api_key`, or an `api_key_env` variable the harness has
+`backends.<id>.api_key`, or an `api_key_env` variable the harness has
 already read out of the operator's own process environment, before
 `build()` is ever called. The operator authorizes this once, structurally,
-by adding a `[backends.<id>]` entry that names the factory's kind — never
+by adding a `backends.<id>` entry that names the factory's kind — never
 per call, never as a runtime prompt, and with nothing in the review
 surface that distinguishes "this entry hands over a secret" from any
 other configuration key. `BackendBuildContext` also carries `extra`
@@ -303,7 +303,7 @@ boundary: any tool call whose path argument resolves outside it is denied
 before the permission gate is ever consulted, and a subagent forked or
 spawned from a confined root can only narrow that root further, never widen
 it. Root-agent confinement (the `--root` CLI flag, `ConwayBuilder::with_root`
-for a library embedder) landed as board item `01KYTMH9JX21CGSE2Y6E2KP8SJ` —
+for a library embedder) landed as —
 before it, only a subagent could be confined, never the root agent a human
 actually talks to. The full mechanics, including the exact ordering against
 every other permission step and a verified end-to-end transcript, are
@@ -312,13 +312,12 @@ does not repeat them.
 
 **Where this primitive lives is a live, decided-but-not-built redirection,
 not a settled fact of the current tree.** A decision made
-2026-08-07 (`01KZDBYTKFYTVD9R2NA10QJNJE`) rules that the boundary
+2026-08-07 rules that the boundary
 should relocate from the harness-level check described above into the tool
 that performs the operation — a future `conway.fs` plugin enforcing its own
 root over its own reads and writes, closing the TOCTOU window a
 check-then-act split leaves open today. **That relocation has not
-happened.** Both board items tracking it (`01KZDC0269171BZDB3HH00179B`,
-`01KZDC30CBY9CPJ8YEM7HSRV0Y`) are `open`, and the amendment's own text says
+happened.** Both tracking it are `open`, and the amendment's own text says
 so: *"Until they land, containment still lives in `conway-core`; this entry
 states the direction, not the current tree."* Everything stated above this
 paragraph is what's actually shipped.
@@ -340,8 +339,7 @@ enforcement point. `ToolRunner` resolves a proposed call by name against the
 *whole* registry; `ToolBatchCtx` carries no selector at all. **The permission
 gate and the confinement root are the capability boundary** — a narrow
 `tools` list makes a tool less likely to be *proposed*, never impossible to
-*execute* if a call for it somehow reaches the runner (board item
-`01KZHET5G0DN7QC0YF5G9XSB1N`, ruled and landed; `docs/permissions.md`'s
+*execute* if a call for it somehow reaches the runner (ruled and landed; `docs/permissions.md`'s
 Limits section states the identical rule).
 
 ## Known limits
@@ -353,11 +351,9 @@ Stated next to the guarantees, per this set's house style, not softened:
   catch `foo; git push` — the rule never claimed to parse shell.
   `docs/permissions.md`'s Limits section has the full statement, including
   what keeps the *composition* sound anyway (the shell-metacharacter gate on
-  the allow side, following the fix for board item
-  `01KYTMA306JH81R083Y8K9PWCR`, the v0.5.0 sanitizer-laundering bug class,
+  the allow side, following the fix for, the v0.5.0 sanitizer-laundering bug class,
   done). **Correction to this item's own originating spec:** it named the
-  convergence of conway's three control-character sanitizers (board
-  `01KYTJE5TSJBF01598F3BKJP1X`, "F2/F3") as pending and instructed that it
+  convergence of conway's three control-character sanitizers (board, "F2/F3") as pending and instructed that it
   be labeled designed-not-built here. That is stale. The item is **done** —
   a single `conway_core::text::sanitize_control_chars`
   (`crates/conway-core/src/text.rs`) now backs both the `rendered` seam
@@ -368,7 +364,7 @@ Stated next to the guarantees, per this set's house style, not softened:
 - **The trust-digest check is load-time, not per-invocation.** It runs when
   a session starts and again, for one file, on `/trust permissions` — never
   on a timer, never re-verified before an individual tool call. For a
-  *permission file*, `.design/d4-trust-model.md`'s TOCTOU section calls this
+  *permission file*, the trust-model design's TOCTOU section calls this
   gap benign: rules are parsed and installed once at load, there is no
   reload path, and a file edited mid-session cannot install new rules into
   the running session — only the next session start is affected. For a
@@ -387,7 +383,7 @@ Stated next to the guarantees, per this set's house style, not softened:
   tree — a shim script that `import`s the actual payload from a sibling
   module — defeats a digest scoped to the entrypoint alone, regardless of
   when the digest is computed. This is a limit on the *design* for the
-  not-yet-built `plugin` trust kind (`.design/d4-trust-model.md` §12, open
+  not-yet-built `plugin` trust kind (the trust-model design, open
   question 6); today's `TrustStore` digests a `permissions.json`'s own
   bytes directly, which has no adjacent-tree indirection to exploit, so this
   limit does not yet apply to anything shipped — it is recorded here so it

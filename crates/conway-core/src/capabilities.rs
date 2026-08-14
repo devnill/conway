@@ -79,16 +79,16 @@ pub enum CacheMode {
     ImplicitPrefix {
         min_prefix_tokens: u32,
     },
-    /// llama.cpp native slot save/restore (post-MVP adapter).
+    /// Llama.cpp native slot save/restore (post-MVP adapter).
     SlotKv,
     None,
 }
 
 /// A cache breakpoint's time-to-live.
 ///
-/// Defined here (not in `segment.rs`) because WI-004 depends only on WI-001
-/// and needs this type before WI-003's `segment.rs` exists.
-/// WI-003 MUST re-export this type from `segment.rs` rather than redefining
+/// Defined here (not in `segment.rs`) because an earlier item depends only on
+/// and needs this type before an earlier item's `segment.rs` exists.
+/// an earlier item MUST re-export this type from `segment.rs` rather than redefining
 /// it.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -129,8 +129,7 @@ fn default_headroom_tokens() -> u32 {
 /// A declarative, config-time-resolved reservation of output/reasoning
 /// tokens: a global default with per-role overrides.
 ///
-/// Moved here from `conway-routing`'s `config.rs` (board item
-/// 01KZFC0JDMC2Y631FFCXWR37CP): enumerating every read of
+/// Moved here from `conway-routing`'s `config.rs` -- enumerating every read of
 /// [`HeadroomPolicy::resolve`] and every construction site found it is not
 /// a total, drop-in replacement for [`RoutingConfig::headroom_for`] --
 /// `conway-routing`'s `DeclarativeRouter::new` takes a `HeadroomPolicy` as a
@@ -392,7 +391,7 @@ mod tests {
 
     // -----------------------------------------------------------------
     // HeadroomPolicy (moved here from conway-routing's config.rs, board
-    // item 01KZFC0JDMC2Y631FFCXWR37CP)
+    // item)
     // -----------------------------------------------------------------
 
     #[test]

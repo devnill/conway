@@ -1,4 +1,4 @@
-//! Board item 01KZHEZF8XCD0TMDYZQP06J2KH's parity proof, mirroring
+//!'s parity proof, mirroring
 //! `plugin_builtin_parity.rs`'s mechanism for `conway::plugin`: a small but
 //! genuinely complete `Backend` implementation, written using only `use
 //! conway::backend::...`/`use conway::...`, that exercises every name
@@ -23,7 +23,7 @@
 //! in-workspace precedent for the same idea).
 //!
 //! `admit` is overridden (not left at the trait's default) and calls
-//! `check_admission` for its arithmetic (P-14) — the property the item's
+//! `check_admission` for its arithmetic () — the property the item's
 //! own brief calls out as non-optional: an author who cannot name
 //! `check_admission` cannot honour `Backend::admit`'s contract.
 //!
@@ -34,7 +34,7 @@
 //! `conway::backend` — see that module's own doc, "Deliberately NOT here",
 //! for why they are not duplicated a third time.
 //!
-//! **Board item 01KZHF0RBKJZZC68F7GPFB347Q extends this same file** (rather
+//! ** extends this same file** (rather
 //! than adding a second parity file) with `StubBackendFactory`: a
 //! `BackendFactory` implementation, written using the same "only
 //! `conway::`-rooted imports" discipline, that reads every field
@@ -236,7 +236,7 @@ impl Backend for StubBackend {
 
     /// Overridden, not left at the trait's default: every override MUST
     /// call [`check_admission`] for the fits/shortfall arithmetic rather
-    /// than restating it (P-14) — this is that call.
+    /// than restating it () — this is that call.
     fn admit(
         &self,
         req: &GenerateRequest,
@@ -434,7 +434,7 @@ async fn probe_reports_ok_with_no_network_access() {
 }
 
 // ---------------------------------------------------------------------------
-// `BackendFactory` parity (board item 01KZHF0RBKJZZC68F7GPFB347Q)
+// `BackendFactory` parity
 // ---------------------------------------------------------------------------
 
 /// A `BackendFactory` whose `build` reads every `BackendBuildContext` field
@@ -459,7 +459,7 @@ impl BackendFactory for StubBackendFactory {
             api_key,
             dialect,
             models,
-            // Board item 01KZHF270T3W8GZ7NM6DSNQ4MM: not read by this stub
+            // not read by this stub
             // (no "dialect"/profile concept of its own to resolve a file
             // list against -- the same reason `dialect` itself is only
             // plumbed through for observation below, never interpreted) --
@@ -467,7 +467,7 @@ impl BackendFactory for StubBackendFactory {
             // cannot name keeps failing to compile (this destructure's own
             // doc, above).
             profile_file_paths: _profile_file_paths,
-            // Board item 01KZMM8ABQJQGHTDTP5S29P88C: this stub has no
+            // this stub has no
             // custom-key concept of its own -- `crates/conway-thirdparty-
             // backend` is the crate that proves `extra` reaches a factory
             // and changes behavior, not this one (a facade-only manifest

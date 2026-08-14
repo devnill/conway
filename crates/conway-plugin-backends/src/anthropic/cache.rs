@@ -1,5 +1,5 @@
 //! `CacheMode::ExplicitBreakpoints` cache-hint → `cache_control` mapping
-//! (architecture §"Module: conway-backends", WI-021).
+//! (architecture §"Module: conway-backends").
 //!
 //! [`apply_cache_hints`] is the ONLY place in this crate that writes
 //! `cache_control`. It is a strictly additive post-pass over the body
@@ -173,7 +173,7 @@ mod tests {
         assert!(body["system"][0].get("cache_control").is_none());
     }
 
-    /// Board item 01KYTMJA0JHT5SAPYDGV251V17: Anthropic's documented anchor
+    /// Anthropic's documented anchor
     /// for caching tool definitions is `cache_control` on the LAST entry of
     /// `body["tools"]` -- `BreakpointTarget::Tools` must land there, never
     /// in `body["system"]` (there is nothing to attach to there since the

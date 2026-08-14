@@ -1,4 +1,4 @@
-//! Regression test for board item 01KYTMA306JH81R083Y8K9PWCR ("deny rules
+//! Regression test for ("deny rules
 //! are evadable with one leading tab -- sanitizer laundering").
 //!
 //! Mirrors `permission_pattern_seam.rs`/`root_containment_seam.rs` for the
@@ -158,7 +158,7 @@ fn build_conway(backend: Arc<dyn Backend>, gate: Arc<dyn PermissionGate>) -> Con
         .with_session_store(store)
         .with_permission_gate(gate)
         .with_router(fake_router())
-        // Board item (bash ships on by default and cannot be declined):
+        // (bash ships on by default and cannot be declined):
         // this file drives the REAL `bash` tool end to end, so it must now
         // opt in explicitly -- the facade's own default excludes it.
         .with_builtin_plugins(PluginSelection::All)

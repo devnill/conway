@@ -1,6 +1,6 @@
 # Liveness tests: the convention this crate's `*_seam.rs` files follow
 
-Board item `01KYTXVX3SK7DR4X6ZRP8JZ88R` (Guard 2/2) audited liveness-test
+Board item (Guard 2/2) audited liveness-test
 coverage for conway's security- and economics-bearing mechanisms and found
 the gaps this file exists to prevent from recurring. This is the convention,
 written down where a contributor adding or reviewing a test for one of those
@@ -122,7 +122,7 @@ all.
 which seam it drives and why a unit test on the mechanism alone would have
 missed the bug it regression-tests.
 
-`context_admission_seam.rs` (board item `01KYXNB5TBJM2G8ZTJF85K1N09`) is the
+`context_admission_seam.rs` is the
 "two components, each tested, the connection isn't" failure shape applied
 to context admission: a real `ContextBuilder`'s `est_tokens`, through a real
 `DeclarativeRouter` compiled from real config via `ConwayBuilder::build`
@@ -132,7 +132,7 @@ to context admission: a real `ContextBuilder`'s `est_tokens`, through a real
 not run by hand) widens the model's window on an otherwise identical
 fixture and asserts the flip: the backend IS called, exactly once.
 
-`context_probe_overlay_seam.rs` (board item `01KYXNBKWK2DZ7JE3VRKC5FRJB`) is
+`context_probe_overlay_seam.rs` is
 the reachable divergence T-1's backstop actually exists to catch: not the
 router-reads-config-vs-`AttemptEngine`-reads-live premise the item was
 originally filed with (that one is architecturally precluded by
@@ -153,4 +153,4 @@ only `models.json`'s override to match the probed value and asserts the
 flip: the backend IS called, exactly once. Break-the-guard (T-1's
 `caps.max_context_tokens >= required` check stubbed to always admit)
 confirmed the backend is then actually invoked with the full oversized
-request — the literal P-9 violation — before the stub was reverted.
+request — the literal violation — before the stub was reverted.

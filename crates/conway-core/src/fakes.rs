@@ -12,7 +12,7 @@
 //! does. The gap is not only tidiness: because `conway`'s facade enables
 //! `fakes` on `conway-core` under `[dev-dependencies]` only, a third party
 //! depending on `conway` cannot reach any of these at all, so they serve
-//! this workspace and nobody else. Board item 01KZVYWNA24EYMPVW3NPGBW51M
+//! this workspace and nobody else.
 //! ("Extract conway-testkit", Stage 1b) moves them to a crate of their own
 //! and makes them reachable, and **must delete this label when it lands.**
 //!
@@ -860,7 +860,7 @@ impl FakeSubagentHost {
 
 #[async_trait]
 impl SubagentHost for FakeSubagentHost {
-    // Board item 01KYTP0PGKJ4VCJP5TD39A1WHF added a `caller` parameter to
+    // added a `caller` parameter to
     // `start`/`ask` (mirroring the trio below); this fake stays a pure
     // recorder/no-op and does not enforce descendancy itself (see this
     // crate's own module doc, item 1) -- `_caller` is accepted (so it
@@ -876,7 +876,7 @@ impl SubagentHost for FakeSubagentHost {
         Ok(child)
     }
 
-    // Board item 01KYT8TS0EBKJHYNJRF6S88NRH added a `caller` parameter to
+    // added a `caller` parameter to
     // this trio on the trait; this fake stays a pure recorder/no-op and
     // does not enforce descendancy itself (see this crate's own module
     // doc, item 1: it is explicitly a lightweight "no fork/spawn logic"
@@ -903,7 +903,7 @@ impl SubagentHost for FakeSubagentHost {
         }))
     }
 
-    // Board item 01KZDC2222ARKMZKN8ZE4BYHD6 added `mode` to `cancel`; this
+    // added `mode` to `cancel`; this
     // fake stays a pure recorder/no-op (module doc, item 1) and does not
     // itself distinguish the two modes -- `mode` is accepted (so it
     // type-checks against the real trait) and otherwise ignored, exactly as

@@ -1,4 +1,4 @@
-//! WI-097: round-trip, five-source precedence, env-var mapping, discovery,
+//! Round-trip, five-source precedence, env-var mapping, discovery,
 //! and fail-loud schema validation (unknown keys, unknown role alias).
 
 #[path = "support/mod.rs"]
@@ -88,7 +88,7 @@ fn conway_config_round_trips_the_full_documented_schema() {
 /// that have a documented path (see the module-level disclosure below for
 /// why CLI is excluded for that one key).
 ///
-/// Reconciliation disclosed in the WI-097 Self-Check: `CliOverrides`' field
+/// Reconciliation disclosed in the an earlier item Self-Check: `CliOverrides`' field
 /// list (fixed by the amendment's implementation notes) has no per-backend
 /// override, so there is no CLI path to `backends.<id>.base_url`. That key
 /// is therefore proven across default/XDG/project/env only.
@@ -337,7 +337,7 @@ fn typo_d_health_key_is_rejected_by_deny_unknown_fields() {
     );
 }
 
-/// **Breaking-change coverage (board item 01KZ802GSF692EKYKQ2TTVCJB8, "retire
+/// **Breaking-change coverage (, "retire
 /// the health prober"): a `settings.json` naming a removed `[health].probe_*`
 /// key fails loudly, naming the key, rather than loading silently.**
 /// `probe_enabled`/`probe_interval_secs`/`probe_timeout_secs`/

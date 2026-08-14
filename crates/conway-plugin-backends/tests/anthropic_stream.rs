@@ -1,4 +1,4 @@
-//! Wiremock integration tests for `AnthropicBackend::stream` (WI-021).
+//! Wiremock integration tests for `AnthropicBackend::stream`.
 //! Non-streaming `generate` tests live in `tests/anthropic_generate.rs`.
 
 use std::collections::BTreeMap;
@@ -263,7 +263,7 @@ async fn thinking_delta_events_emit_thinking_deltas_and_a_thinking_content_block
                 if text == "Let me think about it."
                     && signature.as_deref() == Some("sig-abc123")
         )),
-        "expected a signed Thinking block in Done.content (cycle-1 review M1): {:?}",
+        "expected a signed Thinking block in Done.content: {:?}",
         response.content
     );
     assert!(

@@ -4,7 +4,7 @@
 WHY THIS EXISTS. The tree cites board items by ULID in ~980 places. A citation
 that names a *closed* item in a pending-work sense is a dangling promise: a
 reader who follows "tracked under 01K..." finds finished work rather than the
-open question the sentence implied. Board item 01KZVYPE1TK3THV2M3GEBMCYPP found
+open question the sentence implied. Board item found
 that class by accident three times before this check existed.
 
 WHY IT IS NOT A CI GATE, stated plainly because a check whose limits are
@@ -30,23 +30,21 @@ be switched off within a week, so the pending-sense cue must sit next to the
 citation and govern it, not merely appear in the same paragraph.
 
 TWO ID NAMESPACES. Work items and record entries (decisions among them) are
-separate stores sharing one id shape. docs/plugins/hooks.md cites
-01KZHEWXDZWPWMEAQ01XY2RDCB and 01KYXS3PTYVATWR58JR95AZJYN as *decisions*; both
+separate stores sharing one id shape. docs/plugins/hooks.md cites and as *decisions*; both
 resolve in the record store and return nothing from the work board. A resolver
 that checked only the board would call both dangling and be wrong.
 
 A SECOND, UNRELATED CLASS THIS ALSO CHECKS: steering-shorthand leaking onto a
-user-facing page (board item 01KZWV0BG353J7SVZX5YV8N459, added by
-01KZY8TEE2FDWQMHEKJDDC3SG9). `GP-03`, `P-2`, `C-04` and similar are internal
+user-facing page (added by). `GP-03`, `P-2`, `C-04` and similar are internal
 governance ids from `.ideate/steering/`, a directory `.gitignore` excludes on
 purpose (the same operator direction that declined vendoring the board).
 `docs/plugins/authoring.md` is read by a third-party plugin author who will
 never have that directory; a bare `GP-03` resolves for nobody but a
 maintainer. This check runs unconditionally (no store needed, unlike the ULID
-check above) over `docs/` plus the five root pages `01KZWV0BG353J7SVZX5YV8N459`
+check above) over `docs/` plus the five root pages
 measured (`README.md`, `ARCHITECTURE.md`, `PHILOSOPHY.md`, `CONTRIBUTING.md`,
 `CHANGELOG.md`) and fails on any match. It does NOT cover `crates/*/src/`
-(that surface's own regression guard is board item `01KZVYKS7WPSZXTGN3XAMM0PC7`,
+(that surface's own regression guard is,
 "S0c" -- deliberately kept a separate item and a separate invariant, not
 widened into this one), and it does NOT cover the `T-`/`V-`/`F-`/`R-` id
 families `docs/plugins/hooks.md` still quotes (e.g. `F12`, `T7`) -- those are
@@ -68,7 +66,7 @@ the defect one level up:
     neither regex anticipates is invisible to this check even naming a
     `done` item in a clearly pending sense.
   * **`crates/*/src/` is not rescanned for steering shorthand.** That surface
-    has its own regression guard, board item `01KZVYKS7WPSZXTGN3XAMM0PC7`
+    has its own regression guard
     ("S0c") -- deliberately a separate invariant, not widened into this one.
   * **`T-`/`V-`/`F-`/`R-` id families are not steering shorthand here.**
     `docs/plugins/hooks.md` still quotes some (`F12`, `T7`) as historical
@@ -98,7 +96,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 BOARD_DB = ROOT / ".ideate-work" / "board.db"
 RECORD_DIR = ROOT / ".ideate" / "record"
 
-SCAN_DIRS = ["crates", "docs", ".design"]
+SCAN_DIRS = ["crates", "docs"]
 SCAN_SUFFIXES = {".rs", ".md", ".toml"}
 
 ULID = re.compile(r"\b01[0-9A-HJKMNP-TV-Z]{24}\b")
@@ -120,14 +118,12 @@ PENDING_BEFORE = re.compile(
     r"|awaiting|owned\s+by\s+the\s+open"
     r"|will\s+be\s+(?:done|built|wired|closed|added)\s+(?:under|in|by))"
     r"\W{0,24}" + _ID,
-    re.IGNORECASE,
-)
+    re.IGNORECASE)
 PENDING_AFTER = re.compile(
     _ID + r'[`")\]]*\s*(?:\([^)]{0,60}\)\s*)?'
     r"(?:tracks\b|is\s+tracking\b|remains?\s+open\b|is\s+still\s+open\b"
     r"|will\s+(?:wire|build|close|land|add|resolve|fix|track)\b)",
-    re.IGNORECASE,
-)
+    re.IGNORECASE)
 
 # ULIDs that appear in a comment or in prose but are NOT board citations. Each
 # needs a reason; an unexplained entry here would hide a real dangling id.
@@ -142,7 +138,7 @@ ALLOWLIST = {
 # F-/R- ids, crates/*/src/).
 STEERING_SHORTHAND = re.compile(r"\b(GP-[0-9]+|P-[0-9]+|C-[0-9]+)\b")
 
-# The exact surface board item 01KZWV0BG353J7SVZX5YV8N459 measured: docs/ plus
+# The exact surface measured: docs/ plus
 # the five root pages a reader outside this repo actually lands on.
 USER_FACING_ROOT_MD = ("README.md", "ARCHITECTURE.md", "PHILOSOPHY.md", "CONTRIBUTING.md", "CHANGELOG.md")
 
@@ -215,7 +211,7 @@ def scan():
         print(
             f"\n{len(shorthand)} steering-shorthand citation(s) found -- unresolvable "
             f"for a reader without .ideate/steering/. Reference the concept instead "
-            f"(see board item 01KZWV0BG353J7SVZX5YV8N459's translation table)."
+            f"(see's translation table)."
         )
 
     stores = load_stores()
@@ -243,7 +239,7 @@ def scan():
         A pending-sense citation naming a `record` id is a defect in its own
         right: a decision is a settled ruling, so nothing can be "tracked
         under" one. That case is how `LogRecord::ContextMask`'s doc came to
-        say "Tracked by board item 01KYTQWD2SBW33YPNGY0YBN9WY" while that id
+        say "Tracked by" while that id
         was a decision that had since been overtaken.
         """
         if ident in board:

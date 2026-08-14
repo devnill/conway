@@ -1,11 +1,11 @@
-//! Board item 01KZVTTP492R3BDY33FAGYWDNW: proves `conway-cli`'s `build_conway`
+//! Proves `conway-cli`'s `build_conway`
 //! actually installs a `HookRunner` -- not merely that the facade method
 //! exists, but that a `pre_tool_use` rule written in a real `settings.json`,
 //! driven through the real compiled `conway` binary's own build path,
-//! denies a tool call end to end (P-15: an observable outcome, not an
+//! denies a tool call end to end (: an observable outcome, not an
 //! intermediate).
 //!
-//! Reuses the WI-113 harness (`tests/common/mod.rs`, `common::{run_conway,
+//! Reuses the harness (`tests/common/mod.rs`, `common::{run_conway,
 //! write_fixture}`) unchanged, the same way `config_warnings.rs` and
 //! `subcommands.rs` do: `write_fixture` renders the shared template, then
 //! this file patches the parsed JSON in place to add a `[hooks]` section
@@ -21,7 +21,7 @@
 //!
 //! No in-process `ConwayBuilder::from_config`/`ConwayBuilder::discover` call
 //! anywhere in this file -- both read the operator's real
-//! `$HOME`/`$XDG_CONFIG_HOME` (board item 01KZVQCQWFMH90APGFTXBAMEVC's
+//! `$HOME`/`$XDG_CONFIG_HOME` ('s
 //! `crates/conway/tests/` fix does not reach this crate's own test suite).
 //! `common::command`/`common::run_conway` already isolate `XDG_CONFIG_HOME`
 //! to the fixture's own temp dir for the SUBPROCESS this file drives; this

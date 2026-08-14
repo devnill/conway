@@ -8,11 +8,11 @@
 //! for deciding *what* to persist (that's `conway-runtime`), context
 //! assembly, or in-memory agent state.
 //!
-//! This crate is a skeleton as of WI-046: [`meta`] and [`codec`] are fully
+//! This crate is a skeleton as of [`meta`] and [`codec`] are fully
 //! implemented (session metadata re-exports and the header/record line
 //! codec); [`store`], [`fork`], [`resolver`], [`index`], and [`provenance`]
-//! are stubs with signatures fixed here, filled in by WI-047 through
-//! WI-051 respectively.
+//! are stubs with signatures fixed here, filled in by an earlier item through
+//! respectively.
 
 pub mod codec;
 pub mod fork;

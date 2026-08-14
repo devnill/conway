@@ -22,7 +22,7 @@
 //! already earns the `/ask` modal / intent-confirm card / permission
 //! prompt's own keys a "modal keys" group below.
 //!
-//! **Board item 01KZYBFTK4QPB45AJT9M57P60W (plugin-declared TUI commands)
+//! ** (plugin-declared TUI commands)
 //! does not change this.** A plugin-declared command is a genuine slash
 //! *command*, exactly like `/steer` or `/fork` -- it belongs in
 //! `view/palette.rs` (which now merges the static built-in table with
@@ -52,7 +52,7 @@
 //!
 //! **Mouse wheel is deliberately absent from the keybinding rows below.**
 //! Conway never calls `EnableMouseCapture` and has no `MouseEventKind`
-//! handler anywhere in this crate (decision 01KYKDKYJEATSYXM7YS1C17HHA) --
+//! handler anywhere in this crate --
 //! the wheel scrolling you see in your terminal is the emulator's own
 //! scrollback, not a Conway binding. Capturing the mouse would disable the
 //! terminal's native click-drag text selection, the very mechanism the
@@ -326,7 +326,7 @@ mod tests {
     /// No binding row may claim a MOUSE KEY, because Conway captures no
     /// mouse events -- there is no such binding to document
     /// (`EnableMouseCapture` stays off to preserve click-drag selection;
-    /// decision 01KYKDKYJEATSYXM7YS1C17HHA).
+    ///).
     ///
     /// V3 narrowed this guard. It used to forbid the word "mouse" in a
     /// row's ACTION text too, on the reasoning that Conway never saw the

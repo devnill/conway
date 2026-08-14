@@ -1,4 +1,4 @@
-//! Board item 01KZFC1KNGQ51TZ0BG7P7RAY9H: `conway routes explain` must stay
+//! `conway routes explain` must stay
 //! honest when the caller supplied its own `Router`
 //! (`conway::ConwayBuilder::with_router`) rather than letting `Conway`
 //! compile its own `DeclarativeRouter`. Before this item, that path made
@@ -114,7 +114,7 @@ fn build_conway(role: &str) -> Conway {
         .with_session_store(Arc::new(FakeStore::new()))
         .with_permission_gate(gate)
         .with_router(router)
-        // Board item 01KZHF270T3W8GZ7NM6DSNQ4MM: `conway` no longer
+        // `conway` no longer
         // compiles the `"fake"` entry's default `kind = "anthropic"` in
         // (overwritten by the injected `FakeBackend` above, but still
         // resolved by `build()` before that overwrite happens).
@@ -213,7 +213,7 @@ async fn injected_router_explain_stays_honest_for_configured_and_unknown_roles()
     // honestly reports zero entries for it too (there is nothing to
     // iterate), but it is NOT unknown -- `conway.config().roles` says so
     // directly. `report.entries.is_empty()` cannot distinguish this from
-    // the unconfigured case above; this is the scenario P-15's
+    // the unconfigured case above; this is the scenario
     // break-the-guard check restores and re-fails against (see this item's
     // own report).
     let (result, stderr) = capture_stderr(run(&explain_args("empty-chain"), &conway)).await;

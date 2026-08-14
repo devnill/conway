@@ -5,7 +5,7 @@ name: CI
 # its name suggested: because it never COMPILED tests, it could not catch a
 # test that fails to build under a feature combination -- and two such tests
 # (`conway_ask.rs` ungated, and a `plugin_surface.rs` test gated on the wrong
-# feature) sat broken and invisible until board item 01KZ7KAEJ0EZG4P8BJAQC95Z6C
+# feature) sat broken and invisible until
 # retired the backend feature flags and exposed them.
 
 on:
@@ -72,9 +72,7 @@ jobs:
   # The falsifiable claims `scripts/board-claims.md` declares about the tree,
   # each owned by an open board item -- the completeness contract that makes
   # `PHILOSOPHY.md`'s present-tense exemption safe (`CONTRIBUTING.md` §2), and
-  # nothing enforced it until board item 01KZVYR259XN9JC12A6X69CGGD. In August
-  # 2026 the ledger this replaced (`.design/philosophy-debt.md`, retired
-  # 2026-08-13 by 01KZYAHSXDXFDY9FX5MXPRZ4M1/01KZY8TEE2FDWQMHEKJDDC3SG9) went
+  # nothing enforced it for a long time. The prose ledger this replaced went
   # stale on its highest-traffic entry while `docs/plugins/hooks.md`, which
   # IS gated, stayed exact. The difference was enforcement, not care.
   #

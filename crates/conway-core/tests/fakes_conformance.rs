@@ -1,5 +1,5 @@
 #![cfg(feature = "fakes")]
-//! Conformance tests for the `feature = "fakes"` test doubles (WI-008).
+//! Conformance tests for the `feature = "fakes"` test doubles.
 //!
 //! These are integration tests: they exercise the fakes exactly as a
 //! downstream crate (`conway-runtime`) would — through the public port
@@ -431,7 +431,7 @@ fn collecting_event_sink_preserves_emission_order() {
 }
 
 // ---------------------------------------------------------------------
-// Cache-hint invariant (GP-06)
+// Cache-hint invariant ()
 // ---------------------------------------------------------------------
 
 #[test]
@@ -486,7 +486,7 @@ fn strip_cache_hints_leaves_content_and_provenance_byte_identical() {
 }
 
 // ---------------------------------------------------------------------
-// Headroom gate (WI-008 amendment)
+// Headroom gate (amendment)
 // ---------------------------------------------------------------------
 
 #[test]

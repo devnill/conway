@@ -4,12 +4,12 @@
 //! `conway-runtime`, `conway-session`, and `conway-tools` implementations
 //! behind one stable public API (`ConwayBuilder` -> `Conway` ->
 //! `SessionHandle`). This crate is the primary integration surface for
-//! embedders (e.g. a Tauri IDE) and for the `conway` CLI. Board item
-//! 01KZFC43J1J06BM4CCWKCKHSNV: this crate no longer links a routing engine
+//! embedders (e.g. a Tauri IDE) and for the `conway` CLI.
+//!: this crate no longer links a routing engine
 //! at all -- `conway-plugin-routing` is an installable first-party plugin,
 //! not one of the implementations assembled here; absent it, `build()`
-//! compiles `conway_core::routing::MinimalRouter` instead. Board item
-//! 01KZHF270T3W8GZ7NM6DSNQ4MM: the same is now true of both provider-adapter
+//! compiles `conway_core::routing::MinimalRouter` instead.
+//!: the same is now true of both provider-adapter
 //! dialects -- `conway-plugin-backends` is a first-party plugin too, and no
 //! production resolution path in this crate names either `"anthropic"` or
 //! `"openai-compat"`: `resolve_backend_factory` matches a
@@ -17,7 +17,7 @@
 //! `BackendFactory`s a caller registered, and absent one, `build()` fails
 //! naming every kind it does recognise.
 //!
-//! This item (WI-096) establishes the crate skeleton: dependency wiring,
+//! This item establishes the crate skeleton: dependency wiring,
 //! the cargo feature flags below, the crate-level [`ConwayError`]/[`Result`],
 //! and the curated re-export list from `conway-core`. Every other module
 //! named in the facade module's implementation notes (`config`, `agents`,
@@ -40,11 +40,10 @@
 //! runtime_reexport` guard in `crates/conway/tests/architecture_invariants.
 //! rs`, so a second fails CI.
 //!
-//! Board item 01KZVYZM7BZRQ54RRB8P814KV9 (Stage 2b) closes it, together with
-//! 01KZWRZ4JBAVCRCZ99BFZFF01K, which owns the consumer half — deleting the
+//! (Stage 2b) closes it, together with
+//!, which owns the consumer half — deleting the
 //! re-export alone breaks the build, so a replacement type carrying the
-//! `AgentId` has to land in the same change (decision
-//! 01KZWRZRS9NT929S1WFYWEPMST). **Those items must delete this label.**
+//! `AgentId` has to land in the same change. **Those items must delete this label.**
 
 pub mod agents;
 mod builder;
@@ -91,10 +90,10 @@ pub use conway_core::permission_pattern::{
 /// `conway::PermissionScope` is not a substitute -- it is a bare
 /// `Session`/`Agent`/`AgentSubtree` enum, while this type is `Session |
 /// Agent(AgentId) | Subtree(AgentId)`, and the review row exists to tell an
-/// operator WHICH agent a per-agent grant covers. Board items
-/// 01KZVYZM7BZRQ54RRB8P814KV9 (Stage 2b) and 01KZWRZ4JBAVCRCZ99BFZFF01K
+/// operator WHICH agent a per-agent grant covers.
+/// (Stage 2b) and
 /// (its consumer half) replace it with a type this facade owns and **must
-/// delete this label**; decision 01KZWRZRS9NT929S1WFYWEPMST records the
+/// delete this label**; records the
 /// evidence and the condition that would reopen it.
 pub use conway_runtime::permission::GrantScope;
 /// V2b: `conway-cli` reaches `parse_rules` through here (it cannot depend
@@ -112,7 +111,7 @@ pub use conway_core::ports::{
     Tool,
 };
 
-/// Board item 01KZHF0RBKJZZC68F7GPFB347Q: the shared error type
+/// The shared error type
 /// [`RouterFactory::build`] and [`BackendFactory::build`] both return.
 /// Re-exported under this name, not `ConwayError` (already this crate's own
 /// root error type, [`crate::error::ConwayError`], returned by every OTHER
@@ -133,7 +132,7 @@ pub use conway_core::error::ConwayError as CoreConwayError;
 /// The extension surface -- there is exactly one extension mechanism, and
 /// this is it: every type a crate depending only on
 /// `conway` needs to implement [`Plugin`], [`Tool`], [`ContextHook`], and
-/// (board item 01KZS00JP5QNBJSSHNFP9C47GM) [`plugin::HookRunner`] against the
+/// [`plugin::HookRunner`] against the
 /// public API.
 ///
 /// WHY A MODULE, NOT FLAT ROOT RE-EXPORTS (F8 decide-and-state): the root
@@ -153,7 +152,7 @@ pub use conway_core::error::ConwayError as CoreConwayError;
 /// one type would remove functionality. Exporting the trait completes the
 /// port list instead.
 ///
-/// RESOLVED (board item 01KYYB2T8AHB4SJFHNG4ZETYN8): this surface
+/// RESOLVED: this surface
 /// used to name a gap here — the report tool's `Fact`, the cd tool's
 /// `CwdError`, and (once `SubagentHandle` landed, C1) `SubagentHandle`'s own
 /// `SubagentError` were constructible/matchable only inside this crate's own
@@ -186,8 +185,7 @@ pub use conway_core::error::ConwayError as CoreConwayError;
 ///   — see "Deliberately NOT here" below; unchanged by this resolution.
 ///
 /// This is a *curated* re-export, deliberately narrower than
-/// `conway_core::ports` (board item F8, `.design/extension-architecture.md`
-/// §12 phase 0): the traits above were always re-exported at the crate
+/// `conway_core::ports` (F8, the extension design phase 0): the traits above were always re-exported at the crate
 /// root, but their method signatures named types this facade never
 /// re-exported, so an external crate could name `Tool` and could not write
 /// `fn invoke(&self, call: ToolCall, ctx: ToolCtx) -> ...`. Every name here
@@ -208,12 +206,11 @@ pub use conway_core::error::ConwayError as CoreConwayError;
 ///   `pub fn with_*` in `crates/conway/src/builder.rs` accepts either — which
 ///   is the actual, IN-PROCESS reason they stay absent here. (§13.5 is a
 ///   non-goals list for the OUT-OF-PROCESS subprocess transport and was
-///   never authority for this in-process question — `.design/
-///   extension-architecture.md` §13.5's own 2026-08-09 dated status note,
-///   board items 01KZHF46C80HFAQN2CJEXXVYY5 and 01KZHMNABS6HC0KT1D1CKM9W8H.)
+///   never authority for this in-process question — the extension design's
+///   own 2026-08-09 dated status note said so.)
 ///   Constructing a `ToolCtx` by hand (what those names are needed for) is
 ///   test-fixture work, not the authoring surface. NOTE, corrected
-///   2026-08-10 (board item 01KZJ5S3ZC8SPWTX94C4HTEC2R): this paragraph
+///   2026-08-10: this paragraph
 ///   used to say that work was "served by `conway-core`'s `fakes`
 ///   feature". That is true INSIDE this workspace and false for a third
 ///   party — `crates/conway/Cargo.toml` takes `conway-core` with
@@ -222,25 +219,23 @@ pub use conway_core::error::ConwayError as CoreConwayError;
 ///   `CollectingEventSink` at all. `ToolCtx` therefore carries the same
 ///   construction tax `ContextHookCtx` carried until
 ///   `ArtifactWriteHandle::noop` closed it, and no equivalent exists yet
-///   for `SubagentHandle`/`EventSinkHandle` (board item
-///   01KZQ3AZWG3NNJNZEJFX21MDJT). Re-checked for `SubagentHandle`
-///   specifically when it landed (C1, board item
-///   01KZ59SXNQ3BRXP49V4JW10N72): no concrete call site names it either.
+///   for `SubagentHandle`/`EventSinkHandle`. Re-checked for `SubagentHandle`
+///   specifically when it landed: no concrete call site names it either.
 /// - The `SessionStore`/`HealthRegistry` implementation surfaces.
 ///   `SessionStore` because `SeqRange`/`StoreError` — needed to spell
 ///   `SessionStore::append`'s own signature — are not re-exported anywhere;
 ///   `HealthRegistry` because, like `SubagentHost`/`EventSink` above, no
 ///   `ConwayBuilder::with_*` method injects a replacement. Both checked by
 ///   compiling a facade-only scratch crate against each claim, not by
-///   reading (`.design/router-installation-q2-compile-evidence.md`).
-///   `Backend` used to be named alongside these here; board item
-///   01KZHEZF8XCD0TMDYZQP06J2KH added `pub mod backend` (below, a second
+///   reading.
+///   `Backend` used to be named alongside these here; a later change added
+///   `pub mod backend` (below, a second
 ///   curated module beside this one — see its own doc for why it is
 ///   separate) specifically to make third-party `Backend` implementations
 ///   possible, so `Backend` is no longer part of this closed list.
 ///
-///   `Router` stays on this list for a narrower reason than it used to
-///   (board item 01KZHMNABS6HC0KT1D1CKM9W8H): a wholly new `impl Router`
+///   `Router` stays on this list for a narrower reason than it used to: a
+///   wholly new `impl Router`
 ///   still needs `RouteRequest`/`Route`/`RoutingError`, none of which this
 ///   facade re-exports, so *authoring* a new routing algorithm is unchanged
 ///   and this curated module still names none of those three types. But
@@ -250,8 +245,7 @@ pub use conway_core::error::ConwayError as CoreConwayError;
 ///   module does not carry:
 ///   [`RouterFactory`]/[`RouterBuildContext`]/[`RouterBundle`], re-exported
 ///   a few dozen lines above this doc comment, and
-///   `ConwayBuilder::with_router_factory` (board item
-///   01KZFC2MD1FVNA674YJ9A19T8E). See `docs/embedding.md`'s "What's
+///   `ConwayBuilder::with_router_factory`. See `docs/embedding.md`'s "What's
 ///   reachable from the library, and what isn't" table and its "Installing
 ///   a router" section for the full authoring-vs-installing distinction, and
 ///   `crates/conway/tests/router_factory.rs` for the installation path
@@ -271,7 +265,7 @@ pub mod plugin {
     pub use conway_core::error::{
         ArtifactWriteError, CwdError, HookFailure, SubagentError, ToolError,
     };
-    /// Board item 01KZYBFTK4QPB45AJT9M57P60W: the SAME core-vs-plugin
+    /// The SAME core-vs-plugin
     /// namespace rule `conway_core::event_name::validate_event_name`
     /// already enforces for plugin-declared events, reused (not
     /// reinvented) for plugin-declared TUI command names -- see that
@@ -284,7 +278,7 @@ pub mod plugin {
     /// `crates/conway-cli/tests/cli_surface.rs`'s `no_forbidden_deps`
     /// guard).
     pub use conway_core::event_name::validate_command_name;
-    /// Board item 01KZS00JP5QNBJSSHNFP9C47GM: the domain types one
+    /// The domain types one
     /// `HookRunner::run` invocation carries in and out -- `HookInvocation`
     /// is the argument, `HookEvent` is its `event` field, and
     /// `HookAnswer`/`HookPermissionVerdict` together are what a
@@ -292,7 +286,7 @@ pub mod plugin {
     /// own doc for why it has no `Allow` variant).
     pub use conway_core::hook::{HookAnswer, HookEvent, HookInvocation, HookPermissionVerdict};
     pub use conway_core::ids::ToolName;
-    /// Board item 01KZS03BFE720EQZG7Q2768N2H: [`Plugin::events`]'s own
+    /// [`Plugin::events`]'s own
     /// return type -- a plugin author constructs one of these per custom
     /// event it declares, the SAME `name`+`summary` shape [`CommandSpec`]
     /// establishes for commands, plus `carries_tool_name` (whether a
@@ -301,21 +295,22 @@ pub mod plugin {
     pub use conway_core::ports::{
         ArtifactWriteHandle, ArtifactWriter, CancellationToken, Command, CommandCtx,
         CommandOutcome, CommandSpec, ContextHook, ContextHookCtx, ContextPayload, HookRunner,
-        OverflowInfo, PathArgs, Plugin, PluginConfig, PluginManifest, RenderKind, Tool, ToolCtx,
-        ToolOutput,
+        ObservedCall, ObserverAnswer, ObserverCtx, ObserverNote, OverflowInfo, PathArgs, Plugin,
+        PluginConfig, PluginEventHandle, PluginManifest, RegisteredObserver, RenderKind, Tool,
+        ToolCtx, ToolObserver, ToolOutput,
     };
     pub use conway_core::provenance::Provenance;
     pub use conway_core::segment::PromptSegment;
 }
 
-/// The `Backend` authoring surface (board item 01KZHEZF8XCD0TMDYZQP06J2KH):
+/// The `Backend` authoring surface:
 /// every type a crate depending only on `conway` needs to write `impl
 /// conway::Backend for MyBackend`. `Backend`'s trait itself has been
-/// re-exported at this crate's root since WI-096, but nothing its five
+/// re-exported at this crate's root since an earlier item, but nothing its five
 /// methods' signatures name was, so a facade-only crate could name the
 /// trait and could not implement it — full stop, not "mostly" (the
 /// preceding item's own compile evidence,
-/// `.design/backends-as-plugins-q1-compile-evidence.md`: 17 unresolved-name
+/// the compile evidence: 17 unresolved-name
 /// errors against a scratch crate that named every one of the trait's own
 /// types through `conway::` paths). This list was derived the same way —
 /// by compiling, not by reading the trait — and `crates/conway/tests/
@@ -326,7 +321,7 @@ pub mod plugin {
 /// decide-and-state, the same choice `pub mod plugin` states for itself):
 /// `Backend` is not a `Tool`/`Plugin`/`ContextHook`. It is selected by
 /// `backends.<id>.kind` in configuration — one adapter per LLM provider
-/// dialect (`.design/extension-architecture.md` §4.1) — not registered
+/// dialect — not registered
 /// in-process alongside a session's tools, and its authoring surface is
 /// twenty names deep on its own. Folding it into `pub mod plugin` would
 /// bury that module's own stated promise ("the set an in-process
@@ -335,8 +330,8 @@ pub mod plugin {
 /// conway::backend::...` reads as intent the same way `use
 /// conway::plugin::...` already does.
 ///
-/// This module sits inside the shape decision 01KZHRPZ010R37411R3W1XR5TF
-/// settled (board item 01KZHEYPGN7VCDKR7KBGEM9NJN): both shipped adapters
+/// This module sits inside the shape
+/// settled: both shipped adapters
 /// will install by default through a new declarative key (not folded into
 /// `[plugins].install`), the adapter crate is being renamed
 /// `conway-plugin-backends`, and `backends.<id>.kind` is becoming an open
@@ -406,8 +401,7 @@ pub mod plugin {
 ///   use it), so nothing here needs `CacheTtl`. A real Anthropic-shaped
 ///   adapter that does need it lives inside this repository already
 ///   (`conway-plugin-backends`' `AnthropicBackend`), the same asymmetry this
-///   item's own preceding investigation (board item
-///   01KZHEY78NCGYZCPDNFENF96N4) flagged as a decision for a later chain
+///   item's own preceding investigation flagged as a decision for a later chain
 ///   item, not this one.
 /// - `Role`, `Provenance`, `ToolCategory`, `PermissionClass`, `ToolName` —
 ///   needed one level further down, to construct a `PromptSegment`/
@@ -436,7 +430,7 @@ pub mod backend {
 pub use conway_core::provenance::{ContextReport, Provenance};
 pub use conway_core::routing::{AttemptFailure, BreakerKind, BreakerState, RoutingReason};
 
-// WI-116 (CARRIED F-111-1), amended by board item 01KZFC1KNGQ51TZ0BG7P7RAY9H:
+// an earlier item (CARRIED), amended by:
 // `routes explain` needs `Conway::explain_routing`'s return type.
 // `ExplainReport` (and its own public field types -- `ExplainEntry`,
 // `EntryOutcome`, `CapabilitySummary`, `BreakerSnapshot`) used to be defined
@@ -450,7 +444,7 @@ pub use conway_core::routing::{
     BreakerSnapshot, CapabilitySummary, EntryOutcome, ExplainEntry, ExplainReport,
 };
 
-// Board item 01KZFC2MD1FVNA674YJ9A19T8E: `RouterFactory` joins the
+// `RouterFactory` joins the
 // extension surface above, so the field types of what its `build` receives
 // must be nameable by a crate depending only on `conway`. Without these two,
 // a third-party factory could read `ctx.routing.roles` and call
@@ -463,7 +457,7 @@ pub use conway_core::routing::{
 pub use conway_core::capabilities::HeadroomPolicy;
 pub use conway_core::routing::RoutingConfig;
 
-// Board item 01KZHF0RBKJZZC68F7GPFB347Q, same reasoning one line
+//, same reasoning one line
 // up: `BackendFactory` joins the extension surface too, and
 // `BackendBuildContext::models` names `ModelOverrides` in its own field
 // type -- without this re-export, a third-party factory could read

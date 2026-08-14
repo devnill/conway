@@ -1,8 +1,8 @@
-//! Board item 01KZGRXFSY4ZB7NCA9NS2AGFS5: `--model`/`--session`/`--resume`/
+//! `--model`/`--session`/`--resume`/
 //! `--fork-from` were all accepted by the CLI parser and never read by the
 //! interactive TUI's own session construction (`tui::app::App::new` built
 //! its `SessionSpec` from `role`/`keep_alive`/`tools` only) -- a
-//! renderer-only gap (P-8): the identical `--model` flag is genuinely wired
+//! renderer-only gap (): the identical `--model` flag is genuinely wired
 //! in one-shot mode (`oneshot::resolve_session`, covered by
 //! `tests/oneshot.rs`'s `model_flag_pins_and_overrides_role_chain`).
 //!
@@ -11,7 +11,7 @@
 //! function `App::new` calls to build the `SessionSpec` it passes to
 //! `Conway::new_session` -- rather than `oneshot::resolve_session` (which
 //! is private to `oneshot.rs`, and is a different code path besides). Per
-//! P-15, `model_flag_pins_the_session_spec` below was confirmed to fail
+//!, `model_flag_pins_the_session_spec` below was confirmed to fail
 //! before this item's fix: `App::new`'s inline `SessionSpec { .. }`
 //! construction never set `model` at all, so `spec.model` was always
 //! `None` regardless of `--model`.
@@ -70,7 +70,7 @@ fn minimal_cli() -> Cli {
 
 /// `--model backend/model` must reach `SessionSpec.model` -- the exact
 /// field `crates/conway/src/session_handle.rs`'s `SessionSpec` has carried
-/// since WI-128, which `App::new`'s own stale doc comment used to (wrongly)
+/// since an earlier item, which `App::new`'s own stale doc comment used to (wrongly)
 /// claim did not exist.
 #[test]
 fn model_flag_pins_the_session_spec() {

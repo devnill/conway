@@ -1,5 +1,5 @@
 //! `conway_steer`, `conway_await`, `conway_cancel`: the small delegation
-//! control tools. Pure wrappers over `ToolCtx::subagents` (WI-066), sharing
+//! control tools. Pure wrappers over `ToolCtx::subagents`, sharing
 //! helpers with `tools.rs`.
 
 use async_trait::async_trait;
@@ -28,8 +28,7 @@ pub(super) struct AwaitArgs {
     agent_id: String,
 }
 
-/// The model-facing shape of [`CancelMode`] (board item
-/// 01KZDC2222ARKMZKN8ZE4BYHD6): a local, `JsonSchema`-deriving enum the tool
+/// The model-facing shape of [`CancelMode`] -- a local, `JsonSchema`-deriving enum the tool
 /// layer owns, mapped onto the domain type at `invoke` time rather than
 /// deriving `JsonSchema` on `conway_core::agent::CancelMode` itself.
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -98,7 +97,7 @@ impl Tool for SteerTool {
 
     /// `conway_steer` never overrides `render`, so its rendering is always
     /// the trait's own default JSON dump -- never a shell command. Board
-    /// item 01KYT3NSWRHMPEAXVXRJ73KDYR.
+    /// item.
     fn render_kind(&self) -> RenderKind {
         RenderKind::Structured
     }
@@ -144,7 +143,7 @@ impl Tool for AwaitTool {
 
     /// `conway_await` never overrides `render`, so its rendering is always
     /// the trait's own default JSON dump -- never a shell command. Board
-    /// item 01KYT3NSWRHMPEAXVXRJ73KDYR.
+    /// item.
     fn render_kind(&self) -> RenderKind {
         RenderKind::Structured
     }
@@ -186,7 +185,7 @@ impl Tool for CancelTool {
 
     /// `conway_cancel` never overrides `render`, so its rendering is always
     /// the trait's own default JSON dump -- never a shell command. Board
-    /// item 01KYT3NSWRHMPEAXVXRJ73KDYR.
+    /// item.
     fn render_kind(&self) -> RenderKind {
         RenderKind::Structured
     }

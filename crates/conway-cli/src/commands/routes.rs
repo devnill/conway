@@ -1,4 +1,4 @@
-//! `conway routes explain <role>` (WI-116): a pure formatter over
+//! `conway routes explain <role>`: a pure formatter over
 //! `Conway::explain_routing`.
 
 use clap::{Args, Subcommand};
@@ -41,7 +41,7 @@ pub async fn run(args: &RoutesArgs, conway: &Conway) -> conway::Result<ExitCode>
             // empty-chain role is a second, distinct cause) -- inferring
             // "unknown role" from bare emptiness previously made that
             // fallback misreport every correctly-configured role as unknown
-            // (board item 01KZFC1KNGQ51TZ0BG7P7RAY9H).
+            //.
             if !conway.config().roles.contains_key(role.as_str()) {
                 let mut roles: Vec<&String> = conway.config().roles.keys().collect();
                 roles.sort();

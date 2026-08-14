@@ -1,6 +1,5 @@
 //! Validates the core-vs-plugin event name namespace convention decided at
-//! `.design/extension-architecture.md` §16.6 (board item
-//! 01KZRZWXQP9QXP6BYN636Z3DCZ): a core, built-in event name is a bare
+//! the extension design -- a core, built-in event name is a bare
 //! identifier (`pre_tool_use`, `post_tool_use`, ...); a plugin-declared
 //! event name always begins with the declaring plugin's
 //! [`crate::ports::PluginManifest::id`], then a single `.`, then the
@@ -8,7 +7,7 @@
 //! split out of the string by guessing where the id ends, since a plugin id
 //! may itself be chosen freely by whoever wrote the plugin.
 //!
-//! **Both call sites now exist (board item 01KZS03BFE720EQZG7Q2768N2H
+//! **Both call sites now exist (
 //! wired the second one; this doc used to say neither did).**
 //! - the `[hooks]` schema's `HookEntry::event` is the *subscriber* side —
 //!   `crates/conway/src/config/merge.rs`'s own event-shape check calls
@@ -28,7 +27,7 @@
 //!
 //! **§16.6 point 3 (a plugin id containing the separator is excluded
 //! outright) is RECONSIDERED here, disclosed rather than silently
-//! reversed — board item 01KZS03BFE720EQZG7Q2768N2H is the very item that
+//! reversed — is the very item that
 //! section named as the follow-up owed to "first validate a
 //! `PluginManifest` at registration time".** Every real built-in plugin id
 //! in this workspace (`conway.fs`, `conway.shell`, `conway.report`,
@@ -41,8 +40,8 @@
 //! band, never recovered by splitting `name` apart) — see that function's
 //! doc comment for the full argument, not restated twice.
 //!
-//! **A third consumer, same rule, different vocabulary.** Board item
-//! 01KZYBFTK4QPB45AJT9M57P60W (plugin-declared TUI slash commands) needs the
+//! **A third consumer, same rule, different vocabulary.**
+//! (plugin-declared TUI slash commands) needs the
 //! identical namespace shape for a plugin's *command* names — "a plugin
 //! declaring `/help` must not shadow the built-in" is the exact same problem
 //! §16.6 already solved for events, just one surface over. Rather than a
@@ -60,7 +59,7 @@
 //! out).
 
 /// The separator between a declaring plugin's id and its event's (or, since
-/// board item 01KZYBFTK4QPB45AJT9M57P60W, command's) own name. Decided in
+///, command's) own name. Decided in
 /// §16.6 point 1: dot, not colon (already a different wire form,
 /// `PatternRule::parse`'s `tool:prefix`) or slash (reads as a path/URI
 /// hierarchy this design does not intend).
@@ -137,8 +136,7 @@ fn validate_namespaced(
             // see this module's own doc for why splitting is unsafe here.
             //
             // **`id` MAY contain the separator, deliberately -- a reversal
-            // from an earlier draft of this rule (`.design/extension-
-            // architecture.md` §16.6 point 3), recorded here rather than
+            // from an earlier draft of this rule (the extension design point 3), recorded here rather than
             // silently changed.** That draft excluded a separator-bearing
             // `id` outright, reasoning from a SUBSCRIBER-side hazard: a
             // hypothetical parser trying to RECOVER `id` by splitting
@@ -305,7 +303,7 @@ mod tests {
         assert!(validate_event_name("", Some("myplugin")).is_err());
     }
 
-    // ---- validate_command_name (board item 01KZYBFTK4QPB45AJT9M57P60W) ----
+    // ---- validate_command_name ----
     // Same shape rule as `validate_event_name`'s own tests above, restated
     // for the command vocabulary -- proves `validate_namespaced` is
     // genuinely shared, not two implementations that happen to agree today.

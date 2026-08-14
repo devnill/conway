@@ -1,14 +1,14 @@
 # Extending conway: plugins and hooks
 
-`docs/plugins/` is the **authoritative** description of conway's plugin and
-hook architecture — what's built, what's decided but not yet built, and what
-an author or a feature developer can rely on. If a page here and something
-in `.design/` disagree, this page wins.
+`docs/plugins/` is the **authoritative and only** description of conway's
+plugin and hook architecture — what's built, what's decided but not yet
+built, and what an author or a feature developer can rely on. There is no
+second copy of it: this set used to sit alongside a separate design corpus,
+and the corpus is gone, because two documents describing the same thing means
+one of them is quietly wrong.
 
-`.design/` is the reasoning archive, not a second spec. Open it when you want
-to know **why** something was decided the way it was — what alternative was
-considered and rejected, and what argument closed the question — never to
-find out what to build; that's what this set is for.
+Where a page here says something is **design only**, that is the design — not
+a summary pointing somewhere else.
 
 ## The set
 
@@ -27,7 +27,7 @@ find out what to build; that's what this set is for.
 
 The declarative, no-Rust hook surface described in `concepts.md` — a
 configuration block naming an event and a command — is **decided but not yet
-built** (board item `01KZDC0RDRMMMJHX7SAFMM2Q5A`). If you came here wanting
+built**. If you came here wanting
 that, there is nothing to install yet; watch that item.
 
 What you *can* build today, in about ten minutes if you're already set up to
@@ -43,10 +43,9 @@ what your implementation may and may not do to what it's handed.
 
 ## Everything not in this set
 
-- **The wire transport** for an out-of-process (non-Rust) plugin —
-  `.design/d1-transport.md` — is a design spike, not implemented. Nothing in
-  this set describes running a plugin as a separate process, because you
-  can't yet.
+- **The wire transport** for an out-of-process (non-Rust) plugin. It was
+  designed and never built. Nothing in this set describes running a plugin as
+  a separate process, because you can't yet.
 - **Fork and spawn as agent-delegation primitives** (the `/fork`/`/spawn`
   commands, `conway_fork`/`conway_spawn` tool calls) are a different,
   already-built topic — see [`docs/agents.md`](../agents.md). `concepts.md`

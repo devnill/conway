@@ -1,6 +1,6 @@
 #![deny(missing_debug_implementations)]
 
-//! conway-core: domain types and port traits for the conway agent harness.
+//! Conway-core: domain types and port traits for the conway agent harness.
 //!
 //! Every public type is `Serialize + Deserialize`. Implementations of the
 //! port traits live in dedicated crates.
@@ -10,14 +10,14 @@
 //! `CanonicalRoot::new` and again in its walk-up loop. That is the whole of
 //! the exception today, pinned by the `t2_core_io_is_confined_to_the_one_
 //! known_file` guard in `crates/conway/tests/architecture_invariants.rs`, so
-//! a second offender fails CI. Board item 01KZDC30CBY9CPJ8YEM7HSRV0Y
+//! a second offender fails CI.
 //! ("Retire the harness-level confinement root once conway.fs enforces its
 //! own", under Stage 1.5) closes it by moving confinement out of this crate,
 //! and **must delete this label when it lands.**
 //!
 //! **FORWARD DECLARATION — test doubles ship here today.** `feature =
 //! "fakes"` compiles [`fakes`], a full set of port doubles, into this
-//! contract crate. Board item 01KZVYWNA24EYMPVW3NPGBW51M ("Extract
+//! contract crate. ("Extract
 //! conway-testkit", Stage 1b) moves them to their own crate, and **must
 //! delete this label when it lands.**
 

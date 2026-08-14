@@ -1,7 +1,7 @@
-//! Test-only render/key-driving harness (board item 01KYAN75MXECX9M2WJWF4KRYM9).
+//! Test-only render/key-driving harness.
 //!
 //! Every one of the four TUI runtime bugs this harness exists to catch
-//! (see this crate's own history around WI-140-adjacent items) passed its
+//! (see this crate's own history around an earlier item-adjacent items) passed its
 //! unit tests -- because those tests only ever drove `AppState`/`status_line`
 //! directly and never went through the real render pass (`view::draw`) or
 //! the real key router (`input::handle_key`). This module gives a test two

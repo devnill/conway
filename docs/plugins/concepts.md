@@ -11,20 +11,18 @@ forward declaration is a respectable state, and the alternative (silence
 until the last piece lands) would leave feature development without the
 normative spec it needs to build against. Every section below says plainly
 which parts exist in the tree today and which are decided-but-not-yet-built.
-Where something is unbuilt, it names the board item tracking it. Nothing here
+Where something is unbuilt, it names the tracking it. Nothing here
 is aspirational in the sense of "might happen" — everything unbuilt has
 already been decided; what remains is implementation.
 
 **What exists today, in one list**, so you don't have to extract it from the
 labels below: a plugin is an in-process `Arc<dyn Plugin>` (built-in or
 supplied via `ConwayBuilder::with_plugin`/`conway::plugin`, or selected by
-id via `ConwayBuilder::install_selected`) that registers tools, and — since
-board items `01KZYBFTK4QPB45AJT9M57P60W`/`01KZS03BFE720EQZG7Q2768N2H` — may
+id via `ConwayBuilder::install_selected`) that registers tools, and — since — may
 also register TUI `commands()` and declare/fire its own `events()`;
 `ContextHook` (`before_request`/`on_overflow`) and `PermissionGate` are
 real, invoked ports with no built-in policy — you supply your own; project-
-file trust (keyed on path + content digest) is real and enforced; and, as of
-board item `01KZYAWQ6011Q6CJVG6CCMQPF1`, a **declarative** `[hooks].rules[]`
+file trust (keyed on path + content digest) is real and enforced; and, as of, a **declarative** `hooks.rules[]`
 block in `settings.json` — no Rust required — really is dispatched: all
 seven core events, narrowable to one tool by a `match` field, given a
 `HookRunner` injected (`docs/plugins/authoring.md`'s "Ten minutes to a
@@ -50,10 +48,10 @@ observes a moment (a tool about to run, a request about to be sent) or
 decides an outcome for one. A plugin that provides only tools is still just
 a plugin whose only registered surface happens to be `tool/1`.
 
-This centering is a correction, not the original design. Earlier material in
-`.design/` centered tool-provision — "a plugin gives conway new tools" — and
+This centering is a correction, not the original design. Earlier design
+material centered tool-provision — "a plugin gives conway new tools" — and
 treated hooks as one extension point among several. The operator redirected
-that (decision `01KYTNTRAGX2H72HF4R69XACEX`): hooks are the primary authoring
+that: hooks are the primary authoring
 surface, and tool-provision is one hook-adjacent capability, not the center.
 If you're carrying a mental model from that earlier material, or from a
 tool-plugin system in general, put the tool at the edge and the hook at the
@@ -69,14 +67,13 @@ register a *script-dispatched* hook through the trait itself; `ContextHook`
 and `PermissionGate` are real, separate ports the embedder wires in directly
 (`ConwayBuilder`), not something a `Plugin` registers. **The first rung of
 hook-first that this section used to call open is now built**: a
-declarative `[hooks].rules[]` block in `settings.json` fires a configured
-command on a named event, narrowed to one tool by `match` — board item
-`01KZYAWQ6011Q6CJVG6CCMQPF1`, dispatching all seven core events plus any
+declarative `hooks.rules[]` block in `settings.json` fires a configured
+command on a named event, narrowed to one tool by `match` —, dispatching all seven core events plus any
 plugin-declared one (`docs/plugins/hooks.md` point 13's Status row is
 normative; `docs/plugins/authoring.md` is the executed walkthrough). What
 remains open under the same umbrella tracking item
-(`01KZDC0RDRMMMJHX7SAFMM2Q5A`): a *plugin* registering a hook through the
-`Plugin` trait itself (as opposed to an operator writing a `[hooks].rules[]`
+: a *plugin* registering a hook through the
+`Plugin` trait itself (as opposed to an operator writing a `hooks.rules[]`
 entry by hand), and the generalized observer/participant composition rule
 the next section describes.
 
@@ -111,13 +108,12 @@ numbers.
 **Not yet implemented: the generalized point vocabulary and composition.**
 The design names discrete "points" a plugin registers against —
 `tool/1`, `permission.policy/1`, `observe/1`, `context.hook/1`
-(`.design/extension-architecture.md` §4) — and specifies how *more than one*
+ — and specifies how *more than one*
 participant's answers compose. Today there is exactly one `PermissionGate`
 implementation per embedder (not a composed chain of policies) and exactly
 one optional `ContextHook` (not a composed set of context hooks), so the
 composition rule is written down but has nothing yet to compose. The remote
-transport those points would run over is design-only
-(`.design/d1-transport.md`), and doc 2 of this set is where the per-point
+transport those points would run over is design-only, and doc 2 of this set is where the per-point
 contracts, once built, will live.
 
 ## The value-class boundary
@@ -177,8 +173,7 @@ call). **Not yet implemented:** a remote (out-of-process) plugin reaching
 context with edit/drop/replace parity to the in-process hook — the wire
 point that would carry it, `context.hook/1`, is specified only for append
 and whole-segment exclude; a same-target *replace* primitive for remote
-plugins is an open gap in the specification itself, board item
-`01KZ844ZXZMVRWC7ZANT7PSM6X`.
+plugins is an open gap in the specification itself.
 
 ## Fork vs spawn, for inference-evaluated hooks
 
@@ -205,8 +200,7 @@ history — a permission classifier almost never does; a compaction-decision
 hook plausibly does.
 
 **Declaration surface and default — decided, not invented for this page**
-(decision `01KYTQTYHW9BNKEEDFEJME90PG`, settling one of the four questions
-decision `01KYTNTRAGX2H72HF4R69XACEX` left open): a hook declares
+(settling one of the four questions left open): a hook declares
 `subagent_mode: Fork | Spawn` **per registration**, not per plugin — one
 plugin may register a classifier that needs no ancestry alongside a
 compaction hook that wants the whole conversation, and a single manifest-wide
@@ -230,7 +224,7 @@ prompt alone. It is not a hook, but it is the identical shape a hook's
 **Not yet implemented.** No hook registration surface exists yet
 (see "Hook-first" above), so there is nowhere for a `subagent_mode` field to
 attach; the `hook.fork` capability is decided but has no code representing
-it. Tracked under `01KZDC0RDRMMMJHX7SAFMM2Q5A`.
+it. Tracked under.
 
 ## Language choice
 
@@ -241,10 +235,10 @@ a claim that stands unchanged.** The design's original shape was a
 script-dispatching *plugin*: an ordinary `Arc<dyn Plugin>` whose own
 implementation shells out per event, so a script-backed hook would still be,
 from the runtime's point of view, an ordinary hook registered by an ordinary
-plugin. **What actually shipped (board item `01KZRZY1MNM872BZ6AKEBG3SKE`) is
+plugin. **What actually shipped is
 the runtime's own built-in `HookRunner` port**
 (`conway_tools::hook_runner::ProcessHookRunner`) consulted directly by a
-`[hooks].rules[]` entry's `command` — no `Plugin` in between at all. The
+`hooks.rules[]` entry's `command` — no `Plugin` in between at all. The
 observable result for an author is identical to what this section always
 promised (write a script in any language, name it in config, it runs on the
 event); the mechanism underneath is not the one originally sketched.
@@ -262,9 +256,8 @@ that remains open:** a script-dispatching *plugin* in the originally-sketched
 sense — a third-party `Plugin` whose own `tools()`/`commands()`/`events()`
 happen to be backed by a script, distinct from the runtime's own built-in
 runner. Nothing today lets a `Plugin` implementor delegate its *own* trait
-methods to an external script the way `[hooks].rules[]` delegates a core
-event; a plugin author still writes Rust. Tracked under
-`01KZDC0RDRMMMJHX7SAFMM2Q5A`.
+methods to an external script the way `hooks.rules[]` delegates a core
+event; a plugin author still writes Rust. Tracked under.
 
 ## Trust, in one paragraph
 
@@ -291,9 +284,8 @@ mechanism today is in-process (`Arc<dyn Plugin>`, linked into the binary in
 Rust before the process starts), so there is nothing an on-disk,
 digest-checked trust record could gate — trusting the binary and trusting
 its plugins are the same act today. [`docs/permissions.md`](../permissions.md#limits)
-states this from the operator-facing side. No board item names the plugin-
-trust build specifically yet; it depends on the out-of-process transport
-(`.design/d1-transport.md`), which is itself design-only.
+states this from the operator-facing side. No names the plugin-
+trust build specifically yet; it depends on the out-of-process transport, which is itself design-only.
 
 ## Glossary
 
@@ -305,7 +297,7 @@ trust build specifically yet; it depends on the out-of-process transport
   tools, required_host_caps }`.
 - **Hook** — an attachment point where behavior runs. Concrete, built
   examples: `ContextHook`, `PermissionGate`, and, declaratively, a
-  `[hooks].rules[]` entry naming a core or plugin-declared event. See
+  `hooks.rules[]` entry naming a core or plugin-declared event. See
   "Hook-first" above for what's still design.
 - **Point** — the design's name for a named, wire-addressable hook (`tool/1`,
   `permission.policy/1`, `context.hook/1`, `observe/1`). Not yet built; see

@@ -37,7 +37,7 @@ pub struct ModelMetadata {
     pub reasoning: Option<bool>,
     #[serde(default)]
     pub reliability_tier: Option<ReliabilityTier>,
-    /// e.g. `"Q4_K_M"`. Informational, and — only when `reliability_tier`
+    /// E.g. `"Q4_K_M"`. Informational, and — only when `reliability_tier`
     /// itself is absent — a fallback tier heuristic; see
     /// `quantization_tier_hint`.
     #[serde(default)]

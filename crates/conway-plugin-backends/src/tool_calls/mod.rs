@@ -1,6 +1,6 @@
 //! `ToolCallAccumulator` — dialect-parameterized streaming tool-call delta
 //! accumulation and validation (architecture §"Module: conway-backends",
-//! WI-018).
+//! an earlier item).
 //!
 //! Isolates the single most bug-prone surface of the OpenAI-compatible
 //! streaming wire format so it is unit-testable without a server: providers
@@ -57,7 +57,7 @@
 //! # Declarative provider profiles: `ToolCallStyle`
 //!
 //! This module used to dispatch directly on `crate::config::Dialect` (added
-//! by WI-016). The declarative-provider-profiles item replaced that
+//! by an earlier item). The declarative-provider-profiles item replaced that
 //! five-variant match with [`ToolCallStyle`], a three-value enum that names
 //! *which parsing strategy* a provider needs rather than which of five
 //! fixed dialects it is — the same accumulator now serves any
@@ -66,7 +66,7 @@
 //! obtain one; `Dialect`'s own predicate methods (kept for source
 //! compatibility) resolve to the same built-in profile data.
 //!
-//! # The `VllmHermes` inline-text fallback (originally WI-022)
+//! # The `VllmHermes` inline-text fallback (originally an earlier item)
 //!
 //! `ToolCallStyle::HermesTextFallback` structured deltas (a well-formed
 //! `delta.tool_calls` entry) go through the same `push_delta`/
@@ -199,7 +199,7 @@ pub struct ToolCallAccumulator {
     /// slot" when a delta carries neither `index` nor a previously-seen
     /// `id`.
     last_key: Option<u32>,
-    /// The Hermes inline-text scanner (WI-022), `Some` only for
+    /// The Hermes inline-text scanner, `Some` only for
     /// `ToolCallStyle::HermesTextFallback`.
     hermes: Option<HermesTextScanner>,
     /// Whether a structured `delta.tool_calls` entry has been seen while
@@ -247,7 +247,7 @@ impl ToolCallAccumulator {
         self.apply(parts)
     }
 
-    /// Feeds one `delta.content` text fragment (WI-022). While `style` is
+    /// Feeds one `delta.content` text fragment. While `style` is
     /// `ToolCallStyle::HermesTextFallback` and no structured
     /// `delta.tool_calls` entry has arrived yet, this routes `text` through
     /// the Hermes inline `<tool_call>...</tool_call>` scanner: plain text is

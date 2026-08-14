@@ -1,11 +1,10 @@
-//! `AgentLoop`: the per-agent turn state machine (WI-081, architecture §7).
+//! `AgentLoop`: the per-agent turn state machine (architecture §7).
 //!
 //! Wires `ContextBuilder` -> `Router` -> `AttemptEngine` -> `ToolRunner` ->
 //! `SessionStore` into one turn, with budgets and terminal-result
-//! construction. `LoopDeps::subagents` is the real `Runtime` (WI-084,
-//! `subagent.rs`), not a stub -- `ToolBatchCtx` gets a working host.
+//! construction. `LoopDeps::subagents` is the real `Runtime` (//! `subagent.rs`), not a stub -- `ToolBatchCtx` gets a working host.
 //!
-//! ## WI-085: mailboxes and steering
+//! ## mailboxes and steering
 //!
 //! `drain_inbox` (previously a documented no-op hook) now really drains
 //! this agent's inbox at every turn boundary and classifies what it finds
@@ -16,16 +15,16 @@
 //! deliver this agent's terminal `Result` upward on `finish`), and
 //! `pending_cancel` (turn-local bookkeeping a drained soft `Cancel`
 //! resolves into). A drained `Result` is classified but drives no
-//! drain-time action -- cycle-2 review (F-085 S2) removed the never-
+//! drain-time action -- An earlier review found: removed the never-
 //! populated `pending_subagent` map this used to resolve; see
 //! `drain_inbox`'s own doc and `mailbox.rs`'s module doc for why
-//! `AgentTree::await_result` (WI-083) is the real, and only, resolution
+//! `AgentTree::await_result` is the real, and only, resolution
 //! path. `LoopDeps` gained `tree`, used both to close the carried
-//! F-083-1/F-084-1 double-`AgentFinished` race in `finish` (this file's
+//!/ double-`AgentFinished` race in `finish` (this file's
 //! half of a two-sided fix -- see `supervisor.rs`'s module doc for the
 //! other half) -- see `finish`'s own doc.
 //!
-//! ## WI-084: `inherited` context
+//! ## `inherited` context
 //!
 //! `AgentLoop` gained one field this item: `inherited: Option<InheritedPrefix>`.
 //! For a root agent or a spawned child it is `None` and every turn's
@@ -36,7 +35,7 @@
 //! every turn's `ContextInput` unchanged -- see the field's own doc for why
 //! no turn-boundary re-resolution is needed or correct.
 //!
-//! `AgentSpec::report_slot` (WI-082 cycle-1 review, F-082 C1) is this item's
+//! `AgentSpec::report_slot` (An earlier review found: ) is this item's
 //! one additive hook for a live caller: after each successful
 //! `ContextBuilder::build`, and before that turn's backend call, the loop
 //! pushes a clone of the just-built `ContextReport` into the slot if the
@@ -44,22 +43,21 @@
 //! report reaches outside the loop — no event-bus reconstruction is
 //! involved.
 //!
-//! ## Reconciliations against the WI-081 amendment's illustrative types
+//! ## Reconciliations against the amendment's illustrative types
 //!
 //! The amendment's prose assumes a runtime-local `HeadroomPolicy` (in a
 //! `headroom.rs` this item would create) and a `RouteRequest.required.
 //! min_context` field carrying `est_tokens + headroom`. Neither exists in
 //! the committed workspace:
-//! - `HeadroomPolicy` is `conway_core::capabilities::HeadroomPolicy` (WI-034,
-//!   already committed; relocated out of `conway-routing`'s `config` module
-//!   into `conway-core` by board item 01KZFC0JDMC2Y631FFCXWR37CP so this
+//! - `HeadroomPolicy` is `conway_core::capabilities::HeadroomPolicy` (//!   already committed; relocated out of `conway-routing`'s `config` module
+//!   into `conway-core` by so this
 //!   engine no longer needs to depend on the whole routing crate for it) —
 //!   reused directly rather than duplicated.
 //! - `conway_core::routing::RequiredCaps` has no `min_context: u32` total;
 //!   it has `min_context: Option<u32>` (an independent absolute floor,
 //!   unrelated to headroom) and `headroom_tokens: u32` (the headroom
 //!   value itself). This loop sets `required.headroom_tokens` to the
-//!   turn's resolved headroom instead. `DeclarativeRouter` (WI-034)
+//!   turn's resolved headroom instead. `DeclarativeRouter`
 //!   documents that it never actually reads this field back (it resolves
 //!   headroom itself from its own compiled config) — this loop sets it
 //!   anyway so a `RouteRequest` is a complete, honest description of what
@@ -72,7 +70,7 @@
 //!   `AgentSpec.headroom_override` diverges from the policy value: the
 //!   router resolves headroom from its own compiled config and ignores the
 //!   request field, so an override is honored only by the attempt engine's
-//!   backstop gate (cycle-1 review S1). The divergence fails safe (a
+//!   backstop gate. The divergence fails safe (a
 //!   spurious rejection at one gate, never corrupted output); plumbing
 //!   per-agent overrides into `DeclarativeRouter` is queued as a follow-up,
 //!   and callers must not rely on `headroom_override` affecting routing
@@ -86,14 +84,17 @@
 //! "turn" is one model generation; tool execution feeds the *next* turn's
 //! context, not the current one's completion event.
 //!
-//! ## WI-086: `AgentResult` construction and repeated-step detection
+//! ## `AgentResult` construction and repeated-step detection
 //!
 //! `finish` no longer builds its `AgentResult` from a raw `summary` string
 //! alone: it resolves a [`crate::result::ResultBuilder`] (report-tool
 //! precedence over trailing text, non-empty-summary/status-naming
 //! fallback) for `summary`/`facts`/`artifacts`/`structured` on every
 //! terminal path. The tool-outcome loop also runs every dispatched call
-//! through a [`crate::step_digest::StepDigest`], emitting `Event::RepeatedStep`
+//! offers every dispatched call to each registered
+//! [`conway_core::ports::ToolObserver`] and appends whatever notes they
+//! return -- the loop holds no detection policy of its own, and with no
+//! observing plugin installed that pass does not execute at all.
 //! plus an injected `SystemNote` the instant a `(tool, canonical-args)`
 //! digest is seen a 3rd time. Both are locals inside `AgentLoop::run_inner`,
 //! not new fields on `AgentLoop`/[`AgentSpec`] -- see `result.rs`'s module
@@ -116,7 +117,7 @@
 //! the first failure appends a `SystemNote { reason:
 //! "result_contract_violation" }` and gives the agent one more turn
 //! (`contract_retried` flips `true`, a local exactly like `result_builder`/
-//! `step_digest`); a second failure is terminal,
+//! `result_builder`); a second failure is terminal,
 //! `ResultStatus::Rejected { missing }`.
 
 use std::collections::HashSet;
@@ -133,8 +134,9 @@ use conway_core::event::Event;
 use conway_core::ids::{AgentId, ModelId, ModelRef, RoleAlias, SeqRange, SessionId};
 use conway_core::log::LogRecord;
 use conway_core::ports::{
-    ArtifactWriteHandle, ContextHook, ContextHookCtx, ContextPayload, CwdHandle, OverflowInfo,
-    PluginConfig, Router, SessionStore, SubagentHost,
+    ArtifactWriteHandle, ContextHook, ContextHookCtx, ContextPayload, CwdHandle, ObservedCall,
+    ObserverCtx, OverflowInfo, PluginConfig, PluginEventEmitter, PluginEventHandle,
+    RegisteredObserver, Router, SessionStore, SubagentHost,
 };
 use conway_core::provenance::{ContextReport, Provenance};
 use conway_core::routing::RouteRequest;
@@ -148,7 +150,6 @@ use crate::context::{
 use crate::events::EventBus;
 use crate::mailbox::{self, MailboxReceiver, MailboxSender};
 use crate::result::{validate_result_contract, ContractOutcome, ResultBuilder};
-use crate::step_digest::{StepDigest, DEFAULT_RING_CAPACITY};
 use crate::tools::{PluginRegistry, ToolBatchCtx, ToolRunner};
 use crate::tree::AgentTree;
 
@@ -170,14 +171,14 @@ pub struct AgentSpec {
     /// Resolution order: `headroom_override` -> `HeadroomPolicy::resolve`.
     pub headroom_override: Option<u32>,
     pub max_parallel_tools: usize,
-    /// The live slot `Runtime::context_report` (WI-082) reads from. Pushed
+    /// The live slot `Runtime::context_report` reads from. Pushed
     /// into by this loop after every successful `ContextBuilder::build`,
     /// before the turn's backend call — so a caller reading the slot always
     /// sees the most recently *assembled* context, independent of whether
     /// that turn's attempt has completed yet. `None` in contexts with no
     /// caller listening (e.g. some tests construct an `AgentLoop` directly).
     pub report_slot: Option<Arc<Mutex<Option<ContextReport>>>>,
-    /// WI-086: the schema a `structured` result must satisfy, carried
+    /// The schema a `structured` result must satisfy, carried
     /// through from `SubagentSpec::result_contract` (`subagent.rs`'s
     /// `SubagentHost::start`) for a fork/spawn child; `None` for a root
     /// agent (`runtime.rs`'s `start_root` has no `SubagentSpec` to source
@@ -194,10 +195,10 @@ pub struct AgentSpec {
     /// resumed root and every fork/spawn child must terminate on
     /// `Completed` exactly as before, since a parent awaiting a spawned or
     /// forked child's terminal `AgentResult` (`AgentTree::await_result`,
-    /// WI-083) depends on that child actually terminating -- making this
+    /// an earlier item) depends on that child actually terminating -- making this
     /// universal would hang such a parent forever.
     pub keep_alive: bool,
-    /// Board item 01KZQJ03ZQ22MPM9H2TW1350ZF: the opaque consumer tag
+    /// The opaque consumer tag
     /// threaded straight from `conway_core::agent::SubagentSpec::tag` by
     /// `subagent.rs`'s `SubagentHost::start` (`None` for a root or resumed
     /// root -- `runtime.rs`'s `start_root`/`resume_root` have no
@@ -208,7 +209,7 @@ pub struct AgentSpec {
     /// this" guarantee and why it is a genuinely new kind of field.
     ///
     /// Required, not defaulting: like `ContextHookCtx::agent_path`
-    /// (01KZQHZH8RXVR38JJX9AY4VSW4), `AgentSpec` derives no `Serialize`/
+    ///, `AgentSpec` derives no `Serialize`/
     /// `Deserialize` and has no wire format to preserve compatibility with,
     /// so there is no serialization justification for a silent default --
     /// and a field whose entire purpose is telling two otherwise-identical
@@ -227,22 +228,22 @@ pub struct LoopDeps {
     pub attempt: Arc<AttemptEngine>,
     pub registry: Arc<PluginRegistry>,
     pub tool_runner: Arc<ToolRunner>,
-    /// Handed to every dispatched tool's `ToolCtx` (WI-079). No subagent
-    /// implementation exists yet (WI-084); a fake or a not-yet-wired real
+    /// Handed to every dispatched tool's `ToolCtx`. No subagent
+    /// implementation exists yet; a fake or a not-yet-wired real
     /// host is injected by the caller.
     pub subagents: Arc<dyn SubagentHost>,
     pub plugin_config: Arc<PluginConfig>,
     pub bus: Arc<EventBus>,
     pub builder: Arc<ContextBuilder>,
     pub headroom: Arc<HeadroomPolicy>,
-    /// The agent tree this agent belongs to. WI-085 carried follow-up
-    /// (F-083-1/F-084-1): lets `finish` consult the tree's set-once
+    /// The agent tree this agent belongs to. an earlier item carried follow-up
+    /// (/): lets `finish` consult the tree's set-once
     /// publication before emitting `Event::AgentFinished`, closing the
     /// benign double-emit race against the supervisor's own grace-timeout
     /// synthesis -- see `finish`'s own doc and `supervisor.rs`'s module doc
     /// ("the narrow race this module does not close").
     pub tree: Arc<AgentTree>,
-    /// WI-126: pluggable per-call context/tool curation. `RwLock` rather
+    /// Pluggable per-call context/tool curation. `RwLock` rather
     /// than a plain `Option` because `RuntimeDeps` (`runtime.rs`, out of
     /// this item's file scope) has no field to source one from at
     /// `LoopDeps` construction time -- `Runtime::set_context_hook` (a new,
@@ -252,11 +253,27 @@ pub struct LoopDeps {
     /// construction site gets, unchanged) means this loop never invokes
     /// anything named `ContextHook` at all -- not even a no-op call -- so
     /// `run_inner`'s assembly, routing, and overflow handling stay
-    /// byte-identical to pre-WI-126 behavior. `Some` is invoked once per
+    /// byte-identical to pre- an earlier item behavior. `Some` is invoked once per
     /// turn (`ContextHook::before_request`) and, only on a T-1
     /// `ContextTooLarge`, up to `MAX_OVERFLOW_ATTEMPTS` additional times
     /// (`ContextHook::on_overflow`) -- see `AgentLoop::route_and_attempt`.
     pub context_hook: RwLock<Option<Arc<dyn ContextHook>>>,
+    /// Every `ToolObserver` the installed plugin set contributed, each paired
+    /// with the plugin that supplied it so its fired events land in that
+    /// plugin's namespace.
+    ///
+    /// Empty is the default and the overwhelming common case: with no
+    /// observing plugin installed the loop's per-outcome observer pass does
+    /// not execute at all, so behavior is byte-identical to a build without
+    /// this port. That emptiness is the point rather than an optimization --
+    /// `PHILOSOPHY.md` §6 requires that writing no loop-intervention policy
+    /// be a real option, which it cannot be while the core ships one.
+    pub observers: Vec<RegisteredObserver>,
+    /// The emitter an observer's `ObserverCtx` fires through -- the SAME
+    /// fan-out layer a plugin's own tools reach via `ToolCtx::plugin_events`,
+    /// so there is one dispatch path for plugin-declared events rather than a
+    /// second one for observers.
+    pub plugin_events: Arc<dyn PluginEventEmitter>,
 }
 
 /// One agent's turn state machine (architecture §7). `run` drives turns
@@ -286,7 +303,7 @@ pub struct AgentLoop {
     pub spec: AgentSpec,
     pub cancel: CancellationToken,
     /// `Some` for a fork child, resolved exactly once by `subagent.rs`'s
-    /// `SubagentHost::start` (WI-084) at fork time via
+    /// `SubagentHost::start` at fork time via
     /// `conway_session::TranscriptResolver` and never recomputed afterward
     /// -- the parent's prefix at the fork point is immutable by
     /// construction (a later parent append only extends records the fork
@@ -298,7 +315,7 @@ pub struct AgentLoop {
     /// single shared `Arc` (sibling-fork memoization lives in
     /// `conway-session`, not here).
     pub inherited: Option<InheritedPrefix>,
-    /// This agent's own inbox (WI-085). Drained exactly once per turn
+    /// This agent's own inbox. Drained exactly once per turn
     /// boundary by `Self::drain_inbox` -- never read anywhere else, which
     /// is what makes the turn-boundary landing guarantee hold by
     /// construction.
@@ -318,22 +335,22 @@ pub struct AgentLoop {
     /// and is always built via a field literal (matching every other field
     /// here).
     pub pending_cancel: Option<String>,
-    /// WI-118 (generalized by the keep-alive item): gates this loop's next
+    /// (generalized by the keep-alive item): gates this loop's next
     /// iteration on the caller's next prompt when `awaiting_prompt` is
     /// `true` (see [`ResumeGate`]'s own doc). `Default::default()` for every
     /// non-resumed, non-keep-alive agent -- `start_root` with `keep_alive:
     /// false` and every fork/spawn child -- which is inert and preserves
-    /// this loop's pre-WI-118 behavior exactly.
+    /// this loop's pre- an earlier item behavior exactly.
     pub resume_gate: ResumeGate,
 }
 
-/// WI-118 resume gate, generalized by the keep-alive item to also gate the
+/// Resume gate, generalized by the keep-alive item to also gate the
 /// END of every turn for a `keep_alive` agent, not just a resumed root's
 /// very first iteration -- both are exactly the same wait ("idle until the
 /// caller's next prompt, unless cancelled/deadlined first"), so one
 /// mechanism serves both instead of a second, parallel one.
 ///
-/// **WI-118's original purpose:** makes a resumed root agent's very first
+/// **an earlier item's original purpose:** makes a resumed root agent's very first
 /// loop iteration WAIT for the caller's next
 /// [`crate::runtime::Runtime::prompt`] instead of reading the (stale,
 /// already-completed) transcript it was persisted with and running a
@@ -358,7 +375,7 @@ pub struct AgentLoop {
 /// by `subagent.rs`) leaves this at its `Default` --
 /// `awaiting_prompt: false` -- so `AgentLoop::run_inner`'s gate is skipped
 /// entirely on the very first check and every turn behaves exactly as it did
-/// before WI-118. `Runtime::resume_root` sets `awaiting_prompt: true` up
+/// before an earlier item. `Runtime::resume_root` sets `awaiting_prompt: true` up
 /// front; a `keep_alive` agent starts with it `false` (its first turn runs
 /// immediately, exactly like any other root) and the loop itself flips it
 /// `true` at the end of each completed turn.
@@ -404,9 +421,21 @@ struct LoopState {
     /// Meaningless (never read) for a non-`keep_alive` agent: `check_budget`
     /// gates that path on `turn` exactly as before this field existed.
     turn_steps: u32,
+    /// Tool calls DISPATCHED since the last keep-alive user-turn boundary,
+    /// gating `Budget::max_tool_calls`. Counts the batch handed to
+    /// `ToolRunner::run_batch`, not the outcomes it returns: a cancel
+    /// arriving mid-batch discards every outcome, and calls that already ran
+    /// real side effects must still count against the ceiling.
+    ///
+    /// Turn-scoped for the same reason `turn_steps` is, and reset at the same
+    /// boundary: `max_tool_calls` is a runaway-tool-loop guard, so a
+    /// session-lifetime reading would permanently end an interactive
+    /// keep-alive session after N total calls rather than bounding each user
+    /// turn.
+    tool_calls: u32,
 }
 
-/// WI-126: bounds how many times [`AgentLoop::route_and_attempt`] will call
+/// Bounds how many times [`AgentLoop::route_and_attempt`] will call
 /// a registered `ContextHook::on_overflow` for a single turn before giving
 /// up and surfacing the last `ContextTooLarge` regardless of what the hook
 /// returns. This is a re-assembly-loop bound, not a policy choice a hook can
@@ -447,13 +476,13 @@ impl AgentLoop {
     /// caller immediately after this returns. A hard cancel was already
     /// handled at enqueue time (`MailboxSender::send`) and is a no-op here.
     /// `Progress` is emitted as `Event::AgentProgress` and never persisted.
-    /// `Result` (board item 01KZQHY6RTMYR4BRDTMQFP9J9R) is persisted as
+    /// `Result` is persisted as
     /// `LogRecord::ChildResultRecord`, the exact same `DrainEffect::Persist`
     /// arm as `Steer` -- this is a NON-blocking notification path, entirely
     /// separate from a `conway_fork`/`conway_spawn` waiter that blocked on
     /// this specific child by id, which still resolves exclusively through
-    /// `AgentTree::await_result` (WI-083); see `mailbox.rs`'s module doc
-    /// (cycle-2 review F-085 S2, updated by 01KZQHY6RTMYR4BRDTMQFP9J9R).
+    /// `AgentTree::await_result`; see `mailbox.rs`'s module doc
+    ///.
     ///
     /// ## A mid-batch persist failure does not lose the rest of the batch
     ///
@@ -521,12 +550,12 @@ impl AgentLoop {
     /// request as too large for the routed model's window
     /// (`RoutingError::ContextTooLarge`) -- from either `Router::resolve`
     /// (the committed `conway_plugin_routing::DeclarativeRouter` -- an
-    /// installable engine as of board item 01KZFC43J1J06BM4CCWKCKHSNV, not a
+    /// installable engine as of, not a
     /// dependency of this crate -- now does construct
     /// this variant, exactly when every candidate's rejection is
     /// attributable solely to the headroom gate; decision
-    /// 01KYXS3PTYVATWR58JR95AZJYN, closing board item
-    /// 01KYXNAHN64YMADZPQDQC0CPTJ -- see that crate's `router.rs` module
+    ///, closing
+    /// -- see that crate's `router.rs` module
     /// doc) or `AttemptEngine::execute` (the T-1 backstop gate for the
     /// remaining case: a route the router admitted but whose real backend
     /// still rejects on context size, e.g. a stale/incorrect capability
@@ -678,6 +707,7 @@ impl AgentLoop {
                         turn,
                         &mut segments,
                         &tools,
+                        report.dropped,
                     );
                 }
                 None => return Err(too_large(role, model).into()),
@@ -699,12 +729,11 @@ impl AgentLoop {
     async fn run_inner(&mut self) -> Result<AgentResult, (RuntimeError, LoopState)> {
         let mut state = LoopState::default();
         let mut seen_segments = HashSet::new();
-        // WI-086: both are turn-loop-local, not `AgentLoop` fields -- see
+        // both are turn-loop-local, not `AgentLoop` fields -- see
         // `result.rs`'s module doc for why (both structs are constructed
         // via field literals in files outside this item's scope).
         let mut result_builder = ResultBuilder::new();
-        let mut step_digest = StepDigest::new(DEFAULT_RING_CAPACITY);
-        // WI-086 result-contract retry: `true` once this run has already
+        // result-contract retry: `true` once this run has already
         // spent its one corrective turn (`self.spec.result_contract`'s
         // "retried exactly once" rule) -- a second failure after this is
         // `true` is terminal (`Rejected`), never another retry.
@@ -729,7 +758,7 @@ impl AgentLoop {
         // filesystem `canonicalize` call this performs happens once per
         // agent's whole run, never once per batch or per tool call.
         let root = crate::permission::AgentRoot::reconstruct(&self.root);
-        // Board item 01KZ84437RMKHP5DJX7RMHH7JY: the write-location
+        // the write-location
         // capability a registered `ContextHook` sees on `ContextHookCtx::
         // artifacts`, built from the SAME `chdir`/`root` pair immediately
         // above -- never a second, independent reconstruction. See
@@ -763,7 +792,7 @@ impl AgentLoop {
                 return Ok(self.finish_cancelled(state, &result_builder).await);
             }
 
-            // WI-118, generalized for keep-alive: a resumed root's very
+            // an earlier item, generalized for keep-alive: a resumed root's very
             // first iteration, or a `keep_alive` agent's idle wait between
             // turns, waits here for the caller's next prompt instead of
             // proceeding into a spurious turn -- see `ResumeGate`'s own doc
@@ -845,7 +874,7 @@ impl AgentLoop {
             };
             let (mut segments, mut report) = try_rt!(state, self.deps.builder.build(&input));
 
-            // WI-126: give a registered `ContextHook` first look at the
+            // give a registered `ContextHook` first look at the
             // assembled request -- segment edits/drops (mask-like
             // exclusion, system-prompt augmentation via the
             // `AgentDef`-provenance segment) and tool-announcement
@@ -858,7 +887,7 @@ impl AgentLoop {
             // `ContextReportRecord`) sees the SAME payload that is actually
             // sent -- never the pre-hook one. No hook registered -> this
             // block never runs -> the rest of this turn is byte-identical to
-            // pre-WI-126 behavior.
+            // pre- an earlier item behavior.
             let mut announced_tools = tool_specs.clone();
             if let Some(hook) = self.context_hook() {
                 let hook_ctx = ContextHookCtx {
@@ -883,6 +912,7 @@ impl AgentLoop {
                     state.turn,
                     &mut segments,
                     &announced_tools,
+                    report.dropped,
                 );
             }
 
@@ -904,7 +934,7 @@ impl AgentLoop {
                 }
             }
 
-            // `request_assembled` (board item 01KZYAXSGDS8AP7YK1CN7H680G):
+            // `request_assembled`:
             // fires once per turn, here -- after `ContextBuilder::build` AND
             // (if one is registered) `ContextHook::before_request`'s own
             // edit immediately above, so a subscriber sees the FINAL
@@ -918,7 +948,7 @@ impl AgentLoop {
             // failing or slow hook here cannot affect this turn -- there is
             // no denial path and no edit path, on purpose (see
             // `crate::hook_dispatch`'s module doc for why, and the
-            // still-open board item that covers the editing case).
+            // still-open that covers the editing case).
             //
             // A SUMMARY payload, not a full segment dump: `report.segments`
             // already carries the ordered content this turn is made of, and
@@ -957,11 +987,11 @@ impl AgentLoop {
 
             let headroom = resolve_headroom(&self.spec, &self.deps.headroom);
 
-            // WI-126: `route_and_attempt` owns routing, the attempt call,
+            // `route_and_attempt` owns routing, the attempt call,
             // AND the bounded `ContextHook::on_overflow` re-assembly retry
             // (see that method's own doc) -- the only thing this call site
             // still owns is racing it against the turn's deadline, exactly
-            // as the pre-WI-126 `attempt_fut` race did.
+            // as the pre- an earlier item `attempt_fut` race did.
             let route_attempt_fut = self.route_and_attempt(
                 state.turn,
                 segments,
@@ -999,7 +1029,7 @@ impl AgentLoop {
 
             let usage = outcome.response.usage;
             let seq = try_rt!(state, self.deps.store.head(&self.session).await);
-            // WI-122: the assistant record must carry the whole turn -- its
+            // the assistant record must carry the whole turn -- its
             // text AND the tool calls it made. `GenerateResponse` keeps
             // `content` (text/thinking) and `tool_calls` in separate fields;
             // fold the calls in as trailing `ToolUse` blocks so the persisted
@@ -1037,7 +1067,7 @@ impl AgentLoop {
                     .append(&self.session, assistant_record)
                     .await
             );
-            // WI-087: persist the SAME report already pushed to
+            // persist the SAME report already pushed to
             // `report_slot` above -- one build, two surfaces (live slot,
             // durable store) -- and only after the assistant record it
             // describes is itself durable, so a report is never persisted
@@ -1149,6 +1179,7 @@ impl AgentLoop {
                     // must persist across the whole keep-alive session (see
                     // their own declarations above this loop).
                     state.turn_steps = 0;
+                    state.tool_calls = 0;
                     result_builder = ResultBuilder::new();
                     contract_retried = false;
                     self.resume_gate.awaiting_prompt = true;
@@ -1177,6 +1208,15 @@ impl AgentLoop {
                 max_parallel_tools: self.spec.max_parallel_tools.max(1),
                 root: root.clone(),
             };
+            // Counted from the DISPATCHED batch rather than `outcomes` below:
+            // the cancel check immediately after discards every outcome,
+            // including calls that already completed real side effects, so
+            // counting outcomes would let a cancelled batch's work escape the
+            // ceiling entirely.
+            state.tool_calls = state
+                .tool_calls
+                .saturating_add(outcome.response.tool_calls.len() as u32);
+
             let outcomes = self
                 .deps
                 .tool_runner
@@ -1186,9 +1226,7 @@ impl AgentLoop {
             if self.cancel.is_cancelled() {
                 // The batch's outcomes are dropped here, including any calls
                 // that completed real side effects before the cancel fired —
-                // their results never reach the session log (cycle-1 review
-                // M1; follow-up if audit/replay completeness requires
-                // partial-batch persistence).
+                // their results never reach the session log.
                 return Ok(self.finish_cancelled(state, &result_builder).await);
             }
 
@@ -1219,44 +1257,74 @@ impl AgentLoop {
                         .await
                 );
 
-                // WI-086 MAST mitigation: repeated-step detection. `calls`
-                // preserves input order (`ToolRunner::run_batch`'s own
-                // contract), so `calls[index]` is this outcome's original
-                // call and carries the arguments the digest is keyed on.
-                if let Some(repeated) =
-                    step_digest.observe(&tool_outcome.tool, &calls[index].arguments, seq)
-                {
-                    self.deps.bus.emit(
-                        self.session,
-                        self.agent_id,
-                        Event::RepeatedStep {
-                            tool: repeated.tool.clone(),
-                            prior_seq: repeated.prior_seq,
-                        },
-                    );
-                    let note_seq = try_rt!(state, self.deps.store.head(&self.session).await);
-                    let note_text = format!(
-                        "tool `{}` was called with identical arguments 3 times; see the result at seq {}",
-                        repeated.tool, repeated.prior_seq
-                    );
-                    try_rt!(
-                        state,
-                        self.deps
-                            .store
-                            .append(
-                                &self.session,
-                                LogRecord::SystemNote {
-                                    seq: note_seq,
-                                    ts: Utc::now(),
-                                    text: note_text,
-                                    reason: "repeated_step".to_string(),
-                                    prov: Provenance::SystemNote {
-                                        reason: "repeated_step".to_string(),
+                // Hand the finished call to every registered `ToolObserver`,
+                // and append whatever notes they ask for. The harness holds
+                // no policy of its own here -- with no observing plugin
+                // installed this loop body does not execute at all, which is
+                // what `PHILOSOPHY.md` §6 ("the policy is yours to write,
+                // including writing none") requires.
+                //
+                // `calls` preserves input order (`ToolRunner::run_batch`'s own
+                // contract), so `calls[index]` is this outcome's original call
+                // and carries the arguments a policy keys on.
+                for registered in &self.deps.observers {
+                    let observed = ObservedCall {
+                        agent_id: self.agent_id,
+                        session: self.session,
+                        call_id: calls[index].call_id.clone(),
+                        tool: tool_outcome.tool.clone(),
+                        arguments: calls[index].arguments.clone(),
+                        is_error: tool_outcome.is_error,
+                        result_seq: seq,
+                    };
+                    let ctx = ObserverCtx {
+                        events: PluginEventHandle::new(
+                            self.deps.plugin_events.clone(),
+                            registered.plugin_id.clone(),
+                        ),
+                    };
+                    // Observation must never fail the call it observed: the
+                    // side effects already happened, so a panicking observer
+                    // is contained and the batch proceeds. Same fail-open
+                    // posture `post_tool_use` already takes, for the same
+                    // reason.
+                    let answer =
+                        match futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(
+                            registered.observer.after_tool_call(&ctx, &observed),
+                        ))
+                        .await
+                        {
+                            Ok(answer) => answer,
+                            Err(_) => {
+                                tracing::warn!(
+                                    plugin = %registered.plugin_id,
+                                    tool = %tool_outcome.tool,
+                                    "tool observer panicked; ignoring its answer"
+                                );
+                                continue;
+                            }
+                        };
+                    for note in answer.notes {
+                        let note_seq = try_rt!(state, self.deps.store.head(&self.session).await);
+                        try_rt!(
+                            state,
+                            self.deps
+                                .store
+                                .append(
+                                    &self.session,
+                                    LogRecord::SystemNote {
+                                        seq: note_seq,
+                                        ts: Utc::now(),
+                                        text: note.text,
+                                        reason: note.reason.clone(),
+                                        prov: Provenance::SystemNote {
+                                            reason: note.reason,
+                                        },
                                     },
-                                },
-                            )
-                            .await
-                    );
+                                )
+                                .await
+                        );
+                    }
                 }
             }
 
@@ -1265,13 +1333,15 @@ impl AgentLoop {
         }
     }
 
-    /// Checks every configured budget dimension at the top of a turn.
-    /// Returns `Some(result)` the first exceeded dimension produces;
-    /// `max_tool_calls` is not enforced by this item (no criterion requires
-    /// it — WI-081's binding budget tests are `max_steps`, `deadline`, and
-    /// `max_tokens`).
+    /// Checks every configured budget dimension at the top of a turn,
+    /// returning `Some(result)` the first exceeded dimension produces. All
+    /// four of `Budget`'s dimensions are enforced here; a dimension a caller
+    /// sets must bind, since the whole reason to set one is to bound cost or
+    /// blast radius, and a ceiling that silently does nothing is worse than
+    /// no field at all.
     ///
-    /// **`max_steps` for a `keep_alive` agent** gates on `state.turn_steps`
+    /// **`max_steps` and `max_tool_calls` for a `keep_alive` agent** gate on
+    /// turn-scoped counters (`state.turn_steps`, `state.tool_calls`)
     /// (steps since the last user-turn boundary) instead of `state.turn`
     /// (steps since the agent's whole life began): a keep-alive session must
     /// survive an unbounded number of user turns, each independently bounded
@@ -1346,11 +1416,27 @@ impl AgentLoop {
                 );
             }
         }
+        if let Some(max_tool_calls) = budget.max_tool_calls {
+            if state.tool_calls >= max_tool_calls {
+                return Some(
+                    self.finish(
+                        ResultStatus::BudgetExceeded {
+                            limit: format!("max_tool_calls={max_tool_calls}"),
+                        },
+                        "",
+                        state.usage,
+                        state.turn,
+                        builder,
+                    )
+                    .await,
+                );
+            }
+        }
         None
     }
 
     /// The immediate-path terminus for every `self.cancel.is_cancelled()`
-    /// check in [`Self::run_inner`]. Board item 01KZDDCN747FEZ3GM3NS0ANE7G:
+    /// check in [`Self::run_inner`].
     /// looks up `self.deps.tree.cancel_reason(self.agent_id)` -- the reason
     /// [`crate::tree::AgentTree::cancel`] stashed if THIS agent was itself
     /// the direct target of a `Runtime::cancel`/`conway_cancel` call -- and
@@ -1400,8 +1486,7 @@ impl AgentLoop {
     /// status-naming fallback still provides from a fresh builder) and
     /// correct `usage`/`steps_taken`/`transcript_ref`.
     ///
-    /// ## The third `RuntimeError::Cancelled` site (board item
-    /// 01KZGRGN9MKJP549NMGT8QACCV)
+    /// ## The third `RuntimeError::Cancelled` site
     ///
     /// `RuntimeError::Cancelled` reaches this fn from exactly one production
     /// site: `attempt.rs`'s `run_generate`/`run_stream`, when a cancel lands
@@ -1415,8 +1500,8 @@ impl AgentLoop {
     ///
     /// Rather than plumb a tree handle into `AttemptEngine` for this one
     /// case, this loop -- which already performs the identical lookup for
-    /// the turn-boundary path ([`Self::finish_cancelled`], board item
-    /// 01KZDDCN747FEZ3GM3NS0ANE7G) -- performs the SAME
+    /// the turn-boundary path ([`Self::finish_cancelled`]
+    ///) -- performs the SAME
     /// `tree.cancel_reason(self.agent_id)` lookup here and prefers it over
     /// `err`'s generic reason. Because [`crate::tree::AgentTree::cancel`]
     /// stashes the reason BEFORE it trips the token, the stashed reason is
@@ -1471,9 +1556,9 @@ impl AgentLoop {
     /// that publication was the first one for this agent -- emits
     /// `AgentFinished` and delivers it to the parent's mailbox.
     ///
-    /// ## Carried follow-up (F-083-1/F-084-1): the tree-publish gate
+    /// ## Carried follow-up (/): the tree-publish gate
     ///
-    /// `AgentTree::publish_result` is set-once (`tree.rs`, WI-083): its
+    /// `AgentTree::publish_result` is set-once (`tree.rs`): its
     /// first caller for a given agent gets `Ok(true)`, every later caller
     /// gets `Ok(false)`. Calling it *here*, before emitting, means this is
     /// the one place a normal completion and the supervisor's own
@@ -1493,7 +1578,7 @@ impl AgentLoop {
     /// cooperative, so an aborted task can keep running past the abort
     /// request and reach this very `finish` method after the supervisor has
     /// already given up on joining it, legitimately winning the CAS in that
-    /// gap. Before cycle-2 review finding S1, `supervisor.rs` emitted
+    /// gap. Before An earlier review found: finding S1, `supervisor.rs` emitted
     /// unconditionally on that path regardless of whether it had actually
     /// won, so the race was only half-closed even with this gate in place.
     /// See `supervisor.rs`'s own module doc for that side's fix; together
@@ -1513,7 +1598,7 @@ impl AgentLoop {
         steps_taken: u32,
         builder: &ResultBuilder,
     ) -> AgentResult {
-        // WI-086: precedence between an explicit `report` tool call and
+        // precedence between an explicit `report` tool call and
         // trailing assistant text -- and the non-empty-summary /
         // status-naming-fallback guarantee -- are both resolved here, in
         // one place, for every terminal path.
@@ -1557,7 +1642,7 @@ impl AgentLoop {
 
         if is_first {
             let ephemeral = self.deps.tree.ephemeral_of(self.agent_id);
-            // Board item: `EventBus.seqs` still leaks for spawned and
+            // `EventBus.seqs` still leaks for spawned and
             // forked agents. `is_prunable_on_finish` is read here, before
             // `emit_pruning`'s own lock is ever taken -- see that method's
             // doc for why this adds no new contention to the bus's
@@ -1578,7 +1663,7 @@ impl AgentLoop {
                     result: result.clone(),
                 });
             }
-            // `child_reported` (board item 01KZYAXSGDS8AP7YK1CN7H680G):
+            // `child_reported`:
             // observation-only, gated on the SAME `is_first` publish-race
             // winner as the `Event::AgentFinished` emit and the mailbox
             // delivery immediately above -- so this fires exactly once per
@@ -1628,7 +1713,7 @@ fn resolve_headroom(spec: &AgentSpec, policy: &HeadroomPolicy) -> u32 {
 /// session's own record 0: a fork directive or the initial prompt) and the
 /// volatile `own` records that follow it (architecture §5.3). A session
 /// with no records, or whose first record is neither, is a caller
-/// precondition violation — `Runtime::start_root`/`prompt` (WI-082) always
+/// precondition violation — `Runtime::start_root`/`prompt` always
 /// append the head record before an `AgentLoop` task is spawned.
 fn split_head(
     records: &[LogRecord],

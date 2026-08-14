@@ -83,7 +83,7 @@ impl<'de> Deserialize<'de> for SecretString {
 
 /// Errors produced while parsing/validating an adapter config.
 ///
-/// `#[non_exhaustive]` because later work items (WI-017's
+/// `#[non_exhaustive]` because later work items (an earlier item's
 /// `ModelMetadataStore::load`) add variants (`Metadata { .. }`) to this same
 /// enum without that being a breaking change for this work item's callers.
 #[non_exhaustive]
@@ -91,7 +91,7 @@ impl<'de> Deserialize<'de> for SecretString {
 pub enum ConfigError {
     #[error("missing API key: api_key must not be empty or whitespace-only")]
     MissingApiKey,
-    /// WI-017: `ModelMetadataStore::load` failed to parse a metadata file at
+    /// `ModelMetadataStore::load` failed to parse a metadata file at
     /// `path` (syntactically invalid TOML, or a shape that does not match
     /// `ModelMetadata`). A missing file is never this variant — `load`
     /// treats "file does not exist" as `Ok(ModelMetadataStore::empty())`.
@@ -124,7 +124,7 @@ struct AnthropicConfigRaw {
     models: BTreeMap<String, ModelOverrides>,
 }
 
-/// Configuration for `AnthropicBackend` (adapter itself is WI-021).
+/// Configuration for `AnthropicBackend` (adapter itself is an earlier item).
 /// Deserializing this type runs [`AnthropicConfig::validate`]: a
 /// value that fails validation fails deserialization, so it is never
 /// possible to construct an `AnthropicConfig` carrying an empty key.
@@ -190,7 +190,7 @@ impl TryFrom<AnthropicConfigRaw> for AnthropicConfig {
 }
 
 /// Configuration for `OpenAiCompatBackend` (adapter itself is
-/// WI-019/WI-022). One adapter, profile-selected behavior
+/// an earlier item/ an earlier item). One adapter, profile-selected behavior
 /// (declarative provider profiles item): `profile` is a fully resolved
 /// [`Profile`] value, not a file path or a name — resolving a name (built-in
 /// `Dialect`, or a user-supplied profile id) against a `ProfileStore` is the
@@ -241,7 +241,7 @@ mod tests {
         assert_eq!(secret.expose_secret(), "sk-ant-api03-super-secret");
     }
 
-    /// conway does not police key shape. A subscription-style token is a
+    /// Conway does not police key shape. A subscription-style token is a
     /// valid key as far as config validation is concerned -- whether it
     /// works is the provider's answer to give, not conway's. This is what
     /// lets a Kimi coding-plan key (or any Anthropic-compatible endpoint's

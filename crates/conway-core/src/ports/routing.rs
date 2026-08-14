@@ -47,7 +47,7 @@ pub trait Router: Send + Sync {
     /// prose inside `considered`.
     ///
     /// This split is SETTLED DESIGN, not a simplification awaiting a fix
-    /// (as amended 2026-08-01; decision `01KYY4D6R5KH1S02XWAJKP7531`).
+    /// (as amended 2026-08-01;).
     /// A chain in which every candidate's window is too small, but at least
     /// one ALSO fails another requirement, deliberately yields
     /// `NoCandidate`. Reporting it as `ContextTooLarge` would attribute the
@@ -75,8 +75,7 @@ pub trait HealthRegistry: Send + Sync {
 
 /// Produces the "why did this model run, and why not the others" answer for
 /// a `RouteRequest` -- see `ExplainReport`. Deliberately a separate port from
-/// `Router` rather than a new method on it (board item
-/// 01KZFC1KNGQ51TZ0BG7P7RAY9H): `Router` has exactly one method, `resolve`,
+/// `Router` rather than a new method on it -- `Router` has exactly one method, `resolve`,
 /// and every existing `.with_router(..)` call site across this workspace
 /// supplies a trait object that only ever needed to answer that one
 /// question. Implemented by `conway_plugin_routing::RoutingExplain` (a capability-
@@ -90,10 +89,10 @@ pub trait RoutingExplainer: Send + Sync {
 }
 
 // ---------------------------------------------------------------------
-// `RouterFactory` (board item 01KZFC2MD1FVNA674YJ9A19T8E): names a router
+// `RouterFactory`: names a router
 // KIND up front (so it can appear in `[plugins].install`, resolved before
 // backends/capabilities exist) and defers actual construction to a later,
-// fallible step. Settled decision 01KZF15KSWVD689HPBNNATFP8C, cited rather
+// fallible step. Settled, cited rather
 // than relitigated: `Router` gains NO `id()` method -- selection (naming a
 // kind) must precede construction (a fallible step needing backends and a
 // capability picture), and `Backend::id()` is a CONFIGURED INSTANCE
@@ -153,10 +152,10 @@ impl std::fmt::Debug for RouterBundle {
 /// none of it reaches into a sibling crate, so this port stays constructible
 /// with no new dependency.
 ///
-/// **`capability_index` (board item 01KZFC43J1J06BM4CCWKCKHSNV, amending
+/// **`capability_index` (, amending
 /// this struct's original shape):** the struct originally omitted this
 /// field on the reasoning "a factory that wants a capability picture builds
-/// one from `backends` itself" -- true for the WI-123 base guarantee
+/// one from `backends` itself" -- true for the base guarantee
 /// (`CapabilityIndex::from_backends` reads `Backend::capabilities()`
 /// directly, so a factory recomputing that part independently cannot
 /// diverge from it), but incomplete for the other half of what a
@@ -213,7 +212,7 @@ impl std::fmt::Debug for RouterBuildContext<'_> {
 /// `[plugins].install` before the router itself can be built -- building a
 /// real router needs backends and a capability picture that do not exist
 /// until much later in startup, well after `[plugins].install` is read
-/// (board item 01KZFC2MD1FVNA674YJ9A19T8E).
+///.
 ///
 /// `build` is DEFERRED (invoked only once `ctx` can actually be assembled)
 /// and FALLIBLE, returning [`ConwayError`] -- `conway-core`'s own existing

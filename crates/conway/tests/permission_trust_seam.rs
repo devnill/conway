@@ -1,4 +1,4 @@
-//! Acceptance test for board item 01KYT8SGX32CP56PRJNG72V2W5 ("SECURITY: a
+//! Acceptance test for ("SECURITY: a
 //! cloned repo's `.conway/permissions.json` auto-grants at startup with no
 //! consent").
 //!
@@ -148,7 +148,7 @@ fn build_conway(cwd: &Path, script: Vec<ScriptedTurn>, gate: Arc<dyn PermissionG
         .with_session_store(store)
         .with_permission_gate(gate)
         .with_router(fake_router())
-        // Board item (bash ships on by default and cannot be declined):
+        // (bash ships on by default and cannot be declined):
         // this file drives the REAL `bash` tool end to end, so it must now
         // opt in explicitly -- the facade's own default excludes it.
         .with_builtin_plugins(PluginSelection::All)
@@ -330,13 +330,13 @@ async fn an_untrusted_project_deny_rule_still_applies_immediately() {
     );
 }
 
-/// Board item 01KZHVDDQQ7XT0RK3JVNM2YV83, driven through the REAL
+///, driven through the REAL
 /// production seam. A misspelled `"denys"` key must not silently install
 /// zero deny rules: the operator wrote a rule they believe blocks `curl`,
 /// and it must be reported as never having loaded, not merely absent from
 /// some in-memory list. Paired with
 /// `a_correctly_spelled_deny_key_in_a_project_file_does_refuse_the_call`
-/// (P-15's control case) so "the call reaches the gate" here is evidence of
+/// ( control case) so "the call reaches the gate" here is evidence of
 /// the typo defeating the rule, not evidence the fixture never had a deny
 /// rule to enforce in the first place.
 #[tokio::test]
@@ -385,7 +385,7 @@ async fn a_misspelled_deny_key_in_a_project_file_installs_no_rule_and_is_reporte
     assert_eq!(gate.requests()[0].rendered, "curl evil.example");
 }
 
-/// P-15's control case for the test above: the SAME rule, correctly
+/// Control case for the test above: the SAME rule, correctly
 /// spelled, actually refuses the call before it ever reaches the gate --
 /// proving the typo test's "reaches the gate" observation is evidence of
 /// the miss, not an artifact of an empty fixture.
@@ -512,7 +512,7 @@ async fn a_global_permissions_file_installs_with_no_trust_decision() {
     );
 }
 
-/// Board item 01KZHVDDQQ7XT0RK3JVNM2YV83, driven through
+///, driven through
 /// `Conway::trust_permission_file` itself -- the `/trust permissions`
 /// production entry point, not just `load_permission_files` (which the
 /// tests above already cover). A file naming an unrecognized top-level key
@@ -525,7 +525,7 @@ async fn a_global_permissions_file_installs_with_no_trust_decision() {
 /// itself (via the same `is_trusted` query `load_permission_files` uses)
 /// and the effect on a live gate -- not on the mere presence of the guard.
 /// Paired with `trusting_a_correctly_spelled_project_file_is_recorded_as_trusted`
-/// (P-15's control), so "not recorded" here is evidence of the refusal, not
+/// ( control), so "not recorded" here is evidence of the refusal, not
 /// of `is_trusted` defaulting to `false` regardless of what
 /// `trust_permission_file` does.
 #[tokio::test]
@@ -572,7 +572,7 @@ async fn trusting_a_project_file_with_an_unrecognized_key_is_refused_and_not_rec
     assert_eq!(gate.requests()[0].rendered, "git status");
 }
 
-/// P-15's control for the test above: the SAME shape of file, correctly
+/// Control for the test above: the SAME shape of file, correctly
 /// spelled, IS recorded as trusted and DOES let its allow rule take effect
 /// -- proving the assertions above are evidence of the refusal, not of a
 /// trust store or gate that behaves identically either way.

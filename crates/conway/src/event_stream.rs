@@ -1,4 +1,4 @@
-//! `EventStream`: the facade-native, session-scoped event stream (WI-101).
+//! `EventStream`: the facade-native, session-scoped event stream.
 //!
 //! This wraps `conway_runtime::events::EventStream` -- the runtime's
 //! already lag-normalized, boxed broadcast stream (`EventBus::subscribe`
@@ -7,10 +7,10 @@
 //! with a session/agent filter and an optional replay prefix.
 //!
 //! This is a facade-owned type, not a re-export of the runtime's own
-//! `EventStream` alias: per the binding spec (WI-096's note on
+//! `EventStream` alias: per the binding spec (an earlier item's note on
 //! `lib.rs`), the facade defines its own state machine here rather than
 //! `pub use conway_runtime::EventStream`. `crate::event_stream` never
-//! writes `pub use conway_runtime::`, so WI-096's grep-based
+//! writes `pub use conway_runtime::`, so an earlier item's grep-based
 //! at-most-one-runtime-reexport test is unaffected by this file.
 
 use std::collections::VecDeque;
@@ -148,7 +148,7 @@ const DEDUP_TTL: chrono::Duration = chrono::Duration::seconds(30);
 /// the preceding `Assistant` record instead) -- so it cannot collide with a
 /// replay envelope either.
 ///
-/// **`Assistant` (-> `Event::TextDelta`, WI-140 review fix) is deliberately
+/// **`Assistant` (-> `Event::TextDelta` review fix) is deliberately
 /// NOT included here, and `Event::TurnFinished` no longer needs to be
 /// either:** `record_to_event`'s `Assistant` arm used to map to
 /// `Event::TurnFinished{usage, stop}`, a genuine 1:1 live twin, which is why
@@ -266,8 +266,7 @@ impl EventStream {
     /// bound `pending`'s lifetime, means this can never produce a **gap**
     /// (a real, non-duplicate event wrongly dropped).
     ///
-    /// **The `Assistant`/`TextDelta` duplicate (cycle-3 review finding,
-    /// fixed separately from `pending` above):** `has_live_twin` deliberately
+    /// **The `Assistant`/`TextDelta` duplicate:** `has_live_twin` deliberately
     /// excludes `TextDelta` -- a replayed `Assistant` record's full-text
     /// `TextDelta` can never content-match a chunked live `TextDelta`, so
     /// `pending`'s content-match mechanism cannot catch this pair. Left
@@ -1287,9 +1286,7 @@ mod tests {
         }
     }
 
-    /// The bug this item fixes (cycle-3 review finding, "focus-switch can
-    /// duplicate an in-flight turn's assistant text at the replay/live
-    /// junction"): `record_to_event` maps a persisted `Assistant` record to
+    /// The bug this item fixes: `record_to_event` maps a persisted `Assistant` record to
     /// ONE `Event::TextDelta` carrying the record's FULL reply text
     /// (`has_live_twin` deliberately excludes `TextDelta`, so
     /// `is_live_duplicate`'s content-match dedup structurally cannot catch
@@ -1501,7 +1498,7 @@ mod tests {
         }
     }
 
-    /// Cycle-4 review finding: `EventBus` is one process-wide broadcast
+    /// An earlier review found: finding: `EventBus` is one process-wide broadcast
     /// channel shared by every agent in the tree, and a lagging subscriber's
     /// missed range collapses into a single `Event::Lagged` with no
     /// per-agent/session information at all. If the boundary marker that

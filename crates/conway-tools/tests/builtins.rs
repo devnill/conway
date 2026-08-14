@@ -1,5 +1,5 @@
 //! Cross-plugin conformance coverage: [`conway_tools::builtin_plugins`] and
-//! the crate-wide rules every built-in tool must follow (WI-067 criteria).
+//! the crate-wide rules every built-in tool must follow (criteria).
 //!
 //! Requires the `test-fakes` feature (for `conway_tools::testing::test_ctx`).
 //! Declared with `required-features = ["test-fakes"]` in Cargo.toml, so a
@@ -216,7 +216,7 @@ fn a_tool_that_does_not_override_path_args_is_unconfinable_not_pathless() {
 
 // ---------------------------------------------------------- render_kind ---
 //
-// Board item 01KYT3NSWRHMPEAXVXRJ73KDYR: "pattern grants are still inert for
+// "pattern grants are still inert for
 // every tool except bash". `read:*`/`write:*`/... never matched anything,
 // because `PatternRule::matches`'s metacharacter gate ran unconditionally
 // against every tool's `render` output -- and every built-in but `bash`
@@ -682,10 +682,10 @@ async fn truncation_matches_the_documented_table_per_tool() {
     assert!(!out.is_error, "conway_cancel: {}", text_of(&out));
     actual.insert("conway_cancel", out.truncation);
 
-    // Authoritative truncation table (WI-067; mirrored in docs/tools.md's
+    // Authoritative truncation table (mirrored in docs/tools.md's
     // "Truncation policies" section, which this test guards against drift),
     // adjusted for conway-core's actual `HeadTail { head_bytes, tail_bytes }`
-    // shape (WI-064 deviation: the plan sketched `{ max_bytes }`, which
+    // shape (deviation: the plan sketched `{ max_bytes }`, which
     // conway-core does not have; `bash.rs` splits its 30_000-byte budget
     // evenly across the two real fields).
     let expected: Vec<(&str, TruncationPolicy)> = vec![

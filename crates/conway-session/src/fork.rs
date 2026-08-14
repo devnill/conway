@@ -1,7 +1,7 @@
 //! O(1) fork-by-reference (architecture §5.1, §8).
 //!
 //! `fork_impl` writes exactly one header line for the child and copies zero
-//! parent records. `JsonlSessionStore::fork` (WI-047) delegates here
+//! parent records. `JsonlSessionStore::fork` delegates here
 //! verbatim.
 //!
 //! ## Cost contract
@@ -64,7 +64,7 @@ use crate::store::JsonlSessionStore;
 ///    `FsyncPolicy` (satisfying "child header fsynced before fork returns
 ///    under all three policies"), zero records.
 ///
-/// `SessionIndex::record_header` (WI-050) is deliberately not called here:
+/// `SessionIndex::record_header` is deliberately not called here:
 /// the delegation to `store.create` in step 4 already records the child's
 /// header in the index (that call is `create`'s single wiring point), so
 /// fork children are indexed with no edit to this file.

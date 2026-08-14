@@ -2,8 +2,8 @@
 //! (de)serialization (architecture §5.1).
 //!
 //! Every other work item in this module depends on this file: `store.rs`
-//! (WI-047) reads/writes lines through it, `fork.rs` (WI-048) writes header
-//! lines through `encode_header`, and `provenance.rs` (WI-051) appends
+//! reads/writes lines through it, `fork.rs` writes header
+//! lines through `encode_header`, and `provenance.rs` appends
 //! `context_report` records through `encode_record`.
 //!
 //! ## Wire forms
@@ -21,7 +21,7 @@
 //!
 //! ## seq resolution (implementation note, not part of the public contract)
 //!
-//! The WI-046 spec text was written assuming `LogRecord` records do not
+//! The an earlier item spec text was written assuming `LogRecord` records do not
 //! carry their own `seq` and that `encode_record` must inject it via
 //! `serde_json::Value::Object` insertion. `conway-core`'s actual
 //! `LogRecord` (authoritative; see `crates/conway-core/src/log.rs`) already

@@ -1,4 +1,4 @@
-//! `Backend::admit` (board item 01KZDC4DKVC4JC3W4KN1WMC43N): per-dialect fit
+//! `Backend::admit`: per-dialect fit
 //! verdicts over `wiremock`, an oversized request refused with a typed
 //! error naming the input size/headroom/window, and a zero-request
 //! assertion proving admission never touches the network — no credentials,
@@ -8,7 +8,7 @@
 //! reachable from this external test crate, so the fixtures below pick
 //! prompt sizes and configured windows generously (a one-word prompt vs. a
 //! multi-thousand-character one) rather than pinning an exact token count —
-//! the heuristic's exact output is not this item's contract; GP-12 owns
+//! the heuristic's exact output is not this item's contract owns
 //! calibrating it.
 
 use std::collections::BTreeMap;
@@ -300,7 +300,7 @@ async fn no_network_call_of_any_kind_occurs_across_a_mix_of_admission_checks() {
 }
 
 // ---------------------------------------------------------------------
-// P-14: exactly one implementation of the headroom arithmetic and fit
+//: exactly one implementation of the headroom arithmetic and fit
 // comparison in this crate -- both dialects must call the shared
 // `conway_core::ports::check_admission` rather than restating
 // `est_tokens + headroom_tokens <= max_context_tokens` (or any saturating

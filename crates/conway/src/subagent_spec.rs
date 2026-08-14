@@ -1,5 +1,5 @@
 //! `ForkSpec`/`SpawnSpec`: the library-consumer-facing request shapes for
-//! [`crate::SessionHandle::fork`]/[`crate::SessionHandle::spawn`] (WI-102).
+//! [`crate::SessionHandle::fork`]/[`crate::SessionHandle::spawn`].
 //!
 //! The project's centerpiece, and the two are never blurred into one
 //! parameterized operation: **fork** inherits the forker's entire
@@ -8,11 +8,11 @@
 //! -- so that distinction is visible at the call site, even though
 //! `agent_def` is now optional on both (see [`SpawnSpec`]'s doc for the
 //! no-`agent_def`-means-inherit-the-parent's-role/model semantics this
-//! relaxes from the 0.1.0 "agent_def mandatory for spawn" rule, WI-099).
+//! relaxes from the 0.1.0 "agent_def mandatory for spawn" rule).
 //!
 //! Both convert into [`conway_core::agent::SubagentSpec`] via `From`, the
 //! type `conway_core::ports::SubagentHost::start` (`impl` on
-//! `conway_runtime::Runtime`, WI-084) actually consumes. This module
+//! `conway_runtime::Runtime`) actually consumes. This module
 //! contains no fork/spawn *logic* -- only the request shape and that
 //! conversion; see [`crate::SessionHandle::fork`]/`::spawn` for the
 //! delegation itself.
@@ -24,7 +24,7 @@ use conway_core::log::AskOrigin;
 /// A request to fork a live agent: the child inherits the forker's entire
 /// context (by reference, as of the fork point) plus `directive`.
 ///
-/// **Reconciliation (disclosed):** the WI-102 binding notes' illustrative
+/// **Reconciliation (disclosed):** the binding notes' illustrative
 /// struct types `result_contract` as `Option<serde_json::Value>`. The
 /// committed `conway_core::agent::SubagentSpec::result_contract` (this
 /// item's own conversion target) is `Option<schemars::schema::RootSchema>`,
@@ -50,23 +50,21 @@ pub struct ForkSpec {
     /// Overrides the forker's own system prompt. `None` means the child
     /// keeps whatever the forker was running under -- system prompt, tools
     /// selector, and model pin (`SubagentHost::start`'s Fork-only
-    /// inheritance fill, decision 01KZHEWXDZWPWMEAQ01XY2RDCB). **Except**
+    /// inheritance fill). **Except**
     /// that def's own `result_contract`, which this inheritance never
     /// carries along -- see [`ForkSpec::result_contract`]'s own doc.
     pub agent_def: Option<String>,
     pub role: Option<RoleAlias>,
     /// Selects which of the registered tools are announced to the child,
     /// replacing whatever it would otherwise inherit (an `agent_def`'s own
-    /// selector) rather than narrowing it (decision
-    /// 01KZHH9N313T5BTDR8281QDWHC) -- this can name a tool the forker's own
+    /// selector) rather than narrowing it -- this can name a tool the forker's own
     /// set excludes, and the runtime performs no intersection anywhere. It
     /// selects what the model is offered, never what it may execute: the
     /// permission gate and the confinement root are the actual capability
     /// boundary.
     pub tools: Option<ToolSelector>,
     pub budget: Budget,
-    /// **Never sourced from an INHERITED `agent_def`** (decision
-    /// 01KZHEWXDZWPWMEAQ01XY2RDCB): leaving this `None` on a `ForkSpec` that
+    /// **Never sourced from an INHERITED `agent_def`** -- leaving this `None` on a `ForkSpec` that
     /// also leaves `agent_def: None` does NOT pick up the def the forker
     /// itself happens to be running under, even though `SubagentHost::
     /// start` fills that def's system prompt/tools/model pin onto the
@@ -103,7 +101,7 @@ pub struct ForkSpec {
 }
 
 impl ForkSpec {
-    /// **Disclosed deviation:** the WI-102 binding notes describe `budget`
+    /// **Disclosed deviation:** the binding notes describe `budget`
     /// as defaulting to "the session's configured budget." That is
     /// infeasible as written -- `ForkSpec` (and `SpawnSpec`) are plain,
     /// freestanding request structs with no session reference at
@@ -201,7 +199,7 @@ impl From<ForkSpec> for SubagentSpec {
             // concept; see that struct's `root` field and
             // `From<SpawnSpec>` below.
             root: None,
-            // (01KZQJ03ZQ22MPM9H2TW1350ZF) Not yet exposed on `ForkSpec`/
+            // Not yet exposed on `ForkSpec`/
             // `SpawnSpec`: this item scopes the new surface to
             // `SubagentSpec`/`AgentSpec`/`ContextHookCtx` only. An embedder
             // wanting a tag today constructs a `SubagentSpec` directly
@@ -217,7 +215,7 @@ impl From<ForkSpec> for SubagentSpec {
 /// A request to spawn a fresh agent: no inherited context, a clean-slate
 /// system prompt from `agent_def` when one is given.
 ///
-/// **Relaxed (WI-099 superseded):** the 0.1.0 design deliberately made
+/// **Relaxed (superseded):** the 0.1.0 design deliberately made
 /// `agent_def` a required `String` here, enforcing "every spawn names a
 /// model" at the type level. That rule is relaxed by a recorded design
 /// decision: `agent_def` is now `Option<String>`, matching the internal
@@ -372,7 +370,7 @@ impl From<SpawnSpec> for SubagentSpec {
             ask_origin: None,
             cwd: spec.cwd,
             root: spec.root,
-            // (01KZQJ03ZQ22MPM9H2TW1350ZF) See the identical note in
+            // See the identical note in
             // `From<ForkSpec>` above.
             tag: None,
         }

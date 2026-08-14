@@ -148,11 +148,15 @@ inspect what its context contains and where each part came from. The
 its place in the hierarchy, so checking what a child knew is a normal thing
 to do rather than a debugging expedition.
 
-Out of the box Conway doesn't touch your context: no records dropped, no
-system prompt rewritten, no tool set narrowed. A host that wants to
-instrument context behavior does it through the `ContextHook` port: mask
-records, rewrite the system prompt, narrow tools, react to overflow. The
-core provides the extension point and the operator writes the policy.
+Out of the box Conway applies no context policy of its own: nothing
+summarized, no system prompt rewritten, no tool set narrowed. There is one
+exception, and it is in the record rather than behind it — a tool call whose
+result is missing from the transcript is removed from the request, because
+every provider rejects the pairing outright, and every call removed that way
+is named in that turn's context report. A host that wants to instrument
+context behavior does it through the `ContextHook` port: mask records,
+rewrite the system prompt, narrow tools, react to overflow. The core provides
+the extension point and the operator writes the policy.
 
 ### 4.3 Routing you can explain
 

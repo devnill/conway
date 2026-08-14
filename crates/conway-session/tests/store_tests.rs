@@ -1,4 +1,4 @@
-//! Integration tests for `JsonlSessionStore` (WI-047 criteria): file
+//! Integration tests for `JsonlSessionStore` (criteria): file
 //! layout, `create`/`append`/`read`/`head`/`meta`, fsync policy, and
 //! per-session-lock concurrency. Crash-recovery behavior lives in
 //! `tests/recovery_tests.rs`.
@@ -82,7 +82,7 @@ async fn open_store(root: &std::path::Path) -> JsonlSessionStore {
 // open
 // ---------------------------------------------------------------------
 
-/// WI-047 review S1 regression: under `Interval`, an idle session's tail
+/// Review S1 regression: under `Interval`, an idle session's tail
 /// write is synced by the background flusher within ~the interval — it must
 /// not wait for the next append.
 #[tokio::test]
@@ -491,7 +491,7 @@ async fn append_never_rewrites_existing_bytes() {
     }
 }
 
-/// Board item 01KZQHY6RTMYR4BRDTMQFP9J9R (P-2/GP-10's "append a delta,
+/// ( "append a delta,
 /// never mutate what was there"): appending a `LogRecord::ChildResultRecord`
 /// -- the record a parent's mailbox drain writes for a child's terminal
 /// result -- is an ordinary append like any other. Every byte written

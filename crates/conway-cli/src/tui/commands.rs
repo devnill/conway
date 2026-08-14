@@ -1,4 +1,4 @@
-//! TUI slash-command parsing and dispatch (WI-115).
+//! TUI slash-command parsing and dispatch.
 //!
 //! Two responsibilities, kept apart on purpose so [`parse`] stays a pure,
 //! state-free function while resolution and dispatch get to see the live
@@ -90,7 +90,7 @@ pub enum SlashCommand {
     /// mutation.
     Settings,
     Quit,
-    /// A plugin-declared command (board item 01KZYBFTK4QPB45AJT9M57P60W):
+    /// A plugin-declared command:
     /// `full_name` is the command word with its leading `/` AND leading
     /// whitespace stripped (e.g. `"acme.greet"` for `/acme.greet`), still
     /// unresolved against any registry -- [`parse`] recognizes only the
@@ -176,7 +176,7 @@ pub fn parse(input: &str) -> Result<SlashCommand, ParseError> {
             Ok(SlashCommand::Quit)
         }
         other => {
-            // Board item 01KZYBFTK4QPB45AJT9M57P60W: a plugin command's full
+            // a plugin command's full
             // name is ALWAYS `plugin_id.command_name` (see `SlashCommand::
             // Plugin`'s own doc) -- no built-in command word above ever
             // contains the namespace separator, so recognizing the SHAPE
@@ -392,8 +392,7 @@ pub enum Effect {
         parent: AgentId,
         first_message: Option<String>,
     },
-    /// A resolved plugin command is ready to run (board item
-    /// 01KZYBFTK4QPB45AJT9M57P60W). **`execute` never calls
+    /// A resolved plugin command is ready to run. **`execute` never calls
     /// `command.invoke` itself** -- it only resolves `full_name` against the
     /// registry and builds `ctx`, both synchronous, bounded-time operations;
     /// running the plugin's OWN async code is deferred to this effect so the
@@ -424,7 +423,7 @@ pub struct PluginCommandInvocation {
 #[async_trait::async_trait]
 pub trait Host {
     fn root(&self) -> AgentId;
-    /// The CALLING session's own id (board item 01KZYH37WNDKDWSMWQQPRFKKXC):
+    /// The CALLING session's own id:
     /// what [`SlashCommand::Plugin`]'s dispatch arm below stamps into
     /// [`conway::plugin::CommandCtx::session_id`] -- the one identity a
     /// `CommandOutcome::ForkSession` reply is ever resolved against (see
@@ -441,8 +440,7 @@ pub trait Host {
     /// alike -- gets the fallback for free rather than each needing to know
     /// to ask for it.
     async fn context_report(&self, agent: AgentId) -> conway::Result<ContextReport>;
-    /// The focused agent's cumulative token spend (board item
-    /// 01KYAGP11FF9YC3G60TWHHKKST): a thin passthrough to
+    /// The focused agent's cumulative token spend -- a thin passthrough to
     /// `SessionHandle::session_usage`, reached through this trait -- like
     /// every other method here -- so `app.rs`'s status-line refresh logic
     /// stays unit-testable against a fake, with no live `Runtime`.
@@ -504,7 +502,7 @@ pub trait Host {
 pub struct LiveHost<'a> {
     pub handle: &'a SessionHandle,
     pub conway: &'a Conway,
-    /// The installed plugin commands (board item 01KZYBFTK4QPB45AJT9M57P60W)
+    /// The installed plugin commands
     /// -- `App` builds this once, at construction (`CommandRegistry::
     /// build`), from the SAME plugin list it was handed; `LiveHost` borrows
     /// it fresh per call, mirroring `handle`/`conway`'s own borrow shape.
@@ -577,7 +575,7 @@ impl Host for LiveHost<'_> {
     }
 }
 
-/// A registration-time defect (board item 01KZYBFTK4QPB45AJT9M57P60W):
+/// A registration-time defect:
 /// [`CommandRegistry::build`] refuses to install a malformed or colliding
 /// plugin command rather than silently dropping or overwriting it --
 /// "a surfaced, named error at install time, not a silent win or a silent
@@ -597,8 +595,7 @@ impl std::fmt::Display for CommandRegistrationError {
 
 impl std::error::Error for CommandRegistrationError {}
 
-/// The resolved set of plugin-declared TUI commands (board item
-/// 01KZYBFTK4QPB45AJT9M57P60W): built once, at TUI startup
+/// The resolved set of plugin-declared TUI commands -- built once, at TUI startup
 /// (`CommandRegistry::build`), from the same installed plugin list
 /// `conway-cli` fed to `ConwayBuilder`; consulted by [`LiveHost::
 /// resolve_command`] on every `/`-prefixed submit and by `AppState::
@@ -727,7 +724,7 @@ impl CommandRegistry {
 }
 
 /// The tool profile a bare `/fork`/`/spawn`'s fresh, interactive keep-alive
-/// child gets (decision 01KYB0BWY27DWB69NCNK85D56J): the same "pure and
+/// child gets: the same "pure and
 /// light" exclusion `App::new` gives the TUI root -- excludes `report`, since
 /// an interactive keep-alive child (like the root) has no parent to report an
 /// `AgentResult` to, and would otherwise hit the permission gate on a tool
@@ -830,7 +827,7 @@ async fn bare_spawn<H: Host>(
 ///   on a `Fork` recipe is ignored, matching `AgentIntent`'s own doc: the
 ///   def is the OPTIONAL garnish; the child still inherits whatever def the
 ///   focused agent was itself running under, via `SubagentHost::start`'s
-///   own Fork-only fallback, decision 01KZHEWXDZWPWMEAQ01XY2RDCB).
+///   own Fork-only fallback).
 ///   `intent.prompt` becomes the first message. Reuses the existing
 ///   `bare_fork`/`bare_spawn` execution path (the `Effect::FocusNewSession`
 ///   machinery) -- no new facade ops.
@@ -1084,7 +1081,7 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
                     // resumed browsing starts from a known-empty transcript
                     // rather than a stale one from the old session.
                     //
-                    // Board item 01KZYBFTK4QPB45AJT9M57P60W: the installed
+                    // the installed
                     // plugin command list is process-lifetime configuration
                     // (which plugins were installed at startup), not
                     // session-scoped state -- `AppState::new` seeds it empty
@@ -1271,7 +1268,7 @@ fn render_tree_snapshot(state: &mut AppState) {
 }
 
 fn render_context_report(report: &ContextReport, state: &mut AppState) {
-    if report.segments.is_empty() {
+    if report.segments.is_empty() && report.dropped.is_empty() {
         notice(state, "empty context");
         return;
     }
@@ -1283,6 +1280,24 @@ fn render_context_report(report: &ContextReport, state: &mut AppState) {
                 entry.segment,
                 provenance_label(&entry.provenance),
                 entry.tokens_est
+            ),
+        );
+    }
+    // Reported last and only when non-empty, so an ordinary turn's output is
+    // byte-for-byte what it was. This is the one thing in the report that
+    // describes what ISN'T in the context, which is exactly why it would
+    // otherwise be unanswerable: the blocks are gone from `segments` by the
+    // time anything renders them.
+    if !report.dropped.is_empty() {
+        notice(
+            state,
+            format!(
+                "dropped {} unanswered tool call{}: {} \
+                 (no result was recorded, so the request could not carry them; \
+                 the model may re-issue them)",
+                report.dropped.len(),
+                if report.dropped.len() == 1 { "" } else { "s" },
+                report.dropped.join(", "),
             ),
         );
     }
@@ -1639,7 +1654,7 @@ mod tests {
     }
 
     // ---------------------------------------------------------------
-    // parse() -- plugin commands (board item 01KZYBFTK4QPB45AJT9M57P60W)
+    // parse() -- plugin commands
     // ---------------------------------------------------------------
 
     #[test]
@@ -1690,7 +1705,7 @@ mod tests {
     struct FakeHost {
         calls: Mutex<Vec<&'static str>>,
         root: AgentId,
-        /// Board item 01KZYH37WNDKDWSMWQQPRFKKXC: the fixed session id this
+        /// The fixed session id this
         /// fake `Host` reports -- lets a test assert `execute`'s
         /// `SlashCommand::Plugin` arm stamps THIS value (never a fresh one,
         /// never the focused/root agent) into `CommandCtx::session_id`.
@@ -1721,7 +1736,7 @@ mod tests {
         /// shape: they now also see one `classify_agent_intent` call
         /// before the `fork`/`spawn` they already asserted on.
         classify_intent: Option<conway::AgentIntent>,
-        /// Board item 01KZYBFTK4QPB45AJT9M57P60W: a registered-by-hand
+        /// A registered-by-hand
         /// plugin-command table (keyed by full name), so `execute`'s
         /// `SlashCommand::Plugin` arm is testable with no live
         /// `CommandRegistry`/plugin at all -- `resolve_command` below is a
@@ -1871,7 +1886,7 @@ mod tests {
     }
 
     // ---------------------------------------------------------------
-    // execute() -- SlashCommand::Plugin (board item 01KZYBFTK4QPB45AJT9M57P60W)
+    // execute() -- SlashCommand::Plugin
     // ---------------------------------------------------------------
 
     /// A fixture plugin command that echoes `ctx.args` back, prefixed --
@@ -2011,7 +2026,7 @@ mod tests {
     }
 
     // ---------------------------------------------------------------
-    // CommandRegistry::build (board item 01KZYBFTK4QPB45AJT9M57P60W)
+    // CommandRegistry::build
     // ---------------------------------------------------------------
 
     struct FixturePlugin {
@@ -3399,6 +3414,7 @@ mod tests {
                 },
             ],
             total_tokens_est: 52,
+            dropped: Vec::new(),
         });
 
         execute(
@@ -3420,7 +3436,7 @@ mod tests {
             .collect();
         assert_eq!(lines.len(), 2, "expected one line per segment");
         // Each line must carry the segment id, a provenance label, and the
-        // token estimate -- not just be present (cycle-1 review M1).
+        // token estimate -- not just be present.
         assert!(
             lines[0].contains(&seg0.to_string())
                 && lines[0].contains("user prompt")
@@ -3448,6 +3464,7 @@ mod tests {
             tokenizer: "heuristic-chars4".to_string(),
             segments: Vec::new(),
             total_tokens_est: 0,
+            dropped: Vec::new(),
         });
 
         execute(

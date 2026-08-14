@@ -1,5 +1,5 @@
 //! `Backend::probe` for `OpenAiCompatBackend`: a single best-effort
-//! liveness/readiness check (WI-020).
+//! liveness/readiness check.
 //!
 //! Deliberately bypasses `HttpClient::send_with_retry` — a probe is one
 //! observation, never retried (architecture §4.5: unlike `BreakerKind::
@@ -18,7 +18,7 @@
 //!
 //! The three-tier Ollama fallback is ordered richest-to-plainest: `/models`
 //! and `/api/tags` both carry a model list, `/api/version` carries none but
-//! is the most universally-served Ollama liveness endpoint (WI-124) — real
+//! is the most universally-served Ollama liveness endpoint — real
 //! Ollama Cloud deployments have been observed 404-ing on both `/models`
 //! (no OpenAI-compat model listing) and `/api/tags` (a local-instance
 //! management endpoint), so a plain version check is the last resort that
@@ -28,14 +28,14 @@
 //! inventing a synthetic success — a caller of [`Backend::probe`] classifying
 //! this result is expected to recognize that a `BadRequest`-classified probe
 //! failure means "this liveness path isn't served here", not "the endpoint
-//! is down" (WI-124). No production code currently consumes
+//! is down". No production code currently consumes
 //! `Backend::probe` at all — `conway_plugin_routing`'s periodic health
 //! prober, formerly this classification's only consumer, was retired (board
-//! item `01KZ802GSF692EKYKQ2TTVCJB8`, which is done: that citation is
+//! item, which is done: that citation is
 //! provenance for how the consumer went away, not an open thread).
 //!
 //! **What remains open is what to do about the port method now.** That is
-//! board item `01KZVQRWRRT8NTRKHHXYZ5ZQ7S` — "retiring the prober left
+//! — "retiring the prober left
 //! `Backend::probe` with no production consumer, decide whether the port
 //! method stays". Until it is decided, this method and `Backend::probe`
 //! itself are unaffected and remain part of the `Backend` port's public
@@ -166,7 +166,7 @@ impl OpenAiCompatBackend {
     }
 
     /// `GET {base_origin}/api/version`, the last-resort Ollama liveness
-    /// fallback (WI-124): carries no model list, but is the plainest
+    /// fallback: carries no model list, but is the plainest
     /// endpoint every real Ollama server answers, for deployments (e.g.
     /// Ollama Cloud) that 404 on both `/models` and `/api/tags`. Body
     /// content is irrelevant — a successful status alone proves liveness.

@@ -206,7 +206,7 @@ async fn promote_flips_header_tree_and_listing_and_emits_agent_promoted() {
     assert_eq!(
         meta.origin.as_ref().map(|o| o.parent),
         Some(handle.id()),
-        "P-2: promotion preserves the record — origin/provenance untouched"
+        ": promotion preserves the record — origin/provenance untouched"
     );
 
     // ... so the default (exclude-ephemeral) listing now surfaces it.

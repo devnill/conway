@@ -1,18 +1,18 @@
 //! `JsonlSessionStore`: append-only, one-file-per-session backing storage
 //! (architecture §4.4, §7 "Module: conway-session").
 //!
-//! WI-047 implements `open`/`open_with`, the `SessionStore` trait impl
+//! implements `open`/`open_with`, the `SessionStore` trait impl
 //! (`create`/`append`/`read`/`head`/`meta`), the fsync policy, and
-//! crash-tolerant reads. `fork` (WI-048) delegates to
+//! crash-tolerant reads. `fork` delegates to
 //! `crate::fork::fork_impl`, which in turn calls `create` — so `create` is
 //! the single place `children`/`list` updates need to be wired in for both
-//! paths. `children`/`list` (WI-050) delegate to `SessionIndex`, an
+//! paths. `children`/`list` delegate to `SessionIndex`, an
 //! in-memory, no-I/O read; `create` calls `SessionIndex::record_header`
 //! after the header write succeeds, and `open_with` builds the index via
 //! `SessionIndex::load_or_rebuild`.
 //!
 //! Layout: `root/<session_id>.jsonl`, one file per session, no
-//! subdirectories. `root/index.jsonl` (WI-050) is skipped by every
+//! subdirectories. `root/index.jsonl` is skipped by every
 //! directory scan here (a session id never parses as the literal string
 //! `index`, so the skip is implicit in the id-parse step, not a special
 //! case).
@@ -40,7 +40,7 @@ use crate::codec;
 use crate::index::SessionIndex;
 
 /// Durability policy for `append`. Header writes (`create`, and `fork` once
-/// WI-048 lands) always fsync immediately, independent of this policy — see
+/// lands) always fsync immediately, independent of this policy — see
 /// [`JsonlSessionStore::create`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FsyncPolicy {
@@ -62,7 +62,7 @@ impl Default for FsyncPolicy {
 }
 
 /// Store-wide configuration. `lru_capacity` is consumed by
-/// [`crate::resolver::TranscriptResolver`] (WI-049); `JsonlSessionStore`
+/// [`crate::resolver::TranscriptResolver`]; `JsonlSessionStore`
 /// itself only reads `fsync`.
 #[derive(Debug, Clone)]
 pub struct StoreConfig {
@@ -91,7 +91,7 @@ struct SessionFile {
     last_fsync: Instant,
     /// Bytes written since the last `sync_data` — the background flusher
     /// syncs dirty idle handles so a session that stops appending is never
-    /// left un-fsynced longer than the interval (WI-047 review S1).
+    /// left un-fsynced longer than the interval (review S1).
     dirty: bool,
     /// Set by `remove` under this session's own mutex, before the file is
     /// unlinked. An `append` that already cloned the handle `Arc` before
@@ -173,7 +173,7 @@ pub struct JsonlSessionStore {
     fsync_count: Arc<AtomicU64>,
     /// Total lines read across every cold-open full-file scan performed by
     /// [`get_or_open_handle`](Self::get_or_open_handle). A warm (already
-    /// cached) handle contributes nothing here — this is what lets WI-048's
+    /// cached) handle contributes nothing here — this is what lets an earlier item's
     /// fork tests assert `fork` performs zero parent reads when the parent
     /// handle is pre-warmed. Test-only instrumentation via
     /// [`lines_scanned`](Self::lines_scanned), not part of the public store
@@ -183,7 +183,7 @@ pub struct JsonlSessionStore {
     /// aborted on drop. Holds only a `Weak` to `handles`, so a dropped
     /// store also ends the task naturally.
     flusher: Option<tokio::task::JoinHandle<()>>,
-    /// The derived `children`/`list` accelerator (WI-050). Built once at
+    /// The derived `children`/`list` accelerator. Built once at
     /// `open_with` time via rebuild-by-scan or an existing `index.jsonl`;
     /// kept current by `record_header` calls from `create` (which `fork`
     /// also goes through). Never a source of truth.
@@ -220,7 +220,7 @@ fn io_err(e: std::io::Error) -> StoreError {
 /// Background flusher for `FsyncPolicy::Interval`: ticks at `interval` and
 /// `sync_data`s any dirty handle whose last sync is older than `interval`,
 /// so an idle session's tail write is never left un-fsynced longer than the
-/// interval (WI-047 review S1). Exits when the store is dropped (the
+/// interval (review S1). Exits when the store is dropped (the
 /// `Weak` fails to upgrade) or the task is aborted.
 async fn flush_idle_handles(
     handles: std::sync::Weak<AsyncRwLock<HashMap<SessionId, Handle>>>,
@@ -474,7 +474,7 @@ impl JsonlSessionStore {
 
         // Cold path: open, read, and (if needed) repair the file WITHOUT
         // holding the map lock — a slow cold-open must never block lookups
-        // or cold-opens of unrelated sessions (WI-047 review S2). Two
+        // or cold-opens of unrelated sessions (review S2). Two
         // concurrent cold-opens of the same session may both do this work;
         // the insert below is first-wins and the loser's read-only handle
         // is dropped before any write happens through it.
@@ -589,7 +589,7 @@ impl JsonlSessionStore {
     }
 
     /// Total lines read across every cold-open full-file scan so far (see
-    /// the field doc on [`JsonlSessionStore::lines_scanned`]). WI-048's O(1)
+    /// the field doc on [`JsonlSessionStore::lines_scanned`]). an earlier item's O(1)
     /// fork tests pre-warm the parent handle, snapshot this counter, call
     /// `fork`, and assert it is unchanged. Test-only instrumentation, not
     /// part of the public store contract.
@@ -680,7 +680,7 @@ impl JsonlSessionStore {
         file.sync_data().await.map_err(io_err)?;
         self.fsync_count.fetch_add(1, Ordering::Relaxed);
 
-        // Single wiring point for the index (WI-050): `fork` delegates to
+        // Single wiring point for the index: `fork` delegates to
         // `create` (see `crate::fork::fork_impl`), so recording here covers
         // both paths without any edit to `fork.rs`. Best-effort — index
         // I/O errors are logged and swallowed inside `record_header`,
@@ -753,7 +753,7 @@ impl SessionStore for JsonlSessionStore {
         Ok(sf.head)
     }
 
-    /// Delegates verbatim to `crate::fork::fork_impl` (WI-048), which
+    /// Delegates verbatim to `crate::fork::fork_impl`, which
     /// implements fork-by-reference: a single header write that references
     /// `parent` by `(parent, at_seq, mode)` and copies zero records.
     async fn fork(
@@ -775,7 +775,7 @@ impl SessionStore for JsonlSessionStore {
             None => {}
         }
 
-        // Cold path: read only line 0, never the whole file — WI-048's
+        // Cold path: read only line 0, never the whole file — an earlier item's
         // fork relies on this being O(1) in parent size.
         let path = self.session_path(sid);
         let file = File::open(&path)
@@ -798,7 +798,7 @@ impl SessionStore for JsonlSessionStore {
         })
     }
 
-    /// Accelerated by `SessionIndex` (WI-050): in-memory lookup, no file
+    /// Accelerated by `SessionIndex`: in-memory lookup, no file
     /// I/O on this path. Hides ephemeral children -- see
     /// `SessionIndex::children`'s doc for why this method has no
     /// `include_ephemeral` opt-in.
@@ -806,7 +806,7 @@ impl SessionStore for JsonlSessionStore {
         Ok(self.index.children(sid))
     }
 
-    /// Accelerated by `SessionIndex` (WI-050): in-memory lookup, no file
+    /// Accelerated by `SessionIndex`: in-memory lookup, no file
     /// I/O on this path.
     async fn list(&self, filter: SessionFilter) -> Result<Vec<SessionMeta>, StoreError> {
         Ok(self.index.list(&filter))

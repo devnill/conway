@@ -99,7 +99,7 @@ would need, the same construction the CLI itself uses (see
 `crates/conway-cli/src/main.rs`'s `build_conway`).
 
 **One default you must override before `build()` will succeed on an
-unmodified config:** `[permissions].mode` defaults to `"prompt"`, and there
+unmodified config:** `permissions.mode` defaults to `"prompt"`, and there
 is no `ConwayBuilder::with_prompt_handler` — `build()` calls
 `gates::from_config` with `prompt_handler: None` unconditionally, and a
 `"prompt"` mode with no handler is a `ConwayError::Config`, not a silent
@@ -116,12 +116,12 @@ Declaratively, these are the same `.conway/settings.json` shape
 (`conway::config::schema::ConwayConfig`) is exactly what `discover()`/
 `from_config()` parse it into, and what `from_parts()` takes directly if you
 build one in code (`minimal_config()` in the example above does this: a
-`BTreeMap<String, RoleEntry>` for `[roles]`, a `BTreeMap<String,
-BackendEntry>` for `[backends]`). To inject an already-constructed provider
+`BTreeMap<String, RoleEntry>` for `roles`, a `BTreeMap<String,
+BackendEntry>` for `backends`). To inject an already-constructed provider
 instead of a config-file entry, `ConwayBuilder::with_backend(Arc<dyn
 Backend>)` takes precedence over any config-derived backend with the same
 `Backend::id()` — this is how the minimal example supplies its fake backend
-with no `[backends]` table at all.
+with no `backends` table at all.
 
 ### Loading config without the ambient user layer
 
@@ -176,8 +176,7 @@ own construction paths instead — routing them through `CliOverrides` would
 be actively breaking there (several of `conway-cli`'s flags are
 non-`Option`, always-present-with-a-default clap fields, so layering them
 as the highest-precedence source would make a bare `conway -p "hi"` fail
-config validation; see `CliOverrides`'s own doc comment and board item
-`01KZ8049CVW1GCAA081M7WSVSZ` for the full reasoning). That does not affect
+config validation; see `CliOverrides`'s own doc comment and for the full reasoning). That does not affect
 an embedder: your own flags are typically `Option`-shaped from the start
 (absent means "don't override"), which is exactly what this struct expects.
 
@@ -281,9 +280,7 @@ config-derived selection instead — so a plain `ConwayBuilder::discover()?
 mechanism exists to require of built-ins too, so an already-explicit call
 gains no new hoop to jump through.
 
-### First-party plugin tier
-
-Board item 01KZDC3JQ7W4DY1MG6MBCVB2DV settles the shape of the tier
+### First-party plugin tier settles the shape of the tier
 [`PHILOSOPHY.md`](../PHILOSOPHY.md#first-party-plugins-and-why-they-are-not-defaults)
 describes: plugins written and shipped in this repository, but installed the
 same way a third party's would be, never by default.
@@ -294,11 +291,11 @@ without special-casing. `conway` (this facade crate) does not, and must
 never, depend on any of them: doing so would put a first-party plugin back
 on the exact footing the tier exists to avoid. `crates/conway-plugin-skeleton`
 is the worked example this item ships — a `SkeletonPlugin` registering one
-`skeleton_ping` tool and (board item 01KZYBFTK4QPB45AJT9M57P60W) one
+`skeleton_ping` tool and one
 `/conway.plugin_skeleton.ping` TUI slash command, both written entirely
 against `conway::plugin`, proving nothing beyond the mechanism below and
 [`docs/plugins/hooks.md`](plugins/hooks.md) point 15. `crates/conway-plugin-history`
-(board item 01KZY8Q1CMMNVSF54CTC270N3H) is this tier's first REAL, non-worked
+ is this tier's first REAL, non-worked
 member: `/conway.history.rewind <seq>`, forking the calling session at an
 explicit, persisted sequence number via `CommandOutcome::ForkSession` (see
 that variant's own doc, and [`docs/plugins/hooks.md`](plugins/hooks.md)
@@ -368,16 +365,14 @@ facade's point of view, just another consumer of the public `conway`/
 itself. Pre-1.0, a first-party plugin's own API can change in any workspace
 release, same as everything else here.
 
-### Installing a router: `RouterFactory` and the `[plugins].install` router arm
+### Installing a router: `RouterFactory` and the `plugins.install` router arm
 
-`RouterFactory` installs through the same `[plugins].install` pass and
+`RouterFactory` installs through the same `plugins.install` pass and
 runs with the same unsandboxed privileges as any other plugin; unlike a
 `BackendFactory` it receives no raw credential, only already-built
 `Backend` handles it can call — see
 [`docs/plugins/trust-and-security.md`](plugins/trust-and-security.md#backends-and-routers-the-same-install-pass-and-one-hands-over-more)
-for what that distinction does and does not buy you.
-
-Board item 01KZFC2MD1FVNA674YJ9A19T8E extends the same `[plugins].install`
+for what that distinction does and does not buy you. extends the same `plugins.install`
 key to router selection. `Router` itself has no identity method — a router
 that ships as an installable component instead names itself through a
 small, separate factory trait, `conway::RouterFactory`:
@@ -403,7 +398,7 @@ impl RouterFactory for MyRouterFactory {
 ```
 
 This exists because router **selection** must precede router
-**construction**: `[plugins].install` is read long before backends and a
+**construction**: `plugins.install` is read long before backends and a
 capability picture exist, and building a real router needs both. A
 `RouterFactory` carries the id up front and defers the fallible `build`
 step to `ConwayBuilder::build()`'s own router step, once that context is
@@ -438,14 +433,14 @@ UNCONDITIONALLY over a registered factory — it is never wrapped, inspected,
 or validated, and a factory set alongside it is then never even invoked.
 Absent an injected router, a registered factory is invoked instead; absent
 both, `build()` falls through to `conway_core::routing::MinimalRouter` —
-the config-only core resolver (board item 01KZFC43J1J06BM4CCWKCKHSNV: this
+the config-only core resolver (: this
 crate no longer compiles a capability-/health-filtering router engine in at
 all). A factory whose `build` returns `Err` fails the whole `build()` call
 as `ConwayError::Build`, naming the factory's own id and the underlying
 message — never silently swallowed, never a silent fallback to
 `MinimalRouter`.
 
-**Wiring it in, as `[plugins].install`:** exactly the same shape as a
+**Wiring it in, as `plugins.install`:** exactly the same shape as a
 plugin id, resolved against a binary's own linked bundle of router
 factories in the SAME pass as its linked plugins and backend factories —
 [`ConwayBuilder::install_selected`]'s second `Vec` argument
@@ -456,7 +451,7 @@ its existing `bundle`):
 { "plugins": { "install": ["conway.routing"] } }
 ```
 
-Naming more than one router-factory id in `[plugins].install` is a hard
+Naming more than one router-factory id in `plugins.install` is a hard
 config error — a build has exactly one router. `conway-cli`'s own linked
 router-factory bundle carries one first-party occupant today,
 `conway-plugin-routing`'s `RoutingRouterFactory` (published id
@@ -469,7 +464,7 @@ factory is a hard error listing both known sets, mirroring the plugin-only
 unknown-id error this tier already raised.
 
 **No mode asymmetry**: a router installed via
-`[plugins].install` takes effect identically for the TUI, one-shot, and a
+`plugins.install` takes effect identically for the TUI, one-shot, and a
 library embedder calling `with_router_factory` directly — all three reach
 the same `ConwayBuilder::build()` router step.
 
@@ -544,13 +539,13 @@ the facade root is the whole surface — no `conway-core` dependency.
 
 **This table is about the IN-PROCESS question — can a crate depending only
 on `conway` write a new `impl` of the trait itself — which is a different
-question from the one `.design/extension-architecture.md` §13.5 answers.**
+question from the one the extension design answers.**
 That section (dated status note, 2026-08-09) is a non-goals list for the
 OUT-OF-PROCESS subprocess-plugin design; it says nothing about registering
 an in-process Rust type through `ConwayBuilder`, and citing it here as
 though it did was itself a standing error this page carried, now corrected.
 `Backend` used to be named alongside `SessionStore`/`Router` in this
-table's "not reachable" set; board item 01KZHEZF8XCD0TMDYZQP06J2KH added
+table's "not reachable" set; added
 `conway::backend` specifically to make the raw trait facade-only
 authorable, so that row is unconditionally **Yes** now.
 
@@ -563,7 +558,7 @@ re-exported either, so a facade-only crate cannot write `impl Router`'s
 the one crate in this workspace that does implement `Router`, depends on
 `conway-core` directly rather than only on `conway` to do it — verified by
 compiling a facade-only scratch crate against each claim, not by reading
-(`.design/router-installation-q2-compile-evidence.md`). **That is not
+. **That is not
 the whole story for `Router`, though, and reading only this row would be
 misleading:** a *separate* trait, `RouterFactory` — installing, not
 authoring, a router — genuinely is facade-only implementable end to end
@@ -593,7 +588,7 @@ read long before API keys, base URLs, and per-model overrides do.
 
 `BackendFactory::id()` names a **kind** — a dialect, like `anthropic` — and
 is not the same question `Backend::id()` answers. That one is a *configured
-instance* identity, taken from the `[backends.<id>]` key, and two
+instance* identity, taken from the `backends.<id>` key, and two
 configured backends can be the same kind under different ids. The
 consequence: one registered factory can be built **once per matching
 configuration entry**, where a `RouterFactory` is built at most once,
@@ -615,11 +610,10 @@ than inventing a second one. Two factories reporting the same kind id is a
 runs so a duplicate never leaves one factory's side effects behind.
 Registering no factories leaves `build()` behaving exactly as before.
 
-**Reachable from configuration.** `[backends.<id>].kind` is an open name
-(board item 01KZHF1E85MS1VF4YH8CDNCP9Z), resolved against every registered
-factory's own `id()` — ONLY (board item 01KZHF270T3W8GZ7NM6DSNQ4MM removed
+**Reachable from configuration.** `backends.<id>.kind` is an open name, resolved against every registered
+factory's own `id()` — ONLY ( removed
 the temporary compiled-in fallback the predecessor item left standing;
-`conway` itself compiles in no kind at all any more). A `[backends.<id>]`
+`conway` itself compiles in no kind at all any more). A `backends.<id>`
 entry naming `MyDialectFactory`'s own kind is what invokes it, with a
 `BackendBuildContext` resolved from THAT entry — `id` is the entry's own
 JSON key, `base_url`/`dialect` copied verbatim, `api_key` resolved the same
@@ -631,7 +625,7 @@ or not its kind reads it. A `kind` no registered factory claims fails
 a misspelled or unregistered kind is never silently ignored.
 
 **The two dialects `conway` used to compile in are now `conway-plugin-backends`,
-a first-party plugin (board item 01KZHF270T3W8GZ7NM6DSNQ4MM) — see
+a first-party plugin — see
 [`docs/providers.md`](providers.md#where-a-backend-is-declared)**. Its
 `AnthropicBackendFactory`/`OpenAiCompatBackendFactory` (published kind ids
 `ANTHROPIC_KIND`/`OPENAI_COMPAT_KIND`, unchanged strings `"anthropic"`/
@@ -641,10 +635,10 @@ and calls `with_backend_factory` for each dialect it wants, before
 `build()`. The shipped `conway` binary is the one place this happens
 without you writing it: `conway-cli` links the crate and hands both
 factories to [`ConwayBuilder::install_selected`]'s third `Vec` argument,
-which attaches by default (`[plugins].default_backends`, default
+which attaches by default (`plugins.default_backends`, default
 `["anthropic", "openai-compat"]`, unioned into the resolved id set inside
 `install_selected` itself) — the one first-party mechanism that
-attaches with no `[plugins].install` entry at all, since a backend, unlike
+attaches with no `plugins.install` entry at all, since a backend, unlike
 a router or a tool plugin, has no honest degenerate fallback (an install
 with none attached cannot reach a model). `conway` (the facade) never does
 this for you.

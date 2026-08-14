@@ -21,7 +21,7 @@ use crate::provenance::{ContextReport, Provenance};
 /// Fork vs spawn: the only two subagent modes, never blurred into one.
 ///
 /// Defined here because [`ForkOrigin`] persists it; re-exported from
-/// `agent` (WI-005) as the canonical public location.
+/// `agent` as the canonical public location.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SubagentMode {
@@ -241,7 +241,7 @@ pub enum LogRecord {
     },
     /// Marks another record in this SAME session's log as excluded from (or
     /// re-included in) the assembled outgoing LLM payload, without deleting
-    /// or mutating it (WI-125). `target_seq` is a local seq in this
+    /// or mutating it. `target_seq` is a local seq in this
     /// session's own numbering -- the same units `resolve_prefix` already
     /// uses everywhere else in this module's ancestry walk.
     ///
@@ -261,9 +261,9 @@ pub enum LogRecord {
     /// record is ever actually excluded from an outgoing LLM payload
     /// today, despite the doc above.
     ///
-    /// **That is a deliberate deferral, not pending work.** The board item
+    /// **That is a deliberate deferral, not pending work.** The
     /// filed for it was cancelled, and decision
-    /// `01KZT3XF73Z5WBC09FSWD51RT7` rules that compaction is explicitly out
+    /// rules that compaction is explicitly out
     /// of scope: its value is empirical and depends on model, workload and
     /// transcript shape, so conway ships the seam and leaves the policy to
     /// the consumer. The same decision states what it does NOT rule -- this
@@ -446,6 +446,7 @@ mod tests {
                         tokenizer: "cl100k_base".into(),
                         segments: vec![],
                         total_tokens_est: 0,
+                        dropped: vec![],
                     },
                 },
                 "context_report",
@@ -726,7 +727,7 @@ mod tests {
     /// A mask and its reversal are two distinct, independently-valid
     /// `ContextMask` records targeting the same `target_seq` -- masking
     /// never mutates the masked record or an earlier mask record in place
-    /// (WI-125's "no silent loss" guiding principle: exclusion is explicit
+    /// (an earlier item's "no silent loss" guiding principle: exclusion is explicit
     /// and reversible by appending the opposite, not by editing history).
     #[test]
     fn context_mask_and_its_reversal_round_trip_as_independent_records() {

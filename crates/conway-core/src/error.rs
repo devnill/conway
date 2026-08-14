@@ -32,7 +32,7 @@ pub enum BackendError {
         max_context_tokens: u32,
     },
     /// `Backend::admit`'s rejection (headroom-and-refusal amendment, decision
-    /// 01KZDBYTKFYTVD9R2NA10QJNJE, board item 01KZDC4DKVC4JC3W4KN1WMC43N):
+    ///):
     /// this backend's own local, pre-flight estimate of `req`'s size, plus
     /// the resolved headroom, exceeds `model`'s declared window --
     /// discovered before any network call, unlike [`Self::ContextOverflow`]
@@ -116,8 +116,7 @@ pub enum ToolError {
     Internal { detail: String },
 }
 
-/// Why a [`crate::ports::HookRunner`] invocation failed (board item
-/// 01KZRZY1MNM872BZ6AKEBG3SKE). **Every** distinct cause -- a nonzero exit,
+/// Why a [`crate::ports::HookRunner`] invocation failed. **Every** distinct cause -- a nonzero exit,
 /// a timeout, a missing/unexecutable command, or stdout that did not parse
 /// as a [`crate::hook::HookAnswer`] -- lands here, uniformly, as the ONE
 /// way this port reports failure: "fail-closed is the runner's job,"
@@ -167,7 +166,7 @@ pub enum CwdError {
 }
 
 /// Errors produced by [`crate::ports::ArtifactWriteHandle::write`] (board
-/// item 01KZ84437RMKHP5DJX7RMHH7JY: the containment guard that makes it safe
+/// item: the containment guard that makes it safe
 /// for a [`crate::ports::ContextHook`] to spill content to disk).
 ///
 /// **`OutsideRoot` is not a corner case -- it is the guard this whole port
@@ -259,7 +258,7 @@ pub enum RoutingError {
     /// capability-skip ("missing: ...") or the backend/health failure a live
     /// attempt hit (e.g. a `BackendError`'s own `Display`, which for
     /// `ServerError` already carries the HTTP status and provider error
-    /// body). `render_considered` (WI-121) is what makes those reasons
+    /// body). `render_considered` is what makes those reasons
     /// visible instead of just the bare count: every wrapping layer's
     /// `Display` (`RuntimeError::Routing`, both `ConwayError::Routing`/
     /// `::Runtime`) forwards this variant's `Display` verbatim, so the
@@ -305,8 +304,8 @@ pub enum RuntimeError {
     /// The agent exists (somewhere in this runtime) but is not a descendant
     /// of the session/handle the caller is acting through -- distinct from
     /// [`RuntimeError::AgentNotFound`], which means the agent is unknown
-    /// entirely. Added for F-102-1: `conway::SessionHandle::
-    /// ensure_agent_in_session` (WI-102) previously had no dedicated variant
+    /// entirely. Added for `conway::SessionHandle::
+    /// ensure_agent_in_session` previously had no dedicated variant
     /// for this case and reused `AgentNotFound` for both.
     #[error("agent {agent} does not belong to session {session}")]
     AgentNotInSession { agent: AgentId, session: SessionId },
@@ -352,8 +351,8 @@ pub enum RuntimeError {
     /// panic.
     #[error("ask requires SubagentMode::Fork (ask is fork+await-text, not a third primitive); got {mode:?}")]
     AskRequiresFork { mode: SubagentMode },
-    /// Board item 01KYT8TS0EBKJHYNJRF6S88NRH, extended by board item
-    /// 01KYTP0PGKJ4VCJP5TD39A1WHF: `steer`/`await_result`/`cancel`/`start`/
+    ///, extended by
+    ///: `steer`/`await_result`/`cancel`/`start`/
     /// `ask` may act only on an agent within the CALLER's own subtree (itself,
     /// or any descendant) -- enforced HERE, at the `SubagentHost` trait
     /// boundary (see that trait's own doc), not only at the
@@ -362,7 +361,7 @@ pub enum RuntimeError {
     /// bypass it (mirrors `AskRequiresFork`'s shape). A sibling (or any
     /// non-ancestor, non-self) `AgentId` a caller merely SAW -- in tool output,
     /// on the event stream, in `conway_fork`/`conway_spawn`'s own return value,
-    /// or via `tree()` (which, post-01KYTP0PGKJ4VCJP5TD39A1WHF, only ever shows
+    /// or via `tree()` (which, as of a later change, only ever shows
     /// the caller's own subtree in the first place) -- is not enough to act on
     /// it. `target` (named `parent` on `start`/`ask`) is known to this runtime
     /// (an unknown one is [`RuntimeError::AgentNotFound`] instead); `caller` is
@@ -386,7 +385,7 @@ pub enum RuntimeError {
     #[error("invalid subagent spec: {detail}")]
     InvalidSpec { detail: String },
     /// A `prompt_submitted` hook refused the prompt before it reached the
-    /// agent loop (board item 01KZS01ZBNEY12DBDNW2Y861SQ).
+    /// agent loop.
     ///
     /// **Surfaced to the CALLER of `start_root`/`prompt`, never to a model as
     /// a tool error** -- there is no model turn yet to report into, which is
@@ -396,7 +395,7 @@ pub enum RuntimeError {
     /// `reason` is the hook's own explanation, or the fail-closed message when
     /// a hook errored or timed out. It is a diagnosis for a human, and is
     /// never substituted for the prompt -- nothing may rewrite what the user
-    /// typed (`.design/extension-architecture.md` §5.8).
+    /// typed.
     #[error("prompt denied by hook: {reason}")]
     PromptDenied { reason: String },
 }
@@ -692,7 +691,7 @@ mod tests {
         assert!(rendered.contains("openai/gpt-5: rate limited (retry after Some(30) seconds)"));
     }
 
-    /// [`BackendError::ContextTooLarge`] (board item 01KZDC4DKVC4JC3W4KN1WMC43N):
+    /// [`BackendError::ContextTooLarge`]:
     /// roundtrips, and its `Display` names every one of the four inputs
     /// plus the derived shortfall -- the acceptance criterion's "typed
     /// error naming the input size, the resolved headroom, and the window"
@@ -720,7 +719,7 @@ mod tests {
         }
     }
 
-    // ---- HookFailure (board item 01KZRZY1MNM872BZ6AKEBG3SKE) ----
+    // ---- HookFailure ----
 
     #[test]
     fn hook_failure_variants_roundtrip_and_render() {

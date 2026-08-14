@@ -1,4 +1,4 @@
-//! `ToolRunner`: owns tool dispatch (WI-079, architecture §4.2, §8) —
+//! `ToolRunner`: owns tool dispatch (architecture §4.2, §8) —
 //! name resolution, argument validation, permission gating, bounded
 //! concurrent execution, cancellation, truncation enforcement, and per-call
 //! event emission.
@@ -140,7 +140,7 @@ pub struct ToolRunner {
     registry: Arc<PluginRegistry>,
     broker: Arc<PermissionBroker>,
     bus: Arc<EventBus>,
-    /// `post_tool_use` dispatch (board item 01KZS019NHG11RVQYSVT7RG0P5).
+    /// `post_tool_use` dispatch.
     /// Constructed here rather than taken as a parameter so `new` keeps its
     /// arity -- five test call sites build a `ToolRunner` directly -- and
     /// read back by `Runtime::new` via [`Self::hooks`] so the runtime
@@ -331,7 +331,7 @@ async fn execute_one(
         // broker's own decision point (which has no `PluginRegistry`
         // access, and must not gain one just for this).
         path_args: resolved.tool.path_args(),
-        // Board item 01KYT3NSWRHMPEAXVXRJ73KDYR: same seam, same reasoning,
+        // same seam, same reasoning,
         // for the metacharacter gate's applicability rather than the root
         // check's.
         render_kind: resolved.tool.render_kind(),
@@ -381,7 +381,7 @@ async fn execute_one(
             // handle is aborted once `invoke` returns: on the ordinary
             // (non-cancelled) path `watch.cancelled()` never resolves, and
             // an unaborted watcher would outlive the call — one leaked live
-            // task per dispatched call (cycle-1 review C1).
+            // task per dispatched call.
             let core_cancel = CoreCancellationToken::new();
             let bridge = {
                 let core_cancel = core_cancel.clone();
@@ -402,12 +402,12 @@ async fn execute_one(
                 // The agent's OWN id is baked into the handle here -- the
                 // one place a `ToolCtx` is built for real tool dispatch
                 // (`conway-core` fakes and `conway-tools` test doubles are
-                // the only other construction sites, board item C1). No
+                // the only other construction sites C1). No
                 // tool this handle reaches can ever act as a different
                 // agent (structural -- see `SubagentHandle`'s own
                 // doc).
                 subagents: SubagentHandle::new(subagents.clone(), agent_id),
-                // Board item 01KZS03BFE720EQZG7Q2768N2H: bound to THIS
+                // bound to THIS
                 // call's own resolved tool's declaring plugin id, never a
                 // different one -- `hooks` (this runner's own
                 // `HookDispatcher`, already shared with `Runtime::
@@ -454,7 +454,7 @@ async fn execute_one(
         },
     );
 
-    // `post_tool_use` (board item 01KZS019NHG11RVQYSVT7RG0P5), dispatched at
+    // `post_tool_use`, dispatched at
     // the same seam that emits `ToolCallFinished` because that is the point
     // which already knows the call finished and what it produced.
     //
@@ -584,7 +584,7 @@ fn apply_truncation(output: &mut ToolOutput) -> Option<TruncationRecord> {
 
     // `kept_bytes` counts bytes retained FROM THE ORIGINAL content — the
     // rendered string's length would also include the elision marker's own
-    // bytes, inflating the audit record (cycle-1 review S1).
+    // bytes, inflating the audit record.
     let (truncated, kept_bytes) = match mode {
         TruncMode::Head => truncate_head(&text, limit as usize),
         TruncMode::Tail => truncate_tail(&text, limit as usize),

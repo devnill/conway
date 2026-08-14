@@ -242,7 +242,7 @@ with text present they move the cursor instead. The keys are shared and go to
 whichever thing currently owns them.
 
 **Turn `bash` on deliberately.** It ships off for the TUI. Add it to
-`[tools].builtin_plugins` in your settings when you want it. In one-shot mode
+`tools.builtin_plugins` in your settings when you want it. In one-shot mode
 it is always registered and `--allowed-tools` is what actually gates it.
 
 **Use `-p` for anything scriptable.** Stable exit codes, `--output-format
@@ -271,7 +271,7 @@ exist yet**.
 same status: wanted, named, not built.
 
 **Installing a plugin means building a binary.** There is no runtime plugin
-host — plugins are compiled in, and `[plugins].install` selects among the ones
+host — plugins are compiled in, and `plugins.install` selects among the ones
 your binary already links. Adding your own means adding a crate to the workspace
 and rebuilding. A subprocess-based host is planned.
 

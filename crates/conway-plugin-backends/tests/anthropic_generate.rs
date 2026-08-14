@@ -1,9 +1,9 @@
 //! Wiremock integration tests for `AnthropicBackend::generate` and
-//! `capabilities` (WI-021). SSE streaming tests live in
+//! `capabilities`. SSE streaming tests live in
 //! `tests/anthropic_stream.rs`; cache-hint mapping tests live in
 //! `tests/anthropic_cache_mapping.rs`. Segment→message golden-JSON and
 //! consecutive-`ToolResult`-merge unit tests live in
-//! `src/anthropic/wire.rs`, matching the WI-019 precedent
+//! `src/anthropic/wire.rs`, matching the precedent
 //! (`openai_compat/wire.rs`) for internals not reachable from an external
 //! test crate.
 
@@ -145,7 +145,7 @@ async fn golden_four_segment_fixture_produces_the_expected_request_body() {
     assert!(requests[0].headers.get("x-api-key").is_some());
     assert!(
         requests[0].headers.get("authorization").is_none(),
-        "no Authorization: Bearer header is ever constructed (GP-09/C-02)"
+        "no Authorization: Bearer header is ever constructed ()"
     );
 
     let body: serde_json::Value = requests[0].body_json().unwrap();

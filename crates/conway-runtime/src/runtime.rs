@@ -1,42 +1,41 @@
-//! `Runtime`: the facade over one agent tree (WI-082/WI-083/WI-084,
+//! `Runtime`: the facade over one agent tree ( an earlier item/ an earlier item/ an earlier item,
 //! architecture §4, §7).
 //!
 //! Owns dependency injection (`RuntimeDeps`), root-agent task lifecycle, and
 //! the public surface (`start_root`, `prompt`, `cancel`, `subscribe`,
 //! `context_report`, `tree`). `tree()` and `cancel()` are backed by the real
-//! [`crate::tree::AgentTree`] (WI-083): every agent (root, forked, or
+//! [`crate::tree::AgentTree`]: every agent (root, forked, or
 //! spawned) is `attach`ed to it, and its task is wrapped by
 //! [`crate::supervisor::supervise`] so a panic or a blown deadline still
 //! resolves to a terminal result instead of leaving the tree's bookkeeping
-//! stuck on `Running` forever. `impl SubagentHost for Runtime` (WI-084,
-//! `subagent.rs`) is this crate's fork/spawn entry point; see that module's
+//! stuck on `Running` forever. `impl SubagentHost for Runtime` (//! `subagent.rs`) is this crate's fork/spawn entry point; see that module's
 //! doc for the fork/spawn procedure and the self-referential-`Arc`
 //! construction this file's `new()` sets up for it. See `tree.rs`'s and
 //! `supervisor.rs`'s module docs for the guarantees this buys and the one
 //! race it does not close.
 //!
-//! ## Reconciliations against the WI-082 spec's illustrative types
+//! ## Reconciliations against the spec's illustrative types
 //!
-//! - **`ToolRunner`/`PermissionBroker` construction (carried from WI-079's
-//!   cycle-1 review, F-079-1):** `ToolRunner::new` takes `Arc<PluginRegistry>`
-//!   and `Arc<PermissionBroker>`, not the unwrapped values the WI-080/081
+//! - **`ToolRunner`/`PermissionBroker` construction (carried from an earlier item's
+//!   An earlier review found: ):** `ToolRunner::new` takes `Arc<PluginRegistry>`
+//!   and `Arc<PermissionBroker>`, not the unwrapped values the
 //!   prose's illustrative structs might suggest. This item wraps both in
 //!   `Arc` at construction, as that review already flagged for this item's
 //!   brief.
 //! - **`RuntimeDeps` has no `subagents` field:** `LoopDeps::subagents`
-//!   (WI-081, committed) requires an `Arc<dyn SubagentHost>` for every agent
-//!   task. Rather than accept this as an injected dependency (WI-082
-//!   cycle-1 review, F-082 S1: an embedder-supplied fake is not a real
+//!   (committed) requires an `Arc<dyn SubagentHost>` for every agent
+//!   task. Rather than accept this as an injected dependency (
+//!   An earlier review found: , an embedder-supplied fake is not a real
 //!   dependency, and `conway_core::fakes::FakeSubagentHost` is gated behind
 //!   `feature = "fakes"`, reserved for test-shaped consumers, so wiring it
 //!   into a non-test `Runtime::new` would be a layering violation either
 //!   way), `Runtime::new` now builds the real `subagent::WeakRuntimeHost`
-//!   (WI-084) from its own `Weak<Runtime>`, replacing the `NoSubagentHost`
+//!   from its own `Weak<Runtime>`, replacing the `NoSubagentHost`
 //!   stub this item originally shipped (every method of which returned a
 //!   `RuntimeError` naming the gap). See `Runtime::new`'s own doc for why a
 //!   `Weak`-backed delegator, not a literal `Arc<Runtime>`, is what
 //!   `LoopDeps::subagents` holds.
-//! - **WI-084 file-scope note:** the work item's own scope section lists
+//! - **An earlier file-scope note:** the work item's own scope section lists
 //!   only `subagent.rs`, `agent_loop.rs`, and its test file — not this file.
 //!   In practice `impl SubagentHost for Runtime` cannot be wired up without
 //!   touching `Runtime::new` (replacing `NoSubagentHost`, adding the
@@ -44,7 +43,7 @@
 //!   handful of narrow `pub(crate)` accessors (`loop_deps`, `agent_defs`,
 //!   `tree_ref`, `resolver`, `agent_session`, `launch_agent`) letting
 //!   `subagent.rs` reach state that was, by design, made private to this
-//!   module by WI-082/083. This is disclosed here as a reconciliation
+//!   module by an earlier item. This is disclosed here as a reconciliation
 //!   rather than silently expanding scope: every added accessor is
 //!   `pub(crate)` (one `#[doc(hidden)] pub` test seam excepted, mirroring
 //!   `conway-session`'s own `peek_prefix` precedent), no existing public
@@ -63,7 +62,7 @@
 //! - **Live `context_report` via a loop-pushed slot, not a bus fold:** an
 //!   earlier revision of this item reconstructed `ContextReport` by
 //!   subscribing to the bus and folding `TurnStarted`/`ContextSegmentAdded`
-//!   envelopes. WI-082 cycle-1 review (F-082 C1, Critical) rejected that
+//!   envelopes. An earlier review found: rejected that
 //!   design: `EventBus::subscribe` synthesizes `Event::Lagged` envelopes
 //!   carrying a *freshly generated* `AgentId` on broadcast overflow
 //!   (`events.rs`), which the fold could never match back to the lagging
@@ -81,7 +80,7 @@
 //!   window in which an overflowing broadcast buffer can corrupt the
 //!   result.
 //! - **`Runtime::cancel`'s `reason`:** the committed `AgentLoop::finish_cancelled`
-//!   (WI-081) hardcodes `ResultStatus::Cancelled { reason: "cancelled" }` and
+//!   hardcodes `ResultStatus::Cancelled { reason: "cancelled" }` and
 //!   has no field or callback through which an external `reason` string
 //!   could reach it. `Runtime::cancel` still accepts `reason` (matching the
 //!   spec's signature) and records it via `tracing`, but callers must not
@@ -92,20 +91,20 @@
 //!   (erroring `AgentNotFound` for an unknown id) for consistency with
 //!   `prompt`'s and `context_report`'s error handling. A disclosed,
 //!   intentional deviation, not an oversight.
-//! - **WI-083: `AgentHandle` sheds its own result channel and cancel
+//! - **`AgentHandle` sheds its own result channel and cancel
 //!   token.** Before this item, `AgentHandle` held its own
 //!   `watch::Receiver<Option<AgentResult>>` (populated by a bare
 //!   `tokio::spawn` that sent into a paired `Sender` on completion) and its
-//!   own `CancellationToken`, and the WI-082 `tree()`/`cancel()` read and
+//!   own `CancellationToken`, and the an earlier item `tree()`/`cancel()` read and
 //!   wrote them directly. Both are now owned by `AgentTree` instead (a
-//!   `start_root` agent is `attach`ed to it exactly like a future WI-084
+//!   `start_root` agent is `attach`ed to it exactly like a future
 //!   child would be, with `kind: None` since a root is started, not
 //!   spawned — see `tree.rs`'s module doc), so `AgentHandle` keeps only
 //!   what nothing else already tracks: the session id (for `prompt`) and
 //!   the live report slot (for `context_report`). Routing both channels
 //!   through one owner is also what makes `tree().nodes[].status` accurate
 //!   for a finished root agent, which the old per-`AgentHandle` channel,
-//!   never read by the WI-082 `tree()` stub, did not actually provide.
+//!   never read by the an earlier item `tree()` stub, did not actually provide.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -123,8 +122,8 @@ use conway_core::ids::{
 };
 use conway_core::log::{ForkOrigin, LogRecord, SessionFilter, SessionMeta, SubagentMode};
 use conway_core::ports::{
-    Backend, ContextHook, HealthRegistry, HookRunner, PermissionGate, Plugin, PluginConfig, Router,
-    SessionStore, SubagentHost,
+    Backend, ContextHook, HealthRegistry, HookRunner, PermissionGate, Plugin, PluginConfig,
+    PluginEventEmitter, RegisteredObserver, Router, SessionStore, SubagentHost,
 };
 use conway_core::provenance::{ContextReport, Provenance};
 use conway_core::segment::CacheTtl;
@@ -169,7 +168,7 @@ pub struct RootSpec {
     pub tools: Option<ToolSelector>,
     pub budget: Budget,
     pub cwd: PathBuf,
-    /// Board item 01KYTMH9JX21CGSE2Y6E2KP8SJ: this root agent's own
+    /// This root agent's own
     /// confinement root -- the S3/S5 primitive (`SubagentSpec::root`,
     /// `AgentRoot`, `PermissionBroker::check_root`), finally reachable for
     /// the agent an operator actually talks to. Before this field existed,
@@ -202,14 +201,14 @@ pub struct RootSpec {
     /// agent's task terminates after its first `Completed` turn, same as
     /// every `RootSpec` caller before this field existed.
     pub keep_alive: bool,
-    /// Pins the model for this session, overriding the role's chain (WI-128).
+    /// Pins the model for this session, overriding the role's chain.
     /// `start_root` prefers this over the `agent_def`-sourced pin when
     /// present -- see that method's own doc for the precedence.
     pub model: Option<ModelRef>,
 }
 
 /// The specification for re-registering a persisted session's agent as a
-/// live root agent (WI-118 — closes the F-117-1/F-103-1/Q-1 session-
+/// live root agent (— closes the//Q-1 session-
 /// continuity gap). Mirrors [`RootSpec`] minus `prompt` (resuming never
 /// appends an initial `UserTurn` — the caller's continuation arrives via a
 /// later [`Runtime::prompt`] call) and minus the fields recoverable from the
@@ -232,17 +231,17 @@ pub struct ResumeSpec {
 
 /// Everything the runtime keeps about one live (or finished-but-not-yet-
 /// evicted) agent task that isn't already tracked by `Runtime::tree`
-/// (WI-083 — see the module doc's reconciliation note). Looked up by
+/// (— see the module doc's reconciliation note). Looked up by
 /// reference, never cloned wholesale, so `agents`'s `RwLock` is never held
 /// across an `.await`.
 struct AgentHandle {
     session: SessionId,
-    /// This agent's mailbox sender (WI-085) — cloned out by
+    /// This agent's mailbox sender — cloned out by
     /// [`Runtime::agent_mailbox`] for `subagent.rs`'s `steer` and for a
     /// fork/spawn child's `parent_mailbox`.
     mailbox: MailboxSender,
     last_report: Arc<Mutex<Option<ContextReport>>>,
-    /// WI-118 (generalized by keep-alive): the same `Arc` as this agent's
+    /// (generalized by keep-alive): the same `Arc` as this agent's
     /// `AgentLoop::resume_gate.notify` (cloned out of the `AgentLoop` before
     /// it moves into its spawned task -- see [`Runtime::launch_agent`]).
     /// [`Runtime::prompt`] calls `notify_one()` on it after every durable
@@ -269,7 +268,7 @@ pub struct Runtime {
     #[allow(dead_code)]
     broker: Arc<PermissionBroker>,
     /// The observation-only hook tier (`post_tool_use`, `session_starting`,
-    /// `child_spawned`) -- board item 01KZS019NHG11RVQYSVT7RG0P5. Shared with
+    /// `child_spawned`) --. Shared with
     /// `LoopDeps.tool_runner`, which dispatches `post_tool_use` from inside
     /// the tool batch; this handle is what `start_root` and
     /// `impl SubagentHost for Runtime`'s `start` use for the other two, and
@@ -278,12 +277,12 @@ pub struct Runtime {
     loop_deps: Arc<LoopDeps>,
     agents: RwLock<HashMap<AgentId, AgentHandle>>,
     tree: Arc<AgentTree>,
-    /// Ancestry resolution for WI-084's fork path (`subagent.rs`) --
+    /// Ancestry resolution for an earlier item's fork path (`subagent.rs`) --
     /// `conway_session::TranscriptResolver`, one instance per runtime so
     /// sibling forks share memoized prefixes (see that type's own module
     /// doc). Not part of `RuntimeDeps`: it needs no injected configuration
     /// beyond a cache capacity, and adding a field to `RuntimeDeps` would
-    /// be a breaking change to WI-082's already-committed, criterion-pinned
+    /// be a breaking change to an earlier item's already-committed, criterion-pinned
     /// surface for a value this crate can construct unconditionally itself.
     resolver: Arc<conway_session::TranscriptResolver>,
 }
@@ -292,7 +291,7 @@ pub struct Runtime {
 /// pins this value; `conway-session`'s own test suite exercises capacities
 /// from 2 to 64 without treating the number itself as load-bearing, so this
 /// picks a generous-but-bounded default rather than inventing a config
-/// surface WI-084 has no mandate to add.
+/// surface an earlier item has no mandate to add.
 const TRANSCRIPT_CACHE_CAPACITY: usize = 512;
 
 impl Runtime {
@@ -303,7 +302,7 @@ impl Runtime {
     /// contract; `Runtime::new`'s binding signature is infallible, so this
     /// is the only place the check can surface).
     ///
-    /// ## WI-084 reconciliation: self-referential `subagents`
+    /// ## an earlier item reconciliation: self-referential `subagents`
     ///
     /// `LoopDeps::subagents` must be a working `Arc<dyn SubagentHost>`
     /// backed by this very `Runtime` (`impl SubagentHost for Runtime`,
@@ -331,6 +330,25 @@ impl Runtime {
             headroom,
         } = deps;
 
+        // Collected before `from_plugins` consumes the set. Each observer is
+        // paired with its own plugin's manifest id here and nowhere else, so
+        // the events it later fires resolve to that plugin's namespace and
+        // cannot be made to resolve to another's -- the same rule
+        // `ToolCtx::plugin_events` already applies to a plugin's own tools.
+        let observers: Vec<RegisteredObserver> = plugins
+            .iter()
+            .flat_map(|plugin| {
+                let plugin_id = plugin.manifest().id;
+                plugin
+                    .observers()
+                    .into_iter()
+                    .map(move |observer| RegisteredObserver {
+                        plugin_id: plugin_id.clone(),
+                        observer,
+                    })
+            })
+            .collect();
+
         let registry = Arc::new(
             PluginRegistry::from_plugins(plugins)
                 .expect("RuntimeDeps.plugins must register without duplicate tool names"),
@@ -345,7 +363,7 @@ impl Runtime {
         // runner share ONE dispatcher: `post_tool_use` fires from inside
         // `ToolRunner`, while `session_starting` and `child_spawned` fire from
         // `Runtime`'s own methods, and all three must see the same injected
-        // runner and subscription lists (board item 01KZS019NHG11RVQYSVT7RG0P5).
+        // runner and subscription lists.
         let hooks = tool_runner.hooks();
         let attempt = Arc::new(AttemptEngine::new(backends, health, event_bus.clone()));
         let builder = Arc::new(ContextBuilder::new());
@@ -369,11 +387,16 @@ impl Runtime {
                 builder,
                 headroom,
                 tree: tree.clone(),
-                // WI-126: no `RuntimeDeps` field sources this (out of that
+                // no `RuntimeDeps` field sources this (out of that
                 // item's file scope to add here) -- `set_context_hook`
                 // below fills it in post-construction. `None` here
                 // preserves every existing caller's behavior unchanged.
                 context_hook: RwLock::new(None),
+                observers,
+                // The SAME dispatcher `post_tool_use` and every other
+                // plugin-declared event already fan out through, so an
+                // observer's events and a tool's events share one path.
+                plugin_events: hooks.clone() as Arc<dyn PluginEventEmitter>,
             });
 
             Runtime {
@@ -391,14 +414,14 @@ impl Runtime {
         })
     }
 
-    /// Everything `subagent.rs`'s `impl SubagentHost for Runtime` (WI-084)
+    /// Everything `subagent.rs`'s `impl SubagentHost for Runtime`
     /// needs that isn't reachable through `loop_deps()`'s already-`pub`
     /// fields. Kept as narrow, crate-private accessors rather than widening
     /// any field's visibility, so `Runtime`'s actual public surface (the
-    /// thing the WI-084 criterion "no additional public methods" on the
+    /// thing the criterion "no additional public methods" on the
     /// trait impl is protecting) is unaffected.
     /// The shared observation-hook dispatcher, for `subagent.rs`'s
-    /// `impl SubagentHost for Runtime` (board item 01KZS019NHG11RVQYSVT7RG0P5).
+    /// `impl SubagentHost for Runtime`.
     /// `pub(crate)` for the same reason [`Self::loop_deps`] is: an internal
     /// seam between two files of one crate, not public surface.
     pub(crate) fn observation_dispatcher(&self) -> &Arc<crate::hook_dispatch::HookDispatcher> {
@@ -421,7 +444,7 @@ impl Runtime {
         &self.resolver
     }
 
-    /// WI-126: registers (or clears, via `None`) the `ContextHook` every
+    /// Registers (or clears, via `None`) the `ContextHook` every
     /// agent task under this runtime consults before each LLM request and
     /// on T-1 overflow (`AgentLoop::route_and_attempt`). A new, purely
     /// additive public method rather than a `RuntimeDeps` field: `RuntimeDeps`
@@ -439,7 +462,7 @@ impl Runtime {
             .expect("context_hook lock poisoned") = hook;
     }
 
-    /// Board item 01KZS00JP5QNBJSSHNFP9C47GM: registers (or clears, via
+    /// Registers (or clears, via
     /// `None`) the `HookRunner` [`PermissionBroker::decide`]'s `pre_tool_use`
     /// step consults, at the SAME deny tier as `deny_matches` -- see that
     /// method's own doc for why the placement, not merely the existence, is
@@ -459,7 +482,7 @@ impl Runtime {
     ///
     /// `conway::ConwayBuilder::with_hook_runner` is this method's own
     /// facade-level caller; `conway-runtime` itself never constructs a
-    /// concrete `HookRunner` (decision 01KZT642CEZ20K92DYWBTPE2XZ: this
+    /// concrete `HookRunner` (: this
     /// crate must not depend on `conway-tools` to reach one -- the runner
     /// arrives here as an already-constructed `Arc<dyn HookRunner>`, a
     /// sibling crate's concern, not this one's).
@@ -467,7 +490,7 @@ impl Runtime {
         self.broker.set_hook_runner(runner);
     }
 
-    /// Board item 01KZS00JP5QNBJSSHNFP9C47GM: installs the `pre_tool_use`
+    /// Installs the `pre_tool_use`
     /// hook specs [`Self::set_hook_runner`]'s dispatcher consults, wholesale
     /// -- see [`PermissionBroker::set_pre_tool_use_hooks`]'s own doc.
     /// `conway::ConwayBuilder::build` is this method's own caller, computing
@@ -477,8 +500,8 @@ impl Runtime {
     /// `Self::set_hook_runner(None)` is.
     /// Injects the same `HookRunner` into the observation tier
     /// (`post_tool_use`, `session_starting`, `child_spawned`) that
-    /// [`Self::set_hook_runner`] gives the permission broker. Board item
-    /// 01KZS019NHG11RVQYSVT7RG0P5; `conway::ConwayBuilder::build` calls both
+    /// [`Self::set_hook_runner`] gives the permission broker.
+    ///; `conway::ConwayBuilder::build` calls both
     /// with the same runner, so an operator injecting one gets every event.
     /// Not called at all leaves every observation dispatch a no-op.
     pub fn set_observation_hook_runner(
@@ -504,16 +527,14 @@ impl Runtime {
     }
 
     /// Every currently-installed `pre_tool_use` hook spec -- the review-list
-    /// counterpart of [`Self::set_pre_tool_use_hooks`] (board item
-    /// 01KZS02HYXGTW42R8G4HP10GHX). See
+    /// counterpart of [`Self::set_pre_tool_use_hooks`]. See
     /// [`PermissionBroker::active_pre_tool_use_hooks`]'s own doc.
     pub fn pre_tool_use_hooks(&self) -> Vec<PreToolUseHookSpec> {
         self.broker.active_pre_tool_use_hooks()
     }
 
     /// The observation tier's whole subscription map -- the review-list
-    /// counterpart of [`Self::set_observation_hooks`] (board item
-    /// 01KZS02HYXGTW42R8G4HP10GHX), including `prompt_submitted`'s own
+    /// counterpart of [`Self::set_observation_hooks`] , including `prompt_submitted`'s own
     /// entry (the deny-capable event this tier also dispatches -- see
     /// `crate::hook_dispatch`'s own module doc). See
     /// [`crate::hook_dispatch::HookDispatcher::hooks_snapshot`]'s own doc
@@ -536,7 +557,7 @@ impl Runtime {
 
     /// The session id of a live-or-finished agent tracked by this runtime.
     /// `AgentNotFound` for an unknown id -- the same lookup `prompt` already
-    /// inlines, factored out so `subagent.rs`'s `start` (WI-084) can resolve
+    /// inlines, factored out so `subagent.rs`'s `start` can resolve
     /// a fork/spawn `parent`'s session without duplicating it.
     pub(crate) fn agent_session(&self, agent: AgentId) -> Result<SessionId, RuntimeError> {
         let agents = self.agents.read().expect("agents lock poisoned");
@@ -546,7 +567,7 @@ impl Runtime {
             .session)
     }
 
-    /// A clone of `agent`'s mailbox sender (WI-085). Used by `subagent.rs`'s
+    /// A clone of `agent`'s mailbox sender. Used by `subagent.rs`'s
     /// `steer` (the target's sender) and `start` (the parent's sender, so a
     /// fork/spawn child can deliver its terminal `Result` upward through
     /// `AgentLoop::parent_mailbox`).
@@ -562,12 +583,12 @@ impl Runtime {
     /// Attaches `node` to the tree, spawns `agent_loop`'s task under the
     /// supervisor, and registers its handle. The shared tail of both
     /// `start_root` (root agents, unchanged, still inlines its own copy of
-    /// this sequence) and WI-084's fork/spawn path (`subagent.rs`), which
+    /// this sequence) and an earlier item's fork/spawn path (`subagent.rs`), which
     /// has no other way to reach `agents`/`tree`/`bus` to do this itself
     /// without those fields losing their private visibility.
     ///
     /// `mailbox` is the sender half of the mailbox `agent_loop.inbox`
-    /// already owns the receiver half of (WI-085) -- constructed by the
+    /// already owns the receiver half of -- constructed by the
     /// caller, since only the caller (`subagent.rs`'s `start`) knows
     /// whether this child also needs a `parent_mailbox` wired from an
     /// already-registered parent before this agent's own handle exists.
@@ -582,14 +603,14 @@ impl Runtime {
         let session_id = node.session;
         let cancel = node.cancel.clone();
         let deadline = agent_loop.spec.budget.deadline;
-        // WI-118: `agent_loop` already carries its own `resume_gate.notify`
+        // `agent_loop` already carries its own `resume_gate.notify`
         // (a real `resume_root` gate, or an unused `Default` one for every
         // other caller of this shared path -- currently only `subagent.rs`'s
         // fork/spawn) -- clone the same `Arc` out before `agent_loop` moves
         // into its spawned task below, so `Runtime::prompt` has something to
         // notify.
         let prompt_notify = agent_loop.resume_gate.notify.clone();
-        // Board item 01KZYAXSGDS8AP7YK1CN7H680G: read out BEFORE
+        // read out BEFORE
         // `agent_loop` moves into the spawned task below -- `AgentId` is
         // `Copy` (`ids.rs`'s `ulid_id!`), so this is an ordinary copy, not
         // a partial move that would make the later whole-struct move
@@ -701,8 +722,7 @@ impl Runtime {
         let agent_id = AgentId::new();
         let session_id = spec.session.unwrap_or_default();
 
-        // `prompt_submitted` for a session's FIRST prompt (board item
-        // 01KZS01ZBNEY12DBDNW2Y861SQ). Dispatched here, at the very top,
+        // `prompt_submitted` for a session's FIRST prompt (//). Dispatched here, at the very top,
         // rather than beside `session_starting` at the bottom: a denial must
         // prevent the prompt from ever reaching the agent loop, and doing it
         // before any store append or tree attach means a refused prompt leaves
@@ -754,13 +774,13 @@ impl Runtime {
             .clone()
             .or_else(|| agent_def.map(|d| d.tools.clone()));
         // `spec.model` (a caller-supplied pin, e.g. `--model`) takes
-        // precedence over the `agent_def`'s own configured model (WI-128).
+        // precedence over the `agent_def`'s own configured model.
         let pin = spec
             .model
             .clone()
             .or_else(|| agent_def.and_then(|d| d.model.clone()));
 
-        // Board item 01KYTMH9JX21CGSE2Y6E2KP8SJ: resolve and validate this
+        // resolve and validate this
         // root agent's own confinement root ONCE, mirroring `subagent.rs`'s
         // `SubagentHost::start` spawn-time validation for a spawned child's
         // `Some(requested)` root (see that method's own doc for the full
@@ -851,7 +871,7 @@ impl Runtime {
             // exists on ephemeral ask children (stamped from the spec in
             // `subagent.rs`'s `SubagentHost::start`).
             ask_origin: None,
-            // Board item 01KYTMH9JX21CGSE2Y6E2KP8SJ: the resolved, canonical
+            // the resolved, canonical
             // root computed above -- `None` (unconfined) exactly as before
             // this field existed unless `spec.root` was set.
             root: root.clone(),
@@ -917,11 +937,11 @@ impl Runtime {
             max_parallel_tools: DEFAULT_MAX_PARALLEL_TOOLS,
             report_slot: Some(last_report.clone()),
             // A root agent has no `SubagentSpec` to source a contract from
-            // (WI-086) -- only a fork/spawn child can declare one.
+            // -- only a fork/spawn child can declare one.
             result_contract: None,
             keep_alive: spec.keep_alive,
             // A root agent has no `SubagentSpec` to source a consumer tag
-            // from either (01KZQJ03ZQ22MPM9H2TW1350ZF) -- `RootSpec` gains
+            // from either -- `RootSpec` gains
             // no counterpart field; out of this item's scope.
             tag: None,
         };
@@ -936,19 +956,19 @@ impl Runtime {
             parent: None,
             agent_path: vec![agent_id],
             cwd: spec.cwd.clone(),
-            // Board item 01KYTMH9JX21CGSE2Y6E2KP8SJ: matches `meta.root`
+            // matches `meta.root`
             // above -- the same resolved, canonical root (or `None`,
             // unconfined, unchanged from before this field existed).
             root: root.clone(),
             deps: self.loop_deps.clone(),
             spec: agent_spec,
             cancel: cancel.clone(),
-            // A root agent's context never inherits anything (WI-084: only
+            // A root agent's context never inherits anything (only
             // a fork child gets `Some`).
             inherited: None,
             inbox: mailbox_rx,
             // A root has no parent to deliver a terminal `Result` to
-            // (WI-085).
+            //.
             parent_mailbox: None,
             pending_cancel: None,
             // A root started WITHOUT an initial prompt (the interactive TUI;
@@ -979,7 +999,7 @@ impl Runtime {
             budget: spec.budget.clone(),
             cancel: cancel.clone(),
             inherited_upto: None,
-            // A root is never ephemeral (decision 01KYD1TWXMZD4BT842CMJT1AED:
+            // A root is never ephemeral (:
             // only `conway`'s facade `SessionHandle::ask` builds an ephemeral
             // child, and that goes through `resume_root`, not `start_root`).
             ephemeral: false,
@@ -1015,7 +1035,7 @@ impl Runtime {
             .expect("agents lock poisoned")
             .insert(agent_id, handle);
 
-        // `session_starting` (board item 01KZS019NHG11RVQYSVT7RG0P5), fired
+        // `session_starting`, fired
         // ONCE per `start_root` -- not per turn and not per tool call. This is
         // the last statement before the id is returned, so every id the
         // payload names already exists and the agent is fully attached.
@@ -1043,7 +1063,7 @@ impl Runtime {
         Ok(agent_id)
     }
 
-    /// Re-registers an already-persisted session's agent as live (WI-118):
+    /// Re-registers an already-persisted session's agent as live:
     /// reads its existing `SessionMeta` via `store.meta` (erroring
     /// `RuntimeError::Store(StoreError::NotFound { .. })` — already a typed
     /// `RuntimeError` via `#[from]`, not a panic and not a `create` — for an
@@ -1090,8 +1110,8 @@ impl Runtime {
         let meta = self.store.meta(&spec.session).await?;
         let agent_id = meta.agent_id;
 
-        // WI-119: a genuine root's own session records ARE its complete
-        // history (`inherited` stays `None`, matching WI-118's original,
+        // a genuine root's own session records ARE its complete
+        // history (`inherited` stays `None`, matching an earlier item's original,
         // unaffected behavior below) -- but a fork child's own records are,
         // by the zero-copy fork contract (`SessionStore::fork`, D-11), only
         // its OWN post-fork turns; the inherited portion lives in the
@@ -1114,7 +1134,7 @@ impl Runtime {
         // turns of its own (non-empty own records), and `AgentLoop` reads
         // those own records separately every turn -- folding them into
         // `inherited` too would double-count them. `TranscriptResolver::
-        // resolve_prefix` (made `pub` for this, `conway-session`, WI-119)
+        // resolve_prefix` (made `pub` for this, `conway-session`)
         // is the shared primitive both paths already bottom out on; calling
         // it directly against `(origin.parent, origin.at_seq)` resolves
         // exactly the parent-only portion, at any depth, without a second,
@@ -1241,7 +1261,7 @@ impl Runtime {
             // before keep-alive existed.
             keep_alive: false,
             // A resumed root has no `SubagentSpec` to source a consumer tag
-            // from either (01KZQJ03ZQ22MPM9H2TW1350ZF) -- same as
+            // from either -- same as
             // `start_root`.
             tag: None,
         };
@@ -1276,7 +1296,7 @@ impl Runtime {
             // A root has no parent to deliver a terminal `Result` to.
             parent_mailbox: None,
             pending_cancel: None,
-            // WI-118 (the F-118 D-3 fix): this loop's first iteration must
+            // an earlier item (the D-3 fix): this loop's first iteration must
             // wait for the caller's next `Runtime::prompt` rather than
             // racing it against the persisted (already-completed)
             // transcript -- see `ResumeGate`'s and `run_inner`'s own docs.
@@ -1338,7 +1358,7 @@ impl Runtime {
     /// is `None`, so it has none, and the ordering guarantee is vacuous for
     /// it) by the time any `prompt` call for that agent can even find it.
     /// Delivering this to a live agent task (so an already-running
-    /// conversation picks it up) is WI-085's mailbox wiring; this item only
+    /// conversation picks it up) is an earlier item's mailbox wiring; this item only
     /// guarantees the durable append plus this live broadcast.
     pub async fn prompt(&self, agent: AgentId, text: String) -> Result<(), RuntimeError> {
         let (session, prompt_notify) = {
@@ -1350,7 +1370,7 @@ impl Runtime {
         };
 
         // `prompt_submitted` for a FOLLOW-UP prompt on a live session (board
-        // item 01KZS01ZBNEY12DBDNW2Y861SQ). After the session is resolved, so
+        // item). After the session is resolved, so
         // the payload can name it, but BEFORE the `store.append` below -- a
         // denied prompt must leave no record behind, exactly as if it had
         // never been typed.
@@ -1358,7 +1378,7 @@ impl Runtime {
         // `text` is passed by reference and returned to the caller untouched.
         // Nothing here can rewrite it: `dispatch_deny_only` reads only
         // `HookPermissionVerdict`, which has no field capable of carrying
-        // replacement text (`.design/extension-architecture.md` §5.8).
+        // replacement text.
         if let Some(reason) = self
             .hooks
             .dispatch_deny_only(
@@ -1396,7 +1416,7 @@ impl Runtime {
                 prov: Provenance::UserPrompt,
             },
         );
-        // WI-118, generalized by keep-alive: wakes a `resume_root` agent's
+        // an earlier item, generalized by keep-alive: wakes a `resume_root` agent's
         // gated first iteration, OR a `keep_alive: true` agent's gated
         // end-of-turn idle wait -- both the same `ResumeGate` (see that
         // type's doc). `Notify::notify_one`'s single stored permit means
@@ -1408,17 +1428,16 @@ impl Runtime {
         Ok(())
     }
 
-    /// Trips `agent`'s `CancellationToken` via `AgentTree::cancel` (WI-083).
+    /// Trips `agent`'s `CancellationToken` via `AgentTree::cancel`.
     /// This is the immediate half of `conway_cancel`/`SessionHandle::
     /// cancel_with`'s two modes -- see `CancelMode`'s own doc for the other.
     ///
-    /// `reason` is recorded via `tracing` (unchanged) AND now (board item
-    /// 01KZDDCN747FEZ3GM3NS0ANE7G) reaches `agent`'s own terminal
+    /// `reason` is recorded via `tracing` (unchanged) AND now reaches `agent`'s own terminal
     /// `AgentResult` (`ResultStatus::Cancelled { reason }`), the same way
     /// the graceful path's mailbox-delivered reason always has -- see
     /// `AgentTree::cancel`'s own doc for the storage mechanism and both
     /// read-back sites: `AgentLoop::finish_cancelled` for the ordinary
-    /// loop-boundary case, and (board item 01KZGRGN9MKJP549NMGT8QACCV)
+    /// loop-boundary case, and
     /// `AgentLoop::finish_error` for the narrower case where the cancel is
     /// instead observed mid-request, inside a backend call.
     ///
@@ -1431,7 +1450,7 @@ impl Runtime {
     /// an agent that was never told it would misrepresent where it came
     /// from. Whether the subtree collapse itself should carry a
     /// reason down to every descendant is a separate, open question (board
-    /// item 01KZDDCBGXNYTNM31PHW46R1SP), not decided here.
+    /// item), not decided here.
     pub fn cancel(&self, agent: AgentId, reason: String) -> Result<(), RuntimeError> {
         self.tree.cancel(agent, reason)
     }
@@ -1458,7 +1477,7 @@ impl Runtime {
     }
 
     /// The persisted `ContextReport` for `agent`'s historical `turn`
-    /// (WI-087). Unlike [`Runtime::context_report`], this always reads the
+    ///. Unlike [`Runtime::context_report`], this always reads the
     /// durable store (`crate::context::report::persisted_at_turn`) rather
     /// than the live `last_report` slot -- history only exists in the
     /// store, since the slot only ever holds the most recent turn. This is
@@ -1540,7 +1559,7 @@ impl Runtime {
     ///
     /// No indexed `AgentId -> SessionId` lookup exists anywhere in this
     /// workspace today (`SessionFilter` carries no `agent_id` field, and
-    /// `conway-session`'s `SessionIndex`, WI-050, does not index on it
+    /// `conway-session`'s `SessionIndex`, does not index on it
     /// either) -- this scan is O(session count) and is an accepted MVP
     /// cost for an inspection API, not a design decision. A dedicated
     /// `conway-session` index is a refinement candidate for `MODULE:
@@ -1576,9 +1595,9 @@ impl Runtime {
             .ok_or(RuntimeError::AgentNotFound { agent })
     }
 
-    /// A snapshot of the whole agent tree (WI-083: `AgentTree::snapshot()`).
+    /// A snapshot of the whole agent tree (`AgentTree::snapshot()`).
     /// Includes every attached agent — every root started so far; children
-    /// arrive once WI-084 attaches them.
+    /// arrive once an earlier item attaches them.
     pub fn tree(&self) -> AgentTreeSnapshot {
         self.tree.snapshot()
     }
@@ -1614,5 +1633,6 @@ fn empty_report(agent_id: AgentId) -> ContextReport {
         tokenizer: TOKEN_ESTIMATOR.to_string(),
         segments: Vec::new(),
         total_tokens_est: 0,
+        dropped: Vec::new(),
     }
 }

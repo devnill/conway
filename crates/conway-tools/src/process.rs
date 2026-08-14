@@ -4,7 +4,7 @@
 //! callers call it rather than restating it).
 //!
 //! Extracted from `crates/conway-tools/src/shell/bash.rs`'s private `unix`
-//! module (board item 01KZRZY1MNM872BZ6AKEBG3SKE): `BashTool` and
+//! module: `BashTool` and
 //! [`crate::hook_runner::ProcessHookRunner`] both spawn via
 //! `tokio::process::Command` with `process_group(0)` (the child becomes its
 //! own process-group leader, so its pid doubles as the pgid every

@@ -6,15 +6,15 @@
 //! does not resolve skills, wire tool selectors into a live registry, or
 //! touch the runtime — `AgentDef.skills` is populated verbatim from the
 //! frontmatter's `skills` list (a list of skill *names*), and resolving
-//! those names to `SkillDef` bodies is WI-100's concern.
+//! those names to `SkillDef` bodies is an earlier item's concern.
 //!
-//! **Reconciliation (disclosed in the WI-099 Self-Check):** the binding
+//! **Reconciliation (disclosed in the an earlier item Self-Check):** the binding
 //! implementation notes describe the `tools` mapping as "`Option<Vec<String>>
 //! -> ToolSelector::Explicit`; absent -> `ToolSelector::Inherit`". The
 //! already-committed `conway_core::agent::ToolSelector` has no `Explicit` or
 //! `Inherit` variant — only `All`, `Only(Vec<String>)`, and
 //! `Except(Vec<String>)` — matching the same prose/reality gap a prior item
-//! (WI-066, per F-066-1) already hit and resolved the same way. Since
+//! (per) already hit and resolved the same way. Since
 //! `AgentDef.tools` is `ToolSelector` (not `Option<ToolSelector>`), an
 //! absent `tools` key maps to `ToolSelector::All` (select everything, the
 //! closest available meaning of "inherit/no restriction") and a present
@@ -91,7 +91,7 @@ pub fn load_agent_defs(dir: &Path) -> Result<HashMap<String, AgentDef>> {
 /// [`load_one`], two *files* can only collide this way on a case-insensitive
 /// filesystem (two distinct file names that both stem-match their own
 /// declared name, whose names then compare equal) — hence "checked
-/// defensively" in the WI-099 criteria. See the unit test below for direct
+/// defensively" in the criteria. See the unit test below for direct
 /// coverage that does not depend on filesystem case sensitivity.
 fn insert_unique(defs: &mut HashMap<String, AgentDef>, def: AgentDef, path: &Path) -> Result<()> {
     if defs.contains_key(&def.name) {
@@ -200,7 +200,7 @@ fn compile_result_contract(
 }
 
 /// Splits `content` into `(yaml_frontmatter, body)`. Parsing algorithm (per
-/// the WI-099 implementation notes): a UTF-8 BOM and leading blank lines are
+/// the implementation notes): a UTF-8 BOM and leading blank lines are
 /// stripped first; the content must then begin with a `---` line; the YAML
 /// slice runs up to the next line that is exactly `---` after trimming
 /// trailing whitespace; the body is everything after that closing

@@ -1,12 +1,12 @@
 //! `AttemptEngine`: turns an ordered candidate list plus assembled segments
-//! into one `GenerateResponse` (WI-080).
+//! into one `GenerateResponse`.
 //!
 //! Responsibilities: choose streaming vs non-streaming per the declared
 //! tool-calling capability, sequence the fallback chain, enforce the
 //! per-candidate `Backend::admit` context gate, and record health
 //! observations with the T-2 classification.
 //!
-//! **T-1, AUTHORITATIVE (board item 01KZFBZHTWDF11TH7G0H613ERE):** each
+//! **T-1, AUTHORITATIVE:** each
 //! route's `GenerateRequest` is built first -- segments already carrying
 //! that specific candidate's cache hints, tools, prefix key, and resolved
 //! sampling params -- then handed to `backend.admit(&gen_req, req.headroom)`.
@@ -38,9 +38,9 @@
 //! pins byte-identical retry requests. Cache-hint semantics are therefore
 //! unchanged: per-candidate, computed once, never per-attempt.
 //!
-//! T-1 error-shape reconciliation (decision 01KYXS3PTYVATWR58JR95AZJYN,
-//! closing board item 01KYXNAHN64YMADZPQDQC0CPTJ): the router (conway-routing
-//! `DeclarativeRouter`, WI-034) still constructs `RoutingError::
+//! T-1 error-shape reconciliation (,
+//! closing): the router (conway-routing
+//! `DeclarativeRouter`) still constructs `RoutingError::
 //! ContextTooLarge` from its own ADVISORY declared-window check
 //! (`conway_core::capabilities::RequiredCaps`-based `satisfies`, evaluated
 //! against the router's own `heuristic-chars4` estimate) when every
@@ -51,7 +51,7 @@
 //! incorrect capability entry, or simply a different, more accurate
 //! estimate) -- this matters especially for the pin path, which can bypass
 //! the router's chain filtering entirely. The two are deliberately NOT
-//! required to agree (decision 01KZF13BAR473X5SXN8HN95T6B): the router's
+//! required to agree: the router's
 //! estimate over a declared window and `admit`'s measure of the actual
 //! serialized wire body are different questions asked at different times.
 
@@ -89,11 +89,11 @@ pub struct AttemptRequest<'a> {
     pub prefix_key: Option<PrefixKey>,
     /// The caller's own (advisory) estimate -- carried for callers that
     /// still want it (e.g. `agent_loop.rs`'s `ContextHookCtx`), but no
-    /// longer read by `execute` itself (board item 01KZFBZHTWDF11TH7G0H613ERE):
+    /// longer read by `execute` itself:
     /// each candidate's own `Backend::admit` produces its own authoritative
     /// estimate from the actually-built `GenerateRequest`, not this field.
     pub est_tokens: u32,
-    /// Reserved output/reasoning budget, resolved by the caller (WI-081).
+    /// Reserved output/reasoning budget, resolved by the caller.
     /// The engine never reads config; it only performs the arithmetic.
     pub headroom: u32,
     pub max_tokens_override: Option<u32>,
@@ -168,7 +168,7 @@ fn endpoint_of(backend: &BackendId) -> EndpointId {
 /// This is `conway-plugin-backends`' own "additive post-pass" framing
 /// (`anthropic::wire`'s module doc) applied one layer up: by the time this
 /// runs, `segments` is the FINAL list a `ContextHook` may already have
-/// added to, dropped from, or reordered (WI-126), so the A/B breakpoint
+/// added to, dropped from, or reordered, so the A/B breakpoint
 /// indices are re-derived from provenance here (`breakpoint_indices`)
 /// rather than threaded from `ContextBuilder::build` time, where they could
 /// have gone stale.
@@ -227,7 +227,7 @@ impl AttemptEngine {
     /// resolver must only ever name backends the runtime was configured
     /// with), so this panics rather than inventing an `RuntimeError` variant
     /// for a state that should be unreachable. The blast radius is one
-    /// agent task, not the process: WI-083's supervisor catches panics via
+    /// agent task, not the process: an earlier item's supervisor catches panics via
     /// `JoinError::is_panic()` and synthesizes a `Failed` terminal result.
     fn backend_for(&self, id: &BackendId) -> Arc<dyn Backend> {
         self.backends
@@ -391,7 +391,7 @@ impl AttemptEngine {
                             // `BackendError::Cancelled` is produced -- has
                             // already collapsed whichever reason the caller
                             // gave down to a bare token trip by this point.
-                            // Board item 01KZGRGN9MKJP549NMGT8QACCV: rather
+                            // rather
                             // than plumb a tree handle in here, the caller's
                             // reason is recovered one level up --
                             // `agent_loop.rs`'s `finish_error` OVERWRITES

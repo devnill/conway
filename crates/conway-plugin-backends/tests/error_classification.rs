@@ -1,6 +1,6 @@
 //! Integration tests for `conway_plugin_backends::error::classify`: one assertion
 //! (or small loop of assertions) per row of the classification table in the
-//! WI-016 implementation notes. The two rows with no HTTP status
+//! implementation notes. The two rows with no HTTP status
 //! (`Transport` for connect/timeout/IO errors, `Cancelled` for a
 //! dropped/cancelled request) are asserted at the variant/health-signal
 //! level here — `http::HttpClient` constructs them directly, never through

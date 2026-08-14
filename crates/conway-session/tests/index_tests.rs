@@ -1,4 +1,4 @@
-//! Integration tests for `SessionIndex` (WI-050 criteria), exercised
+//! Integration tests for `SessionIndex` (criteria), exercised
 //! entirely through the public `JsonlSessionStore`/`SessionStore` surface —
 //! `SessionIndex`'s own methods are `pub(crate)` by design (architecture:
 //! the index is a store-internal accelerator, never a source of truth

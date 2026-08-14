@@ -1,10 +1,10 @@
-//! Integration coverage for `RoutingExplain`/`ExplainReport` (WI-036, amended
+//! Integration coverage for `RoutingExplain`/`ExplainReport` (amended
 //! for headroom): serde round-trip, explain/resolve agreement across >=12
 //! scenarios, entry-count invariants, breaker/capability projection, the
 //! never-calls-record invariant, headroom_tokens equality, the exact header
 //! line, and the golden-file render.
 //!
-//! Reuses the same fixture patterns as `router_resolution.rs` (WI-034):
+//! Reuses the same fixture patterns as `router_resolution.rs`:
 //! `FakeHealth` rather than `BreakerRegistry` + `TestClock` (see that file's
 //! module doc for why), `CapabilityIndex::builder()`, and
 //! `HeadroomPolicy::from_routing_config`.
@@ -323,7 +323,7 @@ fn render_text_matches_golden_file_byte_for_byte() {
     );
 
     // The golden fixture must include a headroom-rejected candidate, per
-    // the WI-036 amendment's criterion.
+    // the amendment's criterion.
     assert!(rendered.contains("headroom"));
 }
 
@@ -336,7 +336,7 @@ fn render_text_matches_golden_file_byte_for_byte() {
 /// `resolve`'s `Route`s; when `resolve` returns `Err(NoCandidate)`, `explain`
 /// has zero `Selected` entries and the same candidate order as
 /// `considered`; and when `resolve` returns `Err(ContextTooLarge)` (T-1,
-/// board item 01KYXNAHN64YMADZPQDQC0CPTJ), `explain` likewise has zero
+///), `explain` likewise has zero
 /// `Selected` entries and its named model appears among the (necessarily
 /// all-`Skipped`) entries.
 fn assert_explain_agrees_with_resolve(router: &DeclarativeRouter, req: &RouteRequest) {

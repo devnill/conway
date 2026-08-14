@@ -38,7 +38,7 @@ pub struct AgentDef {
     /// see `docs/agents.md`'s result-contract table).
     ///
     /// **Never applied when this def arrived by inheritance rather than by
-    /// being named** (decision 01KZHEWXDZWPWMEAQ01XY2RDCB): a forked child
+    /// being named**: a forked child
     /// whose `agent_def` is filled in from its parent's own
     /// (`conway_runtime`'s `SubagentHost::start`, Fork-only fallback, gated
     /// on the call site leaving `agent_def` unset) still gets this def's
@@ -63,7 +63,7 @@ pub struct SkillDef {
 ///
 /// This is a *types-only* struct: nothing in this crate discovers,
 /// resolves, or reads this value from disk or the environment. `RoutingConfig`
-/// and `BackendConfig` (defined in `routing.rs`, WI-004) do not derive
+/// and `BackendConfig` (defined in `routing.rs`) do not derive
 /// `PartialEq`, so this struct does not either; tests compare instances via
 /// `serde_json::Value` equality instead.
 #[derive(Clone, Debug, Serialize, Deserialize)]

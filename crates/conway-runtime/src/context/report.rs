@@ -1,7 +1,7 @@
-//! `ContextReport` persistence and historical-turn lookup (WI-087).
+//! `ContextReport` persistence and historical-turn lookup.
 //!
 //! Thin wrapper over `conway_session::provenance`'s already-committed
-//! (WI-051) `append_context_report`/`load_context_report`/
+//! `append_context_report`/`load_context_report`/
 //! `load_all_context_reports`. This module adds no new file format and no
 //! new record kind, and does not redefine `ContextReport`/
 //! `ContextReportEntry` -- `conway_core::provenance` is authoritative and
@@ -13,12 +13,12 @@
 //!
 //! ## Reconciliation: `tokenizer`, not `estimator`
 //!
-//! The WI-087 criterion prose reads "each report carries `estimator:
+//! The an earlier item criterion prose reads "each report carries `estimator:
 //! heuristic-chars4`". `conway_core::provenance::ContextReport` has no
 //! `estimator` field -- only `tokenizer: String`, whose own doc comment
-//! states plainly: "WI-087 asserts this field (there is no separate
+//! states plainly: " an earlier item asserts this field (there is no separate
 //! estimator field)". `context/builder.rs`'s `TOKEN_ESTIMATOR` constant
-//! (WI-077) already resolved this identically. This item's tests assert
+//! already resolved this identically. This item's tests assert
 //! `report.tokenizer == "heuristic-chars4"`; no `estimator` field is added
 //! anywhere.
 //!
@@ -44,11 +44,11 @@ use conway_core::ports::SessionStore;
 use conway_core::provenance::ContextReport;
 
 /// Persists `report` as an ordinary `LogRecord::ContextReportRecord`
-/// (`conway_session::provenance::append_context_report`, WI-051), inheriting
+/// (`conway_session::provenance::append_context_report`), inheriting
 /// that helper's fsync policy, seq assignment, and crash tolerance. Callers
 /// (`agent_loop.rs`) must call this AFTER the turn's assistant record has
 /// already been durably appended -- this function does not enforce that
-/// ordering, the same caller-discipline contract the WI-051 helper it wraps
+/// ordering, the same caller-discipline contract the helper it wraps
 /// already documents.
 pub async fn persist(
     store: &dyn SessionStore,

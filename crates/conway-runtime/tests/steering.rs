@@ -1,6 +1,6 @@
-//! Acceptance tests for mailboxes and steering (WI-085, architecture §6):
+//! Acceptance tests for mailboxes and steering (architecture §6):
 //! bounded inbox, turn-boundary drain, overflow policy, both steering
-//! directions, and the carried F-083-1/F-084-1 double-`AgentFinished` fix.
+//! directions, and the/ double-`AgentFinished` fix.
 //!
 //! Built entirely from `conway-core`'s fakes (mirroring `agent_loop_e2e.rs`'s
 //! and `runtime_api.rs`'s own harness style) -- this file does not depend on
@@ -225,7 +225,7 @@ struct Harness {
     mailbox_tx: MailboxSender,
 }
 
-/// Builds one `AgentLoop` harness wired with a real mailbox pair (WI-085) --
+/// Builds one `AgentLoop` harness wired with a real mailbox pair --
 /// `harness.mailbox_tx` is this agent's own inbox sender, exposed so a test
 /// can simulate steering/cancelling/progress-reporting/resolving it exactly
 /// as a real caller (an embedder, a sibling, a child, `SubagentHost::steer`)
@@ -273,6 +273,8 @@ fn build_loop(
         headroom: Arc::new(HeadroomPolicy::default()),
         tree: tree.clone(),
         context_hook: std::sync::RwLock::new(None),
+        observers: Vec::new(),
+        plugin_events: Arc::new(conway_runtime::hook_dispatch::HookDispatcher::new()),
     });
 
     let spec = AgentSpec {
@@ -287,7 +289,7 @@ fn build_loop(
         headroom_override: None,
         max_parallel_tools: 4,
         report_slot: None,
-        // WI-086: not exercised by this file -- `tests/result_contract.rs`
+        // not exercised by this file -- `tests/result_contract.rs`
         // owns result-contract coverage.
         result_contract: None,
         keep_alive: false,
@@ -402,7 +404,7 @@ async fn overflow_drops_the_six_oldest_and_emits_exactly_six_steer_dropped_witho
     assert_eq!(dropped, 6);
 }
 
-/// Criterion (cycle-2 review F-085 S3): `Event::SteerDropped` is emitted
+/// Criterion: `Event::SteerDropped` is emitted
 /// only when the EVICTED entry was itself a `Steer` -- evicting a queued
 /// `Progress` or soft `Cancel` must never be misreported as a dropped
 /// steer. A 4-slot inbox is filled exactly to capacity with
@@ -821,10 +823,9 @@ async fn progress_never_enters_context_and_is_emitted_as_agent_progress() {
     );
 }
 
-/// Criterion (cycle-2 review F-085 S2, updated by board item
-/// 01KZQHY6RTMYR4BRDTMQFP9J9R): the real resolution path for a
+/// Criterion: the real resolution path for a
 /// `conway_fork`/`conway_spawn` waiter that BLOCKED on this specific child by id is
-/// still `AgentTree::await_result` (WI-083) alone, exercised end-to-end
+/// still `AgentTree::await_result` alone, exercised end-to-end
 /// (including genuinely BLOCKING until the child finishes, not just
 /// observing an already-finished child) by `tests/subagent_fork_spawn.rs`'s
 /// `await_result_blocks_until_the_child_actually_finishes_then_resolves_every_awaiter_once`
@@ -877,7 +878,7 @@ async fn result_message_is_classified_and_persisted_without_disturbing_this_agen
     )));
 }
 
-/// Criterion (board item 01KZQHY6RTMYR4BRDTMQFP9J9R): a parent that starts
+/// Criterion: a parent that starts
 /// several children and never blocks on `AgentTree::await_result` for any
 /// one of them by id can still learn that one finished -- by observing it
 /// on its own very next turn, exactly the way it already observes a steer.
@@ -958,7 +959,7 @@ async fn a_parent_that_did_not_await_observes_its_childs_completion() {
     // Present in the SECOND turn: THIS is the observation the acceptance
     // criterion asks for -- the parent's own next-turn context genuinely
     // carries the child's completion, with the correct provenance and
-    // content, not a parent-authored stand-in for it (P-2).
+    // content, not a parent-authored stand-in for it ().
     let new_segments = &calls[1].segments[calls[0].segments.len()..];
     let child_segment = new_segments
         .iter()
@@ -1042,7 +1043,7 @@ async fn steering_is_bidirectional_a_child_can_steer_its_own_parent() {
     )));
 }
 
-/// Carried follow-up (F-083-1/F-084-1): `AgentLoop::finish` consults the
+/// Carried follow-up (/): `AgentLoop::finish` consults the
 /// `AgentTree`'s set-once publication before emitting `Event::AgentFinished`
 /// -- if the tree already has a result for this agent (simulating the
 /// supervisor's own grace-timeout synthesis winning the race), `finish`

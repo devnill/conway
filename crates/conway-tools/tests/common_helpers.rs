@@ -43,7 +43,7 @@ fn resolve_path_against_real_tempdir() {
     assert_eq!(resolved, dir.path().join("nested/file.txt"));
 
     // Absolute path passes through unchanged even though it's outside the
-    // tempdir (resolve_path performs no containment checks, GP-08).
+    // tempdir (resolve_path performs no containment checks).
     let abs = resolve_path(&ctx, "/etc/hosts").unwrap();
     assert_eq!(abs, PathBuf::from("/etc/hosts"));
 

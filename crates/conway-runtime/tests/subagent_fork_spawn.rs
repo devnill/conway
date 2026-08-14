@@ -1,5 +1,4 @@
-//! Acceptance tests for `impl SubagentHost for Runtime` (WI-084,
-//! architecture §4.6, §5.1, §5.2): fork/spawn, inherited context, and
+//! Acceptance tests for `impl SubagentHost for Runtime` (//! architecture §4.6, §5.1, §5.2): fork/spawn, inherited context, and
 //! session forking.
 //!
 //! Built entirely from `conway-core`'s fakes plus a local `CountingStore`
@@ -456,7 +455,7 @@ async fn spawn_context_has_no_inherited_segment_and_uses_agent_def_system_prompt
     ));
 }
 
-/// **Relaxed (WI-099 superseded):** a `Spawn` without `agent_def` used to be
+/// **Relaxed (superseded):** a `Spawn` without `agent_def` used to be
 /// rejected via `SubagentSpec::validate()` (§5.2's original "agent_def
 /// required for spawn" rule). A recorded design decision relaxes that: it is
 /// now a valid spawn that inherits the PARENT's role (and, transitively, its
@@ -704,7 +703,7 @@ async fn siblings_forked_at_the_same_point_share_one_inherited_arc() {
 // records, verbatim, in order -- the D-11 whole-prefix property), the
 // ForkDirective names the immediate parent, `Inherited.from` names the
 // immediate parent (not root), and same-point sibling grandchildren still
-// share one Arc (WI-084 rework, finding S1).
+// share one Arc (rework, finding S1).
 // ---------------------------------------------------------------------
 
 #[tokio::test]
@@ -881,7 +880,7 @@ async fn await_result_unknown_agent_errors_finished_agent_returns_immediately() 
 }
 
 // ---------------------------------------------------------------------
-// await_result: the real blocking path (cycle-2 review F-085 S2). This is
+// await_result: the real blocking path. This is
 // the mechanism that supersedes the removed, never-populated
 // `mailbox::PendingSubagents` map -- see mailbox.rs's module doc.
 // ---------------------------------------------------------------------
@@ -938,7 +937,7 @@ impl conway_core::ports::Plugin for SlowPlugin {
     }
 }
 
-/// Criterion (cycle-2 review F-085 S2): `SubagentHost::await_result`
+/// Criterion: `SubagentHost::await_result`
 /// genuinely BLOCKS until the child actually publishes its terminal
 /// result -- not merely "returns immediately for an already-finished
 /// child", which `await_result_unknown_agent_errors_finished_agent_returns_immediately`
@@ -948,7 +947,7 @@ impl conway_core::ports::Plugin for SlowPlugin {
 /// the identical terminal result -- exactly the "resolves ... exactly
 /// once" guarantee the removed `mailbox::PendingSubagents` machinery used
 /// to claim, now proven against the real mechanism
-/// (`AgentTree::await_result`'s `watch` channel, WI-083).
+/// (`AgentTree::await_result`'s `watch` channel).
 #[tokio::test]
 async fn await_result_blocks_until_the_child_actually_finishes_then_resolves_every_awaiter_once() {
     let fake = Arc::new(FakeStore::new());
@@ -1043,7 +1042,7 @@ async fn await_result_blocks_until_the_child_actually_finishes_then_resolves_eve
 }
 
 // ---------------------------------------------------------------------
-// P-1 (board item 01KYT8TS0EBKJHYNJRF6S88NRH): `steer`/`await_result`/
+//: `steer`/`await_result`/
 // `cancel` enforce that `caller` may act only within its OWN subtree
 // (itself, or any descendant). Driven against the REAL `Runtime`'s tree --
 // real `SubagentHost::start`-produced siblings, not a hand-written
@@ -1303,7 +1302,7 @@ async fn steer_attribution_derives_from_the_caller_not_the_targets_own_parent() 
 }
 
 // ---------------------------------------------------------------------
-// Board item 01KYTP0PGKJ4VCJP5TD39A1WHF: `674bb65` (immediately above) left
+// `674bb65` (immediately above) left
 // `start`/`ask`/`tree` unguarded -- `start`/`ask` took only `parent` and
 // acted on it directly, and `tree` took no caller at all and returned the
 // WHOLE runtime-wide tree. Composed, this was cross-tree exfiltration in one
@@ -1360,7 +1359,7 @@ async fn ask_rejects_a_sibling_as_parent_and_the_victims_context_never_comes_bac
     // ordinary, non-privileged agent) has seen `sibling_b`'s id and calls
     // `ask` with itself as the correct, non-forgeable `caller` but
     // `sibling_b` as `parent` -- attempting to fork `sibling_b`'s ENTIRE
-    // context (GP-02: a fork inherits everything up to the fork point) and
+    // context (: a fork inherits everything up to the fork point) and
     // read the reply back as plain model output.
     let err = SubagentHost::ask(
         &*runtime,
@@ -1459,7 +1458,7 @@ async fn tree_scopes_to_the_callers_own_subtree_not_the_whole_runtime() {
     );
 
     // An unrelated third party (a fresh, never-attached id) sees an empty
-    // subtree, not an error and not a panic (P-10) -- mirrors
+    // subtree, not an error and not a panic () -- mirrors
     // `AgentTree::path`'s own "empty for unknown" convention.
     let unknown = AgentId::new();
     let unknown_view = SubagentHost::tree(&*runtime, unknown);
@@ -1496,7 +1495,7 @@ impl conway_core::ports::Tool for ForkingTool {
         _call: conway_core::content::ToolCall,
         ctx: conway_core::ports::ToolCtx,
     ) -> Result<conway_core::ports::ToolOutput, ToolError> {
-        // Board item C1: `ctx.subagents` is now a `SubagentHandle` with
+        // C1: `ctx.subagents` is now a `SubagentHandle` with
         // this agent's own id already baked in -- no `caller`/`parent`
         // arguments to pass here anymore.
         let child = ctx
@@ -2312,13 +2311,13 @@ async fn spawn_with_nonexistent_root_fails_fast_with_a_clear_error() {
     }
 }
 
-/// (f2) Min-1 (P-14): a RELATIVE root carrying a NUL byte is rejected
+/// (f2) Min-1 (): a RELATIVE root carrying a NUL byte is rejected
 /// through the SHARED resolution rule (`resolve_like_the_tool_will`) -- the
 /// guard the inlined "absolute -> as-is, relative -> join cwd" copies
 /// silently dropped until Min-1. Before Min-1 this root would have been
 /// joined onto the parent's cwd and handed to `CanonicalRoot::new`, whose
 /// failure mode would have been a generic "does not canonicalize" at best;
-/// now the typed rejection names the NUL itself (P-10: a typed config
+/// now the typed rejection names the NUL itself (: a typed config
 /// error, never a panic).
 #[tokio::test]
 async fn spawn_with_nul_carrying_relative_root_is_rejected_through_the_shared_resolution_rule() {
@@ -2495,7 +2494,7 @@ async fn resume_root_cwd_override_outside_persisted_root_fails() {
 /// file deliberately has no `conway-tools` dependency (see the module doc),
 /// so this is as close to "through the tool" as it can get without one;
 /// `conway-tools`' own `subagent.rs` test suite covers the tool-argument
-/// surface (which currently exposes no `cwd`/`root` argument -- GP-04,
+/// surface (which currently exposes no `cwd`/`root` argument --,
 /// embedder-only for this slice -- so no tool call can reach this path
 /// today; this test proves the PLUMBING is live for when one does).
 #[tokio::test]
@@ -2536,7 +2535,7 @@ async fn a_real_spec_rejection_reaches_the_subagent_handle_as_invalid_arguments(
 }
 
 // ---------------------------------------------------------------------
-// Decision 01KZHEWXDZWPWMEAQ01XY2RDCB: a fork inherits the parent's own
+// Decision: a fork inherits the parent's own
 // `agent_def` (system prompt, tools selector, model pin) when the call site
 // left its own `agent_def` unset -- `SubagentHost::start`'s Fork-only
 // fallback (`subagent.rs`, right before its `agent_def` resolution) -- but
@@ -2620,8 +2619,7 @@ impl conway_core::ports::Plugin for TwoToolPlugin {
     }
 }
 
-/// The model `restricted_def` pins. Non-default on purpose (decision
-/// 01KZHEWXDZWPWMEAQ01XY2RDCB: fork-only `agent_def` inheritance covers the
+/// The model `restricted_def` pins. Non-default on purpose -- fork-only `agent_def` inheritance covers the
 /// system prompt, the tools selector, AND the model pin) -- distinct from
 /// `default_model_ref` below, so a router that actually resolves
 /// `RouteRequest::pin` (`pin_aware_router`, not `FakeRouter::single`, which
@@ -2873,7 +2871,7 @@ fn build_runtime_with_pin_aware_router(
     (runtime, backend)
 }
 
-/// Guard 1b (decision 01KZHEWXDZWPWMEAQ01XY2RDCB): the SAME Fork-only
+/// Guard 1b: the SAME Fork-only
 /// inheritance fill Guard 1 above proves for `tools` also carries the
 /// inherited def's MODEL PIN through to the real routing request --
 /// `subagent.rs::start`'s `let pin = agent_def.and_then(|d| d.model.clone())`
@@ -2937,8 +2935,8 @@ async fn fork_child_inherits_the_parents_agent_def_pinned_model() {
     );
 }
 
-/// Characterization test for board item 01KZHET5G0DN7QC0YF5G9XSB1N /
-/// decision 01KZHH9N313T5BTDR8281QDWHC: an agent def's (or a call site's)
+/// Characterization test for /
+///: an agent def's (or a call site's)
 /// `tools` selects what is announced to the model, it is NOT a capability
 /// restriction. `subagent.rs::start` computes the child's announced
 /// selector as `spec.tools.clone().or_else(|| agent_def.map(|d|
@@ -3008,7 +3006,7 @@ async fn fork_child_explicit_tools_argument_replaces_rather_than_narrows_the_inh
 /// keep-alive selector). If a def-declared contract were wrongly sourced
 /// from an INHERITED def, this child would be required to call `report` to
 /// produce `structured` while simultaneously being denied that very tool --
-/// `ContractOutcome::Retry` then `Rejected`, `01KZGX1RR0VXN2YH3P75SBE9SA`'s
+/// `ContractOutcome::Retry` then `Rejected`,'s
 /// exact failure shape reproduced in a new path with nobody having typed
 /// either half. `ScriptedBackend` never calls `report` at all here (plain
 /// text turns only), so a `Some` contract fails validation immediately
@@ -3053,7 +3051,7 @@ async fn fork_child_does_not_source_a_result_contract_from_an_inherited_agent_de
 }
 
 // ---------------------------------------------------------------------
-// Guard 3 (decision 01KZHEWXDZWPWMEAQ01XY2RDCB): the fork-only `agent_def`
+// Guard 3: the fork-only `agent_def`
 // inheritance fill is gated on `spec.mode == SubagentMode::Fork`
 // (`subagent.rs::start`'s `def_was_inherited` computation) -- a spawn from a
 // parent running under an `agent_def` must NOT pick that def up merely
@@ -3150,13 +3148,13 @@ async fn spawn_child_declines_the_parents_agent_def_even_though_a_fork_would_inh
 }
 
 // ---------------------------------------------------------------------
-// Board item 01KZQJ03ZQ22MPM9H2TW1350ZF: `SubagentSpec::tag`, an opaque
+// `SubagentSpec::tag`, an opaque
 // consumer correlation identifier threaded onto `ContextHookCtx::tag` --
 // see that field's own doc for the "conway never interprets this" guarantee.
 // ---------------------------------------------------------------------
 
 /// Everything one `ContextHook::before_request` call observed, recorded so a
-/// test can assert on what the hook actually received (P-15) rather than on
+/// test can assert on what the hook actually received () rather than on
 /// an intermediate value. `segments` deliberately captures role/content/
 /// provenance -- everything about a segment EXCEPT its own random
 /// `SegmentId` -- so two otherwise-identical turns can be compared for
@@ -3409,5 +3407,155 @@ async fn two_agents_differing_only_in_tag_take_identical_routing_context_and_log
             .iter()
             .all(|r| !format!("{r:?}").contains(&tag_text)),
         "the tag must never appear in a persisted LogRecord"
+    );
+}
+
+// ---------------------------------------------------------------------
+// Tool-call/result pairing across a fork.
+//
+// `conway_fork` runs as one call *inside* a batch, so a fork's snapshot of
+// the parent can land between the assistant record carrying that turn's
+// `ToolUse` blocks and the `ToolResultRecord`s answering them. The child
+// then inherits a prefix ending on unanswered calls, and every provider
+// rejects that request outright -- eight parallel forks once produced eight
+// children, all dead on their first request with zero steps taken.
+//
+// `ContextBuilder` drops an unanswered call from the assembled request and
+// records what it dropped. These two tests pin both halves at the fork
+// level, where the failure actually happened, rather than only in the
+// builder's own unit tests.
+// ---------------------------------------------------------------------
+
+/// Appends an assistant turn carrying `call_ids` as `ToolUse` blocks, then a
+/// `ToolResultRecord` for each id in `answered`. Leaves the rest unanswered,
+/// which is exactly the state a mid-batch fork snapshots.
+async fn append_batch(
+    store: &CountingStore,
+    session: &SessionId,
+    call_ids: &[&str],
+    answered: &[&str],
+) {
+    let seq = store.head(session).await.unwrap();
+    store
+        .append(
+            session,
+            conway_core::log::LogRecord::Assistant {
+                seq,
+                ts: chrono::Utc::now(),
+                content: call_ids
+                    .iter()
+                    .map(|id| ContentBlock::ToolUse {
+                        call_id: (*id).to_string(),
+                        name: conway_core::ids::ToolName::new("read"),
+                        arguments: serde_json::json!({ "path": id }),
+                    })
+                    .collect(),
+                model: ModelRef {
+                    backend: BackendId::new("b"),
+                    model: ModelId::new("m"),
+                },
+                route_reason: serde_json::json!({}),
+                usage: Usage::default(),
+                stop: StopReason::ToolUse,
+            },
+        )
+        .await
+        .unwrap();
+
+    for id in answered {
+        let seq = store.head(session).await.unwrap();
+        store
+            .append(
+                session,
+                conway_core::log::LogRecord::ToolResultRecord {
+                    seq,
+                    ts: chrono::Utc::now(),
+                    result: conway_core::content::ToolResult {
+                        call_id: (*id).to_string(),
+                        tool: conway_core::ids::ToolName::new("read"),
+                        blocks: vec![ContentBlock::Text {
+                            text: format!("contents of {id}"),
+                        }],
+                        is_error: false,
+                        truncated: None,
+                    },
+                },
+            )
+            .await
+            .unwrap();
+    }
+}
+
+/// The `call_id`s the child's assembled context had to drop, read through
+/// the same report `/context` shows.
+fn dropped_call_ids(runtime: &Runtime, child: AgentId) -> Vec<String> {
+    runtime.context_report(child).unwrap().dropped.clone()
+}
+
+#[tokio::test]
+async fn fork_taken_mid_tool_batch_inherits_no_unanswered_tool_call() {
+    let (runtime, store) = build_runtime(2, HashMap::new());
+    let root = start_and_finish_root(&runtime, "investigate the bug").await;
+    let parent_session = session_of(&runtime, root);
+
+    // The parent's log now ends mid-batch: two calls, neither answered.
+    append_batch(&store, &parent_session, &["a", "b"], &[]).await;
+
+    let mut stream = runtime.subscribe();
+    let child = SubagentHost::start(&*runtime, root, root, fork_spec("look closer"))
+        .await
+        .unwrap();
+    let result = wait_for_agent_finished(&mut stream, child).await;
+
+    assert_eq!(
+        result.status,
+        conway_core::agent::ResultStatus::Completed,
+        "the child must run at all -- an unanswered call in its inherited \
+         prefix is a request no provider accepts"
+    );
+
+    let mut dropped = dropped_call_ids(&runtime, child);
+    dropped.sort();
+    assert_eq!(
+        dropped,
+        vec!["a".to_string(), "b".to_string()],
+        "both unanswered calls are dropped, and the report says which"
+    );
+}
+
+#[tokio::test]
+async fn a_partially_answered_batch_keeps_the_answered_call_and_drops_the_rest() {
+    let (runtime, store) = build_runtime(2, HashMap::new());
+    let root = start_and_finish_root(&runtime, "investigate the bug").await;
+    let parent_session = session_of(&runtime, root);
+
+    // Three calls; only `a` got its result before the snapshot.
+    append_batch(&store, &parent_session, &["a", "b", "c"], &["a"]).await;
+
+    let mut stream = runtime.subscribe();
+    let child = SubagentHost::start(&*runtime, root, root, fork_spec("look closer"))
+        .await
+        .unwrap();
+    let result = wait_for_agent_finished(&mut stream, child).await;
+    assert_eq!(result.status, conway_core::agent::ResultStatus::Completed);
+
+    let mut dropped = dropped_call_ids(&runtime, child);
+    dropped.sort();
+    assert_eq!(
+        dropped,
+        vec!["b".to_string(), "c".to_string()],
+        "only the unanswered calls are dropped -- the answered one survives, \
+         so the pass removes what it must and nothing more"
+    );
+
+    // The answered call and its result are still in the inherited prefix:
+    // the pass drops calls, never the results that answer them.
+    let report = runtime.context_report(child).unwrap();
+    assert!(
+        report
+            .segments
+            .iter()
+            .any(|e| matches!(&e.provenance, Provenance::Inherited { .. })),
+        "the answered call and its result remain inherited"
     );
 }

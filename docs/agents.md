@@ -181,6 +181,65 @@ cancel_with` is the embedder-facing counterpart; `SessionHandle::cancel`
 keeps calling it with `CancelMode::Immediate`, unchanged from before this
 distinction existed.
 
+## Budgets
+
+Every agent runs under a `Budget` with four independent ceilings. The first one
+to trip ends that agent with `ResultStatus::BudgetExceeded`, naming which
+dimension it was — so an agent that set several can tell what stopped it. In
+one-shot mode a root agent tripping any of them is [exit code
+5](scripting.md#exit-codes).
+
+| Dimension | Bounds | Scope |
+| --- | --- | --- |
+| `max_steps` | Turns taken. | Per user turn for a [keep-alive](sessions.md#keep-alive-sessions) session, otherwise the agent's whole life. |
+| `max_tool_calls` | Tool calls dispatched. | Same. |
+| `max_tokens` | Input + output tokens accrued. | The agent's whole life, always. |
+| `deadline` | Wall clock. | The agent's whole life, always. |
+
+The two turn-scoped dimensions are runaway-tool-loop guards, so they reset at
+each user-turn boundary: a keep-alive session has to survive an unbounded number
+of turns, each independently bounded, rather than having its whole lifetime
+capped. The two lifetime-scoped ones are cost and time ceilings, where a total is
+the thing you actually want to bound.
+
+`max_tool_calls` counts calls **dispatched**, not results returned. A batch
+cancelled part-way through still counts every call it started, because some of
+them have already run their side effects.
+
+Set the defaults for a session's own root agent in `settings.json`:
+
+```json
+{
+  "limits": {
+    "max_steps": 40,
+    "max_tool_calls": 0,
+    "max_tokens": 0,
+    "deadline_secs": 0,
+    "max_parallel_tools": 4
+  }
+}
+```
+
+`0` means no ceiling for `max_tool_calls`, `max_tokens`, and `deadline_secs`.
+`max_parallel_tools` is not a budget — it caps how many calls in one batch run
+concurrently, and never ends an agent.
+
+A child overrides any of these per call: `budget` on `conway_fork`/
+`conway_spawn`/`conway_ask` for a model, or `ForkSpec::budget`/
+`SpawnSpec::budget` for an embedder. **A child never inherits its parent's
+budget** — it gets its own defaults and you set the rest explicitly:
+
+- **Model-invoked** (`conway_fork`/`conway_spawn`/`conway_ask`): 40 steps and a
+  10-minute deadline, no token or tool-call ceiling. Override per call, or move
+  the defaults with the `subagent.max_steps`, `subagent.deadline_secs`,
+  `subagent.max_tokens`, and `subagent.max_tool_calls` plugin config keys.
+- **Embedder-invoked** (`ForkSpec`/`SpawnSpec`): `Budget::default` — 40 steps
+  and nothing else. There is no deadline here, because a host application that
+  wants one knows its own workload better than a constant would.
+
+A fan-out is where this matters: ten children with no explicit budget is ten
+independent 40-step allowances, and nothing bounds the tree as a whole.
+
 ## Result contracts
 
 A **result contract** is a JSON Schema a subagent's `structured` result
@@ -221,8 +280,7 @@ and inherits its def) does not require its interactive child to call
 `report` while simultaneously denying it that tool.
 
 **`conway_ask` takes no `agent_def` argument, but its child inherits the
-caller's own def anyway** — the answer to what was, before board items
-01KZGX1RR0VXN2YH3P75SBE9SA/01KZC8DD9C74BSTP8BQDJKYNFR, an open design
+caller's own def anyway** — the answer to what was, before, an open design
 question: a forked child inherits its parent's `agent_def` (system prompt,
 tools selector, model pin), the same as an ordinary `conway_fork`, enforced
 at the `SubagentHost`/`Runtime::ask` trait boundary rather than at the
@@ -283,8 +341,10 @@ Read `missing` to tell whether the delegation itself went wrong or the
 contract doesn't match what the agent can actually produce, then either
 loosen the schema or clarify the prompt.
 
-See [`sessions.md`](sessions.md#repeated-step-notices) for the other
-mechanism that writes into a transcript on conway's own initiative.
+Result contracts are the one thing conway writes into a transcript without
+you or the model asking. An installed plugin can write more — see
+[`sessions.md`](sessions.md#repeated-step-notices) for the first-party one
+that does.
 
 ## What an agent may act on
 
@@ -335,9 +395,9 @@ def's system prompt), `skill` (an injected prompt fragment), `tool
 registry` (the schema set the model was told about, identified by hash),
 `inherited` (a verbatim prefix carried over at fork time, naming the parent
 session and range), `fork directive`, `parent steer`, `tool result`,
-`system note` (runtime-authored, e.g.
-[repeated-step detection](sessions.md#repeated-step-notices) or a
-[result-contract](#result-contracts) violation), `merged
+`system note` (written by the harness or an installed plugin, e.g. a
+[result-contract](#result-contracts) violation or a
+[repeated-step notice](sessions.md#repeated-step-notices)), `merged
 /ask` (a pulled-in ephemeral question), and `child result` (a fan-out
 child's terminal result, landed automatically on your next turn — see
 [the model tool call section above](#a-model-tool-call)). See

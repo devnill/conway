@@ -88,7 +88,7 @@ pub fn permission_file_paths(cwd: &std::path::Path, env: &HashMap<String, String
 /// file path(s), resolved project-first then global — the identical
 /// layering [`permission_file_paths`] already establishes, reused here
 /// rather than invented anew (this module's own precedent). Both candidates
-/// are returned in precedence order (board item 01KZHF270T3W8GZ7NM6DSNQ4MM:
+/// are returned in precedence order (:
 /// copied verbatim onto every `[backends.<id>]` entry's `BackendBuildContext
 /// ::profile_file_paths` -- this module still owns discovering WHICH files
 /// exist; parsing/merging them is `conway_plugin_backends::profile::

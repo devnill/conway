@@ -1,6 +1,6 @@
 //! The `(backend, model) -> Capabilities` lookup built at startup.
 //!
-//! Lives beside the `Backend` port (board item 01KZFBZHTWDF11TH7G0H613ERE,
+//! Lives beside the `Backend` port (,
 //! "the backend side"): [`CapabilityIndex::from_backends`] reads directly
 //! from `Backend::capabilities`, and nothing about this type is
 //! routing-policy-specific -- it is a plain projection over whatever
@@ -79,7 +79,7 @@ impl CapabilityIndex {
     /// what `Backend::capabilities()` -- and therefore
     /// `conway_runtime::attempt::AttemptEngine`'s own `Backend::admit`-based
     /// gate -- will actually see. A second, parallel `models.json` ->
-    /// `Capabilities` conversion is the divergence bug class WI-123 closes;
+    /// `Capabilities` conversion is the divergence bug class an earlier item closes;
     /// don't reintroduce one.
     pub fn from_backends(backends: &[Arc<dyn Backend>], refs: &[ModelRef]) -> CapabilityIndex {
         let by_id: HashMap<BackendId, &Arc<dyn Backend>> =

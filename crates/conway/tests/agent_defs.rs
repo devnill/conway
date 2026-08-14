@@ -1,4 +1,4 @@
-//! WI-099: agent definition loader — non-recursive `*.md` discovery,
+//! Agent definition loader — non-recursive `*.md` discovery,
 //! well-formed parsing (all `AgentDef` fields), and fail-loud, path-naming
 //! errors for every documented malformation.
 
@@ -14,7 +14,7 @@ use conway_core::ids::{BackendId, ModelId, ModelRef, RoleAlias};
 
 // ---------------------------------------------------------------------
 // End-to-end: a `result_contract` declared in a real, on-disk agent-def
-// file is enforced when a subagent is spawned FROM THAT DEF -- board item
+// file is enforced when a subagent is spawned FROM THAT DEF
 // wiring `AgentDef.result_contract` into `subagent.rs`'s `SubagentHost::
 // start`. Everything below drives the real loader (`load_agent_defs`) and
 // the real runtime (`conway_runtime::runtime::Runtime`), never a

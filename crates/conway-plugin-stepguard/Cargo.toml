@@ -1,0 +1,32 @@
+[package]
+name = "conway-plugin-stepguard"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+description = "First-party plugin: notices when an agent calls the same tool with the same arguments repeatedly, and tells it so"
+
+# Versioned WITH the workspace, like every other first-party plugin. This
+# crate carries none of `conway-core`'s strict-semver discipline
+# (ARCHITECTURE.md §2), because that discipline exists for the crate
+# third-party plugins depend on, and from `conway`'s own point of view this
+# is just another consumer of the public `conway::plugin` surface.
+
+[dependencies]
+# The ONLY workspace crate this plugin depends on -- the public facade, the
+# exact surface a third-party author gets. `Plugin`, `ToolObserver`,
+# `ObservedCall`, `ObserverAnswer` and `EventDecl` are all reachable through
+# `conway::plugin` alone, which is what makes this plugin a genuine test of
+# that surface rather than a privileged built-in wearing a plugin's clothes.
+conway = { path = "../conway" }
+async-trait = { workspace = true }
+serde_json = { workspace = true }
+blake3 = { workspace = true }
+# The bounded ring. Already a pinned workspace dependency (`conway-session`
+# uses it for transcript memoization), reused rather than hand-rolling a
+# second bounded-eviction cache.
+lru = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }

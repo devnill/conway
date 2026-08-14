@@ -6,15 +6,14 @@
 //!
 //! Fork-only (v1): the child inherits this agent's full context and
 //! effective role (fork semantics; role via the runtime's parent-role
-//! fallback, WI-136, `conway_runtime::subagent`). `invoke` below always
+//! fallback an earlier item, `conway_runtime::subagent`). `invoke` below always
 //! passes `agent_def: None` on the `SubagentSpec` -- but `Runtime::ask`
-//! (`conway_runtime::subagent`, board item 01KZC8DD9C74BSTP8BQDJKYNFR)
+//! (`conway_runtime::subagent`)
 //! fills it from the parent's own `SessionMeta::agent_def` at the trait
 //! boundary when the call site leaves it unset, so the child DOES inherit
 //! the parent's `agent_def` for system prompt, tools selector, and model
 //! pin -- exactly like an ordinary `conway_fork`. The one thing it never
-//! inherits is a def-declared `result_contract` (board item
-//! 01KZGX1RR0VXN2YH3P75SBE9SA): `Runtime::start` carves that out
+//! inherits is a def-declared `result_contract` -- `Runtime::start` carves that out
 //! unconditionally for any spec whose `ask_origin` is set (both ask entry
 //! points set it), because `AskOutcome`/the facade's `TurnHandle` expose no
 //! `structured` field a contract could ever satisfy -- it could only ever
@@ -24,7 +23,7 @@
 //! (`ToolSelector::selects`, `PluginRegistry::specs`) rather than narrowing
 //! it -- it selects what is announced to the child, not what the child may
 //! execute; the permission gate and confinement root are the capability
-//! boundary (decision 01KZHH9N313T5BTDR8281QDWHC). Returns the
+//! boundary. Returns the
 //! full reply text so the caller's own context stays lean and the model can
 //! compose a fresh spawn
 //! out-of-band, keeping the curation reasoning out of this agent's context
@@ -68,7 +67,7 @@ pub(super) struct AskArgs {
     /// child (`ToolSelector::Only`, the same mapping `conway_fork`/
     /// `conway_spawn`'s `tools` arg uses), replacing whatever the child
     /// would otherwise inherit (its own def's selector, if any) rather than
-    /// narrowing it (decision 01KZHH9N313T5BTDR8281QDWHC): this selects what
+    /// narrowing it: this selects what
     /// the model is offered, it is NOT a capability restriction, so it can
     /// name a tool an inherited def excludes -- the permission gate and the
     /// confinement root are what actually bound what the child may execute.
@@ -96,17 +95,21 @@ fn resolve_ask_budget(arg: Option<BudgetArg>, config: &PluginConfig) -> Result<B
         .as_ref()
         .and_then(|b| b.max_tokens)
         .or_else(|| config_u32(config, "ask.max_tokens"));
+    let max_tool_calls = arg
+        .as_ref()
+        .and_then(|b| b.max_tool_calls)
+        .or_else(|| config_u32(config, "ask.max_tool_calls"));
 
     Ok(Budget {
         max_steps,
         // Range-check the model-supplied deadline -- it is untrusted -- rather
         // than saturate (the prior `unwrap_or(i64::MAX)` saturated into a
-        // `Duration::seconds` overflow panic -- cycle-3 review SIG-1).
+        // `Duration::seconds` overflow panic -- An earlier review found: SIG-1).
         // Out-of-range -> a typed `InvalidArguments` error via
         // `deadline_from_secs`.
         deadline: Some(deadline_from_secs(deadline_secs)?),
         max_tokens,
-        max_tool_calls: None,
+        max_tool_calls,
     })
 }
 
@@ -132,7 +135,7 @@ impl Tool for AskTool {
 
     /// `conway_ask` never overrides `render`, so its rendering is always
     /// the trait's own default JSON dump -- never a shell command. Board
-    /// item 01KYT3NSWRHMPEAXVXRJ73KDYR.
+    /// item.
     fn render_kind(&self) -> RenderKind {
         RenderKind::Structured
     }
@@ -189,7 +192,7 @@ impl Tool for AskTool {
             // (S3) A fork always inherits the forker's root, never overrides
             // it -- same rationale as `cwd` above.
             root: None,
-            // (01KZQJ03ZQ22MPM9H2TW1350ZF) `conway_ask` has no consumer-tag
+            // `conway_ask` has no consumer-tag
             // argument in its schema -- an embedder correlating agents with
             // its own domain objects sets `SubagentSpec::tag` on a fork/spawn
             // it constructs directly, not via a model-invoked tool call.

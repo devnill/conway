@@ -1,6 +1,6 @@
-//! Shared `--model` parsing (WI-128) and the generic "usage error" wrapper.
+//! Shared `--model` parsing and the generic "usage error" wrapper.
 //!
-//! Board item 01KZGRXFSY4ZB7NCA9NS2AGFS5: `--model` used to be wired only in
+//! `--model` used to be wired only in
 //! one-shot mode (`oneshot::resolve_session`), while the interactive TUI
 //! accepted the flag and silently never read it. Factored out here, rather
 //! than left as a private `fn` inside `oneshot.rs`, so both `oneshot::
@@ -26,7 +26,7 @@ pub(crate) fn usage_error(message: impl Into<String>) -> ConwayError {
     }
 }
 
-/// Parses `--model <ref>` (WI-128) into a [`ModelRef`] pin, or `None` when
+/// Parses `--model <ref>` into a [`ModelRef`] pin, or `None` when
 /// the flag was not passed. A malformed ref is a usage error (`ExitCode::
 /// Usage`, 2), consistent with every other flag this crate parses.
 pub(crate) fn parse_model_pin(cli: &Cli) -> conway::Result<Option<ModelRef>> {

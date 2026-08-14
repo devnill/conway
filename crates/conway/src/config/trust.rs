@@ -1,7 +1,7 @@
 //! Recording an explicit, content-scoped trust decision for a
 //! project-scoped `.conway/permissions.json`, per D4
-//! (`.design/d4-trust-model.md` §4-5, §11) and board item
-//! 01KYT8SGX32CP56PRJNG72V2W5.
+//! (the trust-model design) and
+//!.
 //!
 //! ## Why this exists
 //!
@@ -77,8 +77,7 @@
 //!   is fused with `Outside` everywhere in this codebase that consults
 //!   containment: "can't confirm" is never "trusted".
 //!
-//! ## Deliberately NOT `#[serde(deny_unknown_fields)]` (board item
-//! 01KZHVDDQQ7XT0RK3JVNM2YV83)
+//! ## Deliberately NOT `#[serde(deny_unknown_fields)]`
 //!
 //! `conway_core::permission_pattern`'s internal `RawPermissionFile` gained
 //! `deny_unknown_fields` under this item because `permissions.json` is a
@@ -411,7 +410,7 @@ mod tests {
         assert!(!store.is_trusted(Path::new("/anything"), "anything"));
     }
 
-    /// Board item 01KZHVDDQQ7XT0RK3JVNM2YV83, question 3: pins the
+    ///, question 3: pins the
     /// deliberate DIFFERENCE from `permissions.json`'s treatment, recorded
     /// in this module's own doc -- an unrecognized key here (at either
     /// nesting level: a stray top-level field, or a stray field inside one

@@ -1,6 +1,6 @@
 //! The `ConwayConfig` schema: the facade-owned wire shape for `settings.json`.
 //!
-//! Reconciliation note (disclosed in the WI-097 Self-Check): the binding
+//! Reconciliation note (disclosed in the an earlier item Self-Check): the binding
 //! implementation notes say `[roles]` and `[health]` "deserialize directly
 //! into `conway_core::RoutingConfig`. Do not duplicate the types." Two
 //! properties of the already-committed `conway_core` types make a literal
@@ -47,7 +47,7 @@ use serde::{Deserialize, Serialize};
 /// `default_role` has no sensible built-in default (the binding config always
 /// sets it explicitly), so it is the one field with no `#[serde(default)]`.
 /// Every other field defaults per the documented schema in
-/// `docs/embedding.md` (WI-097).
+/// `docs/embedding.md`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConwayConfig {
@@ -77,21 +77,21 @@ pub struct ConwayConfig {
     /// `[tui.status_line]` (T3).
     #[serde(default)]
     pub tui: TuiSection,
-    /// `[tools]` (board item: bash ships on by default and cannot be
+    /// `[tools]` (bash ships on by default and cannot be
     /// declined). Which built-in `conway-tools` plugins
     /// `ConwayBuilder::build` auto-registers -- see [`ToolsConfig`]'s own
     /// doc.
     #[serde(default)]
     pub tools: ToolsConfig,
-    /// `[plugins]` (the first-party plugin tier, board item
-    /// 01KZDC3JQ7W4DY1MG6MBCVB2DV) -- see [`PluginsConfig`]'s own doc for
+    /// `[plugins]` (the first-party plugin tier
+    ///) -- see [`PluginsConfig`]'s own doc for
     /// why this crate carries the wire shape but never itself acts on it.
     #[serde(default)]
     pub plugins: PluginsConfig,
-    /// `[hooks]` (board item 01KZDC0RDRMMMJHX7SAFMM2Q5A, "declarative
+    /// `[hooks]` (, "declarative
     /// hooks"). **A `pre_tool_use` rule is dispatched ONLY IF a runner has
     /// been injected -- either via `ConwayBuilder::with_hook_runner` (board
-    /// item 01KZS00JP5QNBJSSHNFP9C47GM) directly, or via
+    /// item) directly, or via
     /// `ConwayBuilder::with_default_hook_runner`, the convenience that
     /// supplies this workspace's own in-tree default; every other `event` is
     /// still parsed and validated only.** That precondition is stated here
@@ -99,8 +99,7 @@ pub struct ConwayConfig {
     /// site, and a declaration site is ONE artifact -- nothing may claim to be
     /// reached that isn't: a reader
     /// who stops at this field must not come away believing a rule they
-    /// write here will run. `conway-cli` DOES inject a runner (board item
-    /// 01KZVTTP492R3BDY33FAGYWDNW: `build_conway` calls `with_default_
+    /// write here will run. `conway-cli` DOES inject a runner -- `build_conway` calls `with_default_
     /// hook_runner` unconditionally), so a `pre_tool_use` rule in a
     /// `settings.json` driving the CLI fires. A third party that links this
     /// crate directly, without calling either method itself, still gets
@@ -213,6 +212,15 @@ pub struct LimitsConfig {
     /// `0` = none.
     pub deadline_secs: u64,
     pub max_parallel_tools: u32,
+    /// Ceiling on tool calls DISPATCHED per turn (per user turn, for a
+    /// keep-alive session). `0` = unlimited.
+    ///
+    /// The counterpart to `Budget::max_tool_calls`, added when that
+    /// dimension started being enforced: the other three limits all had a
+    /// config counterpart, and leaving this one reachable only from the
+    /// library API would put a capability in one consumption mode and not
+    /// the others.
+    pub max_tool_calls: u32,
 }
 
 impl Default for LimitsConfig {
@@ -222,6 +230,7 @@ impl Default for LimitsConfig {
             max_tokens: 0,
             deadline_secs: 0,
             max_parallel_tools: 4,
+            max_tool_calls: 0,
         }
     }
 }
@@ -260,17 +269,16 @@ pub enum PermissionMode {
 /// `stream_tools` default, only exist at the config-loading layer) and from
 /// `conway_plugin_backends::{AnthropicConfig, OpenAiCompatConfig}` (the
 /// concrete adapter configs constructed from this by
-/// `conway_plugin_backends::factory`, board item 01KZHF270T3W8GZ7NM6DSNQ4MM).
+/// `conway_plugin_backends::factory`).
 /// Mirrors how those two adapter configs are already a third, distinct
 /// shape from `conway_core::routing::BackendConfig` in the committed code.
 ///
-/// **`kind` is an open name, not a closed enum** (board item
-/// 01KZHF1E85MS1VF4YH8CDNCP9Z, cite decision 01KZHRPZ010R37411R3W1XR5TF —
+/// **`kind` is an open name, not a closed enum** (///, cite —
 /// the config break this represents is accepted, pre-1.0, not re-litigated
 /// here). `crate::builder::resolve_backend_factory` resolves it against
 /// every `conway_core::ports::BackendFactory` registered on the builder
-/// (`ConwayBuilder::with_backend_factory`) -- ONLY: board item
-/// 01KZHF270T3W8GZ7NM6DSNQ4MM removed the temporary compiled-in fallback to
+/// (`ConwayBuilder::with_backend_factory`) -- ONLY:
+/// removed the temporary compiled-in fallback to
 /// `"anthropic"`/`"openai-compat"` that predecessor item deliberately left
 /// standing, so every kind, including those two, is a registered factory
 /// now (`conway_plugin_backends::factory`'s two `BackendFactory`s, attached
@@ -297,7 +305,7 @@ pub enum PermissionMode {
 ///    the alternative (below) forecloses third-party kinds entirely. A
 ///    factory is free to validate its own `extra` keys inside `build()`
 ///    and reject its own typos there — `conway_core::ports::
-///    BackendBuildContext::extra` (board item 01KZMM8ABQJQGHTDTP5S29P88C)
+///    BackendBuildContext::extra`
 ///    carries this same map, cloned verbatim by
 ///    `crate::builder::build_backend_context`, onward to every registered
 ///    `BackendFactory::build`, so this is genuinely reachable now, not
@@ -376,7 +384,7 @@ impl Default for RoutingSection {
     }
 }
 
-/// Disclosed reconciliation: the WI-097 amendment's prose says
+/// Disclosed reconciliation: the amendment's prose says
 /// `default_headroom_tokens` "defaults to `16000` when the key is absent."
 /// The already-committed `conway_core::capabilities::DEFAULT_HEADROOM_TOKENS`
 /// (consumed by `RequiredCaps::default()`,
@@ -399,8 +407,7 @@ pub const DEFAULT_HEADROOM_TOKENS: u32 = conway_core::capabilities::DEFAULT_HEAD
 /// silently diverge in meaning between the two types.
 ///
 /// **BREAKING: `probe_enabled`/`probe_interval_secs`/`probe_timeout_secs`/
-/// `probe_failures_to_open` were removed (board item
-/// `01KZ802GSF692EKYKQ2TTVCJB8`), not merely left unimplemented.** They used
+/// `probe_failures_to_open` were removed , not merely left unimplemented.** They used
 /// to configure a periodic health prober and the independent `Probe` breaker
 /// it fed; the prober had no production call site anywhere in this tree —
 /// the Transport breaker alone already handles recovery (a clock read takes
@@ -489,8 +496,7 @@ pub struct RoleEntry {
 /// `conway_plugin_backends::model_metadata::ToolCallSupportSpec`, which
 /// solves the exact same problem for `models.json`, but reusing that type
 /// here is a separate refactor this item does not make: this crate does not
-/// depend on `conway_plugin_backends` at all (board item
-/// 01KZHF270T3W8GZ7NM6DSNQ4MM — that crate is a first-party plugin, never a
+/// depend on `conway_plugin_backends` at all (/// — that crate is a first-party plugin, never a
 /// build dependency of this one), so unifying the two wire vocabularies
 /// would mean either duplicating the type here anyway or reversing that
 /// dependency direction, neither of which this item's own scope covers.
@@ -536,10 +542,10 @@ impl Default for AgentsConfig {
     }
 }
 
-/// `[models]`. `probe_on_startup` is not shown in the WI-097 config snippet
-/// but is required by WI-100's criteria (`config.models.probe_on_startup`,
-/// default `false`); added here since WI-097 owns this file exclusively and
-/// WI-100 depends on it existing.
+/// `[models]`. `probe_on_startup` is not shown in the config snippet
+/// but is required by an earlier item's criteria (`config.models.probe_on_startup`,
+/// default `false`); added here since an earlier item owns this file exclusively and
+/// depends on it existing.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct ModelsConfig {
@@ -556,7 +562,7 @@ impl Default for ModelsConfig {
     }
 }
 
-/// `[tools]` (board item: bash ships on by default and cannot be declined).
+/// `[tools]` (bash ships on by default and cannot be declined).
 ///
 /// `builtin_plugins` is a plain, explicit list of the
 /// `conway-tools` built-in plugins to auto-register at `build()` time,
@@ -604,8 +610,7 @@ impl Default for ToolsConfig {
     }
 }
 
-/// `[plugins]` — the first-party plugin tier's install list (board item
-/// 01KZDC3JQ7W4DY1MG6MBCVB2DV; see `PHILOSOPHY.md`'s "First-party plugins,
+/// `[plugins]` — the first-party plugin tier's install list (///; see `PHILOSOPHY.md`'s "First-party plugins,
 /// and why they are not defaults" and `docs/embedding.md`'s "First-party
 /// plugin tier" section).
 ///
@@ -651,8 +656,8 @@ pub struct PluginsConfig {
     /// code) — the tier's whole point is that nothing in it runs unasked.
     pub install: Vec<String>,
     /// The one deliberate exception to `install`'s "empty by default, the
-    /// tier's whole point" rule (owner decision 01KZHRPZ010R37411R3W1XR5TF,
-    /// board item 01KZHF270T3W8GZ7NM6DSNQ4MM): the `BackendFactory` kind ids
+    /// tier's whole point" rule (owner,
+    ///): the `BackendFactory` kind ids
     /// a reading binary/embedder attaches WITHOUT this array (or `install`)
     /// naming them at all. **Default: `["anthropic", "openai-compat"]`** --
     /// `conway_plugin_backends`'s two published `BackendFactory::id()`
@@ -680,7 +685,7 @@ pub struct PluginsConfig {
     /// against every linked plugin/router-factory/backend-factory bundle,
     /// so an id here and an id in `install` are handled identically once
     /// resolution starts -- only WHERE each id comes from differs. Removing
-    /// an entry from this list -- the decline mechanism a later board item
+    /// an entry from this list -- the decline mechanism a later
     /// designs the operator-facing UX for -- is already possible today by
     /// editing `settings.json` directly (this is an ordinary,
     /// `#[serde(default)]`-backed `Vec<String>` field, not special-cased
@@ -867,7 +872,7 @@ pub struct ThemeStyleConfig {
 }
 
 /// `[hooks]` -- an operator-declared list of "when this event happens, run
-/// this command" rules (board item 01KZDC0RDRMMMJHX7SAFMM2Q5A, "declarative
+/// this command" rules (, "declarative
 /// hooks"; see `docs/plugins/hooks.md` point 13 and `docs/plugins/scripts.md`
 /// for the design this shape is drawn from).
 ///
@@ -876,8 +881,7 @@ pub struct ThemeStyleConfig {
 /// section itself, and every type it names, always parses and validates
 /// (that part was never event-conditional). Whether a rule actually RUNS is:
 ///
-/// - **`event == "pre_tool_use"`, `enabled: true`: DISPATCHED** (board item
-///   01KZS00JP5QNBJSSHNFP9C47GM) -- `ConwayBuilder::build` filters
+/// - **`event == "pre_tool_use"`, `enabled: true`: DISPATCHED** -- `ConwayBuilder::build` filters
 ///   `rules` to exactly these and hands them to
 ///   `conway_runtime::permission::PermissionBroker::decide`, which invokes
 ///   each via the injected [`crate::plugin::HookRunner`] at the SAME tier
@@ -886,11 +890,10 @@ pub struct ThemeStyleConfig {
 ///   permission mode. **This still requires an actual runner.**
 ///   `ConwayBuilder::with_hook_runner` (mirroring `with_permission_gate`/
 ///   `with_context_hook`: not called at all is the default) is what
-///   supplies one -- `conway-runtime` never constructs one itself (decision
-///   01KZT642CEZ20K92DYWBTPE2XZ: it must not depend on `conway-tools` to
+///   supplies one -- `conway-runtime` never constructs one itself -- it must not depend on `conway-tools` to
 ///   reach one).
 ///
-///   **`conway-cli` supplies one.** Board item 01KZVTTP492R3BDY33FAGYWDNW:
+///   **`conway-cli` supplies one.**
 ///   `build_conway` calls `ConwayBuilder::with_default_hook_runner` (a
 ///   convenience over `with_hook_runner` that constructs this workspace's
 ///   own `conway_tools::hook_runner::ProcessHookRunner`) unconditionally, so
@@ -906,7 +909,7 @@ pub struct ThemeStyleConfig {
 ///   gap this doc used to disclose for the whole section, now narrowed to
 ///   that one precondition.
 /// - **`post_tool_use`, `session_starting`, `child_spawned`: DISPATCHED,
-///   observation-only** (board item 01KZS019NHG11RVQYSVT7RG0P5). Same
+///   observation-only**. Same
 ///   injected-runner precondition as `pre_tool_use` above. These cannot
 ///   deny anything and they fail OPEN: a hook that errors or times out is
 ///   logged and the operation it observed is unaffected, which is the
@@ -915,14 +918,14 @@ pub struct ThemeStyleConfig {
 ///   would be the wrong direction. Dispatched by
 ///   `conway_runtime::hook_dispatch::HookDispatcher::dispatch`.
 /// - **`prompt_submitted`: DISPATCHED, may DENY but never MODIFY** (board
-///   item 01KZS01ZBNEY12DBDNW2Y861SQ). Fires at both prompt-submission
+///   item). Fires at both prompt-submission
 ///   sites before the text reaches the agent loop, and fails CLOSED like
 ///   `pre_tool_use`. It cannot rewrite a word of what the user typed, and
 ///   that is a TYPE guarantee rather than an unwired path: the dispatch
 ///   reads only `HookPermissionVerdict`, which has no variant capable of
 ///   carrying replacement text.
 /// - **`request_assembled` and `child_reported`: DISPATCHED,
-///   observation-only** (board item 01KZYAXSGDS8AP7YK1CN7H680G). Same
+///   observation-only**. Same
 ///   injected-runner precondition and same fail-OPEN posture as
 ///   `post_tool_use`/`session_starting`/`child_spawned` immediately above --
 ///   dispatched by the identical
@@ -930,7 +933,7 @@ pub struct ThemeStyleConfig {
 ///   SAME runner. `request_assembled` fires once per turn, from
 ///   `conway_runtime::agent_loop::AgentLoop::run_inner`, after
 ///   `ContextBuilder::build` (and, if one is registered, `ContextHook::
-///   before_request`'s own edit -- WI-126) and before that turn's route/
+///   before_request`'s own edit -- an earlier item) and before that turn's route/
 ///   attempt call; its payload is a SUMMARY (segment count, estimated
 ///   tokens, tokenizer name, turn, an unrouted model pin if one is set),
 ///   never the full assembled segment content -- shipping a verbatim
@@ -952,11 +955,11 @@ pub struct ThemeStyleConfig {
 ///   event's dispatch discards `HookAnswer::context`/`permission` exactly as
 ///   `post_tool_use`'s does. A configured script editing assembled context
 ///   append-only, without breaking the prompt cache, is a SEPARATE, still-
-///   open board item (01KZRZZP6A4A27R3EN0HQAENBS) that this one does not
+///   open that this one does not
 ///   build and does not foreclose.
 /// - **A namespaced `event` (`plugin_id.event_name`): DISPATCHED,
 ///   observation-only, IF AND ONLY IF an installed plugin actually
-///   declares it** (board item 01KZS03BFE720EQZG7Q2768N2H --
+///   declares it** ( --
 ///   `PHILOSOPHY.md` §5's open vocabulary: "A plugin declares the events
 ///   it emits"). `ConwayBuilder::build` resolves every installed plugin's
 ///   own declared events (`conway_runtime::hook_dispatch::
@@ -981,7 +984,7 @@ pub struct ThemeStyleConfig {
 pub struct HooksConfig {
     /// Individually named, individually revocable rules -- "rules", not
     /// "entries" or "hooks", to match the vocabulary the later
-    /// operator-visibility item (umbrella 01KZDC0RDRMMMJHX7SAFMM2Q5A) uses
+    /// operator-visibility item (umbrella) uses
     /// when it lists and revokes one by [`HookEntry::id`].
     pub rules: Vec<HookEntry>,
 }
@@ -995,18 +998,18 @@ pub struct HooksConfig {
 /// value of this type either way -- `ConwayBuilder::build` only ever hands
 /// this data to an injected `Arc<dyn `[`crate::plugin::HookRunner`]`>`,
 /// which is where the actual process spawn lives
-/// (`conway_tools::hook_runner::ProcessHookRunner`, board item
-/// 01KZRZY1MNM872BZ6AKEBG3SKE).
+/// (`conway_tools::hook_runner::ProcessHookRunner`
+///).
 ///
 /// **Deliberately minimal.** The only fields beyond the five the owning
-/// board item names are the ones already covered by those five --
+/// names are the ones already covered by those five --
 /// specifically, no `cwd` override and no `args`-vs-`command` split were
 /// added: `command` already being an argv vector (program, then its
 /// arguments) settles the args-vs-command question by construction (the
 /// first element IS the program, the rest ARE its arguments -- a separate
 /// `args` field would just restate that split redundantly), and a `cwd`
 /// override is left out because nothing runs yet to need one -- the runner
-/// item (01KZRZY1MNM872BZ6AKEBG3SKE) is the one that knows what "current
+/// item is the one that knows what "current
 /// directory" should mean for a spawned hook (the invoking agent's cwd? the
 /// project root? see `crates/conway-tools/src/shell/bash.rs`'s own `cwd`
 /// field for the shape precedent if it wants one), and adding the field now,
@@ -1032,7 +1035,7 @@ pub struct HookEntry {
     /// inferred from an index.
     pub id: String,
     /// The event name this rule fires on -- either a bare core event (e.g.
-    /// `"pre_tool_use"`) or, as of board item 01KZS03BFE720EQZG7Q2768N2H, a
+    /// `"pre_tool_use"`) or, as of, a
     /// plugin-declared `"plugin_id.event_name"` (`PHILOSOPHY.md` §5: "That
     /// list is open rather than fixed"). `merge::validate`'s own event-shape
     /// check enforces the bare-vs-namespaced convention itself
@@ -1045,8 +1048,7 @@ pub struct HookEntry {
     /// rule parses, validates, and is silently never dispatched -- see
     /// [`HooksConfig`]'s own reachability doc.
     pub event: String,
-    /// The tool-name matcher this rule fires for (board item
-    /// 01KZYAWQ6011Q6CJVG6CCMQPF1). `"match"` on the wire -- the exact
+    /// The tool-name matcher this rule fires for. `"match"` on the wire -- the exact
     /// spelling `PHILOSOPHY.md` §5's own example uses
     /// (`{"match": "bash", "run": "..."}`) -- while the Rust field is
     /// `match_tool` because `match` is a reserved word; that item's own "A
@@ -1112,7 +1114,7 @@ pub struct HookEntry {
     /// this command before killing it -- enforced for real, for a
     /// `pre_tool_use` rule, by `ConwayBuilder::build`'s translation into
     /// `conway_runtime::permission::PreToolUseHookSpec::timeout_ms` (board
-    /// item 01KZS00JP5QNBJSSHNFP9C47GM); still only READ, never enforced,
+    /// item); still only READ, never enforced,
     /// for any other `event` (see [`HooksConfig`]'s own doc). Default
     /// 5000ms, chosen the same way `crates/conway-tools/src/shell/bash.rs`'s
     /// own `DEFAULT_TIMEOUT_MS` was: long enough for a typical local script
@@ -1141,7 +1143,7 @@ pub struct HookEntry {
     /// boolean-flag convention. `enabled: false` on a `pre_tool_use` rule
     /// is now genuinely load-bearing: `ConwayBuilder::build`'s filter into
     /// `PreToolUseHookSpec` drops a disabled rule before `PermissionBroker::
-    /// decide` ever sees it (board item 01KZS00JP5QNBJSSHNFP9C47GM).
+    /// decide` ever sees it.
     /// `enabled` on any OTHER `event` stays exactly as inert as every other
     /// field here.
     #[serde(default = "default_hook_enabled")]
@@ -1194,7 +1196,7 @@ mod tests {
 
     /// ACCEPTANCE: a well-formed `[hooks]` block with one entry parses and
     /// round-trips (serialize back, re-parse, equal). Includes `"match"`
-    /// (board item 01KZYAWQ6011Q6CJVG6CCMQPF1), spelled exactly as
+    ///, spelled exactly as
     /// `PHILOSOPHY.md` §5's own example spells it, decoding into
     /// `HookEntry::match_tool`.
     #[test]

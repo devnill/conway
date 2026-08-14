@@ -1,6 +1,5 @@
 //! `conway-plugin-backends` — the two provider-adapter dialects `conway`
-//! ships, installed as a first-party plugin (board item
-//! 01KZHF270T3W8GZ7NM6DSNQ4MM, decision 01KZHRPZ010R37411R3W1XR5TF) rather
+//! ships, installed as a first-party plugin rather
 //! than compiled into the facade directly.
 //!
 //! Owns wire-format translation, tool-call parsing, cache-hint mapping, and
@@ -17,7 +16,7 @@
 //! endpoint, and the bounded transport-retry policy in `http` retries at
 //! most twice against that same endpoint (module boundary rule).
 //!
-//! [`openai_compat`] (WI-019) was the first adapter; [`anthropic`] (WI-021)
+//! [`openai_compat`] was the first adapter; [`anthropic`]
 //! is the second. The remaining `openai_compat` dialects are declarative
 //! [`profile::Profile`] data, not additional Rust adapters.
 //!

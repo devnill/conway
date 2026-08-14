@@ -43,8 +43,8 @@ impl Tool for EditTool {
     }
 
     /// `edit` never overrides `render`, so its rendering is always the
-    /// trait's own default JSON dump -- never a shell command. Board item
-    /// 01KYT3NSWRHMPEAXVXRJ73KDYR.
+    /// trait's own default JSON dump -- never a shell command.
+    ///.
     fn render_kind(&self) -> RenderKind {
         RenderKind::Structured
     }
@@ -268,7 +268,7 @@ mod tests {
         );
     }
 
-    /// Board item 01KZVZ56SBPSTZHAXXGYCNETNX: driven through this tool's
+    /// Driven through this tool's
     /// production `invoke` entry point, not `resolve_path` in isolation.
     #[tokio::test]
     async fn invoke_rejects_nul_byte_in_path() {

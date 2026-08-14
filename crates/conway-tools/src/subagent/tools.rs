@@ -1,5 +1,5 @@
 //! `conway_fork` and `conway_spawn`: pure wrappers over `ToolCtx::subagents`
-//! (WI-066; split into two tools by board item 01KZDC1HSNJZ1K7HVQEW65S56R).
+//! (split into two tools by).
 //! Zero delegation logic: argument parsing, one `ToolCtx::subagents`
 //! (`SubagentHandle`) call -- the exact surface a third-party tool gets,
 //! nothing more -- and result shaping.
@@ -23,7 +23,7 @@
 //! to `ToolError` via `.map_err(ToolError::from)` -- `conway-core`'s own
 //! `From<SubagentError> for ToolError` (the ONE place that mapping is
 //! implemented once) -- rather than through a crate-local forwarding
-//! function (board item C2 deleted this module's own such function; its
+//! function (C2 deleted this module's own such function; its
 //! flatten-everything-to-`Internal` policy predates `SubagentError` and is
 //! superseded by that per-variant `From`).
 
@@ -72,6 +72,10 @@ pub(super) struct BudgetArg {
     pub(super) deadline_secs: Option<u64>,
     #[schemars(range(min = 1))]
     pub(super) max_tokens: Option<u32>,
+    /// Ceiling on tool calls dispatched. Absent means no ceiling unless
+    /// `subagent.max_tool_calls` is configured.
+    #[schemars(range(min = 1))]
+    pub(super) max_tool_calls: Option<u32>,
 }
 
 /// `conway_fork`'s arguments: the child inherits this agent's full context,
@@ -98,7 +102,7 @@ struct ForkArgs {
     /// JSON Schema the child's structured result must satisfy
     #[serde(default)]
     result_contract: Option<serde_json::Value>,
-    /// false returns the agent_id immediately for fan-out
+    /// False returns the agent_id immediately for fan-out
     #[serde(default = "default_await", rename = "await")]
     await_flag: bool,
 }
@@ -127,7 +131,7 @@ struct SpawnArgs {
     /// JSON Schema the child's structured result must satisfy
     #[serde(default)]
     result_contract: Option<serde_json::Value>,
-    /// false returns the agent_id immediately for fan-out
+    /// False returns the agent_id immediately for fan-out
     #[serde(default = "default_await", rename = "await")]
     await_flag: bool,
 }
@@ -196,9 +200,7 @@ pub(super) fn config_u32(config: &PluginConfig, key: &str) -> Option<u32> {
 /// (~50y). Larger values are rejected as `InvalidArguments` (model-
 /// supplied numeric args are range-checked, never panic) rather than
 /// saturating -- the previous `i64::try_from(..).unwrap_or(i64::MAX)` saturated
-/// straight into `Duration::seconds`' overflow panic (cycle-3 review SIG-1;
-/// the earlier "saturate rather than wrap" note was a cycle-1 fix for a
-/// silent-wrap bug that traded one defect for another).
+/// straight into `Duration::seconds`' overflow panic.
 pub(super) const MAX_DEADLINE_SECS: u64 = 1_576_800_000; // 50 * 365 * 86_400
 
 /// Builds the `deadline` `DateTime` from a model/config-supplied `deadline_secs`,
@@ -235,12 +237,16 @@ fn resolve_budget(arg: Option<BudgetArg>, config: &PluginConfig) -> Result<Budge
         .as_ref()
         .and_then(|b| b.max_tokens)
         .or_else(|| config_u32(config, "subagent.max_tokens"));
+    let max_tool_calls = arg
+        .as_ref()
+        .and_then(|b| b.max_tool_calls)
+        .or_else(|| config_u32(config, "subagent.max_tool_calls"));
 
     Ok(Budget {
         max_steps,
         deadline: Some(deadline_from_secs(deadline_secs)?),
         max_tokens,
-        max_tool_calls: None,
+        max_tool_calls,
     })
 }
 
@@ -266,7 +272,7 @@ pub(super) async fn wait_for_result(
     // One pinned future, re-polled across iterations: selecting on a fresh
     // `await_result` call each loop would drop and re-issue the in-flight
     // wait every poll tick — ~30k redundant host calls over a default
-    // 10-minute await (cycle-1 review S1).
+    // 10-minute await.
     let result_fut = ctx.subagents.await_result(child);
     tokio::pin!(result_fut);
     loop {
@@ -296,7 +302,7 @@ async fn start_and_maybe_await(
     mode: SubagentMode,
     req: StartRequest,
 ) -> Result<ToolOutput, ToolError> {
-    // WI-099's "agent_def required for spawn" rule is relaxed: a spawn
+    // an earlier item's "agent_def required for spawn" rule is relaxed: a spawn
     // with no agent_def inherits this agent's own role/model.
 
     let result_contract = req
@@ -336,7 +342,7 @@ async fn start_and_maybe_await(
         // embedder-only for this first slice) -- inherit the parent's
         // root, unchanged, for both fork and spawn.
         root: None,
-        // (01KZQJ03ZQ22MPM9H2TW1350ZF) The consumer tag is an embedder-only
+        // The consumer tag is an embedder-only
         // correlation mechanism, same reasoning as `root` above: neither
         // model-invoked tool has a tag argument in its schema, so a
         // model-initiated fork/spawn never carries one.
@@ -378,7 +384,6 @@ impl Tool for ForkTool {
 
     /// `conway_fork` never overrides `render`, so its rendering is
     /// always the trait's own default JSON dump -- never a shell command.
-    /// Board item 01KYT3NSWRHMPEAXVXRJ73KDYR.
     fn render_kind(&self) -> RenderKind {
         RenderKind::Structured
     }
@@ -427,7 +432,6 @@ impl Tool for SpawnTool {
 
     /// `conway_spawn` never overrides `render`, so its rendering is
     /// always the trait's own default JSON dump -- never a shell command.
-    /// Board item 01KYT3NSWRHMPEAXVXRJ73KDYR.
     fn render_kind(&self) -> RenderKind {
         RenderKind::Structured
     }

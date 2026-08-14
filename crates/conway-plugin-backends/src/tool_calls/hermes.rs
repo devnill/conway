@@ -1,5 +1,5 @@
 //! Inline `<tool_call>...</tool_call>` text scanner for the `VllmHermes`
-//! dialect's text-based tool-call fallback (WI-022, vllm#31871): some
+//! dialect's text-based tool-call fallback (vllm#31871): some
 //! vLLM/Hermes servers, when `tools` are supplied but the request does not
 //! force structured output, emit a tool call as raw text inside
 //! `delta.content` — `<tool_call>{"name":...,"arguments":{...}}</tool_call>`
@@ -9,7 +9,7 @@
 //! scope for a given stream (that's [`super::ToolCallAccumulator`]'s job —
 //! see `push_content_delta`, which only routes through this scanner while
 //! `ToolCallStyle::HermesTextFallback` has not yet seen a structured
-//! `delta.tool_calls` entry, per the WI-022 "structured-path passthrough
+//! `delta.tool_calls` entry, per the an earlier item "structured-path passthrough
 //! when structured tool_calls appear" handoff).
 //!
 //! # Suppression algorithm

@@ -1,4 +1,4 @@
-//! Acceptance tests for WI-087 (`ContextReport` persistence and provenance
+//! Acceptance tests for an earlier item (`ContextReport` persistence and provenance
 //! inspection API): every turn's `ContextReport` is durably persisted after
 //! its assistant record, `Runtime::context_report_at` reads historical/
 //! post-restart reports back, and `Runtime::context_report` continues to
@@ -351,7 +351,7 @@ async fn context_report_unknown_agent_errors_known_never_run_is_empty() {
     let err = runtime.context_report(AgentId::new()).unwrap_err();
     assert!(matches!(err, RuntimeError::AgentNotFound { .. }));
 
-    // `start_root` returns before the first turn completes (WI-082), so
+    // `start_root` returns before the first turn completes, so
     // immediately after it the agent is known but has not yet built a
     // report.
     let root = runtime.start_root(root_spec("hello", None)).await.unwrap();
@@ -526,7 +526,7 @@ async fn fork_and_steer_scenario_covers_every_named_provenance_variant() {
         );
         // Entry count is the segment count by construction: `ContextBuilder::
         // build` derives `entries` from `segments` 1:1 (already golden-tested
-        // at the builder level, WI-077's `context_golden.rs`); nothing outside
+        // at the builder level, an earlier item's `context_golden.rs`); nothing outside
         // the builder can observe the two counts diverging, so this is
         // recorded here as a documented invariant rather than an independent
         // re-check.

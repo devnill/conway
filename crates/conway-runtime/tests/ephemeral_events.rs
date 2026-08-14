@@ -1,5 +1,5 @@
 //! Acceptance tests for the `ephemeral: bool` field on `Event::AgentSpawned`
-//! and `Event::AgentFinished` (board item 01KYD2ERT35VYDSBW9PBSFGYB7, the
+//! and `Event::AgentFinished` (, the
 //! `conway_ask` epic's item b).
 //!
 //! Two scopes:
@@ -19,7 +19,7 @@
 //! (it cannot be exercised from `conway-runtime`, which `conway` depends on);
 //! `crates/conway/tests/ask.rs` covers the `/ask`-specific assertions.
 //!
-//! Also covers `AgentTree::is_prunable_on_finish` (board item: `EventBus.
+//! Also covers `AgentTree::is_prunable_on_finish` (`EventBus.
 //! seqs` still leaks for spawned and forked agents) at the bottom of this
 //! file -- it reuses this file's same direct-`attach` harness, since the
 //! decision it tests is a pure function of tree state.
@@ -147,7 +147,7 @@ async fn attach_stamps_agent_spawned_ephemeral_from_node_and_ephemeral_of_reads_
     assert!(seen_normal, "normal child observed");
 }
 
-/// The `tree()` snapshot keeps ephemeral children (P-2 provenance) but must
+/// The `tree()` snapshot keeps ephemeral children ( provenance) but must
 /// project each node's `ephemeral` flag so a consumer (the TUI `/tree`
 /// renderer) can tell an ephemeral `/ask` child apart from a persistent
 /// subagent (MIN-3).
@@ -203,7 +203,7 @@ async fn snapshot_projects_ephemeral_flag_per_node() {
     .expect("persistent child attach");
 
     let snapshot = tree.snapshot();
-    // Both children stay IN the snapshot (P-2: adding a marker, never
+    // Both children stay IN the snapshot (: adding a marker, never
     // filtering).
     assert_eq!(
         snapshot.nodes.len(),
@@ -555,7 +555,7 @@ async fn promote_agent_flips_tree_and_emits_agent_promoted_under_the_child() {
 }
 
 // ---------------------------------------------------------------------
-// `EventBus.seqs` reclamation (board item: still leaks for spawned and
+// `EventBus.seqs` reclamation (still leaks for spawned and
 // forked agents) -- `AgentTree::is_prunable_on_finish`
 // ---------------------------------------------------------------------
 

@@ -56,13 +56,12 @@ pub enum ConwayError {
     /// build time.
     ///
     /// Backend selection (Anthropic vs. OpenAI-compatible) never has a
-    /// producer here: it is not a cargo-feature axis at all, and (board item
-    /// 01KZHF270T3W8GZ7NM6DSNQ4MM) this crate does not even depend on either
+    /// producer here: it is not a cargo-feature axis at all, and this crate does not even depend on either
     /// dialect's implementation crate any more -- a `[backends.<id>].kind`
     /// this build cannot resolve is `ConwayError::Config`, naming the
     /// offending value, not this variant. The sole remaining producer is
     /// `config::model_metadata::refresh`, gated on the still-genuinely-
-    /// optional `metadata-refresh` feature (WI-097: no HTTP client
+    /// optional `metadata-refresh` feature (no HTTP client
     /// implementation exists yet).
     #[error("{message}")]
     UnsupportedFeature {

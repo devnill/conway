@@ -1,10 +1,10 @@
 //! Wiremock integration tests for `AnthropicBackend`'s
-//! `CacheMode::ExplicitBreakpoints` cache-hint mapping (WI-021): the
+//! `CacheMode::ExplicitBreakpoints` cache-hint mapping: the
 //! breakpoint cap, the byte-identity invariant, and the `CacheTtl` → wire
 //! shape table. These assert on the actual outgoing request body captured
 //! by wiremock (black-box, through the public `Backend::generate` API) —
 //! `src/anthropic/{wire,cache}.rs` are private submodules, matching the
-//! WI-019 precedent of keeping adapter internals out of the crate's public
+//! precedent of keeping adapter internals out of the crate's public
 //! surface.
 
 use std::collections::BTreeMap;
@@ -95,7 +95,7 @@ fn sample_tool(name: &str) -> conway_core::content::ToolSpec {
     }
 }
 
-/// Board item 01KYTMJA0JHT5SAPYDGV251V17, end to end through the real
+///, end to end through the real
 /// `AnthropicBackend::generate`: a `Provenance::ToolRegistry` segment
 /// carrying a breakpoint hint (exactly what `conway-runtime`'s
 /// `ContextBuilder` now produces -- empty `content`) must NOT put a second

@@ -1,6 +1,6 @@
-//! Integration matrix for `DeclarativeRouter::resolve` (WI-034, amended for
-//! the headroom gate; further amended per decision 01KYXS3PTYVATWR58JR95AZJYN
-//! / board item 01KYXNAHN64YMADZPQDQC0CPTJ to implement the T-1 port
+//! Integration matrix for `DeclarativeRouter::resolve` (amended for
+//! the headroom gate; further amended per
+//! / to implement the T-1 port
 //! contract literally): pin hit / pin capability-miss / pin health-open /
 //! all-healthy chain / head-skipped chain / all-rejected / unknown role /
 //! half-open retained, plus the headroom-specific scenarios the amendment
@@ -24,7 +24,7 @@
 //! only public behind the `test-clock` feature (`#[cfg(any(test, feature =
 //! "test-clock"))]` in `breaker.rs`), which this crate does not enable for
 //! plain `cargo test -p conway-routing`. Breaker *transition* semantics are
-//! already exhaustively covered by `breaker.rs`'s own unit tests (WI-033);
+//! already exhaustively covered by `breaker.rs`'s own unit tests;
 //! this file only needs to drive `HealthRegistry::state` to fixed
 //! `Closed`/`Open`/`HalfOpen` values, which `FakeHealth::set_state` does
 //! directly and deterministically. Flagged as a deviation from the
@@ -328,8 +328,7 @@ fn half_open_and_closed_candidates_are_retained() {
     assert_eq!(routes[1].model, b.model);
 }
 
-/// The `Probe` breaker kind was retired (board item
-/// `01KZ802GSF692EKYKQ2TTVCJB8`, "retire the health prober"); `Transport`
+/// The `Probe` breaker kind was retired (///, "retire the health prober"); `Transport`
 /// is now the only `BreakerKind` variant, so this only proves the one
 /// surviving kind renders correctly.
 #[test]
@@ -667,7 +666,7 @@ fn role_configured_capability_floor_rejects_a_candidate_that_does_not_meet_it() 
     }
 }
 
-/// The complement (GP-14: "any check that cannot fail is not a check"):
+/// The complement (: "any check that cannot fail is not a check"):
 /// identical fixture, the candidate's tier raised to meet the configured
 /// floor -- resolution now succeeds.
 #[test]
@@ -763,7 +762,7 @@ fn role_configured_capability_floor_does_not_reach_an_unfloored_sibling_role() {
 // `strictest` that silently returned one side unconditionally would pass
 // every test above it in this file. The three tests below set DIFFERENT
 // fields on each side and assert the merge keeps both, observed as
-// admit/reject outcomes (GP-14: assert the observable outcome, not the
+// admit/reject outcomes (: assert the observable outcome, not the
 // merged struct).
 //
 // Deliberately NOT `min_reliability`/`tool_calling` (the fields the
@@ -888,7 +887,7 @@ fn strictest_merge_still_enforces_the_role_floor_alongside_the_callers_requireme
     }
 }
 
-/// The complement (GP-14: "any check that cannot fail is not a check"): a
+/// The complement (: "any check that cannot fail is not a check"): a
 /// candidate meeting BOTH the role's floor and the caller's requirement is
 /// admitted -- proving the merge is not just "reject unless both fail" but
 /// genuinely pointwise-strictest across both sides.

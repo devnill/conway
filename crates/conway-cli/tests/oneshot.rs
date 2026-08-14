@@ -1,6 +1,6 @@
-//! WI-113: one-shot (`-p`) integration tests against the real, compiled
+//! One-shot (`-p`) integration tests against the real, compiled
 //! `conway` binary -- exit codes, stdout purity, streaming shape, and
-//! SIGINT behavior. See `docs/scripting.md` (WI-113) for the exit-code and
+//! SIGINT behavior. See `docs/scripting.md` for the exit-code and
 //! output-format contract this suite locks in as executable acceptance
 //! evidence.
 //!
@@ -9,7 +9,7 @@
 //! Every exit code `docs/scripting.md` declares has a test in this file
 //! that drives the real binary and asserts the observed process exit
 //! status -- a unit test of `exit.rs`'s mapping functions is NOT evidence
-//! a code is reachable (GP-14): the exit-4 classifier's unit tests passed
+//! a code is reachable (): the exit-4 classifier's unit tests passed
 //! for its entire unreachable lifetime, because they constructed a
 //! `ConwayError::Routing` by hand and never drove the path
 //! (`AgentLoop::finish_error` folding the routing failure into
@@ -565,7 +565,7 @@ async fn exit_2_bad_config() {
 }
 
 // ---------------------------------------------------------------------
-// `--model` pin (WI-128)
+// `--model` pin
 // ---------------------------------------------------------------------
 
 /// `--model <ref>` pins the session's model, overriding the role's own
@@ -652,7 +652,7 @@ async fn exit_4_no_backend() {
 /// setup `model_flag_pins_and_overrides_role_chain` rescues with `--model`;
 /// here nothing rescues it.)
 ///
-/// Board item 01KZFC43J1J06BM4CCWKCKHSNV: capability filtering (the
+/// capability filtering (the
 /// mechanism this test proves) is no longer compiled into `conway` by
 /// default -- it now lives in the `conway-plugin-routing` first-party
 /// plugin, installed here via `[plugins].install` (`"conway.routing"`,
@@ -711,7 +711,7 @@ async fn exit_4_unknown_role_override() {
 
 /// Exit 4, driver 4 of 4: every candidate's context window is too small for
 /// the assembled prompt plus reserved headroom, and headroom is the ONLY
-/// rejection reason -- amended P-9 makes the router return
+/// rejection reason -- amended makes the router return
 /// `RoutingError::ContextTooLarge` (not `NoCandidate`) for exactly this
 /// case, and the exit classifier treats it coherently with every other
 /// routing rejection. With no `ContextHook` registered in one-shot mode,

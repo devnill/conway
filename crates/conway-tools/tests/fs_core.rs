@@ -1,5 +1,5 @@
 //! Integration coverage for `FsPlugin`'s core file tools (`read`, `write`,
-//! `edit`) against a real `tempfile::TempDir` (WI-062 criteria).
+//! `edit`) against a real `tempfile::TempDir` (criteria).
 //!
 //! Requires the `test-fakes` feature (for `conway_tools::testing::test_ctx`).
 //! Declared with `required-features = ["test-fakes"]` in Cargo.toml, so a
