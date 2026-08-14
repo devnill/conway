@@ -15,7 +15,15 @@
 //!   ("what session am I in"), unconditional (always renders), which is
 //!   exactly why it belongs HERE and not on the scroll-triggered sticky
 //!   overlay T6 originally misfiled it onto -- chrome that flickers with
-//!   scroll position is noise, and this field never has.
+//!   scroll position is noise, and this field never has. **Widened (board
+//!   item 01KZY8Q1CMMNVSF54CTC270N3H) to `session <id>@<seq>`** once
+//!   `AppState::session_head_seq` is known: this session's own persisted
+//!   log head, in the exact `<session-id>[@<seq>]` notation
+//!   `session_ref.rs`'s `--fork-from` flag already established -- the
+//!   number `/conway.history.rewind <seq>` (`conway-plugin-history`) takes.
+//!   Before this item, nothing in the TUI showed an operator ANY `LogSeq`
+//!   at all; degrades to the bare `session <id>` form (unchanged from
+//!   before this item) whenever the head is not yet known.
 //! - `lineage` -- **NEW** (this item; V5's content, relocated). Off-root,
 //!   `agent <id>` growing a `via` clause naming how the focused agent came
 //!   to be: `agent <id> via root → fork @seq 3 → @reviewer`. Empty (omitted)
@@ -550,11 +558,19 @@ fn field_ladder(
     lineage_present: bool,
 ) -> Vec<Vec<Span<'static>>> {
     match field {
+        // Board item 01KZY8Q1CMMNVSF54CTC270N3H: `@<seq>` appended once
+        // `AppState::session_head_seq` is known -- see this module's own
+        // doc for the notation's precedent (`session_ref.rs`) and why this
+        // is the field that had to carry it.
         StatusLineField::Session => vec![
-            vec![Span::raw(format!(
-                "session {}",
-                agents::short_agent_id(state.root_agent())
-            ))],
+            vec![Span::raw(match state.session_head_seq {
+                Some(seq) => format!(
+                    "session {}@{}",
+                    agents::short_agent_id(state.root_agent()),
+                    seq.0
+                ),
+                None => format!("session {}", agents::short_agent_id(state.root_agent())),
+            })],
             vec![],
         ],
         StatusLineField::Lineage => lineage_ladder(state),
@@ -1590,6 +1606,36 @@ mod tests {
             line.contains(&format!("session {}", agents::short_agent_id(root))),
             "{line}"
         );
+    }
+
+    /// Board item 01KZY8Q1CMMNVSF54CTC270N3H: once `session_head_seq` is
+    /// known, the `session` field widens to `session <id>@<seq>` -- the
+    /// exact `<session-id>[@<seq>]` notation `session_ref.rs`'s own
+    /// `--fork-from` flag already established, and the number
+    /// `/conway.history.rewind <seq>` (`conway-plugin-history`) takes.
+    #[test]
+    fn session_field_appends_the_head_seq_once_known() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        state.session_head_seq = Some(conway::LogSeq(42));
+        let line = status_line(&state);
+        assert!(
+            line.contains(&format!("session {}@42", agents::short_agent_id(root))),
+            "{line}"
+        );
+    }
+
+    /// Before the first authoritative fetch has ever completed (a fresh
+    /// `AppState`, `session_head_seq` still `None`), the field degrades to
+    /// exactly its pre-this-item bare form -- never `@0` or any other
+    /// invented placeholder.
+    #[test]
+    fn session_field_omits_seq_while_head_is_unknown() {
+        let root = AgentId::new();
+        let state = AppState::new(root);
+        assert_eq!(state.session_head_seq, None);
+        let line = status_line(&state);
+        assert!(!line.contains('@'), "{line}");
     }
 
     #[test]

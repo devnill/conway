@@ -203,10 +203,25 @@ every other part of an installed plugin — see
 for exactly what that does and does not mean, including why (unlike a tool
 call) there is no permission prompt: you typed it yourself. See
 [`docs/plugins/hooks.md`](plugins/hooks.md) point 15 for the full contract an
-author implements against, including what a command may and may not do (it
-cannot fork, resume, or otherwise drive your session — narrower than a tool)
+author implements against, including what a command may and may not do —
+it can ask the host to fork the session it was invoked from at an explicit,
+already-known sequence number (`CommandOutcome::ForkSession`; this is how
+`conway.history`'s `/conway.history.rewind <seq>` works, see below), but it
+can never resume, steer, or otherwise drive a session by name, and it
+cannot read your transcript to resolve free text into a sequence itself —
 and the guarantee that a slow or hanging one degrades to "no reply yet,"
 never a frozen terminal.
+
+`conway.history` (`crates/conway-plugin-history`, install it with
+`"conway.history"` in `[plugins].install`) ships exactly one command,
+`/conway.history.rewind <seq>`: forks the current session at that
+persisted sequence number and switches you to drive the resulting child,
+leaving the original session's own log untouched. `<seq>` must be an
+explicit number you already know — see the status line's `session` field
+below for where to read the current one — never free text like "before the
+bad edit": nothing a plugin command receives lets it read your transcript
+to resolve that on your behalf (the same narrowing this paragraph just
+described).
 
 ## The agent panel (`/agents`)
 
@@ -271,7 +286,7 @@ session | lineage | mode | model | ctx | tokens | activity | hint
 
 | Field | Shows | Notes |
 | --- | --- | --- |
-| `session` | `session <id>` | The session's root agent's short id. Always renders. |
+| `session` | `session <id>@<seq>` | The session's root agent's short id, plus its own persisted log's current head sequence once known (`@<seq>` is omitted before the first authoritative read). Always renders. The `<seq>` is what `/conway.history.rewind <seq>` (`conway-plugin-history`, if installed) takes. |
 | `lineage` | `agent <id> via root → fork @seq 3 → @reviewer` | How the focused agent was created. Omitted while you're focused on the session's own root. |
 | `mode` | `ready`, `awaiting permission`, `ask`, or `intent` | The TUI's current top-level state. When your permission mode isn't the default, this field also names it: `ready · plan` or `ready · AUTO-ALLOW`. `AUTO-ALLOW` is the one thing on this line guaranteed to keep showing even on a very narrow terminal — it's a genuine safety signal, and the field most likely to matter if you've forgotten you're in it. |
 | `model` | `anthropic/claude-sonnet-4-6` | The focused agent's serving model. Omitted until its first turn has routed. |

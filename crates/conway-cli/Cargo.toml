@@ -19,6 +19,14 @@ conway = { path = "../conway" }
 # doc). See `src/first_party_plugins.rs` for the install path this crate's
 # dependency feeds.
 conway-plugin-skeleton = { path = "../conway-plugin-skeleton" }
+# Board item 01KZY8Q1CMMNVSF54CTC270N3H: `/conway.history.rewind` -- the
+# same "the shipped binary is the one place a first-party plugin crate is
+# linked" pattern the line above establishes. See `src/
+# first_party_plugins.rs`'s `bundle` for the install path this dependency
+# feeds; NOT installed by default (no entry in any default
+# `[plugins].install` list) -- an operator opts in the same way they would
+# for `conway-plugin-skeleton`.
+conway-plugin-history = { path = "../conway-plugin-history" }
 # Board item 01KZFC43J1J06BM4CCWKCKHSNV: the routing engine `conway` itself
 # used to compile in directly is now a first-party plugin too, resolved
 # through the SAME `[plugins].install` mechanism and the same `src/

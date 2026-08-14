@@ -169,16 +169,23 @@ adapters (`01KZHF270T3W8GZ7NM6DSNQ4MM`, done, a separate page claim) are the
 first two occupants; compaction, memory, skills, and MCP support remain
 unbuilt with no board item yet as of 2026-08-13.
 
-**The tier's shape is settled and demonstrated, with three members shipping
+**The tier's shape is settled and demonstrated, with four members shipping
 today:** `crates/conway-plugin-skeleton`, a plugin that registers a single
 `skeleton_ping` tool and does nothing else — it exists to prove the `Plugin`/
 `Tool` mechanism below, not to be useful on its own — `crates/conway-plugin-routing`,
 the declarative role-routing engine (ordered fallback chains, capability
 filtering, health tracking, circuit breaking) `conway` itself used to compile
-in unconditionally, now installed the same way, and `crates/conway-plugin-backends`,
+in unconditionally, now installed the same way; `crates/conway-plugin-backends`,
 the Anthropic-native and OpenAI-compatible provider adapters `conway` itself
-used to compile in unconditionally too. Context compaction, memory, skills,
-and MCP support remain separate, later work; conway-plugin-routing is not
+used to compile in unconditionally too; and `crates/conway-plugin-history`
+(board item 01KZY8Q1CMMNVSF54CTC270N3H), `/conway.history.rewind <seq>` —
+the owner's ruling that "features like /rewind, /checkout, etc are to be
+plugins, to fit into the philosophy; they are not core functionality," built
+via `Command::invoke`'s `CommandOutcome::ForkSession` outcome (the TUI's own
+mechanism for a plugin command to fork the session driving it, without a
+command ever holding a live handle onto any session). Context compaction,
+memory, skills, MCP support, and `/checkout`/`ContextMask` remain separate,
+later work; conway-plugin-routing is not
 "dynamic routing" in the learned/adaptive sense PHILOSOPHY.md describes
 elsewhere — no classifier, no embedding model, ever — it is the same purely
 declarative resolver conway always had, no longer compiled in by default.
@@ -198,10 +205,11 @@ an operator declines a specific dialect, and how a library embedder using
 
 - **Where they live.** A crate per plugin under `crates/`, exactly like the
   workspace's other crates — `cargo test --workspace` covers them the same
-  way. `conway` (the facade) never depends on any of them. A `Plugin`/`Tool`
-  first-party plugin (`conway-plugin-skeleton`) is written against
-  `conway::plugin`, the identical public surface a third-party plugin author
-  gets. A router plugin (`conway-plugin-routing`) and the backend plugin
+  way. `conway` (the facade) never depends on any of them. A `Plugin`/`Tool`/
+  `Command` first-party plugin (`conway-plugin-skeleton`,
+  `conway-plugin-history`) is written against `conway::plugin`, the
+  identical public surface a third-party plugin author gets. A router
+  plugin (`conway-plugin-routing`) and the backend plugin
   (`conway-plugin-backends`) are a narrower, different case each:
   `Router`/`HealthRegistry` and `Backend`/`BackendFactory` implementations
   are installed via their own separate identities (`RouterFactory`/
@@ -214,7 +222,7 @@ an operator declines a specific dialect, and how a library embedder using
   compiled-in built-ins and is validated as a closed set; a first-party
   plugin is not a member of it):
   ```json
-  { "plugins": { "install": ["conway.plugin_skeleton", "conway.routing"] } }
+  { "plugins": { "install": ["conway.plugin_skeleton", "conway.routing", "conway.history"] } }
   ```
   The `conway` binary links its own small bundle of first-party plugin
   crates, router factories, AND backend factories

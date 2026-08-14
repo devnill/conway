@@ -1,0 +1,38 @@
+[package]
+name = "conway-plugin-history"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+description = "First-party plugin (board item 01KZY8Q1CMMNVSF54CTC270N3H): /conway.history.rewind, forking the calling TUI session at an explicit sequence number via CommandOutcome::ForkSession"
+
+# Board item 01KZDC3JQ7W4DY1MG6MBCVB2DV: this crate is versioned WITH the
+# workspace (`version.workspace = true`, same as every other crate here),
+# not independently -- see `conway-plugin-skeleton`'s own Cargo.toml doc
+# comment and `docs/embedding.md`'s "First-party plugin tier" section for
+# the full reasoning, restated here rather than re-derived: this crate
+# carries none of `conway-core`'s own strict-semver discipline
+# (ARCHITECTURE.md §2), because that discipline exists specifically for
+# crates third-party plugins depend on, and this plugin is, from `conway`'s
+# own point of view, just another consumer of the public `conway`/
+# `conway::plugin` surface.
+
+[dependencies]
+# The ONLY workspace crate this plugin depends on -- the public facade, the
+# exact surface a third-party plugin author gets (GP-03/P-6). It does NOT
+# depend on `conway-core` or `conway-cli`: `Plugin`/`Command`/`CommandCtx`/
+# `CommandOutcome` and `LogSeq` are all reachable through `conway`/
+# `conway::plugin` alone -- see this crate's `lib.rs` module doc for why
+# that alone was enough to build `/rewind`'s fork-and-drive half, and what
+# it was NOT enough for.
+conway = { path = "../conway" }
+
+[dev-dependencies]
+# Test-only: builds a real, in-memory `Conway` (fake backend/store/gate/
+# router) to drive this plugin's command through a real turn end to end --
+# the same precedent `conway-plugin-skeleton`'s own
+# `tests/skeleton_end_to_end.rs` establishes. Already a pinned workspace
+# dependency, not a new one (C-04).
+conway-core = { path = "../conway-core", features = ["fakes"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }

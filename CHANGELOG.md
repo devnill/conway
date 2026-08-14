@@ -47,6 +47,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   new (narrow) capability in place of the bound they previously described as
   a hard wall.
 
+- **`/conway.history.rewind <seq>`: a first-party plugin proving `/rewind`
+  genuinely is a plugin** (board item 01KZY8Q1CMMNVSF54CTC270N3H), the real
+  consumer of `CommandOutcome::ForkSession` (above). New crate
+  `crates/conway-plugin-history`, one command, no tools, written entirely
+  against `conway::plugin` -- the same public surface a third-party author
+  gets. Not installed by default; `"conway.history"` in `[plugins].install`
+  turns it on (`docs/getting-started.md`, `README.md`).
+
+  **The discriminating proof this item names, both asserted against the
+  real crate:** with the plugin not installed, `/conway.history.rewind 1`
+  is an ordinary "unknown command" notice -- no stub, no special case in
+  core (`crates/conway-cli/src/tui/app.rs`'s
+  `conway_history_rewind_is_an_unknown_command_when_the_plugin_is_not_installed`).
+  Installed, it forks the real calling session end to end, and the parent's
+  own persisted records are asserted byte-for-byte (`LogRecord: PartialEq`)
+  unchanged after the fork, not merely head-count equal
+  (`conway_history_rewind_forks_the_real_plugin_and_leaves_the_parent_log_byte_for_byte_unchanged`).
+
+  **A seq is now operator-visible, closing the gap that would otherwise
+  have made this command unusable.** Before this item, nothing in the TUI
+  showed a `LogSeq` at all -- the live event stream's own `Envelope::seq`
+  is a per-connection renumbering, not the persisted seq `fork_from`
+  accepts, so surfacing it directly would have been actively misleading.
+  The status line's existing `session <id>` field now reads `session
+  <id>@<seq>` once the head is known, reusing `session_ref.rs`'s own
+  `<session-id>[@<seq>]` notation, kept authoritative via the existing
+  `Conway::session_head` facade call (no new port) at session start, after
+  every root-agent turn boundary, and immediately after a fork (the
+  child's fresh head is exactly the seq it was forked at, no round trip
+  needed).
+
+  **Disclosed, not built:** `CommandCtx` grants no transcript-read
+  capability, so only an explicit `<seq>` argument works -- resolving free
+  text ("before the bad edit") needs a further, separately-justified
+  read-only capability this item does not add (`docs/plugins/hooks.md`
+  point 15's own disclosure, restated in this crate's module doc).
+
 - **`docs/plugins/authoring.md` rewritten around the declarative hook
   surface, executed rather than reasoned about** (board item
   `01KZYAYWRQKZ41Y7AHZ2QWVJ8X`, the 1.0-beta acceptance test — same genre
