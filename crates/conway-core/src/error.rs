@@ -295,6 +295,64 @@ pub enum RoutingError {
     },
 }
 
+/// Which [`crate::ports::ContextHook`] trait method produced the payload
+/// [`RuntimeError::ContextHookIncoherent`] names. Moved here from
+/// `conway_runtime::context::hook_guard` (board item
+/// `01M014W91NWBP35139YFWCB88J`, follow-up to `01M00RGARPESWXYAVY960KDE7S`):
+/// that crate's own copy had exactly one caller (the fold this variant
+/// replaces) and no other user in the crate, so it relocates cleanly rather
+/// than being duplicated behind a `String` -- unlike
+/// `conway_runtime::context::builder::ToolCallOrphan` (see
+/// [`HookOrphan`]'s own doc), which stays where it is because it is load-
+/// bearing well beyond this one error path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HookMethod {
+    BeforeRequest,
+    OnOverflow,
+}
+
+impl std::fmt::Display for HookMethod {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HookMethod::BeforeRequest => write!(f, "ContextHook::before_request"),
+            HookMethod::OnOverflow => write!(f, "ContextHook::on_overflow"),
+        }
+    }
+}
+
+/// One tool-call/result pairing violation named by
+/// [`RuntimeError::ContextHookIncoherent`]. Mirrors
+/// `conway_runtime::context::builder::ToolCallOrphan`'s two cases exactly,
+/// but is a distinct, boundary-crossing type rather than a relocation of
+/// that one: `ToolCallOrphan` is `pub(crate)` in `conway-runtime` and used
+/// well beyond this error path (`ContextBuilder::build`'s own mutating
+/// pass, `check_tool_call_coherence`, and that crate's own test suite), so
+/// moving it here would be a `conway-runtime`-wide change this item does not
+/// make -- `HookCoherenceError::into_runtime_error` (the one fold site) maps
+/// one to the other at the boundary instead.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HookOrphan {
+    /// A tool call with no answering result anywhere in the checked
+    /// segments.
+    UnansweredCall { call_id: String },
+    /// A tool result naming no surviving call anywhere in the checked
+    /// segments.
+    OrphanedResult { call_id: String },
+}
+
+impl std::fmt::Display for HookOrphan {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HookOrphan::UnansweredCall { call_id } => {
+                write!(f, "call `{call_id}` has no answering result")
+            }
+            HookOrphan::OrphanedResult { call_id } => {
+                write!(f, "result `{call_id}` names no surviving call")
+            }
+        }
+    }
+}
+
 /// Errors produced by the runtime.
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
@@ -398,6 +456,35 @@ pub enum RuntimeError {
     /// typed.
     #[error("prompt denied by hook: {reason}")]
     PromptDenied { reason: String },
+    /// A registered [`crate::ports::ContextHook`] returned a payload that
+    /// orphans a tool call/result pair -- refused rather than repaired (a
+    /// hook's edit is a deliberate act; see
+    /// `conway_runtime::context::hook_guard`'s own module doc, "Refuse, not
+    /// repair"). `method` is which trait method produced it (typed as
+    /// [`HookMethod`], not a `String` -- a caller can match on it without
+    /// string-comparing a rendered name); `agent`/`session`/`turn` are the
+    /// `ContextHookCtx` identity fields the hook was itself called with
+    /// (mirrors [`RuntimeError::AgentNotInSession`]'s `agent`/`session`
+    /// naming); `orphans` is every affected call/result pairing violation,
+    /// in EITHER direction (see [`HookOrphan`]).
+    ///
+    /// Previously folded into [`BackendError::BadRequest`]'s `detail`
+    /// string (board item `01M00RGARPESWXYAVY960KDE7S`, whose worker
+    /// identified and correctly declined to fix this in that item's own,
+    /// narrower, `conway-runtime`-only scope) -- this is that follow-up
+    /// (`01M014W91NWBP35139YFWCB88J`). Nothing downstream now needs to
+    /// string-match `detail` to identify this cause; a caller matches on
+    /// this variant instead.
+    #[error(
+        "{method} on agent {agent} (session {session}, turn {turn}) returned an incoherent context: {orphans:?}"
+    )]
+    ContextHookIncoherent {
+        agent: AgentId,
+        session: SessionId,
+        turn: u32,
+        method: HookMethod,
+        orphans: Vec<HookOrphan>,
+    },
 }
 
 /// Errors produced by [`crate::ports::SubagentHandle`]'s five fallible
@@ -770,6 +857,70 @@ mod tests {
         let json = serde_json::to_string(&err).unwrap();
         let back: RuntimeError = serde_json::from_str(&json).unwrap();
         assert_eq!(err, back);
+    }
+
+    /// [`RuntimeError::ContextHookIncoherent`] (board item
+    /// `01M014W91NWBP35139YFWCB88J`): roundtrips, names every one of
+    /// `agent`/`session`/`turn`/`method`, and its `Display` still contains
+    /// every orphaned `call_id` even though the field is now a typed
+    /// [`HookOrphan`], not a bare `String`.
+    #[test]
+    fn context_hook_incoherent_exists_roundtrips_and_names_every_field() {
+        let agent = AgentId::new();
+        let session = SessionId::new();
+        let err = RuntimeError::ContextHookIncoherent {
+            agent,
+            session,
+            turn: 5,
+            method: HookMethod::BeforeRequest,
+            orphans: vec![
+                HookOrphan::UnansweredCall {
+                    call_id: "orphan_a".to_string(),
+                },
+                HookOrphan::OrphanedResult {
+                    call_id: "orphan_b".to_string(),
+                },
+            ],
+        };
+        let json = serde_json::to_string(&err).unwrap();
+        let back: RuntimeError = serde_json::from_str(&json).unwrap();
+        assert_eq!(err, back);
+
+        let rendered = err.to_string();
+        for needle in [
+            "ContextHook::before_request",
+            &agent.to_string(),
+            &session.to_string(),
+            "5",
+            "orphan_a",
+            "orphan_b",
+        ] {
+            assert!(
+                rendered.contains(needle),
+                "missing {needle:?} in {rendered:?}"
+            );
+        }
+    }
+
+    /// A caller distinguishes this cause by variant, never by string-
+    /// matching `detail` -- the whole point of giving it a dedicated
+    /// variant instead of folding it into [`BackendError::BadRequest`].
+    #[test]
+    fn context_hook_incoherent_is_distinguishable_from_backend_bad_request() {
+        let err = RuntimeError::ContextHookIncoherent {
+            agent: AgentId::new(),
+            session: SessionId::new(),
+            turn: 1,
+            method: HookMethod::OnOverflow,
+            orphans: vec![HookOrphan::UnansweredCall {
+                call_id: "x".to_string(),
+            }],
+        };
+        assert!(matches!(err, RuntimeError::ContextHookIncoherent { .. }));
+        assert!(!matches!(
+            err,
+            RuntimeError::Backend(BackendError::BadRequest { .. })
+        ));
     }
 
     #[test]
