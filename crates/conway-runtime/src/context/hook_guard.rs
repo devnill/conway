@@ -40,29 +40,19 @@
 
 use std::sync::Arc;
 
-use conway_core::error::{BackendError, RuntimeError};
+use conway_core::error::{HookOrphan, RuntimeError};
 use conway_core::ids::{AgentId, SessionId};
 use conway_core::ports::{ContextHook, ContextHookCtx, ContextPayload, OverflowInfo};
 
+// [`HookMethod`] moved to `conway_core::error` (board item
+// `01M014W91NWBP35139YFWCB88J`) -- it had exactly one caller in this crate
+// (this module) and no other user, so it relocates cleanly rather than
+// being duplicated behind a stringly-typed field on
+// [`RuntimeError::ContextHookIncoherent`]. Re-exported under this module's
+// own name below, so nothing else in this crate has to know it moved.
+pub(crate) use conway_core::error::HookMethod;
+
 use super::builder::{check_tool_call_coherence, ToolCallOrphan};
-
-/// Which [`conway_core::ports::plugin::ContextHook`] method produced the
-/// payload [`ensure_hook_payload_coherent`] rejected. See this module's own
-/// doc, "Naming 'the responsible hook'."
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum HookMethod {
-    BeforeRequest,
-    OnOverflow,
-}
-
-impl std::fmt::Display for HookMethod {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            HookMethod::BeforeRequest => write!(f, "ContextHook::before_request"),
-            HookMethod::OnOverflow => write!(f, "ContextHook::on_overflow"),
-        }
-    }
-}
 
 /// The typed error [`ensure_hook_payload_coherent`] returns: which hook
 /// method produced the incoherent payload, which agent/session/turn it
@@ -104,28 +94,44 @@ impl std::error::Error for HookCoherenceError {}
 
 impl HookCoherenceError {
     /// The one conversion point into [`RuntimeError`], the currency every
-    /// call site in `agent_loop.rs` must eventually return. Folded into
-    /// [`BackendError::BadRequest`] rather than a dedicated `RuntimeError`
-    /// variant: adding one is `conway-core` scope (out of this item's --
-    /// see this crate's own `Cargo.toml`/workspace layout), and
-    /// `BackendError` already has direct precedent for a PRE-FLIGHT
-    /// rejection classified alongside backend-originated ones --
-    /// `BackendError::ContextTooLarge`'s own doc: "discovered before any
-    /// network call ... classifies a provider's own after-the-fact
-    /// rejection" is exactly the same "would-be-rejected-by-every-provider"
-    /// shape this is, just caught one step earlier, before routing rather
-    /// than after `Backend::admit`. This `Display`'s full text (which names
-    /// the hook method, agent/session/turn, and every orphaned `call_id`)
-    /// is preserved verbatim in `BadRequest`'s `detail`, so nothing the
-    /// typed error above already names is lost in the fold -- only the enum
-    /// *tag* is coarser than a dedicated variant would be. A follow-up
-    /// against `MODULE:conway-core` to add a dedicated
-    /// `RuntimeError::ContextHookIncoherent` variant would let this drop the
-    /// fold entirely.
+    /// call site in `agent_loop.rs` must eventually return.
+    ///
+    /// Maps onto [`RuntimeError::ContextHookIncoherent`] -- a dedicated
+    /// variant, not a fold into `BackendError::BadRequest`'s `detail`
+    /// string (board item `01M014W91NWBP35139YFWCB88J`; an earlier item,
+    /// `01M00RGARPESWXYAVY960KDE7S`, folded it there instead, having
+    /// identified but correctly declined to make this `conway-core`-scoped
+    /// change from within its own narrower scope). Every fact this typed
+    /// error names -- `method`, `agent_id`/`session_id`/`turn`, and every
+    /// orphaned `call_id` in either direction -- travels into the variant's
+    /// own fields, not just its rendered `Display`: a caller matches on the
+    /// variant directly and never has to string-match `detail` to identify
+    /// this cause.
     pub(crate) fn into_runtime_error(self) -> RuntimeError {
-        RuntimeError::Backend(BackendError::BadRequest {
-            detail: self.to_string(),
-        })
+        RuntimeError::ContextHookIncoherent {
+            agent: self.agent_id,
+            session: self.session_id,
+            turn: self.turn,
+            method: self.method,
+            orphans: self.orphans.iter().map(orphan_to_core).collect(),
+        }
+    }
+}
+
+/// Maps this module's own [`ToolCallOrphan`] onto `conway_core::error::
+/// HookOrphan`, the boundary-crossing counterpart
+/// [`HookCoherenceError::into_runtime_error`] needs. Not a relocation: see
+/// [`HookOrphan`]'s own doc for why `ToolCallOrphan` itself stays
+/// `pub(crate)` here (`ContextBuilder::build`'s own mutating pass and this
+/// crate's own test suite both use it well beyond this one error path).
+fn orphan_to_core(orphan: &ToolCallOrphan) -> HookOrphan {
+    match orphan {
+        ToolCallOrphan::UnansweredCall { call_id } => HookOrphan::UnansweredCall {
+            call_id: call_id.clone(),
+        },
+        ToolCallOrphan::OrphanedResult { call_id } => HookOrphan::OrphanedResult {
+            call_id: call_id.clone(),
+        },
     }
 }
 
@@ -388,26 +394,47 @@ mod tests {
         );
     }
 
-    /// The typed error survives the fold into `RuntimeError` -- every fact
-    /// it names is still present in the resulting `Display`, even though the
-    /// enclosing variant tag is a coarser `BackendError::BadRequest` (see
-    /// `HookCoherenceError::into_runtime_error`'s own doc for why).
+    /// The typed error becomes its own dedicated
+    /// [`conway_core::error::RuntimeError::ContextHookIncoherent`] variant,
+    /// not a fold into `BackendError::BadRequest`'s `detail` string (board
+    /// item `01M014W91NWBP35139YFWCB88J`). Asserts on the variant's own
+    /// fields via a `let else` on the exact variant -- not on any
+    /// substring-matched text -- so this fails equally whether the fold
+    /// comes back OR the variant's fields silently drop information the
+    /// typed error carries: an assertion that only checked
+    /// `.to_string().contains(...)` would pass against either shape and
+    /// would not be testing this change (see `P-15`).
     #[test]
-    fn into_runtime_error_preserves_the_named_cause() {
+    fn into_runtime_error_produces_the_dedicated_variant_naming_every_field() {
         let agent_id = AgentId::new();
         let session_id = SessionId::new();
-        let hook_ctx = ctx(agent_id, session_id, 1);
+        let hook_ctx = ctx(agent_id, session_id, 5);
         let dropped_result = payload(vec![tool_use_segment("lost")]);
 
         let err =
             ensure_hook_payload_coherent(HookMethod::BeforeRequest, &hook_ctx, dropped_result)
                 .expect_err("must be refused");
-        let expected_detail = err.to_string();
 
         let runtime_err = err.into_runtime_error();
+        let RuntimeError::ContextHookIncoherent {
+            agent,
+            session,
+            turn,
+            method,
+            orphans,
+        } = runtime_err
+        else {
+            panic!("expected RuntimeError::ContextHookIncoherent, got {runtime_err:?}");
+        };
+        assert_eq!(agent, agent_id);
+        assert_eq!(session, session_id);
+        assert_eq!(turn, 5);
+        assert_eq!(method, HookMethod::BeforeRequest);
         assert_eq!(
-            runtime_err.to_string(),
-            format!("backend error: bad request: {expected_detail}")
+            orphans,
+            vec![HookOrphan::UnansweredCall {
+                call_id: "lost".to_string()
+            }]
         );
     }
 }

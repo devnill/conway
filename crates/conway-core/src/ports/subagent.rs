@@ -365,7 +365,20 @@ fn translate(err: RuntimeError) -> SubagentError {
         // own precisely because it is a caller-facing condition, not a
         // tool-facing one -- if a future path does surface it here, `Host` is
         // the honest answer rather than inventing a subagent semantic for it.
-        | RuntimeError::PromptDenied { .. } => SubagentError::Host { detail: rendered },
+        | RuntimeError::PromptDenied { .. }
+        // `ContextHookIncoherent` (board item `01M014W91NWBP35139YFWCB88J`)
+        // is likewise not reachable through this port today: it is raised by
+        // `GuardedContextHook`, which only wraps the ONE `ContextHook` a
+        // `Runtime` registers for its own agent loop, not anything a
+        // `SubagentHost` call goes through on this trait boundary. Mapped to
+        // `Host` for the same reason as `PromptDenied` immediately above --
+        // it is an infrastructure-shaped failure from this handle's point of
+        // view, not a mistake in the caller's own supplied `agent_id`/
+        // `SubagentSpec`, so `Host` (not a new caller-mistake variant) is the
+        // honest answer if a future path ever does surface it here.
+        | RuntimeError::ContextHookIncoherent { .. } => {
+            SubagentError::Host { detail: rendered }
+        }
     }
 }
 
@@ -732,6 +745,20 @@ mod tests {
                 required_tokens: 116_000,
                 max_context_tokens: 100_000,
                 shortfall_tokens: 16_000,
+            },
+            // Added for board item `01M014W91NWBP35139YFWCB88J`: this
+            // `translate` match has no wildcard arm (see its own doc), so
+            // adding `RuntimeError::ContextHookIncoherent` forced a
+            // deliberate arm above rather than a silent fall-through --
+            // this case is that arm's own regression coverage.
+            RuntimeError::ContextHookIncoherent {
+                agent: agent_id,
+                session: SessionId::new(),
+                turn: 3,
+                method: crate::error::HookMethod::BeforeRequest,
+                orphans: vec![crate::error::HookOrphan::UnansweredCall {
+                    call_id: "orphan".into(),
+                }],
             },
         ];
         for runtime_err in cases {
