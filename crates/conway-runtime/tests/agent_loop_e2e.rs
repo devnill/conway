@@ -38,10 +38,10 @@ use conway_core::ports::{
 };
 use conway_core::provenance::Provenance;
 use conway_core::routing::{Route, RouteRequest, RoutingReason};
-use conway_core::segment::CacheTtl;
+use conway_core::segment::{CacheTtl, PromptSegment};
 use conway_runtime::agent_loop::{AgentLoop, AgentSpec, LoopDeps};
 use conway_runtime::attempt::AttemptEngine;
-use conway_runtime::context::ContextBuilder;
+use conway_runtime::context::{ContextBuilder, GuardedContextHook};
 use conway_runtime::events::EventBus;
 use conway_runtime::permission::PermissionBroker;
 use conway_runtime::tools::PluginRegistry;
@@ -626,7 +626,15 @@ fn build_loop_inner(
         builder: Arc::new(ContextBuilder::new()),
         headroom: Arc::new(headroom),
         tree: tree.clone(),
-        context_hook: std::sync::RwLock::new(context_hook),
+        // Mirrors `Runtime::set_context_hook`'s own wrap exactly -- the
+        // fixture is the "a hook enters the runtime" seam for every test in
+        // this file, same as that method is for production, so a raw
+        // `Arc<dyn ContextHook>` never reaches `LoopDeps::context_hook`
+        // unguarded here either (see that field's own doc,
+        // `01M00RGARPESWXYAVY960KDE7S`).
+        context_hook: std::sync::RwLock::new(
+            context_hook.map(|inner| Arc::new(GuardedContextHook::new(inner))),
+        ),
         observers,
         plugin_events: Arc::new(conway_runtime::hook_dispatch::HookDispatcher::new()),
     });
@@ -2204,5 +2212,244 @@ async fn a_dropped_tool_call_reaches_the_report_slot_even_through_a_context_hook
         vec!["orphaned".to_string()],
         "the unanswered call must be named in the report the caller reads, \
          after the hook pass as well as before it"
+    );
+}
+
+// ---------------------------------------------------------------------
+// A `ContextHook` that orphans a tool call/result pair (board item
+// `01M00RGARPESWXYAVY960KDE7S`): `ContextBuilder::build` guarantees no
+// rendered context carries a tool call without its result, but that
+// guarantee only covers ITS OWN output -- a hook edits an already-coherent
+// list and can undo the guarantee just as easily as a mid-batch prefix cut
+// created the problem `drop_unanswered_tool_calls` exists for in the first
+// place. These are the regression tests: the seam refuses (never repairs)
+// either direction, at the real `AgentLoop::run_inner` `before_request`
+// call site, not merely in `context::hook_guard`'s own unit tests.
+// ---------------------------------------------------------------------
+
+/// Which half of a tool call/result pair [`OrphaningHook`] strips out of
+/// whatever `ContextBuilder::build` (or a prior hook pass) already
+/// assembled -- the two directions [`conway_runtime::context::hook_guard`]
+/// (unit-tested directly in that module) must both refuse.
+#[derive(Clone, Copy)]
+enum OrphanDirection {
+    /// Drop every segment carrying a `ToolResultBlock`, stranding its
+    /// `ToolUse` -- the direction `drop_unanswered_tool_calls` ALSO
+    /// handles, but never sees again once a hook runs after it.
+    DropResult,
+    /// Drop every segment carrying a `ToolUse`, stranding its
+    /// `ToolResultBlock` -- the direction `drop_unanswered_tool_calls`
+    /// never handled even before hooks existed (ordering made it
+    /// impossible on assembly's own output).
+    DropCall,
+}
+
+/// A `ContextHook` that always orphans one direction of a tool call/result
+/// pair, so the request it hands back is exactly what an operator's
+/// mis-curating hook (a masking rule that matches too broadly, a stale
+/// `ContextMask`) could produce for real.
+struct OrphaningHook {
+    direction: OrphanDirection,
+}
+
+fn segment_carries(
+    segment: &PromptSegment,
+    is_the_orphaned_kind: impl Fn(&ContentBlock) -> bool,
+) -> bool {
+    segment.content.iter().any(is_the_orphaned_kind)
+}
+
+#[async_trait]
+impl ContextHook for OrphaningHook {
+    async fn before_request(
+        &self,
+        _ctx: &ContextHookCtx,
+        payload: ContextPayload,
+    ) -> ContextPayload {
+        let direction = self.direction;
+        let segments = payload
+            .segments
+            .into_iter()
+            .filter(|segment| match direction {
+                OrphanDirection::DropResult => !segment_carries(segment, |block| {
+                    matches!(block, ContentBlock::ToolResultBlock { .. })
+                }),
+                OrphanDirection::DropCall => !segment_carries(segment, |block| {
+                    matches!(block, ContentBlock::ToolUse { .. })
+                }),
+            })
+            .collect();
+        ContextPayload {
+            segments,
+            tools: payload.tools,
+        }
+    }
+}
+
+/// Seeds a session whose own log already carries ONE fully-answered tool
+/// call/result pair (`call_id`) -- coherent by the time `ContextBuilder::
+/// build` runs, so any incoherence a test observes afterward is provably
+/// the registered hook's doing, not `drop_unanswered_tool_calls`'s.
+async fn seed_answered_tool_call(store: &dyn SessionStore, call_id: &str) -> (SessionId, AgentId) {
+    let (session, agent) = seed_prompt(store, "planner", "hello").await;
+
+    let seq = store.head(&session).await.unwrap();
+    store
+        .append(
+            &session,
+            LogRecord::Assistant {
+                seq,
+                ts: Utc::now(),
+                content: vec![ContentBlock::ToolUse {
+                    call_id: call_id.to_string(),
+                    name: ToolName::new("read"),
+                    arguments: serde_json::json!({"path": "a.txt"}),
+                }],
+                model: ModelRef {
+                    backend: BackendId::new("b"),
+                    model: ModelId::new("m"),
+                },
+                route_reason: serde_json::json!({}),
+                usage: Usage::default(),
+                stop: StopReason::ToolUse,
+            },
+        )
+        .await
+        .unwrap();
+    let seq = store.head(&session).await.unwrap();
+    store
+        .append(
+            &session,
+            LogRecord::ToolResultRecord {
+                seq,
+                ts: Utc::now(),
+                result: conway_core::content::ToolResult {
+                    call_id: call_id.to_string(),
+                    tool: ToolName::new("read"),
+                    blocks: vec![ContentBlock::Text {
+                        text: "file contents".into(),
+                    }],
+                    is_error: false,
+                    truncated: None,
+                },
+            },
+        )
+        .await
+        .unwrap();
+
+    (session, agent)
+}
+
+/// A `before_request` hook that drops the `ToolResultBlock` segment out of
+/// an otherwise-answered pair is refused, not silently sent -- the request
+/// it would have produced is exactly the shape every provider rejects
+/// outright (`kimi/k3`: "an assistant message with 'tool_calls' must be
+/// followed by tool messages responding to each 'tool_call_id'"). The
+/// failure names the orphaned `call_id` and the hook method that produced
+/// it, rather than surfacing as an opaque backend error.
+#[tokio::test]
+async fn a_hook_dropping_a_tool_result_segment_is_refused_not_silently_sent() {
+    let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
+    let (session, agent) = seed_answered_tool_call(&*store, "call_missing_result").await;
+
+    let backend = Arc::new(TrackingBackend::new("b", vec![text_response("done")]));
+    let router = Arc::new(CapturingRouter::ok(vec![make_route("b", "m")]));
+    let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
+    let hook: Arc<dyn ContextHook> = Arc::new(OrphaningHook {
+        direction: OrphanDirection::DropResult,
+    });
+
+    let harness = build_loop_inner(
+        session,
+        agent,
+        vec![],
+        store,
+        router,
+        backend.clone(),
+        vec![],
+        gate,
+        Budget::default(),
+        HeadroomPolicy::default(),
+        None,
+        "planner",
+        None,
+        Some(hook),
+        Vec::new(),
+    );
+
+    let result = harness.agent_loop.run().await;
+
+    match &result.status {
+        ResultStatus::Failed { error } => {
+            assert!(
+                error.contains("call_missing_result"),
+                "the orphaned call_id must be named in the failure: {error}"
+            );
+            assert!(
+                error.contains("before_request"),
+                "the responsible hook method must be named in the failure: {error}"
+            );
+        }
+        other => panic!("expected ResultStatus::Failed naming the orphan, got {other:?}"),
+    }
+    assert!(
+        backend.calls().is_empty(),
+        "an incoherent request must never reach the backend at all -- refused, not sent"
+    );
+}
+
+/// The other direction: a `before_request` hook drops the `ToolUse`
+/// segment, stranding its `ToolResultBlock`. `drop_unanswered_tool_calls`
+/// never handled this direction even before hooks existed -- see that
+/// function's own (corrected) doc -- so this is the case that makes its old
+/// "could not be made to fail" claim false.
+#[tokio::test]
+async fn a_hook_dropping_a_tool_use_segment_is_refused_not_silently_sent() {
+    let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
+    let (session, agent) = seed_answered_tool_call(&*store, "call_missing_use").await;
+
+    let backend = Arc::new(TrackingBackend::new("b", vec![text_response("done")]));
+    let router = Arc::new(CapturingRouter::ok(vec![make_route("b", "m")]));
+    let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
+    let hook: Arc<dyn ContextHook> = Arc::new(OrphaningHook {
+        direction: OrphanDirection::DropCall,
+    });
+
+    let harness = build_loop_inner(
+        session,
+        agent,
+        vec![],
+        store,
+        router,
+        backend.clone(),
+        vec![],
+        gate,
+        Budget::default(),
+        HeadroomPolicy::default(),
+        None,
+        "planner",
+        None,
+        Some(hook),
+        Vec::new(),
+    );
+
+    let result = harness.agent_loop.run().await;
+
+    match &result.status {
+        ResultStatus::Failed { error } => {
+            assert!(
+                error.contains("call_missing_use"),
+                "the orphaned call_id must be named in the failure: {error}"
+            );
+            assert!(
+                error.contains("before_request"),
+                "the responsible hook method must be named in the failure: {error}"
+            );
+        }
+        other => panic!("expected ResultStatus::Failed naming the orphan, got {other:?}"),
+    }
+    assert!(
+        backend.calls().is_empty(),
+        "an incoherent request must never reach the backend at all -- refused, not sent"
     );
 }

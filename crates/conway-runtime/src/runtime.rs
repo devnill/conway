@@ -130,7 +130,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::agent_loop::{AgentLoop, AgentSpec, LoopDeps};
 use crate::attempt::AttemptEngine;
-use crate::context::{ContextBuilder, InheritedPrefix, TOKEN_ESTIMATOR};
+use crate::context::{ContextBuilder, GuardedContextHook, InheritedPrefix, TOKEN_ESTIMATOR};
 use crate::events::{EventBus, EventStream};
 use crate::mailbox::{self, Mailbox, MailboxSender};
 use crate::permission::{PermissionBroker, PreToolUseHookSpec};
@@ -452,12 +452,23 @@ impl Runtime {
     /// (`conway::ConwayBuilder::build`), before any session is started;
     /// safe to call at any time regardless, since every turn reads the
     /// current value fresh (`AgentLoop::context_hook`).
+    ///
+    /// **The one place a hook enters this runtime, which is why the wrap
+    /// happens HERE** (board item `01M00RGARPESWXYAVY960KDE7S`, `INTENT.md`
+    /// §8.6): `hook` arrives as an ordinary, un-self-checking `Arc<dyn
+    /// ContextHook>` -- exactly what every implementation looks like, since
+    /// coherence-checking was never part of the trait's contract -- and
+    /// leaves as a `GuardedContextHook`, the only thing `LoopDeps::
+    /// context_hook`'s field type can hold. Neither of `AgentLoop`'s two
+    /// call sites constructs one themselves; there is no unwrapped hook for
+    /// them to reach.
     pub fn set_context_hook(&self, hook: Option<Arc<dyn ContextHook>>) {
         *self
             .loop_deps
             .context_hook
             .write()
-            .expect("context_hook lock poisoned") = hook;
+            .expect("context_hook lock poisoned") =
+            hook.map(|inner| Arc::new(GuardedContextHook::new(inner)));
     }
 
     /// Registers (or clears, via

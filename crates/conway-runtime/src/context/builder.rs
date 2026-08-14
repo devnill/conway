@@ -60,6 +60,16 @@
 //! turn where the model re-issues a call it appears never to have made is
 //! explicable from the log instead of mysterious.
 //!
+//! **This invariant is only guaranteed on `ContextBuilder::build`'s OWN
+//! output.** A registered `ContextHook` runs after `build` returns and can
+//! edit `segments` freely, including orphaning a tool call/result pair --
+//! `drop_unanswered_tool_calls` never runs again to catch it. `crate::
+//! context::hook_guard::ensure_hook_payload_coherent` is the seam that
+//! re-derives coherence on a hook's output, using [`check_tool_call_coherence`]
+//! (this module's check-only sibling of `drop_unanswered_tool_calls`,
+//! covering BOTH orphan directions -- a hook's edit is a deliberate act, so
+//! it is refused rather than repaired; see that module's own doc).
+//!
 //! ## A documented interpretation gap: assistant-turn provenance
 //!
 //! `conway_core::provenance::Provenance` is exhaustively eleven variants
@@ -520,31 +530,27 @@ fn tool_result_block(result: &ToolResult) -> Vec<ContentBlock> {
 /// (breakpoint A, `prefix_key`'s boundary, the tool-schema token estimate).
 ///
 /// The unmatched direction (a result whose call is absent) is deliberately
-/// NOT handled: records are ordered, an assistant record always precedes the
-/// results answering it, and no prefix cut can therefore admit a result while
-/// excluding its call. A branch for it could not be made to fail, which is
-/// the defect class CONTRIBUTING's testing discipline exists to catch.
+/// NOT handled here: this pass only ever runs on `ContextBuilder::build`'s
+/// OWN assembly output, where it genuinely cannot fire -- records are
+/// ordered, an assistant record always precedes the results answering it,
+/// and no prefix cut can therefore admit a result while excluding its call.
+/// **That was true only as long as nothing edited the list after assembly.**
+/// A `ContextHook` now can: it receives an already-coherent
+/// `Vec<PromptSegment>` and is free to drop the `ToolResultBlock` half of a
+/// pair as easily as the `ToolUse` half, which is exactly the direction this
+/// function still does not handle. `check_tool_call_coherence` (below) is
+/// the check-only sibling that reports BOTH directions, over the same
+/// `Vec<PromptSegment>` type a hook returns -- see
+/// `crate::context::hook_guard`, which runs it on a hook's output instead of
+/// assuming assembly's own ordering guarantee still holds.
 fn drop_unanswered_tool_calls(segments: &mut Vec<PromptSegment>) -> Vec<String> {
-    let answered: HashSet<String> = segments
-        .iter()
-        .flat_map(|segment| segment.content.iter())
-        .filter_map(|block| match block {
-            ContentBlock::ToolResultBlock { call_id, .. } => Some(call_id.clone()),
-            _ => None,
-        })
-        .collect();
+    let answered: HashSet<String> = tool_result_call_ids(segments).into_iter().collect();
 
     // The overwhelmingly common case -- a settled transcript, every call
     // answered -- returns here, having rebuilt nothing.
-    let dropped: Vec<String> = segments
-        .iter()
-        .flat_map(|segment| segment.content.iter())
-        .filter_map(|block| match block {
-            ContentBlock::ToolUse { call_id, .. } if !answered.contains(call_id) => {
-                Some(call_id.clone())
-            }
-            _ => None,
-        })
+    let dropped: Vec<String> = tool_use_call_ids(segments)
+        .into_iter()
+        .filter(|call_id| !answered.contains(call_id))
         .collect();
     if dropped.is_empty() {
         return dropped;
@@ -562,6 +568,102 @@ fn drop_unanswered_tool_calls(segments: &mut Vec<PromptSegment>) -> Vec<String> 
     }
     *segments = kept;
     dropped
+}
+
+/// Every `call_id` on a `ContentBlock::ToolUse` block in `segments`, in
+/// segment/block order (duplicates preserved -- a legitimate transcript
+/// never repeats a `call_id`, but nothing here assumes that). Shared by
+/// [`drop_unanswered_tool_calls`] (the mutating pass) and
+/// [`check_tool_call_coherence`] (the check-only pass), so the two can never
+/// drift on what counts as a "call".
+fn tool_use_call_ids(segments: &[PromptSegment]) -> Vec<String> {
+    segments
+        .iter()
+        .flat_map(|segment| segment.content.iter())
+        .filter_map(|block| match block {
+            ContentBlock::ToolUse { call_id, .. } => Some(call_id.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Every `call_id` on a `ContentBlock::ToolResultBlock` block in `segments`,
+/// in segment/block order. See [`tool_use_call_ids`]'s own doc.
+fn tool_result_call_ids(segments: &[PromptSegment]) -> Vec<String> {
+    segments
+        .iter()
+        .flat_map(|segment| segment.content.iter())
+        .filter_map(|block| match block {
+            ContentBlock::ToolResultBlock { call_id, .. } => Some(call_id.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// One direction of tool-call/result orphaning [`check_tool_call_coherence`]
+/// can find. `drop_unanswered_tool_calls` (`ContextBuilder::build`'s own
+/// mutating pass) only ever produces [`Self::UnansweredCall`] -- a prefix cut
+/// can leave a call standing with no answering result, but ordering makes
+/// the reverse impossible on assembly's own output (see that function's own
+/// doc). A `ContextHook` edits an ALREADY-coherent list, so it can produce
+/// either direction; this type names both.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ToolCallOrphan {
+    /// A `ToolUse` block whose `call_id` has no answering `ToolResultBlock`
+    /// anywhere in the checked segments.
+    UnansweredCall { call_id: String },
+    /// A `ToolResultBlock` whose `call_id` names no surviving `ToolUse`
+    /// anywhere in the checked segments.
+    OrphanedResult { call_id: String },
+}
+
+impl std::fmt::Display for ToolCallOrphan {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ToolCallOrphan::UnansweredCall { call_id } => {
+                write!(f, "call `{call_id}` has no answering result")
+            }
+            ToolCallOrphan::OrphanedResult { call_id } => {
+                write!(f, "result `{call_id}` names no surviving call")
+            }
+        }
+    }
+}
+
+/// Check-only counterpart of [`drop_unanswered_tool_calls`]: reports every
+/// tool-call/result pairing violation in `segments`, in BOTH directions (see
+/// [`ToolCallOrphan`]), without mutating anything. Built on the same
+/// `call_id` bookkeeping (`tool_use_call_ids`/`tool_result_call_ids`) the
+/// mutating pass uses, so "what counts as answered" can never diverge
+/// between the two.
+///
+/// This is the seam `crate::context::hook_guard::ensure_hook_payload_coherent`
+/// runs on a `ContextHook`'s returned `segments` before anything downstream
+/// consumes them: `ContextBuilder::build` already guarantees the invariant
+/// on its own output via the mutating pass above; a hook can undo that
+/// guarantee on ITS output, and this is what re-derives whether it did.
+pub(crate) fn check_tool_call_coherence(segments: &[PromptSegment]) -> Vec<ToolCallOrphan> {
+    let calls = tool_use_call_ids(segments);
+    let results = tool_result_call_ids(segments);
+    let call_set: HashSet<&str> = calls.iter().map(String::as_str).collect();
+    let result_set: HashSet<&str> = results.iter().map(String::as_str).collect();
+
+    let mut orphans: Vec<ToolCallOrphan> = calls
+        .iter()
+        .filter(|call_id| !result_set.contains(call_id.as_str()))
+        .map(|call_id| ToolCallOrphan::UnansweredCall {
+            call_id: call_id.clone(),
+        })
+        .collect();
+    orphans.extend(
+        results
+            .iter()
+            .filter(|call_id| !call_set.contains(call_id.as_str()))
+            .map(|call_id| ToolCallOrphan::OrphanedResult {
+                call_id: call_id.clone(),
+            }),
+    );
+    orphans
 }
 
 /// Renders a `LogRecord::ChildResultRecord`'s `result` into the plain-text
@@ -1557,5 +1659,116 @@ mod tool_call_pairing_tests {
             report.dropped.clone(),
         );
         assert_eq!(after.dropped, vec!["b".to_string()]);
+    }
+
+    /// `check_tool_call_coherence` is a no-op report on a fully-answered
+    /// list -- same "settled case is invisible" property `build` itself
+    /// keeps for `drop_unanswered_tool_calls`.
+    #[test]
+    fn check_tool_call_coherence_finds_nothing_in_a_fully_answered_batch() {
+        let input = input_with(
+            vec![assistant(0, vec![tool_use("a")]), tool_result(1, "a")],
+            CacheMode::None,
+        );
+        let (segments, _) = ContextBuilder::new().build(&input).unwrap();
+        assert!(check_tool_call_coherence(&segments).is_empty());
+    }
+
+    /// The direction `drop_unanswered_tool_calls` also finds: a `ToolUse`
+    /// with no answering `ToolResultBlock`. Constructed directly (not
+    /// through `build`, which would have already dropped it) -- this is
+    /// exactly the shape a `ContextHook` produces by deleting a result
+    /// segment out of an otherwise-coherent list.
+    #[test]
+    fn check_tool_call_coherence_finds_an_unanswered_call() {
+        let segments = vec![PromptSegment::new(
+            Role::Assistant,
+            vec![tool_use("orphan")],
+            Provenance::SystemNote {
+                reason: "assistant_turn".into(),
+            },
+        )];
+        assert_eq!(
+            check_tool_call_coherence(&segments),
+            vec![ToolCallOrphan::UnansweredCall {
+                call_id: "orphan".to_string()
+            }]
+        );
+    }
+
+    /// The direction `drop_unanswered_tool_calls` does NOT handle: a
+    /// `ToolResultBlock` whose call is gone. `build` alone can never
+    /// produce this (ordering forbids it -- see that function's own doc,
+    /// corrected in this change); a hook that deletes the `ToolUse` segment
+    /// out of an otherwise-coherent list can.
+    #[test]
+    fn check_tool_call_coherence_finds_an_orphaned_result() {
+        let segments = vec![PromptSegment::new(
+            Role::ToolResult,
+            tool_result_block(&ToolResult {
+                call_id: "gone".to_string(),
+                tool: ToolName::new("read"),
+                blocks: vec![ContentBlock::Text {
+                    text: "contents".into(),
+                }],
+                is_error: false,
+                truncated: None,
+            }),
+            Provenance::ToolResult {
+                call_id: "gone".to_string(),
+                tool: ToolName::new("read"),
+            },
+        )];
+        assert_eq!(
+            check_tool_call_coherence(&segments),
+            vec![ToolCallOrphan::OrphanedResult {
+                call_id: "gone".to_string()
+            }]
+        );
+    }
+
+    /// Both directions at once, exactly what a hook that swaps which half
+    /// of two DIFFERENT pairs it keeps would produce.
+    #[test]
+    fn check_tool_call_coherence_reports_both_directions_together() {
+        let unanswered = PromptSegment::new(
+            Role::Assistant,
+            vec![tool_use("unanswered")],
+            Provenance::SystemNote {
+                reason: "assistant_turn".into(),
+            },
+        );
+        let orphaned_result = PromptSegment::new(
+            Role::ToolResult,
+            tool_result_block(&ToolResult {
+                call_id: "orphaned".to_string(),
+                tool: ToolName::new("read"),
+                blocks: vec![ContentBlock::Text {
+                    text: "contents".into(),
+                }],
+                is_error: false,
+                truncated: None,
+            }),
+            Provenance::ToolResult {
+                call_id: "orphaned".to_string(),
+                tool: ToolName::new("read"),
+            },
+        );
+        let mut orphans = check_tool_call_coherence(&[unanswered, orphaned_result]);
+        orphans.sort_by_key(|o| match o {
+            ToolCallOrphan::UnansweredCall { call_id }
+            | ToolCallOrphan::OrphanedResult { call_id } => call_id.clone(),
+        });
+        assert_eq!(
+            orphans,
+            vec![
+                ToolCallOrphan::OrphanedResult {
+                    call_id: "orphaned".to_string()
+                },
+                ToolCallOrphan::UnansweredCall {
+                    call_id: "unanswered".to_string()
+                },
+            ]
+        );
     }
 }
