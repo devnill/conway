@@ -662,7 +662,7 @@ impl PermissionBroker {
     /// Note this does NOT pre-validate the rule against metacharacters:
     /// `rule` is desugared to a [`Rule`] immediately below (`to_rule`), and
     /// the gate lives in [`Rule::matches_allow_render`] -- the ONE evaluator
-    /// [`Self::pattern_allows`] consults at decision time (board item
+    /// `Self::pattern_allows` consults at decision time (board item
     /// 01KZVZ4KF72ECHTT14EDEZQQW3: `PatternRule::matches_render` is never
     /// reached from here or anywhere else in this broker -- it is a public,
     /// test-facing convenience that itself now delegates to the same

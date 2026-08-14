@@ -54,7 +54,7 @@
 //!
 //! Before board item 01KZVZ1TDBHS7S604PQB5RZDM3, this file resolved
 //! `[plugins].install` UNIONED with `[plugins].default_backends` against
-//! [`bundle`]/[`router_bundle`]/[`backend_bundle`] itself, in a ~70-line
+//! `bundle`/`router_bundle`/`backend_bundle` itself, in a ~70-line
 //! hand-rolled loop -- the exact resolution logic every OTHER embedder had
 //! to rebuild from scratch, since it lived only here. That resolution is
 //! now [`ConwayBuilder::install_selected`], a facade method taking the same
@@ -111,7 +111,7 @@ fn bundle() -> Vec<Arc<dyn Plugin>> {
 }
 
 /// Every first-party `RouterFactory` this binary links, in no particular
-/// order -- the router-side sibling of [`bundle`], resolved against the
+/// order -- the router-side sibling of `bundle`, resolved against the
 /// SAME `[plugins].install` list, in the same pass ([`install`]).
 ///
 /// **First occupant, board item 01KZFC43J1J06BM4CCWKCKHSNV:**
@@ -119,7 +119,7 @@ fn bundle() -> Vec<Arc<dyn Plugin>> {
 /// health-filtering `DeclarativeRouter` engine `conway` itself used to
 /// compile in unconditionally, now installed by naming its published
 /// `ROUTER_ID` (`"conway.routing"`) in `[plugins].install`, exactly the way
-/// [`bundle`]'s skeleton plugin is named. Absent that entry, `build()`
+/// `bundle`'s skeleton plugin is named. Absent that entry, `build()`
 /// falls through to `conway_core::routing::MinimalRouter` (see
 /// `docs/routing.md`).
 fn router_bundle() -> Vec<Arc<dyn RouterFactory>> {
@@ -127,7 +127,7 @@ fn router_bundle() -> Vec<Arc<dyn RouterFactory>> {
 }
 
 /// Every first-party `BackendFactory` this binary links -- the
-/// backend-side sibling of [`bundle`]/[`router_bundle`], resolved against
+/// backend-side sibling of `bundle`/`router_bundle`, resolved against
 /// the SAME id list, in the same pass ([`install`]).
 ///
 /// **Both occupants, board item 01KZHF270T3W8GZ7NM6DSNQ4MM:**
@@ -153,8 +153,8 @@ fn backend_bundle() -> Vec<Arc<dyn BackendFactory>> {
     ]
 }
 
-/// Hands this binary's three linked bundles ([`bundle`], [`router_bundle`],
-/// [`backend_bundle`]) to [`ConwayBuilder::install_selected`] -- the
+/// Hands this binary's three linked bundles (`bundle`, `router_bundle`,
+/// `backend_bundle`) to [`ConwayBuilder::install_selected`] -- the
 /// facade's own resolution of `[plugins].install` UNIONED with
 /// `[plugins].default_backends` against exactly those three (board item
 /// 01KZVZ1TDBHS7S604PQB5RZDM3). Every dispatch target (`main.rs`'s
@@ -175,16 +175,16 @@ pub fn install(builder: ConwayBuilder) -> Result<ConwayBuilder, ConwayError> {
     builder.install_selected(bundle(), router_bundle(), backend_bundle())
 }
 
-/// The subset of [`bundle`] actually selected by `conway`'s own
+/// The subset of `bundle` actually selected by `conway`'s own
 /// `[plugins].install` config (board item 01KZYBFTK4QPB45AJT9M57P60W) --
 /// what `tui::run`/`App::new` need to build the plugin command registry,
 /// since neither `Conway` nor `Runtime` exposes the installed `Plugin` list
 /// back out once `[install] handed it to `ConwayBuilder::install_selected`.
 ///
-/// **Deliberately re-derives from [`bundle`] + `conway.config().plugins.
+/// **Deliberately re-derives from `bundle` + `conway.config().plugins.
 /// install` rather than re-running `install_selected`'s own resolution
 /// logic** (which also unions in `[plugins].default_backends` and enforces
-/// router-factory cardinality -- neither applicable here, since [`bundle`]
+/// router-factory cardinality -- neither applicable here, since `bundle`
 /// holds `Plugin`s only, never a `RouterFactory`/`BackendFactory`, and
 /// `default_backends` names backend kind ids that never collide with a
 /// first-party PLUGIN's own id in practice). Re-running that fuller
@@ -192,7 +192,7 @@ pub fn install(builder: ConwayBuilder) -> Result<ConwayBuilder, ConwayError> {
 /// the time `main.rs`'s `build_conway` returns a built `Conway` -- so this
 /// reads back the ONE fact that actually decides plugin membership
 /// (`[plugins].install`, a plain `Vec<String>` `Conway::config()` already
-/// exposes publicly) and filters [`bundle`] by it directly. Two callers
+/// exposes publicly) and filters `bundle` by it directly. Two callers
 /// computing "is id X installed" from the SAME public config field can never
 /// disagree about a first-party plugin's own install status, even though
 /// they are, mechanically, two call sites.
@@ -239,7 +239,7 @@ pub fn installed_plugins(conway: &conway::Conway) -> Vec<Arc<dyn Plugin>> {
 /// Constructing a `ConwayBuilder` here would need a stub config solely to
 /// re-check what the integration suite already proves against the real
 /// binary, and two earlier attempts at exactly that asserted only on
-/// [`bundle`] while their names promised they exercised `install` — checks
+/// `bundle` while their names promised they exercised `install` — checks
 /// that could not fail, which is the defect class CONTRIBUTING's testing
 /// discipline exists to catch. The properties below are local to this
 /// module and are stated as narrowly as they are checked.
@@ -264,7 +264,7 @@ mod tests {
         );
     }
 
-    /// Same wiring-only check, for [`backend_bundle`]: both published kind
+    /// Same wiring-only check, for `backend_bundle`: both published kind
     /// ids must be present, otherwise `[plugins].default_backends`'s own
     /// default value resolves to an unknown-id error and a fresh install
     /// cannot reach a model at all.
@@ -284,7 +284,7 @@ mod tests {
         );
     }
 
-    /// Same wiring-only check, for [`router_bundle`]: the routing plugin's
+    /// Same wiring-only check, for `router_bundle`: the routing plugin's
     /// published `ROUTER_ID` must be present, otherwise
     /// `[plugins].install = ["conway.routing"]` resolves to an unknown-id
     /// error and an operator following `docs/routing.md` cannot install it.

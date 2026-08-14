@@ -96,7 +96,7 @@ const HOOK_ORIGIN_LABEL: &str = "settings.json (merged config)";
 pub struct HookRuleView {
     /// The rule's operator-chosen `HookEntry::id`.
     pub id: String,
-    /// The event this rule fires on -- always [`PRE_TOOL_USE_EVENT`] or
+    /// The event this rule fires on -- always `PRE_TOOL_USE_EVENT` or
     /// [`conway_runtime::hook_dispatch::PROMPT_SUBMITTED`], the only two
     /// events this list ever reports (see [`Conway::
     /// active_deny_capable_hook_rules`]'s own doc for why).
@@ -109,7 +109,7 @@ pub struct HookRuleView {
     /// no tool name at all, so `merge::validate` refuses to load a config
     /// pairing `match` with it in the first place).
     pub match_tool: Option<String>,
-    /// Always [`HOOK_ORIGIN_LABEL`] today -- see that constant's own doc
+    /// Always `HOOK_ORIGIN_LABEL` today -- see that constant's own doc
     /// for why a hook rule has no finer-grained provenance to report.
     pub origin: String,
 }

@@ -92,8 +92,8 @@ pub trait Plugin: Send + Sync + 'static {
     /// shared validator [`Self::commands`]' registrar
     /// (`conway_cli::tui::commands::CommandRegistry::build`) already uses
     /// for command names (see that function's own doc, and
-    /// [`crate::event_name::validate_namespaced`]'s "A third consumer,
-    /// same rule, different vocabulary").
+    /// `conway_core::event_name`'s private `validate_namespaced`, under
+    /// "A third consumer, same rule, different vocabulary").
     ///
     /// **An event declared here and never fired is the same defect as a
     /// tool that does nothing** (`PHILOSOPHY.md` §5, verbatim) -- this

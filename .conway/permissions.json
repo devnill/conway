@@ -1,0 +1,8 @@
+{
+  "allow": [
+    "read:*",
+    "bash:grep -rn"
+  ],
+  "deny": [],
+  "rules": []
+}

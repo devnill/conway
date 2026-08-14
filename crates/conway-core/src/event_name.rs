@@ -33,9 +33,9 @@
 //! `PluginManifest` at registration time".** Every real built-in plugin id
 //! in this workspace (`conway.fs`, `conway.shell`, `conway.report`,
 //! `conway.subagent`, `conway.plugin_skeleton`) already contains `.`, so
-//! excluding it outright would make [`Plugin::events`](crate::ports::
-//! Plugin::events)/[`Plugin::commands`](crate::ports::Plugin::commands)
-//! unreachable for every one of them. [`validate_namespaced`]'s own
+//! excluding it outright would make [`Plugin::events`](crate::ports::Plugin::events)
+//! and [`Plugin::commands`](crate::ports::Plugin::commands) unreachable for
+//! every one of them. `validate_namespaced`'s own
 //! `Some(id)` branch now documents exactly why the splitting hazard §16.6
 //! point 3 raised cannot occur there (`id` is always supplied out of
 //! band, never recovered by splitting `name` apart) — see that function's
@@ -47,7 +47,7 @@
 //! declaring `/help` must not shadow the built-in" is the exact same problem
 //! §16.6 already solved for events, just one surface over. Rather than a
 //! second, independently-drifting implementation, [`validate_command_name`]
-//! shares [`validate_namespaced`] with [`validate_event_name`]: same
+//! shares `validate_namespaced` with [`validate_event_name`]: same
 //! separator constant, same shape rule, only the noun in the error text
 //! differs. This also settles that item's own open question ("bare name
 //! reachable, or always namespaced?") structurally: a plugin command's full
@@ -91,7 +91,7 @@ pub fn validate_event_name(name: &str, declaring_plugin: Option<&str>) -> Result
 /// [`validate_event_name`] — see this module's own doc ("A third consumer,
 /// same rule, different vocabulary") for why a plugin-declared TUI command's
 /// full name (as typed with its leading `/` stripped, e.g. `acme.greet` for
-/// `/acme.greet`) reuses [`validate_namespaced`] rather than a second,
+/// `/acme.greet`) reuses `validate_namespaced` rather than a second,
 /// independent shape check. `declaring_plugin` follows the identical
 /// `None`/`Some` split `validate_event_name` documents.
 pub fn validate_command_name(name: &str, declaring_plugin: Option<&str>) -> Result<(), String> {

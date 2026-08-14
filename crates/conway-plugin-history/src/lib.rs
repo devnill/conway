@@ -74,7 +74,7 @@ use conway::LogSeq;
 /// calling `ConwayBuilder::with_plugin`.
 pub const PLUGIN_ID: &str = "conway.history";
 
-/// The bare name [`RewindCommand`] registers under -- reachable in the TUI
+/// The bare name `RewindCommand` registers under -- reachable in the TUI
 /// as `/{PLUGIN_ID}.{COMMAND_NAME}`, i.e. `/conway.history.rewind`
 /// (`conway_cli::tui::commands::CommandRegistry::build` prefixes it with
 /// this plugin's own manifest id).
