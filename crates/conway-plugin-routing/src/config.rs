@@ -320,7 +320,7 @@ mod tests {
     // prober had no production call site anywhere in this tree, and the
     // Transport breaker alone already handles recovery. The two fixtures
     // below were updated in step; the earlier divergence note this comment
-    // block used to carry (an earlier item's illustrative `HealthConfig` shape versus
+    // block used to carry (the caller's illustrative `HealthConfig` shape versus
     // conway-core's actual one) is moot now that both the doc and the type
     // agree on three fields.
     // -----------------------------------------------------------------

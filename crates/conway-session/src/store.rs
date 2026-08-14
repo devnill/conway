@@ -173,7 +173,7 @@ pub struct JsonlSessionStore {
     fsync_count: Arc<AtomicU64>,
     /// Total lines read across every cold-open full-file scan performed by
     /// [`get_or_open_handle`](Self::get_or_open_handle). A warm (already
-    /// cached) handle contributes nothing here — this is what lets an earlier item's
+    /// cached) handle contributes nothing here — this is what lets the
     /// fork tests assert `fork` performs zero parent reads when the parent
     /// handle is pre-warmed. Test-only instrumentation via
     /// [`lines_scanned`](Self::lines_scanned), not part of the public store
@@ -589,7 +589,7 @@ impl JsonlSessionStore {
     }
 
     /// Total lines read across every cold-open full-file scan so far (see
-    /// the field doc on [`JsonlSessionStore::lines_scanned`]). an earlier item's O(1)
+    /// the field doc on [`JsonlSessionStore::lines_scanned`]). the O(1)
     /// fork tests pre-warm the parent handle, snapshot this counter, call
     /// `fork`, and assert it is unchanged. Test-only instrumentation, not
     /// part of the public store contract.
@@ -775,7 +775,7 @@ impl SessionStore for JsonlSessionStore {
             None => {}
         }
 
-        // Cold path: read only line 0, never the whole file — an earlier item's
+        // Cold path: read only line 0, never the whole file — the
         // fork relies on this being O(1) in parent size.
         let path = self.session_path(sid);
         let file = File::open(&path)

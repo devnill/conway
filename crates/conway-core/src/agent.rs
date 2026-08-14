@@ -801,7 +801,7 @@ mod tests {
 
     #[test]
     fn subagent_spec_validate_accepts_spawn_without_agent_def() {
-        // an earlier item's original "agent_def mandatory for spawn" rule is relaxed:
+        // the original "agent_def mandatory for spawn" rule is relaxed:
         // a spawn with no agent_def is valid and means "inherit the
         // spawning session's role/model" (see `validate`'s own doc).
         let spec = SubagentSpec {

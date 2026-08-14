@@ -227,7 +227,7 @@ impl AttemptEngine {
     /// resolver must only ever name backends the runtime was configured
     /// with), so this panics rather than inventing an `RuntimeError` variant
     /// for a state that should be unreachable. The blast radius is one
-    /// agent task, not the process: an earlier item's supervisor catches panics via
+    /// agent task, not the process: the supervisor catches panics via
     /// `JoinError::is_panic()` and synthesizes a `Failed` terminal result.
     fn backend_for(&self, id: &BackendId) -> Arc<dyn Backend> {
         self.backends

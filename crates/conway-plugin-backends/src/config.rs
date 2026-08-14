@@ -83,7 +83,7 @@ impl<'de> Deserialize<'de> for SecretString {
 
 /// Errors produced while parsing/validating an adapter config.
 ///
-/// `#[non_exhaustive]` because later work items (an earlier item's
+/// `#[non_exhaustive]` because later work items (the
 /// `ModelMetadataStore::load`) add variants (`Metadata { .. }`) to this same
 /// enum without that being a breaking change for this work item's callers.
 #[non_exhaustive]
@@ -124,7 +124,7 @@ struct AnthropicConfigRaw {
     models: BTreeMap<String, ModelOverrides>,
 }
 
-/// Configuration for `AnthropicBackend` (adapter itself is an earlier item).
+/// Configuration for `AnthropicBackend` (adapter itself is later work).
 /// Deserializing this type runs [`AnthropicConfig::validate`]: a
 /// value that fails validation fails deserialization, so it is never
 /// possible to construct an `AnthropicConfig` carrying an empty key.
@@ -190,7 +190,7 @@ impl TryFrom<AnthropicConfigRaw> for AnthropicConfig {
 }
 
 /// Configuration for `OpenAiCompatBackend` (adapter itself is
-/// an earlier item/ an earlier item). One adapter, profile-selected behavior
+/// earlier work/ earlier work). One adapter, profile-selected behavior
 /// (declarative provider profiles item): `profile` is a fully resolved
 /// [`Profile`] value, not a file path or a name — resolving a name (built-in
 /// `Dialect`, or a user-supplied profile id) against a `ProfileStore` is the

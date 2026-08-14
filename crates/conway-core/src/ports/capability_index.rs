@@ -79,7 +79,7 @@ impl CapabilityIndex {
     /// what `Backend::capabilities()` -- and therefore
     /// `conway_runtime::attempt::AttemptEngine`'s own `Backend::admit`-based
     /// gate -- will actually see. A second, parallel `models.json` ->
-    /// `Capabilities` conversion is the divergence bug class an earlier item closes;
+    /// `Capabilities` conversion is the divergence bug class closes;
     /// don't reintroduce one.
     pub fn from_backends(backends: &[Arc<dyn Backend>], refs: &[ModelRef]) -> CapabilityIndex {
         let by_id: HashMap<BackendId, &Arc<dyn Backend>> =

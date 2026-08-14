@@ -1,6 +1,6 @@
 //! `ToolCallAccumulator` — dialect-parameterized streaming tool-call delta
 //! accumulation and validation (architecture §"Module: conway-backends",
-//! an earlier item).
+//! earlier work).
 //!
 //! Isolates the single most bug-prone surface of the OpenAI-compatible
 //! streaming wire format so it is unit-testable without a server: providers
@@ -57,7 +57,7 @@
 //! # Declarative provider profiles: `ToolCallStyle`
 //!
 //! This module used to dispatch directly on `crate::config::Dialect` (added
-//! by an earlier item). The declarative-provider-profiles item replaced that
+//! by earlier work). The declarative-provider-profiles item replaced that
 //! five-variant match with [`ToolCallStyle`], a three-value enum that names
 //! *which parsing strategy* a provider needs rather than which of five
 //! fixed dialects it is — the same accumulator now serves any
@@ -66,7 +66,7 @@
 //! obtain one; `Dialect`'s own predicate methods (kept for source
 //! compatibility) resolve to the same built-in profile data.
 //!
-//! # The `VllmHermes` inline-text fallback (originally an earlier item)
+//! # The `VllmHermes` inline-text fallback (originally separate)
 //!
 //! `ToolCallStyle::HermesTextFallback` structured deltas (a well-formed
 //! `delta.tool_calls` entry) go through the same `push_delta`/

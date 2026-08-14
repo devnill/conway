@@ -1,4 +1,4 @@
-//! Interactive TUI (stub; an earlier item implements the ratatui shell here;
+//! Interactive TUI (stub; the ratatui shell is implemented here;
 //! adds slash commands on top of `app.rs`).
 //!
 //! Terminal lifecycle: [`run`] enters raw mode + the alternate screen,

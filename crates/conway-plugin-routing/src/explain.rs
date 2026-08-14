@@ -29,7 +29,7 @@
 //!
 //! Second divergence note: the plan's implementation notes say
 //! `generated_at` "is injected via the router's `Clock`", matching an
-//! earlier draft. `DeclarativeRouter` (as landed at an earlier item, commit 0a38c42)
+//! earlier draft. `DeclarativeRouter` (as landed, commit 0a38c42)
 //! carries no `Clock` field -- only `BreakerRegistry` does, and it is not
 //! reachable from here (see above). `generated_at` is instead read directly
 //! from `chrono::Utc::now()` at explain time. This does not affect

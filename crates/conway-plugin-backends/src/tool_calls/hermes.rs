@@ -9,7 +9,7 @@
 //! scope for a given stream (that's [`super::ToolCallAccumulator`]'s job —
 //! see `push_content_delta`, which only routes through this scanner while
 //! `ToolCallStyle::HermesTextFallback` has not yet seen a structured
-//! `delta.tool_calls` entry, per the an earlier item "structured-path passthrough
+//! `delta.tool_calls` entry, per the "structured-path passthrough
 //! when structured tool_calls appear" handoff).
 //!
 //! # Suppression algorithm

@@ -635,7 +635,7 @@ fn write_contract_asker_agent_def(dir: &std::path::Path) {
 /// path the TUI's modal `/ask` uses (`SessionHandle::ask`, which already
 /// inherits `agent_def` -- see that method's own doc). Before this item's
 /// fix, `subagent.rs::start` sourced `result_contract` from the SAME
-/// inherited def as a second, lower-precedence source (an earlier item's original
+/// inherited def as a second, lower-precedence source (the caller's original
 /// precedence chain, meant for an ordinary `conway_fork`/`conway_spawn`
 /// child that CAN call `report`), so this ask child failed validation on
 /// its first turn, spent its one corrective retry (consuming a SECOND

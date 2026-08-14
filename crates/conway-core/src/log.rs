@@ -727,7 +727,7 @@ mod tests {
     /// A mask and its reversal are two distinct, independently-valid
     /// `ContextMask` records targeting the same `target_seq` -- masking
     /// never mutates the masked record or an earlier mask record in place
-    /// (an earlier item's "no silent loss" guiding principle: exclusion is explicit
+    /// (the caller's "no silent loss" guiding principle: exclusion is explicit
     /// and reversible by appending the opposite, not by editing history).
     #[test]
     fn context_mask_and_its_reversal_round_trip_as_independent_records() {

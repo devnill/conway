@@ -204,7 +204,7 @@ async fn spawn_with_agent_def_records_spawn_mode() {
 
 #[tokio::test]
 async fn spawn_without_agent_def_starts_with_agent_def_none() {
-    // an earlier item's "agent_def required for spawn" rule is relaxed: a spawn with
+    // the "agent_def required for spawn" rule is relaxed: a spawn with
     // no agent_def is no longer a model-recoverable error -- it starts a
     // child with `agent_def: None`, which `conway_runtime`'s
     // `SubagentHost::start` resolves as "inherit the caller's role/model".

@@ -118,7 +118,7 @@ fn corrupt_ancestry(session: SessionId, detail: impl Into<String>) -> StoreError
     }
 }
 
-/// Applies an earlier item's context-exclusion mask to one session's own records
+/// Applies the context-exclusion mask to one session's own records
 /// (never the inherited prefix -- see the call site): `ContextMask::target_seq`
 /// is local to the session that owns both the mask and its target, the same
 /// units this module uses everywhere, so masking only ever needs to look

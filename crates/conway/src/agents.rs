@@ -6,9 +6,9 @@
 //! does not resolve skills, wire tool selectors into a live registry, or
 //! touch the runtime — `AgentDef.skills` is populated verbatim from the
 //! frontmatter's `skills` list (a list of skill *names*), and resolving
-//! those names to `SkillDef` bodies is an earlier item's concern.
+//! those names to `SkillDef` bodies is a later concern.
 //!
-//! **Reconciliation (disclosed in the an earlier item Self-Check):** the binding
+//! **Reconciliation (disclosed):** the binding
 //! implementation notes describe the `tools` mapping as "`Option<Vec<String>>
 //! -> ToolSelector::Explicit`; absent -> `ToolSelector::Inherit`". The
 //! already-committed `conway_core::agent::ToolSelector` has no `Explicit` or

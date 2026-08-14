@@ -17,7 +17,7 @@
 //! `Runtime` calls into) is exactly the change `ConwayBuilder`'s own module
 //! doc flags as missing ("the CLI or a future item should likely add a way
 //! to supply a prompt handler") and `crates/conway-cli/tests/cli_surface.rs`'s
-//! `MINIMAL_CONFIG` comment attributes to "an earlier item" -- see `main.rs`'s
+//! `MINIMAL_CONFIG` comment attributes to earlier work -- see `main.rs`'s
 //! `build_conway`/`main` for the resulting (disclosed) widening of this
 //! item's file scope beyond `src/tui/`.
 

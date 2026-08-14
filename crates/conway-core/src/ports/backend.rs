@@ -304,7 +304,7 @@ pub struct BackendBuildContext {
     /// for this same `id` -- so a factory-built backend's
     /// `Backend::capabilities()` can honor an operator's `models.json`
     /// override the identical way a config-derived backend's own
-    /// `ModelOverrides` table already does (an earlier item's single-source
+    /// `ModelOverrides` table already does (the caller's single-source
     /// guarantee, extended to a third-party kind rather than left as a
     /// built-ins-only privilege).
     pub models: BTreeMap<String, ModelOverrides>,

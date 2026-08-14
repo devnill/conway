@@ -168,8 +168,8 @@ async fn turn_handle_result_resolves_on_budget_exceeded() {
 // actually *drives* a `Cancelled` outcome is not constructible from
 // its own public surface: the only way to trip a hard cancel is
 // `Runtime::cancel(agent, reason)`, which `SessionHandle` does not expose
-// (that arrives as `SessionHandle::cancel` in an earlier item, per the module plan's
-// own dependency edge from an earlier item to an earlier item). Disclosed gap, not a silent
+// (that arrives as `SessionHandle::cancel` in earlier work, per the module plan's
+// own dependency edge from earlier work to earlier work). Disclosed gap, not a silent
 // omission.
 
 // ---------------------------------------------------------------------

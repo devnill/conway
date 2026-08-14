@@ -11,7 +11,7 @@
 //! This crate is a skeleton as of [`meta`] and [`codec`] are fully
 //! implemented (session metadata re-exports and the header/record line
 //! codec); [`store`], [`fork`], [`resolver`], [`index`], and [`provenance`]
-//! are stubs with signatures fixed here, filled in by an earlier item through
+//! are stubs with signatures fixed here, filled in by earlier work through
 //! respectively.
 
 pub mod codec;

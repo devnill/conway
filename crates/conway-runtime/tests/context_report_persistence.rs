@@ -1,4 +1,4 @@
-//! Acceptance tests for an earlier item (`ContextReport` persistence and provenance
+//! Acceptance tests for (`ContextReport` persistence and provenance
 //! inspection API): every turn's `ContextReport` is durably persisted after
 //! its assistant record, `Runtime::context_report_at` reads historical/
 //! post-restart reports back, and `Runtime::context_report` continues to
@@ -526,7 +526,7 @@ async fn fork_and_steer_scenario_covers_every_named_provenance_variant() {
         );
         // Entry count is the segment count by construction: `ContextBuilder::
         // build` derives `entries` from `segments` 1:1 (already golden-tested
-        // at the builder level, an earlier item's `context_golden.rs`); nothing outside
+        // at the builder level, the `context_golden.rs`); nothing outside
         // the builder can observe the two counts diverging, so this is
         // recorded here as a documented invariant rather than an independent
         // re-check.

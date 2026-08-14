@@ -26,7 +26,7 @@ use serde::Deserialize;
 use crate::tools::ToolOutcome;
 
 /// The tool name the runtime recognizes as the explicit-finalization call
-/// (`conway-tools`' `ReportPlugin`, an earlier item's `ReportTool`). Matched by name
+/// (`conway-tools`' `ReportPlugin`, the `ReportTool`). Matched by name
 /// only -- `conway-runtime` must not depend on `conway-tools`
 /// (`report_tool.rs`'s own module doc names this exact boundary).
 const REPORT_TOOL_NAME: &str = "report";

@@ -1,5 +1,5 @@
 //! The supervisor: guarantees [`AgentTree::await_result`] always terminates
-//! (architecture §7, an earlier item's core objective -- the MAST "failure to
+//! (architecture §7, the core objective -- the MAST "failure to
 //! recognize termination" mitigation). Wraps an already-spawned agent task
 //! so a panic, a blown deadline, or an external cancellation each resolve to
 //! a terminal `AgentResult`, published through

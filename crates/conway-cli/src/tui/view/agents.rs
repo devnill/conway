@@ -339,7 +339,7 @@ mod tests {
         );
     }
 
-    // an earlier item (finding M1): the arrow-selected agent row renders highlighted.
+    // Review finding M1: the arrow-selected agent row renders highlighted.
     #[test]
     fn draw_highlights_the_selected_agent_row() {
         use ratatui::style::Modifier;

@@ -86,9 +86,9 @@ pub enum CacheMode {
 
 /// A cache breakpoint's time-to-live.
 ///
-/// Defined here (not in `segment.rs`) because an earlier item depends only on
-/// and needs this type before an earlier item's `segment.rs` exists.
-/// an earlier item MUST re-export this type from `segment.rs` rather than redefining
+/// Defined here (not in `segment.rs`) because earlier work depends only on
+/// and needs this type before the `segment.rs` exists.
+/// earlier work MUST re-export this type from `segment.rs` rather than redefining
 /// it.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -1884,7 +1884,7 @@ async fn context_hook_ctx_at_on_overflow_carries_agent_path_tag_and_a_working_ar
     assert_eq!(
         ctx.agent_path, expected_path,
         "ContextHookCtx::agent_path on the on_overflow call must be the same root-first, \
-         self-inclusive chain the before_request call sees -- not the pre- an earlier item default of \
+         self-inclusive chain the before_request call sees -- not the earlier default of \
          just [agent_id]"
     );
     // A one-level tree can't distinguish a working copy from an empty

@@ -419,7 +419,7 @@ impl ContextBuilder {
 ///
 /// `tools`: the same
 /// `ContextPayload::tools` a hook returned alongside `segments` -- a
-/// `ContextHook` can narrow/replace the announced tool set (an earlier item's
+/// `ContextHook` can narrow/replace the announced tool set (the
 /// `announced_tools`) as well as edit segments, and the `[2] ToolSchemas`
 /// segment's `content` is deliberately always empty (see `ContextBuilder::
 /// build`'s own comment), so the generic per-segment loop above cannot
@@ -686,7 +686,7 @@ fn own_segment(record: &LogRecord) -> Option<(Role, Vec<ContentBlock>, Provenanc
 /// tags) a real tokenizer spends a handful of tokens on that a pure
 /// character count would otherwise miss entirely. Deliberately small next to
 /// a typical JSON-serialized block's own structural overhead (field names,
-/// quoting, escaping) -- see the module doc's an earlier item note on why this
+/// quoting, escaping) -- see the module doc's earlier work note on why this
 /// estimator no longer serializes the whole block to JSON first.
 const PER_BLOCK_OVERHEAD_TOKENS: u32 = 4;
 
@@ -832,7 +832,7 @@ fn desired_breakpoints(a_index: usize, b_index: Option<usize>) -> Vec<usize> {
 /// This is what makes the model-aware cache-hint post-pass in
 /// `attempt.rs` (run AFTER routing resolves a concrete model, and after any
 /// `ContextHook::before_request` has had a chance to add, drop, or reorder
-/// segments — an earlier item) correct even when the hook has changed segment
+/// segments — earlier work) correct even when the hook has changed segment
 /// positions since `build` ran: re-deriving from provenance on the FINAL
 /// segment list is safe against staleness in a way that threading `build`-
 /// time indices through would not be. `a_index` is `None` only if a hook
@@ -1491,22 +1491,45 @@ mod tool_call_pairing_tests {
         );
     }
 
-    /// The report is the only place a reader can learn the request was
-    /// altered -- the removed blocks are gone from `segments` by then. A
-    /// settled transcript must record nothing, so a non-empty list always
-    /// means something really was removed.
+    /// The module doc claims this pass runs on the WHOLE assembled list,
+    /// because an inherited prefix cut mid-batch and an own log that ends
+    /// mid-batch produce the same invalid request. Each half has its own
+    /// coverage -- the fork tests in `subagent_fork_spawn.rs` for the
+    /// inherited side, the cases above for the own side -- but a build
+    /// carrying BOTH is the one that shows the pass is not scoped to
+    /// either source. A single-source implementation passes every other
+    /// test in this module and fails this one.
     #[test]
-    fn a_settled_transcript_records_no_drops() {
-        let input = input_with(
-            vec![
-                assistant(0, vec![tool_use("a"), tool_use("b")]),
-                tool_result(1, "a"),
-                tool_result(2, "b"),
-            ],
-            CacheMode::None,
+    fn orphans_are_dropped_from_the_inherited_prefix_and_the_own_log_alike() {
+        let mut input = input_inheriting(vec![
+            LogRecord::UserTurn {
+                seq: LogSeq(0),
+                ts: Utc::now(),
+                text: "inherited turn".into(),
+                prov: Provenance::UserPrompt,
+            },
+            assistant(1, vec![tool_use("inherited_orphan")]),
+        ]);
+        input.own = Arc::from(vec![
+            assistant(2, vec![tool_use("own_orphan"), tool_use("own_answered")]),
+            tool_result(3, "own_answered"),
+        ]);
+
+        let (segments, report) = ContextBuilder::new().build(&input).unwrap();
+
+        let mut dropped = report.dropped.clone();
+        dropped.sort();
+        assert_eq!(
+            dropped,
+            vec!["inherited_orphan".to_string(), "own_orphan".to_string()],
+            "an orphan is an orphan whichever side of the prefix boundary it \
+             sits on"
         );
-        let (_, report) = ContextBuilder::new().build(&input).unwrap();
-        assert!(report.dropped.is_empty());
+        assert_eq!(
+            rendered_call_ids(&segments),
+            vec!["own_answered".to_string()],
+            "and the answered call survives, from either side"
+        );
     }
 
     /// `retotal` runs after a `ContextHook` has edited the payload and

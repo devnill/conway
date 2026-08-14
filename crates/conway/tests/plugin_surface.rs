@@ -130,7 +130,7 @@ impl Plugin for EchoPlugin {
 }
 
 // ---------------------------------------------------------------------------
-// A third-party context hook (an earlier item's extension point): masks segments
+// A third-party context hook (the caller's extension point): masks segments
 // carrying a marker and appends a hook-authored segment -- exercising
 // `PromptSegment`/`Role`/`Provenance` construction, the thing a masking or
 // system-prompt-instrumenting hook actually does.

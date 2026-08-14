@@ -3507,12 +3507,14 @@ async fn fork_taken_mid_tool_batch_inherits_no_unanswered_tool_call() {
         .unwrap();
     let result = wait_for_agent_finished(&mut stream, child).await;
 
-    assert_eq!(
-        result.status,
-        conway_core::agent::ResultStatus::Completed,
-        "the child must run at all -- an unanswered call in its inherited \
-         prefix is a request no provider accepts"
-    );
+    // A smoke check, not the pin: `ScriptedBackend` does not validate
+    // tool-call pairing, so this stays `Completed` either way. What a real
+    // provider does with an unanswered call -- reject the whole request --
+    // is the failure this pass exists to prevent, and no fake reproduces
+    // it. The pin is the drop list below, and the content-level guarantee
+    // (the call is really gone from the rendered segments) is pinned by
+    // `context::builder`'s own unit tests.
+    assert_eq!(result.status, conway_core::agent::ResultStatus::Completed);
 
     let mut dropped = dropped_call_ids(&runtime, child);
     dropped.sort();

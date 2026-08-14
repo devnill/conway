@@ -79,7 +79,7 @@ impl Default for LoadOptions {
 /// `conway-cli` wiring with this struct is the open architectural question
 /// filed as — not decided here.
 ///
-/// Reconciliation disclosed in the an earlier item Self-Check: this field list is
+/// Reconciliation disclosed here: this field list is
 /// exactly the amendment's enumerated set. It has no per-backend override
 /// (e.g. no `backends.<id>.base_url` field) — the precedence-test criterion
 /// names `backends.<id>.base_url` as one of the keys to prove all five
@@ -249,7 +249,7 @@ fn resolve_metadata_path(config: &ConwayConfig, cwd: &std::path::Path) -> PathBu
 }
 
 /// The built-in, lowest-precedence layer. Matches the documented config
-/// defaults exactly (an earlier item's Implementation Notes / the headroom
+/// defaults exactly (the implementation notes / the headroom
 /// amendment), except `routing.default_headroom_tokens`: see
 /// `schema::DEFAULT_HEADROOM_TOKENS`'s doc comment for why `8_192` (not the
 /// amendment's literal `16000`) is used.

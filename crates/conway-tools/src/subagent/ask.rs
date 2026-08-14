@@ -6,7 +6,7 @@
 //!
 //! Fork-only (v1): the child inherits this agent's full context and
 //! effective role (fork semantics; role via the runtime's parent-role
-//! fallback an earlier item, `conway_runtime::subagent`). `invoke` below always
+//! fallback earlier work, `conway_runtime::subagent`). `invoke` below always
 //! passes `agent_def: None` on the `SubagentSpec` -- but `Runtime::ask`
 //! (`conway_runtime::subagent`)
 //! fills it from the parent's own `SessionMeta::agent_def` at the trait

@@ -13,7 +13,7 @@
 //! test in `tests/model_metadata.rs` greps this file's source to enforce
 //! that (see that test for the exact forbidden token list).
 //!
-//! an earlier item (unifying the two capability systems that previously diverged —
+//! earlier work (unifying the two capability systems that previously diverged —
 //! see `conway_core::ports::CapabilityIndex::from_backends`'s doc):
 //! [`build_capabilities`] is the *only* function that turns dialect
 //! defaults + metadata + overrides into a `Capabilities` value anywhere in
@@ -30,7 +30,7 @@
 //! both read only dialect defaults / `ModelMetadataStore` metadata for
 //! those two fields. Giving `models.json` real control over them requires
 //! adding fields to `ModelOverrides` (owned by `conway-core`, out of
-//! an earlier item's file scope) — flagged there as a scope-boundary follow-up, not
+//! the file scope) — flagged there as a scope-boundary follow-up, not
 //! solved here.
 
 use conway_core::capabilities::{

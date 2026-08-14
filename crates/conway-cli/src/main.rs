@@ -32,7 +32,7 @@ async fn main() -> std::process::ExitCode {
         }
     }
 
-    // **Disclosed an earlier item/ an earlier item reconciliation -- widens this function and
+    // **Disclosed reconciliation -- widens this function and
     // `build_conway` beyond `dispatch`'s own match arms, which is the one
     // piece of this shared file each of those items' briefs asked to leave
     // alone.** `conway_runtime::runtime::Runtime` bakes its `PermissionGate`
@@ -52,7 +52,7 @@ async fn main() -> std::process::ExitCode {
     // item's own public surface -- the CLI or a future item should likely
     // add a way to supply a prompt handler") and that
     // `tests/cli_surface.rs`'s `MINIMAL_CONFIG` comment attributes to
-    // "an earlier item" by name. Every other dispatch target's behavior here is
+    // by name. Every other dispatch target's behavior here is
     // byte-for-byte unchanged (`gate_override`/`tui_gate_rx` are both
     // `None`).
     let is_tui = cli.command.is_none() && cli.print.is_none();

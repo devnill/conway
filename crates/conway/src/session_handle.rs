@@ -8,7 +8,7 @@
 //! **Relocation note (disclosed, per its own deviation #3):**
 //! `SessionHandle` and `SessionSpec` were previously a minimal stub living
 //! in `crate::conway` (landed only `id()`/`root()`, with an explicit
-//! comment that an earlier item owns moving them here). This file is that move,
+//! comment noting the move). This file is that move,
 //! plus the full surface this item specifies.
 
 use std::future::poll_fn;
@@ -149,7 +149,7 @@ impl SessionHandle {
     /// keep_alive`/`ForkSpec::keep_alive`), this is how it drives that
     /// child's turns directly, exactly the way `prompt` drives the root's.
     ///
-    /// `Runtime::prompt(agent, text)` already accepts any agent id (an earlier item's
+    /// `Runtime::prompt(agent, text)` already accepts any agent id (the
     /// generalization, unmodified by this item) -- this method is a thin
     /// wrapper that additionally resolves `agent`'s owning `SessionId` (via
     /// `Self::resolve_agent_session`, the same resolution
@@ -219,7 +219,7 @@ impl SessionHandle {
     /// `fork_child` fallback did), so the child resolves the same system
     /// prompt and tool selector this session's own agent runs with;
     /// `role: None` lets `SubagentHost::start` inherit the parent's
-    /// effective role itself (its an earlier item fallback). Tool calls the child
+    /// effective role itself (its inheritance fallback). Tool calls the child
     /// makes during the ask are real and permanent -- only the transcript
     /// is ephemeral; that is intended, not a gap (a throwaway *question*
     /// does not imply throwaway tool side effects).
@@ -250,7 +250,7 @@ impl SessionHandle {
             // registry the parent's own start did.
             agent_def: parent_meta.agent_def.map(AgentDefRef),
             // `None` -> the runtime inherits the parent's effective role
-            // (`subagent.rs`'s an earlier item fallback), same routing as the asker.
+            // (`subagent.rs`'s inheritance fallback), same routing as the asker.
             role: None,
             tools: None,
             budget: Budget::default(),

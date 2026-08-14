@@ -1,5 +1,4 @@
-//! `Runtime`: the facade over one agent tree ( an earlier item/ an earlier item/ an earlier item,
-//! architecture §4, §7).
+//! `Runtime`: the facade over one agent tree (architecture §4, §7).
 //!
 //! Owns dependency injection (`RuntimeDeps`), root-agent task lifecycle, and
 //! the public surface (`start_root`, `prompt`, `cancel`, `subscribe`,
@@ -16,8 +15,7 @@
 //!
 //! ## Reconciliations against the spec's illustrative types
 //!
-//! - **`ToolRunner`/`PermissionBroker` construction (carried from an earlier item's
-//!   An earlier review found: ):** `ToolRunner::new` takes `Arc<PluginRegistry>`
+//! - **`ToolRunner`/`PermissionBroker` construction:** `ToolRunner::new` takes `Arc<PluginRegistry>`
 //!   and `Arc<PermissionBroker>`, not the unwrapped values the
 //!   prose's illustrative structs might suggest. This item wraps both in
 //!   `Arc` at construction, as that review already flagged for this item's
@@ -43,7 +41,7 @@
 //!   handful of narrow `pub(crate)` accessors (`loop_deps`, `agent_defs`,
 //!   `tree_ref`, `resolver`, `agent_session`, `launch_agent`) letting
 //!   `subagent.rs` reach state that was, by design, made private to this
-//!   module by an earlier item. This is disclosed here as a reconciliation
+//!   module. This is disclosed here as a reconciliation
 //!   rather than silently expanding scope: every added accessor is
 //!   `pub(crate)` (one `#[doc(hidden)] pub` test seam excepted, mirroring
 //!   `conway-session`'s own `peek_prefix` precedent), no existing public
@@ -95,7 +93,7 @@
 //!   token.** Before this item, `AgentHandle` held its own
 //!   `watch::Receiver<Option<AgentResult>>` (populated by a bare
 //!   `tokio::spawn` that sent into a paired `Sender` on completion) and its
-//!   own `CancellationToken`, and the an earlier item `tree()`/`cancel()` read and
+//!   own `CancellationToken`, and `tree()`/`cancel()` read and
 //!   wrote them directly. Both are now owned by `AgentTree` instead (a
 //!   `start_root` agent is `attach`ed to it exactly like a future
 //!   child would be, with `kind: None` since a root is started, not
@@ -104,7 +102,7 @@
 //!   the live report slot (for `context_report`). Routing both channels
 //!   through one owner is also what makes `tree().nodes[].status` accurate
 //!   for a finished root agent, which the old per-`AgentHandle` channel,
-//!   never read by the an earlier item `tree()` stub, did not actually provide.
+//!   never read by the `tree()` stub that preceded it, did not actually provide.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -277,12 +275,12 @@ pub struct Runtime {
     loop_deps: Arc<LoopDeps>,
     agents: RwLock<HashMap<AgentId, AgentHandle>>,
     tree: Arc<AgentTree>,
-    /// Ancestry resolution for an earlier item's fork path (`subagent.rs`) --
+    /// Ancestry resolution for the fork path (`subagent.rs`) --
     /// `conway_session::TranscriptResolver`, one instance per runtime so
     /// sibling forks share memoized prefixes (see that type's own module
     /// doc). Not part of `RuntimeDeps`: it needs no injected configuration
     /// beyond a cache capacity, and adding a field to `RuntimeDeps` would
-    /// be a breaking change to an earlier item's already-committed, criterion-pinned
+    /// be a breaking change to the already-committed, criterion-pinned
     /// surface for a value this crate can construct unconditionally itself.
     resolver: Arc<conway_session::TranscriptResolver>,
 }
@@ -291,7 +289,7 @@ pub struct Runtime {
 /// pins this value; `conway-session`'s own test suite exercises capacities
 /// from 2 to 64 without treating the number itself as load-bearing, so this
 /// picks a generous-but-bounded default rather than inventing a config
-/// surface an earlier item has no mandate to add.
+/// surface this type has no mandate to add.
 const TRANSCRIPT_CACHE_CAPACITY: usize = 512;
 
 impl Runtime {
@@ -302,7 +300,7 @@ impl Runtime {
     /// contract; `Runtime::new`'s binding signature is infallible, so this
     /// is the only place the check can surface).
     ///
-    /// ## an earlier item reconciliation: self-referential `subagents`
+    /// ## Reconciliation: self-referential `subagents`
     ///
     /// `LoopDeps::subagents` must be a working `Arc<dyn SubagentHost>`
     /// backed by this very `Runtime` (`impl SubagentHost for Runtime`,
@@ -583,7 +581,7 @@ impl Runtime {
     /// Attaches `node` to the tree, spawns `agent_loop`'s task under the
     /// supervisor, and registers its handle. The shared tail of both
     /// `start_root` (root agents, unchanged, still inlines its own copy of
-    /// this sequence) and an earlier item's fork/spawn path (`subagent.rs`), which
+    /// this sequence) and the fork/spawn path (`subagent.rs`), which
     /// has no other way to reach `agents`/`tree`/`bus` to do this itself
     /// without those fields losing their private visibility.
     ///
@@ -1111,7 +1109,7 @@ impl Runtime {
         let agent_id = meta.agent_id;
 
         // a genuine root's own session records ARE its complete
-        // history (`inherited` stays `None`, matching an earlier item's original,
+        // history (`inherited` stays `None`, matching the original,
         // unaffected behavior below) -- but a fork child's own records are,
         // by the zero-copy fork contract (`SessionStore::fork`, D-11), only
         // its OWN post-fork turns; the inherited portion lives in the
@@ -1296,7 +1294,7 @@ impl Runtime {
             // A root has no parent to deliver a terminal `Result` to.
             parent_mailbox: None,
             pending_cancel: None,
-            // an earlier item (the D-3 fix): this loop's first iteration must
+            // This loop's first iteration must
             // wait for the caller's next `Runtime::prompt` rather than
             // racing it against the persisted (already-completed)
             // transcript -- see `ResumeGate`'s and `run_inner`'s own docs.
@@ -1358,7 +1356,7 @@ impl Runtime {
     /// is `None`, so it has none, and the ordering guarantee is vacuous for
     /// it) by the time any `prompt` call for that agent can even find it.
     /// Delivering this to a live agent task (so an already-running
-    /// conversation picks it up) is an earlier item's mailbox wiring; this item only
+    /// conversation picks it up) is the mailbox wiring; this method only
     /// guarantees the durable append plus this live broadcast.
     pub async fn prompt(&self, agent: AgentId, text: String) -> Result<(), RuntimeError> {
         let (session, prompt_notify) = {
@@ -1416,7 +1414,7 @@ impl Runtime {
                 prov: Provenance::UserPrompt,
             },
         );
-        // an earlier item, generalized by keep-alive: wakes a `resume_root` agent's
+        // Generalized by keep-alive: wakes a `resume_root` agent's
         // gated first iteration, OR a `keep_alive: true` agent's gated
         // end-of-turn idle wait -- both the same `ResumeGate` (see that
         // type's doc). `Notify::notify_one`'s single stored permit means
@@ -1597,7 +1595,7 @@ impl Runtime {
 
     /// A snapshot of the whole agent tree (`AgentTree::snapshot()`).
     /// Includes every attached agent — every root started so far; children
-    /// arrive once an earlier item attaches them.
+    /// arrive once something attaches them.
     pub fn tree(&self) -> AgentTreeSnapshot {
         self.tree.snapshot()
     }

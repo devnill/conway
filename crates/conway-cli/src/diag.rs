@@ -24,7 +24,7 @@ pub fn error(msg: impl AsRef<str>) {
 
 /// Unconditional stderr diagnostic for a non-fatal warning.
 ///
-/// Not yet called: the first real caller is an earlier item's render loop
+/// Not yet called: the first real caller is the render loop
 /// (`Event::Lagged`/`BackendDegraded` notices).
 #[allow(dead_code)]
 pub fn warn(msg: impl AsRef<str>) {
@@ -33,7 +33,7 @@ pub fn warn(msg: impl AsRef<str>) {
 
 /// Stderr diagnostic suppressed unless `--verbose` was passed at least once.
 ///
-/// Not yet called: the first real caller is an earlier item's `ModelDecision`
+/// Not yet called: the first real caller is the `ModelDecision`
 /// rendering.
 #[allow(dead_code)]
 pub fn info(msg: impl AsRef<str>) {

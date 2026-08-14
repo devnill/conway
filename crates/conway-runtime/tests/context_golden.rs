@@ -1,4 +1,4 @@
-//! Golden-file and behavioral tests for an earlier item's `ContextBuilder`.
+//! Golden-file and behavioral tests for the `ContextBuilder`.
 //!
 //! Golden comparisons serialize a `GoldenSegment` projection (ordinal,
 //! role, provenance, cache_hint, content_sha) that deliberately omits

@@ -1677,7 +1677,7 @@ impl Conway {
     /// gap -- `conway-runtime` exposed only `start_root`, which cannot be
     /// repurposed for resume (it unconditionally `store.create`s, which
     /// every committed `SessionStore` rejects for an id that already has a
-    /// persisted session). an earlier item closed that gap by adding
+    /// persisted session). A later change closed that gap by adding
     /// `Runtime::resume_root(ResumeSpec)`: it reads the existing
     /// `SessionMeta` via `store.meta` (no `store.create`), re-registers
     /// `meta.agent_id` into `Runtime`'s `agents` map and `AgentTree` through
@@ -1686,7 +1686,7 @@ impl Conway {
     /// idles until this handle's own first `SessionHandle::prompt` call --
     /// never racing the (already-completed) persisted transcript. This
     /// method now calls it directly, which resolves both criteria the
-    /// pre- an earlier item doc could not satisfy:
+    /// earlier doc could not satisfy:
     /// - `prompt()` after resume: `Runtime::prompt` now finds `agent` in
     ///   `Runtime.agents` (registered by `resume_root` below), so it appends
     ///   and wakes the gated loop instead of returning `AgentNotFound`.
@@ -1727,7 +1727,7 @@ impl Conway {
     /// `store.meta` lookup, converted via that type's own `#[from]
     /// StoreError`) -- a plain `?` here would surface it as
     /// `ConwayError::Runtime(RuntimeError::Store(_))`, one layer deeper than
-    /// this method returned pre- an earlier item (`ConwayError::Store(_)` directly, from
+    /// this method returned earlier (`ConwayError::Store(_)` directly, from
     /// this method's own former `store.meta` call). `resume`'s existing test
     /// suite asserts the flat shape, and nothing about resuming a session
     /// makes "the store doesn't have it" a *runtime* concern rather than a

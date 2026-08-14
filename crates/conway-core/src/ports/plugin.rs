@@ -942,7 +942,7 @@ pub struct OverflowInfo {
 /// bundles segments and announced tools together because the runtime treats
 /// them as one outgoing request -- a hook can edit/drop a segment (e.g. the
 /// `AgentDef`-provenance segment, to augment the system prompt; or any
-/// segment, to apply an ad hoc exclusion mirroring an earlier item's persisted
+/// segment, to apply an ad hoc exclusion mirroring the persisted
 /// `ContextMask`) and/or narrow `tools` (announcement filtering) in the same
 /// call. Async so an inference-driven hook can issue its own LLM call to
 /// decide (criterion: "hooks may be pure scripts OR issue their own LLM
@@ -1161,7 +1161,7 @@ mod tests {
     /// A hook that drops every segment whose text contains "secret" and
     /// otherwise passes the payload through unchanged -- exercises the
     /// mask-like "drop a segment" transform (criterion 1a) without any
-    /// dependency on an earlier item's persisted `ContextMask`.
+    /// dependency on the persisted `ContextMask`.
     struct DropSecretsHook;
 
     #[async_trait]

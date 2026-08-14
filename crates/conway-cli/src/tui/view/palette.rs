@@ -296,7 +296,7 @@ mod tests {
         assert!(found[0].description.contains("/quit"));
     }
 
-    // an earlier item (finding M1): render-layer coverage of the arrow selection.
+    // Review finding M1: render-layer coverage of the arrow selection.
     #[test]
     fn draw_overlay_renders_the_selected_row_reversed_and_nothing_otherwise() {
         use ratatui::backend::TestBackend;

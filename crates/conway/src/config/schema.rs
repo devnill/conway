@@ -1,6 +1,6 @@
 //! The `ConwayConfig` schema: the facade-owned wire shape for `settings.json`.
 //!
-//! Reconciliation note (disclosed in the an earlier item Self-Check): the binding
+//! Reconciliation note (disclosed): the binding
 //! implementation notes say `[roles]` and `[health]` "deserialize directly
 //! into `conway_core::RoutingConfig`. Do not duplicate the types." Two
 //! properties of the already-committed `conway_core` types make a literal
@@ -543,8 +543,8 @@ impl Default for AgentsConfig {
 }
 
 /// `[models]`. `probe_on_startup` is not shown in the config snippet
-/// but is required by an earlier item's criteria (`config.models.probe_on_startup`,
-/// default `false`); added here since an earlier item owns this file exclusively and
+/// but is required by the criteria (`config.models.probe_on_startup`,
+/// default `false`); added here since earlier work owns this file exclusively and
 /// depends on it existing.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
@@ -933,7 +933,7 @@ pub struct ThemeStyleConfig {
 ///   SAME runner. `request_assembled` fires once per turn, from
 ///   `conway_runtime::agent_loop::AgentLoop::run_inner`, after
 ///   `ContextBuilder::build` (and, if one is registered, `ContextHook::
-///   before_request`'s own edit -- an earlier item) and before that turn's route/
+///   before_request`'s own edit -- earlier work) and before that turn's route/
 ///   attempt call; its payload is a SUMMARY (segment count, estimated
 ///   tokens, tokenizer name, turn, an unrouted model pin if one is set),
 ///   never the full assembled segment content -- shipping a verbatim

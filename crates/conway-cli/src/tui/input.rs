@@ -23,7 +23,7 @@ pub enum Action {
     /// The input line was submitted (`Enter`) -- `SessionHandle::prompt`
     /// text, or (if it starts with `/`) a slash command's raw input. Which
     /// one it is is not this module's concern (module notes: "the dispatch
-    /// hook is defined here, handlers land in an earlier item") -- the app loop
+    /// hook is defined here, handlers land elsewhere") -- the app loop
     /// branches on the leading `/`.
     Submit(String),
     /// A permission prompt was answered.
@@ -702,7 +702,7 @@ fn handle_normal_key(state: &mut AppState, key: KeyEvent) -> Action {
                 Action::None
             }
         }
-        // an earlier item/bug 3: arrows drive the
+        // Bug 3: arrows drive the
         // on-demand surfaces, in priority order. The slash-command palette
         // takes priority when it is showing (the user is composing a
         // command); otherwise the arrows scroll the agent panel when it is
@@ -758,7 +758,7 @@ fn handle_normal_key(state: &mut AppState, key: KeyEvent) -> Action {
         KeyCode::Esc => {
             // Esc does ONE thing per press, innermost surface first.
             //
-            // made Esc close the agent panel; an earlier item separately made
+            // made Esc close the agent panel; a separate change made
             // it return to the root's conversation. Both fired on a single
             // press, so the natural flow -- open `/agents`, focus a child,
             // press Esc to dismiss the panel -- closed the panel AND threw
