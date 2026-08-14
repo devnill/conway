@@ -60,10 +60,12 @@ consumers, not a partially-wired capability system: the glossary entry in
 `concepts.md` already states it ("Declared today; not yet consumed anywhere
 in the tree"), and this document confirms it by exhaustive grep, not
 inference. It needs a forward-declaration label of its own distinct from the hook-first
-surface it will eventually gate through — no board item currently names
-"consume `PluginManifest::required_host_caps`" specifically; the closest
-tracked work is the declarative `hooks` surface, `01KZDC0RDRMMMJHX7SAFMM2Q5A`,
-which is where a capability grant/request handshake would first need one.
+surface it will eventually gate through — **no board item currently names
+"consume `PluginManifest::required_host_caps`."** The declarative `hooks`
+charter, `01KZDC0RDRMMMJHX7SAFMM2Q5A`, is not it — none of its nine children
+builds a capability grant/request handshake — so it is not cited here as
+tracked work, only noted as the surface such a handshake would eventually
+need to gate through, whenever an item is filed for it.
 
 ### 2. Tool execution — `Tool::invoke`
 
@@ -247,7 +249,7 @@ three previously-divergent copies.
 | On garbage | N/A |
 | When absent | This is the current, only state: no `Plugin` implementor has any way to submit a rule. `Plugin::tools()`/`Plugin::manifest()` are the entire trait surface (point 1) — there is no `Plugin::rules()` method or equivalent |
 | Ordering | N/A |
-| Status | **designed-not-built**, but with real, tested guard code already in place ahead of the producer: `PatternOrigin::Plugin` (`crates/conway-core/src/permission_pattern.rs`) exists as a variant, is exercised by `crates/conway-runtime/tests/permission_broker.rs` (proving the allow-rejection holds even though nothing constructs this variant outside tests today), and its own doc names the reason precisely — "the invariant rests on a guard, not on the absence of a transport." Tracked under the same umbrella as the declarative `hooks` surface, `01KZDC0RDRMMMJHX7SAFMM2Q5A`. **Correction (board item 01KZS00JP5QNBJSSHNFP9C47GM): this row's forward reference is now only partially right.** `pre_tool_use` IS a real, dispatched capability (point 13 below) — but it does NOT produce `PatternOrigin::Plugin` rules, and its answer shape is not "allow/deny/deny-with-feedback": `HookPermissionVerdict` is `no_opinion` (proceed) or `deny { reason }` ONLY, with no `allow` variant at all, by construction (decision 01KZRZAFD8T3GX407MZC8P1W1E — a hook may only narrow, never widen). `pre_tool_use` dispatch feeds `PermissionBroker::decide` directly, as an independent narrowing-only chain step (exactly one narrowing chain, never configurable policy branching), never through this row's `Plugin::rules()`/`PatternOrigin::Plugin` producer, which remains exactly as unbuilt as before this item |
+| Status | **designed-not-built**, but with real, tested guard code already in place ahead of the producer: `PatternOrigin::Plugin` (`crates/conway-core/src/permission_pattern.rs`) exists as a variant, is exercised by `crates/conway-runtime/tests/permission_broker.rs` (proving the allow-rejection holds even though nothing constructs this variant outside tests today), and its own doc names the reason precisely — "the invariant rests on a guard, not on the absence of a transport." **No board item tracks building this producer.** The declarative `hooks` charter, `01KZDC0RDRMMMJHX7SAFMM2Q5A`, does not build it — none of its nine children gives `Plugin` a `rules()` method or constructs `PatternOrigin::Plugin` outside a test; that charter's own spec is scoped to the script-hook surface, a different axis. **Correction (board item 01KZS00JP5QNBJSSHNFP9C47GM, done): this row's forward reference is now only partially right.** `pre_tool_use` IS a real, dispatched capability (point 13 below) — but it does NOT produce `PatternOrigin::Plugin` rules, and its answer shape is not "allow/deny/deny-with-feedback": `HookPermissionVerdict` is `no_opinion` (proceed) or `deny { reason }` ONLY, with no `allow` variant at all, by construction (decision 01KZRZAFD8T3GX407MZC8P1W1E — a hook may only narrow, never widen). `pre_tool_use` dispatch feeds `PermissionBroker::decide` directly, as an independent narrowing-only chain step (exactly one narrowing chain, never configurable policy branching), never through this row's `Plugin::rules()`/`PatternOrigin::Plugin` producer, which remains exactly as unbuilt as before this item |
 
 ### 8. Composed inference-evaluated permission policy — `permission.policy/1`
 
@@ -261,7 +263,7 @@ three previously-divergent copies.
 | On garbage | Design only: an unparseable verdict is treated as `on_failure`, never guessed at |
 | When absent | Today: nothing is affected, because nothing consults this point — `PermissionBroker::decide`'s real ordering (below) has no policy-chain step at all |
 | Ordering | Design only: most-restrictive-wins, admission gated by trust for the allow half only (identical two-stage shape to point 6) |
-| Status | **designed-not-built.** No `NarrowingPolicy`/`DecidingPolicy` trait exists anywhere in the workspace. `PermissionBroker::decide`'s real, live ordering has exactly eight steps and none of them is a policy chain — see "The permission decision ordering" below. No dedicated board item names building this composed chain distinctly from the declarative `hooks` surface; `01KZDC0RDRMMMJHX7SAFMM2Q5A` is the closest tracked work and is the umbrella this document cites for it |
+| Status | **designed-not-built.** No `NarrowingPolicy`/`DecidingPolicy` trait exists anywhere in the workspace. `PermissionBroker::decide`'s real, live ordering has exactly eight steps and none of them is a policy chain — see "The permission decision ordering" below. **No board item tracks building this composed chain.** The declarative `hooks` charter, `01KZDC0RDRMMMJHX7SAFMM2Q5A`, is scoped to the script-hook surface (config schema, one-shot runner, the seven core events, plugin-declared events) — none of its nine children names this inference-evaluated policy chain, and it is not cited here for it |
 
 ### 9. Remote context-editing parity — `context.hook/1`
 
@@ -284,7 +286,7 @@ three previously-divergent copies.
 | On error / timeout / garbage | Design only: a selector matching nothing is a registration error, per `.design/extension-architecture.md` §4's own row for this point |
 | When absent | Today: the only way to narrow `ContextPayload.tools` is an embedder-supplied `ContextHook::before_request` doing it imperatively (point 3) — there is no way for a `Plugin`, as such, to *declare* a static hide-list the way this point would let it |
 | Ordering | Design only: a set union over every plugin's declared hides |
-| Status | **designed-not-built.** No `Plugin` method for declaring a tool-hide selector exists; tracked under `01KZDC0RDRMMMJHX7SAFMM2Q5A` alongside the rest of the generalized point vocabulary |
+| Status | **designed-not-built.** No `Plugin` method for declaring a tool-hide selector exists. **No board item tracks it.** The declarative `hooks` charter, `01KZDC0RDRMMMJHX7SAFMM2Q5A`, does not build a `Plugin`-declared tool-hide selector among its nine children — it is a plugin-reachable extension point, not the script-hook surface the charter decomposed |
 
 ### 11. Event observation by a plugin — `observe/1`
 
@@ -298,7 +300,7 @@ three previously-divergent copies.
 | On garbage | Design only: an unknown `Event` variant is ignored — the one enum-versioning case where "ignore" is the *right* answer, per `.design/extension-architecture.md` §6.3, because an observer changes nothing by definition |
 | When absent | Today: `EventSink::emit` (`crates/conway-core/src/ports/events.rs`) is real and invoked constantly, but it is an **embedder-level** subscription (`conway::EventStream`, `crates/conway/src/event_stream.rs`), not something a `Plugin` implements or registers through the `Plugin` trait. A slow consumer is dropped from delivery and sees `Event::Lagged { skipped }` on its next successful receive rather than stalling the runtime — that guarantee is real and tested today, for the embedder's own stream |
 | Ordering | Independent by construction — multiple subscribers never interact |
-| Status | **designed-not-built**, specifically as a *plugin*-reachable point. The underlying mechanism (`EventSink`, lossy-with-notice delivery) is implemented and load-bearing; what is missing is any way for an in-process or remote `Plugin` to subscribe to it the way an embedder's `EventStream` already can. Tracked under `01KZDC0RDRMMMJHX7SAFMM2Q5A` |
+| Status | **designed-not-built**, specifically as a *plugin*-reachable point. The underlying mechanism (`EventSink`, lossy-with-notice delivery) is implemented and load-bearing; what is missing is any way for an in-process or remote `Plugin` to subscribe to it the way an embedder's `EventStream` already can. **No board item tracks it.** This is a plugin *subscribing* to the event stream; the declarative `hooks` charter's ninth child built the opposite direction — a plugin *declaring and firing* its own event (point 16 below) — and its other eight children do not cover subscription either, so `01KZDC0RDRMMMJHX7SAFMM2Q5A` is not cited here |
 
 ### 12. UI status contribution — `status.declare/1` / `status/1`
 
@@ -306,7 +308,7 @@ three previously-divergent copies.
 |---|---|
 | Kind | Declarative (`status.declare/1`) + Observer output (`status/1`) |
 | Receives / May return / failure modes | Entirely design (`.design/extension-architecture.md` §8): a plugin declares per-key `{ max_len, ttl_ms }`, then pushes `StatusContribution { key, value }`; a stale value expires at snapshot time and the render path never calls a plugin or blocks on one |
-| Status | **designed-not-built.** No status-line plugin surface exists in the tree; `conway-cli`'s status line reads only conway's own computed state |
+| Status | **designed-not-built.** No status-line plugin surface exists in the tree; `conway-cli`'s status line reads only conway's own computed state. **No board item tracks it** — not the declarative `hooks` charter (`01KZDC0RDRMMMJHX7SAFMM2Q5A`, a different axis: script-fired events, not a status-contribution surface) or any other item found by id search |
 
 ### 13. Declarative script-fired hooks — the `hooks` configuration block
 
@@ -327,7 +329,7 @@ three previously-divergent copies.
 | On error | Design only: an operator may refuse a requested `hook.fork` (the hook fails to register if declared required, or is skipped with a status change if optional); an operator may never force `Fork` onto a hook that declared `Spawn`, and a runtime may never silently downgrade a declared `Fork` to `Spawn` and run it anyway — "never guessed at" |
 | On timeout | Design only: §16.2's decision-bearing-call exclusion applies — see "Failure semantics" below |
 | Ordering | Not applicable — a per-registration field, not a composed value |
-| Status | **designed-not-built.** No hook registration surface exists at all (point 13), so there is nowhere for a `subagent_mode` field to attach. `crates/conway/src/intent.rs`'s `classify` function is the one shipped precedent for the shape `Spawn` mode would reuse — a zero-tool, `SubagentMode::Spawn` judge deciding one narrow question from a prompt alone, with no ancestry and no tool access — but it is not a hook; it backs the TUI's natural-language `/fork`/`/spawn` intent classifier, an unrelated feature that predates this design and happens to need the same shape |
+| Status | **designed-not-built.** A hook registration surface exists now (point 13's `[hooks].rules[]`, unlike when this row was first written) but registers only one-shot script hooks — decision `01KZRZBQ2ACF40QGK8E9AVGMT3` kept that invocation modality deliberately separable from others, and no *inference-evaluated* hook modality has been built. There is accordingly still nowhere for a `subagent_mode` field to attach: the field belongs to a hook whose own evaluation may fork or spawn a subagent, and no hook evaluates by inference anywhere in the tree. `crates/conway/src/intent.rs`'s `classify` function is the one shipped precedent for the shape `Spawn` mode would reuse — a zero-tool, `SubagentMode::Spawn` judge deciding one narrow question from a prompt alone, with no ancestry and no tool access — but it is not a hook; it backs the TUI's natural-language `/fork`/`/spawn` intent classifier, an unrelated feature that predates this design and happens to need the same shape. **No board item tracks an inference-evaluated hook modality or its `subagent_mode` field** — the declarative `hooks` charter (`01KZDC0RDRMMMJHX7SAFMM2Q5A`) built only the script-runner modality and does not cover this |
 
 **Correction to the design corpus this document must make explicit, per the
 brief that produced it:** any future inference-evaluated hook running in

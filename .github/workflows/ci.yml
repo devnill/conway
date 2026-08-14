@@ -93,6 +93,26 @@ jobs:
       - name: python3 scripts/check-design-claims.py
         run: python3 scripts/check-design-claims.py
 
+  # The steering-shorthand half of `check-board-citations.py` -- bare `GP-*`/
+  # `P-*`/`C-*` ids from `.ideate/steering/` (gitignored, unresolvable outside
+  # a maintainer checkout) leaking onto a page a third party actually reads.
+  # Needs no store, unlike this script's OTHER half (ULID citation
+  # resolution against `.ideate-work/board.db`/`.ideate/record`), which CI
+  # cannot run -- both are `.gitignore`d local tooling state, and committing
+  # them was declined. The script itself prints "CITATION-RESOLUTION HALF
+  # SKIPPED" and still exits 0 on a clean steering-shorthand pass, so this
+  # job gates what CI genuinely can check rather than always failing on a
+  # half it never had the stores for.
+  board-citations:
+    name: board citations (steering-shorthand half)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: python3 scripts/check-board-citations.py
+        run: python3 scripts/check-board-citations.py
+
   # The MSRV declared in the workspace manifest, built on that exact toolchain.
   # `rust-version` used to be set to 1.94.0 -- the same version the toolchain
   # file pins -- which is a claim nothing had ever tested, and the most
