@@ -126,7 +126,7 @@ pub(crate) fn build_request_body(
 ///
 /// `GenerateRequest` has no dedicated reasoning-effort/budget field yet —
 /// that caller-facing knob and its plumbing into `params.extra` is a
-/// an earlier item/ an earlier item concern (`SessionSpec`/runtime wiring), outside this
+/// a separate concern (`SessionSpec`/runtime wiring), outside this
 /// module's scope. `extra` is the only existing field on the request that
 /// reaches this wire layer, so it is the wire contract this key targets.
 fn reasoning_budget_tokens(req: &GenerateRequest) -> Option<u32> {

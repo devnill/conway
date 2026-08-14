@@ -854,7 +854,7 @@ mod tests {
     }
 
     // --- `Dialect`'s per-predicate tests, preserved from the pre-profile
-    // `openai_compat/dialect.rs` ( an earlier item/ an earlier item): every assertion below is
+    // `openai_compat/dialect.rs` ( earlier work/ earlier work): every assertion below is
     // unchanged from before this item, now exercising the profile-derived
     // methods above rather than literal `matches!` arms — the regression
     // net proving byte-identical behavior.

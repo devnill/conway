@@ -1,5 +1,5 @@
 //! The input box: the one bordered element besides the on-demand agent
-//! panel/command palette. A border here is fine -- an earlier item criterion 2's
+//! panel/command palette. A border here is fine -- earlier work criterion 2's
 //! clean-copy guarantee is specifically about the conversation stream
 //! (`transcript.rs`), which this is not.
 //!

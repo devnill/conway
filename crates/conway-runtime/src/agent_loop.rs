@@ -195,7 +195,7 @@ pub struct AgentSpec {
     /// resumed root and every fork/spawn child must terminate on
     /// `Completed` exactly as before, since a parent awaiting a spawned or
     /// forked child's terminal `AgentResult` (`AgentTree::await_result`,
-    /// an earlier item) depends on that child actually terminating -- making this
+    /// depends on that child actually terminating -- making this
     /// universal would hang such a parent forever.
     pub keep_alive: bool,
     /// The opaque consumer tag
@@ -236,7 +236,7 @@ pub struct LoopDeps {
     pub bus: Arc<EventBus>,
     pub builder: Arc<ContextBuilder>,
     pub headroom: Arc<HeadroomPolicy>,
-    /// The agent tree this agent belongs to. an earlier item carried follow-up
+    /// The agent tree this agent belongs to. Carried follow-up
     /// (/): lets `finish` consult the tree's set-once
     /// publication before emitting `Event::AgentFinished`, closing the
     /// benign double-emit race against the supervisor's own grace-timeout
@@ -253,7 +253,7 @@ pub struct LoopDeps {
     /// construction site gets, unchanged) means this loop never invokes
     /// anything named `ContextHook` at all -- not even a no-op call -- so
     /// `run_inner`'s assembly, routing, and overflow handling stay
-    /// byte-identical to pre- an earlier item behavior. `Some` is invoked once per
+    /// byte-identical to behavior before the hook existed. `Some` is invoked once per
     /// turn (`ContextHook::before_request`) and, only on a T-1
     /// `ContextTooLarge`, up to `MAX_OVERFLOW_ATTEMPTS` additional times
     /// (`ContextHook::on_overflow`) -- see `AgentLoop::route_and_attempt`.
@@ -340,7 +340,7 @@ pub struct AgentLoop {
     /// `true` (see [`ResumeGate`]'s own doc). `Default::default()` for every
     /// non-resumed, non-keep-alive agent -- `start_root` with `keep_alive:
     /// false` and every fork/spawn child -- which is inert and preserves
-    /// this loop's pre- an earlier item behavior exactly.
+    /// this loop's earlier behavior exactly.
     pub resume_gate: ResumeGate,
 }
 
@@ -350,7 +350,7 @@ pub struct AgentLoop {
 /// caller's next prompt, unless cancelled/deadlined first"), so one
 /// mechanism serves both instead of a second, parallel one.
 ///
-/// **an earlier item's original purpose:** makes a resumed root agent's very first
+/// **Its original purpose:** makes a resumed root agent's very first
 /// loop iteration WAIT for the caller's next
 /// [`crate::runtime::Runtime::prompt`] instead of reading the (stale,
 /// already-completed) transcript it was persisted with and running a
@@ -375,7 +375,7 @@ pub struct AgentLoop {
 /// by `subagent.rs`) leaves this at its `Default` --
 /// `awaiting_prompt: false` -- so `AgentLoop::run_inner`'s gate is skipped
 /// entirely on the very first check and every turn behaves exactly as it did
-/// before an earlier item. `Runtime::resume_root` sets `awaiting_prompt: true` up
+/// beforehand. `Runtime::resume_root` sets `awaiting_prompt: true` up
 /// front; a `keep_alive` agent starts with it `false` (its first turn runs
 /// immediately, exactly like any other root) and the loop itself flips it
 /// `true` at the end of each completed turn.
@@ -792,7 +792,7 @@ impl AgentLoop {
                 return Ok(self.finish_cancelled(state, &result_builder).await);
             }
 
-            // an earlier item, generalized for keep-alive: a resumed root's very
+            // Generalized for keep-alive: a resumed root's very
             // first iteration, or a `keep_alive` agent's idle wait between
             // turns, waits here for the caller's next prompt instead of
             // proceeding into a spurious turn -- see `ResumeGate`'s own doc
@@ -887,7 +887,7 @@ impl AgentLoop {
             // `ContextReportRecord`) sees the SAME payload that is actually
             // sent -- never the pre-hook one. No hook registered -> this
             // block never runs -> the rest of this turn is byte-identical to
-            // pre- an earlier item behavior.
+            // the behavior before the hook existed.
             let mut announced_tools = tool_specs.clone();
             if let Some(hook) = self.context_hook() {
                 let hook_ctx = ContextHookCtx {
@@ -991,7 +991,7 @@ impl AgentLoop {
             // AND the bounded `ContextHook::on_overflow` re-assembly retry
             // (see that method's own doc) -- the only thing this call site
             // still owns is racing it against the turn's deadline, exactly
-            // as the pre- an earlier item `attempt_fut` race did.
+            // as the earlier `attempt_fut` race did.
             let route_attempt_fut = self.route_and_attempt(
                 state.turn,
                 segments,

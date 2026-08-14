@@ -8,7 +8,7 @@ use predicates::prelude::*;
 
 /// A minimal, valid `conway.json`: one `deny`-mode permissions block (so
 /// `build()` never hits the undocumented "mode = prompt requires a handler"
-/// gap -- an earlier item wires no gate override, that's an earlier item's job), one
+/// gap -- this layer wires no gate override, that's a later one's job), one
 /// `openai-compat` backend (never actually dialed -- these tests only need
 /// `build()` to succeed, not a live connection), and one role so
 /// `default_role` resolves.

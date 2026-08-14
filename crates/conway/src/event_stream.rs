@@ -7,10 +7,10 @@
 //! with a session/agent filter and an optional replay prefix.
 //!
 //! This is a facade-owned type, not a re-export of the runtime's own
-//! `EventStream` alias: per the binding spec (an earlier item's note on
+//! `EventStream` alias: per the binding spec (the note on
 //! `lib.rs`), the facade defines its own state machine here rather than
 //! `pub use conway_runtime::EventStream`. `crate::event_stream` never
-//! writes `pub use conway_runtime::`, so an earlier item's grep-based
+//! writes `pub use conway_runtime::`, so a grep-based
 //! at-most-one-runtime-reexport test is unaffected by this file.
 
 use std::collections::VecDeque;

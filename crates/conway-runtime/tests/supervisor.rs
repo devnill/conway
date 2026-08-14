@@ -5,7 +5,7 @@
 //!
 //! These tests exercise `AgentTree`/`supervisor::supervise` directly against
 //! bare mock tasks (not a real `AgentLoop` -- `agent_loop.rs`/`subagent.rs`
-//! wiring is an earlier item's job) so the supervision guarantee itself is proven
+//! wiring is the job) so the supervision guarantee itself is proven
 //! independent of any particular agent implementation.
 
 use std::collections::BTreeMap;

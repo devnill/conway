@@ -88,7 +88,7 @@ fn conway_config_round_trips_the_full_documented_schema() {
 /// that have a documented path (see the module-level disclosure below for
 /// why CLI is excluded for that one key).
 ///
-/// Reconciliation disclosed in the an earlier item Self-Check: `CliOverrides`' field
+/// Reconciliation disclosed here: `CliOverrides`' field
 /// list (fixed by the amendment's implementation notes) has no per-backend
 /// override, so there is no CLI path to `backends.<id>.base_url`. That key
 /// is therefore proven across default/XDG/project/env only.

@@ -247,7 +247,7 @@ const ALLOWLIST: &[Allowlisted] = &[
     Allowlisted {
         enum_name: "LogRecord",
         variant: "ContextMask",
-        reason: "an earlier item's persisted context-exclusion overlay is READ by \
+        reason: "the persisted context-exclusion overlay is READ by \
                  the fork-ancestry resolver (`apply_context_mask`), but \
                  nothing appends one -- there is no tool or operator \
                  surface that can mask a record. Worse than \"no \

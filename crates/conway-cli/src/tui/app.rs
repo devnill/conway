@@ -176,7 +176,7 @@ impl App {
     /// (`crate::model_pin::parse_model_pin`) rather than a second one that
     /// could fail a malformed value a different way.
     ///
-    /// `--session`/`--resume`/`--fork-from` (an earlier item's session-continuity
+    /// `--session`/`--resume`/`--fork-from` (the caller's session-continuity
     /// flags) are a decided non-goal for the TUI, not an oversight: one-
     /// shot's `resolve_session` has real per-flag logic with no equivalent
     /// shape here (an existence probe ahead of `--session`, `--cwd`
@@ -571,7 +571,7 @@ impl App {
                 maybe_env = events.next() => {
                     match maybe_env {
                         Some(env) => {
-                            // an earlier item's `/why` reads this back; `AppState::apply`
+                            // the `/why` reads this back; `AppState::apply`
                             // (state.rs, out of this item's file scope) does
                             // not populate it -- see the field's own doc.
                             if matches!(env.event, conway::Event::ModelDecision { .. }) {
@@ -1075,10 +1075,10 @@ impl App {
 
     /// Routes `text` to `commands::parse` + `commands::execute` when it
     /// starts with `/` (module notes: "the dispatch hook is defined here,
-    /// handlers land in an earlier item"); otherwise sends it as a prompt. A
+    /// handlers land elsewhere"); otherwise sends it as a prompt. A
     /// malformed or unknown slash command becomes a `Notice` -- it is never
     /// sent to the model (module notes' binding requirement, carried from
-    /// an earlier item's stub).
+    /// the stub).
     ///
     /// `/ask` and `/agents` (criteria 4 & 5) are intercepted HERE,
     /// before `commands::parse` ever sees them: `commands.rs` is out of

@@ -103,7 +103,7 @@ pub(crate) fn build_request_body(
 ///
 /// `GenerateRequest` has no dedicated reasoning-effort field yet — that
 /// caller-facing knob and its plumbing into `params.extra` is a
-/// an earlier item/ an earlier item concern, outside this module's scope; `extra` is the only
+/// a separate concern, outside this module's scope; `extra` is the only
 /// existing field that reaches this wire layer. Emitted only when
 /// `profile.sends_reasoning_effort`, mirroring the `parallel_tool_calls`
 /// gating above: other OpenAI-compatible servers 400 on a field they don't

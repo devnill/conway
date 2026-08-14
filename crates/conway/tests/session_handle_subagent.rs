@@ -5,7 +5,7 @@
 //! Built the same way `tests/session_handle.rs` is: a real
 //! `Arc<Runtime>` assembled from `conway_core::fakes` ports, not a literal
 //! mock swapped in for `conway_core::ports::SubagentHost` -- `SessionHandle`
-//! holds a concrete `Arc<Runtime>` (an earlier item's committed struct shape, out of
+//! holds a concrete `Arc<Runtime>` (the caller's committed struct shape, out of
 //! this item's file scope to change), so "argument identity" is verified
 //! through this crate's own observable effects (the resulting
 //! `AgentTreeSnapshot` node, the child's persisted transcript, and terminal
@@ -1334,7 +1334,7 @@ async fn spawn_without_an_agent_def_inherits_the_parents_role_not_the_literal_de
     // above: a spawn with no `agent_def` (and no `role`) must resolve its
     // role the same way a roleless fork does -- inherit the PARENT
     // session's role, not the hardcoded literal `"default"`. This is the
-    // relaxed an earlier item "agent_def mandatory for spawn" rule's actual runtime
+    // relaxed earlier work "agent_def mandatory for spawn" rule's actual runtime
     // behavior: `agent_def: None` no longer fails `SubagentSpec::validate`,
     // and `conway_runtime`'s `SubagentHost::start` routes exactly like a
     // roleless fork (`spec.role -> agent_def.role (skipped, none) ->

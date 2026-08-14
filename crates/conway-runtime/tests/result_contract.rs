@@ -1,4 +1,4 @@
-//! Acceptance tests for an earlier item's `AgentResult` contract: `ResultBuilder`
+//! Acceptance tests for the `AgentResult` contract: `ResultBuilder`
 //! precedence (`report` tool over trailing text), the non-empty/status-
 //! naming summary guarantee, every terminal path populating
 //! `transcript_ref`/`usage`/`steps_taken`, the result-contract validation

@@ -5,7 +5,7 @@
 //! config-only `Router`/`RoutingExplainer` fallback (`MinimalRouter`) usable
 //! without depending on `conway-routing` at all.
 //!
-//! `Router::resolve` (defined as a port trait in an earlier item) never consults
+//! `Router::resolve` (defined as a port trait in earlier work) never consults
 //! request *content* — [`RouteRequest`] is constructed so that no field can
 //! carry prompt text. This is a compile-time guarantee, not a convention: a
 //! unit test below asserts the field set is exactly the five documented

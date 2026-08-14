@@ -14,10 +14,10 @@
 //! `fork_from_creates_child`'s live-turn half all asserted the then-real,
 //! disclosed blocked behavior (exit 2 / an inert exit 0) instead.
 //!
-//! an earlier item (`Runtime::resume_root`) and an earlier item (the facade wiring: caller-
+//! `Runtime::resume_root` and the facade wiring: caller-
 //! chosen `SessionSpec::id`, a drivable `Conway::resume`, a
 //! live-registered, context-inheriting `Conway::fork_from` child) closed
-//! that gap. an earlier item flips every test below that asserted the old blocked
+//! that gap. A later change flips every test below that asserted the old blocked
 //! behavior to assert the now-working one, specified from the start:
 //! `--session <new-id>` creates exactly that id; `--resume <id>` continues
 //! the persisted transcript into a live second turn; `--fork-from <ref>`
@@ -29,9 +29,9 @@
 //!
 //! its own module doc explained why it read fork-child facts (a
 //! child's `origin.parent`/`origin.at_seq`) directly off `Conway::sessions`
-//! rather than through `conway sessions tree`: that subcommand was an earlier item's
+//! rather than through `conway sessions tree`: that subcommand was later work's
 //! scope, a sibling item concurrently in flight with no dependency edge to
-//! or from an earlier item. an earlier item has since landed (`sessions tree` is real,
+//! or from later work, which has since landed (`sessions tree` is real,
 //! compiled CLI surface -- `crates/conway-cli/src/commands/sessions.rs`),
 //! and this item's own criterion for `fork_from_creates_child` names it
 //! explicitly ("`conway sessions tree <sid>` shows exactly one child with

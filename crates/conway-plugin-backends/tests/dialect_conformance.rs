@@ -1,6 +1,6 @@
-//! Conformance tests for the three dialects added by an earlier item —
+//! Conformance tests for the three dialects added later —
 //! `VllmHermes`, `LmStudio`, `LlamaCppServer` — completing the five-dialect
-//! matrix on top of an earlier item's `OpenAi`/`Ollama` coverage.
+//! matrix on top of the `OpenAi`/`Ollama` coverage.
 //!
 //! `ToolCallAccumulator`-level tests exercise the vllm#31871 inline-text
 //! fallback (`push_content_delta`/`stop_override`) and the

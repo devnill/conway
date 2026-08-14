@@ -1,4 +1,4 @@
-//! Acceptance tests for `Conway::resume`/`::sessions`/`::fork_from` (//! then an earlier item).
+//! Acceptance tests for `Conway::resume`/`::sessions`/`::fork_from` (//! then earlier work).
 //!
 //! **An earlier closes the gap this file's doc used to disclose here:**
 //! `Runtime::resume_root` now exists, and `Conway::resume`/
@@ -255,7 +255,7 @@ async fn resumed_handle_transcript_matches_records_from_before_a_simulated_resta
     );
 }
 
-/// The an earlier item headline criterion: a resumed handle is DRIVABLE. Verified
+/// The earlier work headline criterion: a resumed handle is DRIVABLE. Verified
 /// end-to-end over a real drop-and-rebuild of `Conway` against the same
 /// store (mirroring `resumed_handle_transcript_matches_records_from_before_a_
 /// simulated_restart` above), with a `ScriptedBackend` so the SECOND
@@ -309,7 +309,7 @@ async fn resumed_handle_prompt_succeeds_and_continues_the_transcript() {
         .expect("resume should succeed after the simulated restart");
 
     // Give the resumed agent's spawned task every chance to run its gated
-    // first iteration before `prompt` is ever called -- pre- an earlier item, this
+    // first iteration before `prompt` is ever called -- pre- earlier work, this
     // is exactly the window a would-be spurious turn would run in.
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(
@@ -564,7 +564,7 @@ async fn context_report_at_errors_typed_for_an_out_of_range_turn() {
 
 /// Builds a bare `SessionMeta` directly, bypassing `Conway::new_session`
 /// entirely: `new_session`'s own committed implementation has a disclosed
-/// gap (`RootSpec`, `conway-runtime`/ an earlier item, has no field for
+/// gap (`RootSpec`, `conway-runtime`/ earlier work, has no field for
 /// `SessionSpec::labels`) that silently drops any labels a caller passes
 /// it, which would make a `new_session`-based fixture unable to exercise
 /// this test's label filter at all. `Conway::sessions` is a pure delegation
@@ -759,7 +759,7 @@ async fn fork_from_at_zero_is_valid_with_an_empty_inherited_prefix() {
     );
 }
 
-/// The full an earlier item `fork_from` criterion, both halves: `prompt` on the
+/// The full earlier work `fork_from` criterion, both halves: `prompt` on the
 /// child succeeds and the child produces a real completion (DRIVABLE), AND
 /// the child's assembled context contains the parent's inherited prefix
 /// (: a fork inherits the forker's ENTIRE context up to the fork

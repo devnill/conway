@@ -644,7 +644,7 @@ pub struct AppState {
     /// `SessionHandle::session_usage` facade accessor (through the `Host`
     /// trait's `session_usage`) on focus change and after
     /// `TurnFinished`/`AgentFinished` for the focused agent, overwriting
-    /// whatever this field held (replay carries no `Usage` at all -- an earlier item's
+    /// whatever this field held (replay carries no `Usage` at all -- the
     /// `record_to_event` maps a replayed `Assistant` record to `TextDelta`,
     /// not `TurnFinished` -- so this field alone would silently stay zero
     /// after any focus switch onto an agent with prior turns without that

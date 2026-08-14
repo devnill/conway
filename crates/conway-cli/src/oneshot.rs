@@ -9,7 +9,7 @@
 //!    session within it -- `conway_runtime::runtime::RuntimeDeps.gate` is
 //!    set exactly once, at `Runtime::new`, inside `ConwayBuilder::build()`.
 //!    So the gate this module builds ([`build_gate`]) cannot be attached
-//!    from inside `run` itself; `main.rs` (coordinated with an earlier item, which
+//!    from inside `run` itself; `main.rs` (coordinated with the TUI work, which
 //!    has the identical need for its own TUI gate) calls [`build_gate`]
 //!    *before* `Conway` is constructed and passes it through
 //!    `ConwayBuilder::with_permission_gate` — see `main.rs`'s own doc
@@ -30,7 +30,7 @@
 //!    `PermissionGate` impl, which is impossible without naming
 //!    `conway_core::agent::{PermissionRequest, PermissionDecision}` --
 //!    neither is re-exported by the facade, and depending on `conway-core`
-//!    directly is exactly what an earlier item's `no_forbidden_deps` test forbids.
+//!    directly is exactly what the `no_forbidden_deps` test forbids.
 //!    (b) Even setting the dependency problem aside,
 //!    `crates/conway/src/presets.rs::default_permissions_for_one_shot`
 //!    (already committed) documents the *opposite* default as the
@@ -53,10 +53,10 @@
 //!    agent (`Runtime::start_root`, reached only through
 //!    `Conway::new_session`), which always minted its own fresh `SessionId`
 //!    and always `store.create`d a brand-new session -- there was no
-//!    `resume_root`/`attach` counterpart. an earlier item added
+//!    `resume_root`/`attach` counterpart. A later change added
 //!    `Runtime::resume_root` (re-registers a persisted agent as live,
 //!    gated behind a `ResumeGate` so it idles until the first `prompt`
-//!    rather than racing a spurious turn) and an earlier item wired it through the
+//!    rather than racing a spurious turn) and wired it through the
 //!    facade: `SessionSpec` gained a caller-chosen `id` field,
 //!    `Conway::resume` now returns a drivable handle, and
 //!    `Conway::fork_from`'s child is registered live too (genuinely
@@ -189,7 +189,7 @@ pub async fn run(cli: &Cli, conway: Conway) -> conway::Result<ExitCode> {
 }
 
 /// Resolves `cli.session`/`cli.resume`/`cli.fork_from` (driven live
-/// by an earlier item) -- at most one is ever `Some`, per `cli.rs`'s
+/// here) -- at most one is ever `Some`, per `cli.rs`'s
 /// `conflicts_with_all` -- into a live [`SessionHandle`] that [`run`] then
 /// subscribes to and prompts uniformly, regardless of which arm produced
 /// it. See this module's doc comment, reconciliation #3, for how each flag

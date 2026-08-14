@@ -26,7 +26,7 @@
 //!   storing them separately would just be a second, independently-mutable
 //!   copy of the same fact -- a staleness bug waiting to happen. `snapshot`
 //!   computes them from the watch channel's current value on every call
-//!   (mirroring the an earlier item `tree()` stub this item supersedes, which did the
+//!   (mirroring the `tree()` stub this type supersedes, which did the
 //!   same thing for the same reason).
 //!
 //! This crate's own [`AgentNode`] (this module's input to `attach`) is a
@@ -44,7 +44,7 @@
 //! also gives the architecture §8 "`AgentSpawned` precedes every other event
 //! bearing that `agent_id`" guarantee for free: `attach` is synchronous and
 //! always returns before its caller can spawn the agent's task (and thus
-//! before anything else can be emitted under that id). an earlier item's `subagent.rs`
+//! before anything else can be emitted under that id). `subagent.rs`
 //! (not yet implemented) should call `attach` and rely on this emission
 //! rather than emitting its own `AgentSpawned` -- see this module's doc for
 //! why a second emission site would double-fire the event.
@@ -141,7 +141,7 @@ struct TreeEntry {
 
 /// The multi-agent tree: attachment, structural lookups, cancellation
 /// propagation, and the terminal-result publication guarantee that makes
-/// `await_result` always resolve (architecture §7, an earlier item's core
+/// `await_result` always resolve (architecture §7's core
 /// objective -- the MAST "failure to recognize termination" mitigation).
 pub struct AgentTree {
     nodes: RwLock<HashMap<AgentId, TreeEntry>>,
@@ -230,7 +230,7 @@ impl AgentTree {
     /// A cancellation token that is a structural child of `parent`'s own
     /// token (`parent.cancel.child_token()`), so cancelling `parent` (or any
     /// ancestor) cancels the returned token too, without ever exposing
-    /// `parent`'s own token directly. Added for an earlier item's fork/spawn path
+    /// `parent`'s own token directly. Added for the fork/spawn path
     /// (`subagent.rs`), which needs to derive a new child's token per
     /// [`AgentNode::cancel`]'s contract but has no other way to reach an
     /// already-attached node's token — every other method here either trips
@@ -510,7 +510,7 @@ fn already_attached(id: AgentId) -> RuntimeError {
 /// Maps a terminal `ResultStatus` to the tree's coarser `AgentStatus`.
 /// `ResultStatus` is `#[non_exhaustive]`; unrecognized future variants map
 /// to `Finished` rather than failing to compile or panicking (mirrors the
-/// an earlier item `tree()` stub this item supersedes).
+/// `tree()` stub this supersedes).
 fn status_for(status: &ResultStatus) -> AgentStatus {
     match status {
         ResultStatus::Completed => AgentStatus::Finished,

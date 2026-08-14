@@ -25,7 +25,7 @@
 //! same as every other all-rejected outcome (an unindexed model, a health
 //! skip, or a mix of these with headroom). `DeclarativeRouter` was the last
 //! place folding T-1 into `NoCandidate`; the divergence this superseded was
-//! recorded against an earlier item's machine-checked spec (the tests named below
+//! recorded against the machine-checked spec (the tests named below
 //! were amended in the same change that added this note) and against
 //! `conway-runtime`'s `agent_loop.rs`, whose own note is retired alongside
 //! this one.
@@ -107,7 +107,7 @@ pub(crate) enum EvalOutcome {
 /// where an owned `ModelRef`-derived value is produced.
 pub(crate) struct EvalEntry<'a> {
     pub(crate) model_ref: &'a ModelRef,
-    #[allow(dead_code)] // consumed by an earlier item's RoutingExplain, not yet landed
+    #[allow(dead_code)] // consumed by the RoutingExplain, not yet landed
     pub(crate) chain_position: Option<u8>,
     pub(crate) outcome: EvalOutcome,
 }
@@ -118,7 +118,7 @@ pub(crate) struct EvalEntry<'a> {
 /// can never diverge.
 pub(crate) struct Evaluation<'a> {
     pub(crate) entries: Vec<EvalEntry<'a>>,
-    #[allow(dead_code)] // consumed by an earlier item's RoutingExplain, not yet landed
+    #[allow(dead_code)] // consumed by the RoutingExplain, not yet landed
     pub(crate) headroom_tokens: u32,
 }
 

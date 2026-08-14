@@ -43,7 +43,7 @@
 //! content-free request/response/config types this crate operates on; this
 //! crate provides the implementations. See `ARCHITECTURE.md` for the
 //! whole-system picture, and `docs/routing.md` for how the resulting
-//! behavior looks from the outside (through an earlier item).
+//! behavior looks from the outside (through earlier work).
 //!
 //! No classifier, embedding model, or other learned component may be linked
 //! into this crate, at MVP or ever, absent an explicit decision reversal
@@ -57,7 +57,7 @@ mod factory;
 mod router;
 
 // The crate's re-export block is authored incrementally by the work items
-// that implement each type (.. an earlier item); each lands its own line.
+// that implement each type; each lands its own line.
 #[cfg(any(test, feature = "test-clock"))]
 pub use breaker::TestClock;
 pub use breaker::{BreakerRegistry, Clock, SystemClock};

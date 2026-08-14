@@ -11,7 +11,7 @@
 //! This module synthesizes the `{"index":..,"id":..,"function":{"name":..,
 //! "arguments":..}}` shape `ToolCallStyle::Structured`'s parser expects (`synth_*`
 //! below), so the shared accumulator needs no Anthropic-specific parser and
-//! `src/tool_calls/*` (owned by an earlier item/ an earlier item) is untouched.
+//! `src/tool_calls/*` (owned elsewhere) is untouched.
 //!
 //! `spawn` is only ever called with an already-`200`-classified
 //! `reqwest::Response` (see `AnthropicBackend::stream`): a mid-body

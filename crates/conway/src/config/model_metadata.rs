@@ -1,5 +1,5 @@
 //! Local, network-free model metadata: context windows and capability hints
-//! used to compute headroom warnings and (later, by an earlier item's
+//! used to compute headroom warnings and (later, by later work's
 //! `CapabilityIndex`) routing capability floors.
 //!
 //! `load` reads a local JSON file only. The feature-gated, stubbed refresh

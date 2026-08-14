@@ -8,7 +8,7 @@ use crate::content::{ContentBlock, Role};
 use crate::ids::{PrefixKey, SegmentId};
 use crate::provenance::Provenance;
 
-// `CacheTtl` lives in `capabilities.rs` (depends only on an earlier item and
+// `CacheTtl` lives in `capabilities.rs` (depends only on earlier work and
 // needed this type before this module existed). Re-export it rather than
 // redefining it — see the doc comment on `capabilities::CacheTtl`.
 pub use crate::capabilities::CacheTtl;

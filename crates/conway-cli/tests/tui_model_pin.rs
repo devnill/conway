@@ -70,7 +70,7 @@ fn minimal_cli() -> Cli {
 
 /// `--model backend/model` must reach `SessionSpec.model` -- the exact
 /// field `crates/conway/src/session_handle.rs`'s `SessionSpec` has carried
-/// since an earlier item, which `App::new`'s own stale doc comment used to (wrongly)
+/// since then, which `App::new`'s own stale doc comment used to (wrongly)
 /// claim did not exist.
 #[test]
 fn model_flag_pins_the_session_spec() {

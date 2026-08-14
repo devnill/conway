@@ -13,10 +13,10 @@
 //!
 //! ## Reconciliation: `tokenizer`, not `estimator`
 //!
-//! The an earlier item criterion prose reads "each report carries `estimator:
+//! The criterion prose reads "each report carries `estimator:
 //! heuristic-chars4`". `conway_core::provenance::ContextReport` has no
 //! `estimator` field -- only `tokenizer: String`, whose own doc comment
-//! states plainly: " an earlier item asserts this field (there is no separate
+//! states plainly: "the spec asserts this field (there is no separate
 //! estimator field)". `context/builder.rs`'s `TOKEN_ESTIMATOR` constant
 //! already resolved this identically. This item's tests assert
 //! `report.tokenizer == "heuristic-chars4"`; no `estimator` field is added

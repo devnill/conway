@@ -21,7 +21,7 @@
 //!
 //! ## seq resolution (implementation note, not part of the public contract)
 //!
-//! The an earlier item spec text was written assuming `LogRecord` records do not
+//! The earlier work spec text was written assuming `LogRecord` records do not
 //! carry their own `seq` and that `encode_record` must inject it via
 //! `serde_json::Value::Object` insertion. `conway-core`'s actual
 //! `LogRecord` (authoritative; see `crates/conway-core/src/log.rs`) already

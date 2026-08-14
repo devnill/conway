@@ -1422,7 +1422,7 @@ fn resolve_backend_factory<'a>(
 /// resolved through the same centralized [`resolve_api_key`] every
 /// config-derived backend's credential already goes through, `models` the
 /// same per-backend `models.json` overrides [`models_overrides_for`]
-/// projects (an earlier item's single-source guarantee, extended to every registered
+/// projects (the single-source guarantee, extended to every registered
 /// kind rather than left a built-ins-only privilege), `profile_file_paths`
 /// copied verbatim from [`ConwayBuilder::build`]'s own step 2b resolution --
 /// see that field's own doc ([`conway_core::ports::BackendBuildContext`]) for
@@ -1494,7 +1494,7 @@ fn models_overrides_for(
         .collect()
 }
 
-/// Parses the facade's `models.json` `reliability_tier` string (an earlier item's
+/// Parses the facade's `models.json` `reliability_tier` string (the
 /// JSON schema). Used both by [`models_overrides_for`] (the
 /// `Backend::capabilities()`/router-`CapabilityIndex` channel) — any value
 /// other than `"verified"`/`"community"` is `Unknown`, never a hard error:
@@ -1620,7 +1620,7 @@ mod models_overrides_tests {
     /// -- see that crate's `src/factory.rs` test module for the ported
     /// tests, unchanged in what they check.
     ///
-    /// an earlier item's core proof: `models.json` has exactly one predictable
+    /// the core proof: `models.json` has exactly one predictable
     /// routing effect. The value `Backend::capabilities()` returns (what
     /// `conway_runtime::attempt::AttemptEngine`'s T-1 gate reads directly)
     /// and the value the router's `CapabilityIndex` resolves for the same
@@ -1657,7 +1657,7 @@ mod models_overrides_tests {
             Arc::new(OpenAiCompatBackend::new(cfg).expect("valid config must construct"));
         let model = ModelId::new("glm-5.2");
 
-        // What the runtime's T-1 gate reads directly (attempt.rs an earlier item;
+        // What the runtime's T-1 gate reads directly (attempt.rs;
         // out of this item's file scope, but this is its accessor).
         let direct = backend.capabilities(&model);
         assert_eq!(

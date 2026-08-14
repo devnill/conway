@@ -17,7 +17,7 @@
 //!
 //! `IndexState { by_id, children }`, guarded by a `std::sync::RwLock` (not
 //! `tokio::sync::RwLock`): `record_header`/`children`/`list` are
-//! synchronous per the an earlier item-fixed signatures below, so a blocking lock is
+//! synchronous per the earlier work-fixed signatures below, so a blocking lock is
 //! both correct and simpler — no lock is ever held across an `.await`.
 //!
 //! ## Failure policy
@@ -269,7 +269,7 @@ fn raw_lines(content: &str) -> Vec<(&str, bool)> {
     out
 }
 
-/// The derived, rebuildable session index. Implemented by an earlier item.
+/// The derived, rebuildable session index. Implemented by earlier work.
 #[derive(Debug)]
 pub struct SessionIndex {
     state: RwLock<IndexState>,
@@ -438,7 +438,7 @@ impl SessionIndex {
     /// logged at WARN and never propagate; see the module-level failure
     /// policy).
     ///
-    /// Synchronous by the an earlier item-fixed signature: `store.rs` calls this
+    /// Synchronous by the earlier work-fixed signature: `store.rs` calls this
     /// inline from `create` (which `fork` also delegates to), not awaited.
     /// The `index.jsonl` append below therefore uses blocking `std::fs`
     /// rather than `tokio::fs` — acceptable because it is one small,
@@ -471,7 +471,7 @@ impl SessionIndex {
     }
 
     /// Fsyncs `index.jsonl`. Called by the interval flusher's tick loop
-    /// (an earlier item's wiring); a missing file is not an error (nothing has been
+    /// (the caller's wiring); a missing file is not an error (nothing has been
     /// appended yet).
     pub(crate) async fn flush(&self, root: &Path) -> Result<(), StoreError> {
         let path = root.join("index.jsonl");

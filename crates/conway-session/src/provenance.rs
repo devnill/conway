@@ -6,11 +6,11 @@
 //! `store.append`/`store.read` path — the report is persisted as
 //! `LogRecord::ContextReportRecord`, an ordinary record with
 //! `kind == "context_report"`, so it inherits fsync policy, seq assignment,
-//! and crash tolerance from an earlier item with no new file format.
+//! and crash tolerance from earlier work with no new file format.
 //!
 //! ## Type re-export, not redefinition
 //!
-//! The an earlier item spec text sketches `ContextReport`/`ContextSegmentEntry` as
+//! The earlier work spec text sketches `ContextReport`/`ContextSegmentEntry` as
 //! new types to be defined in this module (`{ turn, segments }` +
 //! `{ segment, provenance, tokens_est }`). `conway-core` (authoritative;
 //! complete) already defines `ContextReport`/`ContextReportEntry` in
@@ -47,7 +47,7 @@ pub use conway_core::provenance::{ContextReport, ContextReportEntry};
 /// Appends `report` as an ordinary `LogRecord::ContextReportRecord` through
 /// the same `store.append` path every other record uses — this function
 /// adds no new file format and no new durability rule, inheriting seq
-/// assignment, fsync policy, and crash tolerance from an earlier item. It exists as
+/// assignment, fsync policy, and crash tolerance from earlier work. It exists as
 /// a typed convenience so callers do not hand-build the record.
 ///
 /// Callers append the report *after* the turn's assistant record (

@@ -376,7 +376,7 @@ async fn fork_fsyncs_the_child_header_before_returning_under_all_fsync_policies(
 // Property test: parent bytes are unaffected by fork, and the parent's
 // pre-fork bytes remain an unchanged prefix even after further appends
 // (≥128 cases). The stronger `TranscriptResolver`-level invariant is
-// an earlier item's.
+// the.
 // ---------------------------------------------------------------------
 
 proptest! {

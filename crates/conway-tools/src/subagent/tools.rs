@@ -302,7 +302,7 @@ async fn start_and_maybe_await(
     mode: SubagentMode,
     req: StartRequest,
 ) -> Result<ToolOutput, ToolError> {
-    // an earlier item's "agent_def required for spawn" rule is relaxed: a spawn
+    // the "agent_def required for spawn" rule is relaxed: a spawn
     // with no agent_def inherits this agent's own role/model.
 
     let result_contract = req

@@ -1,4 +1,4 @@
-//! The TUI's render pass (redesigned single-column layout an earlier item):
+//! The TUI's render pass (redesigned single-column layout earlier work):
 //! a pure function from `&AppState` to a `ratatui::Frame` -- no `AppState`
 //! mutation, no I/O, so it can run under a `ratatui::backend::TestBackend`
 //! with no real terminal.

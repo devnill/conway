@@ -180,7 +180,7 @@ async fn end_to_end_from_parts_with_fakes_succeeds_with_no_network_or_fs() {
 /// `budget`/`labels` have no store-side inspection point yet (`SessionMeta`
 /// carries no budget field, and `RootSpec` has no field for
 /// `SessionSpec::labels` at all -- see `conway.rs`'s own disclosed gap), so
-/// asserting those two is deferred to an earlier item.
+/// asserting those two is deferred to earlier work.
 #[tokio::test]
 async fn new_session_with_default_spec_resolves_role_and_cwd_from_config() {
     let cfg = base_config();

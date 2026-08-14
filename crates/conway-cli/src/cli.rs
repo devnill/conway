@@ -1,12 +1,12 @@
 //! The complete `conway` clap command surface.
 //!
 //! Declared once, here, for the whole module: every later work item
-//! (an earlier item.. an earlier item) reads flags off this `Cli`/`Command` but never adds a
+//! (earlier work.. earlier work) reads flags off this `Cli`/`Command` but never adds a
 //! new field to them, so the four downstream tracks (one-shot, TUI,
 //! subcommands, continuity flags) can proceed without contending for this
 //! file. `--session`/`--resume`/`--fork-from` are declared here (so
 //! `--help` is complete from the first commit) even though they are only
-//! wired up behaviorally by an earlier item -- their `conflicts_with_all` triple is
+//! wired up behaviorally by earlier work -- their `conflicts_with_all` triple is
 //! also set up now, since that is the one piece of their contract that
 //! belongs to the flag *declaration* rather than the flag's runtime effect.
 

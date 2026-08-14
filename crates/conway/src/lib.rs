@@ -306,7 +306,7 @@ pub mod plugin {
 /// The `Backend` authoring surface:
 /// every type a crate depending only on `conway` needs to write `impl
 /// conway::Backend for MyBackend`. `Backend`'s trait itself has been
-/// re-exported at this crate's root since an earlier item, but nothing its five
+/// re-exported at this crate's root for some time, but nothing its five
 /// methods' signatures name was, so a facade-only crate could name the
 /// trait and could not implement it — full stop, not "mostly" (the
 /// preceding item's own compile evidence,
@@ -430,7 +430,7 @@ pub mod backend {
 pub use conway_core::provenance::{ContextReport, Provenance};
 pub use conway_core::routing::{AttemptFailure, BreakerKind, BreakerState, RoutingReason};
 
-// an earlier item (CARRIED), amended by:
+// Amended by:
 // `routes explain` needs `Conway::explain_routing`'s return type.
 // `ExplainReport` (and its own public field types -- `ExplainEntry`,
 // `EntryOutcome`, `CapabilitySummary`, `BreakerSnapshot`) used to be defined
