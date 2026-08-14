@@ -508,6 +508,7 @@ dependencies = [
  "conway",
  "conway-core",
  "conway-plugin-backends",
+ "conway-plugin-history",
  "conway-plugin-routing",
  "conway-plugin-skeleton",
  "crossterm",
@@ -567,6 +568,15 @@ dependencies = [
  "tracing",
  "url",
  "wiremock",
+]
+
+[[package]]
+name = "conway-plugin-history"
+version = "0.8.0"
+dependencies = [
+ "conway",
+ "conway-core",
+ "tokio",
 ]
 
 [[package]]
