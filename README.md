@@ -65,8 +65,12 @@ See [`crates/conway/examples/minimal_session.rs`](crates/conway/examples/minimal
 
 For a real session — installing the binary, configuring a model provider,
 and running your first prompt against it — see
-[`docs/getting-started.md`](docs/getting-started.md), and
-[`docs/README.md`](docs/README.md) for the rest of the documentation:
+[`docs/getting-started.md`](docs/getting-started.md). Once that works,
+[`GUIDE.md`](GUIDE.md) is the day-to-day walkthrough: what a session
+actually looks like, writing hooks, working the agent tree, recovering
+from a bad turn, and the things that are not discoverable from the
+screen. See [`docs/README.md`](docs/README.md) for the rest of the
+documentation:
 driving the TUI, scripting one-shot mode, and embedding conway as a
 library. If you want to *extend* conway rather than use it —
 a hook, a tool, a provider adapter — start at

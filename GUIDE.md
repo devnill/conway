@@ -1,16 +1,16 @@
 # Using conway day to day
 
-[`getting-started.md`](getting-started.md) gets you installed and talking to a
+[`getting-started.md`](docs/getting-started.md) gets you installed and talking to a
 model. This page is what comes after: the things you actually do in a working
 session, the ones that are not discoverable from the screen, and the limits
 worth knowing before you hit them.
 
 It is a walkthrough, not a reference. Where a reference page already says a
 thing precisely, this page links to it rather than restating it —
-[`interactive.md`](interactive.md) for the TUI surface,
-[`agents.md`](agents.md) for fork/spawn semantics,
-[`plugins/authoring.md`](plugins/authoring.md) for writing hooks and plugins,
-[`scripting.md`](scripting.md) for `-p`.
+[`interactive.md`](docs/interactive.md) for the TUI surface,
+[`agents.md`](docs/agents.md) for fork/spawn semantics,
+[`plugins/authoring.md`](docs/plugins/authoring.md) for writing hooks and plugins,
+[`scripting.md`](docs/scripting.md) for `-p`.
 
 ---
 
@@ -135,7 +135,7 @@ find it. Revoking is session-scoped, like every other `/settings` toggle.
 
 A hook runs with **your** privileges. There is no sandbox between a hook command
 and everything you can touch. See
-[`plugins/trust-and-security.md`](plugins/trust-and-security.md).
+[`plugins/trust-and-security.md`](docs/plugins/trust-and-security.md).
 
 ---
 
@@ -247,7 +247,7 @@ it is always registered and `--allowed-tools` is what actually gates it.
 
 **Use `-p` for anything scriptable.** Stable exit codes, `--output-format
 json|jsonl`, model output on stdout and diagnostics on stderr. It fails closed:
-an empty allow-list denies every tool. See [`scripting.md`](scripting.md).
+an empty allow-list denies every tool. See [`scripting.md`](docs/scripting.md).
 
 **Any session can be forked at any point, including finished ones.** The log is
 the truth and it outlives the process, so `--fork-from <sid>@<seq>` works on a
@@ -264,7 +264,7 @@ your back. A session that outgrows the model's window gets a loud, typed error
 naming what did not fit — it is never silently trimmed or moved to a bigger
 model. The intended answer is structural: push work into children and keep the
 distillate. A first-party compaction plugin is named in
-[`PHILOSOPHY.md`](../PHILOSOPHY.md) as a thing you would install, and **does not
+[`PHILOSOPHY.md`](PHILOSOPHY.md) as a thing you would install, and **does not
 exist yet**.
 
 **There is no memory, skills, or MCP support**, for the same reason and with the
@@ -280,7 +280,7 @@ gate. Stronger isolation composes from outside — a container, a worktree per
 agent, a tool that confines itself.
 
 None of these are oversights. Each is a judgment call conway leaves to you
-rather than guessing at, and [`PHILOSOPHY.md`](../PHILOSOPHY.md) §6 argues each
+rather than guessing at, and [`PHILOSOPHY.md`](PHILOSOPHY.md) §6 argues each
 one. The point of knowing them here is that you will not waste an afternoon
 looking for a setting that was never going to exist.
 
@@ -288,13 +288,13 @@ looking for a setting that was never going to exist.
 
 ## Where to go next
 
-- [`interactive.md`](interactive.md) — the full TUI reference: every command,
+- [`interactive.md`](docs/interactive.md) — the full TUI reference: every command,
   the settings menu, the status line field by field
-- [`agents.md`](agents.md) — fork and spawn in depth, result contracts, what an
+- [`agents.md`](docs/agents.md) — fork and spawn in depth, result contracts, what an
   agent may act on
-- [`plugins/authoring.md`](plugins/authoring.md) — writing your first hook, then
+- [`plugins/authoring.md`](docs/plugins/authoring.md) — writing your first hook, then
   your first plugin
-- [`permissions.md`](permissions.md) — the full permission model and its stated
+- [`permissions.md`](docs/permissions.md) — the full permission model and its stated
   limits
-- [`PHILOSOPHY.md`](../PHILOSOPHY.md) — how these primitives are meant to be
+- [`PHILOSOPHY.md`](PHILOSOPHY.md) — how these primitives are meant to be
   composed, and why they are shaped this way
