@@ -422,6 +422,43 @@ So the accurate claim is: **a path may be rearranged freely, subject only to wha
 wire permits.** Any constraint that cannot be traced to a provider requirement is a
 defect, and any constraint that can be must be documented where a curator will hit it.
 
+### 5e. A selection may reference any record; the control is on the composer
+
+*Added 2026-08-14, answering "may a selection reach outside the current session's
+ancestry?" **Yes** — and not grudgingly. It is where much of the power is.*
+
+A selection may name **any record in the store**: a sibling's, another project's, an
+unrelated tree's.
+
+**Why permitting it is safe.** Context composition has never been a confinement
+boundary, and this does not change that. A fork already inherits everything its parent
+could see. Confinement (`SubagentSpec::root`) governs what an agent can *reach with a
+tool call* — a different axis entirely. Refusing cross-ancestry references would buy
+no containment while removing the mechanism's main capability.
+
+**The control that does matter is who may compose a path**, and it lands on machinery
+that already exists rather than needing a new boundary:
+
+- **The operator**, through the CLI.
+- **An installed plugin**, through the curation capability (D1-8).
+- **A model** — only if a plugin gives it a tool that composes paths, in which case it
+  is a tool call, subject to the permission gate and to tool-set narrowing exactly like
+  every other. An agent cannot curate its own context by default because nothing hands
+  it the means to.
+
+**What it buys, and this is the reason to say yes rather than merely allow it:
+memory stops being a separate subsystem.** "Recall what I learned in a past session"
+is a cross-session selection. So is "show me how I solved this in the other
+repository", and so is pulling a worked example from a finished agent as few-shot
+context. Under this rule `conway.memory` is not a new mechanism with its own storage
+and its own retrieval semantics — it is a **curation plugin whose selections reach
+further back than the current tree**. One mechanism, several plugins, which is the
+whole shape this project is aiming at.
+
+It also means retention (a selection pins the records it references) is doing real
+work rather than being a formality: a memory plugin's selections are precisely what
+keeps old sessions from being reaped.
+
 ---
 
 ## 6. Plugins all the way down

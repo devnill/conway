@@ -134,9 +134,9 @@ use conway_core::event::Event;
 use conway_core::ids::{AgentId, ModelId, ModelRef, RoleAlias, SeqRange, SessionId};
 use conway_core::log::LogRecord;
 use conway_core::ports::{
-    ArtifactWriteHandle, ContextHook, ContextHookCtx, ContextPayload, CwdHandle, ObservedCall,
-    ObserverCtx, OverflowInfo, PluginConfig, PluginEventEmitter, PluginEventHandle,
-    RegisteredObserver, Router, SessionStore, SubagentHost,
+    ArtifactWriteHandle, ContextHookCtx, ContextPayload, CwdHandle, ObservedCall, ObserverCtx,
+    OverflowInfo, PluginConfig, PluginEventEmitter, PluginEventHandle, RegisteredObserver, Router,
+    SessionStore, SubagentHost,
 };
 use conway_core::provenance::{ContextReport, Provenance};
 use conway_core::routing::RouteRequest;
@@ -145,7 +145,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::attempt::{AttemptEngine, AttemptOutcome, AttemptRequest};
 use crate::context::{
-    ContextBuilder, ContextInput, HeadSegment, InheritedPrefix, SkillFragment, SystemPromptSpec,
+    ContextBuilder, ContextInput, GuardedContextHook, HeadSegment, InheritedPrefix, SkillFragment,
+    SystemPromptSpec,
 };
 use crate::events::EventBus;
 use crate::mailbox::{self, MailboxReceiver, MailboxSender};
@@ -257,7 +258,18 @@ pub struct LoopDeps {
     /// turn (`ContextHook::before_request`) and, only on a T-1
     /// `ContextTooLarge`, up to `MAX_OVERFLOW_ATTEMPTS` additional times
     /// (`ContextHook::on_overflow`) -- see `AgentLoop::route_and_attempt`.
-    pub context_hook: RwLock<Option<Arc<dyn ContextHook>>>,
+    ///
+    /// **`Arc<GuardedContextHook>`, never `Arc<dyn ContextHook>`**
+    /// (board item `01M00RGARPESWXYAVY960KDE7S`, `INTENT.md` §8.6: "an
+    /// invariant belongs to the seam, not to its call sites"). A bare hook
+    /// is unrepresentable here by construction -- there is no way to store
+    /// one that skipped `GuardedContextHook::new`'s tool-call/result
+    /// coherence check, so a new call site (or a third `ContextHook`
+    /// method, if one is ever added) inherits the guard automatically
+    /// rather than having to remember to invoke it. The wrap happens once,
+    /// in `Runtime::set_context_hook` -- the one place a hook enters this
+    /// runtime -- not at either place `AgentLoop` uses the stored value.
+    pub context_hook: RwLock<Option<Arc<GuardedContextHook>>>,
     /// Every `ToolObserver` the installed plugin set contributed, each paired
     /// with the plugin that supplied it so its fired events land in that
     /// plugin's namespace.
@@ -572,10 +584,11 @@ impl AgentLoop {
     /// with no `ContextHook` machinery in this method at all -- this is what
     /// makes "no hook registered -> today's behavior exactly" hold for the
     /// overflow path specifically, not just for `before_request`.
-    /// The currently-registered `ContextHook`, if any. Reads
-    /// `LoopDeps::context_hook` fresh on every call (see that field's own
-    /// doc for why it is a `RwLock` rather than a plain `Option`).
-    fn context_hook(&self) -> Option<Arc<dyn ContextHook>> {
+    /// The currently-registered `ContextHook`, if any -- ALWAYS guarded
+    /// (see `LoopDeps::context_hook`'s own doc). Reads `LoopDeps::
+    /// context_hook` fresh on every call (see that field's own doc for why
+    /// it is a `RwLock` rather than a plain `Option`).
+    fn context_hook(&self) -> Option<Arc<GuardedContextHook>> {
         self.deps
             .context_hook
             .read()
@@ -698,8 +711,14 @@ impl AgentLoop {
                 tools: tools.clone(),
             };
 
+            // `hook` is a `GuardedContextHook` (see `LoopDeps::context_hook`'s
+            // own doc): its `on_overflow` is already the checked, `Result`-
+            // returning inherent method, not the raw trait one -- there is
+            // nothing left for this call site to remember. A hook that
+            // shrinks a payload by orphaning a tool call/result pair is
+            // refused here, never repaired.
             match hook.on_overflow(&hook_ctx, payload, overflow).await {
-                Some(transformed) => {
+                Ok(Some(transformed)) => {
                     segments = transformed.segments;
                     tools = transformed.tools;
                     report = crate::context::builder::retotal(
@@ -710,7 +729,8 @@ impl AgentLoop {
                         report.dropped,
                     );
                 }
-                None => return Err(too_large(role, model).into()),
+                Ok(None) => return Err(too_large(role, model).into()),
+                Err(err) => return Err(err.into_runtime_error()),
             }
         }
     }
@@ -904,7 +924,21 @@ impl AgentLoop {
                     segments,
                     tools: announced_tools,
                 };
-                let transformed = hook.before_request(&hook_ctx, payload).await;
+                // `hook` is a `GuardedContextHook` (see `LoopDeps::
+                // context_hook`'s own doc): its `before_request` is already
+                // the checked, `Result`-returning inherent method, not the
+                // raw trait one -- `ContextBuilder::build` guaranteed no
+                // rendered context carries a tool call without its result,
+                // but only about ITS OWN output, and a hook edits an
+                // already-coherent list freely. There is nothing left for
+                // this call site to remember; the SAME guard covers
+                // `route_and_attempt`'s `on_overflow` call below.
+                let transformed = try_rt!(
+                    state,
+                    hook.before_request(&hook_ctx, payload)
+                        .await
+                        .map_err(|err| err.into_runtime_error())
+                );
                 segments = transformed.segments;
                 announced_tools = transformed.tools;
                 report = crate::context::builder::retotal(
