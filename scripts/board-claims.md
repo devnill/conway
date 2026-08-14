@@ -148,3 +148,43 @@ claim: conway.fs does not yet enforce a root of its own
 paths: crates/conway-tools/src/fs
 absent: (AgentRoot|CanonicalRoot)
 -->
+
+<!-- claim-check
+board_item: 01KZWT5NE4VGW84HSCN3FV24S7
+note: regression guard added 2026-08-13 by 01KZY8TEE2FDWQMHEKJDDC3SG9, extending checker coverage to the leaked class this item fixed by hand. The whitepaper used to assert capability-based candidate filtering and health-aware failover as present-tense default-build fact; a default build has neither (MinimalRouter/AlwaysClosedHealthRegistry). This predicate pins the honest disclosure clause the fix added -- if it disappears while the surrounding claims of filtering/failover remain, the false-present-tense defect is back.
+claim: routing §4.3 states capability filtering and health-aware failover as something conway.routing adds, not a default-build fact
+paths: docs/whitepaper.md
+present: does \*\*not\*\* do is filter candidates
+-->
+
+<!-- claim-check
+board_item: 01KZVZ6XCZVHD2YFVJQEGC61YV
+note: regression guard added 2026-08-13, pinning the exact defect phrasing this item's fix removed from docs/plugins/hooks.md -- four rows cited the declarative-hooks charter (01KZDC0RDRMMMJHX7SAFMM2Q5A) for work outside its nine children (Plugin::rules()/PatternOrigin::Plugin producer). Does not catch a NEW mis-citation phrased differently; see check-board-citations.py's own disclosed limits for the general class.
+claim: point 7 (Plugin-contributed permission rules) no longer cites the hooks charter as its umbrella tracker
+paths: docs/plugins/hooks.md
+absent: Tracked under the same umbrella as the declarative `hooks` surface, `01KZDC0RDRMMMJHX7SAFMM2Q5A`
+-->
+
+<!-- claim-check
+board_item: 01KZVZ6XCZVHD2YFVJQEGC61YV
+note: sibling regression guard, point 8 (composed inference-evaluated policy).
+claim: point 8 no longer calls the hooks charter "the closest tracked work"
+paths: docs/plugins/hooks.md
+absent: is the closest tracked work and is the umbrella this document cites for it
+-->
+
+<!-- claim-check
+board_item: 01KZVZ6XCZVHD2YFVJQEGC61YV
+note: sibling regression guard, point 10 (tool-hide selector).
+claim: point 10 no longer cites the hooks charter for a Plugin tool-hide selector
+paths: docs/plugins/hooks.md
+absent: tracked under `01KZDC0RDRMMMJHX7SAFMM2Q5A` alongside the rest of the generalized point vocabulary
+-->
+
+<!-- claim-check
+board_item: 01KZVZ6XCZVHD2YFVJQEGC61YV
+note: sibling regression guard, point 11 (plugin subscription to observe/1). Narrower than the other three guards on purpose -- point 13's Status row legitimately says "remain tracked under the umbrella `01KZDC0R...`", which this pattern does not match (no "the umbrella" between "under" and the id).
+claim: point 11 no longer bare-cites the hooks charter for plugin event subscription
+paths: docs/plugins/hooks.md
+absent: Tracked under `01KZDC0RDRMMMJHX7SAFMM2Q5A`
+-->
