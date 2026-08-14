@@ -235,13 +235,20 @@ for what that tier is for. Turn one on with a distinct `[plugins]` key (not
 
 ```json
 // .conway/settings.json
-{ "plugins": { "install": ["conway.plugin_skeleton"] } }
+{ "plugins": { "install": ["conway.plugin_skeleton", "conway.history"] } }
 ```
 
 `conway.plugin_skeleton` is the tier's own worked example
 (`crates/conway-plugin-skeleton`): it registers one `skeleton_ping` tool
-and does nothing else. Naming an id here that the `conway` binary does not
-recognize is a hard config error, not a silent no-op. See
+and does nothing else. `conway.history` (`crates/conway-plugin-history`,
+board item 01KZY8Q1CMMNVSF54CTC270N3H) is `/conway.history.rewind
+<seq>`: forks the current session at an explicit, persisted sequence
+number (never free text — see that crate's own module doc for why) and
+switches the TUI to drive the resulting child, with the original session's
+own log untouched. Once installed, the status line's `session <id>`
+field grows to `session <id>@<seq>` so there is something to type. Naming
+an id here that the `conway` binary does not recognize is a hard config
+error, not a silent no-op. See
 [`docs/embedding.md`](embedding.md#first-party-plugin-tier) for the full
 mechanism, including the library-embedder equivalent.
 

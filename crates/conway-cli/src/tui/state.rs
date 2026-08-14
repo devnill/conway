@@ -653,6 +653,37 @@ pub struct AppState {
     /// after any focus switch onto an agent with prior turns without that
     /// authoritative refresh).
     pub focused_agent_usage: Usage,
+    /// The persisted head [`LogSeq`] of THIS session's own log -- i.e.
+    /// `self.handle.id()`'s log, the calling session `CommandOutcome::
+    /// ForkSession::at_seq`/`Conway::fork_from` resolve against (board item
+    /// 01KZY8Q1CMMNVSF54CTC270N3H, `/conway.history.rewind`'s own item).
+    /// Deliberately SESSION-scoped, not agent-scoped like
+    /// [`Self::focused_agent_usage`] immediately above: `SessionStore` keys
+    /// one session per agent, and a fork targets `self.handle`'s OWN
+    /// session regardless of which agent the transcript pane happens to be
+    /// focused on, so this tracks the ROOT agent's own turn boundaries, not
+    /// the focused agent's.
+    ///
+    /// **Why this field exists at all.** Before this item, nothing in the
+    /// TUI showed an operator any `LogSeq` at all -- `Envelope::seq` (the
+    /// live event stream's own field) is a PER-CONNECTION renumbering, not
+    /// the persisted seq `fork_from` accepts (see that field's own doc),
+    /// so surfacing it here directly would have been actively misleading.
+    /// This field instead mirrors [`Self::focused_agent_usage`]'s own
+    /// "authoritative refetch" shape one field over: `app.rs`'s run loop
+    /// re-fetches the true head via `Conway::session_head` (a single,
+    /// already-existing facade accessor -- no new port) after a root-agent
+    /// `TurnFinished`/`AgentFinished`, and at session start; a
+    /// `ForkSession` needs no such round trip at all, since the CHILD's
+    /// fresh head is exactly the `at_seq` it was forked at
+    /// (`apply_plugin_command_done`'s own `ForkSession` arm sets this
+    /// directly). `None` only until the first of those points has run once
+    /// (a session with literally no history yet). Rendered by
+    /// `view/status.rs`'s `session` field as `session <id>@<seq>` -- the
+    /// exact `<session-id>[@<seq>]` syntax `session_ref.rs`'s own
+    /// `--fork-from` flag already uses, reused rather than a second
+    /// notation invented for the same number.
+    pub session_head_seq: Option<LogSeq>,
     /// An answered `/ask` modal waiting for a permission prompt (or another
     /// modal) to clear first (B5) -- `app.rs`'s ask-result arm calls
     /// [`Self::offer_ask_modal`], which parks the modal here whenever `mode`
@@ -1041,6 +1072,7 @@ impl AppState {
             focused_agent: root,
             activity: Activity::Idle,
             focused_agent_usage: Usage::default(),
+            session_head_seq: None,
             pending_ask_modal: None,
             ask_in_flight: false,
             modal_scroll: 0,

@@ -352,7 +352,7 @@ simply inherit once built.
 | On garbage | Not applicable to `invoke` (it receives typed Rust values, not wire input). At *registration*, a malformed `CommandSpec::name` (empty, containing whitespace, or failing `conway::plugin::validate_command_name` once namespaced) is a **named, install-time error** — the TUI refuses to start rather than installing a command that could never be typed or that malforms its own namespace |
 | When absent | No `Plugin::commands()` override means no commands (the trait's own default returns `Vec::new()`) — every existing `Plugin` implementor, built-in or third-party, keeps compiling and behaving identically. With the declaring plugin not installed at all, its command's full name is simply unknown — `commands::parse` recognizes the *shape* of a plugin-looking word (containing conway-core's event/command namespace separator, `.`) but resolution against the installed registry happens only in `execute`, so an uninstalled plugin's command produces the ordinary "unknown command" notice, never a stub or a special case |
 | Ordering | **The render/input loop never calls a plugin, and never blocks on one — the same hard-won property point 12 (`status.declare/1`/`status/1`) establishes for the status line, reused here for the same reason.** `commands::execute` resolves a command (a synchronous `HashMap` lookup) and returns an `Effect::RunPluginCommand` describing it, without ever calling `invoke`; `App` (`conway-cli`) spawns the actual call on its own task, off the `select!` loop that drives rendering and key handling, and receives the reply on a channel exactly like `/ask`'s own modal-answer plumbing (`ModalAskOutcome`/`run_modal_ask`). A hanging command therefore degrades to "the operator doesn't see a reply yet," never to a frozen terminal. Applying a `ForkSession` reply (`App::apply_plugin_command_done`) DOES run on that loop, same as `host.fork`/`host.resume` already do for the built-in commands that swap sessions — the property that must never block is `Command::invoke` itself, already complete by the time a reply exists |
-| Status | **Implemented.** `conway_core::ports::plugin::{Command, CommandCtx, CommandOutcome, CommandSpec}` and `Plugin::commands()`'s default (`crates/conway-core/src/ports/plugin.rs`); dispatch through `conway_cli::tui::commands::{SlashCommand::Plugin, CommandRegistry, Host::resolve_command}` and `conway_cli::tui::app::App::spawn_plugin_command`/`apply_plugin_command_done`. `conway-plugin-skeleton`'s `SkeletonPingCommand` (`/{plugin id}.ping`) is the worked example of `Output`. Board item 01KZYBFTK4QPB45AJT9M57P60W; `ForkSession` lands with board item 01KZYH37WNDKDWSMWQQPRFKKXC |
+| Status | **Implemented.** `conway_core::ports::plugin::{Command, CommandCtx, CommandOutcome, CommandSpec}` and `Plugin::commands()`'s default (`crates/conway-core/src/ports/plugin.rs`); dispatch through `conway_cli::tui::commands::{SlashCommand::Plugin, CommandRegistry, Host::resolve_command}` and `conway_cli::tui::app::App::spawn_plugin_command`/`apply_plugin_command_done`. `conway-plugin-skeleton`'s `SkeletonPingCommand` (`/{plugin id}.ping`) is the worked example of `Output`. Board item 01KZYBFTK4QPB45AJT9M57P60W; `ForkSession` lands with board item 01KZYH37WNDKDWSMWQQPRFKKXC; `conway-plugin-history`'s real `/conway.history.rewind <seq>` consumer lands with board item 01KZY8Q1CMMNVSF54CTC270N3H |
 
 **Why this is narrower than a hook that can touch a live session, and
 deliberately so.** [`CommandCtx`] carries read-only identity and the raw
@@ -433,6 +433,20 @@ selection to the operator some other way (an explicit `@seq` argument, a
 picker built from data the TUI already has). Either way, nothing about
 resolving a target reaches `conway-cli` internals, and nothing here widens
 `CommandCtx` beyond the one new read-only field this item adds.
+
+**Resolved, this way, by 01KZY8Q1CMMNVSF54CTC270N3H (`conway-plugin-history`,
+`/conway.history.rewind <seq>`):** the second option above — an explicit
+`<seq>` argument, never free text, and NO new `CommandCtx`/`conway-core`
+capability. The "is a seq even operator-visible" question that item was
+also asked to settle came back "no, not before this item": the live event
+stream's own `Envelope::seq` is a per-connection renumbering, not the
+persisted `LogSeq` `fork_from` accepts, so the status line's `session <id>`
+field now widens to `session <id>@<seq>` once the head is known, reusing
+`session_ref.rs`'s own `<session-id>[@<seq>]` notation and the ALREADY-
+EXISTING `Conway::session_head` facade call (`conway-cli`'s own host-side
+addition — `crates/conway-cli/src/tui/app.rs`'s `refresh_session_head`, no
+new port). Resolving free text against history remains the disclosed,
+unbuilt gap this paragraph always named.
 
 **Namespacing is mandatory, and shadowing a built-in is impossible by
 construction, not merely checked.** `CommandRegistry::build` (the one

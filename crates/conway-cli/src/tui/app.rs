@@ -249,6 +249,13 @@ impl App {
         let spec = Self::session_spec(cli)?;
         let handle = conway.new_session(spec).await?;
         let mut state = AppState::new(handle.root());
+        // Board item 01KZY8Q1CMMNVSF54CTC270N3H: the initial, authoritative
+        // read of this session's own head -- see `AppState::
+        // session_head_seq`'s own doc for why this is the FIRST of several
+        // refresh points, not the only one. Best-effort: a failed fetch
+        // just leaves the field `None` until the next successful refresh
+        // (`Self::refresh_session_head`).
+        state.session_head_seq = conway.session_head(handle.id()).await.ok();
         state.plugin_commands = std::sync::Arc::new(command_registry.palette_entries());
         // T1: build the theme once from the loaded `[tui.theme]` config
         // (defaults when the section is absent; malformed values fall back
@@ -588,7 +595,26 @@ impl App {
                                 }
                                 _ => false,
                             };
+                            // Board item 01KZY8Q1CMMNVSF54CTC270N3H: the SAME
+                            // check, scoped to `self.handle`'s own ROOT agent
+                            // rather than whichever agent is focused -- see
+                            // `AppState::session_head_seq`'s own doc for why
+                            // those two can legitimately differ (`SessionStore`
+                            // keys one session per agent, so only the root
+                            // agent's own turns land in THIS session's log).
+                            let refresh_session_head = match &env.event {
+                                conway::Event::TurnFinished { .. } => {
+                                    env.agent == self.handle.root()
+                                }
+                                conway::Event::AgentFinished { result, .. } => {
+                                    result.agent_id == self.handle.root()
+                                }
+                                _ => false,
+                            };
                             self.state.apply(&env);
+                            if refresh_session_head {
+                                self.refresh_session_head().await;
+                            }
                             if refresh_focused_usage {
                                 // `AppState::apply`'s own `TurnFinished` arm
                                 // already live-incremented
@@ -1288,6 +1314,15 @@ impl App {
                         Effect::Quit => return Ok(SubmitOutcome::Quit),
                         Effect::Resumed(handle) => {
                             self.handle = handle;
+                            // Board item 01KZY8Q1CMMNVSF54CTC270N3H: the
+                            // resumed session's own head, same reasoning as
+                            // `Self::new`'s initial fetch -- `execute`'s
+                            // `Resume` arm already reset `self.state` to a
+                            // fresh `AppState` (this call site's own
+                            // sibling in `apply_plugin_command_done` does
+                            // the identical reset for `ForkSession`), so
+                            // `session_head_seq` starts `None` here.
+                            self.refresh_session_head().await;
                             return Ok(SubmitOutcome::Resubscribe);
                         }
                         Effect::FocusNewSession {
@@ -1561,6 +1596,13 @@ impl App {
                         self.handle = handle;
                         self.state = AppState::new(child_root);
                         self.state.plugin_commands = plugin_commands;
+                        // Board item 01KZY8Q1CMMNVSF54CTC270N3H: no facade
+                        // round trip needed here, unlike `Self::
+                        // refresh_session_head`'s other call sites -- a
+                        // freshly forked child's own head IS `at_seq`,
+                        // exactly the point it was forked at
+                        // (`Conway::fork_from`'s own contract).
+                        self.state.session_head_seq = Some(at_seq);
                         self.state.transcript.push(super::state::Entry::Notice {
                             text: format!(
                                 "/{}: forked session at seq {} -- now driving {child_root}",
@@ -1577,6 +1619,22 @@ impl App {
                     }
                 }
             }
+        }
+    }
+
+    /// Best-effort authoritative refresh of `AppState::session_head_seq`
+    /// (board item 01KZY8Q1CMMNVSF54CTC270N3H) -- the same "re-fetch rather
+    /// than reconstruct" shape `Self::run`'s own `refresh_focused_usage`
+    /// local already establishes for `AppState::focused_agent_usage`, one
+    /// field over. Scoped to `self.handle`'s OWN session id (never the
+    /// focused agent's), and called from that spot plus `Self::new` and
+    /// `Effect::Resumed`'s own call site -- see the field's own doc for why
+    /// `apply_plugin_command_done`'s `ForkSession` arm does NOT call this
+    /// (it sets the field directly, with no round trip needed). A failed
+    /// fetch just leaves whatever figure was already showing.
+    async fn refresh_session_head(&mut self) {
+        if let Ok(head) = self.conway.session_head(self.handle.id()).await {
+            self.state.session_head_seq = Some(head);
         }
     }
 
@@ -2024,6 +2082,91 @@ mod tests {
         {
             state.apply(&env);
         }
+    }
+
+    /// Board item 01KZY8Q1CMMNVSF54CTC270N3H: `App::new`'s own initial
+    /// `AppState::session_head_seq` fetch -- a fresh session's head is
+    /// `LogSeq(0)`, read authoritatively via `Conway::session_head` rather
+    /// than assumed. See `AppState::session_head_seq`'s own doc for why
+    /// this is the FIRST of several refresh points, not the only one (the
+    /// others live inside `Self::run`'s own `select!` loop, which -- like
+    /// its pre-existing `refresh_focused_usage` sibling one field over --
+    /// this crate's test suite does not drive end to end: no `TestBackend`-
+    /// backed `run()` call exists here today).
+    #[tokio::test]
+    async fn app_new_populates_the_initial_session_head_seq() {
+        let conway = build_conway_with_echo_backend();
+        let cli = minimal_cli();
+        let app = App::new(&cli, &conway, &[])
+            .await
+            .expect("App::new should succeed");
+        assert_eq!(app.state.session_head_seq, Some(conway::LogSeq(0)));
+    }
+
+    /// The `Effect::Resumed` call site's own `refresh_session_head` call
+    /// (`Self::submit`, this item): resuming a DIFFERENT, non-empty
+    /// session must read back ITS OWN head, not leave the field `None`
+    /// (`execute`'s `Resume` arm resets `self.state` to a fresh
+    /// `AppState`, which starts `None`) or carry over whatever the
+    /// previous session's head happened to be.
+    ///
+    /// **Two `Conway`s sharing one `FakeStore`, not one** -- the SAME
+    /// "simulated restart" shape `crates/conway/tests/resume.rs`'s own
+    /// `resume_returns_handle_whose_id_and_root_match_the_session_header`
+    /// establishes and explains: attaching an agent id already live in the
+    /// SAME `Runtime`'s tree is a genuine, unrelated error
+    /// (`conway_runtime::tree::already_attached`), so `other` is created
+    /// and driven to completion under its OWN `Conway`/`Runtime` (dropped
+    /// before `app.submit` runs), leaving only its PERSISTED record behind
+    /// for `app`'s own `Conway::resume` to re-attach.
+    #[tokio::test]
+    async fn resuming_a_session_refreshes_its_own_head_seq() {
+        let (conway, store) = build_conway_with_echo_backend_and_store();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[])
+            .await
+            .expect("App::new should succeed");
+
+        let other_sid = {
+            let other_conway = build_conway_with_echo_backend_over(store.clone());
+            let other = other_conway
+                .new_session(conway::SessionSpec::default())
+                .await
+                .expect("new_session should succeed");
+            let sid = other.id();
+            other
+                .prompt("hello")
+                .await
+                .expect("prompt should not error")
+                .text()
+                .await
+                .expect("turn should complete");
+            sid
+            // `other_conway`/`other` drop here -- their in-memory
+            // `Runtime`/tree go with them, leaving only the persisted log
+            // in the SHARED `store` behind for `app.conway.resume` to read.
+        };
+        let other_head = conway
+            .session_head(other_sid)
+            .await
+            .expect("session_head should succeed");
+        assert!(other_head.0 > 0);
+
+        let outcome = app
+            .submit(format!("/resume {other_sid}"))
+            .await
+            .expect("submit should not error");
+        assert!(
+            matches!(outcome, SubmitOutcome::Resubscribe),
+            "transcript: {:?}",
+            app.state.transcript
+        );
+        assert_eq!(
+            app.state.session_head_seq,
+            Some(other_head),
+            "resuming must read back the RESUMED session's own head, not leave it None or \
+             stale"
+        );
     }
 
     #[tokio::test]
@@ -2565,6 +2708,222 @@ mod tests {
             would_have_failed.is_err(),
             "sanity: at_seq must genuinely be out of range for `other_sid`, or this test \
              proves nothing"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Board item 01KZY8Q1CMMNVSF54CTC270N3H: `conway-plugin-history`'s
+    // `/conway.history.rewind`, driven through the REAL shipped plugin
+    // crate (not `RewindPluginFixture` above) -- the discriminating
+    // acceptance criterion this item names: absent the plugin, the command
+    // is simply unknown, with no stub or special case anywhere in core;
+    // installed, it forks the real calling session end to end and the
+    // parent's own log is provably untouched.
+    // -----------------------------------------------------------------
+
+    /// Mirrors [`build_conway_with_echo_backend`], additionally handing
+    /// back the [`FakeStore`] so a test can read the persisted log directly
+    /// -- the same shape `conway-plugin-skeleton`'s own
+    /// `tests/skeleton_end_to_end.rs::build_conway` uses, reached here as
+    /// this crate's own in-file test helper since `App`'s private `submit`/
+    /// `apply_plugin_command_done`/`plugin_cmd_rx` are only reachable from
+    /// THIS module's own test code, never from an external
+    /// `crates/conway-cli/tests/*.rs` integration file.
+    fn build_conway_with_echo_backend_and_store() -> (Conway, Arc<FakeStore>) {
+        let store = Arc::new(FakeStore::new());
+        let conway = build_conway_with_echo_backend_over(store.clone());
+        (conway, store)
+    }
+
+    /// A fresh `Conway`/`Runtime` (own tree, own in-memory state) over an
+    /// ALREADY-EXISTING store -- the "simulated restart" shape
+    /// `resuming_a_session_refreshes_its_own_head_seq` (below) needs: two
+    /// independent runtimes sharing one persisted log, mirroring
+    /// `crates/conway/tests/resume.rs`'s own `build_conway`/`resume` tests.
+    fn build_conway_with_echo_backend_over(store: Arc<FakeStore>) -> Conway {
+        let backend: Arc<dyn conway::Backend> = Arc::new(FakeBackend::echo(BackendId::new("fake")));
+        let gate: Arc<dyn PermissionGate> = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
+        let router: Arc<dyn conway::Router> = Arc::new(FakeRouter::single(conway::ModelRef {
+            backend: BackendId::new("fake"),
+            model: ModelId::new("echo-model"),
+        }));
+        ConwayBuilder::from_parts(base_config())
+            .with_backend(backend)
+            .with_session_store(store)
+            .with_permission_gate(gate)
+            .with_router(router)
+            .build()
+            .expect("build should succeed with every port injected")
+    }
+
+    /// **The discriminating observable this item exists to prove.** With
+    /// `conway_plugin_history::HistoryPlugin` NOT installed (`App::new`'s
+    /// own `plugins` slice is empty -- no fixture, no substitute), typing
+    /// `/conway.history.rewind 1` produces the ordinary "unknown command"
+    /// notice `commands::execute`'s `SlashCommand::Plugin` arm already
+    /// produces for ANY unresolved plugin-shaped name -- never a
+    /// core-level special case for this specific command, and never a
+    /// `ForkSession` outcome (nothing was ever invoked to produce one).
+    #[tokio::test]
+    async fn conway_history_rewind_is_an_unknown_command_when_the_plugin_is_not_installed() {
+        let conway = build_conway_with_echo_backend();
+        let cli = minimal_cli();
+        // Deliberately `&[]`: no plugin installed at all, not even an
+        // unrelated one -- the empty case this whole item's acceptance
+        // criterion is about.
+        let mut app = App::new(&cli, &conway, &[])
+            .await
+            .expect("App::new should succeed");
+
+        let outcome = app
+            .submit("/conway.history.rewind 1".to_string())
+            .await
+            .expect("submit should not error even for an unresolved plugin command");
+        assert!(matches!(outcome, SubmitOutcome::Continue));
+
+        assert!(
+            app.plugin_cmd_rx
+                .as_mut()
+                .expect("plugin_cmd_rx is set by App::new")
+                .try_recv()
+                .is_err(),
+            "nothing was ever invoked -- no plugin command task exists to reply at all"
+        );
+        assert!(
+            app.state.transcript.iter().any(|e| matches!(
+                e,
+                Entry::Notice { text }
+                    if text.contains("unknown command") && text.contains("conway.history.rewind")
+            )),
+            "an uninstalled plugin's command must be the ORDINARY unknown-command notice, not a \
+             stub or a special case: {:?}",
+            app.state.transcript
+        );
+    }
+
+    /// The positive half, driven through the SAME real crate: installed,
+    /// `/conway.history.rewind <seq>` forks the real calling session and the
+    /// TUI ends up driving a genuinely different, genuinely drivable child
+    /// -- while the parent's own log is provably untouched, checked two
+    /// ways: `Conway::session_head` (the same proof
+    /// `fork_session_outcome_forks_the_calling_session_and_drives_the_child`
+    /// above already gives for the local fixture) AND, stronger, every
+    /// persisted `LogRecord` read back byte-for-byte equal
+    /// (`LogRecord: PartialEq`) -- the literal "the parent's bytes are
+    /// unchanged" this item's acceptance criterion names.
+    #[tokio::test]
+    async fn conway_history_rewind_forks_the_real_plugin_and_leaves_the_parent_log_byte_for_byte_unchanged(
+    ) {
+        let (conway, store) = build_conway_with_echo_backend_and_store();
+        let cli = minimal_cli();
+        let plugin: Arc<dyn conway::plugin::Plugin> =
+            Arc::new(conway_plugin_history::HistoryPlugin);
+        let mut app = App::new(&cli, &conway, &[plugin])
+            .await
+            .expect("App::new should succeed");
+
+        let parent_sid = app.handle.id();
+        app.handle
+            .prompt("first")
+            .await
+            .expect("prompt 1 should not error")
+            .text()
+            .await
+            .expect("turn 1 should complete");
+        app.handle
+            .prompt("second")
+            .await
+            .expect("prompt 2 should not error")
+            .text()
+            .await
+            .expect("turn 2 should complete");
+
+        let head_before = app
+            .conway
+            .session_head(parent_sid)
+            .await
+            .expect("session_head should succeed");
+        assert!(head_before.0 > 0);
+        let records_before: Vec<conway_core::log::LogRecord> = conway::SessionStore::read(
+            store.as_ref(),
+            &parent_sid,
+            conway_core::ids::SeqRange::full(),
+        )
+        .await
+        .expect("read should succeed");
+        assert!(!records_before.is_empty());
+
+        let outcome = app
+            .submit(format!("/conway.history.rewind {}", head_before.0))
+            .await
+            .expect("submit should not error");
+        assert!(matches!(outcome, SubmitOutcome::Continue));
+
+        let done = app
+            .plugin_cmd_rx
+            .as_mut()
+            .expect("plugin_cmd_rx is set by App::new")
+            .recv()
+            .await
+            .expect("the spawned command task must reply");
+        assert_eq!(done.full_name, "conway.history.rewind");
+        assert_eq!(done.session_id, parent_sid);
+
+        let resubscribe = app.apply_plugin_command_done(done).await;
+        assert!(
+            resubscribe,
+            "a successful ForkSession must ask the caller to resubscribe its event stream"
+        );
+
+        let child_sid = app.handle.id();
+        assert_ne!(child_sid, parent_sid);
+        assert_eq!(
+            app.state.session_head_seq,
+            Some(head_before),
+            "the child's fresh head is exactly the seq it was forked at -- no round trip needed \
+             (apply_plugin_command_done's own ForkSession arm sets this directly)"
+        );
+        let child_prompt_err = app
+            .handle
+            .prompt("hello from the child")
+            .await
+            .err()
+            .map(|e| e.to_string());
+        assert!(
+            child_prompt_err.is_none(),
+            "the forked child must be drivable: {child_prompt_err:?}"
+        );
+
+        let head_after = app
+            .conway
+            .session_head(parent_sid)
+            .await
+            .expect("session_head should succeed");
+        assert_eq!(
+            head_before, head_after,
+            "forking through the real plugin must never mutate the parent session's own head"
+        );
+        let records_after: Vec<conway_core::log::LogRecord> = conway::SessionStore::read(
+            store.as_ref(),
+            &parent_sid,
+            conway_core::ids::SeqRange::full(),
+        )
+        .await
+        .expect("read should succeed");
+        assert_eq!(
+            records_before, records_after,
+            "the parent session's own persisted records must be byte-for-byte unchanged after a \
+             fork through the real conway-plugin-history crate -- append-only, never mutated"
+        );
+
+        assert!(
+            app.state.transcript.iter().any(|e| matches!(
+                e,
+                Entry::Notice { text }
+                    if text.contains("conway.history.rewind") && text.contains("forked")
+            )),
+            "a successful fork must be surfaced as a transcript notice: {:?}",
+            app.state.transcript
         );
     }
 

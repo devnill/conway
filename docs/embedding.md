@@ -297,7 +297,14 @@ is the worked example this item ships — a `SkeletonPlugin` registering one
 `skeleton_ping` tool and (board item 01KZYBFTK4QPB45AJT9M57P60W) one
 `/conway.plugin_skeleton.ping` TUI slash command, both written entirely
 against `conway::plugin`, proving nothing beyond the mechanism below and
-[`docs/plugins/hooks.md`](plugins/hooks.md) point 15.
+[`docs/plugins/hooks.md`](plugins/hooks.md) point 15. `crates/conway-plugin-history`
+(board item 01KZY8Q1CMMNVSF54CTC270N3H) is this tier's first REAL, non-worked
+member: `/conway.history.rewind <seq>`, forking the calling session at an
+explicit, persisted sequence number via `CommandOutcome::ForkSession` (see
+that variant's own doc, and [`docs/plugins/hooks.md`](plugins/hooks.md)
+point 15's "Forking the calling session" subsection, for the mechanism a
+plugin command uses to retarget the session that invoked it without ever
+holding a live handle on any session).
 
 **How one is installed — deliberately a distinct key from
 `tools.builtin_plugins`.** That key names a *closed* candidate set (the four
