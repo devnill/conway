@@ -10,21 +10,33 @@
 
 conway is a Rust agent harness for agentic coding. It runs LLM-driven agents
 that call tools, create child agents, and route across model backends, behind an
-explicit permission system and a durable session log. There are three ways to
-use it, all written against the same API: embedded as a library inside a host
-application, driven interactively from a terminal, or run as a one-shot command
-in a script or a pipeline. Nothing it can do is available in only one of them.
+explicit permission system and a durable session log.
+
+There are three ways to use it, all written against the same API, and none of
+them is more native than the others:
+
+- **Embedded**, as a library inside a host application. A host reaches every
+  primitive below — routing, permissions, the log, forking and spawning —
+  through the same facade a terminal session uses, taking as much or as
+  little of it as the host wants.
+- **Driven interactively**, from a terminal. This is where the most design
+  attention goes: a real tool meant to be pleasant to use, not a debug
+  harness with a prompt attached.
+- **One-shot**, from a shell or a pipeline: a single prompt in, a streamed
+  answer out. Usable by someone who is not writing code, in a repository
+  that may not exist.
+
+Nothing conway can do is available in only one of them.
 
 What it ships in all three is primitives rather than workflows. The pieces are
 unopinionated and composable, which leaves no single right way to use them, and
 leaves a pile of sharp primitives with no suggested arrangement. This page is
 the suggested arrangement.
 
-The terminal UI gets the most design attention and is meant to be a useful tool
-in its own right. It does not hold your hand, and neither do the other two. All
-three put the primitives in front of you, and the distance between using conway
-adequately and using it well is mostly knowledge of what those primitives do and
-why they are shaped the way they are.
+None of the three holds your hand. All three put the primitives in front of
+you, and the distance between using conway adequately and using it well is
+mostly knowledge of what those primitives do and why they are shaped the way
+they are.
 
 conway holds no opinions about how you should work. The guidance still has to
 live somewhere, so it lives here, in prose you can disagree with and discard
@@ -190,6 +202,52 @@ per session, and in-memory state is a cache over that file.
 A session is JSONL, one record per line. `conway sessions list`, `show`, `tree`,
 and `export` read it, and so will anything else you point at a line-delimited
 JSON file.
+
+### Objects, heads, and the path through them
+
+Every turn and every tool call the log holds is an **immutable object**. Once
+written it is never edited, summarized in place, or replaced — the append-only
+discipline above already guarantees this. An agent's **head** is a pointer
+into that set of objects, which is what makes forking cheap: putting a new
+agent at any point in the tree costs nothing but a pointer, because the
+objects it would need have not moved and cannot.
+
+The objects and the path taken through them are two different things. A
+context window is not "the log" — it is a **path**: an ordered selection of
+immutable objects. Two agents can walk different paths across the same
+objects, sharing whatever they select in common. Curation — merging a branch
+back in, dropping one, condensing what a context holds — acts on the path. It
+never acts on the objects. Nothing already written is deleted, rewritten, or
+replaced by a curation decision; a curated context is a different selection
+through material that still exists exactly as it was written.
+
+This is the split git makes between objects and refs, carried one layer
+further. A **record** is a blob: global, immutable, referenced rather than
+copied. A **selection** — a path frozen and identified by what it selects,
+not by who made it — is a commit. A **head**, the pointer a session moves as
+it works, is a branch ref. Ownership applies to the head: exactly one session
+may move it. A selection is shared freely: any session may reference one, and
+referencing costs nothing, because nothing is copied, only pointed at.
+
+**Which records belong on a path is policy the core does not hold.** The core
+owns the ability to express and assemble a path — to select, to order, to
+render a selection to the bytes a model sees — never a default answer for
+what a selection should contain. That line is what keeps a curation opinion
+out of the core: the one selection rule the core ships is "everything, in
+log order," which excludes nothing and is therefore not a judgment two
+people could make differently. Past that point, what merges, what gets
+dropped, and what a branch means are opinions, and
+[opinions are plugins](#5-extending-conway).
+
+> **Where the tree is today.** The path above is real but singular: conway
+> computes exactly one per agent, by the fixed rule just described — a
+> session's own records plus its inherited prefix, in that order, nothing
+> omitted (see [`ARCHITECTURE.md`](ARCHITECTURE.md) §3.2 for that rule as
+> it stands). Naming a path, persisting one apart from the session that
+> produced it, or deriving a second by dropping or reordering records is
+> designed and not yet built. When it lands, the fixed rule does not go
+> away — it stays the one path a curator never has to build, because it
+> already encodes no opinion.
 
 ---
 
@@ -484,9 +542,14 @@ privileged inference path in the core and no blessed list of providers, so:
 
 ### The default set
 
-Shipping primitives rather than workflows still requires shipping something that
-runs. conway installs a small set of plugins on a fresh install, because some
-questions have to have an answer before the harness is a harness.
+Shipping primitives rather than workflows still requires shipping something
+that runs. This section answers one narrow question — **what must exist for
+the harness itself to work at all?** The harness installs a small set of
+plugins into itself because some questions have to have an answer before it
+is a harness at all. That is not the same question as what the shipped
+`conway` binary installs; see
+[The binary is a different question](#the-binary-is-a-different-question)
+below for that one.
 
 Talking to an inference API is the clearest case. A harness that cannot reach a
 model is inert rather than unopinionated. So the common dialects ship,
@@ -510,6 +573,63 @@ as the thing it wraps. `coreutils` is the parallel: `ls` belongs to no kernel,
 a system without it is unusable, and swapping the lot for busybox leaves a
 working system. conway ships defaults because the questions cannot go
 unanswered.
+
+### The binary is a different question
+
+The test above is deliberately narrow, and it has been asked to answer a
+second question it was never built for: not "what must exist for the harness
+to work at all," but "what should someone get when they install the `conway`
+binary and run it?" Conflating the two either starves the binary — compaction,
+memory, and skills all fail the harness's own test, so a binary held to that
+test alone could never carry them — or widens the harness's own membership
+test until it stops being narrow. Splitting the questions is the fix, and it
+settles what the second answer looks like without a third tier of plugins to
+hold it.
+
+**The harness** stays exactly what "The default set" above describes: sharp,
+narrow, the same for every embedder. Compaction, memory, skills, and MCP
+support all fail its test, so none of them may become harness defaults on the
+strength of being common or expected elsewhere.
+
+**The shipped binary** is not the harness plus a little more of the same
+thing — it is a fully-equipped coding agent, opinionated on purpose, built by
+turning already-classified plugins on: some from the harness's own default
+set above, some from the
+[first-party tier](#first-party-plugins-and-why-they-are-not-defaults) below.
+Every opinion it ships with is visible and removable through the same
+surfaces a third party uses to extend conway at all — install it, and you can
+also uninstall it. An opinion in the binary is not an opinion in the core,
+and that is the whole distinction: it is what lets conway be agnostic in the
+harness and usable on the first run of the binary, without either fact
+costing the other.
+
+> **Where the tree is today.** The binary does not yet turn on anything
+> beyond the harness's own default set described above. `conway.routing` and
+> `conway.stepguard` exist and install, but ship off; compaction, memory,
+> skills, and MCP support are not written at all — see the note under
+> [First-party plugins](#first-party-plugins-and-why-they-are-not-defaults)
+> for exactly what exists. Becoming the opinionated, fully-equipped binary
+> this section describes is tracked work, not a description of what
+> installing conway gives you today.
+
+**Why it has to become that**, in increasing order of importance. It is the
+clearest demonstration that capability composes granularly at all — a real
+application, assembled from pieces you can each see and switch off, is more
+persuasive than a skeleton plugin arguing the same point in the abstract. And
+it has to be good enough to replace whatever harness you are reading this on
+now, full time, because a tool only improves through daily use by someone who
+notices what is wrong with it — until conway is used that way, every priority
+on this page is a guess.
+
+That bar is a ladder, not a switch:
+
+- [ ] **Supplement.** conway is used alongside your current harness, for real
+      work, by choice, for some class of task.
+- [ ] **No longer needed.** Comfort that the other harness could be
+      uninstalled — which needs coverage of the features that actually
+      matter day to day, *and* output quality better than the incumbent's,
+      not merely comparable. Feature parity with worse results is not a
+      reason to switch, including for conway's own authors.
 
 ### First-party plugins, and why they are not defaults
 

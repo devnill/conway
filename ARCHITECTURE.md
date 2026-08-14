@@ -378,13 +378,31 @@ still doesn't fit the routed model's context window, giving the hook one more
 chance to shrink it before the runtime raises a hard error.
 
 **No hook is registered by default, and conway-core ships no curation
-policy.** With `Option<Arc<dyn ContextHook>>` set to `None` — the default —
-the runtime never invokes anything, not even a no-op pass-through; behavior
-is byte-for-byte what it was before the hook existed. There is no automatic
+policy.** With `LoopDeps::context_hook` set to `None` — the default — the
+runtime never invokes anything, not even a no-op pass-through; behavior is
+byte-for-byte what it was before the hook existed. There is no automatic
 compaction anywhere in the harness. A consumer that wants masking,
 system-prompt instrumentation, tool-announcement narrowing, or
 overflow-time summarization supplies its own hook — which may be a pure
 script or may itself issue an LLM call, since `before_request` is async.
+
+**A hook's returned payload is re-checked for tool-call/result coherence at
+one seam, not at each call site.** `ContextBuilder::build` already guarantees
+a rendered context never carries a tool call without its answering result;
+nothing re-checked that guarantee once a hook had edited the payload, so a
+hook dropping half a pair shipped a request every provider rejects outright.
+A hook enters the runtime through exactly one place, `Runtime::
+set_context_hook`, which wraps whatever it is given in `GuardedContextHook`:
+`LoopDeps::context_hook` holds `Arc<GuardedContextHook>`, never a bare
+`Arc<dyn ContextHook>`, so there is no unwrapped path for a call site to use
+by mistake. The wrapper's `before_request` and `on_overflow` delegate to the
+wrapped hook and then run the same coherence check on whatever it returns —
+covering both existing methods and any the trait gains later — and refuse
+with a typed error naming the orphaned `call_id`s and which method produced
+them, rather than repairing the payload itself: a hook's edit is a deliberate
+act, and guessing which half of an orphaned pair to drop would be guessing at
+intent the hook never stated
+(`crates/conway-runtime/src/context/hook_guard.rs`).
 
 A related, narrower mechanism is the **out-of-context record mask**
 (`LogRecord::ContextMask`): a persisted, reversible overlay naming another
