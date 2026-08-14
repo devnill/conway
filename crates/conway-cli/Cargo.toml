@@ -27,6 +27,7 @@ conway-plugin-skeleton = { path = "../conway-plugin-skeleton" }
 # `[plugins].install` list) -- an operator opts in the same way they would
 # for `conway-plugin-skeleton`.
 conway-plugin-history = { path = "../conway-plugin-history" }
+conway-plugin-stepguard = { path = "../conway-plugin-stepguard" }
 # Board item 01KZFC43J1J06BM4CCWKCKHSNV: the routing engine `conway` itself
 # used to compile in directly is now a first-party plugin too, resolved
 # through the SAME `[plugins].install` mechanism and the same `src/

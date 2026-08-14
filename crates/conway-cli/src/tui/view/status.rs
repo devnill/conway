@@ -16,7 +16,7 @@
 //!   exactly why it belongs HERE and not on the scroll-triggered sticky
 //!   overlay T6 originally misfiled it onto -- chrome that flickers with
 //!   scroll position is noise, and this field never has. **Widened (board
-//!   item 01KZY8Q1CMMNVSF54CTC270N3H) to `session <id>@<seq>`** once
+//!   item) to `session <id>@<seq>`** once
 //!   `AppState::session_head_seq` is known: this session's own persisted
 //!   log head, in the exact `<session-id>[@<seq>]` notation
 //!   `session_ref.rs`'s `--fork-from` flag already established -- the
@@ -558,7 +558,7 @@ fn field_ladder(
     lineage_present: bool,
 ) -> Vec<Vec<Span<'static>>> {
     match field {
-        // Board item 01KZY8Q1CMMNVSF54CTC270N3H: `@<seq>` appended once
+        // `@<seq>` appended once
         // `AppState::session_head_seq` is known -- see this module's own
         // doc for the notation's precedent (`session_ref.rs`) and why this
         // is the field that had to carry it.
@@ -672,7 +672,7 @@ fn mode_ladder(state: &AppState, theme: &Theme) -> Vec<Vec<Span<'static>>> {
 /// reads `ctx 100%`, not `ctx 137%`. That is accepted here: the authoritative
 /// token total lands via the turn-end summary (T4), and a proper re-fetch of
 /// the runtime's true context total on focus is tracked as a separate
-/// follow-up board item. No behavior change vs. the original cap -- only the
+/// follow-up No behavior change vs. the original cap -- only the
 /// intent is now documented.
 ///
 /// `pub(super)` (T6): the sticky context header (`view/header.rs`) shows the
@@ -779,7 +779,7 @@ fn hint_ladder(state: &AppState, theme: &Theme, lineage_present: bool) -> Vec<Ve
     // the settings menu (V4). `/agents` keeps its affordance because it is a
     // stateful toggle whose current state the hint reports.
     let mut full = format!("Enter submit · Ctrl-E expand · /help · {agents_hint}");
-    // WI-140: name which agent's conversation is currently shown whenever
+    // name which agent's conversation is currently shown whenever
     // it is not the root -- the root case stays silent (an always-on
     // "focused: root" would be noise for the overwhelmingly common case).
     //
@@ -995,7 +995,7 @@ mod tests {
         assert!(status_line(&state).contains("/agents to hide"));
     }
 
-    // WI-140: the focused agent must be clearly indicated.
+    // the focused agent must be clearly indicated.
     #[test]
     fn status_line_says_nothing_extra_while_focused_on_root() {
         let state = AppState::new(AgentId::new());
@@ -1043,7 +1043,7 @@ mod tests {
         assert!(line.contains(&child.to_string()), "{line}");
     }
 
-    // ---- Board item 01KYAGP11FF9YC3G60TWHHKKST: activity indicator + token
+    // --: activity indicator + token
     // spend, both scoped to the focused agent. ----
 
     #[test]
@@ -1608,7 +1608,7 @@ mod tests {
         );
     }
 
-    /// Board item 01KZY8Q1CMMNVSF54CTC270N3H: once `session_head_seq` is
+    /// Once `session_head_seq` is
     /// known, the `session` field widens to `session <id>@<seq>` -- the
     /// exact `<session-id>[@<seq>]` notation `session_ref.rs`'s own
     /// `--fork-from` flag already established, and the number
@@ -1949,7 +1949,7 @@ mod tests {
 
     /// Renders `draw` through a REAL `Terminal<TestBackend>` and reads the
     /// buffer's cells back -- the buffer-asserting test binding decision
-    /// (`01KYAN619EEDCY88E6QP0W282Y`) requires for exactly this class of
+    /// requires for exactly this class of
     /// safety-critical claim (adversarial review finding 4). Every prior
     /// width assertion in this module operated on [`flatten`]'s pre-render
     /// span content, which can (and did) disagree with what a `Paragraph`

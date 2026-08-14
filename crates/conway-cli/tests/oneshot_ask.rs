@@ -1,4 +1,4 @@
-//! WI-113 `conway_ask` one-shot (`-p`) smoke test (epic item f): proves the
+//! `conway_ask` one-shot (`-p`) smoke test (epic item f): proves the
 //! `conway_ask` -> `conway_spawn` composition is reachable through
 //! the real compiled `conway` binary driven by a single `-p` prompt against a
 //! scripted OpenAI-compatible mock backend, and that the persisted
@@ -52,10 +52,10 @@ fn long_brief() -> String {
         "AskOutcome.text is the full concatenated TextDelta stream, untruncated.",
         "The EphemeralSessionRef artifact carries the child's transcript_ref.",
         "store.list with include_ephemeral surfaces the fork; the default hides it.",
-        "P-1: ask composes SubagentHost::ask, it is not a third primitive.",
-        "P-2: provenance -- the artifact names the child session.",
-        "GP-01: full text, not a truncated summary.",
-        "GP-02: fork-only, no mode parameter on conway_ask.",
+        ": ask composes SubagentHost::ask, it is not a third primitive.",
+        ": provenance -- the artifact names the child session.",
+        ": full text, not a truncated summary.",
+        ": fork-only, no mode parameter on conway_ask.",
         "The agent-id-checked drain ignores sibling TextDeltas.",
         "subscribe-before-launch guarantees no TextDelta is missed.",
     ];
@@ -75,8 +75,7 @@ fn long_brief() -> String {
 /// gate). Uses `ConwayBuilder::from_config_only`, not `from_config` --
 /// see `continuity.rs::open_conway`'s own doc for why: this helper runs
 /// in-process, so `common::command`'s `XDG_CONFIG_HOME` isolation (which
-/// only reaches the spawned `conway` binary) does not cover it (board item
-/// 01KZYCKF3Z1XBCS50N7EWWVPEQ).
+/// only reaches the spawned `conway` binary) does not cover it.
 async fn open_conway(fixture: &Fixture) -> Conway {
     let gate: Arc<dyn PermissionGate> = Arc::new(AllowListGate::new(Vec::new(), Vec::new()));
     ConwayBuilder::from_config_only(&fixture.config_path)
@@ -86,7 +85,7 @@ async fn open_conway(fixture: &Fixture) -> Conway {
             ..Default::default()
         })
         .with_permission_gate(gate)
-        // Board item 01KZHF270T3W8GZ7NM6DSNQ4MM: see `continuity.rs::
+        // see `continuity.rs::
         // open_conway`'s identical addition.
         .with_backend_factory(Arc::new(conway_plugin_backends::OpenAiCompatBackendFactory))
         .build()
@@ -331,7 +330,7 @@ async fn conway_p_drives_conway_ask_then_conway_spawn() {
     // ------------------------------------------------------------------
     // Assertion: the spawn child's own first `UserTurn` is the curated brief,
     // verbatim -- the text `conway_ask` returned was passed verbatim as the
-    // spawn's prompt (P-1 composition, end-to-end through the real binary).
+    // spawn's prompt ( composition, end-to-end through the real binary).
     // ------------------------------------------------------------------
     let spawn_child_records = read_session_records(&fixture, spawn_child_meta.id);
     let spawn_first_user_turn = spawn_child_records

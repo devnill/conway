@@ -1,4 +1,4 @@
-//! A hand-rolled OpenAI-compatible mock HTTP server for WI-113's one-shot
+//! A hand-rolled OpenAI-compatible mock HTTP server for an earlier item's one-shot
 //! integration tests.
 //!
 //! This is deliberately not `wiremock`: `wiremock::ResponseTemplate` has no

@@ -41,7 +41,7 @@ use crate::segment::PromptSegment;
 /// directly.
 ///
 /// If a genuine lifecycle hook is wanted later, the out-of-process plugin
-/// design (`.design/d1-transport.md`) specifies a real handshake with a
+/// design specifies a real handshake with a
 /// defined failure mode — that, not a resurrected no-op, is the shape to
 /// build.
 pub trait Plugin: Send + Sync + 'static {
@@ -51,8 +51,7 @@ pub trait Plugin: Send + Sync + 'static {
 
     fn tools(&self) -> Vec<Arc<dyn Tool>>;
 
-    /// Zero or more TUI slash commands this plugin contributes (board item
-    /// 01KZYBFTK4QPB45AJT9M57P60W). The default returns none, so every
+    /// Zero or more TUI slash commands this plugin contributes. The default returns none, so every
     /// existing `Plugin` implementor -- every built-in, every first-party
     /// plugin, every third party's -- keeps compiling unmodified.
     ///
@@ -71,8 +70,7 @@ pub trait Plugin: Send + Sync + 'static {
         Vec::new()
     }
 
-    /// Zero or more custom events this plugin may fire (board item
-    /// 01KZS03BFE720EQZG7Q2768N2H, `PHILOSOPHY.md` §5: "That list is open
+    /// Zero or more custom events this plugin may fire (///, `PHILOSOPHY.md` §5: "That list is open
     /// rather than fixed. A plugin declares the events it emits, so
     /// installing one brings hook points along with whatever else it
     /// provides... Those events sit at the same level as the ones conway
@@ -105,6 +103,25 @@ pub trait Plugin: Send + Sync + 'static {
     fn events(&self) -> Vec<EventDecl> {
         Vec::new()
     }
+
+    /// Zero or more [`ToolObserver`](crate::ports::ToolObserver)s this plugin
+    /// installs -- policy that watches finished tool calls and may add to the
+    /// record. `PHILOSOPHY.md` §6 leaves loop intervention to the operator, so
+    /// the harness ships the seam and a plugin supplies the judgment; see that
+    /// port's own module doc for what an observer may and may not do.
+    ///
+    /// The default returns none, the same zero-cost-default precedent
+    /// [`Self::commands`] and [`Self::events`] established above: every
+    /// existing `Plugin` implementor keeps compiling unmodified, and a build
+    /// with no observing plugin installed invokes nothing.
+    ///
+    /// Each observer is bound to THIS plugin's own [`PluginManifest::id`] when
+    /// the runtime calls it, so the events it fires land under this plugin's
+    /// namespace and no other -- an author never picks their own namespace,
+    /// matching [`Self::commands`] and [`Self::events`] exactly.
+    fn observers(&self) -> Vec<Arc<dyn crate::ports::ToolObserver>> {
+        Vec::new()
+    }
 }
 
 /// One custom event a plugin declares it may emit -- the event-vocabulary
@@ -133,7 +150,7 @@ pub struct EventDecl {
     pub summary: String,
     /// Whether this event's payload carries a `"tool"` string field --
     /// decides whether an operator's `[hooks].rules[]` entry may pair this
-    /// event with `match` (board item 01KZYAWQ6011Q6CJVG6CCMQPF1's rule,
+    /// event with `match` ('s rule,
     /// extended to plugin-declared events by this type). `false` here
     /// makes a rule's `match` on this event the SAME typed, build-time
     /// error `crates/conway/src/config/merge.rs`'s check 10 already gives
@@ -144,12 +161,11 @@ pub struct EventDecl {
     pub carries_tool_name: bool,
 }
 
-/// One plugin-declared TUI slash command (board item
-/// 01KZYBFTK4QPB45AJT9M57P60W): a plugin's own [`CommandSpec`] plus the
+/// One plugin-declared TUI slash command -- a plugin's own [`CommandSpec`] plus the
 /// async handler `conway-cli` invokes when the operator types it.
 ///
-/// **Deliberately narrow -- still true after board item
-/// 01KZYH37WNDKDWSMWQQPRFKKXC.** [`CommandCtx`] carries read-only identity
+/// **Deliberately narrow -- still true after
+///.** [`CommandCtx`] carries read-only identity
 /// and the raw argument text -- nothing that reaches a live
 /// `Conway`/`SessionHandle`, and never will: `Plugin`/`Command` live in
 /// `conway-core`, which cannot depend on `conway` (the facade, where
@@ -166,7 +182,7 @@ pub struct EventDecl {
 /// declare/return-an-effect shape [`ContextHook`]'s own `before_request` and
 /// `docs/plugins/hooks.md` point 12's "declare, then push; the render path
 /// never blocks on a plugin" precedent both already establish -- applied
-/// here to close the ONE gap board item 01KZYBFTK4QPB45AJT9M57P60W
+/// here to close the ONE gap
 /// deliberately left open (see [`CommandOutcome::ForkSession`]'s own doc for
 /// the full binding argument: nothing about this variant lets a command name
 /// a session other than the one that invoked it -- there is no field to put
@@ -219,7 +235,7 @@ pub struct CommandCtx {
     pub focused_agent: AgentId,
     /// This session's root agent (`SessionHandle::root`).
     pub root_agent: AgentId,
-    /// The CALLING session's own id -- board item 01KZYH37WNDKDWSMWQQPRFKKXC.
+    /// The CALLING session's own id --.
     /// Read-only identity, the same tier as [`Self::focused_agent`]/
     /// [`Self::root_agent`]: a command cannot use this to reach another
     /// session (there is no live handle on this type at all, for any
@@ -253,8 +269,7 @@ pub enum CommandOutcome {
     /// still prefer returning this variant over panicking.
     Error(String),
     /// Asks the host to fork the CALLING session at `at_seq` and drive the
-    /// resulting child in place of the parent (board item
-    /// 01KZYH37WNDKDWSMWQQPRFKKXC) -- the answer to "what must `conway-core`
+    /// resulting child in place of the parent -- the answer to "what must `conway-core`
     /// expose for `/rewind` to be a plugin at all", per the owner's ruling
     /// that session-history features are plugins, not core functionality.
     ///
@@ -282,8 +297,8 @@ pub enum CommandOutcome {
     /// it happens to be driving by the time the reply arrives (the two can
     /// legitimately differ -- e.g. an operator typed `/resume` while a slow
     /// plugin command was still running). This is the "a command acts on
-    /// its own session, never one it names" property board item
-    /// 01KYTP0PGKJ4VCJP5TD39A1WHF's [`SubagentHandle`] precedent
+    /// its own session, never one it names" property
+    ///'s [`SubagentHandle`] precedent
     /// established for tools, applied here to commands the only way it CAN
     /// be applied given this variant carries no live handle at all: by
     /// construction of the type, not by a runtime check that could be
@@ -388,7 +403,7 @@ pub trait Tool: Send + Sync + 'static {
 
     /// Declares whether [`Self::render`]'s OUTPUT can be interpreted by a
     /// shell, for `conway_core::permission_pattern::PatternRule`'s
-    /// metacharacter gate (board item 01KYT3NSWRHMPEAXVXRJ73KDYR).
+    /// metacharacter gate.
     ///
     /// **Orthogonal to [`Self::path_args`].** `path_args` asks "which
     /// arguments are filesystem paths a root-containment check can
@@ -600,7 +615,7 @@ impl CwdHandle {
 }
 
 /// Accepts a plugin-declared event for dispatch to whatever hook an
-/// operator has configured for it (board item 01KZS03BFE720EQZG7Q2768N2H).
+/// operator has configured for it.
 ///
 /// **A PORT, not a concrete type**, for the identical reason
 /// [`crate::ports::HookRunner`] is one: a real implementation performs I/O
@@ -778,8 +793,7 @@ pub struct ToolCtx {
     /// this narrowed it: the same widening `chdir` underwent for the cwd
     /// capability.
     pub subagents: SubagentHandle,
-    /// Fires THIS call's own declaring plugin's custom events (board item
-    /// 01KZS03BFE720EQZG7Q2768N2H, [`Plugin::events`]) -- a
+    /// Fires THIS call's own declaring plugin's custom events (///, [`Plugin::events`]) -- a
     /// [`PluginEventHandle`] bound to the plugin that registered the tool
     /// being invoked, so there is no parameter through which a call could
     /// fire under a DIFFERENT plugin's namespace (see that type's own
@@ -823,7 +837,7 @@ pub struct ToolOutput {
 /// assembled prompt segments (in send order, including the `ToolRegistry`
 /// segment) and the tool set announced to the model for this turn.
 ///
-/// **Tool announcement vs. execution (WI-126):** `tools` here is what the
+/// **Tool announcement vs. execution:** `tools` here is what the
 /// model is TOLD it may call -- distinct from [`crate::ports::PermissionGate`], which
 /// governs whether a call the model actually makes is allowed to run.
 /// Narrowing `tools` hides a tool from the model entirely (it can never
@@ -867,7 +881,7 @@ pub struct ContextHookCtx {
     /// already chosen and found to overflow by the time that fires).
     pub model: Option<ModelRef>,
     pub estimated_tokens: u32,
-    /// Board item 01KZ84437RMKHP5DJX7RMHH7JY: where this hook may safely
+    /// Where this hook may safely
     /// write an artifact file (e.g. a spill-to-file `TruncationPolicy::
     /// Artifact` implementation), if it wants to. See
     /// [`crate::ports::ArtifactWriteHandle`]'s own doc, and
@@ -875,7 +889,7 @@ pub struct ContextHookCtx {
     /// guarantee and why this is a write-capable accessor rather than a raw
     /// root or cwd value a hook would have to resolve against itself.
     pub artifacts: ArtifactWriteHandle,
-    /// Board item 01KZQJ03ZQ22MPM9H2TW1350ZF: the opaque tag an embedder
+    /// The opaque tag an embedder
     /// attached to this agent at creation time
     /// (`crate::agent::SubagentSpec::tag`), carried through unread by
     /// `conway_runtime`'s `AgentSpec::tag`. A hook may read it to correlate
@@ -887,7 +901,7 @@ pub struct ContextHookCtx {
     /// unset).
     ///
     /// Required, not defaulting: same reasoning as [`Self::agent_path`]
-    /// (01KZQHZH8RXVR38JJX9AY4VSW4) -- this struct derives no `Serialize`/
+    /// -- this struct derives no `Serialize`/
     /// `Deserialize` and has no wire format to stay backward-compatible
     /// with, so there is no serialization justification for a silent
     /// default, and a hook's whole reason to read this field is telling one
@@ -911,7 +925,7 @@ pub struct OverflowInfo {
     pub shortfall_tokens: u32,
 }
 
-/// Pluggable per-call context/tool curation (WI-126, architecture's
+/// Pluggable per-call context/tool curation (architecture's
 /// unifying hook primitive): invoked before every LLM request, with an
 /// optional second invocation if the first invocation's output still
 /// overflows the routed model's window.
@@ -928,7 +942,7 @@ pub struct OverflowInfo {
 /// bundles segments and announced tools together because the runtime treats
 /// them as one outgoing request -- a hook can edit/drop a segment (e.g. the
 /// `AgentDef`-provenance segment, to augment the system prompt; or any
-/// segment, to apply an ad hoc exclusion mirroring WI-125's persisted
+/// segment, to apply an ad hoc exclusion mirroring an earlier item's persisted
 /// `ContextMask`) and/or narrow `tools` (announcement filtering) in the same
 /// call. Async so an inference-driven hook can issue its own LLM call to
 /// decide (criterion: "hooks may be pure scripts OR issue their own LLM
@@ -1104,7 +1118,7 @@ mod tests {
         assert_eq!(out, back);
     }
 
-    /// `ArtifactWriteHandle::noop` (board item 01KZJ5S3ZC8SPWTX94C4HTEC2R)
+    /// `ArtifactWriteHandle::noop`
     /// replaces what used to be a hand-rolled private `ArtifactWriter` double
     /// here -- this module's own fixtures are exactly the boilerplate that
     /// constructor exists to remove -- one implementation, reused rather than
@@ -1147,7 +1161,7 @@ mod tests {
     /// A hook that drops every segment whose text contains "secret" and
     /// otherwise passes the payload through unchanged -- exercises the
     /// mask-like "drop a segment" transform (criterion 1a) without any
-    /// dependency on WI-125's persisted `ContextMask`.
+    /// dependency on an earlier item's persisted `ContextMask`.
     struct DropSecretsHook;
 
     #[async_trait]
@@ -1398,7 +1412,7 @@ mod tests {
         assert_eq!(handle.current(), weird);
     }
 
-    // ---- Plugin::commands (board item 01KZYBFTK4QPB45AJT9M57P60W) ----
+    // ---- Plugin::commands ----
 
     /// A third-party `Plugin` implementor that accepts the trait's default
     /// `commands` untouched -- same proof shape as `Tool`'s own default-method
@@ -1487,7 +1501,7 @@ mod tests {
         assert_object_safe(&command);
     }
 
-    // ---- CommandOutcome::ForkSession (board item 01KZYH37WNDKDWSMWQQPRFKKXC) ----
+    // ---- CommandOutcome::ForkSession ----
 
     /// A `/rewind`-shaped fixture command: asks the host to fork at whatever
     /// `at_seq` the operator typed. Deliberately reads NOTHING from
@@ -1628,7 +1642,7 @@ mod tests {
         assert_eq!(commands[0].spec().name, "greet");
     }
 
-    // ---- Plugin::events (board item 01KZS03BFE720EQZG7Q2768N2H) ----
+    // ---- Plugin::events ----
 
     /// Same proof shape as `default_commands_is_empty` immediately above:
     /// a third-party `Plugin` implementor that accepts the trait's default

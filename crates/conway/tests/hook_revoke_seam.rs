@@ -1,4 +1,4 @@
-//! Acceptance test for board item 01KZS02HYXGTW42R8G4HP10GHX ("Show
+//! Acceptance test for ("Show
 //! hook-backed permission rules in `/settings` as a fourth revocable
 //! list").
 //!
@@ -229,7 +229,7 @@ async fn revoking_a_pre_tool_use_hook_lets_the_next_matching_call_reach_the_gate
         gate.clone() as Arc<dyn PermissionGate>,
     );
 
-    // Visible before anything happens -- P-12's own bar: an operator must
+    // Visible before anything happens -- own bar: an operator must
     // be able to SEE a rule before deciding to revoke it.
     let rows = conway.active_deny_capable_hook_rules();
     assert_eq!(hook_row(&rows, "deny-bash").event, "pre_tool_use");

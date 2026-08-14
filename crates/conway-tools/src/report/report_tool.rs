@@ -113,7 +113,7 @@ impl Tool for ReportTool {
     /// `PathArgs` rather than a reuse of it: `report` is `Unconfinable`
     /// (root check must always fall through to the gate) while its
     /// pattern-grant rendering is `Structured` (the metacharacter gate does
-    /// not apply). Board item 01KYT3NSWRHMPEAXVXRJ73KDYR.
+    /// not apply).
     fn render_kind(&self) -> RenderKind {
         RenderKind::Structured
     }

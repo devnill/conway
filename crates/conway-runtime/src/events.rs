@@ -24,7 +24,7 @@
 //! pruned; that claim was aspirational, not delivered, and is retracted
 //! here rather than repeated.
 //!
-//! ## Reclamation (board item: `EventBus.seqs` still leaks for spawned and
+//! ## Reclamation (`EventBus.seqs` still leaks for spawned and
 //! forked agents)
 //!
 //! Two cases are safe to reclaim -- neither weakens the guarantee above,
@@ -85,7 +85,7 @@ pub struct EventBus {
 }
 
 impl EventBus {
-    /// Construct a bus with [`DEFAULT_CAPACITY`]. `Runtime::new` (WI-082)
+    /// Construct a bus with [`DEFAULT_CAPACITY`]. `Runtime::new`
     /// uses this unless configured otherwise.
     pub fn with_default_capacity() -> Arc<Self> {
         Self::new(DEFAULT_CAPACITY)

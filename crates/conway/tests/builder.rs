@@ -1,4 +1,4 @@
-//! Acceptance tests for `ConwayBuilder`/`Conway` assembly (WI-100).
+//! Acceptance tests for `ConwayBuilder`/`Conway` assembly.
 
 mod support;
 
@@ -52,8 +52,8 @@ fn caps() -> Capabilities {
 
 /// An injected router that trivially satisfies `ConwayBuilder::with_router`,
 /// used by tests whose `ConwayConfig` carries an empty-chain role and that
-/// are not themselves exercising routing behavior. Board item
-/// 01KZFC43J1J06BM4CCWKCKHSNV: `build()`'s no-router/no-factory default is
+/// are not themselves exercising routing behavior.
+///: `build()`'s no-router/no-factory default is
 /// now `conway_core::routing::MinimalRouter`, which never validates a
 /// chain at construction at all (unlike the opt-in
 /// `conway-plugin-routing::DeclarativeRouter::new`, whose own, stricter
@@ -180,7 +180,7 @@ async fn end_to_end_from_parts_with_fakes_succeeds_with_no_network_or_fs() {
 /// `budget`/`labels` have no store-side inspection point yet (`SessionMeta`
 /// carries no budget field, and `RootSpec` has no field for
 /// `SessionSpec::labels` at all -- see `conway.rs`'s own disclosed gap), so
-/// asserting those two is deferred to WI-101.
+/// asserting those two is deferred to an earlier item.
 #[tokio::test]
 async fn new_session_with_default_spec_resolves_role_and_cwd_from_config() {
     let cfg = base_config();
@@ -413,9 +413,9 @@ fn duplicate_injected_plugin_id_is_rejected() {
 }
 
 // -----------------------------------------------------------------------
-// Board item: bash ships on by default and cannot be declined.
+// bash ships on by default and cannot be declined.
 //
-// GP-14: every assertion below reads `Conway::tool_render_kind` -- the
+//: every assertion below reads `Conway::tool_render_kind` -- the
 // SAME already-existing accessor `structured_rule_seam.rs`'s registration
 // checks use to read the real registry -- never a config flag/selection
 // value. `tool_render_kind(name)` returns `None` iff no plugin registered
@@ -448,7 +448,7 @@ fn build_conway_with_selection(selection: Option<PluginSelection>) -> Conway {
 /// `with_builtin_plugins` call, no `[tools]` override) yields a runtime
 /// with NO `bash` tool registered.
 ///
-/// The registry-emptiness hazard this test is written to rule out (GP-14):
+/// The registry-emptiness hazard this test is written to rule out ():
 /// a build that silently registered NOTHING would also make
 /// `tool_render_kind("bash")` return `None`, passing this assertion for
 /// the WRONG reason. `fs`'s `read` tool is asserted present in the very
@@ -519,7 +519,7 @@ fn explicit_opt_in_via_only_naming_shell_registers_the_bash_tool() {
 /// This is the config key an operator uses to turn `bash` back on. If
 /// `"conway.shel"` were accepted and simply never matched, the build would
 /// succeed, bash would stay absent, and the operator would believe they had
-/// enabled it -- silence indistinguishable from success, which GP-14 ranks
+/// enabled it -- silence indistinguishable from success ranks
 /// as the WORST harm tier ("user-facing configuration that does nothing").
 /// The candidate set is closed and known at compile time, so an
 /// unrecognized id is always a mistake and never a forward reference.
@@ -592,7 +592,7 @@ fn all_except_shell_and_none_select_what_their_names_say() {
 /// The `settings.json`-reachable path: no `with_builtin_plugins` call at
 /// all, just `config.tools.builtin_plugins` naming `"conway.shell"` --
 /// proving the config key and the builder method reach the exact same
-/// outcome (GP-03: built-ins and the config surface select the same way).
+/// outcome (: built-ins and the config surface select the same way).
 #[cfg(feature = "builtin-tools")]
 #[test]
 fn config_tools_builtin_plugins_naming_shell_registers_the_bash_tool() {
@@ -621,7 +621,7 @@ fn config_tools_builtin_plugins_naming_shell_registers_the_bash_tool() {
 /// A `with_plugin`-injected third-party plugin is never filtered by the
 /// built-in `PluginSelection` -- including the restrictive DEFAULT one
 /// (`PluginSelection`'s own doc: calling `with_plugin` IS already the
-/// explicit per-plugin declaration GP-03 requires).
+/// explicit per-plugin declaration requires).
 #[cfg(feature = "builtin-tools")]
 #[test]
 fn injected_plugin_is_unaffected_by_the_default_builtin_selection() {
@@ -747,7 +747,7 @@ fn connection_was_accepted(listener: &std::net::TcpListener) -> bool {
 /// `TcpListener` (bound to an ephemeral port, never actually speaking
 /// HTTP) lets this test observe, at the TCP level, whether `build()` ever
 /// attempted a connection -- independent of whatever mechanism performs the
-/// probe (board item 01KZHF270T3W8GZ7NM6DSNQ4MM: `OpenAiCompatBackendFactory
+/// probe (: `OpenAiCompatBackendFactory
 /// ::probe_capabilities` calls `conway_plugin_backends::probe::
 /// CapabilityProbe` directly rather than through `Backend::probe()`; a
 /// "counting `Backend`" double would not observe anything, since no
@@ -823,8 +823,8 @@ fn probe_on_startup_false_makes_no_network_call_true_does() {
 }
 
 /// `Conway::explain_routing` delegates to `conway_core::routing::
-/// MinimalRouter` (the no-plugin default -- board item
-/// 01KZFC43J1J06BM4CCWKCKHSNV, no `with_router`/`with_router_factory` call
+/// MinimalRouter` (the no-plugin default
+///, no `with_router`/`with_router_factory` call
 /// here), and its `entries` correspond 1:1 to the role's configured chain,
 /// in order -- the same shape the richer, capability-/health-filtered
 /// `conway-plugin-routing::RoutingExplain` produces when that plugin is
@@ -851,7 +851,7 @@ fn explain_routing_reports_the_configured_chain_for_the_role() {
 
     // No `with_router`/`with_router_factory` override: `build()` falls
     // through to `MinimalRouter`, which `explain_routing` projects through
-    // directly (board item 01KZFC43J1J06BM4CCWKCKHSNV).
+    // directly.
     let conway = ConwayBuilder::from_parts(cfg)
         .with_session_store(store)
         .with_permission_gate(gate)
@@ -923,14 +923,14 @@ fn unset_api_key_env_fails_naming_the_variable() {
     );
 }
 
-/// Board item 01KZHF1E85MS1VF4YH8CDNCP9Z: a `[backends.<id>].kind` no
+/// A `[backends.<id>].kind` no
 /// registered factory claims fails `build()` -- a production entry point
 /// (`ConwayBuilder::from_parts(..).build()`, the same call every other
 /// `build()`-time error in this file goes through) -- with an error naming
 /// the offending value and listing the kinds this build actually
-/// recognises. GP-14: a silently ignored `kind` is exactly the failure this
+/// recognises.: a silently ignored `kind` is exactly the failure this
 /// error exists to prevent. Both `conway_plugin_backends` factories are
-/// registered here (board item 01KZHF270T3W8GZ7NM6DSNQ4MM removed the
+/// registered here ( removed the
 /// compiled-in fallback the previous item's own doc referenced -- every
 /// kind is a registered factory now, including these two) so the
 /// "recognised kinds" assertion below still has something real to list.
@@ -1019,11 +1019,11 @@ fn registered_factory_kind_appears_in_the_recognised_kinds_list() {
     );
 }
 
-/// Board item 01KZHF2W8Y1KBM7PJH7R4QQJA0: an unresolved `[backends.<id>].
+/// An unresolved `[backends.<id>].
 /// kind` is a hard `build()` error either way (unchanged), but the message
 /// must DISTINGUISH "conway has never heard of this kind" from "an operator
 /// declined it" -- two different diagnoses for the same unresolved-kind
-/// failure (GP-14: an operator who deliberately declined a dialect deserves
+/// failure (: an operator who deliberately declined a dialect deserves
 /// the accurate one). `ConwayBuilder::with_declined_backend_kinds` is the
 /// mechanism a caller declares that distinction with;
 /// `crates/conway-cli/src/first_party_plugins.rs`'s `install` is the one

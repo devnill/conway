@@ -1,4 +1,4 @@
-//! Board item 01KZFC2MD1FVNA674YJ9A19T8E: `ConwayBuilder::with_router_factory`
+//! `ConwayBuilder::with_router_factory`
 //! -- a router KIND named up front, its construction deferred to `build()`'s
 //! own router step.
 //!
@@ -19,7 +19,7 @@
 //!    `ConwayError::Build`, naming both the factory's own id and the
 //!    underlying message (`factory_build_error_surfaces_as_build_error`).
 //!
-//! P-15's break-the-guard run for property 2 is recorded in this item's own
+//! break-the-guard run for property 2 is recorded in this item's own
 //! completion report, not committed here (the guard must be shown to fail
 //! and then be restored, never left broken in the tree).
 
@@ -71,7 +71,7 @@ fn fake_backend(id: &str) -> Arc<dyn conway_core::ports::Backend> {
     ))
 }
 
-/// One role with an EMPTY chain. Board item 01KZFC43J1J06BM4CCWKCKHSNV:
+/// One role with an EMPTY chain.
 /// `build()`'s own no-router/no-factory default fell through to
 /// `conway_core::routing::MinimalRouter` (which never validates a chain at
 /// construction) by the time this test landed; this fixture's discriminating

@@ -1,5 +1,5 @@
 //! Seam tests for the grant-SCOPE wiring (grant-prompt Axis B, decision
-//! 01KZ1NAXE0KZRSRFBDDJFCPMK8: "WIRE IT"), and for the `render_kind`
+//!: "WIRE IT"), and for the `render_kind`
 //! plumbing the prompt's offer now depends on (Axis A).
 //!
 //! `conway-runtime`'s broker tests already prove `GrantScope::covers` in
@@ -12,7 +12,7 @@
 //! `PermissionBroker`) and asserts on the observable outcome: whether the
 //! operator's gate is consulted at all.
 //!
-//! The negative cases are the point (GP-14): a per-agent grant must NOT
+//! The negative cases are the point (): a per-agent grant must NOT
 //! authorize a different agent's identical call, and a per-subtree grant
 //! must NOT authorize an agent outside the subtree. Each negative case is
 //! paired with a positive control (the covered agent IS authorized without
@@ -145,7 +145,7 @@ fn build_conway(script: Vec<ScriptedTurn>, gate: Arc<dyn PermissionGate>) -> Con
         .with_session_store(store)
         .with_permission_gate(gate)
         .with_router(fake_router())
-        // Board item (bash ships on by default and cannot be declined):
+        // (bash ships on by default and cannot be declined):
         // this file drives the REAL `bash` tool end to end, so it must now
         // opt in explicitly -- the facade's own default excludes it.
         .with_builtin_plugins(PluginSelection::All)

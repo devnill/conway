@@ -12,7 +12,7 @@ given request, see [`routing.md`](routing.md).
 
 ## Where a backend is declared
 
-Every provider is a `[backends.<id>]` entry in `.conway/settings.json`,
+Every provider is a `backends.<id>` entry in `.conway/settings.json`,
 discovered project-first then global — the nearest `.conway/settings.json`
 walking up from your current directory, then `~/.conway/settings.json` (or
 `$XDG_CONFIG_HOME/conway/settings.json`), then conway's built-in defaults.
@@ -25,8 +25,7 @@ actually is (`kimi`, `internal-proxy`) and sit alongside a real
 resolves it against every `BackendFactory` an embedder has registered
 (`ConwayBuilder::with_backend_factory`) — and *only* those; the facade
 itself compiles in no fallback adapter of its own, and its own resolution
-path names neither `"anthropic"` nor `"openai-compat"` (board item
-01KZHF270T3W8GZ7NM6DSNQ4MM):
+path names neither `"anthropic"` nor `"openai-compat"`:
 
 | `kind` | Adapter | Selects |
 | --- | --- | --- |
@@ -43,11 +42,10 @@ under `crates/`, published as `conway_plugin_backends::AnthropicBackendFactory`/
 embedding path you're on:
 
 - **The shipped `conway` binary** links `conway-plugin-backends` and
-  attaches both factories by default — no `[plugins].install` entry
-  required, unlike every other first-party plugin. `[plugins].
+  attaches both factories by default — no `plugins.install` entry
+  required, unlike every other first-party plugin. `plugins.
   default_backends` (default: `["anthropic", "openai-compat"]`) is the
-  declarative key that makes this happen (owner decision
-  01KZHRPZ010R37411R3W1XR5TF): a backend, unlike a router or a tool
+  declarative key that makes this happen (owner): a backend, unlike a router or a tool
   plugin, has no honest degenerate fallback — an install with no backend
   attached cannot reach a model at all — so this one pair ships on rather
   than opt-in. An operator declines a specific kind by removing its id
@@ -61,11 +59,11 @@ embedding path you're on:
   `conway` itself never does this for you.
 
 **Declining a shipped dialect means something observable, not just a
-smaller install (board item 01KZHF2W8Y1KBM7PJH7R4QQJA0).** Removing a kind
+smaller install.** Removing a kind
 id from `default_backends` — say, dropping `"openai-compat"` — does two
 things: no factory for that kind attaches (the install mechanism above,
 unchanged), *and* the CLI tells `build()` that kind was deliberately
-declined rather than simply never installed. If a `[backends.<id>]` entry
+declined rather than simply never installed. If a `backends.<id>` entry
 still names it, `build()` still fails — a build with zero backends can
 never reach a model, so there is no silent smaller-but-working outcome to
 fall back to (`PluginsConfig::default_backends`'s own doc) — but the
@@ -109,9 +107,8 @@ factory itself, only changes which of the two messages an unresolved
 
 **A third `kind` is a library extension point, not a config typo.** An
 embedder registers a `BackendFactory` under whatever kind name it wants
-(`ConwayBuilder::with_backend_factory`, board item
-01KZHF0RBKJZZC68F7GPFB347Q/01KZHF1E85MS1VF4YH8CDNCP9Z) and a
-`[backends.<id>]` entry naming that kind is resolved to it — the same
+(`ConwayBuilder::with_backend_factory`) and a
+`backends.<id>` entry naming that kind is resolved to it — the same
 extension surface `conway-plugin-backends`'s own two factories use, not a
 privileged, build-time switch on this crate. A `kind` no registered factory
 claims is a hard `build()` error naming the offending value and listing
@@ -418,7 +415,7 @@ page's job is the crate you depend on and a worked example, not restating
 that list a second time.
 
 **Publishing and naming a kind id.** `BackendFactory::id()` returns the
-*kind* string — the same open name `[backends.<id>].kind` (see ["Where a
+*kind* string — the same open name `backends.<id>.kind` (see ["Where a
 backend is declared"](#where-a-backend-is-declared) above) resolves against
 every registered factory, with no privileged set: the two shipped dialects
 resolve through the identical mechanism. Publish your own kind as a `pub
@@ -486,8 +483,7 @@ is trusted with rather than what conway checks for them.
 The strongest claim this page can make is that its example is the same
 code a test compiles, not a fresh retelling. It is: every snippet below is
 lifted verbatim from `crates/conway-thirdparty-backend/src/lib.rs`, a real
-workspace member built for exactly this purpose (board item
-01KZHF3E1ZG3AZ7F7HHVY324T9) — a third-party-shaped `Backend` +
+workspace member built for exactly this purpose — a third-party-shaped `Backend` +
 `BackendFactory` whose own `[dependencies]` name exactly one workspace
 crate, `conway`, so `use conway_core::...` anywhere in it is a hard
 `error[E0433]: failed to resolve`, not a convention a reviewer has to
@@ -522,12 +518,12 @@ use conway::{BackendBuildContext, BackendFactory, CoreConwayError, ModelOverride
 The published kind id, alongside the other ids this fixture uses:
 
 ```rust,ignore
-/// The `[backends.<id>]` JSON key `fixture::write_settings` renders, and
+/// The `backends.<id>` JSON key `fixture::write_settings` renders, and
 /// the `Backend::id()` `ThirdPartyBackendFactory::build` gives back.
 pub const BACKEND_ID: &str = "thirdparty";
 /// The `kind` `fixture::write_settings` names -- an open string
 /// (`ThirdPartyBackendFactory::id()` returns the identical value), never a
-/// closed enum variant (board item 01KZHF1E85MS1VF4YH8CDNCP9Z).
+/// closed enum variant.
 pub const BACKEND_KIND: &str = "thirdparty-stub";
 ```
 
@@ -601,8 +597,7 @@ impl Backend for ThirdPartyBackend {
 
     async fn stream(
         &self,
-        _req: GenerateRequest,
-    ) -> Result<BoxStream<'static, Result<StreamChunk, BackendError>>, BackendError> {
+        _req: GenerateRequest) -> Result<BoxStream<'static, Result<StreamChunk, BackendError>>, BackendError> {
         let response = self.respond();
         let first_delta = match response.content.first() {
             Some(ContentBlock::Text { text }) => StreamChunk::TextDelta(text.clone()),
@@ -627,15 +622,13 @@ impl Backend for ThirdPartyBackend {
     fn admit(
         &self,
         req: &GenerateRequest,
-        headroom_tokens: u32,
-    ) -> Result<Admission, BackendError> {
+        headroom_tokens: u32) -> Result<Admission, BackendError> {
         let est_tokens = estimate_tokens(req);
         check_admission(
             req.model.clone(),
             est_tokens,
             headroom_tokens,
-            self.max_context_tokens,
-        )
+            self.max_context_tokens)
     }
 }
 ```
@@ -659,8 +652,7 @@ fn estimate_tokens(req: &GenerateRequest) -> u32 {
     total.saturating_add(
         u32::try_from(req.tools.len())
             .unwrap_or(u32::MAX)
-            .saturating_mul(16),
-    )
+            .saturating_mul(16))
 }
 ```
 
@@ -715,8 +707,7 @@ pub fn build_conway(dir: &Path, config_path: &Path) -> conway::Result<conway::Co
     let mut env = std::collections::HashMap::new();
     env.insert(
         "XDG_CONFIG_HOME".to_string(),
-        dir.to_string_lossy().into_owned(),
-    );
+        dir.to_string_lossy().into_owned());
     let outcome = conway::config::load(conway::config::LoadOptions {
         cwd: dir.to_path_buf(),
         explicit_path: Some(config_path.to_path_buf()),
@@ -731,7 +722,7 @@ pub fn build_conway(dir: &Path, config_path: &Path) -> conway::Result<conway::Co
 ```
 
 And the `settings.json`/`.conway/models.json` pair this factory resolves
-against — the same `[backends.<id>].kind` shape every dialect on this page
+against — the same `backends.<id>.kind` shape every dialect on this page
 uses, naming a kind no built-in factory claims. `write_settings_with_
 greeting` is the variant that also sets `GREETING_KEY` — the custom key
 beyond `kind` this section exists to demonstrate — leaving everything else
@@ -742,14 +733,12 @@ drift apart on anything but the one entry that differs:
 pub fn write_settings_with_greeting(dir: &std::path::Path, greeting: &str) -> PathBuf {
     write_settings_with_backend_entry(
         dir,
-        serde_json::json!({ "kind": BACKEND_KIND, (GREETING_KEY): greeting }),
-    )
+        serde_json::json!({ "kind": BACKEND_KIND, (GREETING_KEY): greeting }))
 }
 
 fn write_settings_with_backend_entry(
     dir: &std::path::Path,
-    backend_entry: serde_json::Value,
-) -> PathBuf {
+    backend_entry: serde_json::Value) -> PathBuf {
     let chain = format!("{BACKEND_ID}/{MODEL_ID}");
     let settings = serde_json::json!({
         "default_role": "coder",
@@ -776,7 +765,7 @@ fn write_settings_with_backend_entry(
 ```
 
 A `write_settings_with_greeting(dir, "friend")` call therefore renders a
-`[backends.thirdparty]` entry of `{"kind": "thirdparty-stub", "greeting":
+`backends.thirdparty` entry of `{"kind": "thirdparty-stub", "greeting":
 "friend"}` — the `greeting` key is not one of `BackendEntry`'s five typed
 fields, so it lands in that entry's own `extra` map, which is exactly what
 `ThirdPartyBackendFactory::build` (above) reads back out. `fixture::

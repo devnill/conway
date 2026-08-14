@@ -15,8 +15,8 @@ use crate::ids::{AgentId, LogSeq, SegmentId, SeqRange, SessionId, ToolName};
 /// Why a segment of assembled context exists.
 ///
 /// Eleven variants: the original nine of architecture §5.3, plus
-/// [`Provenance::MergedAsk`] (board item B4), plus
-/// [`Provenance::ChildResult`] (board item 01KZQHY6RTMYR4BRDTMQFP9J9R).
+/// [`Provenance::MergedAsk`] (B4), plus
+/// [`Provenance::ChildResult`].
 /// Adding another is a breaking wire-format change and must be treated as
 /// such.
 #[non_exhaustive]
@@ -125,11 +125,29 @@ pub struct ContextReport {
     /// runtime's chars/4 estimate) or a real tokenizer name like
     /// `"cl100k_base"`. Despite the field name, this may be an
     /// estimator, not a true tokenizer (T-9): counts are estimates
-    /// unless a per-entry `estimated` flag says otherwise. WI-087
+    /// unless a per-entry `estimated` flag says otherwise.
     /// asserts this field (there is no separate `estimator` field).
     pub tokenizer: String,
     pub segments: Vec<ContextReportEntry>,
     pub total_tokens_est: u32,
+    /// `call_id`s of tool calls the assembler removed from this turn's
+    /// request because no answering result was present anywhere in it.
+    ///
+    /// A tool call with no result is a request every provider rejects
+    /// outright, so dropping it is not optional -- but dropping it silently
+    /// would make this report describe a context the model never saw. The
+    /// harness does not curate context on its own initiative; where it must
+    /// intervene to produce a sendable request at all, the intervention is
+    /// part of the record rather than behind it.
+    ///
+    /// Empty for the overwhelmingly common case of a settled transcript. A
+    /// non-empty list means the model no longer sees that it made those
+    /// calls and may re-issue them.
+    ///
+    /// `#[serde(default)]`: every session log written before this field
+    /// existed still decodes, with no dropped calls recorded.
+    #[serde(default)]
+    pub dropped: Vec<String>,
 }
 
 /// One segment's entry in a [`ContextReport`].
@@ -307,6 +325,7 @@ mod tests {
                 estimated: true,
             }],
             total_tokens_est: 42,
+            dropped: vec!["call_9".into()],
         };
         let json = serde_json::to_string(&report).unwrap();
         let back: ContextReport = serde_json::from_str(&json).unwrap();

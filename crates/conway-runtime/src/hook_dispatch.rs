@@ -3,8 +3,8 @@
 //!
 //! # The two tiers
 //!
-//! **Observation-only** (board item 01KZS019NHG11RVQYSVT7RG0P5, joined by
-//! board item 01KZYAXSGDS8AP7YK1CN7H680G's `request_assembled`/
+//! **Observation-only** (, joined by
+//!'s `request_assembled`/
 //! `child_reported`): `post_tool_use`, `session_starting`, `child_spawned`,
 //! `request_assembled`, `child_reported`. These cannot say no, and that is
 //! the whole point of them — an operator wanting a log line per command, or
@@ -15,10 +15,10 @@
 //! **`request_assembled`/`child_reported` are observation-only by the SAME
 //! reasoning as their three siblings above, not a new decision.**
 //! `request_assembled` sits at the seam `ContextHook::before_request`
-//! (`agent_loop.rs`, WI-126) already edits the assembled payload at, so a
+//! (`agent_loop.rs`) already edits the assembled payload at, so a
 //! reader could reasonably expect this hook to edit too — it cannot, and
 //! this doc says so rather than leaving that a surprise. A SEPARATE,
-//! still-open board item (01KZRZZP6A4A27R3EN0HQAENBS) covers a configured
+//! still-open covers a configured
 //! script editing assembled context append-only without breaking the prompt
 //! cache; this item does not build that, and shipping `request_assembled`
 //! as observation-only does not foreclose it -- widening `HookAnswer`'s
@@ -29,7 +29,7 @@
 //! `supervisor.rs`), because a hook that only sees the happy path is
 //! misleading about what "a child reporting" means.
 //!
-//! **Deny-capable but never modifying** (board item 01KZS01ZBNEY12DBDNW2Y861SQ):
+//! **Deny-capable but never modifying**:
 //! `prompt_submitted`. It fires BEFORE the prompt is processed, so a hook
 //! here CAN refuse — but it may never rewrite a word of what the user typed.
 //! [`HookDispatcher::dispatch_deny_only`] serves it and returns
@@ -73,7 +73,7 @@
 //!
 //! # `prompt_submitted` may never touch the text
 //!
-//! `.design/extension-architecture.md` §5.8 forbids any participant, hook
+//! the extension design forbids any participant, hook
 //! included, from editing a user's submitted prompt. That is stricter than
 //! the tool-call-arguments rule elsewhere: there, the argument against
 //! rewriting rests partly on a human having approved a specific rendered
@@ -96,7 +96,7 @@
 //! Nothing structurally forces `child_spawned` to be observe-only the way
 //! `post_tool_use` is (there, the call has already run). A spawn COULD in
 //! principle be refused. It is shipped observe-only anyway, because refusing
-//! raises questions board item 01KZS019NHG11RVQYSVT7RG0P5 did not scope: what
+//! raises questions did not scope: what
 //! does the parent agent see when its own spawn is denied — a tool error, a
 //! silent no-op? Does the caller need new error handling? Answering those by
 //! accident, in the shape of a return type, is exactly the trap
@@ -105,7 +105,7 @@
 //! **If that question is settled later, the change is deliberate and visible;
 //! it is not settled here by omission.**
 //!
-//! # Plugin-declared events (board item 01KZS03BFE720EQZG7Q2768N2H)
+//! # Plugin-declared events
 //!
 //! `PHILOSOPHY.md` §5 is explicit that the event vocabulary above is open,
 //! not closed: "A plugin declares the events it emits... Those events sit
@@ -164,8 +164,7 @@ pub struct HookSpec {
     pub id: String,
     pub command: Vec<String>,
     pub timeout_ms: u64,
-    /// The rule's `HookEntry::match_tool` (board item
-    /// 01KZYAWQ6011Q6CJVG6CCMQPF1), carried through untouched. `None`
+    /// The rule's `HookEntry::match_tool` , carried through untouched. `None`
     /// (the config-default) fires this hook for every event it is
     /// subscribed to, unchanged from before this field existed. `Some`
     /// only ever NARROWS which of `event`'s occurrences invoke this hook --
@@ -209,13 +208,13 @@ pub const SESSION_STARTING: &str = "session_starting";
 /// The event name every `child_spawned` subscription is keyed on.
 pub const CHILD_SPAWNED: &str = "child_spawned";
 /// The event name every `request_assembled` subscription is keyed on
-/// (board item 01KZYAXSGDS8AP7YK1CN7H680G). Fired once per turn by
+///. Fired once per turn by
 /// `AgentLoop::run_inner`, after `ContextBuilder::build` (and, if
 /// registered, `ContextHook::before_request`'s own edit) and before that
 /// turn's route/attempt call.
 pub const REQUEST_ASSEMBLED: &str = "request_assembled";
 /// The event name every `child_reported` subscription is keyed on (board
-/// item 01KZYAXSGDS8AP7YK1CN7H680G). Fired for every terminal `AgentResult`
+/// item). Fired for every terminal `AgentResult`
 /// that crosses back to a parent -- both a normal completion
 /// (`AgentLoop::finish`) and a supervisor-synthesized one (`supervisor.rs`,
 /// a panic or a task unresponsive past `supervisor::DEFAULT_GRACE`) --
@@ -225,8 +224,7 @@ pub const REQUEST_ASSEMBLED: &str = "request_assembled";
 /// result to cross back to.
 pub const CHILD_REPORTED: &str = "child_reported";
 
-/// The deny-capable-but-never-modifying event (board item
-/// 01KZS01ZBNEY12DBDNW2Y861SQ). Fires at both prompt-submission call sites.
+/// The deny-capable-but-never-modifying event. Fires at both prompt-submission call sites.
 pub const PROMPT_SUBMITTED: &str = "prompt_submitted";
 
 /// Every observation event this tier dispatches, in one place so a caller
@@ -340,7 +338,7 @@ impl HookDispatcher {
     }
 
     /// The whole subscription map, cloned -- the review-list counterpart of
-    /// [`Self::set_hooks`] (board item 01KZS02HYXGTW42R8G4HP10GHX). Cloning
+    /// [`Self::set_hooks`]. Cloning
     /// the WHOLE map, not one event's list, is deliberate: `Self::set_hooks`
     /// replaces every event's subscriptions wholesale, so a caller that
     /// wants to remove one hook from one event (e.g. `prompt_submitted`,
@@ -381,7 +379,7 @@ impl HookDispatcher {
     }
 
     /// Invokes every hook subscribed to `event` whose [`HookSpec::matcher`]
-    /// (board item 01KZYAWQ6011Q6CJVG6CCMQPF1) is unset or satisfied by
+    /// is unset or satisfied by
     /// `payload`'s `"tool"` field, in configured order.
     ///
     /// **Returns `()` on purpose** — see the module doc. A hook that fails,
@@ -679,7 +677,7 @@ mod tests {
 
     // ---------------------------------------------------------------- matcher --
 
-    /// ACCEPTANCE (board item 01KZYAWQ6011Q6CJVG6CCMQPF1): a `post_tool_use`
+    /// ACCEPTANCE: a `post_tool_use`
     /// rule matching one tool fires for that tool and does NOT fire for
     /// another -- the VERIFICATION ANCHOR, at the unit level (the
     /// integration-level version drives this through a real `ToolRunner`;

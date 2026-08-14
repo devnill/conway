@@ -1,7 +1,7 @@
 //! The nine architecture invariants, as guards pinned at TODAY's values.
 //!
 //! This file is the ratchet for the Stage 0-5 migration recorded in
-//! `.design/HANDOFF-2026-08-12.md`. Board item 01KZVYMMZJPPTFNQT3AEMJMEFH.
+//! the staged migration plan.
 //!
 //! # Why the false ones are asserted as false
 //!
@@ -156,9 +156,9 @@ fn t1_core_depends_on_no_workspace_crate() {
 ///
 /// `containment.rs` calls `canonicalize()`, while the crate's own module doc
 /// opens by claiming the crate performs no I/O. Stage 1.5
-/// (01KZVYJ0MH5D4DKJBCY1XEXSJY) closes this by moving confinement into
+/// closes this by moving confinement into
 /// `conway.fs`, where the check and the open become one step -- specifically
-/// its child 01KZDC30CBY9CPJ8YEM7HSRV0Y, "Retire the harness-level
+/// its child, "Retire the harness-level
 /// confinement root once conway.fs enforces its own", which is the item the
 /// forward-declaration labels name and the one that must delete them.
 ///
@@ -174,7 +174,7 @@ fn t2_core_io_is_confined_to_the_one_known_file() {
          Expected exactly {{containment.rs}}, found {offenders:?}.\n\
          If a file was ADDED: the contract crate must not do I/O -- put it \
          behind a port. If `containment.rs` was REMOVED because Stage 1.5 \
-         (board 01KZVYJ0MH5D4DKJBCY1XEXSJY) landed, this guard has done its \
+         landed, this guard has done its \
          job: replace it with `assert!(offenders.is_empty())` and delete the \
          no-I/O forward-declaration label the Stage 0 labelling item added."
     );
@@ -185,7 +185,7 @@ fn t2_core_io_is_confined_to_the_one_known_file() {
 /// **T3: `conway-core` ships no test doubles. FALSE TODAY.**
 ///
 /// `fakes.rs` is 969 lines of doubles inside the contract crate, behind
-/// `feature = "fakes"`. Stage 1b (01KZVYWNA24EYMPVW3NPGBW51M) extracts them
+/// `feature = "fakes"`. Stage 1b extracts them
 /// into `conway-testkit`.
 ///
 /// Pinned as: the doubles exist, are feature-gated, and there is exactly one
@@ -198,7 +198,7 @@ fn t3_core_doubles_are_the_one_known_gated_module() {
         lib.contains("#[cfg(feature = \"fakes\")]") && lib.contains("pub mod fakes;"),
         "T3 CHANGED: `conway-core`'s doubles module is no longer declared as a \
          `fakes`-gated `pub mod fakes;`.\n\
-         If Stage 1b (board 01KZVYWNA24EYMPVW3NPGBW51M) landed and the module \
+         If Stage 1b landed and the module \
          is gone, this guard has done its job: replace it with an assertion \
          that no doubles module exists in the contract crate at all. If the \
          GATE was removed but the module remains, that is a regression -- \
@@ -226,7 +226,7 @@ fn t3_core_doubles_are_the_one_known_gated_module() {
 /// The runtime has a hard edge to `conway-session`, the JSONL adapter, for two
 /// things that are not JSONL-specific at all: `TranscriptResolver` and the
 /// `provenance::*_context_report` helpers. Stage 1a
-/// (01KZVYVTVWRH20R6VJ6G3SWTJ6) moves both into core and cuts the edge.
+/// moves both into core and cuts the edge.
 ///
 /// Pinned as: exactly one forbidden edge, and it is that one. Fails if the
 /// runtime reaches for a second adapter -- which is how this becomes
@@ -242,7 +242,7 @@ fn t4_runtime_has_exactly_the_one_known_adapter_edge() {
          If an edge was ADDED, that is a regression: the runtime is meant to \
          depend on the contract crate alone, and each new adapter edge is one \
          more thing Stage 1a has to unpick. If `conway-session` is GONE \
-         because Stage 1a (board 01KZVYVTVWRH20R6VJ6G3SWTJ6) landed, this \
+         because Stage 1a landed, this \
          guard has done its job: tighten it to {{conway-core}} and turn T4 on \
          for real."
     );
@@ -260,7 +260,7 @@ fn t4_runtime_has_exactly_the_one_known_adapter_edge() {
 /// the JSONL crate. It governs default *wiring*, not linkage.
 ///
 /// So this guard pins the shape, and the fiction is fixed by Stage 1a
-/// (01KZVYVTVWRH20R6VJ6G3SWTJ6) rather than here. The two are deliberately
+/// rather than here. The two are deliberately
 /// coupled: when T4 flips, this becomes true without being touched. That
 /// item also owns deleting the forward-declaration labels the feature now
 /// carries in `crates/conway/Cargo.toml`, `src/builder.rs`, and
@@ -314,18 +314,18 @@ fn t5_facade_gates_its_adapters_behind_features() {
 /// `crates/conway/src/lib.rs` re-exports `conway_runtime::permission::
 /// GrantScope` roughly forty lines below a module doc that used to deny doing
 /// exactly this -- one file contradicting itself. Stage 2b
-/// (01KZVYZM7BZRQ54RRB8P814KV9) resolves it the tree's way: the re-export
+/// resolves it the tree's way: the re-export
 /// goes, because an audit resolves a mismatch in the code rather than the
 /// page.
 ///
-/// **But not by deletion alone** (board item 01KZVYS0E0H0SKPZ9BM9WYXHTB
-/// settled this; decision 01KZWRZRS9NT929S1WFYWEPMST). The re-export has a
+/// **But not by deletion alone** (
+/// settled this;). The re-export has a
 /// real consumer: `conway-cli` names `conway::GrantScope` at eight sites to
 /// label and revoke a structured-allow rule, and cannot reach it another way
 /// (`no_forbidden_deps`). `conway::PermissionScope` is not a substitute --
 /// it carries no `AgentId`. Stage 2b must land a facade- or core-owned
 /// replacement and move those call sites in the same change;
-/// 01KZWRZ4JBAVCRCZ99BFZFF01K owns that half.
+/// owns that half.
 ///
 /// Pinned as: exactly one such re-export, and it is that one. Fails on a
 /// second -- which would turn a single known contradiction into a pattern.
@@ -345,7 +345,7 @@ fn t6_facade_has_exactly_the_one_known_runtime_reexport() {
          If one was ADDED, that is a regression -- the module doc in this very \
          file denies exposing runtime types, and every addition widens a \
          contradiction Stage 2b is trying to close. If the list is now EMPTY \
-         because Stage 2b (board 01KZVYZM7BZRQ54RRB8P814KV9) landed, this \
+         because Stage 2b landed, this \
          guard has done its job: assert emptiness and delete the \
          forward-declaration label on the module doc."
     );
@@ -358,7 +358,7 @@ fn t6_facade_has_exactly_the_one_known_runtime_reexport() {
 /// Four ratatui-shaped types sit in the embeddable config schema, so a service
 /// or IDE with no terminal still parses and validates roughly 34 slots of
 /// theme and status-line configuration. Stage 2a
-/// (01KZVYYWZ85D1SYMCSRRZ7RAM3) moves them to `conway-cli`.
+/// moves them to `conway-cli`.
 ///
 /// Pinned as: exactly these four. Fails on a fifth -- the schema growing more
 /// terminal vocabulary is precisely the drift this stage exists to stop.
@@ -407,7 +407,7 @@ fn t7_facade_has_exactly_the_four_known_presentation_types() {
          If one was ADDED, that is the regression this guard exists for -- the \
          embeddable schema is growing more terminal vocabulary that every \
          headless host must still parse. If the set is now EMPTY because Stage \
-         2a (board 01KZVYYWZ85D1SYMCSRRZ7RAM3) landed, this guard has done its \
+         2a landed, this guard has done its \
          job: assert emptiness and delete the forward-declaration label. If it \
          SHRANK otherwise, the schema is half-migrated -- move them together."
     );
@@ -421,7 +421,7 @@ fn t7_facade_has_exactly_the_four_known_presentation_types() {
 /// This guard asserts an ASYMMETRY, not a gap, and that distinction is the
 /// whole point of it existing.
 ///
-/// Operator ruling, 2026-08-12, recorded as decision 01KZVZ9SKQ4PXKDE1AKR3X45TK:
+/// Operator ruling, 2026-08-12, recorded as:
 /// `RouteRequest`/`Route`/`RoutingError` stay unexported from the facade. A
 /// router genuinely needs the routing and capability domain that the facade's
 /// curated surface deliberately does not carry -- `Router`/`HealthRegistry`
@@ -445,13 +445,12 @@ fn t8_router_authoring_exception_is_intact_and_deliberate() {
         assert!(
             !reexported,
             "T8 CHANGED: the facade now re-exports `{routing_type}`.\n\
-             This is a RULED PERMANENT EXCEPTION, not an oversight -- see \
-             decision 01KZVZ9SKQ4PXKDE1AKR3X45TK (operator ruling, \
-             2026-08-12). The routing domain is deliberately absent from the \
-             facade's curated surface; `Router`/`HealthRegistry` are on this \
-             crate's own \"Deliberately NOT here\" list. If the ruling has been \
-             REVERSED, reverse it in the decision record first and then update \
-             this guard -- do not let the code and the decision disagree."
+             This is a RULED PERMANENT EXCEPTION, not an oversight. The \
+             routing domain is deliberately absent from the facade's curated \
+             surface; `Router`/`HealthRegistry` are on this crate's own \
+             \"Deliberately NOT here\" list. If that ruling has been REVERSED, \
+             record the reversal first and then update this guard -- do not \
+             let the code and the decision disagree."
         );
     }
 
@@ -469,11 +468,11 @@ fn t8_router_authoring_exception_is_intact_and_deliberate() {
 /// **T9: one command-dispatch path per surface. FALSE TODAY.**
 ///
 /// The TUI intercepts slash commands with direct string comparison before
-/// `commands::parse` ever runs. Stage 5c (01KZVZ5XV162XCQR96AQKCCCF7)
+/// `commands::parse` ever runs. Stage 5c
 /// collapses this to one parser-generated path.
 ///
 /// **The count is FOUR, not two.** The architecture review, and this guard's
-/// own board item, both said two -- `/ask` and `/agents` -- because that is
+/// own, both said two -- `/ask` and `/agents` -- because that is
 /// what `submit`'s doc comment names ("`/ask` and `/agents` are intercepted
 /// HERE, before `commands::parse` ever sees them"). `/settings` and `/trust`
 /// are intercepted the same way and the doc mentions neither. Corrected here
@@ -504,8 +503,7 @@ fn t9_tui_has_exactly_the_four_known_parser_bypasses() {
          If one was ADDED, that is the regression this guard exists for: a \
          fifth command that never reaches `commands::parse` gets none of the \
          parser's validation, completion or help, and Stage 5c has one more \
-         case to absorb. If the set SHRANK because Stage 5c (board \
-         01KZVZ5XV162XCQR96AQKCCCF7) landed, this guard has done its job: \
+         case to absorb. If the set SHRANK because Stage 5c landed, this guard has done its job: \
          assert emptiness and turn T9 on for real.\n\
          Note the doc comment on `submit` names only two of these four."
     );

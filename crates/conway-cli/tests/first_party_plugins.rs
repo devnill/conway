@@ -1,14 +1,14 @@
 //! CLI-level acceptance test for the first-party plugin tier's install
-//! mechanism (board item 01KZDC3JQ7W4DY1MG6MBCVB2DV): `[plugins].install`
+//! mechanism: `[plugins].install`
 //! in `settings.json`, resolved by `conway-cli`'s own
 //! `first_party_plugins::install` before `ConwayBuilder::build`, against the
 //! REAL compiled `conway` binary and a mock OpenAI-compatible server -- no
-//! unit test of the resolution function substitutes for this (P-15: a unit
+//! unit test of the resolution function substitutes for this (: a unit
 //! test is not a liveness test).
 //!
 //! One-shot (`-p`) is the mode driven here; the TUI is not (no headless TUI
 //! driver exists in this suite). This is still full, not partial, coverage
-//! of the "every mode reachable" requirement (C-03/P-8): `conway-cli`'s
+//! of the "every mode reachable" requirement (): `conway-cli`'s
 //! `main::build_conway` is the SINGLE choke point both the TUI and one-shot
 //! dispatch targets call (see that function's own doc comment: `is_tui`
 //! only affects the *built-in* selection, never the first-party-plugin
@@ -19,7 +19,7 @@
 //! same capability takes when no binary is involved at all.
 //!
 //! **The VERIFICATION ANCHOR pair asserts on the announced tool set** --
-//! the exact wording the board item's acceptance criterion uses -- read
+//! the exact wording the's acceptance criterion uses -- read
 //! straight off the real wire request `MockBackend` received
 //! (`request["tools"]`, the identical field `interactive_tools.rs`'s own
 //! `announced_names` helper reads at the library level). This sidesteps a
@@ -34,7 +34,7 @@
 //! legitimate), to prove invocation rather than mere announcement.
 //!
 //! **`default_backends_attach_with_no_plugins_install_entry_and_complete_a_
-//! one_shot_prompt` (board item 01KZHF270T3W8GZ7NM6DSNQ4MM) is this file's
+//! one_shot_prompt` is this file's
 //! second VERIFICATION ANCHOR:** a fresh install with an ordinary
 //! `settings.json` -- no `[plugins]` section at all, the exact fixture
 //! every other test in this file already renders -- must still complete a
@@ -234,7 +234,7 @@ async fn skeleton_tool_is_callable_from_one_shot_once_installed() {
 }
 
 /// An id in `[plugins].install` this binary does not link is a hard config
-/// error (GP-14), never a silent no-op.
+/// error (), never a silent no-op.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn unknown_plugins_install_id_is_a_hard_error() {
     let mock = MockBackend::start(Script(vec![vec![
@@ -256,7 +256,7 @@ async fn unknown_plugins_install_id_is_a_hard_error() {
         stderr.contains("conway.totally_unknown"),
         "the error must name the offending id, got stderr: {stderr}"
     );
-    // Board item 01KZFC2MD1FVNA674YJ9A19T8E: the message widened to list
+    // the message widened to list
     // linked router factory ids alongside linked plugin ids, resolved
     // against `[plugins].install` in the same pass.
     assert!(
@@ -265,16 +265,16 @@ async fn unknown_plugins_install_id_is_a_hard_error() {
     );
     assert!(
         stderr.contains("linked router factories"),
-        "the error must also list linked router factory ids (board item \
-         01KZFC43J1J06BM4CCWKCKHSNV: 'conway.routing' today -- see \
-         first_party_plugins::router_bundle's own doc), got stderr: {stderr}"
+        "the error must also list linked router factory ids: 'conway.routing' \
+         today -- see first_party_plugins::router_bundle's own doc), got \
+         stderr: {stderr}"
     );
     assert!(
         stderr.contains("conway.routing"),
         "the linked router factory list must name the installed router plugin's own \
          published id, got stderr: {stderr}"
     );
-    // Board item 01KZHF270T3W8GZ7NM6DSNQ4MM: the message widened again to
+    // the message widened again to
     // list linked backend factory ids alongside the other two.
     assert!(
         stderr.contains("linked backend factories"),
@@ -286,7 +286,7 @@ async fn unknown_plugins_install_id_is_a_hard_error() {
     );
 }
 
-/// The VERIFICATION ANCHOR for board item 01KZHF270T3W8GZ7NM6DSNQ4MM (this
+/// The VERIFICATION ANCHOR for (this
 /// module's own doc, above): an ORDINARY rendered fixture -- no
 /// `[plugins].install` entry, no `[plugins].default_backends` override, the
 /// exact config every other test in this file also renders -- completes a

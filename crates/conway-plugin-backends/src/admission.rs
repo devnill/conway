@@ -1,6 +1,5 @@
 //! The one estimator both shipped dialects call to turn their OWN
-//! already-built wire body into `est_tokens` (board item
-//! 01KZDC4DKVC4JC3W4KN1WMC43N).
+//! already-built wire body into `est_tokens`.
 //!
 //! `estimate_wire_tokens` is deliberately dialect-agnostic *as a function*
 //! while still yielding a genuinely different answer per dialect for

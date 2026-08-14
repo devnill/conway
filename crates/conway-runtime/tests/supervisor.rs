@@ -1,11 +1,11 @@
-//! Acceptance tests for `AgentTree` and the supervisor (WI-083, architecture
+//! Acceptance tests for `AgentTree` and the supervisor (architecture
 //! §7): attachment/structural lookups, cancellation propagation, and the
 //! guarantee that `await_result` always terminates -- panic containment,
 //! budget-deadline synthesis, and hard cancellation.
 //!
 //! These tests exercise `AgentTree`/`supervisor::supervise` directly against
 //! bare mock tasks (not a real `AgentLoop` -- `agent_loop.rs`/`subagent.rs`
-//! wiring is WI-084's job) so the supervision guarantee itself is proven
+//! wiring is an earlier item's job) so the supervision guarantee itself is proven
 //! independent of any particular agent implementation.
 
 use std::collections::BTreeMap;
@@ -32,7 +32,7 @@ use tokio_util::sync::CancellationToken;
 /// An unwired dispatcher (no runner installed) is a byte-for-byte no-op,
 /// matching every other observation-tier default -- the right default for
 /// every test in this file that is not itself about `child_reported`
-/// (board item 01KZYAXSGDS8AP7YK1CN7H680G).
+///.
 fn no_hooks() -> Arc<HookDispatcher> {
     Arc::new(HookDispatcher::new())
 }
@@ -356,7 +356,7 @@ async fn panic_in_task_resolves_failed_mentioning_panic_within_1s() {
 }
 
 // ---------------------------------------------------------------------
-// `child_reported` on the `Synthesized` branch (board item 01KZYAXSGDS8AP7YK1CN7H680G)
+// `child_reported` on the `Synthesized` branch
 // ---------------------------------------------------------------------
 
 /// ACCEPTANCE: "`child_reported` fires ... for one that is cancelled or
@@ -663,7 +663,7 @@ async fn cancelling_parent_cancels_entire_subtree_and_every_descendant_terminate
 /// Asserts the architecture §8 per-agent lifecycle invariant: the first
 /// envelope bearing `agent` is `AgentSpawned`, and exactly one
 /// `AgentFinished` appears among `events`. Written to be reusable verbatim
-/// by later multi-agent test suites (WI-084/085), which is why it takes a
+/// by later multi-agent test suites, which is why it takes a
 /// plain envelope slice rather than anything specific to this file's
 /// fixtures.
 fn assert_agent_lifecycle_invariants(events: &[Envelope], agent: AgentId) {
@@ -771,12 +771,12 @@ async fn agent_spawned_precedes_and_exactly_one_agent_finished_follows() {
 }
 
 // ---------------------------------------------------------------------
-// The double-AgentFinished race (cycle-2 review F-085 S1): a task racing to
+// The double-AgentFinished race: a task racing to
 // publish its own result concurrently with the supervisor's own
 // grace-timeout synthesis.
 // ---------------------------------------------------------------------
 
-/// Cycle-2 review finding S1: before this fix, `supervise`'s
+/// An earlier review found: finding S1: before this fix, `supervise`'s
 /// `Outcome::Synthesized` branch emitted `Event::AgentFinished`
 /// unconditionally, without checking whether it had actually won
 /// `AgentTree::publish_result`'s CAS. `task.abort()` (used on the

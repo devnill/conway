@@ -1,5 +1,5 @@
 //! Mailboxes: bounded per-agent inbox, oldest-drop overflow policy, and the
-//! primitives `AgentLoop::drain_inbox` (`agent_loop.rs`, WI-085) uses to give
+//! primitives `AgentLoop::drain_inbox` (`agent_loop.rs`) uses to give
 //! steering its turn-boundary landing guarantee "by construction"
 //! (architecture §6.2/§6.3).
 //!
@@ -39,13 +39,13 @@
 //! ## `AgentMessage::Result`: a BLOCKING waiter resolves via `AgentTree`,
 //! everyone else observes the persisted record
 //!
-//! Cycle-2 review (F-085 S2): an earlier revision of this module shipped a
+//! An earlier review found: an earlier revision of this module shipped a
 //! `PendingSubagents` map (`AgentId` -> `oneshot::Sender<AgentResult>`) and
 //! a `resolve_pending_subagent` helper, meant to resolve a parent's pending
 //! `conway_fork`/`conway_spawn` tool call when a child's `Result` drained. Nothing in
 //! production ever populated that map: `conway-tools`' subagent wait path
 //! resolves exclusively through `SubagentHost::await_result` ->
-//! `AgentTree::await_result` (WI-083, `tree.rs`), a `watch`-channel-backed
+//! `AgentTree::await_result` (`tree.rs`), a `watch`-channel-backed
 //! wait that is strictly more robust than a per-drain `oneshot` map entry
 //! would have been -- it survives a panic or a deadline-driven synthesis
 //! (`supervisor.rs`), and it does not require the waiter to have registered
@@ -55,7 +55,7 @@
 //! caller that DID block on a specific child by id keeps resolving exactly
 //! as before.
 //!
-//! What WAS missing (board item 01KZQHY6RTMYR4BRDTMQFP9J9R): a parent that
+//! What WAS missing: a parent that
 //! started several children and never blocked on any one of them by id had no
 //! way to learn that any had finished -- the child's `AgentMessage:: Result`
 //! landed in the parent's mailbox, got classified, and was discarded.
@@ -74,7 +74,7 @@
 //!
 //! ## Overflow policy: only an evicted `Steer` is `Event::SteerDropped`
 //!
-//! Cycle-2 review (F-085 S3): a full inbox's oldest entry is evicted
+//! An earlier review found: a full inbox's oldest entry is evicted
 //! regardless of kind (see [`MailboxSender::send`]), but only when the
 //! EVICTED message is itself a `Steer` does that eviction produce
 //! `Event::SteerDropped` -- reporting a steer as dropped when what was
@@ -107,7 +107,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::events::EventBus;
 
-/// The inbox capacity every real agent in the runtime uses (WI-085
+/// The inbox capacity every real agent in the runtime uses (
 /// criterion: `Mailbox::new(capacity)` with runtime capacity 64).
 pub const RUNTIME_CAPACITY: usize = 64;
 
@@ -139,7 +139,7 @@ struct MailboxEvents {
 pub struct Mailbox;
 
 impl Mailbox {
-    /// Criterion-pinned signature (WI-085): `Mailbox` itself is never
+    /// Criterion-pinned signature: `Mailbox` itself is never
     /// constructed -- it exists only to namespace this constructor, so `new`
     /// returns the sender/receiver pair rather than `Self`.
     #[allow(clippy::new_ret_no_self)]
@@ -312,8 +312,8 @@ impl MailboxReceiver {
 //
 // REOPEN THIS if `DrainEffect` acquires a construction site inside a hot loop
 // -- per-token, per-tool-call, or per-agent in a wide fan-out -- or if a
-// measurement shows the stack cost is real. Board item
-// 01KZW92NWQNSR4SYZ2RXQ18XKG records the reasoning and what would change it.
+// measurement shows the stack cost is real.
+// records the reasoning and what would change it.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum DrainEffect {
@@ -374,7 +374,7 @@ pub fn classify(msg: AgentMessage) -> DrainEffect {
         } => DrainEffect::SoftCancel { reason },
         AgentMessage::Cancel { hard: true, .. } => DrainEffect::HardCancelAcknowledged,
         AgentMessage::Progress { note, .. } => DrainEffect::Progress { note },
-        // Board item 01KZQHY6RTMYR4BRDTMQFP9J9R: a drained
+        // a drained
         // `AgentMessage::Result` now persists into THIS agent's (the
         // parent's) own log, the same `DrainEffect::Persist` path
         // `AgentMessage::Steer` already takes -- see the module doc. `from`
@@ -504,7 +504,7 @@ mod tests {
         ));
     }
 
-    /// Board item 01KZQHY6RTMYR4BRDTMQFP9J9R: the persisted record carries
+    /// The persisted record carries
     /// the originating child's id (both at the top level and inside
     /// `result`) and its provenance is `ChildResult`, never anything that
     /// would misattribute the child's output as parent-authored.

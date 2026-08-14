@@ -8,7 +8,7 @@ latter.
 
 Depends on [`concepts.md`](concepts.md) for vocabulary. Most of what this
 page states concretely applies to a wire protocol that does not exist yet
-(`.design/d1-transport.md` is a design spike, not implemented) — every claim
+(the out-of-process transport design is a design spike, not implemented) — every claim
 below says plainly whether it describes something enforced in the tree today
 or a decided rule for the transport once it lands, the same labeling
 discipline [`hooks.md`](hooks.md) uses throughout.
@@ -42,7 +42,7 @@ treatment:
   refusal naming the field. `crates/conway/src/config/schema.rs`,
   `crates/conway/src/agents.rs`'s frontmatter, and
   `crates/conway-plugin-backends/src/profile.rs`'s `ProfileRaw` all set the
-  attribute directly. As of board item 01KZHVDDQQ7XT0RK3JVNM2YV83,
+  attribute directly. As of,
   `crates/conway-core/src/permission_pattern.rs`'s `RawPermissionFile` — the
   type `permissions.json` is actually loaded through — reaches the SAME
   observable outcome (a loud, named error for an unrecognized key) by a
@@ -56,7 +56,7 @@ treatment:
   own family — `PermissionFile` — that deliberately stays lenient, and why).
 
 **This gap is closed for `permissions.json`, and deliberately NOT closed the
-same way for `trust.json` — board item 01KZHVDDQQ7XT0RK3JVNM2YV83.** The
+same way for `trust.json` —.** The
 type that actually deserializes a permissions file being loaded for
 installation is `RawPermissionFile`, the private struct inside
 `conway_core::permission_pattern::parse_permission_file` — not the public
@@ -129,7 +129,7 @@ restrictive value" the wire-level rule below generalizes.
 
 ### The wire protocol, once it exists — decided design, not yet code
 
-`.design/d3-wire-vocabulary.md` §2.2/§3.1 settles the rules a future
+the wire-vocabulary design settles the rules a future
 out-of-process plugin transport must follow. Concrete, and cited here so a
 future implementation is built against a decision, not a vibe:
 
@@ -169,7 +169,7 @@ against this reference needs the rule the same way `hooks.md` documents
 `permission.policy/1`'s contract ahead of its implementation: labeled,
 decided, and precise enough to implement without re-litigating.
 
-**Decision `01KYTP2QYE00FJSQAQQ0E37JZP`** (settling the hook-first
+**Decision** (settling the hook-first
 redirect's four open questions) bears on this page only through what it
 already settled elsewhere in the set: `concepts.md`'s "Fork vs spawn"
 section states the resulting per-registration `subagent_mode` declaration
@@ -186,7 +186,7 @@ than silently skipped.
   because it is the surface third-party plugins depend on."* This is the
   surface an in-process plugin author is actually building against, and it
   is the one this project is most deliberate about not letting churn.
-- **`conway::plugin`'s export set** (landed as board item F8,
+- **`conway::plugin`'s export set** (landed as F8,
   `crates/conway/src/lib.rs`) is a curated re-export, not a second surface
   with its own promise: every name in it is sourced from `conway-core`
   (`conway_core::ports`, `conway_core::content`, `conway_core::error`,
@@ -232,7 +232,7 @@ frame between two programs must survive a newer peer.**
 ## Deprecation
 
 **No point, field, or capability in this set has actually been retired
-yet**, and there is no board item ruling a formal deprecation *procedure*
+yet**, and there is no ruling a formal deprecation *procedure*
 (a warning period, a required runtime notice, a minimum number of minor
 releases before removal) — searched and confirmed absent. What follows is
 the policy this page can state with confidence from what's already ruled
@@ -252,7 +252,7 @@ elsewhere, not an exercised procedure:
 - **The closest live precedent for a surface moving out from under a
   consumer** is not a deprecation but a relocation: `conway-routing`'s
   engine moved from a mandatory workspace crate into the installable
-  first-party plugin tier (board item `01KZFC43J1J06BM4CCWKCKHSNV`), and
+  first-party plugin tier, and
   `conway_plugin_backends::config::Dialect`'s five-variant convenience enum was kept
   working for every existing call site rather than replaced outright when
   provider profiles became data (`crates/conway-plugin-backends/src/profile.rs`'s

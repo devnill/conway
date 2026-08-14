@@ -1,14 +1,14 @@
 //! `SessionHandle`, `TurnHandle`, `SessionSpec`: the Slice 1 consumer-facing
-//! surface over one running `conway-runtime::Runtime` session (WI-101).
+//! surface over one running `conway-runtime::Runtime` session.
 //!
 //! All `SessionHandle` methods are thin delegations to `Runtime`; no method
 //! takes `&mut self` -- every state change routes through the runtime, not
 //! through local mutation.
 //!
-//! **Relocation note (disclosed, per WI-100's own F-100-1 deviation #3):**
+//! **Relocation note (disclosed, per its own deviation #3):**
 //! `SessionHandle` and `SessionSpec` were previously a minimal stub living
-//! in `crate::conway` (WI-100 landed only `id()`/`root()`, with an explicit
-//! comment that WI-101 owns moving them here). This file is that move,
+//! in `crate::conway` (landed only `id()`/`root()`, with an explicit
+//! comment that an earlier item owns moving them here). This file is that move,
 //! plus the full surface this item specifies.
 
 use std::future::poll_fn;
@@ -47,7 +47,7 @@ use crate::subagent_spec::{ForkSpec, SpawnSpec};
 /// `Default` impl returns.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SessionSpec {
-    /// Overrides the store-assigned session id (WI-119). `None` mints a
+    /// Overrides the store-assigned session id. `None` mints a
     /// fresh [`SessionId`] as before; `Some` is passed straight through to
     /// `RootSpec::session`, so `Runtime::start_root`'s own internal
     /// `store.create` becomes the single, authoritative creation call under
@@ -55,7 +55,7 @@ pub struct SessionSpec {
     pub id: Option<SessionId>,
     pub agent_def: Option<String>,
     pub role: Option<RoleAlias>,
-    /// Pins the model for this session, overriding the role's chain (WI-128).
+    /// Pins the model for this session, overriding the role's chain.
     /// Passed straight through to `RootSpec::model`, which `start_root`
     /// prefers over the `agent_def`-sourced pin (see that field's own doc).
     pub model: Option<ModelRef>,
@@ -149,7 +149,7 @@ impl SessionHandle {
     /// keep_alive`/`ForkSpec::keep_alive`), this is how it drives that
     /// child's turns directly, exactly the way `prompt` drives the root's.
     ///
-    /// `Runtime::prompt(agent, text)` already accepts any agent id (WI-118's
+    /// `Runtime::prompt(agent, text)` already accepts any agent id (an earlier item's
     /// generalization, unmodified by this item) -- this method is a thin
     /// wrapper that additionally resolves `agent`'s owning `SessionId` (via
     /// `Self::resolve_agent_session`, the same resolution
@@ -175,7 +175,7 @@ impl SessionHandle {
     /// since a fork always does -- and drives the child's first (and only)
     /// turn with `text`.
     ///
-    /// **Attach semantics (board item B2):** the child goes through the
+    /// **Attach semantics (B2):** the child goes through the
     /// runtime's own subagent machinery (`SubagentHost::start`, the same
     /// path `SessionHandle::fork` and the `conway_ask` tool already use),
     /// NOT the `fork_child` -> `resume_root` sequence this method used
@@ -219,7 +219,7 @@ impl SessionHandle {
     /// `fork_child` fallback did), so the child resolves the same system
     /// prompt and tool selector this session's own agent runs with;
     /// `role: None` lets `SubagentHost::start` inherit the parent's
-    /// effective role itself (its WI-136 fallback). Tool calls the child
+    /// effective role itself (its an earlier item fallback). Tool calls the child
     /// makes during the ask are real and permanent -- only the transcript
     /// is ephemeral; that is intended, not a gap (a throwaway *question*
     /// does not imply throwaway tool side effects).
@@ -250,7 +250,7 @@ impl SessionHandle {
             // registry the parent's own start did.
             agent_def: parent_meta.agent_def.map(AgentDefRef),
             // `None` -> the runtime inherits the parent's effective role
-            // (`subagent.rs`'s WI-136 fallback), same routing as the asker.
+            // (`subagent.rs`'s an earlier item fallback), same routing as the asker.
             role: None,
             tools: None,
             budget: Budget::default(),
@@ -271,14 +271,14 @@ impl SessionHandle {
             cwd: None,
             // (S3) Same rationale -- inherit its root too.
             root: None,
-            // (01KZQJ03ZQ22MPM9H2TW1350ZF) A modal `/ask` has no
+            // A modal `/ask` has no
             // embedder-supplied correlation identifier of its own -- no tag.
             tag: None,
         };
         // Subscribe BEFORE `start` so the child's first events cannot race
         // past this handle's stream (see the doc above).
         let live = self.rt.subscribe();
-        // Board item 01KYTP0PGKJ4VCJP5TD39A1WHF: `caller` and `parent`
+        // `caller` and `parent`
         // are both `self.root` -- a modal `/ask` always forks the SESSION's
         // own root, mirroring `steer`/`await_agent`/`cancel`'s own
         // root/operator-exemption doc below.
@@ -359,7 +359,7 @@ impl SessionHandle {
     /// records (`[0, head)` of its own session, NOT the ancestry-prefixed
     /// effective view -- see the "Own records only" note below), replayed
     /// as synthesized envelopes, followed by that agent's live event stream
-    /// (WI-140: "switching the focused agent switches the transcript to
+    /// ("switching the focused agent switches the transcript to
     /// that agent's conversation").
     ///
     /// This is [`SessionHandle::events_from`]'s own no-gap-first ordering,
@@ -401,7 +401,7 @@ impl SessionHandle {
     /// holds its `AgentId` may still resolve it) is observable here too.
     ///
     /// **Own records only, NOT the ancestry-prefixed effective transcript
-    /// (bug 4 fix, decision 01KYAN6AHFG9JHQ6D2FAYCNFZJ):** the replay batch
+    /// (bug 4 fix):** the replay batch
     /// below reads `agent`'s own session, `[0, head)` -- exactly the same
     /// read [`Self::session_usage`] already performs, and for the same
     /// reason that method's doc explains: an inherited fork/spawn prefix is
@@ -467,7 +467,7 @@ impl SessionHandle {
     }
 
     /// The persisted `ContextReport` for `agent`'s historical `turn`
-    /// (carried from the capstone review, F-114-1-adjacent): a thin
+    /// (carried from the capstone review-adjacent): a thin
     /// delegation to `Runtime::context_report_at`, which -- unlike
     /// `context_report` above -- reads durably from the store rather than
     /// the live `last_report` slot, so it works even across a process
@@ -530,8 +530,7 @@ impl SessionHandle {
         }))
     }
 
-    /// Cumulative token spend for `agent`'s OWN turns (board item
-    /// 01KYAGP11FF9YC3G60TWHHKKST -- the TUI status line's per-agent
+    /// Cumulative token spend for `agent`'s OWN turns (/// -- the TUI status line's per-agent
     /// counter): sums the `usage` of every `LogRecord::Assistant` record in
     /// `agent`'s own session log.
     ///
@@ -572,12 +571,12 @@ impl SessionHandle {
     ///
     /// **Reconciliation (disclosed):** this item's binding notes name
     /// `conway_session::TranscriptResolver` as the mechanism. It cannot be
-    /// used directly here: `crates/conway/Cargo.toml` (WI-096, out of this
+    /// used directly here: `crates/conway/Cargo.toml` (out of this
     /// item's file scope) gates this crate's own direct `conway-session`
     /// dependency behind the optional `jsonl-store` feature -- which is a
     /// gate on NAMING `conway_session::` from this crate, not on linking it,
     /// since `conway-runtime` depends on it unconditionally (forward
-    /// declaration, board 01KZVYVTVWRH20R6VJ6G3SWTJ6). The reconciliation
+    /// declaration, board). The reconciliation
     /// below is unaffected either way: `SessionHandle` is core surface
     /// and must stay feature-independent (this item's own test matrix runs
     /// `--no-default-features`). Depending on `conway_session::` here
@@ -681,9 +680,9 @@ impl SessionHandle {
 }
 
 // ---------------------------------------------------------------------
-// WI-102: subagent surface (fork/spawn/steer/await_agent/cancel).
+// Subagent surface (fork/spawn/steer/await_agent/cancel).
 //
-// Pure delegation to `Runtime`'s `impl SubagentHost` (conway-runtime, WI-084)
+// Pure delegation to `Runtime`'s `impl SubagentHost` (conway-runtime)
 // -- see `crate::subagent_spec` for `ForkSpec`/`SpawnSpec` and their `From`
 // conversions into `conway_core::agent::SubagentSpec`. Fork and spawn stay
 // visibly distinct types: `fork` inherits the forker's entire context plus a
@@ -700,7 +699,7 @@ impl SessionHandle {
 // check that (see that test for the exact identifiers, deliberately not
 // spelled out here so the rule this comment describes doesn't itself trip
 // the check it describes). It is scoped to this block rather than the
-// whole file because the methods above this marker (WI-101, unmodified by
+// whole file because the methods above this marker (unmodified by
 // this item) already reference one of those types legitimately, for a
 // concern this item has nothing to do with.
 // ---------------------------------------------------------------------
@@ -734,7 +733,7 @@ impl SessionHandle {
     /// `SessionHandle::ensure_agent_in_session`'s doc for exactly what error
     /// that produces (`RuntimeError::AgentNotFound` vs. `AgentNotInSession`).
     ///
-    /// **`caller` (board item 01KYTP0PGKJ4VCJP5TD39A1WHF):** `self.root` is
+    /// **`caller`:** `self.root` is
     /// passed as `caller` to the trait's own `caller`-owns-`parent` check --
     /// see `steer`'s own doc for the root/operator-exemption mechanism this
     /// mirrors exactly. Not a bypass: `from` was already proven to be in
@@ -756,7 +755,7 @@ impl SessionHandle {
     /// belong to this session's agent tree -- see
     /// `SessionHandle::ensure_agent_in_session`'s doc.
     ///
-    /// **`caller` (board item 01KYTP0PGKJ4VCJP5TD39A1WHF):** `self.root` is
+    /// **`caller`:** `self.root` is
     /// passed as `caller`, exactly like [`Self::fork`] above -- see that
     /// method's own doc for why this is not a bypass.
     ///
@@ -779,7 +778,7 @@ impl SessionHandle {
     }
 
     /// Delivers `text` to `target` as a steer message, landing at `target`'s
-    /// next turn boundary (WI-085). Delegates to `Runtime::steer` (`impl
+    /// next turn boundary. Delegates to `Runtime::steer` (`impl
     /// SubagentHost`) with `text` converted and otherwise unmodified.
     ///
     /// Rejects `target` with `Err(ConwayError::Runtime)` when it does not
@@ -790,7 +789,7 @@ impl SessionHandle {
     /// `SessionHandle::ensure_agent_in_session`'s doc for exactly what error
     /// that produces (`RuntimeError::AgentNotFound` vs. `AgentNotInSession`).
     ///
-    /// **Root/operator exemption (board item 01KYT8TS0EBKJHYNJRF6S88NRH):**
+    /// **Root/operator exemption:**
     /// `self.root` is passed as `caller` to the trait's own descendancy
     /// check (`SubagentHost`'s own doc). This is not a bypass -- `target`
     /// was already proven to be in `self.root`'s subtree by
@@ -829,8 +828,7 @@ impl SessionHandle {
             .map_err(ConwayError::Runtime)
     }
 
-    /// Cancels `target` with `reason`, immediately (board item
-    /// 01KZDC2222ARKMZKN8ZE4BYHD6) -- delegates to [`Self::cancel_with`]
+    /// Cancels `target` with `reason`, immediately -- delegates to [`Self::cancel_with`]
     /// with [`CancelMode::Immediate`], the pre-existing behavior, so every
     /// caller of this method keeps its exact prior semantics without
     /// needing to name a mode.
@@ -839,8 +837,7 @@ impl SessionHandle {
             .await
     }
 
-    /// Cancels `target` with `reason`, in `mode` (board item
-    /// 01KZDC2222ARKMZKN8ZE4BYHD6) -- the primitive [`Self::cancel`]
+    /// Cancels `target` with `reason`, in `mode` -- the primitive [`Self::cancel`]
     /// delegates to. `CancelMode::Immediate` trips `target`'s
     /// `CancellationToken` now and propagates to `target`'s whole subtree,
     /// structurally (`tree.rs`: every child's own token is a
@@ -894,7 +891,7 @@ impl SessionHandle {
 
     /// Verifies `agent` is reachable from `self.root` by walking
     /// `AgentNode.parent` links in `Runtime::tree()`'s snapshot -- the
-    /// "session-ownership check" the WI-102 binding notes describe. Called
+    /// "session-ownership check" the binding notes describe. Called
     /// as the first step of every method above that takes an `AgentId` not
     /// already known to be `self.root` (`fork`, `spawn`, `steer`,
     /// `await_agent`, `cancel`): `Arc<Runtime>` is shared across every
@@ -908,7 +905,7 @@ impl SessionHandle {
     /// child's `AgentNode.session` is never equal to `self.session` -- only
     /// reachability via `parent` proves membership in this handle's tree.
     ///
-    /// **F-102-1, resolved (WI-119):** `conway_core::error::RuntimeError`
+    /// **, resolved:** `conway_core::error::RuntimeError`
     /// now has a dedicated `AgentNotInSession { agent, session }` variant
     /// (rendering `"agent {agent} does not belong to session {session}"`),
     /// added specifically to close the gap this method's previous doc
@@ -982,7 +979,7 @@ impl SessionHandle {
 /// criteria do not exercise. Left as explicit follow-up rather than folded
 /// in silently.
 ///
-/// **`Assistant` -> `Event::TextDelta`, not `Event::TurnFinished` (WI-140
+/// **`Assistant` -> `Event::TextDelta`, not `Event::TurnFinished` (
 /// review fix, was the opposite -- see this arm's own inline doc):** a bare
 /// `TurnFinished{usage, stop}` carries no reply text, and nothing downstream
 /// (`conway-cli`'s `AppState::apply`) turns one into visible transcript
@@ -1018,7 +1015,7 @@ fn record_to_event(record: &LogRecord) -> Option<(LogSeq, DateTime<Utc>, Event)>
         } => Some((
             *seq,
             *ts,
-            // **Fixed (was `Event::TurnFinished{usage, stop}`, WI-140
+            // **Fixed (was `Event::TurnFinished{usage, stop}`
             // review finding 1, CRITICAL):** that mapping discarded the
             // reply text entirely, so a focus-switch replay showed no
             // assistant dialogue at all -- `AppState::apply` has no arm
@@ -1108,7 +1105,7 @@ fn record_to_event(record: &LogRecord) -> Option<(LogSeq, DateTime<Utc>, Event)>
                 ),
             },
         )),
-        // 01KZQHY6RTMYR4BRDTMQFP9J9R: a child's result recorded into this
+        //: a child's result recorded into this
         // (the parent's) log -- same `AgentProgress` fallback shape as
         // `ForkDirective`/`ParentSteer`/`ContextReportRecord` above, not a
         // faithful `AgentFinished` (that event describes the RECORD-OWNING

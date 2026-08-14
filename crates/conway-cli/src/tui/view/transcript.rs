@@ -1,4 +1,4 @@
-//! The conversation stream (WI-127 criteria 1 & 2): a plain, borderless
+//! The conversation stream (criteria 1 & 2): a plain, borderless
 //! `Paragraph` of [`entry_lines`] output.
 //!
 //! **Clean-copy guarantee (criterion 2):** [`draw`] renders `Paragraph::new`
@@ -14,7 +14,7 @@
 //! visual divider is ever needed, use blank-line spacing or styling, never
 //! a border/rule glyph.
 //!
-//! **Mouse-wheel decision (see decision 01KYKDKYJEATSYXM7YS1C17HHA, as
+//! **Mouse-wheel decision (see, as
 //! amended by V3):** crossterm mouse capture is NOT enabled. Enabling it
 //! would deliver `MouseEventKind::ScrollUp`/`ScrollDown` directly, but it
 //! also disables the terminal's own click-drag text selection (a captured
@@ -52,7 +52,7 @@ use crate::tui::state::{Activity, AppState, Entry, NodeStatus, ToolStatus};
 /// Responding`. This is a render-time decoration ONLY -- it is never baked
 /// into the stored `Entry::Assistant` text or into [`entry_lines`] output
 /// for settled entries (the clean-copy invariant, decision
-/// 01KYJFB983G6KH491ZKYYHYM1K, is RELAXED only for the actively-streaming
+///, is RELAXED only for the actively-streaming
 /// line per decision D-clean-copy). See [`build_paragraph`] for the
 /// append-at-render-time mechanism that keeps settled `entry_lines` output
 /// unchanged.
@@ -375,7 +375,7 @@ pub fn entry_lines(
             .split('\n')
             .map(|line| Line::from(Span::styled(line.to_string(), theme.notice)))
             .collect(),
-        // board item 01KYND6GCCKYSYD0VDGJD1ZCXG: the one place the
+        //: the one place the
         // fatal-vs-notice severity decision is made. `fatal_error`
         // (Red+Bold) for `Event::Error { fatal: true }` -- the loudest thing
         // the harness can say; `error` (Red, no bold) for `fatal: false` --
@@ -633,7 +633,7 @@ fn tool_status_style(status: ToolStatus, theme: &Theme) -> (&'static str, Style)
     }
 }
 
-/// Subagent lifecycle, inline in the stream (WI-127 criterion 4).
+/// Subagent lifecycle, inline in the stream (criterion 4).
 fn agent_line(label: &str, status: NodeStatus, theme: &Theme) -> Line<'static> {
     let (tag, style) = node_status_style(status, theme);
     Line::from(vec![
@@ -999,7 +999,7 @@ mod tests {
         assert_eq!(plain_text(&lines[1]), "notice two");
     }
 
-    // ---- board item 01KYND6GCCKYSYD0VDGJD1ZCXG: `Entry::Error` severity ----
+    // ----: `Entry::Error` severity ----
 
     /// A fatal error (`Entry::Error { fatal: true }`) renders in
     /// `theme.fatal_error` -- distinct from `theme.notice`'s cyan, and from

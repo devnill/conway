@@ -1,4 +1,4 @@
-//! Shared test harness for the one-shot integration suite (WI-113): the
+//! Shared test harness for the one-shot integration suite: the
 //! [`mock_backend`] module plus [`run_conway`]/[`spawn_conway`], which
 //! template `fixtures/conway.json.tmpl` into a fresh `TempDir` pointed at a
 //! live [`mock_backend::MockHandle`] and drive the real compiled `conway`
@@ -27,7 +27,7 @@ use mock_backend::MockHandle;
 /// bakes in a `roles.coder = { chain = [] }` at the lowest merge layer, and
 /// routing validation rejects an empty chain on ANY role, not just
 /// `default_role` -- see `cli_surface.rs::MINIMAL_CONFIG`'s identical note
-/// (F-111-1). Without it, `build()` fails with EmptyChain before dispatch
+///. Without it, `build()` fails with EmptyChain before dispatch
 /// ever reaches one-shot mode.
 const TEMPLATE: &str = include_str!("../fixtures/conway.json.tmpl");
 

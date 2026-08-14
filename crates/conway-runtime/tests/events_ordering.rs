@@ -1,4 +1,4 @@
-//! Event bus ordering and back-pressure guarantees (WI-076 criteria).
+//! Event bus ordering and back-pressure guarantees (criteria).
 
 use std::time::Duration;
 

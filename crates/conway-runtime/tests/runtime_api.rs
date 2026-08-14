@@ -1,4 +1,4 @@
-//! Acceptance tests for `Runtime` (WI-082, architecture §4, §7): the
+//! Acceptance tests for `Runtime` (architecture §4, §7): the
 //! facade's dependency injection, root-agent lifecycle, and public surface
 //! (`start_root`, `prompt`, `cancel`, `subscribe`, `context_report`,
 //! `tree`).
@@ -224,7 +224,7 @@ impl Plugin for FakePlugin {
 
 /// Builds a `Runtime` whose `RuntimeDeps` is constructed entirely from
 /// `conway-core` fakes (`FakeStore`, `FakeGate`, `FakeHealth`) plus
-/// `FakeRouter` and the given backend/plugins -- the WI-082 compile-check
+/// `FakeRouter` and the given backend/plugins -- the compile-check
 /// criterion in living form. `RuntimeDeps` has no `subagents` field:
 /// `Runtime::new` wires its own private `NoSubagentHost` stub in (see
 /// `runtime.rs`'s module doc). Returns the runtime plus the backing store,

@@ -1,12 +1,11 @@
-//! A per-endpoint circuit breaker (WI-033, Olla pattern): a `Transport`
+//! A per-endpoint circuit breaker (Olla pattern): a `Transport`
 //! breaker fed by request-path failures. All endpoint health *state* lives
 //! here; routing *policy* never mutates it — `state`/`kind_state` are
 //! read-only by construction (`&self`, read lock, expiry derived from the
 //! clock on read).
 //!
 //! **A second, independent `Probe` breaker fed by a periodic health prober
-//! used to live alongside this one; it was retired, not wired (board item
-//! `01KZ802GSF692EKYKQ2TTVCJB8`)** — the prober that would have fed it had
+//! used to live alongside this one; it was retired, not wired ** — the prober that would have fed it had
 //! no production call site, and the Transport breaker alone already handles
 //! recovery (a clock read takes it half-open; the next real request
 //! retries). `merged_state` below is a one-arm merge now, kept as its own
@@ -192,7 +191,7 @@ impl BreakerRegistry {
     }
 
     /// Merged view. A single breaker remains (the `Probe` breaker was
-    /// retired — board item `01KZ802GSF692EKYKQ2TTVCJB8`), so this is now a
+    /// retired —), so this is now a
     /// direct passthrough of the Transport breaker's own state.
     fn merged_state(&self, ep: &EndpointId) -> BreakerState {
         self.kind_state(ep, BreakerKind::Transport)
@@ -446,7 +445,7 @@ mod tests {
     }
 
     /// A single breaker survives (the `Probe` breaker was retired — board
-    /// item `01KZ802GSF692EKYKQ2TTVCJB8`), so the merged view is now a
+    /// item), so the merged view is now a
     /// direct passthrough of the Transport breaker's own state.
     #[test]
     fn merged_state_passes_through_the_transport_breaker() {

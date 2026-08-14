@@ -1,4 +1,4 @@
-//! `ConwayBuilder::install_selected` (board item 01KZVZ1TDBHS7S604PQB5RZDM3):
+//! `ConwayBuilder::install_selected`:
 //! plugin assembly as a facade capability over CALLER-SUPPLIED bundles,
 //! collapsing `crates/conway-cli/src/first_party_plugins.rs`'s ~70-line
 //! hand-rolled resolution onto one method any embedder can call. This file
@@ -407,7 +407,7 @@ fn empty_resolved_id_set_is_not_an_error_and_consults_no_bundle() {
 }
 
 /// `install_selected` also calls `with_declined_backend_kinds` unconditionally
-/// (board item 01KZHF2W8Y1KBM7PJH7R4QQJA0's mechanism), naming every
+/// ('s mechanism), naming every
 /// supplied backend-factory id the resolved id set does not select --
 /// mirroring `crates/conway/tests/builder.rs`'s own
 /// `declined_backend_kind_error_is_distinct_from_unknown_backend_kind_error`,

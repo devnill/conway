@@ -6,7 +6,7 @@
 //!
 //! `HttpClient` itself is not yet constructed anywhere outside this
 //! module's own tests: the adapters that build one (`AnthropicBackend`,
-//! `OpenAiCompatBackend`) are later work items (WI-019, WI-021). The
+//! `OpenAiCompatBackend`) are later work items. The
 //! `#[allow(dead_code)]` below is scoped to this file for exactly that
 //! reason and should be revisited once those adapters land.
 
@@ -38,7 +38,7 @@ const MAX_RATE_LIMIT_SLEEP: Duration = Duration::from_secs(30);
 /// `conway-backends`'s `Provides`).
 pub(crate) struct HttpClient {
     inner: reqwest::Client,
-    /// Consulted by adapter constructors (WI-019, WI-021) when building
+    /// Consulted by adapter constructors when building
     /// per-request timeouts; not read directly by `send_with_retry`, which
     /// operates on requests the caller has already configured via `make`.
     timeout: Duration,

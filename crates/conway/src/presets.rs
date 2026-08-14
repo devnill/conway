@@ -1,4 +1,4 @@
-//! Preset plugin and permission-config registration helpers (WI-098).
+//! Preset plugin and permission-config registration helpers.
 //!
 //! Contains no logic beyond delegation and defaults — no plugin registered
 //! here is privileged over one an embedder supplies via
@@ -11,7 +11,7 @@ use crate::config::schema::{PermissionMode, PermissionsConfig};
 ///
 /// **Not every candidate returned here necessarily ends up registered.**
 /// `ConwayBuilder::build` filters this list through a `PluginSelection`
-/// (board item: bash ships on by default and cannot be declined) before
+/// (bash ships on by default and cannot be declined) before
 /// installing anything -- by default every candidate except `conway.shell`
 /// (bash), which requires a deliberate opt-in (see
 /// `crate::config::schema::ToolsConfig`'s doc and `ConwayBuilder::

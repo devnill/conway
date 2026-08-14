@@ -1,4 +1,4 @@
-//! Locks down the crate's curated re-export list (WI-096 criteria).
+//! Locks down the crate's curated re-export list (criteria).
 //!
 //! The `use conway::{...};` statement below names every item `lib.rs`
 //! re-exports as of this work item. Removing any name from `lib.rs` is a

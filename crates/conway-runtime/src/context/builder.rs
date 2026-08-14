@@ -1,7 +1,7 @@
 //! `ContextBuilder`: assembles one agent's request context in the fixed
 //! architecture §5.3 order, with complete provenance and non-correctness-
 //! bearing cache hints. Pure over already-resolved records — no I/O, no
-//! `async`; ancestry resolution is the caller's job (WI-084).
+//! `async`; ancestry resolution is the caller's job.
 //!
 //! ## `SegmentId` determinism
 //!
@@ -23,12 +23,49 @@
 //! byte-equality does not depend on the derivation formula staying fixed
 //! forever — only on it staying deterministic.
 //!
+//! ## Tool-call/result pairing
+//!
+//! A rendered context must never contain a tool call without its result:
+//! every provider rejects that request outright rather than tolerating it
+//! (`kimi/k3`: "an assistant message with 'tool_calls' must be followed by
+//! tool messages responding to each 'tool_call_id'"). Nothing upstream
+//! guarantees the pairing, because two ordinary situations break it:
+//!
+//! - **A fork snapshot cut mid-batch.** `conway_fork` runs as one call
+//!   *inside* a batch, so `Conway::fork_from` takes the parent's head while
+//!   that batch is still in flight: the assistant record carrying every
+//!   `ToolUse` of the turn is already appended, and none of the answering
+//!   `ToolResultRecord`s exist yet. The child inherits a prefix ending on
+//!   unanswered calls. Eight parallel `conway_fork` calls produced exactly
+//!   this -- eight children, all dead on their first request with zero steps
+//!   taken.
+//! - **An own log that ends mid-batch.** `agent_loop` re-reads the whole
+//!   session every turn, so a session killed between the assistant append
+//!   and its tool results is unresumable for the same reason.
+//!
+//! `drop_unanswered_tool_calls` (private to this module) enforces the
+//! invariant on the final assembled list, covering both. It is lossy in one
+//! direction, deliberately: the model no longer sees that it made those
+//! calls, and may re-issue them. That is a recoverable turn, where the
+//! alternative is a request no provider will accept at all. Synthesizing
+//! placeholder results was rejected as the costlier trade: it would fabricate
+//! `Provenance::Inherited` content that no agent ever produced.
+//!
+//! **The loss is recorded, not merely conceded.** Every dropped `call_id`
+//! lands in `ContextReport::dropped`, which reaches both the live
+//! `report_slot` the TUI's `/context` reads and the durable
+//! `LogRecord::ContextReportRecord`. The harness does not curate context on
+//! its own initiative; the one place it must intervene to produce a sendable
+//! request at all is therefore in the record rather than behind it, and a
+//! turn where the model re-issues a call it appears never to have made is
+//! explicable from the log instead of mysterious.
+//!
 //! ## A documented interpretation gap: assistant-turn provenance
 //!
 //! `conway_core::provenance::Provenance` is exhaustively eleven variants
 //! (enforced by that crate's own tests; the original §5.3 nine, plus
-//! `MergedAsk` added by B4, plus `ChildResult` added by board item
-//! 01KZQHY6RTMYR4BRDTMQFP9J9R) and none of them represents "the
+//! `MergedAsk` added by B4, plus `ChildResult` added by
+//!) and none of them represents "the
 //! model's own prior turn" — `LogRecord::Assistant` does not even carry a
 //! `prov` field. Architecture §5.3's own-records mapping table names a
 //! provenance for `tool_result`, `parent_steer`, and system notes, but only
@@ -37,12 +74,13 @@
 //! another `Provenance` variant (out of `conway-runtime`'s scope), assistant
 //! turns are mapped to `Provenance::SystemNote { reason: "assistant_turn"
 //! }` — the closest existing volatile-tier variant, using a `reason`
-//! sentinel that collides with no other component's matching (WI-086 only
+//! sentinel that collides with no other component's matching (only
 //! matches `"repeated_step"` and `"result_contract_violation"`). This is a
 //! placeholder, not a design decision: it should be raised against
 //! `MODULE:conway-core` as a request for a dedicated `Provenance::Assistant`
 //! (or similar) variant.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use conway_core::capabilities::CacheMode;
@@ -100,7 +138,7 @@ pub struct InheritedPrefix {
     /// that does not exist upstream (in `conway_core::log::LogRecord` or in
     /// `conway_session`'s resolver) — out of this item's scope; queued as a
     /// refinement question rather than attempted here (coordinator ruling,
-    /// WI-084 rework).
+    /// rework).
     pub from: SessionId,
     pub seq_range: SeqRange,
     pub records: Arc<[LogRecord]>,
@@ -117,9 +155,9 @@ pub enum HeadSegment {
 
 /// Pure input to [`ContextBuilder::build`] — already-resolved records, no
 /// store dependency. Ancestry resolution (`TranscriptResolver`) is the
-/// caller's job (WI-084); this builder never touches a store.
+/// caller's job; this builder never touches a store.
 ///
-/// `turn` is not part of the WI-077 spec's illustrative struct but is
+/// `turn` is not part of the spec's illustrative struct but is
 /// required to populate `ContextReport::turn`; added here since
 /// `ContextReport` is otherwise unconstructable.
 #[derive(Clone, Debug)]
@@ -194,8 +232,7 @@ impl ContextBuilder {
 
         // [2] ToolSchemas — unconditional; breakpoint A attaches here.
         //
-        // NO SCHEMA TEXT LIVES IN THIS SEGMENT'S `content` (board item
-        // 01KYTMJA0JHT5SAPYDGV251V17). Every request already carries the full
+        // NO SCHEMA TEXT LIVES IN THIS SEGMENT'S `content` (//). Every request already carries the full
         // tool-schema set once as the native `tools` array the provider
         // actually consumes (`conway-plugin-backends`'s `openai_compat`/
         // `anthropic` wire modules, built straight from `ContextInput.tools`
@@ -269,8 +306,9 @@ impl ContextBuilder {
         let a_index = segments.len() - 1;
 
         // [3] InheritedPrefix* — one segment per record, order preserved;
-        // breakpoint B attaches to the last one, if any exist.
-        let mut b_index = None;
+        // breakpoint B attaches to the last one, if any exist (resolved
+        // below, AFTER `drop_unanswered_tool_calls` may have removed
+        // segments, so the index can never be stale).
         if let Some(inherited) = &input.inherited {
             for record in inherited.records.iter() {
                 let Some((role, content)) = record_role_and_content(record) else {
@@ -287,9 +325,6 @@ impl ContextBuilder {
                         seq_range: SeqRange::new(seq, Some(seq.succ())),
                     },
                 ));
-            }
-            if segments.len() > a_index + 1 {
-                b_index = Some(segments.len() - 1);
             }
         }
 
@@ -313,6 +348,21 @@ impl ContextBuilder {
                 segments.push(PromptSegment::new(role, content, provenance));
             }
         }
+
+        // Every tool call this context renders must have its result in the
+        // same context (see the module doc, "Tool-call/result pairing").
+        // Runs on the WHOLE assembled list -- both an inherited prefix cut
+        // mid-batch and an own log that ends mid-batch produce the same
+        // invalid request -- and before ids/estimates/hints below, so all
+        // three describe what is actually sent.
+        let dropped = drop_unanswered_tool_calls(&mut segments);
+
+        // Breakpoint B: the last surviving inherited segment, re-derived
+        // from provenance now that the list is final. A cannot have moved:
+        // the `ToolSchemas` segment carries no `ToolUse` block, so the pass
+        // above can neither empty nor drop it, and nothing before it is
+        // droppable either.
+        let (_, b_index) = breakpoint_indices(&segments);
 
         // Deterministic ids + token estimates. Runs before cache-hint
         // attachment so the hash inputs never include a cache_hint.
@@ -346,7 +396,7 @@ impl ContextBuilder {
             &key,
         );
 
-        let report = build_report(input.agent_id, input.turn, &segments);
+        let report = build_report(input.agent_id, input.turn, &segments, dropped);
 
         Ok((segments, report))
     }
@@ -354,7 +404,7 @@ impl ContextBuilder {
 
 /// Re-derives a `ContextReport` from a (possibly `ContextHook`-transformed)
 /// segment list: recomputes every segment's `tokens_est` and rebuilds the
-/// report entries in the given order. WI-126: a hook may add, edit, or drop
+/// report entries in the given order. a hook may add, edit, or drop
 /// segments after `ContextBuilder::build` -- content is the only thing that
 /// can have changed, so re-estimating every segment (not just ones with
 /// `tokens_est: None`) is the only correct way to keep `tokens_est`/
@@ -367,9 +417,9 @@ impl ContextBuilder {
 /// hints (a hook that cares about cache-breakpoint placement is responsible
 /// for its own `cache_hint`).
 ///
-/// `tools` (board item 01KYTMJA0JHT5SAPYDGV251V17): the same
+/// `tools`: the same
 /// `ContextPayload::tools` a hook returned alongside `segments` -- a
-/// `ContextHook` can narrow/replace the announced tool set (WI-126's
+/// `ContextHook` can narrow/replace the announced tool set (an earlier item's
 /// `announced_tools`) as well as edit segments, and the `[2] ToolSchemas`
 /// segment's `content` is deliberately always empty (see `ContextBuilder::
 /// build`'s own comment), so the generic per-segment loop above cannot
@@ -377,11 +427,18 @@ impl ContextBuilder {
 /// Both call sites (`agent_loop.rs`'s `on_overflow` and `before_request`
 /// handling) already have the hook's returned tools at hand and pass the
 /// same value here that flows into the eventual request.
+/// `dropped` is the list from the report this one supersedes. It MUST be
+/// carried forward rather than defaulted: `drop_unanswered_tool_calls` ran
+/// during the original assembly and its removals are not recoverable from
+/// `segments` afterwards, so re-deriving here would silently produce an
+/// empty list -- replacing the silent drop this field exists to expose with
+/// a second one, on every turn a `ContextHook` is registered.
 pub(crate) fn retotal(
     agent_id: AgentId,
     turn: u32,
     segments: &mut [PromptSegment],
     tools: &[ToolSpec],
+    dropped: Vec<String>,
 ) -> ContextReport {
     for segment in segments.iter_mut() {
         segment.tokens_est = Some(estimate_tokens(&segment.content));
@@ -393,10 +450,19 @@ pub(crate) fn retotal(
     {
         segment.tokens_est = Some(estimate_tool_schemas_tokens(tools));
     }
-    build_report(agent_id, turn, segments)
+    build_report(agent_id, turn, segments, dropped)
 }
 
-fn build_report(agent_id: AgentId, turn: u32, segments: &[PromptSegment]) -> ContextReport {
+/// `dropped` is threaded in rather than recomputed: by the time a report is
+/// built the unanswered calls are already gone from `segments`, so nothing
+/// downstream can rediscover them. [`retotal`] therefore has to carry the
+/// incoming report's list forward -- see its own doc.
+fn build_report(
+    agent_id: AgentId,
+    turn: u32,
+    segments: &[PromptSegment],
+    dropped: Vec<String>,
+) -> ContextReport {
     let entries: Vec<ContextReportEntry> = segments
         .iter()
         .map(|segment| ContextReportEntry {
@@ -414,6 +480,7 @@ fn build_report(agent_id: AgentId, turn: u32, segments: &[PromptSegment]) -> Con
         tokenizer: TOKEN_ESTIMATOR.to_string(),
         segments: entries,
         total_tokens_est,
+        dropped,
     }
 }
 
@@ -424,20 +491,77 @@ fn text_block(text: &str) -> Vec<ContentBlock> {
 }
 
 /// Wraps a recorded `ToolResult` as the single `ContentBlock::ToolResultBlock`
-/// a `Role::ToolResult` segment must carry (WI-137). Both wire adapters
+/// a `Role::ToolResult` segment must carry. Both wire adapters
 /// (`openai_compat::tool_result_messages` and `anthropic::tool_result_blocks`)
 /// serialize a tool result ONLY from a `ToolResultBlock` -- it is the block
 /// that carries the `call_id` tying the result back to its `tool_use` /
 /// `tool_call`. The tool runner produces raw `Text` blocks, so before this
 /// wrapping the segment held bare `Text`, matched neither wire adapter, and the
 /// tool result was silently dropped from every request: the model saw its own
-/// tool call (WI-122) but never the output, so it confabulated an answer.
+/// tool call but never the output, so it confabulated an answer.
 fn tool_result_block(result: &ToolResult) -> Vec<ContentBlock> {
     vec![ContentBlock::ToolResultBlock {
         call_id: result.call_id.clone(),
         blocks: result.blocks.clone(),
         is_error: result.is_error,
     }]
+}
+
+/// Drops every `ContentBlock::ToolUse` whose `call_id` has no answering
+/// `ContentBlock::ToolResultBlock` anywhere in `segments`, then drops any
+/// segment the filtering emptied. Returns the dropped `call_id`s, which is
+/// the only record that the request was altered at all -- see the module doc.
+///
+/// A segment that held ONLY unanswered calls is removed rather than sent
+/// empty: an assistant message with neither text nor tool calls is rejected
+/// by the Anthropic dialect ("all messages must have non-empty content").
+/// A segment that was ALREADY empty is untouched -- that is the `[2]
+/// ToolSchemas` segment, which is deliberately contentless and load-bearing
+/// (breakpoint A, `prefix_key`'s boundary, the tool-schema token estimate).
+///
+/// The unmatched direction (a result whose call is absent) is deliberately
+/// NOT handled: records are ordered, an assistant record always precedes the
+/// results answering it, and no prefix cut can therefore admit a result while
+/// excluding its call. A branch for it could not be made to fail, which is
+/// the defect class CONTRIBUTING's testing discipline exists to catch.
+fn drop_unanswered_tool_calls(segments: &mut Vec<PromptSegment>) -> Vec<String> {
+    let answered: HashSet<String> = segments
+        .iter()
+        .flat_map(|segment| segment.content.iter())
+        .filter_map(|block| match block {
+            ContentBlock::ToolResultBlock { call_id, .. } => Some(call_id.clone()),
+            _ => None,
+        })
+        .collect();
+
+    // The overwhelmingly common case -- a settled transcript, every call
+    // answered -- returns here, having rebuilt nothing.
+    let dropped: Vec<String> = segments
+        .iter()
+        .flat_map(|segment| segment.content.iter())
+        .filter_map(|block| match block {
+            ContentBlock::ToolUse { call_id, .. } if !answered.contains(call_id) => {
+                Some(call_id.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    if dropped.is_empty() {
+        return dropped;
+    }
+
+    let mut kept: Vec<PromptSegment> = Vec::with_capacity(segments.len());
+    for mut segment in std::mem::take(segments) {
+        let was_empty = segment.content.is_empty();
+        segment.content.retain(|block| {
+            !matches!(block, ContentBlock::ToolUse { call_id, .. } if !answered.contains(call_id))
+        });
+        if was_empty || !segment.content.is_empty() {
+            kept.push(segment);
+        }
+    }
+    *segments = kept;
+    dropped
 }
 
 /// Renders a `LogRecord::ChildResultRecord`'s `result` into the plain-text
@@ -467,7 +591,7 @@ fn record_role_and_content(record: &LogRecord) -> Option<(Role, Vec<ContentBlock
         LogRecord::ParentSteer { text, .. } => Some((Role::User, text_block(text))),
         LogRecord::SystemNote { text, .. } => Some((Role::System, text_block(text))),
         // A child's result, recorded into an ancestor's own log
-        // (01KZQHY6RTMYR4BRDTMQFP9J9R), flows into a fork child's inherited
+        //, flows into a fork child's inherited
         // prefix exactly like any other own volatile record kind -- same
         // treatment `ParentSteer` already gets two arms above.
         LogRecord::ChildResultRecord { result, .. } => {
@@ -538,7 +662,7 @@ fn own_segment(record: &LogRecord) -> Option<(Role, Vec<ContentBlock>, Provenanc
                 reason: reason.clone(),
             },
         )),
-        // Board item 01KZQHY6RTMYR4BRDTMQFP9J9R: a child's terminal result,
+        // a child's terminal result,
         // drained into THIS agent's own mailbox and persisted by
         // `mailbox::classify`, becomes visible on the very next turn's
         // ordinary re-read -- exactly like `ParentSteer` above. `prov` is
@@ -562,13 +686,13 @@ fn own_segment(record: &LogRecord) -> Option<(Role, Vec<ContentBlock>, Provenanc
 /// tags) a real tokenizer spends a handful of tokens on that a pure
 /// character count would otherwise miss entirely. Deliberately small next to
 /// a typical JSON-serialized block's own structural overhead (field names,
-/// quoting, escaping) -- see the module doc's WI-126 note on why this
+/// quoting, escaping) -- see the module doc's an earlier item note on why this
 /// estimator no longer serializes the whole block to JSON first.
 const PER_BLOCK_OVERHEAD_TOKENS: u32 = 4;
 
 /// Heuristic token estimate (T-9: explicitly approximate, never presented as
 /// an exact count) over a segment's actual text/content payload, NOT its
-/// JSON serialization. WI-126: the prior formula (`json.len() / 4` over
+/// JSON serialization. the prior formula (`json.len() / 4` over
 /// `serde_json::to_string(content)`) counted every content block's field
 /// names, `{}`/`[]`/`,` punctuation, and string-escaping once per block --
 /// structural overhead a real tokenizer never spends tokens on -- which
@@ -583,8 +707,7 @@ fn estimate_tokens(content: &[ContentBlock]) -> u32 {
     content.iter().map(estimate_block_tokens).sum()
 }
 
-/// Estimated token cost of the native provider `tools` array (board item
-/// 01KYTMJA0JHT5SAPYDGV251V17): the `[2] ToolSchemas` segment carries no
+/// Estimated token cost of the native provider `tools` array -- the `[2] ToolSchemas` segment carries no
 /// `content` to run [`estimate_tokens`] over anymore, so this is the
 /// estimator's dedicated term for the copy that actually reaches the wire.
 /// Same `heuristic-chars4` shape as every other estimate in this module
@@ -647,7 +770,7 @@ fn block_payload_chars(block: &ContentBlock) -> usize {
 
 /// `blake3(agent_id ‖ ordinal ‖ provenance_discriminant ‖ content_hash)`,
 /// reinterpreted as a `ulid::Ulid` — see the module doc.
-/// NOTE (cycle-1 review S2): unlike `SessionId`/`AgentId` (fresh ULIDs,
+/// NOTE: unlike `SessionId`/`AgentId` (fresh ULIDs,
 /// chronologically sortable), a derived `SegmentId` is a blake3-based
 /// deterministic id reinterpreted as a Ulid — it does NOT sort by creation
 /// time. Never order segments by id; order is the Vec's order.
@@ -709,7 +832,7 @@ fn desired_breakpoints(a_index: usize, b_index: Option<usize>) -> Vec<usize> {
 /// This is what makes the model-aware cache-hint post-pass in
 /// `attempt.rs` (run AFTER routing resolves a concrete model, and after any
 /// `ContextHook::before_request` has had a chance to add, drop, or reorder
-/// segments — WI-126) correct even when the hook has changed segment
+/// segments — an earlier item) correct even when the hook has changed segment
 /// positions since `build` ran: re-deriving from provenance on the FINAL
 /// segment list is safe against staleness in a way that threading `build`-
 /// time indices through would not be. `a_index` is `None` only if a hook
@@ -778,7 +901,7 @@ mod estimator_tests {
     use conway_core::content::Role;
     use conway_core::provenance::Provenance;
 
-    /// The formula this heuristic replaced (WI-126): the whole content
+    /// The formula this heuristic replaced: the whole content
     /// array's JSON serialization, divided by 4. Reproduced here (not
     /// exported) purely so the "more accurate" claim has a concrete
     /// baseline to compare against.
@@ -863,7 +986,7 @@ mod estimator_tests {
             text: "a".repeat(40),
         }];
 
-        let report = retotal(agent_id, 3, &mut segments, &[]);
+        let report = retotal(agent_id, 3, &mut segments, &[], Vec::new());
 
         let expected = estimate_tokens(&segments[0].content);
         assert_eq!(segments[0].tokens_est, Some(expected));
@@ -881,7 +1004,7 @@ mod estimator_tests {
             _ => true,
         });
 
-        let report = retotal(agent_id, 0, &mut segments, &[]);
+        let report = retotal(agent_id, 0, &mut segments, &[], Vec::new());
         assert_eq!(report.segments.len(), 1);
     }
 
@@ -895,7 +1018,7 @@ mod estimator_tests {
         }
     }
 
-    /// Board item 01KYTMJA0JHT5SAPYDGV251V17: the `[2] ToolSchemas` segment
+    /// The `[2] ToolSchemas` segment
     /// no longer carries the schema text on the wire (the native `tools`
     /// array is the only copy), but the estimator must still account for
     /// it.
@@ -929,7 +1052,7 @@ mod estimator_tests {
         )];
         let tools = vec![sample_tool("read"), sample_tool("write")];
 
-        let report = retotal(agent_id, 0, &mut segments, &tools);
+        let report = retotal(agent_id, 0, &mut segments, &tools, Vec::new());
 
         let expected = estimate_tool_schemas_tokens(&tools);
         assert!(expected > 0);
@@ -1138,7 +1261,7 @@ mod breakpoint_indices_tests {
         assert!(b.is_none());
     }
 
-    /// A hook (WI-126) can drop the `ToolSchemas` segment entirely from the
+    /// A hook can drop the `ToolSchemas` segment entirely from the
     /// FINAL list this function is actually run against in `attempt.rs`'s
     /// post-pass -- in that case there is no A, so this returns `None`
     /// rather than a stale/wrong index.
@@ -1150,5 +1273,266 @@ mod breakpoint_indices_tests {
 
         let (a, _b) = breakpoint_indices(&segments);
         assert!(a.is_none());
+    }
+}
+
+#[cfg(test)]
+mod tool_call_pairing_tests {
+    use super::*;
+    use chrono::Utc;
+    use conway_core::content::{StopReason, Usage};
+    use conway_core::ids::{BackendId, LogSeq, ModelRef, SessionId, ToolName};
+
+    fn tool_use(call_id: &str) -> ContentBlock {
+        ContentBlock::ToolUse {
+            call_id: call_id.to_string(),
+            name: ToolName::new("read"),
+            arguments: serde_json::json!({ "path": call_id }),
+        }
+    }
+
+    fn assistant(seq: u64, content: Vec<ContentBlock>) -> LogRecord {
+        LogRecord::Assistant {
+            seq: LogSeq(seq),
+            ts: Utc::now(),
+            content,
+            model: ModelRef {
+                backend: BackendId::new("b"),
+                model: ModelId::new("m"),
+            },
+            route_reason: serde_json::json!({}),
+            usage: Usage::default(),
+            stop: StopReason::ToolUse,
+        }
+    }
+
+    fn tool_result(seq: u64, call_id: &str) -> LogRecord {
+        LogRecord::ToolResultRecord {
+            seq: LogSeq(seq),
+            ts: Utc::now(),
+            result: ToolResult {
+                call_id: call_id.to_string(),
+                tool: ToolName::new("read"),
+                blocks: vec![ContentBlock::Text {
+                    text: format!("contents of {call_id}"),
+                }],
+                is_error: false,
+                truncated: None,
+            },
+        }
+    }
+
+    /// Records arrive as the agent's OWN log (the resumable-mid-batch case).
+    fn input_with(own: Vec<LogRecord>, cache_mode: CacheMode) -> ContextInput {
+        ContextInput {
+            agent_id: AgentId::new(),
+            turn: 0,
+            model: ModelId::new("m"),
+            cache_mode,
+            system_prompt: None,
+            skills: vec![],
+            tools: vec![],
+            inherited: None,
+            head: HeadSegment::Prompt {
+                text: "head".into(),
+            },
+            own: Arc::from(own),
+            cache_ttl: CacheTtl::FiveMinutes,
+        }
+    }
+
+    /// The same records arriving as an INHERITED prefix (the mid-batch fork
+    /// case) rather than as the agent's own log.
+    fn input_inheriting(records: Vec<LogRecord>) -> ContextInput {
+        let from = SessionId::new();
+        let last = records.last().and_then(|r| r.seq()).unwrap_or(LogSeq(0));
+        ContextInput {
+            inherited: Some(InheritedPrefix {
+                from,
+                seq_range: SeqRange::new(LogSeq(0), Some(last.succ())),
+                records: Arc::from(records),
+            }),
+            ..input_with(vec![], CacheMode::None)
+        }
+    }
+
+    /// Every `ToolUse` `call_id` the assembled segments actually render.
+    fn rendered_call_ids(segments: &[PromptSegment]) -> Vec<String> {
+        segments
+            .iter()
+            .flat_map(|s| s.content.iter())
+            .filter_map(|b| match b {
+                ContentBlock::ToolUse { call_id, .. } => Some(call_id.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The settled case: nothing is dropped, and the pass is invisible.
+    #[test]
+    fn a_fully_answered_batch_is_left_exactly_as_it_was() {
+        let input = input_with(
+            vec![
+                assistant(0, vec![tool_use("a"), tool_use("b")]),
+                tool_result(1, "a"),
+                tool_result(2, "b"),
+            ],
+            CacheMode::None,
+        );
+        let (segments, report) = ContextBuilder::new().build(&input).unwrap();
+
+        let mut ids = rendered_call_ids(&segments);
+        ids.sort();
+        assert_eq!(ids, vec!["a".to_string(), "b".to_string()]);
+        assert!(report.dropped.is_empty());
+    }
+
+    /// Only `b` may be dropped -- this pass removes unanswered calls, not
+    /// answered ones, and not the results that answer them.
+    #[test]
+    fn an_unanswered_call_is_dropped_and_the_answered_one_survives() {
+        let input = input_with(
+            vec![
+                assistant(0, vec![tool_use("a"), tool_use("b")]),
+                tool_result(1, "a"),
+            ],
+            CacheMode::None,
+        );
+        let (segments, report) = ContextBuilder::new().build(&input).unwrap();
+
+        assert_eq!(rendered_call_ids(&segments), vec!["a".to_string()]);
+        assert_eq!(
+            report.dropped,
+            vec!["b".to_string()],
+            "the drop is recorded, not just performed"
+        );
+    }
+
+    /// The turn still has prose, so the segment stays -- stripped of the
+    /// unanswered call, not thrown away with it.
+    #[test]
+    fn a_turn_with_text_keeps_its_text_after_its_calls_are_dropped() {
+        let input = input_with(
+            vec![assistant(
+                0,
+                vec![
+                    ContentBlock::Text {
+                        text: "spawning reviewers".into(),
+                    },
+                    tool_use("a"),
+                ],
+            )],
+            CacheMode::None,
+        );
+        let (segments, report) = ContextBuilder::new().build(&input).unwrap();
+
+        assert!(rendered_call_ids(&segments).is_empty());
+        assert_eq!(report.dropped, vec!["a".to_string()]);
+        assert!(
+            segments
+                .iter()
+                .any(|s| s.content.iter().any(
+                    |b| matches!(b, ContentBlock::Text { text } if text == "spawning reviewers")
+                )),
+            "the turn's own prose must survive its dropped calls"
+        );
+    }
+
+    /// A turn of only unanswered calls is removed rather than sent empty (the
+    /// Anthropic dialect rejects a message with neither text nor calls). The
+    /// deliberately-contentless `ToolSchemas` segment must NOT be swept up
+    /// with it: it is load-bearing for breakpoint A and the schema estimate.
+    #[test]
+    fn a_turn_of_only_unanswered_calls_is_dropped_but_the_empty_tool_registry_stays() {
+        let input = input_with(vec![assistant(0, vec![tool_use("a")])], CacheMode::None);
+        let (segments, report) = ContextBuilder::new().build(&input).unwrap();
+
+        assert!(rendered_call_ids(&segments).is_empty());
+        assert_eq!(report.dropped, vec!["a".to_string()]);
+        assert!(
+            segments
+                .iter()
+                .any(|s| matches!(s.provenance, Provenance::ToolRegistry { .. })
+                    && s.content.is_empty()),
+            "the empty ToolSchemas segment is load-bearing and must survive"
+        );
+    }
+
+    /// Breakpoint B is resolved AFTER the drop pass. If it were captured
+    /// during assembly it would point at a segment the pass then removed, and
+    /// the cache hint would land on the wrong boundary.
+    #[test]
+    fn breakpoint_b_lands_on_the_last_surviving_inherited_segment() {
+        let input = input_inheriting(vec![
+            LogRecord::UserTurn {
+                seq: LogSeq(0),
+                ts: Utc::now(),
+                text: "inherited turn".into(),
+                prov: Provenance::UserPrompt,
+            },
+            assistant(1, vec![tool_use("orphan")]),
+        ]);
+        let (segments, report) = ContextBuilder::new().build(&input).unwrap();
+
+        assert_eq!(report.dropped, vec!["orphan".to_string()]);
+        let (_, b) = breakpoint_indices(&segments);
+        let b = b.expect("an inherited segment survives");
+        assert!(
+            matches!(segments[b].provenance, Provenance::Inherited { .. }),
+            "B must name a segment that is still present after the drop"
+        );
+        assert_eq!(
+            b,
+            segments
+                .iter()
+                .rposition(|s| matches!(s.provenance, Provenance::Inherited { .. }))
+                .unwrap(),
+            "B is the LAST surviving inherited segment"
+        );
+    }
+
+    /// The report is the only place a reader can learn the request was
+    /// altered -- the removed blocks are gone from `segments` by then. A
+    /// settled transcript must record nothing, so a non-empty list always
+    /// means something really was removed.
+    #[test]
+    fn a_settled_transcript_records_no_drops() {
+        let input = input_with(
+            vec![
+                assistant(0, vec![tool_use("a"), tool_use("b")]),
+                tool_result(1, "a"),
+                tool_result(2, "b"),
+            ],
+            CacheMode::None,
+        );
+        let (_, report) = ContextBuilder::new().build(&input).unwrap();
+        assert!(report.dropped.is_empty());
+    }
+
+    /// `retotal` runs after a `ContextHook` has edited the payload and
+    /// rebuilds the report from scratch. It must carry the drop list forward:
+    /// the removed calls are unrecoverable from `segments` by that point, so
+    /// re-deriving would silently empty the field on every turn a hook is
+    /// registered -- a second silent drop replacing the first.
+    #[test]
+    fn retotal_carries_the_drop_list_forward() {
+        let input = input_with(
+            vec![
+                assistant(0, vec![tool_use("a"), tool_use("b")]),
+                tool_result(1, "a"),
+            ],
+            CacheMode::None,
+        );
+        let (mut segments, report) = ContextBuilder::new().build(&input).unwrap();
+        assert_eq!(report.dropped, vec!["b".to_string()]);
+
+        let after = retotal(
+            input.agent_id,
+            input.turn,
+            &mut segments,
+            &[],
+            report.dropped.clone(),
+        );
+        assert_eq!(after.dropped, vec!["b".to_string()]);
     }
 }

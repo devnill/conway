@@ -1,8 +1,8 @@
-//! Integration tests for `ToolCallAccumulator` (WI-018 acceptance
+//! Integration tests for `ToolCallAccumulator` (acceptance
 //! criteria). Fixture files under `tests/fixtures/streams/` hold one raw
 //! provider tool-call delta object per line, in arrival order, so the same
 //! fixtures are reusable by later work items' SSE-level integration tests
-//! (WI-019, WI-022).
+//!.
 
 use conway_core::content::{PermissionClass, StopReason, ToolCategory, ToolSpec};
 use conway_core::ids::ToolName;

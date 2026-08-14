@@ -1,6 +1,5 @@
-//! The pure predicate the router uses for capability filtering (WI-032,
-//! amended: headroom-aware context gate; further amended, board item
-//! 01KZFBZHTWDF11TH7G0H613ERE, to express the size half of that gate through
+//! The pure predicate the router uses for capability filtering (//! amended: headroom-aware context gate; further amended
+//!, to express the size half of that gate through
 //! `conway_core::ports::Admission` and to move `CapabilityIndex` to
 //! `conway-core`'s `ports` module — see that module's own doc).
 //!
@@ -14,7 +13,7 @@
 //! The two formulations are pinned together by
 //! `satisfies_agrees_with_core_on_accept_reject` below: for identical
 //! inputs they must agree on ACCEPT vs REJECT (messages may differ; the
-//! decision may not). As of 01KZFBZHTWDF11TH7G0H613ERE, the SIZE half of
+//! decision may not). As of, the SIZE half of
 //! both formulations is no longer two independent restatements of
 //! `est_tokens + headroom_tokens <= max_context_tokens`: both
 //! [`size_missing`] here and `RequiredCaps::satisfied_by`'s own context
@@ -160,7 +159,7 @@ fn strictest_min(a: Option<u32>, b: Option<u32>) -> Option<u32> {
 /// reliability_tier, min_context. Returns every unmet requirement (never
 /// short-circuits on the first) as a human-readable string.
 ///
-/// Split out (board item 01KZFBZHTWDF11TH7G0H613ERE) so `router.rs`'s
+/// Split out so `router.rs`'s
 /// `check_candidate` can ask "did anything OTHER than size fail?"
 /// structurally -- `non_size_missing(..).is_empty()` -- rather than by
 /// counting strings in `satisfies`'s combined `Vec`.
@@ -262,7 +261,7 @@ pub(crate) fn size_missing(
 /// in that same fixed order (CONTRACT: the context entry is always last,
 /// with the exact string `size_missing` documents).
 ///
-/// The caller (the router, WI-034) resolves the effective headroom once per
+/// The caller (the router) resolves the effective headroom once per
 /// role and passes it in — headroom policy lives in exactly one place.
 pub fn satisfies(
     caps: &Capabilities,
@@ -286,7 +285,7 @@ mod tests {
     use conway_core::capabilities::CacheMode;
 
     /// STRUCTURAL discrimination (replaces the old pin that counted
-    /// `missing`'s entries, board item 01KZFBZHTWDF11TH7G0H613ERE): a
+    /// `missing`'s entries): a
     /// headroom-only failure is exactly `non_size_missing(..).is_empty() &&
     /// size_missing(..).is_some()` -- never a string count. `router.rs`'s
     /// `check_candidate` consumes these two functions directly, not
@@ -295,8 +294,7 @@ mod tests {
     /// Without this, the router's classification rests on an unstated
     /// property of these functions. If someone splits the context entry
     /// into two strings, this test fails here rather than silently turning
-    /// every headroom-only rejection back into a `NoCandidate` (board item
-    /// `01KYXNAHN64YMADZPQDQC0CPTJ`).
+    /// every headroom-only rejection back into a `NoCandidate`.
     #[test]
     fn headroom_only_failure_is_non_size_empty_and_size_some() {
         let fits_everything_but_context = caps(40_000);
@@ -478,7 +476,7 @@ mod tests {
         assert!(err[1].starts_with("context:"));
     }
 
-    /// Reconciliation pin (re-aimed, board item 01KZFBZHTWDF11TH7G0H613ERE):
+    /// Reconciliation pin (re-aimed):
     /// routing's `satisfies` and core's `RequiredCaps::satisfied_by` --
     /// TWO surviving renderings of ONE admission decision, not two
     /// independent implementations of it -- must agree on ACCEPT vs REJECT

@@ -1,4 +1,4 @@
-//! Wiremock integration tests for `OpenAiCompatBackend::stream` (WI-019).
+//! Wiremock integration tests for `OpenAiCompatBackend::stream`.
 //! Generate (non-streaming) tests live in `tests/openai_compat_generate.rs`.
 
 use std::collections::BTreeMap;

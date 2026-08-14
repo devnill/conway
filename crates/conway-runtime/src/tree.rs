@@ -1,4 +1,4 @@
-//! `AgentTree`: the multi-agent tree (WI-083, architecture §7).
+//! `AgentTree`: the multi-agent tree (architecture §7).
 //!
 //! Owns attachment/lookup of every agent in a runtime's tree(s), structural
 //! `agent_path` resolution (§4.3's `PermissionRequest` precondition),
@@ -7,7 +7,7 @@
 //! ([`crate::supervisor`]) is this guarantee's other half; this module owns
 //! the state it publishes into.
 //!
-//! ## Reconciliations against the WI-083 spec's illustrative `AgentNode`
+//! ## Reconciliations against the spec's illustrative `AgentNode`
 //!
 //! The spec's implementation-notes sketch shows one `AgentNode` struct
 //! carrying `result_tx: watch::Sender<Option<AgentResult>>` and a plain
@@ -26,7 +26,7 @@
 //!   storing them separately would just be a second, independently-mutable
 //!   copy of the same fact -- a staleness bug waiting to happen. `snapshot`
 //!   computes them from the watch channel's current value on every call
-//!   (mirroring the WI-082 `tree()` stub this item supersedes, which did the
+//!   (mirroring the an earlier item `tree()` stub this item supersedes, which did the
 //!   same thing for the same reason).
 //!
 //! This crate's own [`AgentNode`] (this module's input to `attach`) is a
@@ -44,7 +44,7 @@
 //! also gives the architecture §8 "`AgentSpawned` precedes every other event
 //! bearing that `agent_id`" guarantee for free: `attach` is synchronous and
 //! always returns before its caller can spawn the agent's task (and thus
-//! before anything else can be emitted under that id). WI-084's `subagent.rs`
+//! before anything else can be emitted under that id). an earlier item's `subagent.rs`
 //! (not yet implemented) should call `attach` and rely on this emission
 //! rather than emitting its own `AgentSpawned` -- see this module's doc for
 //! why a second emission site would double-fire the event.
@@ -91,8 +91,7 @@ pub struct AgentNode {
     /// Forwarded verbatim into `Event::AgentSpawned::inherited_upto` when
     /// `kind.is_some()`; ignored (and should be `None`) for a root.
     pub inherited_upto: Option<LogSeq>,
-    /// Whether this agent is an ephemeral `/ask`-style aside (decision
-    /// 01KYD1TWXMZD4BT842CMJT1AED). Stamped verbatim into
+    /// Whether this agent is an ephemeral `/ask`-style aside. Stamped verbatim into
     /// `Event::AgentSpawned::ephemeral` (when `kind.is_some()`) and read back
     /// by [`AgentTree::ephemeral_of`] for `Event::AgentFinished::ephemeral`.
     /// Defaults to `false` for every non-facade-`/ask` path: a root is never
@@ -142,7 +141,7 @@ struct TreeEntry {
 
 /// The multi-agent tree: attachment, structural lookups, cancellation
 /// propagation, and the terminal-result publication guarantee that makes
-/// `await_result` always resolve (architecture §7, WI-083's core
+/// `await_result` always resolve (architecture §7, an earlier item's core
 /// objective -- the MAST "failure to recognize termination" mitigation).
 pub struct AgentTree {
     nodes: RwLock<HashMap<AgentId, TreeEntry>>,
@@ -231,7 +230,7 @@ impl AgentTree {
     /// A cancellation token that is a structural child of `parent`'s own
     /// token (`parent.cancel.child_token()`), so cancelling `parent` (or any
     /// ancestor) cancels the returned token too, without ever exposing
-    /// `parent`'s own token directly. Added for WI-084's fork/spawn path
+    /// `parent`'s own token directly. Added for an earlier item's fork/spawn path
     /// (`subagent.rs`), which needs to derive a new child's token per
     /// [`AgentNode::cancel`]'s contract but has no other way to reach an
     /// already-attached node's token — every other method here either trips
@@ -253,14 +252,14 @@ impl AgentTree {
     ///
     /// `reason` is recorded (via `tracing`, unchanged) AND stashed on
     /// `agent`'s own `TreeEntry` *before* the token below is tripped,
-    /// readable back via [`Self::cancel_reason`] -- board item
-    /// 01KZDDCN747FEZ3GM3NS0ANE7G: `agent_loop.rs`'s loop-boundary
+    /// readable back via [`Self::cancel_reason`]
+    ///: `agent_loop.rs`'s loop-boundary
     /// cancellation checks (`AgentLoop::finish_cancelled`) read it back from
     /// there to attach it to `agent`'s own terminal `AgentResult`
     /// (`ResultStatus::Cancelled { reason }`), so the immediate path now
     /// agrees with the graceful path's `pending_cancel` mailbox mechanism,
-    /// which has always carried its reason this way. Board item
-    /// 01KZGRGN9MKJP549NMGT8QACCV closed the one remaining gap: a cancel
+    /// which has always carried its reason this way.
+    /// closed the one remaining gap: a cancel
     /// observed WHILE a backend call is in flight (`attempt.rs`'s
     /// `run_generate`/`run_stream`) unwinds through `AgentLoop::finish_error`
     /// instead, which performs this exact same `cancel_reason` read-back
@@ -276,8 +275,7 @@ impl AgentTree {
     /// observes an ancestor's token already cancelled and falls back to a
     /// generic reason (see `AgentLoop::finish_cancelled`'s doc). Whether that
     /// subtree collapse should itself carry a reason down to every
-    /// descendant is a separate, open question (board item
-    /// 01KZDDCBGXNYTNM31PHW46R1SP), not decided here.
+    /// descendant is a separate, open question , not decided here.
     pub fn cancel(&self, agent: AgentId, reason: String) -> Result<(), RuntimeError> {
         let nodes = self.nodes.read().expect("agent tree lock poisoned");
         let entry = nodes
@@ -287,8 +285,8 @@ impl AgentTree {
         // `reason` is model-supplied, so untrusted (a tool argument, `conway_cancel`)
         // and, from this item on, reaches a persisted `AgentResult` on the
         // immediate path (`cancel_reason`, read back by both
-        // `AgentLoop::finish_cancelled` and, since board item
-        // 01KZGRGN9MKJP549NMGT8QACCV, `AgentLoop::finish_error`) --
+        // `AgentLoop::finish_cancelled` and, since
+        //, `AgentLoop::finish_error`) --
         // bounded to the same `DEFAULT_SUMMARY_LIMIT` `AgentResult::new`
         // already caps `summary` at, on the same char-boundary-safe logic,
         // so an adversarial caller cannot grow the tree's per-agent
@@ -467,7 +465,7 @@ impl AgentTree {
             .collect();
 
         // `AgentTreeSnapshot::root` has no way to name "the roots" plural
-        // (WI-082's own documented gap, unchanged by this item): prefer an
+        // (its own documented gap, unchanged by this item): prefer an
         // actual root (no parent) over an arbitrary node when more than one
         // has been started, as a best-effort tie-break rather than a fix.
         let root = projected
@@ -512,7 +510,7 @@ fn already_attached(id: AgentId) -> RuntimeError {
 /// Maps a terminal `ResultStatus` to the tree's coarser `AgentStatus`.
 /// `ResultStatus` is `#[non_exhaustive]`; unrecognized future variants map
 /// to `Finished` rather than failing to compile or panicking (mirrors the
-/// WI-082 `tree()` stub this item supersedes).
+/// an earlier item `tree()` stub this item supersedes).
 fn status_for(status: &ResultStatus) -> AgentStatus {
     match status {
         ResultStatus::Completed => AgentStatus::Finished,

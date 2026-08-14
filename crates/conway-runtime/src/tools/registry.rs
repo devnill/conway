@@ -1,5 +1,5 @@
 //! `PluginRegistry`: the runtime's compiled view over the injected
-//! `Arc<dyn Plugin>` set (WI-079, architecture §4.2).
+//! `Arc<dyn Plugin>` set (architecture §4.2).
 //!
 //! Every tool's JSON Schema is compiled exactly once, at construction time
 //! ([`PluginRegistry::from_plugins`]), so [`super::runner::ToolRunner`] never
@@ -24,7 +24,7 @@ struct RegisteredTool {
     tool: Arc<dyn Tool>,
     /// Captured once at registration: `Tool::spec()` rebuilds the whole
     /// spec (including its schema) on every call, which is wasted work on
-    /// the per-dispatch hot path (cycle-1 review M1).
+    /// the per-dispatch hot path.
     spec: ToolSpec,
     validator: jsonschema::Validator,
 }
@@ -44,7 +44,7 @@ pub(crate) struct ResolvedTool<'a> {
     pub(crate) tool: Arc<dyn Tool>,
     pub(crate) spec: &'a ToolSpec,
     /// The manifest id of the plugin that registered this tool -- board
-    /// item 01KZS03BFE720EQZG7Q2768N2H: `conway_runtime::tools::runner`
+    /// item: `conway_runtime::tools::runner`
     /// binds a `ToolCtx::plugin_events` handle to THIS id, so a call's own
     /// declaring plugin (never a different one) is who a fired custom
     /// event's namespace resolves to.
@@ -122,7 +122,7 @@ impl PluginRegistry {
     }
 
     /// Every registered tool's spec, in lexicographic order by name, so the
-    /// `ToolRegistry` provenance hash (`ContextBuilder`, WI-077) is stable
+    /// `ToolRegistry` provenance hash (`ContextBuilder`) is stable
     /// across runs. `selector: None` behaves as `ToolSelector::All`.
     ///
     /// **This is registration-time filtering, not announcement or execution
@@ -130,7 +130,7 @@ impl PluginRegistry {
     /// this AGENT may ever see, for its whole run; two further, distinct
     /// filters apply downstream, per-turn, to this method's already-narrowed
     /// result:
-    /// - **Announcement** (WI-126): `conway_core::ports::ContextHook::
+    /// - **Announcement**: `conway_core::ports::ContextHook::
     ///   before_request` may further narrow the `tools` this method returns
     ///   before it reaches the router/backend for a given turn -- hiding a
     ///   tool from the model entirely, so it can never propose calling it.

@@ -65,25 +65,23 @@ declaration sites in `conway-core` itself, and both are scheduled:
   symlink-aware containment check cannot be pure computation. Exactly one
   file, pinned by a CI guard
   (`crates/conway/tests/architecture_invariants.rs`, T2) that fails if a
-  second one starts. Board item 01KZDC30CBY9CPJ8YEM7HSRV0Y moves confinement
-  into `conway.fs` and closes it.
+  second one starts. It closes when confinement moves into `conway.fs`, per
+  §3.4 and `PHILOSOPHY.md` §1; that file's own module doc records the four
+  questions that has to answer first.
 - **`conway-core` ships test doubles.** `feature = "fakes"` compiles a full
-  set of port doubles into the contract crate. Board item
-  01KZVYWNA24EYMPVW3NPGBW51M extracts them into `conway-testkit`, which also
-  makes them reachable by a third party — today they are unreachable outside
-  this workspace, since the facade enables `fakes` only under
-  `[dev-dependencies]`.
+  set of port doubles into the contract crate. Extracting them into a
+  `conway-testkit` crate would also make them reachable by a third party —
+  today they are unreachable outside this workspace, since the facade enables
+  `fakes` only under `[dev-dependencies]`.
 
 This is the fixed core layout; it does not include the first-party plugin
 tier (§2b), whose crate count grows independently of it — notably
 `conway-plugin-routing` (install id `conway.routing`), the capability-/
 health-filtering `DeclarativeRouter` engine that used to be a mandatory
-crate in this table (`conway-routing`) until board item
-01KZFC43J1J06BM4CCWKCKHSNV moved it out to the plugin tier, and
+crate in this table (`conway-routing`) until moved it out to the plugin tier, and
 `conway-plugin-backends`, the Anthropic-native and OpenAI-compatible
 provider adapters (OpenAI, Ollama, vLLM/Hermes, LM Studio, llama.cpp server
-dialects) that used to be the mandatory `conway-backends` crate above until
-board item 01KZHF270T3W8GZ7NM6DSNQ4MM moved it out the same way.
+dialects) that used to be the mandatory `conway-backends` crate above until moved it out the same way.
 
 Dependency direction is **strictly downward**; `conway-core` depends on
 nothing else in the workspace. This is the **default build** — no routing
@@ -96,14 +94,14 @@ conway-cli ──> conway ──> conway-runtime ──┬─> conway-session �
                                             └─> conway-tools ───┴─> conway-core
 ```
 
-Installing the routing plugin (`[plugins].install = ["conway.routing"]`,
+Installing the routing plugin (`plugins.install = ["conway.routing"]`,
 §3.3) adds exactly **one** edge to this graph, and it touches neither
 `conway` nor `conway-runtime` — only `conway-cli` gains it, because linking
 the plugin crate to populate `first_party_plugins::router_bundle()` is what
-makes `RoutingRouterFactory` nameable in `[plugins].install` at all. The two
+makes `RoutingRouterFactory` nameable in `plugins.install` at all. The two
 provider-adapter dialects are the same shape, one layer over: `conway-cli`
 links `conway-plugin-backends` to populate `first_party_plugins::
-backend_bundle()`, but — unlike routing — needs no `[plugins].install` entry
+backend_bundle()`, but — unlike routing — needs no `plugins.install` entry
 at all to attach both (`conway::config::schema::PluginsConfig::
 default_backends`'s own doc explains why a backend, unlike every other
 first-party mechanism, ships attached by default):
@@ -141,16 +139,15 @@ This shape exists so:
 - A third-party plugin author depends on `conway-core` — a small, slow-moving
   crate with strict semver discipline — not on the whole harness.
 - **Which backend you talk to is runtime configuration, not a build-time
-  choice.** `conway` itself depends on neither adapter (board item
-  01KZHF270T3W8GZ7NM6DSNQ4MM: `conway-plugin-backends` is a first-party
+  choice.** `conway` itself depends on neither adapter (: `conway-plugin-backends` is a first-party
   plugin, §2b); the shipped `conway-cli` binary links it and attaches both
   `BackendFactory`s by default (`PluginsConfig::default_backends`), so the
   harness still ships adapters for the common API flavours (Anthropic
-  native, OpenAI-compatible) out of the box, and a `[backends.<id>].kind`
+  native, OpenAI-compatible) out of the box, and a `backends.<id>.kind`
   entry in settings selects among whatever kinds are registered — there is
   no `anthropic`/`openai-compat` cargo feature to recompile for, and no
   closed built-in set: `kind` is an open name resolved against every
-  registered `BackendFactory` (decision 01KZHRPZ010R37411R3W1XR5TF).
+  registered `BackendFactory`.
 - Every port trait has a fake/test-double implementation available behind a
   feature flag, so the runtime and tools are testable end-to-end with zero
   network.
@@ -159,16 +156,30 @@ This shape exists so:
 
 A second, open-ended set of crates sits alongside the seven above: plugins
 written and shipped in this repository but never installed unless asked for
-(board item 01KZDC3JQ7W4DY1MG6MBCVB2DV; `PHILOSOPHY.md`'s "First-party
-plugins, and why they are not defaults"). `crates/conway-plugin-skeleton` was
-the first member — a worked example (one `skeleton_ping` tool) proving the
-mechanism, not a real capability. `crates/conway-plugin-routing` is the
-second: the capability-/health-filtering `DeclarativeRouter` engine `conway`
-itself used to compile in unconditionally, relocated here by board item
-01KZFC43J1J06BM4CCWKCKHSNV and installed by naming its `RouterFactory::id()`
-(`ROUTER_ID = "conway.routing"`) in `[plugins].install` — see §3.3 for
-exactly what it adds over the default `MinimalRouter`. Compaction, memory,
-skills, and MCP support remain separate, later work.
+(`PHILOSOPHY.md`'s "First-party plugins, and why they are not defaults").
+Members today:
+
+- **`crates/conway-plugin-skeleton`** — the first, and a worked example (one
+  `skeleton_ping` tool) proving the mechanism rather than a real capability.
+- **`crates/conway-plugin-routing`** — the capability-/health-filtering
+  `DeclarativeRouter` engine `conway` itself used to compile in
+  unconditionally, relocated here and installed by naming its
+  `RouterFactory::id()` (`ROUTER_ID = "conway.routing"`) in `plugins.install`.
+  See §3.3 for exactly what it adds over the default `MinimalRouter`.
+- **`crates/conway-plugin-backends`** — the Anthropic-native and
+  OpenAI-compatible provider adapters. The one member attached by default
+  (`PluginsConfig::default_backends`), because a harness that cannot reach a
+  model is inert rather than unopinionated.
+- **`crates/conway-plugin-history`** — `/conway.history.rewind <seq>`, which
+  forks the calling session at a sequence number and hands the TUI the child.
+  It exists to prove that `/rewind`-class features genuinely are plugins.
+- **`crates/conway-plugin-stepguard`** — repeated-tool-call detection, which
+  the agent loop used to carry unconditionally. It is the first consumer of
+  the `ToolObserver` port (§3.9), and the reason that port exists:
+  `PHILOSOPHY.md` §6 leaves loop intervention to the operator "including
+  writing none", which is only true once declining it is possible.
+
+Compaction, memory, skills, and MCP support remain separate, later work.
 
 The layout is one crate per plugin, under `crates/` like everything else.
 A single crate holding several would couple members that are meant to be
@@ -192,7 +203,7 @@ plugin is written and reviewed here, but from the facade's own point of
 view it is indistinguishable from a plugin nobody at this project wrote.
 The one place a first-party plugin crate IS linked into a shipped binary is
 `conway-cli` (`src/first_party_plugins.rs`), behind a config key
-(`[plugins].install`) distinct from the built-in selection §2 describes —
+(`plugins.install`) distinct from the built-in selection §2 describes —
 a `Plugin` via `bundle()`/`ConwayBuilder::with_plugin`, or, for
 `conway-plugin-routing` specifically, a `RouterFactory` via
 `router_bundle()`/`ConwayBuilder::with_router_factory`. A library embedder
@@ -277,7 +288,7 @@ Widening that surface is future work.
 
 **A default build** resolves a role alias (`"planner"`, `"coder"`,
 `"fast"`, ...) with `conway_core::routing::MinimalRouter`: a config-only
-resolver that walks `[roles.<alias>].chain` in order — the first entry
+resolver that walks `roles.<alias>.chain` in order — the first entry
 carries `RoutingReason::AliasPrimary`, every entry after it
 `RoutingReason::Fallback` — paired with `AlwaysClosedHealthRegistry`,
 which reports every breaker `Closed` and records nothing. Stated plainly,
@@ -292,11 +303,10 @@ requirements) and a circuit breaker per endpoint — **transport**, fed by
 connection failures — are what installing `conway-plugin-routing` (§2b)
 adds, not something a default build has. (A second, independent **probe**
 breaker fed by a periodic background liveness check used to be planned
-alongside it; it was retired rather than wired — board item
-`01KZ802GSF692EKYKQ2TTVCJB8` — because the transport breaker alone already
+alongside it; it was retired rather than wired — — because the transport breaker alone already
 detects a recovered endpoint on the next real request, so the prober would
 only have shaved latency off that one request, an optimization with no
-measured baseline to justify it.) `[plugins].install = ["conway.routing"]`
+measured baseline to justify it.) `plugins.install = ["conway.routing"]`
 resolves
 `RoutingRouterFactory` (`ROUTER_ID = "conway.routing"`) from
 `conway-cli`'s `router_bundle()`, which builds a `DeclarativeRouter` plus a
@@ -449,6 +459,38 @@ Widening port surfaces where they are narrower than the model implies is
 ongoing work, and the tool-facing types are serialization-ready, which
 leaves cheaper plugin hosts (subprocess, WASM) as a layered addition rather
 than a redesign.
+
+### 3.9 `ToolObserver` — loop-intervention policy, outside the core
+
+`ToolObserver` is a port (`conway-core`) invoked once per finished tool call,
+after its result is durable and before the next turn's context is assembled.
+It receives the call — including the `arguments`, which the `post_tool_use`
+payload does not carry, and which any "has this exact call happened before"
+policy needs — and returns an `ObserverAnswer` describing what to record. The
+runtime performs it.
+
+**Declare an effect, do not perform one.** An observer is handed no
+`SessionStore`, no event bus, and no agent handle; the only thing it can cause
+is a `SystemNote` appended to the session it was called about, plus events
+fired through the same `PluginEventHandle` a plugin's own tools already use
+(so under its own `plugin_id.` namespace, never a core event and never another
+plugin's). This is the same shape `ContextHook` (returns an edited payload)
+and `CommandOutcome::ForkSession` (returns a request to fork) already use: the
+smallest capability that does the job, bounded by the return type rather than
+by the plugin's restraint.
+
+**Observation only, fail-open.** The call has already run its side effects, so
+an observer cannot deny, cancel, or alter it, and a panicking observer is
+contained rather than failing the batch — the same posture `post_tool_use`
+takes, for the same reason. Policy that wants to *stop* something wants
+`PermissionGate` or a `pre_tool_use` hook, both of which run beforehand.
+
+**No observer is registered by default**, and with none installed the loop's
+observer pass does not execute at all. That emptiness is the design rather
+than an optimization: `PHILOSOPHY.md` §6 leaves loop intervention to the
+operator "including writing none", which is not a real option while the core
+ships one. `conway-plugin-stepguard` (§2b) is the first consumer, and carries
+the repeated-call detection the agent loop used to hold itself.
 
 ## 4. Data flow of one turn
 

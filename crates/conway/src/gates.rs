@@ -1,4 +1,4 @@
-//! Built-in [`conway_core::ports::PermissionGate`] implementations (WI-098).
+//! Built-in [`conway_core::ports::PermissionGate`] implementations.
 //!
 //! Three gates cover the full space named in architecture §4.3:
 //! [`AllowListGate`] (stateless allow/deny by tool name and argument glob),

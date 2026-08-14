@@ -2,7 +2,7 @@
 //! `[roles.<alias>].min_reliability` floor, parsed from JSON exactly as
 //! `.conway/settings.json` would be, driven through a real
 //! `ConwayConfig::routing()` -> `DeclarativeRouter` -> `AttemptEngine` ->
-//! `Backend`, asserting the OBSERVABLE OUTCOME (GP-14 / `LIVENESS_TESTS.md`):
+//! `Backend`, asserting the OBSERVABLE OUTCOME ( / `LIVENESS_TESTS.md`):
 //! a candidate that does not meet the configured floor is never called.
 //!
 //! ## Why `min_reliability`, not `tool_calling`
@@ -45,8 +45,8 @@
 //! change alone would have been exactly the kind of unreached
 //! configuration this whole item exists to prevent. Both are proven here:
 //! this file end to end through a real `Conway` (with the
-//! `conway-plugin-routing` first-party plugin installed -- board item
-//! 01KZFC43J1J06BM4CCWKCKHSNV, see `build_conway`'s own doc), and
+//! `conway-plugin-routing` first-party plugin installed
+//!, see `build_conway`'s own doc), and
 //! `crates/conway-plugin-routing/tests/router_resolution.rs`'s
 //! `role_configured_capability_floor_rejects_a_candidate_that_does_not_meet_it`
 //! / `..._admits_a_candidate_that_meets_it` directly against
@@ -158,7 +158,7 @@ fn config_naming(metadata_path: PathBuf) -> ConwayConfig {
     serde_json::from_str(&json).expect("fixture JSON must parse as ConwayConfig")
 }
 
-/// Board item 01KZFC43J1J06BM4CCWKCKHSNV: `conway` no longer compiles a
+/// `conway` no longer compiles a
 /// capability-filtering `DeclarativeRouter` in by default -- the role's
 /// configured `min_reliability` floor this file exists to prove is enforced
 /// by that engine specifically, so it must be installed via
@@ -176,7 +176,7 @@ fn build_conway(
         .with_session_store(store)
         .with_permission_gate(gate)
         .with_router_factory(Arc::new(conway_plugin_routing::RoutingRouterFactory))
-        // Board item 01KZHF270T3W8GZ7NM6DSNQ4MM: `conway` no longer
+        // `conway` no longer
         // compiles the `kind = "openai-compat"` fixture entry above in.
         .with_backend_factory(Arc::new(conway_plugin_backends::OpenAiCompatBackendFactory))
         .build()
@@ -214,7 +214,7 @@ async fn undercapable_model_is_never_called_and_turn_fails() {
         .expect("result must not hang")
         .expect("result() itself must not error -- the turn ends Failed, not the stream");
 
-    // PRIMARY (GP-14/LIVENESS_TESTS.md): the observable outcome, not an
+    // PRIMARY (/LIVENESS_TESTS.md): the observable outcome, not an
     // intermediate signal.
     assert!(
         backend.calls().is_empty(),
@@ -236,7 +236,7 @@ async fn undercapable_model_is_never_called_and_turn_fails() {
     }
 }
 
-/// GP-14: "any check that cannot fail is not a check" — proof the assertion
+///: "any check that cannot fail is not a check" — proof the assertion
 /// above can fail. Identical fixture, exactly one field changed: the
 /// model's `reliability_tier`, raised to meet the configured floor. The
 /// backend is now called exactly once and the turn completes normally.

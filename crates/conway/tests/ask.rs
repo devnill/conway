@@ -1,5 +1,5 @@
 //! Acceptance tests for `SessionHandle::ask` (the `/ask` fork-ask slice,
-//! slice A; re-attached by board item B2): forks the caller's agent at its
+//! slice A; re-attached by B2): forks the caller's agent at its
 //! current head into an ephemeral, catalog-hidden child -- attached as a
 //! proper fork child of the asker, `AgentSpawned { kind: Fork,
 //! parent: Some(asker), ephemeral: true, inherited_upto: Some(_) }` emitted
@@ -25,7 +25,7 @@
 //!   child attaches under the asker (not as a root): `AgentSpawned` on the
 //!   live stream carries `kind: Fork`, `parent: Some(asker)`,
 //!   `ephemeral: true`, `inherited_upto: Some(<fork-point seq>)`, and the
-//!   `tree()` snapshot shows the child node under the asker (P-2:
+//!   `tree()` snapshot shows the child node under the asker (:
 //!   ephemeral children stay attached and visible to provenance).
 //! - `ask_child_emits_agent_finished_with_ephemeral_true` -- the child's
 //!   terminal event is stamped ephemeral too.
@@ -600,7 +600,7 @@ async fn ask_child_can_invoke_a_tool_the_parent_session_had() {
 }
 
 // ---------------------------------------------------------------------
-// Board item 01KZGX1RR0VXN2YH3P75SBE9SA: a def-declared `result_contract`
+// a def-declared `result_contract`
 // must never govern an ask child.
 // ---------------------------------------------------------------------
 
@@ -628,14 +628,14 @@ fn write_contract_asker_agent_def(dir: &std::path::Path) {
     std::fs::write(dir.join("contract_asker.md"), content).expect("write agent def fixture");
 }
 
-/// **Part 1 guard (board item 01KZGX1RR0VXN2YH3P75SBE9SA), shown to fail
+/// **Part 1 guard, shown to fail
 /// before the fix.** The asker's own def declares a `result_contract` the
 /// child cannot possibly satisfy (its `tools` selector omits `report`, so
 /// `structured` always resolves to `null`). Drives the exact production
 /// path the TUI's modal `/ask` uses (`SessionHandle::ask`, which already
 /// inherits `agent_def` -- see that method's own doc). Before this item's
 /// fix, `subagent.rs::start` sourced `result_contract` from the SAME
-/// inherited def as a second, lower-precedence source (WI-086's original
+/// inherited def as a second, lower-precedence source (an earlier item's original
 /// precedence chain, meant for an ordinary `conway_fork`/`conway_spawn`
 /// child that CAN call `report`), so this ask child failed validation on
 /// its first turn, spent its one corrective retry (consuming a SECOND
@@ -712,7 +712,7 @@ async fn ask_child_completes_with_prose_despite_a_def_declared_result_contract_i
 }
 
 // ---------------------------------------------------------------------
-// Ephemeral flag on the live event stream (board item b)
+// Ephemeral flag on the live event stream (b)
 // ---------------------------------------------------------------------
 
 /// The facade `/ask` child is born with `SessionMeta::ephemeral = true`
@@ -803,7 +803,7 @@ async fn ask_child_emits_agent_finished_with_ephemeral_true() {
 // B2: the ask child attaches as a proper ephemeral fork child of the asker
 // ---------------------------------------------------------------------
 
-/// Board item B2's acceptance shape: `SessionHandle::ask` must attach its
+/// B2's acceptance shape: `SessionHandle::ask` must attach its
 /// ephemeral child as a FORK CHILD of the asker -- not (as the pre-B2
 /// `fork_child` -> `resume_root` path did) as a `kind: None` root with no
 /// `AgentSpawned` event at all. Two observation points, both asserted here:
@@ -813,9 +813,9 @@ async fn ask_child_emits_agent_finished_with_ephemeral_true() {
 ///    point) }` for the child -- this is what the post-A1 TUI tree view
 ///    renders the node from.
 /// 2. `SessionHandle::tree()`'s snapshot keeps the child attached UNDER
-///    the asker (P-2: runtime provenance keeps ephemeral children attached
+///    the asker (: runtime provenance keeps ephemeral children attached
 ///    -- never-attach was REJECTED, decision
-///    01KYFS1W7CJ1HW7N30H56B1VZZ) with `mode: Some(Fork)` and
+///) with `mode: Some(Fork)` and
 ///    `ephemeral: true` projected.
 #[tokio::test]
 async fn ask_child_attaches_as_ephemeral_fork_child_of_the_asker() {
@@ -890,7 +890,7 @@ async fn ask_child_attaches_as_ephemeral_fork_child_of_the_asker() {
     assert_eq!(
         spawned.0,
         SubagentMode::Fork,
-        "the ask child must attach as kind: Fork (P-1: ask is the fork primitive, not a new one)"
+        "the ask child must attach as kind: Fork (: ask is the fork primitive, not a new one)"
     );
     assert_eq!(
         spawned.1,
@@ -913,7 +913,7 @@ async fn ask_child_attaches_as_ephemeral_fork_child_of_the_asker() {
         .nodes
         .iter()
         .find(|n| n.agent_id == child_agent)
-        .expect("the ephemeral ask child must stay attached in the tree snapshot (P-2)");
+        .expect("the ephemeral ask child must stay attached in the tree snapshot ()");
     assert_eq!(
         node.parent,
         Some(handle.root()),

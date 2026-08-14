@@ -190,7 +190,7 @@ capability distinct from a tool (which the *model* calls; a command is
 something *you* type). A plugin command's name is always namespaced with its
 declaring plugin's own id, `/<plugin id>.<command name>` (e.g.
 `/conway.plugin_skeleton.ping`, the shipped worked example — install it with
-`"conway.plugin_skeleton"` in `[plugins].install`, see
+`"conway.plugin_skeleton"` in `plugins.install`, see
 [`embedding.md`](embedding.md)) — never a bare name, so an installed plugin
 can never shadow a built-in command. A plugin command shows up in the `/`
 palette exactly like a built-in one, alongside its one-line description; type
@@ -213,7 +213,7 @@ and the guarantee that a slow or hanging one degrades to "no reply yet,"
 never a frozen terminal.
 
 `conway.history` (`crates/conway-plugin-history`, install it with
-`"conway.history"` in `[plugins].install`) ships exactly one command,
+`"conway.history"` in `plugins.install`) ships exactly one command,
 `/conway.history.rewind <seq>`: forks the current session at that
 persisted sequence number and switches you to drive the resulting child,
 leaving the original session's own log untouched. `<seq>` must be an
@@ -258,7 +258,7 @@ tool-preview line count persists to `[tui.tool_preview_lines]` in
 `settings.json` when you step it. Permission-mode and grant details are
 covered in [`permissions.md`](permissions.md).
 
-The **hooks** section lists every configured `[hooks].rules[]` entry whose
+The **hooks** section lists every configured `hooks.rules[]` entry whose
 event can currently deny something — `pre_tool_use` (narrows a tool call)
 and `prompt_submitted` (narrows a submitted prompt) — each row naming its
 `id`, its event, its tool matcher (`match`, or "every call" when unset),
@@ -290,7 +290,7 @@ session | lineage | mode | model | ctx | tokens | activity | hint
 | `lineage` | `agent <id> via root → fork @seq 3 → @reviewer` | How the focused agent was created. Omitted while you're focused on the session's own root. |
 | `mode` | `ready`, `awaiting permission`, `ask`, or `intent` | The TUI's current top-level state. When your permission mode isn't the default, this field also names it: `ready · plan` or `ready · AUTO-ALLOW`. `AUTO-ALLOW` is the one thing on this line guaranteed to keep showing even on a very narrow terminal — it's a genuine safety signal, and the field most likely to matter if you've forgotten you're in it. |
 | `model` | `anthropic/claude-sonnet-4-6` | The focused agent's serving model. Omitted until its first turn has routed. |
-| `ctx` | `ctx 42%`, or `ctx 12.3k` when the model's context window isn't known | Cumulative context-window occupancy for the focused agent, from `[models.metadata_path]`. |
+| `ctx` | `ctx 42%`, or `ctx 12.3k` when the model's context window isn't known | Cumulative context-window occupancy for the focused agent, from `models.metadata_path`. |
 | `tokens` | `1.4k tok (88% cached)` | The focused agent's cumulative token spend; the cached-percentage parenthetical is the prompt-cache hit rate — `cache_read / (input + cache_read + cache_write)` — and is omitted when there's no cache activity yet. |
 | `activity` | `⠋ thinking… 12s · +45 tok` while active, `idle` otherwise | The working indicator: elapsed time and new context tokens added this turn. |
 | `hint` | `Enter submit · Ctrl-E expand · /help · /agents to view` | A persistent reminder of the essentials. Also names the focused agent when you're off-root and `lineage` isn't part of your configured fields. |

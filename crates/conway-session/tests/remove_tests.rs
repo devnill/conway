@@ -1,6 +1,6 @@
 //! Integration tests for `SessionStore::remove` (B1): the guarded purge
 //! primitive — the single user-explicit exception to mandatory provenance
-//! retention (P-2/GP-10). Covers the guard matrix (ephemeral-only;
+//! retention (). Covers the guard matrix (ephemeral-only;
 //! children — ephemeral ones included — block removal), file deletion,
 //! `SessionIndex` eviction (`by_id` + `children` map), and the no-WARN-
 //! rebuild-on-reopen invariant.

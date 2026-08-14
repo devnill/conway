@@ -124,7 +124,7 @@ An earlier `Artifact` variant — spill the full result to a file, keep a
 pointer in context — was declared but never implemented: nothing ever
 constructed it, and the runtime handled it identically to `None`, the
 inverse of what it promised. It has since been removed from the enum
-entirely (board item `01KYTN3A9SPDMRG610YSB5QQXX`) rather than fixed, so it
+entirely rather than fixed, so it
 is not in the table above because it no longer exists as an option — no
 built-in tool, or any tool, can declare it. `TruncationPolicy` stays
 `#[non_exhaustive]`, so a future variant is possible; this table reflects

@@ -1,12 +1,11 @@
-//! Domain types for one hook invocation (board item
-//! 01KZRZY1MNM872BZ6AKEBG3SKE): the EVENT NAME + PAYLOAD a hook is invoked
+//! Domain types for one hook invocation -- the EVENT NAME + PAYLOAD a hook is invoked
 //! with, and the ANSWER it may return -- kept deliberately separable from
 //! the INVOCATION MODALITY that actually delivers them. See
 //! [`crate::ports::HookRunner`] for the port that performs an invocation
 //! (a PORT, not a type here, because performing one is I/O -- this crate
 //! does none).
 //!
-//! **Today's modality (decision 01KZRZBQ2ACF40QGK8E9AVGMT3): one-shot.** A
+//! **Today's modality: one-shot.** A
 //! runner spawns the hook's configured command fresh per event, writes
 //! [`HookEvent`] to its stdin as JSON, and reads a [`HookAnswer`] from its
 //! stdout plus its exit status. This is deliberately NOT the long-lived
@@ -24,10 +23,10 @@ use serde::{Deserialize, Serialize};
 /// of how it is delivered (module doc).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct HookEvent {
-    /// e.g. `"pre_tool_use"`, or a plugin-namespaced `"myplugin.foo"` --
+    /// E.g. `"pre_tool_use"`, or a plugin-namespaced `"myplugin.foo"` --
     /// `crate::event_name::validate_event_name`'s vocabulary. **Not
     /// validated here**: that is the config-load-time (subscriber side) and
-    /// declaration-time (plugin side) concern two OTHER board items own --
+    /// declaration-time (plugin side) concern two OTHER own --
     /// see that function's own module doc. This runner is invoked with
     /// whatever name its caller already resolved.
     pub name: String,
@@ -57,7 +56,7 @@ pub struct HookInvocation {
 /// [`crate::ports::HookRunner`]'s own doc).
 ///
 /// **Structurally cannot express "replace computed context wholesale"**
-/// (decision 01KZSDRZ2HYPGGJVDPZHGPMD5G, which supersedes an earlier one
+/// (, which supersedes an earlier one
 /// whose reasoning was cacheability -- NOT the basis here). The only way to
 /// change context is [`ContextDelta`]: append, or exclude by identifier,
 /// never substitute. The load-bearing reason is **reconstructability**: the
@@ -67,7 +66,7 @@ pub struct HookInvocation {
 /// of the same shape, not the justification -- caching is the inference
 /// plugin's own responsibility, not this runner's.
 ///
-/// **`permission` (board item 01KZS00JP5QNBJSSHNFP9C47GM): a second,
+/// **`permission`: a second,
 /// independent axis, unrelated to context.** Only `pre_tool_use` dispatch
 /// (`conway_runtime::permission::PermissionBroker::decide`) ever reads it;
 /// every other event ignores the field completely, exactly as a hook that
@@ -89,17 +88,17 @@ pub struct HookAnswer {
 }
 
 /// A `pre_tool_use` hook's opinion on whether the call it was invoked for
-/// should be allowed to proceed (board item 01KZS00JP5QNBJSSHNFP9C47GM).
+/// should be allowed to proceed.
 ///
 /// **No `Allow` variant exists, anywhere in this type -- not "we only check
-/// whether it denied."** Decision 01KZRZAFD8T3GX407MZC8P1W1E: a hook may
+/// whether it denied."** Decision: a hook may
 /// only NARROW a permission verdict, never widen one; it cannot grant an
 /// allow that was not already going to happen, only add another way to say
 /// no. `crate::permission_pattern::Then` enforces the same rule one layer
 /// down for plugin-contributed pattern rules, but does so by *rejecting*
 /// `Then::Allow` at admission time (`PermissionBroker::remember_pattern_rule`,
 /// a runtime check a future edit could get wrong) -- this type takes the
-/// strictly stronger option the same board item's spec asked for: there is
+/// strictly stronger option the same's spec asked for: there is
 /// no `Allow` variant for a runtime check to fail to reject, so
 /// `PermissionBroker::decide` structurally cannot treat a hook's answer as
 /// a grant, independent of whether every call site keeps checking that
@@ -129,7 +128,7 @@ pub enum HookPermissionVerdict {
 pub struct ContextDelta {
     /// Opaque content this hook is appending. Left untyped here
     /// (`serde_json::Value`): the concrete per-item shape (`{role,
-    /// blocks}`, mirroring `.design/extension-architecture.md` §16.5's
+    /// blocks}`, mirroring the extension design's
     /// `context.hook/1`) is a later item's concern, once a concrete context
     /// event is actually wired onto this runner -- this item proves the
     /// SHAPE (append, never replace) is representable, nothing more.
@@ -144,7 +143,7 @@ pub struct ContextDelta {
 }
 
 /// Whether `tool` satisfies a `pre_tool_use`/`post_tool_use` rule's `match`
-/// pattern (board item 01KZYAWQ6011Q6CJVG6CCMQPF1; `"match"` on the wire --
+/// pattern (; `"match"` on the wire --
 /// see `crates/conway/src/config/schema.rs`'s `HookEntry::match_tool`,
 /// which is the only producer of `pattern` in practice).
 ///
@@ -329,7 +328,7 @@ mod tests {
         assert!(serde_json::from_str::<HookPermissionVerdict>("\"allow\"").is_err());
     }
 
-    /// ACCEPTANCE (board item 01KZYAWQ6011Q6CJVG6CCMQPF1): both of
+    /// ACCEPTANCE: both of
     /// `PHILOSOPHY.md` §5's own example patterns are exact matches, and each
     /// matches only its own tool.
     #[test]

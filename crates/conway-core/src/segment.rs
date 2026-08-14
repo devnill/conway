@@ -8,7 +8,7 @@ use crate::content::{ContentBlock, Role};
 use crate::ids::{PrefixKey, SegmentId};
 use crate::provenance::Provenance;
 
-// `CacheTtl` lives in `capabilities.rs` (WI-004 depends only on WI-001 and
+// `CacheTtl` lives in `capabilities.rs` (depends only on an earlier item and
 // needed this type before this module existed). Re-export it rather than
 // redefining it — see the doc comment on `capabilities::CacheTtl`.
 pub use crate::capabilities::CacheTtl;
@@ -125,7 +125,7 @@ impl From<&Provenance> for SegmentKind {
 mod tests {
     use super::*;
 
-    // Compile-time regression guard for the WI-003 criterion: if any future
+    // Compile-time regression guard for the criterion: if any future
     // change adds `#[derive(Default)]` (or a manual `Default`) to
     // `PromptSegment`, compilation of the test suite fails here — a segment
     // must never be constructible without stated provenance.

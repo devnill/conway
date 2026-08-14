@@ -1,5 +1,5 @@
 //! Integration coverage for `ReportTool` and the `ReportPlugin` assembly
-//! (WI-065 criteria).
+//! (criteria).
 //!
 //! Requires the `test-fakes` feature (for `conway_tools::testing::test_ctx`).
 //! Declared with `required-features = ["test-fakes"]` in Cargo.toml, so a
@@ -33,7 +33,7 @@ fn text_of(out: &ToolOutput) -> &str {
 
 /// The runtime does the `AgentResult` lift; this crate holds zero
 /// session-logging or result-construction logic (architecture boundary,
-/// WI-065 criteria). Read from outside `report_tool.rs` so this assertion's
+/// criteria). Read from outside `report_tool.rs` so this assertion's
 /// own literal strings aren't part of the scanned content.
 #[test]
 fn report_tool_module_has_no_session_or_agent_result_construction() {

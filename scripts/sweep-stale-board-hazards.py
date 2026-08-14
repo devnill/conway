@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Report board specs that still quote a retired hazard or a dead baseline.
 
-WHY THIS EXISTS. Board item 01KZY8TEE2FDWQMHEKJDDC3SG9 measured that roughly
+WHY THIS EXISTS. Board item measured that roughly
 twenty board specs quote "never run a package-wide `cargo fmt`" -- a warning
 that was true when written (the tree had ~150 pre-existing violations) and has
 been false since the workspace was reformatted and gated in CI on 2026-08-13.
@@ -26,14 +26,14 @@ THREE CLASSES, each reported separately because they need different fixes:
   * FMT HAZARD -- a spec still tells a reader never to run a package-wide
     `cargo fmt`. Suggested replacement: state plainly that the repo is
     fmt-clean and CI-gated since 2026-08-13, so `cargo fmt` is safe, mirroring
-    the correction board item 01KZVZ5XV162XCQR96AQKCCCF7 already carries.
+    the correction already carries.
   * STALE BASELINE -- a spec cites a suite/test count from a specific
     canonical set of dead figures (129/2276, 129/2292, 130/2301, 130/2314,
     131/2315, 153/2346). The current baseline as of 2026-08-13 is
     **156 suites / 2454 tests**. This will go stale again; the durable fix a
     spec can make is to say "re-measure and trust the live number, not this
     one" rather than hardcode a fresh figure that just becomes the next dead
-    one -- board item 01KZQHZ18MXR7WYVPMTGM5DHT0 already says this about
+    one -- already says this about
     itself and is the pattern worth copying.
   * HOME-REDIRECT -- a spec instructs redirecting `HOME` for test isolation
     without mentioning `CARGO_HOME`/`RUSTUP_HOME`. Since config isolation
@@ -52,7 +52,7 @@ tooling state, not the user-facing surface `check-board-citations.py` covers,
 and a board spec citing its own internal governance vocabulary is not the
 defect that item guards against. It does not verify a DONE item's historical
 accuracy is worth preserving vs. correcting -- CHANGELOG.md's own precedent
-(01KZWV0BG353J7SVZX5YV8N459) treated an append-only historical log
+ treated an append-only historical log
 differently from a live reference page; a board item is neither, and this
 script takes no position on whether to rewrite closed work, only reports it
 so a human can decide. The HOME-redirect negation heuristic is a fixed phrase
@@ -76,23 +76,20 @@ BOARD_DB = ROOT / ".ideate-work" / "board.db"
 
 FMT_HAZARD = re.compile(
     r"never run (?:a )?(?:package|workspace|whole)[- ]wide[^.\n]{0,60}cargo fmt",
-    re.IGNORECASE,
-)
+    re.IGNORECASE)
 
 CURRENT_BASELINE = "156 suites / 2454 tests"
 STALE_BASELINE_PAIRS = {"129/2276", "129/2292", "130/2301", "130/2314", "131/2315", "153/2346"}
 BASELINE = re.compile(
     r"\b(\d{3})\s*suites?\s*/?\s*[\-–—]?\s*([\d,]{3,6})\s*(?:passed|tests)\b",
-    re.IGNORECASE,
-)
+    re.IGNORECASE)
 
 HOME_REDIRECT = re.compile(r"\bHOME\b[^.\n]{0,80}redirect|redirect[^.\n]{0,80}\bHOME\b")
 HOME_NEGATION = re.compile(
     r"without\s+redirect|run\s+without[^.\n]{0,40}redirect|not\s+redirect|"
     r"never\s+redirect|no\s+longer\s+necessary|left\s+at\s+their\s+real\s+values|"
     r"is\s+no\s+longer\s+necessary",
-    re.IGNORECASE,
-)
+    re.IGNORECASE)
 
 
 def load_items() -> list[tuple[str, str, str, str]] | None:
@@ -162,7 +159,7 @@ def main() -> int:
 
     print(f"FMT HAZARD -- {len(fmt_hits)} item(s) still warn against a package-wide `cargo fmt`")
     print(f"  suggested fix: state plainly the repo is fmt-clean and CI-gated since")
-    print(f"  2026-08-13 (mirror board item 01KZVZ5XV162XCQR96AQKCCCF7's own correction)")
+    print(f"  2026-08-13 (mirror's own correction)")
     for id_, status, title, ctx in fmt_hits:
         print(f"  [{status:9}] {id_}  {title[:70]}")
         print(f"      ...{ctx}...")

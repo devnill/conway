@@ -1,4 +1,4 @@
-//! Crash-recovery integration tests for `JsonlSessionStore` (WI-047):
+//! Crash-recovery integration tests for `JsonlSessionStore`:
 //! truncate-and-warn on a damaged trailing line, `Corrupt` (never
 //! truncated) on a damaged header, and that a post-recovery `append`
 //! continues at `last_complete_seq + 1`.

@@ -1,9 +1,9 @@
 //! The first-party plugin tier's own acceptance test for this crate (board
-//! item 01KZHF270T3W8GZ7NM6DSNQ4MM), the backend-side sibling of
+//! item), the backend-side sibling of
 //! `crates/conway-plugin-skeleton/tests/skeleton_end_to_end.rs`: written the
 //! way a library embedder would write it, `ConwayBuilder` +
 //! `ConwayBuilder::with_backend_factory` called directly, no
-//! `conway-cli`/`first_party_plugins` involved at all -- proving GP-05/C-03
+//! `conway-cli`/`first_party_plugins` involved at all -- proving
 //! ("every mode reachable") for the library-embedder path the way
 //! `crates/conway-cli/tests/first_party_plugins.rs`'s
 //! `default_backends_attach_with_no_plugins_install_entry_and_complete_a_
@@ -13,7 +13,7 @@
 //! `ScriptedBackend`), this one drives the REAL
 //! `OpenAiCompatBackendFactory::build` -> real `OpenAiCompatBackend` ->
 //! real HTTP request, against a loopback `wiremock` server -- no
-//! credentials, no network beyond that loopback listener (P-15). This is
+//! credentials, no network beyond that loopback listener (). This is
 //! the discriminating proof that `ConwayBuilder::with_backend_factory` is
 //! not merely accepted but genuinely reaches the wire: a builder that
 //! silently dropped the registered factory, or built a backend that never

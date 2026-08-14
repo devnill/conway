@@ -1,4 +1,4 @@
-//! SIGINT handling for one-shot mode (WI-112).
+//! SIGINT handling for one-shot mode.
 //!
 //! [`install`] spawns a background task that watches for `Ctrl-C`. The
 //! **first** delivery only records itself: `oneshot::run`'s own render loop
@@ -77,7 +77,7 @@ fn abort() {
 /// unit test below, which calls it directly instead of raising a real OS
 /// signal -- doing that from a `#[test]` would be neither portable (no
 /// `SIGINT` on Windows) nor deterministic (this process's own signal
-/// handler and the test harness's would race). WI-113's integration tests
+/// handler and the test harness's would race). an earlier item's integration tests
 /// cover the real, OS-signal-driven path against the compiled binary.
 fn record(hits: &AtomicU8, notify: &Notify, abort: &dyn Fn()) {
     let n = hits.fetch_add(1, Ordering::SeqCst) + 1;

@@ -1,5 +1,5 @@
 //! Wiremock integration tests for `OpenAiCompatBackend::generate` and
-//! `capabilities` (WI-019). Segment→message mapping golden-JSON and
+//! `capabilities`. Segment→message mapping golden-JSON and
 //! cache-hint byte-identity unit tests live in
 //! `src/openai_compat/wire.rs`; SSE streaming tests live in
 //! `tests/openai_compat_stream.rs`.

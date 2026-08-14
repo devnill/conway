@@ -1,4 +1,4 @@
-//! End-to-end acceptance tests for `AgentLoop` (WI-081, architecture §7):
+//! End-to-end acceptance tests for `AgentLoop` (architecture §7):
 //! ContextBuilder -> Router -> AttemptEngine -> ToolRunner -> SessionStore
 //! wiring, budgets, and terminal-result construction.
 //!
@@ -500,11 +500,12 @@ fn build_loop(
         role,
         None,
         None,
+        Vec::new(),
     )
 }
 
 /// Like [`build_loop`], but wires `report_slot` into the `AgentSpec` so a
-/// test can observe the live slot `Runtime::context_report` (WI-082) reads
+/// test can observe the live slot `Runtime::context_report` reads
 /// from without going through `Runtime` itself.
 #[allow(clippy::too_many_arguments)]
 fn build_loop_with_report_slot(
@@ -535,6 +536,7 @@ fn build_loop_with_report_slot(
         role,
         Some(report_slot),
         None,
+        Vec::new(),
     )
 }
 
@@ -543,8 +545,8 @@ fn build_loop_with_report_slot(
 /// derives `AgentLoop::agent_path` from a real `AgentTree::path` walk over
 /// that chain (mirroring `subagent.rs`'s own construction, not a hand-typed
 /// `vec![agent]`), and installs `context_hook` so a test can observe what a
-/// registered `ContextHook` actually receives. Board item
-/// 01KZQHZH8RXVR38JJX9AY4VSW4.
+/// registered `ContextHook` actually receives.
+///.
 #[allow(clippy::too_many_arguments)]
 fn build_loop_with_ancestry_and_hook(
     session: SessionId,
@@ -575,6 +577,7 @@ fn build_loop_with_ancestry_and_hook(
         role,
         None,
         Some(context_hook),
+        Vec::new(),
     )
 }
 
@@ -594,6 +597,7 @@ fn build_loop_inner(
     role: &str,
     report_slot: Option<Arc<Mutex<Option<conway_core::provenance::ContextReport>>>>,
     context_hook: Option<Arc<dyn ContextHook>>,
+    observers: Vec<conway_core::ports::RegisteredObserver>,
 ) -> Harness {
     let bus = EventBus::new(1024);
     let health: Arc<dyn HealthRegistry> = Arc::new(FakeHealth::new());
@@ -623,6 +627,8 @@ fn build_loop_inner(
         headroom: Arc::new(headroom),
         tree: tree.clone(),
         context_hook: std::sync::RwLock::new(context_hook),
+        observers,
+        plugin_events: Arc::new(conway_runtime::hook_dispatch::HookDispatcher::new()),
     });
 
     let spec = AgentSpec {
@@ -637,7 +643,7 @@ fn build_loop_inner(
         headroom_override,
         max_parallel_tools: 4,
         report_slot,
-        // WI-086: not exercised by this file -- `tests/result_contract.rs`
+        // not exercised by this file -- `tests/result_contract.rs`
         // owns result-contract coverage.
         result_contract: None,
         // Keep-alive is exercised at the facade level
@@ -695,10 +701,10 @@ fn build_loop_inner(
         deps,
         spec,
         cancel: cancel.clone(),
-        // WI-084: no test in this file exercises fork inheritance --
+        // no test in this file exercises fork inheritance --
         // that's `tests/subagent_fork_spawn.rs`'s job.
         inherited: None,
-        // WI-085: no test in this file exercises mailboxes/steering --
+        // no test in this file exercises mailboxes/steering --
         // that's `tests/steering.rs`'s job.
         inbox: mailbox_rx,
         parent_mailbox: None,
@@ -826,7 +832,7 @@ async fn tool_call_then_text_runs_two_turns_and_second_context_sees_the_result()
         )),
         "second turn's context must include the first turn's tool result"
     );
-    // WI-137: the tool result rides in a `ToolResultBlock` (carrying its
+    // the tool result rides in a `ToolResultBlock` (carrying its
     // call_id) so the wire adapters can serialize it as a `tool` message --
     // its text lives inside that block, not as a bare top-level `Text`.
     assert!(
@@ -842,7 +848,7 @@ async fn tool_call_then_text_runs_two_turns_and_second_context_sees_the_result()
             ))),
         "second turn's context must contain the tool result's text inside a ToolResultBlock"
     );
-    // WI-122 regression: the second turn's context must ALSO carry the first
+    // regression: the second turn's context must ALSO carry the first
     // turn's tool CALL as an assistant `ToolUse` block. Without it the
     // assistant message has no `tool_calls`, the model never sees that it
     // called a tool, and it re-calls the tool indefinitely (the orphaned
@@ -867,7 +873,7 @@ async fn tool_call_then_text_runs_two_turns_and_second_context_sees_the_result()
         r,
         LogRecord::ToolResultRecord { result, .. } if result.tool.as_str() == "read" && !result.is_error
     )));
-    // WI-122 regression: the persisted assistant record is the WHOLE turn --
+    // regression: the persisted assistant record is the WHOLE turn --
     // its tool calls folded in as trailing `ToolUse` blocks, not just text.
     assert!(
         records.iter().any(|r| matches!(
@@ -1066,6 +1072,61 @@ async fn budget_max_tokens_exceeded_stops_the_loop() {
 
     let result = harness.agent_loop.run().await;
     assert!(matches!(result.status, ResultStatus::BudgetExceeded { .. }));
+    assert_eq!(backend.calls().len(), 2);
+}
+
+/// The fourth budget dimension. `max_tool_calls` was a public, settable,
+/// serialized field that nothing read: an embedder who set a tool-call
+/// ceiling got no ceiling and no warning. This pins that it binds, and that
+/// the terminal result names WHICH dimension tripped -- an operator who set
+/// several needs to know which one ended the run.
+#[tokio::test]
+async fn budget_max_tool_calls_exceeded_stops_the_loop() {
+    let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
+    let (session, agent) = seed_prompt(&*store, "planner", "hello").await;
+    let backend = Arc::new(TrackingBackend::new(
+        "b",
+        vec![
+            tool_call_response("tc_1", "read", serde_json::json!({})),
+            tool_call_response("tc_2", "read", serde_json::json!({})),
+            tool_call_response("tc_3", "read", serde_json::json!({})),
+        ],
+    ));
+    let router = Arc::new(CapturingRouter::ok(vec![make_route("b", "m")]));
+    let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
+    let tool: Arc<dyn Tool> = Arc::new(RecordingTool {
+        name: ToolName::new("read"),
+        output: "ok".to_string(),
+        order: None,
+    });
+
+    // Each turn's response dispatches exactly one tool call; a ceiling of 2
+    // must stop at the top of the third turn, before a third backend call.
+    let budget = Budget {
+        max_tool_calls: Some(2),
+        ..Budget::default()
+    };
+    let harness = build_loop(
+        session,
+        agent,
+        store,
+        router,
+        backend.clone(),
+        vec![tool],
+        gate,
+        budget,
+        HeadroomPolicy::default(),
+        None,
+        "planner",
+    );
+
+    let result = harness.agent_loop.run().await;
+    match &result.status {
+        ResultStatus::BudgetExceeded { limit } => {
+            assert_eq!(limit, "max_tool_calls=2", "the tripped dimension is named");
+        }
+        other => panic!("expected BudgetExceeded, got {other:?}"),
+    }
     assert_eq!(backend.calls().len(), 2);
 }
 
@@ -1393,7 +1454,7 @@ async fn headroom_override_wins_over_the_policy_default() {
     assert_eq!(backend.calls()[0].params.max_tokens, Some(777));
 }
 
-/// FINDING C1 (WI-082 cycle-1 review): the loop pushes the turn's just-built
+/// FINDING C1 (An earlier review found: ): the loop pushes the turn's just-built
 /// `ContextReport` into `AgentSpec.report_slot` every turn, before the
 /// backend call -- proving a caller reading the slot sees a live report that
 /// both exists mid-run and grows across turns, independent of the event bus.
@@ -1452,11 +1513,11 @@ async fn report_slot_is_populated_and_updates_across_turns() {
 }
 
 // ---------------------------------------------------------------------
-// Board item 01KZQHZH8RXVR38JJX9AY4VSW4: `ContextHookCtx::agent_path`
+// `ContextHookCtx::agent_path`
 // ---------------------------------------------------------------------
 
 /// Records every `ContextHookCtx` a registered `ContextHook` sees, so a test
-/// can assert on what the hook actually received (P-15) rather than on an
+/// can assert on what the hook actually received () rather than on an
 /// intermediate value.
 struct RecordingContextHook {
     captured: Mutex<Vec<ContextHookCtx>>,
@@ -1570,7 +1631,7 @@ async fn context_hook_ctx_agent_path_equals_permission_request_agent_path_at_dep
     );
 
     // A one-level tree can't distinguish a working copy from an empty
-    // vector (P-15) -- assert this fixture is genuinely depth-four, not
+    // vector () -- assert this fixture is genuinely depth-four, not
     // vacuously equal.
     assert_eq!(hook_paths[0].len(), 4);
     assert_ne!(hook_paths[0], vec![leaf]);
@@ -1648,11 +1709,11 @@ async fn context_hook_ctx_agent_path_distinguishes_depth_one_from_depth_four() {
 }
 
 // ---------------------------------------------------------------------
-// Board item 01KZVD646PS4DGQV2S76VQ91X7: `ContextHookCtx` at the
+// `ContextHookCtx` at the
 // `ContextHook::on_overflow` construction site (`agent_loop.rs`'s
 // `route_and_attempt`) was REACHED but never OBSERVED by any test --
-// unlike the `before_request` site above (01KZQJ03ZQ22MPM9H2TW1350ZF,
-// 01KZQHZH8RXVR38JJX9AY4VSW4). Measured, not assumed: stubbing `tag` at
+// unlike the `before_request` site above,
+//). Measured, not assumed: stubbing `tag` at
 // that second construction site to `None` left the full `--all-features`
 // workspace suite green, 0 failed. `agent_path` and `artifacts` are built
 // from the identical field-literal pattern as `tag` at both sites, so one
@@ -1793,7 +1854,7 @@ async fn context_hook_ctx_at_on_overflow_carries_agent_path_tag_and_a_working_ar
     );
     // `build_loop_with_ancestry_and_hook` has no `tag` parameter (no
     // existing caller needs one) -- set it directly on the built spec,
-    // exactly as `SubagentSpec::tag` (01KZQJ03ZQ22MPM9H2TW1350ZF) is set on
+    // exactly as `SubagentSpec::tag` is set on
     // a real fork/spawn child before that child's first turn ever runs.
     harness.agent_loop.spec.tag = Some("ticket-42".to_string());
     // A real, writable confinement-free cwd for the `artifacts` assertion
@@ -1823,18 +1884,18 @@ async fn context_hook_ctx_at_on_overflow_carries_agent_path_tag_and_a_working_ar
     assert_eq!(
         ctx.agent_path, expected_path,
         "ContextHookCtx::agent_path on the on_overflow call must be the same root-first, \
-         self-inclusive chain the before_request call sees -- not the pre-WI-126 default of \
+         self-inclusive chain the before_request call sees -- not the pre- an earlier item default of \
          just [agent_id]"
     );
     // A one-level tree can't distinguish a working copy from an empty
-    // vector (P-15) -- assert this fixture is genuinely depth-four.
+    // vector () -- assert this fixture is genuinely depth-four.
     assert_eq!(ctx.agent_path.len(), 4);
 
     assert_eq!(
         ctx.tag,
         Some("ticket-42".to_string()),
         "ContextHookCtx::tag on the on_overflow call must be the consumer's tag, not None -- \
-         this is the field board item 01KZVD646PS4DGQV2S76VQ91X7 was filed over"
+         this is the field was filed over"
     );
 
     assert_eq!(ctx.agent_id, leaf);
@@ -1864,5 +1925,284 @@ async fn context_hook_ctx_at_on_overflow_carries_agent_path_tag_and_a_working_ar
     assert_eq!(
         on_disk, b"proof",
         "the bytes read back from disk must be exactly what was written"
+    );
+}
+
+// ---------------------------------------------------------------------
+// `ToolObserver`: the seam that lets loop-intervention policy live outside
+// the core. The pair below is the parity check for moving repeated-step
+// detection into `conway-plugin-stepguard` -- the same three identical calls
+// must produce a note with an observer installed, and nothing at all
+// without one. The second half is the half that matters: `PHILOSOPHY.md` §6
+// says writing no policy is a real option, and it only is if a default
+// build genuinely does nothing.
+// ---------------------------------------------------------------------
+
+/// Counts calls it sees and asks for a note on the third identical one --
+/// the smallest thing shaped like the real plugin, so this test exercises
+/// the RUNTIME's seam rather than the plugin's policy (which has its own
+/// tests, in its own crate, where it belongs).
+struct NoteOnThird {
+    seen: Mutex<u32>,
+}
+
+#[async_trait]
+impl conway_core::ports::ToolObserver for NoteOnThird {
+    async fn after_tool_call(
+        &self,
+        _ctx: &conway_core::ports::ObserverCtx,
+        call: &conway_core::ports::ObservedCall,
+    ) -> conway_core::ports::ObserverAnswer {
+        let mut seen = self.seen.lock().unwrap();
+        *seen += 1;
+        if *seen == 3 {
+            conway_core::ports::ObserverAnswer {
+                notes: vec![conway_core::ports::ObserverNote {
+                    text: format!("saw `{}` three times", call.tool),
+                    reason: "repeated_step".to_string(),
+                }],
+            }
+        } else {
+            conway_core::ports::ObserverAnswer::default()
+        }
+    }
+}
+
+/// Observation must never fail the thing it observed -- the call already ran
+/// its side effects by the time an observer sees it.
+struct PanickingObserver;
+
+#[async_trait]
+impl conway_core::ports::ToolObserver for PanickingObserver {
+    async fn after_tool_call(
+        &self,
+        _ctx: &conway_core::ports::ObserverCtx,
+        _call: &conway_core::ports::ObservedCall,
+    ) -> conway_core::ports::ObserverAnswer {
+        panic!("observer blew up");
+    }
+}
+
+async fn run_three_identical_calls(
+    observers: Vec<conway_core::ports::RegisteredObserver>,
+) -> Vec<LogRecord> {
+    let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
+    let (session, agent) = seed_prompt(&*store, "planner", "hello").await;
+    let backend = Arc::new(TrackingBackend::new(
+        "b",
+        vec![
+            tool_call_response("tc_1", "read", serde_json::json!({"path": "a.txt"})),
+            tool_call_response("tc_2", "read", serde_json::json!({"path": "a.txt"})),
+            tool_call_response("tc_3", "read", serde_json::json!({"path": "a.txt"})),
+            text_response("done"),
+        ],
+    ));
+    let router = Arc::new(CapturingRouter::ok(vec![make_route("b", "m")]));
+    let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
+    let tool: Arc<dyn Tool> = Arc::new(RecordingTool {
+        name: ToolName::new("read"),
+        output: "file contents".to_string(),
+        order: None,
+    });
+
+    let harness = build_loop_inner(
+        session,
+        agent,
+        vec![],
+        store.clone(),
+        router,
+        backend,
+        vec![tool],
+        gate,
+        Budget::default(),
+        HeadroomPolicy::default(),
+        None,
+        "planner",
+        None,
+        None,
+        observers,
+    );
+    let result = harness.agent_loop.run().await;
+    assert_eq!(result.status, ResultStatus::Completed);
+
+    store
+        .read(&session, conway_core::ids::SeqRange::full())
+        .await
+        .unwrap()
+}
+
+fn repeated_step_notes(records: &[LogRecord]) -> Vec<String> {
+    records
+        .iter()
+        .filter_map(|r| match r {
+            LogRecord::SystemNote { text, reason, .. } if reason == "repeated_step" => {
+                Some(text.clone())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn an_installed_observer_can_add_a_note_the_model_will_read() {
+    let observer = Arc::new(NoteOnThird {
+        seen: Mutex::new(0),
+    });
+    let records = run_three_identical_calls(vec![conway_core::ports::RegisteredObserver {
+        plugin_id: "test.stepguard".to_string(),
+        observer,
+    }])
+    .await;
+
+    let notes = repeated_step_notes(&records);
+    assert_eq!(
+        notes.len(),
+        1,
+        "the observer's note must be appended to the durable log exactly once"
+    );
+    assert!(
+        notes[0].contains("three times"),
+        "note text: {:?}",
+        notes[0]
+    );
+}
+
+/// The half that proves the move actually removed something. Before this
+/// change the runtime produced this note on its own; now, with no observing
+/// plugin installed, the log must contain nothing of the kind.
+#[tokio::test]
+async fn with_no_observer_installed_the_runtime_writes_no_notes_of_its_own() {
+    let records = run_three_identical_calls(Vec::new()).await;
+    assert!(
+        repeated_step_notes(&records).is_empty(),
+        "a default build holds no repeated-step policy: {:?}",
+        repeated_step_notes(&records)
+    );
+}
+
+#[tokio::test]
+async fn a_panicking_observer_does_not_fail_the_call_it_observed() {
+    let records = run_three_identical_calls(vec![conway_core::ports::RegisteredObserver {
+        plugin_id: "test.panics".to_string(),
+        observer: Arc::new(PanickingObserver),
+    }])
+    .await;
+
+    // `run_three_identical_calls` already asserts the run reached
+    // `Completed`; this pins that the tool results still landed, so the
+    // panic was contained rather than merely not propagated to the status.
+    let results = records
+        .iter()
+        .filter(|r| matches!(r, LogRecord::ToolResultRecord { .. }))
+        .count();
+    assert_eq!(results, 3, "every tool result must still be recorded");
+}
+
+/// A tool call the assembler had to drop reaches the caller's report, and
+/// **survives a registered `ContextHook`**.
+///
+/// The second half is the one worth a real turn rather than a unit test.
+/// `retotal` rebuilds the report from scratch after a hook edits the payload,
+/// and by then the removed blocks are gone from `segments` -- so if it does
+/// not carry the drop list forward explicitly, the field silently empties on
+/// every turn a hook is registered. That would replace the silent drop this
+/// field exists to expose with a second one, in the exact configuration an
+/// operator installed a hook to gain visibility.
+#[tokio::test]
+async fn a_dropped_tool_call_reaches_the_report_slot_even_through_a_context_hook() {
+    let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
+    let (session, agent) = seed_prompt(&*store, "planner", "hello").await;
+
+    // An assistant turn with two calls, and a result for only one of them.
+    let seq = store.head(&session).await.unwrap();
+    store
+        .append(
+            &session,
+            LogRecord::Assistant {
+                seq,
+                ts: Utc::now(),
+                content: vec![
+                    ContentBlock::ToolUse {
+                        call_id: "answered".into(),
+                        name: ToolName::new("read"),
+                        arguments: serde_json::json!({"path": "a.txt"}),
+                    },
+                    ContentBlock::ToolUse {
+                        call_id: "orphaned".into(),
+                        name: ToolName::new("read"),
+                        arguments: serde_json::json!({"path": "b.txt"}),
+                    },
+                ],
+                model: ModelRef {
+                    backend: BackendId::new("b"),
+                    model: ModelId::new("m"),
+                },
+                route_reason: serde_json::json!({}),
+                usage: conway_core::content::Usage::default(),
+                stop: conway_core::content::StopReason::ToolUse,
+            },
+        )
+        .await
+        .unwrap();
+    let seq = store.head(&session).await.unwrap();
+    store
+        .append(
+            &session,
+            LogRecord::ToolResultRecord {
+                seq,
+                ts: Utc::now(),
+                result: conway_core::content::ToolResult {
+                    call_id: "answered".into(),
+                    tool: ToolName::new("read"),
+                    blocks: vec![ContentBlock::Text {
+                        text: "file contents".into(),
+                    }],
+                    is_error: false,
+                    truncated: None,
+                },
+            },
+        )
+        .await
+        .unwrap();
+
+    let backend = Arc::new(TrackingBackend::new("b", vec![text_response("done")]));
+    let router = Arc::new(CapturingRouter::ok(vec![make_route("b", "m")]));
+    let gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
+    let report_slot = Arc::new(Mutex::new(None));
+    // A pass-through hook: it changes nothing, so any difference in the
+    // report is `retotal`'s doing, not the hook's.
+    let hook: Arc<dyn ContextHook> = Arc::new(RecordingContextHook::new());
+
+    let harness = build_loop_inner(
+        session,
+        agent,
+        vec![],
+        store,
+        router,
+        backend,
+        vec![],
+        gate,
+        Budget::default(),
+        HeadroomPolicy::default(),
+        None,
+        "planner",
+        Some(report_slot.clone()),
+        Some(hook),
+        Vec::new(),
+    );
+
+    let result = harness.agent_loop.run().await;
+    assert_eq!(result.status, ResultStatus::Completed);
+
+    let report = report_slot
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("report slot populated by the time the loop finishes");
+    assert_eq!(
+        report.dropped,
+        vec!["orphaned".to_string()],
+        "the unanswered call must be named in the report the caller reads, \
+         after the hook pass as well as before it"
     );
 }

@@ -1,5 +1,13 @@
 # Philosophy: conway
 
+> **This page is a specification, not a description.** It states the shape
+> conway is meant to have at 1.0, and the tree is built to converge on it —
+> when the two disagree, the defect is in the code. A handful of claims here
+> are therefore ahead of what is built; each one is marked with a
+> **Where the tree is today** note saying so, and
+> [`CONTRIBUTING.md`](CONTRIBUTING.md) §2 is the rule that keeps those notes
+> honest. Anything without such a note is expected to be true right now.
+
 conway is a Rust agent harness for agentic coding. It runs LLM-driven agents
 that call tools, create child agents, and route across model backends, behind an
 explicit permission system and a durable session log. There are three ways to
@@ -153,10 +161,19 @@ rejects enough routine commands that the people relying on it turn it off.
 
 Limits on reach belong to whichever plugin can enforce them, which in practice
 means the plugin that performs the operation. `conway.fs` takes a root
-confining every path it will read or write, and that guarantee is exact, because
-one plugin does both the checking and the opening. The distinction Unix draws
-holds inside it: the working directory is where the agent is and changes freely,
-while the root is what it can reach, set from outside and narrowing only.
+confining every path it will read or write, and the reason to put it there
+rather than above it is that one plugin doing both the checking and the opening
+leaves no gap between the two. The distinction Unix draws holds inside it: the
+working directory is where the agent is and changes freely, while the root is
+what it can reach, set from outside and narrowing only.
+
+> **Where the tree is today.** The root is enforced, but by the harness rather
+> than by `conway.fs`: the permission broker checks a call's declared path
+> arguments before dispatch, and the tool opens the file afterwards. That gap
+> is exactly the one the paragraph above exists to close — across it, a symlink
+> created inside the root between the check and the open defeats the check.
+> Moving enforcement into the plugin is real work, not a rename; see
+> [`ARCHITECTURE.md`](ARCHITECTURE.md) §3.4 for the limits as they stand.
 
 A root on `conway.fs` says nothing about what a shell command does, and does not
 need to. `bash` belongs to a different plugin, and a boundary spanning plugins
@@ -404,15 +421,20 @@ actually does, and conway's model is not that model, so the vocabulary is drawn
 from the primitives rather than translated across.
 
 ```json
-{ "hooks": {
-    "pre_tool_use": [
-      { "match": "bash", "run": "~/.conway/hooks/audit-command.sh" }
-    ],
-    "post_tool_use": [
-      { "match": "fs.write", "run": "cargo fmt --" }
-    ]
-} }
+{ "hooks": { "rules": [
+    { "id": "audit-shell", "event": "pre_tool_use", "match": "bash",
+      "command": ["~/.conway/hooks/audit-command.sh"] },
+    { "id": "fmt-after-write", "event": "post_tool_use", "match": "fs.write",
+      "command": ["cargo", "fmt", "--"] }
+] } }
 ```
+
+`command` is an argument vector rather than one shell string, and that is the
+same argument as the section above: a string only becomes a command once
+something decides where the words break, and deciding that means predicting a
+shell. The first element is the program and the rest are its arguments, settled
+before anything runs. `id` is what makes a rule individually revocable, which a
+deny-capable hook has to be.
 
 What the core emits follows from [the primitives](#1-the-primitives): a tool
 call about to run or just finished, a prompt submitted, a request assembled, a
@@ -506,6 +528,12 @@ written and maintained in this repository, shipped with it, and not installed by
 default. Dynamic routing, context compaction, memory, skills, MCP support. You
 get them by choosing them.
 
+> **Where the tree is today.** Dynamic routing is built and installable
+> (`conway.routing`), as are three members this list does not name — the
+> provider adapters, a session-rewind command, and repeated-step detection
+> (`conway.stepguard`, which §6 below is about). Compaction, memory, skills,
+> and MCP are not written yet, so there is nothing to install for any of them.
+
 This tier is permanent rather than a staging area for things on their way into
 the core, for three reasons.
 
@@ -578,6 +606,10 @@ plugin to install or fork. Summarize the oldest N records, drop tool results
 older than K turns, keep the diff and discard the exploration that produced it.
 Which of those is right depends entirely on what you are doing.
 
+> **Where the tree is today.** The `ContextHook` port this rests on is built
+> and does everything described here. The first-party compaction plugin is
+> not written, so today you write the hook yourself rather than forking one.
+
 **Where a turn should go.** The core resolves a role to a model and stops. It
 cannot see prompt text to do it, and it holds no view on what should happen when
 that model is unavailable, overloaded, or too small. Ordered fallback, filtering
@@ -599,8 +631,11 @@ does not own across a platform matrix it would have to track, and implying
 containment it cannot deliver is worse than saying plainly what it does.
 
 **When to intervene in a loop.** Repeated-step detection, retry ceilings, and
-circling-agent heuristics are not in the core. The events exist, so the policy
-is yours to write, including writing none.
+circling-agent heuristics are not in the core. The seam exists — a
+`ToolObserver` sees each finished call and returns what to record — so the
+policy is yours to write, including writing none. `conway.stepguard` is the
+first-party answer if you want one: it notices the third identical call and
+says so, and you decline it by not installing it.
 
 **What a failure should cost.** conway prefers a loud, predictable refusal to a
 clever recovery. A request too large for the model it was headed to is rejected

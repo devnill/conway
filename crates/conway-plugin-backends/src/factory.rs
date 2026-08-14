@@ -1,6 +1,5 @@
 //! [`AnthropicBackendFactory`]/[`OpenAiCompatBackendFactory`]: this crate's
-//! two [`conway_core::ports::BackendFactory`] implementations (board item
-//! 01KZHF270T3W8GZ7NM6DSNQ4MM) -- name [`ANTHROPIC_KIND`]/
+//! two [`conway_core::ports::BackendFactory`] implementations -- name [`ANTHROPIC_KIND`]/
 //! [`OPENAI_COMPAT_KIND`] up front so `ConwayBuilder::with_backend_factory`
 //! (or, for the shipped binary, `conway-cli`'s own default-on backend arm --
 //! see that crate's `src/first_party_plugins.rs` module doc for exactly what
@@ -24,7 +23,7 @@
 //! against whichever factories are registered.
 //!
 //! `[plugins].default_backends` (`conway::config::schema::PluginsConfig`,
-//! decision 01KZHRPZ010R37411R3W1XR5TF) is what makes both kinds attach
+//!) is what makes both kinds attach
 //! WITHOUT an explicit `[plugins].install` entry -- unlike every other
 //! first-party plugin/router kind, whose install list is empty by contract
 //! (`PluginsConfig::install`'s own doc: "the tier's whole point is that
@@ -33,7 +32,7 @@
 //! materially different failure mode than routing's honest degenerate
 //! `MinimalRouter` fallback -- so this one first-party pair ships attached
 //! by default, and an operator declines a specific kind by removing its id
-//! from that list (a later board item's decline-mechanism UX, not this
+//! from that list (a later's decline-mechanism UX, not this
 //! item's job -- see `PluginsConfig::default_backends`'s own doc for the
 //! exact default value and precedence).
 
@@ -329,7 +328,7 @@ mod tests {
             dialect: dialect.map(|d| d.to_string()),
             models: BTreeMap::new(),
             profile_file_paths: Vec::new(),
-            // Board item 01KZMM8ABQJQGHTDTP5S29P88C: neither shipped
+            // neither shipped
             // dialect reads `extra` -- this helper's callers all assert on
             // `base_url`/`dialect`/`profile_file_paths` behavior, unaffected
             // by this field's addition.

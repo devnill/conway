@@ -1,4 +1,4 @@
-//! Board item 01KZHF3E1ZG3AZ7F7HHVY324T9's "not trapped in one mode" half:
+//!'s "not trapped in one mode" half:
 //! `src/bin/thirdparty_backend_demo.rs` run as the REAL compiled binary
 //! `cargo test` already built for this crate, via `assert_cmd` -- the same
 //! mechanism `crates/conway-cli/tests/common/mod.rs`'s own

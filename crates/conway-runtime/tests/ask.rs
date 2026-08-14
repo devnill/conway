@@ -323,7 +323,7 @@ async fn ask_returns_full_text_status_completed_and_transcript_ref() {
 }
 
 // ---------------------------------------------------------------------
-// P-1 enforcement: `ask` with a non-fork mode is a typed error, at the
+// enforcement: `ask` with a non-fork mode is a typed error, at the
 // TRAIT boundary, in BOTH debug and release builds (the invariant this
 // item replaces a `debug_assert!` for -- a `debug_assert!` alone compiles
 // to nothing in release, which is every binary a user runs).
@@ -588,7 +588,7 @@ async fn ask_drain_resolves_with_cancelled_status_when_parent_is_cancelled() {
         outcome.status
     );
     // No turn ever ran: no TextDeltas accumulated, zero usage -- but
-    // `transcript_ref` still names the (empty) child session (P-2).
+    // `transcript_ref` still names the (empty) child session ().
     assert_eq!(outcome.text, "");
     assert_eq!(outcome.usage, Usage::default());
     let child_session = runtime
@@ -602,7 +602,7 @@ async fn ask_drain_resolves_with_cancelled_status_when_parent_is_cancelled() {
 }
 
 // ---------------------------------------------------------------------
-// Board item 01KZC8DD9C74BSTP8BQDJKYNFR: the `conway_ask` TOOL path (the
+// the `conway_ask` TOOL path (the
 // `Runtime::ask` trait method `AskTool::invoke` -- `conway-tools`' --
 // drives directly) must fill `agent_def` from the parent's own
 // `SessionMeta` when the call site leaves it `None`, exactly like
@@ -650,7 +650,7 @@ fn build_runtime_with_backend_and_defs(
     })
 }
 
-/// **Part 2 guard (board item 01KZC8DD9C74BSTP8BQDJKYNFR), shown to fail
+/// **Part 2 guard, shown to fail
 /// before the fix.** The parent is started from a def (`"asker"`) with a
 /// restrictive `tools: Only(["marker"])` selector; `ask_fork_spec` mirrors
 /// EXACTLY what `AskTool::invoke` (`conway-tools`' `subagent/ask.rs`)

@@ -1,4 +1,4 @@
-//! Board item 01KZDDPZPAXFHDF1YTZG7F95EG: `PHILOSOPHY.md`'s "Useful
+//! `PHILOSOPHY.md`'s "Useful
 //! patterns" describes map/gather and panel as forking once so several
 //! children share a common inherited prefix, then giving each a different
 //! directive. "Working with the cache" prices that arrangement: "siblings
@@ -17,7 +17,7 @@
 //! feature, not a hand-rolled fake), dispatched three times in a single
 //! assistant turn (three `tool_use` blocks -- exactly what a model
 //! requesting a three-way map/gather fan-out would emit), against a REAL
-//! `AnthropicBackend` pointed at a loopback `wiremock` server (P-15:
+//! `AnthropicBackend` pointed at a loopback `wiremock` server (:
 //! credential-free -- the same fake API key `anthropic_cache_mapping.rs`
 //! uses, never a live network call). Every wire body this test asserts on is
 //! the adapter's own `wire::build_request_body` + `cache::apply_cache_hints`
@@ -126,7 +126,7 @@ fn base_config() -> ConwayConfig {
 fn anthropic_config(base_url: &str) -> AnthropicConfig {
     AnthropicConfig {
         id: BackendId::new("fake"),
-        // P-15: a syntactically-shaped but fake credential, matching
+        //: a syntactically-shaped but fake credential, matching
         // `anthropic_cache_mapping.rs`'s own fixture -- never a live key,
         // never a live network call (loopback `wiremock` only).
         api_key: SecretString::new("sk-ant-api03-test-key"),
@@ -154,7 +154,7 @@ fn sse_event(json: Value) -> String {
 /// `tool_use` blocks, all named `conway_fork`, each with its own directive
 /// -- exactly what a model requesting a three-way map/gather fan-out would
 /// emit in a single turn. `wire.rs`'s `segments_to_body_parts` appends all
-/// three `ToolUse` blocks onto ONE assistant record (WI-122), so `run_batch`
+/// three `ToolUse` blocks onto ONE assistant record, so `run_batch`
 /// dispatches all three `conway_fork` calls against the SAME parent session
 /// head -- see `conway-runtime::subagent`'s own module doc, "`InheritedPrefix`
 /// and sibling sharing", for why that timing is what makes the three

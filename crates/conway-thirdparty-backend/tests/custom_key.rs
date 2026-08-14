@@ -1,4 +1,4 @@
-//! Board item 01KZMM8ABQJQGHTDTP5S29P88C: proves `BackendBuildContext::
+//! Proves `BackendBuildContext::
 //! extra` genuinely reaches a third-party `BackendFactory::build`, and that
 //! the value it carries changes the built backend's own observable
 //! behaviour -- not merely that the field is populated.

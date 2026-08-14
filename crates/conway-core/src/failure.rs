@@ -3,7 +3,7 @@
 //! three-class model the attempt loop consults.
 //!
 //! Relationship to [`BackendError`]'s own coarse boolean helpers (moved here
-//! from `conway-routing`'s `failure.rs`, board item 01KZFC0JDMC2Y631FFCXWR37CP,
+//! from `conway-routing`'s `failure.rs`,
 //! so the consistency test below and the two projections it pins can
 //! never drift across a crate boundary — they previously lived on opposite
 //! sides of one):
@@ -318,7 +318,7 @@ mod tests {
 
     /// Single-implementation pin: this module's table and `BackendError`'s own boolean
     /// projections live in the same crate now (moved from `conway-routing`
-    /// by board item 01KZFC0JDMC2Y631FFCXWR37CP specifically so this could
+    /// by specifically so this could
     /// never drift silently across a crate boundary). Exhaustive over every
     /// `BackendError` variant.
     #[test]

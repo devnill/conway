@@ -15,7 +15,7 @@ use crate::routing::ModelOverrides;
 use crate::segment::PromptSegment;
 
 /// The numbers behind an admission verdict (headroom-and-refusal amendment, decision
-/// 01KZDBYTKFYTVD9R2NA10QJNJE, board item 01KZDC4DKVC4JC3W4KN1WMC43N):
+///):
 /// `est_tokens` as measured by whichever `Backend::admit` implementation
 /// produced this (its own dialect's local estimate -- never a network round
 /// trip), the `headroom_tokens` the caller resolved from configuration, and
@@ -41,8 +41,8 @@ impl Admission {
     /// Inclusive bound: an exact fit (`required_tokens() ==
     /// max_context_tokens`) admits -- the same inclusive bound
     /// `conway-routing`'s pre-relocation restatement of this arithmetic
-    /// used to document for itself, before board item
-    /// 01KZFBZHTWDF11TH7G0H613ERE retired that copy.
+    /// used to document for itself, before
+    /// retired that copy.
     pub fn fits(&self) -> bool {
         self.required_tokens() <= self.max_context_tokens
     }
@@ -155,8 +155,8 @@ pub trait Backend: Send + Sync + 'static {
 
     /// Whether `req` fits inside its own `req.model`'s context window,
     /// reserving `headroom_tokens` for output/reasoning (headroom-and-refusal
-    /// amendment, decision 01KZDBYTKFYTVD9R2NA10QJNJE, board item
-    /// 01KZDC4DKVC4JC3W4KN1WMC43N). Headroom the NUMBER stays declarative
+    /// amendment
+    ///). Headroom the NUMBER stays declarative
     /// configuration -- a default plus a per-role override -- resolved by the
     /// caller and passed in here; only who *reads* it moved.
     ///
@@ -183,8 +183,7 @@ pub trait Backend: Send + Sync + 'static {
     /// call [`check_admission`] for the arithmetic rather than restating it
     /// (ONE implementation of "fits", not one per dialect).
     ///
-    /// **THE production admission path** (board item
-    /// 01KZFBZHTWDF11TH7G0H613ERE): `conway_runtime::attempt::AttemptEngine
+    /// **THE production admission path** -- `conway_runtime::attempt::AttemptEngine
     /// ::execute` builds each candidate route's real `GenerateRequest`
     /// first, then calls this method -- the authoritative answer to
     /// "does it fit?" -- before making any network call. A refusal skips
@@ -216,11 +215,11 @@ pub trait Backend: Send + Sync + 'static {
 }
 
 // ---------------------------------------------------------------------
-// `BackendFactory` (board item 01KZHF0RBKJZZC68F7GPFB347Q): names a
+// `BackendFactory`: names a
 // provider-adapter KIND up front -- so a third party can ship one -- and
 // defers actual construction to a later, fallible step. Mirrors
 // `RouterFactory`/`RouterBuildContext`/`RouterBundle`
-// (`crate::ports::routing`, board item 01KZFC2MD1FVNA674YJ9A19T8E) one layer
+// (`crate::ports::routing`) one layer
 // over, with one load-bearing asymmetry stated in `BackendFactory`'s own doc
 // below: a build has exactly one router, so `RouterFactory::build` is
 // invoked at most once; a build has a SET of backends, so a `BackendFactory`
@@ -234,8 +233,8 @@ pub trait Backend: Send + Sync + 'static {
 /// reason: `conway_plugin_backends::config::{AnthropicConfig, OpenAiCompatConfig}`
 /// (`conway_plugin_backends::factory`'s `AnthropicBackendFactory::build`/
 /// `OpenAiCompatBackendFactory::build` -- relocated from `crates/conway/src/
-/// builder.rs`'s own `build_anthropic`/`build_openai_compat` by board item
-/// 01KZHF270T3W8GZ7NM6DSNQ4MM) are what this shape is read off of, and every
+/// builder.rs`'s own `build_anthropic`/`build_openai_compat` by
+///) are what this shape is read off of, and every
 /// one of these six fields is something those two `build` methods resolve
 /// BEFORE their adapter's own constructor ever runs.
 ///
@@ -258,13 +257,13 @@ pub trait Backend: Send + Sync + 'static {
 /// **Why not both (the raw entry ALONGSIDE these resolved fields)?** Two
 /// sources of the same value invites the question "which one wins when they
 /// disagree" for no benefit any item to date has needed answering.
-/// `backends.<id>.kind` is an OPEN name now (decision 01KZHRPZ010R37411R3W1XR5TF,
-/// board item 01KZHF1E85MS1VF4YH8CDNCP9Z), so a third-party kind is already
+/// `backends.<id>.kind` is an OPEN name now (,
+///), so a third-party kind is already
 /// nameable; `BackendEntry`'s own six fields (`kind`, `api_key`,
 /// `api_key_env`, `base_url`, `dialect`, `stream_tools`) still fully cover
 /// via the resolved fields below (`stream_tools` has no analogue here: it is
 /// not read by either shipped kind's `build` today), and [`Self::extra`]
-/// (board item 01KZMM8ABQJQGHTDTP5S29P88C) is that same escape hatch for
+/// is that same escape hatch for
 /// whatever a `kind` puts beyond those six -- a raw entry duplicating the
 /// six typed fields a second time alongside it would still buy nothing.
 #[derive(Clone, Debug)]
@@ -305,7 +304,7 @@ pub struct BackendBuildContext {
     /// for this same `id` -- so a factory-built backend's
     /// `Backend::capabilities()` can honor an operator's `models.json`
     /// override the identical way a config-derived backend's own
-    /// `ModelOverrides` table already does (WI-123's single-source
+    /// `ModelOverrides` table already does (an earlier item's single-source
     /// guarantee, extended to a third-party kind rather than left as a
     /// built-ins-only privilege).
     pub models: BTreeMap<String, ModelOverrides>,
@@ -388,8 +387,8 @@ pub struct BackendBuildContext {
 /// produce many configured instances (as the "kimi" example above already
 /// shows for a built-in kind) -- so nothing about this trait promises
 /// `build` is called at most once over a `ConwayBuilder::build()` call.
-/// `[backends.<id>].kind` is an open name (decision 01KZHRPZ010R37411R3W1XR5TF,
-/// board item 01KZHF1E85MS1VF4YH8CDNCP9Z), so `ConwayBuilder::build()`
+/// `[backends.<id>].kind` is an open name (,
+///), so `ConwayBuilder::build()`
 /// routes each `[backends.<id>]` entry to whichever registered factory's
 /// `BackendFactory::id()` matches that entry's own `kind` -- see
 /// `ConwayBuilder::with_backend_factory`'s own doc for the exact resolution
@@ -398,8 +397,7 @@ pub struct BackendBuildContext {
 /// `[backends.<id>]` entry, never unconditionally once per `ConwayBuilder::
 /// build()` call.
 pub trait BackendFactory: Send + Sync {
-    /// This factory's own identity -- the id an operator names (decision
-    /// 01KZHRPZ010R37411R3W1XR5TF) to select it. A KIND, not a configured
+    /// This factory's own identity -- the id an operator names to select it. A KIND, not a configured
     /// instance's identity -- see this trait's own doc for why the two are
     /// not the same question asked twice. Stable across every `Backend`
     /// this factory might construct.
@@ -415,8 +413,7 @@ pub trait BackendFactory: Send + Sync {
     /// describe.
     fn build(&self, ctx: BackendBuildContext) -> Result<std::sync::Arc<dyn Backend>, ConwayError>;
 
-    /// Optional startup capability discovery (board item
-    /// 01KZHF270T3W8GZ7NM6DSNQ4MM): a kind whose provider exposes a
+    /// Optional startup capability discovery -- a kind whose provider exposes a
     /// server-side model/capability listing (today, only
     /// `conway_plugin_backends`'s `"openai-compat"` kind does) may override
     /// this to report what it discovers for `ctx`'s configured instance.
@@ -576,7 +573,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // `Admission` / `check_admission` (board item 01KZDC4DKVC4JC3W4KN1WMC43N)
+    // `Admission` / `check_admission`
     // -----------------------------------------------------------------
 
     #[test]

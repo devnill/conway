@@ -1,4 +1,4 @@
-//! F8's liveness test (GP-14): the facade's `conway::plugin` surface is
+//! F8's liveness test (): the facade's `conway::plugin` surface is
 //! *implementable* from outside the workspace, not merely nameable.
 //!
 //! Everything below is written the way a third-party Rust plugin author
@@ -130,14 +130,14 @@ impl Plugin for EchoPlugin {
 }
 
 // ---------------------------------------------------------------------------
-// A third-party context hook (WI-126's extension point): masks segments
+// A third-party context hook (an earlier item's extension point): masks segments
 // carrying a marker and appends a hook-authored segment -- exercising
 // `PromptSegment`/`Role`/`Provenance` construction, the thing a masking or
 // system-prompt-instrumenting hook actually does.
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// A third-party `ArtifactWriter` double (board item 01KZ84437RMKHP5DJX7RMHH7JY):
+// A third-party `ArtifactWriter` double:
 // an EMBEDDER-supplied capability (like `PermissionGate`/`Router`, not a
 // hook-authored one -- a hook only ever RECEIVES `ContextHookCtx::artifacts`,
 // already wired to the runtime's real, containment-checked writer). This
@@ -204,7 +204,7 @@ impl ContextHook for MarkerHook {
 }
 
 // ---------------------------------------------------------------------------
-// A third-party `HookRunner` (board item 01KZS00JP5QNBJSSHNFP9C47GM): the
+// A third-party `HookRunner`: the
 // `pre_tool_use` dispatcher `ConwayBuilder::with_hook_runner` installs.
 // Names every type that trait's own signature needs
 // (`HookInvocation`/`HookEvent`/`HookAnswer`/`HookFailure`/
@@ -326,12 +326,12 @@ fn plugin_tool_and_hook_register_through_the_builder() {
     ConwayBuilder::from_parts(config)
         .with_plugin(Arc::new(EchoPlugin))
         .with_context_hook(Arc::new(MarkerHook))
-        // Board item 01KZS00JP5QNBJSSHNFP9C47GM: same shape as
+        // same shape as
         // `with_context_hook` immediately above -- a facade-only
         // `HookRunner` registers through the identical builder surface a
         // built-in would.
         .with_hook_runner(Arc::new(NeverOpinionatedHookRunner))
-        // Board item 01KZHF270T3W8GZ7NM6DSNQ4MM: `conway` no longer
+        // `conway` no longer
         // compiles the `kind = "anthropic"` entry above in -- registering
         // its factory is the third-party-shaped way this now-genuinely-
         // constructed (never contacted) backend resolves.

@@ -2,7 +2,7 @@
 //! consumer's [`PermissionGate`] (architecture §4.3).
 //!
 //! The broker normalizes whatever the gate decides into a
-//! [`PermissionOutcome`] the tool runner (WI-079) can act on directly, and
+//! [`PermissionOutcome`] the tool runner can act on directly, and
 //! it owns the `AllowAlways` cache so a consumer answering "allow always"
 //! is only ever asked once per scope. It never imposes a timeout on the
 //! gate: architecture §8 requires the runtime to hold a pending call open
@@ -69,7 +69,7 @@ pub struct AuthorizedCall {
     /// which of `arguments`' fields carry filesystem paths without duplicating
     /// tool resolution.
     pub path_args: PathArgs,
-    /// Board item 01KYT3NSWRHMPEAXVXRJ73KDYR: the resolved tool's own
+    /// The resolved tool's own
     /// [`Tool::render_kind`](conway_core::ports::Tool::render_kind)
     /// declaration, read at the identical call site and for the identical
     /// reason as `path_args` above -- fed to [`PatternRule::matches_render`]
@@ -78,8 +78,7 @@ pub struct AuthorizedCall {
     pub render_kind: RenderKind,
 }
 
-/// One `pre_tool_use` hook [`PermissionBroker::decide`] consults (board item
-/// 01KZS00JP5QNBJSSHNFP9C47GM). Installed via
+/// One `pre_tool_use` hook [`PermissionBroker::decide`] consults. Installed via
 /// [`PermissionBroker::set_pre_tool_use_hooks`], translated by the facade
 /// from `[hooks].rules[]` entries whose `event == "pre_tool_use"` and
 /// `enabled` is `true` -- this crate has no dependency on `conway`'s config
@@ -95,8 +94,7 @@ pub struct PreToolUseHookSpec {
     pub id: String,
     pub command: Vec<String>,
     pub timeout_ms: u64,
-    /// The rule's `HookEntry::match_tool` (board item
-    /// 01KZYAWQ6011Q6CJVG6CCMQPF1), carried through untouched. `None` (the
+    /// The rule's `HookEntry::match_tool` , carried through untouched. `None` (the
     /// config default) consults this hook for every `pre_tool_use` call,
     /// unchanged from before this field existed -- see
     /// [`crate::hook_dispatch::HookSpec::matcher`]'s own doc for the
@@ -189,14 +187,13 @@ enum RootDecision {
 /// itself would fail to resolve it too).
 ///
 /// **A thin, same-crate wrapper around the one shared implementation,
-/// [`conway_core::containment::resolve_candidate`] -- board item
-/// 01KZVZ56SBPSTZHAXXGYCNETNX.** This function used to carry its own
+/// [`conway_core::containment::resolve_candidate`]
+///.** This function used to carry its own
 /// restated copy of the resolution rule (kept in sync with `conway_tools::
 /// common::resolve_path` only by a doc comment demanding lockstep edits,
 /// never enforced by the compiler); it is now a direct call, so the two
 /// crates' wrappers cannot independently drift or independently drop the
-/// NUL guard the way two inlined copies already did once (board item
-/// 01KZ00VV3F3EBZ9WQSB292TBJZ). It still cannot simply BE `resolve_path`:
+/// NUL guard the way two inlined copies already did once. It still cannot simply BE `resolve_path`:
 /// crate layering runs `conway-tools -> conway-core` and `conway-runtime ->
 /// conway-core` only, never `conway-runtime -> conway-tools`, so this crate
 /// must keep its own `pub(crate)` entry point into the shared core function
@@ -204,8 +201,8 @@ enum RootDecision {
 ///
 /// `pub(crate)` so the crate's OTHER path-resolution consumers -- the
 /// spawn-time confinement-root resolution in `subagent.rs` and `runtime.rs` --
-/// call THIS one rule -- one implementation, never restated (Min-1, board item
-/// 01KZ00VV3F3EBZ9WQSB292TBJZ) instead of inlining "absolute -> as-is, relative
+/// call THIS one rule -- one implementation, never restated (Min-1
+///) instead of inlining "absolute -> as-is, relative
 /// -> join cwd" and silently dropping the NUL guard, as both did until that
 /// item.
 pub(crate) fn resolve_like_the_tool_will(cwd: &Path, raw: &str) -> Option<PathBuf> {
@@ -513,14 +510,14 @@ pub struct PermissionBroker {
     /// granted at and where they came from. Checked BEFORE the gate, so a
     /// matching pattern spares the operator a prompt -- but only for
     /// commands that clear `PatternRule::matches_render`'s metacharacter
-    /// gate (a shell command, per the call's `RenderKind`). Board item
-    /// 01KYT8SGX32CP56PRJNG72V2W5: the CALLER (`conway`'s facade,
+    /// gate (a shell command, per the call's `RenderKind`).
+    ///: the CALLER (`conway`'s facade,
     /// `conway-cli`'s startup loader) is responsible for confirming trust
     /// before an allow rule loaded from a project file ever reaches
     /// `remember_pattern` -- this broker has no file-trust concept of its
     /// own and does not need one; it only stores what it is told to.
     patterns: RwLock<AllowRuleStore>,
-    /// Board item 01KYT8SGX32CP56PRJNG72V2W5: prefix-pattern DENY rules.
+    /// Prefix-pattern DENY rules.
     /// Unlike `patterns` above, these carry no `GrantScope` -- a `deny`
     /// rule is D4 §3's asymmetric half, "applies immediately, trusted or
     /// not, from any file, to any requester," so it is checked in
@@ -529,9 +526,8 @@ pub struct PermissionBroker {
     /// the metacharacter gate `patterns` above is gated by -- see that
     /// method's own doc.
     deny_patterns: RwLock<NarrowingRuleStore>,
-    /// Board item 01KYTP1D3XWEZPW4AKPH54FNB3: prefix-pattern PROMPT rules --
-    /// the second narrowing effect `.design/extension-architecture.md`
-    /// §5.4 grants a plugin-contributed rule (`then: prompt`, alongside
+    /// Prefix-pattern PROMPT rules --
+    /// the second narrowing effect the extension design grants a plugin-contributed rule (`then: prompt`, alongside
     /// `deny`), which had NOTHING evaluating it anywhere in this broker
     /// before this item: `must_reach_gate` was set exclusively by
     /// `check_root`, so a `prompt` rule could never force `gate.check` and
@@ -564,13 +560,13 @@ pub struct PermissionBroker {
     /// `remember_*_rule` companions take a [`Rule`] directly, for the
     /// structured form the flat syntax cannot express.
     prompt_patterns: RwLock<Vec<(Rule, Option<CanonicalRoot>, PatternOrigin)>>,
-    /// Board item 01KZS00JP5QNBJSSHNFP9C47GM: the injected `pre_tool_use`
+    /// The injected `pre_tool_use`
     /// hook dispatcher. `None` (the default, and every caller before this
     /// field existed) means the hook-check step in `Self::decide` is a
     /// byte-for-byte no-op -- see [`Self::set_hook_runner`]'s own doc for
     /// the full "additive, not a new dependency" contract.
     hook_runner: RwLock<Option<Arc<dyn HookRunner>>>,
-    /// Board item 01KZS00JP5QNBJSSHNFP9C47GM: the `[hooks].rules[]` entries
+    /// The `[hooks].rules[]` entries
     /// (already filtered to `event == "pre_tool_use" && enabled` by the
     /// facade) `Self::decide`'s hook-check step consults, in installation
     /// order. Empty (the default) is the same no-op as `hook_runner` being
@@ -596,8 +592,8 @@ impl PermissionBroker {
     }
 
     /// Injects (or clears, via `None`) the `pre_tool_use` hook dispatcher
-    /// every call to `Self::decide` consults at the deny tier -- board item
-    /// 01KZS00JP5QNBJSSHNFP9C47GM. Mirrors `Runtime::set_context_hook`'s own
+    /// every call to `Self::decide` consults at the deny tier
+    ///. Mirrors `Runtime::set_context_hook`'s own
     /// post-construction-setter shape (`conway::ConwayBuilder::
     /// with_hook_runner` is this method's own facade-level caller, via
     /// `Runtime::set_hook_runner`): not called at all (the default) leaves
@@ -611,7 +607,7 @@ impl PermissionBroker {
 
     /// Installs the `pre_tool_use` hook specs `Self::decide`'s hook-check
     /// step consults, wholesale (replacing whatever was installed before) --
-    /// board item 01KZS00JP5QNBJSSHNFP9C47GM. The facade computes this list
+    ///. The facade computes this list
     /// once, from `[hooks].rules[]` filtered to `event == "pre_tool_use" &&
     /// enabled`, before any session starts; not called at all (the default,
     /// an empty list) is the identical no-op `Self::set_hook_runner(None)`
@@ -625,8 +621,7 @@ impl PermissionBroker {
 
     /// Every currently-installed `pre_tool_use` hook spec, in dispatch order
     /// -- the review-list counterpart of [`Self::set_pre_tool_use_hooks`],
-    /// mirroring [`Self::active_patterns`]'s own shape (board item
-    /// 01KZS02HYXGTW42R8G4HP10GHX: a hook that can silently deny a call is a
+    /// mirroring [`Self::active_patterns`]'s own shape -- a hook that can silently deny a call is a
     /// permission rule, and an operator cannot revoke what they cannot see).
     /// A rule installs here regardless of whether its command actually
     /// resolves at invocation time, so a hook whose script is broken or
@@ -657,13 +652,12 @@ impl PermissionBroker {
     }
 
     /// Installs a pattern ALLOW grant at `scope`, attributed to `origin`
-    /// for the review surface (board item 01KYT8SGX32CP56PRJNG72V2W5).
+    /// for the review surface.
     ///
     /// Note this does NOT pre-validate the rule against metacharacters:
     /// `rule` is desugared to a [`Rule`] immediately below (`to_rule`), and
     /// the gate lives in [`Rule::matches_allow_render`] -- the ONE evaluator
-    /// `Self::pattern_allows` consults at decision time (board item
-    /// 01KZVZ4KF72ECHTT14EDEZQQW3: `PatternRule::matches_render` is never
+    /// `Self::pattern_allows` consults at decision time -- `PatternRule::matches_render` is never
     /// reached from here or anywhere else in this broker -- it is a public,
     /// test-facing convenience that itself now delegates to the same
     /// evaluator, not a second decision path). Filtering at creation time
@@ -760,7 +754,7 @@ impl PermissionBroker {
     /// [`Self::remember_pattern`], there is no `scope` parameter: a deny
     /// rule applies to every requester in the session, unconditionally --
     /// narrowing what is authorized has no failure mode worth scoping
-    /// (board item 01KYT8SGX32CP56PRJNG72V2W5, D4 §3).
+    /// (, D4 §3).
     pub fn remember_deny_pattern(&self, rule: PatternRule, origin: PatternOrigin) {
         // Never-`PathsUnder` desugaring, so `base` is never consulted --
         // see `remember_pattern`'s own comment and its `debug_assert!`.
@@ -793,9 +787,9 @@ impl PermissionBroker {
         true
     }
 
-    /// Installs a PROMPT rule, attributed to `origin`. Board item
-    /// 01KYTP1D3XWEZPW4AKPH54FNB3: the second narrowing effect
-    /// `.design/extension-architecture.md` §5.4 grants a
+    /// Installs a PROMPT rule, attributed to `origin`.
+    ///: the second narrowing effect
+    /// the extension design grants a
     /// plugin-contributed rule. Like [`Self::remember_deny_pattern`], there
     /// is no `scope` parameter -- a `prompt` rule applies to every
     /// requester, unconditionally: forcing an EXTRA ask has no failure mode
@@ -931,7 +925,7 @@ impl PermissionBroker {
     /// settings menu's review list. An operator must be able to see what
     /// they have granted, AND where it came from; a rule set nobody can
     /// inspect -- or whose provenance nobody can tell -- is a trap (board
-    /// item 01KYT8SGX32CP56PRJNG72V2W5).
+    /// item).
     pub fn active_patterns(&self) -> Vec<(PatternRule, PatternOrigin)> {
         self.patterns
             .read()
@@ -1049,7 +1043,7 @@ impl PermissionBroker {
 
     /// Revokes exactly ONE installed pattern ALLOW grant, addressed by the
     /// value it renders as -- `(rule, origin)` -- rather than by position
-    /// in `active_patterns()`. Board item 01KYND4WGHSZXW5YQ6ZWHCDDNN.
+    /// in `active_patterns()`.
     ///
     /// ## Why `(PatternRule, PatternOrigin)` identity, not an index
     ///
@@ -1175,7 +1169,7 @@ impl PermissionBroker {
     }
 
     /// The first installed `deny` rule that refuses this call, if any.
-    /// Board item 01KYT8SGX32CP56PRJNG72V2W5, D4 §3: checked for EVERY
+    ///, D4 §3: checked for EVERY
     /// requester (no `GrantScope`), via the deny/prompt evaluator
     /// ([`Rule::matches_deny_render`] for render-based `when` clauses, plus
     /// the broker's own `paths_under` resolution for [`When::PathsUnder`])
@@ -1195,8 +1189,7 @@ impl PermissionBroker {
     }
 
     /// The first installed `prompt` rule that matches this call, if any.
-    /// Board item 01KYTP1D3XWEZPW4AKPH54FNB3.
-    ///
+    /// ///
     /// **Deliberately reuses the deny/prompt evaluator (ungated), not
     /// `Rule::matches_allow_render`.** The allow-side metacharacter gate
     /// exists to keep an ALLOW from being satisfied by a chained command
@@ -1223,7 +1216,7 @@ impl PermissionBroker {
     }
 
     /// The rendered denial, if any INSTALLED `pre_tool_use` hook refuses
-    /// this call -- board item 01KZS00JP5QNBJSSHNFP9C47GM, `Self::decide`'s
+    /// this call --, `Self::decide`'s
     /// only caller (see that method's own doc for WHY this sits at the deny
     /// tier).
     ///
@@ -1289,7 +1282,7 @@ impl PermissionBroker {
         });
 
         for hook in hooks.iter().filter(|hook| {
-            // Board item 01KZYAWQ6011Q6CJVG6CCMQPF1: a matcher only
+            // a matcher only
             // NARROWS which calls consult this hook -- absent (`None`) is
             // the pre-existing "fire for every call" behavior, unchanged.
             hook.matcher.as_deref().is_none_or(|pattern| {
@@ -1332,8 +1325,8 @@ impl PermissionBroker {
     /// Authorize one tool call, consulting the cache first and the gate on a
     /// miss.
     ///
-    /// Full ordering (board item 01KZS00JP5QNBJSSHNFP9C47GM added the
-    /// **`pre_tool_use` hook** step; board item 01KYTP1D3XWEZPW4AKPH54FNB3
+    /// Full ordering ( added the
+    /// **`pre_tool_use` hook** step;
     /// added `prompt`; every step before each addition is unchanged): root →
     /// deny-pattern → **`pre_tool_use` hook** → plan-mode → prompt-pattern →
     /// cache → pattern-allow → `AutoAllow` → gate. Each step before `gate`
@@ -1389,7 +1382,7 @@ impl PermissionBroker {
         // root decision returns immediately, before the cache/pattern/
         // AutoAllow/gate are ever consulted.
         //
-        // Board item 01KYTP1D3XWEZPW4AKPH54FNB3: `must_reach_gate` is now a
+        // `must_reach_gate` is now a
         // BROKER-LEVEL ACCUMULATOR, not `check_root`'s exclusive output --
         // `mut` below, OR'd with the prompt-rule check further down. It is
         // never cleared once set: every source that can set it (`check_root`
@@ -1416,7 +1409,7 @@ impl PermissionBroker {
             RootDecision::Proceed => false,
         };
 
-        // Board item 01KYT8SGX32CP56PRJNG72V2W5, D4 §3: the `deny` half of
+        //, D4 §3: the `deny` half of
         // the allow/deny asymmetry. Checked immediately after the root
         // floor and BEFORE the mode gate, the cache, pattern allows, and
         // AutoAllow -- a deny rule beats every one of those, regardless of
@@ -1443,7 +1436,7 @@ impl PermissionBroker {
             };
         }
 
-        // Board item 01KZS00JP5QNBJSSHNFP9C47GM: the `pre_tool_use` hook
+        // the `pre_tool_use` hook
         // step. SAME TIER as `deny_matches` immediately above -- checked
         // BEFORE the mode gate, the prompt-pattern step, the cache, pattern
         // allows, and `AutoAllow` -- see this method's own doc for why. A
@@ -1496,7 +1489,7 @@ impl PermissionBroker {
             };
         }
 
-        // Board item 01KYTP1D3XWEZPW4AKPH54FNB3: the PROMPT step.
+        // the PROMPT step.
         // Deliberately placed HERE -- after the deny check and the plan-mode
         // gate (both of which already returned a `Deny` and can never be
         // reached by a call this step would only ask about; "deny beats
@@ -1642,7 +1635,7 @@ impl PermissionBroker {
         let grants = cache.entry(key).or_default();
         // Dedup on insert: concurrent decide() races on the same key may
         // both reach here; duplicate grants are harmless but accumulate
-        // (cycle-1 review M2).
+        //.
         if !grants.contains(&grant) {
             grants.push(grant);
         }
@@ -1653,7 +1646,7 @@ impl PermissionBroker {
     }
 }
 
-/// Board item 01KZS00JP5QNBJSSHNFP9C47GM: the `pre_tool_use` hook step's own
+/// The `pre_tool_use` hook step's own
 /// tests. Inline (not `tests/permission_broker.rs`) so `cargo test -p
 /// conway-runtime permission::` -- this item's own verification anchor --
 /// finds them by module path.
@@ -2098,7 +2091,7 @@ mod tests {
 
     // ---------------------------------------------------------------- matcher --
 
-    /// ACCEPTANCE (board item 01KZYAWQ6011Q6CJVG6CCMQPF1): a matcher on a
+    /// ACCEPTANCE: a matcher on a
     /// `pre_tool_use` rule narrows which tool calls consult it -- a denying
     /// hook matching `read` never runs for a `bash` call.
     #[tokio::test]

@@ -1,7 +1,7 @@
 //! `CapabilityProbe`: startup-time discovery that queries an OpenAI-compatible
 //! endpoint's model list and server properties, merging the result with
 //! `ModelMetadata` to produce `Capabilities` per model (architecture
-//! §"Module: conway-backends", WI-020).
+//! §"Module: conway-backends").
 //!
 //! Every discovery step is best-effort — a 5s timeout, zero retries, and any
 //! failure (transport error, non-2xx status, malformed body) is treated as
@@ -52,7 +52,7 @@ use crate::profile::Profile;
 /// `pub(crate)`, not private: `factory.rs`'s `OpenAiCompatBackendFactory::
 /// probe_capabilities` constructs its own `CapabilityProbe` and needs this
 /// same value for `CapabilityProbe::new`'s `timeout` parameter — before
-/// board item 01KZHF270T3W8GZ7NM6DSNQ4MM, that caller lived in `crates/
+///, that caller lived in `crates/
 /// conway/src/builder.rs` (a different crate) and had to maintain its own
 /// `PROBE_TIMEOUT` constant "mirroring" this one; now that the caller moved
 /// into this same crate, the duplicate constant is gone and this is the one
@@ -91,7 +91,7 @@ struct ModelsResponse {
 #[derive(Debug, Deserialize)]
 struct ModelEntry {
     id: String,
-    /// vLLM-specific: the model's configured context length. Populated only
+    /// VLLM-specific: the model's configured context length. Populated only
     /// when `profile.id == "vllm_hermes"` consults it.
     #[serde(default)]
     max_model_len: Option<u32>,
@@ -109,7 +109,7 @@ struct OllamaTagEntry {
     name: String,
 }
 
-/// llama.cpp-shaped `/props` response.
+/// Llama.cpp-shaped `/props` response.
 #[derive(Debug, Deserialize)]
 struct LlamaCppProps {
     #[serde(default)]

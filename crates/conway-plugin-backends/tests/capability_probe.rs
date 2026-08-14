@@ -1,5 +1,5 @@
 //! Wiremock integration tests for `CapabilityProbe::discover`/
-//! `discover_result` and `OpenAiCompatBackend::probe` (WI-020).
+//! `discover_result` and `OpenAiCompatBackend::probe`.
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -327,7 +327,7 @@ async fn backend_probe_against_401_is_auth() {
     assert!(matches!(err, BackendError::Auth { .. }), "{err:?}");
 }
 
-/// The startup-probe-overrides-discard defect (board item, "the startup
+/// The startup-probe-overrides-discard defect ("the startup
 /// capability probe discards the operator's models.json overrides"): a
 /// `vllm_hermes` server reports a huge `max_model_len`, but the caller's own
 /// `overrides` map (mirroring `models_overrides_for`'s projection of
@@ -337,8 +337,8 @@ async fn backend_probe_against_401_is_auth() {
 /// `ModelOverrides` > `ModelMetadata` entry > probed server value >
 /// `DialectDefaults`), the override must win outright — proving that a
 /// `CapabilityProbe` constructed with a non-empty `overrides` map (as
-/// `OpenAiCompatBackendFactory::probe_capabilities`, board item
-/// 01KZHF270T3W8GZ7NM6DSNQ4MM, now passes) composes the operator-pinned
+/// `OpenAiCompatBackendFactory::probe_capabilities`
+///, now passes) composes the operator-pinned
 /// value, not the server-reported one.
 #[tokio::test]
 async fn vllm_hermes_max_model_len_is_overridden_by_a_pinned_override() {
@@ -377,7 +377,7 @@ async fn vllm_hermes_max_model_len_is_overridden_by_a_pinned_override() {
     );
 }
 
-/// Cycle-1 review M1: a llama.cpp /props response with an empty
+/// An earlier review found: M1: a llama.cpp /props response with an empty
 /// chat_template downgrades reliability_tier to Unknown for probed models,
 /// while an explicit override tier still wins the precedence chain.
 #[tokio::test]

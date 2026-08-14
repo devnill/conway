@@ -588,7 +588,7 @@ impl Dialect {
             .unwrap_or_else(|| panic!("built-in profile '{}' missing", self.profile_id()))
     }
 
-    /// This dialect's baseline `DialectDefaults` (WI-017), profile-derived.
+    /// This dialect's baseline `DialectDefaults`, profile-derived.
     pub fn defaults(self) -> DialectDefaults {
         self.profile().dialect_defaults()
     }
@@ -854,7 +854,7 @@ mod tests {
     }
 
     // --- `Dialect`'s per-predicate tests, preserved from the pre-profile
-    // `openai_compat/dialect.rs` (WI-017/WI-022): every assertion below is
+    // `openai_compat/dialect.rs` ( an earlier item/ an earlier item): every assertion below is
     // unchanged from before this item, now exercising the profile-derived
     // methods above rather than literal `matches!` arms — the regression
     // net proving byte-identical behavior.

@@ -1,5 +1,5 @@
 //! Shared rendering helpers for the `sessions`/`routes` subcommands
-//! (WI-116): table layout, ASCII tree layout, and small id/timestamp
+//!: table layout, ASCII tree layout, and small id/timestamp
 //! formatters, kept in one place so the two subcommand families render
 //! consistently rather than each inventing its own table/tree shape.
 

@@ -1,4 +1,4 @@
-//! The interactive app loop (WI-114): three tasks joined by channels (module
+//! The interactive app loop: three tasks joined by channels (module
 //! notes' architecture) -- the session's own `EventStream`, the gate's
 //! `PendingPrompt` channel, and crossterm's key/resize stream -- driving one
 //! [`AppState`] and redrawing at a capped rate.
@@ -38,8 +38,7 @@ struct ModalAskOutcome {
     reply: conway::Result<String>,
 }
 
-/// The result of one spawned plugin-command task (board item
-/// 01KZYBFTK4QPB45AJT9M57P60W) -- see [`App`]'s own `plugin_cmd_tx`/
+/// The result of one spawned plugin-command task -- see [`App`]'s own `plugin_cmd_tx`/
 /// `plugin_cmd_rx` doc and [`commands::Effect::RunPluginCommand`]'s.
 /// `outcome` is already a [`conway::plugin::CommandOutcome::Error`] when the
 /// spawned task panicked (`App::run`'s own `Effect::RunPluginCommand` arm
@@ -48,7 +47,7 @@ struct ModalAskOutcome {
 /// returned an error" and "the plugin's task panicked").
 struct PluginCommandDone {
     full_name: String,
-    /// Board item 01KZYH37WNDKDWSMWQQPRFKKXC: the session THIS invocation's
+    /// The session THIS invocation's
     /// `CommandCtx::session_id` was stamped with -- captured by
     /// [`App::spawn_plugin_command`] before the outer task is spawned, so it
     /// reflects whatever session was live at INVOCATION time, never
@@ -81,7 +80,7 @@ const ANIMATION_TICK: Duration = Duration::from_millis(125);
 pub struct App {
     handle: conway::SessionHandle,
     state: AppState,
-    // `/resume` (WI-115) needs `Conway::resume`, not just the current
+    // `/resume` needs `Conway::resume`, not just the current
     // `SessionHandle` -- cheap to hold (every field is `Arc`-backed, per
     // `Conway`'s own doc: "Cheap to `Clone`").
     conway: Conway,
@@ -103,7 +102,7 @@ pub struct App {
     /// `run`, and polled there as an extra `tokio::select!` arm.
     modal_ask_tx: mpsc::UnboundedSender<ModalAskOutcome>,
     modal_ask_rx: Option<mpsc::UnboundedReceiver<ModalAskOutcome>>,
-    /// Board item 01KZYBFTK4QPB45AJT9M57P60W: the installed plugin commands,
+    /// The installed plugin commands,
     /// built once at [`Self::new`] from the plugin list the caller (`tui::run`,
     /// ultimately `main.rs`) was handed -- the SAME list installed into the
     /// `Conway` this `App` already holds, so a plugin command reaches only a
@@ -169,7 +168,7 @@ impl App {
     /// `oneshot::resolve_session`, which has no equivalent for the TUI to
     /// share).
     ///
-    /// Board item 01KZGRXFSY4ZB7NCA9NS2AGFS5: `--model` used to be accepted by
+    /// `--model` used to be accepted by
     /// the parser and then never read here at all, despite the same flag being
     /// genuinely wired in one-shot mode -- a renderer-only gap -- every
     /// capability lands in the facade, so a difference between modes is a
@@ -177,7 +176,7 @@ impl App {
     /// (`crate::model_pin::parse_model_pin`) rather than a second one that
     /// could fail a malformed value a different way.
     ///
-    /// `--session`/`--resume`/`--fork-from` (WI-117's session-continuity
+    /// `--session`/`--resume`/`--fork-from` (an earlier item's session-continuity
     /// flags) are a decided non-goal for the TUI, not an oversight: one-
     /// shot's `resolve_session` has real per-flag logic with no equivalent
     /// shape here (an existence probe ahead of `--session`, `--cwd`
@@ -209,7 +208,7 @@ impl App {
             // keep-alive bug; see `SessionSpec::keep_alive`'s own doc).
             keep_alive: true,
             // The interactive root has no parent to `report` an
-            // `AgentResult` to (decision 01KYB0BWY27DWB69NCNK85D56J: the
+            // `AgentResult` to (: the
             // "pure and light" tool profile for interactive chat sessions)
             // -- excluding `report` makes the model answer plain chat
             // questions in text instead of hitting the permission gate for a
@@ -221,8 +220,7 @@ impl App {
         })
     }
 
-    /// Creates the interactive session. `plugins` (board item
-    /// 01KZYBFTK4QPB45AJT9M57P60W) is the SAME plugin list the caller
+    /// Creates the interactive session. `plugins` is the SAME plugin list the caller
     /// installed into `conway` -- this is what lets [`commands::
     /// CommandRegistry::build`] resolve exactly the plugin commands that
     /// were actually installed this run (never a plugin merely LINKED into
@@ -249,7 +247,7 @@ impl App {
         let spec = Self::session_spec(cli)?;
         let handle = conway.new_session(spec).await?;
         let mut state = AppState::new(handle.root());
-        // Board item 01KZY8Q1CMMNVSF54CTC270N3H: the initial, authoritative
+        // the initial, authoritative
         // read of this session's own head -- see `AppState::
         // session_head_seq`'s own doc for why this is the FIRST of several
         // refresh points, not the only one. Best-effort: a failed fetch
@@ -306,7 +304,7 @@ impl App {
         // Deliberately NOT surfaced as a startup error — a broken rules
         // file should cost extra prompting, never a refusal to start.
         //
-        // Board item 01KYT8SGX32CP56PRJNG72V2W5: `Conway::load_permission_files`
+        // `Conway::load_permission_files`
         // is the real production seam -- it decides trust (global files are
         // trusted by authorship; a project file's `allow` half installs
         // only with a matching recorded trust decision; its `deny` half
@@ -354,7 +352,7 @@ impl App {
                 fatal: false,
             });
         }
-        // Board item 01KZHVDDQQ7XT0RK3JVNM2YV83: a permissions file naming
+        // a permissions file naming
         // an unrecognized top-level key (`"denys"` for `"deny"`) installed
         // NOTHING from that file -- allow, deny, AND prompt. Surfaced
         // through the SAME `Entry::Error { fatal: false }` channel
@@ -367,7 +365,7 @@ impl App {
                 fatal: false,
             });
         }
-        // Board item 01KZ803DJW8Y1H4FXTM8D3PYMY: `Conway::warnings()`
+        // `Conway::warnings()`
         // (currently only `WarningCode::HeadroomExceedsContext`, pushed by
         // `config::merge::validate` when a role's effective headroom is `>=`
         // the smallest context window reachable through its chain -- every
@@ -478,7 +476,7 @@ impl App {
             .modal_ask_rx
             .take()
             .expect("modal_ask_rx is set in App::new and taken exactly once, here");
-        // Board item 01KZYBFTK4QPB45AJT9M57P60W: mirrors `modal_ask_rx`
+        // mirrors `modal_ask_rx`
         // exactly, same reasoning (this `select!`'s own `plugin_cmd_rx.recv()`
         // arm below and the other arms' `&mut self.state` borrows don't
         // conflict once this is a local rather than a field borrowed in
@@ -549,7 +547,7 @@ impl App {
                         dirty = true;
                     }
                 }
-                // Board item 01KZYBFTK4QPB45AJT9M57P60W: the reply side of
+                // the reply side of
                 // `Effect::RunPluginCommand`'s spawned task (this loop's own
                 // arm below) -- mirrors `modal_ask_rx.recv()` immediately
                 // above in every structural respect (a spawned task's
@@ -560,7 +558,7 @@ impl App {
                 // arm is ready first, exactly like every other arm here.
                 maybe_plugin_cmd = plugin_cmd_rx.recv() => {
                     if let Some(done) = maybe_plugin_cmd {
-                        // Board item 01KZYH37WNDKDWSMWQQPRFKKXC: a
+                        // a
                         // `ForkSession` outcome swaps `self.handle` --
                         // resubscribe `events` exactly like `SubmitOutcome::
                         // Resubscribe`'s own call site does.
@@ -573,13 +571,13 @@ impl App {
                 maybe_env = events.next() => {
                     match maybe_env {
                         Some(env) => {
-                            // WI-115's `/why` reads this back; `AppState::apply`
+                            // an earlier item's `/why` reads this back; `AppState::apply`
                             // (state.rs, out of this item's file scope) does
                             // not populate it -- see the field's own doc.
                             if matches!(env.event, conway::Event::ModelDecision { .. }) {
                                 self.state.last_model_decision = Some(env.clone());
                             }
-                            // Board item 01KYAGP11FF9YC3G60TWHHKKST: whether
+                            // whether
                             // this envelope marks the end of a turn/agent
                             // for the FOCUSED agent specifically -- checked
                             // BEFORE `apply` consumes `env` below (`apply`
@@ -595,7 +593,7 @@ impl App {
                                 }
                                 _ => false,
                             };
-                            // Board item 01KZY8Q1CMMNVSF54CTC270N3H: the SAME
+                            // the SAME
                             // check, scoped to `self.handle`'s own ROOT agent
                             // rather than whichever agent is focused -- see
                             // `AppState::session_head_seq`'s own doc for why
@@ -755,8 +753,7 @@ impl App {
                                     // for rules that no longer authorize.
                                     self.state.structured_allow_rules.clear();
                                 }
-                                // Board item 01KYND4WGHSZXW5YQ6ZWHCDDNN:
-                                // revoke exactly the one grant the operator
+                                // // revoke exactly the one grant the operator
                                 // selected. The broker's in-memory grant is
                                 // dropped unconditionally before any file
                                 // I/O is attempted (`Conway::
@@ -809,7 +806,7 @@ impl App {
                                         .transcript
                                         .push(super::state::Entry::Notice { text });
                                 }
-                                // Board item A2: the structured-allow
+                                // A2: the structured-allow
                                 // counterpart of the arm above -- revoke
                                 // exactly the one structured rule the
                                 // operator selected, through the
@@ -862,8 +859,7 @@ impl App {
                                         .transcript
                                         .push(super::state::Entry::Notice { text });
                                 }
-                                // Board item 01KZS02HYXGTW42R8G4HP10GHX:
-                                // revoke exactly the one hook-backed rule
+                                // // revoke exactly the one hook-backed rule
                                 // the operator selected. `Conway::
                                 // revoke_hook_rule` mutates the broker/
                                 // dispatcher directly and NEVER attempts
@@ -1079,12 +1075,12 @@ impl App {
 
     /// Routes `text` to `commands::parse` + `commands::execute` when it
     /// starts with `/` (module notes: "the dispatch hook is defined here,
-    /// handlers land in WI-115"); otherwise sends it as a prompt. A
+    /// handlers land in an earlier item"); otherwise sends it as a prompt. A
     /// malformed or unknown slash command becomes a `Notice` -- it is never
     /// sent to the model (module notes' binding requirement, carried from
-    /// WI-114's stub).
+    /// an earlier item's stub).
     ///
-    /// `/ask` and `/agents` (WI-127 criteria 4 & 5) are intercepted HERE,
+    /// `/ask` and `/agents` (criteria 4 & 5) are intercepted HERE,
     /// before `commands::parse` ever sees them: `commands.rs` is out of
     /// this item's file scope, so its `SlashCommand`/`parse`/`execute` are
     /// left untouched, and both new commands are handled entirely within
@@ -1113,11 +1109,11 @@ impl App {
         // the menu builder stays a pure function of `AppState`, and it
         // would be stale (or empty) if refreshed anywhere else.
         //
-        // Board item 01KYT8SGX32CP56PRJNG72V2W5: kept as `(rule, origin)`
+        // kept as `(rule, origin)`
         // pairs rather than pre-formatted strings -- `view/settings.rs::
         // build_tree` both labels each row (`[interactive]`/the
         // originating file's path, via `origin.describe()`) AND addresses
-        // it for per-rule revocation (board item 01KYND4WGHSZXW5YQ6ZWHCDDNN),
+        // it for per-rule revocation,
         // which a bare formatted string could never do.
         if text.trim() == "/settings" {
             self.state.permission_grants = self.conway.active_permission_patterns();
@@ -1133,13 +1129,13 @@ impl App {
             self.state.permission_prompts = self.conway.active_prompt_permission_patterns();
             self.state.structured_deny_rules = self.conway.active_structured_deny_rules();
             self.state.structured_prompt_rules = self.conway.active_structured_prompt_rules();
-            // Board item 01KZS02HYXGTW42R8G4HP10GHX: the fourth mirror,
+            // the fourth mirror,
             // refreshed on the SAME seam as the four above -- see this
             // block's own doc for why the refresh lives here rather than
             // anywhere else.
             self.state.hook_rules = self.conway.active_deny_capable_hook_rules();
         }
-        // Board item 01KYT8SGX32CP56PRJNG72V2W5: the ONLY path that writes
+        // the ONLY path that writes
         // a trust record -- an explicit operator action, never automatic,
         // never a side effect of starting a session (D4 §5/§9). Trusts the
         // project-scoped candidate (`state.permission_paths`' first entry,
@@ -1213,7 +1209,7 @@ impl App {
                             });
                         }
                         Err(e) => {
-                            // Board item 01KZHVDDQQ7XT0RK3JVNM2YV83: this
+                            // this
                             // arm's most consequential case is
                             // `Conway::trust_permission_file` refusing a
                             // file that names an unrecognized top-level key
@@ -1314,7 +1310,7 @@ impl App {
                         Effect::Quit => return Ok(SubmitOutcome::Quit),
                         Effect::Resumed(handle) => {
                             self.handle = handle;
-                            // Board item 01KZY8Q1CMMNVSF54CTC270N3H: the
+                            // the
                             // resumed session's own head, same reasoning as
                             // `Self::new`'s initial fetch -- `execute`'s
                             // `Resume` arm already reset `self.state` to a
@@ -1336,7 +1332,7 @@ impl App {
                                 first_message,
                             });
                         }
-                        // Board item 01KZYBFTK4QPB45AJT9M57P60W: `execute`
+                        // `execute`
                         // itself never ran a byte of the plugin's own code
                         // (see `Effect::RunPluginCommand`'s own doc) -- THIS
                         // is where it actually runs. See
@@ -1414,7 +1410,7 @@ impl App {
             .await
         {
             Ok(_) => {
-                // Bug 2 fix (01KYAN9EQ5BRZQ0V3DCW590YCZ): mark the
+                // Bug 2 fix: mark the
                 // indicator working the instant Enter is pressed, rather
                 // than waiting for the first event to arrive on the stream
                 // (`state.rs`'s `TurnStarted` arm covers the same window
@@ -1443,7 +1439,7 @@ impl App {
     /// `agent`'s own event stream and switches `state`'s focus to it,
     /// returning the new stream for the run loop's `events` local to adopt.
     ///
-    /// **Fallible-but-matched, not `?`-propagated (carried from the WI-140
+    /// **Fallible-but-matched, not `?`-propagated (carried from the
     /// review fix this factors out of `Action::FocusAgent`'s old inline
     /// body):** `agent_events` can fail (unknown/foreign agent, store I/O,
     /// ancestry depth) -- surfaced as a `Notice`, returning `None`, rather
@@ -1454,7 +1450,7 @@ impl App {
     /// BEFORE `state.focus_agent` runs, so a failure leaves both the
     /// transcript and the caller's live subscription exactly as they were.
     ///
-    /// Board item 01KYAGP11FF9YC3G60TWHHKKST: `focus_agent` already reset
+    /// `focus_agent` already reset
     /// `focused_agent_usage` to zero -- the `session_usage` call below is
     /// the authoritative fetch that fills in the newly focused agent's REAL
     /// cumulative total (replay carries no `Usage`, so the zero reset would
@@ -1484,7 +1480,7 @@ impl App {
     /// first message was ALSO dropped, rather than silently losing it with
     /// no trace in the transcript. `None` for the plain `Action::FocusAgent`
     /// call site, which has no message riding along.
-    /// Runs a resolved plugin command (board item 01KZYBFTK4QPB45AJT9M57P60W)
+    /// Runs a resolved plugin command
     /// off this loop's own `select!`, never on it -- the mechanism behind
     /// this item's "a hanging or panicking plugin command does not freeze
     /// the TUI" acceptance criterion.
@@ -1508,7 +1504,7 @@ impl App {
             command,
             ctx,
         } = invocation;
-        // Board item 01KZYH37WNDKDWSMWQQPRFKKXC: captured HERE, before `ctx`
+        // captured HERE, before `ctx`
         // is moved into the spawned task -- see `PluginCommandDone::
         // session_id`'s own doc for why this specific capture point (not a
         // later read of `self.handle.id()`) is what makes the binding
@@ -1546,7 +1542,7 @@ impl App {
     /// `plugin_cmd_rx.recv()` arm) must then resubscribe its `events` local,
     /// exactly like `SubmitOutcome::Resubscribe`'s own call site.
     ///
-    /// **Now `async`** (this item, board 01KZYH37WNDKDWSMWQQPRFKKXC): the
+    /// **Now `async`** (this item, board): the
     /// `ForkSession` arm awaits `Conway::fork_from`, the SAME facade call
     /// `/rewind` needs and the reason this method could not stay
     /// synchronous. This does NOT reopen the hang-safety property point 15
@@ -1572,7 +1568,7 @@ impl App {
                 });
                 false
             }
-            // Board item 01KZYH37WNDKDWSMWQQPRFKKXC: `/rewind`'s own
+            // `/rewind`'s own
             // capability. `done.session_id` -- NOT `self.handle.id()` -- is
             // what this resolves against: see `PluginCommandDone::
             // session_id`'s own doc for why that specific field is what
@@ -1596,7 +1592,7 @@ impl App {
                         self.handle = handle;
                         self.state = AppState::new(child_root);
                         self.state.plugin_commands = plugin_commands;
-                        // Board item 01KZY8Q1CMMNVSF54CTC270N3H: no facade
+                        // no facade
                         // round trip needed here, unlike `Self::
                         // refresh_session_head`'s other call sites -- a
                         // freshly forked child's own head IS `at_seq`,
@@ -1623,7 +1619,7 @@ impl App {
     }
 
     /// Best-effort authoritative refresh of `AppState::session_head_seq`
-    /// (board item 01KZY8Q1CMMNVSF54CTC270N3H) -- the same "re-fetch rather
+    /// -- the same "re-fetch rather
     /// than reconstruct" shape `Self::run`'s own `refresh_focused_usage`
     /// local already establishes for `AppState::focused_agent_usage`, one
     /// field over. Scoped to `self.handle`'s OWN session id (never the
@@ -2084,7 +2080,7 @@ mod tests {
         }
     }
 
-    /// Board item 01KZY8Q1CMMNVSF54CTC270N3H: `App::new`'s own initial
+    /// `App::new`'s own initial
     /// `AppState::session_head_seq` fetch -- a fresh session's head is
     /// `LogSeq(0)`, read authoritatively via `Conway::session_head` rather
     /// than assumed. See `AppState::session_head_seq`'s own doc for why
@@ -2221,7 +2217,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // Plugin-declared TUI commands (board item 01KZYBFTK4QPB45AJT9M57P60W)
+    // Plugin-declared TUI commands
     // -- the VERIFICATION ANCHOR: a fixture plugin declaring `/greet`,
     // driven through the real `App::submit` -> spawned task -> channel ->
     // `apply_plugin_command_done` pipeline (`Self::run`'s own path, minus
@@ -2433,7 +2429,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // CommandOutcome::ForkSession (board item 01KZYH37WNDKDWSMWQQPRFKKXC)
+    // CommandOutcome::ForkSession
     // -- the VERIFICATION ANCHOR: a fixture plugin command that forks its
     // own calling session and returns; the TUI ends up driving the child,
     // and the parent's log is byte-identical to before. Paired with a
@@ -2712,7 +2708,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // Board item 01KZY8Q1CMMNVSF54CTC270N3H: `conway-plugin-history`'s
+    // `conway-plugin-history`'s
     // `/conway.history.rewind`, driven through the REAL shipped plugin
     // crate (not `RewindPluginFixture` above) -- the discriminating
     // acceptance criterion this item names: absent the plugin, the command
@@ -2989,7 +2985,7 @@ mod tests {
         );
     }
 
-    /// Board item 01KZHVDDQQ7XT0RK3JVNM2YV83, end to end through the real
+    ///, end to end through the real
     /// startup loader -- the sibling of `registration_error_surfaces_as_a_
     /// transcript_error` just above, same shape: a real `.conway/
     /// permissions.json` on a real filesystem, loaded by the real
@@ -3154,7 +3150,7 @@ mod tests {
         }
     }
 
-    /// Board item 01KZS02HYXGTW42R8G4HP10GHX: the fourth review list --
+    /// The fourth review list --
     /// every DENY-CAPABLE hook rule (`pre_tool_use` AND `prompt_submitted`)
     /// refreshes into `state.hook_rules` on the same `/settings` seam as
     /// the other four mirrors, and renders with its id, event, matcher, and
@@ -3378,7 +3374,7 @@ mod tests {
         );
     }
 
-    /// Board item 01KZ803DJW8Y1H4FXTM8D3PYMY: `Conway::warnings()` (real,
+    /// `Conway::warnings()` (real,
     /// populated by `config::merge::validate` -- `WarningCode::
     /// HeadroomExceedsContext` when a role's effective headroom is `>=` the
     /// smallest context window reachable through its chain) had zero
@@ -3456,7 +3452,7 @@ mod tests {
             .with_session_store(Arc::new(FakeStore::new()))
             .with_permission_gate(gate)
             .with_router(router)
-            // Board item 01KZHF270T3W8GZ7NM6DSNQ4MM: `conway` no longer
+            // `conway` no longer
             // compiles either dialect in -- `from_config` also layers in
             // whatever the live XDG-global `settings.json` declares (this
             // function's own doc), so both factories are registered here,

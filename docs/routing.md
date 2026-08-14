@@ -9,8 +9,8 @@ these chains reference, see [`providers.md`](providers.md).
 
 **The capability filtering, health tracking, and circuit breaking this page
 mostly describes are an installable first-party plugin, not something
-`conway` ships built in** (board item 01KZFC43J1J06BM4CCWKCKHSNV). Add
-`"conway.routing"` to `[plugins].install`:
+`conway` ships built in**. Add
+`"conway.routing"` to `plugins.install`:
 
 ```json
 // .conway/settings.json
@@ -19,7 +19,7 @@ mostly describes are an installable first-party plugin, not something
 
 Absent that entry, `conway` still resolves every role to a model and
 completes a turn — using `conway_core::routing::MinimalRouter`, an honest,
-config-only resolver that walks `[roles.<alias>].chain` in order with **no**
+config-only resolver that walks `roles.<alias>.chain` in order with **no**
 capability filtering, health filtering, or circuit breaking at all: every
 candidate is treated as eligible, so an unregistered model or a dead
 endpoint is only discovered when the request itself is actually attempted,
@@ -31,7 +31,7 @@ different router"](#installing-a-different-router) for exactly what
 ## Roles and fallback chains
 
 A role is a named alias — `default_role`, `--role-override`, or an
-agent definition's own role — resolved to a `[roles.<alias>]` chain in
+agent definition's own role — resolved to a `roles.<alias>` chain in
 `.conway/settings.json`:
 
 ```json
@@ -65,7 +65,7 @@ Two flags override chain resolution for a single run:
 
 **Absent, by default: `conway_core::routing::MinimalRouter`.** `build()`
 compiles this whenever nothing else is installed or injected — it needs
-nothing but `[roles]`, walks a role's configured chain in order, and
+nothing but `roles`, walks a role's configured chain in order, and
 performs **no** capability filtering, **no** health filtering, and **no**
 circuit breaking. `--model`/pin still works (`RoutingReason::PinnedByApi`),
 and every candidate still carries a `RoutingReason` (`conway routes explain`
@@ -76,11 +76,10 @@ endpoint is only discovered when conway actually tries the request, not
 skipped in advance the way the rest of this page describes.
 
 **Installed: `conway-plugin-routing`'s `DeclarativeRouter`.** This is the
-engine `conway` itself used to compile in unconditionally before board item
-01KZFC43J1J06BM4CCWKCKHSNV — capability matching, headroom, health, and
+engine `conway` itself used to compile in unconditionally before — capability matching, headroom, health, and
 circuit breaking, everything else on this page — now an installable
 first-party plugin (see the note at the top of this page for the
-`[plugins].install` entry). Two ways to install it:
+`plugins.install` entry). Two ways to install it:
 
 - **By name, in `settings.json`**: `{ "plugins": { "install":
   ["conway.routing"] } }`, resolved by whatever binary links the plugin
@@ -89,9 +88,9 @@ first-party plugin (see the note at the top of this page for the
   `"conway.routing"`.
 - **By an embedder, directly**: `ConwayBuilder::with_router_factory(Arc::new(
   conway_plugin_routing::RoutingRouterFactory))`, the library-embedder shape
-  of the SAME mechanism `[plugins].install` resolves for a binary — a
+  of the SAME mechanism `plugins.install` resolves for a binary — a
   `conway::RouterFactory` names a router *kind* up front (an id plus a
-  deferred, fallible `build` step) since `[plugins].install` is read long
+  deferred, fallible `build` step) since `plugins.install` is read long
   before backends exist to build a real router against. See
   [`embedding.md`](embedding.md#installing-a-router-routerfactory-and-the-pluginsinstall-router-arm)
   for the full `RouterFactory` shape.
@@ -155,7 +154,7 @@ against `conway::Conway::explain_routing`):
 - `explain_routing` itself asks for nothing (`RequiredCaps::default()`) —
   any capability requirement a `SKIPPED` entry names still comes from
   somewhere, and as of the per-role floor above that somewhere can now be
-  `[roles.<alias>]`'s own configured fields, not just a caller-supplied
+  `roles.<alias>`'s own configured fields, not just a caller-supplied
   requirement.
 
 For the routing decision an actual turn just made, the TUI's `/why`
@@ -181,7 +180,7 @@ entry per configured chain candidate (position `0` `SELECTED`, the rest
 tracks no real breaker state, and inventing either would be claiming a
 capability the harness doesn't have. Critically, `conway routes explain` still
 distinguishes "unknown role" from "configured role, empty report" in this
-configuration: it checks `[roles]` directly against your configuration,
+configuration: it checks `roles` directly against your configuration,
 not whether the report came back with zero entries -- a configured role
 whose chain happens to be empty gets an honest, entry-less report rather
 than being misreported as "unknown".
@@ -190,7 +189,7 @@ than being misreported as "unknown".
 
 Each chain candidate's `Capabilities` are resolved with a fixed
 precedence, config closest to you winning: **your `models.json` entry
-> a live startup probe (`[models.metadata_path]` with
+> a live startup probe (`models.metadata_path` with
 `probe_on_startup`) > the backend's declared `Profile` defaults**. Only
 two of `models.json`'s four fields actually reach this resolution —
 `max_context_tokens` and `reliability_tier`; `tool_calling` and
@@ -225,7 +224,7 @@ fields, so you can tell exactly which declarations are missing from
 
 Once resolved, a candidate is checked against the role's requirement
 floor and, last, against context headroom. A role's requirement floor is
-set directly in `settings.json` — `[roles.<alias>]` carries
+set directly in `settings.json` — `roles.<alias>` carries
 `tool_calling`, `structured_output`, `parallel_tool_calls`, `reasoning`,
 `min_reliability`, and `min_context`, alongside `chain` and
 `headroom_tokens`, and `ConwayConfig::routing()` maps every one of them
@@ -304,7 +303,7 @@ with a per-role override:
 ```
 
 `coder` uses its own `4096`; `planner`, with no override, falls back to
-`[routing].default_headroom_tokens`. Precedence is per-role override >
+`routing.default_headroom_tokens`. Precedence is per-role override >
 global default > conway's own built-in constant (`8192`) if you set
 neither. Two env vars reach the same knobs without touching the file:
 `CONWAY_ROUTING__DEFAULT_HEADROOM_TOKENS=16000` and
@@ -463,7 +462,7 @@ half-open candidate exactly like a closed one — so the very next request
 against that role naturally retries it. `conway-plugin-routing` used to
 also carry a periodic `HealthProber` that fed a second, independent
 `Probe` breaker from liveness checks decoupled from request traffic; it
-was retired rather than wired (board item `01KZ802GSF692EKYKQ2TTVCJB8`)
+was retired rather than wired
 because it had no production call site anywhere in the tree, and the only
 thing it would have bought — shaving one failed round trip off recovery
 for a sparse-traffic role — is a latency optimization this project gates
@@ -474,7 +473,7 @@ on a measured baseline that neither existed nor was scheduled. The
 naming the offending key.
 
 (Do not confuse the retired periodic health prober with the *startup*
-`[models].probe_on_startup` capability probe covered above under
+`models.probe_on_startup` capability probe covered above under
 "Capability matching" — same word, two unrelated mechanisms: that one
 discovers model capabilities once at startup and is wired; the health
 prober would have fed an ongoing liveness signal and no longer exists at

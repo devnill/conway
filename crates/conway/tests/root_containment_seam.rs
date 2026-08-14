@@ -1,4 +1,4 @@
-//! Regression/acceptance tests for board item 01KYR2SR5NQGDT6043D8B3TPCA
+//! Regression/acceptance tests for
 //! ("S5: the broker root check") -- the SECURITY-CRITICAL slice: the only
 //! one in this cycle where a mistake is a security bug rather than a
 //! defect.
@@ -19,7 +19,7 @@
 //! A confined child is always produced via [`SessionHandle::spawn`] with
 //! [`SpawnSpec::root`].
 //!
-//! **Board item 01KYTMH9JX21CGSE2Y6E2KP8SJ.** `RootSpec` (a session's ROOT
+//! **** `RootSpec` (a session's ROOT
 //! agent -- the one an operator actually talks to) used to have no `root`
 //! field at all, so every root agent started unconfined regardless of what
 //! `PermissionBroker::check_root` could do, and `must_reach_gate` was
@@ -182,7 +182,7 @@ fn build_conway(script: Vec<ScriptedTurn>, gate: Arc<dyn PermissionGate>) -> Con
         .with_session_store(store)
         .with_permission_gate(gate)
         .with_router(fake_router())
-        // Board item (bash ships on by default and cannot be declined):
+        // (bash ships on by default and cannot be declined):
         // this file drives the REAL `bash` tool end to end, so it must now
         // opt in explicitly -- the facade's own default excludes it.
         .with_builtin_plugins(PluginSelection::All)
@@ -191,7 +191,7 @@ fn build_conway(script: Vec<ScriptedTurn>, gate: Arc<dyn PermissionGate>) -> Con
 }
 
 /// Identical to [`build_conway`], plus `ConwayBuilder::with_root(root)` --
-/// board item 01KYTMH9JX21CGSE2Y6E2KP8SJ's own operator surface. Every
+///'s own operator surface. Every
 /// session this `Conway` starts (`conway.new_session`) is therefore a
 /// CONFINED root agent, not only a spawned child.
 fn build_conway_with_root(
@@ -207,7 +207,7 @@ fn build_conway_with_root(
         .with_permission_gate(gate)
         .with_router(fake_router())
         .with_root(root)
-        // Board item (bash ships on by default and cannot be declined):
+        // (bash ships on by default and cannot be declined):
         // this file drives the REAL `bash` tool end to end, so it must now
         // opt in explicitly -- the facade's own default excludes it.
         .with_builtin_plugins(PluginSelection::All)
@@ -361,7 +361,7 @@ async fn read_outside_root_is_denied() {
 }
 
 // ---------------------------------------------------------------------
-// 2a. Board item 01KZVZ56SBPSTZHAXXGYCNETNX: a path argument carrying a NUL
+// 2a. a path argument carrying a NUL
 // byte is denied at `PermissionBroker::check_root` -- the production
 // callsite for `conway_runtime::permission::resolve_like_the_tool_will`,
 // itself now a thin wrapper over the ONE shared implementation,
@@ -859,7 +859,7 @@ async fn bash_cwd_outside_root_is_denied() {
 //     same as any other in-root, fully-confinable call. `cwd` was never
 //     the security boundary here either -- this pins that the `checkable`
 //     enforcement above (test 9) is not collateral-damaging an ordinary
-//     in-root `cwd` (board item 01KYR2TK16200461FY6BG42KQZ, S6, part 1).
+//     in-root `cwd` (, S6, part 1).
 // ---------------------------------------------------------------------
 #[tokio::test]
 async fn bash_cwd_inside_root_is_allowed() {
@@ -949,7 +949,7 @@ async fn no_root_leaves_behavior_unchanged() {
 }
 
 // =======================================================================
-// Root agent confinement (board item 01KYTMH9JX21CGSE2Y6E2KP8SJ).
+// Root agent confinement.
 //
 // Every test above confines only a SPAWNED CHILD -- the parent it spawns
 // from is always `Unconfined` (`build_conway` never calls `with_root`).
@@ -1107,8 +1107,7 @@ async fn cd_within_a_confined_root_agents_own_root_is_allowed() {
 // 12. `must_reach_gate` is reachable for the ROOT agent: bash's own
 //     Unconfinable `command` always reaches the gate under a configured
 //     root, even with AutoAllow mode AND a matching pattern grant both in
-//     play -- the exact property `.design/extension-architecture.md`
-//     §5.1/§7.5 depend on, and which was vacuous for a root agent before
+//     play -- the exact property the extension design depend on, and which was vacuous for a root agent before
 //     this item (no `RootSpec::root` meant `AgentRoot::reconstruct` always
 //     produced `Unconfined` for it, so `must_reach_gate` was always false).
 // ---------------------------------------------------------------------

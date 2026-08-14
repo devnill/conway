@@ -1,4 +1,4 @@
-//! Board item C3 (conway FR probe): does a PROMPTED agent whose tool set is
+//! C3 (conway FR probe): does a PROMPTED agent whose tool set is
 //! restricted to `report` alone -- the shape an embedder (Kepler) needs for
 //! a pure-synthesis "proposer" (natural-language in, schema-validated
 //! structured proposal out, no filesystem access) -- run cleanly end to end
@@ -129,7 +129,7 @@ fn tool_spec(name: &str) -> ToolSpec {
     }
 }
 
-/// A local structural stand-in for `conway-tools`' `ReportTool` (WI-065),
+/// A local structural stand-in for `conway-tools`' `ReportTool`,
 /// mirroring `tests/result_contract.rs`'s own `FakeReportTool` -- emits the
 /// same `{"conway_report": {...}}` envelope shape. Not imported from
 /// `conway-tools`: `conway-runtime` must not depend on that crate.
@@ -274,6 +274,8 @@ fn build_loop(
         headroom: Arc::new(HeadroomPolicy::default()),
         tree: tree.clone(),
         context_hook: std::sync::RwLock::new(None),
+        observers: Vec::new(),
+        plugin_events: Arc::new(conway_runtime::hook_dispatch::HookDispatcher::new()),
     });
 
     let spec = AgentSpec {

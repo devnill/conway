@@ -1,4 +1,4 @@
-//! WI-080 acceptance tests: strategy resolution, fallback chain,
+//! Acceptance tests: strategy resolution, fallback chain,
 //! headroom-aware T-1 context gate, and health recording for
 //! `conway_runtime::attempt::AttemptEngine`.
 
@@ -57,7 +57,7 @@ struct RecordingBackend {
     id: BackendId,
     caps: Capabilities,
     /// Feeds this backend's own `admit` override (see the `Backend` impl
-    /// below) -- board item 01KZFBZHTWDF11TH7G0H613ERE: `AttemptEngine`
+    /// below) --: `AttemptEngine`
     /// now gates admission through `Backend::admit` over the actually-built
     /// `GenerateRequest`, not `AttemptRequest.est_tokens`, so a test
     /// exercising the T-1 gate needs a way to control the ESTIMATE a
@@ -146,7 +146,7 @@ impl Backend for RecordingBackend {
     /// (see the `est_tokens` field's own doc) rather than the default
     /// dialect-neutral estimator's real (tiny) count of this file's fixture
     /// segments. Still calls the ONE shared arithmetic, `check_admission`
-    /// (P-14) -- only the estimate is test-controlled, not the comparison.
+    /// () -- only the estimate is test-controlled, not the comparison.
     fn admit(
         &self,
         req: &GenerateRequest,
@@ -914,7 +914,7 @@ async fn t1_headroom_gate_rejects_when_all_candidates_too_small() {
 }
 
 /// The largest-window-among-refusals rule (acceptance criterion 7, board
-/// item 01KZFBZHTWDF11TH7G0H613ERE) picked by VALUE, not by chain position:
+/// item) picked by VALUE, not by chain position:
 /// the SECOND route (`b`, `fallback(1)`) has the larger window here, so a
 /// bug that reported the FIRST refusal instead of the LARGEST one would
 /// still pass a fixture where position 0 happens to have the larger window
@@ -1053,8 +1053,8 @@ async fn t1_mixed_candidates_skips_small_attempts_large() {
     assert_eq!(*skipped_model, model_ref("small", "m1"));
     match reason {
         RoutingReason::CapabilitySkip { missing, .. } => {
-            // The `Backend::admit` refusal's own `Display`, board item
-            // 01KZFBZHTWDF11TH7G0H613ERE (previously a hardcoded
+            // The `Backend::admit` refusal's own `Display`
+            // (previously a hardcoded
             // "min_context" placeholder from the pre-flight partition this
             // item retired).
             assert_eq!(missing.len(), 1);

@@ -1,4 +1,4 @@
-//! `impl SubagentHost for Runtime` (WI-084, architecture §4.6, §5.1, §5.2): the
+//! `impl SubagentHost for Runtime` (architecture §4.6, §5.1, §5.2): the
 //! cycle-breaking fork/spawn entry point every tool call and developer API goes
 //! through (decision 2). Fork and spawn are both, mechanically, "create a child
 //! session, resolve its starting context, attach it to the tree, and launch its
@@ -54,7 +54,7 @@
 //! and `ContextBuilder` (`context/builder.rs`) carries that same single `from`
 //! onto every `Provenance::Inherited` segment it produces from `records`,
 //! regardless of which ancestor a given record actually originated in. This is
-//! a deliberate, coordinator-ruled semantic (WI-084 rework), not an oversight:
+//! a deliberate, coordinator-ruled semantic (rework), not an oversight:
 //! recovering true per-record authorship at arbitrary depth would require
 //! per-record session tracking that does not exist upstream — neither
 //! `conway_core::log::LogRecord` nor `conway_session`'s resolver carries an
@@ -98,10 +98,10 @@
 //! budget or an absent `max_steps`. The property holds vacuously, by the
 //! type, rather than by a runtime check added here.
 //!
-//! ## `steer` (WI-085 supersedes this item's stub)
+//! ## `steer` (supersedes this item's stub)
 //!
-//! Real mailbox delivery now backs `steer`. Board item
-//! 01KYT8TS0EBKJHYNJRF6S88NRH added the trait's `caller` parameter and
+//! Real mailbox delivery now backs `steer`.
+//! added the trait's `caller` parameter and
 //! changed `from`/`at_parent_seq` to derive from it directly -- see that
 //! method's own doc.
 //!
@@ -167,8 +167,7 @@ impl SubagentHost for Runtime {
     ///    reads a session's *own* records straight from the store,
     ///    regardless of what its header's `origin` says).
     /// 4. Append the head record: `LogRecord::ForkDirective` (fork) or
-    ///    `LogRecord::UserTurn` (spawn) — `agent_loop::split_head` (WI-081,
-    ///    unmodified) already turns either into the right `HeadSegment`.
+    ///    `LogRecord::UserTurn` (spawn) — `agent_loop::split_head` (///    unmodified) already turns either into the right `HeadSegment`.
     ///    **Skipped** when `spec.keep_alive` is set AND `spec.prompt` is
     ///    empty (the interactive keep-alive case, this item's addition): no
     ///    placeholder record is written and the child's `resume_gate` starts
@@ -185,7 +184,7 @@ impl SubagentHost for Runtime {
         parent: AgentId,
         mut spec: SubagentSpec,
     ) -> Result<AgentId, RuntimeError> {
-        // Board item 01KYTP0PGKJ4VCJP5TD39A1WHF: `caller` must own
+        // `caller` must own
         // `parent` -- checked BEFORE anything else runs, exactly like
         // `steer`/`await_result`/`cancel`'s own `ensure_own_subtree` call --
         // so no cwd/root resolution, store I/O, or child attach happens for
@@ -381,7 +380,7 @@ impl SubagentHost for Runtime {
         let mut agent_path = self.tree_ref().path(parent);
         agent_path.push(agent_id);
 
-        // Fork-only inheritance fill (decision 01KZHEWXDZWPWMEAQ01XY2RDCB): a
+        // Fork-only inheritance fill: a
         // forked child inherits the PARENT's own `agent_def` when the call
         // site named none itself -- `conway_fork`, `ForkSpec::from`, and the
         // TUI's `bare_fork` all build `SubagentSpec::agent_def: None`
@@ -426,7 +425,7 @@ impl SubagentHost for Runtime {
             .role
             .clone()
             .or_else(|| agent_def.and_then(|d| d.role.clone()))
-            // WI-136: inherit the PARENT's role before any hardcoded fallback.
+            // inherit the PARENT's role before any hardcoded fallback.
             // A fork inherits the parent's context, so it must route the same
             // way; the literal `"default"` below is not a configured role
             // alias in a normal config (config names its default via
@@ -456,7 +455,7 @@ impl SubagentHost for Runtime {
         // contract has no such "inherit from parent" step, so the fallback
         // chain here is exactly two-deep.
         //
-        // **`def_was_inherited` carve-out (decision 01KZHEWXDZWPWMEAQ01XY2RDCB):**
+        // **`def_was_inherited` carve-out:**
         // a fork's `agent_def` may now be the fork-only inheritance fill just
         // above rather than something the call site itself named. A result
         // contract is always declared AT a call site -- a tool argument, a
@@ -475,8 +474,8 @@ impl SubagentHost for Runtime {
         // skipped purely because "the def only got here by inheritance" is
         // not "the call site declared a contract".
         //
-        // **`ask_origin.is_some()` carve-out** (board items 01KZGX1RR0VXN2YH3P75SBE9SA/
-        // 01KZC8DD9C74BSTP8BQDJKYNFR): `spec.ask_origin` is `Some` for
+        // **`ask_origin.is_some()` carve-out** (/
+        //): `spec.ask_origin` is `Some` for
         // exactly the two ask entry points -- `conway`'s `SessionHandle::ask`
         // (`AskOrigin::ModalAsk`) and the `conway_ask` tool
         // (`AskOrigin::ToolAsk`) -- and `None` for every `conway_fork`/
@@ -552,7 +551,7 @@ impl SubagentHost for Runtime {
             // build their `SubagentSpec` with `ephemeral: false`
             // (`SubagentSpec::fork`/`::spawn`'s own constructor default), so
             // they stay non-ephemeral exactly as before. The facade's `/ask`
-            // (`conway`'s `SessionHandle::ask`, board item B2) also comes
+            // (`conway`'s `SessionHandle::ask` B2) also comes
             // through THIS path with `spec.ephemeral = true` -- only
             // `start_root` (a root is never ephemeral, per spec point 4) and
             // `resume_root` (which re-stamps from the persisted header, for
@@ -686,7 +685,7 @@ impl SubagentHost for Runtime {
             headroom_override: None,
             max_parallel_tools: DEFAULT_MAX_PARALLEL_TOOLS,
             report_slot: Some(last_report.clone()),
-            // WI-086 carried `spec.result_contract` straight through as a
+            // carried `spec.result_contract` straight through as a
             // plain value handoff. This item adds the def as a second,
             // lower-precedence source: `result_contract` (computed above)
             // is the call site's contract when the caller supplied one,
@@ -695,20 +694,20 @@ impl SubagentHost for Runtime {
             result_contract,
             // Threaded straight from the spec (WI keep-alive item): a
             // fork/spawn child that `await_result`s (`AgentTree::
-            // await_result`, WI-083) still depends on `keep_alive: false`
+            // await_result`) still depends on `keep_alive: false`
             // (`SubagentSpec::fork`/`::spawn`'s own constructor default,
             // unchanged) actually terminating on `Completed`; keep-alive is
             // an explicit opt-in only an interactive-session caller (the
             // TUI's bare `/spawn`/`/fork`, via `conway`'s `SpawnSpec::
             // keep_alive`/`ForkSpec::keep_alive`) sets.
             keep_alive: spec.keep_alive,
-            // Board item 01KZQJ03ZQ22MPM9H2TW1350ZF: threaded straight
+            // threaded straight
             // through, unread by this loop -- see `AgentSpec::tag`'s own
             // doc for the "conway never interprets this" guarantee.
             tag: spec.tag.clone(),
         };
 
-        // WI-085: this child's own mailbox, plus the already-attached
+        // this child's own mailbox, plus the already-attached
         // parent's mailbox sender, so `AgentLoop::finish` can deliver this
         // child's terminal `Result` upward (architecture §3.2: "child
         // terminates -> AgentResult -> parent mailbox").
@@ -735,7 +734,7 @@ impl SubagentHost for Runtime {
             inbox: mailbox_rx,
             parent_mailbox: Some(parent_mailbox),
             pending_cancel: None,
-            // WI-118: only `Runtime::resume_root` and (this item's
+            // only `Runtime::resume_root` and (this item's
             // addition) an interactive keep-alive child with no initial
             // prompt gate a loop's first iteration -- every other fork/spawn
             // child still starts ungated (`Default`), exactly as before.
@@ -806,7 +805,7 @@ impl SubagentHost for Runtime {
             );
         }
 
-        // `child_spawned` (board item 01KZS019NHG11RVQYSVT7RG0P5), fired after
+        // `child_spawned`, fired after
         // the child exists and is attached, for BOTH modes -- this method is
         // the single entry point for fork and spawn alike, which is why the
         // event is wired here rather than at either caller.
@@ -845,8 +844,8 @@ impl SubagentHost for Runtime {
     }
 
     /// Delivers `text` into `target`'s mailbox as an `AgentMessage::Steer`,
-    /// landing at `target`'s next turn boundary (WI-085, architecture
-    /// §6.2). Board item 01KYT8TS0EBKJHYNJRF6S88NRH: `caller` must be
+    /// landing at `target`'s next turn boundary (architecture
+    /// §6.2). `caller` must be
     /// `target` itself or one of its ancestors (`ensure_own_subtree`,
     /// below) -- a sibling (or any other unrelated agent) is rejected with
     /// `RuntimeError::AgentNotInSubtree` before the mailbox is even
@@ -861,7 +860,7 @@ impl SubagentHost for Runtime {
     /// directly (`AgentLoop`), and can send correctly-attributed messages
     /// without needing this trait's help -- see `tests/steering.rs` for
     /// both directions exercised at the mailbox level, and this module's
-    /// own doc's "`steer` (WI-085 supersedes this item's stub)" section for
+    /// own doc's "`steer` (supersedes this item's stub)" section for
     /// the prior gap this replaces.
     async fn steer(
         &self,
@@ -900,8 +899,8 @@ impl SubagentHost for Runtime {
         self.tree_ref().await_result(target).await
     }
 
-    /// `mode: CancelMode::Immediate` (board item 01KZDC2222ARKMZKN8ZE4BYHD6)
-    /// delegates to the existing `Runtime::cancel` (WI-082/083), whose
+    /// `mode: CancelMode::Immediate`
+    /// delegates to the existing `Runtime::cancel`, whose
     /// signature already matches this trait method's immediate path
     /// exactly. `mode: CancelMode::Graceful` instead enqueues
     /// `AgentMessage::Cancel { hard: false, .. }` into `target`'s own
@@ -937,7 +936,7 @@ impl SubagentHost for Runtime {
     }
 
     /// `caller`'s own subtree, projected from `Runtime::tree`'s whole
-    /// snapshot (WI-082/083; board item 01KYTP0PGKJ4VCJP5TD39A1WHF adds the
+    /// snapshot (adds the
     /// scoping). Deliberately built from the FULL snapshot rather than
     /// walking `tree_ref().path(..)` once per node: `path` and `snapshot`
     /// both take the same tree read lock, and a single `snapshot()` plus an
@@ -1030,7 +1029,7 @@ impl SubagentHost for Runtime {
     /// in `AskOutcome` and the orchestrator's `ToolResultRecord` can name the
     /// ephemeral child session.
     ///
-    /// ## `caller` (board item 01KYTP0PGKJ4VCJP5TD39A1WHF)
+    /// ## `caller`
     ///
     /// `ask` performs no subtree check of its own -- it composes `start`
     /// (`ask` is fork+await-text, not a third subagent primitive), so passing
@@ -1062,8 +1061,8 @@ impl SubagentHost for Runtime {
         if spec.mode != SubagentMode::Fork {
             return Err(RuntimeError::AskRequiresFork { mode: spec.mode });
         }
-        // Board item 01KZC8DD9C74BSTP8BQDJKYNFR, MOVED (decision
-        // 01KZHEWXDZWPWMEAQ01XY2RDCB): the `conway_ask` tool
+        //, MOVED (decision
+        //): the `conway_ask` tool
         // (`crates/conway-tools/src/subagent/ask.rs`) always builds its
         // `SubagentSpec` with `agent_def: None` -- it has no
         // `SessionMeta`/`AgentDef` lookup surface of its own, only a
@@ -1163,7 +1162,7 @@ impl SubagentHost for Runtime {
 }
 
 impl Runtime {
-    /// Board item 01KYT8TS0EBKJHYNJRF6S88NRH: the descendancy check
+    /// The descendancy check
     /// `steer`/`await_result`/`cancel` share -- see `SubagentHost`'s own
     /// doc for the root/operator-exemption mechanism (there is none; the
     /// check below is uniform for every caller, and a root-originated call
@@ -1280,7 +1279,7 @@ impl SubagentHost for WeakRuntimeHost {
         reason: String,
         mode: CancelMode,
     ) -> Result<(), RuntimeError> {
-        // `Runtime` has its own inherent, sync `cancel` method (WI-082/083)
+        // `Runtime` has its own inherent, sync `cancel` method
         // that method resolution prefers over this trait method of the
         // same name -- fully qualified syntax forces the trait impl above.
         SubagentHost::cancel(&*self.upgrade()?, caller, target, reason, mode).await
@@ -1305,7 +1304,7 @@ impl SubagentHost for WeakRuntimeHost {
             // Mirrors `runtime.rs`'s (now-removed) `NoSubagentHost::tree`
             // fallback shape for the one case where there is genuinely no
             // runtime left to ask. `root: caller` (not `AgentId::default()`)
-            // -- board item 01KYTP0PGKJ4VCJP5TD39A1WHF makes `tree()`'s
+            // -- makes `tree()`'s
             // `root` mean "the caller's own subtree root" everywhere else;
             // this one remaining fallback stays consistent with that rather
             // than reverting to a placeholder default.

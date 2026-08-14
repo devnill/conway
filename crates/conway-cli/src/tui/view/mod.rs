@@ -1,9 +1,9 @@
-//! The TUI's render pass (WI-114; redesigned single-column layout WI-127):
+//! The TUI's render pass (redesigned single-column layout an earlier item):
 //! a pure function from `&AppState` to a `ratatui::Frame` -- no `AppState`
 //! mutation, no I/O, so it can run under a `ratatui::backend::TestBackend`
 //! with no real terminal.
 //!
-//! WI-127 replaced the old always-on two-pane layout (a left agent-tree
+//! replaced the old always-on two-pane layout (a left agent-tree
 //! pane alongside right transcript/input columns) with a single column:
 //! conversation stream on top, an optional on-demand agent panel, an input
 //! box, and a bottom status line (criterion 1). See `transcript.rs`'s doc
@@ -312,7 +312,7 @@ const PERMISSION_FOOTER_ROWS: u16 = 5;
 /// transcript content on screen only while a decision is pending, via
 /// `Clear`).
 ///
-/// Bug fix (01KYB0F7V65QAMZWWYH8K7DWDC): this used to be a fixed ~6-row box
+/// Bug fix: this used to be a fixed ~6-row box
 /// with the ENTIRE `req.rendered` command as line 0 of one unscrolled
 /// `Paragraph` -- a long tool-call argument overflowed the box and clipped
 /// the tool/category line, the agent path, and the `[y]/[a]/[n]/[Esc]`
@@ -384,7 +384,7 @@ fn draw_permission_overlay(
     let clamped_scroll = modal::clamp_scroll(scroll, body_max_scroll);
     frame.render_widget(body.scroll((clamped_scroll, 0)), frame_areas.body_area);
 
-    // Review fix (01KYB0F7V65QAMZWWYH8K7DWDC): even with the footer's rows
+    // Review fix: even with the footer's rows
     // reserved first ([`modal::draw_modal_frame`]'s own invariant),
     // `footer_area` can still end up shorter than [`PERMISSION_FOOTER_ROWS`]
     // on a genuinely tiny viewport -- the block's own 2 border rows alone
@@ -752,7 +752,7 @@ mod tests {
         assert!(!text.contains("/ask <text>"));
     }
 
-    // ---- 01KYB0F7V65QAMZWWYH8K7DWDC: permission overlay always shows the
+    // ----: permission overlay always shows the
     // action keys + a long command is viewable ----
 
     fn sample_request(rendered: &str) -> PermissionRequest {

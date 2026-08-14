@@ -1,4 +1,4 @@
-//! Tool dispatch (WI-079): [`registry::PluginRegistry`] compiles the
+//! Tool dispatch: [`registry::PluginRegistry`] compiles the
 //! injected plugin set once; [`runner::ToolRunner`] owns per-call
 //! resolution, schema validation, permission gating, bounded concurrent
 //! execution, cancellation, truncation enforcement, and event emission.

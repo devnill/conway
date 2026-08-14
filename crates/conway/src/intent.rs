@@ -1,4 +1,4 @@
-//! `Conway::classify_agent_intent` (board item C1): natural-language intent
+//! `Conway::classify_agent_intent` (C1): natural-language intent
 //! classification for the TUI's `/fork` and `/spawn` commands, run as an
 //! EPHEMERAL one-turn session routed under the declarative `intent` role.
 //!
@@ -266,7 +266,7 @@ pub(crate) async fn classify(
         // (S3) Likewise, no confinement-scoping need of its own -- inherit
         // the parent's root, unchanged.
         root: None,
-        // (01KZQJ03ZQ22MPM9H2TW1350ZF) Internal classification child, not an
+        // Internal classification child, not an
         // embedder correlation target -- no tag.
         tag: None,
     };
@@ -274,7 +274,7 @@ pub(crate) async fn classify(
     // Subscribe BEFORE `start` so the child's first `TextDelta` cannot race
     // past the drain (the same ordering `SessionHandle::ask` documents).
     let live = rt.subscribe();
-    // Board item 01KYTP0PGKJ4VCJP5TD39A1WHF: `caller` and `parent` are
+    // `caller` and `parent` are
     // both `parent` -- classification always spawns a child of the caller's
     // OWN focused agent (this function's `parent` argument), never a
     // different one, so there is no separate caller identity to thread

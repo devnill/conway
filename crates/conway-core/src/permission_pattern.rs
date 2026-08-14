@@ -35,8 +35,7 @@
 //! completely benign, because the cost of an unnecessary prompt is a
 //! keystroke and the cost of a missed one is arbitrary execution.
 //!
-//! ## The gate only means something for a SHELL command (board item
-//! 01KYT3NSWRHMPEAXVXRJ73KDYR)
+//! ## The gate only means something for a SHELL command
 //!
 //! The gate exists to stop a chained/substituted *shell command* from
 //! riding a matched prefix past what was granted. That reasoning has
@@ -66,12 +65,12 @@
 //! tool, decided by a declaration the tool makes about itself, never by
 //! this module inspecting a tool's name.
 //!
-//! ## The `allow`/`deny` asymmetry (board item 01KYT8SGX32CP56PRJNG72V2W5)
+//! ## The `allow`/`deny` asymmetry
 //!
 //! [`PermissionFile`] has two halves, and they are deliberately NOT
 //! symmetric. `allow` is authority: granting it to a project file that a
 //! cloned repository controls, with no consent, is a live fail-open
-//! security gap (`.design/d4-trust-model.md` §1, §11) -- so an
+//! security gap -- so an
 //! `allow` rule loaded from a project file only takes effect once the
 //! CALLER (`conway`'s facade, `conway-cli`'s startup loader) has confirmed
 //! an explicit, recorded trust decision for that exact file's bytes. This
@@ -112,8 +111,7 @@
 //! never happen belongs in the confinement root, not in a `deny` prefix --
 //! and not in this gate either.
 //!
-//! ## Sanitizer laundering was a second, DIFFERENT hole (board item
-//! 01KYTMA306JH81R083Y8K9PWCR)
+//! ## Sanitizer laundering was a second, DIFFERENT hole
 //!
 //! "Ungated" was correctly not the same thing as "immune to the sanitizer
 //! that runs upstream of it." `rendered` reaches `matches_deny` already
@@ -134,8 +132,7 @@
 //! **Two decisions made explicit, per this item's own instruction to state
 //! them rather than leave them implicit:**
 //!
-//! - **`rendered`, not `arguments`.** `.design/extension-architecture.md`
-//!   §5.3 warns that `rendered` is sanitized and lossy and must not be the
+//! - **`rendered`, not `arguments`.** the extension design warns that `rendered` is sanitized and lossy and must not be the
 //!   basis of a security decision -- which is exactly what motivated
 //!   [`crate::containment`]'s root check (`conway_runtime::permission::
 //!   PermissionBroker::check_root`) to read `arguments` instead. `deny`
@@ -313,8 +310,8 @@ impl PatternRule {
     /// invocation, including chained ones" for a tool whose rendering
     /// genuinely is a shell command.
     ///
-    /// **A thin delegate, not a restatement -- board item
-    /// 01KZVZ4KF72ECHTT14EDEZQQW3.** This used to carry its own full copy
+    /// **A thin delegate, not a restatement
+    ///.** This used to carry its own full copy
     /// of the gate-then-prefix logic, kept "in sync" with
     /// [`Rule::matches_allow_render`] only by a doc comment claiming
     /// byte-identical behavior and a test pinning that claim (see this
@@ -348,7 +345,7 @@ impl PatternRule {
     /// what the matched tool's rendering happens to look like. See this
     /// module's own doc for why gating a `deny` prefix would defeat it.
     ///
-    /// ## Sanitizer laundering (board item 01KYTMA306JH81R083Y8K9PWCR)
+    /// ## Sanitizer laundering
     ///
     /// Omitting the metacharacter gate is not the same as trusting
     /// `prefix_matches` to tokenize `rendered` correctly no matter what is
@@ -383,8 +380,8 @@ impl PatternRule {
     /// seatbelt, not a boundary"), which this item deliberately leaves
     /// alone.
     ///
-    /// **A thin delegate, not a restatement -- board item
-    /// 01KZVZ4KF72ECHTT14EDEZQQW3.** Same shape and same reasoning as
+    /// **A thin delegate, not a restatement
+    ///.** Same shape and same reasoning as
     /// [`Self::matches_render`]'s own doc: this used to carry its own full
     /// copy of the ungated, laundering-aware comparison, reachable by NO
     /// production caller (`PermissionBroker::deny_matches`/`prompt_matches`
@@ -450,7 +447,7 @@ fn prefix_matches(prefix: &str, rendered: &str) -> bool {
 // the `tool:*` wildcard) or [`When::CommandPrefix`] (for a real prefix), and
 // [`Rule::matches_allow_render`]/[`Rule::matches_deny_render`] below are the
 // single evaluator path every admission takes. See this module's own doc and
-// `.design/extension-architecture.md` §5 for why there is one language, not
+// the extension design for why there is one language, not
 // two.
 //
 // The structured form is an ADDITIVE SUPERSET: it can express what the flat
@@ -1000,7 +997,7 @@ mod tests {
         );
     }
 
-    // ---- RenderKind (board item 01KYT3NSWRHMPEAXVXRJ73KDYR) ----
+    // ---- RenderKind ----
 
     /// **The headline fix.** A `Structured` tool's JSON-dump rendering
     /// (the trait's own default `render`) carries `(){}`s that would trip
@@ -1173,7 +1170,7 @@ mod tests {
         assert_eq!(wildcard.describe(), "any `read` call");
     }
 
-    // ---- deny: the asymmetric half (board item 01KYT8SGX32CP56PRJNG72V2W5) ----
+    // ---- deny: the asymmetric half ----
 
     /// The headline property: a `deny` prefix rule still matches a chained
     /// command that carries a metacharacter -- unlike `matches`/
@@ -1235,7 +1232,7 @@ mod tests {
         assert!(!rule.matches_deny("edit", "git status"));
     }
 
-    // ---- sanitizer laundering (board item 01KYTMA306JH81R083Y8K9PWCR) ----
+    // ---- sanitizer laundering ----
 
     /// **The headline regression.** A leading tab is invisible to every
     /// POSIX shell, but by the time `rendered` reaches `matches_deny` it
@@ -1388,8 +1385,7 @@ pub fn suggested_rule(tool: &str, rendered: &str, render_kind: RenderKind) -> Op
 /// schema reference. A file written before `rules` existed keeps parsing
 /// unchanged (`#[serde(default)]`).
 ///
-/// ## Deliberately NOT `#[serde(deny_unknown_fields)]` (board item
-/// 01KZHVDDQQ7XT0RK3JVNM2YV83)
+/// ## Deliberately NOT `#[serde(deny_unknown_fields)]`
 ///
 /// The type that must reject a misspelled key loudly is
 /// `parse_permission_file`'s inner `RawPermissionFile`, which is what
@@ -1423,11 +1419,11 @@ pub struct PermissionFile {
     /// Wire-form rules that AUTHORIZE. Malformed entries are dropped on
     /// load, not guessed at. From a project-scoped file, a caller MUST
     /// confirm a recorded trust decision before installing these -- see
-    /// this module's own doc, and `.design/d4-trust-model.md` §3/§11.
+    /// this module's own doc, and the trust-model design
     #[serde(default)]
     pub allow: Vec<String>,
     /// Wire-form rules that REFUSE, applied immediately regardless of
-    /// trust -- board item 01KYT8SGX32CP56PRJNG72V2W5. `#[serde(default)]`
+    /// trust --. `#[serde(default)]`
     /// so every file written before this field existed keeps parsing
     /// unchanged.
     #[serde(default)]
@@ -1529,7 +1525,7 @@ struct ParsedPermissionFile {
 /// structurally, via [`ParsedPermissionFile::unknown_keys`], not by matching a
 /// `serde_json::Error`'s message text -- see
 /// [`permission_file_unknown_field_error`]'s own doc for why the string match
-/// this replaced was fragile (board item 01KZHVDDQQ7XT0RK3JVNM2YV83).
+/// this replaced was fragile.
 ///
 /// Parses `rules` as an array of opaque JSON values, then deserializes each
 /// one individually: a single structurally malformed `rules` entry is
@@ -1565,7 +1561,7 @@ fn parse_permission_file(contents: &str) -> Result<ParsedPermissionFile, serde_j
         // Catches every top-level key above does not name. Non-empty is the
         // ENTIRE signal `permission_file_unknown_field_error` acts on --
         // structural, so it survives a wording change in serde/serde_json's
-        // own error text (the fragility board item 01KZHVDDQQ7XT0RK3JVNM2YV83's
+        // own error text (the fragility's
         // review found in the string-matching predecessor of this field).
         #[serde(flatten)]
         extra: serde_json::Map<String, serde_json::Value>,
@@ -1628,7 +1624,7 @@ fn parse_permission_file(contents: &str) -> Result<ParsedPermissionFile, serde_j
 
 /// Whether `contents` fails to parse specifically because it names a
 /// top-level key this schema does not recognize (`"denys"` for `"deny"`, or
-/// any other typo) -- board item 01KZHVDDQQ7XT0RK3JVNM2YV83.
+/// any other typo) --.
 ///
 /// Deliberately narrower than "any parse failure": content that is not valid
 /// JSON at all, or that names the RIGHT key with the WRONG shape (`"allow":
@@ -1659,7 +1655,7 @@ fn parse_permission_file(contents: &str) -> Result<ParsedPermissionFile, serde_j
 /// -- wording that is neither serde's nor serde_json's semver contract, so a
 /// future dependency bump changing it would silently fall this function back
 /// to `None` for a genuinely typo'd file, restoring the exact silent-zero-
-/// deny-rules bug board item 01KZHVDDQQ7XT0RK3JVNM2YV83 exists to close. The
+/// deny-rules bug exists to close. The
 /// catch-all field depends on no error text at all.
 pub fn permission_file_unknown_field_error(contents: &str) -> Option<String> {
     let file = parse_permission_file(contents).ok()?;
@@ -1685,7 +1681,7 @@ pub fn permission_file_unknown_field_error(contents: &str) -> Option<String> {
 /// Where an installed [`PatternRule`] grant came from. Required so a rule
 /// set is inspectable — `PermissionBroker::active_patterns()`'s own doc
 /// already states the principle: "a rule set nobody can inspect is a
-/// trap." Board item 01KYT8SGX32CP56PRJNG72V2W5.
+/// trap."
 ///
 /// Lives here (not in `conway-runtime`) so `conway`'s facade can re-export
 /// it alongside [`PatternRule`]/[`PermissionFile`] without re-exporting a
@@ -1702,7 +1698,7 @@ pub enum PatternOrigin {
     /// was only ever installed because the CALLER already confirmed it may
     /// load (the operator's own global file, trusted by authorship; or a
     /// project file with a matching recorded trust decision — see
-    /// `.design/d4-trust-model.md` §4 and this module's own doc). A
+    /// the trust-model design and this module's own doc). A
     /// DENY rule with this origin may have come from an UNTRUSTED file:
     /// deny applies regardless (§3).
     File(PathBuf),
@@ -1820,7 +1816,7 @@ mod store_tests {
         assert!(deny.iter().all(|r| r.to_wire() != "malformed-no-colon"));
     }
 
-    // ---- typo'd keys (board item 01KZHVDDQQ7XT0RK3JVNM2YV83) ----
+    // ---- typo'd keys ----
 
     /// **The headline regression.** A misspelled `"denys"` key must not
     /// silently install zero deny rules with nothing telling the operator
@@ -2028,7 +2024,7 @@ mod store_tests {
 
     /// `RenderKind` is `#[non_exhaustive]`: a future variant must get the
     // conservative shell-shaped behavior (offer less, never more), which
-    /// is exactly what the `_` arm delivers -- pinned here so the fallback
+    /// Is exactly what the `_` arm delivers -- pinned here so the fallback
     /// is a decision, not an accident.
     #[test]
     fn the_offer_falls_back_to_the_conservative_shell_shape_for_unknown_kinds() {
@@ -2152,7 +2148,7 @@ mod f12_tests {
 
     /// THE headline proof: a flat `PatternRule` and its desugared `Rule`
     /// produce byte-identical ALLOW decisions across a matrix of calls and
-    /// render kinds. Board item 01KZVZ4KF72ECHTT14EDEZQQW3 turned this from
+    /// render kinds. turned this from
     /// an OBSERVED equivalence (two independent implementations, pinned by
     /// this test) into a STRUCTURAL one: `PatternRule::matches_render` now
     /// literally calls `Rule::matches_allow_render` (via `to_rule`), so this

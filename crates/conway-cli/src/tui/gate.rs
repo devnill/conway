@@ -1,4 +1,4 @@
-//! The TUI's in-process [`conway::PermissionGate`] implementation (WI-114).
+//! The TUI's in-process [`conway::PermissionGate`] implementation.
 //!
 //! `TuiGate::check` never decides anything itself: it forwards every
 //! [`conway::PermissionRequest`] over an `mpsc` channel as a [`PendingPrompt`]
@@ -17,7 +17,7 @@
 //! `Runtime` calls into) is exactly the change `ConwayBuilder`'s own module
 //! doc flags as missing ("the CLI or a future item should likely add a way
 //! to supply a prompt handler") and `crates/conway-cli/tests/cli_surface.rs`'s
-//! `MINIMAL_CONFIG` comment attributes to "WI-112/114" -- see `main.rs`'s
+//! `MINIMAL_CONFIG` comment attributes to "an earlier item" -- see `main.rs`'s
 //! `build_conway`/`main` for the resulting (disclosed) widening of this
 //! item's file scope beyond `src/tui/`.
 
@@ -43,7 +43,7 @@ impl PendingPrompt {
         self.reply
     }
 
-    /// Test-only constructor (01KYB0F7V65QAMZWWYH8K7DWDC): `reply` is
+    /// Test-only constructor: `reply` is
     /// private outside this module by design -- only `TuiGate::check` ever
     /// builds a real one, tied to the live gate channel. Render/input tests
     /// elsewhere under `tui/` that need a `Mode::AwaitingPermission`

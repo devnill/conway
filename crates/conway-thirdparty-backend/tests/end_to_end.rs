@@ -1,4 +1,4 @@
-//! Board item 01KZHF3E1ZG3AZ7F7HHVY324T9's library-embedder demonstration:
+//!'s library-embedder demonstration:
 //! a `kind = "thirdparty-stub"` `[backends.thirdparty]` entry in a real,
 //! on-disk `settings.json`, loaded through `conway::config::load`,
 //! resolved against `ThirdPartyBackendFactory` installed through

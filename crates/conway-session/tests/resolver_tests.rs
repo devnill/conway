@@ -1,4 +1,4 @@
-//! Integration tests for `TranscriptResolver` (WI-049 criteria): root
+//! Integration tests for `TranscriptResolver` (criteria): root
 //! resolution, prefix + own concatenation across a fork chain, transitivity
 //! against an independently-written reference implementation, sibling `Arc`
 //! sharing, memoization, bounded-LRU eviction, the fork-snapshot invariant,
@@ -151,7 +151,7 @@ async fn root_session_with_zero_records_resolves_to_empty() {
 }
 
 // ---------------------------------------------------------------------
-// context mask (WI-125): excluded from resolve_prefix output, never
+// context mask: excluded from resolve_prefix output, never
 // deleted from the raw log; persists across a store reopen; inherited by
 // a fork up to the fork point.
 // ---------------------------------------------------------------------
@@ -300,10 +300,10 @@ async fn three_level_chain_matches_parent_prefix_plus_own_element_wise() {
         .unwrap();
     let parent_records = append_n(&store, &parent, "p", 4).await;
 
-    // Local units (F-049-1): at_seq indexes the PARENT's OWN records, and
+    // Local units: at_seq indexes the PARENT's OWN records, and
     // the parent's inherited prefix always flows through in full — a fork
     // at the parent's local head (4) captures the parent's entire
-    // effective transcript (3 inherited + 4 own), per GP-02.
+    // effective transcript (3 inherited + 4 own).
     let child = SessionId::new();
     let pa = LogSeq(4);
     store.fork(&parent, pa, meta_for(child)).await.unwrap();
@@ -329,7 +329,7 @@ async fn three_level_chain_matches_parent_prefix_plus_own_element_wise() {
 // implementation
 // ---------------------------------------------------------------------
 
-/// Independently-written (from the WI-049 spec's own description, not the
+/// Independently-written (from the spec's own description, not the
 /// production code) reference model: given every session's own records and
 /// origin, compute the effective transcript recursively.
 struct RefSession {
@@ -357,7 +357,7 @@ fn reference_prefix(
     sid: SessionId,
     upto: u64,
 ) -> Vec<LogRecord> {
-    // LOCAL units (F-049-1): the whole inherited prefix flows through,
+    // LOCAL units: the whole inherited prefix flows through,
     // then this session's OWN records up to `upto`.
     let s = sessions.get(&sid).expect("session in model");
     let mut result = match s.origin {
@@ -710,7 +710,7 @@ proptest! {
                 // the way, so it's available via `peek_prefix` afterward.
                 let resolved_child = resolver.resolve(&store, &child).await.unwrap();
                 let parent_prefix = resolver.peek_prefix(&parent, at_seq).unwrap();
-                // Local units (F-049-1): the inherited length is the
+                // Local units: the inherited length is the
                 // parent's full effective prefix at its local at_seq.
                 let inherited_len = reference_prefix(&model, parent, at_seq.0).len();
                 prop_assert_eq!(parent_prefix.len(), inherited_len);

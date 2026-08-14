@@ -1,11 +1,11 @@
-//! Board item 01KZ803DJW8Y1H4FXTM8D3PYMY: `Conway::warnings()` is a real,
+//! `Conway::warnings()` is a real,
 //! populated mechanism (`config::merge::validate` pushes a
 //! `WarningCode::HeadroomExceedsContext` when a role's effective headroom is
 //! `>=` the smallest context window reachable through its chain) that,
 //! before this item, had **zero callers workspace-wide** -- a user with a
 //! misconfigured headroom was told nothing.
 //!
-//! This suite asserts the OBSERVABLE OUTCOME (GP-14's test-design corollary):
+//! This suite asserts the OBSERVABLE OUTCOME ( test-design corollary):
 //! the rendered stderr text a real misconfigured fixture produces when run
 //! through the real compiled `conway` binary, not the return value of
 //! `warnings()` itself -- a test that only checked the vec would pass
@@ -14,7 +14,7 @@
 //! (`config::load` returns the right `ConfigWarning`); this file pins that
 //! it actually reaches a human.
 //!
-//! Reuses the WI-113 harness (`tests/common/mod.rs`) unchanged, the same way
+//! Reuses the harness (`tests/common/mod.rs`) unchanged, the same way
 //! `subcommands.rs` does.
 
 #[allow(dead_code)]
@@ -33,14 +33,11 @@ use common::{command, Fixture};
 /// never needs a real network dial -- these tests only ever run read-only
 /// subcommands, never a prompt.
 ///
-/// `permissions.mode` is set to `"deny"` -- the same override
-/// `subcommands.rs::allow_build_without_prompt_handler` applies, for the
-/// identical reason (documented there): `sessions`/`routes` never pass a
-/// `PermissionGate` override (`main.rs`'s own comment: only `tui` and
-/// one-shot `-p` build their own), so the default `"prompt"` mode would
-/// otherwise fail `ConwayBuilder::build()` outright with "requires a prompt
-/// handler to be supplied" before the CLI ever reaches the warning-printing
-/// code under test.
+/// `permissions.mode` is set to `"deny"` for explicitness only. It used to
+/// be load-bearing: read-only subcommands passed no `PermissionGate`, so a
+/// `"prompt"`-mode config failed `ConwayBuilder::build()` before the CLI
+/// reached the warning-printing code under test. They now carry a deny-all
+/// gate, so this override no longer changes the outcome.
 fn write_headroom_warning_fixture() -> Fixture {
     let fixture = common::write_fixture_with("http://127.0.0.1:1/v1", "test-model", 10);
     let text = std::fs::read_to_string(&fixture.config_path).expect("read fixture config");
@@ -62,7 +59,7 @@ fn write_headroom_warning_fixture() -> Fixture {
 /// context window and observe the warning on stderr." `sessions list`
 /// stands in for "any non-interactive dispatch target" -- the warning is
 /// printed once, in `main`, before `dispatch` picks a target
-/// (board item's own report requirement: every CLI target shares the one
+/// ('s own report requirement: every CLI target shares the one
 /// choke point, not a per-command carve-out).
 #[test]
 fn misconfigured_headroom_is_visible_on_stderr_for_a_cli_subcommand() {

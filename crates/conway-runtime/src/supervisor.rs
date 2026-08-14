@@ -1,5 +1,5 @@
 //! The supervisor: guarantees [`AgentTree::await_result`] always terminates
-//! (architecture §7, WI-083's core objective -- the MAST "failure to
+//! (architecture §7, an earlier item's core objective -- the MAST "failure to
 //! recognize termination" mitigation). Wraps an already-spawned agent task
 //! so a panic, a blown deadline, or an external cancellation each resolve to
 //! a terminal `AgentResult`, published through
@@ -7,10 +7,10 @@
 //!
 //! ## The double-`AgentFinished` race, closed on both sides
 //!
-//! `AgentLoop::finish`/`finish_cancelled` (`agent_loop.rs`, WI-081/085)
+//! `AgentLoop::finish`/`finish_cancelled` (`agent_loop.rs`)
 //! already gates its own `Event::AgentFinished` emission on winning
-//! `AgentTree::publish_result`'s set-once CAS (`tree.rs`, WI-083) before
-//! emitting -- see that method's own doc. Before cycle-2 review finding S1,
+//! `AgentTree::publish_result`'s set-once CAS (`tree.rs`) before
+//! emitting -- see that method's own doc. Before An earlier review found: finding S1,
 //! this module's `Outcome::Synthesized` branch (a caught panic, or a task
 //! still unresponsive after `grace`) emitted `Event::AgentFinished`
 //! unconditionally, without ever checking whether it had actually won that
@@ -31,7 +31,7 @@
 //! winning interleaving cannot be forced deterministically from outside
 //! tokio's scheduler.
 //!
-//! ## `child_reported` rides the identical gate (board item 01KZYAXSGDS8AP7YK1CN7H680G)
+//! ## `child_reported` rides the identical gate
 //!
 //! `AgentLoop::finish`'s own `is_first`-gated dispatch of `child_reported`
 //! covers a normal completion, INCLUDING a client-observed cancellation
@@ -74,7 +74,7 @@ pub struct SuperviseArgs {
     pub deadline: Option<DateTime<Utc>>,
     pub grace: Duration,
     pub task: JoinHandle<AgentResult>,
-    /// Board item 01KZYAXSGDS8AP7YK1CN7H680G: the SAME `HookDispatcher`
+    /// The SAME `HookDispatcher`
     /// `Runtime`/`ToolRunner` share for every other observation event
     /// (`crate::runtime::Runtime`'s own `hooks` field doc) -- this module's
     /// only use of it is `child_reported`, dispatched on the `Synthesized`
@@ -142,7 +142,7 @@ pub fn supervise(args: SuperviseArgs) -> JoinHandle<()> {
                         // Abort the orphan: dropping the handle would leave
                         // the task running unsupervised, free to emit a
                         // second AgentFinished when it eventually completes
-                        // (cycle-1 review S1).
+                        //.
                         task.abort();
                         Outcome::Synthesized(budget_exceeded(agent, session))
                     }
@@ -154,7 +154,7 @@ pub fn supervise(args: SuperviseArgs) -> JoinHandle<()> {
                     Err(_elapsed) => {
                         // See the abort note on the deadline arm above.
                         task.abort();
-                        // Board item 01KZDDCN747FEZ3GM3NS0ANE7G: this branch
+                        // this branch
                         // only fires when the task fails to unwind within
                         // `grace` and this module synthesizes a result
                         // instead of the task's own `finish_cancelled`
@@ -212,7 +212,7 @@ pub fn supervise(args: SuperviseArgs) -> JoinHandle<()> {
                         },
                         prune,
                     );
-                    // `child_reported` (board item 01KZYAXSGDS8AP7YK1CN7H680G)
+                    // `child_reported`
                     // -- see this module's own doc ("`child_reported` rides
                     // the identical gate") for why this is the ONE place a
                     // synthesized terminal result needs its own dispatch,

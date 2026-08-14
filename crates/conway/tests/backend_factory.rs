@@ -1,10 +1,10 @@
-//! Board item 01KZHF0RBKJZZC68F7GPFB347Q: `ConwayBuilder::with_backend_factory`
+//! `ConwayBuilder::with_backend_factory`
 //! -- a provider-adapter KIND named up front, its construction deferred to
 //! `build()`'s own backend step. Mirrors `tests/router_factory.rs`'s own
 //! mechanism one layer over, restated for a SET rather than a singleton
 //! (`with_backend_factory`'s own doc, `crates/conway/src/builder.rs`).
 //!
-//! **Updated for board item 01KZHF1E85MS1VF4YH8CDNCP9Z:** `[backends.<id>].
+//! **Updated for:** `[backends.<id>].
 //! kind` is now an open name resolved against registered factories, so a
 //! factory's `build` is invoked once per `[backends.<id>]` entry naming its
 //! kind -- never unconditionally regardless of config, which is what this
@@ -39,7 +39,7 @@
 //!    naming both the factory's own kind id and the underlying message
 //!    (`factory_build_error_surfaces_as_build_error`).
 //!
-//! P-15's break-the-guard run for property 2 is recorded in this item's own
+//! break-the-guard run for property 2 is recorded in this item's own
 //! completion report, not committed here (the guard must be shown to fail
 //! and then be restored, never left broken in the tree).
 
@@ -125,7 +125,7 @@ fn base_config() -> ConwayConfig {
 
 /// `base_config()` plus one `[backends.<entry_id>]` entry naming `kind` --
 /// what selects a registered `BackendFactory` whose own `id()` is `kind`
-/// (board item 01KZHF1E85MS1VF4YH8CDNCP9Z: `kind` is an open name resolved
+/// (: `kind` is an open name resolved
 /// against registered factories). `entry_id` is the JSON key only; it never
 /// needs to match anything the factory itself returns from `Backend::id()`
 /// (`BackendBuildContext::id` is advisory, not enforced -- that struct's own
@@ -466,8 +466,8 @@ impl BackendFactory for DualEntryBackendFactory {
     }
 }
 
-/// Property 5 (this item's own binding notes, board item
-/// 01KZMM9E5SMA9C1SB8D4RG6DDB): TWO `[backends.<id>]` entries naming the
+/// Property 5 (this item's own binding notes
+///): TWO `[backends.<id>]` entries naming the
 /// SAME kind invoke that kind's registered factory TWICE, with two
 /// DIFFERENT `BackendBuildContext`s -- the single material asymmetry
 /// against `RouterFactory`, which builds at most once regardless of how

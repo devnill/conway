@@ -1,6 +1,56 @@
 //! `CanonicalRoot`: the one correct answer to "is this candidate path inside
 //! this root?" (S0 of the cwd-aware-agents charter).
 //!
+//! # Where this is meant to end up, and what stands in the way
+//!
+//! `PHILOSOPHY.md` §1 specifies confinement as a property of the plugin that
+//! performs the operation: "`conway.fs` takes a root confining every path it
+//! will read or write", the point being that one plugin doing both the
+//! checking and the opening leaves no gap between them. Today the check runs
+//! in `PermissionBroker::check_root` (`conway-runtime`) and the open runs in
+//! `conway-tools`, across a task boundary -- so a symlink created inside the
+//! root between the two defeats it. Closing that gap means moving enforcement
+//! into `conway.fs`, and this module moving out of `conway-core` with it,
+//! which is also what retires this crate's one I/O exception (architecture
+//! invariant T2).
+//!
+//! Four things have to be answered first. They are recorded here, beside the
+//! type they govern, because a plan that lives anywhere else goes stale
+//! without anyone noticing:
+//!
+//! 1. **Where this type lives afterwards.** `conway-tools` cannot host it:
+//!    `conway-runtime` still needs it for `AgentArtifactWriter`, and that
+//!    dependency edge runs the wrong way. Either a small leaf crate, or
+//!    `conway-core` keeps the pure half ([`resolve_candidate`],
+//!    [`Containment`]) while only the `canonicalize`-calling half moves.
+//!
+//! 2. **Per-plugin configuration, which does not exist.** `Runtime::new`
+//!    builds exactly one empty `PluginConfig` and hands the same `Arc` to
+//!    every tool of every plugin, so there is no way to tell `conway.fs` what
+//!    its root is. `PluginRegistry` already tracks a `plugin_id` per tool, so
+//!    the keying point exists; the config path into it does not.
+//!
+//! 3. **Per-child narrowing.** `SubagentHost::start` enforces that a child's
+//!    requested root canonicalizes inside its parent's. With confinement in
+//!    the plugin there is no mechanism for a parent to narrow a child's
+//!    plugin config, so this is a new core mechanism rather than a
+//!    relocation -- and it is the load-bearing one, because a child that can
+//!    widen its own root is not confined at all.
+//!
+//! 4. **The second consumer.** `AgentArtifactWriter` is confined by this same
+//!    type, but `report` is a *different* plugin, and one declaring
+//!    `PathArgs::Unconfinable` at that. "One plugin does both" has no story
+//!    for it: either `conway.report` grows its own root (a second
+//!    implementation of this logic, which is the thing worth avoiding), or
+//!    artifact confinement changes shape.
+//!
+//! Two consequences worth knowing before starting. Retiring `PathArgs` also
+//! retires `When::PathsUnder` as a permission-rule kind, which is a
+//! user-visible config break. And roughly seven tests in
+//! `crates/conway/tests/root_containment_seam.rs` assert broker-precedence
+//! over pattern grants and `AutoAllow` -- those become meaningless once the
+//! check moves past the gate, so they are deletions rather than migrations.
+//!
 //! Nothing else in the tree answers this question safely.
 //! `conway-tools::common::resolve_path` explicitly does not (isolation belongs
 //! to tools, not the harness: no sandboxing in that layer). A later slice wires
@@ -74,7 +124,7 @@
 //! is exhaustively tested against real tempdirs and real symlinks.
 //!
 //! **The exception is temporary, and it is this module that goes.** Board
-//! item 01KZDC30CBY9CPJ8YEM7HSRV0Y ("Retire the harness-level confinement
+//! item ("Retire the harness-level confinement
 //! root once conway.fs enforces its own", under Stage 1.5) moves confinement
 //! into `conway.fs`, where the check and the open become one step. That item
 //! must delete the crate root's label along with this module.
@@ -177,12 +227,12 @@ impl CanonicalRoot {
 /// filesystem call could act on either.
 ///
 /// **The one implementation every root-enforcement site in this tree
-/// shares — board item 01KZVZ56SBPSTZHAXXGYCNETNX.** This exact operation
+/// shares —.** This exact operation
 /// (join-or-pass-through, NUL rejected) was independently restated at least
 /// three times in this tree before it was collapsed here: two inlined
 /// copies in `conway-runtime` (`subagent.rs`'s spawn-time confinement-root
 /// resolution and `runtime.rs`'s root-agent resolution) each independently
-/// **dropped the NUL guard** — the defect board item 01KZ00VV3F3EBZ9WQSB292TBJZ
+/// **dropped the NUL guard** — the defect
 /// fixed by pointing both at `conway_runtime::permission::
 /// resolve_like_the_tool_will` — and a third, `conway_tools::common::
 /// resolve_path`, carried the guard but as a byte-for-byte separate
@@ -458,7 +508,7 @@ mod tests {
     }
 
     // ---- resolve_candidate: the single resolution rule every
-    // root-enforcement site shares (board item 01KZVZ56SBPSTZHAXXGYCNETNX) ----
+    // root-enforcement site shares ----
 
     #[test]
     fn resolve_candidate_joins_relative_onto_cwd() {

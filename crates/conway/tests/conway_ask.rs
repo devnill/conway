@@ -1,7 +1,7 @@
 //! Acceptance tests for the `conway_ask` epic, item f: the thin-slice
 //! end-to-end proof that `conway_ask` works through the REAL runtime + REAL
 //! `SubagentPlugin` (including `AskTool`, item d), composing with
-//! `conway_spawn` (P-1). This is the capstone: it proves the epic's goal
+//! `conway_spawn` (). This is the capstone: it proves the epic's goal
 //! -- out-of-band context curation, full text not truncated, curation
 //! reasoning stays in the child, provenance preserved.
 //!
@@ -14,17 +14,17 @@
 //! transcripts (`FakeStore::read`) to prove every load-bearing property in
 //! one place:
 //!
-//! - **Full text (GP-01):** the `ToolResultRecord` for `conway_ask` carries
+//! - **Full text ():** the `ToolResultRecord` for `conway_ask` carries
 //!   the child's FULL reply (`text.len() > 2000`, NOT truncated at
 //!   `DEFAULT_SUMMARY_LIMIT`).
 //! - **Curation stays in the child:** the parent's own log has NO
 //!   `LogRecord::Assistant` carrying the curation reply; the ephemeral
 //!   child's own log HAS it.
-//! - **Provenance (P-2):** the child's `SessionId` is reachable via the
+//! - **Provenance ():** the child's `SessionId` is reachable via the
 //!   `EphemeralSessionRef` artifact's `id` (the `transcript_ref`), and
 //!   `store.list(SessionFilter { include_ephemeral: true, .. })` contains it
 //!   while `store.list(SessionFilter::default())` does NOT.
-//! - **Composition (P-1):** the parent's second turn drives
+//! - **Composition ():** the parent's second turn drives
 //!   `conway_ask` -> `conway_spawn { prompt: <brief> }`,
 //!   and the spawn child's own first `UserTurn` is the brief verbatim.
 //!
@@ -34,7 +34,7 @@
 //! which does not exist without this feature -- `build_conway`'s default
 //! `ToolsConfig` would register no tools at all, and the whole slice this
 //! file exercises has nothing meaningful to drive. Discovered by this
-//! item's own verification pass (board item: retire the backend
+//! item's own verification pass (retire the backend
 //! compile-time feature flags): this file predates that item and had no
 //! such gate, but every combination that would have exposed the gap
 //! (`conway-backends` referenced ungated with neither backend feature
@@ -193,10 +193,10 @@ fn long_brief() -> String {
         "Curation reasoning lives in the child's own session, not the parent's context.",
         "The parent sees only the final text via the ToolResultRecord.",
         "Fork semantics: the child inherits the parent's full context, role, and tools.",
-        "GP-01 full text: the tool result is NOT the AgentResult.summary.",
-        "P-1 composition: ask is not a third primitive, it composes SubagentHost::ask.",
-        "P-2 provenance: the artifact carries the transcript_ref.",
-        "GP-02 fork-only: no mode parameter on conway_ask.",
+        "full text: the tool result is NOT the AgentResult.summary.",
+        "composition: ask is not a third primitive, it composes SubagentHost::ask.",
+        "provenance: the artifact carries the transcript_ref.",
+        "fork-only: no mode parameter on conway_ask.",
         "The agent-id-checked drain ignores sibling TextDeltas.",
         "subscribe-before-launch guarantees no TextDelta is missed.",
         "The child's AgentFinished carries ephemeral: true.",
@@ -256,7 +256,7 @@ async fn conway_ask_end_to_end_slice_through_the_real_runtime() {
             //    stay in the CHILD's session, not the parent's.
             ScriptedTurn::Respond(text_response(&brief)),
             // 3. Parent turn 1, second backend call: proposes
-            //    `conway_spawn` with the curated brief as its prompt (P-1:
+            //    `conway_spawn` with the curated brief as its prompt (:
             //    ask -> spawn composition).
             ScriptedTurn::Respond(tool_call_response(
                 "call_spawn_1",
@@ -342,7 +342,7 @@ async fn conway_ask_end_to_end_slice_through_the_real_runtime() {
     // Assertion 4a: the parent's log records the `conway_ask` invocation, as
     // a `ContentBlock::ToolUse` INSIDE the `Assistant` record -- the durable
     // shape for a model-proposed tool call (`LogRecord::ToolCallRecord` was
-    // removed; see decision 01KYXZ25SS2Y95VPZ1NV4T3D4E). The `ToolResultRecord`
+    // removed; see). The `ToolResultRecord`
     // for the reply IS a separate record (asserted below).
     // ------------------------------------------------------------------
     let ask_call = parent_records
@@ -391,7 +391,7 @@ async fn conway_ask_end_to_end_slice_through_the_real_runtime() {
 
     // Locate the ephemeral ask child via the session catalog. The
     // `EphemeralSessionRef` artifact's `id` is the child's `transcript_ref`
-    // (P-2); the catalog lookup (`SessionFilter { include_ephemeral: true }`)
+    // (); the catalog lookup (`SessionFilter { include_ephemeral: true }`)
     // is the other route to the same `SessionId`. Both are exercised below.
     let with_ephemeral = store
         .list(SessionFilter {
@@ -450,7 +450,7 @@ async fn conway_ask_end_to_end_slice_through_the_real_runtime() {
     );
 
     // ------------------------------------------------------------------
-    // Assertion 6 (P-1 composition): `conway_ask` -> `conway_spawn`.
+    // Assertion 6 ( composition): `conway_ask` -> `conway_spawn`.
     // The parent's log has the spawn call as a `ContentBlock::ToolUse` inside
     // its `Assistant` record; the spawn child's own first `UserTurn` is the
     // curated brief, verbatim (the text `conway_ask` returned was passed
@@ -486,7 +486,7 @@ async fn conway_ask_end_to_end_slice_through_the_real_runtime() {
     assert!(
         spawn_result_present,
         "the parent's log must contain a ToolResultRecord for conway_spawn, proving the \
-         parent awaited the spawn child's completion (P-1 composition)"
+         parent awaited the spawn child's completion ( composition)"
     );
 
     // The spawn child is non-ephemeral, so it appears in the DEFAULT listing.

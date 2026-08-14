@@ -1,5 +1,4 @@
-//! Acceptance tests for `PluginRegistry` and `ToolRunner` (WI-079,
-//! architecture §4.2, §8).
+//! Acceptance tests for `PluginRegistry` and `ToolRunner` (//! architecture §4.2, §8).
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -440,8 +439,8 @@ async fn schema_invalid_arguments_are_error_without_invoking() {
     assert!(text.contains("/path"), "{text}");
 }
 
-/// Characterization test for board item 01KZHET5G0DN7QC0YF5G9XSB1N /
-/// decision 01KZHH9N313T5BTDR8281QDWHC: an agent's `tools` selector is
+/// Characterization test for /
+///: an agent's `tools` selector is
 /// consulted only when building the schema list announced to the model
 /// (`PluginRegistry::specs`, exercised by `specs_respects_selector` above)
 /// -- it plays no part at execution. `ToolBatchCtx` (below) carries no
@@ -716,7 +715,7 @@ async fn head_tail_truncation_is_applied_and_recorded() {
     assert_eq!(record.original_bytes, 1000);
     // Exactly head_bytes + tail_bytes of ORIGINAL content is retained — the
     // elision marker's own bytes must not inflate the audit record
-    // (cycle-1 review S1).
+    //.
     assert_eq!(record.kept_bytes, 40);
     match record.policy {
         conway_core::content::TruncationPolicy::HeadTail {

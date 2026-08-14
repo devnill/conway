@@ -1,5 +1,5 @@
 //! Integration coverage for `FsPlugin`'s search tools (`glob`, `grep`) and
-//! the `FsPlugin` assembly (WI-063 criteria).
+//! the `FsPlugin` assembly (criteria).
 //!
 //! Requires the `test-fakes` feature (for `conway_tools::testing::test_ctx`).
 //! Declared with `required-features = ["test-fakes"]` in Cargo.toml, so a
@@ -188,7 +188,7 @@ async fn grep_finds_matching_lines_grouped_by_path_in_walk_order() {
     assert!(!out.is_error);
     let text = text_of(&out);
     assert!(!text.contains("let x"));
-    // Grouped by path IN WALK ORDER (cycle-1 review M1): every line for one
+    // Grouped by path IN WALK ORDER: every line for one
     // path is contiguous, and the multi-file ordering is asserted, not just
     // membership. Root files walk before subdirectory files here.
     let lines: Vec<&str> = text.lines().filter(|l| l.contains(':')).collect();
@@ -349,7 +349,7 @@ async fn grep_cancelled_from_another_task_mid_walk_returns_cancelled() {
 /// actually detect an unsorted walk: it creates `a.rs` before `sub/`, so
 /// `read_dir` order and sorted order usually agree and it passes either way.
 /// That is why an unsorted `walk_files` survived until it failed in CI on a
-/// run with no code change (board item 01KZW91RQ26JP8N8PJTN34WZVT).
+/// run with no code change.
 ///
 /// This case is built to fail without the sort: every entry is CREATED in the
 /// reverse of its sorted order, so a walker yielding creation/inode order

@@ -1,4 +1,4 @@
-//! Diagnostic output (WI-111): every function here writes to `stderr` only,
+//! Diagnostic output: every function here writes to `stderr` only,
 //! and none takes a stdout handle. This is the mechanism that enforces
 //! "stdout carries only program output" across the whole CLI -- a renderer
 //! or command handler that wants to tell the user something can only reach
@@ -24,7 +24,7 @@ pub fn error(msg: impl AsRef<str>) {
 
 /// Unconditional stderr diagnostic for a non-fatal warning.
 ///
-/// Not yet called: the first real caller is WI-112's render loop
+/// Not yet called: the first real caller is an earlier item's render loop
 /// (`Event::Lagged`/`BackendDegraded` notices).
 #[allow(dead_code)]
 pub fn warn(msg: impl AsRef<str>) {
@@ -33,7 +33,7 @@ pub fn warn(msg: impl AsRef<str>) {
 
 /// Stderr diagnostic suppressed unless `--verbose` was passed at least once.
 ///
-/// Not yet called: the first real caller is WI-112's `ModelDecision`
+/// Not yet called: the first real caller is an earlier item's `ModelDecision`
 /// rendering.
 #[allow(dead_code)]
 pub fn info(msg: impl AsRef<str>) {

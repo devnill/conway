@@ -1,4 +1,4 @@
-//! WI-097 rework (finding M1): coverage for `merge::validate` steps 4-6,
+//! Rework (finding M1): coverage for `merge::validate` steps 4-6,
 //! which were implemented correctly but had zero test coverage. This is a
 //! hard-gate file three other work items build on, so each error path is
 //! locked in explicitly.
@@ -62,8 +62,8 @@ fn api_key_and_api_key_env_both_set_is_rejected() {
 }
 
 /// `merge::validate`'s check 2 (every routing chain entry names a backend
-/// that exists in `[backends]`) still holds after board item
-/// 01KZHF1E85MS1VF4YH8CDNCP9Z opened `kind` to an arbitrary name: this
+/// that exists in `[backends]`) still holds after
+/// opened `kind` to an arbitrary name: this
 /// check never inspected `kind` at all, so it is unaffected in principle --
 /// pinned here because, until this test, nothing exercised it directly.
 #[test]
@@ -83,7 +83,7 @@ fn chain_entry_naming_unknown_backend_is_rejected() {
     );
 }
 
-/// Board item 01KZHF1E85MS1VF4YH8CDNCP9Z's harder half: `BackendEntry` drops
+///'s harder half: `BackendEntry` drops
 /// `#[serde(deny_unknown_fields)]` in favor of a flattened `extra` catch-all
 /// (chosen over the two alternatives named in that item's spec -- see
 /// `BackendEntry`'s own doc comment for the full reasoning and the
@@ -125,7 +125,7 @@ fn misspelled_well_known_backend_key_is_accepted_and_passed_through() {
     );
 }
 
-/// `merge::validate`'s hooks check (board item 01KZDC0RDRMMMJHX7SAFMM2Q5A):
+/// `merge::validate`'s hooks check:
 /// an empty `id` on a `[hooks].rules[]` entry is a hard error, not a
 /// silently-accepted default -- `schema::HookEntry::id`'s own doc comment
 /// says why (`id` is load-bearing for the later operator-visibility item
@@ -168,8 +168,7 @@ fn hooks_rules_with_duplicate_id_are_rejected() {
 
 /// A well-formed `[hooks]` block loads through the full five-source `load`
 /// path (not just a bare `serde_json::from_str`), and no process is spawned
-/// as a result -- this item ships config parsing only (board item
-/// 01KZDC0RDRMMMJHX7SAFMM2Q5A's forward-declaration scope).
+/// as a result -- this item ships config parsing only (///'s forward-declaration scope).
 #[test]
 fn well_formed_hooks_block_loads_through_the_full_load_path() {
     let dir = support::unique_temp_dir("hooks-well-formed");
@@ -190,7 +189,7 @@ fn well_formed_hooks_block_loads_through_the_full_load_path() {
     assert!(rule.enabled);
 }
 
-/// ACCEPTANCE (board item 01KZYAWQ6011Q6CJVG6CCMQPF1): a `match` pattern on
+/// ACCEPTANCE: a `match` pattern on
 /// `post_tool_use` loads through the full `load` path and is not silently
 /// dropped.
 #[test]
@@ -230,7 +229,7 @@ fn matcher_on_a_toolless_event_is_rejected() {
     );
 }
 
-/// ACCEPTANCE (board item 01KZS03BFE720EQZG7Q2768N2H): `merge::validate`'s
+/// ACCEPTANCE: `merge::validate`'s
 /// event-shape check closes the FOLLOW-UP `schema::HookEntry::event`'s own
 /// doc comment used to name -- a malformed `event` (here, a leading `.`
 /// with an empty prefix) is a surfaced, typed config error, not silently

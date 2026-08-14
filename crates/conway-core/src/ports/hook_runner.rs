@@ -1,5 +1,5 @@
-//! The `HookRunner` port (board item 01KZRZY1MNM872BZ6AKEBG3SKE, decision
-//! 01KZT642CEZ20K92DYWBTPE2XZ).
+//! The `HookRunner` port (, decision
+//!).
 
 use async_trait::async_trait;
 
@@ -12,14 +12,14 @@ use crate::hook::{HookAnswer, HookInvocation};
 /// I/O -- spawning a process, at minimum -- and `conway-core` performs
 /// none, so this trait lives here while every implementation lives outside
 /// it. Today's implementation (`conway_tools::hook_runner::
-/// ProcessHookRunner`, decision 01KZRZBQ2ACF40QGK8E9AVGMT3) spawns the
+/// ProcessHookRunner`) spawns the
 /// configured command fresh per event, writes the payload to stdin as
 /// JSON, and reads the answer from stdout plus exit status -- but nothing
 /// about this trait's signature commits to that modality; a future
 /// implementation reached over the long-lived plugin transport instead
 /// would satisfy the identical contract.
 ///
-/// **WIRED (board item 01KZS00JP5QNBJSSHNFP9C47GM): [`HookRunner::run`] has
+/// **WIRED: [`HookRunner::run`] has
 /// a real call site.** `conway_runtime::permission::PermissionBroker::
 /// decide` invokes it once per enabled `pre_tool_use` hook, at the SAME
 /// tier as its `deny`-pattern check -- before the mode gate, the cache,
@@ -30,7 +30,7 @@ use crate::hook::{HookAnswer, HookInvocation};
 /// ([`crate::hook::HookAnswer::permission`]/[`crate::hook::
 /// HookPermissionVerdict`]), a type with no `Allow` variant at all: a hook
 /// may only narrow a permission verdict (deny it, or say nothing), never
-/// widen one (decision 01KZRZAFD8T3GX407MZC8P1W1E).
+/// widen one.
 ///
 /// The seam is exactly what this doc used to promise, now real:
 /// `ConwayBuilder::with_hook_runner` injects an `Arc<dyn HookRunner>` on
@@ -40,7 +40,7 @@ use crate::hook::{HookAnswer, HookInvocation};
 /// this trait (and the domain types its signature names) so a third party
 /// can implement it without depending on `conway-core` directly, and
 /// `conway-runtime` reaches this port ONLY through `conway_core::ports` --
-/// never through `conway-tools` (decision 01KZT642CEZ20K92DYWBTPE2XZ): the
+/// never through `conway-tools`: the
 /// runner arrives as an already-constructed `Arc<dyn HookRunner>` handed in
 /// by the facade, a sibling crate's concern.
 ///

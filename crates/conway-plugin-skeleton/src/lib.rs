@@ -1,5 +1,5 @@
 //! `conway-plugin-skeleton`: a worked example of the first-party plugin
-//! tier (board item 01KZDC3JQ7W4DY1MG6MBCVB2DV) — see `PHILOSOPHY.md`'s
+//! tier — see `PHILOSOPHY.md`'s
 //! "First-party plugins, and why they are not defaults" and
 //! `docs/embedding.md`'s "First-party plugin tier" section for what this
 //! crate proves and what it deliberately does not.
@@ -13,7 +13,7 @@
 //! first-party plugin gets no privileged API: if this crate ever needed to
 //! reach past that surface, that would
 //! be a defect in the plugin API, not a reason to give this crate a
-//! private door. As of board item 01KZS03BFE720EQZG7Q2768N2H, that
+//! private door. As of, that
 //! includes declaring and firing a custom event
 //! ([`PONG_DISPATCHED_EVENT`]): `SkeletonPlugin::events` declares it and
 //! `SkeletonPingTool::invoke` fires it on every call, unconditionally --
@@ -23,7 +23,7 @@
 //!
 //! **What this crate is not.** Dynamic routing is built
 //! (`conway-plugin-routing`); context compaction, memory, skills, and MCP
-//! support are not, each separate, later work with no board item yet as of
+//! support are not, each separate, later work with no yet as of
 //! 2026-08-13 (`scripts/board-claims.md`'s `UNFILED` entry records the gap)
 //! — this crate performs no real work of its own and is not a template any
 //! of them must literally follow, only a proof that the tier's install
@@ -55,7 +55,7 @@ pub const PLUGIN_ID: &str = "conway.plugin_skeleton";
 /// The one tool this plugin provides.
 pub const TOOL_NAME: &str = "skeleton_ping";
 
-/// This plugin's own custom event (board item 01KZS03BFE720EQZG7Q2768N2H:
+/// This plugin's own custom event (:
 /// the open-vocabulary half of `PHILOSOPHY.md` §5's hooks claim, "A plugin
 /// declares the events it emits"). BARE here -- reachable in an operator's
 /// `[hooks].rules[].event` as `"{PLUGIN_ID}.{PONG_DISPATCHED_EVENT}"` once
@@ -108,8 +108,7 @@ impl Tool for SkeletonPingTool {
             Some(message) => format!("skeleton pong: {message}"),
             None => "skeleton pong".to_string(),
         };
-        // The worked example's event half (board item
-        // 01KZS03BFE720EQZG7Q2768N2H): fires this plugin's OWN declared
+        // The worked example's event half (//): fires this plugin's OWN declared
         // event, through the SAME `ToolCtx` capability every third-party
         // plugin gets -- nothing privileged. `ctx.plugin_events` is bound
         // to this tool's own declaring plugin id (`PLUGIN_ID`), so this
@@ -147,8 +146,7 @@ impl Tool for SkeletonPingTool {
 /// namespace).
 pub const COMMAND_NAME: &str = "ping";
 
-/// `/{PLUGIN_ID}.ping`: the worked example's command half (board item
-/// 01KZYBFTK4QPB45AJT9M57P60W), proving a plugin can give the OPERATOR
+/// `/{PLUGIN_ID}.ping`: the worked example's command half , proving a plugin can give the OPERATOR
 /// something to type, not only the model something to call --
 /// [`SkeletonPingTool`] above is this same worked example's tool half.
 /// Deliberately the smallest useful thing: replies with a fixed sentence
@@ -190,7 +188,7 @@ impl Plugin for SkeletonPlugin {
     fn manifest(&self) -> PluginManifest {
         PluginManifest {
             id: PLUGIN_ID.to_string(),
-            // Versioned WITH the workspace (board item 01KZDC3JQ7W4DY1MG6MBCVB2DV) --
+            // Versioned WITH the workspace --
             // see this crate's own Cargo.toml doc comment.
             version: env!("CARGO_PKG_VERSION").to_string(),
             tools: vec![ToolName::new(TOOL_NAME)],

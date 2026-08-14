@@ -1,16 +1,16 @@
-//! Acceptance tests for `SessionHandle`'s subagent surface (WI-102):
+//! Acceptance tests for `SessionHandle`'s subagent surface:
 //! `fork`/`spawn`/`steer`/`await_agent`/`cancel`, plus `ForkSpec`/
 //! `SpawnSpec`'s `From` conversions into `conway_core::agent::SubagentSpec`.
 //!
-//! Built the same way `tests/session_handle.rs` (WI-101) is: a real
+//! Built the same way `tests/session_handle.rs` is: a real
 //! `Arc<Runtime>` assembled from `conway_core::fakes` ports, not a literal
 //! mock swapped in for `conway_core::ports::SubagentHost` -- `SessionHandle`
-//! holds a concrete `Arc<Runtime>` (WI-101's committed struct shape, out of
+//! holds a concrete `Arc<Runtime>` (an earlier item's committed struct shape, out of
 //! this item's file scope to change), so "argument identity" is verified
 //! through this crate's own observable effects (the resulting
 //! `AgentTreeSnapshot` node, the child's persisted transcript, and terminal
 //! `AgentResult`s) rather than by intercepting a trait-object double. This
-//! mirrors WI-101's own "fake-runtime test" criteria, which used the exact
+//! mirrors its own "fake-runtime test" criteria, which used the exact
 //! same real-Runtime-over-fakes construction for the same reason.
 
 use std::collections::{BTreeMap, VecDeque};
@@ -223,7 +223,7 @@ impl Backend for DelayedEchoBackend {
 
 #[tokio::test]
 async fn fork_without_a_role_inherits_the_parents_role_not_the_literal_default() {
-    // WI-136 regression: with a normal config whose `default_role` is NOT the
+    // regression: with a normal config whose `default_role` is NOT the
     // literal "default", a fork that specifies no role of its own must inherit
     // the PARENT's role. Before the fix it fell back to a hardcoded
     // `RoleAlias::new("default")`, which is not a configured alias here, so
@@ -406,12 +406,12 @@ async fn spawn_produces_a_child_with_mapped_fields_and_no_inherited_prefix() {
         "the child's own head record must be its spawn prompt, verbatim"
     );
 
-    // **Disclosed reconciliation:** the WI-102 binding notes' own framing
+    // **Disclosed reconciliation:** the binding notes' own framing
     // ("no inherited prefix") describes what a spawned child's *context
     // assembly* sees (`AgentLoop` always reads a session's own records
     // straight from the store, per `conway-runtime`'s `subagent.rs` --
     // architecture's "clean slate" guarantee, unaffected by this). It is
-    // NOT what `SessionHandle::transcript` (WI-101, unmodified by this
+    // NOT what `SessionHandle::transcript` (unmodified by this
     // item) returns: `SubagentHost::start` records `SessionMeta.origin` for
     // a spawned child too ("for tree reconstructability only"), and
     // `transcript`'s ancestry walk (`resolve_prefix`) follows any `Some
@@ -451,7 +451,7 @@ async fn fork_rejects_a_from_agent_that_belongs_to_a_different_session() {
         .expect_err("a foreign session's root must be rejected");
     match err {
         ConwayError::Runtime(inner) => {
-            // F-102-1, resolved (WI-119): `conway_core::error::RuntimeError`
+            //, resolved: `conway_core::error::RuntimeError`
             // now has a dedicated `AgentNotInSession { agent, session }`
             // variant (see `SessionHandle::ensure_agent_in_session`'s doc)
             // rendering exactly "agent does not belong to session" -- this
@@ -691,11 +691,11 @@ async fn await_agent_on_a_hard_cancelled_child_returns_ok_cancelled() {
 }
 
 // ---------------------------------------------------------------------
-// cancel() + TurnHandle::result() -- the F-101-1 deviation #4 gap WI-101
+// cancel() + TurnHandle::result() -- the deviation #4 gap
 // disclosed as untestable until `SessionHandle::cancel` existed. This is
 // that test, now that this item adds it: `Runtime::cancel`'s effect on the
 // *root* agent's own `TurnHandle`, exercised through `SessionHandle::cancel`
-// exactly as an embedder would reach it (WI-101's own suite could only
+// exactly as an embedder would reach it (its own suite could only
 // cover `TurnHandle::result()` resolving on `Completed`/`BudgetExceeded`).
 // ---------------------------------------------------------------------
 
@@ -807,7 +807,7 @@ async fn root_event_stream_observes_a_spawned_childs_agent_spawned_and_finished(
 }
 
 // ---------------------------------------------------------------------
-// agent_events() -- WI-140: a spawned child's own transcript + live events
+// agent_events() -- a spawned child's own transcript + live events
 // are observable via the new per-agent facade method, distinctly from the
 // parent/root's own `events()`/`events_from()`.
 // ---------------------------------------------------------------------
@@ -864,7 +864,7 @@ async fn agent_events_replays_a_spawned_childs_own_transcript() {
 
 #[tokio::test]
 async fn agent_events_replay_excludes_the_inherited_prefix_transcript_still_includes_it() {
-    // Bug 4 (decision 01KYAN6AHFG9JHQ6D2FAYCNFZJ): focusing a spawned
+    // Bug 4: focusing a spawned
     // agent used to show the parent's prior conversation because
     // `agent_events` built its replay from `effective_transcript` (the
     // ancestry-prefixed view). This mirrors
@@ -1158,7 +1158,7 @@ async fn agent_events_on_the_root_observes_live_progress_after_replay() {
 }
 
 // ---------------------------------------------------------------------
-// session_usage() -- board item 01KYAGP11FF9YC3G60TWHHKKST: sums an
+// session_usage() --: sums an
 // agent's OWN Assistant records, excluding any inherited fork prefix.
 // ---------------------------------------------------------------------
 
@@ -1309,10 +1309,10 @@ async fn session_usage_sums_the_agents_own_assistant_turns_and_excludes_the_inhe
 #[test]
 fn subagent_block_in_session_handle_has_no_fork_spawn_logic() {
     let source = include_str!("../src/session_handle.rs");
-    const MARKER: &str = "WI-102: subagent surface";
+    const MARKER: &str = "Subagent surface (fork/spawn/steer/await_agent/cancel)";
     let idx = source
         .find(MARKER)
-        .expect("session_handle.rs must contain the WI-102 subagent-surface marker");
+        .expect("session_handle.rs must contain the subagent-surface marker comment");
     let new_code = &source[idx..];
     for forbidden in [
         "SessionStore",
@@ -1322,7 +1322,7 @@ fn subagent_block_in_session_handle_has_no_fork_spawn_logic() {
     ] {
         assert!(
             !new_code.contains(forbidden),
-            "the WI-102 subagent block in session_handle.rs must not reference `{forbidden}` -- \
+            "the subagent block in session_handle.rs must not reference `{forbidden}` -- \
              fork/spawn logic belongs in conway-runtime, not the facade"
         );
     }
@@ -1334,7 +1334,7 @@ async fn spawn_without_an_agent_def_inherits_the_parents_role_not_the_literal_de
     // above: a spawn with no `agent_def` (and no `role`) must resolve its
     // role the same way a roleless fork does -- inherit the PARENT
     // session's role, not the hardcoded literal `"default"`. This is the
-    // relaxed WI-099 "agent_def mandatory for spawn" rule's actual runtime
+    // relaxed an earlier item "agent_def mandatory for spawn" rule's actual runtime
     // behavior: `agent_def: None` no longer fails `SubagentSpec::validate`,
     // and `conway_runtime`'s `SubagentHost::start` routes exactly like a
     // roleless fork (`spec.role -> agent_def.role (skipped, none) ->
@@ -1589,8 +1589,8 @@ async fn autonomous_spawn_and_fork_default_keep_alive_false_and_finish_after_one
 }
 
 // ---------------------------------------------------------------------
-// cancel_with(): the VERIFICATION ANCHOR for board item
-// 01KZDC2222ARKMZKN8ZE4BYHD6 ("wire graceful cancellation") -- graceful
+// cancel_with(): the VERIFICATION ANCHOR for
+// ("wire graceful cancellation") -- graceful
 // cancellation, driven through a PUBLIC entry point (the facade), not the
 // mailbox classifier `conway-runtime`'s own `tests/steering.rs:717`
 // exercises (that test builds the loop harness directly; it proves nothing
@@ -1809,7 +1809,7 @@ async fn default_cancel_through_the_facade_stops_immediately_without_waiting_for
         .await
         .expect("the default cancel path must resolve promptly, without waiting on the tool")
         .expect("await_agent should resolve Ok even on Cancelled");
-    // Board item 01KZDDCN747FEZ3GM3NS0ANE7G (P-15 break-the-guard: against
+    // ( break-the-guard: against
     // the pre-fix `Runtime::cancel`, this failed -- `finish_cancelled`
     // hardcoded `reason: "cancelled".to_string()`, discarding the caller's
     // string outright). A distinctive reason, not just any `Cancelled`
@@ -1862,8 +1862,8 @@ async fn default_cancel_through_the_facade_stops_immediately_without_waiting_for
     release.notify_one();
 }
 
-/// Board item 01KZGRGN9MKJP549NMGT8QACCV: the two tests above (415fbc5,
-/// board item 01KZDDCN747FEZ3GM3NS0ANE7G) drive a cancel while the child is
+/// The two tests above (415fbc5,
+///) drive a cancel while the child is
 /// waiting on a *tool*, which lands at one of `AgentLoop::run_inner`'s own
 /// turn-boundary checks (`finish_cancelled`, already fixed). This test
 /// drives the THIRD, narrower site that item's worker disclosed but did not
@@ -1956,8 +1956,8 @@ async fn cancel_reason_reaches_the_result_when_observed_mid_request() {
 }
 
 // ---------------------------------------------------------------------
-// Graceful cancellation does NOT propagate (decision 01KZGV7TN6KSWRZM9XRJAKW4CE,
-// board item 01KZDDCBGXNYTNM31PHW46R1SP): `CancelMode::Graceful` stops only
+// Graceful cancellation does NOT propagate (,
+//): `CancelMode::Graceful` stops only
 // the named target, never its descendants -- `PHILOSOPHY.md` and
 // `CancelMode`'s own doc both state this; immediate propagation already has
 // a pinning test (`conway-runtime`'s `tests/supervisor.rs`,
@@ -1982,7 +1982,7 @@ async fn cancel_reason_reaches_the_result_when_observed_mid_request() {
 /// conflate both agents' start/release signals on the very same `Notify`
 /// pair, which is exactly the ambiguity
 /// `graceful_cancel_on_a_parent_does_not_touch_a_live_childs_terminal_result`
-/// below must avoid to stay deterministic (P-15).
+/// below must avoid to stay deterministic ().
 struct NamedSlowTool {
     name: conway_core::ids::ToolName,
     started: Arc<tokio::sync::Notify>,
@@ -2149,7 +2149,7 @@ async fn graceful_cancel_on_a_parent_does_not_touch_a_live_childs_terminal_resul
     // in-flight tool yet, so the ONLY way `await_agent(child)` could resolve
     // at all here (Cancelled or otherwise) is if the cancel had reached the
     // child too -- a short timeout that fails to resolve is itself the
-    // discriminating assertion (P-15: observable terminal state, not a call
+    // discriminating assertion (: observable terminal state, not a call
     // count -- a correct non-propagation and a broken cancel would both
     // produce "no cancel call recorded against the child").
     let still_running =
@@ -2175,7 +2175,6 @@ async fn graceful_cancel_on_a_parent_does_not_touch_a_live_childs_terminal_resul
         ResultStatus::Completed,
         "the child must reach its OWN ordinary terminal result, untouched by the parent's \
          graceful cancel -- this is the observable pin for 'Graceful stops only the named \
-         agent, not its descendants' (PHILOSOPHY.md; CancelMode's own doc; decision \
-         01KZGV7TN6KSWRZM9XRJAKW4CE)"
+         agent, not its descendants' (PHILOSOPHY.md; CancelMode's own doc)"
     );
 }

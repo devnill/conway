@@ -1,4 +1,4 @@
-//! Acceptance tests for WI-086's `AgentResult` contract: `ResultBuilder`
+//! Acceptance tests for an earlier item's `AgentResult` contract: `ResultBuilder`
 //! precedence (`report` tool over trailing text), the non-empty/status-
 //! naming summary guarantee, every terminal path populating
 //! `transcript_ref`/`usage`/`steps_taken`, the result-contract validation
@@ -116,7 +116,7 @@ fn tool_spec(name: &str) -> ToolSpec {
     }
 }
 
-/// A local structural stand-in for `conway-tools`' `ReportTool` (WI-065):
+/// A local structural stand-in for `conway-tools`' `ReportTool`:
 /// emits the same `{"conway_report": {...}}` envelope shape. Not imported
 /// from `conway-tools` -- `conway-runtime` must not depend on that crate
 /// (architecture boundary; see `result.rs`'s module doc).
@@ -266,6 +266,8 @@ fn build_loop_with_contract(
         headroom: Arc::new(HeadroomPolicy::default()),
         tree: tree.clone(),
         context_hook: std::sync::RwLock::new(None),
+        observers: Vec::new(),
+        plugin_events: Arc::new(conway_runtime::hook_dispatch::HookDispatcher::new()),
     });
 
     let spec = AgentSpec {
@@ -966,7 +968,7 @@ fn agent_result_serializes_only_the_bounded_field_set_no_raw_transcript() {
 /// Builds the same loop as [`build_loop_with_contract`] but KEPT ALIVE.
 ///
 /// Deliberately bypasses `SubagentSpec::validate`, which now rejects this
-/// combination outright (board item 01KZS38F5TN3DEYHWG3VC0FZ9R). These two
+/// combination outright. These two
 /// tests pin the RUNTIME behaviour the rejection exists to prevent, so that
 /// if anyone later removes the rejection believing it unnecessary, the
 /// behaviour it was guarding is still described here in executable form.

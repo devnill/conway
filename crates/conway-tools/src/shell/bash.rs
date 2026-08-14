@@ -1,5 +1,5 @@
 //! `BashTool`: the `bash` tool — streamed, cancellable, process-group-killing
-//! command execution (architecture "Module: conway-tools", WI-064).
+//! command execution (architecture "Module: conway-tools").
 
 use async_trait::async_trait;
 use schemars::JsonSchema;
@@ -17,8 +17,8 @@ use crate::common::{check_cancel, parse_args};
 /// Applied when the caller omits `timeout_ms`.
 const DEFAULT_TIMEOUT_MS: u64 = 120_000;
 
-/// conway-core's `HeadTail` variant is `{ head_bytes, tail_bytes }`, not the
-/// `{ max_bytes }` shape the module plan sketched (WI-061 assumption 1: use
+/// Conway-core's `HeadTail` variant is `{ head_bytes, tail_bytes }`, not the
+/// `{ max_bytes }` shape the module plan sketched (assumption 1: use
 /// conway-core's names with the same semantics rather than inventing a
 /// field). Split the plan's 30_000-byte budget evenly to preserve the same
 /// total-retained-bytes semantics.
@@ -102,8 +102,8 @@ impl Tool for BashTool {
     /// this is also [`RenderKind`]'s own default, restated here (mirroring
     /// `path_args` above, which restates `PathArgs`'s own default too) for
     /// the same reason: a reader should never have to go check what the
-    /// default is to know what `bash` does. Board item
-    /// 01KYT3NSWRHMPEAXVXRJ73KDYR.
+    /// default is to know what `bash` does.
+    ///.
     fn render_kind(&self) -> RenderKind {
         RenderKind::ShellCommand
     }

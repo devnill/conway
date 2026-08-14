@@ -1,10 +1,10 @@
-//! WI-117/WI-120: integration tests for the session-continuity flags
+//! Integration tests for the session-continuity flags
 //! (`--session`/`--resume`/`--fork-from`) against the real, compiled
 //! `conway` binary.
 //!
 //! ## History (disclosed)
 //!
-//! WI-117 wired and validated these three flags but could not drive a live
+//! wired and validated these three flags but could not drive a live
 //! turn against a pre-existing session: `conway`/`conway-runtime` at that
 //! point had exactly one way to register a *live* root agent
 //! (`Runtime::start_root`, reached only through `Conway::new_session`),
@@ -14,10 +14,10 @@
 //! `fork_from_creates_child`'s live-turn half all asserted the then-real,
 //! disclosed blocked behavior (exit 2 / an inert exit 0) instead.
 //!
-//! WI-118 (`Runtime::resume_root`) and WI-119 (the facade wiring: caller-
+//! an earlier item (`Runtime::resume_root`) and an earlier item (the facade wiring: caller-
 //! chosen `SessionSpec::id`, a drivable `Conway::resume`, a
 //! live-registered, context-inheriting `Conway::fork_from` child) closed
-//! that gap. WI-120 flips every test below that asserted the old blocked
+//! that gap. an earlier item flips every test below that asserted the old blocked
 //! behavior to assert the now-working one, specified from the start:
 //! `--session <new-id>` creates exactly that id; `--resume <id>` continues
 //! the persisted transcript into a live second turn; `--fork-from <ref>`
@@ -27,11 +27,11 @@
 //!
 //! ## Why this suite now shells out to `conway sessions tree`
 //!
-//! WI-117's own module doc explained why it read fork-child facts (a
+//! its own module doc explained why it read fork-child facts (a
 //! child's `origin.parent`/`origin.at_seq`) directly off `Conway::sessions`
-//! rather than through `conway sessions tree`: that subcommand was WI-116's
+//! rather than through `conway sessions tree`: that subcommand was an earlier item's
 //! scope, a sibling item concurrently in flight with no dependency edge to
-//! or from WI-117. WI-116 has since landed (`sessions tree` is real,
+//! or from an earlier item. an earlier item has since landed (`sessions tree` is real,
 //! compiled CLI surface -- `crates/conway-cli/src/commands/sessions.rs`),
 //! and this item's own criterion for `fork_from_creates_child` names it
 //! explicitly ("`conway sessions tree <sid>` shows exactly one child with
@@ -59,8 +59,7 @@ use common::mock_backend::{Chunk, MockBackend, Script};
 /// Opens a fresh, read-only `Conway` against `fixture`'s on-disk session
 /// store -- the same store the compiled binary's subprocess runs wrote to.
 ///
-/// Uses `ConwayBuilder::from_config_only` (board item
-/// 01KZYCKF3Z1XBCS50N7EWWVPEQ), not `from_config`: this helper runs
+/// Uses `ConwayBuilder::from_config_only` , not `from_config`: this helper runs
 /// in-process, in the *test* process, not a subprocess -- `common::command`'s
 /// own `XDG_CONFIG_HOME` isolation only reaches the compiled `conway` binary
 /// it spawns, never this test binary's own calls into the `conway` library.
@@ -102,7 +101,7 @@ async fn open_conway(fixture: &Fixture) -> Conway {
             ..Default::default()
         })
         .with_permission_gate(gate)
-        // Board item 01KZHF270T3W8GZ7NM6DSNQ4MM: `conway` no longer
+        // `conway` no longer
         // compiles the fixture template's `kind = "openai-compat"` entry
         // in -- the same factory `main.rs`'s own `build_conway` attaches by
         // default, registered explicitly here since this helper builds a
@@ -110,27 +109,6 @@ async fn open_conway(fixture: &Fixture) -> Conway {
         .with_backend_factory(Arc::new(conway_plugin_backends::OpenAiCompatBackendFactory))
         .build()
         .expect("build conway against the fixture's own store")
-}
-
-/// `conway sessions tree` (unlike every `-p` invocation elsewhere in this
-/// suite) supplies no gate override of its own -- `main.rs`'s dispatch only
-/// builds one for `tui`/`print` targets -- so it falls through to
-/// `gates::from_config`, which errors on this fixture template's default
-/// `permissions.mode = "prompt"` with no handler supplied. Merging in a
-/// `permissions` object with any other mode (`"deny"`, matching
-/// `subcommands.rs`'s own `allow_build_without_prompt_handler` fixture for
-/// the identical reason) sidesteps it; harmless for the `-p` runs that
-/// share this same fixture file, since one-shot mode always supplies its
-/// own gate regardless of config (`oneshot::build_gate`).
-fn allow_sessions_subcommand(fixture: &Fixture) {
-    let text = std::fs::read_to_string(&fixture.config_path).expect("read fixture config");
-    let mut value: serde_json::Value = serde_json::from_str(&text).expect("parse fixture config");
-    value["permissions"] = serde_json::json!({ "mode": "deny" });
-    std::fs::write(
-        &fixture.config_path,
-        serde_json::to_vec(&value).expect("serialize fixture config"),
-    )
-    .expect("rewrite fixture config");
 }
 
 /// The one session a freshly-populated fixture has created so far.
@@ -168,7 +146,7 @@ async fn resume_unknown_session_exits_2_empty_stdout() {
     );
 }
 
-/// `--resume` (WI-120): reattaches the persisted session from the first
+/// `--resume`: reattaches the persisted session from the first
 /// `-p` invocation and drives a genuine second turn against it -- the
 /// mock's second request must carry the first turn's own text, proving the
 /// transcript was continued rather than the second invocation starting a
@@ -269,14 +247,13 @@ async fn fork_from_creates_child() {
     );
     assert_eq!(
         second.stdout, b"branched\n",
-        "the -p prompt on the forked child (WI-120: fork_from now registers a live, \
+        "the -p prompt on the forked child (fork_from now registers a live, \
          context-inheriting child) must produce real output"
     );
 
     // This criterion names `conway sessions tree <sid>` as its own
-    // verification mechanism (WI-116 has since landed) -- shell out to the
+    // verification mechanism (has since landed) -- shell out to the
     // real subcommand rather than reading `Conway::sessions` directly.
-    allow_sessions_subcommand(&fixture);
     let tree_out = run_conway(&["sessions", "tree", &parent.to_string()], &fixture);
     assert!(
         tree_out.status.success(),
@@ -370,7 +347,7 @@ async fn fork_from_without_seq_uses_head() {
     assert_eq!(children[0].origin.as_ref().unwrap().at_seq.0, expected_head);
 }
 
-/// Regression test (cycle-1 review, Significant #1): `--fork-from <ref>`
+/// Regression test: `--fork-from <ref>`
 /// with no `@seq`, where `<ref>` itself names a fork child that has since
 /// taken its own turn, must compute the fork point from that child's own
 /// LOCAL head -- not its effective (ancestry-resolved) transcript length.
@@ -518,7 +495,7 @@ async fn fork_from_without_seq_on_a_fork_child_uses_local_head() {
     );
 }
 
-/// Regression test (cycle-1 review, Minor #4): `--fork-from` combined with
+/// Regression test: `--fork-from` combined with
 /// `--cwd` must be an honest, explicit usage error rather than silently
 /// dropping `--cwd` -- `ForkSpec` has no field to carry a `cwd` override
 /// through to `Conway::fork_from`, so plumbing it would mean growing that
@@ -554,7 +531,7 @@ async fn fork_from_with_cwd_is_a_usage_error() {
     );
 }
 
-/// Regression test (cycle-1 review, Minor #4): `--fork-from` combined with
+/// Regression test: `--fork-from` combined with
 /// `--role-override` must actually take effect -- wired through
 /// `ForkSpec::role`, which `Conway::fork_from` already honors
 /// (`spec.role.or(parent_meta.role)`).
@@ -651,7 +628,7 @@ async fn fork_from_malformed_ref_exits_2() {
 // --session
 // ---------------------------------------------------------------------
 
-/// `--session <new-id>` (WI-120): creates exactly the requested id; reusing
+/// `--session <new-id>`: creates exactly the requested id; reusing
 /// that same id on a later invocation without `--resume` still exits 2.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn session_flag_sets_id() {

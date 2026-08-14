@@ -1,4 +1,4 @@
-//! Integration tests for the WI-111 command surface and exit-code contract:
+//! Integration tests for the command surface and exit-code contract:
 //! everything here runs the actual compiled `conway` binary.
 
 use std::io::Write;
@@ -8,7 +8,7 @@ use predicates::prelude::*;
 
 /// A minimal, valid `conway.json`: one `deny`-mode permissions block (so
 /// `build()` never hits the undocumented "mode = prompt requires a handler"
-/// gap -- WI-111 wires no gate override, that's WI-112/114's job), one
+/// gap -- an earlier item wires no gate override, that's an earlier item's job), one
 /// `openai-compat` backend (never actually dialed -- these tests only need
 /// `build()` to succeed, not a live connection), and one role so
 /// `default_role` resolves.
@@ -17,7 +17,7 @@ use predicates::prelude::*;
 /// lowest merge layer, and routing validation rejects an empty chain on ANY
 /// role (not just `default_role`). `coder` therefore gets a valid chain
 /// here too, or `build()` fails with EmptyChain before dispatch ever
-/// reaches the stub (cycle-1 review S1).
+/// reaches the stub.
 const MINIMAL_CONFIG: &str = r#"
 {
   "default_role": "default",
@@ -65,12 +65,12 @@ fn no_forbidden_deps() {
         "expected a dependency on the `conway` facade crate"
     );
 
-    // Board item 01KZFC43J1J06BM4CCWKCKHSNV: "conway-routing" stays in this
+    // "conway-routing" stays in this
     // list even though that crate no longer exists (renamed and relocated
     // to `conway-plugin-routing`) -- the string simply never matches any
     // key in this crate's `[dependencies]` table again, which is exactly
     // the state a deleted internal-engine crate should leave behind here.
-    // Board item 01KZHF270T3W8GZ7NM6DSNQ4MM did the identical relocation
+    // did the identical relocation
     // for "conway-backends" (-> `conway-plugin-backends`), for the same
     // reason and with the same outcome here: it stays too, a second dead
     // string this list will never match again either.
@@ -79,7 +79,7 @@ fn no_forbidden_deps() {
     // conway-cli reaching an internal IMPLEMENTATION crate `conway` itself
     // used to assemble (conway-runtime, -backends, -session, -core, -tools
     // -- see each one's own doc); a first-party PLUGIN crate is a different
-    // tier entirely (decision 01KZDM9EEVJDWAKJQPV0Y3CQ4D), explicitly meant
+    // tier entirely, explicitly meant
     // to be linked by exactly one binary through `src/
     // first_party_plugins.rs`'s `router_bundle`/`backend_bundle` --
     // `conway-plugin-skeleton`, immediately below in this crate's own
@@ -162,9 +162,9 @@ fn sessions_show_missing_id_exits_usage() {
         .stderr(predicate::str::is_empty().not());
 }
 
-// **WI-116 reconciliation (disclosed):** this test originally asserted the
-// WI-111 stub's contract (empty stdout, a "not implemented" stderr note).
-// WI-116 replaces that stub with the real `sessions list` formatter, whose
+// **An earlier reconciliation (disclosed):** this test originally asserted the
+// stub's contract (empty stdout, a "not implemented" stderr note).
+// replaces that stub with the real `sessions list` formatter, whose
 // own binding criterion is "prints only the header when there are no
 // sessions (never an error)" -- the opposite of "writes nothing to
 // stdout". Updated in place rather than left asserting since-removed

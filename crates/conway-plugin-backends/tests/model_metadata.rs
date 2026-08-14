@@ -1,4 +1,4 @@
-//! Integration tests for `conway_plugin_backends::model_metadata` (WI-017):
+//! Integration tests for `conway_plugin_backends::model_metadata`:
 //! `ModelMetadataStore::load` semantics (fixture loading, missing-path,
 //! invalid-file, normalized lookup) plus a grep-style assertion that
 //! `capabilities.rs` never gains a filesystem/network dependency.

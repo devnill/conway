@@ -1,4 +1,4 @@
-//! C4: facade-only parity acceptance test (GP-03/P-6) -- the payoff and
+//! C4: facade-only parity acceptance test () -- the payoff and
 //! acceptance gate for the whole facade-parity epic (C1/C2/C3/C5).
 //!
 //! Proves that conway's own `conway_fork`/`conway_spawn`/`conway_ask`/
@@ -131,7 +131,7 @@ fn agent_result_output(result: &AgentResult) -> ToolOutput {
 // ---------------------------------------------------------------------------
 // `conway_fork`/`conway_spawn`: SpawnSpec/ForkSpec construction + `.into()`,
 // awaiting per the args flag, AgentResult handling. Two replicas, not one --
-// mirroring the real split (board item 01KZDC1HSNJZ1K7HVQEW65S56R): the
+// mirroring the real split: the
 // `mode` field is gone, each tool's own `prompt` carries its own meaning,
 // and everything else (`agent_def`/`role`/`tools`/`budget`/`await`) is
 // declared on both, exactly like the real `ForkArgs`/`SpawnArgs`.
@@ -373,8 +373,8 @@ impl Tool for AskToolReplica {
                 detail: e.to_string(),
             })?;
 
-        // The ephemeral-ask shape (P-1: `ask` is fork+await-text, not a
-        // third primitive) -- fork-only, GP-02: `SpawnSpec` has neither
+        // The ephemeral-ask shape (: `ask` is fork+await-text, not a
+        // third primitive) -- fork-only: `SpawnSpec` has neither
         // `ephemeral` nor `ask_origin` at all, so there is no way to
         // express this shape with a spawn.
         let mut spec = ForkSpec::new(args.prompt)
@@ -390,7 +390,7 @@ impl Tool for AskToolReplica {
             .await
             .map_err(ToolError::from)?;
 
-        // P-2: the persisted `ToolOutput` names the child session via an
+        //: the persisted `ToolOutput` names the child session via an
         // `EphemeralSessionRef` artifact pointing at the child's
         // `transcript_ref`. The model sees only the clean reply text.
         let artifact = Artifact {
@@ -582,7 +582,7 @@ impl Tool for CdToolReplica {
             },
             // `CwdError` is `#[non_exhaustive]`: a future variant must map
             // to a typed `ToolError` deliberately, here too, not fall
-            // through to a panic (P-10) -- the real `cd` tool's own
+            // through to a panic () -- the real `cd` tool's own
             // discipline, reproduced verbatim.
             other => ToolError::Internal {
                 detail: format!("cwd handle set failed: {other}"),

@@ -64,7 +64,7 @@ a separate process-level error: the runtime folds it into
 routing rejection it is. The practical consequence for a script is only
 the table above — branch on 4 for "no model could serve this run," on 1
 for everything else that went wrong mid-run. A *config-time* routing
-problem (an invalid `[routing]`/`[roles]` table) is different: nothing
+problem (an invalid `routing`/`roles` table) is different: nothing
 ever started, so it is a usage error (2).
 
 ## Output formats

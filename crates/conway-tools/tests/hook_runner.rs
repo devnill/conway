@@ -1,5 +1,4 @@
-//! Integration coverage for [`ProcessHookRunner`] (board item
-//! 01KZRZY1MNM872BZ6AKEBG3SKE): one library-level end-to-end pass driving a
+//! Integration coverage for [`ProcessHookRunner`] -- one library-level end-to-end pass driving a
 //! single made-up event against a fixture script, plus the fail-closed
 //! guarantees the runner is the one place responsible for -- a nonexistent
 //! command, a nonzero exit, unparseable stdout, and a hang past the
@@ -56,7 +55,7 @@ fn fixture(dir: &Path, name: &str, script: &str) -> PathBuf {
 /// threading and is not the behaviour any of these tests are about.
 ///
 /// Bounded, and it panics loudly when exhausted rather than looping until the
-/// harness times out. Board item 01KZWGMDPAKQ3DFNSKYFM7ZEVD.
+/// harness times out.
 async fn run_retrying_spawn_race(
     runner: &ProcessHookRunner,
     invocation: &HookInvocation,
@@ -128,7 +127,7 @@ fn assert_group_dead(pgid: i32) {
 /// pattern-match on a marker string the test alone controls), so a
 /// correctly-shaped default `{}` answer coming back would mean the payload
 /// never arrived -- the assertion is on the RETURNED ANSWER's content, not
-/// on any intermediate signal like "a process spawned" (P-15).
+/// on any intermediate signal like "a process spawned" ().
 #[tokio::test]
 async fn drives_one_event_end_to_end_and_returns_the_scripts_answer() {
     let dir = TempDir::new().unwrap();

@@ -1,4 +1,4 @@
-//! Board item 01KZHF3E1ZG3AZ7F7HHVY324T9's compiled-binary demonstration:
+//!'s compiled-binary demonstration:
 //! byte-identical wiring to `tests/end_to_end.rs`'s library-embedder
 //! proof, but run as a genuinely separate compiled process rather than a
 //! function call inside this crate's own `cargo test` binary -- "the same

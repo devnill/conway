@@ -1,6 +1,6 @@
 //! `OpenAiCompatBackend`: one `Backend` adapter, dialect-selected behavior,
 //! covering every OpenAI-compatible chat-completions server (architecture
-//! §"Module: conway-backends", WI-019).
+//! §"Module: conway-backends").
 //!
 //! `wire.rs` owns the segment↔message and response↔`GenerateResponse`
 //! mapping, `stream.rs` owns SSE streaming, [`crate::profile::Profile`]
@@ -164,7 +164,7 @@ impl Backend for OpenAiCompatBackend {
         self.run_probe().await
     }
 
-    /// This dialect's own counting (board item 01KZDC4DKVC4JC3W4KN1WMC43N):
+    /// This dialect's own counting:
     /// builds the exact chat-completions wire body `generate`/`stream`
     /// would send — this profile's own message envelope, tool-schema
     /// shape, and any per-provider quirks `wire::build_request_body`

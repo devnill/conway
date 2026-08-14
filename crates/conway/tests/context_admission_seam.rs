@@ -1,7 +1,7 @@
-//! One end-to-end admission test (board item `01KYXNB5TBJM2G8ZTJF85K1N09`):
+//! One end-to-end admission test:
 //! a real `ContextBuilder`'s `est_tokens`, through a real
 //! `DeclarativeRouter` compiled from real config, into a real
-//! `AttemptEngine`'s own T-1 backstop — asserting the one thing P-9
+//! `AttemptEngine`'s own T-1 backstop — asserting the one thing
 //! ("reject; never truncate or escalate") actually promises an operator:
 //! **THE BACKEND WAS NEVER CALLED.**
 //!
@@ -47,11 +47,11 @@
 //!
 //! ## The fixture: a headroom-only rejection, not a mixed one
 //!
-//! `DeclarativeRouter::resolve` (board item `01KYXNAHN64YMADZPQDQC0CPTJ`,
+//! `DeclarativeRouter::resolve` (,
 //! commit `f8b8cc4`) returns `ContextTooLarge` only when EVERY candidate in
 //! the chain is rejected and each one *solely* on the headroom gate; a
 //! mixed failure (headroom plus a missing capability) falls back to
-//! `NoCandidate`, which carries none of P-9's structured fields. The single
+//! `NoCandidate`, which carries none of structured fields. The single
 //! candidate below (`fake/tiny-model`) is given every OTHER capability a
 //! request could plausibly need (`Streaming { validated: true }` tool
 //! calling, `Grammar` structured output, `parallel_tool_calls`,
@@ -60,17 +60,17 @@
 //! warns is required, or the router's `NoCandidate` fallback (not this
 //! item's concern) is what this test would catch instead.
 //!
-//! ## Out of scope here (separate, filed board items)
+//! ## Out of scope here (separate, filed)
 //!
 //! - The capability-source disagreement between the router's static index
-//!   and `AttemptEngine`'s live `backend.capabilities()`
-//!   (`01KYXNBKWK2DZ7JE3VRKC5FRJB`): this fixture keeps both in EXACT
+//!   and `AttemptEngine`'s live `backend.capabilities()`: this fixture keeps
+//!   both in EXACT
 //!   agreement by construction — `CapabilityIndex::from_backends` calls the
 //!   very same `ScriptedBackend::capabilities()` the attempt engine's own
 //!   gate would call — not by luck.
-//! - The mixed-failure P-9 gap (`01KYXTZ3C79NB8S8PV9Y0M6X5N`): not
+//! - The mixed-failure gap: not
 //!   constructed here (see above).
-//! - The estimator's tool-schema under-count (`01KYTMJA0JHT5SAPYDGV251V17`):
+//! - The estimator's tool-schema under-count:
 //!   this test never predicts or asserts a numeric `est_tokens` value — it
 //!   proves the seam carries WHATEVER the real estimator produces, by
 //!   pinning `max_context_tokens` far below (the rejection test) or far
@@ -213,7 +213,7 @@ fn build_conway(
         .with_backend(backend)
         .with_session_store(store)
         .with_permission_gate(gate)
-        // Board item 01KZHF270T3W8GZ7NM6DSNQ4MM: `conway` no longer
+        // `conway` no longer
         // compiles either dialect in, so this file's config-derived
         // `kind = "openai-compat"` entry (overwritten by the injected
         // `backend` above, but still resolved by `build()` before that
@@ -256,17 +256,17 @@ async fn oversized_context_is_refused_before_the_backend_is_ever_called() {
         .expect("result must not hang")
         .expect("result() itself must not error -- the turn ends Failed, not the stream");
 
-    // PRIMARY (GP-14/LIVENESS_TESTS.md): the observable outcome, not an
-    // intermediate signal -- P-9's actual promise.
+    // PRIMARY (/LIVENESS_TESTS.md): the observable outcome, not an
+    // intermediate signal -- actual promise.
     assert!(
         backend.calls().is_empty(),
-        "the backend must NEVER be called for an oversized context (P-9: reject, never \
+        "the backend must NEVER be called for an oversized context (: reject, never \
          truncate or escalate); calls: {:?}",
         backend.calls()
     );
 
     // SECONDARY: the typed error shape, so a regression to the plain
-    // `NoCandidate` fallback (which carries none of P-9's structured
+    // `NoCandidate` fallback (which carries none of structured
     // fields) is caught here too, not just "some failure occurred".
     match &result.status {
         ResultStatus::Failed { error } => {
@@ -282,7 +282,7 @@ async fn oversized_context_is_refused_before_the_backend_is_ever_called() {
     }
 }
 
-/// GP-14: "any check that cannot fail is not a check" — proof that the
+///: "any check that cannot fail is not a check" — proof that the
 /// assertion above can fail. Identical fixture, exactly one field changed:
 /// the model's window, widened from 1 to comfortably fit any real assembled
 /// context. The flip is asserted directly, not merely implied: the backend

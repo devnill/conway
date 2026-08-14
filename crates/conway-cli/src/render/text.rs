@@ -1,4 +1,4 @@
-//! `--output-format text` (WI-112, the default): stdout carries only the
+//! `--output-format text` (the default): stdout carries only the
 //! assistant's raw text, verbatim, flushed after every delta, so
 //! `conway -p "…" > out.txt` yields clean content. Everything else --
 //! tool-call activity, permission denials, backend health, routing detail --

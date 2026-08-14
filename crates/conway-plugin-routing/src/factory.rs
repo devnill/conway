@@ -1,5 +1,5 @@
 //! `RoutingRouterFactory`: this crate's [`conway_core::ports::RouterFactory`]
-//! (board item 01KZFC43J1J06BM4CCWKCKHSNV) -- names [`ROUTER_ID`] up front so
+//! -- names [`ROUTER_ID`] up front so
 //! `[plugins].install` (or a direct `ConwayBuilder::with_router_factory`
 //! call) can select this crate before backends exist, then builds the same
 //! `DeclarativeRouter` + `BreakerRegistry` pairing `conway`'s own

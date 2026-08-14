@@ -1,4 +1,4 @@
-//! Board item 01KZS019NHG11RVQYSVT7RG0P5: the three observation-only hook
+//! The three observation-only hook
 //! events dispatch, and — the property that actually matters — a hook that
 //! fails NEVER turns into a failure of the thing it observed.
 //!
@@ -14,13 +14,12 @@
 //! failure path is the one with a real chance of being wrong, and a test that
 //! only ever exercises a succeeding hook proves nothing about propagation.
 //!
-//! **The matcher section (board item 01KZYAWQ6011Q6CJVG6CCMQPF1) below is
+//! **The matcher section below is
 //! the one deliberate exception.** Its question is "did the RIGHT hook run
 //! for the RIGHT tool", which a failing runner cannot answer -- only a
 //! runner that records what it was actually invoked with can, so
 //! `RecordingRunner` (never failing) is used there instead. The
-//! `request_assembled`/`child_reported` section (board item
-//! 01KZYAXSGDS8AP7YK1CN7H680G) further down uses the SAME failing-runner
+//! `request_assembled`/`child_reported` section further down uses the SAME failing-runner
 //! discipline as every other observation event above it -- those two are
 //! ordinary observation-tier dispatch, and their own propagation guarantee
 //! (a failing hook must not fail the turn/finish it observed) is exactly
@@ -245,7 +244,7 @@ impl HookRunner for RecordingRunner {
     }
 }
 
-/// **VERIFICATION ANCHOR** (board item 01KZYAWQ6011Q6CJVG6CCMQPF1): two
+/// **VERIFICATION ANCHOR**: two
 /// `post_tool_use` rules, one matching `read` and one matching `edit`,
 /// driven through a session (`ToolRunner::run_batch`, the real production
 /// seam -- module doc) that calls both tools; each script runs EXACTLY ONCE,
@@ -743,7 +742,7 @@ async fn wait_until(mut predicate: impl FnMut() -> bool) {
     .expect("condition was not met within 2s");
 }
 
-/// ACCEPTANCE (board item 01KZYAXSGDS8AP7YK1CN7H680G): `request_assembled`
+/// ACCEPTANCE: `request_assembled`
 /// fires once per turn, before routing -- asserted by a hook script (here,
 /// `FailingRunner`, recording then failing per this file's own discipline)
 /// that records it, not by the dispatch function having been called

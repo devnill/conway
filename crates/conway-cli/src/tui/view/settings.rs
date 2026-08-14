@@ -39,7 +39,7 @@
 //! plus allow/deny/prompt/hooks rule review as FOUR SUB-groups -- see
 //! [`build_tree`]'s own doc for why they are separate sections, why
 //! deny/prompt rows are read-only [`MenuNode::Static`] rows, and why hooks
-//! (board item 01KZS02HYXGTW42R8G4HP10GHX) get a fourth section rather than
+//! get a fourth section rather than
 //! folding into allow) -- rather than one flat group or several separate
 //! ones: this is genuinely the shape a further settings category (say,
 //! session history) would extend later, not artificial nesting invented
@@ -96,7 +96,7 @@ pub(crate) const LEAF_TOOL_PREVIEW_LINES: &str = "tool_preview_lines";
 pub(crate) const LEAF_PERMISSION_MODE: &str = "permission_mode";
 /// V2b: drops every pattern grant and cached allow-always.
 pub(crate) const LEAF_REVOKE_GRANTS: &str = "revoke_grants";
-/// Board item 01KYND4WGHSZXW5YQ6ZWHCDDNN: prefix for one grant row's own
+/// Prefix for one grant row's own
 /// leaf id, `"{LEAF_REVOKE_GRANT_PREFIX}{index}"` where `index` is the
 /// row's position in `state.permission_grants` at the moment this tree was
 /// built. `input::activate_settings_selection` resolves that index back
@@ -104,7 +104,7 @@ pub(crate) const LEAF_REVOKE_GRANTS: &str = "revoke_grants";
 /// there is no window in which the index could point at a different grant
 /// than the one rendered — see that function's own doc.
 pub(crate) const LEAF_REVOKE_GRANT_PREFIX: &str = "revoke_grant:";
-/// Board item A2: prefix for one STRUCTURED allow rule's own leaf id,
+/// A2: prefix for one STRUCTURED allow rule's own leaf id,
 /// `"{LEAF_REVOKE_STRUCTURED_ALLOW_PREFIX}{index}"` where `index` is the
 /// row's position in `state.structured_allow_rules` at the moment this tree
 /// was built -- a DISTINCT id space from [`LEAF_REVOKE_GRANT_PREFIX`] so a
@@ -114,7 +114,7 @@ pub(crate) const LEAF_REVOKE_GRANT_PREFIX: &str = "revoke_grant:";
 /// OWN mirror in the same call that built this tree, exactly as the flat
 /// path does -- see that function's own doc).
 pub(crate) const LEAF_REVOKE_STRUCTURED_ALLOW_PREFIX: &str = "revoke_structured_allow:";
-/// Board item 01KZS02HYXGTW42R8G4HP10GHX: prefix for one hook-backed rule's
+/// Prefix for one hook-backed rule's
 /// own leaf id, `"{LEAF_REVOKE_HOOK_PREFIX}{index}"` where `index` is the
 /// row's position in `state.hook_rules` at the moment this tree was built --
 /// a DISTINCT id space from the two prefixes above, resolved against its own
@@ -137,7 +137,7 @@ const PERMISSIONS_GROUP: &str = "permissions";
 const ALLOW_GROUP: &str = "allow";
 const DENY_GROUP: &str = "deny";
 const PROMPT_GROUP: &str = "prompt";
-/// The fourth review-list sub-section (board item 01KZS02HYXGTW42R8G4HP10GHX):
+/// The fourth review-list sub-section:
 /// every hook-backed rule that can currently deny a call (`pre_tool_use`,
 /// `prompt_submitted`) -- its own section, not merged into `ALLOW_GROUP`/
 /// `DENY_GROUP`/`PROMPT_GROUP`, because a hook rule composes by a DIFFERENT
@@ -189,7 +189,7 @@ pub(crate) fn build_tree(state: &AppState) -> MenuState {
                 LEAF_TOOL_PREVIEW_LINES,
             )],
         ),
-        // Board item 01KYND4WGHSZXW5YQ6ZWHCDDNN: each active grant is now a
+        // each active grant is now a
         // real, selectable leaf row with a destructive action (revoke)
         // rather than inert label text -- the reasoning that made a
         // selectable-but-inert row "a worse lie than an obviously static
@@ -236,7 +236,7 @@ pub(crate) fn build_tree(state: &AppState) -> MenuState {
                                 format!("{LEAF_REVOKE_GRANT_PREFIX}{i}"),
                             ));
                         }
-                        // Board item A2: the structured allow rules the flat
+                        // A2: the structured allow rules the flat
                         // form cannot express render in the SAME allow
                         // section, as the same selectable-leaf shape -- they
                         // are revocable grants exactly like the flat rows,
@@ -314,7 +314,7 @@ pub(crate) fn build_tree(state: &AppState) -> MenuState {
                     }
                     prompt
                 }),
-                // Board item 01KZS02HYXGTW42R8G4HP10GHX: the fourth
+                // the fourth
                 // review list -- every hook-backed rule that can currently
                 // DENY a call, selectable and revocable exactly like an
                 // allow-grant row (unlike deny/prompt's read-only rows: a
@@ -579,7 +579,7 @@ mod tests {
         );
     }
 
-    /// Board item 01KYND4WGHSZXW5YQ6ZWHCDDNN: each grant row is now a real
+    /// Each grant row is now a real
     /// selectable leaf, addressed by its position in `state.
     /// permission_grants` at build time -- not the inert `""` id the
     /// pre-revocation shape used.
@@ -774,7 +774,7 @@ mod tests {
         }
     }
 
-    // ---- Structured allow rows: visible AND revocable (board item A2) ----
+    // ---- Structured allow rows: visible AND revocable (A2) ----
 
     fn a_structured_allow_rule() -> conway::Rule {
         // Multi-tool + Always: a rule the flat form cannot express (its
@@ -906,7 +906,7 @@ mod tests {
         assert!(text.contains("revoke all grants"), "{text}");
     }
 
-    // ---- Hooks review section: visible AND revocable (board item 01KZS02HYXGTW42R8G4HP10GHX) ----
+    // ---- Hooks review section: visible AND revocable ----
 
     fn a_hook_rule(id: &str, event: &str, match_tool: Option<&str>) -> conway::HookRuleView {
         conway::HookRuleView {

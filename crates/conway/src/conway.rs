@@ -1,5 +1,5 @@
 //! `Conway`: the live, assembled facade over one `conway-runtime::Runtime`
-//! (WI-100). Constructed exclusively via `crate::builder::ConwayBuilder::build`.
+//!. Constructed exclusively via `crate::builder::ConwayBuilder::build`.
 
 use std::sync::Arc;
 
@@ -21,8 +21,7 @@ use crate::intent::AgentIntent;
 use crate::session_handle::{SessionHandle, SessionSpec};
 use crate::subagent_spec::ForkSpec;
 
-/// The result of [`Conway::load_permission_files`] (board item
-/// 01KYT8SGX32CP56PRJNG72V2W5) -- what `conway-cli`'s startup loader needs
+/// The result of [`Conway::load_permission_files`] -- what `conway-cli`'s startup loader needs
 /// to update `AppState` with.
 #[derive(Debug, Clone, Default)]
 pub struct PermissionLoadReport {
@@ -48,7 +47,7 @@ pub struct PermissionLoadReport {
     /// pin it (untrusted input -> typed errors, never a panic). The rule is carried
     /// whole so the operator sees exactly what was rejected.
     pub registration_errors: Vec<conway_core::permission_pattern::RuleRegistrationError>,
-    /// Board item 01KZHVDDQQ7XT0RK3JVNM2YV83: one human-readable message per
+    /// One human-readable message per
     /// candidate file that named a top-level key this schema does not
     /// recognize (`conway_core::permission_pattern::
     /// permission_file_unknown_field_error`) -- a misspelled `"denys"`
@@ -89,7 +88,7 @@ const PRE_TOOL_USE_EVENT: &str = "pre_tool_use";
 const HOOK_ORIGIN_LABEL: &str = "settings.json (merged config)";
 
 /// One row [`Conway::active_deny_capable_hook_rules`] hands the `/settings`
-/// review surface (board item 01KZS02HYXGTW42R8G4HP10GHX) -- a hook-backed
+/// review surface -- a hook-backed
 /// rule that can currently deny a call, addressed for revocation by its
 /// `(event, id)` pair via [`Conway::revoke_hook_rule`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -101,8 +100,7 @@ pub struct HookRuleView {
     /// events this list ever reports (see [`Conway::
     /// active_deny_capable_hook_rules`]'s own doc for why).
     pub event: String,
-    /// The rule's `HookEntry::match_tool` (board item
-    /// 01KZYAWQ6011Q6CJVG6CCMQPF1). `None` fires this rule for every call
+    /// The rule's `HookEntry::match_tool`. `None` fires this rule for every call
     /// this event dispatches; `Some(pattern)` narrows to calls whose tool
     /// name satisfies `pattern` (exact match, or a `*`-glob) -- only ever
     /// meaningful for `pre_tool_use` (`prompt_submitted`'s payload carries
@@ -114,8 +112,7 @@ pub struct HookRuleView {
     pub origin: String,
 }
 
-/// The result of [`Conway::trust_permission_file`] (board item
-/// 01KYZYA4HQAFN6SQ1T08JABYAD) -- the trust-path parallel of
+/// The result of [`Conway::trust_permission_file`] -- the trust-path parallel of
 /// [`PermissionLoadReport`]. Carries the count of allow rules actually
 /// installed AND the typed registration errors for rules the broker refused
 /// to install (today: a `paths_under` prefix that fails to canonicalize, B3).
@@ -144,8 +141,7 @@ pub struct TrustPermissionReport {
     pub notices: Vec<String>,
 }
 
-/// The result of [`Conway::revoke_permission_pattern`] (board item
-/// 01KYND4WGHSZXW5YQ6ZWHCDDNN): what happened to the in-session grant AND to
+/// The result of [`Conway::revoke_permission_pattern`] -- what happened to the in-session grant AND to
 /// whatever file it came from, so the caller can tell the operator the
 /// whole truth rather than folding a failed persist into a blanket "done".
 #[derive(Debug, Clone)]
@@ -179,8 +175,8 @@ pub enum RevokeOutcome {
 
 /// The live, assembled facade: one `Runtime`, its resolved config, and --
 /// when the builder had a real answer to "why" (it compiled its own router,
-/// or a `RouterFactory` supplied one, board item
-/// 01KZFC2MD1FVNA674YJ9A19T8E) -- the `RoutingExplainer` `explain_routing`
+/// or a `RouterFactory` supplied one
+///) -- the `RoutingExplainer` `explain_routing`
 /// projects through.
 ///
 /// Cheap to `Clone`: every field is an `Arc`.
@@ -190,7 +186,7 @@ pub struct Conway {
     config: Arc<ConwayConfig>,
     // Also cloned into every `SessionHandle` this `Conway` mints
     // (`new_session`), which needs it for `SessionHandle::transcript`'s
-    // ancestry walk (WI-101).
+    // ancestry walk.
     store: Arc<dyn SessionStore>,
     router_explain: Option<Arc<dyn RoutingExplainer>>,
     warnings: Arc<Vec<ConfigWarning>>,
@@ -202,7 +198,7 @@ pub struct Conway {
     // re-parsed it from disk on its own, a second code path that agreed
     // with the builder's only by coincidence.
     model_metadata: Arc<ModelMetadata>,
-    /// Board item 01KYTMH9JX21CGSE2Y6E2KP8SJ: set via
+    /// Set via
     /// `ConwayBuilder::with_root` -- see that method's own doc for the
     /// default (`None`, unconfined, unchanged) and the operator-facing
     /// contract. Consulted once per [`Self::new_session`] call, exactly like
@@ -283,7 +279,7 @@ impl Conway {
     /// gate (V2b) -- origin `Interactive`. Use
     /// [`Self::grant_permission_pattern_from_file`] for a rule loaded from
     /// a permissions file, so the review surface can tell the two apart
-    /// (board item 01KYT8SGX32CP56PRJNG72V2W5).
+    ///.
     ///
     /// Note the metacharacter gate is NOT applied here: it lives in
     /// `PatternRule::matches_render` and is evaluated against each
@@ -304,7 +300,7 @@ impl Conway {
     }
 
     /// Installs a pattern ALLOW grant loaded from a permissions file at
-    /// `origin_path` (board item 01KYT8SGX32CP56PRJNG72V2W5).
+    /// `origin_path`.
     ///
     /// **This method trusts its caller completely.** It installs whatever
     /// it is given. The TRUST DECISION for a project-scoped file --
@@ -331,8 +327,8 @@ impl Conway {
     /// Installs a DENY rule loaded from a permissions file at
     /// `origin_path`. Unlike the allow-side methods above, there is no
     /// trust precondition here at all -- `deny` applies immediately,
-    /// trusted or not, from any file (D4 §3, board item
-    /// 01KYT8SGX32CP56PRJNG72V2W5).
+    /// trusted or not, from any file (D4 §3
+    ///).
     pub fn grant_deny_pattern(
         &self,
         rule: conway_core::permission_pattern::PatternRule,
@@ -345,7 +341,7 @@ impl Conway {
     }
 
     /// Installs a PROMPT rule loaded from a permissions file at
-    /// `origin_path` (board item 01KYTP1D3XWEZPW4AKPH54FNB3). Mirrors
+    /// `origin_path`. Mirrors
     /// [`Self::grant_deny_pattern`] exactly, including its "no trust
     /// precondition" reasoning: `prompt`, like `deny`, only ever narrows
     /// (forces an extra ask rather than skipping one), never grants, so it
@@ -713,7 +709,7 @@ impl Conway {
         self.rt.permission_broker().active_structured_deny_rules()
     }
 
-    /// The structured half of the ALLOW review list (board item A2): every
+    /// The structured half of the ALLOW review list (A2): every
     /// active allow [`conway_core::permission_pattern::Rule`] the flat form
     /// cannot express (`paths_under`, `categories`, `category_in`, multiple
     /// tools), paired with its origin and the
@@ -751,8 +747,7 @@ impl Conway {
         self.rt.permission_broker().active_structured_prompt_rules()
     }
 
-    /// Every currently-installed DENY-CAPABLE hook-backed rule (board item
-    /// 01KZS02HYXGTW42R8G4HP10GHX): every `pre_tool_use` hook, then every
+    /// Every currently-installed DENY-CAPABLE hook-backed rule -- every `pre_tool_use` hook, then every
     /// `prompt_submitted` subscriber, in that order.
     ///
     /// **Scoped to the two DENY-CAPABLE events, deliberately, not every
@@ -807,8 +802,7 @@ impl Conway {
         rows
     }
 
-    /// Revokes exactly ONE hook-backed rule (board item
-    /// 01KZS02HYXGTW42R8G4HP10GHX), addressed by its `(event, id)` pair --
+    /// Revokes exactly ONE hook-backed rule , addressed by its `(event, id)` pair --
     /// the same identity [`Self::active_deny_capable_hook_rules`] hands the
     /// review surface. `event` must be exactly `"pre_tool_use"` or
     /// `"prompt_submitted"`; any other value (including an observation-only
@@ -870,8 +864,7 @@ impl Conway {
         self.rt.permission_broker().revoke_all_grants();
     }
 
-    /// Revokes exactly ONE pattern ALLOW grant (board item
-    /// 01KYND4WGHSZXW5YQ6ZWHCDDNN), addressed by the same `(rule, origin)`
+    /// Revokes exactly ONE pattern ALLOW grant , addressed by the same `(rule, origin)`
     /// pair [`Self::active_permission_patterns`] already hands the review
     /// surface -- see `PermissionBroker::revoke_pattern`'s own doc for why
     /// that pair, not a position, is the identity.
@@ -982,7 +975,7 @@ impl Conway {
         )
     }
 
-    /// Revokes exactly ONE STRUCTURED allow rule (board item A2) -- the
+    /// Revokes exactly ONE STRUCTURED allow rule (A2) -- the
     /// counterpart to [`Self::revoke_permission_pattern`] for the rules the
     /// flat form cannot express. Addressed by the same `(rule, origin)`
     /// pair [`Self::active_structured_allow_rules`] hands the review
@@ -1179,7 +1172,7 @@ impl Conway {
 
     /// B2: the directory a RELATIVE `paths_under` prefix in the permissions
     /// file at `path` resolves against before the broker canonicalizes it
-    /// (board item B2, finding S5). Resolving a relative prefix against the
+    /// (B2, finding S5). Resolving a relative prefix against the
     /// process's cwd -- what a bare `Path::canonicalize` does -- points the
     /// rule at wherever the operator happened to launch conway from, so the
     /// base is derived here, where the file's own location is known:
@@ -1220,8 +1213,8 @@ impl Conway {
 
     /// Loads permissions files project-first then global
     /// (`crate::config::discovery::permission_file_paths`) and installs
-    /// their rules -- **the real production startup seam**, board item
-    /// 01KYT8SGX32CP56PRJNG72V2W5. `conway-cli`'s TUI (`tui::app::App::new`)
+    /// their rules -- **the real production startup seam**
+    ///. `conway-cli`'s TUI (`tui::app::App::new`)
     /// calls this directly; so does
     /// `crates/conway/tests/permission_trust_seam.rs`, which is how that
     /// item's acceptance test drives the actual code path rather than a
@@ -1241,8 +1234,7 @@ impl Conway {
     ///   which still holds for content that is not valid JSON at all, or
     ///   that names a recognized key with the wrong shape).
     ///
-    /// **One deliberate exception to that silent posture** (board item
-    /// 01KZHVDDQQ7XT0RK3JVNM2YV83): a file naming a top-level key this schema
+    /// **One deliberate exception to that silent posture** -- a file naming a top-level key this schema
     /// does not recognize -- `"denys"` for `"deny"`, or any other typo -- is
     /// checked FIRST, via `conway_core::permission_pattern::
     /// permission_file_unknown_field_error`, before any rule from that file is
@@ -1285,7 +1277,7 @@ impl Conway {
                 continue;
             };
 
-            // Board item 01KZHVDDQQ7XT0RK3JVNM2YV83: a misspelled top-level
+            // a misspelled top-level
             // key (`"denys"` for `"deny"`) must not silently install zero
             // rules with nothing telling the operator -- checked BEFORE any
             // of `parse_deny_rules`/`parse_prompt_rules`/`parse_rules` run,
@@ -1419,20 +1411,19 @@ impl Conway {
     /// This is the ONLY path that writes a trust record, and it is only
     /// ever invoked by an explicit operator action (the TUI's `/trust
     /// permissions`) -- never automatically, never as a side effect of
-    /// [`Self::load_permission_files`] (board item
-    /// 01KYT8SGX32CP56PRJNG72V2W5, D4 §5/§9: no startup prompt, no silent
+    /// [`Self::load_permission_files`] (///, D4 §5/§9: no startup prompt, no silent
     /// self-trust).
     ///
     /// Returns `Err` -- WITHOUT writing a trust record and WITHOUT
     /// installing any rule -- for two reasons: the ordinary `std::io::Error`
     /// an unreadable `path` or a failed `TrustStore::trust` write produces,
     /// and, checked first, `path` naming an unrecognized top-level key (board
-    /// item 01KZHVDDQQ7XT0RK3JVNM2YV83; see
+    /// item; see
     /// [`conway_core::permission_pattern::permission_file_unknown_field_error`]'s
     /// own doc). The second case exists because a typo'd file's rules were
     /// never going to install anyway -- recording trust for it first would
     /// bless content that silently enforces nothing on every subsequent
-    /// load, exactly the failure this whole board item closes, just moved
+    /// load, exactly the failure this whole closes, just moved
     /// to the trust-recording path instead of the load path. Both `Err`
     /// cases carry a message naming `path` and, for the unknown-key case,
     /// the offending field.
@@ -1444,7 +1435,7 @@ impl Conway {
         granting_agent: conway_core::ids::AgentId,
     ) -> std::io::Result<TrustPermissionReport> {
         let contents = std::fs::read_to_string(path)?;
-        // Board item 01KZHVDDQQ7XT0RK3JVNM2YV83: refuse a file naming an
+        // refuse a file naming an
         // unrecognized top-level key BEFORE recording a trust decision for
         // it -- a typo'd file's rules were never going to install anyway
         // (see `permission_file_unknown_field_error`'s own doc), so trusting
@@ -1550,7 +1541,7 @@ impl Conway {
     /// **Reconciliation (disclosed):** the binding implementation notes
     /// describe this method's sequence as "build `SessionMeta` ->
     /// `store.create` -> `Runtime::start_root`", but the already-committed
-    /// `Runtime::start_root` (WI-082) already builds the `SessionMeta` and
+    /// `Runtime::start_root` already builds the `SessionMeta` and
     /// calls `SessionStore::create` internally. Calling `store.create` again
     /// here with the same id would double-create the session (an error
     /// against both `FakeStore` and `JsonlSessionStore`, which reject a
@@ -1560,9 +1551,9 @@ impl Conway {
     /// this still satisfies "creates a session via `SessionStore::create`",
     /// it just avoids invoking that call a second time.
     ///
-    /// **Caller-chosen id (WI-119):** `spec.id` -- when `Some` -- is passed
+    /// **Caller-chosen id:** `spec.id` -- when `Some` -- is passed
     /// through unchanged instead of the freshly minted `SessionId` below.
-    /// `RootSpec::session` (WI-082) already supports this at the runtime
+    /// `RootSpec::session` already supports this at the runtime
     /// layer; this is the facade-side wiring to reach it. An id already
     /// present in the store surfaces as `start_root`'s own
     /// `SessionStore::create` failure --
@@ -1571,7 +1562,7 @@ impl Conway {
     /// distinct from every other failure this method can produce, not a
     /// generic error.
     ///
-    /// **Disclosed gap:** `RootSpec` (`conway-runtime`, WI-082) has no field
+    /// **Disclosed gap:** `RootSpec` (`conway-runtime`) has no field
     /// for `SessionSpec::labels` or for `config.limits.max_parallel_tools`,
     /// so neither reaches the created session/agent through this method --
     /// out of this item's file scope to add.
@@ -1591,7 +1582,7 @@ impl Conway {
             tools: spec.tools,
             budget,
             cwd,
-            // Board item 01KYTMH9JX21CGSE2Y6E2KP8SJ: this `Conway`'s own
+            // this `Conway`'s own
             // confinement root (`ConwayBuilder::with_root`), if the operator
             // set one -- `None` (unconfined) otherwise. `SessionSpec` has no
             // per-session override for this: unlike `cwd`/`role`/`model`,
@@ -1612,8 +1603,9 @@ impl Conway {
         ))
     }
 
-    /// `config.limits` resolved into a `Budget`. `max_tool_calls` has no
-    /// facade config counterpart and is always `None`.
+    /// `config.limits` resolved into a `Budget`. Every dimension follows the
+    /// same convention: a `0` in config means "no ceiling" and maps to
+    /// `None`, since `Budget`'s own optionality is what the runtime gates on.
     fn default_budget(&self) -> Budget {
         let limits = &self.config.limits;
         Budget {
@@ -1628,7 +1620,11 @@ impl Conway {
             } else {
                 Some(limits.max_tokens)
             },
-            max_tool_calls: None,
+            max_tool_calls: if limits.max_tool_calls == 0 {
+                None
+            } else {
+                Some(limits.max_tool_calls)
+            },
         }
     }
 
@@ -1642,8 +1638,8 @@ impl Conway {
     /// at all -- `router_explain` is `None`. This used to fall back to a
     /// fabricated-empty report (`entries: vec![]`), which `conway routes
     /// explain` then misread as "unknown role" for a perfectly valid one
-    /// (a silent inversion of what the surface claimed, board item
-    /// 01KZFC1KNGQ51TZ0BG7P7RAY9H).
+    /// (a silent inversion of what the surface claimed
+    ///).
     /// It now falls back to `conway_core::routing::MinimalRouter`,
     /// projected over this `Conway`'s own resolved `RoutingConfig` -- an
     /// honestly degenerate answer (no capability filtering, no health
@@ -1674,14 +1670,14 @@ impl Conway {
         }
     }
 
-    /// Reattaches to a persisted session (WI-103), now as a DRIVABLE handle
-    /// (WI-119).
+    /// Reattaches to a persisted session, now as a DRIVABLE handle
+    ///.
     ///
-    /// **Resolved (WI-119):** this method's previous doc disclosed a real
+    /// **Resolved:** this method's previous doc disclosed a real
     /// gap -- `conway-runtime` exposed only `start_root`, which cannot be
     /// repurposed for resume (it unconditionally `store.create`s, which
     /// every committed `SessionStore` rejects for an id that already has a
-    /// persisted session). WI-118 closed that gap by adding
+    /// persisted session). an earlier item closed that gap by adding
     /// `Runtime::resume_root(ResumeSpec)`: it reads the existing
     /// `SessionMeta` via `store.meta` (no `store.create`), re-registers
     /// `meta.agent_id` into `Runtime`'s `agents` map and `AgentTree` through
@@ -1690,12 +1686,12 @@ impl Conway {
     /// idles until this handle's own first `SessionHandle::prompt` call --
     /// never racing the (already-completed) persisted transcript. This
     /// method now calls it directly, which resolves both criteria the
-    /// pre-WI-118 doc could not satisfy:
+    /// pre- an earlier item doc could not satisfy:
     /// - `prompt()` after resume: `Runtime::prompt` now finds `agent` in
     ///   `Runtime.agents` (registered by `resume_root` below), so it appends
     ///   and wakes the gated loop instead of returning `AgentNotFound`.
     /// - `tree()`: `resume_root` attaches the resumed root to `AgentTree`,
-    ///   so `SessionHandle::tree()` (`self.rt.tree()`, WI-101, unchanged)
+    ///   so `SessionHandle::tree()` (`self.rt.tree()`, unchanged)
     ///   now reflects it. **Still disclosed, not silently dropped:**
     ///   `resume_root`'s own doc is explicit that it re-attaches only the
     ///   resumed *root* -- past fork/spawn children are not re-attached as
@@ -1731,7 +1727,7 @@ impl Conway {
     /// `store.meta` lookup, converted via that type's own `#[from]
     /// StoreError`) -- a plain `?` here would surface it as
     /// `ConwayError::Runtime(RuntimeError::Store(_))`, one layer deeper than
-    /// this method returned pre-WI-119 (`ConwayError::Store(_)` directly, from
+    /// this method returned pre- an earlier item (`ConwayError::Store(_)` directly, from
     /// this method's own former `store.meta` call). `resume`'s existing test
     /// suite asserts the flat shape, and nothing about resuming a session
     /// makes "the store doesn't have it" a *runtime* concern rather than a
@@ -1798,7 +1794,7 @@ impl Conway {
     /// goes through the runtime's subagent machinery (and so also spawns a
     /// live agent task); this method only creates the child's session file.
     ///
-    /// Reuses [`ForkSpec`] (WI-102) rather than a parallel type, per the
+    /// Reuses [`ForkSpec`] rather than a parallel type, per the
     /// binding notes. `directive`/`result_contract` still have
     /// no session-level counterpart -- `conway_core::log::SessionMeta`
     /// carries none of them, and there is no live child turn here to attach
@@ -1807,12 +1803,12 @@ impl Conway {
     /// and `role` are consulted for the persisted `SessionMeta`, as
     /// overrides onto the parent's own values.
     ///
-    /// **Live registration (WI-119):** after the store-side fork below, this
+    /// **Live registration:** after the store-side fork below, this
     /// method now also calls `Runtime::resume_root` over the freshly created
     /// child session -- the same mechanism [`Conway::resume`] uses -- so the
     /// returned handle is DRIVABLE: `prompt` on it succeeds (verified by
     /// `fork_from_returns_a_drivable_child_whose_prompt_succeeds`).
-    /// `resume_root`'s `ResumeGate` (WI-118) means the child idles until
+    /// `resume_root`'s `ResumeGate` means the child idles until
     /// *this* handle's own first `prompt` call, exactly like a resumed root
     /// -- it does not run a turn as a side effect of `fork_from` itself.
     /// `spec.tools`/`spec.budget` -- otherwise unused by the store-side fork
@@ -1824,10 +1820,10 @@ impl Conway {
     /// values (set from `spec`/`parent_meta` just above), so there is no
     /// need to re-derive them a second time.
     ///
-    /// **Inherited prefix, resolved (WI-119 gap closed):** this criterion
+    /// **Inherited prefix, resolved (gap closed):** this criterion
     /// also asks for "the child's context contains the inherited prefix" --
     /// previously disclosed here as NOT satisfied, since `Runtime::
-    /// resume_root` (WI-118) always constructed its `AgentLoop` with
+    /// resume_root` always constructed its `AgentLoop` with
     /// `inherited: None`, correct only for a genuine root (whose own session
     /// records ARE its complete history), not for a fork child (whose own
     /// records are, by the zero-copy contract this method preserves, empty
@@ -1864,7 +1860,7 @@ impl Conway {
     /// **Shared helper (disclosed refactor):** the `store.fork` ->
     /// `rt.resume_root` sequence below used to live inline here. It now
     /// delegates to `crate::fork_child::fork_child` -- which only this
-    /// method calls, since board item B2 moved the `/ask` fork-ask flow
+    /// method calls, since B2 moved the `/ask` fork-ask flow
     /// (`SessionHandle::ask`) onto the runtime's own attach path
     /// (`SubagentHost::start`) so ephemeral `/ask` children attach as proper
     /// fork children of the asker. A session created through this method is

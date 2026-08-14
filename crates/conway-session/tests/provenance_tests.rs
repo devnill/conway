@@ -1,5 +1,5 @@
 //! Integration tests for `provenance::{append_context_report,
-//! load_context_report, load_all_context_reports}` (WI-051 criteria),
+//! load_context_report, load_all_context_reports}` (criteria),
 //! exercised entirely through the public `JsonlSessionStore`/`SessionStore`
 //! surface — the report is an ordinary `LogRecord::ContextReportRecord`
 //! appended/read via `store.append`/`store.read`, with no store
@@ -48,6 +48,7 @@ fn report(turn: u32, segments: Vec<ContextReportEntry>) -> ContextReport {
         tokenizer: "heuristic-chars4".into(),
         segments,
         total_tokens_est,
+        dropped: Vec::new(),
     }
 }
 

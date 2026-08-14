@@ -1,4 +1,4 @@
-//! Real-path acceptance tests for board item 01KYTP1D3XWEZPW4AKPH54FNB3
+//! Real-path acceptance tests for
 //! ("the extension design's flagship `prompt` effect was never evaluated
 //! anywhere in `PermissionBroker::decide`").
 //!
@@ -15,7 +15,7 @@
 //! `PermissionBroker::check_root`, so a `prompt` rule -- the extension
 //! design's OWN flagship worked example
 //! (`{"categories":["edit","delete"],"then":"prompt"}`,
-//! `.design/extension-architecture.md` §2020) -- had nothing evaluating
+//! the extension design) -- had nothing evaluating
 //! it anywhere. The two tests below are the item's own named failures,
 //! reproduced end to end:
 //!
@@ -28,7 +28,7 @@
 //!   be consulted, so an operator's own pattern grant silently defeated a
 //!   plugin's narrower `prompt` rule for the identical call.
 //!
-//! Per this item's own GP-14 corollary, each test asserts on the persisted
+//! Per this item's own corollary, each test asserts on the persisted
 //! `ToolResult` text (a distinctive `Deny { reason }` the REAL gate is
 //! scripted to return), not merely on the gate's call count: a silently
 //! bypassed call and a genuinely refused one can otherwise both leave a
@@ -167,7 +167,7 @@ fn build_conway(backend: Arc<dyn Backend>, gate: Arc<dyn PermissionGate>) -> Con
         .with_session_store(store)
         .with_permission_gate(gate)
         .with_router(fake_router())
-        // Board item (bash ships on by default and cannot be declined):
+        // (bash ships on by default and cannot be declined):
         // this file drives the REAL `bash` tool end to end, so it must now
         // opt in explicitly -- the facade's own default excludes it.
         .with_builtin_plugins(PluginSelection::All)

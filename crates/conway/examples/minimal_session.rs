@@ -1,4 +1,4 @@
-//! A minimal runnable conway session (WI-132).
+//! A minimal runnable conway session.
 //!
 //! Runs fully offline against fake ports (an echoing backend), so
 //!

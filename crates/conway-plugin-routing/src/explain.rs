@@ -1,11 +1,10 @@
 //! `RoutingExplain`: the "why did this model run, and why not the others"
-//! answer (WI-036, amended for headroom). Implemented **solely** as a
-//! projection of `DeclarativeRouter::evaluate` (`router.rs`, WI-034) plus a
+//! answer (amended for headroom). Implemented **solely** as a
+//! projection of `DeclarativeRouter::evaluate` (`router.rs`) plus a
 //! per-candidate health/capability snapshot -- it must never re-implement
 //! filtering, which is the specific bug this structure prevents.
 //!
-//! **The report shape itself moved to `conway-core`** (board item
-//! 01KZFC1KNGQ51TZ0BG7P7RAY9H): `BreakerSnapshot`, `CapabilitySummary`,
+//! **The report shape itself moved to `conway-core`** -- `BreakerSnapshot`, `CapabilitySummary`,
 //! `EntryOutcome`, `ExplainEntry`, and `ExplainReport` are now defined in
 //! `conway_core::routing` and re-exported from this crate's `lib.rs` for
 //! source compatibility. This module now also implements
@@ -24,13 +23,13 @@
 //! the port trait, so it is unreachable through `Arc<dyn HealthRegistry>`.
 //! `BreakerSnapshot` below therefore carries a single merged `state` field
 //! instead of the specified `{transport, probe}` pair. Coordinator-approved
-//! (option (a) of the WI-036 scoping blocker): a `HealthRegistry::kind_state`
+//! (option (a) of the scoping blocker): a `HealthRegistry::kind_state`
 //! trait addition is queued for the refinement phase; this note is the
 //! breadcrumb back to the original spec shape.
 //!
 //! Second divergence note: the plan's implementation notes say
 //! `generated_at` "is injected via the router's `Clock`", matching an
-//! earlier draft. `DeclarativeRouter` (as landed at WI-034, commit 0a38c42)
+//! earlier draft. `DeclarativeRouter` (as landed at an earlier item, commit 0a38c42)
 //! carries no `Clock` field -- only `BreakerRegistry` does, and it is not
 //! reachable from here (see above). `generated_at` is instead read directly
 //! from `chrono::Utc::now()` at explain time. This does not affect
@@ -147,7 +146,7 @@ impl RoutingExplainer for RoutingExplain<'_> {
 }
 
 /// Lets an owned `Arc<DeclarativeRouter>` (as `ConwayBuilder::build` holds
-/// once it compiles one, board item 01KZFC2MD1FVNA674YJ9A19T8E) stand in
+/// once it compiles one) stand in
 /// directly as an `Arc<dyn RoutingExplainer>` for `Conway`'s
 /// `router_explain` slot. `RoutingExplain<'a>` above borrows a `&'a
 /// DeclarativeRouter` and so cannot itself be boxed/arc'd as a `'static`

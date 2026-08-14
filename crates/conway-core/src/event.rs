@@ -67,8 +67,7 @@ pub enum Event {
         parent: Option<AgentId>,
         agent_def: Option<String>,
         inherited_upto: Option<LogSeq>,
-        /// Whether this child is an ephemeral `/ask`-style aside (decision
-        /// 01KYD1TWXMZD4BT842CMJT1AED): stamped from the child's
+        /// Whether this child is an ephemeral `/ask`-style aside -- stamped from the child's
         /// `SessionMeta::ephemeral` at `attach` time. `#[serde(default)]`
         /// keeps old JSON logs readable: a missing key deserializes to
         /// `false`, matching the pre-ephemeral semantics every non-ask fork/
@@ -192,10 +191,6 @@ pub enum Event {
     SteerDropped {
         target: AgentId,
         reason: String,
-    },
-    RepeatedStep {
-        tool: ToolName,
-        prior_seq: LogSeq,
     },
     BackendDegraded {
         endpoint: EndpointId,
@@ -392,13 +387,6 @@ mod tests {
                 "steer_dropped",
             ),
             (
-                Event::RepeatedStep {
-                    tool: ToolName::new("read"),
-                    prior_seq: LogSeq(3),
-                },
-                "repeated_step",
-            ),
-            (
                 Event::BackendDegraded {
                     endpoint: EndpointId::new("anthropic-1"),
                     breaker: BreakerKind::Transport,
@@ -420,14 +408,16 @@ mod tests {
     #[test]
     fn every_variant_constructs_and_round_trips_with_exact_tag() {
         let variants = all_variants();
-        // Twenty-four variants: the twenty from architecture §6.5 (Envelope's
-        // inline `event` field dropped from the count) plus `Lagged`,
-        // `SteerDropped`, the extra `SteerQueued` field, the B3
-        // `AgentPromoted` addition, and this item's `UserTurn` addition —
-        // i.e. every variant currently defined on `Event`. This assertion
-        // exists precisely so nobody adds a variant without updating it
-        // (see this file's module doc and the item that added `UserTurn`).
-        assert_eq!(variants.len(), 24);
+        // Every variant currently defined on `Event`: the twenty from
+        // architecture §6.5 (`Envelope`'s inline `event` field dropped from
+        // the count), plus `Lagged`, `SteerDropped`, `AgentPromoted` and
+        // `UserTurn`, minus `RepeatedStep` -- retired when repeated-step
+        // detection moved to `conway-plugin-stepguard`, since the core event
+        // vocabulary keeps no variant the core cannot produce.
+        //
+        // This assertion exists precisely so nobody adds or removes a variant
+        // without saying so here (see this file's module doc).
+        assert_eq!(variants.len(), 23);
         for (event, expected_tag) in variants {
             let value = serde_json::to_value(&event).unwrap();
             assert_eq!(value["event"], expected_tag, "tag for {event:?}");

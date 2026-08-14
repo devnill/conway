@@ -1,4 +1,4 @@
-//! Integration tests for the JSONL line codec (WI-046 criteria): header
+//! Integration tests for the JSONL line codec (criteria): header
 //! round-trip against a §5.1-shaped example, record line shape, and a
 //! ≥256-case property test asserting
 //! `decode_record(encode_record(r, s)) == (s, r)` across every
@@ -268,24 +268,31 @@ fn arb_child_result_record() -> impl Strategy<Value = LogRecord> {
 }
 
 fn arb_context_report_record() -> impl Strategy<Value = LogRecord> {
-    (arb_seq(), any::<u32>(), any::<u32>()).prop_map(|(seq, turn, tokens_est)| {
-        LogRecord::ContextReportRecord {
-            seq,
-            ts: ts(),
-            report: ContextReport {
-                agent_id: AgentId::new(),
-                turn,
-                tokenizer: "cl100k_base".into(),
-                segments: vec![ContextReportEntry {
-                    segment: SegmentId::new(),
-                    provenance: Provenance::UserPrompt,
-                    tokens_est,
-                    estimated: true,
-                }],
-                total_tokens_est: tokens_est,
+    (
+        arb_seq(),
+        any::<u32>(),
+        any::<u32>(),
+        proptest::collection::vec(any::<String>(), 0..3),
+    )
+        .prop_map(
+            |(seq, turn, tokens_est, dropped)| LogRecord::ContextReportRecord {
+                seq,
+                ts: ts(),
+                report: ContextReport {
+                    agent_id: AgentId::new(),
+                    turn,
+                    tokenizer: "cl100k_base".into(),
+                    segments: vec![ContextReportEntry {
+                        segment: SegmentId::new(),
+                        provenance: Provenance::UserPrompt,
+                        tokens_est,
+                        estimated: true,
+                    }],
+                    total_tokens_est: tokens_est,
+                    dropped,
+                },
             },
-        }
-    })
+        )
 }
 
 fn arb_log_record() -> impl Strategy<Value = LogRecord> {

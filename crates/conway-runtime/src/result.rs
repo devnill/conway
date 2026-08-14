@@ -1,5 +1,5 @@
 //! `ResultBuilder`: accumulates the cross-turn state needed to construct an
-//! agent's terminal `AgentResult` (WI-086) -- every artifact any dispatched
+//! agent's terminal `AgentResult` -- every artifact any dispatched
 //! tool emitted over the run, and the most recent successful `report` tool
 //! invocation, if the agent made one. `AgentLoop::finish` resolves
 //! precedence between the two exactly once, at the finish boundary.
@@ -9,17 +9,14 @@
 //! against a `SubagentSpec::result_contract`, classified into `Ok` /
 //! `Retry` / `Rejected` so the turn loop can drive the spec's "one
 //! corrective retry, then `Rejected{missing}`" rule. Enforcement lives at
-//! the finish boundary, not in the tool layer (module notes, WI-086) --
+//! the finish boundary, not in the tool layer (module notes) --
 //! this function is the boundary's stateless decision procedure; the loop
 //! itself tracks whether a given failure is the first or second attempt.
 //!
-//! `ResultBuilder` and `StepDigest` (`step_digest.rs`) are both
-//! turn-loop-local state (`AgentLoop::run_inner`'s stack), not fields on
-//! `AgentLoop`/`AgentSpec` -- see this crate's lib doc / WI-086 self-check
-//! for why: both structs are constructed via field literals in files
-//! outside this item's scope (`runtime.rs`, `subagent.rs`, and existing
-//! tests), so adding a struct field there would force edits this item is
-//! not chartered to make.
+//! `ResultBuilder` is turn-loop-local state (`AgentLoop::run_inner`'s
+//! stack), not a field on `AgentLoop`/`AgentSpec`: both of those structs are
+//! constructed via field literals across `runtime.rs`, `subagent.rs`, and
+//! the test suite, so a field there is a much wider change than a local.
 
 use conway_core::agent::{Fact, ResultStatus};
 use conway_core::content::{Artifact, ContentBlock};
@@ -29,7 +26,7 @@ use serde::Deserialize;
 use crate::tools::ToolOutcome;
 
 /// The tool name the runtime recognizes as the explicit-finalization call
-/// (`conway-tools`' `ReportPlugin`, WI-065's `ReportTool`). Matched by name
+/// (`conway-tools`' `ReportPlugin`, an earlier item's `ReportTool`). Matched by name
 /// only -- `conway-runtime` must not depend on `conway-tools`
 /// (`report_tool.rs`'s own module doc names this exact boundary).
 const REPORT_TOOL_NAME: &str = "report";

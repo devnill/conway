@@ -1,15 +1,13 @@
 # Scripts: the any-language hook convention
 
 **This page documents a designed convention, mostly still not a built one --
-`pre_tool_use` is the one exception.** Board item
-`01KZDC0RDRMMMJHX7SAFMM2Q5A`'s own config-schema child,
-`01KZRZW5CWMVQ0GPRT4GX4RV5G`, shipped the `[hooks]` block's typed, validated
+`pre_tool_use` is the one exception.**'s own config-schema child, shipped the `hooks` block's typed, validated
 shape (`conway::config::schema::HooksConfig`/`HookEntry`) — see the
 correction note right after the JSON example below for exactly how it
-differs from this page's original illustrative sketch. `01KZRZY1MNM872BZ6AKEBG3SKE`
+differs from this page's original illustrative sketch.
 (the script runner, `conway_core::ports::HookRunner`/
-`conway_tools::hook_runner::ProcessHookRunner`) and `01KZS00JP5QNBJSSHNFP9C47GM`
-(`pre_tool_use` enforcement) are BOTH now built: a `[hooks].rules[]` entry
+`conway_tools::hook_runner::ProcessHookRunner`) and
+(`pre_tool_use` enforcement) are BOTH now built: a `hooks.rules[]` entry
 with `event: "pre_tool_use"` and `enabled: true` really does spawn `command`
 and can really deny a tool call, PROVIDED a binary or embedder also calls
 `ConwayBuilder::with_hook_runner` (not automatic — see `hooks.md` point 13's
@@ -27,7 +25,7 @@ note for exactly what was verified.
 
 ## The contract
 
-**Declaration** — the shape board item `01KZDC0RDRMMMJHX7SAFMM2Q5A` itself
+**Declaration** — the shape itself
 gave as the ORIGINAL worked example (an illustrative sketch, not the shipped
 schema — see the correction immediately below), a JSON block naming an
 event and a command:
@@ -40,7 +38,7 @@ event and a command:
 } }
 ```
 
-**Correction: this is NOT the shape `01KZRZW5CWMVQ0GPRT4GX4RV5G` shipped.**
+**Correction: this is NOT the shape shipped.**
 That item settled the config-parsing half of this page down to the field,
 and it diverges from the sketch above in three ways, each decided for a
 stated reason (see `conway::config::schema::HookEntry`'s own doc comment):
@@ -70,7 +68,7 @@ today is:
 
 This parses, validates (deny-unknown-fields per rule, non-empty/unique
 `id`), and round-trips today. **It still does nothing when loaded** — no
-dispatcher reads `rules` yet; see the runner/enforcement board items named
+dispatcher reads `rules` yet; see the runner/enforcement named
 above. The stdin/stdout contract described below (what the command receives
 and how it answers) is still design only, for either shape.
 

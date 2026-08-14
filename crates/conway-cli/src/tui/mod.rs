@@ -1,5 +1,5 @@
-//! Interactive TUI (WI-111: stub; WI-114 implements the ratatui shell here;
-//! WI-115 adds slash commands on top of `app.rs`).
+//! Interactive TUI (stub; an earlier item implements the ratatui shell here;
+//! adds slash commands on top of `app.rs`).
 //!
 //! Terminal lifecycle: [`run`] enters raw mode + the alternate screen,
 //! installs a panic hook that restores the terminal before re-raising (so a
@@ -39,19 +39,19 @@ use crate::exit::ExitCode;
 use app::App;
 use gate::GateReceiver;
 
-/// Entry point (WI-114). Deviates from the module notes' literal two-argument
+/// Entry point. Deviates from the module notes' literal two-argument
 /// `tui::run(cli, conway)` form by one argument -- see this crate's
 /// `main.rs`, `build_conway`'s doc comment, and this item's own Self-Check
 /// for why: `conway_runtime::runtime::Runtime` bakes its `PermissionGate` in
 /// at construction, with no later swap point, so the interactive permission
 /// gate this item is responsible for wiring (`gate::TuiGate`, CARRIED
-/// F-100-1) must be constructed and handed to `ConwayBuilder::with_permission_gate`
+///) must be constructed and handed to `ConwayBuilder::with_permission_gate`
 /// *before* `conway: Conway` (this function's second argument) is built --
 /// i.e. in `main.rs`, ahead of this call. This function receives the
 /// matching [`GateReceiver`] half of that same channel as its third
 /// argument so the app loop can service the requests the already-built
 /// `Conway`'s live `Runtime` sends into it.
-/// `plugins` (board item 01KZYBFTK4QPB45AJT9M57P60W): the installed plugin
+/// `plugins`: the installed plugin
 /// list, forwarded verbatim to [`App::new`] so it can build the plugin
 /// command registry -- see that method's own doc for why this is threaded
 /// as a parameter here rather than read back off the already-built `conway`

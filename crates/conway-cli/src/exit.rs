@@ -1,4 +1,4 @@
-//! The CLI's exit-code contract (WI-111).
+//! The CLI's exit-code contract.
 //!
 //! [`ExitCode`] is the single vocabulary every command path reports
 //! through: `main` never returns early with a bare `std::process::exit`

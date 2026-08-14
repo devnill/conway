@@ -1,4 +1,4 @@
-//! Integration coverage for `SubagentPlugin`'s six tools (WI-066 criteria).
+//! Integration coverage for `SubagentPlugin`'s six tools (criteria).
 //!
 //! Requires the `test-fakes` feature (for `conway_tools::testing::test_ctx`
 //! and `FakeSubagentHost`). Declared with `required-features =
@@ -62,12 +62,12 @@ fn fake_with_result(status: ResultStatus) -> (Arc<FakeSubagentHost>, AgentId) {
 }
 
 /// This crate holds zero delegation logic (architecture boundary,
-/// WI-066 criteria): the tool layer is a pure wrapper over
+/// criteria): the tool layer is a pure wrapper over
 /// `ToolCtx::subagents`. Read from outside `tools.rs` so this assertion's
 /// own literal strings aren't part of the scanned content.
 ///
-/// The line cap moved from 400 to 500 when board item
-/// 01KZDC1HSNJZ1K7HVQEW65S56R split the single former mode-argument tool
+/// The line cap moved from 400 to 500 when
+/// split the single former mode-argument tool
 /// into `conway_fork`/`conway_spawn`: two independently-documented arg structs
 /// (each declaring its own `prompt` doc, per the split's whole point) plus
 /// two `Tool` impls cost real lines even though delegation logic is
@@ -168,8 +168,7 @@ async fn fork_records_start_with_fork_mode_and_prompt() {
     assert_eq!(started[0].1.prompt, "p");
 }
 
-/// Break-the-guard evidence for this test (board item
-/// 01KZDC1HSNJZ1K7HVQEW65S56R): stubbing `ForkTool::invoke`'s
+/// Break-the-guard evidence for this test -- stubbing `ForkTool::invoke`'s
 /// `start_and_maybe_await` call to pass `SubagentMode::Spawn` instead of
 /// `SubagentMode::Fork` fails this assertion (`SubagentMode::Fork` no longer
 /// matches) while every other assertion in the file is unaffected -- the
@@ -205,7 +204,7 @@ async fn spawn_with_agent_def_records_spawn_mode() {
 
 #[tokio::test]
 async fn spawn_without_agent_def_starts_with_agent_def_none() {
-    // WI-099's "agent_def required for spawn" rule is relaxed: a spawn with
+    // an earlier item's "agent_def required for spawn" rule is relaxed: a spawn with
     // no agent_def is no longer a model-recoverable error -- it starts a
     // child with `agent_def: None`, which `conway_runtime`'s
     // `SubagentHost::start` resolves as "inherit the caller's role/model".
@@ -234,7 +233,7 @@ async fn spawn_without_agent_def_starts_with_agent_def_none() {
 /// A model can no longer send spawn-shaped (or fork-shaped) arguments under
 /// the wrong tool by filling in a `mode` field -- there is no such field, so
 /// `deny_unknown_fields` rejects a stray `mode` key outright, with zero
-/// starts recorded (P-10: caller-correctable, not a panic or a silent
+/// starts recorded (: caller-correctable, not a panic or a silent
 /// misinterpretation).
 #[tokio::test]
 async fn a_stray_mode_argument_is_rejected_not_silently_accepted() {
@@ -261,10 +260,10 @@ async fn a_stray_mode_argument_is_rejected_not_silently_accepted() {
 
 #[tokio::test]
 async fn ask_tool_calls_subagent_host_ask_with_ephemeral_fork_spec() {
-    // P-1: `conway_ask` composes `SubagentHost::ask` — it is NOT a third
+    //: `conway_ask` composes `SubagentHost::ask` — it is NOT a third
     // primitive. The tool is a pure wrapper: it builds an ephemeral fork spec
-    // and delegates. GP-02: fork-only (no mode arg); GP-01: returns the full
-    // reply text; P-2: an `EphemeralSessionRef` artifact names the child.
+    // and delegates.: fork-only (no mode arg): returns the full
+    // reply text: an `EphemeralSessionRef` artifact names the child.
     let parent = AgentId::new();
     let transcript_ref = SessionId::new();
     let outcome = AskOutcome {
@@ -310,10 +309,10 @@ async fn ask_tool_calls_subagent_host_ask_with_ephemeral_fork_spec() {
     assert_eq!(spec.role, None);
     assert_eq!(spec.tools, None);
 
-    // GP-01: the model sees the full, clean reply text.
+    //: the model sees the full, clean reply text.
     assert_eq!(text_of(&out), "curated brief");
     assert_eq!(out.truncation, TruncationPolicy::Tail { max_bytes: 16_384 });
-    // P-2: an `EphemeralSessionRef` artifact carrying the child's
+    //: an `EphemeralSessionRef` artifact carrying the child's
     // `transcript_ref`.
     assert_eq!(out.artifacts.len(), 1);
     let artifact = &out.artifacts[0];
@@ -328,7 +327,7 @@ async fn ask_tools_arg_maps_to_only_selector_on_child_spec() {
     // `ToolSelector::Only` straight into the captured SubagentSpec (the same
     // mapping `conway_fork`/`conway_spawn`'s `tools` arg uses at tools.rs), leaving
     // resolution/narrowing to the runtime's existing spec plumbing — the
-    // tool layer adds no plumbing of its own (P-6).
+    // tool layer adds no plumbing of its own ().
     let parent = AgentId::new();
     let outcome = AskOutcome {
         text: "curated brief".into(),
@@ -366,7 +365,7 @@ async fn ask_tools_arg_maps_to_only_selector_on_child_spec() {
 
 #[tokio::test]
 async fn ask_args_reject_unknown_fields_and_deserialize_without_tools() {
-    // C-04: `AskArgs` keeps `deny_unknown_fields` — a typo'd arg is an
+    //: `AskArgs` keeps `deny_unknown_fields` — a typo'd arg is an
     // `InvalidArguments` error with zero asks recorded...
     let (ctx, handles) = test_ctx(PathBuf::from("/tmp/x"));
     let err = AskTool::new()
@@ -450,7 +449,7 @@ async fn ask_host_runtime_error_surfaces_as_err_not_is_error() {
     // a `SubagentHost::ask` failure surfaces as `Err`, never `Ok` with
     // `is_error` set (that shape is reserved for a non-Completed AskOutcome).
     //
-    // Board item C1: `RuntimeError::AgentNotFound` -> `SubagentError::
+    // C1: `RuntimeError::AgentNotFound` -> `SubagentError::
     // UnknownAgent` -> `ToolError::InvalidArguments`, not `Internal` -- an
     // unknown `agent_id` the model itself never even supplied here (this
     // fake's `ask_error` fires unconditionally) is still, structurally, a
@@ -556,6 +555,55 @@ async fn ask_budget_args_override_config_keys() {
     let deadline = budget.deadline.expect("arg deadline is set");
     assert!(deadline >= before + chrono::Duration::seconds(8));
     assert!(deadline <= before + chrono::Duration::seconds(11));
+}
+
+/// `max_tool_calls` reaches the child through the same two tiers every other
+/// budget dimension uses -- the call's own `budget` argument, then a config
+/// key. Without both, the dimension would be settable only from the library
+/// API, which is a capability trapped in one consumption mode.
+#[tokio::test]
+async fn ask_max_tool_calls_comes_from_the_arg_then_the_config_key() {
+    // Tier 2: the config key alone.
+    let (ctx, handles) = test_ctx(PathBuf::from("/tmp/x"));
+    let mut values = serde_json::Map::new();
+    values.insert("ask.max_tool_calls".into(), serde_json::json!(9));
+    let ctx = ToolCtx {
+        config: Arc::new(PluginConfig { values }),
+        ..ctx
+    };
+    AskTool::new()
+        .invoke(call("conway_ask", serde_json::json!({"prompt": "p"})), ctx)
+        .await
+        .unwrap();
+    assert_eq!(handles.subagents.asks()[0].1.budget.max_tool_calls, Some(9));
+
+    // Tier 1: the call's argument outranks it.
+    let (ctx, handles) = test_ctx(PathBuf::from("/tmp/x"));
+    let mut values = serde_json::Map::new();
+    values.insert("ask.max_tool_calls".into(), serde_json::json!(9));
+    let ctx = ToolCtx {
+        config: Arc::new(PluginConfig { values }),
+        ..ctx
+    };
+    AskTool::new()
+        .invoke(
+            call(
+                "conway_ask",
+                serde_json::json!({"prompt": "p", "budget": {"max_tool_calls": 2}}),
+            ),
+            ctx,
+        )
+        .await
+        .unwrap();
+    assert_eq!(handles.subagents.asks()[0].1.budget.max_tool_calls, Some(2));
+
+    // Absent from both: no ceiling, matching `max_tokens`'s own default.
+    let (ctx, handles) = test_ctx(PathBuf::from("/tmp/x"));
+    AskTool::new()
+        .invoke(call("conway_ask", serde_json::json!({"prompt": "p"})), ctx)
+        .await
+        .unwrap();
+    assert_eq!(handles.subagents.asks()[0].1.budget.max_tool_calls, None);
 }
 
 #[tokio::test]
@@ -695,11 +743,11 @@ async fn steer_calls_host_with_exact_agent_id_and_text() {
     assert_eq!(
         handles.subagents.steers(),
         vec![(caller, target, "keep going".to_string())],
-        "the tool must thread ctx.agent_id through as `caller` (P-1, 01KYT8TS0EBKJHYNJRF6S88NRH)"
+        "the tool must thread ctx.agent_id through as `caller` (,)"
     );
 }
 
-/// The exfiltration-seam extension (board item C2): a `conway_steer` call
+/// The exfiltration-seam extension (C2): a `conway_steer` call
 /// naming a SIBLING id (a real, known-to-the-runtime agent outside the
 /// caller's own subtree) must surface as `ToolError::InvalidArguments`
 /// naming BOTH the caller and the sibling -- not `Internal`, which is how
@@ -719,7 +767,7 @@ async fn steer_calls_host_with_exact_agent_id_and_text() {
 /// `SubagentHandle`'s `RuntimeError -> SubagentError -> ToolError`
 /// translation) surfaces the correct `ToolError` VARIANT -- asserted by
 /// `matches!`/`match`, never by scanning rendered text for a substring that
-/// would look identical whether the mapping were right or wrong (GP-14: a
+/// would look identical whether the mapping were right or wrong (: a
 /// check that cannot fail is not a check).
 #[tokio::test]
 async fn steer_against_a_sibling_id_is_invalid_arguments_naming_both_ids() {
@@ -911,7 +959,7 @@ async fn host_runtime_error_surfaces_as_err_not_is_error() {
     // No scripted result for this unknown id: `FakeSubagentHost::await_result`
     // returns `Err(RuntimeError::AgentNotFound)`, which `SubagentHandle`
     // translates to `SubagentError::UnknownAgent` -> `ToolError::
-    // InvalidArguments` (board item C1: an unknown `agent_id` the model
+    // InvalidArguments` (C1: an unknown `agent_id` the model
     // itself supplied is a caller-correctable mistake, not a host bug --
     // see `conway_core::error::SubagentError`'s own doc).
     let unknown = AgentId::new();

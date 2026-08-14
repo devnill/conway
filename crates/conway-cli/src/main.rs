@@ -1,4 +1,4 @@
-//! `conway`: the CLI binary (WI-111).
+//! `conway`: the CLI binary.
 //!
 //! `main` never uses `?`: every fallible step is matched explicitly and
 //! converted to an [`conway_cli::exit::ExitCode`] via
@@ -18,7 +18,7 @@ use conway_cli::{commands, diag, first_party_plugins, oneshot, tui};
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
     // `Cli::parse()` (not `try_parse`) already implements the exact
-    // contract the WI-111 criteria ask for: `--help`/`--version` print to
+    // contract the criteria ask for: `--help`/`--version` print to
     // stdout and exit 0, every other parse error prints to stderr and
     // exits 2 -- clap's own `Error::exit()`, which this calls internally.
     let cli = Cli::parse();
@@ -32,7 +32,7 @@ async fn main() -> std::process::ExitCode {
         }
     }
 
-    // **Disclosed, WI-112/WI-114 reconciliation -- widens this function and
+    // **Disclosed an earlier item/ an earlier item reconciliation -- widens this function and
     // `build_conway` beyond `dispatch`'s own match arms, which is the one
     // piece of this shared file each of those items' briefs asked to leave
     // alone.** `conway_runtime::runtime::Runtime` bakes its `PermissionGate`
@@ -41,7 +41,7 @@ async fn main() -> std::process::ExitCode {
     // `Conway` already exists -- which is what every dispatch target other
     // than `tui`/`print` still does -- can never see a live tool call.
     // `tui` and one-shot (`print`) are the two targets whose own binding
-    // notes require them to supply their own gate (CARRIED F-100-1: "the
+    // notes require them to supply their own gate (CARRIED "the
     // TUI is the layer that wires the INTERACTIVE permission prompt
     // handler"; one-shot's own notes: "-p one-shot uses an ALLOW-LIST
     // gate ... this is the layer that wires the gate for non-interactive
@@ -52,7 +52,7 @@ async fn main() -> std::process::ExitCode {
     // item's own public surface -- the CLI or a future item should likely
     // add a way to supply a prompt handler") and that
     // `tests/cli_surface.rs`'s `MINIMAL_CONFIG` comment attributes to
-    // "WI-112/114" by name. Every other dispatch target's behavior here is
+    // "an earlier item" by name. Every other dispatch target's behavior here is
     // byte-for-byte unchanged (`gate_override`/`tui_gate_rx` are both
     // `None`).
     let is_tui = cli.command.is_none() && cli.print.is_none();
@@ -66,7 +66,21 @@ async fn main() -> std::process::ExitCode {
         let gate: Arc<dyn PermissionGate> = Arc::new(oneshot::build_gate(&cli));
         (Some(gate), None)
     } else {
-        (None, None)
+        // `sessions`/`routes` are read-only inspections: they never start an
+        // agent and never propose a tool call, so whatever gate they carry is
+        // never consulted. They used to supply none, which left
+        // `ConwayBuilder::build` falling through to `gates::from_config` --
+        // and that errors under `permissions.mode = "prompt"`, because no
+        // subcommand can supply the interactive handler that mode needs. The
+        // effect was that `conway routes explain` refused to run under an
+        // ordinary interactive config, for want of a permission decision it
+        // could not have made.
+        //
+        // Deny-all rather than allow-list: it is never consulted either way,
+        // so the honest choice is the one that would be correct if it ever
+        // were.
+        let gate: Arc<dyn PermissionGate> = Arc::new(conway::gates::DenyAllGate);
+        (Some(gate), None)
     };
 
     let conway = match build_conway(&cli, gate_override, is_tui) {
@@ -77,7 +91,7 @@ async fn main() -> std::process::ExitCode {
         }
     };
 
-    // Board item 01KZ803DJW8Y1H4FXTM8D3PYMY: `Conway::warnings()` (a real,
+    // `Conway::warnings()` (a real,
     // populated mechanism -- `config::merge::validate` pushes a
     // `WarningCode::HeadroomExceedsContext` when a role's effective headroom is
     // `>=` the smallest context window reachable through its chain) had zero
@@ -115,9 +129,9 @@ async fn main() -> std::process::ExitCode {
 /// absent, `from_config(path)` when present (module notes). `gate`, when
 /// `Some`, overrides `permissions`-derived gate selection via
 /// `ConwayBuilder::with_permission_gate` -- see this file's `main` for why
-/// (WI-114 reconciliation) and which dispatch targets ever pass one.
+/// (reconciliation) and which dispatch targets ever pass one.
 ///
-/// `--root` (board item 01KYTMH9JX21CGSE2Y6E2KP8SJ) is applied here, via
+/// `--root` is applied here, via
 /// `ConwayBuilder::with_root`, whenever `cli.root` is `Some` -- absent, this
 /// `Conway`'s root agent (and every session it starts) stays `Unconfined`,
 /// exactly as before this flag existed. Resolved relative to the process's
@@ -127,7 +141,7 @@ async fn main() -> std::process::ExitCode {
 /// itself never joins two path flags together, and neither does this
 /// function.
 ///
-/// `is_tui` (bash opt-in board item: bash ships on by default and cannot be
+/// `is_tui` (bash opt-in bash ships on by default and cannot be
 /// declined) selects which built-in plugins `build()` registers.
 /// Every non-interactive CLI target (`sessions`, `routes`, one-shot `-p`)
 /// keeps this crate's pre-item behavior UNCHANGED -- every built-in,
@@ -150,7 +164,7 @@ fn build_conway(
         Some(path) => ConwayBuilder::from_config(path)?,
         None => ConwayBuilder::discover()?,
     };
-    // Board item 01KZVTTP492R3BDY33FAGYWDNW: unconditional, not gated on
+    // unconditional, not gated on
     // whether the loaded config's `[hooks].rules` is non-empty -- injecting
     // a runner that never gets consulted (no `pre_tool_use` rules present)
     // costs nothing, and it is one fewer branch than checking first. Without
@@ -172,7 +186,7 @@ fn build_conway(
     } else {
         builder.with_builtin_plugins(conway::PluginSelection::All)
     };
-    // First-party plugin tier (board item 01KZDC3JQ7W4DY1MG6MBCVB2DV):
+    // First-party plugin tier:
     // `[plugins].install` names ids against the small bundle this binary
     // links (`first_party_plugins::bundle`) -- every dispatch target
     // (TUI, one-shot `-p`, `sessions`, `routes`) shares this single
@@ -180,7 +194,7 @@ fn build_conway(
     // from the same config, with no target-specific carve-out the way
     // `is_tui`'s built-in selection above has one.
     //
-    // Board item 01KZHF270T3W8GZ7NM6DSNQ4MM / 01KZVZ1TDBHS7S604PQB5RZDM3:
+    // /:
     // the resolved id set is not `[plugins].install` alone --
     // `ConwayBuilder::install_selected` (which `first_party_plugins::install`
     // calls) unions it with `[plugins].default_backends` (default: both
@@ -208,7 +222,7 @@ async fn dispatch(
         None if cli.print.is_some() => oneshot::run(cli, conway).await,
         None => {
             let gate_rx = tui_gate_rx.expect("tui_gate_rx is constructed whenever is_tui is true");
-            // Board item 01KZYBFTK4QPB45AJT9M57P60W: resolved from the SAME
+            // resolved from the SAME
             // `[plugins].install` config `build_conway`'s own
             // `first_party_plugins::install` call already read -- see
             // `installed_plugins`'s own doc for why this is a second,
@@ -221,7 +235,7 @@ async fn dispatch(
 }
 
 /// Installs a `tracing_subscriber::fmt` subscriber to stderr when `-v`/`-vv`
-/// is passed (WI-121). Without this, `diag::set_verbosity` had no effect on
+/// is passed. Without this, `diag::set_verbosity` had no effect on
 /// the `tracing::{trace,info,warn,error}!` calls already scattered through
 /// conway-runtime/-backends/-session/conway (agent-loop failures, backend
 /// health-breaker trips, probe warnings): nothing installs a subscriber, so
@@ -260,7 +274,7 @@ fn to_process_code(code: ExitCode) -> std::process::ExitCode {
 
 #[cfg(test)]
 mod tracing_target_tests {
-    //! Board item 01KZFC43J1J06BM4CCWKCKHSNV names `install_tracing`'s
+    //! Names `install_tracing`'s
     //! per-crate target list as a place a rename can silently stop matching
     //! with no compile error (it's a plain `&str`, not a dependency): this
     //! module verifies `conway_plugin_routing` is actually a live,
@@ -278,8 +292,8 @@ mod tracing_target_tests {
     //! never been renamed) the pre-rename crate name too -- an event on
     //! that OLD target (the `conway-routing` crate's module-path spelling,
     //! not written out verbatim here since this crate no longer exists --
-    //! it was relocated to `conway-plugin-routing`, board item
-    //! 01KZDC5BJWSWZZJQ7HHS11S97H) was verified, empirically,
+    //! it was relocated to `conway-plugin-routing`
+    //!) was verified, empirically,
     //! to still pass this exact directive string even with every trace of
     //! that name gone from the source. The specific `conway_plugin_routing={level}`
     //! clause this item's spec worried would "silently stop matching after

@@ -1,4 +1,4 @@
-//! `conway sessions {list,show,tree,export}` (WI-116): pure formatters over
+//! `conway sessions {list,show,tree,export}`: pure formatters over
 //! `Conway::sessions`/`Conway::resume`/`SessionHandle::transcript` -- no
 //! method here reads a session store file directly, everything goes
 //! through the `conway` facade.

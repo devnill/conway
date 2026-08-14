@@ -3,7 +3,7 @@
 //! (the headroom checks and structural consistency checks).
 //!
 //! [`load_ignoring_xdg`] is the one seam that opts out of a source entirely
-//! (board item 01KZYCKF3Z1XBCS50N7EWWVPEQ) — see its own doc for why XDG
+//! — see its own doc for why XDG
 //! alone, not `env` too, and why it is a sibling function rather than a new
 //! `LoadOptions` field.
 //!
@@ -77,9 +77,9 @@ impl Default for LoadOptions {
 /// strength of that claim would reasonably expect it to reach a real `conway`
 /// invocation when it would not. Whether/how to reconcile the bespoke
 /// `conway-cli` wiring with this struct is the open architectural question
-/// filed as board item `01KZ8049CVW1GCAA081M7WSVSZ` — not decided here.
+/// filed as — not decided here.
 ///
-/// Reconciliation disclosed in the WI-097 Self-Check: this field list is
+/// Reconciliation disclosed in the an earlier item Self-Check: this field list is
 /// exactly the amendment's enumerated set. It has no per-backend override
 /// (e.g. no `backends.<id>.base_url` field) — the precedence-test criterion
 /// names `backends.<id>.base_url` as one of the keys to prove all five
@@ -106,8 +106,8 @@ pub struct CliOverrides {
     /// (`[routing].default_headroom_tokens`, `[roles.<alias>].headroom_tokens`)
     /// and the `CONWAY_ROUTING__DEFAULT_HEADROOM_TOKENS` /
     /// `CONWAY_ROLES__<ALIAS>__HEADROOM_TOKENS` env vars. Left in place
-    /// rather than removed (decision 01KZGRW3CXEAGMP275P95KGN83, board item
-    /// `01KZ8049CVW1GCAA081M7WSVSZ`): unlike the deleted `model` field —
+    /// rather than removed (
+    ///): unlike the deleted `model` field —
     /// which had no `ConwayConfig` key to land on and was skipped by this
     /// struct's own `cli_overrides_to_value` — this field IS translated
     /// into the merge document (`routing.default_headroom_tokens`) and is
@@ -129,7 +129,7 @@ pub fn load(options: LoadOptions) -> Result<LoadOutcome> {
 /// Identical to [`load`], except the XDG/user layer
 /// (`$XDG_CONFIG_HOME/conway/settings.json`, or `~/.conway/settings.json`)
 /// is never read — the merge becomes `default < project < env < CLI`, four
-/// sources instead of five (board item 01KZYCKF3Z1XBCS50N7EWWVPEQ).
+/// sources instead of five.
 ///
 /// [`load`] reads the XDG layer unconditionally, *before* the
 /// `explicit_path`/discovered project layer, regardless of whether
@@ -219,7 +219,7 @@ fn load_impl(options: LoadOptions, include_xdg: IncludeXdgLayer) -> Result<LoadO
 }
 
 /// Re-applies `cli_overrides` to an already-loaded config (used by
-/// `ConwayBuilder::build`, WI-100, so an
+/// `ConwayBuilder::build`, so an
 /// invalid override is caught even when `from_parts`/`from_config` bypassed
 /// `load`'s own CLI layer). Re-runs full validation.
 pub fn apply_cli(config: &ConwayConfig, cli: &CliOverrides) -> Result<ConwayConfig> {
@@ -249,7 +249,7 @@ fn resolve_metadata_path(config: &ConwayConfig, cwd: &std::path::Path) -> PathBu
 }
 
 /// The built-in, lowest-precedence layer. Matches the documented config
-/// defaults exactly (WI-097's Implementation Notes / the headroom
+/// defaults exactly (an earlier item's Implementation Notes / the headroom
 /// amendment), except `routing.default_headroom_tokens`: see
 /// `schema::DEFAULT_HEADROOM_TOKENS`'s doc comment for why `8_192` (not the
 /// amendment's literal `16000`) is used.
@@ -744,7 +744,7 @@ pub fn validate(
         }
     }
 
-    // 10. A rule's `match` (board item 01KZYAWQ6011Q6CJVG6CCMQPF1) only
+    // 10. A rule's `match` only
     //     applies to an `event` whose payload actually names a tool --
     //     `"pre_tool_use"`/`"post_tool_use"`. `EVENTS_WITHOUT_TOOL_NAME`
     //     names every OTHER event `conway-runtime` dispatches on this
@@ -789,9 +789,9 @@ pub fn validate(
     // 11. Every [hooks].rules[] `event` is a WELL-FORMED name -- bare
     //     (core-shaped) or `plugin_id.event_name` -- per
     //     `conway_core::event_name::validate_event_name`'s subscriber-side
-    //     rule (`declaring_plugin: None`). Board item 01KZS03BFE720EQZG7Q2768N2H:
+    //     rule (`declaring_plugin: None`).
     //     this closes the FOLLOW-UP `schema::HookEntry::event`'s own doc
-    //     comment used to name ("a sibling board item is deciding that
+    //     comment used to name ("a sibling is deciding that
     //     rule" -- this is that item).
     //
     //     This checks SHAPE only, never membership: whether a well-formed

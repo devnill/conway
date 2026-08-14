@@ -1,5 +1,5 @@
 //! Acceptance tests for the interactive-chat "pure and light" tool profile
-//! (decision 01KYB0BWY27DWB69NCNK85D56J, board item 01KYB0ESC1YXDEKFT11AZ847NT):
+//! ():
 //! `SessionSpec::tools` plumbs straight through `Conway::new_session` into
 //! `RootSpec::tools`, so a session built with `ToolSelector::Except(vec![
 //! "report".into()])` announces every builtin tool EXCEPT `report` to the
@@ -229,7 +229,7 @@ async fn default_spawn_spec_still_announces_report_to_the_child() {
 /// children use) must NOT leak that exclusion into a default `SpawnSpec`
 /// child it spawns. Today's code cannot leak it -- `SpawnSpec::tools`
 /// defaults `None`, and `SubagentHost::start`'s child resolution never reads
-/// the PARENT's own `AgentSpec.tools` for a spawn (clean-slate, per GP-02) --
+/// the PARENT's own `AgentSpec.tools` for a spawn (clean-slate) --
 /// but nothing up to now asserted that specifically from a report-excluded
 /// parent; a future change that threaded the parent's tools into spawn
 /// child resolution would silently break the "autonomous subagents keep

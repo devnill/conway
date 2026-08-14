@@ -91,8 +91,7 @@ pub struct TruncationRecord {
 /// **There is deliberately no spill-to-file variant.** An earlier `Artifact`
 /// variant promised to spill the full output to an [`Artifact`] and keep a
 /// pointer in context, but nothing ever constructed it and the runtime
-/// handled it identically to `None` -- the inverse of the promise (board item
-/// `01KYTN3A9SPDMRG610YSB5QQXX`). It was removed rather than implemented:
+/// handled it identically to `None` -- the inverse of the promise. It was removed rather than implemented:
 /// where to spill, when, the retention/cleanup policy, and whether the
 /// preview is head/tail/summary are workload-specific opinions, and policy of that kind
 /// puts opinions like that in a hook or plugin, not in this enum.
@@ -100,7 +99,7 @@ pub struct TruncationRecord {
 /// surface to report a spilled file; the seam a spill plugin still needs is
 /// a participant point that can *narrow* another tool's output before it
 /// reaches context, which does not exist yet
-/// (`.design/extension-architecture.md` §16.5 tracks the gap).
+/// (the extension design tracks the gap).
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "policy", rename_all = "snake_case")]

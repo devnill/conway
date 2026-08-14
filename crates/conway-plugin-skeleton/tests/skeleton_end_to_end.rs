@@ -1,5 +1,4 @@
-//! The first-party plugin tier's own acceptance test (board item
-//! 01KZDC3JQ7W4DY1MG6MBCVB2DV): this crate is a first-party plugin, never
+//! The first-party plugin tier's own acceptance test -- this crate is a first-party plugin, never
 //! registered unless a caller explicitly installs it -- exactly the shape
 //! `PHILOSOPHY.md`'s "First-party plugins, and why they are not defaults"
 //! describes.
@@ -12,7 +11,7 @@
 //! third-party plugin would be, via `ConwayBuilder::with_plugin`.
 //!
 //! **`tool_absent_by_default_present_once_installed` is the VERIFICATION
-//! ANCHOR test** the board item names: it asserts the skeleton's tool is
+//! ANCHOR test** the names: it asserts the skeleton's tool is
 //! absent from a `Conway` built with no `with_plugin` call, and present on
 //! an otherwise-identical one that adds exactly one `.with_plugin(..)`
 //! call -- so a stubbed-out registration path (e.g. this crate's
@@ -28,7 +27,7 @@
 //! persisted `ToolResultRecord` carries the exact reply text.
 //!
 //! `a_configured_hook_fires_when_the_skeletons_declared_event_is_dispatched`
-//! (board item 01KZS03BFE720EQZG7Q2768N2H) is the open-vocabulary half's OWN
+//! is the open-vocabulary half's OWN
 //! end-to-end proof, driven the identical way: a real `[hooks].rules[]`
 //! entry naming this plugin's declared event
 //! (`{PLUGIN_ID}.{PONG_DISPATCHED_EVENT}`), a real injected `HookRunner`
@@ -256,7 +255,7 @@ async fn skeleton_tool_is_callable_end_to_end_through_a_real_turn() {
 }
 
 // ---------------------------------------------------------------------
-// Board item 01KZS03BFE720EQZG7Q2768N2H: a plugin's own custom event,
+// a plugin's own custom event,
 // declared AND fired, actually reaches a real configured hook -- end to
 // end, through a real `Conway`.
 // ---------------------------------------------------------------------
@@ -324,7 +323,7 @@ fn build_conway_with_pong_hook(
     (conway, store)
 }
 
-/// **The VERIFICATION ANCHOR for the event half of this board item:** a
+/// **The VERIFICATION ANCHOR for the event half of this** a
 /// real `[hooks].rules[]` entry naming this plugin's declared event fires
 /// when a real turn calls `skeleton_ping` -- the runner is invoked with the
 /// exact namespaced event name and a payload carrying the reply

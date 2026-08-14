@@ -1,4 +1,4 @@
-//! `-p`/`--print` one-shot mode (WI-112): reads the prompt, builds the
+//! `-p`/`--print` one-shot mode: reads the prompt, builds the
 //! session, streams the event stream through a `render::Renderer`, and maps
 //! termination to an `ExitCode`.
 //!
@@ -9,7 +9,7 @@
 //!    session within it -- `conway_runtime::runtime::RuntimeDeps.gate` is
 //!    set exactly once, at `Runtime::new`, inside `ConwayBuilder::build()`.
 //!    So the gate this module builds ([`build_gate`]) cannot be attached
-//!    from inside `run` itself; `main.rs` (coordinated with WI-114, which
+//!    from inside `run` itself; `main.rs` (coordinated with an earlier item, which
 //!    has the identical need for its own TUI gate) calls [`build_gate`]
 //!    *before* `Conway` is constructed and passes it through
 //!    `ConwayBuilder::with_permission_gate` — see `main.rs`'s own doc
@@ -30,10 +30,10 @@
 //!    `PermissionGate` impl, which is impossible without naming
 //!    `conway_core::agent::{PermissionRequest, PermissionDecision}` --
 //!    neither is re-exported by the facade, and depending on `conway-core`
-//!    directly is exactly what WI-111's `no_forbidden_deps` test forbids.
+//!    directly is exactly what an earlier item's `no_forbidden_deps` test forbids.
 //!    (b) Even setting the dependency problem aside,
 //!    `crates/conway/src/presets.rs::default_permissions_for_one_shot`
-//!    (already committed, WI-098) documents the *opposite* default as the
+//!    (already committed) documents the *opposite* default as the
 //!    deliberately safe one: "allow-list mode with an empty allow list,
 //!    i.e. every tool call is denied with feedback unless the embedder
 //!    populates `allowed_tools` itself" -- specifically because one-shot
@@ -47,16 +47,16 @@
 //!    allow-list, ... `read` yields `AllowOnce`") is deliberately **not**
 //!    implemented -- this module's own test for that scenario asserts
 //!    `read` is denied instead, and says why.
-//! 3. **`--session`/`--resume`/`--fork-from` (WI-117, driven live by
-//!    WI-120).** WI-117 wired these three flags but could only validate
+//! 3. **`--session`/`--resume`/`--fork-from`.** An earlier item wired these
+//!    three flags but could only validate
 //!    them: `conway-runtime` had exactly one way to register a *live* root
 //!    agent (`Runtime::start_root`, reached only through
 //!    `Conway::new_session`), which always minted its own fresh `SessionId`
 //!    and always `store.create`d a brand-new session -- there was no
-//!    `resume_root`/`attach` counterpart. WI-118 added
+//!    `resume_root`/`attach` counterpart. an earlier item added
 //!    `Runtime::resume_root` (re-registers a persisted agent as live,
 //!    gated behind a `ResumeGate` so it idles until the first `prompt`
-//!    rather than racing a spurious turn) and WI-119 wired it through the
+//!    rather than racing a spurious turn) and an earlier item wired it through the
 //!    facade: `SessionSpec` gained a caller-chosen `id` field,
 //!    `Conway::resume` now returns a drivable handle, and
 //!    `Conway::fork_from`'s child is registered live too (genuinely
@@ -188,8 +188,8 @@ pub async fn run(cli: &Cli, conway: Conway) -> conway::Result<ExitCode> {
     Ok(code)
 }
 
-/// Resolves `cli.session`/`cli.resume`/`cli.fork_from` (WI-117, driven live
-/// by WI-120) -- at most one is ever `Some`, per `cli.rs`'s
+/// Resolves `cli.session`/`cli.resume`/`cli.fork_from` (driven live
+/// by an earlier item) -- at most one is ever `Some`, per `cli.rs`'s
 /// `conflicts_with_all` -- into a live [`SessionHandle`] that [`run`] then
 /// subscribes to and prompts uniformly, regardless of which arm produced
 /// it. See this module's doc comment, reconciliation #3, for how each flag
@@ -261,9 +261,9 @@ async fn resolve_session(cli: &Cli, conway: &Conway) -> conway::Result<SessionHa
 
         // `--resume <id>`: reattach and hand the drivable handle straight
         // back to `run`, which subscribes and prompts it exactly like the
-        // flag-free path above -- `Conway::resume` (WI-119) now returns a
+        // flag-free path above -- `Conway::resume` now returns a
         // handle whose `prompt` genuinely continues the persisted
-        // transcript (`Runtime::resume_root`, WI-118), so there is nothing
+        // transcript (`Runtime::resume_root`), so there is nothing
         // arm-specific left to do here beyond the existence check.
         (None, Some(id), None) => {
             let sid = session_ref::parse_sid(id).map_err(|e| usage_error(e.to_string()))?;
@@ -275,7 +275,7 @@ async fn resolve_session(cli: &Cli, conway: &Conway) -> conway::Result<SessionHa
 
         // `--fork-from <ref>`: branch a new session from `<sid>[@seq]` and
         // hand the drivable child straight back to `run` -- `Conway::
-        // fork_from` (WI-119) now registers the child live too (genuinely
+        // fork_from` now registers the child live too (genuinely
         // inheriting the parent's context up to `at`), so `run`'s own
         // subsequent `handle.prompt(text)` is the child's first turn.
         //

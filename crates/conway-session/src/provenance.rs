@@ -1,16 +1,16 @@
 //! Per-turn context provenance persistence (architecture, Internal Design
 //! Notes: "provenance survives process restart", decision 9).
 //!
-//! WI-051 implements `append_context_report`, `load_context_report`, and
+//! implements `append_context_report`, `load_context_report`, and
 //! `load_all_context_reports` on top of the ordinary
 //! `store.append`/`store.read` path — the report is persisted as
 //! `LogRecord::ContextReportRecord`, an ordinary record with
 //! `kind == "context_report"`, so it inherits fsync policy, seq assignment,
-//! and crash tolerance from WI-047 with no new file format.
+//! and crash tolerance from an earlier item with no new file format.
 //!
 //! ## Type re-export, not redefinition
 //!
-//! The WI-046 spec text sketches `ContextReport`/`ContextSegmentEntry` as
+//! The an earlier item spec text sketches `ContextReport`/`ContextSegmentEntry` as
 //! new types to be defined in this module (`{ turn, segments }` +
 //! `{ segment, provenance, tokens_est }`). `conway-core` (authoritative;
 //! complete) already defines `ContextReport`/`ContextReportEntry` in
@@ -18,7 +18,7 @@
 //! `crates/conway-core/src/log.rs`) already embeds
 //! `conway_core::provenance::ContextReport` by that exact type. Defining a
 //! second, differently-shaped type of the same name here would make it
-//! impossible for `append_context_report` (WI-051) to construct a
+//! impossible for `append_context_report` to construct a
 //! `LogRecord` from its input, and would collide with the re-export `pub
 //! use provenance::ContextReport;` `lib.rs` is specified to perform. This
 //! module therefore re-exports the authoritative `conway-core` types
@@ -31,7 +31,7 @@
 //!
 //! `append_context_report`/`load_context_report`/`load_all_context_reports`
 //! take `&S where S: SessionStore + ?Sized`, the same pattern
-//! `TranscriptResolver::resolve` (WI-049) uses — object-safe, so a `&dyn
+//! `TranscriptResolver::resolve` uses — object-safe, so a `&dyn
 //! SessionStore` satisfies the bound too, and `&JsonlSessionStore` costs
 //! callers no extra syntax.
 
@@ -47,10 +47,10 @@ pub use conway_core::provenance::{ContextReport, ContextReportEntry};
 /// Appends `report` as an ordinary `LogRecord::ContextReportRecord` through
 /// the same `store.append` path every other record uses — this function
 /// adds no new file format and no new durability rule, inheriting seq
-/// assignment, fsync policy, and crash tolerance from WI-047. It exists as
+/// assignment, fsync policy, and crash tolerance from an earlier item. It exists as
 /// a typed convenience so callers do not hand-build the record.
 ///
-/// Callers append the report *after* the turn's assistant record (WI-051
+/// Callers append the report *after* the turn's assistant record (
 /// spec) so a truncated trailing line can lose a report without losing the
 /// turn it describes — this function does not enforce that ordering, it is
 /// a caller discipline.

@@ -25,7 +25,7 @@ License: **AGPL-3.0-only** (see [Licensing](#licensing)).
   build does **not** filter candidates on declared capabilities, track
   endpoint health, or open circuit breakers. Those arrive with the routing
   plugin (`crates/conway-plugin-routing`, installed by naming
-  `conway.routing` in `[plugins].install`), which adds pre-flight capability
+  `conway.routing` in `plugins.install`), which adds pre-flight capability
   filtering on context window, tool-calling and reasoning, plus a
   per-endpoint **circuit breaker**.
 - **Pluggable tools behind a permission gate.** Tools are plugins; every call
@@ -119,7 +119,7 @@ for the full explanation and the library-embedder equivalent
 conway discovers configuration with increasing precedence:
 
 ```
-built-in defaults  <  ~/.conway/settings.json  <  ./.conway/settings.json  <  env  <  CLI flags
+built-in defaults < ~/.conway/settings.json < ./.conway/settings.json < env < CLI flags
 ```
 
 `settings.json` declares backends (OpenAI-compatible and Anthropic dialects,
@@ -168,10 +168,9 @@ memory, skills, and MCP support are the ones named in
 and each lands as its own crate under `crates/` as it is built — a capability
 being common does not make it neutral, so conway ships these as things you
 install rather than behavior you inherit. Progress against that intent is
-tracked on the board: routing (`01KZDC5BJWSWZZJQ7HHS11S97H`, done) and provider
-adapters (`01KZHF270T3W8GZ7NM6DSNQ4MM`, done, a separate page claim) are the
-first two occupants; compaction, memory, skills, and MCP support remain
-unbuilt with no board item yet as of 2026-08-13.
+Routing, the provider adapters, session
+rewind and step-guarding are the occupants today; compaction, memory, skills,
+and MCP support remain unbuilt.
 
 **The tier's shape is settled and demonstrated, with four members shipping
 today:** `crates/conway-plugin-skeleton`, a plugin that registers a single
@@ -181,13 +180,16 @@ the declarative role-routing engine (ordered fallback chains, capability
 filtering, health tracking, circuit breaking) `conway` itself used to compile
 in unconditionally, now installed the same way; `crates/conway-plugin-backends`,
 the Anthropic-native and OpenAI-compatible provider adapters `conway` itself
-used to compile in unconditionally too; and `crates/conway-plugin-history`
-(board item 01KZY8Q1CMMNVSF54CTC270N3H), `/conway.history.rewind <seq>` —
+used to compile in unconditionally too; and `crates/conway-plugin-history`, `/conway.history.rewind <seq>` —
 the owner's ruling that "features like /rewind, /checkout, etc are to be
 plugins, to fit into the philosophy; they are not core functionality," built
 via `Command::invoke`'s `CommandOutcome::ForkSession` outcome (the TUI's own
 mechanism for a plugin command to fork the session driving it, without a
-command ever holding a live handle onto any session). Context compaction,
+command ever holding a live handle onto any session); and
+`crates/conway-plugin-stepguard`, repeated-tool-call detection, which the
+agent loop used to carry unconditionally — `PHILOSOPHY.md` §6 leaves loop
+intervention to the operator "including writing none", which is only a real
+option once declining it is possible. Context compaction,
 memory, skills, MCP support, and `/checkout`/`ContextMask` remain separate,
 later work; conway-plugin-routing is not
 "dynamic routing" in the learned/adaptive sense PHILOSOPHY.md describes
@@ -199,10 +201,10 @@ no capability or health filtering — see
 [`docs/routing.md`](docs/routing.md#installing-a-different-router).
 **The backend plugin is the one deliberate exception to "not registered by
 default"** named at the top of this section: `conway-cli` attaches both its
-`BackendFactory`s without any `[plugins].install` entry (see below) — a
+`BackendFactory`s without any `plugins.install` entry (see below) — a
 missing router or tool plugin costs a capability, but a missing backend
 leaves conway unable to reach a model at all, so this one pair ships
-attached (owner decision, board item 01KZHF270T3W8GZ7NM6DSNQ4MM). See
+attached (owner decision). See
 [`docs/providers.md`](docs/providers.md#where-a-backend-is-declared) for how
 an operator declines a specific dialect, and how a library embedder using
 `conway` alone attaches one instead.
@@ -221,12 +223,12 @@ an operator declines a specific dialect, and how a library embedder using
   with_backend_factory`) rather than through `conway::plugin` — `conway`
   still links none of the three crates either way. Each is linked only by
   whatever binary or embedder chooses to install it.
-- **How you install one.** A distinct `[plugins]` section, deliberately not
+- **How you install one.** A distinct `plugins` section, deliberately not
   folded into `tools.builtin_plugins` (that key names only the four
   compiled-in built-ins and is validated as a closed set; a first-party
   plugin is not a member of it):
   ```json
-  { "plugins": { "install": ["conway.plugin_skeleton", "conway.routing", "conway.history"] } }
+  { "plugins": { "install": ["conway.plugin_skeleton", "conway.routing", "conway.history", "conway.stepguard"] } }
   ```
   The `conway` binary links its own small bundle of first-party plugin
   crates, router factories, AND backend factories

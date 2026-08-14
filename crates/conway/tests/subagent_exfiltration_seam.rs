@@ -1,7 +1,7 @@
-//! Regression/acceptance tests for board item 01KYTP0PGKJ4VCJP5TD39A1WHF
+//! Regression/acceptance tests for
 //! ("`start`/`ask`/`tree` are unguarded -- cross-tree exfiltration in one
 //! call") -- the SECURITY-CRITICAL slice `674bb65`
-//! (01KYT8TS0EBKJHYNJRF6S88NRH, see `subagent_control_seam.rs`) left open.
+//! (see `subagent_control_seam.rs`) left open.
 //!
 //! `674bb65` fenced `steer`/`await_result`/`cancel` at the trait boundary,
 //! but `start`/`ask` still took only `parent` and acted on it directly, and
@@ -10,7 +10,7 @@
 //! `tree()` to discover a sibling's `AgentId` (an ordinary, unprivileged
 //! read every tool already has via `ToolCtx::subagents`), then
 //! `ask(sibling, SubagentSpec { mode: Fork, .. })` to fork that sibling's
-//! ENTIRE context (GP-02: a fork inherits everything up to the fork point)
+//! ENTIRE context (: a fork inherits everything up to the fork point)
 //! and read the reply back as plain model output.
 //!
 //! Mirrors `subagent_control_seam.rs` exactly, for the identical reason
@@ -22,7 +22,7 @@
 //! the real `SubagentHost::start`, calling `ctx.subagents` -- the exact
 //! capability every built-in AND third-party tool holds -- directly.
 //!
-//! **Board item C1 superseded most of this file's original premise, in the
+//! ** C1 superseded most of this file's original premise, in the
 //! strongest possible direction.** This file predates `SubagentHandle`:
 //! `ctx.subagents` used to be a raw `Arc<dyn SubagentHost>`, so a
 //! third-party tool COULD, syntactically, pass a model-chosen `target`/
@@ -251,7 +251,7 @@ impl Backend for LazyBackend {
 // tool takes IF it exposes a model-chosen target -- unlike `conway_ask`/
 // `conway_fork`/`conway_spawn`, which never do (see this file's own module doc). Both
 // still accept a MODEL-SUPPLIED `target_agent_id` argument (the hostile
-// shape), but since board item C1, `SubagentHandle::ask`/`start` have no
+// shape), but since C1, `SubagentHandle::ask`/`start` have no
 // `caller`/`parent` parameter at all for either tool to thread it through
 // -- `target_agent_id` is parsed (proving a real, well-formed foreign id
 // was genuinely supplied) and then provably unused: whatever id a model
@@ -376,7 +376,7 @@ impl Tool for ExfiltrateStartTool {
 
 /// A tool that reports the `AgentId`s visible in `ctx.subagents.tree()` --
 /// the reconnaissance half of the exfiltration attack this item closes.
-/// Since board item C1, `SubagentHandle::tree` takes no `caller` argument
+/// Since C1, `SubagentHandle::tree` takes no `caller` argument
 /// at all (it was always `ctx.agent_id` in practice here; now there is no
 /// parameter through which this -- or any -- tool could supply anything
 /// else).
@@ -599,7 +599,7 @@ async fn a_hostile_ask_tool_can_only_ever_ask_its_own_caller_never_a_named_targe
 
 // ---------------------------------------------------------------------
 // 2. `start` -- a sibling tries to attach a new child under another
-//    sibling. Since board item C1, `SubagentHandle::start` has no `parent`
+//    sibling. Since C1, `SubagentHandle::start` has no `parent`
 //    parameter at all -- the call always attaches the new child under the
 //    CALLER (A) itself, so it SUCCEEDS instead of being rejected; the
 //    assertion that matters is that the attached child's parent is A,

@@ -1,7 +1,7 @@
 //! Acceptance tests for `Conway::classify_agent_intent` (C1): the facade NL
 //! intent classifier for `/fork`/`/spawn`, run as an ephemeral one-turn
 //! spawn session under the declarative `intent` role. Covers the
-//! well-formed parse, the P-10 validation policy (malformed JSON ->
+//! well-formed parse, the validation policy (malformed JSON ->
 //! passthrough, invalid recipe -> passthrough with the CALLER's default
 //! recipe, hallucinated agent_def -> stripped, configured agent_def ->
 //! kept), the unconfigured-role passthrough (no session, no backend call),
@@ -122,7 +122,7 @@ fn build_conway(
         .with_session_store(store)
         .with_permission_gate(gate)
         .with_router(fake_router())
-        // Board item 01KZHF270T3W8GZ7NM6DSNQ4MM: `conway` no longer
+        // `conway` no longer
         // compiles either dialect in -- `with_intent_role`'s `fake`
         // `[backends.<id>]` entry (kind "openai-compat") needs a
         // registered factory to construct (then be overwritten by the
@@ -200,7 +200,7 @@ async fn classify_parses_a_well_formed_reply_and_purges_the_intent_session() {
     );
     assert_eq!(sessions[0].id, parent.id());
 
-    // The classifier ran tool-less (P-10 surface minimization: it must
+    // The classifier ran tool-less ( surface minimization: it must
     // answer from the prompt alone).
     let calls = backend.calls();
     assert_eq!(calls.len(), 1, "exactly one classification turn must run");
@@ -247,7 +247,7 @@ async fn classify_strips_a_single_json_code_fence() {
     );
 }
 
-/// P-10: a malformed reply degrades to the verbatim passthrough (the
+///: a malformed reply degrades to the verbatim passthrough (the
 /// caller's default recipe, the RAW text, no def) -- a confused cheap
 /// model must never break `/fork`/`/spawn` -- and the intent session is
 /// still purged on the parse-failure path.
@@ -327,7 +327,7 @@ async fn classify_without_an_intent_role_passes_through_without_a_session_or_bac
     );
 }
 
-/// P-10, reject-vs-strip (decided: STRIP): a reply naming a def that is
+///, reject-vs-strip (decided: STRIP): a reply naming a def that is
 /// NOT configured must not reach the caller -- the field degrades to
 /// `None` -- while the validated recipe and prompt survive.
 #[tokio::test]
@@ -412,7 +412,7 @@ async fn classify_keeps_a_configured_agent_def() {
     assert_eq!(all_sessions(&store).await.len(), 1, "no session may leak");
 }
 
-/// P-10: an invalid `recipe` value degrades the WHOLE reply to the
+///: an invalid `recipe` value degrades the WHOLE reply to the
 /// verbatim passthrough carrying the CALLER's default recipe (here
 /// `Spawn`, proving the default is caller-supplied, not hardcoded) and the
 /// raw text.

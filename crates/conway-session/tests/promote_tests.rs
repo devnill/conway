@@ -2,7 +2,7 @@
 //! one-way ephemeral→persistent header flip behind the facade's promote.
 //! Covers the guard matrix (demotion refused; non-ephemeral no-op refused;
 //! unknown session `NotFound`), the crash-atomic on-disk header rewrite
-//! with VERBATIM record-byte preservation (P-2), the index upsert +
+//! with VERBATIM record-byte preservation (), the index upsert +
 //! `persist_full` (both the in-memory `list` view and the on-disk
 //! `index.jsonl`), warm- and cold-handle paths, reopen persistence, and
 //! the purge interplay (a promoted session is no longer removable).
@@ -97,7 +97,7 @@ async fn set_ephemeral_flips_header_on_disk_and_index_preserves_records_and_surv
         );
 
         // The on-disk header flipped; the record bytes are VERBATIM
-        // (P-2: promotion rewrites nothing except the flag).
+        // (: promotion rewrites nothing except the flag).
         let raw_after = raw_session_bytes(&root, sid);
         let header_line = String::from_utf8(
             raw_after[..raw_after.iter().position(|b| *b == b'\n').unwrap()].to_vec(),

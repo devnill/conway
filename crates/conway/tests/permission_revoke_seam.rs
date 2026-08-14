@@ -1,4 +1,4 @@
-//! Acceptance tests for board item 01KYND4WGHSZXW5YQ6ZWHCDDNN ("Per-rule
+//! Acceptance tests for ("Per-rule
 //! permission revocation in `/settings`").
 //!
 //! Before this item, `/settings`'s grant list rendered
@@ -131,7 +131,7 @@ fn build_conway(cwd: &Path, script: Vec<ScriptedTurn>, gate: Arc<dyn PermissionG
         .with_session_store(store)
         .with_permission_gate(gate)
         .with_router(fake_router())
-        // Board item (bash ships on by default and cannot be declined):
+        // (bash ships on by default and cannot be declined):
         // this file drives the REAL `bash` tool end to end, so it must now
         // opt in explicitly -- the facade's own default excludes it.
         .with_builtin_plugins(PluginSelection::All)

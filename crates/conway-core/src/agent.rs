@@ -8,7 +8,7 @@
 //! internal consistency, and the `fork`/`spawn` constructors only set field
 //! defaults. The crate-wide claim is narrower than that — see the crate root
 //! doc's forward-declaration label for `containment`, the one module that
-//! does I/O today (board item 01KZDC30CBY9CPJ8YEM7HSRV0Y closes it).
+//! does I/O today ( closes it).
 
 use std::path::PathBuf;
 
@@ -177,8 +177,7 @@ pub struct SubagentSpec {
     /// `result_contract_violation` and grants one corrective turn.
     ///
     /// **Cannot be combined with [`Self::keep_alive`]** -- the pair is
-    /// rejected by [`Self::validate`] (board item
-    /// 01KZS38F5TN3DEYHWG3VC0FZ9R). A kept-alive agent never finishes, so a
+    /// rejected by [`Self::validate`]. A kept-alive agent never finishes, so a
     /// result it validated has nowhere to be delivered and the caller's
     /// `await_result` would hang forever. See `validate`'s own doc for the
     /// mechanism and for why this is a rejection rather than a delivery
@@ -199,8 +198,7 @@ pub struct SubagentSpec {
     /// `ForkSpec::keep_alive`.
     ///
     /// **Cannot be combined with [`Self::result_contract`]** -- the pair is
-    /// rejected by [`Self::validate`] (board item
-    /// 01KZS38F5TN3DEYHWG3VC0FZ9R). Keeping the child open is precisely what
+    /// rejected by [`Self::validate`]. Keeping the child open is precisely what
     /// stops its validated result from ever being delivered, so the two
     /// requests contradict each other; asking for both used to hang the
     /// caller silently.
@@ -293,7 +291,7 @@ pub struct SubagentSpec {
     /// unconfined behavior for every such spec.
     #[serde(default)]
     pub root: Option<PathBuf>,
-    /// Board item 01KZQJ03ZQ22MPM9H2TW1350ZF: an opaque identifier an
+    /// An opaque identifier an
     /// embedder attaches at creation to correlate this agent with its OWN
     /// domain object (a file, a job, a node in its own tool) -- set here,
     /// atomically with the spec that creates the agent, so there is nothing
@@ -301,7 +299,7 @@ pub struct SubagentSpec {
     /// window in which the child's first turn can race a side table that
     /// does not have the association yet.
     ///
-    /// **conway never reads this field.** Decision 01KZT5EZD1RT6C3Q2MZPZ3NHAW
+    /// **conway never reads this field.** Decision
     /// ruled out the two alternatives considered (a caller-supplied
     /// `AgentId`, and a prepare/launch split) specifically because both
     /// either hand a conway-enforced invariant to the caller or force two
@@ -333,7 +331,7 @@ pub struct SubagentSpec {
 }
 
 impl SubagentSpec {
-    /// **Relaxed (WI-099 superseded):** §5.2's original "`agent_def` is
+    /// **Relaxed (superseded):** §5.2's original "`agent_def` is
     /// required for `Spawn`" rule -- enforced here as an
     /// `Err(ConwayError::Config{..})` -- is relaxed by a recorded design
     /// decision: a spawn with `agent_def: None` is now valid. It means the
@@ -344,8 +342,7 @@ impl SubagentSpec {
     /// outright) since it remains the natural place for any future
     /// spec-shape validation.
     ///
-    /// **Rejects `keep_alive` combined with a `result_contract`** (board item
-    /// 01KZS38F5TN3DEYHWG3VC0FZ9R). The two are individually sound and
+    /// **Rejects `keep_alive` combined with a `result_contract`**. The two are individually sound and
     /// individually documented; together they produce a HANG, which is the
     /// worst failure shape available because it is indistinguishable from a
     /// child that is simply still working.
@@ -361,8 +358,7 @@ impl SubagentSpec {
     /// **Why rejection rather than delivery.** Making a kept-alive child's
     /// result reachable is a real feature and remains open -- it needs a
     /// mid-flight report channel, and `AgentMessage::Progress` already exists
-    /// for exactly that shape with no production sender (board item
-    /// 01KZQHZ18MXR7WYVPMTGM5DHT0). Building it was declined here in favour
+    /// for exactly that shape with no production sender. Building it was declined here in favour
     /// of removing the hang now: nothing can depend on the current behaviour,
     /// because the current behaviour is a hang. Turning it into an immediate,
     /// typed error is a strict improvement and does not foreclose the feature
@@ -487,8 +483,7 @@ pub struct AgentNode {
     pub status: AgentStatus,
     pub steps_taken: u32,
     pub budget: Budget,
-    /// Whether this agent is an ephemeral `/ask`-style aside (decision
-    /// 01KYD1TWXMZD4BT842CMJT1AED), projected from the attached node's
+    /// Whether this agent is an ephemeral `/ask`-style aside , projected from the attached node's
     /// `ephemeral` flag at `snapshot` time (the same source
     /// `Event::AgentSpawned::ephemeral` is stamped from). The snapshot keeps
     /// ephemeral children, so their provenance survives; this flag is what lets a
@@ -513,16 +508,15 @@ pub enum AgentStatus {
     Cancelled,
 }
 
-/// The two ways a caller can stop a running agent (board item
-/// 01KZDC2222ARKMZKN8ZE4BYHD6, decision 01KZDDBNCC3K9HXJYHC8QX3DKQ) --
+/// The two ways a caller can stop a running agent --
 /// `PHILOSOPHY.md`'s `TERM`/`KILL` analogy. `Immediate` trips the target's
 /// `CancellationToken` synchronously (`Runtime::cancel` -> `AgentTree::
 /// cancel`) and propagates to the whole subtree structurally, since every
 /// child's own token is a `child_token()` of its parent's (`tree.rs`).
 /// `Graceful` instead enqueues `AgentMessage::Cancel { hard: false, .. }`,
 /// landing at the target's next turn boundary and stopping ONLY the named
-/// agent -- it does not itself cancel descendants (that is board item
-/// 01KZDDCBGXNYTNM31PHW46R1SP, a deliberate follow-up, not a gap in this
+/// agent -- it does not itself cancel descendants (that is
+///, a deliberate follow-up, not a gap in this
 /// one). A graceful cancel also cannot reach an agent parked at the resume
 /// gate (an idle `keep_alive` agent between turns, or a resumed root's very
 /// first iteration): that wait only selects on the hard cancellation token,
@@ -532,13 +526,13 @@ pub enum AgentStatus {
 /// `SessionHandle::cancel_with`'s own doc for where this is stated to a
 /// caller.
 ///
-/// **The caller-supplied reason** (board item 01KZDDCN747FEZ3GM3NS0ANE7G)
+/// **The caller-supplied reason**
 /// reaches the named target's own terminal `AgentResult` on both modes --
 /// `Graceful` always has, via its mailbox delivery; `Immediate` now does
 /// too, via `AgentTree::cancel`'s stash, read back at whichever of
 /// `AgentLoop::finish_cancelled` (the ordinary loop-boundary case) or, for
 /// a cancel observed while the target's turn is mid-backend-call (board
-/// item 01KZGRGN9MKJP549NMGT8QACCV), `AgentLoop::finish_error` actually
+/// item), `AgentLoop::finish_error` actually
 /// unwinds the target's task. `Immediate`'s whole-subtree propagation is
 /// still scoped to the reason's attribution, though: only the explicitly
 /// named target carries it, since a descendant swept up by the same
@@ -807,7 +801,7 @@ mod tests {
 
     #[test]
     fn subagent_spec_validate_accepts_spawn_without_agent_def() {
-        // WI-099's original "agent_def mandatory for spawn" rule is relaxed:
+        // an earlier item's original "agent_def mandatory for spawn" rule is relaxed:
         // a spawn with no agent_def is valid and means "inherit the
         // spawning session's role/model" (see `validate`'s own doc).
         let spec = SubagentSpec {

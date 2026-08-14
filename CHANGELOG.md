@@ -7,12 +7,119 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`conway sessions` and `conway routes` no longer require a permission
+  handler.** Both are read-only inspections that never start an agent or
+  propose a tool call, but dispatch supplied them no `PermissionGate`, so
+  `ConwayBuilder::build` fell through to `gates::from_config` — which errors
+  under `permissions.mode = "prompt"`, because no subcommand can supply the
+  interactive handler that mode needs. `conway routes explain <role>` therefore
+  refused to run under an ordinary interactive config, for want of a permission
+  decision it could not have made. They now carry a deny-all gate, which is
+  never consulted either way.
+
+  Two test fixtures existed solely to work around this by rewriting
+  `permissions.mode` to `"deny"`; both are gone, so those tests now run against
+  a prompt-mode config and guard the fix.
+
+### Removed
+
+- **Repeated-step detection is no longer in the core.** `StepDigest` ran
+  unconditionally in the agent loop and appended a `SystemNote` to the durable
+  log on the third identical tool call, with no way to decline it. That
+  contradicted `PHILOSOPHY.md` §6 in the page's own words — "repeated-step
+  detection, retry ceilings, and circling-agent heuristics are not in the core
+  … the policy is yours to write, including writing none" — which is not true
+  while the core ships one. The whitepaper §4.5 names the same behavior
+  specifically as belonging in a plugin.
+
+  It now lives in `conway-plugin-stepguard`, installed by naming
+  `conway.stepguard` in `plugins.install`. Behavior is unchanged when
+  installed, with one improvement: sibling agents no longer pool their calls,
+  so a fan-out where ten children each make the same call once is not reported
+  as repetition.
+
+- **`Event::RepeatedStep`** — the core event vocabulary keeps no variant that
+  the core cannot produce, which is `Plugin::events`' own rule. The plugin
+  fires `conway.stepguard.repeated_step` under its own namespace instead.
+
+- The `lru` dependency of `conway-runtime`, which existed solely for
+  `StepDigest`'s ring.
+
+### Fixed
+
+- **A dropped tool call is now part of the record instead of behind it.**
+  When a transcript contains a tool call with no answering result — a fork
+  taken mid-batch, or a session killed between an assistant turn and its
+  results — conway removes the call so the request is one a provider will
+  accept at all. It did that silently. `ContextReport` gains a `dropped` list
+  naming every removed `call_id`, which reaches both the live report a caller
+  reads and the durable `context_report` log record, and `/context` prints it.
+
+  The harness does not curate context on its own initiative; the one place it
+  must intervene to produce a sendable request is therefore visible. A turn
+  where the model re-issues a call it appears never to have made is now
+  explicable from the log rather than mysterious.
+
+  `#[serde(default)]` on the new field, so every session written before it
+  existed still decodes.
+
+- **`Budget::max_tool_calls` is now enforced.** It was public, settable through
+  `ForkSpec`/`SpawnSpec`, and serialized into the session log, but nothing ever
+  read it: an embedder who set a tool-call ceiling got no ceiling and no
+  warning. `AgentLoop::check_budget` now gates on it like the other three
+  dimensions, and the terminal `BudgetExceeded` names which one tripped.
+
+  The counter tracks calls **dispatched**, not outcomes returned — a batch
+  cancelled part-way through still counts every call it started, because some
+  of them have already run their side effects. It is turn-scoped and resets at
+  the keep-alive user-turn boundary alongside `max_steps`, for the same reason:
+  a tool-call ceiling is a runaway-loop guard, and reading it over a whole
+  session's lifetime would permanently end an interactive session after N total
+  calls rather than bounding each turn.
+
+### Added
+
+- **A `ToolObserver` port**, and `Plugin::observers` to supply one. An observer
+  is handed each finished tool call — including the arguments, which the
+  `post_tool_use` payload does not carry — and returns a description of what to
+  record; the runtime performs it. It receives no `SessionStore`, no event bus
+  and no agent handle, following the same declare-an-effect shape
+  `ContextHook` and `CommandOutcome::ForkSession` already use, so a
+  misbehaving observer's blast radius is bounded by the return type.
+
+  Observation is fail-open and cannot alter what it observed: the call has
+  already run, and a panicking observer is contained rather than failing the
+  batch. An observer fires its own plugin-declared events through the same
+  handle a plugin's tools already use, so it cannot emit a core event or
+  impersonate another plugin.
+
+  With no observing plugin installed the runtime's observer pass does not
+  execute at all — which is the point rather than an optimization, since
+  "write no policy" has to be a real option.
+
+- **`crates/conway-plugin-stepguard`**, the first consumer of that port and
+  the fourth first-party plugin. Not installed by default.
+
+- **`limits.max_tool_calls` in `settings.json`**, and `max_tool_calls` on the
+  `budget` argument of `conway_fork`/`conway_spawn`/`conway_ask` plus the
+  matching `subagent.max_tool_calls`/`ask.max_tool_calls` plugin config keys.
+  The other three budget dimensions each had a config counterpart; enforcing
+  this one without adding its own would have left a capability reachable only
+  from the library API. `0` means no ceiling, matching `max_tokens` and
+  `deadline_secs`.
+- **`docs/agents.md` documents budgets**, which no page previously covered —
+  all four dimensions, which are turn-scoped and which are lifetime-scoped and
+  why, the config block, and the fact that a child never inherits its parent's
+  budget.
+
 ## [0.9.0] — 2026-08-13
 
 ### Added
 
 - **A plugin command can now fork its own calling session and hand the TUI
-  the child to drive** (board item 01KZYH37WNDKDWSMWQQPRFKKXC) -- the answer
+  the child to drive** -- the answer
   to what `conway-core` must expose for `/rewind` to be a plugin at all, per
   the owner's ruling that "features like /rewind, /checkout, etc are to be
   plugins... not core functionality." `CommandOutcome` gains a third variant,
@@ -30,7 +137,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ForkSession` carries no session identifier of its own -- there is no
   field through which a command could name a session other than the one it
   was invoked from, the same "acts on its own session, never one it names"
-  property board item 01KYTP0PGKJ4VCJP5TD39A1WHF's `SubagentHandle`
+  property's `SubagentHandle`
   established for tools. `conway-cli`'s host resolves every `ForkSession`
   against the `CommandCtx::session_id` it captured AT INVOCATION time, never
   against whatever session it happens to be driving once the reply arrives
@@ -50,11 +157,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a hard wall.
 
 - **`/conway.history.rewind <seq>`: a first-party plugin proving `/rewind`
-  genuinely is a plugin** (board item 01KZY8Q1CMMNVSF54CTC270N3H), the real
+  genuinely is a plugin**, the real
   consumer of `CommandOutcome::ForkSession` (above). New crate
   `crates/conway-plugin-history`, one command, no tools, written entirely
   against `conway::plugin` -- the same public surface a third-party author
-  gets. Not installed by default; `"conway.history"` in `[plugins].install`
+  gets. Not installed by default; `"conway.history"` in `plugins.install`
   turns it on (`docs/getting-started.md`, `README.md`).
 
   **The discriminating proof this item names, both asserted against the
@@ -87,15 +194,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   point 15's own disclosure, restated in this crate's module doc).
 
 - **`docs/plugins/authoring.md` rewritten around the declarative hook
-  surface, executed rather than reasoned about** (board item
-  `01KZYAYWRQKZ41Y7AHZ2QWVJ8X`, the 1.0-beta acceptance test — same genre
+  surface, executed rather than reasoned about** (, the 1.0-beta acceptance test — same genre
   and rigour as `.design/getting-started-default-build-walkthrough.md`).
   The page's own opening claim — "the declarative surface is decided, not
-  built" — went false the same day two other beta items landed
-  (`01KZYAWQ6011Q6CJVG6CCMQPF1`'s `match` field, `01KZVZ1TDBHS7S604PQB5RZDM3`'s
-  `ConwayBuilder::install_selected`), and this item is what actually ran the
+  built" — went false the same day two other beta items landed (the `match`
+  field, and `ConwayBuilder::install_selected`), and this change is what ran the
   page against both, not merely read them. "Ten minutes to a working hook"
-  is now the declarative `[hooks].rules[]` path — narrowed with `match`, no
+  is now the declarative `hooks.rules[]` path — narrowed with `match`, no
   Rust, no compiling — proven by a real local-Ollama session where a
   matcher-narrowed `post_tool_use` rule fires for `bash` and, in a
   counterfactual run with `match` pointed elsewhere, correctly does not.
@@ -105,11 +210,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ConwayBuilder::install_selected` with a real, executed end-to-end
   example (a plugin's tool actually invoked by a real model), states
   plainly that installing a plugin requires building a binary today (no
-  runtime plugin host exists; the future is `01KZY8PATND84AKY0J376E3DWV`),
+  runtime plugin host exists; the future is),
   names `Plugin::commands()`/`Plugin::events()`, and documents a real
   gotcha this walkthrough hit and `docs/embedding.md`'s own illustrative
-  example doesn't warn about: `install_selected`'s `[plugins].install`
-  resolution unions in `[plugins].default_backends` (default `["anthropic",
+  example doesn't warn about: `install_selected`'s `plugins.install`
+  resolution unions in `plugins.default_backends` (default `["anthropic",
   "openai-compat"]`), so a facade-only binary linking only one dialect
   factory fails with `plugins.install names unknown id 'anthropic'` unless
   it also narrows `default_backends`. `concepts.md`'s "Hook-first" and
@@ -119,8 +224,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   enumerated), and the steps-to-first-visible-result measurement for both
   halves: `.design/authoring-walkthrough-evidence.md`.
 
-- **A plugin can now declare and fire its own custom hook event** (board item
-  01KZS03BFE720EQZG7Q2768N2H) -- the open-vocabulary half of `PHILOSOPHY.md`
+- **A plugin can now declare and fire its own custom hook event** -- the open-vocabulary half of `PHILOSOPHY.md`
   §5's hooks claim: "A plugin declares the events it emits... Those events
   sit at the same level as the ones conway emits." `Plugin::events()` is the
   new declaration surface, added on the exact same precedent as its sibling
@@ -142,14 +246,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   given what they have installed": an embedder already holding its own
   plugin list can call this function directly, before `build()`, with no new
   registry. `ConwayBuilder::build` unions the result into the same dispatch
-  table `[hooks].rules[]` already feeds, and gives a named, build-time error
+  table `hooks.rules[]` already feeds, and gives a named, build-time error
   for a `match` on a plugin event whose own declaration says its payload
   carries no tool name -- the plugin-event extension of the identical check
   a core event without one has always gotten. `merge::validate` also now
   enforces the subscriber-side event-name shape (bare or
-  `plugin_id.event_name`) on every `[hooks].rules[]` entry, closing a
+  `plugin_id.event_name`) on every `hooks.rules[]` entry, closing a
   FOLLOW-UP `schema::HookEntry::event`'s own doc comment had left open since
-  the `[hooks]` schema first landed.
+  the `hooks` schema first landed.
 
   **Also reconsiders, disclosed rather than silently reversed, an earlier
   design decision that a plugin id must never contain the namespace
@@ -168,7 +272,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`PHILOSOPHY.md` §5: "An event a plugin declares and never fires is the
   same defect as a tool that does nothing"). A new test wires a real
   `HookRunner` double through `ConwayBuilder::with_hook_runner`, configures a
-  `[hooks].rules[]` entry naming the skeleton's namespaced event, drives a
+  `hooks.rules[]` entry naming the skeleton's namespaced event, drives a
   real turn through a real `Conway`, and asserts the hook fired exactly once
   with the exact reply text the tool actually produced.
   (`crates/conway-core/src/ports/plugin.rs`,
@@ -185,7 +289,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Hook-backed permission rules are now visible and individually revocable
   in `/settings`, as a fourth review list alongside allow/deny/prompt**
-  (board item 01KZS02HYXGTW42R8G4HP10GHX). Before this item, a `pre_tool_use`
+ . Before this item, a `pre_tool_use`
   or `prompt_submitted` hook that could silently deny a call had no surface
   anywhere in the TUI -- turning one off meant hand-editing `enabled` in
   `settings.json` and restarting, which fails `PHILOSOPHY.md` §5's own
@@ -211,7 +315,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `crates/conway-runtime/src/hook_dispatch.rs`,
   `crates/conway-runtime/src/runtime.rs`) -- no change to either's existing
   dispatch or fail-closed behavior. Proven end to end against a real
-  `[hooks]` config, a real spawned hook process, and a real `bash` tool call
+  `hooks` config, a real spawned hook process, and a real `bash` tool call
   (`crates/conway/tests/hook_revoke_seam.rs`): a denying hook blocks the
   call, revoking it through the exact facade method the UI action calls
   lets the next matching call through, in the same session.
@@ -224,8 +328,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `crates/conway-cli/src/tui/test_support.rs`,
   `crates/conway/tests/hook_revoke_seam.rs`, `docs/interactive.md`)
 
-- **A way to load config while ignoring the ambient user layer** (board item
-  01KZYCKF3Z1XBCS50N7EWWVPEQ). Every config load merges five sources --
+- **A way to load config while ignoring the ambient user layer**. Every config load merges five sources --
   `default < XDG < project < env < CLI` -- and `LoadOptions::explicit_path`
   (and therefore `ConwayBuilder::from_config(path)`) only ever replaces the
   *project* layer: the XDG/user layer
@@ -254,8 +357,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `crates/conway-cli/tests/oneshot_ask.rs`,
   `crates/conway/tests/config_isolation_guard.rs`, `docs/embedding.md`)
 
-- **`[hooks].rules[]` entries can now target one tool instead of firing for
-  every call** (board item 01KZYAWQ6011Q6CJVG6CCMQPF1). A `pre_tool_use` or
+- **`hooks.rules[]` entries can now target one tool instead of firing for
+  every call**. A `pre_tool_use` or
   `post_tool_use` rule with no `match` fires for every tool, exactly as
   before this item; a rule with `match` set narrows to calls whose tool
   satisfies it -- an exact name (`"bash"`) or a `*`-glob against the tool's
@@ -280,9 +383,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `crates/conway/src/builder.rs`, `crates/conway-runtime/tests/hook_dispatch.rs`,
   `crates/conway/tests/config_validation.rs`, `docs/plugins/hooks.md`)
 
-- **The last two `[hooks]` events -- `request_assembled` and
-  `child_reported` -- now dispatch** (board item 01KZYAXSGDS8AP7YK1CN7H680G),
-  closing the gap the previous `[hooks]` dispatch entry below left open ("Two
+- **The last two `hooks` events -- `request_assembled` and
+  `child_reported` -- now dispatch**,
+  closing the gap the previous `hooks` dispatch entry below left open ("Two
   events remain forward-declared"). Both are OBSERVATION-ONLY, joining
   `post_tool_use`/`session_starting`/`child_spawned` rather than becoming a
   fourth shape: they cannot deny anything and a failing hook is logged and
@@ -301,8 +404,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ContextHook::before_request` already edits the assembled request at** --
   a reasonable thing to expect it to edit too, so this is stated rather than
   left a surprise; a configured script editing assembled context
-  append-only without breaking the prompt cache is a separate, still-open
-  board item (01KZRZZP6A4A27R3EN0HQAENBS) this one does not build and does
+  append-only without breaking the prompt cache is a separate, still-open this one does not build and does
   not foreclose. `child_reported` fires for every terminal `AgentResult`
   that crosses back to a parent -- both a normal completion
   (`AgentLoop::finish`) and a supervisor-synthesized one (`supervisor.rs`: a
@@ -320,13 +422,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - **Two safety-bearing code duplications collapsed to a single implementation
-  each -- repairs, shipped ungated** (board items 01KZVZ56SBPSTZHAXXGYCNETNX,
-  01KZVZ4KF72ECHTT14EDEZQQW3). Both close the same named failure mode: a guard
+  each -- repairs, shipped ungated**. Both close the same named failure mode: a guard
   present in one copy and silently absent from a sibling, which no test of the
   surviving copy can detect, because the sibling is a different function no
   assertion about the first one reaches -- **already on the record in this
   tree**, not theoretical: the NUL guard previously went missing from two
-  inlined path-resolution copies before board item 01KZ00VV3F3EBZ9WQSB292TBJZ
+  inlined path-resolution copies before
   pointed both at `conway_runtime::permission::resolve_like_the_tool_will`.
 
   **Root canonicalization.** That fix left `resolve_like_the_tool_will`
@@ -378,8 +479,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`ratatui` upgraded 0.29 -> 0.30, clearing the transitive `lru`
   use-after-free/`IterMut` advisories and the unmaintained `paste` crate from
-  the dependency graph** (board item 01KZWWVKT9M13E306ZW29P0W9D). Filed by
-  board item 01KZVYND5JPG3Z8WHR1AMNAY01 when `cargo-deny` was introduced: that
+  the dependency graph**. Filed by when `cargo-deny` was introduced: that
   item's `deny.toml` set `unmaintained = "workspace"`, which correctly reports
   an unmaintained crate the workspace depends on directly but stays quiet
   about one that only arrives transitively -- so `ratatui` 0.29's pin of
@@ -409,8 +509,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `deny.toml`, `crates/conway-cli/src/tui/app.rs`)
 
 - **A `pre_tool_use` hook written in a `settings.json` now actually runs
-  under the CLI** (board item 01KZVTTP492R3BDY33FAGYWDNW). Board item
-  01KZS00JP5QNBJSSHNFP9C47GM built the enforcement -- a hook script that
+  under the CLI**. built the enforcement -- a hook script that
   refuses a tool call, checked at the same tier as a `deny` pattern rule so
   it holds under every permission mode -- but that mechanism only runs when
   an embedder injects a runner, and `conway-cli` injected none. An operator
@@ -449,8 +548,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `crates/conway/src/config/schema.rs`, `docs/plugins/hooks.md`)
 
 - **BREAKING: a misspelled key in `permissions.json` now fails to load
-  instead of silently installing zero rules** (board item
-  01KZHVDDQQ7XT0RK3JVNM2YV83). A file containing `"denys"` instead of
+  instead of silently installing zero rules**. A file containing `"denys"` instead of
   `"deny"` previously parsed cleanly — the typo'd key was ignored as
   unrecognized, `deny` fell back to its empty default, and the operator's
   rule installed nothing, with no error anywhere. `deny` always applies
@@ -498,7 +596,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A configured `pre_tool_use` hook can now actually refuse a tool call --
   wired at the ONE tier in `PermissionBroker::decide` that no permission
-  mode can route around** (board item 01KZS00JP5QNBJSSHNFP9C47GM). Placement
+  mode can route around**. Placement
   was the whole difficulty: a hook checked downstream of `gate.check` (or
   implemented as a `PermissionGate` itself) would see only the calls that
   reach the operator's prompt and NONE resolved by a cached `AllowAlways`
@@ -516,8 +614,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`conway_core::hook::HookAnswer::permission`) is a new
   `HookPermissionVerdict` enum with exactly two variants, `NoOpinion` and
   `Deny { reason }` -- there is no `Allow` variant anywhere in the type for
-  a future edit to accidentally start acting on (decision
-  01KZRZAFD8T3GX407MZC8P1W1E: a hook may only narrow a permission verdict,
+  a future edit to accidentally start acting on (: a hook may only narrow a permission verdict,
   never widen one; mirrors `permission_pattern::Then`'s own
   plugin-rule restriction one layer down, but as a structural omission
   rather than a runtime rejection a future edit could get wrong).
@@ -539,15 +636,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   re-exports `HookRunner`/`HookInvocation`/`HookEvent`/`HookAnswer`/
   `HookPermissionVerdict`/`HookFailure` so a third party can implement it
   without depending on `conway-core`), and `conway-runtime` reaches it only
-  through `conway_core::ports` -- never through `conway-tools` (decision
-  01KZT642CEZ20K92DYWBTPE2XZ: the two are siblings; the runner arrives
+  through `conway_core::ports` -- never through `conway-tools` (: the two are siblings; the runner arrives
   already constructed). **Additive, not automatic:** with no
   `with_hook_runner` call (the default) `PermissionBroker::decide` is
   byte-for-byte unchanged -- the entire pre-existing `permission_broker.rs`
-  suite (46 tests) passes unmodified -- and a `[hooks].rules[]` entry with
+  suite (46 tests) passes unmodified -- and a `hooks.rules[]` entry with
   `event: "pre_tool_use"` still parses and validates with no runner
   injected, it just is silently never consulted (disclosed at every
-  relevant declaration site, not only here). `[hooks]`'s own forward-
+  relevant declaration site, not only here). `hooks`'s own forward-
   declaration label is corrected to be precise PER EVENT: `pre_tool_use` is
   now dispatched; every other `event` value remains exactly the forward
   declaration it always was. Docs updated to match: `docs/plugins/hooks.md`
@@ -566,7 +662,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A plugin can now declare a TUI slash command — the closed `SlashCommand`
   enum was the last genuinely privileged surface a plugin could not reach**
-  (board item 01KZYBFTK4QPB45AJT9M57P60W). `Plugin::commands()` (new, default
+ . `Plugin::commands()` (new, default
   empty -- every existing implementor keeps compiling unmodified) returns
   `Arc<dyn Command>`s; each declares a bare `CommandSpec { name, summary }`
   and an async `invoke(CommandCtx) -> CommandOutcome` (`Output(Vec<String>)`
@@ -612,10 +708,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`ConwayBuilder::install_selected(plugins, router_factories,
   backend_factories)` — plugin assembly is now a facade capability, not a
-  CLI privilege** (board item 01KZVZ1TDBHS7S604PQB5RZDM3). Before this,
+  CLI privilege**. Before this,
   `crates/conway-cli/src/first_party_plugins.rs` carried ~70 lines of
-  hand-rolled resolution -- matching `[plugins].install` (unioned with
-  `[plugins].default_backends` for the backend arm) against whichever
+  hand-rolled resolution -- matching `plugins.install` (unioned with
+  `plugins.default_backends` for the backend arm) against whichever
   plugin/router-factory/backend-factory crates the CLI binary happened to
   link -- and it was the *only* place that logic existed: every other
   embedder wanting the same "declare an id in config, attach the matching
@@ -635,10 +731,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reverted twice in this repository before, each time caught by an
   architecture test rather than review. The three installable shapes stay
   distinct, never flattened into one: a `Plugin`/`Tool` and a
-  `RouterFactory` both resolve from `[plugins].install`, but a
+  `RouterFactory` both resolve from `plugins.install`, but a
   `RouterFactory` is selected before construction and capped at one match
   (a build has exactly one router); a `BackendFactory` resolves from the
-  separate, default-on `[plugins].default_backends`, where an operator
+  separate, default-on `plugins.default_backends`, where an operator
   opts *out* rather than in (a build with zero backends cannot reach a
   model at all, unlike an absent plugin or router). An id resolving to
   nothing in any of the three supplied bundles is a hard, named
@@ -650,9 +746,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `install_selected` call, and completing a real turn), not merely by an
   in-workspace test.
 
-- **Four more `[hooks]` events now dispatch, in two tiers that fail in
-  opposite directions** (board items 01KZS019NHG11RVQYSVT7RG0P5 and
-  01KZS01ZBNEY12DBDNW2Y861SQ). `post_tool_use`, `session_starting` and
+- **Four more `hooks` events now dispatch, in two tiers that fail in
+  opposite directions** (and). `post_tool_use`, `session_starting` and
   `child_spawned` are OBSERVATION-ONLY: they cannot deny anything and they
   fail OPEN, so a hook that errors or times out is logged and the operation
   it observed is unaffected. That is the opposite of `pre_tool_use` and it
@@ -673,7 +768,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A parent that fans out several children (`await: false`) now observes
   each child's completion on its own very next turn, without ever calling
-  `conway_await` on it** (board item 01KZQHY6RTMYR4BRDTMQFP9J9R). A child's
+  `conway_await` on it**. A child's
   `AgentLoop::finish` has always delivered its terminal `AgentResult` to its
   parent's mailbox, but before this item that delivery was consumed only by
   a caller that had actually blocked on that specific child by id
@@ -706,7 +801,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`ContextHookCtx` now carries `agent_path`, the same root-first,
   self-inclusive ancestry chain `PermissionRequest.agent_path` already
-  carried** (board item 01KZQHZH8RXVR38JJX9AY4VSW4). A registered
+  carried**. A registered
   `ContextHook` was told *which* agent it was running for but not *where*
   that agent sat in the tree — it could not behave differently for a
   top-level agent than for one four levels down, even though the permission
@@ -734,14 +829,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `docs/plugins/hooks.md`, `docs/plugins/authoring.md`, `docs/plugins/cookbook.md`)
 
 - **`SubagentSpec` gains `tag`, an opaque consumer correlation identifier
-  carried onto `ContextHookCtx.tag`** (board item 01KZQJ03ZQ22MPM9H2TW1350ZF,
-  decision 01KZT5EZD1RT6C3Q2MZPZ3NHAW). An embedder mapping conway agents
+  carried onto `ContextHookCtx.tag`** . An embedder mapping conway agents
   onto its own domain objects (a file, a job, a node in its own tool) had
   nowhere to attach its own identifier at creation time -- the association
   could only be recorded after `SubagentHost::start` returned, which raced
   the child's first turn: a `ContextHook` firing on that turn found nothing
-  in a side table keyed on an id that did not exist yet. Decision
-  01KZT5EZD1RT6C3Q2MZPZ3NHAW ruled out the two alternatives considered (a
+  in a side table keyed on an id that did not exist yet. Decision ruled out the two alternatives considered (a
   caller-supplied `AgentId`, which converts a conway-enforced invariant --
   subtree permission scoping resolves entirely by comparing agent ids -- into
   a caller obligation with a silent collision failure mode; and a
@@ -768,8 +861,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `SubagentSpec`:** `SubagentSpec` is `Serialize`/`Deserialize` (a genuine
   backward-compatibility case, alongside `cwd`/`root`), so a spec serialized
   before this field existed still deserializes as `None`; `AgentSpec` and
-  `ContextHookCtx` are neither, so -- matching board item
-  01KZQHZH8RXVR38JJX9AY4VSW4's `agent_path` precedent -- there is no
+  `ContextHookCtx` are neither, so -- matching's `agent_path` precedent -- there is no
   serialization justification for a silent default there, and every
   construction site (including every test fixture) states the field
   explicitly. Not yet exposed on the facade's `ForkSpec`/`SpawnSpec`: an
@@ -790,10 +882,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `crates/conway/tests/plugin_surface.rs`, `docs/plugins/hooks.md`,
   `docs/plugins/authoring.md`, `docs/plugins/cookbook.md`)
 
-- **A `[hooks]` config section that parses and validates -- forward
-  declaration, nothing dispatches yet** (board item
-  01KZRZW5CWMVQ0GPRT4GX4RV5G, child of the declarative-hooks umbrella
-  01KZDC0RDRMMMJHX7SAFMM2Q5A). `settings.json` now accepts a `[hooks]`
+- **A `hooks` config section that parses and validates -- forward
+  declaration, nothing dispatches yet** (, child of the declarative-hooks umbrella). `settings.json` now accepts a `hooks`
   block: `HooksConfig { rules: Vec<HookEntry> }`, each rule an `id`
   (required, non-empty, unique across the file -- `merge::validate`'s new
   check), `event` (a bare string; the bare-vs-namespaced convention is a
@@ -808,13 +898,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   written today parses, validates, and then does nothing, which is stated
   at every declaration site (`HooksConfig`, `HookEntry`, and the `hooks`
   field on `ConwayConfig`), not only here. The default rule list is empty,
-  so an operator who never writes `[hooks]` sees no behavior change.
+  so an operator who never writes `hooks` sees no behavior change.
   `enabled` defaulting to `true` does not repeat the `probe_enabled`
   precedent of config that does nothing: it only has any effect on a rule the operator
-  already hand-wrote, not on every config by default. Two later, separate
-  board items wire dispatch: `01KZRZY1MNM872BZ6AKEBG3SKE` (the script
-  runner that spawns `command` when `event` fires) and
-  `01KZS00JP5QNBJSSHNFP9C47GM` (`pre_tool_use` enforcement). Docs updated to
+  already hand-wrote, not on every config by default. Two later, separate wire dispatch: (the script
+  runner that spawns `command` when `event` fires) and (`pre_tool_use` enforcement). Docs updated to
   match: `docs/plugins/hooks.md` point 13's status row and its fail-closed
   summary table row, and `docs/plugins/scripts.md`'s worked JSON example,
   which previously sketched a different, now-superseded shape
@@ -827,8 +915,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `docs/plugins/scripts.md`)
 
 - **`ArtifactWriteHandle::noop(agent_id)`: a `ContextHookCtx` fixture no
-  longer requires hand-rolling an `ArtifactWriter`** (board item
-  01KZJ5S3ZC8SPWTX94C4HTEC2R). `ContextHookCtx::artifacts` became a required
+  longer requires hand-rolling an `ArtifactWriter`**. `ContextHookCtx::artifacts` became a required
   field when the real containment-checked writer landed (`c430ca9`), which
   meant every construction site — including a unit test for a hook that
   never writes a file — had to supply *some* `Arc<dyn ArtifactWriter>`.
@@ -857,11 +944,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A router can now be named and installed the same way a plugin is:
   `RouterFactory`, `ConwayBuilder::with_router_factory`, and a
-  `[plugins].install` router arm** (board item 01KZFC2MD1FVNA674YJ9A19T8E,
-  settled decision 01KZF15KSWVD689HPBNNATFP8C). `conway_core::ports::
+  `plugins.install` router arm** (,
+  settled). `conway_core::ports::
   routing::RouterFactory` carries a router *kind*'s identity (`id`) up
   front and defers actual construction to a deferred, fallible `build`
-  step — necessary because `[plugins].install` is read long before the
+  step — necessary because `plugins.install` is read long before the
   backends and capability picture a real router needs even exist.
   `RouterFactory::build` receives a `RouterBuildContext` (the resolved
   `RoutingConfig`, `HeadroomPolicy`, and every already-constructed
@@ -879,7 +966,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   invoked). Absent both, `build()` still compiles its own
   `DeclarativeRouter`, exactly as before. `crates/conway-cli/src/
   first_party_plugins.rs` gains a `router_bundle()` beside its existing
-  `bundle()`, resolved against `[plugins].install` in the same pass —
+  `bundle()`, resolved against `plugins.install` in the same pass —
   empty today (no first-party router crate has landed yet), which the
   unknown-id error now discloses by listing linked router factory ids
   alongside linked plugin ids. See
@@ -894,18 +981,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **The routing engine moves from something conway is built with to
   something you install: `conway-routing` is now `conway-plugin-routing`, a
-  first-party plugin, and `conway` links it no longer** (board item
-  01KZFC43J1J06BM4CCWKCKHSNV, closing this charter). The router
+  first-party plugin, and `conway` links it no longer** (, closing this charter). The router
   `RouterFactory` port (immediately above) gains its first real occupant:
   `conway-plugin-routing::RoutingRouterFactory`, published id
-  `ROUTER_ID = "conway.routing"`, installed via `[plugins].install` (the
+  `ROUTER_ID = "conway.routing"`, installed via `plugins.install` (the
   SAME mechanism `crates/conway-cli/src/first_party_plugins.rs`'s
   `router_bundle` already resolved for an empty bundle) or directly via
   `ConwayBuilder::with_router_factory`. **`crates/conway/src/builder.rs`'s
   `build()` no longer compiles a `DeclarativeRouter` by default**: absent an
   injected router or a registered/installed router factory, `build()` now
   falls through to `conway_core::routing::MinimalRouter` — an honest,
-  config-only resolver walking `[roles.<alias>].chain` in order with no
+  config-only resolver walking `roles.<alias>.chain` in order with no
   capability filtering, no health filtering, and no circuit breaking — and
   the default `HealthRegistry` becomes `conway_core::routing::
   AlwaysClosedHealthRegistry` (no real breaker state) for the same reason:
@@ -913,8 +999,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   capability this crate carried travels with it UNCHANGED: `DeclarativeRouter`,
   `BreakerRegistry`/`Clock`/`SystemClock`/`TestClock` (`test-clock` feature),
   `RoutingExplain`, `satisfies`/`strictest`, `config::validate`/`ConfigIssue`/
-  `ConfigIssueKind`, and the still-unwired `HealthProber` (board item
-  01KZ802GSF692EKYKQ2TTVCJB8 still owns its wire-or-retire decision).
+  `ConfigIssueKind`, and the still-unwired `HealthProber` (still owns its wire-or-retire decision).
   `RouterBuildContext` gains a `capability_index: conway_core::ports::
   CapabilityIndex` field (the SAME index `ConwayBuilder::build` itself
   computes from `.conway/models.json`, optionally probe-overlaid) so a
@@ -951,8 +1036,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `crates/conway-cli/tests/first_party_plugins.rs`)
 
 - **`Backend` gains an `admit` method: whether a request fits is now
-  answerable by the thing talking to the endpoint** (board item
-  01KZDC4DKVC4JC3W4KN1WMC43N, decision 01KZDBYTKFYTVD9R2NA10QJNJE). Only a backend knows its model's real window,
+  answerable by the thing talking to the endpoint** . Only a backend knows its model's real window,
   how its provider tokenizes, and what a refusal looks like when it
   arrives, so `Backend::admit(&self, req: &GenerateRequest, headroom_tokens:
   u32) -> Result<Admission, BackendError>` answers with the numbers behind
@@ -973,8 +1057,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   configuration, resolved by whoever calls `admit` — only who *reads* it
   moved. `capability.rs` (`conway-routing`) still performs its own,
   pre-existing headroom check today; consolidating onto this new port
-  method, and relocating `capability.rs` itself, is board item
-  01KZDC5BJWSWZZJQ7HHS11S97H, not this one — `conway-runtime`'s existing
+  method, and relocating `capability.rs` itself, is, not this one — `conway-runtime`'s existing
   admission path is unchanged here, and the only `conway-routing` change is
   the classification arm described next.
   **A refusal advances the fallback chain rather than ending the turn.**
@@ -997,8 +1080,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Two foundation pages for the plugin and hook documentation set:
   [`docs/plugins/concepts.md`](docs/plugins/concepts.md) and
-  [`docs/plugins/README.md`](docs/plugins/README.md)** (board item
-  01KYTP59ZBQZ6GDAHNH5N3T6HR), indexed from `docs/README.md`'s new
+  [`docs/plugins/README.md`](docs/plugins/README.md)**, indexed from `docs/README.md`'s new
   "Extending conway" group. `concepts.md` is the mental model the other
   four pages assume and none of them re-explain: hook-first registration,
   the observer/participant split (an observer's shape *structurally cannot*
@@ -1026,11 +1108,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exists. What is real is in-process `Plugin`/`Tool` registration,
   `ContextHook`, `PermissionGate`, and a `TrustStore` that implements one
   kind keyed on absolute path rather than the full `(kind, id, digest)`
-  design. Every unbuilt section names its board item
-  (01KZDC0RDRMMMJHX7SAFMM2Q5A, 01KZ844ZXZMVRWC7ZANT7PSM6X).
+  design. Every unbuilt section names its
+ .
 
 - **Three documented guarantees had tests that could not have failed if the
-  guarantee were deleted** (board item 01KZMM9E5SMA9C1SB8D4RG6DDB). Not
+  guarantee were deleted**. Not
   missing tests — existing ones whose fixtures left the thing under test at
   its default, so the assertion said nothing.
 
@@ -1065,8 +1147,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `crates/conway/tests/backend_factory.rs`)
 
 - **The security page names backends and routers — the one extension point
-  the harness hands a credential to was the one it omitted** (board item
-  01KZMMCGAPGPRG7T0JXWMRM46S). `docs/plugins/trust-and-security.md` is 267
+  the harness hands a credential to was the one it omitted**. `docs/plugins/trust-and-security.md` is 267
   lines written so an author meets the limits alongside the guarantees, and
   it did not contain the word "backend"; `docs/providers.md`'s authoring
   section did not contain the word "trust". Meanwhile a `BackendFactory`
@@ -1098,8 +1179,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   [`docs/embedding.md`](docs/embedding.md))
 
 - **A third-party provider adapter can now read its own configuration keys —
-  `BackendBuildContext` carries `extra`** (board item
-  01KZMM8ABQJQGHTDTP5S29P88C). `docs/providers.md` told an author their
+  `BackendBuildContext` carries `extra`**. `docs/providers.md` told an author their
   custom keys were "captured verbatim and handed to whichever factory built
   that entry's backend". The first half was true; the second was not —
   `BackendEntry::extra` was populated at load time and then discarded,
@@ -1130,11 +1210,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   [`docs/providers.md`](docs/providers.md))
 
 - **Provider adapters have a documented authoring path, and three places
-  that said otherwise are corrected** (board item 01KZHF46C80HFAQN2CJEXXVYY5,
+  that said otherwise are corrected** (,
   **closing the backends-as-plugins charter**). `docs/providers.md` gains
   "Writing your own adapter": the crate boundary (`conway` alone, no
   internal crate), how a kind id is published and named in
-  `[backends.<id>].kind`, how an embedder attaches one, and a worked
+  `backends.<id>.kind`, how an embedder attaches one, and a worked
   example **lifted verbatim** from `crates/conway-thirdparty-backend` —
   the same code `cargo test -p conway-thirdparty-backend` compiles and
   runs, not a fresh retelling. Elisions are named on the page; the
@@ -1168,8 +1248,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`crates/conway/src/lib.rs`'s `pub mod plugin` doc comment stops citing
   §13.5 as authority over the in-process question, and stops naming
-  `Router` alongside ports that are still genuinely closed** (board item
-  01KZHMNABS6HC0KT1D1CKM9W8H, the third of the three stale declaration
+  `Router` alongside ports that are still genuinely closed** (, the third of the three stale declaration
   sites the item above found — this one deferred rather than fixed by that
   item because it needed its own, narrower edit). The comment used to say
   the `SubagentHost`/`EventSink`/`SessionStore`/`Router`/`HealthRegistry`
@@ -1190,8 +1269,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`crates/conway/src/lib.rs`)
 
 - **The backend authoring surface now has a stranger proving it works, not
-  conway's own test suite vouching for itself** (board item
-  01KZHF3E1ZG3AZ7F7HHVY324T9). New workspace member
+  conway's own test suite vouching for itself**. New workspace member
   `crates/conway-thirdparty-backend`, whose `[dependencies]` names exactly
   one workspace crate — `conway` — and no internal crate, no `fakes`
   feature, nothing a stranger could not enable. It hand-writes a `Backend`
@@ -1222,10 +1300,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fakes) resolved to a fully public substitute the facade already provides.
   (`crates/conway-thirdparty-backend/`)
 
-- **Declining a shipped dialect now says so: a `[backends.<id>]` entry
+- **Declining a shipped dialect now says so: a `backends.<id>` entry
   naming a declined kind gets a different message from one naming a kind
-  conway has never heard of** (board item 01KZHF2W8Y1KBM7PJH7R4QQJA0).
-  `[plugins].default_backends` already let an operator decline by editing a
+  conway has never heard of**.
+  `plugins.default_backends` already let an operator decline by editing a
   list; what was missing was the consequence. Declining and leaving a stale
   entry behind produced the plain unknown-kind error — telling someone who
   deliberately turned a dialect off that it never existed, which is a worse
@@ -1253,8 +1331,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **BREAKING: `conway` no longer compiles either provider dialect in —
   `conway-backends` is now `conway-plugin-backends`, a first-party plugin,
-  installed by default** (board item 01KZHF270T3W8GZ7NM6DSNQ4MM, closing
-  the backends-as-plugins charter; decision 01KZHRPZ010R37411R3W1XR5TF).
+  installed by default** (, closing
+  the backends-as-plugins charter;).
   `crates/conway/Cargo.toml`'s dependency on the adapter crate is gone, and
   no production resolution path in `conway`'s own `src/` hardcodes either
   dialect — `kind` is matched as data against whichever factories are
@@ -1266,11 +1344,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   two `BackendFactory` implementations, **relocated** from `builder.rs`'s
   own `build_anthropic`/`build_openai_compat` rather than reimplemented.
   The temporary compiled-in fallback the preceding item deliberately left
-  behind is deleted: `[backends.<id>].kind` now resolves against registered
+  behind is deleted: `backends.<id>.kind` now resolves against registered
   factories and nothing else.
 
   **A backend is the one first-party mechanism that attaches without a
-  `[plugins].install` entry.** `PluginsConfig` gains `default_backends`
+  `plugins.install` entry.** `PluginsConfig` gains `default_backends`
   (defaulting to both dialects), because a backend has no honest degenerate
   fallback the way an absent router has `MinimalRouter` — a missing router
   degrades routing, a missing backend leaves conway unable to reach a model
@@ -1291,7 +1369,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   Both proofs are end to end and credential-free. A new
   `conway-cli` test drives the **real compiled binary** against a loopback
-  server with an ordinary settings file and **no `[plugins]` section at
+  server with an ordinary settings file and **no `plugins` section at
   all**, asserting a one-shot prompt completes and the reply reaches
   stdout. A new test in the plugin crate's own suite proves the identical
   capability for a **library embedder** calling
@@ -1305,7 +1383,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Removed: `conway-backends`' `anthropic` and `openai-compat` cargo
   features; `reqwest` and `eventsource-stream` are now plain, non-optional
-  dependencies** (board item 01KZHEZWT3ET8C4V1RHVMSMNJA, under the
+  dependencies** (, under the
   backends-as-plugins charter). The crate had a build-time knob nothing
   ever turned: no CI job and no workspace member has ever built it with
   `--no-default-features` — the CI feature matrix is scoped `-p conway`,
@@ -1338,9 +1416,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `crates/conway-backends/src/config.rs`,
   `crates/conway-backends/src/anthropic/mod.rs`)
 
-- **BREAKING: `[backends.<id>].kind` is an open name rather than a closed
-  two-valued enum** (board item 01KZHF1E85MS1VF4YH8CDNCP9Z, decision
-  01KZHRPZ010R37411R3W1XR5TF). `config::schema::BackendKind` is gone;
+- **BREAKING: `backends.<id>.kind` is an open name rather than a closed
+  two-valued enum** . `config::schema::BackendKind` is gone;
   `BackendEntry.kind` is a plain `String`, resolved at `build()` against
   every `BackendFactory` registered through
   `ConwayBuilder::with_backend_factory`, falling back to the two adapters
@@ -1349,10 +1426,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reachable from configuration at all** — a matching factory now receives a
   real, per-entry `BackendBuildContext` (`id`, `base_url`, resolved
   `api_key`, `dialect`, `models`) instead of the empty stub the previous
-  item disclosed, and is invoked **once per `[backends.<id>]` entry naming
+  item disclosed, and is invoked **once per `backends.<id>` entry naming
   its kind** rather than unconditionally once per `build()`. The built-in
   fallback is deliberate and temporary; the relocation item
-  (01KZHF270T3W8GZ7NM6DSNQ4MM) removes it.
+  removes it.
 
   A `kind` that neither a registered factory nor the two built-ins claim
   fails `build()` with an error quoting the offending value and listing
@@ -1391,8 +1468,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   [`docs/embedding.md`](docs/embedding.md))
 
 - **Docs 5/5 — the cookbook:
-  [`docs/plugins/cookbook.md`](docs/plugins/cookbook.md)** (board item
-  01KYTP9XCPQW88P7WNNBFMNE31), completing the plugin documentation set. Five
+  [`docs/plugins/cookbook.md`](docs/plugins/cookbook.md)**, completing the plugin documentation set. Five
   worked examples, each labeled implementable-today, partially-implementable,
   or blocked, and **every runnable one compiled and run** against a scratch
   crate depending only on `conway` — 12 tests across five files, all passing.
@@ -1402,7 +1478,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   judges hold. **Spilling bulky tool output to a file** works today — and the
   finding is that it was *never* the design failure it was recorded as:
   `ContextHook::before_request` has had edit/drop/replace authority over any
-  segment, including a `Provenance::ToolResult` one, since WI-126. The only
+  segment, including a `Provenance::ToolResult` one. The only
   genuinely missing piece was somewhere confinement-checked to put the bytes,
   closed this release by `ContextHookCtx::artifacts`. **Progressive skill
   disclosure** needed nothing new at all.
@@ -1426,8 +1502,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Docs 4/5 — the authoring guide:
   [`docs/plugins/authoring.md`](docs/plugins/authoring.md),
   [`scripts.md`](docs/plugins/scripts.md), and
-  [`inference-hooks.md`](docs/plugins/inference-hooks.md)** (board item
-  01KYTP8BT2BT4ADAPZENHT4FQV). `authoring.md`'s ten-minute walkthrough gets
+  [`inference-hooks.md`](docs/plugins/inference-hooks.md)**. `authoring.md`'s ten-minute walkthrough gets
   an author from an empty crate to a `ContextHook` they can watch transform
   a payload, and **its code was executed verbatim** against a scratch crate
   whose only conway dependency is `conway` itself — the snippets are
@@ -1441,7 +1516,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fifteen lines of no-op `ArtifactWriter` boilerplate, because that field
   became required in this same release and the facade ships no no-op
   implementation. The page now shows the working form; the underlying
-  ergonomic problem is filed as 01KZJ5S3ZC8SPWTX94C4HTEC2R.
+  ergonomic problem is filed as.
 
   `scripts.md` carries a heavier caveat, stated at the top rather than
   buried: **no script-dispatching plugin exists in the tree**, so it
@@ -1460,9 +1535,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `docs/plugins/hooks.md`)
 
 - **`BackendFactory` — a provider dialect can be named and constructed as an
-  installable component** (board item 01KZHF0RBKJZZC68F7GPFB347Q, under the
-  backends-as-plugins charter; shape approved in decision
-  01KZHRPZ010R37411R3W1XR5TF). `ConwayBuilder::with_backend` takes a backend
+  installable component** (, under the
+  backends-as-plugins charter; shape approved in). `ConwayBuilder::with_backend` takes a backend
   already constructed; `with_backend_factory` takes something that knows how
   to construct one and defers that until the config it needs exists — the
   same split `RouterFactory` makes, because an install list is read long
@@ -1470,7 +1544,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   `BackendFactory::id()` names a **kind**, and its doc says why that is not
   the question `Backend::id()` answers: that one is a *configured instance*
-  identity taken from the `[backends.<id>]` key, and two configured backends
+  identity taken from the `backends.<id>` key, and two configured backends
   can be the same kind under different ids. The consequence is the one real
   asymmetry against routing — a backend factory is built **once per matching
   configuration entry**, where a `RouterFactory` is built at most once,
@@ -1493,9 +1567,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   factory and read every field, rather than by inspection. A port whose
   context cannot be spelled through the public facade is only half-installed.
 
-  **Disclosed limitation:** `[backends.<id>].kind` is still a closed enum, so
+  **Disclosed limitation:** `backends.<id>.kind` is still a closed enum, so
   a config entry cannot yet name a factory and a registered factory receives
-  an empty context. Opening `kind` is board item 01KZHF1E85MS1VF4YH8CDNCP9Z;
+  an empty context. Opening `kind` is;
   until then this surface is reachable only by an embedder calling the
   builder directly. Labeled at the method doc and in
   [`docs/embedding.md`](docs/embedding.md)'s new "Installing a backend"
@@ -1509,7 +1583,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Docs 3/5 — trust, security, and compatibility promises:
   [`docs/plugins/trust-and-security.md`](docs/plugins/trust-and-security.md)
   and [`docs/plugins/compatibility.md`](docs/plugins/compatibility.md)**
-  (board item 01KYTP78T0NR20A9HV93D7E3AE). The security page states the
+ . The security page states the
   limit unhedged and up front rather than buried in a non-goals list:
   **conway does not sandbox the plugin process — a trusted plugin runs with
   the operator's full privileges**, their filesystem, network, credentials,
@@ -1523,7 +1597,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   It documents what **ships** rather than what was designed: `TrustStore`
   implements exactly one subject kind, `permission_file`, keyed on absolute
   path plus content digest — not the full `(kind, id, digest)` model — and
-  no board item names building the rest. It also records a design-versus-
+  no names building the rest. It also records a design-versus-
   shipped gap found while writing: `.design/d4-trust-model.md` describes an
   operator-opened diff against the trusted digest, but the shipped
   `/trust permissions` shows no diff or preview at all, installing and
@@ -1538,7 +1612,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the tree, that asymmetry is currently unimplemented in one direction:
   neither `PermissionFile` nor `TrustFile` sets `deny_unknown_fields`, so a
   misspelled `denys` key still silently installs **zero** deny rules. Filed
-  as 01KZHVDDQQ7XT0RK3JVNM2YV83.
+  as.
 
   Both pages also correct two stale instructions in their own originating
   spec — the sanitizer convergence and the structured rule form are `done`,
@@ -1548,9 +1622,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `docs/plugins/README.md`)
 
 - **`conway::backend` — a `Backend` can now be written from a crate that
-  depends only on `conway`** (board item 01KZHEZF8XCD0TMDYZQP06J2KH, under
-  the backends-as-plugins charter; shape approved in decision
-  01KZHRPZ010R37411R3W1XR5TF). The trait was re-exported, but none of the
+  depends only on `conway`** (, under
+  the backends-as-plugins charter; shape approved in). The trait was re-exported, but none of the
   types its five methods name were, so nobody outside this repository could
   actually implement one. That gap was established by **compiling, not by
   reading**: a scratch crate depending only on `conway` with a full
@@ -1587,15 +1660,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   [`docs/embedding.md`](docs/embedding.md))
 
 - **Docs 2/5 — the normative hook and extension-point reference,
-  [`docs/plugins/hooks.md`](docs/plugins/hooks.md)** (board item
-  01KYTP63BD0J0324VB5AH7NXK5). Fourteen extension points, each with all
+  [`docs/plugins/hooks.md`](docs/plugins/hooks.md)**. Fourteen extension points, each with all
   nine required fields — Kind, Receives, May return, On error, On timeout,
   On garbage, When absent, Ordering, and **Status** — checked against the
   tree rather than against the design corpus. **Six of the fourteen are
   implemented** (tool declaration and execution, `ContextHook::
   before_request` and `on_overflow`, `PermissionGate::check`, and
   operator-authored `permissions.json` rules); the other eight are labeled
-  designed-not-built with their board items. That Status row is the point
+  designed-not-built with their That Status row is the point
   of the document: this codebase has shipped documented capabilities with
   nothing behind them, and a reference that cannot tell built from designed
   would produce another.
@@ -1617,8 +1689,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   capabilities as if they gate anything.
 
   Writing it also corrected the item's own spec twice: it named the
-  structured rule form (01KYTJD6CJ1CHJBXZ0GFYMV5MT) and the sanitizer
-  convergence (01KYTJE5TSJBF01598F3BKJP1X) as pending and instructed that
+  structured rule form and the sanitizer
+  convergence as pending and instructed that
   both be labeled designed-not-built. Both have since shipped, so both are
   documented as implemented and the stale framing is called out at the site
   rather than silently followed.
@@ -1626,8 +1698,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **The four "`tools` is narrowing-only" claims are retracted rather than
   implemented: a `tools` selector chooses what is *announced* to the model
-  and is not a capability boundary** (board item
-  01KZHET5G0DN7QC0YF5G9XSB1N, decision 01KZHH9N313T5BTDR8281QDWHC,
+  and is not a capability boundary** (,
   confirmed by the project owner). `AskTool`'s **model-facing description**,
   `AskArgs::tools`, `ask.rs`'s module doc, and `ForkSpec::tools` variously
   claimed the selector could "restrict, never widen" or was "intersected
@@ -1671,8 +1742,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   [`docs/permissions.md`](docs/permissions.md))
 
 - **A forked child now inherits the parent's `agent_def` — but never that
-  def's `result_contract`** (board item 01KZGXYSEKMVM4GVG4ZBWC0WSC,
-  decision 01KZHEWXDZWPWMEAQ01XY2RDCB). **BREAKING:** a def's system
+  def's `result_contract`** . **BREAKING:** a def's system
   prompt, tools selector, and model pin newly apply to fork children that
   had none before. Inside the same TUI, `/ask` kept the parent's def and
   `/fork` lost it — drift rather than design, and git history shows an
@@ -1707,7 +1777,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on the concrete regression it prevents: without the rule, a bare `/fork`
   off any def-carrying agent produces a keep-alive interactive child
   *required* to `report` and *denied* that tool (the TUI hardcodes
-  `Except(["report"])`), reproducing 01KZGX1RR0VXN2YH3P75SBE9SA in a new
+  `Except(["report"])`), reproducing in a new
   path with nobody having typed either half.
 
   Both guards shown to fail first, verified independently of the
@@ -1722,7 +1792,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A context hook can now write a file without guessing where it is
   allowed to: `ContextHookCtx` carries a confinement-checked
-  `ArtifactWriteHandle`** (board item 01KZ84437RMKHP5DJX7RMHH7JY).
+  `ArtifactWriteHandle`**.
   **BREAKING:** `ContextHookCtx` gained a required `artifacts` field, so
   any code constructing one by hand must supply it.
   `ContextHook::before_request` already receives the assembled
@@ -1773,7 +1843,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Setting both `keep_alive` and a `result_contract` on one child no longer
-  hangs the caller** (board item 01KZS38F5TN3DEYHWG3VC0FZ9R). The two
+  hangs the caller**. The two
   compose into a hang: a contract is checked when a child finishes and its
   validated answer is handed back, and `keep_alive` is precisely the
   instruction never to finish -- so the answer was validated and then had
@@ -1789,9 +1859,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A modal `/ask` against a session whose agent def declares a
   `result_contract` no longer fails on every call, and an `ask` child now
-  inherits the parent's agent def** (board items
-  01KZGX1RR0VXN2YH3P75SBE9SA and 01KZC8DD9C74BSTP8BQDJKYNFR, settled
-  decision 01KZGX0RSJ7WDYMCT9SE2V5GHF — one change, because both land at
+  inherits the parent's agent def** (and, settled — one change, because both land at
   the same trait boundary). Two halves of a single inconsistency, and
   together the same defect in **both** directions at once:
   - *Under-inheritance, now fixed.* The `conway_ask` tool builds its
@@ -1844,7 +1912,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Provenance::AgentDef` segment, not merely that tree bookkeeping records
   a def. `conway_fork`'s own def-dropping asymmetry — the same TUI keeps
   the def on `/ask` and loses it on `/fork` — is deliberately **not**
-  changed here; it is filed separately as 01KZGXYSEKMVM4GVG4ZBWC0WSC,
+  changed here; it is filed separately as,
   because a fork returns a full `AgentResult` *with* a `structured` field,
   so the contract reasoning above does not transfer to it.
   (`crates/conway-runtime/src/subagent.rs`,
@@ -1853,8 +1921,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `crates/conway-runtime/tests/ask.rs`, `crates/conway/tests/ask.rs`,
   [`docs/agents.md`](docs/agents.md))
 
-- **Tool schemas are sent once per request instead of twice** (board item
-  01KYTMJA0JHT5SAPYDGV251V17). Every request carried the full tool-schema set
+- **Tool schemas are sent once per request instead of twice**. Every request carried the full tool-schema set
   twice: as the native `tools` array the provider consumes, and again as a
   system message holding the canonical JSON of the same `ToolSpec` list. The
   second copy was a superset — `ToolSpec` serialized every field, so it also
@@ -1890,7 +1957,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   selection arms agree on a named contract rather than on tuple position.
 
 - **The economic claim behind map-and-gather is now verified on the wire**
-  (board item 01KZDDPZPAXFHDF1YTZG7F95EG). `PHILOSOPHY.md` says siblings
+ . `PHILOSOPHY.md` says siblings
   forked at the same point "open with the same bytes", and that ten children
   forked from one point are largely paid for after the first. The existing
   tests proved the siblings share one in-process allocation — which is not
@@ -1909,8 +1976,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`crates/conway/tests/fanout_prefix_sharing.rs`)
 
 - **Graceful cancellation's non-propagation is now enforced, not just
-  documented** (board item 01KZDDCBGXNYTNM31PHW46R1SP, decision
-  01KZGV7TN6KSWRZM9XRJAKW4CE). `CancelMode::Graceful` stops the named agent
+  documented** . `CancelMode::Graceful` stops the named agent
   alone; only `Immediate` collapses the subtree. That contract was stated in
   ten places and demonstrated in none, while its opposite — immediate
   propagation — had a test. It now has one too: a graceful cancel on a parent
@@ -1923,10 +1989,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `crates/conway/tests/session_handle_subagent.rs`)
 
 - **A cancellation reason survives the in-flight-request race too** (board
-  item 01KZGRGN9MKJP549NMGT8QACCV). When a cancel landed while a request to
+  item). When a cancel landed while a request to
   the model was already in flight, the agent stopped correctly but reported a
   generic `"attempt cancelled"` instead of the caller's reason — a third
-  discard site, after the two closed by 01KZDDCN747FEZ3GM3NS0ANE7G. The
+  discard site, after the two closed by. The
   guarantee was stated in four places and untrue in this corner, which is
   harder to notice than an undocumented gap. Fixed in the agent loop rather
   than by plumbing a tree handle into the attempt engine: the loop already
@@ -1936,8 +2002,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`crates/conway-runtime/src/agent_loop.rs`, `attempt.rs`, `tree.rs`,
   `runtime.rs`, `crates/conway-core/src/agent.rs`)
 
-- **The TUI no longer silently ignores four documented flags** (board item
-  01KZGRXFSY4ZB7NCA9NS2AGFS5). `--model`, `--session`, `--resume` and
+- **The TUI no longer silently ignores four documented flags**. `--model`, `--session`, `--resume` and
   `--fork-from` were accepted by the parser and never read by the interactive
   UI, while `docs/interactive.md` documented them. There was no error and no
   warning — the session simply behaved as if the flag were absent, and the
@@ -1955,7 +2020,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `docs/sessions.md` now describe what actually happens, including a
   `--resume <id> (CLI/TUI)` claim in the latter that was simply false.
   **A doc comment in the TUI justified the omission by asserting a
-  `SessionSpec` field "does not exist yet"; it has existed since WI-128.**
+  `SessionSpec` field "does not exist yet"; it already existed.**
   A wrong justification is worse than none — a reader who checks it stops
   looking, which is plausibly how this survived. Both that comment and a
   matching stale note in `oneshot.rs` are gone.
@@ -1963,8 +2028,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `crates/conway-cli/src/oneshot.rs`, `crates/conway-cli/tests/tui_model_pin.rs`,
   `docs/interactive.md`, `docs/sessions.md`)
 
-- **`CliOverrides::model` is removed** (board item 01KZ8049CVW1GCAA081M7WSVSZ,
-  decision 01KZGRW3CXEAGMP275P95KGN83). **Breaking for an embedder that set
+- **`CliOverrides::model` is removed** . **Breaking for an embedder that set
   it** — though setting it never did anything: the field had zero readers
   anywhere in the workspace, and `cli_overrides_to_value`, the only function
   that consumes the struct, deliberately skipped it because a model pin is not
@@ -1986,8 +2050,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `docs/embedding.md`)
 
 - **A cancellation reason now reaches the cancelled agent's result on the
-  immediate path, not just the graceful one** (board item
-  01KZDDCN747FEZ3GM3NS0ANE7G). `conway_cancel` accepts a `reason`; on the
+  immediate path, not just the graceful one**. `conway_cancel` accepts a `reason`; on the
   immediate path it went to a `tracing` line and nowhere else. That became
   worse than a uniform gap once graceful cancellation shipped, because the
   same argument on the same tool then reached the result on one path and
@@ -2010,7 +2073,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `crates/conway-tools/src/subagent/control.rs`)
 
 - **Configuration warnings reach you instead of being computed and
-  discarded** (board item 01KZ803DJW8Y1H4FXTM8D3PYMY). `Conway::warnings()`
+  discarded**. `Conway::warnings()`
   had zero call sites anywhere in the workspace: `config::merge::validate`
   correctly detected a role whose configured headroom meets or exceeds the
   smallest context window reachable through its chain, stored the warning on
@@ -2031,9 +2094,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`Backend::admit` becomes the authoritative context-fit check;
   `conway-routing`'s pre-flight arithmetic is demoted to an advisory
-  filter** (board item 01KZFBZHTWDF11TH7G0H613ERE, decision
-  01KZF13BAR473X5SXN8HN95T6B), completing the admission work board item
-  01KZDC4DKVC4JC3W4KN1WMC43N shipped `admit` for but left unconsumed.
+  filter** , completing the admission work shipped `admit` for but left unconsumed.
   Right up to this item, three call sites asked the same question --
   "does this fit?" -- with three independent restatements of
   `est_tokens + headroom_tokens <= max_context_tokens`:
@@ -2082,8 +2143,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `crates/conway-runtime/Cargo.toml`, `docs/routing.md`)
 
 - **The T-2 failure-classification table and `HeadroomPolicy` move from
-  `conway-routing` into `conway-core`** (board item
-  01KZFC0JDMC2Y631FFCXWR37CP), the precondition for the agent engine to stop
+  `conway-routing` into `conway-core`**, the precondition for the agent engine to stop
   depending on the whole routing library for two small things unrelated to
   routing policy. `FailureClass`, `classify`, and `observation_for` (the
   authority on whether a `BackendError` advances the fallback chain and/or
@@ -2094,8 +2154,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   consistency test pinning the two together (`observation_for(e).is_some()
   == e.is_health_signal()`, exhaustive over every variant including
   `ContextTooLarge`) is now intra-crate, so it can never again drift across
-  a crate boundary the way `ContextTooLarge`'s missing arm did in board item
-  01KZDC4DKVC4JC3W4KN1WMC43N (commit `92bfbd7`).
+  a crate boundary the way `ContextTooLarge`'s missing arm did in (commit `92bfbd7`).
   `HeadroomPolicy` moves from `conway-routing`'s `config.rs` to
   `conway_core::capabilities`, beside `DEFAULT_HEADROOM_TOKENS`: checking
   every read of `HeadroomPolicy::resolve` and every construction site found
@@ -2129,7 +2188,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `crates/conway/src/builder.rs`)
 
 - **`conway_subagent` is split into `conway_fork` and `conway_spawn`**
-  (board item 01KZDC1HSNJZ1K7HVQEW65S56R), settling the fork-vs-spawn
+ , settling the fork-vs-spawn
   choice by tool name rather than by a `mode` argument, exactly as
   `PHILOSOPHY.md`'s "Choosing between them" section has always described.
   **This is a breaking change to the model-facing tool surface**: a config,
@@ -2146,15 +2205,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `deadline_secs` mapping to `ToolError::InvalidArguments`, never a panic)
   is preserved on both. `SubagentSpec` (the port `conway-core`/
   `conway-runtime` share) is unchanged — it keeps its own `mode` field;
-  only the tool layer split. Also unblocks board item
-  01KZC8DD9C74BSTP8BQDJKYNFR (whether a fork should inherit the parent's
+  only the tool layer split. Also unblocks (whether a fork should inherit the parent's
   `agent_def`) without deciding it: two tools let each answer for itself
   instead of one optional field having to behave sensibly for both.
   (`crates/conway-tools/src/subagent/{tools,mod}.rs`, `README.md`,
   `docs/agents.md`, `docs/sessions.md`, `docs/scripting.md`)
 
 - **`conway routes explain` stays honest when the router was supplied from
-  outside `conway-routing`** (board item 01KZFC1KNGQ51TZ0BG7P7RAY9H). Before
+  outside `conway-routing`**. Before
   this item, `ExplainReport` (and its field types -- `ExplainEntry`,
   `EntryOutcome`, `CapabilitySummary`, `BreakerSnapshot`) were defined only
   in `conway-routing`, reachable exclusively through `RoutingExplain`'s
@@ -2191,7 +2249,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Graceful cancellation is now reachable, and immediate stays the default**
-  (board item 01KZDC2222ARKMZKN8ZE4BYHD6, decision 01KZDDBNCC3K9HXJYHC8QX3DKQ):
+  :
   `PHILOSOPHY.md` has described a `TERM`/`KILL`-style soft/hard cancellation
   contract since it was written, but no production code ever constructed the
   soft form — every reachable cancellation, from `conway_cancel` down to
@@ -2203,7 +2261,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   new embedder-facing primitive `SessionHandle::cancel` now delegates to
   (unchanged, immediate). A graceful cancel lets the target finish its
   in-flight turn and stops only that agent — it does not itself cancel
-  descendants (tracked separately as board item 01KZDDCBGXNYTNM31PHW46R1SP)
+  descendants (tracked separately as)
   — and cannot reach an agent idling at the resume gate between turns (an
   idle `keep_alive` agent, or a resumed root's first iteration), which is
   now stated on the tool, the facade, and `docs/agents.md`'s control-surface
@@ -2217,15 +2275,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   declaration/behavior mismatch fixed by the `mode` addition above, not
   merely by editing the comment.
 
-- **The first-party plugin tier now has a settled shape** (board item
-  01KZDC3JQ7W4DY1MG6MBCVB2DV): `PHILOSOPHY.md` names a second tier of
+- **The first-party plugin tier now has a settled shape**: `PHILOSOPHY.md` names a second tier of
   plugins — dynamic routing, compaction, memory, skills, MCP — written and
   shipped in this repository but never installed by default, and until now
   none of it existed. Four decisions, made once so the members that follow
   are ordinary work: (1) one crate per plugin under `crates/`, and `conway`
   (the facade) never depends on any of them — a first-party plugin is
   written against `conway::plugin`, the same public surface a third party
-  gets; (2) installed through a new, distinct `[plugins].install` key in
+  gets; (2) installed through a new, distinct `plugins.install` key in
   `settings.json` (deliberately not folded into `tools.builtin_plugins`,
   which names only the closed conway-tools built-in set), resolved by
   whatever binary or embedder links the plugin crate — `conway-cli` does
@@ -2244,8 +2301,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **BREAKING: the periodic health prober is retired, not wired — the
   independent `Probe` circuit breaker it fed, and the four `[health]`
-  config keys that tuned it, are gone** (board item
-  01KZ802GSF692EKYKQ2TTVCJB8, "retire the health prober"). The operator
+  config keys that tuned it, are gone** (, "retire the health prober"). The operator
   ruled on the deferred question this project had carried since the
   prober was first labeled a forward declaration: `HealthProber`
   (`conway-plugin-routing`) never had a production call site — no code in
@@ -2306,7 +2362,7 @@ prober is not yet wired.
 
 ### Added
 
-- **`[roles.<alias>]` gains a per-role capability floor:
+- **`roles.<alias>` gains a per-role capability floor:
   `tool_calling`/`structured_output`/`parallel_tool_calls`/`reasoning`/
   `min_reliability`/`min_context`.** Previously `ConwayConfig::routing()`
   hardcoded `RequiredCaps::default()` (every capability field `None`) for
@@ -2459,8 +2515,7 @@ prober is not yet wired.
   negative cases are proven end to end in
   `crates/conway/tests/permission_scope_seam.rs`: a per-agent grant does not
   authorize a sibling's identical call, and a subtree grant does not
-  authorize an agent outside the subtree. (Operator decision
-  01KZ1NAXE0KZRSRFBDDJFCPMK8: wire the scopes, do not remove them.)
+  authorize an agent outside the subtree. (Operator: wire the scopes, do not remove them.)
   (`crates/conway-core/src/permission_pattern.rs`,
   `crates/conway-cli/src/tui/input.rs`,
   `crates/conway-cli/src/tui/view/mod.rs`, `crates/conway/src/conway.rs`,
@@ -2543,7 +2598,7 @@ prober is not yet wired.
   by manifest id (`All`, `None`, `Only([..])`, `AllExcept([..])`) — the
   SAME id-keyed mechanism a bundle of third-party plugins would use for
   identical selection UX (no bespoke built-in-only switch). Not
-  calling it defers to the new `[tools]` config section
+  calling it defers to the new `tools` config section
   (`ConwayConfig::tools.builtin_plugins`, a plain `Vec<String>` of manifest
   ids), which **defaults to every built-in EXCEPT `"conway.shell"`.**
   Obtaining bash now requires a deliberate act: add `"conway.shell"` to a
@@ -2593,8 +2648,8 @@ prober is not yet wired.
   behavior no fresh install actually got. The prober itself, `BreakerKind::
   Probe`, `Observation::ProbeFail`, and the config keys are all still
   present — this is a forward declaration, not a deletion — and wiring is
-  tracked by a separate board item. Do not confuse this with the
-  already-wired startup `[models].probe_on_startup` capability probe,
+  tracked by a separate Do not confuse this with the
+  already-wired startup `models.probe_on_startup` capability probe,
   a different mechanism. (`crates/conway-core/src/routing.rs`,
   `crates/conway/src/config/schema.rs`, `crates/conway-routing/src/prober.rs`,
   `crates/conway-routing/src/lib.rs`, `docs/routing.md`)
@@ -2673,7 +2728,7 @@ prober is not yet wired.
 - **A built-in subagent tool naming an unknown/foreign agent id now fails
   with `InvalidArguments`, not `Internal`.** `conway_steer`/`conway_await`/
   `conway_cancel`/`conway_subagent`/`conway_ask` all call
-  `ToolCtx::subagents` (`SubagentHandle`), which since board item C1 already
+  `ToolCtx::subagents` (`SubagentHandle`), which since C1 already
   narrows every `RuntimeError` a call can produce to `SubagentError`; this
   item deletes `conway-tools`' own `host_error` helper, which used to flatten
   every one of those into `ToolError::Internal` regardless of cause. Now
@@ -2750,15 +2805,14 @@ prober is not yet wired.
   artifacts` and `Artifact` already give a plugin the type surface to report
   a spilled file; the participant point that would let a plugin *narrow*
   another tool's output before it reaches context does not exist yet
-  (`.design/extension-architecture.md` §16.5 tracks the gap). Board item
-  `01KYTN3A9SPDMRG610YSB5QQXX`. (`crates/conway-core/src/content.rs`,
+  (`.design/extension-architecture.md` §16.5 tracks the gap). (`crates/conway-core/src/content.rs`,
   `crates/conway-runtime/src/tools/runner.rs`,
   `crates/conway/tests/enum_variant_construction_guard.rs`)
 
 - **BREAKING: the `conway` crate's `anthropic` and `openai-compat` cargo
   features are gone.** Which backend you talk to (native Anthropic, or one
   of the OpenAI-compatible dialects) is runtime configuration — a
-  `[backends.<id>].kind` entry in settings — not a build-time choice, and
+  `backends.<id>.kind` entry in settings — not a build-time choice, and
   these two features were the wrong axis for it: every combination of the
   workspace's own `feature-matrix.yml` job that had neither feature enabled
   failed to compile (`conway_backends::profile::ProfileStore` referenced
@@ -2777,7 +2831,7 @@ prober is not yet wired.
   outright, not left behind as dead code for a state that can no longer
   occur — that variant's sole remaining producer is
   `config::model_metadata::refresh` (`metadata-refresh`, unrelated, still a
-  genuine no-op-until-implemented feature per WI-097). `feature-matrix.yml`
+  genuine no-op-until-implemented feature an earlier item). `feature-matrix.yml`
   is updated to the new truth (`--no-default-features`, `builtin-tools`
   alone, `jsonl-store` alone, both together, `--all-features`, default —
   six combinations, all now green) and its own guard was proven to still
@@ -2795,8 +2849,7 @@ prober is not yet wired.
   Both are now gated on the feature they actually depend on. This is a
   ground-clearing removal, not a replacement: backends as plugins,
   installed declaratively on the same surface a third-party plugin author
-  uses, is filed separately as board item
-  `01KZACKE05ZNYTYR0TGV3550SD`. (`crates/conway/Cargo.toml`,
+  uses, is filed separately as. (`crates/conway/Cargo.toml`,
   `crates/conway/src/builder.rs`, `crates/conway/src/error.rs`,
   `crates/conway/src/config/schema.rs`, `crates/conway/tests/builder.rs`,
   `crates/conway/tests/plugin_surface.rs`, `crates/conway/tests/conway_ask.rs`,
@@ -2844,7 +2897,7 @@ prober is not yet wired.
   (`crates/conway-runtime/src/subagent.rs`,
   `crates/conway/tests/agent_defs.rs`,
   `crates/conway/tests/fixtures/agents/contract_child.md`, `docs/agents.md`)
-- **The startup capability probe (`[models].probe_on_startup`) can no
+- **The startup capability probe (`models.probe_on_startup`) can no
   longer make a model routable that `models.json` never declared.**
   `probe_openai_compat_backends` (`ConwayBuilder::build` step 5's overlay)
   inserted every probe-observed `(backend, model)` pair into the router's
@@ -2885,7 +2938,7 @@ prober is not yet wired.
   always passes `agent_def: None`, so a def-declared `result_contract`,
   tools selector, system prompt, and model pin never reach a `conway_ask`
   child, even from a parent itself spawned from a def (only the parent's
-  effective *role* is inherited, via `conway-runtime`'s existing WI-136
+  effective *role* is inherited, via `conway-runtime`'s existing
   fallback). This became load-bearing once agent-def `result_contract`
   enforcement landed (above): for `conway_ask` it silently never applies,
   and the docs previously implied otherwise. No behavior changed — the
@@ -3389,8 +3442,7 @@ and was verified to fail when the guard is removed.
     a `deny` rule is a seatbelt for the obvious case, not one. What keeps
     the composition sound is `allow`'s own gate: a command carrying a
     metacharacter can never be satisfied by a **pattern grant**, regardless
-    of what patterns exist. (Corrected 2026-08-04, board item
-    01KZ71QDAFXT3MVYS3H5WCFMSC: this sentence originally ended "so a chained
+    of what patterns exist. (Corrected 2026-08-04: this sentence originally ended "so a chained
     command always reaches the operator either way," which was false and
     contradicted this same release's own entries above — the gate governs
     pattern matching only, and `AutoAllow` short-circuits to allow *after*
@@ -3593,7 +3645,7 @@ and was verified to fail when the guard is removed.
   `crates/conway-cli/src/tui/app.rs`, `crates/conway-cli/src/tui/commands.rs`,
   `crates/conway-cli/src/tui/state.rs`)
 
-- **The TUI re-read and re-parsed `[models.metadata_path]` from disk a
+- **The TUI re-read and re-parsed `models.metadata_path` from disk a
   second time at startup, independently of the facade's own load** — two
   code paths that agreed only because both happened to implement the
   identical "missing file → empty map" fallback. `App::new` now reads the
@@ -4343,7 +4395,7 @@ Full detail on both defects, including the tests that pin them, in the two
   (possibly cross-classified); `[e]` drops the classified prompt into the
   input line for editing; `[esc]` falls back to today's pre-classification
   manual flow with the raw text untouched. The verbatim passthrough
-  (unconfigured `[roles.intent]` role, unparseable reply, invalid recipe,
+  (unconfigured `roles.intent` role, unparseable reply, invalid recipe,
   empty prompt) still shows the card with the raw text; a hard
   `ConwayError::IntentClassification` does NOT show the card and falls back
   to the manual flow with a notice. Explicit `@<agent_def>` syntax and bare
@@ -4478,7 +4530,7 @@ Full detail on both defects, including the tests that pin them, in the two
   — never a panic. New fields: `model` (the focused agent's
   serving model display name from `Event::ModelDecision`); `ctx`
   (context-window occupancy — `ctx 42%` when the focused model's max
-  context is known from `[models.metadata_path]`, else the raw
+  context is known from `models.metadata_path`, else the raw
   cumulative `Event::ContextSegmentAdded` token estimate, compact-
   suffixed as `ctx 12.3k`; capped at `ctx 100%`); `tokens` formalizes
   the cumulative spend slot as `<total> tok (<n%> cached)`, where
@@ -4835,7 +4887,7 @@ capability is a plugin.
   plugin-author guide) are not yet written.
 
 <!-- Only versions that carry a git tag are linked. Tagging began at v0.4.0
-     (decision 01KYT8AQBTK4EZMA0B57K58W3R); 0.3.0 and earlier were released
+    ; 0.3.0 and earlier were released
      untagged and have no target to point at. -->
 
 [Unreleased]: https://github.com/devnill/conway/compare/v0.9.0...HEAD

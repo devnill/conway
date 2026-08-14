@@ -44,7 +44,7 @@ pub fn unique_temp_dir(label: &str) -> PathBuf {
 /// tests "whatever happens to be on the machine running the suite," CI or a
 /// developer's laptop alike.
 ///
-/// This is not hypothetical (board item 01KZVQCQWFMH90APGFTXBAMEVC): eight
+/// This is not hypothetical: eight
 /// `config_headroom.rs` tests built exactly this way went red on one
 /// laptop, and only that laptop, when an unrelated change removed four
 /// `[health]` keys that the operator's real `settings.json` happened to

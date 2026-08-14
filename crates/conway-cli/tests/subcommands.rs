@@ -1,9 +1,9 @@
-//! WI-116: integration tests for the read-only `sessions`/`routes`
+//! Integration tests for the read-only `sessions`/`routes`
 //! introspection subcommands, run against the real compiled `conway`
-//! binary. Reuses the WI-113 harness (`tests/common/mod.rs`) unchanged --
+//! binary. Reuses the harness (`tests/common/mod.rs`) unchanged --
 //! no new harness code is added here, per this item's own binding notes.
 
-// This test binary only exercises a subset of the shared WI-113 harness's
+// This test binary only exercises a subset of the shared harness's
 // `Chunk` variants and `MockHandle` accessors (`ToolCall`/`Delay`/`Hang`,
 // `requests()` are exercised by `tests/oneshot.rs`'s own suite, not this
 // one) -- each integration-test file compiles as its own independent
@@ -80,7 +80,7 @@ fn write_forked_child(fixture: &Fixture, parent: &str, at_seq: u64) -> String {
 }
 
 /// Same shape as [`write_forked_child`], but `origin.mode` is `"spawn"`
-/// rather than `"fork"` -- the fixture for GP-02's "fork and spawn are
+/// rather than `"fork"` -- the fixture for "fork and spawn are
 /// distinct primitives that must never be blurred into one label"
 /// regression: a session `conway_spawn` created must never
 /// render as a fork in `sessions list` (neither the text `ORIGIN` cell nor
@@ -128,46 +128,23 @@ fn jsonl_lines(stdout: &[u8]) -> Vec<Value> {
         .collect()
 }
 
-/// The shared WI-113 template (`fixtures/conway.json.tmpl`) declares no
-/// `permissions` section, so it defaults to `PermissionsConfig::default()`
-/// (`mode = "prompt"`). One-shot mode's dispatch always supplies its own
-/// gate override (`oneshot::build_gate`), so that default is invisible to
-/// `tests/oneshot.rs` -- but `sessions`/`routes` dispatch supplies no
-/// override (WI-116's own binding notes: these subcommands never touch a
-/// tool or a permission decision), so `ConwayBuilder::build` falls through
-/// to `gates::from_config(&config.permissions, None)`, which errors for
-/// `mode = "prompt"` with no handler supplied. Merging in a `permissions`
-/// object (any mode other than `prompt` -- `"deny"` is the one every other
-/// fixture in this workspace already uses for exactly this reason, e.g.
-/// `cli_surface.rs::MINIMAL_CONFIG`) sidesteps it; harmless here since no
-/// subcommand under test ever proposes a tool call.
-fn allow_build_without_prompt_handler(fixture: &Fixture) {
-    let text = std::fs::read_to_string(&fixture.config_path).expect("read fixture config");
-    let mut value: serde_json::Value = serde_json::from_str(&text).expect("parse fixture config");
-    value["permissions"] = serde_json::json!({ "mode": "deny" });
-    std::fs::write(
-        &fixture.config_path,
-        serde_json::to_vec(&value).expect("serialize fixture config"),
-    )
-    .expect("rewrite fixture config");
-}
-
 /// A fixture that never dials a backend -- routing decisions and an empty
 /// session store don't need one, so these tests skip `MockBackend`
 /// entirely (matching `cli_surface.rs`'s `MINIMAL_CONFIG` pattern for the
 /// same reason).
 fn static_fixture() -> Fixture {
-    let fixture = write_fixture_with("http://127.0.0.1:1/v1", "test-model", 10);
-    allow_build_without_prompt_handler(&fixture);
-    fixture
+    write_fixture_with("http://127.0.0.1:1/v1", "test-model", 10)
 }
 
-/// [`write_fixture`], plus the `[permissions]` override described on
-/// [`allow_build_without_prompt_handler`].
+/// The shared fixture template declares no `permissions` section, so it
+/// defaults to `mode = "prompt"`. These tests deliberately leave it that
+/// way: `sessions`/`routes` used to fail outright under that mode, because
+/// dispatch supplied no gate and `ConwayBuilder::build` fell through to
+/// `gates::from_config`, which needs an interactive handler no subcommand
+/// can provide. Read-only subcommands now carry a deny-all gate, so running
+/// them against a prompt-mode config is the regression guard for that fix.
 fn fixture_with_mock(mock: &common::mock_backend::MockHandle) -> Fixture {
-    let fixture = write_fixture(mock, 10);
-    allow_build_without_prompt_handler(&fixture);
-    fixture
+    write_fixture(mock, 10)
 }
 
 // ---------------------------------------------------------------------
@@ -215,7 +192,7 @@ async fn sessions_list_json_has_id_created_no_status() {
     assert!(!obj.contains_key("status"));
 }
 
-/// GP-02 regression (text output): a spawned child's `ORIGIN` cell must
+/// Regression (text output): a spawned child's `ORIGIN` cell must
 /// read `spawn@...`, never `fork@...` -- `origin_cell` used to hardcode the
 /// word `fork` regardless of the persisted `SessionMeta.origin.mode`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -249,13 +226,13 @@ async fn sessions_list_text_spawned_child_shows_spawn_not_fork() {
     );
     assert!(
         !text.contains("fork@"),
-        "spawned child's row must never say fork (GP-02): {text:?}"
+        "spawned child's row must never say fork (): {text:?}"
     );
 }
 
-/// GP-02 regression (JSON output), the `origin_json`-side counterpart of
+/// Regression (JSON output), the `origin_json`-side counterpart of
 /// [`sessions_list_text_spawned_child_shows_spawn_not_fork`] -- text and
-/// JSON must agree (GP-05/C-03).
+/// JSON must agree ().
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sessions_list_json_spawned_child_origin_mode_is_spawn() {
     let mock =
@@ -281,7 +258,7 @@ async fn sessions_list_json_spawned_child_origin_mode_is_spawn() {
     assert_eq!(
         child_obj["origin"]["mode"].as_str(),
         Some("spawn"),
-        "spawned child's origin.mode must be \"spawn\", never \"fork\" (GP-02): {child_obj:?}"
+        "spawned child's origin.mode must be \"spawn\", never \"fork\" (): {child_obj:?}"
     );
 }
 

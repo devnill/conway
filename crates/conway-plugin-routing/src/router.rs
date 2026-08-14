@@ -1,5 +1,5 @@
 //! `DeclarativeRouter`: pure, synchronous resolution of a `RoleAlias` to an
-//! ordered, capability- and health-filtered candidate list (WI-034, amended
+//! ordered, capability- and health-filtered candidate list (amended
 //! for the headroom gate; further amended to implement
 //! `conway_core::ports::Router`'s T-1 contract literally, see below).
 //!
@@ -7,8 +7,8 @@
 //! health -> chain order. See `docs/routing.md` for how this order shows up
 //! in `conway routes explain` output.
 //!
-//! **T-1 error selection (decision 01KYXS3PTYVATWR58JR95AZJYN, closing board
-//! item 01KYXNAHN64YMADZPQDQC0CPTJ):** `conway_core::ports::Router`'s doc
+//! **T-1 error selection (, closing board
+//! item):** `conway_core::ports::Router`'s doc
 //! comment on `resolve` states that T-1 (no candidate's headroom-adjusted
 //! window covers `req.est_tokens`) returns `RoutingError::ContextTooLarge`.
 //! `DeclarativeRouter` now implements that literally: `resolve` returns
@@ -25,7 +25,7 @@
 //! same as every other all-rejected outcome (an unindexed model, a health
 //! skip, or a mix of these with headroom). `DeclarativeRouter` was the last
 //! place folding T-1 into `NoCandidate`; the divergence this superseded was
-//! recorded against WI-034's machine-checked spec (the tests named below
+//! recorded against an earlier item's machine-checked spec (the tests named below
 //! were amended in the same change that added this note) and against
 //! `conway-runtime`'s `agent_loop.rs`, whose own note is retired alongside
 //! this one.
@@ -107,24 +107,24 @@ pub(crate) enum EvalOutcome {
 /// where an owned `ModelRef`-derived value is produced.
 pub(crate) struct EvalEntry<'a> {
     pub(crate) model_ref: &'a ModelRef,
-    #[allow(dead_code)] // consumed by WI-036's RoutingExplain, not yet landed
+    #[allow(dead_code)] // consumed by an earlier item's RoutingExplain, not yet landed
     pub(crate) chain_position: Option<u8>,
     pub(crate) outcome: EvalOutcome,
 }
 
 /// The full evaluation of a `RouteRequest` against every candidate it could
 /// have resolved to -- the shared source of truth `resolve` (this file) and
-/// `RoutingExplain::explain` (WI-036) both project from, so the two surfaces
+/// `RoutingExplain::explain` both project from, so the two surfaces
 /// can never diverge.
 pub(crate) struct Evaluation<'a> {
     pub(crate) entries: Vec<EvalEntry<'a>>,
-    #[allow(dead_code)] // consumed by WI-036's RoutingExplain, not yet landed
+    #[allow(dead_code)] // consumed by an earlier item's RoutingExplain, not yet landed
     pub(crate) headroom_tokens: u32,
 }
 
 /// Maps a model reference to its endpoint identity. Endpoint identity is 1:1
 /// with backend identity for MVP (per-model endpoints are out of scope).
-/// Shared with `explain.rs` (WI-036).
+/// Shared with `explain.rs`.
 pub(crate) fn endpoint_of(model_ref: &ModelRef) -> EndpointId {
     EndpointId::new(model_ref.backend.as_str())
 }
@@ -234,8 +234,7 @@ impl DeclarativeRouter {
     /// and neither does a candidate that fails headroom *and* some other
     /// requirement.
     ///
-    /// "Failed the headroom gate" is decided STRUCTURALLY (board item
-    /// 01KZFBZHTWDF11TH7G0H613ERE): solely-on-size is `non_size_missing(..)
+    /// "Failed the headroom gate" is decided STRUCTURALLY -- solely-on-size is `non_size_missing(..)
     /// .is_empty() && size_missing(..).is_some()`; mixed is `!non_size_missing
     /// (..).is_empty()` (with or without a size failure alongside it). No
     /// string counting, no string parsing of `missing`'s entries --
@@ -354,7 +353,7 @@ impl DeclarativeRouter {
     }
 
     /// The health registry this router reads for `HealthSkip` filtering,
-    /// exposed read-only so `RoutingExplain` (WI-036) can take its own
+    /// exposed read-only so `RoutingExplain` can take its own
     /// per-candidate breaker snapshot at explain time without duplicating
     /// health state anywhere.
     pub(crate) fn health(&self) -> &Arc<dyn HealthRegistry> {
@@ -362,7 +361,7 @@ impl DeclarativeRouter {
     }
 
     /// The capability index this router filters against, exposed read-only
-    /// so `RoutingExplain` (WI-036) can render each candidate's
+    /// so `RoutingExplain` can render each candidate's
     /// `CapabilitySummary` without duplicating the lookup.
     pub(crate) fn capability_index(&self) -> &CapabilityIndex {
         &self.capability_index
@@ -688,7 +687,7 @@ mod tests {
             measured = measured.min(after - before);
         }
 
-        // NOTE (flagged, not silently claimed as "<= 2"): the WI-034
+        // NOTE (flagged, not silently claimed as "<= 2"): the
         // criterion text specifies "at most 2 heap allocations on the
         // success path (the result Vec ... plus the per-Route reason)". On
         // the tightest possible fixture (a single pinned candidate, already
@@ -696,7 +695,7 @@ mod tests {
         // measures 7, not 2:
         //   1 `evaluate`'s `entries` Vec::with_capacity
         //   2 `CapabilityIndex::get`'s `(BackendId, ModelId)` lookup-key
-        //     clone (capability.rs, WI-032 -- outside this item's file
+        //     clone (capability.rs -- outside this item's file
         //     scope)
         //   1 `endpoint_of`'s `EndpointId::new(&str)` String allocation
         //   1 `resolve`'s `routes` Vec::with_capacity
@@ -714,17 +713,16 @@ mod tests {
         // unreachable here, not an inefficiency in this file's control
         // flow. This test pins the actual measured count instead of
         // silently asserting the unreachable budget; flagged to the
-        // coordinator for reconciliation with the WI-034 criterion text.
+        // coordinator for reconciliation with the criterion text.
         assert_eq!(
             measured, 7,
             "measured allocation count drifted from the documented floor (7); \
-             re-examine whether the WI-034 budget criterion is achievable, got {measured}"
+             re-examine whether the budget criterion is achievable, got {measured}"
         );
     }
 
     // ---------------------------------------------------------------------
-    // `check_candidate`'s headroom-only discrimination (board item
-    // 01KYXNAHN64YMADZPQDQC0CPTJ): unit-level coverage of the `Option<u32>`
+    // `check_candidate`'s headroom-only discrimination (//): unit-level coverage of the `Option<u32>`
     // half of its return value, directly, rather than only through
     // `resolve`'s aggregate `ContextTooLarge`/`NoCandidate` choice.
     // ---------------------------------------------------------------------
