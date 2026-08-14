@@ -35,8 +35,55 @@ separate stores sharing one id shape. docs/plugins/hooks.md cites
 resolve in the record store and return nothing from the work board. A resolver
 that checked only the board would call both dangling and be wrong.
 
+A SECOND, UNRELATED CLASS THIS ALSO CHECKS: steering-shorthand leaking onto a
+user-facing page (board item 01KZWV0BG353J7SVZX5YV8N459, added by
+01KZY8TEE2FDWQMHEKJDDC3SG9). `GP-03`, `P-2`, `C-04` and similar are internal
+governance ids from `.ideate/steering/`, a directory `.gitignore` excludes on
+purpose (the same operator direction that declined vendoring the board).
+`docs/plugins/authoring.md` is read by a third-party plugin author who will
+never have that directory; a bare `GP-03` resolves for nobody but a
+maintainer. This check runs unconditionally (no store needed, unlike the ULID
+check above) over `docs/` plus the five root pages `01KZWV0BG353J7SVZX5YV8N459`
+measured (`README.md`, `ARCHITECTURE.md`, `PHILOSOPHY.md`, `CONTRIBUTING.md`,
+`CHANGELOG.md`) and fails on any match. It does NOT cover `crates/*/src/`
+(that surface's own regression guard is board item `01KZVYKS7WPSZXTGN3XAMM0PC7`,
+"S0c" -- deliberately kept a separate item and a separate invariant, not
+widened into this one), and it does NOT cover the `T-`/`V-`/`F-`/`R-` id
+families `docs/plugins/hooks.md` still quotes (e.g. `F12`, `T7`) -- those are
+historical labels from an item's own original spec text, always paired inline
+with the real, resolvable board ULID that superseded them, which is a
+different (legitimate) citation shape than a bare, untranslated `GP-*`/`P-*`/
+`C-*` reference standing alone.
+
+WHAT THIS DOES NOT CHECK, stated because a gate whose limits are unstated is
+the defect one level up:
+
+  * **Citation resolution (the ULID half) needs a maintainer checkout.** CI
+    has no `.ideate-work/board.db`/`.ideate/record`, so it cannot notice a
+    dangling `tracked under 01K...` citation -- only the steering-shorthand
+    half runs there. Run on a checkout with both stores present before
+    trusting a citation's pending/done status.
+  * **The pending-sense phrase list (`PENDING_BEFORE`/`PENDING_AFTER`) is a
+    fixed vocabulary, not language understanding.** A citation phrased a way
+    neither regex anticipates is invisible to this check even naming a
+    `done` item in a clearly pending sense.
+  * **`crates/*/src/` is not rescanned for steering shorthand.** That surface
+    has its own regression guard, board item `01KZVYKS7WPSZXTGN3XAMM0PC7`
+    ("S0c") -- deliberately a separate invariant, not widened into this one.
+  * **`T-`/`V-`/`F-`/`R-` id families are not steering shorthand here.**
+    `docs/plugins/hooks.md` still quotes some (`F12`, `T7`) as historical
+    labels from an item's own original spec text, always paired inline with
+    the real board ULID that superseded them -- a legitimate citation shape
+    this check does not flag, distinct from a bare, untranslated `GP-*`/
+    `P-*`/`C-*` reference standing alone.
+  * **A false PRESENT-TENSE capability claim with no `GP-*`/`P-*`/`C-*` id at
+    all is invisible to this script.** That class (a page asserting a
+    default build does something only a plugin adds) is guarded instance by
+    instance as a `scripts/board-claims.md` regression predicate, not
+    mechanically detected here -- see `check-design-claims.py`'s own header.
+
 Usage:  python3 scripts/check-board-citations.py [--verbose]
-Exit:   0 clean | 1 violations found | 2 stores unavailable (SKIPPED)
+Exit:   0 clean | 1 violations found (either class)
 """
 
 from __future__ import annotations
@@ -89,6 +136,16 @@ ALLOWLIST = {
     "01KZWT0ET8E669YPNQWXB3GQZA": "a conway *session* id in a recorded walkthrough transcript, not a board item",
 }
 
+# Internal governance shorthand from `.ideate/steering/` -- unresolvable for
+# anyone without that gitignored directory. See the module doc's "A SECOND,
+# UNRELATED CLASS" section for what this deliberately does not cover (T-/V-/
+# F-/R- ids, crates/*/src/).
+STEERING_SHORTHAND = re.compile(r"\b(GP-[0-9]+|P-[0-9]+|C-[0-9]+)\b")
+
+# The exact surface board item 01KZWV0BG353J7SVZX5YV8N459 measured: docs/ plus
+# the five root pages a reader outside this repo actually lands on.
+USER_FACING_ROOT_MD = ("README.md", "ARCHITECTURE.md", "PHILOSOPHY.md", "CONTRIBUTING.md", "CHANGELOG.md")
+
 
 def load_stores() -> tuple[dict[str, str], set[str]] | None:
     if not BOARD_DB.exists() or not RECORD_DIR.is_dir():
@@ -130,15 +187,49 @@ def citation_lines(path: pathlib.Path):
         yield lineno, line
 
 
+def scan_steering_shorthand() -> list[tuple[str, int, str, str]]:
+    """`(rel_path, lineno, id, line)` for every bare GP-*/P-*/C-* citation on a
+    user-facing page. Needs neither store -- this is the half of the module
+    that DOES gate CI, unlike the ULID-resolution half below.
+    """
+    files = sorted(
+        [p for p in (ROOT / "docs").rglob("*.md") if p.is_file()]
+        + [ROOT / f for f in USER_FACING_ROOT_MD if (ROOT / f).exists()]
+    )
+    hits: list[tuple[str, int, str, str]] = []
+    for path in files:
+        rel = path.relative_to(ROOT).as_posix()
+        for lineno, line in citation_lines(path):
+            masked = QUOTED.sub(lambda m: " " * len(m.group()), line)
+            for m in STEERING_SHORTHAND.finditer(masked):
+                hits.append((rel, lineno, m.group(1), line.strip()[:140]))
+    return hits
+
+
 def scan():
+    shorthand = scan_steering_shorthand()
+    for rel, lineno, ident, ctx in shorthand:
+        print(f"{rel}:{lineno}: STEERING-SHORTHAND citation on a user-facing page: {ident}")
+        print(f"    {ctx}")
+    if shorthand:
+        print(
+            f"\n{len(shorthand)} steering-shorthand citation(s) found -- unresolvable "
+            f"for a reader without .ideate/steering/. Reference the concept instead "
+            f"(see board item 01KZWV0BG353J7SVZX5YV8N459's translation table)."
+        )
+
     stores = load_stores()
     if stores is None:
-        print("SKIPPED: the ideate stores are not present in this checkout.")
+        print(
+            "\nCITATION-RESOLUTION HALF SKIPPED: the ideate stores are not present "
+            "in this checkout."
+        )
         print(f"  expected {BOARD_DB.relative_to(ROOT)} and {RECORD_DIR.relative_to(ROOT)}")
-        print("  Both are .gitignore'd local tooling state, so CI and a plain")
-        print("  clone cannot run this. Exiting 2 rather than 0: a run that")
-        print("  verified nothing must not report success.")
-        return 2
+        print("  Both are .gitignore'd local tooling state, so CI and a plain clone")
+        print("  cannot run it -- unlike the steering-shorthand check above, which just")
+        print("  ran regardless. Run this on a maintainer checkout before trusting a")
+        print("  board_item citation's pending/done status.")
+        return 1 if shorthand else 0
     board, record = stores
 
     unknown: list[tuple[str, int, str, str]] = []
@@ -208,11 +299,12 @@ def scan():
         print(f"{rel}:{lineno}: UNKNOWN id {ident} resolves in neither store")
         print(f"    {ctx}")
 
-    total = len(stale) + len(unknown)
+    total = len(stale) + len(unknown) + len(shorthand)
     print(
         f"\nchecked {cited} citations across {len(files)} files "
         f"({len(board)} board items, {len(record)} record entries): "
-        f"{len(stale)} stale, {len(unknown)} unknown"
+        f"{len(stale)} stale, {len(unknown)} unknown, "
+        f"{len(shorthand)} steering-shorthand"
     )
     return 1 if total else 0
 
