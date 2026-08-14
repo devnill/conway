@@ -14,12 +14,14 @@
 //! links.
 //!
 //! **This bundle is a worked example, not a commitment to any of its
-//! members individually.** Today it contains exactly one plugin entry --
-//! `conway-plugin-skeleton`, itself a skeleton proving nothing beyond the
-//! install mechanism (see that crate's own module doc). Dynamic routing is
-//! built (`conway-plugin-routing`, resolved through `router_bundle` below,
-//! not this list). Context compaction, memory, skills, and MCP support are
-//! not; each is separate, later work, and none has a board item yet as of
+//! members individually.** Today it contains two plugin entries --
+//! `conway-plugin-skeleton`, a skeleton proving nothing beyond the install
+//! mechanism (see that crate's own module doc), and `conway-plugin-history`
+//! (board item 01KZY8Q1CMMNVSF54CTC270N3H), `/conway.history.rewind`'s real
+//! capability. Dynamic routing is built (`conway-plugin-routing`, resolved
+//! through `router_bundle` below, not this list). Context compaction,
+//! memory, skills, MCP support, and `/checkout`/`ContextMask` are not; each
+//! is separate, later work, and none has a landed board item yet as of
 //! 2026-08-13 (`scripts/board-claims.md`'s `UNFILED` entry records the gap)
 //! -- each adds its own entry here when it lands --
 //! through `ConwayBuilder::with_backend_factory`/`with_router_factory` too,
@@ -94,7 +96,18 @@ use conway::{BackendFactory, ConwayBuilder, ConwayError, RouterFactory};
 /// `presets::builtin_plugins()` uses for the built-in bundle -- no second
 /// registry idiom introduced for a one-plugin list.
 fn bundle() -> Vec<Arc<dyn Plugin>> {
-    vec![Arc::new(conway_plugin_skeleton::SkeletonPlugin)]
+    vec![
+        Arc::new(conway_plugin_skeleton::SkeletonPlugin),
+        // Board item 01KZY8Q1CMMNVSF54CTC270N3H: `/conway.history.rewind`
+        // -- the answer to "is /rewind a plugin", per the owner's ruling
+        // that session-history features belong in the plugin tier, not
+        // core. Resolved through this SAME `[plugins].install` mechanism;
+        // absent from `main.rs`'s default install set (and from every
+        // README/getting-started example's default snippet), exactly like
+        // `conway_plugin_skeleton` above -- first-party still means
+        // opt-in.
+        Arc::new(conway_plugin_history::HistoryPlugin),
+    ]
 }
 
 /// Every first-party `RouterFactory` this binary links, in no particular
