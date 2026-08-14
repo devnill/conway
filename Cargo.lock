@@ -469,7 +469,7 @@ dependencies = [
 
 [[package]]
 name = "conway"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "blake3",
@@ -499,7 +499,7 @@ dependencies = [
 
 [[package]]
 name = "conway-cli"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "assert_cmd",
  "async-trait",
@@ -527,7 +527,7 @@ dependencies = [
 
 [[package]]
 name = "conway-core"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "blake3",
@@ -544,7 +544,7 @@ dependencies = [
 
 [[package]]
 name = "conway-plugin-backends"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -572,7 +572,7 @@ dependencies = [
 
 [[package]]
 name = "conway-plugin-history"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "conway",
  "conway-core",
@@ -581,7 +581,7 @@ dependencies = [
 
 [[package]]
 name = "conway-plugin-routing"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -597,7 +597,7 @@ dependencies = [
 
 [[package]]
 name = "conway-plugin-skeleton"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "conway",
  "conway-core",
@@ -609,7 +609,7 @@ dependencies = [
 
 [[package]]
 name = "conway-runtime"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "blake3",
@@ -633,7 +633,7 @@ dependencies = [
 
 [[package]]
 name = "conway-session"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -650,7 +650,7 @@ dependencies = [
 
 [[package]]
 name = "conway-thirdparty-backend"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "assert_cmd",
  "chrono",
@@ -662,7 +662,7 @@ dependencies = [
 
 [[package]]
 name = "conway-tools"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "chrono",

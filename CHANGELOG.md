@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-08-13
+
 ### Added
 
 - **A plugin command can now fork its own calling session and hand the TUI
@@ -4836,7 +4838,8 @@ capability is a plugin.
      (decision 01KYT8AQBTK4EZMA0B57K58W3R); 0.3.0 and earlier were released
      untagged and have no target to point at. -->
 
-[Unreleased]: https://github.com/devnill/conway/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/devnill/conway/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/devnill/conway/releases/tag/v0.9.0
 [0.8.0]: https://github.com/devnill/conway/releases/tag/v0.8.0
 [0.7.0]: https://github.com/devnill/conway/releases/tag/v0.7.0
 [0.6.0]: https://github.com/devnill/conway/releases/tag/v0.6.0
