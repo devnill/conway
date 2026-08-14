@@ -247,8 +247,8 @@ Git needs three layers here, not two, and so does this:
 | | git | conway | Owned by |
 | --- | --- | --- | --- |
 | content | blob | **record** | nobody — global, immutable |
-| structure, frozen | commit / tree | **graph version** | nobody — global, immutable, freely referenced |
-| structure, moving | branch ref | **graph head** | **exactly one session** |
+| structure, frozen | commit / tree | **selection** | nobody — global, immutable, freely referenced |
+| structure, moving | branch ref | **head** | **exactly one session** |
 
 **Ownership applies to the head. A version is shared freely.** Read that way, the
 rule above is exactly right and costs nothing.
@@ -256,7 +256,7 @@ rule above is exactly right and costs nothing.
 Two reasons it has to be this way.
 
 **Expressiveness.** Fork ten children off one carefully curated path and they should
-share that path's cache. If a graph may reference *another graph version* as its
+share that path's cache. If a graph may reference *another selection* as its
 prefix, that sharing is structural — one named version, ten heads pointing at it,
 byte-identity guaranteed by construction. If a graph may reference only *records*,
 each child re-enumerates the same selection, byte-identity becomes a coincidence
@@ -668,7 +668,7 @@ refuses to own.
 
 ## 8. What "good" means here
 
-Ordered, most important first.
+Ordered, most important first. **The numbered points below are cited elsewhere as §8.1 through §8.7** — there is no sub-heading to jump to, so a citation like §8.3 means point 3 of this list.
 
 1. **An open question is a failure of the spec, not a gap in the code.** If
    someone building on conway has to ask "should I do it this way or that way,"
