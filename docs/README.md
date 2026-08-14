@@ -10,6 +10,7 @@ everything else assumes that page's setup.
 | Page | Answers | Read if |
 | --- | --- | --- |
 | [`getting-started.md`](getting-started.md) | How do I install conway, configure a model provider, and run my first prompt? | You're setting conway up for the first time. |
+| [`cli-guide.md`](cli-guide.md) | What does a working session actually look like — hooks, the agent tree, recovering from a bad turn, and the things that aren't on the screen? | You're installed and running, and want the practical path rather than a reference. |
 
 ## Driving conway
 
