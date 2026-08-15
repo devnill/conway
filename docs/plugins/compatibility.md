@@ -7,8 +7,12 @@ stating the compatibility rules themselves, and this page is entirely the
 latter.
 
 Depends on [`concepts.md`](concepts.md) for vocabulary. Most of what this
-page states concretely applies to a wire protocol that does not exist yet
-(the out-of-process transport design is a design spike, not implemented) — every claim
+page states concretely applies to the FULL wire protocol, which remains a
+design spike beyond a thin, disclosed slice: `tool.spec/1`/`tool/1`
+(one-shot exec) are real and enforced today — see
+[`subprocess-plugins.md`](subprocess-plugins.md) — while the persistent-
+connection transport and every other point (`permission.policy/1`,
+`context.hook/1`, `observe/1`) are not. Every claim
 below says plainly whether it describes something enforced in the tree today
 or a decided rule for the transport once it lands, the same labeling
 discipline [`hooks.md`](hooks.md) uses throughout.
@@ -160,7 +164,15 @@ appears in a future handshake as informational only (`host: { name,
 version }`), never branched on — a TUI-only release does not have to move
 the protocol, and nothing here is size-of-conway-version-shaped.
 
-**None of the wire-level table above is enforced by any code today.** No
+**None of the wire-level table above is enforced by any code today — not
+even by the thin `tool.spec/1`/`tool/1` slice that now exists**
+([`subprocess-plugins.md`](subprocess-plugins.md)). That slice fails
+CLOSED on any unknown tag or malformed field (a hard parse error, the same
+uniform failure every other malformed answer produces), rather than the
+graceful per-enum degradation this table specifies (`execute` for an
+unknown `ToolCategory`, and so on) — a future implementation that widens
+past `tool.spec/1`/`tool/1` is the one this table's convergence rules are
+written for, not this slice. No
 `initialize` handshake, no `WireManifest`, no per-point version negotiation
 exists in the tree — `concepts.md`'s "Hook-first" section and
 [`hooks.md`](hooks.md) point 1 both state the same thing from their own

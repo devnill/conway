@@ -385,6 +385,7 @@ fn root_spec() -> RootSpec {
         keep_alive: false,
         model: None,
         system_prompt_override: None,
+        result_contract: None,
     }
 }
 

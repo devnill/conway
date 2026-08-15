@@ -43,6 +43,17 @@ conway-plugin-routing = { path = "../conway-plugin-routing" }
 # `main.rs`'s `build_conway` unions that key into `wanted` before calling
 # `first_party_plugins::install`.
 conway-plugin-backends = { path = "../conway-plugin-backends" }
+# Board item 01KZY8PATND84AKY0J376E3DWV: the subprocess plugin host. Unlike
+# every other `conway-plugin-*` dependency above, this crate's own tools are
+# NOT compiled in at all -- it is a HOST mechanism (a `Plugin` that talks to
+# an external process named in `settings.json`), resolved through
+# `src/subprocess_plugins.rs`, a NEW, separate choke point from
+# `first_party_plugins.rs`'s `[plugins].install` resolution (this tier has
+# no closed candidate set to resolve an id against; every entry in
+# `[plugins].subprocess` is spawned, by construction). See that module's
+# own doc for the full wiring and the trust disclosure this dependency
+# carries.
+conway-plugin-subprocess = { path = "../conway-plugin-subprocess" }
 clap = { workspace = true, features = ["derive", "env"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }
 async-trait = { workspace = true }
@@ -80,6 +91,13 @@ tracing-subscriber = { workspace = true }
 # using them by field access doesn't require naming the crate; formatting
 # them does.
 chrono = { workspace = true }
+# `--output-schema`: `oneshot.rs` names `schemars::schema::RootSchema` by
+# type (the shape `conway::SessionSpec::result_contract` requires) when
+# resolving the flag's precedence with `--agent`'s own def-declared
+# contract -- already a workspace dependency (`conway`, `conway-core`,
+# `conway-runtime` all depend on it; C-04, not a new one), just not
+# previously named directly by this crate.
+schemars = { workspace = true }
 
 [dev-dependencies]
 # Board item 01KZFC43J1J06BM4CCWKCKHSNV: `main.rs`'s own `tracing_target_

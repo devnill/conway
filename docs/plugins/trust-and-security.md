@@ -40,11 +40,18 @@ it now is deliberately left open rather than decided here: generalizing
 `TrustStore` to the full `(kind, id, digest)` subject today, with a
 `plugin` kind nothing can yet consume, would be exactly the "capability
 with nothing behind it" this project's own preference for thin,
-demonstrable slices over speculative generality warns against — the
-out-of-process transport that would give a `plugin` kind a real artifact to
-digest is itself still design-only (a subprocess-over-stdio shape is
-decided; nothing loads a plugin that way yet). If and when that transport
-lands enough to produce a plugin artifact, the shape to build is: a
+demonstrable slices over speculative generality warns against.
+
+**A subprocess plugin (`[plugins].subprocess`,
+[`subprocess-plugins.md`](subprocess-plugins.md)) now IS a real, loadable
+off-process artifact — the premise that used to make a `plugin` kind
+"nothing behind it" no longer holds verbatim.** Building the trust kind
+anyway is still explicitly out of scope: board item `01KZHVFCN6ZEAXV7K5JHRQN1YB`
+is under a STANDING OPERATOR DEFERRAL and is marked DO NOT EXECUTE. What
+this leaves, stated plainly rather than left implicit: naming a command in
+`[plugins].subprocess[]` is checked against **nothing** — no digest, no
+allow-list, no prompt — on the exact footing `[hooks].rules[].command`
+already has. If and when the deferral lifts, the shape to build is: a
 `plugin` trust-subject kind in `TrustStore` keyed on `(entry_digest,
 artifact_digest)` — two digests, because an artifact digest alone covers
 only the named entrypoint file, and an interpreter entrypoint whose real

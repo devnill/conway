@@ -13,7 +13,7 @@ use conway::{Conway, ConwayBuilder, PermissionGate};
 
 use conway_cli::cli::{Cli, Command};
 use conway_cli::exit::ExitCode;
-use conway_cli::{commands, diag, first_party_plugins, oneshot, tui};
+use conway_cli::{commands, diag, first_party_plugins, oneshot, subprocess_plugins, tui};
 
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
@@ -83,7 +83,7 @@ async fn main() -> std::process::ExitCode {
         (Some(gate), None)
     };
 
-    let conway = match build_conway(&cli, gate_override, is_tui) {
+    let conway = match build_conway(&cli, gate_override, is_tui).await {
         Ok(conway) => conway,
         Err(e) => {
             diag::error(e.to_string());
@@ -155,7 +155,16 @@ async fn main() -> std::process::ExitCode {
 /// default: every built-in except bash) -- an operator turns bash on for
 /// the TUI by adding `"conway.shell"` to that `settings.json` array (see
 /// `docs/interactive.md`).
-fn build_conway(
+///
+/// **DISCLOSED, PROMINENTLY FLAGGED: now `async fn`** (board item
+/// `01KZY8PATND84AKY0J376E3DWV`, the subprocess plugin host). The one new
+/// step below, `subprocess_plugins::install`, spawns a real process per
+/// `[plugins].subprocess[]` entry and awaits its `tool.spec/1` manifest
+/// answer -- see that module's own doc for why this cannot be
+/// `first_party_plugins::install`'s purely synchronous shape. `main`'s own
+/// call site now `.await`s this function; every OTHER line here is
+/// unchanged.
+async fn build_conway(
     cli: &Cli,
     gate: Option<Arc<dyn PermissionGate>>,
     is_tui: bool,
@@ -204,6 +213,12 @@ fn build_conway(
     // sees this union from the SAME choke point, so the property holds for
     // the TUI and every one-shot/subcommand invocation identically.
     let builder = first_party_plugins::install(builder)?;
+    // The subprocess plugin tier (board item 01KZY8PATND84AKY0J376E3DWV):
+    // a SEPARATE choke point from the line above -- see
+    // `subprocess_plugins`'s own module doc for why this is a distinct
+    // resolution mechanism (no closed candidate set, always spawns) and
+    // why it is awaited rather than folded into `install_selected`.
+    let builder = subprocess_plugins::install(builder).await?;
     builder.build()
 }
 

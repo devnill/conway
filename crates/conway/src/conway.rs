@@ -839,6 +839,10 @@ impl Conway {
             keep_alive: spec.keep_alive,
             model: spec.model,
             system_prompt_override: spec.system_prompt_override,
+            // `SessionSpec::result_contract`'s own doc has the
+            // call-site-wins-over-agent-def precedence; `RootSpec::
+            // result_contract`'s own doc has the enforcement mechanism.
+            result_contract: spec.result_contract,
         };
         let root = self.rt.start_root(root_spec).await?;
 

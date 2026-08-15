@@ -93,6 +93,33 @@ pub struct SessionSpec {
     /// makes the model answer in plain text instead of hitting the
     /// permission gate for a tool call nothing downstream ever unblocks.
     pub tools: Option<conway_core::agent::ToolSelector>,
+    /// The schema this session's root agent's `structured` result must
+    /// satisfy, passed straight through to `RootSpec::result_contract`
+    /// (`conway_runtime::runtime::RootSpec` -- see that field's own doc
+    /// for the enforcement mechanism: one corrective retry, then terminal
+    /// `ResultStatus::Rejected { missing }`). `None` (the default)
+    /// preserves this crate's pre-existing behavior exactly: a root agent
+    /// carries no contract at all.
+    ///
+    /// **Precedence with `agent_def`:** when both this field and the
+    /// resolved `agent_def`'s own `AgentDef::result_contract` are `Some`,
+    /// THIS field wins outright -- the call-site contract is never merged
+    /// with, and never loses to, a def-declared one. This mirrors
+    /// `subagent.rs`'s already-established rule for a forked/spawned
+    /// child's own contract precedence (`SubagentSpec::result_contract`
+    /// over the spawning `AgentDef`'s), applied here to the one case that
+    /// rule did not yet cover: the root agent itself. `conway-cli`'s
+    /// `--output-schema` is this field's motivating caller -- see that
+    /// flag's own help for the exact precedence with `--agent`.
+    ///
+    /// Use [`crate::compile_output_schema`] to build this from an
+    /// arbitrary, caller-supplied JSON Schema document (a plain
+    /// `serde_json::Value`, not necessarily `schemars`-generated) --
+    /// the same compile-and-validate step `crate::agents::
+    /// load_agent_defs` already applies to an agent def's own
+    /// frontmatter-declared `result_contract`, generalized to accept a
+    /// schema from any source.
+    pub result_contract: Option<schemars::schema::RootSchema>,
 }
 
 /// A live handle onto one running session: `id()`/`root()` are static, and

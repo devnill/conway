@@ -349,6 +349,56 @@ let conway = ConwayBuilder::from_config(".conway/settings.json")?
     .build()?;
 ```
 
+### Structured output: `SessionSpec::result_contract`
+
+`SessionSpec::result_contract` (`Option<schemars::schema::RootSchema>`) is
+the library form of the CLI's `--output-schema` (see
+[`scripting.md`](scripting.md#--output-schema-structured-output)) — set it
+and the session's root agent must conclude with a `structured` result
+satisfying that schema, or the run ends `ResultStatus::Rejected` rather than
+`Completed`. Build the schema with `conway::compile_output_schema`, which
+validates an arbitrary `serde_json::Value` compiles as a JSON Schema
+document before handing back the `RootSchema` this field wants:
+
+```rust
+let schema = conway::compile_output_schema(serde_json::json!({
+    "type": "object",
+    "required": ["answer"],
+    "properties": { "answer": { "type": "string" } }
+}))?;
+
+let session = conway
+    .new_session(SessionSpec {
+        result_contract: Some(schema),
+        ..SessionSpec::default()
+    })
+    .await?;
+```
+
+**The enforcement mechanism is identical for every backend/model.** conway
+never reaches for a backend's own native structured-output/JSON-mode
+request field — no adapter in this workspace has one wired. Instead the
+schema is checked mechanically, post-hoc, against whatever `structured`
+value the agent's `report` tool call ends its turn with: a first mismatch
+costs the agent one corrective turn (a system note naming exactly what
+failed), a second is terminal. There is no backend-dependent branch to this
+behavior, so there is nothing that can silently enforce on one backend and
+not another — the same mechanism runs regardless of what the underlying
+model or provider can natively do. If you also want the model to actually
+*see* the schema rather than relying solely on that one corrective retry,
+compose it into your own prompt/`system_prompt_override` — this field is
+the enforcement half, not a prompting mechanism by itself (`conway-cli`'s
+own `--output-schema` does exactly this composition; see its own section
+in `scripting.md` for the precedent).
+
+**Precedence with an `AgentDef`'s own `result_contract`:** when both
+`SessionSpec::result_contract` and the resolved `agent_def`'s own declared
+contract are `Some`, the `SessionSpec` field wins outright — never merged,
+never lost to the def's. This mirrors the identical, already-established
+rule for a forked/spawned child's contract (a call-site `result_contract`
+argument to `conway_fork`/`conway_spawn` wins over the spawning `AgentDef`'s
+own).
+
 ### Built-in plugin selection (bash is opt-in)
 
 `build()` no longer registers all four `conway-tools` built-ins

@@ -1,0 +1,53 @@
+[package]
+name = "conway-plugin-subprocess"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+description = "The subprocess plugin host (board item 01KZY8PATND84AKY0J376E3DWV): a Plugin implementation that discovers its tools and answers tool calls by spawning an operator-configured out-of-process command, so a shipped conway binary gains a tool via a settings.json edit, no rebuild required"
+
+# Versioned WITH the workspace, same footing `conway-plugin-skeleton`'s own
+# Cargo.toml doc comment establishes for the first-party plugin tier -- this
+# crate is the HOST mechanism (a Plugin that talks to a subprocess), not
+# itself a first-party plugin offering end-user functionality, but it sits
+# in the same crate-naming convention (`conway-plugin-*`) and carries the
+# same versioning discipline.
+
+[dependencies]
+# The public facade -- the exact `conway::plugin` surface a third-party
+# plugin AUTHOR gets (GP-03/P-6), proven by `conway-plugin-skeleton`'s own
+# identical choice. This crate implements `Plugin`/`Tool` against that
+# surface only; it does not reach into `conway-core` or `conway-runtime`
+# directly, even though it is a HOST-side adapter rather than a leaf
+# plugin, because the whole point is that a subprocess plugin host needs
+# nothing more privileged than what any other plugin author already has.
+conway = { path = "../conway" }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["process", "io-util", "time", "rt", "macros"] }
+
+[target.'cfg(unix)'.dependencies]
+# The identical SIGTERM-then-SIGKILL process-group kill primitive
+# `conway_tools::process::unix::kill_group` already implements for
+# `ProcessHookRunner`/`BashTool` -- `conway-tools`'s own module is private
+# (`mod process;`, not `pub mod`), so it cannot be reused across the crate
+# boundary from here; see `src/lib.rs`'s own module doc for the disclosed
+# duplication this causes (same ~15 lines, same shape, cited by name) rather
+# than a silent reinvention.
+nix = { workspace = true, features = ["signal", "process"] }
+
+[dev-dependencies]
+# Test-only: builds a real, in-memory `Conway` (fake backend/store/gate/
+# router) to drive a real subprocess plugin's tool through a real turn end
+# to end -- the exact precedent `conway-plugin-skeleton`'s own
+# `tests/skeleton_end_to_end.rs` establishes for exercising a plugin through
+# the runtime with zero network. Neither is a new dependency to the
+# workspace (C-04).
+conway-core = { path = "../conway-core" }
+conway-testkit = { path = "../conway-testkit" }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "test-util"] }

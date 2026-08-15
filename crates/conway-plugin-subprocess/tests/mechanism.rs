@@ -1,0 +1,419 @@
+//! Direct proof of `SubprocessPlugin`'s wire mechanism and its failure
+//! modes -- spawn failure, timeout, nonzero exit, garbage output, and a
+//! subprocess-declared error -- each asserted to fail CLOSED with a typed
+//! error, never a hang and never a silent success. `tests/end_to_end.rs` is
+//! the companion proof that the same mechanism reaches a real agent turn,
+//! not merely a direct call.
+
+mod common;
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use conway::plugin::{Plugin as _, ToolCall, ToolCtx, ToolError};
+use conway::AgentId;
+use conway_plugin_subprocess::{SubprocessPlugin, SubprocessPluginError, SubprocessPluginSpec};
+use conway_testkit::{CollectingEventSink, FakeSubagentHost};
+
+fn ctx() -> ToolCtx {
+    let agent_id = AgentId::new();
+    ToolCtx::for_test(
+        agent_id,
+        std::env::temp_dir(),
+        Arc::new(FakeSubagentHost::new(agent_id)),
+        Arc::new(CollectingEventSink::new()),
+    )
+}
+
+fn call(tool: &str, arguments: serde_json::Value) -> ToolCall {
+    ToolCall {
+        call_id: "call-1".to_string(),
+        name: conway::ToolName::new(tool),
+        arguments,
+    }
+}
+
+// ---------------------------------------------------------------------
+// Discovery -- `tool.spec/1`
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn discover_builds_a_plugin_from_a_real_subprocess_manifest() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let spec = common::spec_for(dir.path(), "greet.py", common::GREET_PLUGIN);
+
+    let plugin = SubprocessPlugin::discover(spec)
+        .await
+        .expect("discovery against a well-behaved fixture must succeed");
+
+    let manifest = plugin.manifest();
+    assert_eq!(manifest.id, "acme.greet");
+    assert_eq!(manifest.version, "0.1.0");
+    assert_eq!(manifest.tools, vec![conway::ToolName::new("greet")]);
+
+    let tools = plugin.tools();
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0].spec().name, conway::ToolName::new("greet"));
+}
+
+#[tokio::test]
+async fn discover_fails_closed_when_the_command_cannot_be_spawned() {
+    let spec = SubprocessPluginSpec::new(
+        "unspawnable",
+        vec!["/nonexistent/path/does-not-exist-conway-test".to_string()],
+    );
+
+    let err = SubprocessPlugin::discover(spec)
+        .await
+        .expect_err("a nonexistent command must fail closed, never silently register zero tools");
+    assert!(
+        matches!(err, SubprocessPluginError::Spawn { .. }),
+        "expected Spawn, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn discover_fails_closed_on_timeout() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut spec = common::spec_for(dir.path(), "sleepy.py", common::SLEEPY_PLUGIN);
+    spec.timeout_ms = 500;
+
+    let start = std::time::Instant::now();
+    let err = SubprocessPlugin::discover(spec)
+        .await
+        .expect_err("a subprocess that never answers must time out, never hang the caller");
+    assert!(
+        matches!(err, SubprocessPluginError::TimedOut { after_ms: 500, .. }),
+        "expected TimedOut{{after_ms: 500}}, got {err:?}"
+    );
+    assert!(
+        start.elapsed() < Duration::from_secs(5),
+        "discover must return promptly once the configured timeout elapses, not hang until the \
+         fixture's own 10s sleep finishes: took {:?}",
+        start.elapsed()
+    );
+}
+
+#[tokio::test]
+async fn discover_fails_closed_on_nonzero_exit() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let spec = common::spec_for(dir.path(), "failing.py", common::FAILING_PLUGIN);
+
+    let err = SubprocessPlugin::discover(spec)
+        .await
+        .expect_err("a nonzero exit must fail closed");
+    assert!(
+        matches!(
+            err,
+            SubprocessPluginError::NonzeroExit { code: Some(3), .. }
+        ),
+        "expected NonzeroExit{{code: Some(3)}}, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn discover_fails_closed_on_garbage_output() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let spec = common::spec_for(dir.path(), "garbage.py", common::GARBAGE_PLUGIN);
+
+    let err = SubprocessPlugin::discover(spec)
+        .await
+        .expect_err("output that is not valid JSON must fail closed, never be read as zero tools");
+    assert!(
+        matches!(err, SubprocessPluginError::UnparseableAnswer { .. }),
+        "expected UnparseableAnswer, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn discover_rejects_a_manifest_declaring_zero_tools() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let empty_manifest = r#"#!/usr/bin/env python3
+import sys, json
+sys.stdin.read()
+print(json.dumps({"id": "acme.empty", "version": "0.1.0", "tools": []}))
+"#;
+    let spec = common::spec_for(dir.path(), "empty.py", empty_manifest);
+
+    let err = SubprocessPlugin::discover(spec)
+        .await
+        .expect_err("a manifest with zero tools must be refused, not silently accepted");
+    assert!(
+        matches!(err, SubprocessPluginError::InvalidManifest { .. }),
+        "expected InvalidManifest, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn discover_rejects_a_manifest_with_a_duplicate_tool_name() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let dup_manifest = r#"#!/usr/bin/env python3
+import sys, json
+sys.stdin.read()
+tool = {
+    "name": "dup",
+    "description": "d",
+    "schema": {"type": "object"},
+    "category": "read",
+    "permission": "safe",
+}
+print(json.dumps({"id": "acme.dup", "version": "0.1.0", "tools": [tool, tool]}))
+"#;
+    let spec = common::spec_for(dir.path(), "dup.py", dup_manifest);
+
+    let err = SubprocessPlugin::discover(spec)
+        .await
+        .expect_err("a duplicate declared tool name must be refused");
+    assert!(
+        matches!(err, SubprocessPluginError::InvalidManifest { .. }),
+        "expected InvalidManifest, got {err:?}"
+    );
+}
+
+// ---------------------------------------------------------------------
+// Invocation -- `tool/1`
+// ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_successful_call_reaches_the_real_subprocess_and_returns_its_reply() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let spec = common::spec_for(dir.path(), "greet.py", common::GREET_PLUGIN);
+    let plugin = SubprocessPlugin::discover(spec)
+        .await
+        .expect("discovery must succeed");
+    let tool = plugin.tools().into_iter().next().expect("one tool");
+
+    let output = tool
+        .invoke(call("greet", serde_json::json!({"name": "world"})), ctx())
+        .await
+        .expect("a well-formed call to a well-behaved fixture must succeed");
+
+    assert!(!output.is_error);
+    let text: String = output
+        .blocks
+        .iter()
+        .filter_map(|b| match b {
+            conway::plugin::ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        text, "hello, world",
+        "the real subprocess's own tool/1 answer must reach the caller verbatim"
+    );
+}
+
+#[tokio::test]
+async fn a_subprocess_declared_error_maps_to_the_matching_typed_tool_error() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let spec = common::spec_for(dir.path(), "greet.py", common::GREET_PLUGIN);
+    let plugin = SubprocessPlugin::discover(spec)
+        .await
+        .expect("discovery must succeed");
+    let tool = plugin.tools().into_iter().next().expect("one tool");
+
+    let err = tool
+        .invoke(
+            call("greet", serde_json::json!({"name": "__boom__"})),
+            ctx(),
+        )
+        .await
+        .expect_err("the fixture deliberately declares failure for this argument");
+    assert_eq!(
+        err,
+        ToolError::Internal {
+            detail: "boom".to_string()
+        },
+        "the wire error's kind/detail must map onto the matching ToolError variant, not a \
+         generic catch-all"
+    );
+}
+
+#[tokio::test]
+async fn invoke_fails_closed_when_the_subprocess_dies_mid_call() {
+    // "A plugin that exits mid-call yields a typed error and the agent loop
+    // continues" -- this item's own ACCEPTANCE, proved by a fixture that
+    // exits nonzero for every call (a call that "dies" -- crashes -- looks
+    // identical on the wire to one that exits nonzero deliberately: both
+    // are "the process ended without producing a valid tool/1 answer").
+    let dir = tempfile::tempdir().expect("tempdir");
+    let crashing = r#"#!/usr/bin/env python3
+import sys, json
+req = json.loads(sys.stdin.read())
+if req.get("op") == "tool.spec/1":
+    print(json.dumps({
+        "id": "acme.crasher",
+        "version": "0.1.0",
+        "tools": [{
+            "name": "crash",
+            "description": "always crashes on tool/1",
+            "schema": {"type": "object"},
+            "category": "read",
+            "permission": "safe",
+        }],
+    }))
+else:
+    sys.exit(1)
+"#;
+    let spec = common::spec_for(dir.path(), "crasher.py", crashing);
+    let plugin = SubprocessPlugin::discover(spec)
+        .await
+        .expect("discovery must succeed even though invocation will crash");
+    let tool = plugin.tools().into_iter().next().expect("one tool");
+
+    let err = tool
+        .invoke(call("crash", serde_json::json!({})), ctx())
+        .await
+        .expect_err("a process that dies mid-call must yield a typed error, never a hang");
+    assert!(
+        matches!(err, ToolError::Io { .. }),
+        "expected ToolError::Io, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn invoke_fails_closed_on_timeout() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let hangs_on_invoke = r#"#!/usr/bin/env python3
+import sys, json, time
+req = json.loads(sys.stdin.read())
+if req.get("op") == "tool.spec/1":
+    print(json.dumps({
+        "id": "acme.hangs",
+        "version": "0.1.0",
+        "tools": [{
+            "name": "hang",
+            "description": "hangs forever on tool/1",
+            "schema": {"type": "object"},
+            "category": "read",
+            "permission": "safe",
+        }],
+    }))
+else:
+    time.sleep(10)
+    print("{}")
+"#;
+    // `tool.spec/1` on this fixture answers immediately (no sleep); only
+    // `tool/1` hangs. 1500ms comfortably covers a fresh `python3`
+    // interpreter's own startup under concurrent test load while still
+    // proving the invoke call (which hits a 10s sleep) times out well
+    // before that sleep would ever finish.
+    let path = common::write_script(dir.path(), "hangs.py", hangs_on_invoke);
+    let mut spec = conway_plugin_subprocess::SubprocessPluginSpec::new(
+        "hangs",
+        vec![path.display().to_string()],
+    );
+    spec.timeout_ms = 1_500;
+    let plugin = SubprocessPlugin::discover(spec)
+        .await
+        .expect("discovery must succeed promptly; only the tool/1 call hangs");
+    let tool = plugin.tools().into_iter().next().expect("one tool");
+
+    let start = std::time::Instant::now();
+    let err = tool
+        .invoke(call("hang", serde_json::json!({})), ctx())
+        .await
+        .expect_err("a call that never answers within timeout_ms must fail closed");
+    assert!(
+        matches!(err, ToolError::Io { .. }),
+        "expected ToolError::Io (timeout is reported through the Io variant, carrying the \
+         underlying SubprocessPluginError::TimedOut in its detail), got {err:?}"
+    );
+    assert!(
+        start.elapsed() < Duration::from_secs(5),
+        "invoke must return promptly once timeout_ms elapses: took {:?}",
+        start.elapsed()
+    );
+}
+
+#[tokio::test]
+async fn invoke_fails_closed_on_garbage_tool_output() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let garbage_on_invoke = r#"#!/usr/bin/env python3
+import sys, json
+req = json.loads(sys.stdin.read())
+if req.get("op") == "tool.spec/1":
+    print(json.dumps({
+        "id": "acme.garbler",
+        "version": "0.1.0",
+        "tools": [{
+            "name": "garble",
+            "description": "returns garbage on tool/1",
+            "schema": {"type": "object"},
+            "category": "read",
+            "permission": "safe",
+        }],
+    }))
+else:
+    print("this is not json")
+"#;
+    let spec = common::spec_for(dir.path(), "garbler.py", garbage_on_invoke);
+    let plugin = SubprocessPlugin::discover(spec)
+        .await
+        .expect("discovery must succeed");
+    let tool = plugin.tools().into_iter().next().expect("one tool");
+
+    let err = tool
+        .invoke(call("garble", serde_json::json!({})), ctx())
+        .await
+        .expect_err("garbage stdout must fail closed, never be read as an empty success");
+    assert!(
+        matches!(err, ToolError::Internal { .. }),
+        "expected ToolError::Internal, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn invoke_never_spawns_a_process_when_already_cancelled() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    // A fixture that leaves a marker file behind IF it is ever invoked --
+    // absence of the marker after `invoke` is this test's proof that
+    // cancellation was honored BEFORE any process was spawned, not merely
+    // that the call returned `Cancelled` for some other reason.
+    let marker = dir.path().join("was-invoked");
+    let marks_and_answers = format!(
+        r#"#!/usr/bin/env python3
+import sys, json
+open({marker:?}, "w").close()
+req = json.loads(sys.stdin.read())
+if req.get("op") == "tool.spec/1":
+    print(json.dumps({{
+        "id": "acme.marker",
+        "version": "0.1.0",
+        "tools": [{{
+            "name": "mark",
+            "description": "marks that it ran",
+            "schema": {{"type": "object"}},
+            "category": "read",
+            "permission": "safe",
+        }}],
+    }}))
+else:
+    print(json.dumps({{"ok": True, "blocks": [], "is_error": False}}))
+"#,
+        marker = marker.display().to_string()
+    );
+    let spec = common::spec_for(dir.path(), "marker.py", &marks_and_answers);
+    let plugin = SubprocessPlugin::discover(spec)
+        .await
+        .expect("discovery legitimately runs the fixture once, so the marker exists now");
+    assert!(
+        marker.exists(),
+        "discovery itself must have run the fixture once"
+    );
+    std::fs::remove_file(&marker).expect("reset marker before the cancellation assertion");
+
+    let tool = plugin.tools().into_iter().next().expect("one tool");
+    let cancelled_ctx = ctx();
+    cancelled_ctx.cancel.cancel();
+
+    let err = tool
+        .invoke(call("mark", serde_json::json!({})), cancelled_ctx)
+        .await
+        .expect_err("an already-cancelled call must be refused");
+    assert_eq!(err, ToolError::Cancelled);
+    assert!(
+        !marker.exists(),
+        "a call cancelled before it started must never spawn the subprocess at all"
+    );
+}

@@ -79,6 +79,25 @@ pub struct RootSpec {
     /// `SessionSpec::system_prompt_override`) -- see that field's own doc
     /// for how the two flags combine into the single string landing here.
     pub system_prompt_override: Option<String>,
+    /// The schema this root agent's `structured` result must satisfy,
+    /// threaded straight into `AgentSpec::result_contract` -- see that
+    /// field's own doc for the enforcement mechanism (`AgentLoop::
+    /// run_inner`'s natural-completion branch: `Ok` proceeds, a first
+    /// failure gets one corrective retry via a `SystemNote`, a second is
+    /// terminal `ResultStatus::Rejected { missing }`). Before this field
+    /// existed, a root agent had no way to carry a contract at all --
+    /// `start_root` always passed `AgentSpec::result_contract: None`
+    /// (only a fork/spawn child, via `SubagentSpec::result_contract`,
+    /// could declare one) -- so the identical, already-tested enforcement
+    /// mechanism simply never reached the one agent an operator's own
+    /// prompt talks to. `None` (every caller before this field existed)
+    /// preserves that exact behavior. `conway-cli`'s `--output-schema` is
+    /// this field's motivating caller, via `conway::SessionSpec::
+    /// result_contract` (`conway::Conway::new_session`) -- see that
+    /// field's own doc for the call-site-wins-over-agent-def precedence,
+    /// mirrored from `subagent.rs`'s identical rule for a forked/spawned
+    /// child's own contract.
+    pub result_contract: Option<schemars::schema::RootSchema>,
 }
 
 /// The specification for re-registering a persisted session's agent as a
@@ -364,9 +383,10 @@ impl Runtime {
             headroom_override: None,
             max_parallel_tools: DEFAULT_MAX_PARALLEL_TOOLS,
             report_slot: Some(last_report.clone()),
-            // A root agent has no `SubagentSpec` to source a contract from
-            // -- only a fork/spawn child can declare one.
-            result_contract: None,
+            // `RootSpec::result_contract` -- see that field's own doc for
+            // the mechanism this finally makes reachable for a root agent
+            // (previously always `None` here, unconditionally).
+            result_contract: spec.result_contract,
             keep_alive: spec.keep_alive,
             // A root agent has no `SubagentSpec` to source a consumer tag
             // from either -- `RootSpec` gains
@@ -774,8 +794,13 @@ impl Runtime {
             headroom_override: None,
             max_parallel_tools: DEFAULT_MAX_PARALLEL_TOOLS,
             report_slot: Some(last_report.clone()),
-            // A resumed root has no `SubagentSpec` to source a contract
-            // from either -- same as `start_root`.
+            // Unlike `start_root` (`RootSpec::result_contract`, added
+            // for `conway-cli`'s `--output-schema`), `ResumeSpec` has no
+            // counterpart field -- out of this item's scope, matching
+            // `--system-prompt`/the budget flags' identical "not supported
+            // with --resume/--fork-from" restriction (`conway-cli`'s
+            // `oneshot::resolve_session` refuses the combination as a
+            // usage error before this method is ever called).
             result_contract: None,
             // Out of scope for this item: only a freshly `start_root`ed
             // agent can opt into keep-alive today (`RootSpec::keep_alive`).

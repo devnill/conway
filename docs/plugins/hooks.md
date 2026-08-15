@@ -48,7 +48,7 @@ Every point gets all nine fields:
 | On garbage | An unparseable schema is a registration error, not a runtime one; there is no live-request path where a schema can arrive malformed |
 | When absent | A `Plugin` with no `tools()` entries contributes nothing; a session with no plugins beyond the built-ins registers only those |
 | Ordering | Tool names must be unique across every registered plugin; a collision is a build-time error (`ConwayBuilder::build`) naming both plugins, never a silent last-registration-wins |
-| Status | **Implemented.** `Plugin::manifest`/`Plugin::tools` (`crates/conway-core/src/ports/plugin.rs`), exercised by `crates/conway/tests/plugin_surface.rs` and `crates/conway/tests/plugin_builtin_parity.rs`. In-process only — the wire projection `WireManifest`/`tool.spec/1` for an out-of-process plugin is design only, and nothing yet names its implementation |
+| Status | **Implemented**, in-process (`Plugin::manifest`/`Plugin::tools`, `crates/conway-core/src/ports/plugin.rs`, exercised by `crates/conway/tests/plugin_surface.rs` and `crates/conway/tests/plugin_builtin_parity.rs`). **The wire projection is now ALSO implemented, as a thin, disclosed slice**: `tool.spec/1` (`conway_plugin_subprocess::wire::WireManifest`/`WireTool`) is a real, one-shot-exec request a `SubprocessPlugin` sends once at `SubprocessPlugin::discover`, projecting `PluginManifest`/`ToolSpec` over JSON — see [`subprocess-plugins.md`](subprocess-plugins.md) for the full contract. Narrower than the design's own persistent-connection shape (disclosed on that page) |
 
 **`required_host_caps` is declared and consulted nowhere.** Every constructor
 of `PluginManifest` in the tree — every built-in tool
@@ -79,7 +79,7 @@ need to gate through, whenever an item is filed for it.
 | On garbage | `PRE: call.arguments has already been validated` — a `Tool::invoke` implementation is entitled to assume schema-valid arguments, but it must still not panic on adversarial values within that schema (`ToolCtx`'s own doc; `Tool::render`'s doc states the identical rule for its own untrusted-input surface) |
 | When absent | The tool is not registered; a call naming it never resolves (`ToolRunner`'s registry lookup fails before invocation, distinct from a running tool erroring) |
 | Ordering | Not applicable — one call resolves to exactly one tool by name; there is no composition question for execution itself |
-| Status | **Implemented**, in-process. The wire form (`tool/1`, the RPC-shaped `ToolCtx` projection in the extension design) is design only |
+| Status | **Implemented**, in-process. **A thin, disclosed slice of the wire form is now ALSO implemented**: `tool/1` (`conway_plugin_subprocess::SubprocessTool::invoke`) spawns the plugin's own command fresh per call, projecting `ToolCall`/`ToolOutput`/`ToolError` over JSON — see [`subprocess-plugins.md`](subprocess-plugins.md). **Narrower than this row's own "RPC-shaped `ToolCtx` projection"**: a subprocess tool receives only `{tool, call_id, arguments}`, never `ToolCtx` itself (no `cwd`, no `chdir`, no `subagents`, no `plugin_events` reach a subprocess) — this host enforces `ctx.cancel` and the timeout on the subprocess's behalf, from the outside, rather than projecting those capabilities across the wire |
 
 **`ToolCtx.subagents` never lets a tool act as a different agent.** It is a
 `SubagentHandle` (`crates/conway-core/src/ports/mod.rs`) bound to
