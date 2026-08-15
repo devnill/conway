@@ -139,6 +139,7 @@ fn root_spec(prompt: &str) -> RootSpec {
         prompt: Some(prompt.to_string()),
         keep_alive: false,
         model: None,
+        system_prompt_override: None,
     }
 }
 

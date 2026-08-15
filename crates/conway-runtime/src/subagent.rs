@@ -11,7 +11,7 @@
 //!
 //! ## `InheritedPrefix` and sibling sharing
 //!
-//! [`conway_session::TranscriptResolver`] resolves a *session's own*
+//! [`conway_core::transcript::TranscriptResolver`] resolves a *session's own*
 //! effective transcript (ancestors' prefix, in full, concatenated with that
 //! session's own records up to its current head) — it has no public method
 //! that resolves an arbitrary ancestor at an arbitrary bound directly. This
@@ -57,7 +57,7 @@
 //! a deliberate, coordinator-ruled semantic (rework), not an oversight:
 //! recovering true per-record authorship at arbitrary depth would require
 //! per-record session tracking that does not exist upstream — neither
-//! `conway_core::log::LogRecord` nor `conway_session`'s resolver carries an
+//! `conway_core::log::LogRecord` nor `conway_core::transcript`'s resolver carries an
 //! originating-session field per record — which is out of this item's scope. It
 //! is queued as a refinement question rather than attempted here.
 //!

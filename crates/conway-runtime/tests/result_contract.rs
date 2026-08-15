@@ -897,6 +897,7 @@ async fn a_spawned_childs_result_contract_is_enforced_through_subagent_host() {
             prompt: Some("go".to_string()),
             keep_alive: false,
             model: None,
+            system_prompt_override: None,
         })
         .await
         .unwrap();
@@ -1206,6 +1207,7 @@ async fn keep_alive_with_a_result_contract_is_refused_by_subagent_host() {
             prompt: Some("go".to_string()),
             keep_alive: false,
             model: None,
+            system_prompt_override: None,
         })
         .await
         .expect("root starts");

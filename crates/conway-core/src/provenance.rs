@@ -7,10 +7,31 @@
 //! Internally tagged on field `type`, snake_case tag values. This is the
 //! wire format for the `prov` field on several [`LogRecord`](crate::log::LogRecord)
 //! variants and for [`ContextReportEntry::provenance`].
+//!
+//! ## Persistence: `append_context_report` / `load_context_report` /
+//! `load_all_context_reports`
+//!
+//! Per-turn context provenance persistence (architecture, Internal Design
+//! Notes: "provenance survives process restart", decision 9), on top of the
+//! ordinary `store.append`/`store.read` path -- the report is persisted as
+//! `LogRecord::ContextReportRecord`, an ordinary record with `kind ==
+//! "context_report"`, so it inherits fsync policy, seq assignment, and crash
+//! tolerance from the store with no new file format. Generic over `S:
+//! SessionStore + ?Sized` (the same pattern [`crate::transcript::
+//! TranscriptResolver::resolve`] uses), not over any one store
+//! implementation -- pure logic over the port, so it lives beside
+//! `ContextReport`/`ContextReportEntry` in the contract crate rather than in
+//! an adapter (board item 01KZVYVTVWRH20R6VJ6G3SWTJ6, "Stage 1a").
+//! `conway-session` re-exports these functions unchanged for existing
+//! callers.
 
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
+use crate::error::StoreError;
 use crate::ids::{AgentId, LogSeq, SegmentId, SeqRange, SessionId, ToolName};
+use crate::log::LogRecord;
+use crate::ports::SessionStore;
 
 /// Why a segment of assembled context exists.
 ///
@@ -157,6 +178,70 @@ pub struct ContextReportEntry {
     pub provenance: Provenance,
     pub tokens_est: u32,
     pub estimated: bool,
+}
+
+/// Appends `report` as an ordinary `LogRecord::ContextReportRecord` through
+/// the same `store.append` path every other record uses — this function
+/// adds no new file format and no new durability rule, inheriting seq
+/// assignment, fsync policy, and crash tolerance from the store. It exists
+/// as a typed convenience so callers do not hand-build the record.
+///
+/// Callers append the report *after* the turn's assistant record (
+/// spec) so a truncated trailing line can lose a report without losing the
+/// turn it describes — this function does not enforce that ordering, it is
+/// a caller discipline.
+pub async fn append_context_report<S>(
+    store: &S,
+    sid: &SessionId,
+    report: &ContextReport,
+) -> Result<LogSeq, StoreError>
+where
+    S: SessionStore + ?Sized,
+{
+    let rec = LogRecord::ContextReportRecord {
+        seq: LogSeq::ZERO, // overwritten by `append`; the store is the seq authority.
+        ts: Utc::now(),
+        report: report.clone(),
+    };
+    store.append(sid, rec).await
+}
+
+/// The report for `turn`, or `Ok(None)` if no report was ever appended for
+/// it. If multiple reports share a turn, the highest-seq one wins (`read`
+/// returns ascending seq order, so this is simply the last match).
+pub async fn load_context_report<S>(
+    store: &S,
+    sid: &SessionId,
+    turn: u32,
+) -> Result<Option<ContextReport>, StoreError>
+where
+    S: SessionStore + ?Sized,
+{
+    let reports = load_all_context_reports(store, sid).await?;
+    Ok(reports.into_iter().rfind(|r| r.turn == turn))
+}
+
+/// Every context report persisted for `sid`, in ascending seq order. A
+/// linear scan over the full transcript, filtering on `kind ==
+/// "context_report"` — the only interpretation of record contents this
+/// module performs; `segments`, `provenance`, and `tokens_est` stay opaque
+/// payload. Acceptable cost: reports are read on demand by inspection
+/// APIs, never on the agent-loop hot path.
+pub async fn load_all_context_reports<S>(
+    store: &S,
+    sid: &SessionId,
+) -> Result<Vec<ContextReport>, StoreError>
+where
+    S: SessionStore + ?Sized,
+{
+    let records = store.read(sid, SeqRange::full()).await?;
+    Ok(records
+        .into_iter()
+        .filter_map(|rec| match rec {
+            LogRecord::ContextReportRecord { report, .. } => Some(report),
+            _ => None,
+        })
+        .collect())
 }
 
 #[cfg(test)]

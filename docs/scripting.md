@@ -189,6 +189,115 @@ produces it, so a consumer reading either as a pipe sees output before the
 run finishes. `json` is not streaming in this sense at all — nothing reaches
 stdout until the terminal `AgentResult` is available, by design (see above).
 
+## Being something other than a coding agent
+
+Everything above works whether or not you write code — `-p` is a fast path
+to a model's answer, not exclusively an entry point into the coding agent.
+Nothing about it requires a repository, a tool, or a coding task:
+
+```console
+$ conway -p "translate 'good morning' into French, Spanish, and Japanese" \
+    --system-prompt "You are a translator. Reply with only the translations, one per line, no commentary."
+Bonjour
+Buenos días
+おはようございます
+```
+
+No `.conway/` directory, no agent definition, no tool access (`--allowed-tools`
+was never passed, and an empty allow-list denies every tool — see
+"Permissions with no human present" below — which this prompt never needs
+anyway) — just a question and an answer, run from any directory. See
+[`docs/vision/INTENT.md`](vision/INTENT.md) §7 for why this surface exists
+as a first-class target, not a side effect of the coding one.
+
+### `--agent`: run as a named persona
+
+`--agent <name>` runs the session as `.conway/agents/<name>.md` (the same
+agent-definition files a subagent can already be forked/spawned into — see
+[`docs/agents.md`](agents.md)) instead of the bare, no-persona default. Its
+`system_prompt`, `role`, `model`, and tool selector all apply, each still
+overridable by its own flag (`--role-override`, `--model`,
+`--system-prompt`/`--append-system-prompt` below):
+
+```console
+conway -p "review this diff" --agent reviewer < diff.patch
+```
+
+An unknown name is a usage error naming both what you typed and the
+directory conway searched — never a silent run with no persona at all.
+`--agent` is not supported with `--resume` (a resumed session's persona is
+fixed by the session it continues) but composes cleanly with `--fork-from`
+(the child can be given a different persona than its parent).
+
+### `--system-prompt` / `--append-system-prompt`
+
+`--system-prompt <text>` replaces the effective system prompt outright —
+with `--agent` absent, this is what stops a one-shot run from being the
+built-in coding agent at all: the run gets exactly that text, and no other
+framing, as its system prompt (the quickstart above uses exactly this).
+Combined with `--agent`, it replaces that def's own prompt text (the def's
+`role`/`tools`/`model` still apply — only the prompt text is swapped).
+
+`--append-system-prompt <text>` adds to whatever system prompt is already
+in effect: the named `--agent`'s own prompt, `--system-prompt`'s text if
+both are given, or — with neither — becomes the entire system prompt by
+itself.
+
+Neither flag is supported with `--resume` or `--fork-from`: a continued
+session's system prompt is fixed by the session it continues, not by the
+invocation that resumes or forks it, so combining them is a usage error
+naming both flags rather than a silent drop.
+
+## Budget flags
+
+The runtime always enforces a turn/token/wall-clock budget (`exit 5`,
+`BudgetExceeded`, above) — these three flags are how you set it from the
+command line instead of `settings.json`'s `[limits]` table:
+
+| Flag | Overrides |
+| --- | --- |
+| `--max-turns <n>` | `[limits].max_steps` — the turn (step) ceiling. |
+| `--max-tokens <n>` | `[limits].max_tokens` — the total-token ceiling for the run (`0` there means unlimited; a flag value of `0` means the run trips immediately, before any request). |
+| `--max-seconds <n>` | `[limits].deadline_secs` — a wall-clock ceiling counted from the moment the run starts (`0` there means no deadline; a flag value of `0` also trips immediately). |
+
+Passing any one of the three still respects the configured value for the
+other dimensions — `--max-turns 5` alone does not silently clear a
+configured `[limits].max_tokens`. None of the three is supported with
+`--resume`/`--fork-from` in this release (a usage error): neither facade
+path accepts a caller-supplied budget override yet.
+
+```console
+conway -p "summarize this log" --max-turns 3 --max-seconds 30 < build.log
+```
+
+## Plugin-contributed subcommands
+
+A plugin can add a slash command to the interactive TUI (see
+[`docs/plugins/authoring.md`](plugins/authoring.md)) — and, as of this
+release, the same declared command is also reachable as a subcommand on the
+`conway` binary itself, with no separate registration: anything typed that
+is not a built-in subcommand (`sessions`, `routes`) is resolved against
+every installed plugin's own commands, namespaced `<plugin-id>.<command-name>`
+— the identical scheme the TUI's `/`-prefixed dispatch already uses.
+
+```console
+$ conway conway.history.rewind 12
+conway.history.rewind: forked session 01K7… at seq 12 -- `conway sessions show 01K7…` to \
+inspect it, or `conway -p --resume 01K7…` to continue it
+```
+
+This dispatch path has no live session to hand the command yet (unlike the
+TUI, which is always driving one), so it starts a fresh, prompt-less
+session purely to have real ids to invoke against — the command never
+reaches a model. A command that forks the calling session (like `rewind`
+above) genuinely forks it; there being no follow-on interactive loop to
+hand the child to, the child's own id is printed instead, ready for
+`conway sessions show`/`conway -p --resume` to pick up.
+
+An unresolved name — not a built-in, and not declared by any installed
+plugin — is a usage error naming what you typed, exactly like any other
+unrecognized subcommand.
+
 ## Permissions with no human present
 
 One-shot mode has no interactive channel to prompt through, so it fails
@@ -298,6 +407,12 @@ naming both flags rather than a silently dropped one.
 | `--permission-mode <allowlist\|deny>` | See "Permissions with no human present" above. |
 | `--role-override <role>` | Use this role instead of `default_role` for the session. |
 | `--model <backend/model>` | Pin a specific model instead of routing through a role's chain. |
+| `--agent <name>` | Run as this named `.conway/agents/<name>.md` definition. See "`--agent`: run as a named persona" above. |
+| `--system-prompt <text>` | Replace the effective system prompt outright. See "`--system-prompt` / `--append-system-prompt`" above. |
+| `--append-system-prompt <text>` | Add to the effective system prompt instead of replacing it. See above. |
+| `--max-turns <n>` | Turn (step) ceiling for this run. See "Budget flags" above. |
+| `--max-tokens <n>` | Total-token ceiling for this run. See "Budget flags" above. |
+| `--max-seconds <n>` | Wall-clock ceiling, in seconds, for this run. See "Budget flags" above. |
 | `--session <id>` | Use (creating if new) a specific session id. |
 | `--resume <id>` | Reattach to a persisted session and continue its transcript. |
 | `--fork-from <id>[@seq]` | Start a new session branched from another one, optionally at a specific point in its log. Not combinable with `--cwd` (see above). |
@@ -307,7 +422,11 @@ naming both flags rather than a silently dropped one.
 | `-v`, `-vv` (`--verbose`) | Stderr diagnostics: `-v` also surfaces routing decisions and other info-level notices; `-vv` also surfaces trace-level detail. `RUST_LOG`, if set, overrides this entirely. Never writes to stdout, at any level — one-shot's stdout-purity contract holds regardless of verbosity. |
 
 `--session`, `--resume`, and `--fork-from` are mutually exclusive; with none
-of them, conway starts a fresh session.
+of them, conway starts a fresh session. `--agent` is not supported with
+`--resume`; `--system-prompt`/`--append-system-prompt`/`--max-turns`/
+`--max-tokens`/`--max-seconds` are not supported with `--resume` or
+`--fork-from` — each is a usage error naming the flags involved rather than
+a silent drop (see each flag's own section above for why).
 
 ## Next steps
 

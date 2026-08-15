@@ -195,6 +195,7 @@ fn root_spec(prompt: &str, agent_def: Option<AgentDefRef>) -> RootSpec {
         prompt: Some(prompt.to_string()),
         keep_alive: false,
         model: None,
+        system_prompt_override: None,
     }
 }
 

@@ -1,15 +1,16 @@
 //! `ContextReport` persistence and historical-turn lookup.
 //!
-//! Thin wrapper over `conway_session::provenance`'s already-committed
+//! Thin wrapper over `conway_core::provenance`'s already-committed
 //! `append_context_report`/`load_context_report`/
-//! `load_all_context_reports`. This module adds no new file format and no
-//! new record kind, and does not redefine `ContextReport`/
-//! `ContextReportEntry` -- `conway_core::provenance` is authoritative and
-//! `conway_session::provenance` already re-exports those exact types (see
-//! that module's own doc). This module exists only to translate
-//! `StoreError` into `conway_core::error::RuntimeError` (the only error
-//! type this crate's public surface returns) and to add the one behavior
-//! `conway-session` does not: a typed "turn out of range" error.
+//! `load_all_context_reports` (moved there from `conway_session::provenance`
+//! by board item 01KZVYVTVWRH20R6VJ6G3SWTJ6, "Stage 1a" -- pure logic over
+//! the `SessionStore` port, not JSONL-specific, so it belongs in the
+//! contract crate). This module does not redefine `ContextReport`/
+//! `ContextReportEntry`, which `conway_core::provenance` already defines
+//! authoritatively. This module exists only to translate `StoreError` into
+//! `conway_core::error::RuntimeError` (the only error type this crate's
+//! public surface returns) and to add the one behavior the moved helpers
+//! do not: a typed "turn out of range" error.
 //!
 //! ## Reconciliation: `tokenizer`, not `estimator`
 //!
@@ -44,7 +45,7 @@ use conway_core::ports::SessionStore;
 use conway_core::provenance::ContextReport;
 
 /// Persists `report` as an ordinary `LogRecord::ContextReportRecord`
-/// (`conway_session::provenance::append_context_report`), inheriting
+/// (`conway_core::provenance::append_context_report`), inheriting
 /// that helper's fsync policy, seq assignment, and crash tolerance. Callers
 /// (`agent_loop.rs`) must call this AFTER the turn's assistant record has
 /// already been durably appended -- this function does not enforce that
@@ -55,7 +56,7 @@ pub async fn persist(
     sid: &SessionId,
     report: &ContextReport,
 ) -> Result<LogSeq, RuntimeError> {
-    conway_session::provenance::append_context_report(store, sid, report)
+    conway_core::provenance::append_context_report(store, sid, report)
         .await
         .map_err(RuntimeError::Store)
 }
@@ -68,14 +69,14 @@ pub async fn persisted_at_turn(
     sid: &SessionId,
     turn: u32,
 ) -> Result<ContextReport, RuntimeError> {
-    if let Some(report) = conway_session::provenance::load_context_report(store, sid, turn)
+    if let Some(report) = conway_core::provenance::load_context_report(store, sid, turn)
         .await
         .map_err(RuntimeError::Store)?
     {
         return Ok(report);
     }
 
-    let all = conway_session::provenance::load_all_context_reports(store, sid)
+    let all = conway_core::provenance::load_all_context_reports(store, sid)
         .await
         .map_err(RuntimeError::Store)?;
     Err(turn_out_of_range(agent, turn, &all))

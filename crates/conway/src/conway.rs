@@ -1603,6 +1603,7 @@ impl Conway {
             prompt: None,
             keep_alive: spec.keep_alive,
             model: spec.model,
+            system_prompt_override: spec.system_prompt_override,
         };
         let root = self.rt.start_root(root_spec).await?;
 

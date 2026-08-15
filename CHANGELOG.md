@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **One-shot mode gains six flags: `--agent`, `--system-prompt` /
+  `--append-system-prompt`, and `--max-turns` / `--max-tokens` /
+  `--max-seconds`.** `-p` was a coding agent with the interactive parts
+  removed — every flag it had assumed a repository and a tool-calling task.
+  `--agent <name>` runs as a named `.conway/agents/<name>.md` definition;
+  an unknown name is a usage error naming the directory searched, never a
+  silent no-op. `--system-prompt <text>` replaces the effective system
+  prompt outright — with `--agent` absent, this is what stops a one-shot
+  run from being the built-in coding agent at all — and
+  `--append-system-prompt <text>` adds to whatever is in effect instead of
+  replacing it. The three budget flags expose the runtime's
+  already-enforced turn/token/wall-clock budget to the command line instead
+  of only `settings.json`. `--system-prompt`, `--append-system-prompt` and
+  the budget flags are usage errors when combined with `--resume` /
+  `--fork-from`, since neither facade path accepts a caller override yet —
+  a stated refusal rather than a silent drop. `--agent` composes cleanly
+  with `--fork-from`. `SessionSpec` and `RootSpec` gained a
+  `system_prompt_override` field to carry the literal-text case through.
+- **A plugin can add a subcommand to the `conway` binary, not only a slash
+  command to the TUI.** Anything typed that is not a built-in subcommand is
+  resolved against every installed plugin's declared commands, namespaced
+  `<plugin-id>.<command-name>` — the same scheme and the same resolver the
+  TUI's `/`-prefixed dispatch already uses, reused rather than
+  reimplemented. Proven through the real shipped `conway-plugin-history`
+  crate: `conway conway.history.rewind <seq>` forks the real session store
+  end to end; without `[plugins].install` the command is simply unknown,
+  with no special case anywhere in core.
+
+### Changed
+
+- **The runtime no longer links the JSONL adapter it never needed.**
+  `TranscriptResolver` and `provenance::{append_context_report,
+  load_context_report, load_all_context_reports}` moved from
+  `conway-session` into `conway-core` — both were always pure logic over
+  the `SessionStore` port, not over `JsonlSessionStore` specifically.
+  `conway-runtime`'s manifest no longer names `conway-session`, so
+  `cargo tree -p conway --no-default-features` no longer pulls it in: the
+  `jsonl-store` feature now genuinely gates linkage rather than only
+  default wiring. `conway-session` re-exports both unchanged, so existing
+  callers and its own test suites compile and pass with no edits.
+
 ### Changed
 
 - **One kind-agnostic profile facility, not a second per-kind store.**
