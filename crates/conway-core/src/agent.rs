@@ -357,12 +357,16 @@ impl SubagentSpec {
     ///
     /// **Why rejection rather than delivery.** Making a kept-alive child's
     /// result reachable is a real feature and remains open -- it needs a
-    /// mid-flight report channel, and `AgentMessage::Progress` already exists
-    /// for exactly that shape with no production sender. Building it was declined here in favour
-    /// of removing the hang now: nothing can depend on the current behaviour,
-    /// because the current behaviour is a hang. Turning it into an immediate,
-    /// typed error is a strict improvement and does not foreclose the feature
-    /// -- it forecloses only the silent version of it.
+    /// mid-flight report channel, which does not exist today. A prior
+    /// message-kind-plus-drain-effect-plus-event scaffold that once stood
+    /// in for one was retired end to end -- 01KZQHZ18MXR7WYVPMTGM5DHT0 --
+    /// after landing with every piece except a production sender in any
+    /// tree that ever ran; a real channel would be unrelated new work, not
+    /// a revival. Building it was declined here in favour of removing the
+    /// hang now: nothing can depend on the current behaviour, because the
+    /// current behaviour is a hang. Turning it into an immediate, typed
+    /// error is a strict improvement and does not foreclose the feature --
+    /// it forecloses only the silent version of it.
     ///
     /// Enforced HERE rather than at a tool callsite because this method is
     /// the single chokepoint every subagent path already passes through
@@ -576,10 +580,6 @@ pub enum AgentMessage {
         reason: String,
         hard: bool,
     },
-    Progress {
-        from: AgentId,
-        note: String,
-    },
     Result {
         from: AgentId,
         result: AgentResult,
@@ -593,7 +593,6 @@ pub enum AgentMessage {
 pub enum MessageKind {
     Steer,
     Cancel,
-    Progress,
     Result,
 }
 
@@ -602,7 +601,6 @@ impl From<&AgentMessage> for MessageKind {
         match msg {
             AgentMessage::Steer { .. } => MessageKind::Steer,
             AgentMessage::Cancel { .. } => MessageKind::Cancel,
-            AgentMessage::Progress { .. } => MessageKind::Progress,
             AgentMessage::Result { .. } => MessageKind::Result,
         }
     }
@@ -975,17 +973,18 @@ mod tests {
 
     #[test]
     fn message_kind_from_agent_message() {
-        let msg = AgentMessage::Progress {
-            from: AgentId::new(),
-            note: "n".into(),
-        };
-        assert_eq!(MessageKind::from(&msg), MessageKind::Progress);
         let msg = AgentMessage::Cancel {
             from: AgentId::new(),
             reason: "r".into(),
             hard: true,
         };
         assert_eq!(MessageKind::from(&msg), MessageKind::Cancel);
+        let msg = AgentMessage::Steer {
+            from: AgentId::new(),
+            text: "s".into(),
+            at_parent_seq: LogSeq::ZERO,
+        };
+        assert_eq!(MessageKind::from(&msg), MessageKind::Steer);
     }
 
     #[test]

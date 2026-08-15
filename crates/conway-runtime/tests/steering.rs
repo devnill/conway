@@ -403,11 +403,11 @@ async fn overflow_drops_the_six_oldest_and_emits_exactly_six_steer_dropped_witho
 
 /// Criterion: `Event::SteerDropped` is emitted
 /// only when the EVICTED entry was itself a `Steer` -- evicting a queued
-/// `Progress` or soft `Cancel` must never be misreported as a dropped
+/// `Result` or soft `Cancel` must never be misreported as a dropped
 /// steer. A 4-slot inbox is filled exactly to capacity with
-/// `[Steer, Progress, Steer, Cancel]`, then four more sends each evict
+/// `[Steer, Result, Steer, Cancel]`, then four more sends each evict
 /// exactly one oldest entry, in order: the two `Steer`s ("s1", "s2") and
-/// the `Progress`/`Cancel` in between and after -- so only 2 of the 4
+/// the `Result`/`Cancel` in between and after -- so only 2 of the 4
 /// evictions should ever produce `Event::SteerDropped`.
 #[tokio::test]
 async fn overflow_emits_steer_dropped_only_for_evicted_steers_not_other_kinds() {
@@ -422,9 +422,14 @@ async fn overflow_emits_steer_dropped_only_for_evicted_steers_not_other_kinds() 
         text: text.to_string(),
         at_parent_seq: LogSeq::ZERO,
     };
-    let progress = |note: &str| AgentMessage::Progress {
+    let result = |summary: &str| AgentMessage::Result {
         from: AgentId::new(),
-        note: note.to_string(),
+        result: AgentResult::new(
+            AgentId::new(),
+            SessionId::new(),
+            ResultStatus::Completed,
+            summary,
+        ),
     };
     let soft_cancel = |reason: &str| AgentMessage::Cancel {
         from: AgentId::new(),
@@ -434,14 +439,14 @@ async fn overflow_emits_steer_dropped_only_for_evicted_steers_not_other_kinds() 
 
     // Fills the 4-slot inbox exactly (no eviction yet).
     tx.send(steer("s1"));
-    tx.send(progress("p1"));
+    tx.send(result("r1"));
     tx.send(steer("s2"));
     tx.send(soft_cancel("c1"));
 
     // Each of these evicts exactly one oldest entry, in order:
-    // s1 (Steer), p1 (Progress), s2 (Steer), c1 (Cancel).
+    // s1 (Steer), r1 (Result), s2 (Steer), c1 (Cancel).
     tx.send(steer("s3"));
-    tx.send(progress("p2"));
+    tx.send(result("r2"));
     tx.send(steer("s4"));
     tx.send(soft_cancel("c2"));
 
@@ -456,7 +461,7 @@ async fn overflow_emits_steer_dropped_only_for_evicted_steers_not_other_kinds() 
     assert_eq!(
         steer_dropped, 2,
         "exactly the two evicted Steers (s1, s2) must produce SteerDropped -- \
-         the evicted Progress and Cancel must not"
+         the evicted Result and Cancel must not"
     );
 }
 
@@ -775,48 +780,6 @@ async fn soft_cancel_waits_for_the_inflight_tool_then_stops_at_the_next_boundary
         backend.calls().len(),
         1,
         "the soft cancel must stop the loop before the next turn's backend call"
-    );
-}
-
-/// Criterion: `Progress` messages never appear in the parent's assembled
-/// context and are emitted as `Event::AgentProgress`.
-#[tokio::test]
-async fn progress_never_enters_context_and_is_emitted_as_agent_progress() {
-    let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
-    let session = SessionId::new();
-    let agent = AgentId::new();
-    seed_prompt(&*store, agent, session, "go").await;
-    let backend = Arc::new(
-        ScriptedBackend::new(vec![ScriptedTurn::Respond(text_response("hi"))])
-            .with_capabilities(caps_ok()),
-    );
-
-    let harness = build_loop(session, agent, store.clone(), backend, vec![], None);
-    let mailbox_tx = harness.mailbox_tx.clone();
-    mailbox_tx.send(AgentMessage::Progress {
-        from: agent,
-        note: "still working".to_string(),
-    });
-
-    let mut stream = harness.bus.subscribe();
-    let result = harness.agent_loop.run().await;
-    assert_eq!(result.status, ResultStatus::Completed);
-
-    let events = drain(&mut stream);
-    assert!(events
-        .iter()
-        .any(|e| matches!(e, Event::AgentProgress { note } if note == "still working")));
-
-    let records = store
-        .read(&session, conway_core::ids::SeqRange::full())
-        .await
-        .unwrap();
-    assert!(
-        !records.iter().any(|r| matches!(
-            r,
-            LogRecord::UserTurn { text, .. } | LogRecord::SystemNote { text, .. } if text == "still working"
-        )),
-        "progress must never become a persisted record"
     );
 }
 
