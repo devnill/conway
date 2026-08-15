@@ -313,3 +313,6 @@ tools you want to allow explicitly, as above.
   commands, the status line, and what you see during a turn.
 - [`permissions.md`](permissions.md) — permission modes, pattern grants,
   and project-file trust.
+- [`dogfooding.md`](dogfooding.md) — if you're using conway to work on
+  conway itself, this is where friction you hit turns into a board item in
+  one command instead of getting shrugged off.

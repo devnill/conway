@@ -286,6 +286,23 @@ looking for a setting that was never going to exist.
 
 ---
 
+## Recording friction while you work
+
+If you're using conway on conway's own tree, something in this page will
+turn out to be awkward in a way it doesn't describe. The moment that
+happens, record it — reconstructing it later from memory is the same
+failure mode as prose checked against prose:
+
+```console
+scripts/dogfood-note.sh friction --title "<short title>" --body "<what happened>"
+```
+
+That's the whole ceremony: one command, filed as a board item, no board
+tooling to learn. See [`docs/dogfooding.md`](docs/dogfooding.md) for the
+full loop — attaching friction to an existing item instead of filing a new
+one, the end-of-session note, and how to check whether the path is actually
+being used.
+
 ## Where to go next
 
 - [`interactive.md`](docs/interactive.md) — the full TUI reference: every command,
