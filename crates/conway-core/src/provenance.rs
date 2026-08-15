@@ -5,7 +5,7 @@
 //! render and reason about *why* a byte of context is present.
 //!
 //! Internally tagged on field `type`, snake_case tag values. This is the
-//! wire format for the `prov` field on several [`LogRecord`](crate::log::LogRecord)
+//! wire format for the `prov` field on several [`LogRecord`]
 //! variants and for [`ContextReportEntry::provenance`].
 //!
 //! ## Persistence: `append_context_report` / `load_context_report` /

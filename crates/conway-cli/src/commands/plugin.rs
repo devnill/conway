@@ -20,7 +20,7 @@
 //! CommandCtx`] from; a bare `conway <plugin-id>.<command>` invocation has
 //! none yet, so [`run`] starts one fresh, prompt-less session purely to
 //! have real `focused_agent`/`root_agent`/`session_id` values to hand the
-//! command -- the same shape [`crate::oneshot::resolve_session`]'s
+//! command -- the same shape `crate::oneshot::resolve_session`'s
 //! flag-free arm already creates for one-shot mode. A
 //! [`conway::plugin::CommandOutcome::ForkSession`] outcome is honored for
 //! real (the fork actually happens, against the real store) but, unlike the

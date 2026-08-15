@@ -167,7 +167,7 @@ pub(crate) fn ensure_hook_payload_coherent(
 
 /// Makes an unwrapped hook unrepresentable, per `INTENT.md` §8.6: rather
 /// than trusting every current and future call site to remember to call
-/// [`ensure_hook_payload_coherent`] (the exact shape of the defect this
+/// `ensure_hook_payload_coherent` (the exact shape of the defect this
 /// module exists to retire -- `on_overflow` went unguarded while
 /// `before_request` was the one being discussed), the check is installed
 /// ONCE, at construction, and the resulting type is what
@@ -205,7 +205,7 @@ impl GuardedContextHook {
     /// The only constructor. Nothing about `inner` is inspected or altered
     /// here -- wrapping installs the check at every SUBSEQUENT call, not at
     /// registration time (an already-coherent hook costs nothing extra
-    /// either way, since [`check_tool_call_coherence`]'s common-case cost is
+    /// either way, since `check_tool_call_coherence`'s common-case cost is
     /// a `HashSet` build and an empty `Vec`).
     ///
     /// `pub`, unlike this module's other internals: `LoopDeps::context_hook`

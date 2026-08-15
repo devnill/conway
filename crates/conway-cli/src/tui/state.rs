@@ -11,12 +11,12 @@
 //! the one thing every seam below shares, so it stays here. Everything
 //! `apply` dispatches INTO lives in its own submodule, split along the
 //! seams the struct's own fields already group into: the transcript
-//! entry model ([`transcript`], turn-summary formatting in
-//! [`turn_summary`], pane scrolling in [`scroll`]), the focused agent's
-//! live activity ([`status`]), the agent-tree data model ([`agent_tree`])
-//! and the `/agents` panel built over it ([`agent_panel`]), the
-//! modal-bearing surfaces ([`modal`]), and the input line's own composer
-//! state ([`input_line`]). Each submodule's own methods are additional
+//! entry model (`transcript`, turn-summary formatting in
+//! `turn_summary`, pane scrolling in `scroll`), the focused agent's
+//! live activity (`status`), the agent-tree data model (`agent_tree`)
+//! and the `/agents` panel built over it (`agent_panel`), the
+//! modal-bearing surfaces (`modal`), and the input line's own composer
+//! state (`input_line`). Each submodule's own methods are additional
 //! `impl AppState` blocks -- ordinary Rust, not a language feature -- so
 //! this split is purely organizational: `AppState` is exactly the same
 //! type, with exactly the same fields and methods, as before it moved.
@@ -102,7 +102,7 @@ pub enum IntentChoice {
 ///   `commands::execute_intent_confirm` re-derives those the same way
 ///   `commands::execute`'s bare arms do).
 ///
-/// Defined here (not in [`modal`], which owns the rest of the modal-bearing
+/// Defined here (not in `modal`, which owns the rest of the modal-bearing
 /// surfaces) because `crates/conway-cli/tests/intent_confirm.rs` pins this
 /// struct's definition, and [`AppState::offer_intent_confirm`]/
 /// [`AppState::close_intent_confirm`]/[`AppState::begin_intent_confirm_edit`]
@@ -336,7 +336,7 @@ pub struct AppState {
     /// right after `Conway::classify_agent_intent` returns, which parks here
     /// whenever `mode` is not `Normal`. [`Self::close_ask_modal`],
     /// [`Self::close_intent_confirm`], and [`Self::resolve_current_prompt`]
-    /// all funnel through [`Self::promote_next_surface`] to drain the
+    /// all funnel through `Self::promote_next_surface` to drain the
     /// queued-prompts / `pending_ask_modal` / `pending_intent_confirm`
     /// slots in that fixed priority order, so the three modal-bearing
     /// surfaces never stack.
@@ -829,7 +829,7 @@ impl AppState {
     /// `pending_intent_confirm` instead whenever another modal surface (a
     /// permission prompt or an `/ask` modal) currently owns `mode` --
     /// mirroring [`Self::offer_ask_modal`]'s parking behavior, so
-    /// the modal-bearing surfaces never stack. [`Self::promote_next_surface`]
+    /// the modal-bearing surfaces never stack. `Self::promote_next_surface`
     /// opens the parked card once the surface ahead of it clears. Called
     /// by `commands::execute`'s free-text `/fork`/`/spawn` arm right after
     /// `Conway::classify_agent_intent` returns `Ok`.
@@ -846,7 +846,7 @@ impl AppState {
 
     /// Closes the intent confirmation card (C2) after a `Confirm` or
     /// `Manual` choice, promoting the next parked/queued surface via
-    /// [`Self::promote_next_surface`]. A no-op when no card is open.
+    /// `Self::promote_next_surface`. A no-op when no card is open.
     /// `Edit` does NOT call this -- [`Self::begin_intent_confirm_edit`]
     /// drops the classified prompt into the input line and then closes the
     /// card via this same method, but with the input line populated so the

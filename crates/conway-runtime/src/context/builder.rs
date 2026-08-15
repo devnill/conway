@@ -65,7 +65,7 @@
 //! edit `segments` freely, including orphaning a tool call/result pair --
 //! `drop_unanswered_tool_calls` never runs again to catch it. `crate::
 //! context::hook_guard::ensure_hook_payload_coherent` is the seam that
-//! re-derives coherence on a hook's output, using [`check_tool_call_coherence`]
+//! re-derives coherence on a hook's output, using `check_tool_call_coherence`
 //! (this module's check-only sibling of `drop_unanswered_tool_calls`,
 //! covering BOTH orphan directions -- a hook's edit is a deliberate act, so
 //! it is refused rather than repaired; see that module's own doc).
