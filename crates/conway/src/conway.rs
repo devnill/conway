@@ -4,13 +4,12 @@
 use std::sync::Arc;
 
 use chrono::{Duration as ChronoDuration, Utc};
-use conway_core::agent::{AgentDefRef, AgentStatus, Budget, SubagentMode};
+use conway_core::agent::{AgentDefRef, Budget, SubagentMode};
 use conway_core::capabilities::RequiredCaps;
 use conway_core::error::{RuntimeError, StoreError};
-use conway_core::ids::{AgentId, LogSeq, RoleAlias, SeqRange, SessionId};
-use conway_core::log::{LogRecord, SessionFilter, SessionMeta};
+use conway_core::ids::{AgentId, LogSeq, RoleAlias, SessionId};
+use conway_core::log::{SessionFilter, SessionMeta};
 use conway_core::ports::{RoutingExplainer, SessionStore};
-use conway_core::provenance::Provenance;
 use conway_core::routing::{ExplainReport, MinimalRouter, RouteRequest};
 use conway_runtime::runtime::{ResumeSpec, RootSpec, Runtime};
 
@@ -18,48 +17,9 @@ use crate::config::model_metadata::ModelMetadata;
 use crate::config::{ConfigWarning, ConwayConfig};
 use crate::error::{ConwayError, Result};
 use crate::intent::AgentIntent;
+use crate::permissions::{PermissionLoadReport, RevokeOutcome, TrustPermissionReport};
 use crate::session_handle::{SessionHandle, SessionSpec};
 use crate::subagent_spec::ForkSpec;
-
-/// The result of [`Conway::load_permission_files`] -- what `conway-cli`'s startup loader needs
-/// to update `AppState` with.
-#[derive(Debug, Clone, Default)]
-pub struct PermissionLoadReport {
-    /// Every candidate path considered, project-first then global, in the
-    /// same precedence `crate::config::discovery::permission_file_paths`
-    /// establishes -- present or not, so a caller wanting to trust a
-    /// project file (`/trust permissions`) knows which path that is.
-    pub paths: Vec<std::path::PathBuf>,
-    /// Human-readable notices for anything the caller should surface
-    /// (currently: a project file's allow rules skipped for lack of
-    /// trust). Never an error -- see [`Conway::load_permission_files`]'s
-    /// own doc for why every condition here is a silent, narrowing
-    /// degrade by design. Distinct from [`Self::parse_errors`]: a notice
-    /// describes a file that DID load, just not fully in effect yet (an
-    /// untrusted project file's `allow` half); a parse error describes a
-    /// file that did NOT load at all.
-    pub notices: Vec<String>,
-    /// F12: typed registration errors for rules the loader refused to
-    /// install silently -- currently, a `command_prefix` rule paired with
-    /// a tool whose `render_kind` is `Structured` (a rule that can never
-    /// reliably match). Surfaced as a typed value, not folded into
-    /// `notices`, so the caller can render it distinctly and a test can
-    /// pin it (untrusted input -> typed errors, never a panic). The rule is carried
-    /// whole so the operator sees exactly what was rejected.
-    pub registration_errors: Vec<conway_core::permission_pattern::RuleRegistrationError>,
-    /// One human-readable message per
-    /// candidate file that named a top-level key this schema does not
-    /// recognize (`conway_core::permission_pattern::
-    /// permission_file_unknown_field_error`) -- a misspelled `"denys"`
-    /// being the motivating case. A file listed here contributed ZERO
-    /// rules -- allow, deny, AND prompt -- to this load; unlike every other
-    /// condition [`Self::notices`] carries, this one IS the caller's signal
-    /// that a file failed to load, not merely that it loaded with something
-    /// degraded. Kept separate from [`Self::registration_errors`] (which is
-    /// always about one already-parsed [`conway_core::permission_pattern::
-    /// Rule`], never about the file failing to parse at all).
-    pub parse_errors: Vec<String>,
-}
 
 /// The event name [`Conway::active_deny_capable_hook_rules`]/
 /// [`Conway::revoke_hook_rule`] use to identify a `pre_tool_use` row --
@@ -112,67 +72,6 @@ pub struct HookRuleView {
     pub origin: String,
 }
 
-/// The result of [`Conway::trust_permission_file`] -- the trust-path parallel of
-/// [`PermissionLoadReport`]. Carries the count of allow rules actually
-/// installed AND the typed registration errors for rules the broker refused
-/// to install (today: a `paths_under` prefix that fails to canonicalize, B3).
-/// The count and the errors are surfaced together so `/trust permissions`
-/// can never report "N installed" when fewer than N actually installed --
-/// the trust path's version of the silent-no-op the load path already
-/// surfaces through `PermissionLoadReport::registration_errors`.
-#[derive(Debug, Clone, Default)]
-pub struct TrustPermissionReport {
-    /// The number of allow rules actually installed by the broker (rules the
-    /// broker dropped are NOT counted -- distinct from the raw parse count).
-    pub installed: usize,
-    /// Typed registration errors for rules the broker refused to install --
-    /// surfaced to the operator through the SAME `Entry::Error { fatal: false
-    /// }` channel `PermissionLoadReport::registration_errors` uses, so a
-    /// registration failure reaches the operator instead of being produced and
-    /// discarded.
-    pub registration_errors: Vec<conway_core::permission_pattern::RuleRegistrationError>,
-    /// A4: operator-visible notices for rules the broker DID install but
-    /// that are partially inert (today: a `command_prefix` rule selecting a
-    /// MIX of `Structured`- and `ShellCommand`-rendering tools -- the
-    /// `ShellCommand` members install and match, the `Structured` members
-    /// can never match and the operator is warned). Surfaced through the
-    /// SAME `Entry::Notice` channel `PermissionLoadReport::notices` uses,
-    /// so a partially-inert rule is never silently installed.
-    pub notices: Vec<String>,
-}
-
-/// The result of [`Conway::revoke_permission_pattern`] -- what happened to the in-session grant AND to
-/// whatever file it came from, so the caller can tell the operator the
-/// whole truth rather than folding a failed persist into a blanket "done".
-#[derive(Debug, Clone)]
-pub enum RevokeOutcome {
-    /// No installed grant matched `(rule, origin)` -- nothing to revoke
-    /// (already gone, e.g. a stale row left over from an earlier action in
-    /// the same session).
-    NotFound,
-    /// Revoked for this session. `origin` was
-    /// [`conway_core::permission_pattern::PatternOrigin::Interactive`] --
-    /// there was never a file backing this grant, so none was touched.
-    RevokedNoFile,
-    /// Revoked for this session AND removed from the file it came from.
-    /// `retrust_warning`, when present, means the file was a TRUSTED
-    /// project-scoped file whose bytes the rewrite just changed (which
-    /// changes its content digest) and re-recording trust for the new
-    /// bytes failed -- the revoke itself still fully succeeded, but the
-    /// file's OTHER allow rules will require `/trust permissions` again
-    /// until this is fixed. See [`Conway::revoke_permission_pattern`]'s own
-    /// doc for why re-trusting here is the correct call, not a loophole.
-    RevokedAndPersisted { retrust_warning: Option<String> },
-    /// Revoked for this session, but the file it came from could not be
-    /// rewritten. The rule no longer applies THIS session -- nothing on
-    /// disk changed, so it returns at the next restart unless the file is
-    /// fixed by hand. Revocation never fails open: the in-session grant is
-    /// gone either way; only the DURABILITY of that removal failed, and
-    /// this variant exists so the caller can say so rather than reporting
-    /// a plain success that the next launch would quietly contradict.
-    RevokedButPersistFailed { error: String },
-}
-
 /// The live, assembled facade: one `Runtime`, its resolved config, and --
 /// when the builder had a real answer to "why" (it compiled its own router,
 /// or a `RouterFactory` supplied one
@@ -204,23 +103,6 @@ pub struct Conway {
     /// contract. Consulted once per [`Self::new_session`] call, exactly like
     /// `self.config.cwd`.
     root: Option<std::path::PathBuf>,
-}
-
-/// A4: the outcome of [`Conway::validate_rule_registration`] -- either a
-/// hard reject (the rule is refused installation and surfaced as a typed
-/// `RuleRegistrationError` through `registration_errors`), or a notice (the
-/// rule installs but the operator is warned a part of it is inert, surfaced
-/// through `notices`). `None` means the rule is clean. This split exists so
-/// the broadened `command_prefix`-on-`Structured` check can distinguish the
-/// fully-inert all-`Structured` case (a hard reject -- no working member to
-/// preserve) from the mixed `Structured`+`ShellCommand` case (a notice --
-/// the `ShellCommand` members install and the operator is warned the
-/// `Structured` members are inert). Both arms are typed values, never
-/// panics on untrusted input; both are operator-visible (one as a transcript error, one
-/// as a transcript notice).
-enum RegistrationCheck {
-    Reject(conway_core::permission_pattern::RuleRegistrationError),
-    Notice(String),
 }
 
 impl Conway {
@@ -377,277 +259,6 @@ impl Conway {
         name: &conway_core::ids::ToolName,
     ) -> Option<conway_core::ports::PathArgs> {
         self.rt.tool_path_args(name)
-    }
-
-    /// F12: validates a parsed [`Rule`] against the registered tools, the
-    /// single registration check the structured form needs. Returns a typed
-    /// [`RuleRegistrationError`] for a rule this loader will refuse to
-    /// install silently rather than store inert -- the mirror of the
-    /// `68ea9b1` `read:*`-matched-nothing bug. Two checks today:
-    /// (1) `when: command_prefix` paired with a `select: tools([t])` whose
-    /// resolved `render_kind` is `Structured` (a JSON dump whose token
-    /// boundaries the operator cannot predict);
-    /// (2) B1: `when: paths_under` paired with a `then: deny`/`prompt` rule
-    /// whose `select: tools([t...])` contains any exactly-named tool whose
-    /// resolved `PathArgs` is not `Named` (`Unconfinable` such as `bash`, or
-    /// `None`) -- a `paths_under` predicate can never confine such a tool, so
-    /// the rule is silently inert and fail-OPEN for deny/prompt. A `tools`
-    /// pattern naming an UNKNOWN tool is NOT a registration error here -- the
-    /// broker simply never matches it, and an unknown tool can be registered
-    /// later in the same session; refusing it at load time would be a
-    /// load-order hazard. A `Select::Categories` and a trailing-`*` wildcard
-    /// are not inspectable here (members may register later) and are left to
-    /// the decision-time fail-closed in `rule_denies_or_prompts`.
-    ///
-    /// A4 broadens check (1) beyond a single-tool `Select::Tools`. A
-    /// `command_prefix` rule is a token-wise prefix over the call's
-    /// `rendered` string; for any tool whose `render_kind` is `Structured`
-    /// that string is a JSON dump whose token boundaries depend on key
-    /// order, spacing, and escaping the operator cannot predict, so the
-    /// rule is inert for that tool -- the same trap the single-tool check
-    /// catches. The broadened check resolves the select (via
-    /// [`Self::registered_tools_metadata`] + [`Rule::select_matches`],
-    /// which handles exact names, trailing-`*` wildcards, and category
-    /// membership uniformly) and counts the resolvable selected tools whose
-    /// `render_kind` is `Structured` vs `ShellCommand` (unknown tools are
-    /// skipped, mirroring the load-order-hazard reasoning of the single-tool
-    /// check):
-    /// - **All resolvable selected tools are `Structured`** (including the
-    ///   single-tool case): the rule is fully inert. The loader REFUSES to
-    ///   install it and surfaces a typed `CommandPrefixOnStructuredTool`
-    ///   registration error -- the same hard error the single-tool case
-    ///   always raised, now covering multi-tool, wildcard, and category
-    ///   selects that resolve to a fully-Structured set.
-    /// - **Mixed (some `Structured` + some `ShellCommand`):** the rule is
-    ///   PARTIALLY inert -- the `ShellCommand` members match exactly as the
-    ///   operator wrote them, the `Structured` members can never match.
-    ///   Rejecting the whole rule would also reject the working
-    ///   `ShellCommand` members (overzealous); installing it silently would
-    ///   hide the inert `Structured` members. The shape that is both
-    ///   fail-closed-safe (the inert `Structured` allow members fail-CLOSED
-    ///   -- the call falls through to the gate; deny/prompt members are
-    ///   fail-open, but the operator is warned) and least-surprise is a
-    ///   NOTICE: the rule installs, and the operator is warned the
-    ///   `Structured` members are inert so they can split the rule. The
-    ///   single-tool all-`Structured` case stays a hard error (no working
-    ///   member to preserve).
-    /// - **No `Structured` members:** the rule is clean, no error/notice.
-    fn validate_rule_registration(
-        &self,
-        rule: &conway_core::permission_pattern::Rule,
-    ) -> Option<RegistrationCheck> {
-        use conway_core::permission_pattern::{RuleRegistrationReason, Select, When};
-        match (&rule.select, &rule.when) {
-            // A4: `command_prefix` on a Structured-rendering tool is inert
-            // for that tool. Resolve the select (exact tools, trailing-`*`
-            // wildcards, and categories -- all via `select_matches` over the
-            // registered-tools metadata) and count Structured vs
-            // ShellCommand members. Unknown tools are skipped (load-order
-            // hazard, mirroring the single-tool check's `None` arm).
-            (Select::Tools(_), When::CommandPrefix(_))
-            | (Select::Categories(_), When::CommandPrefix(_)) => {
-                let (structured, shell) = self.command_prefix_resolved_kinds(rule);
-                if structured > 0 && shell == 0 {
-                    Some(RegistrationCheck::Reject(
-                        conway_core::permission_pattern::RuleRegistrationError {
-                            rule: rule.clone(),
-                            reason: RuleRegistrationReason::CommandPrefixOnStructuredTool,
-                        },
-                    ))
-                } else if structured > 0 {
-                    Some(RegistrationCheck::Notice(format!(
-                        "a `command_prefix` rule selecting {} matches no `Structured`-rendering \
-                         tool it selects ({} of its selected tools render a JSON dump whose \
-                         token boundaries the operator cannot predict); the `ShellCommand` \
-                         members install, but the `Structured` members are inert -- split the \
-                         rule if you meant the `Structured` tools to match, or use `always` \
-                         (the `tool:*` flat form)",
-                        rule.describe(),
-                        structured,
-                    )))
-                } else {
-                    None
-                }
-            }
-            // B1: a `paths_under` rule can never confine a tool whose
-            // `PathArgs` is not `Named`. For `then: deny/prompt` selecting an
-            // `Unconfinable` tool (e.g. `bash`) that inertness is fail-OPEN --
-            // the command can still reach the prefix, so the call the operator
-            // expected to be refused instead goes through. For a `None` tool
-            // (no path args) the rule is a no-op rather than fail-open, but a
-            // no-op deny is still a trap worth surfacing. In both cases the
-            // loader refuses to install it silently and surfaces a typed
-            // error. For `then: allow` the same inertness is fail-CLOSED (the
-            // broker simply never matches it and the call falls through to the
-            // gate), so it is NOT raised here.
-            //
-            // Multi-tool / mixed Select: fire when ANY exactly-named selected
-            // tool resolves to a non-`Named` `PathArgs` (an unenforceable deny
-            // rule fails closed -- if any tool in the select can't be
-            // path-confined, the deny/prompt rule is silently inert for that
-            // tool, which is the hazard; the operator is informed and can split
-            // the rule). A trailing-`*` wildcard pattern is NOT resolvable to a
-            // single tool here (no tool is named `*`), so it is skipped at
-            // install time -- the decision-time fail-closed in
-            // `rule_denies_or_prompts` covers it. An unknown tool (`path_args
-            // == None`) is skipped too, mirroring the CommandPrefix check's
-            // load-order-hazard reasoning. A `Select::Categories` is not
-            // inspectable at install time (its member tools may register later
-            // in the same session), so it is left to the decision-time
-            // fail-closed as well.
-            (Select::Tools(ts), When::PathsUnder(_))
-                if rule.then == conway_core::permission_pattern::Then::Deny
-                    || rule.then == conway_core::permission_pattern::Then::Prompt =>
-            {
-                ts.iter().find_map(|p| {
-                    // A trailing-`*` wildcard cannot be resolved to one tool.
-                    if p == "*" || p.ends_with('*') {
-                        return None;
-                    }
-                    match self.tool_path_args(&conway_core::ids::ToolName::new(p)) {
-                        Some(conway_core::ports::PathArgs::Named(_)) | None => None,
-                        // `Unconfinable` or `None` (or any future
-                        // `#[non_exhaustive]` variant): a `paths_under` rule
-                        // can never confine this tool -- fail closed.
-                        Some(_) => Some(RegistrationCheck::Reject(
-                            conway_core::permission_pattern::RuleRegistrationError {
-                                rule: rule.clone(),
-                                reason: RuleRegistrationReason::PathsUnderOnUnconfinedTool,
-                            },
-                        )),
-                    }
-                })
-            }
-            _ => None,
-        }
-    }
-
-    /// A4: resolves a `command_prefix` rule's `select` against the
-    /// registered tools and returns `(structured_count, shell_count)` -- how
-    /// many resolvable selected tools render `Structured` vs `ShellCommand`.
-    /// Unknown tools are skipped (load-order hazard). Uses
-    /// [`Self::registered_tools_metadata`] (the registry enumeration) plus
-    /// [`Rule::select_matches`], which handles exact `Tools` names,
-    /// trailing-`*` wildcards, and `Categories` membership uniformly -- so
-    /// the broadened check does not reimplement wildcard or category
-    /// resolution, it reuses the SAME `select_matches` the decision-time
-    /// evaluator already uses (no second implementation to drift).
-    fn command_prefix_resolved_kinds(
-        &self,
-        rule: &conway_core::permission_pattern::Rule,
-    ) -> (usize, usize) {
-        let mut structured = 0usize;
-        let mut shell = 0usize;
-        for (name, cat, rk) in self.rt.registered_tools_metadata() {
-            if rule.select_matches(name.as_str(), cat) {
-                match rk {
-                    conway_core::ports::RenderKind::Structured => structured += 1,
-                    _ => shell += 1,
-                }
-            }
-        }
-        (structured, shell)
-    }
-
-    /// F12: installs a parsed ALLOW [`Rule`] from a permissions file at
-    /// `origin_path`. The flat form desugars to a `Rule` too, so this is the
-    /// single install path for allow rules from config. Trust was already
-    /// confirmed by the caller (`load_permission_files`); this method does
-    /// not re-check it. Returns the `bool` from
-    /// `PermissionBroker::remember_pattern_rule`: `false` means the broker
-    /// dropped the rule -- today, the only reachable cause from the load
-    /// path is a [`When::PathsUnder`] prefix that cannot be canonicalized
-    /// (B3). The caller surfaces that as a typed
-    /// [`RuleRegistrationReason::PathsUnderPrefixUncanonicalizable`]
-    /// registration error rather than silently swallowing the `bool`.
-    ///
-    /// `base` is the directory a RELATIVE `paths_under` prefix resolves
-    /// against (B2), computed by the caller, which knows which file the rule
-    /// came from -- see [`Self::permission_rule_base`].
-    fn install_allow_rule(
-        &self,
-        rule: &conway_core::permission_pattern::Rule,
-        scope: conway_core::agent::PermissionScope,
-        granting_agent: conway_core::ids::AgentId,
-        origin_path: std::path::PathBuf,
-        base: &std::path::Path,
-    ) -> bool {
-        self.rt.permission_broker().remember_pattern_rule(
-            rule.clone(),
-            scope,
-            granting_agent,
-            conway_core::permission_pattern::PatternOrigin::File(origin_path),
-            base,
-        )
-    }
-
-    /// F12: installs a parsed DENY [`Rule`] from a permissions file at
-    /// `origin_path`. No trust precondition (D4 §3). Returns the `bool` from
-    /// `PermissionBroker::remember_deny_rule` -- see
-    /// [`Self::install_allow_rule`] for the `false` contract (B3). `base` is
-    /// as in [`Self::install_allow_rule`].
-    fn install_deny_rule(
-        &self,
-        rule: &conway_core::permission_pattern::Rule,
-        origin_path: std::path::PathBuf,
-        base: &std::path::Path,
-    ) -> bool {
-        self.rt.permission_broker().remember_deny_rule(
-            rule.clone(),
-            conway_core::permission_pattern::PatternOrigin::File(origin_path),
-            base,
-        )
-    }
-
-    /// F12: installs a parsed PROMPT [`Rule`] from a permissions file at
-    /// `origin_path`. No trust precondition (extension-architecture.md §5.5
-    /// stage 1). Returns the `bool` from
-    /// `PermissionBroker::remember_prompt_rule` -- see
-    /// [`Self::install_allow_rule`] for the `false` contract (B3). `base` is
-    /// as in [`Self::install_allow_rule`].
-    fn install_prompt_rule(
-        &self,
-        rule: &conway_core::permission_pattern::Rule,
-        origin_path: std::path::PathBuf,
-        base: &std::path::Path,
-    ) -> bool {
-        self.rt.permission_broker().remember_prompt_rule(
-            rule.clone(),
-            conway_core::permission_pattern::PatternOrigin::File(origin_path),
-            base,
-        )
-    }
-
-    /// B3: when an `install_*_rule` call returns `false` for a
-    /// [`When::PathsUnder`] rule, the broker dropped it because
-    /// `canonicalize_when` could not resolve the prefix on disk (a typo, or
-    /// a repo/subdirectory not yet cloned/checked out). Surface that as a
-    /// typed [`RuleRegistrationReason::PathsUnderPrefixUncanonicalizable`]
-    /// registration error instead of silently swallowing the `bool` -- the
-    /// mirror of `68ea9b1`'s `read:*`-matched-nothing bug. Returns `None` for
-    /// every other `when` clause: a non-`PathsUnder` rule's
-    /// `remember_*_rule` never returns `false` from the load path (the `then`
-    /// mismatch is an invariant the load split already enforces), so a
-    /// `false` there would be an invariant violation rather than an
-    /// operator-visible condition.
-    fn uncanonicalizable_paths_under_error(
-        rule: &conway_core::permission_pattern::Rule,
-        installed: bool,
-    ) -> Option<conway_core::permission_pattern::RuleRegistrationError> {
-        if !installed
-            && matches!(
-                rule.when,
-                conway_core::permission_pattern::When::PathsUnder(_)
-            )
-        {
-            Some(conway_core::permission_pattern::RuleRegistrationError {
-                rule: rule.clone(),
-                reason: conway_core::permission_pattern::RuleRegistrationReason::
-                    PathsUnderPrefixUncanonicalizable,
-            })
-        } else {
-            None
-        }
     }
 
     /// Every active PROMPT rule, paired with its origin -- the prompt
@@ -972,10 +583,10 @@ impl Conway {
             }
         };
 
-        Self::persist_revoke_outcome(
+        crate::permissions::persist_revoke_outcome(
             env,
             path,
-            Self::rewrite_permission_file_removing(path, rule),
+            crate::permissions::rewrite_permission_file_removing(path, rule),
         )
     }
 
@@ -1038,188 +649,11 @@ impl Conway {
             }
         };
 
-        Self::persist_revoke_outcome(
+        crate::permissions::persist_revoke_outcome(
             env,
             path,
-            Self::rewrite_permission_file_removing_structured(path, rule),
+            crate::permissions::rewrite_permission_file_removing_structured(path, rule),
         )
-    }
-
-    /// The shared persistence tail of [`Self::revoke_permission_pattern`]
-    /// and [`Self::revoke_structured_allow_rule`]: folds the file rewrite's
-    /// result into a [`RevokeOutcome`], re-trusting a rewritten trusted
-    /// project file (never the global file, which is trusted by authorship
-    /// and never gated on a digest at all -- `Self::load_permission_files`'s
-    /// own doc) so the rewrite does not silently de-trust the file's OTHER
-    /// rules. The in-session grant is already gone when this runs -- a
-    /// failure here only means the removal is not durable, reported
-    /// honestly via [`RevokeOutcome::RevokedButPersistFailed`] /
-    /// [`RevokeOutcome::RevokedAndPersisted`]'s `retrust_warning` rather
-    /// than folded into a blanket "done".
-    fn persist_revoke_outcome(
-        env: &std::collections::HashMap<String, String>,
-        path: &std::path::Path,
-        rewrite: std::io::Result<()>,
-    ) -> RevokeOutcome {
-        match rewrite {
-            Err(e) => RevokeOutcome::RevokedButPersistFailed {
-                error: e.to_string(),
-            },
-            Ok(()) => {
-                let global_path = crate::config::discovery::xdg_config_path(env)
-                    .and_then(|settings| settings.parent().map(|dir| dir.join("permissions.json")));
-                let is_global = global_path.as_deref() == Some(path);
-                let retrust_warning = if is_global {
-                    None
-                } else {
-                    match crate::config::trust::TrustStore::trust(env, path) {
-                        Ok(()) => None,
-                        Err(e) => Some(format!(
-                            "could not re-trust {} after removing a rule from it -- \
-                             its other allow rules will need `/trust permissions` \
-                             again ({e})",
-                            path.display()
-                        )),
-                    }
-                };
-                RevokeOutcome::RevokedAndPersisted { retrust_warning }
-            }
-        }
-    }
-
-    /// Removes `rule`'s wire form from `path`'s `allow` list, tmp-then-
-    /// rename -- see [`Self::revoke_permission_pattern`]'s own doc for the
-    /// full reasoning (why a parse failure is a hard error here, unlike the
-    /// append path; why no chmod hardening).
-    fn rewrite_permission_file_removing(
-        path: &std::path::Path,
-        rule: &conway_core::permission_pattern::PatternRule,
-    ) -> std::io::Result<()> {
-        let contents = std::fs::read_to_string(path)?;
-        let mut file: conway_core::permission_pattern::PermissionFile =
-            serde_json::from_str(&contents).map_err(|e| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!(
-                        "{} is not valid JSON, refusing to rewrite it blindly: {e}",
-                        path.display()
-                    ),
-                )
-            })?;
-
-        let wire = rule.to_wire();
-        let before = file.allow.len();
-        file.allow.retain(|w| w != &wire);
-        if file.allow.len() == before {
-            // Nothing to remove -- the goal state already holds. No write,
-            // so there is nothing that could de-trust the file either.
-            return Ok(());
-        }
-
-        let serialized = serde_json::to_string_pretty(&file)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, serialized)?;
-        std::fs::rename(&tmp, path)?;
-        Ok(())
-    }
-
-    /// Removes `rule` from `path`'s structured `rules` array, tmp-then-
-    /// rename -- the structured counterpart to
-    /// [`Self::rewrite_permission_file_removing`], for
-    /// [`Self::revoke_structured_allow_rule`]. Same posture throughout: an
-    /// unparseable file is a hard error (never blindly overwritten), a rule
-    /// already absent from an otherwise-valid file means the goal state
-    /// already holds so nothing is written, and every OTHER entry -- flat
-    /// `allow`/`deny` lists and the rest of `rules`, including the array's
-    /// `deny`/`prompt` entries -- is preserved verbatim. Matches by `Rule`
-    /// equality, the same identity the broker matched in memory, so the
-    /// row the operator selected is the entry removed from disk.
-    fn rewrite_permission_file_removing_structured(
-        path: &std::path::Path,
-        rule: &conway_core::permission_pattern::Rule,
-    ) -> std::io::Result<()> {
-        let contents = std::fs::read_to_string(path)?;
-        let mut file: conway_core::permission_pattern::PermissionFile =
-            serde_json::from_str(&contents).map_err(|e| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!(
-                        "{} is not valid JSON, refusing to rewrite it blindly: {e}",
-                        path.display()
-                    ),
-                )
-            })?;
-
-        // Remove exactly ONE matching entry -- the broker dropped exactly
-        // one in-memory instance, so the file must lose exactly one too, or
-        // a hand-duplicated entry would diverge durable state from session
-        // state (the operator revokes one row, one instance survives in
-        // memory, but a `retain` here would strip both from disk and the
-        // "surviving" grant would silently vanish at the next restart). The
-        // flat path's `retain` predates this reasoning; matching it is
-        // consistency, fixing it here is the new code keeping its own
-        // one-instance contract.
-        let Some(idx) = file.rules.iter().position(|r| r == rule) else {
-            // Nothing to remove -- the goal state already holds. No write,
-            // so there is nothing that could de-trust the file either.
-            return Ok(());
-        };
-        file.rules.remove(idx);
-
-        let serialized = serde_json::to_string_pretty(&file)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, serialized)?;
-        std::fs::rename(&tmp, path)?;
-        Ok(())
-    }
-
-    /// B2: the directory a RELATIVE `paths_under` prefix in the permissions
-    /// file at `path` resolves against before the broker canonicalizes it
-    /// (B2, finding S5). Resolving a relative prefix against the
-    /// process's cwd -- what a bare `Path::canonicalize` does -- points the
-    /// rule at wherever the operator happened to launch conway from, so the
-    /// base is derived here, where the file's own location is known:
-    ///
-    /// - For a PROJECT file (`<project>/.conway/permissions.json`): the
-    ///   PROJECT ROOT -- the directory containing `.conway/` -- not the
-    ///   file's own parent (`.conway/` itself), which would point a prefix
-    ///   like `"src"` at `<project>/.conway/src`, a directory no operator
-    ///   means. (Note the base is derived from the FILE's own location, so
-    ///   under ancestor discovery it is the ancestor holding `.conway/`,
-    ///   not the launch cwd: `RootSpec.root`/`SubagentSpec.root` resolve
-    ///   against the agent cwd, which coincides with the project root only
-    ///   in the standard launch.)
-    /// - For the GLOBAL file (`~/.conway/permissions.json`, or
-    ///   `$XDG_CONFIG_HOME/conway/permissions.json`): there is no containing
-    ///   project, so the base is the AGENT CWD the load was initiated with --
-    ///   the one directory a global rule can meaningfully be relative to at
-    ///   load time. (Resolving against the config directory would make
-    ///   `"src"` mean `~/.conway/src`, which protects nothing.)
-    ///
-    /// An ABSOLUTE prefix is unaffected by this choice in both cases.
-    fn permission_rule_base(
-        path: &std::path::Path,
-        global_path: Option<&std::path::Path>,
-        cwd: &std::path::Path,
-    ) -> std::path::PathBuf {
-        if global_path == Some(path) {
-            return cwd.to_path_buf();
-        }
-        // `<project>/.conway/permissions.json` -> `<project>`. The fallback
-        // (a permissions file somehow not two components deep) is the agent
-        // cwd, the same uniform choice the global file makes.
-        path.parent()
-            .and_then(std::path::Path::parent)
-            .unwrap_or(cwd)
-            .to_path_buf()
     }
 
     /// Loads permissions files project-first then global
@@ -1275,137 +709,7 @@ impl Conway {
         scope: conway_core::agent::PermissionScope,
         granting_agent: conway_core::ids::AgentId,
     ) -> PermissionLoadReport {
-        let paths = crate::config::discovery::permission_file_paths(cwd, env);
-        let global_path = crate::config::discovery::xdg_config_path(env)
-            .and_then(|settings| settings.parent().map(|dir| dir.join("permissions.json")));
-        let trust_store = crate::config::trust::TrustStore::load(env);
-        let mut notices = Vec::new();
-        let mut registration_errors = Vec::new();
-        let mut parse_errors = Vec::new();
-
-        for path in &paths {
-            let Ok(contents) = std::fs::read_to_string(path) else {
-                continue;
-            };
-
-            // a misspelled top-level
-            // key (`"denys"` for `"deny"`) must not silently install zero
-            // rules with nothing telling the operator -- checked BEFORE any
-            // of `parse_deny_rules`/`parse_prompt_rules`/`parse_rules` run,
-            // so a typo'd file contributes NOTHING (not even its
-            // correctly-spelled rules) rather than partially installing
-            // around the typo, matching `settings.json`'s own "a bad key
-            // rejects the whole file" precedent.
-            if let Some(err) =
-                conway_core::permission_pattern::permission_file_unknown_field_error(&contents)
-            {
-                parse_errors.push(format!(
-                    "{} was not loaded: {err} -- fix or remove the unrecognized key; \
-                     no rules (allow, deny, or prompt) from this file are in effect \
-                     until it is fixed",
-                    path.display()
-                ));
-                continue;
-            }
-
-            let is_global = global_path.as_deref() == Some(path.as_path());
-            // B2: the base a relative `paths_under` prefix in THIS file
-            // resolves against -- the project root for a project file, the
-            // agent cwd for the global file (see `Self::permission_rule_base`).
-            let base = Self::permission_rule_base(path, global_path.as_deref(), cwd);
-
-            // Deny applies unconditionally, from every scope, regardless
-            // of trust -- D4 §3. F12: this now also covers structured
-            // `then: deny` rules from the `rules` array (`parse_deny_rules`
-            // returns the union of flat `deny` and structured `then: deny`).
-            for rule in conway_core::permission_pattern::parse_deny_rules(&contents) {
-                match self.validate_rule_registration(&rule) {
-                    Some(RegistrationCheck::Reject(err)) => {
-                        registration_errors.push(err);
-                        continue;
-                    }
-                    Some(RegistrationCheck::Notice(msg)) => {
-                        notices.push(msg);
-                    }
-                    None => {}
-                }
-                // B3: a `paths_under` prefix that fails to canonicalize is
-                // dropped by the broker; surface it instead of silently
-                // swallowing the `bool` (deny rules apply unconditionally,
-                // so the operator believed this was protecting them).
-                let installed = self.install_deny_rule(&rule, path.clone(), &base);
-                if let Some(err) = Self::uncanonicalizable_paths_under_error(&rule, installed) {
-                    registration_errors.push(err);
-                }
-            }
-
-            // F12: prompt rules apply unconditionally too (narrowing, D4 §3
-            // extended to `prompt` -- extension-architecture.md §5.5 stage
-            // 1). The flat form has no prompt syntax, so these come
-            // entirely from the structured `rules` array.
-            for rule in conway_core::permission_pattern::parse_prompt_rules(&contents) {
-                match self.validate_rule_registration(&rule) {
-                    Some(RegistrationCheck::Reject(err)) => {
-                        registration_errors.push(err);
-                        continue;
-                    }
-                    Some(RegistrationCheck::Notice(msg)) => {
-                        notices.push(msg);
-                    }
-                    None => {}
-                }
-                // B3: same surfacing as the deny arm -- a dropped `prompt`
-                // narrowing rule is a trap the operator will not notice.
-                let installed = self.install_prompt_rule(&rule, path.clone(), &base);
-                if let Some(err) = Self::uncanonicalizable_paths_under_error(&rule, installed) {
-                    registration_errors.push(err);
-                }
-            }
-
-            let trusted = is_global || trust_store.is_trusted(path, &contents);
-            let allow_rules = conway_core::permission_pattern::parse_rules(&contents);
-            if !trusted {
-                if !allow_rules.is_empty() {
-                    notices.push(format!(
-                        "project permissions file {} has {} allow rule(s) that \
-                         require an explicit trust decision before they take \
-                         effect -- run `/trust permissions` to review and \
-                         trust it (its `deny` rules, if any, already apply)",
-                        path.display(),
-                        allow_rules.len()
-                    ));
-                }
-                continue;
-            }
-            for rule in allow_rules {
-                match self.validate_rule_registration(&rule) {
-                    Some(RegistrationCheck::Reject(err)) => {
-                        registration_errors.push(err);
-                        continue;
-                    }
-                    Some(RegistrationCheck::Notice(msg)) => {
-                        notices.push(msg);
-                    }
-                    None => {}
-                }
-                // B3: same surfacing as the deny/prompt arms -- a dropped
-                // `paths_under` allow rule is fail-CLOSED (the call falls
-                // through to the gate), but the operator still deserves to
-                // know their rule did nothing.
-                let installed =
-                    self.install_allow_rule(&rule, scope, granting_agent, path.clone(), &base);
-                if let Some(err) = Self::uncanonicalizable_paths_under_error(&rule, installed) {
-                    registration_errors.push(err);
-                }
-            }
-        }
-
-        PermissionLoadReport {
-            paths,
-            notices,
-            registration_errors,
-            parse_errors,
-        }
+        crate::permissions::load_permission_files(&self.rt, cwd, env, scope, granting_agent)
     }
 
     /// Records an explicit trust decision for `path`'s CURRENT bytes on
@@ -1445,82 +749,14 @@ impl Conway {
         scope: conway_core::agent::PermissionScope,
         granting_agent: conway_core::ids::AgentId,
     ) -> std::io::Result<TrustPermissionReport> {
-        let contents = std::fs::read_to_string(path)?;
-        // refuse a file naming an
-        // unrecognized top-level key BEFORE recording a trust decision for
-        // it -- a typo'd file's rules were never going to install anyway
-        // (see `permission_file_unknown_field_error`'s own doc), so trusting
-        // it first would record a decision for content that installs
-        // nothing, silently, on every subsequent load.
-        if let Some(err) =
-            conway_core::permission_pattern::permission_file_unknown_field_error(&contents)
-        {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!(
-                    "{} was not trusted: {err} -- fix or remove the unrecognized key first",
-                    path.display()
-                ),
-            ));
-        }
-        crate::config::trust::TrustStore::trust(env, path)?;
-        let rules = conway_core::permission_pattern::parse_rules(&contents);
-        // B2: the same relative-`paths_under` base `load_permission_files`
-        // computes, so a rule installs with the SAME boundary whether it
-        // took effect at startup (already-trusted file) or here (`/trust
-        // permissions` mid-session). For the project file -- the only file
-        // the TUI's `/trust permissions` ever targets -- the base is the
-        // project root derived from the path itself, identical either way.
-        // For the global file (no containing project) the base is this
-        // `Conway`'s configured agent cwd, the same choice
-        // `load_permission_files` makes with its explicit `cwd`.
-        let global_path = crate::config::discovery::xdg_config_path(env)
-            .and_then(|settings| settings.parent().map(|dir| dir.join("permissions.json")));
-        let base = Self::permission_rule_base(path, global_path.as_deref(), &self.config.cwd);
-        let mut installed = 0;
-        let mut registration_errors = Vec::new();
-        let mut notices = Vec::new();
-        for rule in rules {
-            match self.validate_rule_registration(&rule) {
-                Some(RegistrationCheck::Reject(err)) => {
-                    // A registration error means the rule was never going to
-                    // match; do not count it as installed. `trust_permission_file`
-                    // is operator-triggered (`/trust permissions`), so the
-                    // operator will have already seen THIS class of registration
-                    // error (e.g. `PathsUnderOnUnconfinedTool`) from the prior
-                    // `load_permission_files` -- re-trusting does not silently
-                    // swallow it, it just does not re-report the structurally-
-                    // invalid cases here. B3's `PathsUnderPrefixUncanonicalizable`
-                    // is a DIFFERENT class: it is not caught by
-                    // `validate_rule_registration` (the prefix's existence on
-                    // disk is not a structural property), so it surfaces below
-                    // via the install `bool`, and IS re-reported here -- a
-                    // bad-prefix rule trusted mid-session must not silently
-                    // inflate the count.
-                    registration_errors.push(err);
-                    continue;
-                }
-                Some(RegistrationCheck::Notice(msg)) => {
-                    notices.push(msg);
-                }
-                None => {}
-            }
-            // B3: honor the install `bool` -- a rule the broker dropped
-            // (today: a `paths_under` prefix that fails to canonicalize)
-            // must NOT count as installed, and the operator must be told.
-            let was_installed =
-                self.install_allow_rule(&rule, scope, granting_agent, path.to_path_buf(), &base);
-            if let Some(err) = Self::uncanonicalizable_paths_under_error(&rule, was_installed) {
-                registration_errors.push(err);
-                continue;
-            }
-            installed += 1;
-        }
-        Ok(TrustPermissionReport {
-            installed,
-            registration_errors,
-            notices,
-        })
+        crate::permissions::trust_permission_file(
+            &self.rt,
+            env,
+            path,
+            scope,
+            granting_agent,
+            &self.config.cwd,
+        )
     }
 
     pub fn config(&self) -> &ConwayConfig {
@@ -1914,40 +1150,22 @@ impl Conway {
     /// of: the durable session-header rewrite, the live-tree flag flip, and
     /// the `Event::AgentPromoted` emission that tells UIs to update. After
     /// B2, promotion is a flag flip ONLY — no re-parenting, no record
-    /// rewriting beyond the header's `ephemeral` bit (the child's
-    /// entire transcript, origin, and provenance are preserved verbatim).
+    /// rewriting beyond the header's `ephemeral` bit (the child's entire
+    /// transcript, origin, and provenance are preserved verbatim).
     ///
-    /// **Failure ordering (binding): header first, then tree, then
-    /// event.** The store is the source of truth, so the durable flip
-    /// (`SessionStore::set_ephemeral`) runs first; if it fails — unknown
-    /// session, non-ephemeral session, I/O error — this method returns
-    /// `Err` having touched NOTHING else: no tree flip, no event, so the
-    /// three views can never split-brain. The tree flip and the event are
-    /// then performed together by `Runtime::promote_agent` (flip strictly
-    /// before emission), and both are infallible once the guard below has
-    /// passed: `AgentTree` never detaches nodes, so an agent present in
-    /// the snapshot stays flippable for this runtime's lifetime. The
-    /// reverse ordering (tree/event first) was rejected precisely because
-    /// a subsequent durable failure would then leave the live views
-    /// claiming "persistent" while the header still says ephemeral —
-    /// including making the session wrongly purge-eligible via
-    /// `SessionStore::remove`.
+    /// **Stage 2c (board item `01KZVZ0ASR4CRFG822YWEAW30K`):** the full
+    /// mechanism — the failure ordering (header first, then tree, then
+    /// event, so the three views can never split-brain), the live-tree
+    /// resolution, and the exact error taxonomy — now lives on
+    /// [`conway_runtime::runtime::Runtime::promote`], beside `AgentTree`;
+    /// see that method's own doc for the complete reasoning. This method
+    /// is a thin, unchanged-behavior delegation that flattens
+    /// `RuntimeError::Store` back to this facade's own `ConwayError::
+    /// Store` at the boundary (see `Self::resume`'s doc for why that
+    /// unwrap is not a shortcut but a preserved contract).
     ///
-    /// **Facade-layer live check (guard-matrix boundary):** `agent` must
-    /// be present in `Runtime::tree()` — promotion is a LIVE operation
-    /// (the modal acts on a child it is looking at), and this is also what
-    /// resolves `agent` to its owning session without a store scan. The
-    /// check lives here, not in the store, for the same reason B1's
-    /// `remove` guard matrix documents its own (inverse) live check at the
-    /// facade layer: the store has no view of the runtime's tree. The
-    /// store-level `set_ephemeral` primitive itself imposes no liveness
-    /// requirement and would also work on a cold session; this facade
-    /// method deliberately does not expose that. The snapshot read and the
-    /// later flip cannot race stale: nodes are never detached from
-    /// `AgentTree`, so presence cannot go stale between the two.
-    ///
-    /// Promote is a lifecycle operation on an existing agent, NOT a
-    /// new subagent primitive — no fork, no spawn, no new session.
+    /// Promote is a lifecycle operation on an existing agent, NOT a new
+    /// subagent primitive — no fork, no spawn, no new session.
     ///
     /// Errors: `ConwayError::Runtime(RuntimeError::AgentNotFound)` when
     /// `agent` is not in the live tree; `ConwayError::Store(
@@ -1959,25 +1177,19 @@ impl Conway {
     /// — the flip touches no ids), so the caller can immediately e.g.
     /// focus or resume the now-persistent session.
     pub async fn promote(&self, agent: AgentId) -> Result<SessionId> {
-        // Facade-layer live check + agent -> session resolution in one
-        // read (see the doc above for why the check lives at this layer).
-        let snapshot = self.rt.tree();
-        let node = snapshot
-            .nodes
-            .iter()
-            .find(|n| n.agent_id == agent)
-            .ok_or(ConwayError::Runtime(RuntimeError::AgentNotFound { agent }))?;
-        let session = node.session;
-
-        // Step 1 (durable, source of truth): the guarded header rewrite.
-        // On ANY failure here nothing else has happened — see the
-        // failure-ordering paragraph in this method's doc.
-        self.store.set_ephemeral(&session, false).await?;
-
-        // Steps 2+3 (live): tree flip, then the event — strictly in that
-        // order inside `Runtime::promote_agent` (see its doc).
-        self.rt.promote_agent(agent)?;
-        Ok(session)
+        // Stage 2c (board item `01KZVZ0ASR4CRFG822YWEAW30K`): the full
+        // sequence (durable header rewrite, then the live tree flip and
+        // event) now lives on `Runtime::promote`, beside `AgentTree` -- see
+        // that method's own doc. The unwrap below mirrors `Self::resume`'s
+        // own "error-shape preservation" precedent: `RuntimeError::Store`
+        // flattens back to this facade's own `ConwayError::Store` rather
+        // than nesting one layer deeper, matching what this method
+        // returned before the relocation and what
+        // `crates/conway/tests/promote.rs` already asserts.
+        self.rt.promote(agent).await.map_err(|err| match err {
+            RuntimeError::Store(inner) => ConwayError::Store(inner),
+            other => ConwayError::Runtime(other),
+        })
     }
 
     /// Merges an ephemeral `/ask` child's turns into its parent's log,
@@ -1987,208 +1199,22 @@ impl Conway {
     /// answer become part of the parent's own history and the child ceases
     /// to exist).
     ///
-    /// **The merge set (binding, from the B2 review):** post-B2, BOTH
-    /// facade `/ask` children (`SessionHandle::ask`) and `conway_ask` tool
-    /// children carry their question as a `LogRecord::ForkDirective { by:
-    /// parent }` head record, NOT a `UserTurn`. The merge set is exactly:
-    /// - the child's `ForkDirective` head record, materialized as a
-    ///   `UserTurn` (text = the directive's text, `ts` preserved) re-stamped
-    ///   `Provenance::MergedAsk { from: child_session }` — so the merge
-    ///   origin stays explicit and inspectable even after the
-    ///   child's own session file is purged;
-    /// - the child's `Assistant` records, copied VERBATIM — real `model`,
-    ///   `route_reason`, `usage`, `stop`, `content`, `ts` all pass through
-    ///   untouched (these are untrusted model-produced fields; this
-    ///   method never fabricates synthetic values for them);
-    /// - any genuine `UserTurn` records in the child (defensive: older or
-    ///   other ask shapes), copied verbatim except `prov` re-stamped to
-    ///   `MergedAsk`.
+    /// **Stage 2c (board item `01KZVZ0ASR4CRFG822YWEAW30K`):** the full
+    /// mechanism — the merge set, the sequencing, and the guard matrix —
+    /// now lives on [`conway_runtime::runtime::Runtime::pull_in`], beside
+    /// `AgentTree`; see that method's own doc for the complete reasoning.
+    /// This method is a thin, unchanged-behavior delegation with the same
+    /// `RuntimeError::Store` -> `ConwayError::Store` flattening
+    /// [`Self::promote`]'s own doc explains.
     ///
-    /// `ContextReportRecord`/`AgentResultRecord`/tool records are NOT
-    /// merged as top-level records — tool calls persist inside the
-    /// `Assistant` records' content blocks (the `conway_ask` item-f
-    /// precedent), and the child's context reports/results describe the
-    /// child's own (now-purged) session, not the parent's.
-    ///
-    /// **Sequencing:** merged records are appended to the parent's log via
-    /// `SessionStore::append`, which re-sequences them to the parent's head
-    /// (`JsonlSessionStore`'s `assign_seq`; `FakeStore` has parity) — this
-    /// method deliberately does NOT hand-assign seqs. The placeholder seq on
-    /// the materialized `UserTurn` never reaches disk.
-    ///
-    /// **Guard matrix and failure ordering (binding):** every refusal runs
-    /// BEFORE the parent's log is mutated, so a refused pull leaves no
-    /// partial merge behind:
-    /// 1. `child` must be present in `Runtime::tree()` (else
-    ///    `RuntimeError::AgentNotFound`) — the same facade-layer live check
-    ///    [`Conway::promote`] documents, and also how `child` resolves to
-    ///    its owning session and parent without a store scan. Tree nodes
-    ///    are never detached, so the snapshot taken here cannot go stale
-    ///    before the store calls below.
-    /// 2. The child's parent (from the tree) must be LIVE — present in the
-    ///    tree with a non-terminal `AgentStatus` — else
-    ///    `RuntimeError::AgentNotLive`. A finished parent will never run
-    ///    another turn, so merging into its log would write records nothing
-    ///    ever reads. No wake is needed for a live parent: `agent_loop`
-    ///    re-reads its full context from the store every turn
-    ///    (agent_loop.rs), so the merged records are simply part of the
-    ///    parent's next turn.
-    /// 3. B1's `remove` guards, mirrored as pre-checks so they fail before
-    ///    any parent mutation: the child's session must be ephemeral (else
-    ///    `StoreError::NotRemovable`) and must have NO children of its own,
-    ///    ephemeral ones included (else `NotRemovable`).
-    ///
-    /// Only then are the merged records appended and `SessionStore::remove`
-    /// called for the child — whose own guard matrix re-runs authoritatively
-    /// under the store's lifecycle lock, so a concurrent fork of the child
-    /// between the pre-check and the purge is still refused (that race
-    /// leaves the appended records in the parent AND the child unpurged —
-    /// disclosed as the one non-atomic seam in this operation; a crash in
-    /// the same window has the same shape. Recovery is a store-level
-    /// `SessionStore::remove` of the child, NOT a `pull_in` retry: the
-    /// child is still ephemeral and childless, so `remove`'s guards pass —
-    /// whereas re-calling `pull_in` would append the whole merge set a
-    /// SECOND time before purging, duplicating the question and answer in
-    /// the parent's log).
-    ///
-    /// The child's tree node is NOT detached (`AgentTree` never detaches —
-    /// the same invariant [`Conway::promote`] relies on), so the tree keeps
-    /// a provenance record that the ask happened even though the
-    /// session behind it is gone.
-    ///
-    /// Pull-in is a lifecycle operation on two existing agents' logs,
-    /// NOT a new subagent primitive — no fork, no spawn, no new session is
+    /// Pull-in is a lifecycle operation on two existing agents' logs, NOT
+    /// a new subagent primitive — no fork, no spawn, no new session is
     /// created here.
     pub async fn pull_in(&self, child: AgentId) -> Result<()> {
-        // 1+2. Live-tree resolution and the parent liveness guard, from one
-        // snapshot (nodes never detach, so this cannot race stale).
-        let snapshot = self.rt.tree();
-        let child_node =
-            snapshot
-                .nodes
-                .iter()
-                .find(|n| n.agent_id == child)
-                .ok_or(ConwayError::Runtime(RuntimeError::AgentNotFound {
-                    agent: child,
-                }))?;
-        let child_session = child_node.session;
-        let parent_agent =
-            child_node
-                .parent
-                .ok_or(ConwayError::Store(StoreError::NotRemovable {
-                    session: child_session,
-                    reason: "pull_in: the child has no parent in the live tree to merge into"
-                        .into(),
-                }))?;
-        let parent_node = snapshot
-            .nodes
-            .iter()
-            .find(|n| n.agent_id == parent_agent)
-            .ok_or(ConwayError::Runtime(RuntimeError::AgentNotFound {
-                agent: parent_agent,
-            }))?;
-        if matches!(
-            parent_node.status,
-            AgentStatus::Finished | AgentStatus::Failed | AgentStatus::Cancelled
-        ) {
-            return Err(ConwayError::Runtime(RuntimeError::AgentNotLive {
-                agent: parent_agent,
-            }));
-        }
-        let parent_session = parent_node.session;
-
-        // The child must be terminal: merging a still-running child would
-        // miss its trailing records and then purge the session under a
-        // live agent loop (whose next append would fail `NotFound`).
-        // Terminal status is absorbing — a Finished/Failed/Cancelled child
-        // can never append again — so this snapshot check cannot go stale
-        // (cycle-5 B4 review, significant finding 1).
-        if !matches!(
-            child_node.status,
-            AgentStatus::Finished | AgentStatus::Failed | AgentStatus::Cancelled
-        ) {
-            return Err(ConwayError::Store(StoreError::NotRemovable {
-                session: child_session,
-                reason: "child is still running (pull_in merges only completed asks)".into(),
-            }));
-        }
-
-        // 3. B1's remove guards, mirrored as pre-checks so a refused pull
-        // never leaves a partial merge in the parent's log (see the doc
-        // above). `remove` re-checks both authoritatively under its
-        // lifecycle lock before anything is deleted.
-        let child_meta = self.store.meta(&child_session).await?;
-        if !child_meta.ephemeral {
-            return Err(ConwayError::Store(StoreError::NotRemovable {
-                session: child_session,
-                reason: "session is not ephemeral (pull_in merges only ephemeral /ask children)"
-                    .into(),
-            }));
-        }
-        let grandchildren = self
-            .store
-            .list(SessionFilter {
-                parent: Some(child_session),
-                include_ephemeral: true,
-                ..SessionFilter::default()
-            })
-            .await?;
-        if !grandchildren.is_empty() {
-            return Err(ConwayError::Store(StoreError::NotRemovable {
-                session: child_session,
-                reason: "session has children (pull_in would orphan their provenance)".into(),
-            }));
-        }
-
-        // The merge set, per the AMENDMENT in this method's doc.
-        let head = self.store.head(&child_session).await?;
-        let records = self
-            .store
-            .read(&child_session, SeqRange::new(LogSeq::ZERO, Some(head)))
-            .await?;
-        let mut merged = Vec::new();
-        for record in records {
-            match record {
-                LogRecord::ForkDirective { ts, text, .. } => {
-                    merged.push(LogRecord::UserTurn {
-                        // Placeholder only — the store re-sequences on
-                        // append; this value never reaches disk.
-                        seq: LogSeq::ZERO,
-                        ts,
-                        text,
-                        prov: Provenance::MergedAsk {
-                            from: child_session,
-                        },
-                    });
-                }
-                // VERBATIM: real model/route_reason/usage/stop/ts —
-                // passed through, never fabricated.
-                assistant @ LogRecord::Assistant { .. } => merged.push(assistant),
-                LogRecord::UserTurn { seq, ts, text, .. } => merged.push(LogRecord::UserTurn {
-                    seq,
-                    ts,
-                    text,
-                    prov: Provenance::MergedAsk {
-                        from: child_session,
-                    },
-                }),
-                // Everything else (tool records, context reports, agent
-                // results, system notes, the header) is not part of the
-                // merge set — see the doc above.
-                _ => {}
-            }
-        }
-
-        // Append to the parent's log; the store re-sequences each record to
-        // the parent's head (see the doc above).
-        for record in merged {
-            self.store.append(&parent_session, record).await?;
-        }
-
-        // Purge the child. B1's guards re-run authoritatively here; the
-        // pre-checks above only exist for failure ordering.
-        self.store.remove(&child_session).await?;
-        Ok(())
+        self.rt.pull_in(child).await.map_err(|err| match err {
+            RuntimeError::Store(inner) => ConwayError::Store(inner),
+            other => ConwayError::Runtime(other),
+        })
     }
 
     /// Purges an ephemeral `/ask` child outright, WITHOUT merging its turns
@@ -2199,61 +1225,21 @@ impl Conway {
     /// mandatory provenance retention (discard only ever happens
     /// via this explicit choice, never silently).
     ///
-    /// **Guard matrix (mirrors the facade-layer checks [`Conway::promote`]
-    /// and [`Conway::pull_in`] document, with the store's B1 guards
-    /// authoritative at the end):**
-    /// 1. `agent` must be present in `Runtime::tree()` (else
-    ///    `RuntimeError::AgentNotFound`) — purge is a LIVE operation here
-    ///    (the modal discards a child it is looking at), the same
-    ///    facade-layer live check the store's own `remove` doc assigns to
-    ///    this layer, and also how `agent` resolves to its owning session
-    ///    without a store scan. Tree nodes are never detached, so the
-    ///    snapshot cannot go stale before the store call below.
-    /// 2. The child must be TERMINAL (`Finished`/`Failed`/`Cancelled`),
-    ///    else `StoreError::NotRemovable` — purging under a still-running
-    ///    agent loop would orphan its next append (the same still-running
-    ///    guard `pull_in` carries; terminal status is absorbing, so this
-    ///    snapshot check cannot race stale either). The modal only offers
-    ///    the discard fate after the child's turn has ended, but this is a
-    ///    public facade op and guards itself.
-    /// 3. B1's `SessionStore::remove` guards then run authoritatively under
-    ///    the store's lifecycle lock: ephemeral-only (`NotRemovable`
-    ///    otherwise — a promoted child can no longer be discarded; the two
-    ///    fates are exclusive) and no children of its own.
-    ///
-    /// The child's tree node is NOT detached (`AgentTree` never detaches),
-    /// so the tree keeps a provenance record that the ask happened even
-    /// though the session behind it is gone — same invariant
-    /// [`Conway::pull_in`] documents.
+    /// **Stage 2c (board item `01KZVZ0ASR4CRFG822YWEAW30K`):** the full
+    /// guard matrix now lives on
+    /// [`conway_runtime::runtime::Runtime::purge`], beside `AgentTree`;
+    /// see that method's own doc for the complete reasoning. This method
+    /// is a thin, unchanged-behavior delegation with the same
+    /// `RuntimeError::Store` -> `ConwayError::Store` flattening
+    /// [`Self::promote`]'s own doc explains.
     ///
     /// Purge is a lifecycle operation on an existing agent's session,
     /// NOT a new subagent primitive.
     pub async fn purge(&self, agent: AgentId) -> Result<()> {
-        // 1. Live-tree resolution (see the doc above).
-        let snapshot = self.rt.tree();
-        let node = snapshot
-            .nodes
-            .iter()
-            .find(|n| n.agent_id == agent)
-            .ok_or(ConwayError::Runtime(RuntimeError::AgentNotFound { agent }))?;
-        let session = node.session;
-
-        // 2. Terminal-only (see the doc above; same reasoning as
-        // `pull_in`'s still-running guard).
-        if !matches!(
-            node.status,
-            AgentStatus::Finished | AgentStatus::Failed | AgentStatus::Cancelled
-        ) {
-            return Err(ConwayError::Store(StoreError::NotRemovable {
-                session,
-                reason: "agent is still running (purge discards only completed asks)".into(),
-            }));
-        }
-
-        // 3. B1's guards (ephemeral-only, no children) run authoritatively
-        // under the store's lifecycle lock.
-        self.store.remove(&session).await?;
-        Ok(())
+        self.rt.purge(agent).await.map_err(|err| match err {
+            RuntimeError::Store(inner) => ConwayError::Store(inner),
+            other => ConwayError::Runtime(other),
+        })
     }
 
     /// Crash-residue sweep (B5): purges leftover ephemeral sessions created
@@ -2398,14 +1384,6 @@ impl Conway {
         default_recipe: SubagentMode,
         text: &str,
     ) -> Result<AgentIntent> {
-        crate::intent::classify(
-            &self.rt,
-            &self.store,
-            &self.config,
-            parent,
-            default_recipe,
-            text,
-        )
-        .await
+        crate::intent::classify(&self.rt, &self.config, parent, default_recipe, text).await
     }
 }

@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`Conway` sheds three responsibilities it never should have carried
+  inline.** Permission-file I/O — reading, validating, installing and
+  rewriting `permissions.json` — moves to a new `crate::permissions` module
+  inside the facade, where its dependence on facade-only config discovery
+  keeps it. `pull_in`/`promote`/`purge` move to
+  `conway_runtime::runtime::Runtime`, beside `AgentTree`: they never needed
+  anything but the tree snapshot and the session store, both of which
+  `Runtime` already owned. Intent classification's mechanical
+  spawn/drain/purge sequence becomes `Runtime::run_ephemeral_turn`, a
+  mode-agnostic sibling of the existing `SubagentHost::ask` — which is
+  Fork-only by trait contract and so cannot serve a classifier that
+  deliberately spawns with a clean slate. **No public signature changed:**
+  every `Conway` method these moves touch takes the same arguments, returns
+  the same type, and every existing test in
+  `crates/conway/tests/{promote,pull_in,purge,intent,permission_*_seam}.rs`
+  passes unedited. `conway.rs` drops from 2,411 lines to 1,389 (48 methods
+  to 38) because the code moved to where it belongs, not because anything
+  was removed.
+
 ### Added
 
 - **Anthropic gets its first built-in profile, and one procedure now covers
