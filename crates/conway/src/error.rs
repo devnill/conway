@@ -48,6 +48,13 @@ pub enum ConwayError {
     #[error("{message}")]
     AgentDef { path: PathBuf, message: String },
 
+    /// A skill definition file (`.conway/skills/*/SKILL.md`) failed to load
+    /// or parse. Mirrors [`ConwayError::AgentDef`]'s shape exactly —
+    /// `crate::skills::load_skill_defs` is the same discovery/parse shape as
+    /// `crate::agents::load_agent_defs`, just for `conway_core::config::SkillDef`.
+    #[error("{message}")]
+    SkillDef { path: PathBuf, message: String },
+
     /// `ConwayBuilder::build` could not assemble a `Conway`.
     #[error("{message}")]
     Build { message: String },

@@ -16,8 +16,60 @@
 //! moving either would change what is and is not yet visible when a hook
 //! observes it. `resume_root` deliberately does not fire `session_starting`
 //! -- see its own call site below for why.
+//!
+//! **Skill resolution (board item `01M03GKZ3MGZK3ETP6R27E2M9Y`):** both
+//! `start_root` and `resume_root` resolve the resolved `AgentDef.skills`
+//! name list against `Runtime.skills` (`RuntimeDeps.skills`, sourced from
+//! `crate::skills::load_skill_defs` on the facade side) via
+//! [`resolve_skills`] below, replacing what used to be an unconditional
+//! `skills: Vec::new()` at both call sites. A name the registry does not
+//! contain is `RuntimeError::InvalidSpec`, via the same `subagent::
+//! invalid_spec` helper this file's own root/cwd containment checks already
+//! use -- never a silent drop.
 
 use super::*;
+
+/// Resolves `agent_def.skills` (a list of skill *names*) against `skills`
+/// (the runtime's discovered `SkillDef` registry) into the ordered
+/// `SkillFragment` list `AgentSpec.skills` carries into context assembly
+/// (`ContextBuilder::build`'s `[1] SkillFragments*` step, which turns each
+/// into a `Provenance::Skill { name }` segment). `agent_def: None` (no
+/// resolved `AgentDef`, e.g. a root started without one) yields no skills,
+/// exactly as before this item -- there is no other selection mechanism.
+///
+/// An unknown name is a spawn-time error, not a silent drop: the operator
+/// wrote `skills: [name]` in that def's frontmatter expecting it to resolve
+/// to real body text, mirroring `crate::skills`' (`crates/conway/src/
+/// skills.rs`, facade-side) own loud-failure discipline for a malformed
+/// `SKILL.md`.
+fn resolve_skills(
+    agent_def: Option<&AgentDef>,
+    skills: &HashMap<String, conway_core::config::SkillDef>,
+) -> Result<Vec<crate::context::SkillFragment>, RuntimeError> {
+    let Some(def) = agent_def else {
+        return Ok(Vec::new());
+    };
+    def.skills
+        .iter()
+        .map(|name| {
+            skills
+                .get(name)
+                .map(|skill| crate::context::SkillFragment {
+                    name: skill.name.clone(),
+                    text: skill.body.clone(),
+                })
+                .ok_or_else(|| {
+                    crate::subagent::invalid_spec(ConwayError::Config {
+                        detail: format!(
+                            "agent def `{}` names unknown skill `{name}` \
+                             (no `.conway/skills/{name}/SKILL.md` was discovered)",
+                            def.name
+                        ),
+                    })
+                })
+        })
+        .collect()
+}
 
 /// The complete specification for starting a new root agent (i.e. one with
 /// no parent — the entry point of a fresh agent tree).
@@ -214,9 +266,10 @@ impl Runtime {
                 text: d.system_prompt.clone(),
             }),
         };
-        // Skills are deliberately empty here -- see the module doc's
-        // reconciliation note (no SkillDef registry is injected).
-        let skills = Vec::new();
+        // Resolves `agent_def.skills` (names) against the discovered
+        // registry into `SkillFragment`s -- see the module doc's "Skill
+        // resolution" note and `resolve_skills`'s own doc.
+        let skills = resolve_skills(agent_def, &self.skills)?;
         let tools = spec
             .tools
             .clone()
@@ -668,9 +721,10 @@ impl Runtime {
             agent_def: d.name.clone(),
             text: d.system_prompt.clone(),
         });
-        // Skills are deliberately empty here -- see the module doc's
-        // reconciliation note (no SkillDef registry is injected).
-        let skills = Vec::new();
+        // Resolves `agent_def.skills` (names) against the discovered
+        // registry into `SkillFragment`s -- see the module doc's "Skill
+        // resolution" note and `resolve_skills`'s own doc.
+        let skills = resolve_skills(agent_def, &self.skills)?;
         let tools = spec
             .tools
             .clone()

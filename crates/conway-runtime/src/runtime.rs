@@ -50,15 +50,20 @@
 //!   method's signature or behavior changes, and `start_root` is left
 //!   untouched rather than refactored onto the new `launch_agent` helper,
 //!   to keep this file's diff as small as the underlying necessity allows.
-//! - **Skill body resolution:** `conway_core::config::AgentDef::skills` is a
-//!   `Vec<String>` of *names*; there is no `SkillDef` registry among this
-//!   item's eight injected fields (only `agent_defs: HashMap<String,
-//!   AgentDef>`), so this item cannot resolve a name to its fragment body.
-//!   `start_root` therefore builds every `AgentSpec` with `skills: vec![]`
-//!   regardless of what an `AgentDef` names — a known gap, not a decision;
-//!   it should be raised against the facade (`MODULE:conway`) as a request
-//!   for a `skills: Arc<HashMap<String, SkillDef>>` `RuntimeDeps` field once
-//!   skill discovery exists there.
+//! - **Skill body resolution (resolved, board item
+//!   `01M03GKZ3MGZK3ETP6R27E2M9Y`):** `conway_core::config::AgentDef::skills`
+//!   is a `Vec<String>` of *names*; resolving a name to its `SkillDef` body
+//!   requires a registry. `RuntimeDeps` now carries one (`skills:
+//!   HashMap<String, SkillDef>`, sourced from `crate::skills::
+//!   load_skill_defs` — `crates/conway/src/skills.rs` — discovering
+//!   `.conway/skills/*/SKILL.md`, the same shape `agents.rs` already
+//!   established for `AgentDef`). `Runtime` stores it as `Arc<HashMap<String,
+//!   SkillDef>>`; `start_root` and `resume_root` resolve each name an
+//!   `AgentDef` lists against it into a `SkillFragment` (see `root.rs`'s
+//!   `resolve_skills`). An `AgentDef` naming a skill this registry does not
+//!   contain is `RuntimeError::InvalidSpec` at spawn time — never a silent
+//!   drop, matching `agents.rs`'s own loud-failure discipline for a
+//!   malformed def.
 //! - **Live `context_report` via a loop-pushed slot, not a bus fold:** an
 //!   earlier revision of this item reconstructed `ContextReport` by
 //!   subscribing to the bus and folding `TurnStarted`/`ContextSegmentAdded`
@@ -115,7 +120,7 @@ use conway_core::agent::{
     AgentDefRef, AgentResult, AgentStatus, AgentTreeSnapshot, Budget, SubagentSpec, ToolSelector,
 };
 use conway_core::capabilities::{CacheMode, HeadroomPolicy};
-use conway_core::config::{AgentDef, DEFAULT_MAX_PARALLEL_TOOLS};
+use conway_core::config::{AgentDef, SkillDef, DEFAULT_MAX_PARALLEL_TOOLS};
 use conway_core::containment::{CanonicalRoot, Containment};
 use conway_core::error::{ConwayError, RuntimeError, StoreError};
 use conway_core::event::Event;
@@ -159,6 +164,17 @@ pub struct RuntimeDeps {
     pub plugins: Vec<Arc<dyn Plugin>>,
     pub gate: Arc<dyn PermissionGate>,
     pub agent_defs: HashMap<String, AgentDef>,
+    /// Discovered `.conway/skills/*/SKILL.md` definitions, keyed by name --
+    /// `crate::skills::load_skill_defs`'s facade counterpart
+    /// (`crates/conway/src/skills.rs`) is the sole producer in a real build.
+    /// `start_root`/`resume_root` (`root.rs`) resolve each name an
+    /// `AgentDef.skills` entry names against this map into a
+    /// `SkillFragment`; a name absent here is `RuntimeError::InvalidSpec`,
+    /// never a silent drop. `HashMap::new()` (empty) preserves the prior
+    /// `skills: vec![]`-everywhere behavior exactly for any `AgentDef` that
+    /// names no skills, and is what every pre-existing test call site now
+    /// passes.
+    pub skills: HashMap<String, SkillDef>,
     pub event_bus: Arc<EventBus>,
     pub headroom: Arc<HeadroomPolicy>,
 }
@@ -202,6 +218,9 @@ pub struct Runtime {
     store: Arc<dyn SessionStore>,
     bus: Arc<EventBus>,
     agent_defs: HashMap<String, AgentDef>,
+    /// `RuntimeDeps.skills`, wrapped once at construction -- `root.rs`'s
+    /// `resolve_skills` reads it on every `start_root`/`resume_root` call.
+    skills: Arc<HashMap<String, SkillDef>>,
     /// Held so `Runtime` reflects the spec's illustrative fields even though
     /// no method here reaches back into them directly (both are already
     /// shared, via clones, with `loop_deps`'s `ToolRunner`).
@@ -269,9 +288,11 @@ impl Runtime {
             plugins,
             gate,
             agent_defs,
+            skills,
             event_bus,
             headroom,
         } = deps;
+        let skills = Arc::new(skills);
 
         // Collected before `from_plugins` consumes the set. Each observer is
         // paired with its own plugin's manifest id here and nowhere else, so
@@ -346,6 +367,7 @@ impl Runtime {
                 store,
                 bus: event_bus,
                 agent_defs,
+                skills,
                 registry,
                 broker,
                 hooks,

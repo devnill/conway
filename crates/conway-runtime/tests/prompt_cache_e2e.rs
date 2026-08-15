@@ -121,6 +121,7 @@ fn build_runtime(turns: usize) -> (Arc<Runtime>, Arc<ScriptedBackend>) {
         plugins: vec![],
         gate: Arc::new(FakeGate::new(PermissionDecision::AllowOnce)),
         agent_defs: HashMap::new(),
+        skills: Default::default(),
         event_bus: EventBus::with_default_capacity(),
         headroom: Arc::new(HeadroomPolicy::default()),
     });
@@ -353,6 +354,7 @@ async fn gp06_stripping_cache_hint_makes_a_cached_and_uncached_route_identical()
         plugins: vec![],
         gate: Arc::new(FakeGate::new(PermissionDecision::AllowOnce)),
         agent_defs: HashMap::new(),
+        skills: Default::default(),
         event_bus: EventBus::with_default_capacity(),
         headroom: Arc::new(HeadroomPolicy::default()),
     });
