@@ -756,39 +756,69 @@ impl Default for PluginsConfig {
 ///   that is a TYPE guarantee rather than an unwired path: the dispatch
 ///   reads only `HookPermissionVerdict`, which has no variant capable of
 ///   carrying replacement text.
-/// - **`request_assembled` and `child_reported`: DISPATCHED,
-///   observation-only**. Same
+/// - **`child_reported`: DISPATCHED, observation-only**. Same
 ///   injected-runner precondition and same fail-OPEN posture as
-///   `post_tool_use`/`session_starting`/`child_spawned` immediately above --
-///   dispatched by the identical
-///   `conway_runtime::hook_dispatch::HookDispatcher::dispatch`, through the
-///   SAME runner. `request_assembled` fires once per turn, from
-///   `conway_runtime::agent_loop::AgentLoop::run_inner`, after
-///   `ContextBuilder::build` (and, if one is registered, `ContextHook::
-///   before_request`'s own edit -- earlier work) and before that turn's route/
-///   attempt call; its payload is a SUMMARY (segment count, estimated
-///   tokens, tokenizer name, turn, an unrouted model pin if one is set),
-///   never the full assembled segment content -- shipping a verbatim
-///   context dump on every turn is a performance/privacy decision this item
-///   does not make unilaterally. `child_reported` fires once per agent that
-///   HAS a parent (never for a root's own finish), for both a normal
-///   completion (`AgentLoop::finish`) and a supervisor-synthesized terminal
-///   result (`conway_runtime::supervisor`: a panic, or a task still
-///   unresponsive past its grace window) -- gated on the same publish-race
-///   winner `Event::AgentFinished` already uses at each site, so it fires
-///   exactly once per agent regardless of which side wins.
+///   `post_tool_use`/`session_starting`/`child_spawned` above -- dispatched
+///   by the identical `conway_runtime::hook_dispatch::HookDispatcher::
+///   dispatch`, through the SAME runner. Fires once per agent that HAS a
+///   parent (never for a root's own finish), for both a normal completion
+///   (`AgentLoop::finish`) and a supervisor-synthesized terminal result
+///   (`conway_runtime::supervisor`: a panic, or a task still unresponsive
+///   past its grace window) -- gated on the same publish-race winner
+///   `Event::AgentFinished` already uses at each site, so it fires exactly
+///   once per agent regardless of which side wins.
+/// - **`request_assembled` and `context_overflow`: DISPATCHED,
+///   CONTEXT-EDITING** (board item `01KZRZZP6A4A27R3EN0HQAENBS`,
+///   correcting this doc's own earlier "observation-only" claim for
+///   `request_assembled`). Same injected-runner precondition as every other
+///   event above, and still fails OPEN like the observation tier -- a
+///   failing/timing-out/malformed script contributes nothing, logged
+///   (`tracing::warn!`) rather than failing the turn -- but a subscribed
+///   hook's `HookAnswer.context` (`conway_core::hook::ContextDelta`) is now
+///   READ and APPLIED, via `conway_runtime::hook_dispatch::HookDispatcher::
+///   dispatch_context` rather than `Self::dispatch`. **Append-only, by the
+///   TYPE `ContextDelta` itself**: a hook may append a new segment (stamped
+///   with `Provenance::SystemNote { reason: "script_hook:<its id>" }`,
+///   naming the configured hook per the ACCEPTANCE's provenance
+///   requirement) or exclude an existing one BY ID -- there is no field
+///   anywhere capable of expressing in-place edit, reorder, or wholesale
+///   replace (`conway_runtime::context::script_hook`'s own module doc has
+///   the full type-level argument). An existing `request_assembled` rule
+///   written purely for observation (its answer never sets `context`) is
+///   UNAFFECTED: applying an empty `ContextDelta` is a no-op, so this is not
+///   a breaking change to a shipped config surface.
 ///
-///   **Both are observation-only, like their three siblings, not a lesser
-///   version of something else.** `request_assembled` sits at the exact
-///   seam `ContextHook::before_request` already edits the assembled request
-///   at, so it would be reasonable to expect this hook to edit too -- it
-///   structurally cannot: [`crate::plugin::HookRunner::run`]'s answer is
-///   read only by the dispatch tiers documented as consulting it, and this
-///   event's dispatch discards `HookAnswer::context`/`permission` exactly as
-///   `post_tool_use`'s does. A configured script editing assembled context
-///   append-only, without breaking the prompt cache, is a SEPARATE, still-
-///   open that this one does not
-///   build and does not foreclose.
+///   `request_assembled` fires once per turn, from `conway_runtime::
+///   agent_loop::AgentLoop::run_inner`, after `ContextBuilder::build` (and,
+///   if one is registered, `ContextHook::before_request`'s own edit) and
+///   before that turn's route/attempt call; `context_overflow` is the
+///   script-hook counterpart of `ContextHook::on_overflow` (point 4 of
+///   `docs/plugins/hooks.md`) -- it fires ONLY when routing/the attempt
+///   engine rejects with `RoutingError::ContextTooLarge` (every candidate
+///   failed SOLELY on headroom), never for a mixed `RoutingError::
+///   NoCandidate` rejection; this boundary is unchanged and unwidened by
+///   this event's addition. Both payloads are a SUMMARY plus per-segment
+///   METADATA (id, role, provenance, estimated tokens) -- an id is what
+///   `ContextDelta::excludes` needs to name a target, and
+///   role/provenance is enough for a policy decision, but segment
+///   `content` is never shipped: a verbatim context dump on every turn is
+///   an unbounded, content-proportional cost this item's own design
+///   question declined to pay unconditionally (`crate::hook_dispatch::
+///   HookDispatcher::dispatch_context`'s own doc has the reasoning).
+///
+///   A Rust `ContextHook` (`ConwayBuilder::with_context_hook`) and a
+///   configured script hook on the SAME event coexist: both are evaluated
+///   independently against the SAME pre-edit payload (decision
+///   `01KYTQVYPJW0PAAXRBEMAKZY0V`, "no chaining between context-editing
+///   hooks") and their edits compose -- exclusions union, appends
+///   concatenate in configured order. Two or more script hooks on the same
+///   event compose the identical way. Every edit, Rust or script, is run
+///   through the SAME tool-call/result coherence guard
+///   (`conway_runtime::context::hook_guard::ensure_hook_payload_coherent`,
+///   board item `01M00RGARPESWXYAVY960KDE7S`) before it can reach a
+///   request -- a script hook that orphans a tool call/result pair is
+///   refused, never repaired, exactly like the Rust `ContextHook` path
+///   already was.
 /// - **A namespaced `event` (`plugin_id.event_name`): DISPATCHED,
 ///   observation-only, IF AND ONLY IF an installed plugin actually
 ///   declares it** ( --

@@ -268,10 +268,12 @@ see and revoke it, since a broken script denies everything it matches
 until you do (fail-closed). Selecting a row and pressing `Enter` revokes
 it for the rest of this session only — the same session-only rule every
 other `/settings` toggle follows, since there is no `settings.json`
-writer for hooks either. Observation-only hook events (`post_tool_use`,
+writer for hooks either. Every other hook event (`post_tool_use`,
 `session_starting`, `child_spawned`, `request_assembled`,
-`child_reported`) do not appear in this list: they cannot deny a call, so
-there is nothing here for them to silently keep authorizing by staying
+`context_overflow`, `child_reported`) does not appear in this list: none of
+them can deny a call — `request_assembled`/`context_overflow` can edit the
+assembled context (append/exclude, append-only), but editing is not
+denying, so there is nothing here for them to silently keep authorizing by staying
 enabled — to turn one off, edit its `enabled` field in `settings.json`.
 
 ## The status line

@@ -284,8 +284,11 @@ mechanism today is in-process (`Arc<dyn Plugin>`, linked into the binary in
 Rust before the process starts), so there is nothing an on-disk,
 digest-checked trust record could gate — trusting the binary and trusting
 its plugins are the same act today. [`docs/permissions.md`](../permissions.md#limits)
-states this from the operator-facing side. No names the plugin-
-trust build specifically yet; it depends on the out-of-process transport, which is itself design-only.
+states this from the operator-facing side. Whether to build a `plugin` kind
+now is deliberately left open, not decided here — see doc 3's "What trust
+is" section for the reasoning: a `plugin` kind nothing can yet consume
+would be a capability with nothing behind it, and it depends on the
+out-of-process transport, which is itself still design-only.
 
 ## Glossary
 

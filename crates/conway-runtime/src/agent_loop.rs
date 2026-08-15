@@ -679,9 +679,20 @@ impl AgentLoop {
             if overflow_attempts >= MAX_OVERFLOW_ATTEMPTS {
                 return Err(too_large(role, model).into());
             }
-            let Some(hook) = self.context_hook() else {
+            let rust_hook = self.context_hook();
+            let hooks = self.deps.tool_runner.hooks();
+            // `context_overflow`: the script-hook counterpart of
+            // `ContextHook::on_overflow` (board item
+            // `01KZRZZP6A4A27R3EN0HQAENBS`). Fires at the IDENTICAL trigger
+            // boundary the Rust hook already observes -- this call site is
+            // only reached once `routing_err` has already been destructured
+            // as `RoutingError::ContextTooLarge` above (never `NoCandidate`,
+            // never any mixed rejection); `hooks.will_dispatch` cannot widen
+            // that, it only asks whether anything is subscribed.
+            let scripts_subscribed = hooks.will_dispatch(crate::hook_dispatch::CONTEXT_OVERFLOW);
+            if rust_hook.is_none() && !scripts_subscribed {
                 return Err(too_large(role, model).into());
-            };
+            }
             overflow_attempts += 1;
 
             let hook_ctx = ContextHookCtx {
@@ -705,27 +716,71 @@ impl AgentLoop {
                 tools: tools.clone(),
             };
 
-            // `hook` is a `GuardedContextHook` (see `LoopDeps::context_hook`'s
-            // own doc): its `on_overflow` is already the checked, `Result`-
-            // returning inherent method, not the raw trait one -- there is
-            // nothing left for this call site to remember. A hook that
-            // shrinks a payload by orphaning a tool call/result pair is
-            // refused here, never repaired.
-            match hook.on_overflow(&hook_ctx, payload, overflow).await {
-                Ok(Some(transformed)) => {
-                    segments = transformed.segments;
-                    tools = transformed.tools;
-                    report = crate::context::builder::retotal(
-                        self.agent_id,
-                        turn,
-                        &mut segments,
-                        &tools,
-                        report.dropped,
-                    );
+            // `rust_hook` (if any) and every subscribed script hook are
+            // evaluated INDEPENDENTLY against the SAME pre-edit `payload`
+            // above -- decision `01KYTQVYPJW0PAAXRBEMAKZY0V`'s no-chaining
+            // rule, restated for this seam. `rust_hook` is a
+            // `GuardedContextHook` (see `LoopDeps::context_hook`'s own doc):
+            // its `on_overflow` is already the checked, `Result`-returning
+            // inherent method, not the raw trait one -- a hook that shrinks
+            // a payload by orphaning a tool call/result pair is refused
+            // here, never repaired.
+            let mut edited = false;
+            let mut working = payload.clone();
+            if let Some(hook) = &rust_hook {
+                match hook.on_overflow(&hook_ctx, payload.clone(), overflow).await {
+                    Ok(Some(transformed)) => {
+                        working = transformed;
+                        edited = true;
+                    }
+                    Ok(None) => {}
+                    Err(err) => return Err(err.into_runtime_error()),
                 }
-                Ok(None) => return Err(too_large(role, model).into()),
-                Err(err) => return Err(err.into_runtime_error()),
             }
+            if scripts_subscribed {
+                let script_payload = serde_json::json!({
+                    "agent_id": self.agent_id,
+                    "agent_path": self.agent_path,
+                    "session": self.session,
+                    "turn": turn,
+                    "model": model,
+                    "max_context_tokens": max_context_tokens,
+                    "headroom_tokens": headroom_tokens,
+                    "required_tokens": required_tokens,
+                    "shortfall_tokens": shortfall_tokens,
+                    "segment_count": payload.segments.len(),
+                    "estimated_tokens": est_tokens,
+                    "segments": segment_metadata_json(&payload.segments),
+                });
+                let outcome = hooks
+                    .dispatch_context(crate::hook_dispatch::CONTEXT_OVERFLOW, script_payload)
+                    .await;
+                if !outcome.answers.is_empty() {
+                    let edit = crate::context::apply_script_deltas(working, &outcome.answers);
+                    working = edit.payload;
+                    edited = true;
+                }
+            }
+
+            if !edited {
+                return Err(too_large(role, model).into());
+            }
+
+            let checked = crate::context::hook_guard::ensure_hook_payload_coherent(
+                crate::context::hook_guard::HookMethod::OnOverflow,
+                &hook_ctx,
+                working,
+            )
+            .map_err(|err| err.into_runtime_error())?;
+            segments = checked.segments;
+            tools = checked.tools;
+            report = crate::context::builder::retotal(
+                self.agent_id,
+                turn,
+                &mut segments,
+                &tools,
+                report.dropped,
+            );
         }
     }
 
@@ -944,6 +999,102 @@ impl AgentLoop {
                 );
             }
 
+            // `request_assembled`: fires once per turn, here -- after
+            // `ContextBuilder::build` AND (if one is registered)
+            // `ContextHook::before_request`'s own edit immediately above,
+            // so a subscriber sees the FINAL pre-script assembled request,
+            // never the pre-Rust-hook one -- and before `route_and_attempt`
+            // below, exactly as `schema::HooksConfig`'s own doc states.
+            //
+            // CONTEXT-EDITING as of board item
+            // `01KZRZZP6A4A27R3EN0HQAENBS`, not observation-only: a
+            // configured script hook's `HookAnswer.context`
+            // (`conway_core::hook::ContextDelta`) is read via
+            // `HookDispatcher::dispatch_context` and applied append-only
+            // (`crate::context::apply_script_deltas`), then run through the
+            // SAME `crate::context::hook_guard::ensure_hook_payload_coherent`
+            // guard the Rust `ContextHook` path above already goes through
+            // -- there is no second, unguarded way for a script's edit to
+            // reach a request. Still fails OPEN, per hook: a failing/timing-
+            // out/malformed script contributes nothing (visibly --
+            // `HookDispatcher::dispatch_context`'s own `tracing::warn!` plus
+            // its returned `ContextHookFailure`), never fails the turn. An
+            // existing rule written purely for observation (its answer never
+            // sets `context`) is unaffected: applying an empty `ContextDelta`
+            // is a no-op.
+            //
+            // A SUMMARY payload plus per-segment METADATA, never segment
+            // CONTENT: `report.segments` already carries the ordered
+            // content this turn is made of, but shipping the full assembled
+            // transcript to a subprocess every turn is a real, unbounded
+            // cost this item's own design question flags -- `segment_metadata_json`
+            // ships each segment's id (needed to EXCLUDE it), role, and
+            // provenance (enough for a role/provenance-driven policy, e.g.
+            // "exclude every `ToolResult` older than N calls"), never
+            // `content`.
+            //
+            // Reached through `LoopDeps::tool_runner` rather than a new
+            // `LoopDeps` field: `ToolRunner::hooks()` is the SAME shared
+            // `HookDispatcher` `Runtime::new` already wires `post_tool_use`/
+            // `session_starting`/`child_spawned`/`prompt_submitted` through
+            // (`tools/runner.rs`'s own doc on `ToolRunner::hooks`), so
+            // wiring one runner reaches every dispatched event -- no new
+            // machinery, only this call site.
+            let hooks = self.deps.tool_runner.hooks();
+            if hooks.will_dispatch(crate::hook_dispatch::REQUEST_ASSEMBLED) {
+                let script_payload = serde_json::json!({
+                    "agent_id": self.agent_id,
+                    "agent_path": self.agent_path,
+                    "session": self.session,
+                    "turn": state.turn,
+                    "model_pin": self.spec.pin.as_ref().map(|pin| pin.model.clone()),
+                    "segment_count": report.segments.len(),
+                    "total_tokens_est": report.total_tokens_est,
+                    "tokenizer": report.tokenizer.clone(),
+                    "segments": segment_metadata_json(&segments),
+                });
+                let outcome = hooks
+                    .dispatch_context(crate::hook_dispatch::REQUEST_ASSEMBLED, script_payload)
+                    .await;
+                if !outcome.answers.is_empty() {
+                    let hook_ctx = ContextHookCtx {
+                        agent_id: self.agent_id,
+                        agent_path: self.agent_path.clone(),
+                        session_id: self.session,
+                        turn: state.turn,
+                        model: self.spec.pin.clone(),
+                        estimated_tokens: report.total_tokens_est,
+                        artifacts: artifacts.clone(),
+                        tag: self.spec.tag.clone(),
+                    };
+                    let edit = crate::context::apply_script_deltas(
+                        ContextPayload {
+                            segments,
+                            tools: announced_tools,
+                        },
+                        &outcome.answers,
+                    );
+                    let checked = try_rt!(
+                        state,
+                        crate::context::hook_guard::ensure_hook_payload_coherent(
+                            crate::context::hook_guard::HookMethod::BeforeRequest,
+                            &hook_ctx,
+                            edit.payload,
+                        )
+                        .map_err(|err| err.into_runtime_error())
+                    );
+                    segments = checked.segments;
+                    announced_tools = checked.tools;
+                    report = crate::context::builder::retotal(
+                        self.agent_id,
+                        state.turn,
+                        &mut segments,
+                        &announced_tools,
+                        report.dropped,
+                    );
+                }
+            }
+
             if let Some(slot) = &self.spec.report_slot {
                 *slot.lock().expect("report slot poisoned") = Some(report.clone());
             }
@@ -960,57 +1111,6 @@ impl AgentLoop {
                         },
                     );
                 }
-            }
-
-            // `request_assembled`:
-            // fires once per turn, here -- after `ContextBuilder::build` AND
-            // (if one is registered) `ContextHook::before_request`'s own
-            // edit immediately above, so a subscriber sees the FINAL
-            // assembled request, never the pre-hook one -- and before
-            // `route_and_attempt` below, exactly as `schema::HooksConfig`'s
-            // own doc states.
-            //
-            // OBSERVATION-ONLY, like `post_tool_use`/`session_starting`/
-            // `child_spawned`: `HookDispatcher::dispatch` returns `()` and
-            // discards `HookAnswer::context`/`permission` unread, so a
-            // failing or slow hook here cannot affect this turn -- there is
-            // no denial path and no edit path, on purpose (see
-            // `crate::hook_dispatch`'s module doc for why, and the
-            // still-open that covers the editing case).
-            //
-            // A SUMMARY payload, not a full segment dump: `report.segments`
-            // already carries the ordered content this turn is made of, and
-            // shipping it verbatim on every turn is a performance/privacy
-            // decision this item does not make unilaterally -- the same
-            // token/segment-count figures `Event::ContextSegmentAdded`
-            // already publishes above, plus `model_pin` (the model this
-            // agent is PINNED to, if any -- routing has not run yet, so no
-            // resolved model exists to report).
-            //
-            // Reached through `LoopDeps::tool_runner` rather than a new
-            // `LoopDeps` field: `ToolRunner::hooks()` is the SAME shared
-            // `HookDispatcher` `Runtime::new` already wires `post_tool_use`/
-            // `session_starting`/`child_spawned`/`prompt_submitted` through
-            // (`tools/runner.rs`'s own doc on `ToolRunner::hooks`), so
-            // wiring one runner reaches every dispatched event -- no new
-            // machinery, only this call site.
-            let hooks = self.deps.tool_runner.hooks();
-            if hooks.will_dispatch(crate::hook_dispatch::REQUEST_ASSEMBLED) {
-                hooks
-                    .dispatch(
-                        crate::hook_dispatch::REQUEST_ASSEMBLED,
-                        serde_json::json!({
-                            "agent_id": self.agent_id,
-                            "agent_path": self.agent_path,
-                            "session": self.session,
-                            "turn": state.turn,
-                            "model_pin": self.spec.pin.as_ref().map(|pin| pin.model.clone()),
-                            "segment_count": report.segments.len(),
-                            "total_tokens_est": report.total_tokens_est,
-                            "tokenizer": report.tokenizer.clone(),
-                        }),
-                    )
-                    .await;
             }
 
             let headroom = resolve_headroom(&self.spec, &self.deps.headroom);
@@ -1735,6 +1835,37 @@ impl AgentLoop {
 fn resolve_headroom(spec: &AgentSpec, policy: &HeadroomPolicy) -> u32 {
     spec.headroom_override
         .unwrap_or_else(|| policy.resolve(&spec.role))
+}
+
+/// Per-segment METADATA for a context-editing script hook's own payload
+/// (`request_assembled`/`context_overflow`, board item
+/// `01KZRZZP6A4A27R3EN0HQAENBS`) -- id (needed to EXCLUDE a segment by it),
+/// role, provenance, and estimated tokens, deliberately NEVER `content`.
+///
+/// **The design question this item's own spec asked to be settled first:**
+/// "whether the script sees the whole payload or a summary." Shipping full
+/// segment bodies to a subprocess on every turn is an unbounded,
+/// content-proportional cost paid whether or not a hook ever looks at most
+/// of it; metadata is proportional to segment COUNT, not transcript size,
+/// and is enough to (a) name a target for `ContextDelta::excludes` and (b)
+/// drive a role/provenance-based policy ("exclude every `ToolResult` older
+/// than N calls") without reading any of the actual conversation. A hook
+/// that genuinely needs a segment's text has no reach for it today -- that
+/// is a disclosed limit of this shape, not silently worked around, and
+/// matches `schema::HooksConfig`'s own established precedent of shipping a
+/// summary rather than a verbatim dump for this exact event.
+fn segment_metadata_json(segments: &[PromptSegment]) -> Vec<serde_json::Value> {
+    segments
+        .iter()
+        .map(|segment| {
+            serde_json::json!({
+                "id": segment.id.to_string(),
+                "role": segment.role,
+                "provenance": segment.provenance,
+                "tokens_est": segment.tokens_est,
+            })
+        })
+        .collect()
 }
 
 /// Splits a session's full record list into the fixed head segment (the

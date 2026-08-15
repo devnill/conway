@@ -25,8 +25,7 @@ subjects recorded grants nothing.
 **The full design's subject is `(kind, id, content-digest)`** — `kind`
 distinguishing what's being trusted (a `permission_file`, eventually a
 `plugin`), `id` distinguishing multiple subjects of the same kind, and
-`content-digest` pinning the exact bytes the decision covers
-.
+`content-digest` pinning the exact bytes the decision covers.
 
 **What actually ships is narrower, and it is real, tested code, not a
 forward declaration of the full triple.** `TrustStore`
@@ -36,17 +35,21 @@ forward declaration of the full triple.** `TrustStore`
 to disambiguate today. This is the same gap `concepts.md`'s own "Trust"
 section and `docs/permissions.md`'s Limits section both already state: *"no
 on-disk, digest-checked ceremony for trusting a plugin the way one exists
-for a `permissions.json` file."* There is no that names building
-the full `(kind, id, digest)` model, or a `plugin` trust kind specifically,
-as its own tracked work — confirmed by searching the board for "plugin
-trust" and "digest-keyed" and finding nothing. It depends on the
-out-of-process transport, which is itself
-design-only. If this gap is worth tracking as its own item rather than
-riding along inside the transport work, the item is: *build a `plugin`
-trust-subject kind in `TrustStore` — `(entry_digest, artifact_digest)` per
-the trust-model design, gated behind whatever loads a plugin
-off-process — once the out-of-process transport design lands enough of the transport
-to have a plugin artifact to digest.*
+for a `permissions.json` file."* This gap is tracked, and whether to close
+it now is deliberately left open rather than decided here: generalizing
+`TrustStore` to the full `(kind, id, digest)` subject today, with a
+`plugin` kind nothing can yet consume, would be exactly the "capability
+with nothing behind it" this project's own preference for thin,
+demonstrable slices over speculative generality warns against — the
+out-of-process transport that would give a `plugin` kind a real artifact to
+digest is itself still design-only (a subprocess-over-stdio shape is
+decided; nothing loads a plugin that way yet). If and when that transport
+lands enough to produce a plugin artifact, the shape to build is: a
+`plugin` trust-subject kind in `TrustStore` keyed on `(entry_digest,
+artifact_digest)` — two digests, because an artifact digest alone covers
+only the named entrypoint file, and an interpreter entrypoint whose real
+code sits in an adjacent tree would defeat a single-digest check. Gate it
+behind whatever loads a plugin off-process, not before.
 
 **Why the directory form is rejected.** A directory-scoped trust decision
 made about `/repo` stays valid for whatever `/repo` becomes — a `git pull`
@@ -196,8 +199,7 @@ as a finding, not a control: nothing stops a command's OWN Rust code from
 doing arbitrary I/O outside conway's mediation entirely, exactly as a tool's
 `invoke` already can.
 
-**The one narrow exception, and why it does not widen this control (board
-item).** A command CAN ask the host to fork its
+**The one narrow exception, and why it does not widen this control.** A command CAN ask the host to fork its
 OWN calling session at a sequence and drive the child (`CommandOutcome::
 ForkSession` — `hooks.md` point 15's own "Forking the calling session"
 subsection has the full mechanism). This is not a live handle: the command
@@ -303,7 +305,7 @@ boundary: any tool call whose path argument resolves outside it is denied
 before the permission gate is ever consulted, and a subagent forked or
 spawned from a confined root can only narrow that root further, never widen
 it. Root-agent confinement (the `--root` CLI flag, `ConwayBuilder::with_root`
-for a library embedder) landed as —
+for a library embedder) landed —
 before it, only a subagent could be confined, never the root agent a human
 actually talks to. The full mechanics, including the exact ordering against
 every other permission step and a verified end-to-end transcript, are
@@ -317,7 +319,7 @@ should relocate from the harness-level check described above into the tool
 that performs the operation — a future `conway.fs` plugin enforcing its own
 root over its own reads and writes, closing the TOCTOU window a
 check-then-act split leaves open today. **That relocation has not
-happened.** Both tracking it are `open`, and the amendment's own text says
+happened.** Both items tracking it are `open`, and the amendment's own text says
 so: *"Until they land, containment still lives in `conway-core`; this entry
 states the direction, not the current tree."* Everything stated above this
 paragraph is what's actually shipped.
@@ -351,9 +353,9 @@ Stated next to the guarantees, per this set's house style, not softened:
   catch `foo; git push` — the rule never claimed to parse shell.
   `docs/permissions.md`'s Limits section has the full statement, including
   what keeps the *composition* sound anyway (the shell-metacharacter gate on
-  the allow side, following the fix for, the v0.5.0 sanitizer-laundering bug class,
+  the allow side, following the fix for the v0.5.0 sanitizer-laundering bug class,
   done). **Correction to this item's own originating spec:** it named the
-  convergence of conway's three control-character sanitizers (board, "F2/F3") as pending and instructed that it
+  convergence of conway's three control-character sanitizers ("F2/F3") as pending and instructed that it
   be labeled designed-not-built here. That is stale. The item is **done** —
   a single `conway_core::text::sanitize_control_chars`
   (`crates/conway-core/src/text.rs`) now backs both the `rendered` seam

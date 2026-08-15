@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A configured script can edit assembled context, append-only.**
+  `request_assembled` and the new `context_overflow` event read a hook's
+  `ContextDelta` — append a segment, or exclude one by id — and apply it
+  through the *same* coherence guard the in-process `ContextHook` path
+  already uses, so no second, unguarded path exists. Append-only is
+  enforced by the type rather than documented: `ContextDelta` carries only
+  `appends` and `excludes` with no field pairing an append to a position,
+  so a script cannot express "replace" even by combining the two.
+  Excluding never discards — the pre-edit payload is reconstructable — and
+  appends land after the cached prefix, so prompt caching is unaffected.
+
+### Changed
+
+- Decided: **`Backend::probe` stays.** Retiring the periodic health prober
+  left it with no in-tree caller, but it remains a required method on the
+  `Backend` port's public contract — documented for third-party
+  implementors, exercised by two crates' test suites, and structurally
+  unlike a declared-but-unreachable capability: it produces a real liveness
+  result whenever anything calls it. `[models].probe_on_startup` drives a
+  different mechanism entirely (`BackendFactory::probe_capabilities`) and
+  never calls it.
+
+### Added
+
 - **`ConwayBuilder::with_prompt_handler`, closing a gap the builder's own
   doc had disclosed as unresolved.** `permissions.mode = "prompt"` — the
   config default, including `discover()`'s — previously had no
