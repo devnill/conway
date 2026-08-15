@@ -1,6 +1,6 @@
 //! The `(backend, model) -> Capabilities` lookup built at startup.
 //!
-//! Lives beside the `Backend` port (,
+//! Lives beside the `Backend` port (deliberately,
 //! "the backend side"): [`CapabilityIndex::from_backends`] reads directly
 //! from `Backend::capabilities`, and nothing about this type is
 //! routing-policy-specific -- it is a plain projection over whatever

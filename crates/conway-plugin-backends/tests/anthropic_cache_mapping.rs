@@ -95,7 +95,7 @@ fn sample_tool(name: &str) -> conway_core::content::ToolSpec {
     }
 }
 
-///, end to end through the real
+/// This acceptance test drives cache-hint mapping end to end through the real
 /// `AnthropicBackend::generate`: a `Provenance::ToolRegistry` segment
 /// carrying a breakpoint hint (exactly what `conway-runtime`'s
 /// `ContextBuilder` now produces -- empty `content`) must NOT put a second

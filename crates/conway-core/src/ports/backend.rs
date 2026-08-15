@@ -14,8 +14,7 @@ use crate::ids::{BackendId, ModelId, PrefixKey};
 use crate::routing::ModelOverrides;
 use crate::segment::PromptSegment;
 
-/// The numbers behind an admission verdict (headroom-and-refusal amendment, decision
-///):
+/// The numbers behind an admission verdict (the headroom-and-refusal amendment):
 /// `est_tokens` as measured by whichever `Backend::admit` implementation
 /// produced this (its own dialect's local estimate -- never a network round
 /// trip), the `headroom_tokens` the caller resolved from configuration, and
@@ -41,7 +40,7 @@ impl Admission {
     /// Inclusive bound: an exact fit (`required_tokens() ==
     /// max_context_tokens`) admits -- the same inclusive bound
     /// `conway-routing`'s pre-relocation restatement of this arithmetic
-    /// used to document for itself, before
+    /// used to document for itself, before a later relocation
     /// retired that copy.
     pub fn fits(&self) -> bool {
         self.required_tokens() <= self.max_context_tokens
@@ -154,9 +153,8 @@ pub trait Backend: Send + Sync + 'static {
     async fn probe(&self) -> Result<ProbeReport, BackendError>;
 
     /// Whether `req` fits inside its own `req.model`'s context window,
-    /// reserving `headroom_tokens` for output/reasoning (headroom-and-refusal
-    /// amendment
-    ///). Headroom the NUMBER stays declarative
+    /// reserving `headroom_tokens` for output/reasoning (the headroom-and-refusal
+    /// amendment). Headroom the NUMBER stays declarative
     /// configuration -- a default plus a per-role override -- resolved by the
     /// caller and passed in here; only who *reads* it moved.
     ///
@@ -233,8 +231,8 @@ pub trait Backend: Send + Sync + 'static {
 /// reason: `conway_plugin_backends::config::{AnthropicConfig, OpenAiCompatConfig}`
 /// (`conway_plugin_backends::factory`'s `AnthropicBackendFactory::build`/
 /// `OpenAiCompatBackendFactory::build` -- relocated from `crates/conway/src/
-/// builder.rs`'s own `build_anthropic`/`build_openai_compat` by
-///) are what this shape is read off of, and every
+/// builder.rs`'s own `build_anthropic`/`build_openai_compat`) are what
+/// this shape is read off of, and every
 /// one of these six fields is something those two `build` methods resolve
 /// BEFORE their adapter's own constructor ever runs.
 ///
@@ -257,8 +255,8 @@ pub trait Backend: Send + Sync + 'static {
 /// **Why not both (the raw entry ALONGSIDE these resolved fields)?** Two
 /// sources of the same value invites the question "which one wins when they
 /// disagree" for no benefit any item to date has needed answering.
-/// `backends.<id>.kind` is an OPEN name now (,
-///), so a third-party kind is already
+/// `backends.<id>.kind` is an OPEN name now (a settled design decision),
+/// so a third-party kind is already
 /// nameable; `BackendEntry`'s own six fields (`kind`, `api_key`,
 /// `api_key_env`, `base_url`, `dialect`, `stream_tools`) still fully cover
 /// via the resolved fields below (`stream_tools` has no analogue here: it is
@@ -398,8 +396,8 @@ pub struct BackendBuildContext {
 /// produce many configured instances (as the "kimi" example above already
 /// shows for a built-in kind) -- so nothing about this trait promises
 /// `build` is called at most once over a `ConwayBuilder::build()` call.
-/// `[backends.<id>].kind` is an open name (,
-///), so `ConwayBuilder::build()`
+/// `[backends.<id>].kind` is an open name (a settled design decision),
+/// so `ConwayBuilder::build()`
 /// routes each `[backends.<id>]` entry to whichever registered factory's
 /// `BackendFactory::id()` matches that entry's own `kind` -- see
 /// `ConwayBuilder::with_backend_factory`'s own doc for the exact resolution

@@ -78,10 +78,13 @@ impl Tool for GrepTool {
     async fn invoke(&self, call: ToolCall, ctx: ToolCtx) -> Result<ToolOutput, ToolError> {
         check_cancel(&ctx)?;
         let args: GrepArgs = parse_args(&call)?;
-        let root = match &args.path {
+        let requested_root = match &args.path {
             Some(p) => resolve_path(&ctx, p)?,
             None => ctx.cwd.clone(),
         };
+        // `[S1.5]`/(retirement): see `glob.rs`'s
+        // identical comment -- `grep` had the same pre-existing gap.
+        let root = crate::fs::beneath::confine_search_root(&ctx, &requested_root).await?;
         let max_results = args.max_results.unwrap_or(DEFAULT_MAX_RESULTS) as usize;
 
         let regex = match RegexBuilder::new(&args.pattern)
@@ -269,5 +272,40 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, ToolError::InvalidArguments { .. }));
+    }
+
+    /// (retirement): `grep` had no
+    /// harness-independent root check before this item -- the same
+    /// pre-existing gap `glob.rs`'s own pinning test names.
+    #[tokio::test]
+    async fn invoke_denies_a_search_root_outside_the_configured_root() {
+        use std::sync::Arc;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root_dir = tmp.path().join("root");
+        let outside_dir = tmp.path().join("outside");
+        std::fs::create_dir(&root_dir).unwrap();
+        std::fs::create_dir(&outside_dir).unwrap();
+        std::fs::write(outside_dir.join("f.rs"), "fn main() {}").unwrap();
+
+        let (mut ctx, _h) = test_ctx(root_dir.clone());
+        let mut values = serde_json::Map::new();
+        values.insert(
+            "conway.fs.root".to_string(),
+            serde_json::json!(root_dir.display().to_string()),
+        );
+        ctx.config = Arc::new(conway_core::ports::PluginConfig { values });
+
+        let err = GrepTool::new()
+            .invoke(
+                call(serde_json::json!({
+                    "pattern": "fn",
+                    "path": outside_dir.display().to_string(),
+                })),
+                ctx,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ToolError::Denied { .. }));
     }
 }

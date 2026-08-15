@@ -117,8 +117,7 @@ pub struct CliOverrides {
     /// (`[routing].default_headroom_tokens`, `[roles.<alias>].headroom_tokens`)
     /// and the `CONWAY_ROUTING__DEFAULT_HEADROOM_TOKENS` /
     /// `CONWAY_ROLES__<ALIAS>__HEADROOM_TOKENS` env vars. Left in place
-    /// rather than removed (
-    ///): unlike the deleted `model` field —
+    /// rather than removed (a settled design decision): unlike the deleted `model` field —
     /// which had no `ConwayConfig` key to land on and was skipped by this
     /// struct's own `cli_overrides_to_value` — this field IS translated
     /// into the merge document (`routing.default_headroom_tokens`) and is

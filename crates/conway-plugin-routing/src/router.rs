@@ -7,7 +7,7 @@
 //! health -> chain order. See `docs/routing.md` for how this order shows up
 //! in `conway routes explain` output.
 //!
-//! **T-1 error selection (, closing board
+//! **T-1 error selection (a decision closing an earlier gap
 //! item):** `conway_core::ports::Router`'s doc
 //! comment on `resolve` states that T-1 (no candidate's headroom-adjusted
 //! window covers `req.est_tokens`) returns `RoutingError::ContextTooLarge`.

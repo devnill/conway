@@ -1,6 +1,6 @@
 //! [`ProcessHookRunner`]: the one-shot exec implementation of
-//! `conway_core::ports::HookRunner` (,
-//!). Spawns the hook's configured
+//! `conway_core::ports::HookRunner` (a settled design
+//! decision). Spawns the hook's configured
 //! command fresh per invocation, writes the event as JSON to stdin, and
 //! reads the answer from stdout plus the process's exit status --
 //! deliberately NOT the long-lived NDJSON JSON-RPC transport the remote

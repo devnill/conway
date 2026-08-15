@@ -409,8 +409,8 @@ pub enum RuntimeError {
     /// panic.
     #[error("ask requires SubagentMode::Fork (ask is fork+await-text, not a third primitive); got {mode:?}")]
     AskRequiresFork { mode: SubagentMode },
-    ///, extended by
-    ///: `steer`/`await_result`/`cancel`/`start`/
+    /// Narrowed in a later item:
+    /// `steer`/`await_result`/`cancel`/`start`/
     /// `ask` may act only on an agent within the CALLER's own subtree (itself,
     /// or any descendant) -- enforced HERE, at the `SubagentHost` trait
     /// boundary (see that trait's own doc), not only at the

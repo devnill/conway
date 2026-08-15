@@ -1,35 +1,47 @@
 //! `FsPlugin`: the file tools (`cd`, `read`, `write`, `edit`, `glob`, `grep`).
 //!
-//! ## `[S1.5]`: `conway.fs`'s root, read from per-agent state
+//! ## `[S1.5]`, retired-and-closed: `conway.fs` enforces its own root, and
+//! the harness-level pre-gate root check is gone
 //!
-//! `FsPlugin` is the proving consumer of the general per-agent
+//! `FsPlugin` reads its root from the general per-agent
 //! plugin-configuration/narrowing mechanism (`conway_core::ports::
 //! Plugin::narrowable_keys`/`PluginConfig::narrow`): it declares one
 //! narrowable key, bare name `"root"` (reachable in a caller's
 //! `SubagentSpec::plugin_config` map as `"conway.fs.root"` once the host
-//! prefixes it with this plugin's own manifest id), and `check_root`
-//! enforces it inside `read`/`write`/`cd` before the underlying I/O runs.
+//! prefixes it with this plugin's own manifest id), and enforces it inside
+//! `read`/`write`/`edit`/`cd` (`beneath`) and `glob`/`grep` (`beneath::
+//! confine_search_root`) before the underlying I/O runs.
 //!
-//! **This is additive, not a replacement.** The harness-level confinement
-//! root (`SubagentSpec::root`/`--root`, enforced by `PermissionBroker`
-//! ahead of the gate) is untouched by this item -- see its own board item
-//! for the eventual retirement. Both mechanisms can be in effect
-//! simultaneously; a call denied by either is denied.
-//!
-//! **Not itself TOCTOU-closed.** This checks `candidate` (an already-
-//! resolved path) and then a caller performs the real filesystem operation
-//! as a separate step -- the SAME check-then-open shape the harness-level
-//! root has today. Closing that gap with open-relative operations (so the
-//! check and the use are one step) is explicitly the FOLLOW-ON item's job,
-//! not this one's.
+//! **This is now the ONLY confinement enforcement these six tools get.**
+//! The harness-level pre-gate root check
+//! (`PermissionBroker::check_root`'s per-tool `PathArgs::Named` walk) that
+//! used to run ahead of the operator's gate for every tool declaring
+//! `PathArgs::Named` is retired -- see `conway_runtime::permission`'s own
+//! doc for exactly what remains there (a narrower, differently-named
+//! gate-routing policy for `PathArgs::Unconfinable` calls like `bash`'s,
+//! which this plugin cannot help with because `bash` is a different
+//! plugin's tool). `check_root` (the pre-check-then-separately-open
+//! function this module used to export) is gone; `beneath` replaces it with
+//! open-relative enforcement, closing the TOCTOU gap the pre-check could
+//! never close -- see that module's own doc for the full "why" and the
+//! symlink-race test that fails against a reverted, pre-check-shaped build.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use conway_core::containment::{CanonicalRoot, Containment};
-use conway_core::error::ToolError;
-use conway_core::ports::{CancellationToken, NarrowingRule, Plugin, PluginManifest, Tool, ToolCtx};
+use conway_core::ports::{CancellationToken, NarrowingRule, Plugin, PluginManifest, Tool};
 
+// `pub` only under `test-fakes`, exposing `beneath::toctou_probe` (this
+// item's own verification anchor, `tests/fs_confinement.rs`, needs it) --
+// mirrors `crate::testing`'s identical conditional-visibility pattern.
+// `pub(crate)` otherwise: `beneath` itself (`resolve`/`Access`/`open_root`/
+// the four confined-operation entry points) is production dispatch
+// plumbing, not a public API.
+#[cfg(feature = "test-fakes")]
+pub mod beneath;
+#[cfg(not(feature = "test-fakes"))]
+pub(crate) mod beneath;
 pub mod cd;
 pub mod edit;
 pub mod glob;
@@ -48,16 +60,22 @@ pub use write::WriteTool;
 /// `conway_core::ports::Plugin::narrowable_keys`'s own doc says the HOST
 /// applies to [`ROOT_CONFIG_KEY`] before it is ever reachable in a caller's
 /// `SubagentSpec::plugin_config` map. Shared by [`FsPlugin::manifest`] and
-/// `check_root` so the two can never independently drift.
+/// `beneath` so the two can never independently drift.
 pub const PLUGIN_ID: &str = "conway.fs";
 
 /// The bare per-agent config key this plugin declares narrowable.
 pub const ROOT_CONFIG_KEY: &str = "root";
 
-/// The already-prefixed key [`ToolCtx::config`] actually carries this
-/// plugin's root under, once the host has applied the prefix
-/// [`ROOT_CONFIG_KEY`]'s own doc describes.
-const FULL_ROOT_CONFIG_KEY: &str = "conway.fs.root";
+/// The already-prefixed key `conway_core::ports::ToolCtx::config` actually
+/// carries this plugin's root under, once the host has applied the prefix
+/// [`ROOT_CONFIG_KEY`]'s own doc describes. `conway_runtime`'s
+/// `runtime::root`/`subagent` cannot import this constant (crate layering:
+/// `conway-runtime -> conway-tools` would be a new, backward dependency
+/// edge), so both derive the identical `"conway.fs.root"` string
+/// independently, from a `pub(crate)` constant of their own naming this one
+/// -- see those modules' own doc for the cross-crate duplication this
+/// forces and why it is bounded (a `const`, not restated logic).
+pub(crate) const FULL_ROOT_CONFIG_KEY: &str = "conway.fs.root";
 
 /// `[S1.5]`'s narrowing rule for [`ROOT_CONFIG_KEY`]: `child` narrows
 /// `parent` iff both are strings naming a real, canonicalizable filesystem
@@ -81,50 +99,6 @@ fn root_narrows(parent: &serde_json::Value, child: &serde_json::Value) -> bool {
         parent_root.contains(child_root.as_path()),
         Containment::Inside
     )
-}
-
-/// Checks `candidate` (an already-resolved, possibly-not-yet-existing
-/// filesystem path -- the same shape `crate::common::resolve_path`
-/// produces) against `ctx.config`'s [`FULL_ROOT_CONFIG_KEY`], if this agent
-/// has one set. `Ok(())` when unconfined (no key set -- today's
-/// pre-existing behavior, unchanged) or when `candidate` resolves inside
-/// the configured root; `Err(ToolError::Denied)` (model-recoverable --
-/// `ToolRunner`'s `execute_one` turns any `Err` from `Tool::invoke` into a
-/// persisted, `is_error: true` `ToolResultRecord`, the observable outcome
-/// this item's own acceptance asks tests to assert on) otherwise.
-/// `Containment::Undecidable` is treated identically to `Outside`.
-///
-/// Callers invoke this AFTER resolving the candidate path
-/// (`crate::common::resolve_path`) and BEFORE performing the underlying
-/// I/O.
-pub(crate) fn check_root(ctx: &ToolCtx, candidate: &Path) -> Result<(), ToolError> {
-    let Some(configured) = ctx.config.values.get(FULL_ROOT_CONFIG_KEY) else {
-        return Ok(());
-    };
-    let Some(root_str) = configured.as_str() else {
-        return Err(ToolError::Denied {
-            reason: format!(
-                "{FULL_ROOT_CONFIG_KEY} is configured but is not a string ({configured}); \
-                 refusing to resolve any path against it"
-            ),
-        });
-    };
-    let root = CanonicalRoot::new(Path::new(root_str)).map_err(|err| ToolError::Denied {
-        reason: format!(
-            "{FULL_ROOT_CONFIG_KEY} ({root_str}) does not canonicalize: {err}; refusing every \
-             path under an unresolvable root"
-        ),
-    })?;
-    match root.contains(candidate) {
-        Containment::Inside => Ok(()),
-        Containment::Outside | Containment::Undecidable => Err(ToolError::Denied {
-            reason: format!(
-                "{} is outside this agent's {FULL_ROOT_CONFIG_KEY} ({})",
-                candidate.display(),
-                root.as_path().display()
-            ),
-        }),
-    }
 }
 
 /// One file entry produced by [`walk_files`]: its path relative to the
@@ -332,42 +306,8 @@ mod tests {
         assert!(!root_narrows(&parent, &child));
     }
 
-    // ---- check_root ----
-
-    #[test]
-    fn check_root_is_ok_when_unconfined() {
-        let (ctx, _h) = crate::testing::test_ctx(PathBuf::from("/tmp"));
-        assert!(check_root(&ctx, Path::new("/anything/at/all")).is_ok());
-    }
-
-    #[test]
-    fn check_root_allows_a_candidate_inside_the_configured_root() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let (mut ctx, _h) = crate::testing::test_ctx(tmp.path().to_path_buf());
-        let mut values = serde_json::Map::new();
-        values.insert(
-            FULL_ROOT_CONFIG_KEY.to_string(),
-            serde_json::json!(tmp.path().display().to_string()),
-        );
-        ctx.config = Arc::new(conway_core::ports::PluginConfig { values });
-        assert!(check_root(&ctx, tmp.path()).is_ok());
-    }
-
-    #[test]
-    fn check_root_denies_a_candidate_outside_the_configured_root() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let root_dir = tmp.path().join("root");
-        let outside_dir = tmp.path().join("outside");
-        std::fs::create_dir(&root_dir).unwrap();
-        std::fs::create_dir(&outside_dir).unwrap();
-        let (mut ctx, _h) = crate::testing::test_ctx(root_dir.clone());
-        let mut values = serde_json::Map::new();
-        values.insert(
-            FULL_ROOT_CONFIG_KEY.to_string(),
-            serde_json::json!(root_dir.display().to_string()),
-        );
-        ctx.config = Arc::new(conway_core::ports::PluginConfig { values });
-        let err = check_root(&ctx, &outside_dir.join("secret.txt")).unwrap_err();
-        assert!(matches!(err, ToolError::Denied { .. }));
-    }
+    // `check_root`'s own coverage (unconfined no-op, allow-inside,
+    // deny-outside) moved to `beneath`'s test module along with the function
+    // itself -- see that module for the equivalent (and now open-relative,
+    // TOCTOU-closed) tests.
 }

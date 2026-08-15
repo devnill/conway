@@ -1,4 +1,4 @@
-//! Regression/acceptance tests for
+//! Regression/acceptance tests for the broker's root-confinement check
 //! ("S5: the broker root check") -- the SECURITY-CRITICAL slice: the only
 //! one in this cycle where a mistake is a security bug rather than a
 //! defect.
@@ -19,7 +19,7 @@
 //! A confined child is always produced via [`SessionHandle::spawn`] with
 //! [`SpawnSpec::root`].
 //!
-//! **** `RootSpec` (a session's ROOT
+//! **Root-agent confinement, added later.** `RootSpec` (a session's ROOT
 //! agent -- the one an operator actually talks to) used to have no `root`
 //! field at all, so every root agent started unconfined regardless of what
 //! `PermissionBroker::check_root` could do, and `must_reach_gate` was
@@ -31,6 +31,36 @@
 //! a spawned child's root narrowing against a parent that is ITSELF
 //! confined (every earlier test here confines only the child, against an
 //! always-`Unconfined` parent).
+//!
+//! **Retirement of the harness-level pre-gate check ("Retire the
+//! harness-level confinement root once `conway.fs` enforces its own"):**
+//! `PermissionBroker::check_root` no longer walks a `PathArgs::Named`
+//! tool's own declared path arguments at all -- `conway.fs` does, INSIDE
+//! the tool (`conway_tools::fs::beneath`, open-relative, TOCTOU-closed),
+//! before its own I/O runs. Every test below that used to assert
+//! `gate.requests().is_empty()` for a `PathArgs::Named` denial
+//! (`read`/`cd`, never `bash`) now asserts `gate.requests().len() == 1`
+//! instead: the operator's gate IS reached now (nothing before
+//! `conway.fs`'s own check, which runs inside the tool, stops it), and the
+//! call is STILL refused afterward -- the property that matters (the
+//! read/cd never actually happens) is unchanged; only WHERE in the
+//! pipeline the refusal happens moved. `bash`'s own `PathArgs::
+//! Unconfinable { checkable }` tests (5, 6, 7, 8, 9, 9b, 12) are UNCHANGED:
+//! `checkable` (e.g. `bash`'s `cwd`) is still walked by `PermissionBroker::
+//! check_root` directly -- `bash` belongs to a different plugin than
+//! `conway.fs` and has no plugin-level root check of its own to delegate
+//! to, which is precisely the asymmetry GP-13 records ("a harness-level
+//! root appears to cover every tool while actually covering only those
+//! declaring path arguments").
+//!
+//! `--root`/`ConwayBuilder::with_root` and a spawned child's
+//! `SubagentSpec::root` still confine ordinary tool calls end to end
+//! (tests 2, 4, 11, 11b, 15 all still pass): `runtime::root::start_root`/
+//! `subagent::SubagentHost::start` now derive a `conway.fs.root` per-agent
+//! plugin-config entry from the SAME resolved, validated,
+//! narrowing-checked `root` value they already computed for the
+//! (unrelated, still-live) artifact-writer confinement path -- see
+//! `conway_runtime::permission::derive_fs_root_config`'s own doc.
 #![cfg(feature = "builtin-tools")]
 
 use std::collections::BTreeMap;
@@ -189,7 +219,7 @@ fn build_conway(script: Vec<ScriptedTurn>, gate: Arc<dyn PermissionGate>) -> Con
 }
 
 /// Identical to [`build_conway`], plus `ConwayBuilder::with_root(root)` --
-///'s own operator surface. Every
+/// the root-confinement item's own operator surface. Every
 /// session this `Conway` starts (`conway.new_session`) is therefore a
 /// CONFINED root agent, not only a spawned child.
 fn build_conway_with_root(
@@ -316,7 +346,15 @@ async fn read_inside_root_is_allowed() {
 }
 
 // ---------------------------------------------------------------------
-// 2. `read` outside the root -> denied, gate never consulted.
+// 2. `read` outside the root -> denied. `conway.fs` enforces this now, not
+//    a harness-level pre-gate check -- see this file's own module doc
+//    (`[Retirement]`) for the full accounting. The operator's own gate
+//    (`AllowOnce` here) IS reached exactly once first: nothing before
+//    `conway.fs`'s own containment check, which now lives INSIDE the tool,
+//    stops a `PathArgs::Named` call from reaching the gate any more. The
+//    security property that matters -- the read never actually happens --
+//    holds regardless: even though the gate says yes, `conway.fs` still
+//    refuses.
 // ---------------------------------------------------------------------
 #[tokio::test]
 async fn read_outside_root_is_denied() {
@@ -349,25 +387,32 @@ async fn read_outside_root_is_denied() {
     let result = tool_result(&records);
     assert!(
         result.is_error,
-        "an out-of-root absolute path must be denied"
+        "an out-of-root absolute path must be denied -- by `conway.fs` itself now, even though \
+         the gate above already said AllowOnce: {:?}",
+        blocks_text(&result.blocks)
     );
-    assert!(
-        gate.requests().is_empty(),
-        "an out-of-root call must never reach the operator's gate: {:?}",
+    assert_eq!(
+        gate.requests().len(),
+        1,
+        "the gate IS reached once now (the pre-gate harness check that used to short-circuit \
+         this is retired) -- the refusal comes from `conway.fs` afterward, not from the gate \
+         never being asked: {:?}",
         gate.requests()
     );
 }
 
 // ---------------------------------------------------------------------
-// 2a. a path argument carrying a NUL
-// byte is denied at `PermissionBroker::check_root` -- the production
-// callsite for `conway_runtime::permission::resolve_like_the_tool_will`,
-// itself now a thin wrapper over the ONE shared implementation,
-// `conway_core::containment::resolve_candidate`. Driven end to end (real
-// `ReadTool`, real broker, real gate double) rather than unit-testing the
-// resolver in isolation -- exactly the discriminating shape this item's own
-// acceptance criteria require: a test of the shared function alone proves
-// nothing about whether THIS callsite still reaches it.
+// 2a. (Retirement) a path argument carrying a NUL
+// byte is denied at `conway_tools::common::resolve_path` -- the production
+// callsite for `conway_core::containment::resolve_candidate` that now
+// matters for this argument (the harness-level `PermissionBroker::
+// check_root`'s OWN, separate call to the same shared function, ahead of
+// the gate, is retired for `PathArgs::Named` tools -- see this file's own
+// module doc). Driven end to end (real `ReadTool`, real broker, real gate
+// double) rather than unit-testing the resolver in isolation -- exactly the
+// discriminating shape this item's own acceptance criteria require: a test
+// of the shared function alone proves nothing about whether a real call
+// still reaches it.
 // ---------------------------------------------------------------------
 #[tokio::test]
 async fn read_with_nul_byte_path_under_root_is_denied_not_bypassed() {
@@ -378,10 +423,9 @@ async fn read_with_nul_byte_path_under_root_is_denied_not_bypassed() {
     let conway = build_conway(
         vec![
             // A NUL byte embedded in an otherwise ordinary relative path --
-            // untrusted, model-influenced input. `resolve_like_the_tool_will`
-            // must refuse to resolve it (`None`), which `check_root` turns
-            // into an outright denial, never an `Undecidable`/`Outside`
-            // containment answer computed against a bogus candidate.
+            // untrusted, model-influenced input. `resolve_path` (inside
+            // `ReadTool::invoke` itself, BEFORE `conway.fs`'s own root
+            // check ever runs) must refuse to resolve it.
             ScriptedTurn::Respond(read_call("file.txt\0/etc/passwd")),
             ScriptedTurn::Respond(text_response("done")),
         ],
@@ -403,42 +447,38 @@ async fn read_with_nul_byte_path_under_root_is_denied_not_bypassed() {
         "a NUL-carrying path argument must be denied, not silently resolved: {:?}",
         blocks_text(&result.blocks)
     );
-    // Asserting `is_error` alone is not the discriminating check: even with
-    // `resolve_like_the_tool_will`'s NUL guard disabled, the candidate it
-    // would produce (`root_dir/file.txt\0/etc/passwd`) still fails to
-    // canonicalize at the OS level inside `CanonicalRoot::contains`
-    // (`Containment::Undecidable`), which `check_root` ALSO denies -- a
-    // second, coincidental line of defense that would make a bare
-    // `is_error` assertion pass whether or not THIS callsite's typed guard
-    // ever fired (the exact trap `subagent_fork_spawn.rs`'s own NUL test
-    // names). The persisted error text must therefore name the guard's own
-    // distinctive wording ("cannot be resolved to a filesystem path" --
-    // `check_root`'s `RootDecision::Denied` arm for a `None` from
-    // `resolve_like_the_tool_will`), not the different wording
-    // `Containment::Outside`/`Undecidable` produces ("resolves to ...,
-    // which is outside this agent's confinement root").
+    // The persisted error text names `resolve_path`'s own distinctive
+    // wording -- proving THIS is what denied it, not some other, unrelated
+    // failure that happens to also set `is_error`.
     assert!(
-        blocks_text(&result.blocks).contains("cannot be resolved to a filesystem path"),
-        "the denial must be THIS callsite's typed NUL guard, not a downstream containment \
-         answer computed against a bogus NUL-carrying candidate: {:?}",
+        blocks_text(&result.blocks).contains("path contains a NUL byte"),
+        "the denial must be `resolve_path`'s own typed NUL guard: {:?}",
         blocks_text(&result.blocks)
     );
-    assert!(
-        gate.requests().is_empty(),
-        "a NUL-carrying path argument must never reach the operator's gate: {:?}",
+    // Retirement: the gate IS reached now
+    // (`PermissionBroker` no longer denies a `PathArgs::Named` call
+    // pre-gate at all, for any reason) -- `resolve_path`'s NUL guard fires
+    // INSIDE `ReadTool::invoke`, strictly after the gate already said
+    // AllowOnce. The call is still refused; it is refused by the tool, not
+    // by the gate never being asked.
+    assert_eq!(
+        gate.requests().len(),
+        1,
+        "the gate is reached once now, exactly like every other `PathArgs::Named` denial in \
+         this file: {:?}",
         gate.requests()
     );
 }
 
 // ---------------------------------------------------------------------
-// 2b. `cd` out of the root -> denied, by the SAME generic mechanism.
-//
-// `CdTool` contains no root-specific code whatsoever. It is confined
-// purely because it declares `PathArgs::Named(&["path"])` and the broker
-// checks every declared path argument of every tool. That is the design's
-// central claim -- confinement enforced once, at the chokepoint, rather
-// than re-implemented per tool -- so it is pinned here rather than left as
-// an inference from `read`'s behavior.
+// 2b. (Retirement) `cd` out of the root ->
+// denied, now by `conway.fs` itself (`crate::fs::beneath::confined_
+// metadata`, wired into `CdTool::invoke`) rather than by a harness-level
+// generic `PathArgs::Named` walk that ran ahead of the gate. `CdTool`
+// contains no root-specific SYMLINK/CONTAINMENT-ALGORITHM code of its own
+// (it delegates to `beneath`, the same as `read`/`write`/`edit`) -- but it
+// DOES now call into its own plugin's confinement, unlike before this item,
+// when it called nothing at all and relied entirely on the harness.
 //
 // This test exists because the docs assert this guarantee. An asserted
 // security property with no test is how both 0.5.0 fail-open bugs
@@ -473,14 +513,15 @@ async fn cd_out_of_the_root_is_denied_by_the_generic_path_arg_check() {
     let result = tool_result(&records);
     assert!(
         result.is_error,
-        "a `cd` to a directory outside the confinement root must be denied, \
-         even though CdTool itself performs no root check -- the broker's \
-         generic `PathArgs::Named` check is what confines it"
+        "a `cd` to a directory outside the confinement root must be denied -- by `conway.fs` \
+         itself now: {:?}",
+        blocks_text(&result.blocks)
     );
-    assert!(
-        gate.requests().is_empty(),
-        "an out-of-root `cd` must be denied by the broker before the \
-         operator's gate is ever consulted: {:?}",
+    assert_eq!(
+        gate.requests().len(),
+        1,
+        "the gate is reached once now (the harness-level pre-gate walk that used to deny this \
+         before the gate is retired) -- `conway.fs` still refuses the `cd` afterward: {:?}",
         gate.requests()
     );
 }
@@ -561,8 +602,11 @@ async fn write_nonexistent_target_inside_root_is_allowed() {
 }
 
 // ---------------------------------------------------------------------
-// 4. Symlink escape (`root/link -> ../outside`, read `root/link/secret`)
-//    -> denied.
+// 4. (Retirement) Symlink escape (`root/link
+//    -> ../outside`, read `root/link/secret`) -> denied, by `conway.fs`
+//    itself now (open-relative, TOCTOU-closed -- see `conway_tools::fs::
+//    beneath`'s own doc and `conway-tools/tests/fs_confinement.rs` for the
+//    dedicated closure proof).
 // ---------------------------------------------------------------------
 #[tokio::test]
 #[cfg(unix)]
@@ -598,11 +642,15 @@ async fn symlink_escape_is_denied() {
     let result = tool_result(&records);
     assert!(
         result.is_error,
-        "a symlink that resolves outside the root must be denied"
+        "a symlink that resolves outside the root must be denied: {:?}",
+        blocks_text(&result.blocks)
     );
-    assert!(
-        gate.requests().is_empty(),
-        "a symlink escape must never reach the operator's gate: {:?}",
+    assert_eq!(
+        gate.requests().len(),
+        1,
+        "the gate is reached once now (the harness-level pre-gate check that used to deny this \
+         before the gate is retired) -- `conway.fs`'s own open-relative check still refuses the \
+         symlink escape afterward: {:?}",
         gate.requests()
     );
 }
@@ -857,7 +905,7 @@ async fn bash_cwd_outside_root_is_denied() {
 //     same as any other in-root, fully-confinable call. `cwd` was never
 //     the security boundary here either -- this pins that the `checkable`
 //     enforcement above (test 9) is not collateral-damaging an ordinary
-//     in-root `cwd` (, S6, part 1).
+//     in-root `cwd` (S6, part 1).
 // ---------------------------------------------------------------------
 #[tokio::test]
 async fn bash_cwd_inside_root_is_allowed() {
@@ -997,21 +1045,25 @@ async fn a_configured_root_confines_the_root_agent_itself() {
     let result = tool_result(&records);
     assert!(
         result.is_error,
-        "the ROOT agent's own out-of-root read must be denied, not just a spawned child's"
+        "the ROOT agent's own out-of-root read must be denied, not just a spawned child's: {:?}",
+        blocks_text(&result.blocks)
     );
-    assert!(
-        gate.requests().is_empty(),
-        "an out-of-root call from the root agent must never reach the operator's gate: {:?}",
+    assert_eq!(
+        gate.requests().len(),
+        1,
+        "(Retirement) the gate is \
+         reached once now for the root agent too, exactly like a spawned child's identical call \
+         (test 2) -- `conway.fs` still refuses afterward: {:?}",
         gate.requests()
     );
 }
 
 // ---------------------------------------------------------------------
-// 11b. `cd` out of a CONFINED ROOT AGENT's own root -> denied, by the same
-//      generic `PathArgs::Named` mechanism as test 2b -- explicitly
-//      confirmed for a root-agent root, per this item's own "Interaction
-//      with `cd`" requirement, not merely inferred from `read`'s behavior
-//      above.
+// 11b. (Retirement) `cd` out of a
+//      CONFINED ROOT AGENT's own root -> denied, by the same `conway.fs`
+//      mechanism as test 2b -- explicitly confirmed for a root-agent root,
+//      per this item's own "Interaction with `cd`" requirement, not merely
+//      inferred from `read`'s behavior above.
 // ---------------------------------------------------------------------
 #[tokio::test]
 async fn cd_out_of_a_confined_root_agents_own_root_is_denied() {
@@ -1047,12 +1099,15 @@ async fn cd_out_of_a_confined_root_agents_own_root_is_denied() {
     let result = tool_result(&records);
     assert!(
         result.is_error,
-        "a `cd` to a directory outside a CONFINED ROOT AGENT's own root must be denied, even \
-         though `CdTool` itself performs no root check"
+        "a `cd` to a directory outside a CONFINED ROOT AGENT's own root must be denied -- by \
+         `conway.fs` itself now: {:?}",
+        blocks_text(&result.blocks)
     );
-    assert!(
-        gate.requests().is_empty(),
-        "an out-of-root `cd` from the root agent must never reach the operator's gate: {:?}",
+    assert_eq!(
+        gate.requests().len(),
+        1,
+        "the gate is reached once now for the root agent too, exactly like test 2b's spawned \
+         child: {:?}",
         gate.requests()
     );
 }
@@ -1294,9 +1349,13 @@ async fn a_spawned_child_with_no_override_inherits_a_confined_root_agents_own_ro
          not start unconfined: {:?}",
         blocks_text(&result.blocks)
     );
-    assert!(
-        gate.requests().is_empty(),
-        "the inherited-root denial must never reach the operator's gate: {:?}",
+    assert_eq!(
+        gate.requests().len(),
+        1,
+        "the gate is reached once now, exactly like every other `PathArgs::Named` denial in \
+         this file -- the inherited root still denies afterward, via `conway.fs`'s own \
+         (inherited, per (retirement)) `conway.fs.root` \
+         plugin-config entry: {:?}",
         gate.requests()
     );
 }

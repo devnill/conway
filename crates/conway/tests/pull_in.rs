@@ -2,7 +2,7 @@
 //! turns merged into the parent's log VERBATIM — the child's `ForkDirective`
 //! head record materialized as a `UserTurn` re-stamped
 //! `Provenance::MergedAsk { from: child_session }`, its `Assistant` records
-//! passed through untouched () — followed by the child's purge via
+//! passed through untouched — followed by the child's purge via
 //! `SessionStore::remove` (B1). Also covers the guard matrix: parent not
 //! live (`AgentNotLive`), child has children (`NotRemovable`), non-ephemeral
 //! child (`NotRemovable`), unknown child (`AgentNotFound`) — each refusing
@@ -211,7 +211,7 @@ async fn pull_in_merges_the_ask_child_verbatim_then_purges_it() {
     }
 
     // The answer landed VERBATIM: every untrusted model-produced field
-    // () — content, model, route_reason, usage, stop — plus ts is
+    // — content, model, route_reason, usage, stop — plus ts is
     // field-for-field the child's original record; only the seq moved.
     let (merged_content, merged_model, merged_route, merged_usage, merged_stop, merged_ts) =
         match &parent_records[before + 1] {

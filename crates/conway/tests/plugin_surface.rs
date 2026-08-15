@@ -1,4 +1,4 @@
-//! F8's liveness test (): the facade's `conway::plugin` surface is
+//! F8's liveness test: the facade's `conway::plugin` surface is
 //! *implementable* from outside the workspace, not merely nameable.
 //!
 //! Everything below is written the way a third-party Rust plugin author

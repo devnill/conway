@@ -42,7 +42,7 @@ treatment:
   refusal naming the field. `crates/conway/src/config/schema.rs`,
   `crates/conway/src/agents.rs`'s frontmatter, and
   `crates/conway-plugin-backends/src/profile.rs`'s `ProfileRaw` all set the
-  attribute directly. As of,
+  attribute directly. As of a later item,
   `crates/conway-core/src/permission_pattern.rs`'s `RawPermissionFile` — the
   type `permissions.json` is actually loaded through — reaches the SAME
   observable outcome (a loud, named error for an unrecognized key) by a
@@ -56,7 +56,7 @@ treatment:
   own family — `PermissionFile` — that deliberately stays lenient, and why).
 
 **This gap is closed for `permissions.json`, and deliberately NOT closed the
-same way for `trust.json` —.** The
+same way for `trust.json`.** The
 type that actually deserializes a permissions file being loaded for
 installation is `RawPermissionFile`, the private struct inside
 `conway_core::permission_pattern::parse_permission_file` — not the public
@@ -232,7 +232,7 @@ frame between two programs must survive a newer peer.**
 ## Deprecation
 
 **No point, field, or capability in this set has actually been retired
-yet**, and there is no ruling a formal deprecation *procedure*
+yet**, and nothing rules a formal deprecation *procedure*
 (a warning period, a required runtime notice, a minimum number of minor
 releases before removal) — searched and confirmed absent. What follows is
 the policy this page can state with confidence from what's already ruled

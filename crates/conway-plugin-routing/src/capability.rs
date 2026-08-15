@@ -1,5 +1,6 @@
-//! The pure predicate the router uses for capability filtering (//! amended: headroom-aware context gate; further amended
-//!, to express the size half of that gate through
+//! The pure predicate the router uses for capability filtering (once
+//! amended: headroom-aware context gate; further amended
+//! since, to express the size half of that gate through
 //! `conway_core::ports::Admission` and to move `CapabilityIndex` to
 //! `conway-core`'s `ports` module — see that module's own doc).
 //!

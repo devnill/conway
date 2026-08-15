@@ -253,6 +253,26 @@ impl Runtime {
             }
         };
 
+        // (retirement) `conway.fs`'s
+        // OWN root, derived from the SAME `root` just resolved above --
+        // never a second `spec`-level field, never a second validation. See
+        // `crate::permission::derive_fs_root_config`'s own doc for why this
+        // derivation exists at all: `root` alone, since the harness-level
+        // per-tool `PathArgs::Named` check retired, no longer confines a
+        // single ordinary tool call by itself -- and why it is gated on
+        // `fs_root_is_narrowable`: a `Runtime` with no `conway.fs`-shaped
+        // plugin installed must not turn an unrelated `--root` into a hard
+        // startup failure.
+        let plugin_config = crate::permission::derive_fs_root_config(
+            root.as_deref(),
+            None,
+            self.loop_deps
+                .registry
+                .narrowing_rules()
+                .contains_key(crate::permission::CONWAY_FS_ROOT_CONFIG_KEY),
+        )
+        .unwrap_or_default();
+
         let meta = SessionMeta {
             id: session_id,
             agent_id,
@@ -274,17 +294,15 @@ impl Runtime {
             // root computed above -- `None` (unconfined) exactly as before
             // this field existed unless `spec.root` was set.
             root: root.clone(),
-            // (S1.5 resume gap) A root agent's own per-agent plugin config
-            // is simply the process-wide global config (mirrors
-            // `AgentLoop::plugin_config`'s own doc below) -- nothing to
-            // persist as a per-agent narrowing, since a root has no parent
-            // to narrow from. Empty, not the global config's own values:
-            // this field records only what THIS agent itself narrowed
-            // (`subagent.rs`'s `SubagentHost::start` persists its child's
-            // full effective value the same way `root` above is a full
-            // resolved value, not a delta -- but a root's own delta over
-            // "nothing" is always nothing).
-            plugin_config: PluginConfig::default(),
+            // (retirement) A root agent's own
+            // per-agent plugin config is the process-wide global config
+            // (mirrors `AgentLoop::plugin_config`'s own doc below) PLUS the
+            // derived `conway.fs.root` entry computed just above -- `Runtime::
+            // resume_root`'s existing (unchanged) generic re-derivation
+            // logic re-validates this exactly as it would any other
+            // per-agent config on resume, so persisting it here is enough
+            // for it to survive a resume correctly with no further wiring.
+            plugin_config: plugin_config.clone(),
         };
         self.store.create(meta).await?;
 
@@ -370,13 +388,14 @@ impl Runtime {
             // above -- the same resolved, canonical root (or `None`,
             // unconfined, unchanged from before this field existed).
             root: root.clone(),
-            // [S1.5]: a root agent's own per-agent plugin config is simply
-            // the process-wide global config -- byte-identical to this
-            // agent's behavior before this field existed. Per-agent
-            // narrowing below a root is a fork/spawn-only concept
-            // (`subagent.rs`'s `SubagentHost::start`); `RootSpec` gains no
-            // counterpart field, mirroring `tag` immediately above.
-            plugin_config: self.loop_deps.plugin_config.clone(),
+            // (retirement) the SAME
+            // effective config just computed for `meta.plugin_config` above
+            // (process-wide global config plus the derived `conway.fs.root`
+            // entry, if any) -- never re-derived, never
+            // `self.loop_deps.plugin_config.clone()` alone (that would drop
+            // the derived entry and silently unconfine every ordinary tool
+            // call again).
+            plugin_config: Arc::new(plugin_config.clone()),
             deps: self.loop_deps.clone(),
             spec: agent_spec,
             cancel: cancel.clone(),
@@ -697,10 +716,9 @@ impl Runtime {
         //   silently keeping a value nothing enforces is its own trap (an
         //   operator reading the persisted header would see a root that
         //   looks confined while nothing checks it, since the plugin that
-        //   would have called `conway_tools::fs::check_root`, or an
-        //   equivalent, is no longer even registered); refusing to resume
-        //   is the only outcome that is never silently wrong in either
-        //   direction.
+        //   would have enforced it -- `conway_tools::fs::beneath` -- is no
+        //   longer even registered); refusing to resume is the only outcome
+        //   that is never silently wrong in either direction.
         // - a key whose value would WIDEN the current global default's own
         //   value for that same key (`PluginConfigError::WouldWiden`) --
         //   refused the same way. Unreachable with today's `RuntimeDeps`

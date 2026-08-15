@@ -78,15 +78,15 @@ pub struct ConwayConfig {
     /// doc.
     #[serde(default)]
     pub tools: ToolsConfig,
-    /// `[plugins]` (the first-party plugin tier
-    ///) -- see [`PluginsConfig`]'s own doc for
+    /// `[plugins]` (the first-party plugin tier) -- see
+    /// [`PluginsConfig`]'s own doc for
     /// why this crate carries the wire shape but never itself acts on it.
     #[serde(default)]
     pub plugins: PluginsConfig,
-    /// `[hooks]` (, "declarative
+    /// `[hooks]` ("declarative
     /// hooks"). **A `pre_tool_use` rule is dispatched ONLY IF a runner has
-    /// been injected -- either via `ConwayBuilder::with_hook_runner` (board
-    /// item) directly, or via
+    /// been injected -- either via `ConwayBuilder::with_hook_runner`
+    /// directly, or via
     /// `ConwayBuilder::with_default_hook_runner`, the convenience that
     /// supplies this workspace's own in-tree default; every other `event` is
     /// still parsed and validated only.** That precondition is stated here
@@ -704,7 +704,7 @@ impl Default for PluginsConfig {
 }
 
 /// `[hooks]` -- an operator-declared list of "when this event happens, run
-/// this command" rules (, "declarative
+/// this command" rules ("declarative
 /// hooks"; see `docs/plugins/hooks.md` point 13 and `docs/plugins/scripts.md`
 /// for the design this shape is drawn from).
 ///
@@ -1057,8 +1057,8 @@ mod tests {
     "#;
 
     /// ACCEPTANCE: a well-formed `[hooks]` block with one entry parses and
-    /// round-trips (serialize back, re-parse, equal). Includes `"match"`
-    ///, spelled exactly as
+    /// round-trips (serialize back, re-parse, equal). Includes `"match"`,
+    /// spelled exactly as
     /// `PHILOSOPHY.md` §5's own example spells it, decoding into
     /// `HookEntry::match_tool`.
     #[test]

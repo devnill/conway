@@ -3,12 +3,12 @@
 //! in `settings.json`, resolved by `conway-cli`'s own
 //! `first_party_plugins::install` before `ConwayBuilder::build`, against the
 //! REAL compiled `conway` binary and a mock OpenAI-compatible server -- no
-//! unit test of the resolution function substitutes for this (: a unit
+//! unit test of the resolution function substitutes for this (a unit
 //! test is not a liveness test).
 //!
 //! One-shot (`-p`) is the mode driven here; the TUI is not (no headless TUI
 //! driver exists in this suite). This is still full, not partial, coverage
-//! of the "every mode reachable" requirement (): `conway-cli`'s
+//! of the "every mode reachable" requirement: `conway-cli`'s
 //! `main::build_conway` is the SINGLE choke point both the TUI and one-shot
 //! dispatch targets call (see that function's own doc comment: `is_tui`
 //! only affects the *built-in* selection, never the first-party-plugin
@@ -234,7 +234,7 @@ async fn skeleton_tool_is_callable_from_one_shot_once_installed() {
 }
 
 /// An id in `[plugins].install` this binary does not link is a hard config
-/// error (), never a silent no-op.
+/// error, never a silent no-op.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn unknown_plugins_install_id_is_a_hard_error() {
     let mock = MockBackend::start(Script(vec![vec![

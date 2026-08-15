@@ -9,7 +9,7 @@
 //! Every exit code `docs/scripting.md` declares has a test in this file
 //! that drives the real binary and asserts the observed process exit
 //! status -- a unit test of `exit.rs`'s mapping functions is NOT evidence
-//! a code is reachable (): the exit-4 classifier's unit tests passed
+//! a code is reachable: the exit-4 classifier's unit tests passed
 //! for its entire unreachable lifetime, because they constructed a
 //! `ConwayError::Routing` by hand and never drove the path
 //! (`AgentLoop::finish_error` folding the routing failure into

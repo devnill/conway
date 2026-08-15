@@ -307,7 +307,7 @@ and inherits its def) does not require its interactive child to call
 `report` while simultaneously denying it that tool.
 
 **`conway_ask` takes no `agent_def` argument, but its child inherits the
-caller's own def anyway** — the answer to what was, before, an open design
+caller's own def anyway** — the answer to what was, before this item, an open design
 question: a forked child inherits its parent's `agent_def` (system prompt,
 tools selector, model pin), the same as an ordinary `conway_fork`, enforced
 at the `SubagentHost`/`Runtime::ask` trait boundary rather than at the

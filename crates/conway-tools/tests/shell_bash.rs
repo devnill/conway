@@ -89,8 +89,8 @@ fn find_pgid(events: &[Event]) -> i32 {
 /// The poll is what makes the assertion honest, not a way to make a red test
 /// green: if the group genuinely SURVIVED — a real orphaned-process bug —
 /// polling cannot rescue it, because a live `sleep 300` outlives this window
-/// by minutes and every attempt returns `Ok`. Finding
-///.
+/// by minutes and every attempt returns `Ok` -- a finding from the same
+/// review that added this poll.
 #[cfg(unix)]
 fn assert_group_dead(pgid: i32) {
     // Generous relative to reaping (milliseconds) and tiny relative to the

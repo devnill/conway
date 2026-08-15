@@ -1,6 +1,7 @@
-//! Acceptance tests for `Conway::resume`/`::sessions`/`::fork_from` (//! then earlier work).
+//! Acceptance tests for `Conway::resume`/`::sessions`/`::fork_from` (built on
+//! earlier work).
 //!
-//! **An earlier closes the gap this file's doc used to disclose here:**
+//! **A later item closes the gap this file's doc used to disclose here:**
 //! `Runtime::resume_root` now exists, and `Conway::resume`/
 //! `::fork_from` both call it (see `crates/conway/src/conway.rs`'s doc for
 //! the full mechanism). `resumed_handle_prompt_succeeds_and_continues_the_

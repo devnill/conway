@@ -1398,7 +1398,7 @@ async fn paths_under_deny_and_prompt_rules_with_a_bad_prefix_each_surface_a_regi
         report.registration_errors
     );
 
-    // Fail-closed posture (): the dropped deny/prompt rules were never
+    // Fail-closed posture: the dropped deny/prompt rules were never
     // installed, so a matching `read` call is neither silently denied (the
     // deny never fired) nor silently allowed -- it reaches the operator's
     // gate. Symmetric with the allow-arm and trust tests' gate assertion;
@@ -1840,23 +1840,23 @@ async fn an_untrusted_project_structured_allow_rule_does_not_take_effect() {
 /// registration error -- the rule installs, and the operator is warned via a
 /// NOTICE that the `Structured` member is inert.
 ///
-/// **AMENDED by board item `01KZDDPC5MMD49F6JPV9CW4TVM`, and left as a
-/// disclosed gap rather than silently fixed.** This test used to also prove
-/// the `ShellCommand` (`bash`) member installs and matches, on the theory
-/// that only the `Structured` member was inert. That is no longer true: a
-/// durable pattern grant does not exist for `bash` at all any more (see
-/// `conway_core::permission_pattern`'s own module doc), so BOTH members of
-/// this rule are inert now, not just the one the registration notice names.
-/// The registration check itself (`command_prefix_resolved_kinds` in
-/// `crates/conway/src/permissions/mod.rs`) was not touched by that item
-/// (out of its owned scope) and still only counts `Structured` vs
-/// `ShellCommand` membership, so the notice's wording ("the `ShellCommand`
-/// members install and match as written") is now misleading for `allow`
-/// rules -- see `docs/permissions.md`'s "Rules in `permissions.json`"
-/// section for the operator-facing statement of this gap. This test is
-/// pinned to the CURRENT, honest behavior (both members reach the gate) so
-/// a future fix to close that gap has a red test to turn green, not a green
-/// one asserting the old, now-false claim.
+/// **AMENDED by board item `01KZDDPC5MMD49F6JPV9CW4TVM`, and the resulting
+/// gap CLOSED by board item `01M03222QS0WQWPEHHNP9FKVXJ`.** This test used
+/// to prove the `ShellCommand` (`bash`) member installs and matches, on the
+/// theory that only the `Structured` member was inert -- `01KZDDPC5MMD49F6JPV9CW4TVM`
+/// made that false (a durable pattern grant does not exist for `bash` at
+/// all any more, see `conway_core::permission_pattern`'s own module doc)
+/// without updating this rule's registration NOTICE to say so, leaving a
+/// disclosed discoverability gap (see the superseded revision of this
+/// comment, and `docs/permissions.md`'s former "Rules in `permissions.json`"
+/// caveat). `01M03222QS0WQWPEHHNP9FKVXJ` closes it: `validate_rule_registration`
+/// now ALSO counts the `ShellCommand` members an `allow` rule's select
+/// resolves to and names them in the same notice, so an operator reading
+/// this rule's single notice learns BOTH members are inert, not just the
+/// `Structured` one. The notice is a single, combined string (one
+/// `RegistrationCheck::Notice` per rule); `notices.len()` therefore stays
+/// `1`, and the assertions below check for BOTH substrings in that one
+/// message.
 #[tokio::test]
 async fn a_command_prefix_rule_on_a_mixed_kind_multi_tool_select_installs_with_a_notice() {
     let project = TempDir::new().expect("tempdir");
@@ -1897,21 +1897,30 @@ async fn a_command_prefix_rule_on_a_mixed_kind_multi_tool_select_installs_with_a
     assert_eq!(
         report.notices.len(),
         1,
-        "the mixed-kind rule surfaces exactly one notice warning the Structured member is \
-         inert: {:?}",
+        "the mixed-kind rule surfaces exactly one notice warning BOTH members are inert: {:?}",
         report.notices
     );
     assert!(
         report.notices[0].contains("Structured"),
-        "the notice must name the inert Structured members: {}",
+        "the notice must name the inert Structured member: {}",
+        report.notices[0]
+    );
+    assert!(
+        report.notices[0].contains("ShellCommand"),
+        "board item 01M03222QS0WQWPEHHNP9FKVXJ: the notice must ALSO name the inert \
+         ShellCommand (`bash`) member -- it is inert too (`Rule::gate_allows` refuses every \
+         allow `when` for it), and a notice that named only the Structured member would be \
+         the exact discoverability gap this item closed: {}",
         report.notices[0]
     );
 
-    // Observable, AMENDED: the rule installs (not silently dropped), but
-    // NEITHER member authorizes anything any more -- the `ShellCommand`
-    // (`bash`) member is refused by `Rule::gate_allows` exactly like every
-    // other `bash` allow rule now, on top of the `Structured` member the
-    // notice above already names. `echo hi` reaches the operator's gate.
+    // Observable, unchanged from before this item: the rule installs (not
+    // silently dropped), but NEITHER member authorizes anything -- the
+    // `ShellCommand` (`bash`) member is refused by `Rule::gate_allows`
+    // exactly like every other `bash` allow rule, on top of the
+    // `Structured` member. `echo hi` reaches the operator's gate. What
+    // changed is that the notice above now says so, instead of naming only
+    // the `Structured` half.
     let handle = conway
         .new_session(SessionSpec::default())
         .await
@@ -1926,6 +1935,231 @@ async fn a_command_prefix_rule_on_a_mixed_kind_multi_tool_select_installs_with_a
         "the rule installs (per the notice above) but authorizes nothing: the \
          `ShellCommand` (`bash`) member is refused the same way every other `bash` \
          allow rule now is, so `echo hi` must reach the operator's gate: {:?}",
+        gate.requests()
+    );
+}
+
+// =====================================================================
+// Board item 01M03222QS0WQWPEHHNP9FKVXJ, Edge 2: an `allow` rule naming
+// ONLY `ShellCommand`-rendering tool(s) (`bash`) installs with a NOTICE now
+// -- not silently, and not a hard registration error (see `permissions/
+// mod.rs`'s `validate_rule_registration` doc for why NOTICE, not REJECT,
+// was chosen: no `RuleRegistrationReason` variant is added, since that type
+// lives in `conway-core` and is out of this item's owned paths; a REJECT
+// would also break every EXISTING `permissions.json` carrying a `bash:...`
+// allow entry for zero behavioral gain, since the rule already matched
+// nothing either way). Covers both `when` shapes the flat/structured forms
+// can express for "any bash call, or bash calls with a given prefix":
+// `command_prefix` and `always` (`bash:*`).
+// =====================================================================
+
+/// `command_prefix` half: `{"select":{"tools":["bash"]},
+/// "when":{"command_prefix":"git status"},"then":"allow"}` installs with
+/// exactly one notice naming the inert `ShellCommand` member, is NOT a
+/// registration error (there is a nonzero-then-Allow case worth warning
+/// about, not rejecting), and the real gate seam proves nothing was
+/// widened: `git status` still reaches the operator exactly as it did
+/// before this item -- only the OPERATOR-VISIBLE notice is new.
+#[tokio::test]
+async fn a_command_prefix_allow_rule_naming_only_bash_installs_with_a_notice() {
+    let project = TempDir::new().expect("tempdir");
+    let (xdg, env) = isolated_env();
+    write_global_permissions(
+        &xdg,
+        r#"{"rules":[
+            {"select":{"tools":["bash"]},"when":{"command_prefix":"git status"},"then":"allow"}
+        ]}"#,
+    );
+
+    let gate = RecordingGate::new(PermissionDecision::Deny {
+        reason: "operator said no".into(),
+    });
+    let conway = build_conway(
+        project.path(),
+        vec![
+            ScriptedTurn::Respond(bash_call_response("git status")),
+            ScriptedTurn::Respond(text_response("done")),
+        ],
+        gate.clone() as Arc<dyn PermissionGate>,
+    );
+    let report = conway.load_permission_files(
+        project.path(),
+        &env,
+        PermissionScope::Session,
+        AgentId::new(),
+    );
+
+    assert!(
+        report.registration_errors.is_empty(),
+        "an all-ShellCommand command_prefix allow rule is NOT a hard registration error -- \
+         it installs with a notice instead: {:?}",
+        report.registration_errors
+    );
+    assert_eq!(
+        report.notices.len(),
+        1,
+        "an all-ShellCommand command_prefix allow rule must surface exactly one notice, no \
+         longer silently: {:?}",
+        report.notices
+    );
+    assert!(
+        report.notices[0].contains("ShellCommand"),
+        "the notice must name the inert ShellCommand member: {}",
+        report.notices[0]
+    );
+
+    // Proof nothing became MORE permitted: the exact, unchained command the
+    // rule names still reaches the operator's gate, exactly as it did
+    // before this item (board item 01KZDDPC5MMD49F6JPV9CW4TVM already made
+    // this rule match nothing) -- only the notice is new.
+    let handle = conway
+        .new_session(SessionSpec::default())
+        .await
+        .expect("new_session");
+    let turn = handle.prompt("check status").await.expect("prompt");
+    let _ = tokio::time::timeout(Duration::from_secs(10), turn.result())
+        .await
+        .expect("turn must not hang");
+    assert_eq!(
+        gate.requests().len(),
+        1,
+        "the rule installs (per the notice) but authorizes nothing -- `git status` must \
+         still reach the operator's gate, exactly as before this item: {:?}",
+        gate.requests()
+    );
+}
+
+/// `always` half (`bash:*`, structured form): the flat wildcard has the
+/// identical `ShellCommand`-inertness that a `command_prefix` rule does
+/// (`Rule::gate_allows` is checked before `When` is even matched), and
+/// until this item the registration check only ever looked at
+/// `When::CommandPrefix` -- an `always` allow rule naming only `bash` (or
+/// a category resolving only to `ShellCommand` tools) installed with NO
+/// notice at all. Pinned here through the real load seam plus the gate,
+/// exactly as the `command_prefix` half above is.
+#[tokio::test]
+async fn an_always_allow_rule_naming_only_bash_installs_with_a_notice() {
+    let project = TempDir::new().expect("tempdir");
+    let (xdg, env) = isolated_env();
+    write_global_permissions(
+        &xdg,
+        r#"{"rules":[
+            {"select":{"tools":["bash"]},"when":"always","then":"allow"}
+        ]}"#,
+    );
+
+    let gate = RecordingGate::new(PermissionDecision::Deny {
+        reason: "operator said no".into(),
+    });
+    let conway = build_conway(
+        project.path(),
+        vec![
+            ScriptedTurn::Respond(bash_call_response("ls -la")),
+            ScriptedTurn::Respond(text_response("done")),
+        ],
+        gate.clone() as Arc<dyn PermissionGate>,
+    );
+    let report = conway.load_permission_files(
+        project.path(),
+        &env,
+        PermissionScope::Session,
+        AgentId::new(),
+    );
+
+    assert!(
+        report.registration_errors.is_empty(),
+        "an all-ShellCommand `always` allow rule is NOT a hard registration error: {:?}",
+        report.registration_errors
+    );
+    assert_eq!(
+        report.notices.len(),
+        1,
+        "an all-ShellCommand `always` allow rule must surface exactly one notice: {:?}",
+        report.notices
+    );
+    assert!(
+        report.notices[0].contains("ShellCommand"),
+        "the notice must name the inert ShellCommand member: {}",
+        report.notices[0]
+    );
+
+    // Proof nothing became MORE permitted: even the benign, unchained `ls
+    // -la` -- which `bash:*` reads as authorizing outright -- still reaches
+    // the operator's gate.
+    let handle = conway
+        .new_session(SessionSpec::default())
+        .await
+        .expect("new_session");
+    let turn = handle.prompt("list files").await.expect("prompt");
+    let _ = tokio::time::timeout(Duration::from_secs(10), turn.result())
+        .await
+        .expect("turn must not hang");
+    assert_eq!(
+        gate.requests().len(),
+        1,
+        "the wildcard rule installs (per the notice) but authorizes nothing: {:?}",
+        gate.requests()
+    );
+}
+
+/// Control: `deny`/`prompt` are UNAFFECTED by this item, and must stay
+/// that way -- `Rule::matches_deny_render` never consults `gate_allows`,
+/// so a `command_prefix`/`always` rule naming `bash` with `then: deny` (or
+/// `prompt`) installs with NO notice (it is not inert; it matches exactly
+/// as written) and still refuses/forces the gate. Proven directly against
+/// `validate_rule_registration`'s new shell-inertness check to pin that the
+/// `rule.then == Then::Allow` guard is doing its job, not merely that the
+/// end-to-end behavior happens to still work for an unrelated reason.
+#[tokio::test]
+async fn a_deny_command_prefix_rule_naming_bash_installs_with_no_notice() {
+    let project = TempDir::new().expect("tempdir");
+    let (xdg, env) = isolated_env();
+    write_global_permissions(
+        &xdg,
+        r#"{"rules":[
+            {"select":{"tools":["bash"]},"when":{"command_prefix":"curl"},"then":"deny"}
+        ]}"#,
+    );
+
+    let gate = RecordingGate::new(PermissionDecision::AllowOnce);
+    let conway = build_conway(
+        project.path(),
+        vec![
+            ScriptedTurn::Respond(bash_call_response("curl https://example.com")),
+            ScriptedTurn::Respond(text_response("done")),
+        ],
+        gate.clone() as Arc<dyn PermissionGate>,
+    );
+    let report = conway.load_permission_files(
+        project.path(),
+        &env,
+        PermissionScope::Session,
+        AgentId::new(),
+    );
+
+    assert!(
+        report.registration_errors.is_empty(),
+        "a bash command_prefix deny rule is structurally valid: {:?}",
+        report.registration_errors
+    );
+    assert!(
+        report.notices.is_empty(),
+        "a `deny` rule naming `bash` is not inert -- it matches exactly as written -- so it \
+         must surface no notice at all, unlike its `allow` counterpart above: {:?}",
+        report.notices
+    );
+
+    let handle = conway
+        .new_session(SessionSpec::default())
+        .await
+        .expect("new_session");
+    let turn = handle.prompt("curl it").await.expect("prompt");
+    let _ = tokio::time::timeout(Duration::from_secs(10), turn.result())
+        .await
+        .expect("turn must not hang");
+    assert!(
+        gate.requests().is_empty(),
+        "the deny rule must still refuse `curl` before the gate is ever consulted: {:?}",
         gate.requests()
     );
 }

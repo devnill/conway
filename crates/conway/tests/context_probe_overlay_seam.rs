@@ -66,7 +66,7 @@
 //! That assertion shape cannot discriminate "T-1 backstopped a wrong index"
 //! from "the index was already correct" -- it was retired for that reason,
 //! not renamed, since renaming it as if it still proved the T-1-backstop
-//! property would leave a passing check that cannot fail ().
+//! property would leave a passing check that cannot fail.
 //!
 //! ## The mock HTTP server is loopback-only, not a live network dependency
 //!

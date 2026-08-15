@@ -76,7 +76,7 @@ endpoint is only discovered when conway actually tries the request, not
 skipped in advance the way the rest of this page describes.
 
 **Installed: `conway-plugin-routing`'s `DeclarativeRouter`.** This is the
-engine `conway` itself used to compile in unconditionally before — capability matching, headroom, health, and
+engine `conway` itself used to compile in unconditionally before this item — capability matching, headroom, health, and
 circuit breaking, everything else on this page — now an installable
 first-party plugin (see the note at the top of this page for the
 `plugins.install` entry). Two ways to install it:

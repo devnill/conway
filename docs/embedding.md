@@ -549,7 +549,7 @@ UNCONDITIONALLY over a registered factory — it is never wrapped, inspected,
 or validated, and a factory set alongside it is then never even invoked.
 Absent an injected router, a registered factory is invoked instead; absent
 both, `build()` falls through to `conway_core::routing::MinimalRouter` —
-the config-only core resolver (: this
+the config-only core resolver (this
 crate no longer compiles a capability-/health-filtering router engine in at
 all). A factory whose `build` returns `Err` fails the whole `build()` call
 as `ConwayError::Build`, naming the factory's own id and the underlying
@@ -664,7 +664,7 @@ OUT-OF-PROCESS subprocess-plugin design; it says nothing about registering
 an in-process Rust type through `ConwayBuilder`, and citing it here as
 though it did was itself a standing error this page carried, now corrected.
 `Backend` used to be named alongside `SessionStore`/`Router` in this
-table's "not reachable" set; added
+table's "not reachable" set; a later item added
 `conway::backend` specifically to make the raw trait facade-only
 authorable, so that row is unconditionally **Yes** now.
 
@@ -730,7 +730,7 @@ runs so a duplicate never leaves one factory's side effects behind.
 Registering no factories leaves `build()` behaving exactly as before.
 
 **Reachable from configuration.** `backends.<id>.kind` is an open name, resolved against every registered
-factory's own `id()` — ONLY ( removed
+factory's own `id()` — ONLY (a later item removed
 the temporary compiled-in fallback the predecessor item left standing;
 `conway` itself compiles in no kind at all any more). A `backends.<id>`
 entry naming `MyDialectFactory`'s own kind is what invokes it, with a

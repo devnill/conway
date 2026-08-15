@@ -20,8 +20,7 @@ use crate::commands::sessions::SessionsArgs;
 /// Adding a flag here? It does **not** reach a running `conway` through
 /// `conway::config::merge::CliOverrides` — that struct is an embedder-facing
 /// config-override API `conway-cli` deliberately does not construct
-/// (
-///; see that struct's own doc comment for why
+/// (a settled design decision; see that struct's own doc comment for why
 /// routing this crate's flags through it would be actively breaking, not
 /// merely unwired). This crate reads its own fields off `Cli` directly and
 /// wires them by hand: `oneshot::build_gate`/`oneshot::resolve_session` for

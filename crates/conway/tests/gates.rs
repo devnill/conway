@@ -121,6 +121,37 @@ async fn allow_list_gate_glob_form_rejects_chained_shell_command() {
 }
 
 #[tokio::test]
+async fn allow_list_gate_glob_form_refuses_a_benign_piped_command_the_glob_itself_would_match() {
+    // Board item 01M03222QS0WQWPEHHNP9FKVXJ, Edge 1's finding, pinned: this
+    // scan DOES occasionally refuse a call the operator's own glob would
+    // otherwise cover -- `git *` (a raw globset pattern) matches "git log |
+    // head" trivially (`*` matches any character sequence, pipe included),
+    // but the metacharacter pre-check refuses it anyway, before the glob is
+    // even consulted. This is the SAME shape GP-13 measured a 68%
+    // false-positive rate on -- kept anyway, deliberately, because removing
+    // it would WIDEN what a scoped `bash(pattern)` grant authorizes (see
+    // `ArgMatcher::allows`'s own doc for the full "determined and kept"
+    // reasoning: no accumulating fatigue in one-shot mode, same principal
+    // same moment, and an explicit unrestricted escape hatch -- the bare
+    // `tool_name` form -- exists for an operator who wants none of this
+    // friction).
+    let gate = AllowListGate::new(vec!["bash(git *)".to_string()], vec![]);
+    let decision = gate
+        .check(request(
+            "bash",
+            ToolCategory::Execute,
+            serde_json::json!({"command": "git log | head"}),
+        ))
+        .await;
+    assert!(
+        matches!(decision, PermissionDecision::DenyWithFeedback { .. }),
+        "a benign piped command the operator's own `git *` glob would otherwise match is \
+         still refused by the metacharacter pre-check -- this is the documented, KEPT \
+         tradeoff, not a regression: got {decision:?}"
+    );
+}
+
+#[tokio::test]
 async fn allow_list_gate_bare_name_entry_still_authorizes_chained_shell_command() {
     // Deliberate: `--allowed-tools bash` already grants unrestricted bash
     // access (this is the documented path), so the metacharacter gate does

@@ -433,7 +433,7 @@ mod tests {
         );
     }
 
-    ///, end to end through the real
+    /// Proven end to end through the real
     /// startup loader -- the sibling of `registration_error_surfaces_as_a_
     /// transcript_error` just above, same shape: a real `.conway/
     /// permissions.json` on a real filesystem, loaded by the real

@@ -56,7 +56,7 @@ pub struct HookInvocation {
 /// [`crate::ports::HookRunner`]'s own doc).
 ///
 /// **Structurally cannot express "replace computed context wholesale"**
-/// (, which supersedes an earlier one
+/// (a later decision, which supersedes an earlier one
 /// whose reasoning was cacheability -- NOT the basis here). The only way to
 /// change context is [`ContextDelta`]: append, or exclude by identifier,
 /// never substitute. The load-bearing reason is **reconstructability**: the

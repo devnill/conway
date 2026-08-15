@@ -152,8 +152,7 @@ impl Conway {
     /// Installs a pattern ALLOW grant approved through the interactive
     /// gate (V2b) -- origin `Interactive`. Use
     /// [`Self::grant_permission_pattern_from_file`] for a rule loaded from
-    /// a permissions file, so the review surface can tell the two apart
-    ///.
+    /// a permissions file, so the review surface can tell the two apart.
     ///
     /// Note the metacharacter gate is NOT applied here: it lives in
     /// `PatternRule::matches_render` and is evaluated against each
@@ -918,8 +917,7 @@ impl Conway {
         }
     }
 
-    /// Reattaches to a persisted session, now as a DRIVABLE handle
-    ///.
+    /// Reattaches to a persisted session, now as a DRIVABLE handle.
     ///
     /// **Resolved:** this method's previous doc disclosed a real
     /// gap -- `conway-runtime` exposed only `start_root`, which cannot be

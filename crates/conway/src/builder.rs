@@ -910,11 +910,27 @@ impl ConwayBuilder {
     }
 
     /// Sets this `Conway`'s confinement root -- every root agent
-    /// [`crate::Conway::new_session`] starts afterward is confined to it,
-    /// via `conway_runtime::runtime::RootSpec::root` -- the same S3/S5
-    /// primitive (`AgentRoot`, `PermissionBroker::check_root`) that already
-    /// confines a spawned child, now finally reachable for the agent an
-    /// operator actually talks to.
+    /// [`crate::Conway::new_session`] starts afterward is confined to it.
+    ///
+    /// **This is the ergonomic surface GP-13 required stay reachable
+    /// through "Retire the harness-level confinement root once
+    /// `conway.fs` enforces its own":** a harness-level pre-gate check used
+    /// to be the ONLY thing this method's `root` fed; that check is retired.
+    /// `with_root` now feeds TWO things from the SAME single, once-resolved,
+    /// once-canonicalized `root` value: (1) `conway_runtime::runtime::
+    /// RootSpec::root`, unchanged, which still confines the artifact-writer
+    /// path (`conway_runtime::artifact_store::AgentArtifactWriter`); and (2)
+    /// a derived `conway.fs.root` per-agent plugin-config entry
+    /// (`conway_runtime::permission::derive_fs_root_config`, applied inside
+    /// `Runtime::start_root`), which is what `conway.fs` itself now reads to
+    /// confine `read`/`write`/`edit`/`cd`/`glob`/`grep` -- open-relative,
+    /// inside the tool, closing a TOCTOU gap the harness-level check could
+    /// not (see `conway_tools::fs::beneath`'s own doc). A spawned child's
+    /// `SubagentSpec::root` (`SpawnSpec::root`/`ForkSpec` inheritance)
+    /// receives the identical treatment at spawn time
+    /// (`conway_runtime::subagent::SubagentHost::start`), so a subtree
+    /// confined via this method stays confined for ordinary tool calls at
+    /// every depth, not only at the agent an operator directly started.
     ///
     /// **Not called at all (the default)** means every root agent this
     /// `Conway` starts stays `Unconfined`, byte-for-byte identical to every
@@ -929,6 +945,12 @@ impl ConwayBuilder {
     /// doc), which must itself already fall inside it -- `new_session`
     /// returns a typed error rather than starting an agent whose own working
     /// directory sits outside its own confinement.
+    ///
+    /// **`bash` remains outside this boundary entirely** (a different
+    /// plugin, with no root-enforcing mechanism `conway.fs`'s relocation
+    /// could give it) -- excluding it from the tool set is the actual
+    /// guarantee an operator relying on `--root` needs, not this method
+    /// alone. See `docs/tools.md` and `docs/plugins/trust-and-security.md`.
     pub fn with_root(mut self, root: impl Into<PathBuf>) -> Self {
         self.root = Some(root.into());
         self
@@ -1286,8 +1308,7 @@ impl ConwayBuilder {
                 matcher: rule.match_tool.clone(),
             })
             .collect();
-        //,,
-        //, and: the
+        // The observation and deny-only events, and: the
         // same shape for every event dispatched outside the permission
         // broker, grouped by event name. `post_tool_use`, `session_starting`,
         // `child_spawned`, `request_assembled`, `child_reported`, and every

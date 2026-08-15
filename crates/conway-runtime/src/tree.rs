@@ -285,8 +285,8 @@ impl AgentTree {
         // `reason` is model-supplied, so untrusted (a tool argument, `conway_cancel`)
         // and, from this item on, reaches a persisted `AgentResult` on the
         // immediate path (`cancel_reason`, read back by both
-        // `AgentLoop::finish_cancelled` and, since
-        //, `AgentLoop::finish_error`) --
+        // `AgentLoop::finish_cancelled` and, since a later item,
+        // `AgentLoop::finish_error`) --
         // bounded to the same `DEFAULT_SUMMARY_LIMIT` `AgentResult::new`
         // already caps `summary` at, on the same char-boundary-safe logic,
         // so an adversarial caller cannot grow the tree's per-agent

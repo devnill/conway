@@ -127,7 +127,7 @@ fn assert_group_dead(pgid: i32) {
 /// pattern-match on a marker string the test alone controls), so a
 /// correctly-shaped default `{}` answer coming back would mean the payload
 /// never arrived -- the assertion is on the RETURNED ANSWER's content, not
-/// on any intermediate signal like "a process spawned" ().
+/// on any intermediate signal like "a process spawned".
 #[tokio::test]
 async fn drives_one_event_end_to_end_and_returns_the_scripts_answer() {
     let dir = TempDir::new().unwrap();

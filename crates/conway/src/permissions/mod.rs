@@ -175,7 +175,7 @@ pub(crate) enum RegistrationCheck {
 /// single registration check the structured form needs. Returns a typed
 /// [`RuleRegistrationError`] for a rule this loader will refuse to install
 /// silently rather than store inert -- the mirror of the `68ea9b1`
-/// `read:*`-matched-nothing bug. Two checks today:
+/// `read:*`-matched-nothing bug. Three checks today:
 /// (1) `when: command_prefix` paired with a `select: tools([t])` whose
 /// resolved `render_kind` is `Structured` (a JSON dump whose token
 /// boundaries the operator cannot predict);
@@ -190,29 +190,68 @@ pub(crate) enum RegistrationCheck {
 /// load-order hazard. A `Select::Categories` and a trailing-`*` wildcard
 /// are not inspectable here (members may register later) and are left to
 /// the decision-time fail-closed in `rule_denies_or_prompts`.
+/// (3) board item `01M03222QS0WQWPEHHNP9FKVXJ`: `then: allow` paired with
+/// `when: command_prefix`/`always` whose resolved select includes a
+/// `ShellCommand`-rendering member (`bash`) is inert for that member --
+/// `Rule::gate_allows` refuses EVERY allow `when` for a `ShellCommand`
+/// tool, unconditionally, since board item `01KZDDPC5MMD49F6JPV9CW4TVM`
+/// removed the durable pattern-grant surface for such a tool. This is the
+/// mirror of check (1), inverted: (1) flags a select that resolves to
+/// ONLY `Structured` members (inert because of a fragile prefix match over
+/// a JSON dump); (3) flags an ALLOW rule whose select includes a
+/// `ShellCommand` member (inert because `allow` cannot reach that render
+/// kind at all, regardless of what the prefix says). A NOTICE, not a
+/// REJECT, deliberately: unlike (1)'s all-`Structured` case, there is no
+/// "fully inert, nothing worth keeping" shape here to reject outright --
+/// a rule combining `bash` with a `Structured` tool still has a working
+/// half (or, all-`bash`, would need a NEW [`RuleRegistrationReason`]
+/// variant that this module cannot add, since [`Rule`]/[`RuleRegistrationReason`]
+/// live in `conway-core` and are out of this item's owned paths) -- and a
+/// hard reject would break every EXISTING `permissions.json` carrying a
+/// `bash:...` allow entry (a real migration cost for a rule that was
+/// already doing nothing, see `docs/permissions.md`'s Limits section).
+/// `deny`/`prompt` are UNAFFECTED (checked via `rule.then == Then::Allow`):
+/// `Rule::matches_deny_render` never consults `gate_allows`, so a `deny`/
+/// `prompt` `command_prefix`/`always` rule naming `bash` matches exactly as
+/// written.
 ///
-/// A4 broadens check (1) beyond a single-tool `Select::Tools`. See the
-/// exact rejection/notice split at each match arm below -- copied
-/// unchanged from this function's original home on `Conway` (this move is
-/// a relocation, not a rewrite of the decision itself).
+/// A4 broadens check (1) beyond a single-tool `Select::Tools`; this item
+/// broadens the SAME resolved-kind counting (3) covers to also flag the
+/// allow-specific `ShellCommand` inertness (1) never looked for. See the
+/// exact rejection/notice split at each match arm below -- (1) and (2) are
+/// copied unchanged from this function's original home on `Conway` (that
+/// move was a relocation, not a rewrite); (3) is new.
 pub(crate) fn validate_rule_registration(rt: &Runtime, rule: &Rule) -> Option<RegistrationCheck> {
     match (&rule.select, &rule.when) {
-        // A4: `command_prefix` on a Structured-rendering tool is inert for
-        // that tool. Resolve the select (exact tools, trailing-`*`
-        // wildcards, and categories -- all via `select_matches` over the
-        // registered-tools metadata) and count Structured vs ShellCommand
-        // members. Unknown tools are skipped (load-order hazard, mirroring
-        // the single-tool check's `None` arm).
+        // (1) + (3): `command_prefix` on a Structured-rendering tool is
+        // inert for that tool (1); an ALLOW rule (`command_prefix` or, via
+        // the arm below, `always`) on a ShellCommand-rendering tool is
+        // inert for that tool too (3), for the unrelated reason that
+        // `Rule::gate_allows` refuses every allow `when` for it. Resolve
+        // the select (exact tools, trailing-`*` wildcards, and categories
+        // -- all via `select_matches` over the registered-tools metadata)
+        // and count Structured vs ShellCommand members. Unknown tools are
+        // skipped (load-order hazard, mirroring the single-tool check's
+        // `None` arm).
         (Select::Tools(_), When::CommandPrefix(_))
         | (Select::Categories(_), When::CommandPrefix(_)) => {
             let (structured, shell) = command_prefix_resolved_kinds(rt, rule);
+            let shell_allow_inert = rule.then == Then::Allow && shell > 0;
             if structured > 0 && shell == 0 {
-                Some(RegistrationCheck::Reject(RuleRegistrationError {
+                // (1): fully inert -- no working member to preserve. Note
+                // this fires regardless of `then` (unchanged from before
+                // this item): a `deny`/`prompt` `command_prefix` rule on an
+                // all-`Structured` select is exactly as fragile as an
+                // `allow` one, since the token-boundary problem lives in
+                // `prefix_matches`, not in `gate_allows`.
+                return Some(RegistrationCheck::Reject(RuleRegistrationError {
                     rule: rule.clone(),
                     reason: RuleRegistrationReason::CommandPrefixOnStructuredTool,
-                }))
-            } else if structured > 0 {
-                Some(RegistrationCheck::Notice(format!(
+                }));
+            }
+            let mut notice_parts = Vec::new();
+            if structured > 0 {
+                notice_parts.push(format!(
                     "a `command_prefix` rule selecting {} matches no `Structured`-rendering \
                      tool it selects ({} of its selected tools render a JSON dump whose \
                      token boundaries the operator cannot predict); the `ShellCommand` \
@@ -221,6 +260,47 @@ pub(crate) fn validate_rule_registration(rt: &Runtime, rule: &Rule) -> Option<Re
                      (the `tool:*` flat form)",
                     rule.describe(),
                     structured,
+                ));
+            }
+            if shell_allow_inert {
+                notice_parts.push(format!(
+                    "an `allow` rule selecting {} matches no `ShellCommand`-rendering tool \
+                     it selects ({} of its selected tools render a shell command); a durable \
+                     pattern grant can never authorize a `ShellCommand` tool, regardless of \
+                     the prefix (`Rule::gate_allows`) -- these member(s) install but never \
+                     match. Use `deny`/`prompt` instead, or grant per-call (`[y]`/`[a]`) or \
+                     per-directory (`--root`)",
+                    rule.describe(),
+                    shell,
+                ));
+            }
+            if notice_parts.is_empty() {
+                None
+            } else {
+                Some(RegistrationCheck::Notice(notice_parts.join("; ")))
+            }
+        }
+        // (3): the `always` half of the same allow-on-ShellCommand
+        // inertness -- `bash:*` (or its structured equivalent) is exactly
+        // as inert as `bash:git status` for an `allow` rule, and for the
+        // identical reason (`Rule::gate_allows`, checked before `When` is
+        // even matched). `deny`/`prompt` are unaffected, hence the
+        // `rule.then == Then::Allow` guard -- an `always` deny/prompt rule
+        // naming `bash` matches every call exactly as written.
+        (Select::Tools(_), When::Always) | (Select::Categories(_), When::Always)
+            if rule.then == Then::Allow =>
+        {
+            let (_structured, shell) = command_prefix_resolved_kinds(rt, rule);
+            if shell > 0 {
+                Some(RegistrationCheck::Notice(format!(
+                    "an `always` allow rule selecting {} matches no `ShellCommand`-rendering \
+                     tool it selects ({} of its selected tools render a shell command); a \
+                     durable pattern grant can never authorize a `ShellCommand` tool \
+                     (`Rule::gate_allows`) -- these member(s) install but never match. Use \
+                     `deny`/`prompt` instead, or grant per-call (`[y]`/`[a]`) or per-directory \
+                     (`--root`)",
+                    rule.describe(),
+                    shell,
                 )))
             } else {
                 None

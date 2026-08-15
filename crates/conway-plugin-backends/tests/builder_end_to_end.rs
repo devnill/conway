@@ -13,7 +13,7 @@
 //! `ScriptedBackend`), this one drives the REAL
 //! `OpenAiCompatBackendFactory::build` -> real `OpenAiCompatBackend` ->
 //! real HTTP request, against a loopback `wiremock` server -- no
-//! credentials, no network beyond that loopback listener (). This is
+//! credentials, no network beyond that loopback listener. This is
 //! the discriminating proof that `ConwayBuilder::with_backend_factory` is
 //! not merely accepted but genuinely reaches the wire: a builder that
 //! silently dropped the registered factory, or built a backend that never

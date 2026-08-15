@@ -16,7 +16,7 @@ an explicit verdict below, not just a code sample.
 
 **A cookbook containing only what happens to work is a marketing
 document.** Where an example (or a variant of one) cannot be written against
-the tree as it stands, that is stated plainly, the gap is named, and the tracking it is cited — a documented gap is a required outcome of
+the tree as it stands, that is stated plainly, the gap is named, and the item tracking it is cited — a documented gap is a required outcome of
 this page, not a failure of it.
 
 ## How to read this page
@@ -28,7 +28,7 @@ Every example is labeled one of:
 - **Partially implementable today** — one variant works now; a stronger
   variant is designed-not-built, and the gap is named.
 - **Blocked** — designed-not-built; the section shows what exists instead
-  (if anything) and cites the
+  (if anything) and cites the tracking item
 
 **Every code block below marked runnable was actually compiled and run**
 against a scratch crate outside this workspace, `cookbook-scratch/`, whose
@@ -242,14 +242,14 @@ subtly wrong.
 written:** building `ContextHookCtx` by hand for a test used to require a
 real `ArtifactWriter` impl even when a hook wrote nothing, and the facade
 shipped no no-op one — the ~15 lines of boilerplate `authoring.md`'s own
-walkthrough hit, tracked as, now
+walkthrough hit, tracked as its own item, now
 closed: `ArtifactWriteHandle::noop(agent_id)` (`authoring.md`'s current step
 3) covers that case. It does **not** cover this example's own test above,
 which keeps its `RecordingArtifactWriter` on purpose — the test asserts on
 the exact name and bytes the hook wrote, something a no-op writer cannot
 record by construction. `noop` and a purpose-built recording double solve two
 different problems (nothing to supply vs. something to observe); this
-example genuinely needs the latter or no.
+example genuinely needs the latter regardless.
 
 ### 2. Compaction
 
@@ -448,7 +448,7 @@ variant is **designed-not-built**.
 A guardrail that narrows without holding authority: it can only make an
 outcome *more* restrictive than the floor already in force, never grant
 anything. `permissions.json`'s structured `{ select, when, then }` rules
-(`hooks.md` point 6, **Implemented**
+(`hooks.md` point 6, **Implemented**,
 done) are exactly this shape, and `Rule::then` is enforced to only ever be
 `Deny`/`Prompt` for a plugin-contributed rule — `Then::Allow` paired with
 `PatternOrigin::Plugin` is structurally rejected at
@@ -456,7 +456,7 @@ done) are exactly this shape, and `Rule::then` is enforced to only ever be
 author is expected to follow.
 
 **Verified against the tree at writing time, per this set's standing
-rule**: ("the `prompt` rule effect
+rule**: an earlier item ("the `prompt` rule effect
 has no slot in the decision ordering") is **done**. `PermissionBroker::
 decide`'s real, eight-step ordering (`hooks.md`'s "The permission decision
 ordering" section) gives `prompt`-pattern rules their own step, ahead of the
@@ -715,9 +715,9 @@ architecture does not stand in the way of building it.
 
 **Blocked.** `hooks.md` point 12 (`status.declare/1`/`status/1`) is
 **designed-not-built**: *"No status-line plugin surface exists in the tree;
-`conway-cli`'s status line reads only conway's own computed state."* No names this point specifically (checked against `hooks.md`'s own
+`conway-cli`'s status line reads only conway's own computed state."* Nothing names this point specifically (checked against `hooks.md`'s own
 citation for it, which names none) — the closest tracked work is the
-generalized declarative `hooks` surface,, the
+generalized declarative `hooks` surface, the
 same umbrella most of `hooks.md`'s unbuilt rows cite.
 
 The operator's framing for this example was deliberate: *"the simplest

@@ -146,7 +146,7 @@ impl Backend for RecordingBackend {
     /// (see the `est_tokens` field's own doc) rather than the default
     /// dialect-neutral estimator's real (tiny) count of this file's fixture
     /// segments. Still calls the ONE shared arithmetic, `check_admission`
-    /// () -- only the estimate is test-controlled, not the comparison.
+    /// -- only the estimate is test-controlled, not the comparison.
     fn admit(
         &self,
         req: &GenerateRequest,

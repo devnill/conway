@@ -8,11 +8,11 @@
 //! Declaring a variant before anything constructs it is a legitimate,
 //! ordinary thing to do -- forward compatibility for a `#[non_exhaustive]`
 //! vocabulary, wire/serialization stability for an older peer parsing a
-//! newer message, or a deliberate seam (: expose it, let policy live
+//! newer message, or a deliberate seam (deliberately: expose it, let policy live
 //! outside). This guard does not forbid that. **What it forbids is a
 //! MISMATCH between what a variant's own doc comment promises and what a
 //! reader would get if they declared it today.** `TruncationPolicy::Artifact`
-//! (, since removed rather than
+//! (since removed rather than
 //! wired -- see `ALLOWLIST`'s comment for that entry) was not a problem
 //! because it was unconstructed; it was a problem because its doc comment
 //! described a behavior ("spill to an Artifact, keep a pointer") that a tool
@@ -75,7 +75,7 @@
 //! alternatives -- see `LogRecord::seq`'s multi-variant arm) lands on `=>`
 //! before anything else. Everything else -- a struct literal, a `const`
 //! initializer, a match arm's RHS, a function's tail expression -- counts as
-//! a construction. This is deliberately a heuristic, not a parser ();
+//! a construction. This is deliberately a heuristic, not a parser;
 //! its known gaps are stated in [`is_pattern_position`]'s own doc, and none
 //! of them are exercised by this tree's current source (verified below and
 //! by hand while writing this guard).
@@ -256,8 +256,8 @@ const ALLOWLIST: &[Allowlisted] = &[
     // (`crates/conway-core/src/log.rs`) for what changed and what did not
     // (still fork-prefix-only, per that item's own scope decision).
     //
-    // -- Newly flagged by THIS guard (
-    // itself), reported in that item's completion rather than fixed --
+    // -- Newly flagged by THIS guard (as part of that item's own
+    // work), reported in that item's completion rather than fixed --
     // acceptance explicitly says "any newly-flagged variant is reported,
     // do not fix them in this item". None of these two has its own
     // dedicated yet; each `board_item` below says so honestly

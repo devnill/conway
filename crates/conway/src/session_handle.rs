@@ -984,7 +984,7 @@ impl SessionHandle {
 /// criteria do not exercise. Left as explicit follow-up rather than folded
 /// in silently.
 ///
-/// **`Assistant` -> `Event::TextDelta`, not `Event::TurnFinished` (
+/// **`Assistant` -> `Event::TextDelta`, not `Event::TurnFinished` (an earlier
 /// review fix, was the opposite -- see this arm's own inline doc):** a bare
 /// `TurnFinished{usage, stop}` carries no reply text, and nothing downstream
 /// (`conway-cli`'s `AppState::apply`) turns one into visible transcript

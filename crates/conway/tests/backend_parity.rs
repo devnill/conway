@@ -24,7 +24,7 @@
 //! in-workspace precedent for the same idea).
 //!
 //! `admit` is overridden (not left at the trait's default) and calls
-//! `check_admission` for its arithmetic () — the property the item's
+//! `check_admission` for its arithmetic — the property the item's
 //! own brief calls out as non-optional: an author who cannot name
 //! `check_admission` cannot honour `Backend::admit`'s contract.
 //!
@@ -237,7 +237,7 @@ impl Backend for StubBackend {
 
     /// Overridden, not left at the trait's default: every override MUST
     /// call [`check_admission`] for the fits/shortfall arithmetic rather
-    /// than restating it () — this is that call.
+    /// than restating it — this is that call.
     fn admit(
         &self,
         req: &GenerateRequest,

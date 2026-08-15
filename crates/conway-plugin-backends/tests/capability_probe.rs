@@ -338,7 +338,7 @@ async fn backend_probe_against_401_is_auth() {
 /// `DialectDefaults`), the override must win outright — proving that a
 /// `CapabilityProbe` constructed with a non-empty `overrides` map (as
 /// `OpenAiCompatBackendFactory::probe_capabilities`
-///, now passes) composes the operator-pinned
+/// now passes) composes the operator-pinned
 /// value, not the server-reported one.
 #[tokio::test]
 async fn vllm_hermes_max_model_len_is_overridden_by_a_pinned_override() {

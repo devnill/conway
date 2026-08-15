@@ -51,6 +51,17 @@ exceptions = [
     { name = "wasi", allow = ["Apache-2.0 WITH LLVM-exception"] },
     { name = "wasip2", allow = ["Apache-2.0 WITH LLVM-exception"] },
     { name = "wit-bindgen", allow = ["Apache-2.0 WITH LLVM-exception"] },
+    # winx is cap-std's Windows backend, reached through cap-primitives. It is
+    # never compiled on a unix host, but cargo-deny walks every target, so the
+    # grant is required regardless of where conway is built. Same expression
+    # already granted to six crates above, and the reasoning is the same one
+    # this file's own header asks for rather than a build fix: the LLVM
+    # exception ADDS a permission to Apache-2.0 (it waives the binary-
+    # distribution attribution requirement), so it is strictly more permissive
+    # than the bare `Apache-2.0` already in `allow`, and combinable with
+    # AGPL-3.0-only anywhere Apache-2.0 is. It is also the expression Rust's
+    # own standard library ships under.
+    { name = "winx", allow = ["Apache-2.0 WITH LLVM-exception"] },
 ]
 
 # A crate whose licence cannot be determined from its metadata is a failure, not

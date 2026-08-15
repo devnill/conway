@@ -50,6 +50,14 @@ tempfile = "3"
 ignore = "0.4"
 globset = "0.4"
 nix = "0.29"
+# Open-relative (`openat`-family), capability-based filesystem access: the
+# manual per-component walk this crate would otherwise have to hand-write
+# (refusing an intermediate OR leaf symlink that resolves outside a sandbox
+# `Dir`, at OPEN time, not at a separate pre-check) to close the TOCTOU gap a
+# canonicalize-then-open two-step can never close. Used by `conway-tools`'
+# `fs::beneath` -- see that module's own doc for why a hand-rolled `openat`
+# loop over `nix` was rejected in favor of this.
+cap-std = "4"
 lru = "0.18"
 proptest = "1"
 serde_yaml = "0.9"
