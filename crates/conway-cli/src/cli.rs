@@ -130,6 +130,30 @@ pub struct Cli {
     #[arg(long, value_name = "SECONDS")]
     pub max_seconds: Option<u64>,
 
+    /// Constrain the run's structured result to a JSON Schema document read
+    /// from `PATH`. Enforced IDENTICALLY for every backend/model: conway
+    /// never reaches for a backend's own native structured-output/JSON-mode
+    /// request field (no backend adapter in this workspace wires one) --
+    /// instead the schema becomes this run's `result_contract`, checked
+    /// mechanically, post-hoc, against whatever `structured` value the
+    /// agent's own `report` tool call ends the run with. There is
+    /// therefore no "some backends enforce it, others silently don't" split
+    /// to worry about: every backend gets the same emulated contract, the
+    /// same one corrective retry on a first mismatch (the agent is told
+    /// exactly what failed and gets one more turn), and the same terminal
+    /// outcome on a second failure -- `ResultStatus::Rejected` (exit code
+    /// 1), never a success status wrapping text that was never checked.
+    ///
+    /// Composes with `--agent`: when the named def ALSO declares its own
+    /// `result_contract` (its frontmatter's own key), THIS flag's schema
+    /// wins outright -- the same call-site-over-agent-def precedence an
+    /// agent's own `conway_fork`/`conway_spawn` tool calls already have for
+    /// a child's contract. Not supported with `--resume`/`--fork-from` in
+    /// this release (a usage error): neither facade path accepts a
+    /// caller-supplied contract override yet.
+    #[arg(long, value_name = "PATH")]
+    pub output_schema: Option<PathBuf>,
+
     /// Use (creating if new) a specific session id.
     #[arg(long, conflicts_with_all = ["resume", "fork_from"])]
     pub session: Option<String>,

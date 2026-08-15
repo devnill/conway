@@ -9,6 +9,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A shipped `conway` binary can gain a tool without a rebuild: subprocess
+  plugins.** A thin, disclosed slice of the out-of-process plugin host —
+  `tool.spec/1` (manifest discovery) and `tool/1` (execution) only, one-shot
+  exec (spawn fresh, one JSON request in, one JSON response out, torn down),
+  which is the same shape `ProcessHookRunner` already uses for
+  `[hooks].rules[].command` rather than the design's eventual persistent
+  connection. Configure with `[plugins].subprocess` in `settings.json`;
+  [`docs/plugins/subprocess-plugins.md`](docs/plugins/subprocess-plugins.md)
+  is the protocol reference with a complete Python worked example — no Rust,
+  no rebuild. Every failure mode (spawn failure, timeout, non-zero exit,
+  garbage output, a call already cancelled) fails closed with a typed error,
+  never a hang. **No new trust mechanism**: naming a command in
+  `[plugins].subprocess[]` sits on the identical footing
+  `[hooks].rules[].command` already has — no sandboxing, no digest check, the
+  operator's own review of what they typed is the only control point. The
+  list is empty by default, so nothing spawns unless deliberately named. A
+  digest-keyed plugin trust kind remains a separate, deferred question.
+- **`--output-schema <path>` gives one-shot mode a structured-output contract
+  a caller can parse without prompting for JSON and hoping.** The schema
+  becomes the run's `result_contract` — the same schema-checked-at-finish
+  mechanism `conway_fork`/`conway_spawn` already gave a subagent, now
+  reachable for the ROOT agent a `-p` invocation actually talks to.
+  Enforcement is identical on every backend: conway reaches for no provider's
+  native JSON mode (none is wired here), so there is no "enforces on one,
+  asks nicely on another" split. The flag directs the model to the `report`
+  tool, validates whatever it produces, and grants exactly one corrective
+  retry before a mismatch becomes a terminal, named `ResultStatus::Rejected`
+  (exit 1) — never a `Completed` status wrapping unvalidated text. The
+  flag's schema wins outright over a named `--agent`'s own declared
+  contract. Not supported with `--resume`/`--fork-from`, which is a usage
+  error rather than a silent drop. `conway::SessionSpec::result_contract`
+  and `conway::compile_output_schema` expose the same mechanism to an
+  embedder, not only the CLI.
+
+### Added
+
 - **`scripts/dogfood-note.sh` — one command from "using conway just now was
   awkward" to a board item**, plus [`docs/dogfooding.md`](docs/dogfooding.md)
   documenting the loop. Three modes (`friction`, `comment`, `session`), each

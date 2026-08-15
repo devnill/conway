@@ -692,6 +692,42 @@ pub struct PluginsConfig {
     /// machinery); that later item's job is discoverability and validation
     /// around doing so, not this field's existence.
     pub default_backends: Vec<String>,
+    /// **DISCLOSED, PROMINENTLY FLAGGED addition (board item
+    /// `01KZY8PATND84AKY0J376E3DWV`, the subprocess plugin host): out-of-
+    /// process plugins named by an operator's `settings.json`, resolved by
+    /// whatever binary/embedder reads this list itself** -- the SAME wire-
+    /// shape-only division of labor `install`'s own doc establishes just
+    /// above ("this crate carries the wire shape and does nothing else
+    /// with it"), extended to a kind of plugin that is never compiled into
+    /// this binary at all. `crates/conway-cli/src/subprocess_plugins.rs`
+    /// is the worked example this item ships: it reads this list from
+    /// `ConwayBuilder::config()`, calls
+    /// `conway_plugin_subprocess::SubprocessPlugin::discover` for each
+    /// entry (an async, fallible step -- this is why it happens in
+    /// `conway-cli`, before `build()`, rather than inside `build()`
+    /// itself, which is synchronous), and attaches the result via the
+    /// ordinary `ConwayBuilder::with_plugin` -- no change to `build()`, no
+    /// change to `install_selected`, no new `ConwayBuilder` method.
+    ///
+    /// **Empty by default**, the identical "nothing in this tier runs
+    /// unasked" rule `install` states for the in-process first-party tier:
+    /// no subprocess plugin is ever spawned unless an operator names one
+    /// here.
+    ///
+    /// **Trust, stated here because this is the field that grants the
+    /// capability.** Board item `01KZHVFCN6ZEAXV7K5JHRQN1YB` (a `plugin`
+    /// trust subject kind, digest-keyed) is under a STANDING OPERATOR
+    /// DEFERRAL and is explicitly NOT built by this field's addition --
+    /// naming a command here is on the exact same trust footing as naming
+    /// one in `[hooks].rules[].command` already is (no sandboxing, no
+    /// digest check, the operator's own review of what they typed is the
+    /// only control point) -- see `conway_plugin_subprocess`'s own crate
+    /// doc for the full argument. This is a genuine widening of what a
+    /// `settings.json` can make a shipped binary execute, disclosed rather
+    /// than smuggled in as an "inert wire shape" claim that would
+    /// otherwise be misleading for THIS particular field.
+    #[serde(default)]
+    pub subprocess: Vec<SubprocessPluginEntry>,
 }
 
 impl Default for PluginsConfig {
@@ -699,6 +735,48 @@ impl Default for PluginsConfig {
         Self {
             install: Vec::new(),
             default_backends: vec!["anthropic".to_string(), "openai-compat".to_string()],
+            subprocess: Vec::new(),
+        }
+    }
+}
+
+/// One `[plugins].subprocess[]` entry: an out-of-process plugin, spawned by
+/// naming a command -- see [`PluginsConfig::subprocess`]'s own doc for the
+/// full trust/reachability disclosure this field carries.
+///
+/// **Deliberately mirrors [`HookEntry`]'s own shape** (`id`, `command` as
+/// an argv vector, `timeout_ms`) rather than inventing a third config
+/// vocabulary for "run this command": an operator who has already
+/// configured a `[hooks].rules[]` entry recognizes this shape on sight.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct SubprocessPluginEntry {
+    /// This entry's stable, operator-chosen identity -- used only in error
+    /// messages a reading binary/embedder produces (which configured entry
+    /// failed to spawn/discover/time out). **Not** validated against the
+    /// plugin's own declared `PluginManifest::id` (the subprocess names
+    /// that itself, over the wire, once spawned) -- the two are allowed to
+    /// differ, the identical relationship
+    /// `conway_plugin_subprocess::SubprocessPluginSpec::config_id`'s own
+    /// doc states.
+    pub id: String,
+    /// The command to spawn, argv-shaped (program, then its arguments) --
+    /// never a single shell string, the same shape and reasoning
+    /// [`HookEntry::command`]'s own doc gives.
+    pub command: Vec<String>,
+    /// Milliseconds any single spawn (manifest discovery, or one `tool/1`
+    /// call) is allowed to run before the reading binary/embedder kills
+    /// it. Same default and reasoning as [`HookEntry::timeout_ms`].
+    #[serde(default = "default_hook_timeout_ms")]
+    pub timeout_ms: u64,
+}
+
+impl Default for SubprocessPluginEntry {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            command: Vec::new(),
+            timeout_ms: default_hook_timeout_ms(),
         }
     }
 }

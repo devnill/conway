@@ -19,6 +19,7 @@ a summary pointing somewhere else.
 | [`trust-and-security.md`](trust-and-security.md) — trust and security | What is an author trusted with? What does conway do and not protect against — stated bluntly, including that a trusted plugin runs with your full privileges? | You're deciding whether to install a plugin, or you're shipping one and need to know what you're accountable for. |
 | [`compatibility.md`](compatibility.md) — compatibility promises | What does conway promise not to break across versions — for config files, for the not-yet-built wire protocol, for the facade itself? | You're building against this set as a normative reference and need to know what's safe to depend on. |
 | [`authoring.md`](authoring.md) — your first hook | How do I actually write one in Rust, register it, and confirm it fired? | You're ready to build. Its ten-minute walkthrough has been **executed verbatim** against a crate depending only on `conway`. |
+| [`subprocess-plugins.md`](subprocess-plugins.md) — the subprocess plugin host | How do I add a tool to a `conway` binary I already built, in a language that isn't Rust, with a `settings.json` edit and no rebuild? | You want a plugin that isn't Rust, or you're evaluating what naming a command in `[plugins].subprocess` actually trusts. |
 | [`scripts.md`](scripts.md) — the script convention | How would a hook fire a script in any language, and what does that cost per invocation? | You want a hook in something other than Rust. **Describes a designed convention; no script-dispatching plugin exists yet.** |
 | [`inference-hooks.md`](inference-hooks.md) — hooks judged by a model | When should a hook call an LLM rather than express a static rule, and do I fork or spawn? | You're weighing an inference-evaluated hook. Read its "when NOT to use one" section first. |
 | [`cookbook.md`](cookbook.md) — worked examples | What does a real hook look like end to end — spilling bulky output to a file, compaction, a permission guardrail, progressive skill disclosure, a status-line observer? | You learn faster from a worked example than from a contract. Five examples, each labeled implementable-today, partially-implementable, or blocked, with two treated explicitly as the architecture's own acceptance tests. |
@@ -41,11 +42,22 @@ builder chain (`ConwayBuilder::with_context_hook`,
 for the vocabulary those traits assume, then "The value-class boundary" for
 what your implementation may and may not do to what it's handed.
 
+## Adding a tool without a rebuild
+
+A **thin, disclosed slice** of the out-of-process transport now exists:
+[`subprocess-plugins.md`](subprocess-plugins.md) — spawn a command named in
+`settings.json`, no Rust required, no rebuild of the binary. Read that page
+before assuming the wire transport is still "designed and never built": the
+two points it wires (`tool.spec/1`, `tool/1`) are real; everything else the
+full design describes (a persistent connection, `permission.policy/1`,
+`context.hook/1`, `observe/1`, a `plugin` trust subject) is not, and that
+page's own "What's left" section names each gap.
+
 ## Everything not in this set
 
-- **The wire transport** for an out-of-process (non-Rust) plugin. It was
-  designed and never built. Nothing in this set describes running a plugin as
-  a separate process, because you can't yet.
+- **The persistent-connection remote-plugin transport**, and every point
+  beyond `tool.spec/1`/`tool/1` — see [`subprocess-plugins.md`](subprocess-plugins.md)'s
+  own "What's left" section for the itemized gap.
 - **Fork and spawn as agent-delegation primitives** (the `/fork`/`/spawn`
   commands, `conway_fork`/`conway_spawn` tool calls) are a different,
   already-built topic — see [`docs/agents.md`](../agents.md). `concepts.md`

@@ -286,6 +286,7 @@ fn root_spec(prompt: &str) -> RootSpec {
         keep_alive: false,
         model: None,
         system_prompt_override: None,
+        result_contract: None,
     }
 }
 

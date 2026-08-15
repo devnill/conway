@@ -167,6 +167,7 @@ use conway::{
     AgentDef, AgentResult, Budget, Conway, Event, ForkSpec, RoleAlias, SessionHandle, SessionSpec,
 };
 use futures::StreamExt;
+use schemars::schema::RootSchema;
 
 use crate::cli::{Cli, PermissionMode};
 use crate::exit::ExitCode;
@@ -280,6 +281,7 @@ async fn resolve_session(cli: &Cli, conway: &Conway) -> conway::Result<SessionHa
     let system_prompt_requested = cli.system_prompt.is_some() || cli.append_system_prompt.is_some();
     let budget_requested =
         cli.max_turns.is_some() || cli.max_tokens.is_some() || cli.max_seconds.is_some();
+    let output_schema_requested = cli.output_schema.is_some();
     let continuing = cli.resume.is_some() || cli.fork_from.is_some();
     if system_prompt_requested && continuing {
         return Err(usage_error(
@@ -295,6 +297,21 @@ async fn resolve_session(cli: &Cli, conway: &Conway) -> conway::Result<SessionHa
              budget override yet",
         ));
     }
+    // `ForkSpec::result_contract` exists on the facade type (mirroring
+    // `SubagentSpec::result_contract`, for a model-triggered `conway_fork`)
+    // but `Conway::fork_from` -- what `--fork-from` drives -- never reads it
+    // (its `fork_child` helper goes through `conway_runtime::runtime::
+    // ResumeSpec`, which has no `result_contract` field at all); pre-existing,
+    // not introduced by this item, and flagged rather than silently worked
+    // around. `--resume` has no facade parameter to carry a contract through
+    // either (same shape as `--system-prompt`/the budget flags above). Both
+    // arms are therefore usage errors, not a silent drop.
+    if output_schema_requested && continuing {
+        return Err(usage_error(
+            "--output-schema is not supported with --resume or --fork-from in this release: \
+             neither facade path accepts a caller-supplied result-contract override yet",
+        ));
+    }
     if cli.agent.is_some() && cli.resume.is_some() {
         return Err(usage_error(
             "--agent is not supported with --resume: a resumed session's agent definition is \
@@ -307,7 +324,10 @@ async fn resolve_session(cli: &Cli, conway: &Conway) -> conway::Result<SessionHa
     // `--agent` name is caught here regardless of which arm would
     // otherwise have run.
     let agent_def = load_agent_def(cli, conway)?;
-    let system_prompt_override = resolve_system_prompt_override(cli, agent_def.as_ref());
+    let output_schema = load_output_schema(cli)?;
+    let system_prompt_override =
+        resolve_system_prompt_override(cli, agent_def.as_ref(), output_schema.as_ref());
+    let result_contract = resolve_result_contract(output_schema, agent_def.as_ref());
     let budget = resolve_budget(cli, conway);
 
     match (&cli.session, &cli.resume, &cli.fork_from) {
@@ -324,6 +344,7 @@ async fn resolve_session(cli: &Cli, conway: &Conway) -> conway::Result<SessionHa
                 agent_def: cli.agent.clone(),
                 system_prompt_override,
                 budget,
+                result_contract,
                 ..SessionSpec::default()
             };
             conway.new_session(spec).await
@@ -360,6 +381,7 @@ async fn resolve_session(cli: &Cli, conway: &Conway) -> conway::Result<SessionHa
                 agent_def: cli.agent.clone(),
                 system_prompt_override,
                 budget,
+                result_contract,
                 ..SessionSpec::default()
             };
             conway
@@ -492,29 +514,137 @@ fn load_agent_def(cli: &Cli, conway: &Conway) -> conway::Result<Option<AgentDef>
     }
 }
 
-/// Combines `--system-prompt`/`--append-system-prompt` into the single
-/// string [`RootSpec::system_prompt_override`] (`conway-runtime`) takes, or
-/// `None` when neither flag was given (preserving the pre-existing,
-/// `agent_def`-alone behavior exactly). `agent_def` is `--agent`'s own
-/// already-loaded, already-validated def (from [`load_agent_def`]) -- its
-/// `system_prompt` is the base `--append-system-prompt` appends to when
-/// `--system-prompt` itself is absent.
-fn resolve_system_prompt_override(cli: &Cli, agent_def: Option<&AgentDef>) -> Option<String> {
-    if cli.system_prompt.is_none() && cli.append_system_prompt.is_none() {
+/// Combines `--system-prompt`/`--append-system-prompt`/`--output-schema`
+/// into the single string [`RootSpec::system_prompt_override`]
+/// (`conway-runtime`) takes, or `None` when none of the three was given
+/// (preserving the pre-existing, `agent_def`-alone behavior exactly).
+/// `agent_def` is `--agent`'s own already-loaded, already-validated def
+/// (from [`load_agent_def`]) -- its `system_prompt` is the base
+/// `--append-system-prompt` appends to when `--system-prompt` itself is
+/// absent. `output_schema` is `--output-schema`'s own already-compiled
+/// schema (from [`load_output_schema`]).
+///
+/// **Precedence:** `--output-schema`'s own instruction text (naming the
+/// schema and directing the model to the `report` tool -- see
+/// [`schema_instruction`]) is always appended LAST, after whatever
+/// `--system-prompt`/`--append-system-prompt`/`--agent` already produced --
+/// it is the outermost, always-final constraint, mirroring how
+/// [`resolve_result_contract`]'s validation always wins over an agent
+/// def's own declared contract regardless of which text is in effect. This
+/// is deliberately NOT the enforcement mechanism itself (that is
+/// `RootSpec::result_contract`, wired separately in `resolve_session`) --
+/// it exists only because, unlike a `conway_fork`/`conway_spawn` result
+/// contract (whose spawning AGENT is expected to write a prompt telling the
+/// child what shape to produce), a one-shot root's `--print` text is the
+/// operator's own task description, not persona-authoring text -- without
+/// this, an operator would have to know to describe the schema themselves
+/// or the run would spend its one corrective retry doing nothing but
+/// re-stating what already failed.
+fn resolve_system_prompt_override(
+    cli: &Cli,
+    agent_def: Option<&AgentDef>,
+    output_schema: Option<&RootSchema>,
+) -> Option<String> {
+    if cli.system_prompt.is_none() && cli.append_system_prompt.is_none() && output_schema.is_none()
+    {
         return None;
     }
     let base = cli
         .system_prompt
         .clone()
         .or_else(|| agent_def.map(|d| d.system_prompt.clone()));
-    Some(match (base, &cli.append_system_prompt) {
+    let mut text = match (base, &cli.append_system_prompt) {
         (Some(b), Some(a)) => format!("{b}\n\n{a}"),
         (Some(b), None) => b,
         (None, Some(a)) => a.clone(),
-        (None, None) => unreachable!(
-            "checked above: at least one of cli.system_prompt/cli.append_system_prompt is Some"
-        ),
-    })
+        // Reachable now that `output_schema` alone can trigger this
+        // function (unlike the pre-`--output-schema` version, where the
+        // guard above guaranteed at least one of the two text flags was
+        // `Some`): no base text and no `--append-system-prompt`, but
+        // `--output-schema` is `Some` -- `schema_instruction` below becomes
+        // the entire system prompt by itself.
+        (None, None) => String::new(),
+    };
+    if let Some(schema) = output_schema {
+        if !text.is_empty() {
+            text.push_str("\n\n");
+        }
+        text.push_str(&schema_instruction(schema));
+    }
+    if text.is_empty() {
+        None
+    } else {
+        Some(text)
+    }
+}
+
+/// The instruction text [`resolve_system_prompt_override`] appends when
+/// `--output-schema` is given: tells the model to conclude via the `report`
+/// tool's `structured` argument, matching `schema` exactly, and states the
+/// retry-then-terminal consequence of not doing so -- so a model that reads
+/// its own system prompt has a real chance to comply on the first attempt,
+/// rather than relying solely on the one corrective `SystemNote` the
+/// `result_contract` enforcement mechanism sends after a first failure (see
+/// `RootSpec::result_contract`'s own doc, `conway-runtime`, for that
+/// mechanism). `schema` is rendered as pretty-printed JSON via `serde_json`
+/// (already a dependency; no new templating dependency reached for).
+fn schema_instruction(schema: &RootSchema) -> String {
+    let pretty = serde_json::to_string_pretty(schema)
+        .unwrap_or_else(|_| "<schema serialization failed>".to_string());
+    format!(
+        "Before finishing, call the `report` tool with its `structured` argument set to a JSON \
+         value that satisfies the following JSON Schema exactly -- no prose, no code fence, no \
+         other tool call may substitute for it. If your first attempt does not satisfy the \
+         schema, you will be told exactly what failed and get exactly one more turn to correct \
+         it; a second failure ends the run without a usable result.\n\n{pretty}"
+    )
+}
+
+/// Resolves `--output-schema`'s eventual [`RootSpec::result_contract`]
+/// value: `output_schema` (already loaded/compiled by
+/// [`load_output_schema`]) when `Some`, else the resolved `--agent` def's
+/// own `AgentDef::result_contract` when it declares one, else `None`.
+///
+/// **Precedence: the call site always wins.** `--output-schema`'s schema
+/// is never merged with, and never loses to, an agent def's own declared
+/// contract -- mirroring `conway-runtime`'s `subagent.rs`, which documents
+/// the identical rule for a forked/spawned child's contract ("the explicit
+/// call-site contract ... wins ... over ... the AgentDef's own contract").
+/// This is the same precedence [`resolve_system_prompt_override`]'s own doc
+/// describes for the INSTRUCTION text; this function is the ENFORCEMENT
+/// half of that same combination.
+fn resolve_result_contract(
+    output_schema: Option<RootSchema>,
+    agent_def: Option<&AgentDef>,
+) -> Option<RootSchema> {
+    output_schema.or_else(|| agent_def.and_then(|d| d.result_contract.clone()))
+}
+
+/// Loads and compiles `cli.output_schema` (`None` when the flag was not
+/// given, in which case this is a no-op returning `Ok(None)`): the named
+/// file must exist, parse as JSON, and compile as a JSON Schema document
+/// (via [`conway::compile_output_schema`]) -- any failure is a usage error
+/// naming the path and the underlying cause, never a silent no-op and never
+/// a run that starts with an unenforceable "schema".
+fn load_output_schema(cli: &Cli) -> conway::Result<Option<RootSchema>> {
+    let Some(path) = &cli.output_schema else {
+        return Ok(None);
+    };
+    let text = std::fs::read_to_string(path).map_err(|e| {
+        usage_error(format!(
+            "--output-schema {}: could not read file: {e}",
+            path.display()
+        ))
+    })?;
+    let value: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
+        usage_error(format!(
+            "--output-schema {}: not valid JSON: {e}",
+            path.display()
+        ))
+    })?;
+    let schema = conway::compile_output_schema(value)
+        .map_err(|e| usage_error(format!("--output-schema {}: {e}", path.display())))?;
+    Ok(Some(schema))
 }
 
 /// Builds a [`Budget`] from `--max-turns`/`--max-tokens`/`--max-seconds`,
@@ -669,6 +799,7 @@ mod tests {
             max_turns: None,
             max_tokens: None,
             max_seconds: None,
+            output_schema: None,
             session: None,
             resume: None,
             fork_from: None,

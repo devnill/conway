@@ -307,6 +307,80 @@ path accepts a caller-supplied budget override yet.
 conway -p "summarize this log" --max-turns 3 --max-seconds 30 < build.log
 ```
 
+### `--output-schema`: structured output
+
+A caller embedding conway in a script has, until this flag, exactly one way
+to get JSON back: ask the model for it in the prompt, and hope it doesn't
+wrap the answer in prose or a code fence. `--output-schema <path>` makes it
+a contract instead of a convention:
+
+```console
+conway -p "extract the invoice number and total from this text" \
+    --output-schema invoice.schema.json --allowed-tools report < invoice.txt
+```
+
+```json
+// invoice.schema.json
+{
+  "type": "object",
+  "required": ["invoice_number", "total"],
+  "properties": {
+    "invoice_number": { "type": "string" },
+    "total": { "type": "number" }
+  }
+}
+```
+
+On success, `--output-format json`'s `structured` field carries exactly the
+value the model produced, already validated:
+
+```json
+{ "status": { "status": "completed" }, "structured": { "invoice_number": "INV-42", "total": 199.5 }, "…": "…" }
+```
+
+**How it's enforced, and why the answer is the same for every backend.**
+conway never reaches for a backend's own native structured-output/JSON-mode
+request field — no backend adapter in this workspace has one wired, and
+`--output-schema` does not change that. Instead, the schema becomes this
+run's `result_contract`: the SAME schema-checked-at-finish mechanism
+`conway_fork`/`conway_spawn`'s own `result_contract` argument already gives
+a subagent, now reachable for the root agent a one-shot invocation actually
+talks to. Concretely: the flag also appends an instruction to the effective
+system prompt telling the model to conclude via the `report` tool's
+`structured` argument, matching the schema (so a capable model has a real
+chance to comply on its first attempt — pass `--allowed-tools report`, or
+include it in a wider `--allowed-tools` list, or the call itself will be
+denied); once the model responds with no further tool calls, conway
+validates whatever `structured` value it produced (`null` if `report` was
+never called) against the schema.
+
+- **A first mismatch costs one corrective turn.** The model is told exactly
+  what failed (a system note naming the missing/invalid paths) and gets one
+  more attempt.
+- **A second mismatch is terminal.** The run ends with `ResultStatus::
+  Rejected` (exit code 1) — never a `Completed` status wrapping text nobody
+  checked. The rejection's `missing` array names every unmet requirement, so
+  a script can log *why*, not just *that*, validation failed.
+
+This is a deliberate, stated design choice, not an oversight: a flag that
+enforces on one backend/model and silently degrades to "asked nicely" on
+another is exactly the shape this project treats as a defect, so
+`--output-schema` never branches on what a backend can natively do — every
+backend gets the identical emulated contract, always.
+
+**Composes with `--agent`/`--system-prompt`/`--append-system-prompt`.** The
+schema instruction is always appended LAST, after whatever `--agent`'s own
+def, `--system-prompt`, and `--append-system-prompt` already produced — it
+is the outermost, always-final constraint. If the named `--agent` def also
+declares its own `result_contract` (its frontmatter's own key — see
+[`docs/agents.md`](agents.md)), `--output-schema`'s schema wins outright:
+the two are never merged, and the flag's schema never loses to the def's.
+
+Not supported with `--resume`/`--fork-from` in this release (a usage
+error): neither facade path accepts a caller-supplied result-contract
+override yet — the same restriction `--system-prompt`/the budget flags
+already have, and for the same reason.
+
 ## Plugin-contributed subcommands
 
 A plugin can add a slash command to the interactive TUI (see
@@ -450,6 +524,7 @@ naming both flags rather than a silently dropped one.
 | `--max-turns <n>` | Turn (step) ceiling for this run. See "Budget flags" above. |
 | `--max-tokens <n>` | Total-token ceiling for this run. See "Budget flags" above. |
 | `--max-seconds <n>` | Wall-clock ceiling, in seconds, for this run. See "Budget flags" above. |
+| `--output-schema <path>` | Constrain the run's structured result to a JSON Schema file. See "`--output-schema`: structured output" above. |
 | `--session <id>` | Use (creating if new) a specific session id. |
 | `--resume <id>` | Reattach to a persisted session and continue its transcript. |
 | `--fork-from <id>[@seq]` | Start a new session branched from another one, optionally at a specific point in its log. Not combinable with `--cwd` (see above). |
@@ -461,9 +536,10 @@ naming both flags rather than a silently dropped one.
 `--session`, `--resume`, and `--fork-from` are mutually exclusive; with none
 of them, conway starts a fresh session. `--agent` is not supported with
 `--resume`; `--system-prompt`/`--append-system-prompt`/`--max-turns`/
-`--max-tokens`/`--max-seconds` are not supported with `--resume` or
-`--fork-from` — each is a usage error naming the flags involved rather than
-a silent drop (see each flag's own section above for why).
+`--max-tokens`/`--max-seconds`/`--output-schema` are not supported with
+`--resume` or `--fork-from` — each is a usage error naming the flags
+involved rather than a silent drop (see each flag's own section above for
+why).
 
 ## Next steps
 

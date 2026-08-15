@@ -27,18 +27,25 @@ file trust (keyed on path + content digest) is real and enforced; and, as of a l
 block in `settings.json` — no Rust required — really is dispatched: all
 seven core events, narrowable to one tool by a `match` field, given a
 `HookRunner` injected (`docs/plugins/authoring.md`'s "Ten minutes to a
-working hook" walks through it end to end). What's still decided design, not
+working hook" walks through it end to end); and a THIN, disclosed slice of
+the out-of-process transport (`tool.spec/1`/`tool/1` only, one-shot exec —
+[`subprocess-plugins.md`](subprocess-plugins.md) is the normative
+reference) really does let a shipped binary gain a tool it was never
+compiled with. What's still decided design, not
 implemented: the generalized observer/participant point vocabulary and
 composition rule (today there is exactly one `ContextHook` and one
-`PermissionGate` per embedder, never a composed set), an out-of-process
-transport, a *plugin*-authored script-dispatching hook (the dispatching
+`PermissionGate` per embedder, never a composed set), the transport's
+own persistent-connection shape and every point beyond `tool.spec/1`/`tool/1`
+(`permission.policy/1`, `context.hook/1`, `observe/1`), a *plugin*-authored
+script-dispatching hook (the dispatching
 above is the runtime's own built-in `ProcessHookRunner`, not something a
-third-party `Plugin` provides), and digest-keyed *plugin* trust. See
-[`docs/permissions.md`](../permissions.md#limits) for the same boundary
-stated from the operator's side: "conway's only extension mechanism today is
-in-process" — still true of every *plugin* (in-process, compiled into a
-specific binary), even though a declarative hook's *command* is an
-out-of-process script.
+third-party `Plugin` provides), and digest-keyed *plugin* trust. **Stale as
+of this transport's own thin slice landing**, flagged here rather than
+silently left wrong:
+[`docs/permissions.md`](../permissions.md#limits)'s "conway's only extension
+mechanism today is in-process" claim (stated from the operator's side) no
+longer covers a `[plugins].subprocess` entry, which is a real, out-of-process
+`Tool` source now — that page's own correction is separate, later work.
 
 ## Hook-first
 
@@ -280,22 +287,34 @@ triple, because the `id` axis exists to distinguish multiple subjects of the
 content edit changes the digest and de-trusts the file exactly as described
 above; this is exercised by that module's own tests.
 
-**Not yet implemented:** a `plugin` trust kind. conway's only extension
-mechanism today is in-process (`Arc<dyn Plugin>`, linked into the binary in
-Rust before the process starts), so there is nothing an on-disk,
-digest-checked trust record could gate — trusting the binary and trusting
-its plugins are the same act today. [`docs/permissions.md`](../permissions.md#limits)
-states this from the operator-facing side. Whether to build a `plugin` kind
-now is deliberately left open, not decided here — see doc 3's "What trust
-is" section for the reasoning: a `plugin` kind nothing can yet consume
-would be a capability with nothing behind it, and it depends on the
-out-of-process transport, which is itself still design-only.
+**Still not implemented, and now genuinely gated behind a standing operator
+deferral rather than "nothing to gate yet":** a `plugin` trust kind. A
+subprocess plugin (`[plugins].subprocess`,
+[`subprocess-plugins.md`](subprocess-plugins.md)) is a real, out-of-process
+artifact now — the "a `plugin` kind nothing can yet consume would be a
+capability with nothing behind it" argument that justified leaving this open
+no longer applies verbatim, since something COULD now consume a digest for
+it. Building it anyway is explicitly out of scope for that item (board item
+`01KZHVFCN6ZEAXV7K5JHRQN1YB`, DO NOT EXECUTE): the operator's own review of
+what they typed into `[plugins].subprocess[]` is the whole control point
+today, on the identical footing `[hooks].rules[].command` already has — see
+[`subprocess-plugins.md`](subprocess-plugins.md)'s own "Trust" section.
+[`docs/permissions.md`](../permissions.md#limits)'s "trusting the binary and
+trusting its plugins are the same act" is now stale for the in-process case
+specifically (a subprocess plugin is trusted separately, by naming its
+command, not by trusting the binary) — that page's own correction is
+separate, later work.
 
 ## Glossary
 
 - **Plugin** — the unit of registration: an implementor of the `Plugin` trait
-  (`crates/conway-core/src/ports/plugin.rs`), in-process today, out-of-process
-  in the design. Declares an identity and, today, its tools, its TUI
+  (`crates/conway-core/src/ports/plugin.rs`), in-process (compiled in) or, as
+  a thin, one-shot-exec slice, out-of-process
+  (`conway_plugin_subprocess::SubprocessPlugin`, itself an in-process `Plugin`
+  that answers `manifest`/`tools` by spawning a subprocess — see
+  [`subprocess-plugins.md`](subprocess-plugins.md)); the FULL out-of-process
+  design (a persistent connection, every point) remains design only. Declares
+  an identity and, today, its tools, its TUI
   `commands()`, and the hook `events()` it may itself fire.
 - **Manifest** — a plugin's static identity: `PluginManifest { id, version,
   tools, required_host_caps }`.

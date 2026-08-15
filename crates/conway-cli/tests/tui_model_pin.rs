@@ -62,6 +62,7 @@ fn minimal_cli() -> Cli {
         max_turns: None,
         max_tokens: None,
         max_seconds: None,
+        output_schema: None,
         session: None,
         resume: None,
         fork_from: None,
