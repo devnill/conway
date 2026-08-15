@@ -7,6 +7,7 @@ pub mod builder;
 pub(crate) mod hook_guard;
 pub mod prefix;
 pub mod report;
+pub mod script_hook;
 
 pub use builder::{
     ContextBuilder, ContextInput, HeadSegment, InheritedPrefix, SkillFragment, SystemPromptSpec,
@@ -14,3 +15,4 @@ pub use builder::{
 };
 pub use hook_guard::GuardedContextHook;
 pub use prefix::prefix_key;
+pub use script_hook::{apply_script_deltas, AppliedContextEdit, SkippedAppend};

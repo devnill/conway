@@ -28,18 +28,32 @@
 //! inventing a synthetic success — a caller of [`Backend::probe`] classifying
 //! this result is expected to recognize that a `BadRequest`-classified probe
 //! failure means "this liveness path isn't served here", not "the endpoint
-//! is down". No production code currently consumes
-//! `Backend::probe` at all — `conway_plugin_routing`'s periodic health
-//! prober, formerly this classification's only consumer, was retired (board
-//! item, which is done: that citation is
-//! provenance for how the consumer went away, not an open thread).
+//! is down".
 //!
-//! **What remains open is what to do about the port method now.** That is
-//! — "retiring the prober left
-//! `Backend::probe` with no production consumer, decide whether the port
-//! method stays". Until it is decided, this method and `Backend::probe`
-//! itself are unaffected and remain part of the `Backend` port's public
-//! contract, exercised directly by this crate's own tests.
+//! No production code inside this workspace calls `Backend::probe` today.
+//! `conway_plugin_routing`'s periodic health prober, formerly the only
+//! in-tree caller, has been retired; that removal is provenance for how the
+//! sole consumer went away, not an open question. `[models].probe_on_startup`
+//! is a genuinely different mechanism — it drives
+//! `BackendFactory::probe_capabilities` (`crate::factory`), a synchronous,
+//! factory-level capability-discovery hook, never this async, per-instance
+//! liveness check; the two are easy to conflate by name and are not the same
+//! thing.
+//!
+//! **Decided: `Backend::probe` stays as an embedder-facing capability.** It
+//! is one of the `Backend` trait's required methods — `docs/providers.md`'s
+//! "Writing your own adapter" section teaches every third-party implementor
+//! to write one, worked example included — and it is exercised directly by
+//! this crate's own tests (`tests/capability_probe.rs`) and by `conway`'s
+//! cross-backend parity suite (`crates/conway/tests/backend_parity.rs`). It
+//! produces real, useful liveness data whenever something calls it; nothing
+//! about it is a promise that never fires. An unused-by-conway port method
+//! on a trait third parties implement is not the same defect as declared
+//! behavior that never runs: retiring it would be a breaking change to
+//! every existing `Backend` implementation for no matching problem. If
+//! conway itself later grows a reason to call its own backends' `probe` —
+//! a `doctor`-style CLI command, a startup liveness gate — it reuses this
+//! method rather than inventing a second one.
 
 use std::time::{Duration, Instant};
 

@@ -1,33 +1,37 @@
-//! Hook dispatch for every event OUTSIDE the permission broker, in two tiers
-//! with deliberately different failure postures.
+//! Hook dispatch for every event OUTSIDE the permission broker, in THREE
+//! tiers with deliberately different failure/edit postures.
 //!
-//! # The two tiers
+//! # The three tiers
 //!
-//! **Observation-only** (, joined by
-//!'s `request_assembled`/
-//! `child_reported`): `post_tool_use`, `session_starting`, `child_spawned`,
-//! `request_assembled`, `child_reported`. These cannot say no, and that is
-//! the whole point of them — an operator wanting a log line per command, or
-//! a notification when a child starts, needs to be told a thing happened
-//! and nothing more. Each fires at a place that already knows the moment has
-//! passed. [`HookDispatcher::dispatch`] serves them and returns `()`.
+//! **Observation-only**: `post_tool_use`, `session_starting`,
+//! `child_spawned`, `child_reported`. These cannot say no and cannot edit
+//! anything, and that is the whole point of them — an operator wanting a log
+//! line per command, or a notification when a child starts, needs to be
+//! told a thing happened and nothing more. Each fires at a place that
+//! already knows the moment has passed. [`HookDispatcher::dispatch`] serves
+//! them and returns `()`, discarding whatever the hook answered.
+//! `child_reported` fires for BOTH a normal completion (`AgentLoop::
+//! finish`) and a supervisor-synthesized terminal result (a panic, or a
+//! task unresponsive past `supervisor::DEFAULT_GRACE` -- `supervisor.rs`),
+//! because a hook that only sees the happy path is misleading about what "a
+//! child reporting" means.
 //!
-//! **`request_assembled`/`child_reported` are observation-only by the SAME
-//! reasoning as their three siblings above, not a new decision.**
-//! `request_assembled` sits at the seam `ContextHook::before_request`
-//! (`agent_loop.rs`) already edits the assembled payload at, so a
-//! reader could reasonably expect this hook to edit too — it cannot, and
-//! this doc says so rather than leaving that a surprise. A SEPARATE,
-//! still-open covers a configured
-//! script editing assembled context append-only without breaking the prompt
-//! cache; this item does not build that, and shipping `request_assembled`
-//! as observation-only does not foreclose it -- widening `HookAnswer`'s
-//! vocabulary later is additive, never a breaking change to what already
-//! shipped. `child_reported` fires for BOTH a normal completion
-//! (`AgentLoop::finish`) and a supervisor-synthesized terminal result (a
-//! panic, or a task unresponsive past `supervisor::DEFAULT_GRACE` --
-//! `supervisor.rs`), because a hook that only sees the happy path is
-//! misleading about what "a child reporting" means.
+//! **Context-editing**: `request_assembled`/`context_overflow` (board item
+//! `01KZRZZP6A4A27R3EN0HQAENBS`). [`HookDispatcher::dispatch_context`]
+//! serves them: like `dispatch`, a broken hook cannot fail the turn (fails
+//! OPEN, per hook, with a `tracing::warn!` -- see that method's own doc),
+//! but UNLIKE `dispatch`, a successful answer's `HookAnswer.context`
+//! (`conway_core::hook::ContextDelta`) is read and returned for the caller
+//! (`crate::agent_loop`) to apply append-only
+//! (`crate::context::script_hook::apply_script_deltas`) through the SAME
+//! tool-call/result coherence guard the Rust `ContextHook` path already
+//! goes through. `request_assembled` sits at the seam `ContextHook::
+//! before_request` (`agent_loop.rs`) already edits the assembled payload
+//! at, and now composes with it rather than merely observing it (§16.3's
+//! union rule, no chaining) -- widening `HookAnswer`'s vocabulary being
+//! read here is additive relative to every existing rule that never set
+//! `context` (an empty `ContextDelta` applies as a no-op), never a breaking
+//! change to what shipped before this item.
 //!
 //! **Deny-capable but never modifying**:
 //! `prompt_submitted`. It fires BEFORE the prompt is processed, so a hook
@@ -36,8 +40,8 @@
 //! `Option<String>`: the denial reason, or `None` to proceed.
 //!
 //! **The module is named for the dispatch, not for one tier**, because a
-//! module called `observation` hosting a deny-capable event would be a
-//! declaration that does not match what it contains.
+//! module called `observation` hosting a deny-capable AND a context-editing
+//! tier would be a declaration that does not match what it contains.
 //!
 //! # Why this is not on `PermissionBroker`
 //!
@@ -86,10 +90,12 @@
 //! [`HookPermissionVerdict`], whose entire vocabulary is `NoOpinion` and
 //! `Deny { reason }` — there is no variant and no field capable of carrying
 //! replacement text back. `HookAnswer::context` is ignored here and
-//! documented as ignored: a `ContextDelta` is about assembled context, not
-//! about the submitted prompt, and no observation or prompt event may edit
-//! context. The `reason` on a denial is surfaced to the CALLER as an error;
-//! it is never substituted for the prompt.
+//! documented as ignored: a `ContextDelta` is about ASSEMBLED CONTEXT
+//! (`request_assembled`/`context_overflow`'s own tier above), never about
+//! the raw submitted prompt this method dispatches for -- `dispatch_deny_only`
+//! reads `HookPermissionVerdict` only, structurally incapable of reaching
+//! `context` at all. The `reason` on a denial is surfaced to the CALLER as
+//! an error; it is never substituted for the prompt.
 //!
 //! # `child_spawned` and denial — an open question, deliberately deferred
 //!
@@ -212,7 +218,32 @@ pub const CHILD_SPAWNED: &str = "child_spawned";
 /// `AgentLoop::run_inner`, after `ContextBuilder::build` (and, if
 /// registered, `ContextHook::before_request`'s own edit) and before that
 /// turn's route/attempt call.
+///
+/// **CONTEXT-EDITING, not observation-only, as of board item
+/// `01KZRZZP6A4A27R3EN0HQAENBS`.** A subscriber's `HookAnswer.context`
+/// (`conway_core::hook::ContextDelta`) is now read, via
+/// [`HookDispatcher::dispatch_context`] rather than [`HookDispatcher::
+/// dispatch`] -- the discard-on-purpose method every OTHER event in
+/// [`OBSERVATION_EVENTS`] still uses. A subscriber that never sets
+/// `context` (the default: absent stdout, or an answer that only sets
+/// `permission`, which this event still ignores) observes byte-identical
+/// behavior to before this item, so existing logging-only `request_assembled`
+/// rules are unaffected. See `crate::context::script_hook`'s module doc for
+/// the append-only application logic, and `docs/plugins/hooks.md` point 3/13
+/// for the normative contract.
 pub const REQUEST_ASSEMBLED: &str = "request_assembled";
+/// The event name every `context_overflow` subscription is keyed on (board
+/// item `01KZRZZP6A4A27R3EN0HQAENBS`) -- the script-hook counterpart of
+/// `ContextHook::on_overflow`. Fired from `AgentLoop::route_and_attempt`,
+/// at the SAME call site and under the SAME trigger boundary the Rust
+/// `on_overflow` seam already enforces: only when routing/the attempt
+/// engine rejects with `RoutingError::ContextTooLarge` (every candidate
+/// failed SOLELY on headroom), never for a mixed `RoutingError::
+/// NoCandidate` rejection -- `docs/plugins/hooks.md` point 4's own
+/// disclosed boundary, unchanged and unwidened by this event's addition.
+/// CONTEXT-EDITING, like [`REQUEST_ASSEMBLED`] above -- see that constant's
+/// own doc.
+pub const CONTEXT_OVERFLOW: &str = "context_overflow";
 /// The event name every `child_reported` subscription is keyed on (board
 /// item). Fired for every terminal `AgentResult`
 /// that crosses back to a parent -- both a normal completion
@@ -227,24 +258,44 @@ pub const CHILD_REPORTED: &str = "child_reported";
 /// The deny-capable-but-never-modifying event. Fires at both prompt-submission call sites.
 pub const PROMPT_SUBMITTED: &str = "prompt_submitted";
 
-/// Every observation event this tier dispatches, in one place so a caller
-/// wiring config can iterate the supported set rather than restating it.
+/// Every event this tier dispatches through the discard-the-answer
+/// [`HookDispatcher::dispatch`] -- fire-and-forget, cannot deny, cannot
+/// edit. **`REQUEST_ASSEMBLED` is deliberately NOT a member as of board item
+/// `01KZRZZP6A4A27R3EN0HQAENBS`** -- it moved to the context-editing tier
+/// ([`HookDispatcher::dispatch_context`]; see that constant's own doc). It
+/// stays fail-open (a broken hook cannot fail the turn it would have
+/// observed) but is no longer discard-only.
 pub const OBSERVATION_EVENTS: &[&str] = &[
     POST_TOOL_USE,
     SESSION_STARTING,
     CHILD_SPAWNED,
-    REQUEST_ASSEMBLED,
     CHILD_REPORTED,
 ];
 
-/// Every event this module dispatches at all, observation and deny-capable
-/// alike -- what `ConwayBuilder::build` filters `[hooks].rules[]` against.
+/// Every event whose `HookAnswer.context` is read and applied append-only
+/// (decision `01KZRZAFD8T3GX407MZC8P1W1E`), via [`HookDispatcher::
+/// dispatch_context`] rather than [`HookDispatcher::dispatch`]. Still fails
+/// OPEN like [`OBSERVATION_EVENTS`] (a broken hook leaves the payload
+/// unchanged rather than failing the turn) -- editing capability and
+/// deny capability are independent axes; this tier has the former, not the
+/// latter.
+pub const CONTEXT_EDITING_EVENTS: &[&str] = &[REQUEST_ASSEMBLED, CONTEXT_OVERFLOW];
+
+/// Every event this module dispatches at all, observation, context-editing,
+/// and deny-capable alike -- what `ConwayBuilder::build` filters
+/// `[hooks].rules[]` against. Both dispatch tiers above share ONE
+/// subscription map (`HookDispatcher::hooks`) and one config surface
+/// (`[hooks].rules[]`) -- which method reads a given event's answer is
+/// decided by the DISPATCH CALL SITE (`crate::agent_loop`), never by a
+/// per-event flag on the stored `HookSpec` -- so this list is a plain union,
+/// not something a caller needs to split by tier itself.
 pub const DISPATCHED_EVENTS: &[&str] = &[
     POST_TOOL_USE,
     SESSION_STARTING,
     CHILD_SPAWNED,
     REQUEST_ASSEMBLED,
     CHILD_REPORTED,
+    CONTEXT_OVERFLOW,
     PROMPT_SUBMITTED,
 ];
 
@@ -259,6 +310,7 @@ pub const EVENTS_WITHOUT_TOOL_NAME: &[&str] = &[
     CHILD_SPAWNED,
     REQUEST_ASSEMBLED,
     CHILD_REPORTED,
+    CONTEXT_OVERFLOW,
     PROMPT_SUBMITTED,
 ];
 
@@ -487,6 +539,124 @@ impl HookDispatcher {
         }
         None
     }
+
+    /// Invokes every hook subscribed to `event` (one of
+    /// [`CONTEXT_EDITING_EVENTS`]) and collects each one's
+    /// `HookAnswer.context` (`conway_core::hook::ContextDelta`) rather than
+    /// discarding it -- the ONE place in this module that reads that field.
+    ///
+    /// **Fails OPEN per hook, visibly, matching [`Self::dispatch`]'s own
+    /// posture, never [`Self::dispatch_deny_only`]'s.** A hook that errors,
+    /// times out, or returns unparseable stdout contributes nothing --
+    /// there is no `Err`/denial for the whole call, only a per-hook
+    /// [`ContextHookFailure`] alongside a `tracing::warn!` (the SAME
+    /// channel [`Self::dispatch`]'s own failing-hook branch already uses,
+    /// so an operator watching for one already watches for both). The
+    /// caller (`crate::agent_loop`) applies whatever DID answer through
+    /// `crate::context::script_hook::apply_script_deltas` and runs the SAME
+    /// tool-call/result coherence guard `crate::context::hook_guard`
+    /// already enforces for the Rust `ContextHook` path -- there is no
+    /// second, unguarded way for an edited payload to reach a request.
+    ///
+    /// **A hook with nothing to say (empty stdout, or an answer that never
+    /// set `context`) still produces an [`ContextHookAnswer`] carrying the
+    /// default, empty `ContextDelta`** -- applying it is a no-op
+    /// (`apply_script_deltas` appends/excludes nothing), so an existing
+    /// `request_assembled` rule written purely for observation (its answer
+    /// never touches `context`) is unaffected by this method reading a
+    /// field [`Self::dispatch`] used to discard.
+    pub async fn dispatch_context(
+        &self,
+        event: &str,
+        payload: serde_json::Value,
+    ) -> ContextDispatchOutcome {
+        let mut outcome = ContextDispatchOutcome::default();
+        let Some(runner) = self
+            .runner
+            .read()
+            .expect("observation runner lock poisoned")
+            .clone()
+        else {
+            return outcome;
+        };
+        let hooks = self
+            .hooks
+            .read()
+            .expect("observation hooks lock poisoned")
+            .get(event)
+            .cloned()
+            .unwrap_or_default();
+
+        for hook in hooks.iter().filter(|hook| hook.applies_to(&payload)) {
+            let invocation = HookInvocation {
+                command: hook.command.clone(),
+                timeout_ms: hook.timeout_ms,
+                event: HookEvent {
+                    name: event.to_string(),
+                    payload: payload.clone(),
+                },
+            };
+            match runner.run(&invocation).await {
+                Ok(answer) => outcome.answers.push(ContextHookAnswer {
+                    hook_id: hook.id.clone(),
+                    delta: answer.context,
+                }),
+                Err(failure) => {
+                    // The VISIBLE failure signal the acceptance asks for --
+                    // the identical channel `Self::dispatch`'s own failing
+                    // branch already uses, plus the structured record below
+                    // a caller can act on further (e.g. surface as an
+                    // `Event`).
+                    tracing::warn!(
+                        event = event,
+                        hook = hook.id.as_str(),
+                        "context hook failed; the pre-hook payload is left unchanged for this \
+                         hook: {failure}"
+                    );
+                    outcome.failures.push(ContextHookFailure {
+                        hook_id: hook.id.clone(),
+                        reason: failure.to_string(),
+                    });
+                }
+            }
+        }
+        outcome
+    }
+}
+
+/// One [`CONTEXT_EDITING_EVENTS`] hook's successful answer, tagged with the
+/// [`HookSpec::id`] that produced it. The tag is what makes
+/// `crate::context::script_hook::apply_script_deltas`'s appended segments
+/// attributable -- every context segment a script hook appends carries this
+/// id in its own provenance, per the ACCEPTANCE "every segment a script
+/// appends carries provenance naming the hook's configured id."
+#[derive(Clone, Debug, PartialEq)]
+pub struct ContextHookAnswer {
+    pub hook_id: String,
+    pub delta: conway_core::hook::ContextDelta,
+}
+
+/// One [`CONTEXT_EDITING_EVENTS`] hook that did NOT answer -- errored, timed
+/// out, or returned output `HookAnswer` cannot parse. `reason` is the
+/// `Display` of the `conway_core::error::HookFailure` that caused it, so a
+/// caller surfacing this further names the same failure `dispatch_context`'s
+/// own `tracing::warn!` already logged.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContextHookFailure {
+    pub hook_id: String,
+    pub reason: String,
+}
+
+/// What [`HookDispatcher::dispatch_context`] learned: every hook that
+/// answered, and every hook that failed to. Both lists are in the SAME
+/// configured-subscription order `Self::dispatch`/`Self::dispatch_deny_only`
+/// already iterate in; composing them (union excludes, concatenate appends)
+/// is `crate::context::script_hook::apply_script_deltas`'s job, not this
+/// type's -- this struct is a transport-level record, not a merge.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ContextDispatchOutcome {
+    pub answers: Vec<ContextHookAnswer>,
+    pub failures: Vec<ContextHookFailure>,
 }
 
 /// The fan-out layer a plugin's own `PluginEventHandle::emit` call reaches
@@ -673,6 +843,156 @@ mod tests {
         assert!(!d.will_dispatch(POST_TOOL_USE));
         d.dispatch(POST_TOOL_USE, serde_json::json!({})).await;
         assert!(runner.seen.lock().expect("seen lock poisoned").is_empty());
+    }
+
+    // -------------------------------------------------------- dispatch_context --
+
+    use conway_core::hook::ContextDelta;
+
+    /// Answers every invocation with a scripted `ContextDelta`, recording
+    /// what it was invoked with -- the `dispatch_context` counterpart of
+    /// `RecordingRunner` above, which only ever answers the trait's
+    /// `Default`.
+    #[derive(Debug, Default)]
+    struct ScriptedContextRunner {
+        delta: ContextDelta,
+    }
+
+    #[async_trait::async_trait]
+    impl HookRunner for ScriptedContextRunner {
+        async fn run(&self, _invocation: &HookInvocation) -> Result<HookAnswer, HookFailure> {
+            Ok(HookAnswer {
+                context: self.delta.clone(),
+                permission: HookPermissionVerdict::default(),
+            })
+        }
+    }
+
+    /// The transport-level property: a subscribed hook's `context` field
+    /// (previously read by nothing at all -- `Self::dispatch` discards it)
+    /// comes back tagged with its own configured id, unchanged.
+    #[tokio::test]
+    async fn dispatch_context_returns_the_answering_hooks_delta_tagged_with_its_id() {
+        let runner = Arc::new(ScriptedContextRunner {
+            delta: ContextDelta {
+                appends: vec![serde_json::json!({"role": "system", "text": "note"})],
+                excludes: vec!["seg-1".to_string()],
+            },
+        });
+        let d = HookDispatcher::new();
+        d.set_runner(Some(runner));
+        d.set_hooks(BTreeMap::from([(
+            REQUEST_ASSEMBLED.to_string(),
+            vec![spec("annotator")],
+        )]));
+
+        let outcome = d
+            .dispatch_context(REQUEST_ASSEMBLED, serde_json::json!({}))
+            .await;
+
+        assert!(outcome.failures.is_empty());
+        assert_eq!(outcome.answers.len(), 1);
+        assert_eq!(outcome.answers[0].hook_id, "annotator");
+        assert_eq!(outcome.answers[0].delta.excludes, vec!["seg-1".to_string()]);
+    }
+
+    /// Two hooks subscribed to the same event both answer, in configured
+    /// order -- the raw material `apply_script_deltas` composes under the
+    /// no-chaining union rule; this level only proves both are COLLECTED,
+    /// not merged (merging is that function's own test's job).
+    #[tokio::test]
+    async fn dispatch_context_collects_every_subscribed_hooks_answer() {
+        let runner = Arc::new(ScriptedContextRunner {
+            delta: ContextDelta {
+                appends: vec![],
+                excludes: vec!["shared".to_string()],
+            },
+        });
+        let d = HookDispatcher::new();
+        d.set_runner(Some(runner));
+        d.set_hooks(BTreeMap::from([(
+            REQUEST_ASSEMBLED.to_string(),
+            vec![spec("first"), spec("second")],
+        )]));
+
+        let outcome = d
+            .dispatch_context(REQUEST_ASSEMBLED, serde_json::json!({}))
+            .await;
+
+        assert_eq!(outcome.answers.len(), 2);
+        assert_eq!(outcome.answers[0].hook_id, "first");
+        assert_eq!(outcome.answers[1].hook_id, "second");
+    }
+
+    /// ACCEPTANCE, the visible-failure half: a hook that errors contributes
+    /// NO answer (so applying `outcome.answers` alone leaves the payload
+    /// unchanged for this hook) AND a structured [`ContextHookFailure`]
+    /// naming it -- both assertable, not just the absence of a panic.
+    #[tokio::test]
+    async fn dispatch_context_reports_a_failing_hook_visibly_and_contributes_no_answer() {
+        let (d, _runner) = {
+            let runner = Arc::new(RecordingRunner {
+                fail: true,
+                ..Default::default()
+            });
+            let d = HookDispatcher::new();
+            d.set_runner(Some(runner.clone()));
+            d.set_hooks(BTreeMap::from([(
+                REQUEST_ASSEMBLED.to_string(),
+                vec![spec("broken")],
+            )]));
+            (d, runner)
+        };
+
+        let outcome = d
+            .dispatch_context(REQUEST_ASSEMBLED, serde_json::json!({}))
+            .await;
+
+        assert!(
+            outcome.answers.is_empty(),
+            "a failing hook must contribute no answer to apply"
+        );
+        assert_eq!(outcome.failures.len(), 1);
+        assert_eq!(outcome.failures[0].hook_id, "broken");
+        assert!(
+            outcome.failures[0].reason.contains("scripted failure"),
+            "{:?}",
+            outcome.failures[0]
+        );
+    }
+
+    /// A hook whose answer never sets `context` (the wire default) still
+    /// produces an [`ContextHookAnswer`] carrying the empty `ContextDelta`
+    /// -- an existing observation-only rule's non-answer is a documented
+    /// no-op when applied, not a failure.
+    #[tokio::test]
+    async fn dispatch_context_treats_an_empty_answer_as_a_no_op_delta() {
+        let (d, _runner) = wired(false);
+        d.set_hooks(BTreeMap::from([(
+            REQUEST_ASSEMBLED.to_string(),
+            vec![spec("silent")],
+        )]));
+
+        let outcome = d
+            .dispatch_context(REQUEST_ASSEMBLED, serde_json::json!({}))
+            .await;
+
+        assert_eq!(outcome.answers.len(), 1);
+        assert!(outcome.answers[0].delta.appends.is_empty());
+        assert!(outcome.answers[0].delta.excludes.is_empty());
+    }
+
+    /// The default posture -- no runner installed -- is still a byte-for-byte
+    /// no-op for the context-editing dispatch, mirroring `Self::dispatch`'s
+    /// own identical guarantee.
+    #[tokio::test]
+    async fn dispatch_context_is_a_no_op_with_no_runner_installed() {
+        let d = HookDispatcher::new();
+        let outcome = d
+            .dispatch_context(REQUEST_ASSEMBLED, serde_json::json!({}))
+            .await;
+        assert!(outcome.answers.is_empty());
+        assert!(outcome.failures.is_empty());
     }
 
     // ---------------------------------------------------------------- matcher --

@@ -653,7 +653,7 @@ What this means for you, concretely:
   quietly. Two things narrow the blast radius, and neither removes it: a
   `match` on an event that carries no tool name at all
   (`session_starting`, `child_spawned`, `request_assembled`,
-  `child_reported`, `prompt_submitted`) is a typed config error naming your
+  `context_overflow`, `child_reported`, `prompt_submitted`) is a typed config error naming your
   rule's `id` rather than silent inertness; and omitting `match` entirely
   means *fire for every call*, which is loud and therefore self-correcting.
   A `match` that is merely misspelled is the case with no safety net —
