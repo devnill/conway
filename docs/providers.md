@@ -220,9 +220,11 @@ Unlike `"openai-compat"`, where `dialect` is *required* (it selects the
 whole wire-behavior profile the adapter needs to function at all), it is
 *optional* here — the Messages API has exactly one wire shape, so an
 `"anthropic"` entry naming no profile is a complete, valid configuration on
-its own, exactly as before this mechanism existed. `"anthropic"` ships no
-built-in profiles of its own (unlike `"openai-compat"`'s six) — every
-`"anthropic"` profile is one you declare. When both a selected profile and
+its own, exactly as before this mechanism existed. `"anthropic"` ships one
+built-in profile of its own (`kimi-code`, unlike `"openai-compat"`'s six —
+see [Kimi coding plan](#kimi-coding-plan) below for what it does and does
+not set, and why); every other `"anthropic"` profile is one you declare.
+When both a selected profile and
 this entry's own inline `extra` set the same key, **`extra` wins** — the
 one precedence rule both kinds' profile support share, see
 [Precedence: profile vs. `extra` vs. defaults](#precedence-profile-vs-extra-vs-defaults)
@@ -241,6 +243,32 @@ needs no dedicated adapter — just a `base_url` and its own env var:
       "kind": "anthropic",
       "base_url": "https://api.kimi.com/coding/",
       "api_key_env": "KIMI_API_KEY"
+    }
+  }
+}
+```
+
+**`"anthropic"`'s one shipped built-in profile names this same
+endpoint.** `dialect: "kimi-code"` resolves out of the box, with no
+`.conway/profiles.toml` required — equivalent to the entry above (today
+it sets neither `anthropic_version` nor `headers`; conway has no verified
+evidence Kimi's gateway needs either overridden, so it ships none rather
+than guessing — see `crates/conway-plugin-backends/src/factory.rs`'s
+`ANTHROPIC_BUILT_IN_PROFILES` for the other endpoints considered and left
+out of this set for the same reason). Naming it buys one thing the
+inline form doesn't: a single place a future real Kimi-specific override
+would land, inherited by every backend entry that selects it rather than
+copied into each one:
+
+```json
+// .conway/settings.json
+{
+  "backends": {
+    "kimi": {
+      "kind": "anthropic",
+      "base_url": "https://api.kimi.com/coding/",
+      "api_key_env": "KIMI_API_KEY",
+      "dialect": "kimi-code"
     }
   }
 }
@@ -406,7 +434,42 @@ conway: error: failed to load provider profiles from ./.conway/profiles.toml: ..
   unknown field `sends_paralel_tool_calls`, expected one of `id`, `chat_path`, ...
 ```
 
-### Adding a provider
+### Adding a provider variant
+
+One procedure adds a provider variant to *either* family — the field
+vocabulary differs (`openai-compat`'s nine wire-behavior fields
+[above](#the-profile-fields) vs. `anthropic`'s two,
+`anthropic_version`/`headers`, [above](#wire-version-and-header-overrides)),
+but the mechanism to declare and select one does not:
+
+1. **Pick your kind, and look up ONLY that kind's own field table** — the
+   two tables just named. A field from the other kind's vocabulary in your
+   entry is a rejected, named build error (`deny_unknown_fields`/the
+   exhaustive `extra` match, per kind), not a silently ignored one.
+2. **Write a `[[profile]]` entry** — `id` plus whichever of that kind's
+   fields you're overriding — in a `.conway/profiles.toml` conway
+   discovers (project- or global-scoped; [above](#discovery-and-precedence)).
+   **One physical file per kind**: `Profiled::parse_source` parses every
+   entry in a discovered file as ONE kind's shape, so a file mixing an
+   `openai-compat`-shaped entry with an `anthropic`-shaped one fails to
+   load for whichever kind reads it second — see [One facility, two
+   vocabularies](#one-facility-two-vocabularies) for why this is a
+   recorded property of the facility staying kind-agnostic, not a bug.
+3. **Select it** — set the corresponding `backends.<id>.dialect` to the
+   profile's `id`, the same way you'd name a built-in. `openai-compat`
+   *requires* `dialect`; `anthropic` accepts one but doesn't
+   ([above](#wire-version-and-header-overrides)).
+4. **Verify.** A malformed profile fails `build()` loudly, naming the file
+   and the offending field, as shown above. A well-formed but
+   *misspelled* `id` does not — see [Seeing what's loaded](#seeing-whats-loaded),
+   immediately below, for today's actual limits on confirming a valid
+   override took effect.
+
+**Worked, executed example — an `openai-compat` variant.** Every backend
+and expectation below is driven through a real `BackendFactory::build` in
+`crates/conway-plugin-backends/tests/providers_doc_walkthrough.rs`, against
+a local `wiremock` server standing in for the real endpoint — this is not
+a description, it is a transcript of code that runs in CI:
 
 ```toml
 # .conway/profiles.toml
@@ -422,9 +485,6 @@ kind = "implicit_prefix"
 min_prefix_tokens = 0
 ```
 
-A backend selects it the same way it selects a built-in — `dialect`
-names the profile's `id`:
-
 ```json
 // .conway/settings.json
 {
@@ -437,6 +497,53 @@ names the profile's `id`:
   }
 }
 ```
+
+The test asserts on the real outgoing request body: `"stream_options"` is
+present on a streamed call (`supports_stream_options = true`), and a
+tool-call reply shaped as a complete JSON-object `arguments` value (not
+just a string fragment) is accepted (`tool_call_style = "tolerant"`) —
+both properties this profile's fields, and no others, control.
+
+**Worked, executed example — an `anthropic` variant.** The same test file
+proves the second family end to end, against a *different* profile file
+(the one-file-per-kind constraint from step 2, above):
+
+```toml
+# .conway/profiles.toml
+[[profile]]
+id = "my-anthropic-gateway"
+anthropic_version = "2024-10-22"
+
+[profile.headers]
+"anthropic-beta" = "my-feature-flag"
+```
+
+```json
+// .conway/settings.json
+{
+  "backends": {
+    "gateway": {
+      "kind": "anthropic",
+      "base_url": "https://gateway.example.com",
+      "api_key_env": "GATEWAY_API_KEY",
+      "dialect": "my-anthropic-gateway"
+    }
+  }
+}
+```
+
+The test asserts on the real outgoing request's HTTP headers (never the
+JSON body — Anthropic's wire format carries both fields as headers, not
+body keys): `anthropic-version: 2024-10-22` and `anthropic-beta:
+my-feature-flag` both reach the wire, alongside (never in place of) the
+`x-api-key` header `AnthropicBackend` always sets.
+
+**The two-family proof is the point of this section, not a bonus.** A
+procedure that only actually works for the family its author was testing
+is worse than no procedure — it reads as authoritative for both and is
+correct for one. `cargo test -p conway-plugin-backends --test
+providers_doc_walkthrough` runs both worked examples above on every CI
+run.
 
 ### Seeing what's loaded
 

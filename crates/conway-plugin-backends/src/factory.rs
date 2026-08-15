@@ -67,6 +67,11 @@
 //! profile SET on top of the selection mechanism landing here, not the
 //! mechanism itself.
 //!
+//! **S4c landed**: [`ANTHROPIC_BUILT_IN_PROFILES`] is that set -- one
+//! entry, `kimi-code`, with the "which endpoints earned one and which did
+//! not" reasoning kept on that constant's own doc rather than repeated
+//! here.
+//!
 //! Both kinds' `build()` now also apply the ONE documented precedence rule
 //! (`crate::profile_store::apply_precedence`: explicit `extra` wins
 //! key-for-key over a selected profile's value for the same key) before
@@ -134,15 +139,89 @@ struct AnthropicFields {
     headers: BTreeMap<String, String>,
 }
 
+/// S4c: this kind's own compile-time-embedded built-in profile set --
+/// mirrors `crate::profile::BUILT_IN_PROFILES` for `"openai-compat"`, but
+/// deliberately much smaller (one entry, every field defaulted): see this
+/// module's own doc, "S4b: one profile facility, `dialect` still means
+/// something different per kind," for why the Messages API has no analogue
+/// of `openai-compat`'s wire-behavior vocabulary at all.
+///
+/// **Which endpoints earned a built-in entry, and which did not -- decided
+/// against [S4c]'s own instruction not to ship an untested claim.** An
+/// Anthropic-compatible endpoint gets one only when this crate can (a) name
+/// a concrete instance of it that is genuinely reachable through this
+/// adapter's own auth shape (a bare `x-api-key` header plus a `base_url`
+/// override -- see `AnthropicConfig`'s own doc; `AnthropicBackend`
+/// implements no other auth scheme), and (b) exercise the selection
+/// credential-free through a `wiremock` fixture asserting the real wire
+/// output, not merely that the profile parses.
+///
+/// - **`kimi-code` ships.** Kimi's coding plan (`docs/providers.md`'s own
+///   "Kimi coding plan" section, `https://api.kimi.com/coding/`) is the
+///   one Anthropic-compatible third-party endpoint this repository already
+///   documents as a real, currently-configured integration (this crate's
+///   own `model_metadata.rs` ships bundled `k3-256k`/`k3[1m]` metadata for
+///   it). Its fields are `ProfileBundle`'s two keys both left UNSET
+///   (`anthropic_version`/`headers` fall through to this kind's own
+///   ordinary defaults) -- nothing in this repository is verified evidence
+///   Kimi's gateway needs anything beyond `base_url` + a credential to work
+///   (`docs/providers.md`'s "Kimi coding plan" section names no header or
+///   version quirk), and inventing one this crate cannot exercise against a
+///   real Kimi response would be exactly the untested-configuration harm
+///   this item's own spec warns against ("an untested profile is a
+///   configuration that claims to work"). What shipping it WITH zero
+///   overrides still buys, and what `tests/anthropic_built_in_profiles.rs`
+///   proves: `dialect = "kimi-code"` now resolves with no
+///   `.conway/profiles.toml` on disk at all, where before this item it
+///   failed every time with a typed `UnknownProfile` -- and it is one
+///   centralized place a FUTURE real Kimi-specific override would land, so
+///   every existing `dialect = "kimi-code"` entry would inherit it without
+///   being individually rewritten.
+/// - **Considered and left out: a built-in `"anthropic"` profile for
+///   Anthropic's own hosted API.** Redundant with leaving `dialect` unset
+///   entirely -- `AnthropicConfig`'s own hardcoded defaults already ARE
+///   Anthropic's API, and `dialect` is optional for this kind precisely
+///   because of that (`Self::resolve_profile`'s own doc). A profile that
+///   resolves to exactly what no-profile-selected already does would teach
+///   a reader nothing `docs/providers.md`'s "Anthropic and
+///   Anthropic-compatible endpoints" section doesn't already say.
+/// - **Considered and left out: AWS Bedrock's and Google Vertex AI's own
+///   Anthropic-shaped endpoints.** Both speak a materially different auth
+///   scheme (SigV4 request signing / a service-account token, never a bare
+///   `x-api-key` header) that `AnthropicBackend` does not implement at all
+///   -- "an endpoint nobody can reach" through this adapter as it exists
+///   today, a gap no profile (which only ever sets a header/version) can
+///   close.
+/// - **Considered and left out: other Anthropic-compatible coding-plan
+///   gateways (e.g. GLM/Zhipu's or MiniMax's own `ANTHROPIC_BASE_URL`
+///   endpoints).** Plausible, and other tools' users report pointing an
+///   Anthropic-shaped client at them the same way this repository points
+///   one at Kimi's -- but this repository has never configured, run
+///   against, or captured a fixture for one. No fixture, no operator
+///   confirmation, nothing this crate can honestly call "tested." Shipping
+///   one is a future item with its own verification against a real
+///   response, not a guess landed here.
+const ANTHROPIC_BUILT_IN_PROFILES: &str = r#"
+[[profile]]
+id = "kimi-code"
+"#;
+
 impl AnthropicBackendFactory {
-    /// S4b: this kind's own (currently empty) compile-time built-in
-    /// profile set -- unlike `"openai-compat"`'s six built-ins
-    /// (`crate::profile::BUILT_IN_PROFILES`), `ProfileBundle` has no
-    /// compile-time source for this kind yet. That is S4c's job, landing
-    /// on top of the selection mechanism this item establishes, not this
-    /// item's own: see this module's own doc.
+    /// S4c: parses [`ANTHROPIC_BUILT_IN_PROFILES`] -- this kind's own
+    /// compile-time-embedded built-in profile set, mirroring
+    /// `crate::profile::ProfileStore::built_ins` for `"openai-compat"`.
+    /// Before this item this returned `profile_store::ProfileStore::empty()`
+    /// unconditionally; see [`ANTHROPIC_BUILT_IN_PROFILES`]'s own doc for
+    /// which endpoint(s) earned an entry and why, and
+    /// `tests/anthropic_built_in_profiles.rs` for the regression net.
+    ///
+    /// Panics only if the embedded TOML itself fails to parse -- a
+    /// compile-time-fixed invariant, never a possible runtime/user-input
+    /// state (mirrors `crate::profile::ProfileStore::built_ins`'s and
+    /// `ModelMetadataStore::defaults`'s identical `.expect()`).
     fn built_in_profiles() -> profile_store::ProfileStore<ProfileBundle> {
-        profile_store::ProfileStore::empty()
+        profile_store::ProfileStore::from_source(ANTHROPIC_BUILT_IN_PROFILES)
+            .expect("ANTHROPIC_BUILT_IN_PROFILES must parse and validate")
     }
 
     /// Resolves `ctx.dialect`, when set, to a [`ProfileBundle`] against
@@ -672,5 +751,23 @@ mod tests {
     fn anthropic_probe_capabilities_is_always_empty() {
         let c = ctx("anthropic", "", None);
         assert!(AnthropicBackendFactory.probe_capabilities(&c).is_empty());
+    }
+
+    /// S4c: [`AnthropicBackendFactory::built_in_profiles`] carries exactly
+    /// the one entry [`ANTHROPIC_BUILT_IN_PROFILES`] ships -- `kimi-code`,
+    /// with both `ProfileBundle` keys unset (that constant's own doc names
+    /// which OTHER endpoints were considered and left out).
+    #[test]
+    fn built_in_profiles_contain_exactly_kimi_code_with_no_field_overrides() {
+        let store = AnthropicBackendFactory::built_in_profiles();
+        assert_eq!(store.len(), 1);
+        let kimi_code = store
+            .get("kimi-code")
+            .expect("kimi-code must be a built-in anthropic profile");
+        assert!(
+            kimi_code.fields.is_empty(),
+            "kimi-code ships zero field overrides by design: {:?}",
+            kimi_code.fields
+        );
     }
 }
