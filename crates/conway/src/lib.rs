@@ -38,17 +38,17 @@ mod event_stream;
 mod fork_child;
 pub mod gates;
 mod intent;
+mod permissions;
 pub mod presets;
 mod session_handle;
 mod subagent_spec;
 
 pub use builder::{ConwayBuilder, PluginSelection};
-pub use conway::{
-    Conway, HookRuleView, PermissionLoadReport, RevokeOutcome, TrustPermissionReport,
-};
+pub use conway::{Conway, HookRuleView};
 pub use error::{ConwayError, Result};
 pub use event_stream::EventStream;
 pub use intent::AgentIntent;
+pub use permissions::{PermissionLoadReport, RevokeOutcome, TrustPermissionReport};
 pub use session_handle::{SessionHandle, SessionSpec, TurnHandle};
 pub use subagent_spec::{ForkSpec, SpawnSpec};
 

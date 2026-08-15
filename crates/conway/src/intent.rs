@@ -8,6 +8,16 @@
 //! subagent primitive — it is one ordinary ephemeral spawn, one turn,
 //! then a purge.
 //!
+//! **Stage 2c (board item `01KZVZ0ASR4CRFG822YWEAW30K`):** the spawn/drain/
+//! purge mechanics used to be hand-rolled inline in this module. They now
+//! delegate to `conway_runtime::runtime::Runtime::run_ephemeral_turn` --
+//! genuinely runtime-shaped (no facade-side dependency at all), so it moved
+//! there, beside `Runtime::promote_agent`/`Runtime::tree`. What stays here
+//! is exactly what CANNOT move without inverting the crate graph: the
+//! `[roles.intent]` config check, the agent-def load, the prompt text, and
+//! the untrusted-reply validation policy -- all facade-only concerns. See
+//! that method's own doc for the mechanism's full contract.
+//!
 //! ## Configuration (purely declarative — ZERO router code, no models.json)
 //!
 //! The classifier routes through the ordinary role machinery under the
@@ -61,11 +71,13 @@
 //!   `ToolAsk`); an intent session is neither. Confirmed against
 //!   `Conway::sweep_stale_modal_asks`: it purges ONLY `ModalAsk`-tagged
 //!   sessions, so untagged intent sessions can never be swept — and they
-//!   never NEED sweeping, because this module purges the session inline on
-//!   every exit path (below). Disclosed residual: a process crash in the
-//!   narrow window between `start` and `remove` leaks one untagged
-//!   ephemeral session that no sweep will ever reclaim (the same shape as
-//!   any pre-`AskOrigin` leftover); it stays hidden from default listings.
+//!   never NEED sweeping, because `Runtime::run_ephemeral_turn` purges the
+//!   session unconditionally once its terminal is observed (Stage 2c;
+//!   previously this module purged it inline, same contract, moved intact).
+//!   Disclosed residual: a process crash in the narrow window between
+//!   `start` and `remove` leaks one untagged ephemeral session that no
+//!   sweep will ever reclaim (the same shape as any pre-`AskOrigin`
+//!   leftover); it stays hidden from default listings.
 //! - **`budget`:** `max_steps: 2`, no deadline/token caps. With zero tools
 //!   the classifier can only answer in one step; the slack step is
 //!   belt-and-braces.
@@ -131,25 +143,16 @@
 //! only.
 
 use std::collections::{HashMap, HashSet};
-use std::future::poll_fn;
 use std::path::PathBuf;
-use std::pin::Pin;
 use std::sync::Arc;
 
-use conway_core::agent::{
-    AgentResult, Budget, ResultStatus, SubagentMode, SubagentSpec, ToolSelector,
-};
+use conway_core::agent::{Budget, ResultStatus, SubagentMode, SubagentSpec, ToolSelector};
 use conway_core::config::AgentDef;
-use conway_core::error::RuntimeError;
-use conway_core::event::Event;
 use conway_core::ids::{AgentId, RoleAlias};
-use conway_core::ports::{SessionStore, SubagentHost};
 use conway_runtime::runtime::Runtime;
-use futures_core::Stream;
 
 use crate::config::ConwayConfig;
 use crate::error::{ConwayError, Result};
-use crate::event_stream::EventStream;
 
 /// The declarative role alias the classifier routes under — see the module
 /// doc for the `settings.json` snippet and the unconfigured-role fallback.
@@ -224,11 +227,28 @@ fn passthrough(default_recipe: SubagentMode, raw_text: &str) -> AgentIntent {
 
 /// The whole classification flow, taken out of `Conway` so `conway.rs`
 /// carries only the one-method delegation this item is scoped to add
-/// there. `rt`/`store`/`config` are the owning `Conway`'s own fields,
-/// passed explicitly.
+/// there. `rt`/`config` are the owning `Conway`'s own fields, passed
+/// explicitly.
+///
+/// **Stage 2c (board item `01KZVZ0ASR4CRFG822YWEAW30K`):** the mechanical
+/// spawn/drain/purge sequence this function used to hand-roll inline now
+/// delegates to [`conway_runtime::runtime::Runtime::run_ephemeral_turn`] --
+/// see that method's own doc for why it lives there (it is genuinely
+/// runtime-shaped: `Runtime`, `SubagentHost`, `SessionStore`, and
+/// `conway-core` domain types only, nothing facade-side) and for the exact
+/// purge-then-report contract this function now relies on rather than
+/// restates. What stays HERE, in the facade, is domain-specific and cannot
+/// move: the `[roles.intent]` pre-flight check and `config.roles` itself
+/// (`crate::config::ConwayConfig`), the configured-agent-def load
+/// (`crate::agents::load_agent_defs`), the classification prompt text, and
+/// the untrusted-reply parse/validation policy -- none of which
+/// `conway-runtime` can name without depending on this facade crate, which
+/// would invert the crate graph (`conway` already depends on
+/// `conway-runtime`, never the reverse). This function no longer takes a
+/// `store` parameter: purging the ephemeral session is now
+/// `run_ephemeral_turn`'s own responsibility, not this function's.
 pub(crate) async fn classify(
     rt: &Arc<Runtime>,
-    store: &Arc<dyn SessionStore>,
     config: &ConwayConfig,
     parent: AgentId,
     default_recipe: SubagentMode,
@@ -271,59 +291,22 @@ pub(crate) async fn classify(
         tag: None,
     };
 
-    // Subscribe BEFORE `start` so the child's first `TextDelta` cannot race
-    // past the drain (the same ordering `SessionHandle::ask` documents).
-    let live = rt.subscribe();
-    // `caller` and `parent` are
-    // both `parent` -- classification always spawns a child of the caller's
-    // OWN focused agent (this function's `parent` argument), never a
-    // different one, so there is no separate caller identity to thread
-    // through here.
-    let child = SubagentHost::start(rt.as_ref(), parent, parent, spec)
+    // `caller` and `parent` are both `parent` -- classification always
+    // spawns a child of the caller's OWN focused agent (this function's
+    // `parent` argument), never a different one, so there is no separate
+    // caller identity to thread through here. `run_ephemeral_turn` itself
+    // subscribes before starting the child (its own doc), drives the
+    // child's single turn to terminal (`keep_alive: false` above guarantees
+    // exactly one `AgentFinished` follows -- architecture §8), and purges
+    // the child's session once that terminal is observed -- see that
+    // method's own doc for the exact purge-then-report contract this
+    // function now relies on instead of restating.
+    let outcome = rt
+        .run_ephemeral_turn(parent, parent, spec)
         .await
         .map_err(ConwayError::Runtime)?;
-    // Disclosed residual (shared with B2's ask path): if `start` fails
-    // AFTER its internal `store.create` but before launch, the half-created
-    // ephemeral session is unreachable from here (its id is never
-    // returned) and leaks. `start` is all-but-atomic in practice; closing
-    // that window is `conway-runtime`'s concern, not this item's.
-    let session = rt
-        .tree()
-        .nodes
-        .iter()
-        .find(|n| n.agent_id == child)
-        .map(|n| n.session)
-        // Tree nodes are never detached, so a just-attached child cannot be
-        // absent; this arm exists only to keep the function total.
-        .ok_or(ConwayError::Runtime(RuntimeError::AgentNotFound {
-            agent: child,
-        }))?;
 
-    // Drive the child's single turn to its terminal event. `keep_alive:
-    // false` guarantees exactly one `AgentFinished` follows the turn
-    // (architecture §8), so this drain always terminates unless the runtime
-    // itself is dropped.
-    let mut stream = EventStream::live(session, Some(child), live);
-    let (reply, terminal) = drain_turn(&mut stream, child).await;
-
-    // Purge the intent session BEFORE parsing/validation, so EVERY exit
-    // path past `start` — success, parse failure, validation failure, a
-    // failed turn — leaves no intent session behind. B1's store guards
-    // pass: the header is ephemeral, a one-turn classifier has no children,
-    // and the child is terminal (we only get here after its
-    // `AgentFinished`; terminal status is absorbing, so this cannot race a
-    // still-running loop).
-    let purge = store.remove(&session).await;
-
-    // The child terminal error wins over a purge error (it is the more
-    // informative failure); a purge error surfaces when the turn itself was
-    // fine — a classify must never SILENTLY leak its session.
-    let result = terminal.ok_or(ConwayError::Runtime(RuntimeError::AgentNotFound {
-        agent: child,
-    }))?;
-    purge?;
-
-    match result.status {
+    match outcome.result.status {
         ResultStatus::Completed => {}
         // Any non-Completed terminal (backend/routing failure folded into
         // `Failed` by the agent loop, budget, cancellation) is an "other
@@ -340,27 +323,12 @@ pub(crate) async fn classify(
         }
     }
 
-    Ok(parse_reply(&reply, default_recipe, text, &def_names))
-}
-
-/// Accumulates the child's reply text until its own terminal
-/// `AgentFinished` — agent-id-checked, because `EventStream` passes tree
-/// lifecycle events through regardless of the session/agent filter (the
-/// same guard `TurnHandle::text`/`result` document). Returns the terminal
-/// `AgentResult`, or `None` only if the bus itself ended first (runtime
-/// dropped).
-async fn drain_turn(stream: &mut EventStream, child: AgentId) -> (String, Option<AgentResult>) {
-    let mut text = String::new();
-    while let Some(envelope) = poll_fn(|cx| Pin::new(&mut *stream).poll_next(cx)).await {
-        match envelope.event {
-            Event::TextDelta { text: delta } => text.push_str(&delta),
-            Event::AgentFinished { result, .. } if result.agent_id == child => {
-                return (text, Some(result));
-            }
-            _ => {}
-        }
-    }
-    (text, None)
+    Ok(parse_reply(
+        &outcome.reply,
+        default_recipe,
+        text,
+        &def_names,
+    ))
 }
 
 /// Builds the intent session's single prompt: the classification
