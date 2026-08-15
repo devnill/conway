@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Anthropic gets its first built-in profile, and one procedure now covers
+  adding a provider variant to either wire family.** `dialect: "kimi-code"`
+  resolves out of the box for Kimi's coding plan with no
+  `.conway/profiles.toml` required — before this, every `dialect` value for
+  `"anthropic"` failed with `UnknownProfile`, since the kind shipped none.
+  It sets neither `anthropic_version` nor `headers`: nothing in this
+  repository is evidence that Kimi's gateway needs either overridden, so it
+  ships zero overrides rather than a guess. `ANTHROPIC_BUILT_IN_PROFILES`
+  in `crates/conway-plugin-backends/src/factory.rs` records which other
+  endpoints were considered and why each was left out. `docs/providers.md`'s
+  "Adding a provider variant" is now one procedure covering both
+  `openai-compat` and `anthropic`, each with a worked example that is
+  actually executed — `tests/providers_doc_walkthrough.rs` drives both
+  through a real `BackendFactory::build` against `wiremock` and asserts the
+  documented wire-body and header effects — replacing a walkthrough that
+  only ever demonstrated `openai-compat`.
+
+### Added
+
 - **One-shot mode gains six flags: `--agent`, `--system-prompt` /
   `--append-system-prompt`, and `--max-turns` / `--max-tokens` /
   `--max-seconds`.** `-p` was a coding agent with the interactive parts

@@ -151,8 +151,12 @@ impl<T> Default for ProfileStore<T> {
 
 impl<T: Profiled> ProfileStore<T> {
     /// An empty store -- the starting point for a kind that ships no
-    /// compile-time built-ins of its own (today, `"anthropic"`; see
-    /// `crate::factory`'s module doc for why it has none YET). Distinct from
+    /// compile-time built-ins of its own at all. Neither kind this crate
+    /// ships uses it in production as of S4c (`"openai-compat"` never did;
+    /// `"anthropic"` used it as a placeholder through S4b, until S4c gave it
+    /// its own `ANTHROPIC_BUILT_IN_PROFILES` -- see `crate::factory`'s
+    /// module doc), but it remains this facility's own honest answer for a
+    /// THIRD kind (or a test) with genuinely nothing to embed. Distinct from
     /// [`Self::from_source`] with an empty string on purpose: an empty
     /// source is still a `[[profile]]` document (zero entries), while this
     /// constructor makes "no built-ins at all" the caller's explicit choice
