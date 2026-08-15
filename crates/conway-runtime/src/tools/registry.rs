@@ -14,8 +14,9 @@ use std::sync::Arc;
 use conway_core::agent::ToolSelector;
 use conway_core::content::{ToolCategory, ToolSpec};
 use conway_core::error::{RuntimeError, ToolError};
+use conway_core::event_name::EVENT_NAMESPACE_SEPARATOR;
 use conway_core::ids::ToolName;
-use conway_core::ports::{Plugin, RenderKind, Tool};
+use conway_core::ports::{NarrowingRule, Plugin, RenderKind, Tool};
 
 /// One registered tool: its owning plugin's id, the `Tool` implementation,
 /// and its compiled schema validator.
@@ -34,6 +35,14 @@ struct RegisteredTool {
 /// [`super::runner::ToolRunner`].
 pub struct PluginRegistry {
     tools: HashMap<ToolName, RegisteredTool>,
+    /// Every installed plugin's declared per-agent-config narrowing rules
+    /// ([`Plugin::narrowable_keys`]), keyed by the ALREADY-prefixed
+    /// `"{plugin_id}.{bare_key}"` string -- built once here, alongside
+    /// `tools` above, from the SAME injected plugin set, so there is one
+    /// registration pass rather than a second one built elsewhere just for
+    /// this. `subagent.rs`'s `SubagentHost::start` is the one production
+    /// reader, via [`Self::narrowing_rules`].
+    narrowing: HashMap<String, NarrowingRule>,
 }
 
 /// A tool resolved from the registry: everything [`super::runner::ToolRunner`]
@@ -82,8 +91,13 @@ impl PluginRegistry {
     /// not the variant tag.
     pub fn from_plugins(plugins: Vec<Arc<dyn Plugin>>) -> Result<Self, RuntimeError> {
         let mut tools: HashMap<ToolName, RegisteredTool> = HashMap::new();
+        let mut narrowing: HashMap<String, NarrowingRule> = HashMap::new();
         for plugin in plugins {
             let plugin_id = plugin.manifest().id;
+            for rule in plugin.narrowable_keys() {
+                let full_key = format!("{plugin_id}{EVENT_NAMESPACE_SEPARATOR}{}", rule.key);
+                narrowing.insert(full_key, rule);
+            }
             for tool in plugin.tools() {
                 let spec = tool.spec();
                 if let Some(existing) = tools.get(&spec.name) {
@@ -118,7 +132,14 @@ impl PluginRegistry {
                 );
             }
         }
-        Ok(Self { tools })
+        Ok(Self { tools, narrowing })
+    }
+
+    /// Every installed plugin's declared per-agent-config narrowing rules,
+    /// keyed by the prefixed `"{plugin_id}.{bare_key}"` string -- see
+    /// [`Self::narrowing`]'s own field doc.
+    pub(crate) fn narrowing_rules(&self) -> &HashMap<String, NarrowingRule> {
+        &self.narrowing
     }
 
     /// Every registered tool's spec, in lexicographic order by name, so the

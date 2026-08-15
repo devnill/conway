@@ -328,6 +328,42 @@ pub struct SubagentSpec {
     /// pre-existing behavior for every such spec.
     #[serde(default)]
     pub tag: Option<String>,
+    /// Per-agent plugin configuration this fork/spawn requests for the
+    /// child -- the general mechanism the `[S1.5]` charter's per-agent
+    /// narrowing item introduces, of which `conway.fs`'s own root is the
+    /// proving consumer. `None` (the `fork`/`spawn` constructors' default)
+    /// means "inherit the parent's own effective per-agent plugin config
+    /// unchanged" -- the same `None`-means-inherit shape [`Self::cwd`]/
+    /// [`Self::root`] already established. `Some(map)` requests an override
+    /// for exactly the keys present in `map`; every other key an ancestor
+    /// may already have narrowed is carried through unchanged.
+    ///
+    /// **Narrowing-only, and validated where the registry lives, not
+    /// here.** A key in `map` must be declared narrowable by its owning
+    /// plugin (`conway_core::ports::Plugin::narrowable_keys`), and its
+    /// requested value must not WIDEN the value the parent's own effective
+    /// config already carries for that key (a parent with no value yet for
+    /// a key has nothing to narrow against, so a first-time value is always
+    /// accepted). This module performs no I/O and holds no plugin registry
+    /// to check against -- `conway_runtime`'s `SubagentHost::start`
+    /// validates this field against the parent's own resolved config and
+    /// the installed plugin set's declared rules (`conway_core::ports::
+    /// PluginConfig::narrow`), the same division of labor `Self::root`'s
+    /// own inheritance algebra already uses (this field carried and
+    /// validated end-to-end; the runtime does the checking).
+    ///
+    /// Unlike `cwd`/`root`, this field is reachable from BOTH `conway`'s
+    /// `ForkSpec` and `SpawnSpec` -- a fork's inherited transcript does not
+    /// describe a plugin's own scoped resource the way it describes a
+    /// working directory, so narrowing a plugin's per-agent config on a
+    /// fork is coherent where narrowing `cwd`/`root` there was not.
+    ///
+    /// `#[serde(default)]` keeps already-persisted data readable: a
+    /// `SubagentSpec` serialized before this field existed still
+    /// deserializes, as `None` -- the pre-existing "no per-agent plugin
+    /// config" behavior for every such spec.
+    #[serde(default)]
+    pub plugin_config: Option<crate::ports::PluginConfig>,
 }
 
 impl SubagentSpec {
@@ -406,6 +442,7 @@ impl SubagentSpec {
             cwd: None,
             root: None,
             tag: None,
+            plugin_config: None,
         }
     }
 
@@ -425,6 +462,7 @@ impl SubagentSpec {
             cwd: None,
             root: None,
             tag: None,
+            plugin_config: None,
         }
     }
 }
@@ -866,6 +904,7 @@ mod tests {
             cwd: None,
             root: None,
             tag: None,
+            plugin_config: None,
         };
         assert!(spec.validate().is_ok());
     }
@@ -952,6 +991,46 @@ mod tests {
         assert_eq!(
             legacy.root, None,
             "a root-less legacy SubagentSpec must deserialize with root: None"
+        );
+        assert_eq!(legacy.mode, spec.mode);
+        assert_eq!(legacy.prompt, spec.prompt);
+        assert_eq!(legacy.agent_def, spec.agent_def);
+        assert_eq!(legacy.budget, spec.budget);
+    }
+
+    #[test]
+    fn fork_and_spawn_constructors_default_plugin_config_none() {
+        // Per-agent plugin configuration didn't exist before this item; both
+        // constructors default it to `None` ("inherit the parent's own
+        // effective per-agent config, unchanged") -- mirrors
+        // `fork_and_spawn_constructors_default_root_none`.
+        let fork = SubagentSpec::fork("x", Budget::default());
+        assert_eq!(fork.plugin_config, None);
+        let spawn = SubagentSpec::spawn("x", AgentDefRef("r".into()), Budget::default());
+        assert_eq!(spawn.plugin_config, None);
+    }
+
+    /// Mirrors `legacy_subagent_spec_json_without_root_deserializes_to_none`:
+    /// a `SubagentSpec` in the shape it had before this item -- no
+    /// `plugin_config` key at all -- still deserializes, with
+    /// `plugin_config` landing on its `None` default rather than failing or
+    /// requiring the key.
+    #[test]
+    fn legacy_subagent_spec_json_without_plugin_config_deserializes_to_none() {
+        let spec = SubagentSpec::spawn("do it", AgentDefRef("reviewer".into()), Budget::default());
+        let mut value = serde_json::to_value(&spec).unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("plugin_config")
+            .expect(
+                "plugin_config is a real key in the current shape, or this test proves nothing",
+            );
+
+        let legacy: SubagentSpec = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            legacy.plugin_config, None,
+            "a plugin_config-less legacy SubagentSpec must deserialize with plugin_config: None"
         );
         assert_eq!(legacy.mode, spec.mode);
         assert_eq!(legacy.prompt, spec.prompt);

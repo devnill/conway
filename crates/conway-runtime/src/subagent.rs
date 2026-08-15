@@ -376,6 +376,37 @@ impl SubagentHost for Runtime {
         let effective_root: Option<PathBuf> =
             effective_root.map(|root| root.as_path().to_path_buf());
 
+        // [S1.5]: the child's own EFFECTIVE per-agent plugin config,
+        // resolved and validated ONCE here (mirroring `effective_root`
+        // immediately above) -- the PARENT's own LIVE effective value
+        // (`Runtime::agent_plugin_config`, never the parent's *persisted*
+        // `SessionMeta`, which carries no such field -- see `AgentLoop::
+        // plugin_config`'s own doc for why this mechanism is in-memory-only
+        // for this first slice) narrowed by `spec.plugin_config`
+        // (`None` means "inherit unchanged", exactly `PluginConfig::
+        // narrow`'s own contract) against every installed plugin's declared
+        // narrowing rules (`PluginRegistry::narrowing_rules`). A key not
+        // declared narrowable by any installed plugin, or a requested value
+        // that would WIDEN what the parent already carries, fails the
+        // spawn outright with a typed error naming the key -- never
+        // silently clamped to the parent's value and never silently
+        // honored, the same "fail the whole operation, don't guess"
+        // discipline `effective_root`'s own widening check just above
+        // already established.
+        let parent_plugin_config = self.agent_plugin_config(parent)?;
+        let child_plugin_config = Arc::new(
+            parent_plugin_config
+                .narrow(
+                    spec.plugin_config.as_ref(),
+                    self.loop_deps().registry.narrowing_rules(),
+                )
+                .map_err(|err| {
+                    invalid_spec(ConwayError::Config {
+                        detail: format!("subagent plugin_config: {err}"),
+                    })
+                })?,
+        );
+
         let agent_id = AgentId::new();
         let mut agent_path = self.tree_ref().path(parent);
         agent_path.push(agent_id);
@@ -727,6 +758,7 @@ impl SubagentHost for Runtime {
             agent_path,
             cwd: child_cwd,
             root: agent_loop_root,
+            plugin_config: child_plugin_config,
             deps: self.loop_deps().clone(),
             spec: agent_spec,
             cancel: cancel.clone(),

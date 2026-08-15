@@ -362,6 +362,12 @@ async fn start_and_maybe_await(
         // model-invoked tool has a tag argument in its schema, so a
         // model-initiated fork/spawn never carries one.
         tag: None,
+        // `[S1.5]`: per-agent plugin configuration is an embedder-only
+        // surface for this first slice (mirrors `root`/`tag` above) --
+        // neither model-invoked tool has a `plugin_config` argument, so a
+        // model-initiated fork/spawn always inherits the parent's own
+        // effective config unchanged.
+        plugin_config: None,
     };
 
     let child = ctx.subagents.start(spec).await.map_err(ToolError::from)?;

@@ -289,6 +289,9 @@ pub(crate) async fn classify(
         // Internal classification child, not an
         // embedder correlation target -- no tag.
         tag: None,
+        // `[S1.5]`: no per-agent plugin config scoping need of its own --
+        // inherit the parent's, unchanged.
+        plugin_config: None,
     };
 
     // `caller` and `parent` are both `parent` -- classification always

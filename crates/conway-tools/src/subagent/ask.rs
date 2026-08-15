@@ -197,6 +197,9 @@ impl Tool for AskTool {
             // its own domain objects sets `SubagentSpec::tag` on a fork/spawn
             // it constructs directly, not via a model-invoked tool call.
             tag: None,
+            // `[S1.5]`: no `plugin_config` argument on this model-invoked
+            // tool either -- mirrors `root`/`tag` above.
+            plugin_config: None,
         };
 
         let outcome = ctx.subagents.ask(spec).await.map_err(ToolError::from)?;

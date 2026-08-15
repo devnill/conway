@@ -120,10 +120,11 @@ present: canonicalize\(\)
 -->
 
 <!-- claim-check
-why: the other half of the same gap: the tool has to do its own checking for the guarantee to be exact
-claim: conway.fs does not yet enforce a root of its own
+why: the other half of the same gap: the tool has to do its own checking for the guarantee to be exact. This flipped from absent to present when per-agent plugin config landed and conway.fs began reading its own root -- which is precisely the precondition the sibling retirement item was blocked on, so the predicate now guards that the enforcement does not silently disappear again while the harness-level root is being retired.
+note: the ONLY consumer of CanonicalRoot inside conway.fs must remain a real check on the I/O paths, not an unused import. `check_root` is called by read, write and cd before their I/O runs; if it stops being called this predicate still matches on the import alone, which is this predicate's known limit -- the behavioural guarantee is pinned by crates/conway/tests/per_agent_plugin_config.rs, not here.
+claim: conway.fs enforces a root of its own, using the same symlink-aware CanonicalRoot the harness-level check uses
 paths: crates/conway-tools/src/fs
-absent: (AgentRoot|CanonicalRoot)
+present: CanonicalRoot
 -->
 
 <!-- claim-check

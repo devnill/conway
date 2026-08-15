@@ -311,6 +311,32 @@ pub struct AgentLoop {
     /// the top of the loop (mirroring the `CwdHandle` cell built alongside
     /// it) -- see `crate::permission::AgentRoot::reconstruct`.
     pub root: Option<PathBuf>,
+    /// `[S1.5]` per-agent plugin configuration: this agent's own EFFECTIVE
+    /// per-agent config -- the global `LoopDeps::plugin_config` (`deps`
+    /// below), narrowed by every ancestor's own `SubagentSpec::
+    /// plugin_config` override in turn, already merged (never a delta).
+    /// `conway.fs`'s own root key is the proving consumer: `FsPlugin`'s
+    /// tools read their confinement root from `ToolCtx::config`'s
+    /// `"conway.fs.root"` key, which this field is what ultimately backs.
+    ///
+    /// A ROOT agent's own value is simply `deps.plugin_config.clone()`
+    /// (today's pre-existing, always-global behavior, byte-identical). A
+    /// fork/spawn child's value is computed exactly once, by `subagent.rs`'s
+    /// `SubagentHost::start`, via `conway_core::ports::PluginConfig::
+    /// narrow` against the PARENT's own live effective value (`Runtime::
+    /// agent_plugin_config`) and the installed plugin set's declared
+    /// narrowing rules (`PluginRegistry::narrowing_rules`) -- mirroring
+    /// `Self::root`'s own "resolve once here, read fresh every batch"
+    /// shape immediately above.
+    ///
+    /// **Not persisted to `SessionMeta`, unlike `Self::root`** -- a
+    /// disclosed, deliberate scope limit of this first slice: a resumed
+    /// session's per-agent narrowing reverts to whatever `deps.
+    /// plugin_config` (the global config) carries, rather than surviving a
+    /// store round-trip the way `root`/`cwd` do. Closing that gap is a
+    /// follow-on, not attempted here (it would require a `SessionMeta`
+    /// field, a much wider blast radius than this item's file scope).
+    pub plugin_config: Arc<PluginConfig>,
     pub deps: Arc<LoopDeps>,
     pub spec: AgentSpec,
     pub cancel: CancellationToken,
@@ -1332,7 +1358,12 @@ impl AgentLoop {
                 chdir: chdir.clone(),
                 cancel: self.cancel.clone(),
                 subagents: self.deps.subagents.clone(),
-                plugin_config: self.deps.plugin_config.clone(),
+                // [S1.5]: this agent's own EFFECTIVE per-agent config
+                // (`self.plugin_config`, resolved once at construction --
+                // see that field's own doc), not the shared, process-wide
+                // `self.deps.plugin_config` every agent used to read
+                // identically.
+                plugin_config: self.plugin_config.clone(),
                 max_parallel_tools: self.spec.max_parallel_tools.max(1),
                 root: root.clone(),
             };

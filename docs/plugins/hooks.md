@@ -359,13 +359,13 @@ simply inherit once built.
 |---|---|
 | Kind | Declarative (`Plugin::commands()`, consulted once, at TUI startup) + Participant (`Command::invoke`, an operator-triggered call the host runs and shows the result of) |
 | Receives | `Command::spec()` is consulted with nothing live, at registry construction, and returns a [`CommandSpec`] (`name`, `summary`). `Command::invoke` receives a [`CommandCtx`]: `focused_agent`, `root_agent`, `session_id` (the CALLING session's own id —), and `args` (everything typed after the command word, verbatim — the same "consume the remainder verbatim" rule every other slash command's free-text argument follows) |
-| May return | A [`CommandOutcome`]: `Output(Vec<String>)` (lines appended to the transcript verbatim, each its own entry), `Error(String)` (shown as an ordinary `Notice`, the same severity a failing built-in command gets), or `ForkSession { at_seq, directive }` ( — asks the HOST to fork the calling session at `at_seq` and drive the resulting child; see this point's own "Forking the calling session" subsection below) |
-| On error | `invoke` returning `CommandOutcome::Error` is not a failure of the *host* — it is the command's own reported outcome, rendered as a `Notice` and nothing more. A **panic** inside `invoke` is isolated: the host runs it inside a `tokio::spawn`, and a panicking task cannot bring down the process or the TUI's render/input loop — its `JoinError` is converted into an ordinary `CommandOutcome::Error` naming the panic, delivered through the same reply channel a normal return uses. A `ForkSession` whose `at_seq` is out of range for the calling session (`Conway::fork_from`'s own bounds check) becomes the identical `Notice`-shaped failure, never a panic |
+| May return | A [`CommandOutcome`]: `Output(Vec<String>)` (lines appended to the transcript verbatim, each its own entry), `Error(String)` (shown as an ordinary `Notice`, the same severity a failing built-in command gets), `ForkSession { at_seq, directive }` ( — asks the HOST to fork the calling session at `at_seq` and drive the resulting child; see this point's own "Forking the calling session" subsection below), `MaskRecord { target_seq, excluded }` (board item 01KZY8QRAVVVKCRBZ6HAEGW3GG — asks the HOST to append a `LogRecord::ContextMask` against the CALLING session; see "Masking a record and checking out another session" below), or `Checkout { target }` (same item — asks the HOST to fork a NAMED, already-existing session at ITS OWN head and drive the child; the one variant that lets a command name a session other than the one that invoked it) |
+| On error | `invoke` returning `CommandOutcome::Error` is not a failure of the *host* — it is the command's own reported outcome, rendered as a `Notice` and nothing more. A **panic** inside `invoke` is isolated: the host runs it inside a `tokio::spawn`, and a panicking task cannot bring down the process or the TUI's render/input loop — its `JoinError` is converted into an ordinary `CommandOutcome::Error` naming the panic, delivered through the same reply channel a normal return uses. A `ForkSession`/`Checkout` whose target sequence/session is invalid (`Conway::fork_from`'s own bounds check) becomes the identical `Notice`-shaped failure, never a panic |
 | On timeout | None imposed. A command that never completes leaves its reply channel silent forever, but never blocks anything else — see "When absent"/Ordering below for why this is structural, not a convention an implementation must remember |
 | On garbage | Not applicable to `invoke` (it receives typed Rust values, not wire input). At *registration*, a malformed `CommandSpec::name` (empty, containing whitespace, or failing `conway::plugin::validate_command_name` once namespaced) is a **named, install-time error** — the TUI refuses to start rather than installing a command that could never be typed or that malforms its own namespace |
 | When absent | No `Plugin::commands()` override means no commands (the trait's own default returns `Vec::new()`) — every existing `Plugin` implementor, built-in or third-party, keeps compiling and behaving identically. With the declaring plugin not installed at all, its command's full name is simply unknown — `commands::parse` recognizes the *shape* of a plugin-looking word (containing conway-core's event/command namespace separator, `.`) but resolution against the installed registry happens only in `execute`, so an uninstalled plugin's command produces the ordinary "unknown command" notice, never a stub or a special case |
 | Ordering | **The render/input loop never calls a plugin, and never blocks on one — the same hard-won property point 12 (`status.declare/1`/`status/1`) establishes for the status line, reused here for the same reason.** `commands::execute` resolves a command (a synchronous `HashMap` lookup) and returns an `Effect::RunPluginCommand` describing it, without ever calling `invoke`; `App` (`conway-cli`) spawns the actual call on its own task, off the `select!` loop that drives rendering and key handling, and receives the reply on a channel exactly like `/ask`'s own modal-answer plumbing (`ModalAskOutcome`/`run_modal_ask`). A hanging command therefore degrades to "the operator doesn't see a reply yet," never to a frozen terminal. Applying a `ForkSession` reply (`App::apply_plugin_command_done`) DOES run on that loop, same as `host.fork`/`host.resume` already do for the built-in commands that swap sessions — the property that must never block is `Command::invoke` itself, already complete by the time a reply exists |
-| Status | **Implemented.** `conway_core::ports::plugin::{Command, CommandCtx, CommandOutcome, CommandSpec}` and `Plugin::commands()`'s default (`crates/conway-core/src/ports/plugin.rs`); dispatch through `conway_cli::tui::commands::{SlashCommand::Plugin, CommandRegistry, Host::resolve_command}` and `conway_cli::tui::app::App::spawn_plugin_command`/`apply_plugin_command_done`. `conway-plugin-skeleton`'s `SkeletonPingCommand` (`/{plugin id}.ping`) is the worked example of `Output`.; `ForkSession` lands with; `conway-plugin-history`'s real `/conway.history.rewind <seq>` consumer lands with |
+| Status | **Implemented.** `conway_core::ports::plugin::{Command, CommandCtx, CommandOutcome, CommandSpec}` and `Plugin::commands()`'s default (`crates/conway-core/src/ports/plugin.rs`); dispatch through `conway_cli::tui::commands::{SlashCommand::Plugin, CommandRegistry, Host::resolve_command}` and `conway_cli::tui::app::App::spawn_plugin_command`/`apply_plugin_command_done`. `conway-plugin-skeleton`'s `SkeletonPingCommand` (`/{plugin id}.ping`) is the worked example of `Output`.; `ForkSession` lands with; `conway-plugin-history`'s real `/conway.history.rewind <seq>` consumer lands with; `MaskRecord`/`Checkout` and their real consumers, `/conway.history.mask <seq> [unmask]`/`/conway.history.checkout <session-id>`, land with board item 01KZY8QRAVVVKCRBZ6HAEGW3GG |
 
 **Why this is narrower than a hook that can touch a live session, and
 deliberately so.** [`CommandCtx`] carries read-only identity and the raw
@@ -384,7 +384,9 @@ being a plugin, which the owner ruled it must be ("features like /rewind,
 /checkout, etc are to be plugins, to fit into the philosophy; they are not
 core functionality"). This closes exactly the slice `/rewind` needs — fork
 the calling session at a sequence, drive the child — and nothing wider
-(YAGNI; `/checkout`/`ContextMask` are a later item with their own consumer).
+(YAGNI at the time; `/checkout`/`ContextMask` were named as a later item
+with their own consumer, and board item 01KZY8QRAVVVKCRBZ6HAEGW3GG is that
+item — see "Masking a record and checking out another session" below).
 
 **The shape: an outcome variant the host acts on, not a handle the plugin
 exercises.** Two designs were weighed: (1) hand `Command::invoke` a
@@ -459,6 +461,73 @@ EXISTING `Conway::session_head` facade call (`conway-cli`'s own host-side
 addition — `crates/conway-cli/src/tui/app.rs`'s `refresh_session_head`, no
 new port). Resolving free text against history remains the disclosed,
 unbuilt gap this paragraph always named.
+
+### Masking a record and checking out another session — `CommandOutcome::MaskRecord`/`CommandOutcome::Checkout`
+
+Board item 01KZY8QRAVVVKCRBZ6HAEGW3GG ("`/checkout` and a reachable
+`ContextMask`") is `conway-plugin-history`'s SECOND and THIRD commands,
+added beside `/rewind` rather than as a parallel mechanism — both reuse
+`ForkSession`'s own "the host performs the effect, the plugin only
+declares it" shape, and both close gaps that item's own predecessor named
+but deliberately did not build.
+
+**`/conway.history.mask <seq> [unmask]` gives `LogRecord::ContextMask` its
+first real producer.** Before this item, that record type was persisted
+and READ by `conway-session`'s fork-ancestry resolver
+(`TranscriptResolver::apply_context_mask`), but nothing in the tree
+appended one outside a test — `ARCHITECTURE.md` §3.5 said so plainly. The
+command parses `ctx.args` as a bare `LogSeq` plus an optional trailing
+`unmask` token and returns `CommandOutcome::MaskRecord { target_seq,
+excluded }`, bound to the CALLING session exactly like `ForkSession` —
+same structural argument, same doc precedent, no field to name a different
+session. The host resolves it with `Conway::mask_record`, a plain
+`SessionStore::append` — masking (and un-masking) is itself an ordinary,
+reversible, append-only write, never a mutation of the targeted record.
+
+**The scope decision that item settled: still fork-prefix-only.** A mask
+only ever affects what a FUTURE fork of the masked session inherits — never
+the owning session's own later turns; `ContextBuilder`/`TranscriptResolver`
+for a session's OWN live assembly is unchanged by this item. Widening it
+to reach a session's own assembly was considered and rejected: the
+per-request, append-only script-hook edit path (`request_assembled`/
+`ContextDelta`, landed separately) already lets an operator-configured
+script exclude a segment from THIS session's own next request, through
+`ContextHook`, without touching the `TranscriptResolver`/`ContextBuilder`
+hot path a persisted-mask widening would have to. Building a second
+mechanism for the identical effect would have been duplication, not a new
+capability.
+
+**`/conway.history.checkout <session-id>` is the one case `ForkSession`
+structurally cannot express.** `ForkSession` can only ever fork the
+CALLING session — deliberately, per its own doc above. Checking out
+means moving to a DIFFERENT, already-existing session, so
+`CommandOutcome::Checkout { target }` deliberately widens what a command
+can name: `target` is a `SessionId` the command read from its own typed
+argument, not the invoking one. Nothing else about the narrowing this
+point establishes is loosened — a command still cannot read another
+session's content, steer it, or act on it beyond "hand me a fresh fork of
+it to drive." `/checkout` always FORKS `target` at ITS OWN current head
+rather than attaching to it live (`PHILOSOPHY.md` §1: a finished session
+is forkable at any point, and forking is the safer default — it keeps
+`target`'s own log append-only-untouched and needs no "two live agents
+driving one session" concurrency story). The host resolves it with
+`Conway::session_head(target)` then the SAME `Conway::fork_from` call
+`ForkSession` uses, then swaps its driven `SessionHandle` for the child —
+`target` itself is never written to and stays listed exactly as before.
+
+**Verification.** `crates/conway/tests/context_mask_producer.rs` masks a
+real record, forks, and asserts on the forked child's ASSEMBLED SEGMENTS
+(`GenerateRequest::segments`, what a model would actually receive) that
+the masked turn is absent while a sibling turn survives — shown, in a
+second test, to be present when the same scenario runs without the mask.
+`crates/conway-cli/src/tui/app/plugin_cmd.rs`'s own test module carries
+the real-plugin, real-`Conway` proofs for both commands through the TUI
+path, mirroring `/rewind`'s own anchor there exactly.
+`crates/conway-cli/tests/checkout_and_mask_plugin.rs` is the headless
+`conway conway.history.checkout <id>`/`conway conway.history.mask <seq>`
+proof, including a `/checkout` test reading the checked-out-FROM session's
+own `.jsonl` file as raw bytes, before and after, to confirm they are
+identical.
 
 **Namespacing is mandatory, and shadowing a built-in is impossible by
 construction, not merely checked.** `CommandRegistry::build` (the one
@@ -618,9 +687,10 @@ separately, what the design's policy-chain overlay would add if points 7 and
    in the loop to catch what the rule would have caught).
 5. **Cache** — a prior `AllowAlways` grant covering this call, consulted only
    if `must_reach_gate` is still false.
-6. **Pattern-allow rules** (point 6's `then: allow`), gated by the
-   metacharacter check on the tool's `RenderKind`, consulted only if
-   `must_reach_gate` is still false.
+6. **Pattern-allow rules** (point 6's `then: allow`) — refused unconditionally
+   for a tool whose `RenderKind` is `ShellCommand` (e.g. `bash`; see
+   `docs/permissions.md`'s Limits section), matched by prefix as written for
+   every other tool — consulted only if `must_reach_gate` is still false.
 7. **`AutoAllow` mode** — if none of the above resolved the call and the
    session mode is `AutoAllow`, allow. Consulted only if `must_reach_gate` is
    still false.

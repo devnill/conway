@@ -122,6 +122,108 @@ pub trait Plugin: Send + Sync + 'static {
     fn observers(&self) -> Vec<Arc<dyn crate::ports::ToolObserver>> {
         Vec::new()
     }
+
+    /// Zero or more per-agent [`PluginConfig`] keys this plugin allows to
+    /// vary per agent, narrowing-only down the fork/spawn tree -- the
+    /// general mechanism `[S1.5]`'s per-agent-plugin-configuration item
+    /// introduces (`conway.fs`'s own root, via `conway-tools`' `FsPlugin`
+    /// implementation, is its proving consumer).
+    ///
+    /// **"Narrowing" is undefined for an arbitrary JSON value, so a plugin
+    /// declares which of its keys are narrowable and supplies the
+    /// comparison itself** ([`NarrowingRule::narrows`]) -- this trait has no
+    /// way to know, in general, whether one plugin-specific value is
+    /// "inside" another; only the plugin that gives the value meaning can
+    /// say. The host prefixes each [`NarrowingRule::key`] with THIS
+    /// plugin's own [`PluginManifest::id`] before it is ever reachable in a
+    /// caller's [`crate::agent::SubagentSpec::plugin_config`] map, the SAME
+    /// "an author never picks their own namespace" rule [`Self::events`]/
+    /// [`Self::commands`] already establish for event/command names.
+    ///
+    /// **The default returns none, the same zero-cost-default precedent
+    /// [`Self::commands`]/[`Self::events`]/[`Self::observers`] established
+    /// above: every existing `Plugin` implementor keeps compiling
+    /// unmodified, and a plugin that declares nothing narrowable keeps
+    /// today's global-only configuration semantics exactly** -- an attempt
+    /// to set any of its keys per-agent is rejected
+    /// ([`PluginConfigError::NotNarrowable`]) rather than silently
+    /// accepted, so "declare nothing" is the correct, zero-tax default
+    /// rather than an opt-out a plugin author has to remember to write.
+    fn narrowable_keys(&self) -> Vec<NarrowingRule> {
+        Vec::new()
+    }
+}
+
+/// One [`PluginConfig`] key a plugin declares narrowable in per-agent
+/// state, plus the pure comparison [`PluginConfig::narrow`] uses to decide
+/// whether a requested child value narrows (or merely equals) the parent's
+/// own value for that key. See [`Plugin::narrowable_keys`]'s own doc for
+/// why this declare-your-own-comparison shape exists at all.
+///
+/// `narrows` is a plain `fn` pointer, not a `Box<dyn Fn>`: it must be a
+/// pure, call-independent property of the key (like [`PathArgs`]/
+/// [`RenderKind`] are pure properties of a tool), never a closure capturing
+/// per-call state, so [`NarrowingRule`] stays cheaply `Copy` and a
+/// registry built from it needs no lifetime management beyond the
+/// declaring plugin's own `'static` lifetime. It MAY perform I/O internally
+/// (`conway-core` itself never calls it except through [`PluginConfig::
+/// narrow`], which performs none) -- `conway.fs`'s own root key, for
+/// instance, canonicalizes both paths to answer honestly under symlinks,
+/// exactly as `conway_core::containment::CanonicalRoot` already does for
+/// the harness-level root this mechanism supersedes.
+#[derive(Clone, Copy)]
+pub struct NarrowingRule {
+    /// Bare key name (e.g. `"root"` for a plugin whose manifest id is
+    /// `"conway.fs"`), reachable in a caller's `SubagentSpec::plugin_config`
+    /// map as `"conway.fs.root"` once the host prefixes it -- see
+    /// [`Plugin::narrowable_keys`]'s own doc.
+    pub key: &'static str,
+    /// `true` iff `child` is narrower than, or equal to, `parent`. MUST be
+    /// a total function over any two [`serde_json::Value`]s a caller might
+    /// supply (untrusted, JSON-typed input, both model- and
+    /// embedder-reachable) -- never panics; a value of the wrong shape
+    /// (e.g. a number where a path string is expected) is simply not a
+    /// narrowing, so the correct answer is `false`, never a panic.
+    pub narrows: fn(parent: &serde_json::Value, child: &serde_json::Value) -> bool,
+}
+
+impl std::fmt::Debug for NarrowingRule {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NarrowingRule")
+            .field("key", &self.key)
+            .field("narrows", &"<fn>")
+            .finish()
+    }
+}
+
+/// [`PluginConfig::narrow`]'s typed rejection -- a child's requested
+/// per-agent override is refused outright, never silently clamped to the
+/// parent's value and never silently honored. Both variants name the
+/// offending `key` so a caller (`conway_runtime`'s `SubagentHost::start`,
+/// which surfaces this as a spec-rejection error) can report exactly what
+/// was wrong.
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum PluginConfigError {
+    /// `key` is not declared narrowable by any installed plugin
+    /// ([`Plugin::narrowable_keys`]) -- it can never vary per-agent, at any
+    /// level, so an ancestor cannot have "permitted" it either. This is
+    /// what makes "a plugin that declares nothing narrowable keeps
+    /// global-only configuration" true: without a declaration, nothing --
+    /// not even a root session's own initial config -- can set the key
+    /// per-agent.
+    #[error("plugin config key '{key}' is not declared narrowable by any installed plugin")]
+    NotNarrowable { key: String },
+    /// `key` IS declared narrowable, but the parent already has an
+    /// effective value for it and the plugin's own [`NarrowingRule::narrows`]
+    /// returned `false` for `(parent_value, requested_value)` -- the
+    /// requested value would widen (or move sideways from) what the parent
+    /// already carries.
+    #[error(
+        "plugin config key '{key}' may only narrow the value inherited from its parent, and \
+         the requested value does not"
+    )]
+    WouldWiden { key: String },
 }
 
 /// One custom event a plugin declares it may emit -- the event-vocabulary
@@ -188,12 +290,23 @@ pub struct EventDecl {
 /// a session other than the one that invoked it -- there is no field to put
 /// one in).
 ///
-/// Everything else about the narrowing stands: a command still cannot
-/// resume a DIFFERENT session, steer any agent, read/write a file through
-/// conway's own mediation, or reach the permission broker. An extension
-/// point earns a wider grant only once a real consumer needs it, not ahead
-/// of one (YAGNI) -- `/rewind`, the item that asked this question first, is
-/// that consumer for forking; nothing wider is built here.
+/// Most of the narrowing still stands: a command still cannot steer any
+/// agent, read/write a file through conway's own mediation, or reach the
+/// permission broker. An extension point earns a wider grant only once a
+/// real consumer needs it, not ahead of one (YAGNI) -- `/rewind`, the item
+/// that asked this question first, was that consumer for forking one's own
+/// session.
+///
+/// **One further, deliberate widening: [`CommandOutcome::Checkout`].** A
+/// command CAN now name a DIFFERENT, already-existing session -- the
+/// capability `/checkout <session>` needs (board item
+/// 01KZY8QRAVVVKCRBZ6HAEGW3GG) and the one case `ForkSession`'s own doc
+/// above says is deliberately impossible for IT. This does not reopen that
+/// argument: `Checkout` still cannot act ON the named session beyond
+/// asking the host to fork it (see that variant's own doc) -- the widening
+/// is "which session can be named," not "what can be done to it once
+/// named." A second addition, [`CommandOutcome::MaskRecord`], stays bound
+/// to the invoking session exactly like `ForkSession` -- see its own doc.
 #[async_trait]
 pub trait Command: Send + Sync + 'static {
     /// This command's bare name (no leading `/`, no plugin-id prefix -- the
@@ -326,6 +439,92 @@ pub enum CommandOutcome {
         /// undirected rewind: the child simply resumes from `at_seq` with no
         /// additional instruction).
         directive: String,
+    },
+    /// Asks the host to append a `LogRecord::ContextMask` to the CALLING
+    /// session's own log -- the producer `/rewind`'s own item deferred
+    /// (board item 01KZY8QRAVVVKCRBZ6HAEGW3GG, "`/checkout` and a reachable
+    /// `ContextMask`"). See that record's own doc
+    /// (`conway_core::log::LogRecord::ContextMask`) for the full overlay
+    /// contract; the short version is that this masks (or, with `excluded:
+    /// false`, un-masks) `target_seq` out of what a FUTURE fork of THIS
+    /// session inherits -- never the owning session's own later turns, and
+    /// never a mutation of the targeted record itself.
+    ///
+    /// **Bound to the invoking session, structurally, exactly like
+    /// [`Self::ForkSession`].** No field here names a session other than
+    /// the one this command was invoked from -- see that variant's own doc
+    /// for the full "acts on its own session, never one it names" argument,
+    /// which applies here unchanged. `target_seq` is a LOCAL seq within
+    /// that same session (the same units `Self::ForkSession::at_seq`
+    /// uses), naming another record already in its log.
+    ///
+    /// **What the host actually does with this, disclosed here since this
+    /// crate performs none of it:** `Conway::mask_record(session_id,
+    /// target_seq, excluded)`, which appends the record via
+    /// `SessionStore::append` -- an ordinary, reversible, append-only write
+    /// (masking and un-masking are both just another appended record), not
+    /// a mutation of `target_seq`'s own stored bytes. Unlike
+    /// `ForkSession`, a successful `MaskRecord` never swaps the host's
+    /// driven session -- there is no new session to drive.
+    MaskRecord {
+        /// The LOCAL seq, within the CALLING session's own log, to mask (or
+        /// un-mask). Out-of-range is a host-side error (`SessionStore::
+        /// append` performs no bounds check of its own against `head`, so
+        /// today this can name a seq that does not exist yet; a future
+        /// item may tighten that, but nothing about this crate can check it
+        /// -- same disclosed limit `ForkSession::at_seq` names for its own
+        /// bounds check).
+        target_seq: LogSeq,
+        /// `true` excludes `target_seq` from what a future fork inherits;
+        /// `false` reverses a previous exclusion (`LogRecord::ContextMask`'s
+        /// own doc: "the latest `ContextMask` for a given `target_seq` --
+        /// by append order -- decides").
+        excluded: bool,
+    },
+    /// Asks the host to CHECK OUT another already-existing session:
+    /// fork `target` at ITS OWN current head and drive the resulting child
+    /// in place of whatever session the host is currently driving -- the
+    /// answer to "`/checkout <session>` does not exist" (board item
+    /// 01KZY8QRAVVVKCRBZ6HAEGW3GG).
+    ///
+    /// **Always forks, never attaches to the live session directly.**
+    /// `PHILOSOPHY.md` §1: a finished session is forkable at any point, and
+    /// forking is the safer default -- it preserves append-only (the
+    /// checked-out session's own log is never written to just because an
+    /// operator looked at it) and needs no new "two live agents driving one
+    /// session" concurrency story. A no-op checkout onto the session
+    /// already being driven still forks (a new child at the current head),
+    /// by design -- this variant does not special-case that as an error or
+    /// a silent identity return, since detecting "already there" would
+    /// require the host to compare `target` against whatever it currently
+    /// drives, which is exactly the kind of implicit self-reference
+    /// [`Self::ForkSession`]'s own doc argues against baking into a
+    /// command's request.
+    ///
+    /// **Deliberately widens what a command can name, unlike
+    /// `ForkSession`.** `ForkSession` structurally cannot name a session
+    /// other than the invoking one; `Checkout` structurally MUST be able
+    /// to, since checking out is the entire point -- there is no narrower
+    /// shape that still does what `/checkout <session>` asks for. This is
+    /// the one new capability this crate grants for this item, and grants
+    /// nothing else: a command still cannot read another session's
+    /// content, steer it, or act on it in any way other than "hand me a
+    /// fresh fork of it to drive."
+    ///
+    /// **What the host actually does with this, disclosed here since this
+    /// crate performs none of it:** resolves `target`'s current head via
+    /// `Conway::session_head(target)`, then `Conway::fork_from(target,
+    /// head, ForkSpec::new(""))` -- the same zero-copy-by-reference
+    /// `SessionStore::fork` contract `ForkSession` relies on, so `target`'s
+    /// own log is untouched and it stays listed exactly as before
+    /// (`Conway::sessions` enumerates unchanged). The host then swaps its
+    /// driven `SessionHandle` for the returned child, the same swap
+    /// `ForkSession`'s own host-side doc describes.
+    Checkout {
+        /// The session to check out. Not validated by this crate (no I/O
+        /// here) -- an unknown or malformed id is a host-side error,
+        /// surfaced the same way an out-of-range `ForkSession::at_seq` is.
+        target: SessionId,
     },
 }
 
@@ -541,6 +740,59 @@ pub struct PluginManifest {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PluginConfig {
     pub values: serde_json::Map<String, serde_json::Value>,
+}
+
+impl PluginConfig {
+    /// Computes a CHILD's own effective per-agent overrides, given
+    /// `requested` (the child's own `SubagentSpec::plugin_config`, if any)
+    /// and `rules` (every installed plugin's declared narrowing rules,
+    /// keyed by the ALREADY-prefixed `"{plugin_id}.{bare_key}"` string --
+    /// see [`NarrowingRule`]/[`Plugin::narrowable_keys`]'s own docs).
+    /// `self` is the PARENT's own effective per-agent overrides.
+    ///
+    /// `requested: None` means "inherit unchanged" -- returns `self.clone()`
+    /// verbatim, the same "no override" shape `SubagentSpec::root: None`
+    /// already established.
+    ///
+    /// For each key in `requested.values`:
+    /// - absent from `rules` -> [`PluginConfigError::NotNarrowable`]: no
+    ///   installed plugin declared this key narrowable, so it can never
+    ///   vary per-agent at all.
+    /// - present in `self` (the parent already has an effective value) ->
+    ///   the rule's [`NarrowingRule::narrows`]`(parent_value, child_value)`
+    ///   must return `true`, or [`PluginConfigError::WouldWiden`].
+    /// - absent from `self` (nothing has narrowed this key anywhere in the
+    ///   ancestor chain yet) -> accepted unconditionally: going from
+    ///   unbounded to *some* bound is always a narrowing, never a widening
+    ///   (mirrors `SubagentSpec::root`'s own "parent with no root at all,
+    ///   i.e. nothing to narrow against yet" rule).
+    ///
+    /// On success, returns the merged map: `self`'s values, with every key
+    /// in `requested` overwritten by the now-validated child value. Pure --
+    /// no I/O performed by this method itself (a plugin's own `narrows` fn
+    /// may perform I/O; see [`NarrowingRule`]'s own doc).
+    pub fn narrow(
+        &self,
+        requested: Option<&PluginConfig>,
+        rules: &std::collections::HashMap<String, NarrowingRule>,
+    ) -> Result<PluginConfig, PluginConfigError> {
+        let Some(requested) = requested else {
+            return Ok(self.clone());
+        };
+        let mut merged = self.values.clone();
+        for (key, child_value) in requested.values.iter() {
+            let rule = rules
+                .get(key)
+                .ok_or_else(|| PluginConfigError::NotNarrowable { key: key.clone() })?;
+            if let Some(parent_value) = self.values.get(key) {
+                if !(rule.narrows)(parent_value, child_value) {
+                    return Err(PluginConfigError::WouldWiden { key: key.clone() });
+                }
+            }
+            merged.insert(key.clone(), child_value.clone());
+        }
+        Ok(PluginConfig { values: merged })
+    }
 }
 
 /// A shared, mutable "current working directory" cell -- the capability
@@ -1188,6 +1440,125 @@ mod tests {
         let json = serde_json::to_string(&out).unwrap();
         let back: ToolOutput = serde_json::from_str(&json).unwrap();
         assert_eq!(out, back);
+    }
+
+    // ---- PluginConfig::narrow ----
+
+    /// A numeric "smaller-or-equal is narrower" rule -- deliberately not
+    /// path-shaped, so these tests stay abstract over what "narrower" means
+    /// for a key and exercise `narrow`'s own algebra, not a concrete
+    /// plugin's `narrows` implementation (that's `conway-tools`'
+    /// `FsPlugin` root key's own end-to-end job).
+    fn ceiling_narrows(parent: &serde_json::Value, child: &serde_json::Value) -> bool {
+        match (parent.as_u64(), child.as_u64()) {
+            (Some(p), Some(c)) => c <= p,
+            _ => false,
+        }
+    }
+
+    fn ceiling_rules() -> std::collections::HashMap<String, NarrowingRule> {
+        let mut rules = std::collections::HashMap::new();
+        rules.insert(
+            "acme.limit".to_string(),
+            NarrowingRule {
+                key: "limit",
+                narrows: ceiling_narrows,
+            },
+        );
+        rules
+    }
+
+    fn config_with(key: &str, value: u64) -> PluginConfig {
+        let mut values = serde_json::Map::new();
+        values.insert(key.to_string(), serde_json::json!(value));
+        PluginConfig { values }
+    }
+
+    #[test]
+    fn narrow_with_no_requested_inherits_parent_unchanged() {
+        let parent = config_with("acme.limit", 10);
+        let child = parent.narrow(None, &ceiling_rules()).unwrap();
+        assert_eq!(child, parent);
+    }
+
+    #[test]
+    fn narrow_accepts_first_time_set_of_a_declared_key_with_no_parent_value() {
+        let parent = PluginConfig::default();
+        let requested = config_with("acme.limit", 5);
+        let child = parent.narrow(Some(&requested), &ceiling_rules()).unwrap();
+        assert_eq!(child.values.get("acme.limit").unwrap().as_u64(), Some(5));
+    }
+
+    #[test]
+    fn narrow_accepts_a_genuine_narrowing() {
+        let parent = config_with("acme.limit", 10);
+        let requested = config_with("acme.limit", 3);
+        let child = parent.narrow(Some(&requested), &ceiling_rules()).unwrap();
+        assert_eq!(child.values.get("acme.limit").unwrap().as_u64(), Some(3));
+    }
+
+    #[test]
+    fn narrow_rejects_widening_with_a_typed_error_not_silently_clamped_or_honored() {
+        let parent = config_with("acme.limit", 3);
+        let requested = config_with("acme.limit", 10);
+        let err = parent
+            .narrow(Some(&requested), &ceiling_rules())
+            .unwrap_err();
+        assert_eq!(
+            err,
+            PluginConfigError::WouldWiden {
+                key: "acme.limit".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn narrow_rejects_a_key_no_plugin_declared_narrowable() {
+        let parent = PluginConfig::default();
+        let requested = config_with("acme.undeclared", 1);
+        let err = parent
+            .narrow(Some(&requested), &ceiling_rules())
+            .unwrap_err();
+        assert_eq!(
+            err,
+            PluginConfigError::NotNarrowable {
+                key: "acme.undeclared".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn narrow_preserves_untouched_keys_from_the_parent() {
+        let mut values = serde_json::Map::new();
+        values.insert("acme.limit".to_string(), serde_json::json!(10));
+        values.insert("acme.other".to_string(), serde_json::json!("kept"));
+        let parent = PluginConfig { values };
+        let requested = config_with("acme.limit", 2);
+        let child = parent.narrow(Some(&requested), &ceiling_rules()).unwrap();
+        assert_eq!(child.values.get("acme.limit").unwrap().as_u64(), Some(2));
+        assert_eq!(
+            child.values.get("acme.other").unwrap().as_str(),
+            Some("kept")
+        );
+    }
+
+    #[test]
+    fn default_plugin_declares_no_narrowable_keys() {
+        struct NoopPlugin;
+        impl Plugin for NoopPlugin {
+            fn manifest(&self) -> PluginManifest {
+                PluginManifest {
+                    id: "acme.noop".into(),
+                    version: "0.1.0".into(),
+                    tools: vec![],
+                    required_host_caps: vec![],
+                }
+            }
+            fn tools(&self) -> Vec<Arc<dyn Tool>> {
+                Vec::new()
+            }
+        }
+        assert!(NoopPlugin.narrowable_keys().is_empty());
     }
 
     /// `ArtifactWriteHandle::noop`

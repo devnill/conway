@@ -706,6 +706,7 @@ fn build_loop_inner(
         agent_path,
         cwd: PathBuf::from("/tmp"),
         root: None,
+        plugin_config: Arc::new(PluginConfig::default()),
         deps,
         spec,
         cancel: cancel.clone(),

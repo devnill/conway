@@ -384,6 +384,7 @@ fn build_loop(
         agent_path,
         cwd: PathBuf::from("/tmp"),
         root: None,
+        plugin_config: Arc::new(PluginConfig::default()),
         deps,
         spec,
         cancel: tokio_util::sync::CancellationToken::new(),

@@ -244,23 +244,18 @@ const ALLOWLIST: &[Allowlisted] = &[
     // when, retention, preview shape) that puts in a hook or plugin,
     // not in core's `TruncationPolicy`. The variant is gone, so its
     // allowlist entry is gone too.
-    Allowlisted {
-        enum_name: "LogRecord",
-        variant: "ContextMask",
-        reason: "the persisted context-exclusion overlay is READ by \
-                 the fork-ancestry resolver (`apply_context_mask`), but \
-                 nothing appends one -- there is no tool or operator \
-                 surface that can mask a record. Worse than \"no \
-                 producer\": a naive guard that treated resolver.rs's \
-                 read as evidence of construction would have missed this \
-                 entirely. RESOLVED AS A DELIBERATE DEFERRAL, not an open \
-                 gap: the item filed for it was cancelled rules compaction explicitly \
-                 out of scope -- its value is empirical and workload- \
-                 dependent, so the harness ships the seam and leaves the \
-                 policy outside. That decision also states what it does \
-                 NOT rule: `ContextMask` is not to be deleted, and this \
-                 allowlist entry stays until something changes it.",
-    },
+    // `LogRecord::ContextMask`, previously allowlisted here ("nothing
+    // appends one -- there is no tool or operator surface that can mask a
+    // record"), was triaged by board item 01KZY8QRAVVVKCRBZ6HAEGW3GG
+    // (`/checkout` and a reachable `ContextMask`): WIRED, not removed.
+    // `conway::Conway::mask_record` (`crates/conway/src/conway.rs`) is a
+    // real production construction site, reached through
+    // `conway_plugin_history`'s `/conway.history.mask` command via
+    // `CommandOutcome::MaskRecord` -- so this guard now finds it
+    // constructed and the entry is gone. See that variant's own doc
+    // (`crates/conway-core/src/log.rs`) for what changed and what did not
+    // (still fork-prefix-only, per that item's own scope decision).
+    //
     // -- Newly flagged by THIS guard (
     // itself), reported in that item's completion rather than fixed --
     // acceptance explicitly says "any newly-flagged variant is reported,

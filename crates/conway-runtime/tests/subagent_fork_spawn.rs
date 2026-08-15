@@ -486,6 +486,7 @@ async fn spawn_without_agent_def_inherits_the_parents_role() {
         cwd: None,
         root: None,
         tag: None,
+        plugin_config: None,
     };
     let mut stream = runtime.subscribe();
     let child = SubagentHost::start(&*runtime, root, root, spec)
@@ -1786,6 +1787,7 @@ fn spawn_spec_with_cwd(prompt: &str, cwd: Option<PathBuf>) -> SubagentSpec {
         cwd,
         root: None,
         tag: None,
+        plugin_config: None,
     }
 }
 
@@ -3110,6 +3112,7 @@ async fn spawn_child_declines_the_parents_agent_def_even_though_a_fork_would_inh
         cwd: None,
         root: None,
         tag: None,
+        plugin_config: None,
     };
     assert!(child_spec.agent_def.is_none());
 

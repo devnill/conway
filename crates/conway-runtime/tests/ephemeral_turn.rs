@@ -194,6 +194,7 @@ fn spawn_spec(prompt: &str) -> SubagentSpec {
         cwd: None,
         root: None,
         tag: None,
+        plugin_config: None,
     }
 }
 

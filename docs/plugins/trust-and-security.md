@@ -190,29 +190,47 @@ typed after the command word — no live `Conway`/`SessionHandle`, no
 filesystem/network/exec capability beyond whatever the plugin's own process
 already has as an ordinary program (the same "conway does not sandbox" limit
 stated above, restated: this trust model does not narrow the MACHINE-level
-capability, only conway's OWN domain objects). A command cannot resume a
-DIFFERENT session, steer any agent, read or write a file through conway's
-own mediation, or reach the permission broker — see `hooks.md` point 15's
-own doc for why (a `conway-core`/`conway` layering constraint, not a policy
-choice held back deliberately), and note that gap is itself disclosed there
-as a finding, not a control: nothing stops a command's OWN Rust code from
-doing arbitrary I/O outside conway's mediation entirely, exactly as a tool's
-`invoke` already can.
+capability, only conway's OWN domain objects). A command cannot steer any
+agent, read or write a file through conway's own mediation, or reach the
+permission broker — see `hooks.md` point 15's own doc for why (a
+`conway-core`/`conway` layering constraint, not a policy choice held back
+deliberately), and note that gap is itself disclosed there as a finding,
+not a control: nothing stops a command's OWN Rust code from doing arbitrary
+I/O outside conway's mediation entirely, exactly as a tool's `invoke`
+already can.
 
-**The one narrow exception, and why it does not widen this control.** A command CAN ask the host to fork its
-OWN calling session at a sequence and drive the child (`CommandOutcome::
-ForkSession` — `hooks.md` point 15's own "Forking the calling session"
-subsection has the full mechanism). This is not a live handle: the command
-never touches `Conway`/`SessionHandle` itself, only RETURNS a request the
-host — still the one actually holding the trusted facade — chooses to
-honor. And it cannot reach past the session it was invoked from: the
-returned request carries no session identifier at all, so there is nothing
-for a command, malicious or buggy, to name a foreign session with. The
-trust boundary this section opens with is unaffected: the operator who
-typed the command already had full privileges over their own session (they
-could have typed `/resume`/quit-and-restart with `--fork-from` themselves);
-this merely lets a plugin offer that same operator-privileged action as a
-named command instead of a manual multi-step workaround.
+**Two narrow exceptions, and why neither widens this control past "the
+operator could already do this by hand."** A command CAN ask the host to
+fork its OWN calling session at a sequence and drive the child
+(`CommandOutcome::ForkSession` — `hooks.md` point 15's own "Forking the
+calling session" subsection has the full mechanism). Neither this nor
+`MaskRecord` below is a live handle: the command never touches
+`Conway`/`SessionHandle` itself, only RETURNS a request the host — still
+the one actually holding the trusted facade — chooses to honor. And
+`ForkSession`/`MaskRecord` cannot reach past the session invoked from: the
+returned request carries no session identifier of its own, so there is
+nothing for a command, malicious or buggy, to name a foreign session with.
+
+**Updated (board item 01KZY8QRAVVVKCRBZ6HAEGW3GG): a command CAN now name a
+DIFFERENT session, through `CommandOutcome::Checkout` alone.** `Checkout {
+target }` is the one variant of the three where `target` is a `SessionId`
+read straight from the command's own typed argument, not the invoking
+session — see `hooks.md` point 15's "Masking a record and checking out
+another session" subsection for the full mechanism and why the widening was
+judged necessary (`/checkout <session>` cannot be expressed any narrower
+and still do what it names). This still does not reach past what an
+operator sitting at that command could already do by hand: `Checkout`
+grants no capability to READ, steer, or mutate `target` — the host's only
+response to it is `Conway::fork_from(target, target's own head, ..)`, the
+identical zero-copy, append-only fork any operator could trigger themselves
+via `conway --fork-from <id>` if they knew `target`'s id (which the command
+was, by construction, typed with — an operator who did not already know
+`target` could not have invoked `Checkout` against it in the first place).
+The trust boundary this section opens with is otherwise unaffected: this
+merely lets a plugin offer operator-privileged, already-possible actions
+(rewinding one's own session, masking a record in it, or hopping to a
+DIFFERENTLY-NAMED session one already knows the id of) as a named command
+instead of a manual multi-step workaround.
 
 ## Backends and routers: the same install pass, and one hands over more
 
@@ -352,9 +370,13 @@ Stated next to the guarantees, per this set's house style, not softened:
   literal prefix of the rendered command; `deny bash:git push` does not
   catch `foo; git push` — the rule never claimed to parse shell.
   `docs/permissions.md`'s Limits section has the full statement, including
-  what keeps the *composition* sound anyway (the shell-metacharacter gate on
-  the allow side, following the fix for the v0.5.0 sanitizer-laundering bug class,
-  done). **Correction to this item's own originating spec:** it named the
+  what keeps the *composition* sound anyway: not a metacharacter scan any
+  more (that scan read a call's text to judge what it might do, which
+  conway's own steering rules out — see `PHILOSOPHY.md`'s "Constraining a
+  child: its tool set" and `docs/permissions.md`'s Limits section) but the
+  fact that a durable `allow` pattern grant does not exist for `bash` (or
+  any shell-rendered tool) at all any more, for any command, chained or
+  not. **Correction to this item's own originating spec:** it named the
   convergence of conway's three control-character sanitizers ("F2/F3") as pending and instructed that it
   be labeled designed-not-built here. That is stale. The item is **done** —
   a single `conway_core::text::sanitize_control_chars`
