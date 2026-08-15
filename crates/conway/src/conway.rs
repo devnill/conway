@@ -8,7 +8,7 @@ use conway_core::agent::{AgentDefRef, Budget, SubagentMode};
 use conway_core::capabilities::RequiredCaps;
 use conway_core::error::{RuntimeError, StoreError};
 use conway_core::ids::{AgentId, LogSeq, RoleAlias, SessionId};
-use conway_core::log::{SessionFilter, SessionMeta};
+use conway_core::log::{LogRecord, SessionFilter, SessionMeta};
 use conway_core::ports::{RoutingExplainer, SessionStore};
 use conway_core::routing::{ExplainReport, MinimalRouter, RouteRequest};
 use conway_runtime::runtime::{ResumeSpec, RootSpec, Runtime};
@@ -1027,6 +1027,57 @@ impl Conway {
     /// not `transcript().len()`.
     pub async fn session_head(&self, sid: SessionId) -> Result<LogSeq> {
         Ok(self.store.head(&sid).await?)
+    }
+
+    /// Appends a `LogRecord::ContextMask` to `sid`'s own log, masking (or,
+    /// with `excluded: false`, un-masking) `target_seq` -- the host-side
+    /// half of [`conway_core::ports::CommandOutcome::MaskRecord`]
+    /// (`conway_plugin_history`'s `/conway.history.mask` command; board
+    /// item 01KZY8QRAVVVKCRBZ6HAEGW3GG, "`/checkout` and a reachable
+    /// `ContextMask`"), and the first production call site the enum
+    /// variant construction guard (`crates/conway/tests/
+    /// enum_variant_construction_guard.rs`) recognizes for it.
+    ///
+    /// **An ordinary append, not a mutation.** Like every other
+    /// `LogRecord`, this is a plain `SessionStore::append` -- `target_seq`'s
+    /// own stored bytes are never touched (`LogRecord::ContextMask`'s own
+    /// doc). Reversible by construction: appending a second mask for the
+    /// same `target_seq` with the opposite `excluded` value is the whole
+    /// undo mechanism; there is no separate "unmask" record shape.
+    ///
+    /// **`seq`/`ts` are placeholders the store overwrites.** Mirrors every
+    /// other record built ahead of an `append` call in this crate (e.g.
+    /// [`Self::fork_from`]'s own child-creation path) -- `seq` becomes
+    /// whatever `SessionStore::append` actually assigns (returned here),
+    /// and `ts` is stamped at the moment of the call, not validated against
+    /// anything.
+    ///
+    /// **Bounds, disclosed:** this performs no check that `target_seq` is
+    /// actually `<= session_head(sid)` -- `SessionStore::append` itself
+    /// enforces no such bound (unlike `Self::fork_from`'s explicit `at >
+    /// head` check), so masking a seq that does not exist yet succeeds
+    /// today and simply has no visible effect until a record with that seq
+    /// is appended. Tightening this is a disclosed follow-up, not a defect
+    /// this item's own acceptance criteria require closing (`CommandOutcome::
+    /// MaskRecord::target_seq`'s own doc names the identical limit).
+    pub async fn mask_record(
+        &self,
+        sid: SessionId,
+        target_seq: LogSeq,
+        excluded: bool,
+    ) -> Result<LogSeq> {
+        Ok(self
+            .store
+            .append(
+                &sid,
+                LogRecord::ContextMask {
+                    seq: LogSeq(0),
+                    ts: Utc::now(),
+                    target_seq,
+                    excluded,
+                },
+            )
+            .await?)
     }
 
     /// Forks a *stored* session at an arbitrary point, offline -- no live

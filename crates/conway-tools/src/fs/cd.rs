@@ -71,6 +71,7 @@ impl Tool for CdTool {
         check_cancel(&ctx)?;
         let args: CdArgs = parse_args(&call)?;
         let path = resolve_path(&ctx, &args.path)?;
+        crate::fs::check_root(&ctx, &path)?;
 
         let metadata = match tokio::fs::metadata(&path).await {
             Ok(metadata) => metadata,

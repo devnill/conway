@@ -72,6 +72,7 @@ impl Tool for ReadTool {
         check_cancel(&ctx)?;
         let args: ReadArgs = parse_args(&call)?;
         let path = resolve_path(&ctx, &args.path)?;
+        crate::fs::check_root(&ctx, &path)?;
 
         let bytes = match tokio::fs::read(&path).await {
             Ok(bytes) => bytes,

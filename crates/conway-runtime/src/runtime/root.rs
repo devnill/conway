@@ -359,6 +359,13 @@ impl Runtime {
             // above -- the same resolved, canonical root (or `None`,
             // unconfined, unchanged from before this field existed).
             root: root.clone(),
+            // [S1.5]: a root agent's own per-agent plugin config is simply
+            // the process-wide global config -- byte-identical to this
+            // agent's behavior before this field existed. Per-agent
+            // narrowing below a root is a fork/spawn-only concept
+            // (`subagent.rs`'s `SubagentHost::start`); `RootSpec` gains no
+            // counterpart field, mirroring `tag` immediately above.
+            plugin_config: self.loop_deps.plugin_config.clone(),
             deps: self.loop_deps.clone(),
             spec: agent_spec,
             cancel: cancel.clone(),
@@ -384,6 +391,10 @@ impl Runtime {
             },
         };
         let prompt_notify = agent_loop.resume_gate.notify.clone();
+        // [S1.5]: cloned out for the SAME reason `prompt_notify` is,
+        // immediately above -- `agent_loop` moves into the spawned task
+        // below.
+        let plugin_config = agent_loop.plugin_config.clone();
 
         // A root is started, not spawned (`kind: None`) — see `tree.rs`'s
         // module doc on why that means `attach` will not emit
@@ -427,6 +438,7 @@ impl Runtime {
             last_report,
             prompt_notify,
             join: Arc::new(Mutex::new(Some(join))),
+            plugin_config,
         };
 
         self.agents
@@ -682,6 +694,14 @@ impl Runtime {
             // could turn a persisted `Some(root)` into `None`, or replace
             // it with something wider").
             root: meta.root.clone(),
+            // [S1.5]: NOT restored from any persisted per-agent narrowing
+            // (this item does not persist `plugin_config` onto
+            // `SessionMeta` -- a disclosed, deliberate scope limit; see
+            // `AgentLoop::plugin_config`'s own doc). A resumed session
+            // always comes back with the process-wide global config,
+            // exactly like a freshly started root -- byte-identical to
+            // this agent's behavior before this field existed.
+            plugin_config: self.loop_deps.plugin_config.clone(),
             deps: self.loop_deps.clone(),
             spec: agent_spec,
             cancel: cancel.clone(),

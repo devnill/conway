@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Plugin configuration becomes per-agent state, narrowing-only down the
+  fork/spawn tree, with `conway.fs`'s own root as the proving consumer.** A
+  plugin declares which of its `PluginConfig` keys may vary per agent
+  (`Plugin::narrowable_keys`) and supplies the comparison itself, so a
+  parent's effective value is the only thing a child's requested override
+  may **narrow** — never widen — and a key no plugin declared narrowable
+  can never be set per-agent at all. `ToolCtx::config` is now built
+  per-agent rather than shared process-wide. `conway.fs` reads its
+  confinement root from this mechanism: two siblings spawned with
+  different roots each read inside their own and are refused outside it,
+  and a child attempting to widen its parent's root **fails the spawn
+  outright** with a typed error rather than being silently clamped or
+  honoured. `Plugin::narrowable_keys` defaults to empty, so every existing
+  implementor keeps compiling and keeps today's global-only semantics.
+  Known gap: per-agent config is not yet persisted to `SessionMeta`, so a
+  resumed session reverts to the global default.
+- **`/checkout` and a reachable `ContextMask` — the session-history
+  plugin's second and third commands.** `/conway.history.mask <seq>
+  [unmask]` is `LogRecord::ContextMask`'s first real producer: an ordinary
+  append-only `SessionStore` write, never a mutation of the masked record,
+  so masking and unmasking are two later records overlaying the same
+  target. `/conway.history.checkout <session-id>` forks a **named**,
+  already-existing session at its own head and drives the child, leaving
+  the original untouched and still listed — the one thing `/rewind`'s
+  `ForkSession` outcome structurally cannot express, since it can only
+  fork the calling session. A mask still affects only fork-prefix
+  resolution, never a session's own later turns: excluding a segment from
+  the current request is already what the append-only script-hook path
+  does, and a second mechanism for one effect was declined.
+
 ### Security
 
 - **A `bash` pattern grant can no longer auto-approve anything — not a

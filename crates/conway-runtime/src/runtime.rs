@@ -185,6 +185,14 @@ struct AgentHandle {
     prompt_notify: Arc<tokio::sync::Notify>,
     #[allow(dead_code)]
     join: Arc<Mutex<Option<JoinHandle<()>>>>,
+    /// `[S1.5]`: this agent's own EFFECTIVE per-agent plugin config -- the
+    /// same `Arc` as its `AgentLoop::plugin_config` (cloned out before that
+    /// `AgentLoop` moves into its spawned task, mirroring `prompt_notify`
+    /// immediately above). `subagent.rs`'s `SubagentHost::start` reads a
+    /// LIVE parent's own value here (via [`Runtime::agent_plugin_config`])
+    /// as the baseline a fork/spawn child's own requested overrides narrow
+    /// against.
+    plugin_config: Arc<PluginConfig>,
 }
 
 /// The runtime facade: owns dependency injection and root-agent task
@@ -513,6 +521,23 @@ impl Runtime {
             .session)
     }
 
+    /// `[S1.5]`: `agent`'s own live, EFFECTIVE per-agent plugin config --
+    /// the baseline `subagent.rs`'s `SubagentHost::start` narrows a
+    /// fork/spawn child's requested overrides against
+    /// (`conway_core::ports::PluginConfig::narrow`). Mirrors [`Self::
+    /// agent_session`] exactly.
+    pub(crate) fn agent_plugin_config(
+        &self,
+        agent: AgentId,
+    ) -> Result<Arc<PluginConfig>, RuntimeError> {
+        let agents = self.agents.read().expect("agents lock poisoned");
+        Ok(agents
+            .get(&agent)
+            .ok_or(RuntimeError::AgentNotFound { agent })?
+            .plugin_config
+            .clone())
+    }
+
     /// A clone of `agent`'s mailbox sender. Used by `subagent.rs`'s
     /// `steer` (the target's sender) and `start` (the parent's sender, so a
     /// fork/spawn child can deliver its terminal `Result` upward through
@@ -562,6 +587,10 @@ impl Runtime {
         // a partial move that would make the later whole-struct move
         // illegal.
         let parent = agent_loop.parent;
+        // [S1.5]: cloned out for the SAME reason `prompt_notify`/`parent`
+        // are, immediately above -- `agent_loop` moves into the spawned
+        // task below, so nothing on it is readable afterward.
+        let plugin_config = agent_loop.plugin_config.clone();
 
         self.tree.attach(node)?;
 
@@ -585,6 +614,7 @@ impl Runtime {
             last_report,
             prompt_notify,
             join: Arc::new(Mutex::new(Some(join))),
+            plugin_config,
         };
         self.agents
             .write()

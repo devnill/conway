@@ -98,6 +98,21 @@ pub struct ForkSpec {
     /// rejecting at runtime. Set via [`ForkSpec::ask_origin`]. Mirrors
     /// [`conway_core::agent::SubagentSpec::ask_origin`]'s own doc.
     pub ask_origin: Option<AskOrigin>,
+    /// `[S1.5]` per-agent plugin configuration this fork requests for the
+    /// child -- narrowing-only overrides for keys the owning plugin
+    /// declares narrowable (`conway_core::ports::Plugin::narrowable_keys`);
+    /// `conway.fs`'s own root key (`"conway.fs.root"`) is the proving
+    /// consumer. `None` (the [`ForkSpec::new`] default) means "inherit the
+    /// forker's own effective per-agent config unchanged".
+    ///
+    /// **Unlike `cwd`/`root`, this IS exposed on `ForkSpec`** (not only
+    /// `SpawnSpec`): a fork's inherited transcript does not describe a
+    /// plugin's own scoped resource the way it describes a working
+    /// directory, so narrowing a plugin's per-agent config on a fork is
+    /// coherent where narrowing `cwd`/`root` there was not (see those
+    /// fields' own `From` impl comments for the incoherence this avoids).
+    /// Set via [`ForkSpec::plugin_config`].
+    pub plugin_config: Option<conway_core::ports::PluginConfig>,
 }
 
 impl ForkSpec {
@@ -122,6 +137,7 @@ impl ForkSpec {
             keep_alive: false,
             ephemeral: false,
             ask_origin: None,
+            plugin_config: None,
         }
     }
 
@@ -167,6 +183,12 @@ impl ForkSpec {
         self.ask_origin = Some(ask_origin);
         self
     }
+
+    /// See [`ForkSpec::plugin_config`]'s own field doc.
+    pub fn plugin_config(mut self, plugin_config: conway_core::ports::PluginConfig) -> Self {
+        self.plugin_config = Some(plugin_config);
+        self
+    }
 }
 
 impl From<ForkSpec> for SubagentSpec {
@@ -208,6 +230,10 @@ impl From<ForkSpec> for SubagentSpec {
             // facade; wiring a `ForkSpec`/`SpawnSpec` builder method is a
             // natural follow-on, not built here.
             tag: None,
+            // `[S1.5]`: mapped straight through -- see [`ForkSpec::
+            // plugin_config`]'s own doc for why this (unlike `cwd`/`root`)
+            // IS reachable from `ForkSpec`.
+            plugin_config: spec.plugin_config,
         }
     }
 }
@@ -285,6 +311,14 @@ pub struct SpawnSpec {
     /// `From` impl for why a fork's inherited-context semantics make a root
     /// override incoherent there.
     pub root: Option<std::path::PathBuf>,
+    /// `[S1.5]` per-agent plugin configuration this spawn requests for the
+    /// child. Mirrors [`ForkSpec::plugin_config`]'s own doc exactly --
+    /// unlike `cwd`/`root` immediately above, this field IS also reachable
+    /// from [`ForkSpec`] (see that field's own doc for why). `None` (the
+    /// [`SpawnSpec::new`] default) means "inherit the spawner's own
+    /// effective per-agent config unchanged". Set via [`SpawnSpec::
+    /// plugin_config`].
+    pub plugin_config: Option<conway_core::ports::PluginConfig>,
 }
 
 impl SpawnSpec {
@@ -308,6 +342,7 @@ impl SpawnSpec {
             keep_alive: false,
             cwd: None,
             root: None,
+            plugin_config: None,
         }
     }
 
@@ -353,6 +388,12 @@ impl SpawnSpec {
         self.root = Some(root.into());
         self
     }
+
+    /// See [`SpawnSpec::plugin_config`]'s own field doc.
+    pub fn plugin_config(mut self, plugin_config: conway_core::ports::PluginConfig) -> Self {
+        self.plugin_config = Some(plugin_config);
+        self
+    }
 }
 
 impl From<SpawnSpec> for SubagentSpec {
@@ -373,6 +414,9 @@ impl From<SpawnSpec> for SubagentSpec {
             // See the identical note in
             // `From<ForkSpec>` above.
             tag: None,
+            // `[S1.5]`: mapped straight through -- see [`SpawnSpec::
+            // plugin_config`]'s own doc.
+            plugin_config: spec.plugin_config,
         }
     }
 }
@@ -538,6 +582,47 @@ mod tests {
             converted.root,
             Some(std::path::PathBuf::from("/some/scoped/root"))
         );
+    }
+
+    /// `[S1.5]` `SpawnSpec::plugin_config` maps through `From<SpawnSpec>
+    /// for SubagentSpec` unchanged, mirroring `spawn_spec_root_maps_
+    /// through_from_spawn_spec` -- the acceptance criterion "a parent can
+    /// set a child's plugin configuration at spawn".
+    #[test]
+    fn spawn_spec_plugin_config_maps_through_from_spawn_spec() {
+        let default_spec = SpawnSpec::new("x");
+        assert_eq!(default_spec.plugin_config, None);
+        let default_converted: SubagentSpec = default_spec.into();
+        assert_eq!(default_converted.plugin_config, None);
+
+        let mut values = serde_json::Map::new();
+        values.insert("conway.fs.root".to_string(), serde_json::json!("/scoped"));
+        let config = conway_core::ports::PluginConfig { values };
+        let scoped = SpawnSpec::new("x").plugin_config(config.clone());
+        assert_eq!(scoped.plugin_config, Some(config.clone()));
+        let converted: SubagentSpec = scoped.into();
+        assert_eq!(converted.plugin_config, Some(config));
+    }
+
+    /// `[S1.5]` `ForkSpec::plugin_config` maps through `From<ForkSpec> for
+    /// SubagentSpec` unchanged -- the acceptance criterion "a parent can
+    /// set a child's plugin configuration at fork", the one place this
+    /// mechanism deliberately diverges from `cwd`/`root` (never exposed on
+    /// `ForkSpec`).
+    #[test]
+    fn fork_spec_plugin_config_maps_through_from_fork_spec() {
+        let default_spec = ForkSpec::new("x");
+        assert_eq!(default_spec.plugin_config, None);
+        let default_converted: SubagentSpec = default_spec.into();
+        assert_eq!(default_converted.plugin_config, None);
+
+        let mut values = serde_json::Map::new();
+        values.insert("conway.fs.root".to_string(), serde_json::json!("/scoped"));
+        let config = conway_core::ports::PluginConfig { values };
+        let scoped = ForkSpec::new("x").plugin_config(config.clone());
+        assert_eq!(scoped.plugin_config, Some(config.clone()));
+        let converted: SubagentSpec = scoped.into();
+        assert_eq!(converted.plugin_config, Some(config));
     }
 
     #[test]

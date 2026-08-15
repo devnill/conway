@@ -285,6 +285,9 @@ impl SessionHandle {
             // A modal `/ask` has no
             // embedder-supplied correlation identifier of its own -- no tag.
             tag: None,
+            // `[S1.5]`: same rationale as `cwd`/`root` above -- inherit the
+            // asker's per-agent plugin config too.
+            plugin_config: None,
         };
         // Subscribe BEFORE `start` so the child's first events cannot race
         // past this handle's stream (see the doc above).

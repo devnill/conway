@@ -421,10 +421,13 @@ record in the same session as excluded. Its only effect is on
 applies it when computing what a *new* fork child inherits. It does not
 touch the owning session's own future turns: a session's own context
 assembly reads its own records directly, unfiltered by any mask on them.
-No code in the workspace today constructs a `ContextMask` record outside
-of tests, so this mechanism is not currently reachable through any
-built-in surface — a consumer wanting it would need to append the record
-itself via `SessionStore`.
+No **built-in** surface constructs a `ContextMask` record.
+`conway_plugin_history`'s `/conway.history.mask <seq> [unmask]` command
+does, through `Conway::mask_record` — but that is an opt-in first-party
+**plugin** (`[plugins].install = ["conway.history"]`), not core and not a
+built-in. With the plugin uninstalled, nothing in core or the CLI can
+append one, so "not reachable through any built-in surface" stays
+literally true — precisely because a plugin is not a built-in.
 
 ### 3.6 Keep-alive sessions and `/ask`
 

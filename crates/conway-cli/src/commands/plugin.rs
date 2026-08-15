@@ -121,5 +121,62 @@ pub async fn run(args: &[String], conway: &Conway) -> conway::Result<ExitCode> {
                 }
             }
         }
+        // `/conway.history.mask`'s own capability (board item
+        // 01KZY8QRAVVVKCRBZ6HAEGW3GG) -- appends against the fresh,
+        // prompt-less session this function created above (module doc: no
+        // live session exists yet in this bare-invocation path), the same
+        // `handle.id()` `ForkSession` above resolves against.
+        CommandOutcome::MaskRecord {
+            target_seq,
+            excluded,
+        } => match conway.mask_record(handle.id(), target_seq, excluded).await {
+            Ok(_seq) => {
+                let verb = if excluded { "masked" } else { "un-masked" };
+                println!(
+                    "{full_name}: {verb} seq {} on session {}",
+                    target_seq.0,
+                    handle.id()
+                );
+                Ok(ExitCode::Completed)
+            }
+            Err(e) => {
+                diag::error(format!("{full_name}: mask failed: {e}"));
+                Ok(ExitCode::AgentFailed)
+            }
+        },
+        // `/conway.history.checkout`'s own capability -- forks `target` at
+        // its own head; unlike the TUI there is no follow-on interactive
+        // loop to hand the child to, so (mirroring `ForkSession` above) this
+        // prints the child's session id instead.
+        CommandOutcome::Checkout { target } => {
+            let head = match conway.session_head(target).await {
+                Ok(head) => head,
+                Err(e) => {
+                    diag::error(format!("{full_name}: checkout failed: {e}"));
+                    return Ok(ExitCode::AgentFailed);
+                }
+            };
+            match conway
+                .fork_from(target, head, ForkSpec::new(String::new()))
+                .await
+            {
+                Ok(child) => {
+                    println!(
+                        "{full_name}: checked out session {target} at seq {} into new session \
+                         {} -- `conway sessions show {}` to inspect it, or `conway -p --resume \
+                         {}` to continue it ({target} is untouched)",
+                        head.0,
+                        child.id(),
+                        child.id(),
+                        child.id(),
+                    );
+                    Ok(ExitCode::Completed)
+                }
+                Err(e) => {
+                    diag::error(format!("{full_name}: checkout failed: {e}"));
+                    Ok(ExitCode::AgentFailed)
+                }
+            }
+        }
     }
 }

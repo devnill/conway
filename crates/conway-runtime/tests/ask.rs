@@ -244,6 +244,7 @@ fn ask_fork_spec(prompt: &str) -> SubagentSpec {
         cwd: None,
         root: None,
         tag: None,
+        plugin_config: None,
     }
 }
 

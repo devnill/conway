@@ -254,22 +254,31 @@ pub enum LogRecord {
     /// which the append-only log never does elsewhere; an overlay record
     /// keeps that invariant intact.
     ///
-    /// **Not yet implemented**: nothing in this tree constructs this
-    /// variant. `conway-session`'s fork-ancestry resolver
-    /// (`apply_context_mask`) is wired to READ and honor one if it
-    /// existed, but no tool or operator surface can append one -- so no
-    /// record is ever actually excluded from an outgoing LLM payload
-    /// today, despite the doc above.
+    /// **Reachable, as of board item 01KZY8QRAVVVKCRBZ6HAEGW3GG
+    /// (`/checkout` and a reachable `ContextMask`), through a first-party
+    /// PLUGIN, not a built-in surface.** `conway_plugin_history`'s
+    /// `/conway.history.mask <seq> [unmask]` command returns
+    /// `conway_core::ports::CommandOutcome::MaskRecord`, which the host
+    /// resolves via `conway::Conway::mask_record` -- an ordinary
+    /// `SessionStore::append` call, exactly like every other record in this
+    /// enum. With the plugin uninstalled, nothing in the core or the CLI
+    /// can append one; ARCHITECTURE.md §3.5's own "not currently reachable
+    /// through any built-in surface" sentence stays literally true for
+    /// that reason (a plugin is not a built-in), and is corrected
+    /// elsewhere to say so precisely, per that item's own acceptance
+    /// criteria.
     ///
-    /// **That is a deliberate deferral, not pending work.** The
-    /// filed for it was cancelled, and decision
-    /// rules that compaction is explicitly out
-    /// of scope: its value is empirical and depends on model, workload and
-    /// transcript shape, so conway ships the seam and leaves the policy to
-    /// the consumer. The same decision states what it does NOT rule -- this
-    /// variant is not to be deleted, and the missing-producer observation
-    /// was not wrong. Allowlisted with a reason in
-    /// `crates/conway/tests/enum_variant_construction_guard.rs`.
+    /// **The scope decision that item settled: this still affects ONLY
+    /// fork-prefix resolution, never a session's own future turns.**
+    /// Widening it to filter a session's OWN live assembly (`ContextBuilder`)
+    /// was considered and rejected for that item -- see its own completion
+    /// report for the full reasoning (in short: the per-request,
+    /// append-only script-hook edit path landed in `0f32bd8` already covers
+    /// "exclude a segment from THIS session's own next request," through
+    /// `ContextHook`/`request_assembled`, without touching the
+    /// `TranscriptResolver`/`ContextBuilder` hot path a persisted-mask
+    /// widening would have to; building a second mechanism for the same
+    /// effect was rejected as duplication, not attempted and abandoned).
     ContextMask {
         seq: LogSeq,
         ts: DateTime<Utc>,

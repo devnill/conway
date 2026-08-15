@@ -318,6 +318,7 @@ fn build_loop(
         agent_path: vec![agent],
         cwd: PathBuf::from("/tmp"),
         root: None,
+        plugin_config: Arc::new(PluginConfig::default()),
         deps,
         spec,
         cancel,

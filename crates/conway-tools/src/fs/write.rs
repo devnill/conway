@@ -64,6 +64,7 @@ impl Tool for WriteTool {
         check_cancel(&ctx)?;
         let args: WriteArgs = parse_args(&call)?;
         let path = resolve_path(&ctx, &args.path)?;
+        crate::fs::check_root(&ctx, &path)?;
 
         let bytes = atomic_write(&path, &args.content).await?;
 

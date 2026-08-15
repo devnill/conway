@@ -39,7 +39,9 @@ use conway_core::agent::PermissionDecision;
 use conway_core::ids::{BackendId, ModelId, RoleAlias};
 use conway_testkit::{FakeBackend, FakeGate, FakeRouter, FakeStore};
 
-use conway_plugin_history::{HistoryPlugin, COMMAND_NAME, PLUGIN_ID};
+use conway_plugin_history::{
+    HistoryPlugin, COMMAND_NAME_CHECKOUT, COMMAND_NAME_MASK, COMMAND_NAME_REWIND, PLUGIN_ID,
+};
 
 fn base_config() -> ConwayConfig {
     let mut roles = BTreeMap::new();
@@ -121,8 +123,8 @@ fn manifest_id_matches_the_published_constant() {
 async fn the_erased_command_still_forks_at_the_typed_sequence() {
     let plugin = HistoryPlugin;
     let commands: Vec<Arc<dyn Command>> = plugin.commands();
-    assert_eq!(commands.len(), 1);
-    assert_eq!(commands[0].spec().name, COMMAND_NAME);
+    assert_eq!(commands.len(), 3);
+    assert_eq!(commands[0].spec().name, COMMAND_NAME_REWIND);
 
     let ctx = CommandCtx {
         focused_agent: conway::AgentId::new(),
@@ -138,4 +140,50 @@ async fn the_erased_command_still_forks_at_the_typed_sequence() {
             directive: String::new(),
         }
     );
+}
+
+/// This plugin's SECOND command, reached only through the same `Arc<dyn
+/// Command>` type erasure -- `/conway.history.mask <seq>` returns a
+/// `CommandOutcome::MaskRecord` requesting the CALLING session's own
+/// `target_seq` be excluded.
+#[tokio::test]
+async fn the_erased_mask_command_returns_a_mask_record_outcome() {
+    let plugin = HistoryPlugin;
+    let commands: Vec<Arc<dyn Command>> = plugin.commands();
+    assert_eq!(commands[1].spec().name, COMMAND_NAME_MASK);
+
+    let ctx = CommandCtx {
+        focused_agent: conway::AgentId::new(),
+        root_agent: conway::AgentId::new(),
+        session_id: conway::SessionId::new(),
+        args: "3".to_string(),
+    };
+    let outcome = commands[1].invoke(ctx).await;
+    assert_eq!(
+        outcome,
+        CommandOutcome::MaskRecord {
+            target_seq: LogSeq(3),
+            excluded: true,
+        }
+    );
+}
+
+/// This plugin's THIRD command, reached only through the same `Arc<dyn
+/// Command>` type erasure -- `/conway.history.checkout <session-id>`
+/// returns a `CommandOutcome::Checkout` naming the typed session.
+#[tokio::test]
+async fn the_erased_checkout_command_returns_a_checkout_outcome() {
+    let plugin = HistoryPlugin;
+    let commands: Vec<Arc<dyn Command>> = plugin.commands();
+    assert_eq!(commands[2].spec().name, COMMAND_NAME_CHECKOUT);
+
+    let target = conway::SessionId::new();
+    let ctx = CommandCtx {
+        focused_agent: conway::AgentId::new(),
+        root_agent: conway::AgentId::new(),
+        session_id: conway::SessionId::new(),
+        args: target.to_string(),
+    };
+    let outcome = commands[2].invoke(ctx).await;
+    assert_eq!(outcome, CommandOutcome::Checkout { target });
 }

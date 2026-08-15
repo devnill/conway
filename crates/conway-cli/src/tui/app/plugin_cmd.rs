@@ -172,6 +172,86 @@ impl App {
                     }
                 }
             }
+            // `/conway.history.mask`'s own capability (board item
+            // 01KZY8QRAVVVKCRBZ6HAEGW3GG). `done.session_id` -- the SAME
+            // field the `ForkSession` arm above resolves against, for the
+            // identical "acts on its own session, never one it names"
+            // reason (`CommandOutcome::MaskRecord`'s own doc). Never swaps
+            // `self.handle` -- masking never changes which session is
+            // driven.
+            conway::plugin::CommandOutcome::MaskRecord {
+                target_seq,
+                excluded,
+            } => {
+                match self
+                    .conway
+                    .mask_record(done.session_id, target_seq, excluded)
+                    .await
+                {
+                    Ok(_seq) => {
+                        let verb = if excluded { "masked" } else { "un-masked" };
+                        self.state.transcript.push(Entry::Notice {
+                            text: format!(
+                                "/{}: {verb} seq {} -- affects future forks of this session \
+                                 only",
+                                done.full_name, target_seq.0
+                            ),
+                        });
+                        false
+                    }
+                    Err(e) => {
+                        self.state.transcript.push(Entry::Notice {
+                            text: format!("/{}: mask failed: {e}", done.full_name),
+                        });
+                        false
+                    }
+                }
+            }
+            // `/conway.history.checkout`'s own capability (board item
+            // 01KZY8QRAVVVKCRBZ6HAEGW3GG): forks `target` at ITS OWN head
+            // (never `done.session_id` -- `Checkout` deliberately names a
+            // DIFFERENT session, see that variant's own doc) and drives the
+            // child, exactly like a successful `ForkSession` above.
+            conway::plugin::CommandOutcome::Checkout { target } => {
+                let head = match self.conway.session_head(target).await {
+                    Ok(head) => head,
+                    Err(e) => {
+                        self.state.transcript.push(Entry::Notice {
+                            text: format!("/{}: checkout failed: {e}", done.full_name),
+                        });
+                        return false;
+                    }
+                };
+                match self
+                    .conway
+                    .fork_from(target, head, ForkSpec::new(String::new()))
+                    .await
+                {
+                    Ok(handle) => {
+                        // Mirrors the `ForkSession` arm's own reset exactly.
+                        let plugin_commands = self.state.plugin_commands.clone();
+                        let child_root = handle.root();
+                        self.handle = handle;
+                        self.state = AppState::new(child_root);
+                        self.state.plugin_commands = plugin_commands;
+                        self.state.session_head_seq = Some(head);
+                        self.state.transcript.push(Entry::Notice {
+                            text: format!(
+                                "/{}: checked out session {target} at seq {} -- now driving \
+                                 {child_root} ({target} is untouched)",
+                                done.full_name, head.0
+                            ),
+                        });
+                        true
+                    }
+                    Err(e) => {
+                        self.state.transcript.push(Entry::Notice {
+                            text: format!("/{}: checkout failed: {e}", done.full_name),
+                        });
+                        false
+                    }
+                }
+            }
         }
     }
 }
@@ -776,6 +856,249 @@ mod tests {
                     if text.contains("conway.history.rewind") && text.contains("forked")
             )),
             "a successful fork must be surfaced as a transcript notice: {:?}",
+            app.state.transcript
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // `conway-plugin-history`'s `/conway.history.mask` --
+    // `CommandOutcome::MaskRecord`, driven through the REAL shipped
+    // plugin crate (board item 01KZY8QRAVVVKCRBZ6HAEGW3GG, "`/checkout`
+    // and a reachable `ContextMask`") -- the plugin's SECOND command.
+    // -----------------------------------------------------------------
+
+    /// Masking never swaps `self.handle` (unlike `ForkSession`/`Checkout`)
+    /// and appends a real, readable-back `LogRecord::ContextMask` against
+    /// the CALLING session -- the record round-trips, is reversible, and
+    /// is surfaced as a transcript notice.
+    #[tokio::test]
+    async fn conway_history_mask_appends_a_real_record_through_the_real_plugin() {
+        let (conway, store) = build_conway_with_echo_backend_and_store();
+        let cli = minimal_cli();
+        let plugin: Arc<dyn conway::plugin::Plugin> =
+            Arc::new(conway_plugin_history::HistoryPlugin);
+        let mut app = App::new(&cli, &conway, &[plugin])
+            .await
+            .expect("App::new should succeed");
+
+        let sid = app.handle.id();
+        app.handle
+            .prompt("only turn")
+            .await
+            .expect("prompt should not error")
+            .text()
+            .await
+            .expect("turn should complete");
+
+        let records: Vec<conway_core::log::LogRecord> =
+            conway::SessionStore::read(store.as_ref(), &sid, conway_core::ids::SeqRange::full())
+                .await
+                .expect("read should succeed");
+        let target_seq = records
+            .iter()
+            .find_map(|r| match r {
+                conway_core::log::LogRecord::UserTurn { seq, text, .. } if text == "only turn" => {
+                    Some(*seq)
+                }
+                _ => None,
+            })
+            .expect("the UserTurn record for the prompt just sent must exist");
+
+        let outcome = app
+            .submit(format!("/conway.history.mask {}", target_seq.0))
+            .await
+            .expect("submit should not error");
+        assert!(matches!(outcome, super::super::SubmitOutcome::Continue));
+
+        let done = app
+            .plugin_cmd_rx
+            .as_mut()
+            .expect("plugin_cmd_rx is set by App::new")
+            .recv()
+            .await
+            .expect("the spawned command task must reply");
+        assert_eq!(done.full_name, "conway.history.mask");
+        assert_eq!(done.session_id, sid);
+
+        let resubscribe = app.apply_plugin_command_done(done).await;
+        assert!(
+            !resubscribe,
+            "masking must never swap the driven session -- there is no new session to drive"
+        );
+        assert_eq!(
+            app.handle.id(),
+            sid,
+            "masking must never change which session is driven"
+        );
+
+        let records_after: Vec<conway_core::log::LogRecord> =
+            conway::SessionStore::read(store.as_ref(), &sid, conway_core::ids::SeqRange::full())
+                .await
+                .expect("read should succeed");
+        let mask = records_after
+            .iter()
+            .find(|r| {
+                matches!(
+                    r,
+                    conway_core::log::LogRecord::ContextMask { target_seq: ts, .. }
+                        if *ts == target_seq
+                )
+            })
+            .expect("a real ContextMask record must be appended and readable back");
+        match mask {
+            conway_core::log::LogRecord::ContextMask { excluded, .. } => assert!(*excluded),
+            _ => unreachable!(),
+        }
+        // The original record is untouched -- an overlay, not a mutation.
+        assert!(records_after
+            .iter()
+            .any(|r| matches!(r, conway_core::log::LogRecord::UserTurn { text, .. } if text == "only turn")));
+
+        assert!(
+            app.state.transcript.iter().any(|e| matches!(
+                e,
+                Entry::Notice { text }
+                    if text.contains("conway.history.mask") && text.contains("masked")
+            )),
+            "a successful mask must be surfaced as a transcript notice: {:?}",
+            app.state.transcript
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // `conway-plugin-history`'s `/conway.history.checkout` --
+    // `CommandOutcome::Checkout`, driven through the REAL shipped
+    // plugin crate -- the plugin's THIRD command. Mirrors the `/rewind`
+    // real-plugin test above, except the forked session is NOT the one
+    // the command was invoked from.
+    // -----------------------------------------------------------------
+
+    /// Checking out a DIFFERENT, already-existing session forks it (never
+    /// attaching live) and swaps the TUI onto the child -- while the
+    /// checked-out-FROM session's own log stays byte-for-byte unchanged
+    /// and remains listed.
+    #[tokio::test]
+    async fn conway_history_checkout_forks_the_target_and_leaves_it_untouched_through_the_real_plugin(
+    ) {
+        let (conway, store) = build_conway_with_echo_backend_and_store();
+        let cli = minimal_cli();
+        let plugin: Arc<dyn conway::plugin::Plugin> =
+            Arc::new(conway_plugin_history::HistoryPlugin);
+        let mut app = App::new(&cli, &conway, &[plugin])
+            .await
+            .expect("App::new should succeed");
+        let invoking_sid = app.handle.id();
+
+        // A SEPARATE, already-existing session -- what the operator is
+        // about to check out INTO, while sitting in `invoking_sid`.
+        let target = conway
+            .new_session(App::session_spec(&cli).expect("session_spec"))
+            .await
+            .expect("new_session should succeed");
+        let target_sid = target.id();
+        assert_ne!(target_sid, invoking_sid);
+        target
+            .prompt("target session content")
+            .await
+            .expect("prompt should not error")
+            .text()
+            .await
+            .expect("turn should complete");
+        let target_head_before = conway
+            .session_head(target_sid)
+            .await
+            .expect("session_head should succeed");
+        let target_records_before: Vec<conway_core::log::LogRecord> = conway::SessionStore::read(
+            store.as_ref(),
+            &target_sid,
+            conway_core::ids::SeqRange::full(),
+        )
+        .await
+        .expect("read should succeed");
+
+        let outcome = app
+            .submit(format!("/conway.history.checkout {target_sid}"))
+            .await
+            .expect("submit should not error");
+        assert!(matches!(outcome, super::super::SubmitOutcome::Continue));
+
+        let done = app
+            .plugin_cmd_rx
+            .as_mut()
+            .expect("plugin_cmd_rx is set by App::new")
+            .recv()
+            .await
+            .expect("the spawned command task must reply");
+        assert_eq!(done.full_name, "conway.history.checkout");
+        assert_eq!(
+            done.session_id, invoking_sid,
+            "CommandCtx::session_id must be the CALLING session, even though `Checkout` acts \
+             on a DIFFERENT, named session"
+        );
+
+        let resubscribe = app.apply_plugin_command_done(done).await;
+        assert!(
+            resubscribe,
+            "a successful checkout must ask the caller to resubscribe its event stream"
+        );
+
+        let driven_sid = app.handle.id();
+        assert_ne!(driven_sid, invoking_sid, "checkout must move the head");
+        assert_ne!(
+            driven_sid, target_sid,
+            "checkout forks the target rather than attaching to it live -- the driven session \
+             must be a NEW child, not `target_sid` itself"
+        );
+        // The new child is genuinely drivable.
+        let child_prompt_err = app
+            .handle
+            .prompt("hello from the checked-out child")
+            .await
+            .err()
+            .map(|e| e.to_string());
+        assert!(
+            child_prompt_err.is_none(),
+            "the checked-out child must be drivable: {child_prompt_err:?}"
+        );
+
+        // The checked-out-FROM session is untouched...
+        let target_head_after = conway
+            .session_head(target_sid)
+            .await
+            .expect("session_head should succeed");
+        assert_eq!(
+            target_head_before, target_head_after,
+            "checkout must never mutate the checked-out-FROM session's own head"
+        );
+        let target_records_after: Vec<conway_core::log::LogRecord> = conway::SessionStore::read(
+            store.as_ref(),
+            &target_sid,
+            conway_core::ids::SeqRange::full(),
+        )
+        .await
+        .expect("read should succeed");
+        assert_eq!(
+            target_records_before, target_records_after,
+            "the checked-out-FROM session's own persisted records must be byte-for-byte \
+             unchanged"
+        );
+        // ...and still listed.
+        let listed = conway
+            .sessions(conway_core::log::SessionFilter::default())
+            .await
+            .expect("sessions should succeed");
+        assert!(
+            listed.iter().any(|m| m.id == target_sid),
+            "the checked-out-FROM session must still be listed: {listed:?}"
+        );
+
+        assert!(
+            app.state.transcript.iter().any(|e| matches!(
+                e,
+                Entry::Notice { text }
+                    if text.contains("conway.history.checkout") && text.contains("checked out")
+            )),
+            "a successful checkout must be surfaced as a transcript notice: {:?}",
             app.state.transcript
         );
     }
