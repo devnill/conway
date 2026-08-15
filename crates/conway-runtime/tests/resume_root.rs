@@ -279,6 +279,7 @@ async fn resume_root_does_not_create_or_append_initial_turn() {
             ephemeral: false,
             ask_origin: None,
             root: None,
+            plugin_config: conway_core::ports::PluginConfig::default(),
         })
         .await
         .unwrap_err();

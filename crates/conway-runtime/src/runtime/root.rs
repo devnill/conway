@@ -274,6 +274,17 @@ impl Runtime {
             // root computed above -- `None` (unconfined) exactly as before
             // this field existed unless `spec.root` was set.
             root: root.clone(),
+            // (S1.5 resume gap) A root agent's own per-agent plugin config
+            // is simply the process-wide global config (mirrors
+            // `AgentLoop::plugin_config`'s own doc below) -- nothing to
+            // persist as a per-agent narrowing, since a root has no parent
+            // to narrow from. Empty, not the global config's own values:
+            // this field records only what THIS agent itself narrowed
+            // (`subagent.rs`'s `SubagentHost::start` persists its child's
+            // full effective value the same way `root` above is a full
+            // resolved value, not a delta -- but a root's own delta over
+            // "nothing" is always nothing).
+            plugin_config: PluginConfig::default(),
         };
         self.store.create(meta).await?;
 
@@ -647,6 +658,89 @@ impl Runtime {
             }
         }
 
+        // (S1.5 resume gap) Re-derive this agent's own EFFECTIVE per-agent
+        // plugin config from its PERSISTED `meta.plugin_config` -- never
+        // simply `self.loop_deps.plugin_config.clone()` (the global
+        // default), which is exactly the fail-open `01KZDC0269171BZDB3HH00179B`
+        // disclosed: every resumed agent silently reverting to the
+        // unconfined global default, no error, no warning. See
+        // `SessionMeta::plugin_config`'s own doc for the full contract this
+        // implements.
+        //
+        // **Re-applies the SAME check `subagent.rs`'s `SubagentHost::start`
+        // validated this value with originally** (`PluginConfig::narrow`),
+        // never merely trusting the persisted record -- the widening hazard
+        // this method's own item exists to close is a resume path that
+        // reconstructs a confinement value by any route OTHER than the one
+        // that validated it; calling the identical validating function again
+        // here, rather than a bespoke or looser check, is what keeps this
+        // resume path the SAME route, not a second one. The CURRENT
+        // process-wide global config (`self.loop_deps.plugin_config`) is the
+        // ceiling `narrow` validates the persisted value against, exactly as
+        // it would be for a brand-new root -- a root's own effective config
+        // IS the global default (`start_root`, immediately above this
+        // method), so every fork/spawn descendant's effective value is, by
+        // construction, always some narrowing of it; re-validating a
+        // resumed value against that SAME ceiling (rather than trusting it
+        // verbatim) is what catches the two cases `narrow` can still refuse:
+        //
+        // - a key the persisted record still carries a value for, but that
+        //   no CURRENTLY installed plugin declares narrowable any more
+        //   (`PluginConfigError::NotNarrowable` -- e.g. the plugin that
+        //   declared it was uninstalled since this session was created) --
+        //   refuses to resume outright, a typed `RuntimeError::InvalidSpec`.
+        //   The disclosed, deliberate choice among three candidate outcomes
+        //   (module doc references the item's own reasoning): silently
+        //   dropping the narrowing is not defensible (a resumed agent would
+        //   come back WIDER, unconfined for that key, with no signal at
+        //   all -- the exact fail-open this whole item exists to close);
+        //   silently keeping a value nothing enforces is its own trap (an
+        //   operator reading the persisted header would see a root that
+        //   looks confined while nothing checks it, since the plugin that
+        //   would have called `conway_tools::fs::check_root`, or an
+        //   equivalent, is no longer even registered); refusing to resume
+        //   is the only outcome that is never silently wrong in either
+        //   direction.
+        // - a key whose value would WIDEN the current global default's own
+        //   value for that same key (`PluginConfigError::WouldWiden`) --
+        //   refused the same way. Unreachable with today's `RuntimeDeps`
+        //   (which carries no operator-configurable global `plugin_config`
+        //   at all, so `self.loop_deps.plugin_config` is always the empty
+        //   map in every build this crate ships, making every key here
+        //   "absent from the ceiling" and thus unconditionally accepted --
+        //   `PluginConfig::narrow`'s own "unbounded to bounded is always a
+        //   narrowing" rule) but not dead code: this call site re-applies
+        //   the identical validating function a future non-empty global
+        //   default would need no further change here to be protected by.
+        //   `conway_core::ports::plugin`'s own unit tests
+        //   (`resuming_a_persisted_plugin_config_wider_than_the_current_
+        //   global_default_is_refused` and neighbors) exercise this branch
+        //   directly, with a synthetic non-empty ceiling, since this
+        //   `Runtime`-level call site cannot manufacture one today.
+        //
+        // Never rewrites `meta.plugin_config` itself (this method never
+        // rewrites the header, matching `root`'s own resume-time treatment
+        // above) -- only the freshly computed, re-validated EFFECTIVE value
+        // handed to the new `AgentLoop`/`AgentHandle` can differ from what
+        // was persisted, and only by refusing the whole resume, never by
+        // silently substituting a different value.
+        let plugin_config = Arc::new(
+            self.loop_deps
+                .plugin_config
+                .narrow(
+                    Some(&meta.plugin_config),
+                    self.loop_deps.registry.narrowing_rules(),
+                )
+                .map_err(|err| {
+                    crate::subagent::invalid_spec(ConwayError::Config {
+                        detail: format!(
+                            "resumed session's persisted plugin_config could not be \
+                             re-validated against the current plugin set: {err}"
+                        ),
+                    })
+                })?,
+        );
+
         let last_report = Arc::new(Mutex::new(None));
         let agent_spec = AgentSpec {
             system_prompt,
@@ -694,14 +788,12 @@ impl Runtime {
             // could turn a persisted `Some(root)` into `None`, or replace
             // it with something wider").
             root: meta.root.clone(),
-            // [S1.5]: NOT restored from any persisted per-agent narrowing
-            // (this item does not persist `plugin_config` onto
-            // `SessionMeta` -- a disclosed, deliberate scope limit; see
-            // `AgentLoop::plugin_config`'s own doc). A resumed session
-            // always comes back with the process-wide global config,
-            // exactly like a freshly started root -- byte-identical to
-            // this agent's behavior before this field existed.
-            plugin_config: self.loop_deps.plugin_config.clone(),
+            // (S1.5 resume gap) The re-validated effective value computed
+            // just above -- never `self.loop_deps.plugin_config.clone()`
+            // (the global default) unconditionally, which is exactly the
+            // silent revert this item closes. See that computation's own
+            // comment for the full contract.
+            plugin_config: plugin_config.clone(),
             deps: self.loop_deps.clone(),
             spec: agent_spec,
             cancel: cancel.clone(),

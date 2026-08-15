@@ -23,12 +23,14 @@ use mock_backend::MockHandle;
 /// speak. Using `openai` here keeps every request in this suite on the one
 /// wire format the mock implements.
 ///
-/// `roles.coder` is likewise given a valid chain: `default_document()`
-/// bakes in a `roles.coder = { chain = [] }` at the lowest merge layer, and
-/// routing validation rejects an empty chain on ANY role, not just
-/// `default_role` -- see `cli_surface.rs::MINIMAL_CONFIG`'s identical note
-///. Without it, `build()` fails with EmptyChain before dispatch
-/// ever reaches one-shot mode.
+/// This fixture's own role is likewise given a valid chain, because
+/// routing validation rejects an empty chain on ANY role, not just the one
+/// named by `default_role` -- see `cli_surface.rs::MINIMAL_CONFIG`'s
+/// identical note. Without it, `build()` fails with EmptyChain before
+/// dispatch ever reaches one-shot mode. (`default_document()` bakes in an
+/// empty-chain role of its own at the lowest merge layer; it is named
+/// `default`, not `coder`, since the shipped default stopped naming one use
+/// of the harness.)
 const TEMPLATE: &str = include_str!("../fixtures/conway.json.tmpl");
 
 /// A fresh temp directory holding a rendered `conway.json`, plus the path

@@ -30,8 +30,13 @@ use crate::commands::sessions::SessionsArgs;
 #[derive(Parser, Debug)]
 #[command(name = "conway", version, about = "The conway agent harness CLI")]
 pub struct Cli {
-    /// One-shot mode: run `PROMPT` (or, with no value, read the prompt from
-    /// stdin) and exit. Absent entirely => interactive TUI.
+    /// One-shot mode: run `PROMPT` and exit. With no value, the prompt is
+    /// read from stdin instead. With a value AND piped (non-terminal)
+    /// stdin, both are sent: `PROMPT` is the directive, the piped text is
+    /// the data it operates on, joined directive-first -- see
+    /// `oneshot::read_prompt`'s own doc for the exact precedence (`conway
+    /// -p "what broke?" < error.log` sends the model both). Absent
+    /// entirely => interactive TUI.
     #[arg(
         short = 'p',
         long = "print",

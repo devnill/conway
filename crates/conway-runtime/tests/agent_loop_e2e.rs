@@ -446,6 +446,7 @@ async fn seed_prompt_for(
             ephemeral: false,
             ask_origin: None,
             root: None,
+            plugin_config: conway_core::ports::PluginConfig::default(),
         })
         .await
         .unwrap();

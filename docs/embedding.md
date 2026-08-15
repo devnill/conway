@@ -116,7 +116,7 @@ stops and "would be guessing" starts:**
   `conway_plugin_backends::openai_compat::OpenAiCompatBackend` wired to a
   real endpoint instead.
 - **Where to route.** The built-in default document's baked-in role
-  (`default_role = "coder"`, an empty chain) deliberately names no
+  (`default_role = "default"`, an empty chain) deliberately names no
   destination — see `ConwayBuilder`'s own module doc for why `default_role`
   has no opinion worth inventing at the core. A caller who already knows
   exactly which backend/model to use (the common embedding case) bypasses
@@ -172,8 +172,8 @@ get an opinionated one anyway, discoverable only by reading source.
 So there is no `ConwayConfig::default()`, and there does not need to be.
 `ConwayBuilder::discover()` answers the same question a different, honest
 way: it reads a REAL, inspectable, versioned answer (`config::merge::
-default_document`'s `default_role = "coder"`, paired with an empty
-`roles.coder.chain`) off the same five-source precedence chain a
+default_document`'s `default_role = "default"`, paired with an empty
+`roles.default.chain`) off the same five-source precedence chain a
 `settings.json` would override — a stated, overridable convention, not a
 value baked silently into a Rust `impl`. `Conway::config()`/`LoadOutcome::
 warnings` make it inspectable after the fact, and an empty chain fails
@@ -181,6 +181,15 @@ routing with a NAMED `RoutingError::NoCandidate` the moment you actually
 try to use it unmodified — never a silent fallback to some other model. A
 caller who wants no opinion about roles at all skips the question entirely
 with `with_router`, as the screenful above does.
+
+The role is named `"default"`, not `"coder"` — this layer used to ship
+`"coder"` here, which was the same opinion the paragraph above rejects for
+a Rust `impl`, wearing a JSON hat instead: conway serves a coding agent and
+a bare inference call equally, so a name that reads as "the coding role"
+is not neutral just because it lives in an overridable file rather than
+compiled-in Rust. `"default"` names what the role actually is — an
+unconfigured placeholder with nowhere to route — not a task any particular
+embedder performs.
 
 If you genuinely need a config with no filesystem and no ambient
 environment involved at all (an embedded target, a from-scratch test

@@ -92,6 +92,15 @@ pub(crate) async fn fork_child(
         // not a spawn, so there is no narrowing/widening decision to make
         // here at all.
         root: parent_meta.root,
+        // (S1.5 resume gap) Mirrors `root` immediately above for the exact
+        // same reason: `ForkChildRequest` carries no `plugin_config`
+        // override field, so a fork always inherits the parent's own
+        // effective per-agent plugin config unchanged. `Runtime::
+        // resume_root` (called just below) re-validates this value against
+        // the current plugin set before trusting it, exactly as it does for
+        // any other resumed session -- see `SessionMeta::plugin_config`'s
+        // own doc.
+        plugin_config: parent_meta.plugin_config,
     };
     let child = store.fork(&parent, at, child_meta).await?;
 

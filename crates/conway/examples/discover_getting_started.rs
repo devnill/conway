@@ -41,7 +41,7 @@
 //!   `real_provider_inference.rs` for the real-backend shape of this same
 //!   screenful).
 //! - **Where to route.** The default document's baked-in role
-//!   (`default_role = "coder"`, an empty chain) deliberately names no
+//!   (`default_role = "default"`, an empty chain) deliberately names no
 //!   destination -- see `conway::ConwayBuilder`'s own module doc for why
 //!   `default_role` has no opinion worth inventing at the core. A caller who
 //!   already knows exactly which backend/model to use (the common embedding

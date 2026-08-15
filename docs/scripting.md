@@ -15,16 +15,53 @@ Pass the prompt as `-p`'s value:
 conway -p "what's in this directory? use bash" --allowed-tools bash
 ```
 
-Or pass `-p` with no value and pipe the prompt on stdin:
+Or pass `-p` with no value and pipe the prompt on stdin — conway reads it to
+EOF, so a large document (bigger than a shell would ever let you pass as a
+single argument) can go straight through the pipe instead of onto argv:
 
 ```console
 echo "what's in this directory? use bash" | conway -p --allowed-tools bash
+cat huge-log.txt | conway -p --allowed-tools bash
 ```
 
 `-p` alone, with stdin attached to a terminal (nothing piped), is a usage
 error rather than a hang — one-shot mode never blocks waiting for interactive
 input. A present-but-empty stdin (piped, but nothing written) is also a usage
 error, not a silent no-op.
+
+**Piping into `-p "<text>"` — an argv prompt AND piped data at once.**
+`-p`'s own value is the *directive*; piped (non-terminal) stdin, when it
+carries any non-whitespace bytes, is the *data that directive operates on*
+— the same split Unix `grep PATTERN` already makes between its own argv
+pattern and the corpus it reads from stdin. When both are present, conway
+sends the model both, directive first, separated by a blank line:
+
+```console
+cat error.log | conway -p "what broke?"
+```
+
+is exactly equivalent to running `conway -p` with stdin carrying:
+
+```text
+what broke?
+
+<the contents of error.log>
+```
+
+If stdin is not piped (a terminal, or simply not redirected), or is piped
+but empty, `-p`'s own text is sent alone — unchanged from every version of
+this flag before piped-stdin composition existed. Nothing about this is
+silent: whichever of the two (or both) supplies the prompt, that's exactly
+what the model sees, and nothing pipes through unread.
+
+One consequence worth knowing: since stdin is now read to EOF whenever it
+is not a terminal — even when `-p` already has text — a script that runs
+`conway -p "<text>"` with stdin inherited from a pipe that never closes and
+never terminates will block on that read where an older conway would not
+have. This is ordinary Unix filter behavior (`grep PATTERN` blocks the same
+way against a non-terminating stdin), not a bug: redirect stdin from
+`/dev/null` if you want `-p`'s text alone with no interaction with whatever
+stdin your script happened to inherit.
 
 conway exits once the root agent's turn reaches a terminal state — see
 "Exit codes" below.
@@ -400,7 +437,7 @@ naming both flags rather than a silently dropped one.
 
 | Flag | Effect |
 | --- | --- |
-| `-p, --print [PROMPT]` | Run one prompt and exit. With a value, that's the prompt; with none, read the prompt from stdin. Absent entirely → interactive TUI. |
+| `-p, --print [PROMPT]` | Run one prompt and exit. With a value and no piped stdin, that value is the prompt; with none, the prompt is read from stdin instead; with both a value AND piped (non-terminal) stdin, they're joined — `PROMPT` as the directive, the piped text as the data, directive first. See "Invocation and input" above. Absent entirely → interactive TUI. |
 | `--output-format <text\|json\|jsonl>` | Selects the renderer (default `text`). See "Output formats" above. |
 | `--allowed-tools <name[,name…]>` | Comma-separated tool names to allow, consulted when `--permission-mode` is `allowlist` (the default). Each entry is a bare tool name or `tool_name(arg_glob)` to scope the grant to matching arguments (see "Scoping an entry to specific arguments" above). Empty (the default) denies every tool call. |
 | `--deny-tools <name[,name…]>` | Comma-separated tool names to deny even when `--allowed-tools` lists them; also accepts `tool_name(arg_glob)` entries; also consulted only in `allowlist` mode. |

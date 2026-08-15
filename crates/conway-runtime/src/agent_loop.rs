@@ -329,13 +329,23 @@ pub struct AgentLoop {
     /// `Self::root`'s own "resolve once here, read fresh every batch"
     /// shape immediately above.
     ///
-    /// **Not persisted to `SessionMeta`, unlike `Self::root`** -- a
-    /// disclosed, deliberate scope limit of this first slice: a resumed
-    /// session's per-agent narrowing reverts to whatever `deps.
-    /// plugin_config` (the global config) carries, rather than surviving a
-    /// store round-trip the way `root`/`cwd` do. Closing that gap is a
-    /// follow-on, not attempted here (it would require a `SessionMeta`
-    /// field, a much wider blast radius than this item's file scope).
+    /// **Persisted to `SessionMeta::plugin_config`, mirroring `Self::root`**
+    /// (`01M0321414SVRD60HEP074AFHG`, closing the gap this field's doc used
+    /// to disclose here: a resumed session's per-agent narrowing used to
+    /// revert to whatever `deps.plugin_config` -- the global config --
+    /// carried, silently, with no error and no warning). `subagent.rs`'s
+    /// `SubagentHost::start` persists this same already-merged value onto
+    /// `SessionMeta.plugin_config` when it constructs a fork/spawn child's
+    /// header; `Runtime::resume_root` re-derives it on resume by
+    /// re-applying `PluginConfig::narrow` against the CURRENT process-wide
+    /// global config and the CURRENTLY installed plugin set's narrowing
+    /// rules -- never by trusting the persisted record verbatim -- and
+    /// refuses to resume outright (rather than silently dropping the
+    /// narrowing or silently keeping a value nothing enforces) when a
+    /// persisted key can no longer be validated. See `SessionMeta::
+    /// plugin_config`'s own doc (`conway-core`) and `Runtime::resume_root`'s
+    /// own doc comment at its plugin_config re-derivation for the full
+    /// contract.
     pub plugin_config: Arc<PluginConfig>,
     pub deps: Arc<LoopDeps>,
     pub spec: AgentSpec,

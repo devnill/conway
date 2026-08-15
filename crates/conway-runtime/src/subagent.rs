@@ -379,10 +379,16 @@ impl SubagentHost for Runtime {
         // [S1.5]: the child's own EFFECTIVE per-agent plugin config,
         // resolved and validated ONCE here (mirroring `effective_root`
         // immediately above) -- the PARENT's own LIVE effective value
-        // (`Runtime::agent_plugin_config`, never the parent's *persisted*
-        // `SessionMeta`, which carries no such field -- see `AgentLoop::
-        // plugin_config`'s own doc for why this mechanism is in-memory-only
-        // for this first slice) narrowed by `spec.plugin_config`
+        // (`Runtime::agent_plugin_config`, an in-memory `AgentHandle`
+        // lookup, not a re-read of the parent's *persisted* `SessionMeta.
+        // plugin_config`) narrowed by `spec.plugin_config`
+        // (01M0321414SVRD60HEP074AFHG: `SessionMeta.plugin_config` now
+        // exists and is what a RESUMED parent's live value is re-derived
+        // from -- see `runtime/root.rs`'s `resume_root`; a LIVE, still-
+        // running parent's `AgentHandle.plugin_config` is always exactly
+        // the same value that was (or will be) persisted onto its own
+        // header at construction, so reading the live copy here rather than
+        // re-fetching the header is equivalent, and cheaper)
         // (`None` means "inherit unchanged", exactly `PluginConfig::
         // narrow`'s own contract) against every installed plugin's declared
         // narrowing rules (`PluginRegistry::narrowing_rules`). A key not
@@ -605,6 +611,13 @@ impl SubagentHost for Runtime {
             // relative `spec.root`) is what lets a resumed session's
             // confinement survive a store round-trip unchanged.
             root: effective_root,
+            // (S1.5 resume gap) The full, already-validated EFFECTIVE
+            // per-agent plugin config computed above (`child_plugin_config`)
+            // -- persisted verbatim, mirroring `root` immediately above, so
+            // this child's own narrowing survives a resumed store
+            // round-trip instead of silently reverting to the global
+            // default (`SessionMeta::plugin_config`'s own doc).
+            plugin_config: child_plugin_config.as_ref().clone(),
         };
 
         // Capture before `meta` is moved into `store.fork`/`store.create` below

@@ -128,6 +128,35 @@
 //!    private `resolve_path` does -- duplicated here in miniature since
 //!    that helper is not exported) -- an unknown name is a usage error
 //!    naming the directory searched, never a silent no-op.
+//! 5. **Piped stdin composed with an explicit `--print <text>`.** Before this
+//!    item, this module's private `read_prompt` helper read stdin only when
+//!    `--print` carried no text (bare `-p`, or `-p` omitted its value) --
+//!    with `--print "<text>"` given, it returned that text immediately and
+//!    never touched stdin at all. That made `cat error.log | conway -p
+//!    "what broke?"` -- this item's own name, and the D4 finding's own
+//!    motivating example -- silently drop the piped log with no error and
+//!    nothing in the response hinting it was ignored: the *combination* of
+//!    an argv prompt and piped data was never a documented, tested
+//!    precedence, just an accident of the early `return` above it.
+//!    `read_prompt` now treats `--print`'s text as the DIRECTIVE and piped
+//!    stdin as the DATA it operates on -- the same split Unix `grep
+//!    PATTERN` already makes between its own argv pattern and the corpus it
+//!    reads from stdin -- and joins them, directive first, when both are
+//!    present (see that private function's own doc, in this same file, for
+//!    the exact join and every other arm).
+//!    **Disclosed consequence:** stdin is now read to EOF whenever it is
+//!    not a terminal, *even when `--print` already has text* -- a caller
+//!    that runs `conway -p "<text>"` with stdin inherited from a pipe that
+//!    never closes and never terminates will now block on that read where
+//!    it previously would not have. This is the same trade-off this module
+//!    already made, unconditionally, for the text-absent case since WI-112
+//!    (139fe4a) -- standard Unix filter behavior (`grep PATTERN` blocks the
+//!    same way against a non-terminating stdin), not a new hazard category
+//!    -- and there is no way to distinguish "an operator forgot to close an
+//!    inherited pipe" from "an operator is deliberately piping a second
+//!    input" other than reading it. A caller that wants `--print`'s text
+//!    alone, with whatever stdin it inherited left untouched, should
+//!    redirect stdin from `/dev/null`.
 
 use std::io::{IsTerminal, Read};
 use std::path::PathBuf;
@@ -533,27 +562,60 @@ fn resolve_budget(cli: &Cli, conway: &Conway) -> Option<Budget> {
     Some(budget)
 }
 
-/// Resolves the prompt text: `--print <text>` if non-empty, else stdin read
-/// to EOF. A present-but-empty `--print` (the flag with no value) on a TTY
-/// stdin is a usage error rather than blocking on interactive input a
-/// one-shot script never intends to provide.
+/// Resolves the prompt text from `--print <text>` (the DIRECTIVE) and piped
+/// stdin (the DATA it operates on) -- see this module's doc comment,
+/// reconciliation #5, for the precedence this implements and why. In short:
+///
+/// - **Both present** (`-p "<text>"` with stdin piped and non-empty): joined
+///   directive-first, `"{text}\n\n{piped}"` -- the same `"\n\n"` join
+///   [`resolve_system_prompt_override`] already uses for `--system-prompt`/
+///   `--append-system-prompt`. This is what makes `cat error.log | conway -p
+///   "what broke?"` (this item's own motivating example) actually work: the
+///   model sees both the question and the log, not one silently dropping
+///   the other.
+/// - **Only `--print` has text**: that text alone, byte-for-byte -- this
+///   module's pre-item behavior, unchanged. Stdin is still probed (see
+///   reconciliation #5 for why that alone is a behavior change worth
+///   flagging), but an empty/absent piped stdin leaves this arm identical
+///   to before.
+/// - **Only stdin is piped** (bare `-p`, or `-p` given no value): the piped
+///   text alone -- this module's pre-item behavior for that case, unchanged.
+/// - **Neither**: a usage error. `--print` present but empty (the flag with
+///   no value) on a TTY stdin is "pass -p or pipe text on stdin" (nothing
+///   was ever going to arrive, so this must not block on interactive input a
+///   one-shot script never intends to provide); with a non-TTY stdin that
+///   simply produced no non-whitespace bytes, it is "stdin was empty"
+///   instead -- distinct messages, both usage errors either way.
+///
+/// Piped stdin is read to EOF whenever stdin is not a terminal
+/// ([`IsTerminal::is_terminal`]), regardless of whether `--print` already
+/// carries text -- see reconciliation #5 for this file's own doc comment
+/// for the full disclosure of what changes as a result.
 fn read_prompt(cli: &Cli) -> conway::Result<String> {
-    if let Some(text) = &cli.print {
-        if !text.is_empty() {
-            return Ok(text.clone());
+    let directive = cli.print.as_ref().filter(|t| !t.is_empty()).cloned();
+
+    let is_tty = std::io::stdin().is_terminal();
+    let piped = if is_tty {
+        None
+    } else {
+        let mut buf = String::new();
+        std::io::stdin().read_to_string(&mut buf)?;
+        if buf.trim().is_empty() {
+            None
+        } else {
+            Some(buf)
         }
-    }
-    if std::io::stdin().is_terminal() {
-        return Err(usage_error(
+    };
+
+    match (directive, piped) {
+        (Some(directive), Some(piped)) => Ok(format!("{directive}\n\n{piped}")),
+        (Some(directive), None) => Ok(directive),
+        (None, Some(piped)) => Ok(piped),
+        (None, None) if is_tty => Err(usage_error(
             "no prompt provided: pass -p \"<prompt>\" or pipe text on stdin",
-        ));
+        )),
+        (None, None) => Err(usage_error("no prompt provided: stdin was empty")),
     }
-    let mut buf = String::new();
-    std::io::stdin().read_to_string(&mut buf)?;
-    if buf.trim().is_empty() {
-        return Err(usage_error("no prompt provided: stdin was empty"));
-    }
-    Ok(buf)
 }
 
 /// Builds the one-shot gate from `--permission-mode`/`--allowed-tools`/

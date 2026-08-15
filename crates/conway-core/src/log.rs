@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use crate::agent::AgentResult;
 use crate::content::{ContentBlock, StopReason, ToolResult, Usage};
 use crate::ids::{AgentId, LogSeq, ModelRef, RoleAlias, SessionId};
+use crate::ports::PluginConfig;
 use crate::provenance::{ContextReport, Provenance};
 
 /// Fork vs spawn: the only two subagent modes, never blurred into one.
@@ -139,6 +140,66 @@ pub struct SessionMeta {
     /// unconfined behavior for every such session.
     #[serde(default)]
     pub root: Option<PathBuf>,
+    /// (S1.5 resume gap) This agent's own EFFECTIVE per-agent plugin config
+    /// at the moment it was created -- the full, already-merged
+    /// `conway_runtime::subagent`'s `child_plugin_config` (every key any
+    /// ancestor narrowed, overlaid with this agent's own narrowing, if any),
+    /// persisted so a resumed session comes back with the SAME per-agent
+    /// narrowing it was spawned under -- the exact same rationale
+    /// [`Self::root`]'s own doc gives for persisting a fully-resolved value
+    /// rather than the caller's raw request: keeping this only in
+    /// `conway_runtime`'s in-memory `AgentHandle` map (as
+    /// `01KZDC0269171BZDB3HH00179B` shipped it) makes a resumed session
+    /// silently revert to the unconfined global default, the exact fail-open
+    /// [`Self::root`] was already written to prevent for the OTHER
+    /// confinement mechanism -- this field closes the same gap for the
+    /// plugin-declared one.
+    ///
+    /// **Wire compatibility, the question [`Self::root`] never had to
+    /// answer.** `root`/`cwd` are two fixed fields; a per-agent plugin
+    /// config is a MAP any installed plugin may extend with its own keys,
+    /// prefixed `"{plugin_id}.{bare_key}"` (`conway_core::ports::Plugin::
+    /// narrowable_keys`'s own doc). [`PluginConfig`] wraps exactly that
+    /// shape in its one field, `values: serde_json::Map<String,
+    /// serde_json::Value>` (so on the wire this field is
+    /// `{"values": {...}}`, not a bare map -- `PluginConfig` has no
+    /// `#[serde(transparent)]`) -- so no NEW schema is needed for a
+    /// plugin's own key to round-trip: an OLDER `conway` reading a NEWER
+    /// log simply carries forward any key it does not itself declare
+    /// narrowable, inside that same `values` object (untouched JSON, never
+    /// rejected, never dropped -- `serde_json::Map` has no
+    /// `deny_unknown_fields` to trip); a NEWER `conway` reading an OLDER log
+    /// (written before this field existed) decodes it as the empty map via
+    /// `#[serde(default)]`, i.e. "no per-agent narrowing recorded" -- the
+    /// same pre-existing behavior every such session already has today. Both
+    /// directions are therefore forward- AND backward-compatible by
+    /// construction of the type this field reuses, not by anything new this
+    /// field adds.
+    ///
+    /// **Not itself trusted at resume time.** Unlike [`Self::root`] (a
+    /// single value this crate's own containment check can re-verify
+    /// against nothing but itself), whether a persisted key here is still
+    /// meaningful depends on EXTERNAL, mutable state -- which plugins are
+    /// currently installed and which keys they currently declare narrowable
+    /// (`Plugin::narrowable_keys` can shrink or vanish entirely between the
+    /// process that wrote this header and the process that resumes it).
+    /// `conway_runtime::runtime::root::Runtime::resume_root` re-applies
+    /// [`PluginConfig::narrow`] -- the SAME function `conway_runtime::
+    /// subagent`'s `SubagentHost::start` validated this value with
+    /// originally -- against the CURRENT plugin set's narrowing rules before
+    /// trusting it, and refuses to resume outright (a typed
+    /// `RuntimeError::InvalidSpec`, never a silent drop and never a silent
+    /// unconfined fallback) when a key can no longer be validated. See that
+    /// method's own doc for the full re-validation contract and the
+    /// disclosed reasoning for "refuse to resume" over the other two
+    /// candidate outcomes.
+    ///
+    /// `#[serde(default)]` keeps old data readable, mirroring [`Self::root`]
+    /// exactly: a header written before this field existed decodes as the
+    /// empty map -- "no per-agent plugin narrowing" -- the correct reading
+    /// of pre-existing data, which never had this mechanism at all.
+    #[serde(default)]
+    pub plugin_config: PluginConfig,
 }
 
 /// Filter for session listing.
@@ -348,6 +409,7 @@ mod tests {
             ephemeral: false,
             ask_origin: None,
             root: None,
+            plugin_config: PluginConfig::default(),
         };
         let records: Vec<(LogRecord, &str)> = vec![
             (LogRecord::Header(meta.clone()), "header"),
@@ -497,6 +559,7 @@ mod tests {
             ephemeral: false,
             ask_origin: None,
             root: None,
+            plugin_config: PluginConfig::default(),
         };
         let record = LogRecord::Header(meta.clone());
         assert_eq!(record.seq(), None);
@@ -578,6 +641,7 @@ mod tests {
             ephemeral: true,
             ask_origin: None,
             root: None,
+            plugin_config: PluginConfig::default(),
         };
         let value = serde_json::to_value(LogRecord::Header(meta.clone())).unwrap();
         assert_eq!(value["ephemeral"], true);
@@ -623,6 +687,7 @@ mod tests {
                 ephemeral: true,
                 ask_origin: Some(origin),
                 root: None,
+                plugin_config: PluginConfig::default(),
             };
             let value = serde_json::to_value(LogRecord::Header(meta.clone())).unwrap();
             let back: LogRecord = serde_json::from_value(value).unwrap();
@@ -673,6 +738,7 @@ mod tests {
             ephemeral: false,
             ask_origin: None,
             root: Some(PathBuf::from("/tmp/scoped")),
+            plugin_config: PluginConfig::default(),
         };
         let value = serde_json::to_value(LogRecord::Header(meta.clone())).unwrap();
         assert_eq!(value["root"], "/tmp/scoped");
@@ -697,6 +763,96 @@ mod tests {
         let record: LogRecord = serde_json::from_str(&header).unwrap();
         match record {
             LogRecord::Header(meta) => assert_eq!(meta.root, None),
+            other => panic!("expected Header, got {other:?}"),
+        }
+    }
+
+    /// (S1.5 resume gap) `SessionMeta::plugin_config` round-trips through the
+    /// header line -- the property a resumed session's per-agent narrowing
+    /// depends on, mirrors `session_meta_root_round_trips` exactly.
+    #[test]
+    fn session_meta_plugin_config_round_trips() {
+        let mut values = serde_json::Map::new();
+        values.insert(
+            "conway.fs.root".to_string(),
+            serde_json::json!("/tmp/scoped"),
+        );
+        let meta = SessionMeta {
+            id: SessionId::new(),
+            agent_id: AgentId::new(),
+            origin: None,
+            agent_def: None,
+            role: None,
+            created: ts(),
+            cwd: PathBuf::from("/tmp/scoped"),
+            labels: vec![],
+            ephemeral: false,
+            ask_origin: None,
+            root: None,
+            plugin_config: PluginConfig {
+                values: values.clone(),
+            },
+        };
+        let value = serde_json::to_value(LogRecord::Header(meta.clone())).unwrap();
+        // `PluginConfig` has no `#[serde(transparent)]` -- it round-trips as
+        // a one-field struct, `{"values": {...}}`, not a bare map. Asserted
+        // explicitly here since it is easy to assume otherwise (the type IS
+        // conceptually an open map -- see `SessionMeta::plugin_config`'s own
+        // doc -- but that openness is about `values`' own KEYS being
+        // unconstrained, not about `PluginConfig` itself lacking a wrapper).
+        assert_eq!(
+            value["plugin_config"]["values"]["conway.fs.root"],
+            "/tmp/scoped"
+        );
+        let back: LogRecord = serde_json::from_value(value).unwrap();
+        match back {
+            LogRecord::Header(decoded) => assert_eq!(decoded, meta),
+            other => panic!("expected Header, got {other:?}"),
+        }
+    }
+
+    /// (S1.5 resume gap) A header written before `plugin_config` existed
+    /// still reads (no `plugin_config` key at all) -- decodes as the empty
+    /// map, "no per-agent narrowing recorded" -- the same pre-existing
+    /// behavior every such session already has today. Mirrors
+    /// `session_meta_root_defaults_none_when_absent_from_wire`.
+    #[test]
+    fn session_meta_plugin_config_defaults_empty_when_absent_from_wire() {
+        let sid = SessionId::new();
+        let agent = AgentId::new();
+        let header = format!(
+            r#"{{"kind":"header","session":"{sid}","agent":"{agent}","created":"2026-07-20T00:00:00Z","origin":null,"agent_def":null,"role":null,"cwd":"/tmp/p","status":"active"}}"#
+        );
+        let record: LogRecord = serde_json::from_str(&header).unwrap();
+        match record {
+            LogRecord::Header(meta) => {
+                assert!(meta.plugin_config.values.is_empty())
+            }
+            other => panic!("expected Header, got {other:?}"),
+        }
+    }
+
+    /// A NEWER `conway` reading an OLDER log with an unfamiliar plugin key
+    /// in `plugin_config` (written by a plugin this reader does not itself
+    /// have installed) must carry it through unmodified rather than reject
+    /// the line -- see [`SessionMeta::plugin_config`]'s own doc for why this
+    /// holds by construction of the type ([`PluginConfig`] is an open
+    /// `serde_json::Map`, not a fixed-field struct).
+    #[test]
+    fn session_meta_plugin_config_carries_forward_an_unfamiliar_key_unmodified() {
+        let sid = SessionId::new();
+        let agent = AgentId::new();
+        let header = format!(
+            r#"{{"kind":"header","session":"{sid}","agent":"{agent}","created":"2026-07-20T00:00:00Z","origin":null,"agent_def":null,"role":null,"cwd":"/tmp/p","status":"active","plugin_config":{{"values":{{"acme.unknown.key":{{"nested":[1,2,3]}}}}}}}}"#
+        );
+        let record: LogRecord = serde_json::from_str(&header).unwrap();
+        match record {
+            LogRecord::Header(meta) => {
+                assert_eq!(
+                    meta.plugin_config.values.get("acme.unknown.key"),
+                    Some(&serde_json::json!({"nested": [1, 2, 3]}))
+                );
+            }
             other => panic!("expected Header, got {other:?}"),
         }
     }

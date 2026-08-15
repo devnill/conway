@@ -496,6 +496,7 @@ async fn transcript_resolves_the_effective_ancestry_of_a_forked_fixture() {
         ephemeral: false,
         ask_origin: None,
         root: None,
+        plugin_config: conway_core::ports::PluginConfig::default(),
     };
     store
         .fork(&handle.id(), fork_at, child_meta)
@@ -593,6 +594,7 @@ async fn transcript_resolves_a_grandchild_fork_three_generations_deep() {
                 ephemeral: false,
                 ask_origin: None,
                 root: None,
+                plugin_config: conway_core::ports::PluginConfig::default(),
             },
         )
         .await
@@ -634,6 +636,7 @@ async fn transcript_resolves_a_grandchild_fork_three_generations_deep() {
                 ephemeral: false,
                 ask_origin: None,
                 root: None,
+                plugin_config: conway_core::ports::PluginConfig::default(),
             },
         )
         .await

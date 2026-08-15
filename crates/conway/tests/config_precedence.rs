@@ -217,7 +217,7 @@ fn five_source_precedence_across_representative_keys() {
         ..opts(support::isolated_env(), CliOverrides::default())
     })
     .unwrap();
-    assert_eq!(outcome.config.default_role.as_str(), "coder");
+    assert_eq!(outcome.config.default_role.as_str(), "default");
     assert_eq!(outcome.config.limits.max_steps, 40);
     assert_eq!(outcome.config.permissions.mode, PermissionMode::Prompt);
     assert!(!outcome.config.backends.contains_key("anthropic"));
@@ -226,7 +226,12 @@ fn five_source_precedence_across_representative_keys() {
 #[test]
 fn env_var_mapping_reads_known_vars_and_ignores_unknown_ones() {
     let mut env = support::isolated_env();
-    env.insert("CONWAY_DEFAULT_ROLE".to_string(), "coder".to_string());
+    // "default" (not an arbitrary alias): with no project/XDG source, the
+    // merged `[roles]` table is only the baked-in default's own
+    // `roles.default` (`config::merge::default_document`) -- naming any
+    // other alias here would fail the "`default_role` exists in `[roles]`"
+    // validation check for reasons unrelated to what this test proves.
+    env.insert("CONWAY_DEFAULT_ROLE".to_string(), "default".to_string());
     env.insert(
         "CONWAY_BACKENDS__ANTHROPIC__API_KEY".to_string(),
         "sk-ant-api03-abc".to_string(),
@@ -250,7 +255,7 @@ fn env_var_mapping_reads_known_vars_and_ignores_unknown_ones() {
     })
     .expect("unknown CONWAY_* vars must not cause an error");
 
-    assert_eq!(outcome.config.default_role.as_str(), "coder");
+    assert_eq!(outcome.config.default_role.as_str(), "default");
     assert_eq!(
         outcome.config.backends["anthropic"].api_key,
         "sk-ant-api03-abc"
