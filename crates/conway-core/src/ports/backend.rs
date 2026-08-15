@@ -325,9 +325,13 @@ pub struct BackendBuildContext {
     /// A path may not exist on disk -- a kind that cares (like
     /// `conway_plugin_backends`'s own `ProfileStore::merge_file`) treats a
     /// missing file as "contributes nothing," never an error. A kind with no
-    /// "dialect"/"profile" concept at all (e.g. `"anthropic"`) simply never
-    /// reads this field, the same way it is free to ignore
-    /// [`Self::dialect`] itself.
+    /// "dialect"/"profile" concept at all simply never reads this field, the
+    /// same way it is free to ignore [`Self::dialect`] itself. `"anthropic"`
+    /// was this doc's example of that case until board item
+    /// 01KZVZ38HH7CKFHDCG1CWEX2CG lifted profile resolution to one
+    /// kind-agnostic facility and taught it to resolve an optional `dialect`
+    /// against these same paths -- so it is no longer an instance, and is no
+    /// longer cited as one.
     pub profile_file_paths: Vec<PathBuf>,
     /// Every key `[backends.<id>]`'s entry carried beyond `kind` and the
     /// five typed fields above -- the facade's own `BackendEntry::extra`
