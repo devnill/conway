@@ -24,14 +24,60 @@
 //! toggle does not scale as more display preferences are added. `parse`
 //! returns the ordinary "unknown command" [`ParseError`] for `/thinking`/
 //! `/timestamps` now, the same as any other retired command name.
+//!
+//! ## `/settings`, `/trust`, `/agents`, `/ask` are ordinary commands now
+//! (board item `01KZVZ5XV162XCQR96AQKCCCF7`)
+//!
+//! All four used to be intercepted in `app.rs::submit` by direct string
+//! comparison, before [`parse`] ever ran -- see T9
+//! (`crates/conway/tests/architecture_invariants.rs`). Each is now a
+//! first-class [`SlashCommand`] variant, parsed here like any other command,
+//! so `submit` calls [`parse`] exactly once and every command -- modal or
+//! not -- is dispatched from its result. Concretely, this closes the "the
+//! parser cannot express a command that takes over the surface or refreshes
+//! state before rendering" gap the item's own spec asked to be checked
+//! first:
+//!
+//! - [`SlashCommand::Agents`] toggles the `/agents` tree view -- a pure
+//!   `AppState` flip, [`execute`]'s simplest arm.
+//! - [`SlashCommand::Trust`] installs the operator's project permissions
+//!   file (D4 §5/§9: an explicit action, never automatic) through the new
+//!   [`Host::trust_permission_file`] -- routed through the SAME `Host` seam
+//!   as every other facade call, so it is unit-testable against
+//!   `tests::FakeHost` like `/steer`/`/fork`/etc.
+//! - [`SlashCommand::Ask`] opens the B5 modal-ask flow. `execute` cannot
+//!   itself spawn the async task that forks the ephemeral child and drains
+//!   its turn (that needs the live `SessionHandle` plus `App`'s own
+//!   `modal_ask_tx`, neither of which `Host` exposes) -- it validates
+//!   (empty question, already-in-flight) and, on success, sets
+//!   `state.ask_in_flight` and returns [`Effect::RunModalAsk`], mirroring
+//!   [`Effect::RunPluginCommand`]'s own shape exactly: the caller
+//!   (`App::submit`, via `App::spawn_modal_ask`) does the actual spawn. A
+//!   second modal command can be added the SAME way -- a new `SlashCommand`
+//!   variant, an `execute` arm that validates and returns a new `Effect::Run*`
+//!   variant, and one new arm in `submit`'s existing `Effect` match -- with
+//!   no new pre-parser interception and no change to `parse`'s dispatch
+//!   shape.
+//! - [`SlashCommand::Settings`] is the one case that stays partly outside
+//!   `execute`: it refreshes eight `Conway`-backed mirrors (`permission_
+//!   grants`, `structured_allow_rules`, `permission_mode`, `permission_
+//!   denies`, `permission_prompts`, `structured_deny_rules`, `structured_
+//!   prompt_rules`, `hook_rules`) so the settings menu builder stays a pure
+//!   function of `AppState` -- see `app.rs::submit`'s own doc for exactly
+//!   where that refresh now lives and why moving it into `execute` would
+//!   break `tests::settings_opens_the_menu`'s existing "a pure `AppState`
+//!   flip, no facade call at all" assertion, which this item must leave
+//!   passing unedited. `execute`'s own `SlashCommand::Settings` arm is
+//!   UNCHANGED: still exactly `state.open_settings(); Effect::None`.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use conway::plugin::{Command, CommandCtx};
 use conway::{
-    AgentId, AgentIntent, ContextReport, Conway, Event, ForkSpec, ModelRef, Provenance,
-    RoutingReason, SessionHandle, SessionId, SpawnSpec, SubagentMode, ToolSelector, Usage,
+    AgentId, AgentIntent, ContextReport, Conway, Event, ForkSpec, ModelRef, PermissionScope,
+    Provenance, RoutingReason, SessionHandle, SessionId, SpawnSpec, SubagentMode, ToolSelector,
+    TrustPermissionReport, Usage,
 };
 
 use super::state::{
@@ -89,6 +135,26 @@ pub enum SlashCommand {
     /// exactly: a pure `AppState` flag flip, no facade call, no transcript
     /// mutation.
     Settings,
+    /// `/trust permissions` (board item `01KZVZ5XV162XCQR96AQKCCCF7`,
+    /// formerly intercepted in `app.rs::submit`): trusts the project-scoped
+    /// permissions file (`AppState::permission_paths`' first entry) and
+    /// installs its current allow rules for this session. `parse` accepts
+    /// only the bare form or the literal `permissions` argument -- anything
+    /// else is a [`ParseError`] naming `usage: /trust permissions`, exactly
+    /// the notice text the old interception pushed by hand.
+    Trust,
+    /// `/agents` (formerly intercepted in `app.rs::submit`): toggles the
+    /// `/agents` tree view. Takes no arguments -- `parse` rejects anything
+    /// else with `usage: /agents (no arguments)`.
+    Agents,
+    /// `/ask <text>` (B5, formerly intercepted in `app.rs::submit`): opens
+    /// the single-question modal-ask flow. `question` is required by
+    /// `parse` (`usage: /ask <text>` on empty); the OTHER failure mode --
+    /// an ask already in flight -- can only be known at `execute` time
+    /// (`AppState::ask_in_flight`), so it is checked there, not here.
+    Ask {
+        question: String,
+    },
     Quit,
     /// A plugin-declared command:
     /// `full_name` is the command word with its leading `/` AND leading
@@ -170,6 +236,28 @@ pub fn parse(input: &str) -> Result<SlashCommand, ParseError> {
         "/settings" => {
             parse_no_arg(rest, "/settings")?;
             Ok(SlashCommand::Settings)
+        }
+        "/trust" => {
+            // Accepts the bare form or the one literal argument
+            // `permissions` -- exactly the form the old `app.rs::submit`
+            // interception checked by hand (`arg.is_empty() || arg ==
+            // "permissions"`), so this `ParseError`'s text becomes the
+            // IDENTICAL `Entry::Notice` the removed interception used to
+            // push directly, once it reaches `submit`'s shared `Err(e)` arm.
+            let arg = rest.trim();
+            if arg.is_empty() || arg == "permissions" {
+                Ok(SlashCommand::Trust)
+            } else {
+                Err(ParseError("usage: /trust permissions".to_string()))
+            }
+        }
+        "/agents" => {
+            parse_no_arg(rest, "/agents")?;
+            Ok(SlashCommand::Agents)
+        }
+        "/ask" => {
+            let question = parse_one_arg(rest, "/ask <text>")?;
+            Ok(SlashCommand::Ask { question })
         }
         "/quit" | "/exit" => {
             parse_no_arg(rest, word)?;
@@ -406,6 +494,16 @@ pub enum Effect {
     /// awaits `execute` -- see `commands::tests::
     /// execute_never_awaits_a_hanging_plugin_command` for the direct proof.
     RunPluginCommand(PluginCommandInvocation),
+    /// `/ask <question>` (B5) validated -- `state.ask_in_flight` is already
+    /// set. **`execute` never spawns the task itself** -- the same reasoning
+    /// as [`Self::RunPluginCommand`]'s own doc: forking the ephemeral child
+    /// and draining its turn needs the live `SessionHandle` and `App`'s own
+    /// `modal_ask_tx`, neither of which `Host`/`execute` has, and running it
+    /// here would be exactly the kind of long-lived async work `execute`
+    /// must never itself await (mirrors the hang-safety property that
+    /// doc names). The caller (`App::submit`, via `App::spawn_modal_ask`)
+    /// does the actual `tokio::spawn`.
+    RunModalAsk { question: String },
 }
 
 /// What [`Effect::RunPluginCommand`] carries: the resolved command object,
@@ -483,6 +581,25 @@ pub trait Host {
         default_recipe: SubagentMode,
         text: &str,
     ) -> conway::Result<AgentIntent>;
+
+    /// `/trust permissions` (board item `01KZVZ5XV162XCQR96AQKCCCF7`): a
+    /// thin passthrough to `Conway::trust_permission_file`, reached through
+    /// this trait like every other facade call so `execute`'s
+    /// `SlashCommand::Trust` arm is unit-testable against a fake. Returns
+    /// `std::io::Result`, NOT `conway::Result` -- deliberately: `Conway::
+    /// trust_permission_file`'s own signature already returns `std::io::
+    /// Result`, and converting through `conway::ConwayError::Io` would
+    /// prepend that variant's `"io error: "` `Display` prefix onto every
+    /// message the old `app.rs::submit` interception used to show verbatim
+    /// (e.g. the unrecognized-top-level-key case's own message), which
+    /// would be an observable wording regression this item's "must not
+    /// regress" acceptance forbids.
+    async fn trust_permission_file(
+        &self,
+        path: &std::path::Path,
+        scope: PermissionScope,
+        granting_agent: AgentId,
+    ) -> std::io::Result<TrustPermissionReport>;
 
     /// Resolves a plugin command's full name (e.g. `"acme.greet"`, the same
     /// string [`SlashCommand::Plugin::full_name`] carries) against the
@@ -568,6 +685,20 @@ impl Host for LiveHost<'_> {
         self.conway
             .classify_agent_intent(parent, default_recipe, text)
             .await
+    }
+
+    async fn trust_permission_file(
+        &self,
+        path: &std::path::Path,
+        scope: PermissionScope,
+        granting_agent: AgentId,
+    ) -> std::io::Result<TrustPermissionReport> {
+        // Collected fresh per call, exactly like the old `app.rs::submit`
+        // interception did -- `Conway::trust_permission_file`'s own
+        // `TrustStore::trust` reads `env` for XDG resolution.
+        let env_vars: HashMap<String, String> = std::env::vars().collect();
+        self.conway
+            .trust_permission_file(&env_vars, path, scope, granting_agent)
     }
 
     fn resolve_command(&self, full_name: &str) -> Option<Arc<dyn Command>> {
@@ -1119,6 +1250,97 @@ pub async fn execute<H: Host>(cmd: SlashCommand, state: &mut AppState, host: &H)
             state.open_settings();
             Effect::None
         }
+        // Formerly intercepted in `app.rs::submit` (board item
+        // `01KZVZ5XV162XCQR96AQKCCCF7`) -- see this module's own doc for
+        // why. `parse` already rejected any argument other than the bare
+        // form or `permissions`, so the only remaining case here is
+        // "nothing to trust".
+        SlashCommand::Trust => {
+            match state.permission_paths.first().cloned() {
+                None => {
+                    notice(state, "no project permissions file is configured to trust");
+                }
+                Some(path) => {
+                    let root_agent = state.root_agent();
+                    match host
+                        .trust_permission_file(&path, PermissionScope::Session, root_agent)
+                        .await
+                    {
+                        Ok(report) => {
+                            // B3: surface each registration error through
+                            // the SAME `Entry::Error { fatal: false }`
+                            // channel `load_permission_files`'s own
+                            // `registration_errors` uses.
+                            for err in report.registration_errors {
+                                state.transcript.push(Entry::Error {
+                                    text: format!(
+                                        "permission rule not installed: {} -- {}",
+                                        err.rule.describe(),
+                                        err.reason.describe()
+                                    ),
+                                    fatal: false,
+                                });
+                            }
+                            // A4: surface each partial-inertness notice
+                            // through the SAME `Entry::Notice` channel
+                            // `load_permission_files`'s own `notices` uses.
+                            for msg in report.notices {
+                                notice(state, msg);
+                            }
+                            notice(
+                                state,
+                                format!(
+                                    "trusted {} -- {} allow rule(s) installed for this \
+                                     session, and will load automatically until its \
+                                     content next changes",
+                                    path.display(),
+                                    report.installed
+                                ),
+                            );
+                        }
+                        Err(e) => {
+                            // Any failure here (not merely the "unrecognized
+                            // top-level key" case) is promoted to
+                            // `Entry::Error`, not `Entry::Notice` -- `/trust
+                            // permissions` is an explicit operator action,
+                            // so the operator's belief ("I just trusted this
+                            // file") diverging from reality ("nothing was
+                            // recorded") must never surface at a weaker
+                            // severity than `report.registration_errors`
+                            // does just above.
+                            state.transcript.push(Entry::Error {
+                                text: format!("could not trust {}: {e}", path.display()),
+                                fatal: false,
+                            });
+                        }
+                    }
+                }
+            }
+            Effect::None
+        }
+        // Formerly intercepted in `app.rs::submit` -- see this module's own
+        // doc. A pure `AppState` flip, no facade call, mirroring `/help`'s
+        // own shape.
+        SlashCommand::Agents => {
+            state.toggle_agent_view();
+            Effect::None
+        }
+        // B5, formerly intercepted in `app.rs::submit` -- see this module's
+        // own doc and `Effect::RunModalAsk`'s. `parse` already guarantees
+        // `question` is non-empty; the only validation left for `execute`
+        // is the one check that needs live `AppState`: the single-question
+        // modal is already occupied.
+        SlashCommand::Ask { question } => {
+            if state.ask_in_flight {
+                // B5: one ask at a time, never a pile-up competing for the
+                // one `Mode::AskModal` slot.
+                notice(state, "an /ask is already running -- wait for its answer");
+                Effect::None
+            } else {
+                state.ask_in_flight = true;
+                Effect::RunModalAsk { question }
+            }
+        }
         SlashCommand::Quit => Effect::Quit,
         SlashCommand::Plugin { full_name, args } => match host.resolve_command(&full_name) {
             Some(command) => Effect::RunPluginCommand(PluginCommandInvocation {
@@ -1604,6 +1826,61 @@ mod tests {
         assert!(err.to_string().contains("/settings"));
     }
 
+    // ---------------------------------------------------------------
+    // /trust, /agents, /ask (board item `01KZVZ5XV162XCQR96AQKCCCF7`):
+    // formerly intercepted in `app.rs::submit` by direct string comparison,
+    // now parsed here like any other command -- see this module's own doc.
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn bare_trust_parses() {
+        assert_eq!(parse("/trust"), Ok(SlashCommand::Trust));
+    }
+
+    #[test]
+    fn trust_permissions_parses() {
+        assert_eq!(parse("/trust permissions"), Ok(SlashCommand::Trust));
+    }
+
+    /// The exact wording the OLD `app.rs::submit` interception pushed as an
+    /// `Entry::Notice` by hand -- now a `ParseError` whose `Display`
+    /// produces the identical text, so `submit`'s shared `Err(e)` arm
+    /// reproduces it with no special case.
+    #[test]
+    fn trust_with_an_unrecognized_argument_is_a_parse_error_naming_the_usage() {
+        let err = parse("/trust nope").unwrap_err();
+        assert_eq!(err.to_string(), "usage: /trust permissions");
+    }
+
+    #[test]
+    fn agents_parses() {
+        assert_eq!(parse("/agents"), Ok(SlashCommand::Agents));
+    }
+
+    /// The exact wording the OLD interception pushed by hand.
+    #[test]
+    fn agents_with_an_argument_is_a_parse_error_naming_the_usage() {
+        let err = parse("/agents foo").unwrap_err();
+        assert_eq!(err.to_string(), "usage: /agents (no arguments)");
+    }
+
+    #[test]
+    fn ask_parses_with_the_question_as_a_single_field() {
+        assert_eq!(
+            parse("/ask is this safe to merge?"),
+            Ok(SlashCommand::Ask {
+                question: "is this safe to merge?".to_string(),
+            })
+        );
+    }
+
+    /// The exact wording the OLD interception pushed by hand.
+    #[test]
+    fn ask_with_no_question_is_a_parse_error_naming_the_usage() {
+        let err = parse("/ask").unwrap_err();
+        assert_eq!(err.to_string(), "usage: /ask <text>");
+    }
+
     /// V4 acceptance: `/thinking` and `/timestamps` no longer parse at all
     /// -- they are REMOVED, not aliased to `/settings`, and both were never
     /// reachable through this parser in the first place (they used to be
@@ -1743,6 +2020,12 @@ mod tests {
         /// plain lookup into this map, the same shape `LiveHost::
         /// resolve_command` delegates to `CommandRegistry::resolve`.
         plugin_commands: HashMap<String, Arc<dyn Command>>,
+        /// `01KZVZ5XV162XCQR96AQKCCCF7`: when `Some`, `trust_permission_file`
+        /// succeeds with this report; otherwise it fails with a fixed
+        /// `std::io::Error` -- lets a `/trust` test exercise both the
+        /// success path (installed rules, notices, registration errors) and
+        /// the failure path (`Entry::Error`, not `Entry::Notice`).
+        trust_result: Option<TrustPermissionReport>,
     }
 
     impl FakeHost {
@@ -1759,6 +2042,7 @@ mod tests {
                 fate_ok: false,
                 classify_intent: None,
                 plugin_commands: HashMap::new(),
+                trust_result: None,
             }
         }
 
@@ -1770,6 +2054,13 @@ mod tests {
         /// `SlashCommand::Plugin` dispatch.
         fn with_plugin_command(mut self, full_name: &str, command: Arc<dyn Command>) -> Self {
             self.plugin_commands.insert(full_name.to_string(), command);
+            self
+        }
+
+        /// Scripts `trust_permission_file` to succeed with `report` -- see
+        /// that field's own doc.
+        fn with_trust_result(mut self, report: TrustPermissionReport) -> Self {
+            self.trust_result = Some(report);
             self
         }
     }
@@ -1877,6 +2168,18 @@ mod tests {
                     message: "fake: intent role unconfigured".to_string(),
                 }),
             }
+        }
+
+        async fn trust_permission_file(
+            &self,
+            _path: &std::path::Path,
+            _scope: PermissionScope,
+            _granting_agent: AgentId,
+        ) -> std::io::Result<TrustPermissionReport> {
+            self.calls.lock().unwrap().push("trust_permission_file");
+            self.trust_result.clone().ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "fake: trust failed")
+            })
         }
 
         fn resolve_command(&self, full_name: &str) -> Option<Arc<dyn Command>> {
@@ -3008,6 +3311,162 @@ mod tests {
         assert!(
             host.calls().is_empty(),
             "no facade call at all -- a pure state flip"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // /trust, /agents, /ask -- the discriminating observable this item
+    // exists to prove: each reaches its handler THROUGH `execute`, driven
+    // off `SlashCommand`, not a pre-parser string comparison.
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn trust_installs_rules_and_records_the_installed_count() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        state.permission_paths = vec![std::path::PathBuf::from("/tmp/permissions.json")];
+        let host = FakeHost::new(root).with_trust_result(TrustPermissionReport {
+            installed: 3,
+            registration_errors: Vec::new(),
+            notices: Vec::new(),
+        });
+
+        let effect = execute(SlashCommand::Trust, &mut state, &host).await;
+
+        assert!(matches!(effect, Effect::None));
+        assert_eq!(host.calls(), vec!["trust_permission_file"]);
+        assert!(
+            state.transcript.iter().any(|e| matches!(
+                e,
+                Entry::Notice { text } if text.contains("trusted") && text.contains("3 allow rule")
+            )),
+            "the installed count must be surfaced: {:?}",
+            state.transcript
+        );
+    }
+
+    /// Nothing configured to trust: a plain notice, and -- the point of
+    /// this test -- NO facade call at all (there is nothing to pass it).
+    #[tokio::test]
+    async fn trust_with_no_permission_paths_configured_is_a_notice_with_no_facade_call() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root); // permission_paths starts empty
+        let host = FakeHost::new(root);
+
+        let effect = execute(SlashCommand::Trust, &mut state, &host).await;
+
+        assert!(matches!(effect, Effect::None));
+        assert!(
+            host.calls().is_empty(),
+            "nothing to trust -- trust_permission_file must never be called"
+        );
+        assert!(
+            state.transcript.iter().any(|e| matches!(
+                e,
+                Entry::Notice { text } if text.contains("no project permissions file")
+            )),
+            "{:?}",
+            state.transcript
+        );
+    }
+
+    /// A facade failure is promoted to `Entry::Error`, never `Entry::Notice`
+    /// -- `/trust permissions` is an explicit operator action, so a failure
+    /// to do what it says must never be camouflaged as a routine notice
+    /// (mirrors `Conway::trust_permission_file`'s own doc).
+    #[tokio::test]
+    async fn trust_facade_failure_is_an_error_entry_not_a_notice() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        state.permission_paths = vec![std::path::PathBuf::from("/tmp/permissions.json")];
+        let host = FakeHost::new(root); // trust_result: None -> fake io::Error
+
+        let effect = execute(SlashCommand::Trust, &mut state, &host).await;
+
+        assert!(matches!(effect, Effect::None));
+        assert!(
+            state.transcript.iter().any(|e| matches!(
+                e,
+                Entry::Error { text, fatal: false } if text.contains("could not trust")
+            )),
+            "a facade failure must be an Entry::Error, not a Notice: {:?}",
+            state.transcript
+        );
+    }
+
+    #[tokio::test]
+    async fn agents_toggles_the_tree_view_with_no_facade_call() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let host = FakeHost::new(root);
+        assert!(!state.agent_view_open);
+
+        let effect = execute(SlashCommand::Agents, &mut state, &host).await;
+
+        assert!(state.agent_view_open, "/agents must open the tree view");
+        assert!(matches!(effect, Effect::None));
+        assert!(
+            host.calls().is_empty(),
+            "no facade call at all -- a pure state flip, mirroring /settings"
+        );
+    }
+
+    /// The discriminating observable for `/ask`: `execute` sets
+    /// `ask_in_flight` and hands the caller `Effect::RunModalAsk` to spawn
+    /// -- it never spawns anything itself (see that effect's own doc).
+    #[tokio::test]
+    async fn ask_sets_ask_in_flight_and_returns_run_modal_ask() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        let host = FakeHost::new(root);
+        assert!(!state.ask_in_flight);
+
+        let effect = execute(
+            SlashCommand::Ask {
+                question: "is this safe?".to_string(),
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+
+        assert!(state.ask_in_flight);
+        match effect {
+            Effect::RunModalAsk { question } => assert_eq!(question, "is this safe?"),
+            _ => panic!("expected Effect::RunModalAsk, got a different effect"),
+        }
+        assert!(
+            host.calls().is_empty(),
+            "no facade call -- forking the child is the CALLER's job (see Effect::RunModalAsk)"
+        );
+    }
+
+    /// B5: one ask at a time -- a second `/ask` while one is already in
+    /// flight is a notice, never a second `Effect::RunModalAsk`.
+    #[tokio::test]
+    async fn ask_while_already_in_flight_is_a_notice_with_no_effect() {
+        let root = AgentId::new();
+        let mut state = AppState::new(root);
+        state.ask_in_flight = true;
+        let host = FakeHost::new(root);
+
+        let effect = execute(
+            SlashCommand::Ask {
+                question: "another one?".to_string(),
+            },
+            &mut state,
+            &host,
+        )
+        .await;
+
+        assert!(matches!(effect, Effect::None));
+        assert!(
+            state.transcript.iter().any(|e| matches!(
+                e,
+                Entry::Notice { text } if text.contains("already running")
+            )),
+            "{:?}",
+            state.transcript
         );
     }
 

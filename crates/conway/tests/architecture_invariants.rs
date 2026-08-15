@@ -465,23 +465,30 @@ fn t8_router_authoring_exception_is_intact_and_deliberate() {
 
 // ------------------------------------------------------------------- T9 ----
 
-/// **T9: one command-dispatch path per surface. FALSE TODAY.**
+/// **T9: one command-dispatch path per surface. TRUE as of board item
+/// `01KZVZ5XV162XCQR96AQKCCCF7`.**
 ///
-/// The TUI intercepts slash commands with direct string comparison before
-/// `commands::parse` ever runs. Stage 5c
-/// collapses this to one parser-generated path.
+/// The TUI used to intercept `/settings`, `/trust`, `/agents`, `/ask` with
+/// direct string comparison in `app.rs::submit`, before `commands::parse`
+/// ever ran. All four are now ordinary `commands::SlashCommand` variants,
+/// dispatched through the SAME single `commands::parse` -> `commands::
+/// execute` call every other command already used -- see `app.rs::submit`'s
+/// own doc for the one remaining piece of housekeeping (`/settings`'s
+/// pre-render state refresh) that still runs outside `commands::execute`,
+/// and why that does not reopen this guard.
 ///
-/// **The count is FOUR, not two.** The architecture review, and this guard's
-/// own, both said two -- `/ask` and `/agents` -- because that is
-/// what `submit`'s doc comment names ("`/ask` and `/agents` are intercepted
-/// HERE, before `commands::parse` ever sees them"). `/settings` and `/trust`
-/// are intercepted the same way and the doc mentions neither. Corrected here
-/// by measurement: the doc is itself a declaration that undercounts the
-/// behaviour it describes.
+/// **The count WAS four, not two.** The architecture review, and this
+/// guard's own original text, both said two -- `/ask` and `/agents` --
+/// because that is what `submit`'s doc comment named at the time.
+/// `/settings` and `/trust` were intercepted the same way and the doc
+/// mentioned neither; that undercount was itself an instance of the defect
+/// class this item closed.
 ///
-/// Pinned as: exactly four. Fails on a fifth -- which is the realistic way
-/// this gets worse, since each new modal command is easiest to add right
-/// beside the existing four.
+/// Pinned as: **empty**. A regression that reintroduces even ONE direct
+/// `if text.trim() == "/..."` check ahead of `commands::parse` fails this
+/// guard immediately -- the realistic way this gets worse, since a new
+/// modal or state-refreshing command is easiest to add as "just one more
+/// special case" beside wherever the last one landed.
 #[test]
 fn t9_tui_has_exactly_the_four_known_parser_bypasses() {
     let app = read("crates/conway-cli/src/tui/app.rs");
@@ -497,14 +504,12 @@ fn t9_tui_has_exactly_the_four_known_parser_bypasses() {
 
     assert_eq!(
         bypasses,
-        set(&["/agents", "/ask", "/settings", "/trust"]),
-        "T9 CHANGED: the TUI's pre-parser command interceptions are no longer \
-         exactly {{/agents, /ask, /settings, /trust}}; found {bypasses:?}.\n\
-         If one was ADDED, that is the regression this guard exists for: a \
-         fifth command that never reaches `commands::parse` gets none of the \
-         parser's validation, completion or help, and Stage 5c has one more \
-         case to absorb. If the set SHRANK because Stage 5c landed, this guard has done its job: \
-         assert emptiness and turn T9 on for real.\n\
-         Note the doc comment on `submit` names only two of these four."
+        BTreeSet::new(),
+        "T9 CHANGED: the TUI has a pre-parser command interception again -- \
+         found {bypasses:?}. Every slash command must reach its handler \
+         THROUGH `commands::parse`; a direct `if text.trim() == \"/...\"` \
+         check in `app.rs::submit` bypasses it entirely, gets none of the \
+         parser's validation, completion or help, and is exactly the defect \
+         class board item `01KZVZ5XV162XCQR96AQKCCCF7` removed."
     );
 }

@@ -601,6 +601,16 @@ impl App {
                                         Effect::RunPluginCommand(invocation) => {
                                             self.spawn_plugin_command(invocation);
                                         }
+                                        // Structurally unreachable from THIS
+                                        // call site for the same reason
+                                        // `RunPluginCommand` just above is:
+                                        // `execute_intent_confirm` only ever
+                                        // returns `None`/`FocusNewSession`.
+                                        // Handled correctly anyway, mirroring
+                                        // `RunPluginCommand`'s own comment.
+                                        Effect::RunModalAsk { question } => {
+                                            self.spawn_modal_ask(question);
+                                        }
                                     }
                                 }
                                 Action::CtrlC => {

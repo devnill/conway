@@ -21,20 +21,21 @@
 //! so this split is purely organizational: `App` is exactly the same type,
 //! with exactly the same fields and methods, as before it moved.
 //!
-//! **`submit` stays in THIS file, not a submodule, and that is deliberate.**
-//! Four commands are intercepted by direct string comparison here, before
-//! `commands::parse` ever runs -- see `submit`'s own doc. That is a known
-//! structural defect (open item `01KZVZ5XV162XCQR96AQKCCCF7`, out of scope
-//! for this behaviour-preserving split), and T9
+//! **`submit` stays in THIS file, not a submodule.** It is `App`'s single
+//! dispatch entry point, alongside the fields every seam shares, and it is
+//! genuinely small now (board item `01KZVZ5XV162XCQR96AQKCCCF7`): `/settings`,
+//! `/trust`, `/agents` and `/ask` used to be intercepted here by direct
+//! string comparison, each running BEFORE `commands::parse` ever saw the
+//! input -- a known structural defect T9
 //! (`crates/conway/tests/architecture_invariants.rs`'s
-//! `t9_tui_has_exactly_the_four_known_parser_bypasses`) asserts exactly
-//! those four by grepping THIS file's own source text. Moving `submit` to a
-//! submodule would silently break that guard without changing anything it
-//! is meant to catch, so the four interceptions -- and the whole of
-//! `submit`, since splitting a single match arm out of its own function
-//! would be its own kind of confusion -- stay here. The item that
-//! eventually collapses them (Stage 5c) now has a smaller file to work in:
-//! this one, ~450 lines instead of 3,492.
+//! `t9_tui_has_exactly_the_four_known_parser_bypasses`) used to pin at
+//! exactly those four by grepping this file's own source text. All four are
+//! now ordinary `commands::SlashCommand` variants, reached through the SAME
+//! single `commands::parse` + `commands::execute` call every other command
+//! already used -- see `submit`'s own doc for the one remaining piece of
+//! housekeeping (`/settings`' state refresh) that still lives here rather
+//! than in `commands::execute`, and why. T9 now asserts there are ZERO such
+//! interceptions left, and fails the moment one reappears.
 
 use tokio::sync::mpsc;
 
@@ -146,20 +147,52 @@ impl App {
     /// sent to the model (module notes' binding requirement, carried from
     /// the stub).
     ///
-    /// **Four commands are intercepted HERE, before `commands::parse` ever
-    /// sees them: `/settings`, `/trust`, `/agents`, `/ask`.** `commands.rs`
-    /// is out of this item's file scope, so its `SlashCommand`/`parse`/
-    /// `execute` are left untouched, and all four are handled entirely
-    /// within this in-scope method instead. Same invariant as every other
-    /// slash command: none of the four ever reaches `commands::parse` as an
-    /// "unknown command" error, and none is ever sent to the model as a
-    /// prompt. This is a known structural defect, not the intended shape --
-    /// see item `01KZVZ5XV162XCQR96AQKCCCF7` (out of scope here, a
-    /// behaviour change) and T9
-    /// (`crates/conway/tests/architecture_invariants.rs`'s
-    /// `t9_tui_has_exactly_the_four_known_parser_bypasses`), which pins the
-    /// count at exactly four by grepping this file's own source text and
-    /// fails on a fifth.
+    /// **One dispatch path (board item `01KZVZ5XV162XCQR96AQKCCCF7`):**
+    /// `commands::parse` runs exactly once per `/`-prefixed `text`, and
+    /// every command -- `/settings`, `/trust`, `/agents`, `/ask` included --
+    /// is reached from ITS result, never from a raw string comparison ahead
+    /// of it. `/settings`, `/trust` and `/agents` used to be intercepted
+    /// HERE by direct string comparison, before `commands::parse` ever saw
+    /// them; `/ask` too. T9 (`crates/conway/tests/architecture_invariants.
+    /// rs`'s `t9_tui_has_exactly_the_four_known_parser_bypasses`) used to
+    /// pin that count at exactly four and now asserts it is zero.
+    ///
+    /// Two of the four still need a little more than a bare `commands::
+    /// execute` call can give them on its own, both handled in the ONE
+    /// match below, never by a pre-parse special case:
+    /// - **`/settings`** needs its eight `Conway`-backed mirrors
+    ///   (`permission_grants`, `structured_allow_rules`, `permission_mode`,
+    ///   `permission_denies`, `permission_prompts`, `structured_deny_rules`,
+    ///   `structured_prompt_rules`, `hook_rules`) refreshed BEFORE the menu
+    ///   renders, so the menu builder stays a pure function of `AppState`
+    ///   (V2b). That refresh runs here, keyed off the PARSED
+    ///   `commands::SlashCommand::Settings` variant (never off `text`
+    ///   itself), immediately before the shared `commands::execute` call
+    ///   that actually opens the menu -- kept OUT of `commands::execute`
+    ///   itself because `commands.rs::tests::settings_opens_the_menu`
+    ///   already pins `/settings` as "a pure `AppState` flip, no facade call
+    ///   at all", and this item's own acceptance forbids editing that test.
+    /// - **`/ask`** needs a `tokio::spawn`ed task (forking the ephemeral
+    ///   child and draining its turn) that only `App` can start -- it owns
+    ///   the live `SessionHandle` to clone and `modal_ask_tx` to reply on,
+    ///   neither of which `commands::execute`'s `Host` seam exposes.
+    ///   `commands::execute`'s `SlashCommand::Ask` arm does everything it
+    ///   CAN from there (validates, sets `state.ask_in_flight`) and hands
+    ///   back `Effect::RunModalAsk`, handled in the SAME `Effect` match this
+    ///   method already has for `Effect::RunPluginCommand` -- see `Self::
+    ///   spawn_modal_ask`.
+    ///
+    /// `/trust` and `/agents` need neither: both are now ordinary
+    /// `commands::execute` arms (`/trust` through the new `Host::
+    /// trust_permission_file`, `/agents` a pure `AppState` flip), reached
+    /// through the identical `commands::parse` -> `commands::execute` call
+    /// this method already makes for `/steer`, `/fork`, `/spawn`, and every
+    /// other command. `/ask`'s three FATES (fork the child into a real
+    /// session, pull the answer into the transcript, discard it) are
+    /// untouched by this item -- they run through `commands::
+    /// apply_ask_fate`, driven by `Action::AskFate` in `run.rs`, a
+    /// completely separate call site from `submit` that this refactor never
+    /// touches.
     async fn submit(&mut self, text: String) -> conway::Result<SubmitOutcome> {
         // T8: every submitted line (prompt or slash command) is recorded into
         // the history FIFO before dispatch, so a slash command that changes
@@ -177,200 +210,55 @@ impl App {
             let _ = tokio::task::spawn_blocking(move || crate::tui::history::save(&path, &history))
                 .await;
         }
-        // V2b: refresh the grant mirror before `/settings` renders its
-        // review list. The broker is the authority; this copy exists so
-        // the menu builder stays a pure function of `AppState`, and it
-        // would be stale (or empty) if refreshed anywhere else.
-        //
-        // kept as `(rule, origin)`
-        // pairs rather than pre-formatted strings -- `view/settings.rs::
-        // build_tree` both labels each row (`[interactive]`/the
-        // originating file's path, via `origin.describe()`) AND addresses
-        // it for per-rule revocation,
-        // which a bare formatted string could never do.
-        if text.trim() == "/settings" {
-            self.state.permission_grants = self.conway.active_permission_patterns();
-            self.state.structured_allow_rules = self.conway.active_structured_allow_rules();
-            self.state.permission_mode = self.conway.permission_mode();
-            // The read-only deny/prompt review lists refresh on the same
-            // seam. Unlike grants, these never change in-session (deny and
-            // prompt rules install only at file load, from any file,
-            // trusted or not -- there is no interactive path that adds
-            // one), so this refresh exists to keep the menu builder a pure
-            // function of `AppState`, not to track churn.
-            self.state.permission_denies = self.conway.active_deny_permission_patterns();
-            self.state.permission_prompts = self.conway.active_prompt_permission_patterns();
-            self.state.structured_deny_rules = self.conway.active_structured_deny_rules();
-            self.state.structured_prompt_rules = self.conway.active_structured_prompt_rules();
-            // the fourth mirror,
-            // refreshed on the SAME seam as the four above -- see this
-            // block's own doc for why the refresh lives here rather than
-            // anywhere else.
-            self.state.hook_rules = self.conway.active_deny_capable_hook_rules();
-        }
-        // the ONLY path that writes
-        // a trust record -- an explicit operator action, never automatic,
-        // never a side effect of starting a session (D4 §5/§9). Trusts the
-        // project-scoped candidate (`state.permission_paths`' first entry,
-        // the same file `persist_permission_rule` already writes an
-        // interactively-approved grant into) and installs its CURRENT
-        // allow rules immediately, so the effect is visible in this
-        // session rather than only on the next restart.
-        if text.trim() == "/trust" || text.starts_with("/trust ") {
-            let arg = text.strip_prefix("/trust").unwrap_or(&text).trim();
-            if !arg.is_empty() && arg != "permissions" {
-                self.state.transcript.push(Entry::Notice {
-                    text: "usage: /trust permissions".to_string(),
-                });
-                return Ok(SubmitOutcome::Continue);
-            }
-            match self.state.permission_paths.first() {
-                None => {
-                    self.state.transcript.push(Entry::Notice {
-                        text: "no project permissions file is configured to trust".to_string(),
-                    });
-                }
-                Some(path) => {
-                    let env_vars: std::collections::HashMap<String, String> =
-                        std::env::vars().collect();
-                    let root_agent = self.state.root_agent();
-                    match self.conway.trust_permission_file(
-                        &env_vars,
-                        path,
-                        conway::PermissionScope::Session,
-                        root_agent,
-                    ) {
-                        Ok(report) => {
-                            // B3: surface each registration error through the
-                            // SAME `Entry::Error { fatal: false }` channel
-                            // `load_permission_files`'s `registration_errors`
-                            // uses, so it reaches the operator rather than
-                            // being discarded -- a `paths_under` rule the
-                            // broker dropped as uncanonicalizable must not be
-                            // camouflaged as a routine notice.
-                            for err in report.registration_errors {
-                                self.state.transcript.push(Entry::Error {
-                                    text: format!(
-                                        "permission rule not installed: {} -- {}",
-                                        err.rule.describe(),
-                                        err.reason.describe()
-                                    ),
-                                    fatal: false,
-                                });
-                            }
-                            // A4: surface each partial-inertness notice
-                            // (today: a `command_prefix` rule selecting a
-                            // mix of `Structured`- and `ShellCommand`-render
-                            // tools) through the SAME `Entry::Notice`
-                            // channel `load_permission_files`'s `notices`
-                            // uses -- the rule installs (its `ShellCommand`
-                            // members match), but the operator is warned the
-                            // `Structured` members are inert.
-                            for notice in report.notices {
-                                self.state.transcript.push(Entry::Notice { text: notice });
-                            }
-                            self.state.transcript.push(Entry::Notice {
-                                text: format!(
-                                    "trusted {} -- {} allow rule(s) installed for this \
-                                     session, and will load automatically until its \
-                                     content next changes",
-                                    path.display(),
-                                    report.installed
-                                ),
-                            });
-                        }
-                        Err(e) => {
-                            // this
-                            // arm's most consequential case is
-                            // `Conway::trust_permission_file` refusing a
-                            // file that names an unrecognized top-level key
-                            // -- the exact defect the startup loader's own
-                            // `report.parse_errors` -> `Entry::Error`
-                            // branch above exists to make loud. Reporting
-                            // THAT specific case through `Entry::Notice`
-                            // here (as this arm previously did, for every
-                            // `Err`) would surface the identical failure at
-                            // a WEAKER severity depending only on which of
-                            // the two entry points hit it -- exactly the
-                            // inconsistency this item's review found.
-                            //
-                            // Every other `Err` this arm can see (the file
-                            // became unreadable between being listed and
-                            // being trusted; `TrustStore::trust`'s write
-                            // failed) is promoted the same way rather than
-                            // split out: `/trust permissions` is an
-                            // explicit operator action, so ANY failure to
-                            // do what it says on the tin means the
-                            // operator's belief ("I just trusted this
-                            // file") and reality (nothing was recorded)
-                            // have diverged -- the same camouflage risk
-                            // `report.registration_errors` and
-                            // `report.parse_errors` are surfaced through
-                            // `Entry::Error` for just above, not a
-                            // narrower one that would need a case split on
-                            // `e`'s `ErrorKind` to keep the two failure
-                            // classes apart here.
-                            self.state.transcript.push(Entry::Error {
-                                text: format!("could not trust {}: {e}", path.display()),
-                                fatal: false,
-                            });
-                        }
-                    }
-                }
-            }
-            return Ok(SubmitOutcome::Continue);
-        }
-        if text.trim() == "/agents" || text.starts_with("/agents ") {
-            if text.trim() == "/agents" {
-                self.state.toggle_agent_view();
-            } else {
-                self.state.transcript.push(Entry::Notice {
-                    text: "usage: /agents (no arguments)".to_string(),
-                });
-            }
-            return Ok(SubmitOutcome::Continue);
-        }
-        if text.trim() == "/ask" || text.starts_with("/ask ") {
-            let question = text
-                .strip_prefix("/ask")
-                .unwrap_or(&text)
-                .trim()
-                .to_string();
-            if question.is_empty() {
-                self.state.transcript.push(Entry::Notice {
-                    text: "usage: /ask <text>".to_string(),
-                });
-            } else if self.state.ask_in_flight {
-                // B5: the modal is a single-question surface -- one ask at
-                // a time, never a pile-up competing for the one
-                // `Mode::AskModal` slot.
-                self.state.transcript.push(Entry::Notice {
-                    text: "an /ask is already running -- wait for its answer".to_string(),
-                });
-            } else {
-                self.state.ask_in_flight = true;
-                let handle = self.handle.clone();
-                let tx = self.modal_ask_tx.clone();
-                tokio::spawn(async move {
-                    let outcome = ask::run_modal_ask(handle, question).await;
-                    // The receiver only goes away when `App::run`'s loop
-                    // has already exited -- nothing left to notify, so a
-                    // send failure here is silently dropped rather than
-                    // treated as an error.
-                    let _ = tx.send(outcome);
-                });
-            }
-            return Ok(SubmitOutcome::Continue);
-        }
         // V4: `/thinking` and `/timestamps` -- the state-only toggles that
-        // used to be intercepted HERE (mirroring `/agents`'s pattern) --
+        // used to be intercepted HERE (mirroring `/agents`'s old pattern) --
         // are REMOVED, not aliased. Both are now a single `/settings` menu
         // (`view/settings.rs`), reached through the ordinary
-        // `commands::parse`/`execute` path just below like any other
-        // command with no live-facade special-casing need.
+        // `commands::parse`/`execute` path below like any other command.
         if text.starts_with('/') {
             match commands::parse(&text) {
                 Ok(cmd) => {
+                    // V2b: refresh the eight `Conway`-backed settings
+                    // mirrors BEFORE the shared dispatch below runs
+                    // `commands::execute` (which is what actually opens the
+                    // menu) -- see `submit`'s own doc for why this lives
+                    // here, keyed off the PARSED variant, rather than
+                    // inside `commands::execute` itself. The broker is the
+                    // authority; these copies exist so the menu builder
+                    // stays a pure function of `AppState`, and would be
+                    // stale (or empty) if refreshed anywhere else. Kept as
+                    // `(rule, origin)` pairs rather than pre-formatted
+                    // strings -- `view/settings.rs::build_tree` both labels
+                    // each row (`[interactive]`/the originating file's
+                    // path, via `origin.describe()`) AND addresses it for
+                    // per-rule revocation, which a bare formatted string
+                    // could never do.
+                    if matches!(cmd, commands::SlashCommand::Settings) {
+                        self.state.permission_grants = self.conway.active_permission_patterns();
+                        self.state.structured_allow_rules =
+                            self.conway.active_structured_allow_rules();
+                        self.state.permission_mode = self.conway.permission_mode();
+                        // The read-only deny/prompt review lists refresh on
+                        // the same seam. Unlike grants, these never change
+                        // in-session (deny and prompt rules install only at
+                        // file load, from any file, trusted or not -- there
+                        // is no interactive path that adds one), so this
+                        // refresh exists to keep the menu builder a pure
+                        // function of `AppState`, not to track churn.
+                        self.state.permission_denies =
+                            self.conway.active_deny_permission_patterns();
+                        self.state.permission_prompts =
+                            self.conway.active_prompt_permission_patterns();
+                        self.state.structured_deny_rules =
+                            self.conway.active_structured_deny_rules();
+                        self.state.structured_prompt_rules =
+                            self.conway.active_structured_prompt_rules();
+                        // the fourth mirror, refreshed on the SAME seam as
+                        // the four above -- see this block's own doc for
+                        // why the refresh lives here rather than anywhere
+                        // else.
+                        self.state.hook_rules = self.conway.active_deny_capable_hook_rules();
+                    }
                     let host = commands::LiveHost {
                         handle: &self.handle,
                         conway: &self.conway,
@@ -411,6 +299,17 @@ impl App {
                         // hang/panic-isolation mechanism.
                         Effect::RunPluginCommand(invocation) => {
                             self.spawn_plugin_command(invocation);
+                        }
+                        // B5: `execute`'s `SlashCommand::Ask` arm has
+                        // already validated and set `state.ask_in_flight`
+                        // -- THIS is where the actual `tokio::spawn` runs,
+                        // mirroring `RunPluginCommand`'s own arm exactly
+                        // (and for the identical reason: only `App` owns
+                        // the live `SessionHandle`/`modal_ask_tx` this
+                        // needs). See `Effect::RunModalAsk`'s own doc and
+                        // `Self::spawn_modal_ask`'s.
+                        Effect::RunModalAsk { question } => {
+                            self.spawn_modal_ask(question);
                         }
                     }
                 }
@@ -531,7 +430,8 @@ mod tests {
         build_conway_with_echo_backend_over, minimal_cli,
     };
     use super::{App, SubmitOutcome};
-    use crate::tui::state::Entry;
+    use crate::tui::commands;
+    use crate::tui::state::{AskFate, AskModal, Entry, Mode};
 
     /// The `Effect::Resumed` call site's own `refresh_session_head` call
     /// (`Self::submit`, this item): resuming a DIFFERENT, non-empty
@@ -947,5 +847,411 @@ mod tests {
         let text = crate::tui::test_support::render_text(&app.state, 200, 50);
         assert!(text.contains("hooks"), "{text}");
         assert!(text.contains("deny-writes"), "{text}");
+    }
+
+    // ---------------------------------------------------------------
+    // Board item `01KZVZ5XV162XCQR96AQKCCCF7`: `/settings`, `/trust`,
+    // `/agents`, `/ask` collapsed onto the SAME `commands::parse` ->
+    // `commands::execute` dispatch every other command uses. Each command
+    // below gets a MALFORMED-input test: the discriminating observable this
+    // item exists to prove is that a malformed call for ANY of the four
+    // never reaches its handler at all (no state mutation, no facade call)
+    // -- which can only be true if the handler is gated by `commands::
+    // parse`'s own `Result`, not by hand-rolled validation duplicated
+    // ahead of it. "It works" (already covered by this file's own
+    // `untrusted_file_deny_and_prompt_rules_are_visible_in_settings` and
+    // `hook_rules_are_visible_in_settings_scoped_to_deny_capable_events`
+    // for `/settings`, and `commands.rs`'s own `execute()`-level tests for
+    // `/trust`/`/agents`/`/ask`) proves nothing on its own -- all four
+    // worked before this item too, by bypassing the parser entirely.
+    // ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn settings_malformed_input_is_rejected_by_the_parser_before_any_refresh_or_open() {
+        let conway = build_conway_with_echo_backend();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[])
+            .await
+            .expect("App::new should succeed");
+        assert!(!app.state.settings_open);
+
+        let outcome = app
+            .submit("/settings bogus".to_string())
+            .await
+            .expect("submit should not error");
+        assert!(matches!(outcome, SubmitOutcome::Continue));
+
+        assert!(
+            !app.state.settings_open,
+            "a malformed /settings must never reach the handler that opens the menu"
+        );
+        assert!(
+            app.state.transcript.iter().any(|e| matches!(
+                e,
+                Entry::Notice { text } if text == "usage: /settings (no arguments)"
+            )),
+            "{:?}",
+            app.state.transcript
+        );
+    }
+
+    #[tokio::test]
+    async fn agents_reaches_its_handler_through_the_parser_and_toggles_the_tree_view() {
+        let conway = build_conway_with_echo_backend();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[])
+            .await
+            .expect("App::new should succeed");
+        assert!(!app.state.agent_view_open);
+
+        let outcome = app
+            .submit("/agents".to_string())
+            .await
+            .expect("submit should not error");
+        assert!(matches!(outcome, SubmitOutcome::Continue));
+        assert!(
+            app.state.agent_view_open,
+            "/agents must toggle the tree view open"
+        );
+    }
+
+    #[tokio::test]
+    async fn agents_malformed_input_is_rejected_by_the_parser_and_never_toggles() {
+        let conway = build_conway_with_echo_backend();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[])
+            .await
+            .expect("App::new should succeed");
+
+        let outcome = app
+            .submit("/agents foo".to_string())
+            .await
+            .expect("submit should not error");
+        assert!(matches!(outcome, SubmitOutcome::Continue));
+
+        assert!(
+            !app.state.agent_view_open,
+            "a malformed /agents must never reach the handler that toggles the view"
+        );
+        assert!(
+            app.state.transcript.iter().any(|e| matches!(
+                e,
+                Entry::Notice { text } if text == "usage: /agents (no arguments)"
+            )),
+            "{:?}",
+            app.state.transcript
+        );
+    }
+
+    /// Drives `/trust permissions` through a REAL `App`/`Conway`/`LiveHost`
+    /// (not `commands.rs`'s `FakeHost`), safely: `App::new`'s permission
+    /// loader ALWAYS populates `state.permission_paths` with at least the
+    /// project candidate -- present on disk or not (`Conway::
+    /// load_permission_files`'s own doc: "every candidate path considered
+    /// ... present or not"), so the old `permission_paths.is_empty()`
+    /// no-op branch is realistically unreachable through `App::new`; that
+    /// branch is instead covered, directly, at the `commands.rs::execute()`
+    /// level in `trust_with_no_permission_paths_configured_is_a_notice_
+    /// with_no_facade_call`. Pointed at a freshly created, empty tempdir
+    /// with NO `.conway/permissions.json` on disk, so `Conway::
+    /// trust_permission_file`'s OWN first step (`std::fs::read_to_string`)
+    /// fails BEFORE ever reaching `TrustStore::trust` (the actual disk
+    /// write) -- this test can never write to the real operator's own
+    /// `~/.conway/trust.json`, unlike a genuinely successful trust would
+    /// (see `LiveHost::trust_permission_file`'s own doc on why that path is
+    /// deliberately left to `FakeHost` instead). The observable this test
+    /// exists to prove is that the REAL, non-fake dispatch chain reaches
+    /// `Conway::trust_permission_file` at all -- a genuine "file does not
+    /// exist" `Entry::Error`, not a parser rejection and not a stub.
+    #[tokio::test]
+    async fn trust_reaches_its_handler_through_the_parser_against_a_real_conway() {
+        let project = tempfile::TempDir::new().expect("tempdir");
+        let conway = build_conway_with_echo_backend();
+        let mut cli = minimal_cli();
+        cli.cwd = Some(project.path().to_path_buf());
+        let mut app = App::new(&cli, &conway, &[])
+            .await
+            .expect("App::new should succeed");
+        assert!(
+            !app.state.permission_paths.is_empty(),
+            "App::new always populates at least the project candidate, present or not"
+        );
+
+        let outcome = app
+            .submit("/trust permissions".to_string())
+            .await
+            .expect("submit should not error");
+        assert!(matches!(outcome, SubmitOutcome::Continue));
+
+        assert!(
+            app.state.transcript.iter().any(|e| matches!(
+                e,
+                Entry::Error { text, .. } if text.contains("could not trust")
+            )),
+            "a real Conway must have reached the trust handler and reported \
+             the genuine 'file does not exist' failure, not a stub: {:?}",
+            app.state.transcript
+        );
+    }
+
+    #[tokio::test]
+    async fn trust_malformed_input_is_rejected_by_the_parser_before_any_facade_call() {
+        let conway = build_conway_with_echo_backend();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[])
+            .await
+            .expect("App::new should succeed");
+
+        let outcome = app
+            .submit("/trust nope".to_string())
+            .await
+            .expect("submit should not error");
+        assert!(matches!(outcome, SubmitOutcome::Continue));
+
+        assert!(
+            app.state.transcript.iter().any(|e| matches!(
+                e,
+                Entry::Notice { text } if text == "usage: /trust permissions"
+            )),
+            "{:?}",
+            app.state.transcript
+        );
+        assert!(
+            !app.state
+                .transcript
+                .iter()
+                .any(|e| matches!(e, Entry::Notice { text } if text.contains("trusted"))),
+            "a malformed /trust must never reach the handler that installs rules: {:?}",
+            app.state.transcript
+        );
+    }
+
+    #[tokio::test]
+    async fn ask_malformed_input_is_rejected_by_the_parser_and_never_sets_ask_in_flight() {
+        let conway = build_conway_with_echo_backend();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[])
+            .await
+            .expect("App::new should succeed");
+
+        let outcome = app
+            .submit("/ask".to_string())
+            .await
+            .expect("submit should not error");
+        assert!(matches!(outcome, SubmitOutcome::Continue));
+
+        assert!(
+            !app.state.ask_in_flight,
+            "a malformed /ask (no question) must never reach the handler that spawns the task"
+        );
+        assert!(
+            app.state.transcript.iter().any(|e| matches!(
+                e,
+                Entry::Notice { text } if text == "usage: /ask <text>"
+            )),
+            "{:?}",
+            app.state.transcript
+        );
+        assert!(
+            app.modal_ask_rx
+                .as_mut()
+                .expect("modal_ask_rx is set by App::new")
+                .try_recv()
+                .is_err(),
+            "nothing was ever spawned -- no task exists to reply at all"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // `/ask`'s three fates, driven end to end THROUGH the new dispatch:
+    // `App::submit` -> `commands::parse` -> `commands::execute` ->
+    // `Effect::RunModalAsk` -> `Self::spawn_modal_ask` -> the real spawned
+    // task -> `modal_ask_rx` -> the modal opens -- exactly `App::run`'s own
+    // path, minus the terminal. Each fate is its OWN test (module notes'
+    // convention, and this item's own acceptance: "a test asserting /ask
+    // 'works' does not distinguish them"), proving the dispatch refactor
+    // changed none of the three: fork the child into a real, persistent
+    // session; pull the answer into the parent and purge the child;
+    // discard the child outright.
+    // ---------------------------------------------------------------
+
+    /// Drives `/ask <question>` through the REAL `submit` -> parser ->
+    /// `commands::execute` -> `Effect::RunModalAsk` -> `Self::
+    /// spawn_modal_ask` pipeline, waits for the spawned task's reply, and
+    /// opens the modal exactly as `App::run`'s own `modal_ask_rx.recv()`
+    /// arm does (`run.rs`) -- so each fate test below starts from the SAME
+    /// state a real interactive `/ask` would. Returns the ephemeral
+    /// child's `AgentId`.
+    async fn drive_ask_to_modal(app: &mut App, question: &str) -> conway::AgentId {
+        let outcome = app
+            .submit(format!("/ask {question}"))
+            .await
+            .expect("submit should not error");
+        assert!(matches!(outcome, SubmitOutcome::Continue));
+        assert!(
+            app.state.ask_in_flight,
+            "commands::execute's SlashCommand::Ask arm must set ask_in_flight \
+             before Effect::RunModalAsk ever reaches Self::spawn_modal_ask"
+        );
+
+        let ask_outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            app.modal_ask_rx
+                .as_mut()
+                .expect("modal_ask_rx is set by App::new")
+                .recv(),
+        )
+        .await
+        .expect("the spawned /ask task must reply promptly")
+        .expect("modal_ask_tx's sender half is alive for the duration of this call");
+
+        // Mirrors `App::run`'s own `modal_ask_rx.recv()` arm exactly.
+        app.state.ask_in_flight = false;
+        let child = ask_outcome
+            .child
+            .expect("SessionHandle::ask must succeed against the in-memory echo backend");
+        app.state.offer_ask_modal(AskModal {
+            question: ask_outcome.question,
+            child,
+            answer: ask_outcome.reply.unwrap_or_else(|e| format!("error: {e}")),
+            error: None,
+        });
+        child
+    }
+
+    #[tokio::test]
+    async fn ask_fate_fork_promotes_the_child_into_a_persistent_session() {
+        let conway = build_conway_with_echo_backend();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[])
+            .await
+            .expect("App::new should succeed");
+
+        let child = drive_ask_to_modal(&mut app, "should I merge this?").await;
+
+        let host = commands::LiveHost {
+            handle: &app.handle,
+            conway: &app.conway,
+            commands: &app.command_registry,
+        };
+        commands::apply_ask_fate(AskFate::Fork, &mut app.state, &host).await;
+
+        assert!(
+            matches!(app.state.mode, Mode::Normal),
+            "a successful Fork fate must close the modal, got: {:?}",
+            app.state.mode
+        );
+        assert!(
+            app.state.transcript.iter().any(|e| matches!(
+                e,
+                Entry::Notice { text } if text.contains("forked session") && text.contains("persistent")
+            )),
+            "{:?}",
+            app.state.transcript
+        );
+
+        // B3: the child is genuinely no longer ephemeral -- it survives as
+        // an ordinary, listed session, the whole point of this fate.
+        let persistent = app
+            .conway
+            .sessions(conway::SessionFilter::default())
+            .await
+            .expect("sessions() should succeed");
+        assert!(
+            persistent.iter().any(|m| m.agent_id == child),
+            "the promoted child must now be a listed, persistent session: {persistent:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn ask_fate_pull_in_merges_the_answer_and_purges_the_child() {
+        let conway = build_conway_with_echo_backend();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[])
+            .await
+            .expect("App::new should succeed");
+
+        let child = drive_ask_to_modal(&mut app, "what does this flag do?").await;
+
+        let host = commands::LiveHost {
+            handle: &app.handle,
+            conway: &app.conway,
+            commands: &app.command_registry,
+        };
+        commands::apply_ask_fate(AskFate::PullIn, &mut app.state, &host).await;
+
+        assert!(
+            matches!(app.state.mode, Mode::Normal),
+            "a successful PullIn fate must close the modal, got: {:?}",
+            app.state.mode
+        );
+        assert!(
+            app.state.transcript.iter().any(|e| matches!(
+                e,
+                Entry::Notice { text } if text.contains("pulled into the parent session")
+            )),
+            "{:?}",
+            app.state.transcript
+        );
+
+        // B4: the child is purged (`SessionStore::remove`) as part of the
+        // merge -- gone even from the ephemeral-inclusive listing.
+        let all = app
+            .conway
+            .sessions(conway::SessionFilter {
+                include_ephemeral: true,
+                ..Default::default()
+            })
+            .await
+            .expect("sessions() should succeed");
+        assert!(
+            all.iter().all(|m| m.agent_id != child),
+            "the pulled-in child must be purged, not merely closed: {all:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn ask_fate_discard_purges_the_child_with_no_merge() {
+        let conway = build_conway_with_echo_backend();
+        let cli = minimal_cli();
+        let mut app = App::new(&cli, &conway, &[])
+            .await
+            .expect("App::new should succeed");
+
+        let child = drive_ask_to_modal(&mut app, "unused aside").await;
+
+        let host = commands::LiveHost {
+            handle: &app.handle,
+            conway: &app.conway,
+            commands: &app.command_registry,
+        };
+        commands::apply_ask_fate(AskFate::Discard, &mut app.state, &host).await;
+
+        assert!(
+            matches!(app.state.mode, Mode::Normal),
+            "a successful Discard fate must close the modal, got: {:?}",
+            app.state.mode
+        );
+        assert!(
+            app.state
+                .transcript
+                .iter()
+                .any(|e| matches!(e, Entry::Notice { text } if text == "ask discarded")),
+            "{:?}",
+            app.state.transcript
+        );
+
+        let all = app
+            .conway
+            .sessions(conway::SessionFilter {
+                include_ephemeral: true,
+                ..Default::default()
+            })
+            .await
+            .expect("sessions() should succeed");
+        assert!(
+            all.iter().all(|m| m.agent_id != child),
+            "the discarded child must be purged: {all:?}"
+        );
     }
 }
