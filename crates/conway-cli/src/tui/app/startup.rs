@@ -111,22 +111,31 @@ impl App {
         // (`Self::refresh_session_head`).
         state.session_head_seq = conway.session_head(handle.id()).await.ok();
         state.plugin_commands = std::sync::Arc::new(command_registry.palette_entries());
+        // Stage 2a: `[tui]` no longer lives in `conway::config::ConwayConfig`
+        // at all (`conway.config()` has no `.tui` field any more) -- this
+        // crate reads it back via its OWN separate, layered load, using the
+        // SAME settings.json discovery/precedence/env sources `build_conway`
+        // used to build `conway` itself. See `crate::tui::config`'s own doc
+        // for why, and for the `#[serde(deny_unknown_fields)]` typo
+        // protection this crate keeps for its own presentation schema even
+        // though the facade no longer can.
+        let tui_config = crate::tui::config::load(cli)?;
         // T1: build the theme once from the loaded `[tui.theme]` config
         // (defaults when the section is absent; malformed values fall back
         // to per-slot defaults -- untrusted input, never a panic). `Theme::from_config`
         // is infallible by construction.
-        let theme = Theme::from_config(&conway.config().tui.theme);
+        let theme = Theme::from_config(&tui_config.theme);
         // T3: status-line field order/visibility from `[tui.status_line]`
         // (defaults to the Lean line when absent; unknown field names are
         // dropped at render time -- untrusted input, never a panic).
-        state.status_line_config = conway.config().tui.status_line.clone();
+        state.status_line_config = tui_config.status_line.clone();
         // T5: collapsed tool-preview line cap from
         // `[tui.tool_preview_lines]` (default 3). The config is untrusted
         // input -- `clamp_tool_preview_lines` clamps to `1..=200` and
         // falls back to the default of 3 on a missing/out-of-range value.
         // Never a panic, no `unwrap`/`expect`/indexing on the config value.
         state.tool_preview_lines =
-            crate::tui::state::clamp_tool_preview_lines(conway.config().tui.tool_preview_lines);
+            crate::tui::state::clamp_tool_preview_lines(tui_config.tool_preview_lines);
         // T8: input-history cap from `[tui.history_size]` (default 500,
         // clamped the same way as `tool_preview_lines` just above),
         // then load whatever history already exists on disk -- best-effort
@@ -135,7 +144,7 @@ impl App {
         // that function's own doc). `history_file_path` itself can return
         // `None` (no resolvable home directory); the session still runs
         // with in-memory-only history in that case.
-        state.history_cap = crate::tui::state::clamp_history_size(conway.config().tui.history_size);
+        state.history_cap = crate::tui::state::clamp_history_size(tui_config.history_size);
         let history_path = conway::config::discovery::history_file_path(
             &std::env::vars().collect::<std::collections::HashMap<_, _>>(),
         );
@@ -599,6 +608,102 @@ mod tests {
             }),
             "expected the transcript to carry the headroom warning as a non-fatal \
              error entry, got: {rendered:?}"
+        );
+    }
+
+    /// **Board item 01KZVYYWZ85D1SYMCSRRZ7RAM3, verification anchor,
+    /// second half.** `crates/conway/tests/architecture_invariants.rs`'s
+    /// `t7_facade_has_no_presentation_types` proves the first half (no
+    /// ratatui-shaped type is reachable from `conway`'s config schema at
+    /// all) -- proving that alone would pass even if the four types had
+    /// simply been DELETED rather than moved, so it is paired here with a
+    /// real end-to-end CLI run: a real `settings.json`, on disk, carrying a
+    /// FULL `[tui.theme]` block plus a custom `[tui.status_line]`, driven
+    /// through `ConwayBuilder::from_config` (unchanged: it still succeeds
+    /// against a config with a `[tui]` block, since `config::load` strips
+    /// and warns rather than hard-erroring) and then `App::new` (this
+    /// crate's own separate `crate::tui::config::load`), reaching a real,
+    /// rendered TUI session -- not a unit test of either parser in
+    /// isolation.
+    #[tokio::test]
+    async fn a_real_settings_json_with_a_full_theme_block_reaches_a_rendered_session() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config_path = dir.path().join("conway.json");
+        std::fs::write(
+            &config_path,
+            serde_json::json!({
+                "default_role": "coder",
+                "roles": { "coder": { "chain": [] } },
+                "backends": {
+                    "fake": { "kind": "anthropic", "api_key": "unused-placeholder-key" }
+                },
+                "permissions": { "mode": "deny" },
+                "tui": {
+                    "theme": {
+                        "user": { "fg": "magenta", "modifiers": ["bold", "italic"] }
+                    },
+                    "status_line": { "fields": ["session", "hint"] }
+                }
+            })
+            .to_string(),
+        )
+        .expect("write conway.json carrying a full [tui] block");
+
+        let backend: Arc<dyn conway::Backend> = Arc::new(FakeBackend::echo(BackendId::new("fake")));
+        let gate: Arc<dyn PermissionGate> = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
+        let router: Arc<dyn conway::Router> = Arc::new(FakeRouter::single(conway::ModelRef {
+            backend: BackendId::new("fake"),
+            model: ModelId::new("echo-model"),
+        }));
+        // The facade half: a settings.json with a real [tui] block must
+        // still load successfully through the unmodified builder entry
+        // point every dispatch target shares -- this would hard-fail here
+        // if [tui] were still handed to ConwayConfig's
+        // #[serde(deny_unknown_fields)] deserialize unstripped.
+        let conway = ConwayBuilder::from_config(&config_path)
+            .expect("a settings.json with a [tui] block must still load through the facade")
+            .with_backend(backend)
+            .with_session_store(Arc::new(FakeStore::new()))
+            .with_permission_gate(gate)
+            .with_router(router)
+            .with_backend_factory(Arc::new(conway_plugin_backends::AnthropicBackendFactory))
+            .with_backend_factory(Arc::new(conway_plugin_backends::OpenAiCompatBackendFactory))
+            .build()
+            .expect("build should succeed with every I/O port injected");
+
+        let mut cli = minimal_cli();
+        cli.config = Some(config_path);
+        // The CLI half: this crate's OWN separate load of [tui] (`crate::
+        // tui::config::load`, called inside `App::new`) must actually wire
+        // the configured theme and status line into a real, live App.
+        let app = App::new(&cli, &conway, &[])
+            .await
+            .expect("App::new must succeed against a real settings.json carrying [tui]");
+
+        assert_eq!(
+            app.theme.user,
+            ratatui::style::Style::default()
+                .fg(ratatui::style::Color::Magenta)
+                .add_modifier(ratatui::style::Modifier::BOLD | ratatui::style::Modifier::ITALIC),
+            "the configured [tui.theme.user] override must reach the built Theme, not just \
+             parse: got {:?}",
+            app.theme.user
+        );
+        assert_eq!(
+            app.state.status_line_config.fields,
+            vec!["session".to_string(), "hint".to_string()],
+            "the configured [tui.status_line.fields] must reach AppState"
+        );
+
+        // "Reaching a rendered session": render the REAL AppState through
+        // the REAL view::draw (this crate's own binding TUI test
+        // convention, also used by the headroom test above) and confirm
+        // the session is actually live and renders something an operator
+        // would see, not an inert struct nobody drew.
+        let text = crate::tui::test_support::render_text(&app.state, 120, 40);
+        assert!(
+            !text.trim().is_empty(),
+            "a session built from a config carrying a full [tui] block must still render"
         );
     }
 }

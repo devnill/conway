@@ -10,7 +10,7 @@
 //! ## Configurability
 //!
 //! The theme is **configurable from the start**: a `[tui.theme]` table in
-//! `settings.json` (schema: `conway::config::schema::ThemeConfig`) overlays
+//! `settings.json` (schema: `crate::tui::config::ThemeConfig`) overlays
 //! per-slot `fg`/`bg`/`modifiers` on top of the defaults. [`Theme::from_config`]
 //! loads that overlay; [`Theme::default`] is what you get when `[tui.theme]`
 //! is absent entirely. The defaults match the exact `(Color, Modifier)` pairs
@@ -88,7 +88,7 @@
 
 use ratatui::style::{Color, Modifier, Style};
 
-use conway::config::schema::{ThemeConfig, ThemeStyleConfig};
+use crate::tui::config::{ThemeConfig, ThemeStyleConfig};
 
 /// The TUI's named style table -- one [`Style`] per concern, threaded
 /// through `view::draw` and each per-view `draw` fn as `&Theme`.
@@ -437,7 +437,7 @@ fn parse_modifier(raw: &str) -> Option<Modifier> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use conway::config::schema::ThemeStyleConfig;
+    use crate::tui::config::ThemeStyleConfig;
 
     /// Helper: build a `ThemeStyleConfig` with just an `fg` override.
     fn fg_only(fg: &str) -> ThemeStyleConfig {

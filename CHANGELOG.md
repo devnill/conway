@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Presentation config left the embeddable schema.** `TuiSection`,
+  `ThemeConfig`, `ThemeStyleConfig` and `StatusLineConfig` — roughly 34
+  terminal-shaped configuration slots — moved from `conway::config::schema`
+  to `conway-cli` (`crates/conway-cli/src/tui/config.rs`), the one reader
+  that ever parses or renders them. A service or IDE linking only the
+  `conway` facade no longer parses or validates a theme it can never draw.
+  An existing `settings.json` with a `[tui]` block still drives the CLI
+  identically — the CLI re-reads it through its own layered load and its
+  own `deny_unknown_fields` schema, so a typo inside `[tui.theme]` is still
+  a named parse error. A bare embedder calling `conway::config::load`
+  directly on such a file gets a successful load plus a `ConfigWarning {
+  code: PresentationConfigIgnored, .. }`, rather than either a hard failure
+  or the block silently vanishing. `Conway::sweep_stale_modal_asks` no
+  longer hardcodes its "4x the TUI's 15s heartbeat" freshness threshold: it
+  takes `live_threshold: chrono::Duration` from the caller, and the CLI
+  computes its own from its own local heartbeat constant.
+
 ### Added
 
 - **`ToolCtx::for_test(agent_id, cwd, subagents, events)`: a `Tool::invoke`

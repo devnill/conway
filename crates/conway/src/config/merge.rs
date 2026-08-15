@@ -13,6 +13,17 @@
 //! `#[serde(deny_unknown_fields)]` a meaningful fail-loud check on the
 //! *result* of layering five sources, rather than on each source
 //! individually (a source may legitimately omit almost everything).
+//!
+//! **One named exception (Stage 2a):** a top-level `tui` key is stripped
+//! out of the merged document before that deserialize, rather than tripping
+//! `deny_unknown_fields`, because `[tui]` is `conway-cli`'s presentation
+//! config (`TuiSection` and its siblings no longer live in this schema at
+//! all) and an existing `settings.json` naming it must still load
+//! successfully. [`load`]/[`load_ignoring_xdg`] record the strip as a
+//! [`crate::config::ConfigWarning`] rather than dropping it with no trace;
+//! [`merged_document`] is the escape hatch a caller that DOES understand
+//! `[tui]` (`conway-cli`) uses to read it back out of the same layered
+//! document.
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
@@ -178,7 +189,35 @@ enum IncludeXdgLayer {
     No,
 }
 
-fn load_impl(options: LoadOptions, include_xdg: IncludeXdgLayer) -> Result<LoadOutcome> {
+/// The fully layered document (the same five-source precedence [`load`]
+/// uses -- default < XDG < project < env < CLI), as raw JSON, BEFORE the
+/// final `ConwayConfig` deserialize.
+///
+/// **The one sanctioned escape hatch for a section this facade's schema
+/// deliberately does not define.** Stage 2a moved `TuiSection`/
+/// `ThemeConfig`/`StatusLineConfig`/`ThemeStyleConfig` out of
+/// `ConwayConfig` entirely -- `[tui]` is `conway-cli`'s presentation
+/// config, and a headless host linking only this facade has no business
+/// parsing or validating a theme it can never render. `load`/
+/// `load_ignoring_xdg` strip a top-level `tui` key out of the merged
+/// document before deserializing (see their own doc for why: otherwise
+/// EVERY existing `settings.json` with a `[tui.theme]`/`[tui.status_line]`
+/// block would hard-fail to load through this crate at all), so `[tui]`'s
+/// actual value is not reachable through [`LoadOutcome`] at all any more.
+/// `conway-cli` calls this function directly instead, to read `[tui]`'s
+/// raw value back out of the SAME layered document and deserialize it into
+/// its own, locally-owned `TuiSection` (`crates/conway-cli/src/tui/
+/// config.rs`) -- the one caller today.
+///
+/// Every other caller should prefer [`load`]/[`load_ignoring_xdg`]
+/// instead: this bypasses `ConwayConfig`'s `#[serde(deny_unknown_fields)]`
+/// validation entirely, so a typo anywhere in the document is not caught
+/// here.
+pub fn merged_document(options: &LoadOptions) -> Result<Value> {
+    merged_document_impl(options, IncludeXdgLayer::Yes)
+}
+
+fn merged_document_impl(options: &LoadOptions, include_xdg: IncludeXdgLayer) -> Result<Value> {
     let mut merged = default_document();
 
     if matches!(include_xdg, IncludeXdgLayer::Yes) {
@@ -205,6 +244,30 @@ fn load_impl(options: LoadOptions, include_xdg: IncludeXdgLayer) -> Result<LoadO
     let cli_layer = cli_overrides_to_value(&options.cli_overrides);
     merge_values(&mut merged, cli_layer);
 
+    Ok(merged)
+}
+
+fn load_impl(options: LoadOptions, include_xdg: IncludeXdgLayer) -> Result<LoadOutcome> {
+    let mut merged = merged_document_impl(&options, include_xdg)?;
+
+    // `[tui]` (or a `CONWAY_TUI__*` env var) is a presentation-only
+    // section this facade deliberately does not define a type for any
+    // more (Stage 2a; see `merged_document`'s own doc). Extracted and
+    // DROPPED here, rather than handed to `ConwayConfig`'s
+    // `#[serde(deny_unknown_fields)]` deserialize below, which would
+    // otherwise hard-fail loading any EXISTING settings.json that
+    // configures a TUI theme or status line -- `conway-cli` genuinely
+    // still needs those to load successfully (it re-reads `[tui]` itself
+    // via `merged_document`, see that function's own doc). Silently
+    // dropping it with no trace at all would be the worst option (board
+    // item's own framing): a `ConfigWarning` is pushed onto this outcome
+    // instead, so a caller that does NOT separately re-parse `[tui]`
+    // itself is told its presence was seen and ignored, not left to
+    // wonder why nothing happened.
+    let had_tui = merged
+        .as_object_mut()
+        .is_some_and(|obj| obj.remove("tui").is_some());
+
     let config: ConwayConfig = serde_json::from_value(merged).map_err(|e| ConwayError::Config {
         path: None,
         message: format!("failed to parse merged configuration: {e}"),
@@ -213,7 +276,20 @@ fn load_impl(options: LoadOptions, include_xdg: IncludeXdgLayer) -> Result<LoadO
     let metadata_path = resolve_metadata_path(&config, &options.cwd);
     let metadata = model_metadata::load(&metadata_path)?;
 
-    let warnings = validate(&config, &metadata, &options.env)?;
+    let mut warnings = validate(&config, &metadata, &options.env)?;
+    if had_tui {
+        warnings.push(ConfigWarning {
+            code: WarningCode::PresentationConfigIgnored,
+            message: "a [tui] section (or a CONWAY_TUI__* environment variable) is present, \
+                      but conway's own config schema no longer defines [tui] -- it is \
+                      conway-cli's presentation config (theme/status-line/tool-preview-lines/\
+                      history-size), not the facade's, as of Stage 2a. This load accepted the \
+                      rest of the document and discarded [tui] entirely; a caller that is not \
+                      conway-cli (which re-reads [tui] itself through a separate, un-stripped \
+                      merge) will not find its value anywhere."
+                .to_string(),
+        });
+    }
 
     Ok(LoadOutcome { config, warnings })
 }

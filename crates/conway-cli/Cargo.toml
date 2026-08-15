@@ -63,6 +63,12 @@ ratatui = { workspace = true, features = ["unstable-rendered-line-info"] }
 # an already-present dependency, not a new crate (C-04).
 crossterm = { workspace = true, features = ["bracketed-paste"] }
 serde_json = { workspace = true }
+# Board item 01KZVYYWZ85D1SYMCSRRZ7RAM3 (Stage 2a): `TuiSection`/`ThemeConfig`/
+# `ThemeStyleConfig`/`StatusLineConfig` moved here from `conway::config::
+# schema` -- see `src/tui/config.rs` -- so this crate now derives
+# `Serialize`/`Deserialize` on its own presentation-config types directly,
+# rather than only consuming `serde_json::Value`.
+serde = { workspace = true }
 # WI-121: `-v`/`-vv` install a `tracing_subscriber::fmt` subscriber to
 # stderr (`main.rs`) so the `tracing::{trace,info,warn,error}!` calls
 # already scattered through conway-runtime/-backends/-session/conway

@@ -45,7 +45,6 @@ use std::time::Duration;
 use conway::config::schema::{
     AgentsConfig, ConwayConfig, HealthSection, HookEntry, HooksConfig, LimitsConfig, ModelsConfig,
     PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection, SessionConfig, ToolsConfig,
-    TuiSection,
 };
 use conway::plugin::{async_trait, HookAnswer, HookInvocation, HookRunner};
 use conway::{Conway, ConwayBuilder, Plugin as _, SessionSpec};
@@ -88,7 +87,6 @@ fn base_config() -> ConwayConfig {
         health: HealthSection::default(),
         agents: AgentsConfig::default(),
         models: ModelsConfig::default(),
-        tui: TuiSection::default(),
         // Deliberately NOT how this plugin is installed -- `tools.builtin_plugins`
         // is the closed conway-tools candidate set, unrelated to this
         // crate (`PluginsConfig`'s own doc). This test never registers any

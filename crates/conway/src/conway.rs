@@ -206,14 +206,6 @@ pub struct Conway {
     root: Option<std::path::PathBuf>,
 }
 
-/// How fresh a store liveness marker must be for `sweep_stale_modal_asks` to
-/// treat it as a live owner and defer. 60s = 4× the TUI's 15s heartbeat
-/// interval, so a few missed beats under load do not flip a live owner to
-/// "stale". A crashed process stops heartbeating, so its marker crosses this
-/// threshold shortly after death and the NEXT startup reaps its residue. See
-/// [`Conway::sweep_stale_modal_asks`] (S1 follow-up to B5).
-const SWEEP_LIVE_THRESHOLD: ChronoDuration = ChronoDuration::seconds(60);
-
 /// A4: the outcome of [`Conway::validate_rule_registration`] -- either a
 /// hard reject (the rule is refused installation and surfaced as a typed
 /// `RuleRegistrationError` through `registration_errors`), or a notice (the
@@ -2290,7 +2282,7 @@ impl Conway {
     /// **Cross-process liveness (S1 follow-up):** BEFORE reaping, the sweep
     /// asks the store for its cross-process liveness marker
     /// ([`SessionStore::live_owner`]). If a marker is present AND its
-    /// `heartbeat` is within `SWEEP_LIVE_THRESHOLD` (60s) of now, ANOTHER
+    /// `heartbeat` is within `live_threshold` of now, ANOTHER
     /// process is actively using this store directory, so the sweep returns
     /// `Ok(0)` immediately — it defers ENTIRELY rather than risk purging
     /// that process's open modal-ask child (which is not in THIS runtime's
@@ -2307,11 +2299,23 @@ impl Conway {
     /// first is live) is out of scope — the store-level marker means a
     /// second process defers ALL sweeping while another is live.
     ///
+    /// **`live_threshold` is caller-supplied, on purpose (Stage 2a).** This
+    /// used to be a facade-owned constant, `60s = 4× the TUI's 15s
+    /// heartbeat interval` — a presentation detail (a specific renderer's
+    /// refresh cadence) hardcoded into engine configuration, which is
+    /// exactly the defect the rest of Stage 2a moves `TuiSection` and its
+    /// siblings out of this crate to fix. A caller with its own heartbeat
+    /// cadence (or none at all) is the only party positioned to know what
+    /// "fresh" means for its own marker; `conway-cli`'s TUI, the one
+    /// production caller, derives its own value from its own 15s heartbeat
+    /// interval rather than reading it back off this crate (see
+    /// `crates/conway-cli/src/tui/mod.rs`).
+    ///
     /// Best-effort per session: a session whose `remove` fails (e.g. it has
     /// since acquired children) is skipped and counting continues — the
     /// sweep is janitorial, and a leftover simply stays for the next
     /// startup's sweep. Returns the number of sessions purged.
-    pub async fn sweep_stale_modal_asks(&self) -> Result<usize> {
+    pub async fn sweep_stale_modal_asks(&self, live_threshold: ChronoDuration) -> Result<usize> {
         // S1 follow-up: if another process is actively using this store, defer
         // entirely. The caller publishes its OWN marker only AFTER the sweep,
         // so a marker read here is necessarily someone else's. A `live_owner`
@@ -2319,7 +2323,7 @@ impl Conway {
         // must never block startup, and a store that cannot report liveness
         // behaves as a cold store (the same as one with no marker).
         if let Some(owner) = self.store.live_owner().await.unwrap_or(None) {
-            if Utc::now().signed_duration_since(owner.heartbeat) <= SWEEP_LIVE_THRESHOLD {
+            if Utc::now().signed_duration_since(owner.heartbeat) <= live_threshold {
                 return Ok(0);
             }
         }

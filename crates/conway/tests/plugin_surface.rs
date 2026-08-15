@@ -32,7 +32,7 @@ use std::sync::Arc;
 use conway::config::schema::{
     AgentsConfig, BackendEntry, ConwayConfig, HealthSection, HooksConfig, LimitsConfig,
     ModelsConfig, PermissionMode, PermissionsConfig, PluginsConfig, RoleEntry, RoutingSection,
-    SessionConfig, ToolsConfig, TuiSection,
+    SessionConfig, ToolsConfig,
 };
 use conway::plugin::{
     async_trait, Artifact, ArtifactKind, ArtifactWriteError, ArtifactWriteHandle, ArtifactWriter,
@@ -286,7 +286,6 @@ fn facade_only_config(
             metadata_path,
             probe_on_startup: false,
         },
-        tui: TuiSection::default(),
         tools: ToolsConfig::default(),
         plugins: PluginsConfig::default(),
         hooks: HooksConfig::default(),
