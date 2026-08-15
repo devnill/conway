@@ -25,15 +25,17 @@
 //!   probe_capabilities` now runs its own probe behind its own,
 //!   independently-maintained bridge — see that method's own doc — so this
 //!   module's `block_on` is used by [`build_default_store`] alone today.)
-//! - **No `with_prompt_handler` method exists** (the criteria list
-//!   `ConwayBuilder`'s methods "exactly", and that list has no such
-//!   method), so `gates::from_config` is always called with `prompt_handler:
-//!   None`. Since `permissions.mode` defaults to `"prompt"`, an embedder
-//!   using an unmodified default config and no `with_permission_gate`
-//!   override will get `ConwayError::Config` from `build()` — flagged as a
-//!   gap in this item's own public surface (the CLI or a future item should
-//!   likely add a way to supply a prompt handler) rather than silently
-//!   adding an undocumented method.
+//! - **`with_prompt_handler` now exists** (board item
+//!   01M00QGYR1M8F71HTAA1S3PEKS closed the gap this bullet used to disclose
+//!   as unresolved): `gates::from_config` is called with whatever handler
+//!   [`ConwayBuilder::with_prompt_handler`] supplied, `None` when it was
+//!   never called. Since `permissions.mode` defaults to `"prompt"`
+//!   (`config::merge::default_document`), an embedder using an unmodified
+//!   default config and neither `with_prompt_handler` nor
+//!   `with_permission_gate` still gets a named `ConwayError::Config` from
+//!   `build()` — unchanged, and deliberately so (see that method's own doc):
+//!   the fix is a direct path to the one closure a host almost always
+//!   already has, not a silent default gate choice.
 //! - **Backend construction, dialect/profile resolution, and startup
 //!   capability probing are `conway_plugin_backends`'s concern, not this
 //!   module's**: `resolve_backend_
@@ -216,6 +218,16 @@ pub struct ConwayBuilder {
     backends: Vec<Arc<dyn Backend>>,
     plugins: Vec<Arc<dyn Plugin>>,
     gate: Option<Arc<dyn PermissionGate>>,
+    /// The handler [`Self::build`]'s step 9 passes to `gates::from_config`
+    /// when `permissions.mode = "prompt"` and no [`Self::with_permission_gate`]
+    /// override is set. `None` (the default) is unchanged from before this
+    /// field existed: an unmodified default config (`permissions.mode`
+    /// defaults to `"prompt"` -- `config::merge::default_document`) with
+    /// neither this nor `with_permission_gate` set still fails `build()`
+    /// with a named `ConwayError::Config` naming exactly that, rather than
+    /// silently choosing `AllowAlways`/`DenyAll` on a caller's behalf -- see
+    /// [`Self::with_prompt_handler`]'s own doc for what setting this closes.
+    prompt_handler: Option<gates::PromptHandler>,
     store: Option<Arc<dyn SessionStore>>,
     router: Option<Arc<dyn Router>>,
     /// `None` (the default) means
@@ -335,6 +347,7 @@ impl ConwayBuilder {
             backends: Vec::new(),
             plugins: Vec::new(),
             gate: None,
+            prompt_handler: None,
             store: None,
             router: None,
             router_factory: None,
@@ -516,6 +529,51 @@ impl ConwayBuilder {
     /// Overrides `permissions.mode`-derived gate selection entirely.
     pub fn with_permission_gate(mut self, gate: Arc<dyn PermissionGate>) -> Self {
         self.gate = Some(gate);
+        self
+    }
+
+    /// Supplies the handler `gates::from_config` needs when `permissions.mode`
+    /// resolves to `"prompt"` -- the config default (`config::merge::
+    /// default_document`), and therefore what `ConwayBuilder::discover()`
+    /// hands a host that changed nothing about permissions.
+    ///
+    /// **This closes a gap this module's own doc used to disclose rather than
+    /// silently paper over**: before this method existed, the ONLY way to
+    /// satisfy an unmodified default config's `permissions.mode = "prompt"`
+    /// was [`Self::with_permission_gate`] -- which requires implementing the
+    /// whole [`PermissionGate`] trait (`check`'s full signature: tool name,
+    /// arguments, render kind, scope) just to answer one async question, "may
+    /// this tool call proceed?" A host embedding conway to ask ITS OWN user
+    /// (a dialog box, a terminal prompt, a chat UI's inline approval) almost
+    /// always has exactly that one closure, not a reason to hand-roll a
+    /// gate. This method takes it directly: `Arc<dyn Fn(PermissionRequest) ->
+    /// BoxFuture<'static, PermissionDecision> + Send + Sync>`
+    /// ([`gates::PromptHandler`]), the same handler shape
+    /// [`gates::PromptingGate`] has always wrapped -- this method is the
+    /// missing builder-level path to it, not a new gate implementation.
+    ///
+    /// **Precedence: [`Self::with_permission_gate`] wins unconditionally over
+    /// this.** If both are called, `build()`'s gate step (9) never even
+    /// constructs a `PromptingGate` from this handler -- the injected gate is
+    /// used outright, exactly as it always has been when `permissions.mode`
+    /// is something this handler is irrelevant to (`"deny"`/`"allowlist"`).
+    /// Calling only this method, with `permissions.mode` resolving to
+    /// anything other than `"prompt"`, is harmless: the handler is simply
+    /// never invoked, since `gates::from_config`'s `"deny"`/`"allowlist"`
+    /// arms never read it.
+    ///
+    /// **Not called at all (the default, unchanged from before this method
+    /// existed):** `permissions.mode = "prompt"` with no
+    /// `with_permission_gate` override still fails `build()` with a named
+    /// [`ConwayError::Config`] stating exactly that ("permissions.mode =
+    /// \"prompt\" requires a prompt handler to be supplied") -- never a
+    /// silent `AllowAlways`/`DenyAll` substitute. A host that wants the
+    /// friendliest default (ask, rather than deny or blanket-allow) to
+    /// actually build now has a direct path to it; a host that never calls
+    /// this (and never overrides `permissions.mode` some other way) keeps
+    /// getting exactly the same named refusal it always has.
+    pub fn with_prompt_handler(mut self, handler: gates::PromptHandler) -> Self {
+        self.prompt_handler = Some(handler);
         self
     }
 
@@ -885,6 +943,7 @@ impl ConwayBuilder {
             backends,
             plugins,
             gate,
+            prompt_handler,
             store,
             router,
             router_factory,
@@ -1110,10 +1169,14 @@ impl ConwayBuilder {
             None => build_default_store(&cwd, &config.session.root)?,
         };
 
-        // 9. Gate: injected, else selected from config.permissions.
+        // 9. Gate: injected, else selected from config.permissions --
+        //    `prompt_handler` (Self::with_prompt_handler) is what lets a
+        //    "permissions.mode = prompt" config (the default) build at all
+        //    without an injected gate; see that method's own doc for the
+        //    precedence between the two.
         let gate: Arc<dyn PermissionGate> = match gate {
             Some(gate) => gate,
-            None => gates::from_config(&config.permissions, None)?,
+            None => gates::from_config(&config.permissions, prompt_handler)?,
         };
 
         // 10. Plugins: built-ins (filtered by `selection`) ++ injected;

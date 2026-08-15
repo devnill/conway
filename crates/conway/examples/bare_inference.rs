@@ -34,6 +34,24 @@
 //! shows `report` is NOT registered there. Turning tools off is possible;
 //! it is just never the default, and nothing about constructing a
 //! `ConwayConfig` by hand forces a caller to know to do it.
+//!
+//! **Board item 01M00QGYR1M8F71HTAA1S3PEKS's own finding, on top of this
+//! one:** the fourteen-field ceremony below is real for `ConwayBuilder::
+//! from_parts` -- the entry point this file (deliberately) uses to isolate
+//! exactly what a hand-built `ConwayConfig` costs -- but it is NOT the only
+//! entry point. `ConwayBuilder::discover()` already existed when this file
+//! was written and was never used here: it layers a documented, built-in
+//! default over every one of these same fourteen fields
+//! (`config::merge::default_document`), reachable with zero struct-literal
+//! ceremony. See `examples/discover_getting_started.rs` for that same
+//! "bare inference" shape reached through `discover()` instead, in well
+//! under half the lines (measured directly against an equivalent scratch
+//! crate outside this workspace -- see that example's own doc for the
+//! numbers) -- and `docs/embedding.md`, which now opens with it.
+//! This file's own finding stands: `ConwayConfig` still has no `Default`,
+//! and a caller who genuinely needs `from_parts` (no filesystem, no
+//! ambient environment -- an embedded target, a test fixture) still pays
+//! this in full.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

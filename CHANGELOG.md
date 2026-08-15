@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`ConwayBuilder::with_prompt_handler`, closing a gap the builder's own
+  doc had disclosed as unresolved.** `permissions.mode = "prompt"` — the
+  config default, including `discover()`'s — previously had no
+  builder-level way to satisfy it short of hand-implementing the whole
+  `PermissionGate` trait. The new method hands a single closure to the
+  `PromptingGate` that `gates::from_config` already builds. Precedence is
+  explicit and tested: an injected `with_permission_gate` still wins
+  unconditionally. Calling neither still fails `build()` with a named
+  `ConwayError::Config` — never a silent fallback.
+- **Four runnable `conway` examples, each with a companion smoke test:**
+  `discover_getting_started` (the shortest path from `cargo add conway` to
+  a model's answer), `custom_permission_gate` (a third-party
+  `PermissionGate` genuinely consulted during a real tool call, proven with
+  a recording gate rather than a successful build),
+  `event_stream_consumer` (assembling a reply from `TextDelta`s off
+  `SessionHandle::events()`), and `real_provider_inference` (the same
+  shape against a genuine `OpenAiCompatBackend` — opt-in only, and its
+  smoke test drives a loopback server, never a live endpoint).
+
+### Changed
+
+- **`docs/embedding.md` opens with the `discover()`-based screenful**
+  instead of the facade's structural overview, and gains a "Discovery, not
+  a struct literal" section explaining why `ConwayConfig` still has no
+  `Default`: a `default_role` picked silently by a Rust `impl` would be an
+  opinion the core has no business holding, and a `discover()`-based caller
+  pays nothing for its absence.
+
 ### Changed
 
 - **`Conway` sheds three responsibilities it never should have carried

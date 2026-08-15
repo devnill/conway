@@ -108,6 +108,15 @@ conway-plugin-routing = { path = "../conway-plugin-routing" }
 # facade compiles neither in directly. Never referenced from `src/`.
 conway-plugin-backends = { path = "../conway-plugin-backends" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+# `examples/event_stream_consumer.rs` (board item 01M00QGYR1M8F71HTAA1S3PEKS)
+# drives `conway::EventStream` (`futures_core::Stream`, the only stream crate
+# in `[dependencies]` above) with `StreamExt::next` in a loop -- the exact
+# pattern `docs/embedding.md`'s own "Consuming the event stream" section
+# already told an embedder to bring themselves (`crates/conway-cli/src/
+# oneshot.rs` does the identical thing with the same crate). Already a
+# pinned workspace dependency used by several other crates' dev-deps
+# (`conway-core`, `conway-runtime`), not a new one (C-04).
+futures = { workspace = true }
 # S5's root-containment seam test needs real tempdirs/symlinks (a real
 # filesystem is the only honest way to prove a symlink escape is denied) --
 # already a pinned workspace dependency (conway-core/conway-runtime dev-deps
