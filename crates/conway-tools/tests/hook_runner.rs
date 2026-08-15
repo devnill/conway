@@ -189,6 +189,88 @@ async fn empty_stdout_on_success_is_the_default_answer() {
     assert_eq!(answer, HookAnswer::default());
 }
 
+/// Multi-thread-flavor coverage for `01M03FNRGWNMMRKXBJKCEE14QJ`.
+///
+/// **What this item found, and what it could not confirm.** `unix::drive`
+/// used to run the stdin write, both output drains, and `child.wait()` in
+/// a single `tokio::join!`. `conway-plugin-subprocess` -- a sibling crate
+/// that reused this exact shape for a new subprocess plugin host -- hit a
+/// hang while bisecting its own implementation and fixed it by draining
+/// all three pipes concurrently, THEN reaping `child.wait()` sequentially
+/// (see that crate's `spawn_one_shot`, whose own comment documents its
+/// bisection). `unix::drive` here was changed to the identical shape on
+/// that report.
+///
+/// Every existing test of this runner used plain `#[tokio::test]`
+/// (current-thread), so none of them ever exercised the multi-thread
+/// flavor `conway-cli`'s own `#[tokio::main]` actually runs under -- this
+/// is the only test in the suite that opts into `flavor = "multi_thread"`
+/// for exactly that reason, closing a real coverage gap regardless of
+/// what follows.
+///
+/// What this item's own investigation could NOT do: reproduce a hang, or
+/// even a measurable, reproducible latency difference between the old
+/// four-way join and the fixed sequential-wait shape, against the tokio
+/// version this workspace has pinned (`1.53.1`). A controlled A/B (both
+/// shapes, matched contention, same harness) was run against real
+/// hardware -- native Apple Silicon macOS, native aarch64 Linux under
+/// cgroup CPU throttling -- and separately under x86_64 Linux via QEMU
+/// emulation; none produced a consistent, reproducible direction across
+/// repeated rounds. The completion report for this item has the full
+/// experimental detail. This test therefore asserts CORRECTNESS under the
+/// multi-thread flavor (the property that must hold either way), not a
+/// specific hang -- an honest test that reproduces a hang must show one,
+/// and this one could not.
+#[tokio::test(flavor = "multi_thread")]
+async fn drives_one_event_end_to_end_under_a_multi_thread_runtime() {
+    let dir = TempDir::new().unwrap();
+    let script = fixture(
+        dir.path(),
+        "echo_answer_mt.sh",
+        r#"#!/bin/sh
+input=$(cat)
+case "$input" in
+  *marker-mt-9d3b*)
+    printf '{"context":{"appends":[{"note":"seen"}],"excludes":["seg-1"]}}'
+    ;;
+  *)
+    printf '{}'
+    ;;
+esac
+"#,
+    );
+
+    let runner = ProcessHookRunner::new();
+    let invocation = invocation(
+        vec![script.to_str().unwrap().to_string()],
+        5_000,
+        serde_json::json!({"marker": "marker-mt-9d3b"}),
+    );
+
+    // Bounded per this item's own hard rule: a test that could reproduce a
+    // hang must report it as a failure, never wedge the harness.
+    let answer = tokio::time::timeout(
+        Duration::from_secs(15),
+        run_retrying_spawn_race(&runner, &invocation),
+    )
+    .await
+    .expect(
+        "ProcessHookRunner did not return within 15s under a multi-thread runtime \
+         (01M03FNRGWNMMRKXBJKCEE14QJ)",
+    )
+    .expect("hook should succeed");
+    assert_eq!(
+        answer,
+        HookAnswer {
+            context: ContextDelta {
+                appends: vec![serde_json::json!({"note": "seen"})],
+                excludes: vec!["seg-1".to_string()],
+            },
+            ..HookAnswer::default()
+        }
+    );
+}
+
 // ------------------------------------------------------- fail-closed ---
 
 #[tokio::test]

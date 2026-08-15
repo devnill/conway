@@ -120,6 +120,36 @@ pub struct ResumeSpec {
     pub budget: Budget,
     /// Overrides the persisted `SessionMeta::cwd`; `None` reuses it.
     pub cwd: Option<PathBuf>,
+    /// The schema this resumed agent's `structured` result must satisfy,
+    /// threaded straight into `AgentSpec::result_contract` -- see
+    /// [`RootSpec::result_contract`]'s own doc for the enforcement mechanism,
+    /// which is identical here (the field feeds the same `AgentLoop::
+    /// run_inner` natural-completion check regardless of which spec started
+    /// the agent).
+    ///
+    /// **Closes a real gap (board item `01M03FQDF33AZ8G258516EDWQD`):**
+    /// before this field existed, `resume_root` always passed `AgentSpec::
+    /// result_contract: None`, unconditionally -- not because resuming a
+    /// session is incoherent with a contract (it is not: the SAME `AgentLoop`
+    /// enforcement this field now reaches for a resumed agent is already
+    /// exercised for a freshly `start_root`ed one via `RootSpec::
+    /// result_contract`, and for a live fork/spawn child via `SubagentSpec::
+    /// result_contract`), but because `ResumeSpec` itself had no field to
+    /// carry one through. That made `conway::Conway::fork_from` -- the ONE
+    /// caller of `resume_root` that receives a fresh, per-call spec
+    /// (`ForkSpec`) with its own `result_contract` field already on it --
+    /// silently drop a contract an embedder set: `ForkSpec::result_contract`
+    /// round-tripped through `From<ForkSpec> for SubagentSpec` (honored on
+    /// the live `SessionHandle::fork` path) but was never even read by
+    /// `crate::fork_child::fork_child` (`conway`'s own module), which built a
+    /// `ResumeSpec` with no way to carry it. `None` (`conway::Conway::
+    /// resume`'s own caller, which has no per-call spec at all -- `resume`
+    /// takes only a `SessionId` -- and so always passes `None` here,
+    /// preserving that binding's existing behavior exactly) is the only
+    /// value that can reach this field for a genuine resume; `fork_from`'s
+    /// `ForkChildRequest::result_contract` is the one caller that can supply
+    /// `Some`.
+    pub result_contract: Option<schemars::schema::RootSchema>,
 }
 
 impl Runtime {
@@ -794,14 +824,15 @@ impl Runtime {
             headroom_override: None,
             max_parallel_tools: DEFAULT_MAX_PARALLEL_TOOLS,
             report_slot: Some(last_report.clone()),
-            // Unlike `start_root` (`RootSpec::result_contract`, added
-            // for `conway-cli`'s `--output-schema`), `ResumeSpec` has no
-            // counterpart field -- out of this item's scope, matching
-            // `--system-prompt`/the budget flags' identical "not supported
-            // with --resume/--fork-from" restriction (`conway-cli`'s
-            // `oneshot::resolve_session` refuses the combination as a
-            // usage error before this method is ever called).
-            result_contract: None,
+            // `ResumeSpec::result_contract` -- see that field's own doc
+            // (board item `01M03FQDF33AZ8G258516EDWQD`) for the gap this
+            // closes: `conway::Conway::resume` always passes `None` here
+            // (it has no per-call spec to source one from), but
+            // `conway::Conway::fork_from` -- the other `resume_root` caller
+            // -- now threads its own `ForkSpec::result_contract` through
+            // `crate::fork_child::fork_child`'s `ForkChildRequest`, so it no
+            // longer silently drops a contract set on the facade fork path.
+            result_contract: spec.result_contract,
             // Out of scope for this item: only a freshly `start_root`ed
             // agent can opt into keep-alive today (`RootSpec::keep_alive`).
             // `ResumeSpec` has no counterpart field, so a resumed root

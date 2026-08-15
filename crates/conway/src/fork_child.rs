@@ -43,12 +43,19 @@ use crate::session_handle::SessionHandle;
 /// Overrides onto the parent's own `agent_def`/`role` (`None` inherits the
 /// parent's value, the same fallback [`crate::Conway::fork_from`] used
 /// before this module existed), plus the live child agent's `tools`/
-/// `budget`.
+/// `budget`/`result_contract`.
 pub(crate) struct ForkChildRequest {
     pub agent_def: Option<String>,
     pub role: Option<RoleAlias>,
     pub tools: Option<ToolSelector>,
     pub budget: Budget,
+    /// The live child agent's result contract -- threaded into
+    /// `ResumeSpec::result_contract` below (board item
+    /// `01M03FQDF33AZ8G258516EDWQD`, see that field's own doc for the gap
+    /// this closes). `None` when [`crate::Conway::fork_from`]'s caller left
+    /// [`crate::ForkSpec::result_contract`] unset -- the same "no contract"
+    /// behavior every caller had before this field existed.
+    pub result_contract: Option<schemars::schema::RootSchema>,
 }
 
 /// Forks `parent` at `at` into a fresh, drivable child session.
@@ -112,6 +119,7 @@ pub(crate) async fn fork_child(
             tools: req.tools,
             budget: req.budget,
             cwd: None,
+            result_contract: req.result_contract,
         })
         .await
         .map_err(|err| match err {

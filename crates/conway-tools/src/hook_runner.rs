@@ -117,8 +117,9 @@ mod unix {
     }
 
     /// Writes `payload` to the child's stdin (closing it afterward so a
-    /// well-behaved hook sees EOF), then reads stdout/stderr to completion
-    /// and waits for exit -- all CONCURRENTLY, and all inside the caller's
+    /// well-behaved hook sees EOF), then reads stdout/stderr to completion,
+    /// THEN reaps the exit status -- draining all three pipes CONCURRENTLY,
+    /// but `child.wait()` SEQUENTIALLY afterward, all inside the caller's
     /// `timeout_at`, so a hook that never reads stdin, or that fills the OS
     /// pipe buffer with stdout/stderr before being read, cannot deadlock
     /// against its own exit, and a hook that simply hangs is still bounded
@@ -126,6 +127,34 @@ mod unix {
     /// Stderr is drained but discarded: a hook's diagnostic output has
     /// nowhere principled to land yet (this item wires no event, hence no
     /// log/event sink to hand it to).
+    ///
+    /// Deliberately NOT `tokio::join!(write_fut, stdout_fut, stderr_fut,
+    /// child.wait())` in one call. That four-way join is what this function
+    /// used to do, and `01M03FNRGWNMMRKXBJKCEE14QJ` reports it hangs under a
+    /// multi-thread Tokio runtime -- `conway-cli`'s own `#[tokio::main]`
+    /// flavor -- found by `conway-plugin-subprocess`'s worker while reusing
+    /// this exact shape for a new subprocess plugin host, and bisected there
+    /// to this specific combination (see that crate's `spawn_one_shot` for
+    /// its own account). Every prior test of this function used plain
+    /// `#[tokio::test]` (current-thread), which never exercised the
+    /// arrangement in question either way. This function was changed to the
+    /// identical fixed shape `spawn_one_shot` adopted: drain stdin/stdout/
+    /// stderr in one `join!`, then `.await` the exit status on its own once
+    /// draining is done. That reordering is safe regardless -- once both
+    /// pipes have been read to EOF, the child has necessarily finished
+    /// producing output, so a `wait()` afterward only reaps a status that is
+    /// already available or imminent, never a fresh wait on a still-running
+    /// process; it removes a coupling (this call's own exit-reap tied to a
+    /// combinator alongside this call's own I/O drain) that the sequential
+    /// version does not need. NOTE, for anyone revisiting this: this item's
+    /// own investigation could not reproduce a hang, or any consistent,
+    /// reproducible latency difference between the two shapes, against the
+    /// tokio version this workspace has pinned (`1.53.1`) on the hardware
+    /// available to it (native Apple Silicon macOS and aarch64 Linux, and
+    /// x86_64 Linux via QEMU emulation) -- see that item's completion report
+    /// for the full experimental record. The reordering is kept anyway
+    /// because it is strictly safe and removes an unneeded dependency, not
+    /// because a regression was independently confirmed here.
     async fn drive(child: &mut Child, payload: &[u8]) -> Result<(ExitStatus, Vec<u8>), String> {
         let mut stdin = child.stdin.take().expect("piped stdin");
         let mut stdout_pipe = child.stdout.take().expect("piped stdout");
@@ -141,11 +170,13 @@ mod unix {
         let stdout_fut = stdout_pipe.read_to_end(&mut stdout_buf);
         let stderr_fut = stderr_pipe.read_to_end(&mut stderr_buf);
 
-        let (_, stdout_result, stderr_result, status) =
-            tokio::join!(write_fut, stdout_fut, stderr_fut, child.wait());
+        let (_, stdout_result, stderr_result) = tokio::join!(write_fut, stdout_fut, stderr_fut);
         let _ = stdout_result;
         let _ = stderr_result;
-        let status = status.map_err(|err| format!("failed to wait for hook child: {err}"))?;
+        let status = child
+            .wait()
+            .await
+            .map_err(|err| format!("failed to wait for hook child: {err}"))?;
         Ok((status, stdout_buf))
     }
 

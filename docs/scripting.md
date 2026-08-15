@@ -376,10 +376,20 @@ declares its own `result_contract` (its frontmatter's own key — see
 [`docs/agents.md`](agents.md)), `--output-schema`'s schema wins outright:
 the two are never merged, and the flag's schema never loses to the def's.
 
-Not supported with `--resume`/`--fork-from` in this release (a usage
-error): neither facade path accepts a caller-supplied result-contract
-override yet — the same restriction `--system-prompt`/the budget flags
-already have, and for the same reason.
+**Composes with `--fork-from`.** A schema combined with `--fork-from` is
+enforced against the FORKED CHILD's own structured result (the parent's own
+turn, if any, is unaffected):
+
+```console
+$ conway -p "branch this" --output-schema answer.schema.json \
+    --fork-from 01H8X.../3 --allowed-tools report
+```
+
+Still not supported with `--resume`: `conway resume`'s facade has no
+per-call parameter of any kind to carry a result-contract override on
+(unlike `--fork-from`, which builds a fresh spec per invocation) — the same
+"no facade parameter" restriction `--system-prompt`/the budget flags have
+with BOTH `--resume` and `--fork-from`.
 
 ## Plugin-contributed subcommands
 
@@ -536,10 +546,11 @@ naming both flags rather than a silently dropped one.
 `--session`, `--resume`, and `--fork-from` are mutually exclusive; with none
 of them, conway starts a fresh session. `--agent` is not supported with
 `--resume`; `--system-prompt`/`--append-system-prompt`/`--max-turns`/
-`--max-tokens`/`--max-seconds`/`--output-schema` are not supported with
-`--resume` or `--fork-from` — each is a usage error naming the flags
-involved rather than a silent drop (see each flag's own section above for
-why).
+`--max-tokens`/`--max-seconds` are not supported with `--resume` or
+`--fork-from` — each is a usage error naming the flags involved rather than
+a silent drop (see each flag's own section above for why). `--output-schema`
+follows that same restriction with `--resume` only — it now composes with
+`--fork-from` (see "`--output-schema`: structured output" above).
 
 ## Next steps
 

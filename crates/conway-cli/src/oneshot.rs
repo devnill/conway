@@ -87,7 +87,11 @@
 //!      `SeqOutOfRange`). `--role-override` is wired through `spec.role`
 //!      (honored by `fork_from`); `--cwd` has no `ForkSpec` field to carry
 //!      it, so combining it with `--fork-from` is a usage error rather than
-//!      a silent drop.
+//!      a silent drop. **`--output-schema` is now also wired through
+//!      `spec.result_contract`** (board item `01M03FQDF33AZ8G258516EDWQD`,
+//!      see reconciliation #6 below) -- it was a usage error with
+//!      `--fork-from` in every earlier release, for a real reason that item
+//!      closed, not an oversight in this module.
 //!
 //!    Every arm now returns a live [`SessionHandle`] straight from
 //!    `resolve_session`, which is why the flag-free default arm and
@@ -157,6 +161,33 @@
 //!    input" other than reading it. A caller that wants `--print`'s text
 //!    alone, with whatever stdin it inherited left untouched, should
 //!    redirect stdin from `/dev/null`.
+//! 6. **`--output-schema` + `--fork-from` (board item
+//!    `01M03FQDF33AZ8G258516EDWQD`).** Reconciliation #3 above described
+//!    `--fork-from` as fully wired; `--output-schema` combined with it was
+//!    nonetheless a usage error, for a real reason (not an oversight in
+//!    THIS module): `conway::Conway::fork_from`'s own `ForkSpec::
+//!    result_contract` field was never read by `fork_from` itself --
+//!    `crate::fork_child::fork_child` (`conway`'s module backing it) built
+//!    a `conway_runtime::runtime::ResumeSpec` with no field to carry a
+//!    contract through at all, so a schema would have silently never been
+//!    enforced had this module tried to pass one. That gap is now closed
+//!    (`ResumeSpec::result_contract`, `conway-runtime`) -- see that field's
+//!    own doc for the mechanism. This module now sets `spec.result_contract`
+//!    on the `--fork-from` arm's `ForkSpec` from the SAME `result_contract`
+//!    local (`resolve_result_contract`) the flag-free and `--session` arms
+//!    already used, so `--output-schema --fork-from <ref>` is no longer
+//!    refused and now genuinely enforces the schema against the forked
+//!    child's structured result.
+//!
+//!    **`--resume` keeps its restriction, for a DIFFERENT and still-real
+//!    reason:** `Conway::resume` takes only a bare `SessionId` -- no spec of
+//!    any kind, so there is no facade parameter this module could even set a
+//!    contract on (the same "no facade parameter" shape as `--system-
+//!    prompt`/the budget flags in reconciliation #4, unaffected by this
+//!    item). Splitting the combined `output_schema_requested && continuing`
+//!    guard into two separate checks (one per flag) is what lets `--fork-
+//!    from` graduate while `--resume` stays refused with its own, accurate
+//!    reason text.
 
 use std::io::{IsTerminal, Read};
 use std::path::PathBuf;
@@ -297,19 +328,17 @@ async fn resolve_session(cli: &Cli, conway: &Conway) -> conway::Result<SessionHa
              budget override yet",
         ));
     }
-    // `ForkSpec::result_contract` exists on the facade type (mirroring
-    // `SubagentSpec::result_contract`, for a model-triggered `conway_fork`)
-    // but `Conway::fork_from` -- what `--fork-from` drives -- never reads it
-    // (its `fork_child` helper goes through `conway_runtime::runtime::
-    // ResumeSpec`, which has no `result_contract` field at all); pre-existing,
-    // not introduced by this item, and flagged rather than silently worked
-    // around. `--resume` has no facade parameter to carry a contract through
-    // either (same shape as `--system-prompt`/the budget flags above). Both
-    // arms are therefore usage errors, not a silent drop.
-    if output_schema_requested && continuing {
+    // `--output-schema` + `--resume`: `Conway::resume` takes only a bare
+    // `SessionId` -- no facade parameter of any kind to carry a contract
+    // through (same "no facade parameter" shape as `--system-prompt`/the
+    // budget flags above). Still a usage error, unaffected by board item
+    // `01M03FQDF33AZ8G258516EDWQD` -- see this module's doc comment,
+    // reconciliation #6, for the full reasoning and why `--fork-from`
+    // (immediately below) is no longer grouped with it.
+    if output_schema_requested && cli.resume.is_some() {
         return Err(usage_error(
-            "--output-schema is not supported with --resume or --fork-from in this release: \
-             neither facade path accepts a caller-supplied result-contract override yet",
+            "--output-schema is not supported with --resume in this release: Conway::resume \
+             accepts no caller-supplied result-contract override",
         ));
     }
     if cli.agent.is_some() && cli.resume.is_some() {
@@ -461,6 +490,15 @@ async fn resolve_session(cli: &Cli, conway: &Conway) -> conway::Result<SessionHa
             // with the named def's, exactly the same "select a persona"
             // capability `--agent` gives a fresh session.
             spec.agent_def = cli.agent.clone();
+            // `--output-schema` now genuinely wires here too (board item
+            // `01M03FQDF33AZ8G258516EDWQD`; see this module's doc comment,
+            // reconciliation #6) -- `ForkSpec::result_contract` is honored
+            // by `Conway::fork_from` as of this item, so the SAME
+            // `result_contract` local the flag-free and `--session` arms
+            // above already use (`--output-schema`, or else the resolved
+            // `--agent`'s own `AgentDef::result_contract`) is set here too,
+            // rather than left at `ForkSpec::new`'s default `None`.
+            spec.result_contract = result_contract;
             conway
                 .fork_from(parent, at, spec)
                 .await
@@ -600,8 +638,10 @@ fn schema_instruction(schema: &RootSchema) -> String {
     )
 }
 
-/// Resolves `--output-schema`'s eventual [`RootSpec::result_contract`]
-/// value: `output_schema` (already loaded/compiled by
+/// Resolves `--output-schema`'s eventual `result_contract` value -- fed into
+/// [`RootSpec::result_contract`] for the flag-free/`--session` arms, and
+/// (board item `01M03FQDF33AZ8G258516EDWQD`) `ForkSpec::result_contract` for
+/// the `--fork-from` arm -- as `output_schema` (already loaded/compiled by
 /// [`load_output_schema`]) when `Some`, else the resolved `--agent` def's
 /// own `AgentDef::result_contract` when it declares one, else `None`.
 ///
