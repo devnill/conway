@@ -343,10 +343,10 @@ fn build_succeeds_for_a_conventionally_named_anthropic_backend() {
 
 /// Indirect but discriminating proof that `with_permission_gate` overrides
 /// config-derived gate selection: `permissions.mode = "prompt"` with no
-/// injected gate always fails `build()` (no `ConwayBuilder` method supplies
-/// a prompt handler -- see `builder.rs`'s module doc), so a `build()`
-/// success with mode `"prompt"` *and* an injected gate can only be explained
-/// by the injected gate having been used instead of `gates::from_config`.
+/// injected gate and no `with_prompt_handler` handler always fails
+/// `build()`, so a `build()` success with mode `"prompt"` *and* an injected
+/// gate can only be explained by the injected gate having been used instead
+/// of `gates::from_config`.
 #[test]
 fn injected_permission_gate_overrides_config_derived_selection() {
     let mut cfg = base_config();
@@ -379,6 +379,74 @@ fn injected_permission_gate_overrides_config_derived_selection() {
         .with_router(fake_router())
         .build()
         .expect("an injected gate must bypass config-derived prompt-mode selection");
+}
+
+/// `with_prompt_handler` is the direct path a `permissions.mode = "prompt"`
+/// config needs when a host has ONE closure to answer permission requests,
+/// not a reason to hand-roll a whole `PermissionGate`. Discriminating the
+/// same way the pre-existing `injected_permission_gate_overrides_config_
+/// derived_selection` test above does: `gates::from_config` (step 9 of
+/// `build()`) errors synchronously, at construction, when `permissions.mode
+/// = "prompt"` and it receives no handler -- proven above by the identical
+/// config failing `build()` with no override at all. `build()` succeeding
+/// here, with only `with_prompt_handler` (no `with_permission_gate`) set,
+/// can only be explained by this handler having reached `gates::from_config`
+/// and let it construct a `PromptingGate` instead of erroring.
+#[test]
+fn with_prompt_handler_satisfies_prompt_mode_with_no_injected_gate() {
+    let mut cfg = base_config();
+    cfg.permissions = PermissionsConfig {
+        mode: PermissionMode::Prompt,
+        allowed_tools: vec![],
+        denied_tools: vec![],
+    };
+    let handler: conway::gates::PromptHandler =
+        Arc::new(|_req| Box::pin(async { PermissionDecision::AllowOnce }));
+
+    ConwayBuilder::from_parts(cfg)
+        .with_backend(fake_backend("fake"))
+        .with_session_store(Arc::new(FakeStore::new()))
+        .with_router(fake_router())
+        .with_prompt_handler(handler)
+        .build()
+        .expect("with_prompt_handler must satisfy prompt-mode gate selection");
+}
+
+/// `with_permission_gate` wins over `with_prompt_handler` when both are
+/// called: `gates::from_config` is never even reached, so the handler is
+/// simply never invoked. Proven the same discriminating way as
+/// `injected_permission_gate_overrides_config_derived_selection`: a handler
+/// that always denies would make the turn below fail if it were somehow
+/// still consulted, and an always-allow injected gate is what actually
+/// authorizes it instead.
+#[test]
+fn with_permission_gate_wins_over_with_prompt_handler() {
+    let mut cfg = base_config();
+    cfg.permissions = PermissionsConfig {
+        mode: PermissionMode::Prompt,
+        allowed_tools: vec![],
+        denied_tools: vec![],
+    };
+    let denying_handler: conway::gates::PromptHandler = Arc::new(|_req| {
+        Box::pin(async {
+            PermissionDecision::Deny {
+                reason: "test handler always denies".to_string(),
+            }
+        })
+    });
+    let allowing_gate = Arc::new(FakeGate::new(PermissionDecision::AllowOnce));
+
+    ConwayBuilder::from_parts(cfg)
+        .with_backend(fake_backend("fake"))
+        .with_session_store(Arc::new(FakeStore::new()))
+        .with_router(fake_router())
+        .with_prompt_handler(denying_handler)
+        .with_permission_gate(allowing_gate)
+        .build()
+        .expect(
+            "an injected gate must win over a prompt handler, so build() succeeds regardless \
+             of the handler's own (denying) decision",
+        );
 }
 
 #[cfg(feature = "builtin-tools")]

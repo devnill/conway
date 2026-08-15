@@ -14,8 +14,11 @@
 //! For a REAL session, drop the fake wiring and start from
 //! [`conway::ConwayBuilder::discover`] (loads `~/.conway/settings.json` plus
 //! any project config) or [`conway::ConwayBuilder::from_config`], which bring
-//! real backends and capability-based routing. The CLI
-//! (`crates/conway-cli`) is the production entry point.
+//! real backends and capability-based routing. `examples/
+//! discover_getting_started.rs` is that path actually exercised, not just
+//! named -- read it for what discovery supplies for you and what it
+//! deliberately still asks you for. The CLI (`crates/conway-cli`) is the
+//! production entry point.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

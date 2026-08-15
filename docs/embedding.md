@@ -59,54 +59,135 @@ real I/O — it bridges that with a throwaway single-purpose runtime on a
 fresh thread. Calling it from inside an existing `tokio` task works, but
 briefly blocks that task; if you care, run it via `spawn_blocking` instead.
 
-## A minimal example
+## From `cargo add conway` to a first answer
 
-`crates/conway/examples/minimal_session.rs` is a complete, runnable example
-— it imports only facade re-exports plus `conway_testkit` (a dev-only
-test double crate), so it needs no config file, no credentials, and no
-network:
+`ConwayConfig` has fourteen fields, and hand-building one by struct literal
+means naming every one of them — `ConwayConfig` has no `Default`, on
+purpose (see "Discovery, not a struct literal" below). But you almost never
+need to build one by hand: `ConwayBuilder::discover()` already layers a
+documented, built-in default over all fourteen — the same five-source
+precedence chain (default < XDG < project < env < CLI) a `settings.json`,
+an environment variable, or a CLI flag all flow through — so a host with no
+`~/.conway/settings.json` anywhere still gets a fully-formed, valid config
+back, not an error and not a struct-literal ceremony. `crates/conway/
+examples/discover_getting_started.rs` is that path, actually run, not just
+described:
 
 ```console
-cargo run -p conway --example minimal_session
+cargo run -p conway --example discover_getting_started
 ```
 
 ```text
 prompt -> Hello, conway!
-ask    -> (ephemeral) just checking something
-main-session log head: LogSeq(4) before the ask, LogSeq(4) after -> the ephemeral ask left no trace in the main session
 ```
 
-The shape that matters, trimmed:
+The whole thing, trimmed only for the doc-comment prose the real file
+carries (read `discover_getting_started.rs` itself for the reasoning behind
+every line):
 
 ```rust
-let conway = ConwayBuilder::from_parts(minimal_config())
-    .with_backend(Arc::new(FakeBackend::echo(BackendId::new("fake"))))
-    .with_permission_gate(Arc::new(FakeGate::new(PermissionDecision::AllowOnce)))
-    .with_session_store(store.clone())
-    .with_router(Arc::new(FakeRouter::single(ModelRef { .. })))
+let conway = ConwayBuilder::discover()?
+    // Per-field overrides over discover()'s own defaults -- not a second
+    // config. See below for why these two are still explicit.
+    .with_cli_overrides(CliOverrides {
+        permission_mode: Some("deny".to_string()),
+        ..CliOverrides::default()
+    })
+    .with_builtin_plugins(PluginSelection::None)
+    .with_backend(backend)
+    .with_router(Arc::new(FakeRouter::single(route)))
+    .with_session_store(Arc::new(FakeStore::new()))
     .build()?;
 
 let session = conway.new_session(SessionSpec::default()).await?;
 let turn = session.prompt("Hello, conway!").await?;
 println!("prompt -> {}", turn.text().await?);
-let _ = turn.result().await?;
 ```
 
-For a **real** session — a real backend, real role routing over an ordered
-fallback chain, a real store — drop the fake wiring and start from
-`ConwayBuilder::discover()`
-or `from_config(path)` instead; those bring everything `conway new_session`
-would need, the same construction the CLI itself uses (see
-`crates/conway-cli/src/main.rs`'s `build_conway`).
+**Two things are still explicit, deliberately — this is where "discovers"
+stops and "would be guessing" starts:**
 
-**One default you must override before `build()` will succeed on an
-unmodified config:** `permissions.mode` defaults to `"prompt"`, and there
-is no `ConwayBuilder::with_prompt_handler` — `build()` calls
-`gates::from_config` with `prompt_handler: None` unconditionally, and a
-`"prompt"` mode with no handler is a `ConwayError::Config`, not a silent
-fallback. Either set `permissions.mode` to `"allowlist"` or `"deny"` in your
-config, or call `.with_permission_gate(..)` yourself (see below) — one of
-the two is mandatory for `build()` to succeed with a default-shaped config.
+- **A `Backend`.** Nobody may be silently
+  billed for a provider they never named, so there is no compiled-in
+  fallback backend, ever — `with_backend` (or `with_backend_factory`, for a
+  config-driven one) is mandatory. The example above injects a fake one to
+  stay offline; `crates/conway/examples/real_provider_inference.rs` is the
+  identical screenful with a genuine
+  `conway_plugin_backends::openai_compat::OpenAiCompatBackend` wired to a
+  real endpoint instead.
+- **Where to route.** The built-in default document's baked-in role
+  (`default_role = "coder"`, an empty chain) deliberately names no
+  destination — see `ConwayBuilder`'s own module doc for why `default_role`
+  has no opinion worth inventing at the core. A caller who already knows
+  exactly which backend/model to use (the common embedding case) bypasses
+  role/chain resolution entirely with `with_router`, as above; a caller who
+  wants real role-based fallback routing declares `[roles.<alias>].chain` in
+  config instead (see "Providers and roles" below) and skips `with_router`.
+
+Everything else — session storage, limits, tool registration, headroom —
+comes from `discover()`'s own layered defaults, or from the two lightweight
+PER-FIELD overrides used above (`CliOverrides`, `PluginSelection`), never a
+second, competing construction path.
+
+**Permissions default to `"prompt"`, which needs a handler.** Discovery's
+built-in default sets `permissions.mode = "prompt"` — the friendliest
+default, "ask," rather than "deny" or "allow everything" — and `build()`
+fails with a named `ConwayError::Config` if it resolves to `"prompt"` with
+neither a handler nor an injected gate, rather than silently picking one
+for you. Two ways to satisfy it: `ConwayBuilder::with_prompt_handler(..)`
+(the direct path — hand it the one closure your host already has for "may
+this proceed?", no need to implement `PermissionGate` yourself for that),
+or override `permissions.mode` to `"allowlist"`/`"deny"` (what the example
+above does, via `CliOverrides`, since it stays offline and has no UI to ask
+through). See "Permissions" below for both, and
+`crates/conway/examples/custom_permission_gate.rs` for a full
+`PermissionGate` implementation when a handler closure isn't expressive
+enough.
+
+**More examples**, each runnable and each with its own doc comment
+explaining what it proves:
+
+| Example | What it shows |
+| --- | --- |
+| `minimal_session.rs` | The original offline smoke test: `from_parts` with a hand-built config, `ask`'s ephemerality. |
+| `bare_inference.rs` | What the fourteen-field ceremony costs when you genuinely need `from_parts` (no filesystem, no ambient environment) — and why `discover_getting_started.rs` doesn't pay it. |
+| `discover_getting_started.rs` | This section's screenful, actually run. |
+| `custom_permission_gate.rs` | A third-party `PermissionGate` implementation, genuinely consulted during a real tool call. |
+| `event_stream_consumer.rs` | Consuming `SessionHandle::events()` live instead of waiting on `TurnHandle::text`/`result`. |
+| `real_provider_inference.rs` | The same screenful against a real OpenAI-compatible endpoint — opt-in only, never runs a network call unattended. |
+
+### Discovery, not a struct literal
+
+`ConwayConfig` deliberately has no `#[derive(Default)]`, even though
+thirteen of its fourteen field types do. `default_role: RoleAlias` is the
+one holdout, and it is a decision, not an oversight: a `Default` impl would
+have to pick SOME role name, and any name it picked would be an opinion the
+core has no business holding — conway serves a coding agent and a bare
+inference call equally, and neither reading of "the default role" is more
+correct than the other at this layer. Inventing one anyway (`"assistant"`,
+`"default"`, anything) would be exactly the "guesses silently" failure mode
+this page opens by rejecting: a caller who never thought about roles would
+get an opinionated one anyway, discoverable only by reading source.
+
+So there is no `ConwayConfig::default()`, and there does not need to be.
+`ConwayBuilder::discover()` answers the same question a different, honest
+way: it reads a REAL, inspectable, versioned answer (`config::merge::
+default_document`'s `default_role = "coder"`, paired with an empty
+`roles.coder.chain`) off the same five-source precedence chain a
+`settings.json` would override — a stated, overridable convention, not a
+value baked silently into a Rust `impl`. `Conway::config()`/`LoadOutcome::
+warnings` make it inspectable after the fact, and an empty chain fails
+routing with a NAMED `RoutingError::NoCandidate` the moment you actually
+try to use it unmodified — never a silent fallback to some other model. A
+caller who wants no opinion about roles at all skips the question entirely
+with `with_router`, as the screenful above does.
+
+If you genuinely need a config with no filesystem and no ambient
+environment involved at all (an embedded target, a from-scratch test
+fixture) — `ConwayBuilder::from_parts(ConwayConfig)` is still there, and
+you still name all fourteen fields, because there is still no default
+value for `default_role` to fall back to. `bare_inference.rs` is that path,
+deliberately exercised so the cost is visible rather than assumed away.
 
 ## Configuring providers, roles, permissions, and confinement
 
@@ -116,13 +197,13 @@ Declaratively, these are the same `.conway/settings.json` shape
 [`getting-started.md`](getting-started.md) documents — `ConwayConfig`
 (`conway::config::schema::ConwayConfig`) is exactly what `discover()`/
 `from_config()` parse it into, and what `from_parts()` takes directly if you
-build one in code (`minimal_config()` in the example above does this: a
-`BTreeMap<String, RoleEntry>` for `roles`, a `BTreeMap<String,
+build one in code (`minimal_session.rs`'s own `minimal_config()` does this:
+a `BTreeMap<String, RoleEntry>` for `roles`, a `BTreeMap<String,
 BackendEntry>` for `backends`). To inject an already-constructed provider
 instead of a config-file entry, `ConwayBuilder::with_backend(Arc<dyn
 Backend>)` takes precedence over any config-derived backend with the same
-`Backend::id()` — this is how the minimal example supplies its fake backend
-with no `backends` table at all.
+`Backend::id()` — this is how `minimal_session.rs`/`discover_getting_started.rs`
+both supply their fake backend with no `backends` table entry at all.
 
 ### Loading config without the ambient user layer
 
@@ -197,13 +278,30 @@ facade's top-level re-export of `conway_core::permission_mode::
 PermissionMode` — `Prompt`/`Plan`/`AutoAllow`, the *runtime* behavior mode a
 live `Conway` is in, read via `Conway::permission_mode()`/set via
 `Conway::set_permission_mode()`): same word, two different enums at two
-different layers, easy to conflate. To supply your own gate outright —
-including a real interactive prompt handler, which conway ships no built-in
-implementation of — implement `PermissionGate` yourself (`async fn
-check(&self, req: PermissionRequest) -> PermissionDecision`, both types
-facade re-exports — this is the one extension point that needs nothing
-beyond the `conway` crate; see "What's reachable" below) and pass it to
-`ConwayBuilder::with_permission_gate`.
+different layers, easy to conflate.
+
+`mode = "prompt"` — discovery's own default — needs SOMETHING to answer
+"may this proceed?" with, and conway ships no built-in implementation of
+that decision itself (only the three modes' *selection* machinery). Two
+ways to supply one, in order of how much you need to write:
+
+- **`ConwayBuilder::with_prompt_handler(handler)`** — the direct path, for
+  the common case where you have exactly one closure: `Arc<dyn
+  Fn(PermissionRequest) -> BoxFuture<'static, PermissionDecision> + Send +
+  Sync>` (`conway::gates::PromptHandler`). `gates::from_config` wraps it in
+  a `PromptingGate` for you. Not calling this (and not calling
+  `with_permission_gate` either) leaves `mode = "prompt"` failing `build()`
+  with a named `ConwayError::Config` — never a silent `AllowAlways`/`DenyAll`
+  substitute.
+- **`ConwayBuilder::with_permission_gate(gate)`** — supply your own gate
+  outright, for policy a single closure can't express (per-tool audit
+  logging, an allow-list keyed off your own data). Implement
+  `PermissionGate` yourself (`async fn check(&self, req: PermissionRequest)
+  -> PermissionDecision`, both types facade re-exports — this is the one
+  extension point that needs nothing beyond the `conway` crate; see "What's
+  reachable" below). Wins unconditionally over a prompt handler if both are
+  set. `crates/conway/examples/custom_permission_gate.rs` is a complete,
+  runnable one.
 
 ### Confinement
 
@@ -478,6 +576,9 @@ library embedder calling `with_router_factory` directly — all three reach
 the same `ConwayBuilder::build()` router step.
 
 ## Consuming the event stream
+
+`crates/conway/examples/event_stream_consumer.rs` is this section, actually
+run and runnable (`cargo run -p conway --example event_stream_consumer`).
 
 `SessionHandle::events()` and `TurnHandle::events()` both return
 `conway::EventStream`, which implements `futures_core::Stream<Item =

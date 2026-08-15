@@ -482,6 +482,7 @@ dependencies = [
  "conway-testkit",
  "conway-tools",
  "directories",
+ "futures",
  "futures-core",
  "globset",
  "jsonschema",
