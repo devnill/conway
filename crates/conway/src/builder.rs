@@ -145,6 +145,7 @@ use crate::error::{ConwayError, Result};
 use crate::gates;
 #[cfg(feature = "builtin-tools")]
 use crate::presets;
+use crate::skills;
 
 /// The capacity of the runtime's broadcast event bus. ASSUMPTION: no
 /// criterion pins this value and `conway-runtime` exports no default
@@ -1262,6 +1263,18 @@ impl ConwayBuilder {
         let agents_dir = resolve_path(&cwd, &config.agents.dir);
         let agent_defs = agents::load_agent_defs(&agents_dir)?;
 
+        // 11b. Skill defs (board item `01M03GKZ3MGZK3ETP6R27E2M9Y`). No
+        // `[skills]` config section exists (or is needed): unlike
+        // `AgentsConfig::dir`, skill *selection* is already fully
+        // established by `AgentDef.skills`' name list -- a configurable
+        // directory would add config surface this item's own scope doesn't
+        // call for. `.conway/skills`, resolved against the same `cwd` as
+        // every other `.conway/`-relative path here, mirrors
+        // `AgentsConfig::dir`'s own default (`.conway/agents`) and
+        // `docs/vision/CATALOGUE.md` entry 2's proposed layout.
+        let skills_dir = resolve_path(&cwd, Path::new(".conway/skills"));
+        let skill_defs = skills::load_skill_defs(&skills_dir)?;
+
         // 12. Runtime::new.
         let event_bus = EventBus::new(EVENT_BUS_CAPACITY);
         let rt = Runtime::new(RuntimeDeps {
@@ -1272,6 +1285,7 @@ impl ConwayBuilder {
             plugins: resolved_plugins,
             gate,
             agent_defs,
+            skills: skill_defs,
             event_bus,
             headroom: Arc::new(headroom_policy),
         });

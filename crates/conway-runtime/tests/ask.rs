@@ -205,6 +205,7 @@ fn build_runtime_with_backend(backend: Arc<dyn Backend>, bus: Arc<EventBus>) -> 
         plugins: vec![],
         gate: Arc::new(FakeGate::new(PermissionDecision::AllowOnce)),
         agent_defs: HashMap::new(),
+        skills: Default::default(),
         event_bus: bus,
         headroom: Arc::new(HeadroomPolicy::default()),
     })
@@ -648,6 +649,7 @@ fn build_runtime_with_backend_and_defs(
         plugins: vec![],
         gate: Arc::new(FakeGate::new(PermissionDecision::AllowOnce)),
         agent_defs,
+        skills: Default::default(),
         event_bus: bus,
         headroom: Arc::new(HeadroomPolicy::default()),
     })

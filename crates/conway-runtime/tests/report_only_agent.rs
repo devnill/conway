@@ -693,6 +693,7 @@ fn runtime_with_plugins(
         plugins,
         gate: Arc::new(FakeGate::new(PermissionDecision::AllowOnce)),
         agent_defs,
+        skills: Default::default(),
         event_bus: EventBus::with_default_capacity(),
         headroom: Arc::new(HeadroomPolicy::default()),
     });

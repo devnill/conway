@@ -155,6 +155,7 @@ mod result_contract_via_def {
             plugins: Vec::<Arc<dyn Plugin>>::new(),
             gate: Arc::new(FakeGate::new(PermissionDecision::AllowOnce)),
             agent_defs,
+            skills: Default::default(),
             event_bus: EventBus::new(1024),
             headroom: Arc::new(HeadroomPolicy::default()),
         });

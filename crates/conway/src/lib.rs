@@ -42,6 +42,7 @@ mod output_schema;
 mod permissions;
 pub mod presets;
 mod session_handle;
+pub mod skills;
 mod subagent_spec;
 
 pub use builder::{ConwayBuilder, PluginSelection};

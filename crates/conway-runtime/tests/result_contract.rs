@@ -883,6 +883,7 @@ async fn a_spawned_childs_result_contract_is_enforced_through_subagent_host() {
         plugins: vec![],
         gate: Arc::new(FakeGate::new(PermissionDecision::AllowOnce)),
         agent_defs: std::collections::HashMap::new(),
+        skills: Default::default(),
         event_bus: EventBus::new(1024),
         headroom: Arc::new(HeadroomPolicy::default()),
     });
@@ -1194,6 +1195,7 @@ async fn keep_alive_with_a_result_contract_is_refused_by_subagent_host() {
         plugins: vec![],
         gate: Arc::new(FakeGate::new(PermissionDecision::AllowOnce)),
         agent_defs: std::collections::HashMap::new(),
+        skills: Default::default(),
         event_bus: EventBus::new(1024),
         headroom: Arc::new(HeadroomPolicy::default()),
     });
