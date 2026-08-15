@@ -36,6 +36,7 @@ fn meta(id: SessionId, origin: Option<ForkOrigin>, ephemeral: bool) -> SessionMe
         ephemeral,
         ask_origin: None,
         root: None,
+        plugin_config: conway_core::ports::PluginConfig::default(),
     }
 }
 

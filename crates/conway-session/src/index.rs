@@ -101,6 +101,16 @@ struct IndexLine {
     /// the same rather than trusting this field.
     #[serde(default)]
     root: Option<PathBuf>,
+    /// Projects `SessionMeta::plugin_config` (S1.5 resume gap) -- same
+    /// reasoning as `root` immediately above, including the identical
+    /// staleness/non-authoritative caveat: `#[serde(default)]` decodes an
+    /// `index.jsonl` written before this field existed as the empty map
+    /// until the next rebuild, which must never be read as "no per-agent
+    /// plugin narrowing." `Runtime::resume_root` re-validates the real
+    /// value from the session's own header via `SessionStore::meta`, never
+    /// this projection -- see that method's own doc.
+    #[serde(default)]
+    plugin_config: conway_core::ports::PluginConfig,
 }
 
 impl IndexLine {
@@ -123,6 +133,7 @@ impl IndexLine {
             ephemeral: meta.ephemeral,
             ask_origin: meta.ask_origin,
             root: meta.root.clone(),
+            plugin_config: meta.plugin_config.clone(),
         }
     }
 
@@ -147,6 +158,7 @@ impl IndexLine {
             ephemeral: self.ephemeral,
             ask_origin: self.ask_origin,
             root: self.root,
+            plugin_config: self.plugin_config,
         }
     }
 }

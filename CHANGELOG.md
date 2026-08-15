@@ -9,6 +9,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A resumed agent's per-agent plugin config survives the store round-trip
+  instead of silently reverting to the unconfined global default.**
+  `SessionMeta` gains a `plugin_config` field mirroring `root`'s precedent:
+  a child's full effective narrowing is persisted onto its header, and
+  `Runtime::resume_root` **re-derives** the resumed agent's config by
+  re-applying `PluginConfig::narrow` against the *current* global config and
+  the *currently* installed plugins' narrowing rules — never by trusting the
+  persisted record verbatim, because a record trusted on resume is a route
+  to a root wider than the parent imposed. A key a plugin no longer declares
+  narrowable refuses the resume outright with a typed error, rather than
+  dropping the narrowing (which returns wider, with no signal) or keeping a
+  value nothing enforces. Wire compatibility falls out of the reused open-map
+  type: an older conway carries an unfamiliar key forward untouched, and a
+  newer one reads a log without the field as "no narrowing recorded".
+- **One-shot composes with piped stdin instead of silently dropping it.**
+  `-p "<text>"` is the directive and piped, non-terminal stdin is the data it
+  operates on — the split `grep PATTERN` makes between its argv pattern and
+  its stdin corpus — joined directive-first. `cat error.log | conway -p "what
+  broke?"` now sends the model both; previously the piped bytes were read by
+  nothing. A bare `-p` with piped stdin, and `-p "<text>"` with no pipe, are
+  unchanged. Consequence, disclosed rather than discovered later: stdin is now
+  probed even when `-p` carries text, so an inherited pipe that never closes
+  will block — redirect from `/dev/null` if that is not what you want.
+
+### Changed
+
+- **The shipped default role is named `default`, not `coder`.**
+  `config::merge::default_document`'s lowest-precedence layer baked in
+  `default_role = "coder"` — a coding-agent opinion in a facade that serves a
+  coding agent and a bare inference call equally, which is the same asymmetry
+  `docs/embedding.md` already rejects one layer up for `ConwayConfig`'s
+  absent `Default`. The role still exists with an empty chain, so an
+  unmodified default still fails loud with a named `RoutingError::NoCandidate`
+  rather than routing anywhere — now pinned by a paired positive/negative
+  test. Only the name changed. An embedder relying on `discover()`'s baked-in
+  defaults naming `coder` specifically is affected; a real project
+  `settings.json`, env var, or CLI override is not.
+
+### Added
+
 - **Plugin configuration becomes per-agent state, narrowing-only down the
   fork/spawn tree, with `conway.fs`'s own root as the proving consumer.** A
   plugin declares which of its `PluginConfig` keys may vary per agent
@@ -23,8 +63,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   outright** with a typed error rather than being silently clamped or
   honoured. `Plugin::narrowable_keys` defaults to empty, so every existing
   implementor keeps compiling and keeps today's global-only semantics.
-  Known gap: per-agent config is not yet persisted to `SessionMeta`, so a
-  resumed session reverts to the global default.
 - **`/checkout` and a reachable `ContextMask` — the session-history
   plugin's second and third commands.** `/conway.history.mask <seq>
   [unmask]` is `LogRecord::ContextMask`'s first real producer: an ordinary

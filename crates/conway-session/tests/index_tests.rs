@@ -41,6 +41,7 @@ fn meta_full(id: SessionId, created: DateTime<Utc>, origin: Option<ForkOrigin>) 
         ephemeral: false,
         ask_origin: None,
         root: None,
+        plugin_config: conway_core::ports::PluginConfig::default(),
     }
 }
 

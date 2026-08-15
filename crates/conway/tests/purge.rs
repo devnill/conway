@@ -349,6 +349,7 @@ async fn sweep_reaps_modal_ask_residue_but_never_tool_ask_or_untagged_sessions()
         ephemeral: true,
         ask_origin: Some(AskOrigin::ToolAsk),
         root: None,
+        plugin_config: conway_core::ports::PluginConfig::default(),
     };
     let tool_ask_session = store
         .fork(&root_session, root_head, tool_ask_meta)
@@ -369,6 +370,7 @@ async fn sweep_reaps_modal_ask_residue_but_never_tool_ask_or_untagged_sessions()
         ephemeral: true,
         ask_origin: None,
         root: None,
+        plugin_config: conway_core::ports::PluginConfig::default(),
     };
     let untagged_session = store
         .fork(&root_session, root_head, untagged_meta)

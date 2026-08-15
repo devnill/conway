@@ -1512,6 +1512,51 @@ mod tests {
         );
     }
 
+    /// (S1.5 resume gap) `conway_runtime::runtime::root::Runtime::
+    /// resume_root` re-validates a resumed session's persisted
+    /// `SessionMeta::plugin_config` by calling exactly this method --
+    /// `self.loop_deps.plugin_config.narrow(Some(&meta.plugin_config), ..)`
+    /// -- with the CURRENT process-wide global config as `self` (the
+    /// ceiling) and the PERSISTED value as `requested`. This test proves
+    /// that call refuses a genuine widen attempt, using a synthetic
+    /// non-empty ceiling: today's `RuntimeDeps` carries no
+    /// operator-configurable global `plugin_config` (`Runtime::new` always
+    /// builds it as `PluginConfig::default()`), so a `Runtime`-level
+    /// integration test cannot yet manufacture a non-empty ceiling to
+    /// exercise this exact branch through `resume_root` itself -- see
+    /// `crates/conway-runtime/src/runtime/root.rs`'s own doc comment on that
+    /// call site, which names this test directly. This unit test closes that
+    /// gap by exercising the identical function `resume_root` calls, proving
+    /// the branch is real and reachable, not dead code: a future non-empty
+    /// global default needs no further change at that call site to be
+    /// protected by it.
+    #[test]
+    fn resuming_a_persisted_plugin_config_wider_than_the_current_global_default_is_refused() {
+        // The CURRENT global default (what a brand-new root's own effective
+        // config would be) already narrows `acme.limit` to 3 -- e.g. an
+        // operator tightened the operator-level config between the process
+        // that spawned this session and the process resuming it.
+        let current_global_default = config_with("acme.limit", 3);
+        // The session's OWN persisted value, written back when a WIDER
+        // global default (or no ceiling at all) was in effect -- exactly
+        // what a resume path that "reconstructs a root by any route other
+        // than the one that validated it" (this item's own hazard
+        // language) could otherwise let through unchecked.
+        let persisted = config_with("acme.limit", 10);
+
+        let err = current_global_default
+            .narrow(Some(&persisted), &ceiling_rules())
+            .unwrap_err();
+        assert_eq!(
+            err,
+            PluginConfigError::WouldWiden {
+                key: "acme.limit".to_string()
+            },
+            "a resumed value wider than the current global default must be refused, \
+             never silently clamped and never silently honored"
+        );
+    }
+
     #[test]
     fn narrow_rejects_a_key_no_plugin_declared_narrowable() {
         let parent = PluginConfig::default();

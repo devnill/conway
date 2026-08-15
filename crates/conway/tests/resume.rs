@@ -378,6 +378,7 @@ async fn resume_succeeds_on_a_session_with_a_truncated_trailing_line() {
                 ephemeral: false,
                 ask_origin: None,
                 root: None,
+                plugin_config: conway_core::ports::PluginConfig::default(),
             })
             .await
             .expect("create should succeed");
@@ -581,6 +582,7 @@ fn session_meta_with_labels(labels: Vec<String>) -> conway_core::log::SessionMet
         ephemeral: false,
         ask_origin: None,
         root: None,
+        plugin_config: conway_core::ports::PluginConfig::default(),
     }
 }
 

@@ -340,15 +340,31 @@ fn resolve_metadata_path(config: &ConwayConfig, cwd: &std::path::Path) -> PathBu
 /// `schema::DEFAULT_HEADROOM_TOKENS`'s doc comment for why `8_192` (not the
 /// amendment's literal `16000`) is used.
 ///
-/// `roles.coder` (an empty chain, no headroom override) is baked in so that
-/// `default_role = "coder"` — itself a baked-in default — passes the
-/// "`default_role` exists in `[roles]`" validation check even when every
-/// other source is absent (the bare-defaults / "D wins" precedence-test
-/// stage). An empty chain trivially satisfies the chain-format/backend-
-/// existence check too.
+/// `roles.default` (an empty chain, no headroom override) is baked in so
+/// that `default_role = "default"` — itself a baked-in default — passes
+/// the "`default_role` exists in `[roles]`" validation check even when
+/// every other source is absent (the bare-defaults / "D wins" precedence-
+/// test stage). An empty chain trivially satisfies the chain-format/
+/// backend-existence check too.
+///
+/// **Named `"default"`, not `"coder"` (board item
+/// 01M02CWXP4846SX97KNW35501S).** This layer used to ship `"coder"` here,
+/// which was a coding-agent opinion in a facade that serves a coding agent
+/// and a bare inference call equally — the exact asymmetry `docs/
+/// embedding.md`'s "Discovery, not a struct literal" section already
+/// rejects for `ConwayConfig`'s absent `Default` impl one layer up
+/// (settled by board item 01M00QGYR1M8F71HTAA1S3PEKS). Renaming the JSON
+/// key instead of dropping it keeps the property that section documents
+/// and this crate's tests still prove: an unmodified default routes
+/// nowhere and fails loud (`RoutingError::NoCandidate`) rather than
+/// silently — dropping `default_role`/`roles` entirely here instead would
+/// turn "D wins" into a five-source-precedence failure mode with no
+/// baked-in floor, a strictly larger change this finding did not ask for.
+/// `"default"` names the role's actual content (an unconfigured
+/// placeholder), not a task any particular embedder performs.
 fn default_document() -> Value {
     serde_json::json!({
-        "default_role": "coder",
+        "default_role": "default",
         "cwd": ".",
         "session": {
             "root": ".conway/sessions",
@@ -371,7 +387,7 @@ fn default_document() -> Value {
             "default_headroom_tokens": crate::config::schema::DEFAULT_HEADROOM_TOKENS,
         },
         "roles": {
-            "coder": { "chain": [], "headroom_tokens": null },
+            "default": { "chain": [], "headroom_tokens": null },
         },
         "health": {
             "transport_failures_to_open": 3,
