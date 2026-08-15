@@ -13,14 +13,18 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use chrono::Utc;
 use conway_core::agent::{
     AgentDefRef, Budget, CancelMode, PermissionDecision, ResultStatus, SubagentMode, SubagentSpec,
     ToolSelector,
 };
-use conway_core::capabilities::{HeadroomPolicy, RequiredCaps};
+use conway_core::capabilities::{
+    Capabilities, CacheMode, HeadroomPolicy, ProbeReport, ReliabilityTier, RequiredCaps,
+    StructuredOutput, ToolCallSupport,
+};
 use conway_core::config::AgentDef;
 use conway_core::content::{ContentBlock, Role, SamplingParams, StopReason, Usage};
-use conway_core::error::{RuntimeError, SubagentError, ToolError};
+use conway_core::error::{BackendError, RuntimeError, SubagentError, ToolError};
 use conway_core::event::Event;
 use conway_core::fakes::{
     FakeGate, FakeHealth, FakeRouter, FakeStore, ScriptedBackend, ScriptedTurn,
@@ -28,8 +32,8 @@ use conway_core::fakes::{
 use conway_core::ids::{AgentId, BackendId, LogSeq, ModelId, ModelRef, RoleAlias, SessionId};
 use conway_core::log::{ForkOrigin, SessionFilter, SessionMeta};
 use conway_core::ports::{
-    Backend, ContextHook, ContextHookCtx, ContextPayload, LiveOwner, Router, SessionStore,
-    SubagentHandle, SubagentHost,
+    Backend, BoxStream, ContextHook, ContextHookCtx, ContextPayload, GenerateRequest,
+    GenerateResponse, LiveOwner, Router, SessionStore, StreamChunk, SubagentHandle, SubagentHost,
 };
 use conway_core::provenance::Provenance;
 use conway_core::routing::{HealthConfig, MinimalRouter, RoleConfig, RoutingConfig};
@@ -3560,4 +3564,191 @@ async fn a_partially_answered_batch_keeps_the_answered_call_and_drops_the_rest()
             .any(|e| matches!(&e.provenance, Provenance::Inherited { .. })),
         "the answered call and its result remain inherited"
     );
+}
+
+// ---------------------------------------------------------------------
+// The supervisor's terminal-result guarantee, exercised through the REAL
+// `SubagentHost::start`/`await_result` path -- board item
+// 01KZY8SB15M9KWZGGGMZAEM1E0's own added-acceptance criterion.
+//
+// `PHILOSOPHY.md` §1: "a parent awaiting a child cannot hang, because a
+// terminal result is synthesized on panic, budget exhaustion, or
+// cancellation." `tests/supervisor.rs` already proves the panic half of
+// this at the unit level, directly against `supervisor::supervise` with a
+// bare `tokio::spawn(async { panic!(...) })` task and a mock tree/bus (see
+// `panic_in_task_resolves_failed_mentioning_panic_within_1s` and
+// `synthesized_panic_dispatches_child_reported_when_a_parent_exists`) --
+// but neither drives a genuine child THROUGH `Runtime`, so neither proves
+// the panic boundary survived wherever `start_root`/`launch_agent` end up
+// living after a split. This test closes that gap end to end: a real
+// `AgentDef`-routed child backend panics inside `AgentLoop::run()`'s own
+// spawned task, and the parent's `SubagentHost::await_result` -- the same
+// call a `wait`/`ask` tool makes -- must still resolve, not hang.
+// ---------------------------------------------------------------------
+
+/// A `Backend` whose `generate`/`stream` panic unconditionally -- unlike
+/// `ScriptedBackend`'s own `ScriptedTurn::Fail` (an ordinary `BackendError`,
+/// already exercised elsewhere), this drives a REAL Rust panic inside the
+/// spawned agent task, the exact `JoinError::is_panic` boundary
+/// `supervisor::supervise`'s `Outcome::from_join` catches.
+struct PanickingBackend {
+    id: BackendId,
+}
+
+impl PanickingBackend {
+    fn new(id: BackendId) -> Self {
+        Self { id }
+    }
+}
+
+#[async_trait]
+impl Backend for PanickingBackend {
+    fn id(&self) -> BackendId {
+        self.id.clone()
+    }
+
+    fn capabilities(&self, _model: &ModelId) -> Capabilities {
+        Capabilities {
+            tool_calling: ToolCallSupport::None,
+            cache: CacheMode::None,
+            parallel_tool_calls: false,
+            structured_output: StructuredOutput::None,
+            max_context_tokens: 128_000,
+            reasoning: false,
+            reliability_tier: ReliabilityTier::Unknown,
+        }
+    }
+
+    async fn generate(&self, _req: GenerateRequest) -> Result<GenerateResponse, BackendError> {
+        panic!("PanickingBackend::generate always panics -- the boundary this test exercises");
+    }
+
+    async fn stream(
+        &self,
+        _req: GenerateRequest,
+    ) -> Result<BoxStream<'static, Result<StreamChunk, BackendError>>, BackendError> {
+        panic!("PanickingBackend::stream always panics -- the boundary this test exercises");
+    }
+
+    async fn probe(&self) -> Result<ProbeReport, BackendError> {
+        Ok(ProbeReport {
+            ok: true,
+            latency_ms: 1,
+            models: vec![],
+            detail: None,
+            at: Utc::now(),
+        })
+    }
+}
+
+/// `MinimalRouter` wired so the root's role ("planner", `root_spec`) routes
+/// to a normal `ScriptedBackend` and the spawned child's role ("reviewer",
+/// `reviewer_def`) routes to [`PanickingBackend`] -- root and child need
+/// genuinely different backends so the child's own turn can panic without
+/// the root ever touching that backend at all.
+fn build_runtime_with_panicking_reviewer(turns: usize) -> (Arc<Runtime>, Arc<ScriptedBackend>) {
+    let store: Arc<dyn SessionStore> = Arc::new(FakeStore::new());
+
+    let planner_backend = Arc::new(
+        ScriptedBackend::new(
+            (0..turns)
+                .map(|_| ScriptedTurn::Respond(text_response("ok")))
+                .collect(),
+        )
+        .with_id(BackendId::new("planner-backend")),
+    );
+    let planner_model = ModelRef {
+        backend: planner_backend.id(),
+        model: ModelId::new("planner-model"),
+    };
+
+    let panicking_backend = Arc::new(PanickingBackend::new(BackendId::new("reviewer-backend")));
+    let reviewer_model = ModelRef {
+        backend: panicking_backend.id(),
+        model: ModelId::new("reviewer-model"),
+    };
+
+    let mut roles = BTreeMap::new();
+    roles.insert(
+        "planner".to_string(),
+        RoleConfig {
+            chain: vec![planner_model],
+            required: RequiredCaps::default(),
+            params: SamplingParams::default(),
+            headroom_tokens: None,
+        },
+    );
+    roles.insert(
+        "reviewer".to_string(),
+        RoleConfig {
+            chain: vec![reviewer_model],
+            required: RequiredCaps::default(),
+            params: SamplingParams::default(),
+            headroom_tokens: None,
+        },
+    );
+    let router: Arc<dyn Router> = Arc::new(MinimalRouter::new(RoutingConfig {
+        roles,
+        health: HealthConfig::default(),
+        default_headroom_tokens: 4096,
+    }));
+
+    let mut backends: HashMap<BackendId, Arc<dyn Backend>> = HashMap::new();
+    backends.insert(planner_backend.id(), planner_backend.clone());
+    backends.insert(panicking_backend.id(), panicking_backend as Arc<dyn Backend>);
+
+    let mut defs = HashMap::new();
+    defs.insert("reviewer".to_string(), reviewer_def());
+
+    let runtime = Runtime::new(RuntimeDeps {
+        store,
+        router,
+        health: Arc::new(FakeHealth::new()),
+        backends,
+        plugins: vec![],
+        gate: Arc::new(FakeGate::new(PermissionDecision::AllowOnce)),
+        agent_defs: defs,
+        event_bus: EventBus::with_default_capacity(),
+        headroom: Arc::new(HeadroomPolicy::default()),
+    });
+    (runtime, planner_backend)
+}
+
+#[tokio::test]
+async fn panicking_child_still_resolves_a_terminal_result_for_an_awaiting_parent() {
+    let (runtime, _planner_backend) = build_runtime_with_panicking_reviewer(1);
+    let root = start_and_finish_root(&runtime, "investigate the bug").await;
+
+    let spec = SubagentSpec::spawn(
+        "review this diff",
+        AgentDefRef("reviewer".to_string()),
+        Budget::default(),
+    );
+    let child = SubagentHost::start(&*runtime, root, root, spec)
+        .await
+        .unwrap();
+
+    // The guarantee under test: `await_result` -- the same call a
+    // `wait`/`ask` tool makes on the parent's behalf -- must resolve, not
+    // hang, even though the child's own `AgentLoop::run()` task panicked
+    // genuinely (a real `JoinError::is_panic`, not a scripted
+    // `BackendError`). A hang here would time out the outer
+    // `tokio::time::timeout` rather than the test itself blocking forever.
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        SubagentHost::await_result(&*runtime, root, child),
+    )
+    .await
+    .expect("await_result must resolve promptly, not hang, when the child panics")
+    .expect("await_result must return Ok(AgentResult), not an error, for a panicked child");
+
+    match &result.status {
+        ResultStatus::Failed { error } => {
+            assert!(
+                error.contains("panic"),
+                "the synthesized Failed result must mention the panic, got {error:?}"
+            );
+        }
+        other => panic!("expected ResultStatus::Failed naming the panic, got {other:?}"),
+    }
 }
