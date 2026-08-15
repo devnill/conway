@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`scripts/dogfood-note.sh` — one command from "using conway just now was
+  awkward" to a board item**, plus [`docs/dogfooding.md`](docs/dogfooding.md)
+  documenting the loop. Three modes (`friction`, `comment`, `session`), each
+  with `--dry-run`. The script resolves the repository root from its own
+  location on disk and refuses to run outside the conway checkout, so it
+  cannot silently file against the wrong project. Items it creates are
+  titled `[dogfooding] …` and records it appends carry `--scope dogfood`, so
+  **whether the path is actually being walked is a checkable question rather
+  than an assertion** — the point being that friction gets recorded instead
+  of absorbed and forgotten.
+
 ### Changed
 
 - **`conway.fs` enforces its own confinement root for all six of its tools —
