@@ -1,13 +1,21 @@
 //! The `/ask` (B5) modal's own async completion: forking an ephemeral
 //! child and draining its single turn, off the app loop's own task so a
 //! slow/failed answer never blocks input handling. Extracted out of
-//! `app.rs` verbatim (this item, board); the four pre-parser command
-//! interceptions -- including `/ask`'s own -- stay in `app.rs` itself (T9's
-//! own guard greps that exact file's source text for them; see `app.rs`'s
-//! module doc). [`super::run`]'s own `modal_ask_rx.recv()` arm is the
-//! production consumer of [`ModalAskOutcome`].
+//! `app.rs` verbatim (original split item, board). [`super::run`]'s own
+//! `modal_ask_rx.recv()` arm is the production consumer of
+//! [`ModalAskOutcome`].
+//!
+//! [`App::spawn_modal_ask`] (board item `01KZVZ5XV162XCQR96AQKCCCF7`) is the
+//! actual `tokio::spawn` call site: `commands::execute`'s `SlashCommand::
+//! Ask` arm cannot spawn this itself (it has no live `SessionHandle` to
+//! clone and no `modal_ask_tx` -- see `commands::Effect::RunModalAsk`'s own
+//! doc), so it validates and hands back that effect, and `App::submit`'s
+//! shared `Effect` match calls this method, mirroring `plugin_cmd::App::
+//! spawn_plugin_command`'s own shape exactly.
 
 use conway::SessionHandle;
+
+use super::App;
 
 /// The result of one spawned `/ask` task (B5 -- see [`super::App::submit`]'s
 /// `/ask` branch and [`run_modal_ask`]). `child` is the ephemeral fork
@@ -47,5 +55,27 @@ pub(super) async fn run_modal_ask(handle: SessionHandle, question: String) -> Mo
             child: None,
             reply: Err(e),
         },
+    }
+}
+
+impl App {
+    /// Spawns the `/ask` (B5) task off this loop's own `select!`, never on
+    /// it -- see this module's own doc and `commands::Effect::
+    /// RunModalAsk`'s for why this specific method (not `commands::
+    /// execute` itself) is what does the actual `tokio::spawn`.
+    /// `commands::execute`'s `SlashCommand::Ask` arm has already validated
+    /// `question` and set `state.ask_in_flight` before returning the effect
+    /// that reaches this call.
+    pub(super) fn spawn_modal_ask(&self, question: String) {
+        let handle = self.handle.clone();
+        let tx = self.modal_ask_tx.clone();
+        tokio::spawn(async move {
+            let outcome = run_modal_ask(handle, question).await;
+            // The receiver only goes away when `App::run`'s loop has
+            // already exited -- nothing left to notify, so a send failure
+            // here is silently dropped, mirroring `spawn_plugin_command`'s
+            // own send site exactly.
+            let _ = tx.send(outcome);
+        });
     }
 }
