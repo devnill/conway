@@ -221,7 +221,12 @@ fn load_impl(options: LoadOptions, include_xdg: IncludeXdgLayer) -> Result<LoadO
 /// Re-applies `cli_overrides` to an already-loaded config (used by
 /// `ConwayBuilder::build`, so an
 /// invalid override is caught even when `from_parts`/`from_config` bypassed
-/// `load`'s own CLI layer). Re-runs full validation.
+/// `load`'s own CLI layer). Re-runs every validation check EXCEPT check 3
+/// (`permissions.mode = "allowlist"` requiring non-empty `allowed_tools`) --
+/// see that check's own comment in `validate_impl` for why this call site
+/// deliberately diverges from `validate`'s strict default. Every other check
+/// still runs unconditionally: this is a targeted exception for one check,
+/// not a general relaxation.
 pub fn apply_cli(config: &ConwayConfig, cli: &CliOverrides) -> Result<ConwayConfig> {
     let mut value = serde_json::to_value(config).map_err(|e| ConwayError::Config {
         path: None,
@@ -235,7 +240,12 @@ pub fn apply_cli(config: &ConwayConfig, cli: &CliOverrides) -> Result<ConwayConf
 
     let metadata_path = resolve_metadata_path(&merged, &merged.cwd);
     let metadata = model_metadata::load(&metadata_path).unwrap_or_else(|_| ModelMetadata::empty());
-    validate(&merged, &metadata, &HashMap::new())?;
+    validate_impl(
+        &merged,
+        &metadata,
+        &HashMap::new(),
+        AllowlistEmptyCheck::Skip,
+    )?;
 
     Ok(merged)
 }
@@ -510,6 +520,13 @@ fn cli_overrides_to_value(cli: &CliOverrides) -> Value {
 /// Runs every validation step in the documented order, failing on the
 /// first hard error and returning accumulated warnings from the last step.
 ///
+/// This is the STRICT entry point (check 3 included, see that check's own
+/// doc for why): the right choice for a config a human might have typed by
+/// hand, notably [`load_impl`]'s own call site (behind [`load`]/
+/// [`load_ignoring_xdg`]). [`apply_cli`] deliberately calls
+/// [`validate_impl`] with check 3 skipped instead of this function -- see
+/// its own doc.
+///
 /// Note: conway does not validate the *shape* of an API key. Whether a
 /// credential is a metered API key, a coding-plan subscription key, or a
 /// token for some Anthropic-compatible third-party endpoint is not
@@ -518,11 +535,34 @@ fn cli_overrides_to_value(cli: &CliOverrides) -> Value {
 pub fn validate(
     config: &ConwayConfig,
     metadata: &ModelMetadata,
-    // Retained in the signature (this function is `pub`) though no current
-    // check consults it: the removed key-shape check was its only reader.
-    // A future validation that legitimately needs the injected environment
-    // has it available without a breaking signature change.
+    env: &HashMap<String, String>,
+) -> Result<Vec<ConfigWarning>> {
+    validate_impl(config, metadata, env, AllowlistEmptyCheck::Enforce)
+}
+
+/// Whether [`validate_impl`] treats `permissions.mode = "allowlist"` paired
+/// with an empty `allowed_tools` as a hard error (check 3) -- a private,
+/// two-variant enum rather than a bare `bool` for the same self-documenting
+/// reason [`IncludeXdgLayer`] is one, not `validate_impl(config, metadata,
+/// env, true)` with no indication of which way `true` goes.
+///
+/// See check 3's own comment, at its call site below, for why the two
+/// [`validate_impl`] call sites ([`validate`] and [`apply_cli`]) disagree.
+enum AllowlistEmptyCheck {
+    Enforce,
+    Skip,
+}
+
+fn validate_impl(
+    config: &ConwayConfig,
+    metadata: &ModelMetadata,
+    // Retained in the signature (this function's public wrapper, `validate`,
+    // is `pub`) though no current check consults it: the removed key-shape
+    // check was its only reader. A future validation that legitimately needs
+    // the injected environment has it available without a breaking signature
+    // change.
     _env: &HashMap<String, String>,
+    allowlist_empty_check: AllowlistEmptyCheck,
 ) -> Result<Vec<ConfigWarning>> {
     // 1. default_role exists in [roles].
     if !config.roles.contains_key(config.default_role.as_str()) {
@@ -560,11 +600,44 @@ pub fn validate(
         }
     }
 
-    // 3. permissions.mode = "allowlist" requires non-empty allowed_tools.
-    if matches!(
-        config.permissions.mode,
-        crate::config::schema::PermissionMode::Allowlist
-    ) && config.permissions.allowed_tools.is_empty()
+    // 3. permissions.mode = "allowlist" requires non-empty allowed_tools --
+    //    but only when the config being checked is one a human could have
+    //    typed by hand into a settings file, i.e. only in `validate`'s own
+    //    STRICT entry point (`AllowlistEmptyCheck::Enforce`, pinned by
+    //    `config_validation.rs::allowlist_mode_with_empty_allowed_tools_is_
+    //    rejected`, which loads the offending value through `config::load`
+    //    -- a JSON FILE -- not through this module's own struct
+    //    constructors). There, `allowlist` with nothing on it is
+    //    overwhelmingly more likely to be an operator who forgot to list
+    //    the tools they meant to allow than a deliberate "deny everything"
+    //    -- allow-list mode reads as additive, so an empty list reads as
+    //    "I haven't filled this in yet", not "I want zero tools". The typo
+    //    is exactly the failure mode this check exists to catch before it
+    //    reaches a live session.
+    //
+    //    `apply_cli` -- `ConwayBuilder::build`'s own re-validation step,
+    //    called for EVERY build regardless of how the config was
+    //    assembled -- passes `AllowlistEmptyCheck::Skip` instead, because by
+    //    the time a config reaches it, the empty-allowlist-as-typo concern
+    //    above no longer applies: either the config came from
+    //    `config::load`/`load_ignoring_xdg` and already passed THIS check
+    //    once (`load_impl`'s own `validate` call), or it was assembled
+    //    programmatically via `ConwayBuilder::from_parts`/`CliOverrides` --
+    //    an embedder writing Rust, not a human hand-editing a settings file
+    //    -- where an explicit empty `allowed_tools` is exactly as legible a
+    //    "deny everything" statement as `permissions.mode = "deny"` itself,
+    //    and is precisely what `presets::default_permissions_for_one_shot`
+    //    ships as its own deliberate, documented value (see that function's
+    //    own doc comment). Skipping here does not weaken the file-typo
+    //    protection above: nothing reaches `apply_cli` without either having
+    //    gone through the strict check already, or never having been a file
+    //    at all.
+    if matches!(allowlist_empty_check, AllowlistEmptyCheck::Enforce)
+        && matches!(
+            config.permissions.mode,
+            crate::config::schema::PermissionMode::Allowlist
+        )
+        && config.permissions.allowed_tools.is_empty()
     {
         return Err(ConwayError::Config {
             path: None,

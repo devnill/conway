@@ -55,6 +55,18 @@ pub fn builtin_plugin_ids() -> Vec<String> {
 /// that never blocks on a prompt: one-shot mode has no interactive channel
 /// to prompt through, and `AllowListGate` never returns `AllowAlways`, so
 /// this preset is safe to use unattended.
+///
+/// **Builds successfully.** This exact combination (`mode = "allowlist"`,
+/// empty `allowed_tools`) was once rejected unconditionally by
+/// `config::merge::validate`'s check 3, which made this preset dead on
+/// arrival for every caller (board item 01M01EM4QSB204FZSANJB3XH78). Check 3
+/// is now scoped to configs a human could have hand-typed into a settings
+/// file (`config::load`/`load_ignoring_xdg`'s own call site) -- see that
+/// check's own comment in `crate::config::merge` for the full reasoning --
+/// and no longer runs on `ConwayBuilder::build`'s re-validation step, so a
+/// config carrying this preset unmodified now builds. Proven, not just
+/// asserted: `tests/preset_one_shot_permissions_build.rs` builds a `Conway`
+/// from this exact value and drives a turn through it.
 pub fn default_permissions_for_one_shot() -> PermissionsConfig {
     PermissionsConfig {
         mode: PermissionMode::Allowlist,
