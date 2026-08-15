@@ -71,10 +71,36 @@ pub struct AnthropicBackend {
     http: HttpClient,
     models: ModelMetadataStore,
     overrides: BTreeMap<String, ModelOverrides>,
+    /// Operator-supplied header name/value pairs, sent alongside (never in
+    /// place of) `x-api-key`/`anthropic-version` on every `generate`/
+    /// `stream`/`probe` request. Resolved from `[backends.<id>].extra.
+    /// headers` by `crate::factory::AnthropicBackendFactory::build` — this
+    /// field's own constructor ([`Self::with_extra_headers`]) is the only
+    /// way to set it, so a config with no `extra.headers` produces an empty
+    /// map here, which [`Self::apply_extra_headers`] turns into a no-op:
+    /// exactly today's request shape, unchanged.
+    extra_headers: BTreeMap<String, String>,
 }
 
 impl AnthropicBackend {
+    /// Constructs a backend with no header overrides -- every existing call
+    /// site's exact prior behavior. Delegates to `Self::with_extra_headers`
+    /// (crate-private) with an empty map rather than duplicating
+    /// construction logic.
     pub fn new(config: AnthropicConfig) -> Result<Self, ConfigError> {
+        Self::with_extra_headers(config, BTreeMap::new())
+    }
+
+    /// Constructs a backend that also sends `extra_headers` on every
+    /// request. Not part of [`AnthropicConfig`] itself (which stays the
+    /// exact six-field shape every existing direct-construction call site
+    /// already depends on) — `crate::factory::AnthropicBackendFactory::
+    /// build` is this constructor's only caller, feeding it the `headers`
+    /// key it already validated out of `[backends.<id>].extra`.
+    pub(crate) fn with_extra_headers(
+        config: AnthropicConfig,
+        extra_headers: BTreeMap<String, String>,
+    ) -> Result<Self, ConfigError> {
         config.validate()?;
         let timeout = config.effective_timeout();
         let http =
@@ -87,7 +113,21 @@ impl AnthropicBackend {
             http,
             models: ModelMetadataStore::defaults(),
             overrides: config.models,
+            extra_headers,
         })
+    }
+
+    /// Layers `self.extra_headers` onto `builder` -- shared by
+    /// `request_builder` and `probe` so an operator's header overrides
+    /// apply to every outbound request, not just `generate`/`stream`.
+    /// Applied last, so an override can add a header the two hardcoded
+    /// calls never set; it is never applied *instead* of `x-api-key`/
+    /// `anthropic-version` (both remain set regardless).
+    fn apply_extra_headers(&self, mut builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        for (name, value) in &self.extra_headers {
+            builder = builder.header(name, value);
+        }
+        builder
     }
 
     fn messages_url(&self) -> Url {
@@ -107,12 +147,13 @@ impl AnthropicBackend {
     /// `x-api-key` + `anthropic-version` headers. No OAuth-style
     /// `Authorization` header is ever constructed.
     fn request_builder(&self, url: Url, body: &Value) -> reqwest::RequestBuilder {
-        self.http
+        let builder = self
+            .http
             .inner()
             .post(url)
             .header("x-api-key", self.api_key.expose_secret())
-            .header("anthropic-version", self.anthropic_version.as_str())
-            .json(body)
+            .header("anthropic-version", self.anthropic_version.as_str());
+        self.apply_extra_headers(builder).json(body)
     }
 
     /// Applies `cache.rs`'s cache-hint mapping when, and only when, the
@@ -221,13 +262,15 @@ impl Backend for AnthropicBackend {
         // owns `BreakerKind::Transport`, Implementation Notes).
         let url = self.models_url();
         let started = Instant::now();
-        let response = self
+        let builder = self
             .http
             .inner()
             .get(url)
             .timeout(PROBE_TIMEOUT)
             .header("x-api-key", self.api_key.expose_secret())
-            .header("anthropic-version", self.anthropic_version.as_str())
+            .header("anthropic-version", self.anthropic_version.as_str());
+        let response = self
+            .apply_extra_headers(builder)
             .send()
             .await
             .map_err(|err| BackendError::Transport {

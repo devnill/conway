@@ -35,6 +35,32 @@
 //! from that list (a later's decline-mechanism UX, not this
 //! item's job -- see `PluginsConfig::default_backends`'s own doc for the
 //! exact default value and precedence).
+//!
+//! # `dialect` does NOT mean the same thing for both kinds -- a finding, not
+//! # a fix
+//!
+//! Determined before the `extra`-reading work below (the "declaration this
+//! closes" item's own instruction): for `"openai-compat"`, `ctx.dialect` is
+//! REQUIRED and selects an entire [`crate::profile::Profile`] -- a whole wire-
+//! behavior/baseline-capability bundle (chat path, tool-call parsing style,
+//! cache mode, multi-block flattening, six more fields) resolved against a
+//! [`crate::profile::ProfileStore`] this crate owns end to end
+//! ([`OpenAiCompatBackendFactory::resolve_profile`]). For `"anthropic"`,
+//! `ctx.dialect` is not merely unread by accident -- there is no profile
+//! concept for this kind to select AT ALL: the Anthropic Messages API has
+//! exactly one wire shape, [`crate::anthropic::AnthropicBackend`] owns no
+//! `Profile`/`ProfileStore`/`Dialect` machinery, and nothing in this crate
+//! would even know what to resolve `ctx.dialect`'s string value against for
+//! this kind. `AnthropicBackendFactory::build` (below) still never reads it.
+//!
+//! So the same field name spans two different vocabularies: "which of six
+//! pre-declared wire-behavior bundles" for one kind, versus "no such
+//! question exists" for the other. That is the shared-name defect the next
+//! item in this chain (lifting the profile machinery to one kind-agnostic
+//! facility) needs to know about BEFORE assuming a single `dialect`
+//! vocabulary applies across every kind -- it does not, today, and nothing
+//! in this item changes that (out of scope: no Anthropic-shaped profile
+//! store is built here, only `extra` is read and validated).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -64,6 +90,91 @@ pub const OPENAI_COMPAT_KIND: &str = "openai-compat";
 #[derive(Debug, Default, Clone, Copy)]
 pub struct AnthropicBackendFactory;
 
+/// `[backends.<id>].extra` keys this kind understands. Anything else in
+/// `ctx.extra` is a rejected, named error -- see
+/// [`AnthropicBackendFactory::resolve_extra`]'s own doc for why silent
+/// acceptance is not this kind's default.
+const ANTHROPIC_EXTRA_KEY_ANTHROPIC_VERSION: &str = "anthropic_version";
+const ANTHROPIC_EXTRA_KEY_HEADERS: &str = "headers";
+
+/// `ctx.extra`, resolved and validated: this kind's answer to "read your own
+/// configuration and validate your own keys" (see [`AnthropicBackendFactory
+/// ::resolve_extra`]).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct AnthropicExtra {
+    /// `extra.anthropic_version`, when present -- overrides
+    /// [`crate::config::default_anthropic_version`], the SAME default
+    /// literal `AnthropicConfigRaw` itself falls back to when a directly-
+    /// deserialized [`AnthropicConfig`] omits the field, so a facade-built
+    /// backend and a directly-constructed one agree on what "unset" means.
+    anthropic_version: Option<String>,
+    /// `extra.headers`, flattened to `BTreeMap<String, String>` -- sent
+    /// alongside (never in place of) `x-api-key`/`anthropic-version` by
+    /// [`crate::anthropic::AnthropicBackend::apply_extra_headers`]. Empty
+    /// when `extra` set no `headers` key, which is exactly today's request
+    /// shape.
+    headers: BTreeMap<String, String>,
+}
+
+impl AnthropicBackendFactory {
+    /// Validates `extra` against [`ANTHROPIC_EXTRA_KEY_ANTHROPIC_VERSION`]/
+    /// [`ANTHROPIC_EXTRA_KEY_HEADERS`], the only two keys this kind
+    /// understands. **An unrecognized key is a named [`ConwayError::Config`],
+    /// never silently ignored** -- the same "top of the harm ladder" reasoning
+    /// [`OpenAiCompatBackendFactory::resolve_profile`] already applies to an
+    /// unknown `dialect`: an operator who sets a key that does nothing gets
+    /// silence indistinguishable from success, which is strictly worse than a
+    /// loud rejection naming exactly what was misspelled or unsupported.
+    fn resolve_extra(
+        id: &conway_core::ids::BackendId,
+        extra: &BTreeMap<String, serde_json::Value>,
+    ) -> Result<AnthropicExtra, ConwayError> {
+        let mut resolved = AnthropicExtra::default();
+        for (key, value) in extra {
+            match key.as_str() {
+                ANTHROPIC_EXTRA_KEY_ANTHROPIC_VERSION => {
+                    let version = value.as_str().ok_or_else(|| ConwayError::Config {
+                        detail: format!(
+                            "backend '{id}': extra.anthropic_version must be a string, got {value}"
+                        ),
+                    })?;
+                    resolved.anthropic_version = Some(version.to_string());
+                }
+                ANTHROPIC_EXTRA_KEY_HEADERS => {
+                    let object = value.as_object().ok_or_else(|| ConwayError::Config {
+                        detail: format!(
+                            "backend '{id}': extra.headers must be an object of string values, \
+                             got {value}"
+                        ),
+                    })?;
+                    for (header_name, header_value) in object {
+                        let header_value =
+                            header_value.as_str().ok_or_else(|| ConwayError::Config {
+                                detail: format!(
+                                    "backend '{id}': extra.headers.{header_name} must be a \
+                                     string, got {header_value}"
+                                ),
+                            })?;
+                        resolved
+                            .headers
+                            .insert(header_name.clone(), header_value.to_string());
+                    }
+                }
+                other => {
+                    return Err(ConwayError::Config {
+                        detail: format!(
+                            "backend '{id}': unrecognized key '{other}' in extra for kind \
+                             '{ANTHROPIC_KIND}' (recognized: '{ANTHROPIC_EXTRA_KEY_ANTHROPIC_VERSION}', \
+                             '{ANTHROPIC_EXTRA_KEY_HEADERS}')"
+                        ),
+                    });
+                }
+            }
+        }
+        Ok(resolved)
+    }
+}
+
 impl BackendFactory for AnthropicBackendFactory {
     fn id(&self) -> &str {
         ANTHROPIC_KIND
@@ -71,15 +182,21 @@ impl BackendFactory for AnthropicBackendFactory {
 
     /// Builds an [`crate::anthropic::AnthropicBackend`] from `ctx` -- exactly
     /// what `crates/conway/src/builder.rs`'s own (now-removed)
-    /// `build_anthropic` assembled directly: an empty `ctx.base_url` falls
-    /// back to Anthropic's own hosted endpoint (`ctx.dialect` is unused by
-    /// this kind -- there is no "dialect" concept for the Anthropic wire
-    /// format), and `ctx.api_key` (empty when `None`) is validated by
-    /// [`AnthropicConfig::validate`] before construction, so a missing key
-    /// is a named [`ConwayError::Config`], never a panic or a silent empty
-    /// credential reaching the wire.
+    /// `build_anthropic` assembled directly, plus: an empty `ctx.base_url`
+    /// falls back to Anthropic's own hosted endpoint (`ctx.dialect` is still
+    /// unused by this kind -- there is no "dialect" concept for the
+    /// Anthropic wire format, see this module's doc for the finding that
+    /// backs that claim), and `ctx.api_key` (empty when `None`) is validated
+    /// by [`AnthropicConfig::validate`] before construction, so a missing
+    /// key is a named [`ConwayError::Config`], never a panic or a silent
+    /// empty credential reaching the wire. `ctx.extra` is resolved through
+    /// `Self::resolve_extra` (crate-private) BEFORE any of that -- an
+    /// unrecognized key fails the build before `base_url`/`api_key` are
+    /// even inspected.
     fn build(&self, ctx: BackendBuildContext) -> Result<Arc<dyn Backend>, ConwayError> {
         use crate::anthropic::AnthropicBackend;
+
+        let extra = Self::resolve_extra(&ctx.id, &ctx.extra)?;
 
         let base_url = if ctx.base_url.is_empty() {
             url::Url::parse("https://api.anthropic.com")
@@ -94,9 +211,13 @@ impl BackendFactory for AnthropicBackendFactory {
             api_key: SecretString::new(ctx.api_key.unwrap_or_default()),
             id: ctx.id.clone(),
             base_url,
-            // Not exposed by the facade schema; mirrors this crate's own
-            // (private) default literal, unchanged from before this item.
-            anthropic_version: "2023-06-01".to_string(),
+            // `extra.anthropic_version`, or this crate's single default
+            // literal when unset -- the same default
+            // `AnthropicConfigRaw`'s own `#[serde(default = ...)]` falls
+            // back to, so this no longer duplicates that literal.
+            anthropic_version: extra
+                .anthropic_version
+                .unwrap_or_else(crate::config::default_anthropic_version),
             timeout: None,
             models: ctx.models,
         };
@@ -104,8 +225,10 @@ impl BackendFactory for AnthropicBackendFactory {
             detail: format!("backend '{}': {e}", ctx.id),
         })?;
 
-        let backend = AnthropicBackend::new(cfg).map_err(|e| ConwayError::Config {
-            detail: format!("backend '{}': {e}", ctx.id),
+        let backend = AnthropicBackend::with_extra_headers(cfg, extra.headers).map_err(|e| {
+            ConwayError::Config {
+                detail: format!("backend '{}': {e}", ctx.id),
+            }
         })?;
         Ok(Arc::new(backend))
     }

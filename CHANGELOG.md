@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The `"anthropic"` backend kind reads its own `extra` configuration.**
+  `[backends.<id>].anthropic_version` overrides the `anthropic-version`
+  wire header (was hardcoded); `.headers` adds provider-specific headers
+  (e.g. `anthropic-beta`) alongside the two `AnthropicBackend` always
+  sends. Any other key under this kind's `extra` is now a rejected, named
+  build error — previously it was captured and silently discarded, the gap
+  `BackendBuildContext::extra`'s own doc already disclosed ("neither
+  shipped kind reads it"). A config with no `extra` is unaffected: the
+  default wire version is unchanged (`2023-06-01`). See
+  [`docs/providers.md`](docs/providers.md#wire-version-and-header-overrides).
+
 ### Fixed
 
 - **`conway sessions` and `conway routes` no longer require a permission
