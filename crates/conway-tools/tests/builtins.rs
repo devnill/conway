@@ -223,11 +223,22 @@ fn a_tool_that_does_not_override_path_args_is_unconfinable_not_pathless() {
 // renders a JSON dump (`name({...})`) whose own `(`/`)`/`{`/`}` trip that
 // gate on sight. `Tool::render_kind` is the fix: a tool's own declaration of
 // whether its `render` output can reach a shell, consulted by
-// `PatternRule::matches_render` to decide whether the gate applies AT ALL.
+// `PatternRule::matches_render` to decide whether ANY pattern grant can ever
+// cover it at all.
 //
-// The two tests below are this item's most important acceptance item, in
+// AMENDED by board item `01KZDDPC5MMD49F6JPV9CW4TVM`: the metacharacter scan
+// itself is gone (it read a call's text to judge what it might do, which
+// this project's own steering rules out). What replaced it is stricter, not
+// looser: a tool declaring `RenderKind::ShellCommand` now has NO pattern
+// grant surface at all -- not even its own benign, unchained rendering --
+// where before it merely had chained renderings refused. `Structured` tools
+// (every built-in but `bash`) are unaffected either way.
+//
+// The tests below are this item's most important acceptance item, in
 // its own words: "A newly added tool must not be able to silently join the
-// broken set." Both iterate `all_tools_with_minimal_args()` -- the SAME
+// broken set" -- and, as of the amendment above, "a newly added
+// `ShellCommand` tool must not be able to silently regain a pattern grant
+// surface either." All iterate `all_tools_with_minimal_args()` -- the SAME
 // registry-wide sweep `every_declared_path_arg_is_a_real_property_of_the_
 // tools_schema` above uses -- so a future built-in is automatically swept in
 // without anyone remembering to add a case for it.
@@ -283,12 +294,27 @@ fn render_kind_is_consistent_with_whether_render_is_overridden() {
 }
 
 /// **The functional guard: the headline fix, proven per tool.** `tool:*`
-/// must actually grant `tool`'s own benign rendering -- for every built-in,
-/// not just `bash`. Before this fix, this assertion failed for 12 of the 13
-/// built-ins (every one but `bash`).
+/// must actually grant `tool`'s own benign rendering -- for every
+/// `Structured`-rendering built-in. Before the original fix, this assertion
+/// failed for 12 of the 13 built-ins (every one but `bash`, which was the
+/// only tool a pattern grant could ever cover at all).
+///
+/// `bash` -- and any other `RenderKind::ShellCommand` tool -- is
+/// deliberately EXCLUDED here, not merely expected to differ: this item
+/// (`01KZDDPC5MMD49F6JPV9CW4TVM`) removed durable pattern grants for a
+/// shell-rendered tool entirely, so `bash:*` matching NOTHING (not even its
+/// own benign rendering) is the correct, current behavior, pinned by
+/// `a_shell_command_declared_tools_wildcard_matches_nothing_at_all` below --
+/// asserting it here too would make this test self-contradictory.
 #[test]
-fn a_wildcard_pattern_grant_matches_every_builtin_tools_own_benign_rendering() {
+fn a_wildcard_pattern_grant_matches_every_structured_builtin_tools_own_benign_rendering() {
+    let mut exercised = 0;
     for (tool, args) in all_tools_with_minimal_args() {
+        if tool.render_kind() != RenderKind::Structured {
+            continue;
+        }
+        exercised += 1;
+
         let spec = tool.spec();
         let name = spec.name.as_str();
         let rendered = tool.render(&args);
@@ -298,19 +324,26 @@ fn a_wildcard_pattern_grant_matches_every_builtin_tools_own_benign_rendering() {
         assert!(
             rule.matches_render(name, &rendered, tool.render_kind()),
             "`{name}:*` must grant `{name}`'s own benign rendering ({rendered:?}) -- if this \
-             fails for a tool other than one declaring RenderKind::ShellCommand, the \
-             metacharacter gate is (again) treating that tool's own rendering syntax as \
-             command-injection risk"
+             fails, `Structured` renderings are (again) being treated as command-injection \
+             risk"
         );
     }
+    assert!(
+        exercised > 0,
+        "no built-in declares RenderKind::Structured -- this test is not exercising anything"
+    );
 }
 
-/// The mirror image: a tool that declares `RenderKind::ShellCommand`
-/// (chaining risk genuinely applies) must still have its CHAINED rendering
-/// rejected by the very same wildcard -- generically, for any current or
-/// future tool that makes that declaration, not just `bash` by name.
+/// The mirror image: a tool that declares `RenderKind::ShellCommand` must
+/// have its wildcard grant match NOTHING at all -- not a chained rendering
+/// (chaining risk genuinely applies to it), and not even its own benign,
+/// unchained rendering, since a durable pattern grant does not exist for a
+/// shell-rendered tool any more (see `conway_core::permission_pattern`'s own
+/// module doc for the "AMENDED" resolution this item recorded). Generic for
+/// any current or future tool that makes this declaration, not just `bash`
+/// by name.
 #[test]
-fn shell_command_declared_tools_still_gate_a_chained_rendering_under_a_wildcard() {
+fn a_shell_command_declared_tools_wildcard_matches_nothing_at_all() {
     let mut exercised = 0;
     for (tool, args) in all_tools_with_minimal_args() {
         if tool.render_kind() != RenderKind::ShellCommand {
@@ -326,14 +359,16 @@ fn shell_command_declared_tools_still_gate_a_chained_rendering_under_a_wildcard(
             .unwrap_or_else(|| panic!("`{name}:*` must parse as a valid pattern rule"));
 
         assert!(
-            rule.matches_render(name, &benign, tool.render_kind()),
-            "sanity: `{name}`'s own benign rendering ({benign:?}) must still match its wildcard"
+            !rule.matches_render(name, &benign, tool.render_kind()),
+            "tool `{name}` declares RenderKind::ShellCommand -- a wildcard grant must NOT \
+             match even its own benign, unchained rendering ({benign:?}): a durable pattern \
+             grant does not exist for a shell-rendered tool at all any more"
         );
         assert!(
             !rule.matches_render(name, &chained, tool.render_kind()),
             "tool `{name}` declares RenderKind::ShellCommand -- a wildcard grant must NEVER \
-             match a chained rendering of it ({chained:?}), or the chaining protection this \
-             declaration exists to preserve is defeated"
+             match a chained rendering of it either ({chained:?}), or the chaining protection \
+             this declaration exists to preserve is defeated"
         );
     }
     assert!(

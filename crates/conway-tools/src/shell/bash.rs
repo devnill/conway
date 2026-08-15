@@ -97,12 +97,14 @@ impl Tool for BashTool {
 
     /// `bash` overrides `render` (below) to return the bare `command`
     /// string -- exactly what gets handed to a shell. This is the ONE
-    /// built-in tool for which the metacharacter gate is meaningful, so it
-    /// is the one built-in that MUST declare `ShellCommand` explicitly --
-    /// this is also [`RenderKind`]'s own default, restated here (mirroring
-    /// `path_args` above, which restates `PathArgs`'s own default too) for
-    /// the same reason: a reader should never have to go check what the
-    /// default is to know what `bash` does.
+    /// built-in tool `RenderKind::ShellCommand` is meaningful for: it is
+    /// what `conway_core::permission_pattern::Rule::gate_allows` reads to
+    /// refuse EVERY pattern allow for this tool outright, so it is the one
+    /// built-in that MUST declare `ShellCommand` explicitly -- this is also
+    /// [`RenderKind`]'s own default, restated here (mirroring `path_args`
+    /// above, which restates `PathArgs`'s own default too) for the same
+    /// reason: a reader should never have to go check what the default is
+    /// to know what `bash` does.
     ///.
     fn render_kind(&self) -> RenderKind {
         RenderKind::ShellCommand

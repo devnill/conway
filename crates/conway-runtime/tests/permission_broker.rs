@@ -93,6 +93,23 @@ fn call(call_id: &str) -> AuthorizedCall {
     }
 }
 
+/// A second `RenderKind::Structured` fixture, distinct from [`call`] (`read`)
+/// -- used wherever a test needs TWO DIFFERENT auto-allow grants, e.g. to
+/// prove revoking one leaves the other in force. See [`bash_call`]'s own
+/// doc for why `bash` can no longer serve that role (board item
+/// `01KZDDPC5MMD49F6JPV9CW4TVM`).
+fn write_call(call_id: &str) -> AuthorizedCall {
+    AuthorizedCall {
+        call_id: call_id.into(),
+        tool: ToolName::new("write"),
+        category: ToolCategory::Edit,
+        arguments: serde_json::json!({"path": "b.txt", "content": "x"}),
+        rendered: "write b.txt".into(),
+        path_args: conway_core::ports::PathArgs::Named(&["path"]),
+        render_kind: conway_core::ports::RenderKind::Structured,
+    }
+}
+
 fn broker(gate: Arc<dyn PermissionGate>) -> (PermissionBroker, Arc<EventBus>) {
     let bus = EventBus::new(256);
     (PermissionBroker::new(gate, bus.clone()), bus)
@@ -417,6 +434,15 @@ async fn broker_builds_permission_request_with_full_agent_path() {
 // ---------------------------------------------------------------------
 
 /// A `bash` call carrying `rendered` — the shape pattern grants care about.
+///
+/// **AMENDED by board item `01KZDDPC5MMD49F6JPV9CW4TVM`: no longer usable
+/// to demonstrate a WORKING pattern grant.** A durable pattern grant does
+/// not exist for `bash` (or any `RenderKind::ShellCommand` tool) at all any
+/// more -- see `conway_core::permission_pattern`'s own module doc. This
+/// fixture stays in use for tests that prove a `bash` call is REFUSED
+/// (chained or not, revoked or not); tests that need to prove two DIFFERENT
+/// grants each genuinely auto-allow use [`call`] (`read`) and [`write_call`]
+/// (`write`) instead.
 fn bash_call(call_id: &str, rendered: &str) -> AuthorizedCall {
     AuthorizedCall {
         call_id: call_id.into(),
@@ -431,20 +457,27 @@ fn bash_call(call_id: &str, rendered: &str) -> AuthorizedCall {
     }
 }
 
-/// **The most important test in V2.**
+/// **The most important test in V2, AMENDED by board item
+/// `01KZDDPC5MMD49F6JPV9CW4TVM`.**
 ///
-/// A pattern grant for `git status` must not authorize a chained command
-/// that merely begins with it. The gate lives inside `PatternRule::matches`,
-/// but this proves it holds through the broker's real decision path — and,
-/// critically, that the chained command actually REACHES the operator's
-/// gate rather than being silently allowed or silently denied.
+/// A pattern grant for `git status` must not authorize ANY `bash` call --
+/// not the plain command it names, and not a chained command that merely
+/// begins with it. This used to prove only the narrower "chained does not
+/// widen the grant" property (the plain command WAS auto-allowed); it now
+/// proves the grant authorizes nothing at all, which subsumes that
+/// property (see `conway_core::permission_pattern`'s own module doc for the
+/// resolution). Both calls must actually REACH the operator's gate rather
+/// than being silently allowed or silently denied.
 #[tokio::test]
 async fn a_chained_command_still_reaches_the_operator_despite_a_matching_pattern() {
-    // The gate is scripted to deny, so if the pattern wrongly authorized
-    // the chained command we would see Allow with zero gate calls.
-    let gate = ScriptedGate::new(vec![PermissionDecision::Deny {
-        reason: "operator said no".into(),
-    }]);
+    let gate = ScriptedGate::new(vec![
+        PermissionDecision::Deny {
+            reason: "operator said no".into(),
+        },
+        PermissionDecision::Deny {
+            reason: "operator said no".into(),
+        },
+    ]);
     let (broker, _bus) = broker(gate.clone());
     let session = SessionId::new();
     let agent = AgentId::new();
@@ -457,16 +490,20 @@ async fn a_chained_command_still_reaches_the_operator_despite_a_matching_pattern
         PatternOrigin::Interactive,
     );
 
-    // The plain granted command is authorized without troubling the gate.
+    // The "plain, granted" command reaches the operator too now -- a
+    // durable pattern grant does not exist for `bash` at all.
     let plain = broker.decide(&c, &bash_call("c1", "git status")).await;
-    assert_eq!(plain, PermissionOutcome::Allow);
+    assert!(
+        matches!(plain, PermissionOutcome::Deny { .. }),
+        "even the exact command the pattern names must not be auto-allowed"
+    );
     assert_eq!(
         gate.call_count(),
-        0,
-        "the granted command must not re-prompt"
+        1,
+        "the plain command must actually reach the operator's gate"
     );
 
-    // The chained one must fall through to the operator.
+    // The chained one must fall through to the operator too.
     let chained = broker
         .decide(&c, &bash_call("c2", "git status && rm -rf /"))
         .await;
@@ -476,7 +513,7 @@ async fn a_chained_command_still_reaches_the_operator_despite_a_matching_pattern
     );
     assert_eq!(
         gate.call_count(),
-        1,
+        2,
         "the chained command must actually REACH the operator's gate -- \
          being silently denied would be almost as wrong as being allowed, \
          because it would mean the pattern layer decided rather than deferred"
@@ -488,22 +525,27 @@ async fn a_chained_command_still_reaches_the_operator_despite_a_matching_pattern
 ///
 /// Identical scenario, installed as a structured [`Rule`]
 /// (`remember_pattern_rule`) instead of a flat [`PatternRule`]
-/// (`remember_pattern`). Before this item, `PatternRule::matches_render`
-/// and `Rule::matches_allow_render` were two independent implementations of
-/// the SAME metacharacter gate, kept in sync only by a doc comment and a
-/// unit test pinning their outputs -- and only the structured evaluator was
-/// ever reached from `decide()` (`remember_pattern` desugars to a `Rule`
-/// immediately, before `pattern_allows` ever runs). This test and its flat
-/// sibling now exercise the identical evaluator either way; asserted on the
-/// PERSISTED `PermissionOutcome`, never a bare gate-call count, so a broken
-/// gate that silently allows (zero gate calls) cannot be confused with a
-/// broken gate that silently denies (also zero gate calls, per the
-/// `ScriptedGate::check` exhausted-script default).
+/// (`remember_pattern`). Before an earlier item, `PatternRule::
+/// matches_render` and `Rule::matches_allow_render` were two independent
+/// implementations of the same gate, kept in sync only by a doc comment and
+/// a unit test pinning their outputs -- and only the structured evaluator
+/// was ever reached from `decide()` (`remember_pattern` desugars to a
+/// `Rule` immediately, before `pattern_allows` ever runs). This test and
+/// its flat sibling now exercise the identical evaluator either way;
+/// asserted on the PERSISTED `PermissionOutcome`, never a bare gate-call
+/// count, so a broken gate that silently allows (zero gate calls) cannot be
+/// confused with a broken gate that silently denies (also zero gate calls,
+/// per the `ScriptedGate::check` exhausted-script default).
 #[tokio::test]
 async fn a_chained_command_still_reaches_the_operator_despite_a_matching_structured_pattern() {
-    let gate = ScriptedGate::new(vec![PermissionDecision::Deny {
-        reason: "operator said no".into(),
-    }]);
+    let gate = ScriptedGate::new(vec![
+        PermissionDecision::Deny {
+            reason: "operator said no".into(),
+        },
+        PermissionDecision::Deny {
+            reason: "operator said no".into(),
+        },
+    ]);
     let (broker, _bus) = broker(gate.clone());
     let session = SessionId::new();
     let agent = AgentId::new();
@@ -523,18 +565,21 @@ async fn a_chained_command_still_reaches_the_operator_despite_a_matching_structu
     );
     assert!(installed, "a structured CommandPrefix allow rule installs");
 
-    // The plain granted command is authorized without troubling the gate --
-    // byte-identical to the flat-form test above.
+    // The "plain, granted" command reaches the operator too now -- byte-
+    // identical to the flat-form test above.
     let plain = broker.decide(&c, &bash_call("c1", "git status")).await;
-    assert_eq!(plain, PermissionOutcome::Allow);
+    assert!(
+        matches!(plain, PermissionOutcome::Deny { .. }),
+        "even the exact command the pattern names must not be auto-allowed"
+    );
     assert_eq!(
         gate.call_count(),
-        0,
-        "the granted command must not re-prompt"
+        1,
+        "the plain command must actually reach the operator's gate"
     );
 
-    // The chained one must fall through to the operator -- the SAME
-    // metacharacter gate that guards `remember_pattern`'s flat form.
+    // The chained one must fall through to the operator too -- the SAME
+    // gate that guards `remember_pattern`'s flat form.
     let chained = broker
         .decide(&c, &bash_call("c2", "git status && rm -rf /"))
         .await;
@@ -544,7 +589,7 @@ async fn a_chained_command_still_reaches_the_operator_despite_a_matching_structu
     );
     assert_eq!(
         gate.call_count(),
-        1,
+        2,
         "the chained command must actually REACH the operator's gate through the structured \
          form too -- being silently denied would be almost as wrong as being allowed"
     );
@@ -592,8 +637,14 @@ async fn a_subtree_pattern_grant_covers_descendants_but_not_strangers() {
     let child = AgentId::new();
     let stranger = AgentId::new();
 
+    // `read:*`, not `bash:git status` -- `GrantScope::covers` (what this
+    // test exercises) is completely orthogonal to a tool's `RenderKind`,
+    // but a `bash` grant no longer covers ANY call at all (board item
+    // `01KZDDPC5MMD49F6JPV9CW4TVM`), which would make the positive control
+    // below fail before the scope logic it exists to test is ever reached.
+    // See `conway_core::permission_pattern`'s own module doc.
     broker.remember_pattern(
-        PatternRule::parse("bash:git status").expect("valid rule"),
+        PatternRule::parse("read:*").expect("valid rule"),
         PermissionScope::AgentSubtree,
         root,
         PatternOrigin::Interactive,
@@ -601,17 +652,13 @@ async fn a_subtree_pattern_grant_covers_descendants_but_not_strangers() {
 
     let descendant = ctx(child, vec![root, child], session);
     assert_eq!(
-        broker
-            .decide(&descendant, &bash_call("c1", "git status"))
-            .await,
+        broker.decide(&descendant, &call("c1")).await,
         PermissionOutcome::Allow,
         "a descendant inherits the subtree grant"
     );
 
     let unrelated = ctx(stranger, vec![stranger], session);
-    let outcome = broker
-        .decide(&unrelated, &bash_call("c2", "git status"))
-        .await;
+    let outcome = broker.decide(&unrelated, &call("c2")).await;
     assert!(
         matches!(outcome, PermissionOutcome::Deny { .. }),
         "an agent outside the granting subtree must not inherit the grant"
@@ -825,14 +872,18 @@ async fn revoke_all_grants_restores_prompting_for_previously_granted_calls() {
     let agent = AgentId::new();
     let c = ctx(agent, vec![agent], session);
 
+    // `read:*`, not `bash:git status` -- see
+    // `a_subtree_pattern_grant_covers_descendants_but_not_strangers`'s own
+    // comment for why a `bash` grant can no longer demonstrate "this call
+    // was actually auto-allowed before the revoke".
     broker.remember_pattern(
-        PatternRule::parse("bash:git status").expect("valid rule"),
+        PatternRule::parse("read:*").expect("valid rule"),
         PermissionScope::Session,
         agent,
         PatternOrigin::Interactive,
     );
     assert_eq!(
-        broker.decide(&c, &bash_call("c1", "git status")).await,
+        broker.decide(&c, &call("c1")).await,
         PermissionOutcome::Allow
     );
     assert_eq!(
@@ -847,7 +898,7 @@ async fn revoke_all_grants_restores_prompting_for_previously_granted_calls() {
         "revocation clears the review list"
     );
 
-    let outcome = broker.decide(&c, &bash_call("c2", "git status")).await;
+    let outcome = broker.decide(&c, &call("c2")).await;
     assert!(
         matches!(outcome, PermissionOutcome::Deny { .. }),
         "a revoked grant must ask again"
@@ -1111,8 +1162,11 @@ async fn revoke_pattern_removes_one_grant_and_leaves_the_other_intact() {
     let agent = AgentId::new();
     let c = ctx(agent, vec![agent], session);
 
-    let revoked_rule = PatternRule::parse("bash:git status").expect("valid rule");
-    let kept_rule = PatternRule::parse("bash:cargo test").expect("valid rule");
+    // `read:*`/`write:*`, not two `bash` prefixes -- see `bash_call`'s own
+    // doc for why a `bash` grant can no longer demonstrate "the surviving
+    // pattern still suppresses its prompt".
+    let revoked_rule = PatternRule::parse("read:*").expect("valid rule");
+    let kept_rule = PatternRule::parse("write:*").expect("valid rule");
     broker.remember_pattern(
         revoked_rule.clone(),
         PermissionScope::Session,
@@ -1134,13 +1188,13 @@ async fn revoke_pattern_removes_one_grant_and_leaves_the_other_intact() {
     assert_eq!(patterns.len(), 1, "exactly one grant survives");
     assert_eq!(patterns[0].0, kept_rule);
 
-    let revoked_outcome = broker.decide(&c, &bash_call("c1", "git status")).await;
+    let revoked_outcome = broker.decide(&c, &call("c1")).await;
     assert!(
         matches!(revoked_outcome, PermissionOutcome::Deny { .. }),
         "the revoked pattern must ask again"
     );
 
-    let kept_outcome = broker.decide(&c, &bash_call("c2", "cargo test")).await;
+    let kept_outcome = broker.decide(&c, &write_call("c2")).await;
     assert!(
         matches!(kept_outcome, PermissionOutcome::Allow),
         "the surviving pattern must still suppress its prompt"
@@ -1603,12 +1657,18 @@ async fn revoke_pattern_rule_removes_only_the_structured_rule_addressed() {
     let agent = AgentId::new();
     let c = ctx(agent, vec![agent], session);
 
+    // Multi-tool (`["read", "grep"]`), so it stays genuinely NOT
+    // flat-representable (`to_pattern_rule()` is `None`) -- deliberately
+    // NOT including `write`, so it cannot overlap with the flat sibling
+    // below.
     let structured = Rule {
-        select: Select::Tools(vec!["read".to_string(), "write".to_string()]),
+        select: Select::Tools(vec!["read".to_string(), "grep".to_string()]),
         when: When::Always,
         then: Then::Allow,
     };
-    let flat = PatternRule::parse("bash:git status").expect("valid rule");
+    // `write:*`, not `bash:git status` -- see `bash_call`'s own doc for why
+    // a `bash` grant can no longer serve as the "still works" sibling.
+    let flat = PatternRule::parse("write:*").expect("valid rule");
     assert!(
         broker.remember_pattern_rule(
             structured.clone(),
@@ -1672,7 +1732,7 @@ async fn revoke_pattern_rule_removes_only_the_structured_rule_addressed() {
         matches!(after, PermissionOutcome::Deny { .. }),
         "the revoked structured rule must ask again"
     );
-    let flat_outcome = broker.decide(&c, &bash_call("c3", "git status")).await;
+    let flat_outcome = broker.decide(&c, &write_call("c3")).await;
     assert_eq!(
         flat_outcome,
         PermissionOutcome::Allow,

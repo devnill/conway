@@ -112,8 +112,9 @@ impl Tool for ReportTool {
     /// case that motivates `RenderKind` being a declaration SEPARATE from
     /// `PathArgs` rather than a reuse of it: `report` is `Unconfinable`
     /// (root check must always fall through to the gate) while its
-    /// pattern-grant rendering is `Structured` (the metacharacter gate does
-    /// not apply).
+    /// pattern-grant rendering is `Structured` (a pattern grant CAN cover
+    /// it -- unlike `ShellCommand`, where a pattern grant covers nothing at
+    /// all; see `conway_core::permission_pattern`'s own module doc).
     fn render_kind(&self) -> RenderKind {
         RenderKind::Structured
     }

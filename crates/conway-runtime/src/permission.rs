@@ -72,9 +72,10 @@ pub struct AuthorizedCall {
     /// The resolved tool's own
     /// [`Tool::render_kind`](conway_core::ports::Tool::render_kind)
     /// declaration, read at the identical call site and for the identical
-    /// reason as `path_args` above -- fed to [`PatternRule::matches_render`]
-    /// so the metacharacter gate applies only when `rendered` could
-    /// actually reach a shell.
+    /// reason as `path_args` above -- fed to [`PatternRule::matches_render`],
+    /// which now refuses EVERY pattern grant outright when this is
+    /// [`RenderKind::ShellCommand`] (see `conway_core::permission_pattern`'s
+    /// own module doc).
     pub render_kind: RenderKind,
 }
 
@@ -308,10 +309,12 @@ fn rule_allows(
                 return false;
             }
             // The allow-side gate applies to `PathsUnder` too: a
-            // `ShellCommand` tool carrying a metacharacter must not be
-            // auto-allowed even when its `checkable` paths are under the
-            // rule's prefix (trap 4: the gate must not weaken).
-            if !Rule::gate_allows(&call.rendered, call.render_kind) {
+            // `ShellCommand` tool can never be auto-allowed by a pattern
+            // grant at all, even when its `checkable` paths are under the
+            // rule's prefix (trap 4: the gate must not weaken). `gate_allows`
+            // reads only `call.render_kind` -- never `call.rendered` -- see
+            // `Rule::gate_allows`'s own doc in `conway-core`.
+            if !Rule::gate_allows(call.render_kind) {
                 return false;
             }
             let Some(root) = canonical else {
@@ -541,9 +544,11 @@ pub struct PermissionBroker {
     mode: RwLock<PermissionMode>,
     /// V2: prefix-pattern ALLOW grants, paired with the scope they were
     /// granted at and where they came from. Checked BEFORE the gate, so a
-    /// matching pattern spares the operator a prompt -- but only for
-    /// commands that clear `PatternRule::matches_render`'s metacharacter
-    /// gate (a shell command, per the call's `RenderKind`).
+    /// matching pattern spares the operator a prompt -- but never for a
+    /// call whose tool declares `RenderKind::ShellCommand` (e.g. `bash`):
+    /// `PatternRule::matches_render` refuses those outright, so no pattern
+    /// installed here can ever cover one -- see `conway_core::
+    /// permission_pattern`'s own module doc.
     ///: the CALLER (`conway`'s facade,
     /// `conway-cli`'s startup loader) is responsible for confirming trust
     /// before an allow rule loaded from a project file ever reaches
@@ -556,7 +561,8 @@ pub struct PermissionBroker {
     /// not, from any file, to any requester," so it is checked in
     /// `Self::decide` for EVERY call regardless of who is asking. Matched
     /// via `PatternRule::matches_deny`, which deliberately does not consult
-    /// the metacharacter gate `patterns` above is gated by -- see that
+    /// `RenderKind` at all -- unlike `patterns` above, a deny rule matches a
+    /// `ShellCommand` tool the same way it matches any other -- see that
     /// method's own doc.
     deny_patterns: RwLock<NarrowingRuleStore>,
     /// Prefix-pattern PROMPT rules --
@@ -687,7 +693,8 @@ impl PermissionBroker {
     /// Installs a pattern ALLOW grant at `scope`, attributed to `origin`
     /// for the review surface.
     ///
-    /// Note this does NOT pre-validate the rule against metacharacters:
+    /// Note this does NOT pre-validate the rule against the tool's
+    /// `RenderKind` (e.g. reject a `bash:...` rule on sight):
     /// `rule` is desugared to a [`Rule`] immediately below (`to_rule`), and
     /// the gate lives in [`Rule::matches_allow_render`] -- the ONE evaluator
     /// `Self::pattern_allows` consults at decision time -- `PatternRule::matches_render` is never
@@ -1187,10 +1194,12 @@ impl PermissionBroker {
     /// `when` clauses, plus the broker's own `paths_under` resolution for
     /// [`When::PathsUnder`] -- the same `resolve_like_the_tool_will` +
     /// [`CanonicalRoot::contains`] path [`Self::check_root`] uses). The
-    /// metacharacter gate lives in [`Rule::gate_allows`], applied for every
-    /// `when` (not just `command_prefix`), unchanged in behavior from
-    /// `PatternRule::matches_render`: a chained SHELL command can never
-    /// satisfy a pattern here regardless of what is installed.
+    /// gate lives in [`Rule::gate_allows`], applied for every `when` (not
+    /// just `command_prefix`): a `RenderKind::ShellCommand` tool (e.g.
+    /// `bash`) can never satisfy a pattern here at all, chained or not,
+    /// regardless of what is installed -- see `conway_core::
+    /// permission_pattern`'s own module doc for why a durable pattern grant
+    /// no longer exists for a shell-rendered tool.
     fn pattern_allows(&self, ctx: &PermissionCtx, call: &AuthorizedCall) -> bool {
         self.patterns
             .read()
@@ -1224,19 +1233,21 @@ impl PermissionBroker {
     /// The first installed `prompt` rule that matches this call, if any.
     /// ///
     /// **Deliberately reuses the deny/prompt evaluator (ungated), not
-    /// `Rule::matches_allow_render`.** The allow-side metacharacter gate
-    /// exists to keep an ALLOW from being satisfied by a chained command
-    /// riding a matched prefix -- a concern that only applies to a rule
-    /// that GRANTS something. A `prompt` rule grants nothing; its only
-    /// effect is "ask the operator instead of skipping the ask", which is
-    /// safe (indeed MORE conservative) to fire on a chained command too.
-    /// Gating it the allow way would have the opposite of the intended
-    /// effect: adding a shell metacharacter would EVADE the extra scrutiny
-    /// a `prompt` rule exists to add, exactly the inversion
-    /// `PatternRule::matches_deny`'s own doc describes for `deny`. `prompt`
-    /// and `deny` are both admitted unconditionally at
-    /// extension-architecture.md §5.5's stage 1 (they narrow; only `allow`
-    /// needs trust) precisely because neither can be evaded this way.
+    /// `Rule::matches_allow_render`.** The allow-side `RenderKind` gate
+    /// exists to keep an ALLOW from ever being satisfied for a
+    /// `ShellCommand` tool -- a concern that only applies to a rule that
+    /// GRANTS something. A `prompt` rule grants nothing; its only effect is
+    /// "ask the operator instead of skipping the ask", which is safe
+    /// (indeed MORE conservative) to fire for `bash` too -- a `prompt`
+    /// rule targeting `bash` is exactly how an operator asks to be
+    /// consulted on shell commands now that a durable `bash` ALLOW pattern
+    /// no longer exists at all. Gating it the allow way would have the
+    /// opposite of the intended effect: it would EVADE the extra scrutiny a
+    /// `prompt` rule exists to add, exactly the inversion `PatternRule::
+    /// matches_deny`'s own doc describes for `deny`. `prompt` and `deny` are
+    /// both admitted unconditionally at extension-architecture.md §5.5's
+    /// stage 1 (they narrow; only `allow` needs trust) precisely because
+    /// neither can be evaded this way.
     fn prompt_matches(&self, ctx: &PermissionCtx, call: &AuthorizedCall) -> Option<Rule> {
         self.prompt_patterns
             .read()
@@ -1593,12 +1604,12 @@ impl PermissionBroker {
                 return PermissionOutcome::Allow;
             }
 
-            // A pattern grant spares the operator a prompt -- but only for a
-            // command that clears the metacharacter gate inside
-            // `PatternRule::matches_render` (consulted only when the call's
-            // own `RenderKind` says it could reach a shell). A chained
-            // shell command falls through to the gate below no matter what
-            // patterns exist.
+            // A pattern grant spares the operator a prompt -- but never for
+            // a call whose tool declares `RenderKind::ShellCommand`:
+            // `PatternRule::matches_render` refuses those unconditionally
+            // now (see `conway_core::permission_pattern`'s own module
+            // doc). Any `bash` call -- chained or not -- falls through to
+            // the gate below no matter what patterns exist.
             if self.pattern_allows(ctx, call) {
                 self.emit(
                     ctx,

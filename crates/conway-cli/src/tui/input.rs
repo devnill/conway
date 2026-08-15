@@ -1830,6 +1830,14 @@ mod tests {
 
     /// The `p` (pattern) grant carries the cycled scope too, so a narrowed
     /// pattern grant reaches the broker as narrow as the operator asked.
+    ///
+    /// Driven through a `Structured` tool. It used to use `bash`, which is
+    /// a `ShellCommand` tool and no longer has a pattern grant to offer at
+    /// all -- the metacharacter gate was removed rather than tightened, so
+    /// `suggested_rule` returns `None` for every shell rendering. The
+    /// scope-carrying property this test exists for is unrelated to that
+    /// change and is still real, so the fixture moves to a tool that still
+    /// has an offer instead of the test being deleted.
     #[test]
     fn the_pattern_grant_action_carries_the_cycled_scope() {
         let mut state = AppState::new(AgentId::new());
@@ -1837,12 +1845,12 @@ mod tests {
             crate::tui::gate::PendingPrompt::new_for_test(conway::PermissionRequest {
                 agent_id: AgentId::new(),
                 agent_path: Vec::new(),
-                tool: conway::ToolName::new("bash"),
-                category: conway::ToolCategory::Execute,
+                tool: conway::ToolName::new("report"),
+                category: conway::ToolCategory::Read,
                 arguments: serde_json::json!({}),
-                rendered: "git status --short".to_string(),
+                rendered: r#"report({"summary":"ok"})"#.to_string(),
                 call_id: "tc_1".to_string(),
-                render_kind: conway::RenderKind::ShellCommand,
+                render_kind: conway::RenderKind::Structured,
             });
         state.mode = Mode::AwaitingPermission(prompt);
 
@@ -1850,7 +1858,10 @@ mod tests {
         let action = handle_permission_key(&mut state, key(KeyCode::Char('p')));
         match action {
             Action::GrantPermissionPattern(rule, scope) => {
-                assert_eq!(rule.command_prefix, "git status");
+                assert_eq!(
+                    rule.command_prefix, "*",
+                    "a Structured tool's only registrable offer is the wildcard"
+                );
                 assert_eq!(
                     scope,
                     PermissionScope::Agent,

@@ -79,6 +79,36 @@ fn bash_call_response(command: &str) -> GenerateResponse {
     }
 }
 
+/// A scripted `read` call -- the `RenderKind::Structured` stand-in used
+/// wherever this file needs to prove an ALLOW rule actually TAKES EFFECT
+/// (AMENDED by board item `01KZDDPC5MMD49F6JPV9CW4TVM`: a durable pattern
+/// grant no longer exists for `bash` at all, so `bash:git status` in the
+/// `allow` position can no longer demonstrate a working grant -- see
+/// `conway_core::permission_pattern`'s own module doc). `bash`/`bash:curl`
+/// remain the fixture for this file's `deny` tests, which are unaffected.
+fn read_call_response(path: &str) -> GenerateResponse {
+    GenerateResponse {
+        content: vec![],
+        tool_calls: vec![ToolCall {
+            call_id: "call_1".to_string(),
+            name: ToolName::new("read"),
+            arguments: serde_json::json!({ "path": path }),
+        }],
+        stop: StopReason::ToolUse,
+        usage: Usage::default(),
+    }
+}
+
+/// Writes a real, readable fixture file inside `project` and returns its
+/// absolute path -- the real `ReadTool` actually opens this file when a
+/// `read:*` grant lets a scripted call through without ever reaching the
+/// (deny-everything) `RecordingGate`, so the file must genuinely exist.
+fn write_fixture_file(project: &Path) -> String {
+    let file_path = project.join("fixture.txt");
+    std::fs::write(&file_path, "fixture content").expect("write fixture file");
+    file_path.display().to_string()
+}
+
 fn base_config(cwd: &Path) -> ConwayConfig {
     let mut roles = BTreeMap::new();
     roles.insert(
@@ -154,9 +184,10 @@ fn build_conway(cwd: &Path, script: Vec<ScriptedTurn>, gate: Arc<dyn PermissionG
         .expect("build should succeed with the real builtin `bash` tool registered")
 }
 
-/// Runs one `bash` call end to end -- the SCRIPTED backend already encodes
-/// which command it issues; the prompt text here is inert filler.
-async fn run_one_bash_call(conway: &Conway) {
+/// Runs one scripted tool call end to end (`bash` or `read`, per the
+/// backend's own script) -- the SCRIPTED backend already encodes which call
+/// it issues; the prompt text here is inert filler.
+async fn run_one_scripted_call(conway: &Conway) {
     let handle = conway
         .new_session(SessionSpec::default())
         .await
@@ -200,21 +231,29 @@ fn isolated_env() -> (TempDir, HashMap<String, String>) {
 }
 
 /// **The headline test.** An untrusted project `permissions.json`'s
-/// `allow` rule must not take effect: `git status` must still reach the
+/// `allow` rule must not take effect: `read` must still reach the
 /// operator's gate through the real render/broker seam, exactly as if no
 /// permissions file existed at all.
 ///
 /// Confirmed to fail against pre-fix behavior -- see this file's own doc.
+/// Uses `read:*` (a `RenderKind::Structured` tool), not `bash:git status`:
+/// since board item `01KZDDPC5MMD49F6JPV9CW4TVM`, `bash` refuses every
+/// pattern grant unconditionally, trusted or not, so a `bash`-based fixture
+/// here would prove nothing about TRUST specifically -- it would pass
+/// whether or not the trust check worked at all. See
+/// `trusting_a_project_file_makes_its_allow_rule_take_effect` for the
+/// control that proves the SAME grant, once trusted, does take effect.
 #[tokio::test]
 async fn an_untrusted_project_allow_rule_does_not_take_effect() {
-    let project = project_dir_with_permissions(r#"{"allow": ["bash:git status"]}"#);
+    let project = project_dir_with_permissions(r#"{"allow": ["read:*"]}"#);
+    let fixture_path = write_fixture_file(project.path());
     let (_xdg, env) = isolated_env();
 
     let gate = RecordingGate::new();
     let conway = build_conway(
         project.path(),
         vec![
-            ScriptedTurn::Respond(bash_call_response("git status")),
+            ScriptedTurn::Respond(read_call_response(&fixture_path)),
             ScriptedTurn::Respond(text_response("done")),
         ],
         gate.clone() as Arc<dyn PermissionGate>,
@@ -237,32 +276,33 @@ async fn an_untrusted_project_allow_rule_does_not_take_effect() {
         report.notices[0]
     );
 
-    run_one_bash_call(&conway).await;
+    run_one_scripted_call(&conway).await;
 
     assert_eq!(
         gate.requests().len(),
         1,
         "an ALLOW rule from an UNTRUSTED project file must never take effect -- \
-         `git status` must still reach the operator's gate, exactly as if the \
+         `read` must still reach the operator's gate, exactly as if the \
          file did not exist"
     );
-    assert_eq!(gate.requests()[0].rendered, "git status");
 }
 
 /// The mirror image: once the SAME file is explicitly trusted
 /// (`Conway::trust_permission_file`, the only path that writes a trust
 /// record), its allow rule takes effect immediately, in the same session --
-/// no restart required.
+/// no restart required. `read:*`, not `bash:git status` -- see the test
+/// above's own doc for why.
 #[tokio::test]
 async fn trusting_a_project_file_makes_its_allow_rule_take_effect() {
-    let project = project_dir_with_permissions(r#"{"allow": ["bash:git status"]}"#);
+    let project = project_dir_with_permissions(r#"{"allow": ["read:*"]}"#);
+    let fixture_path = write_fixture_file(project.path());
     let (_xdg, env) = isolated_env();
 
     let gate = RecordingGate::new();
     let conway = build_conway(
         project.path(),
         vec![
-            ScriptedTurn::Respond(bash_call_response("git status")),
+            ScriptedTurn::Respond(read_call_response(&fixture_path)),
             ScriptedTurn::Respond(text_response("done")),
         ],
         gate.clone() as Arc<dyn PermissionGate>,
@@ -279,12 +319,12 @@ async fn trusting_a_project_file_makes_its_allow_rule_take_effect() {
         .expect("trust succeeds");
     assert_eq!(report.installed, 1);
 
-    run_one_bash_call(&conway).await;
+    run_one_scripted_call(&conway).await;
 
     assert!(
         gate.requests().is_empty(),
         "after an explicit trust decision, the project file's allow rule must \
-         grant `git status` without consulting the operator: {:?}",
+         grant `read` without consulting the operator: {:?}",
         gate.requests()
     );
 }
@@ -318,7 +358,7 @@ async fn an_untrusted_project_deny_rule_still_applies_immediately() {
         report.notices
     );
 
-    run_one_bash_call(&conway).await;
+    run_one_scripted_call(&conway).await;
 
     assert!(
         gate.requests().is_empty(),
@@ -370,7 +410,7 @@ async fn a_misspelled_deny_key_in_a_project_file_installs_no_rule_and_is_reporte
         report.parse_errors[0]
     );
 
-    run_one_bash_call(&conway).await;
+    run_one_scripted_call(&conway).await;
 
     assert_eq!(
         gate.requests().len(),
@@ -414,7 +454,7 @@ async fn a_correctly_spelled_deny_key_in_a_project_file_does_refuse_the_call() {
         report.parse_errors
     );
 
-    run_one_bash_call(&conway).await;
+    run_one_scripted_call(&conway).await;
 
     assert!(
         gate.requests().is_empty(),
@@ -455,7 +495,7 @@ async fn a_call_matching_neither_rule_still_reaches_the_gate() {
         )
         .expect("trust succeeds");
 
-    run_one_bash_call(&conway).await;
+    run_one_scripted_call(&conway).await;
 
     assert_eq!(
         gate.requests().len(),
@@ -479,15 +519,16 @@ async fn a_global_permissions_file_installs_with_no_trust_decision() {
     std::fs::create_dir_all(&global_dir).expect("mkdir global conway dir");
     std::fs::write(
         global_dir.join("permissions.json"),
-        r#"{"allow": ["bash:git status"]}"#,
+        r#"{"allow": ["read:*"]}"#,
     )
     .expect("write global permissions.json");
+    let fixture_path = write_fixture_file(cwd.path());
 
     let gate = RecordingGate::new();
     let conway = build_conway(
         cwd.path(),
         vec![
-            ScriptedTurn::Respond(bash_call_response("git status")),
+            ScriptedTurn::Respond(read_call_response(&fixture_path)),
             ScriptedTurn::Respond(text_response("done")),
         ],
         gate.clone() as Arc<dyn PermissionGate>,
@@ -501,7 +542,7 @@ async fn a_global_permissions_file_installs_with_no_trust_decision() {
         report.notices
     );
 
-    run_one_bash_call(&conway).await;
+    run_one_scripted_call(&conway).await;
 
     assert!(
         gate.requests().is_empty(),
@@ -559,7 +600,7 @@ async fn trusting_a_project_file_with_an_unrecognized_key_is_refused_and_not_rec
         "a refused trust attempt must not record a trust decision for the file"
     );
 
-    run_one_bash_call(&conway).await;
+    run_one_scripted_call(&conway).await;
     assert_eq!(
         gate.requests().len(),
         1,
@@ -576,7 +617,8 @@ async fn trusting_a_project_file_with_an_unrecognized_key_is_refused_and_not_rec
 /// trust store or gate that behaves identically either way.
 #[tokio::test]
 async fn trusting_a_correctly_spelled_project_file_is_recorded_as_trusted() {
-    let project = project_dir_with_permissions(r#"{"allow": ["bash:git status"]}"#);
+    let project = project_dir_with_permissions(r#"{"allow": ["read:*"]}"#);
+    let fixture_path = write_fixture_file(project.path());
     let (_xdg, env) = isolated_env();
     let path = project.path().join(".conway").join("permissions.json");
     let agent = AgentId::new();
@@ -585,7 +627,7 @@ async fn trusting_a_correctly_spelled_project_file_is_recorded_as_trusted() {
     let conway = build_conway(
         project.path(),
         vec![
-            ScriptedTurn::Respond(bash_call_response("git status")),
+            ScriptedTurn::Respond(read_call_response(&fixture_path)),
             ScriptedTurn::Respond(text_response("done")),
         ],
         gate.clone() as Arc<dyn PermissionGate>,
@@ -602,7 +644,7 @@ async fn trusting_a_correctly_spelled_project_file_is_recorded_as_trusted() {
         "a correctly spelled file must be recorded as trusted"
     );
 
-    run_one_bash_call(&conway).await;
+    run_one_scripted_call(&conway).await;
     assert!(
         gate.requests().is_empty(),
         "a correctly spelled, trusted file's allow rule must grant without \
@@ -617,7 +659,8 @@ async fn trusting_a_correctly_spelled_project_file_is_recorded_as_trusted() {
 /// pull`-shaped edit).
 #[tokio::test]
 async fn editing_a_trusted_project_files_content_de_trusts_it() {
-    let project = project_dir_with_permissions(r#"{"allow": ["bash:git status"]}"#);
+    let project = project_dir_with_permissions(r#"{"allow": ["read:*"]}"#);
+    let fixture_path = write_fixture_file(project.path());
     let (_xdg, env) = isolated_env();
     let path = project.path().join(".conway").join("permissions.json");
     let agent = AgentId::new();
@@ -634,14 +677,13 @@ async fn editing_a_trusted_project_files_content_de_trusts_it() {
 
     // A hostile (or merely later) edit changes the bytes -- adds a second
     // rule an operator never reviewed.
-    std::fs::write(&path, r#"{"allow": ["bash:git status", "bash:curl"]}"#)
-        .expect("edit permissions.json");
+    std::fs::write(&path, r#"{"allow": ["read:*", "write:*"]}"#).expect("edit permissions.json");
 
     let gate = RecordingGate::new();
     let conway = build_conway(
         project.path(),
         vec![
-            ScriptedTurn::Respond(bash_call_response("git status")),
+            ScriptedTurn::Respond(read_call_response(&fixture_path)),
             ScriptedTurn::Respond(text_response("done")),
         ],
         gate.clone() as Arc<dyn PermissionGate>,
@@ -656,7 +698,7 @@ async fn editing_a_trusted_project_files_content_de_trusts_it() {
          matches the recorded one"
     );
 
-    run_one_bash_call(&conway).await;
+    run_one_scripted_call(&conway).await;
     assert_eq!(
         gate.requests().len(),
         1,

@@ -904,20 +904,28 @@ mod tests {
 
         let text = render_text(&state, 80, 24);
         assert!(text.contains("bash: ls"));
-        // V2b shortened the key labels so every decision -- including
-        // deny-with-feedback -- stays legible once `[p]` joined the row.
+        // The key labels had been ABBREVIATED ("deny w/ feedback")
+        // specifically to fit `[p]` into this row. With `[p]` gone for
+        // shell commands, the row has the space back and renders the full
+        // label again -- so this asserts the long form. Either way the
+        // point is unchanged: deny-with-feedback must not be pushed off
+        // the edge.
         assert!(text.contains("[y]"), "{text}");
         assert!(text.contains("[a]"), "{text}");
         assert!(text.contains("[n] deny"), "{text}");
         assert!(
-            text.contains("[Esc] deny w/ feedback"),
+            text.contains("[Esc] deny with feedback"),
             "the deny-with-feedback key must not be pushed off the edge: {text}"
         );
-        // The offered grant is named, and its breadth is stated in words.
-        assert!(text.contains("[p]"), "{text}");
+        // `bash` is a `ShellCommand` tool, so there is no pattern grant to
+        // offer and the `[p]` key must be absent. This assertion was
+        // inverted until the metacharacter gate was removed: the row used
+        // to carry `[p]` plus a "commands starting with" breadth line. The
+        // remaining keys are what this test is actually about, and they
+        // still resolve unchanged.
         assert!(
-            text.contains("commands starting with"),
-            "the prompt must state what [p] would grant BEFORE it is pressed: {text}"
+            !text.contains("[p] pattern") && !text.contains("[p] grants:"),
+            "a shell command must not be offered a pattern grant: {text}"
         );
 
         let action = input::handle_key(
@@ -1693,23 +1701,42 @@ mod tests {
         );
     }
 
-    /// The narrow-by-default offer, verified where the operator sees it:
-    /// approving `git status --short` must not silently authorize
-    /// `git push`.
+    /// The stronger half of the rule above: a shell command gets no
+    /// pattern offer even when it is perfectly CLEAN -- no metacharacters,
+    /// no chaining, nothing to object to.
+    ///
+    /// This test used to assert the opposite. It pinned a narrow two-token
+    /// `git status` offer, on the reasoning that approving `git status
+    /// --short` must not silently authorize `git push`. That reasoning was
+    /// sound; the mechanism under it was not. Judging a shell command means
+    /// predicting what a shell will make of a string, and a filter built on
+    /// pattern matching fails in both directions -- so the offer is gone for
+    /// every `ShellCommand` tool rather than narrowed, and `gate_allows` now
+    /// reads only the tool's static `RenderKind`, never the call's text.
+    ///
+    /// Keeping this test pointed at the clean case is deliberate: the
+    /// chained case above would still pass under a metacharacter scan, so
+    /// only this one distinguishes "we removed the surface" from "we
+    /// tightened the filter".
     #[test]
-    fn the_offered_grant_is_the_narrow_two_token_prefix() {
+    fn no_pattern_grant_is_offered_for_a_shell_command_even_a_clean_one() {
         let state = awaiting_permission("git status --short");
 
-        let rule = state
-            .offered_permission_rule()
-            .expect("a clean command gets an offer");
-        assert_eq!(rule.command_prefix, "git status");
-        assert!(!rule.matches("bash", "git push --force"));
+        assert!(
+            state.offered_permission_rule().is_none(),
+            "a ShellCommand tool must never be offered a pattern grant, \
+             however benign the command reads"
+        );
 
         let text = render_text(&state, 100, 24);
         assert!(
-            text.contains("git status"),
-            "the prompt names the prefix it would grant: {text}"
+            !text.contains("[p] pattern") && !text.contains("[p] grants:"),
+            "and the operator must not see an offer that could not be \
+             honored: {text}"
+        );
+        assert!(
+            text.contains("[y]") && text.contains("[n] deny"),
+            "the ordinary decisions must still be available: {text}"
         );
     }
 

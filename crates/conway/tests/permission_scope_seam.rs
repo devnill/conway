@@ -8,9 +8,24 @@
 //! with a scope, the same facade call the TUI's `p` key now makes with the
 //! scope its `s` key cycled to -- install a grant the real stack then
 //! honors NARROWLY. This file drives the genuine stack (`Conway` with the
-//! `builtin-tools` feature's real `bash` tool, real `ToolRunner`, real
+//! `builtin-tools` feature's real `read` tool, real `ToolRunner`, real
 //! `PermissionBroker`) and asserts on the observable outcome: whether the
 //! operator's gate is consulted at all.
+//!
+//! **Why `read`, not `bash` (AMENDED by board item
+//! `01KZDDPC5MMD49F6JPV9CW4TVM`).** These scope tests exercise
+//! `GrantScope::covers`, which is completely orthogonal to a tool's
+//! `RenderKind` -- scope answers "who does this grant cover", `RenderKind`
+//! answers "can a pattern grant cover this tool's render at all". They used
+//! to run against `bash:git status`, back when a `ShellCommand` tool's
+//! benign, unchained rendering could still be matched by a pattern grant.
+//! That is no longer true for ANY `ShellCommand` tool, by design (see
+//! `conway_core::permission_pattern`'s own module doc): a `bash` grant would
+//! never cover even its OWN granting agent's identical later call, which
+//! would make every "positive control" below fail before the scope logic it
+//! exists to test is ever reached. `read` is a `RenderKind::Structured`
+//! tool, entirely unaffected by that change, so `read:*` still isolates
+//! exactly the scope-narrowing property this file exists to prove.
 //!
 //! The negative cases are the point (): a per-agent grant must NOT
 //! authorize a different agent's identical call, and a per-subtree grant
@@ -151,13 +166,15 @@ fn build_conway(script: Vec<ScriptedTurn>, gate: Arc<dyn PermissionGate>) -> Con
         .expect("build should succeed with the real builtin tools registered")
 }
 
-/// The two turns one `bash git status --short` prompt consumes.
-fn bash_git_status_script(call_id: &str) -> Vec<ScriptedTurn> {
+/// The two turns one `read` prompt consumes -- the `RenderKind::Structured`
+/// stand-in for the old `bash git status --short` script (see this file's
+/// own module doc for why `read` is what the scope tests use now).
+fn read_cargo_toml_script(call_id: &str) -> Vec<ScriptedTurn> {
     vec![
         ScriptedTurn::Respond(tool_call_response(
             call_id,
-            "bash",
-            serde_json::json!({ "command": "git status --short" }),
+            "read",
+            serde_json::json!({ "path": "Cargo.toml" }),
         )),
         ScriptedTurn::Respond(text_response("done")),
     ]
@@ -214,9 +231,9 @@ async fn an_agent_scoped_pattern_grant_does_not_authorize_a_different_agent() {
     let gate = RecordingGate::new();
     // Two prompts for session A (first reaches the gate, second is covered
     // by the grant), one for session B (must reach the gate again).
-    let mut script = bash_git_status_script("a1");
-    script.extend(bash_git_status_script("a2"));
-    script.extend(bash_git_status_script("b1"));
+    let mut script = read_cargo_toml_script("a1");
+    script.extend(read_cargo_toml_script("a2"));
+    script.extend(read_cargo_toml_script("b1"));
     let conway = build_conway(script, gate.clone() as Arc<dyn PermissionGate>);
 
     // Session A's first call: no grant yet, so it reaches the gate --
@@ -231,7 +248,7 @@ async fn an_agent_scoped_pattern_grant_does_not_authorize_a_different_agent() {
     // The grant, installed the way the TUI's `p`-at-agent-scope installs
     // it: same facade method, same scope, the prompting agent as granter.
     conway.grant_permission_pattern(
-        PatternRule::parse("bash:git status").expect("valid rule"),
+        PatternRule::parse("read:*").expect("valid rule"),
         PermissionScope::Agent,
         agent_a,
     );
@@ -272,14 +289,14 @@ async fn an_agent_scoped_pattern_grant_does_not_authorize_a_different_agent() {
 #[tokio::test]
 async fn a_subtree_scoped_pattern_grant_does_not_authorize_an_agent_outside_the_subtree() {
     let gate = RecordingGate::new();
-    let mut script = bash_git_status_script("c1");
-    script.extend(bash_git_status_script("c2"));
+    let mut script = read_cargo_toml_script("c1");
+    script.extend(read_cargo_toml_script("c2"));
     let conway = build_conway(script, gate.clone() as Arc<dyn PermissionGate>);
 
     // A subtree rooted at an agent that does not exist: no real
     // `agent_path` can contain it, so this grant covers NO ONE.
     conway.grant_permission_pattern(
-        PatternRule::parse("bash:git status").expect("valid rule"),
+        PatternRule::parse("read:*").expect("valid rule"),
         PermissionScope::AgentSubtree,
         AgentId::new(),
     );
@@ -297,7 +314,7 @@ async fn a_subtree_scoped_pattern_grant_does_not_authorize_an_agent_outside_the_
     // Positive control: a subtree grant rooted at the requester itself
     // covers that requester (its own `agent_path` contains the root).
     conway.grant_permission_pattern(
-        PatternRule::parse("bash:git status").expect("valid rule"),
+        PatternRule::parse("read:*").expect("valid rule"),
         PermissionScope::AgentSubtree,
         agent,
     );

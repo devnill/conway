@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **A `bash` pattern grant can no longer auto-approve anything — not a
+  chained command, and not even the exact command it names.** The
+  shell-metacharacter scan that `Rule`'s allow path ran before comparing a
+  prefix is **gone, not strengthened**: it read a call's rendered text and
+  judged what it might do, which is precisely what `PHILOSOPHY.md` rules
+  out — *"Judging a shell command means predicting what a shell will make
+  of a string, and a filter built on pattern matching fails in both
+  directions."* An earlier attempt to tighten it instead measured 68%
+  false-positive against this repository's own logged `bash` commands.
+  `Rule::gate_allows` now reads only the tool's static `RenderKind` and
+  refuses every allow rule unconditionally for a `ShellCommand` tool, so a
+  `bash:git status` entry in `permissions.json` installs but authorizes
+  nothing at all. `deny` and `prompt` rules, and `allow` grants on
+  `Structured` tools (`read`, `write`, `grep`, …), are unaffected. The
+  `[p]` key is no longer offered for a shell command, because an offer
+  that would then be refused is worse than no offer. One disclosed gap
+  remains: such a rule installs with no registration warning and simply
+  never matches — see `docs/permissions.md`'s Limits section.
+
 ### Added
 
 - **A configured script can edit assembled context, append-only.**

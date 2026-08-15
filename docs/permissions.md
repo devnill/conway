@@ -52,10 +52,10 @@ and the command as it would actually run:
 
 ```
 ┌ PERMISSION REQUIRED ────────────────────────────────────────────┐
-│echo pong                                                        │
+│read({"path":"src/main.rs"})                                     │
 │[y] once  [a] always  [p] pattern  [n] deny  [Esc] deny w/ feedback│
 │  [a]/[p] remember for: this session  ([s] cycles)               │
-│  [p] grants: `bash` commands starting with `echo pong`          │
+│  [p] grants: any `read` call                                    │
 └───────────────────────────────────────────────────────────────────┘
 ```
 
@@ -63,7 +63,7 @@ and the command as it would actually run:
 | --- | --- | --- |
 | `y` | This exact call, once. | Nothing — the identical call asks again next time. |
 | `a` | This exact call — same tool, byte-identical (canonicalized) arguments — remembered at the current grant scope (see `s` below). A different argument to the same tool is a different call and asks again. | In memory only. Gone at restart; never written to a file. |
-| `p` | A prefix pattern: `<command> <subcommand>` for a two-token command (`git status`), or the single token for a one-token command (`pwd`) — narrow by design, so accepting the offer never silently covers a sibling subcommand (`git status` does not grant `git push`). For a tool whose rendering is a structured JSON dump rather than a shell command (`read`, `report`, …), the offer is the `tool:*` wildcard — "any `report` call" — because a prefix over a JSON dump is a rule the loader refuses to register (its token boundaries depend on key order and escaping you cannot predict), and the prompt never offers a rule that cannot be registered. The prompt states the exact grant in words (the `[p] grants:` line above) before you press anything. Not offered at all when a shell command isn't safe to prefix-match — see the metacharacter gate in Limits. | Installed immediately at the current grant scope, **and** — at session scope only — appended to the project-scoped `permissions.json`'s `allow` list (best-effort — a write failure loses only the file durability, never the in-session grant). That write changes the file's bytes, which changes its trust digest, so a *previously untrusted* file gains a rule that still won't take effect on its own until you `/trust permissions`; a *previously trusted* file needs no further action this session, but the digest change means the file is effectively re-recorded as trusted only by virtue of `/trust permissions` having installed the very rule that changed it. A per-agent or per-subtree grant is never written to a file: it names live agent ids, which are meaningless at the next launch, and persisting it would silently widen it to the load scope on restart. |
+| `p` | A prefix pattern: `<command> <subcommand>` for a two-token command (`git status`), or the single token for a one-token command (`pwd`) — narrow by design, so accepting the offer never silently covers a sibling subcommand (`git status` does not grant `git push`). For a tool whose rendering is a structured JSON dump rather than a shell command (`read`, `report`, …), the offer is the `tool:*` wildcard — "any `report` call" — because a prefix over a JSON dump is a rule the loader refuses to register (its token boundaries depend on key order and escaping you cannot predict), and the prompt never offers a rule that cannot be registered. The prompt states the exact grant in words (the `[p] grants:` line above) before you press anything. **`[p]` is never offered at all for a shell command (`bash`).** A durable pattern grant does not exist for a shell-rendered tool any more — see Limits — so there is nothing honest to offer; `[y]`/`[a]` (a one-shot or exact-call grant), `[n]`/`Esc`, or a confinement root are what remain for `bash`. | Installed immediately at the current grant scope, **and** — at session scope only — appended to the project-scoped `permissions.json`'s `allow` list (best-effort — a write failure loses only the file durability, never the in-session grant). That write changes the file's bytes, which changes its trust digest, so a *previously untrusted* file gains a rule that still won't take effect on its own until you `/trust permissions`; a *previously trusted* file needs no further action this session, but the digest change means the file is effectively re-recorded as trusted only by virtue of `/trust permissions` having installed the very rule that changed it. A per-agent or per-subtree grant is never written to a file: it names live agent ids, which are meaningless at the next launch, and persisting it would silently widen it to the load scope on restart. |
 | `s` | Not a decision — cycles the scope the two remembered-grant keys (`a` and `p`) grant at: **this session** (the default; every agent in the session) → **this agent only** → **this agent and its subtree**. The prompt states the current scope in words next to the keys. The choice resets to *this session* for every new prompt, so narrowing is always a deliberate, per-prompt act. | n/a |
 | `n` | Denies this call, once. | Nothing. |
 | `Esc` | Denies this call and tells the model to try a different approach (rather than just failing silently). | Nothing. |
@@ -89,22 +89,36 @@ wire-form strings, meant to be read and diffed like any other config file:
 ```json
 // .conway/permissions.json
 {
-  "allow": ["bash:cargo test", "read:*"],
+  "allow": ["read:*"],
   "deny": ["bash:curl", "bash:ssh"]
 }
 ```
 
-A rule is `<tool>:<prefix>`, matched against the call's *rendered* form.
-For `bash` that form is the bare command string, so `bash:cargo test` means
-what it reads as — and the shell-metacharacter gate (see Limits) guards it,
-so a chained command can never slip past a prefix grant. For every other
-built-in tool the rendered form is a structured JSON dump
-(`read({"path":"…"})`) that is never handed to a shell, so the gate does
-not apply to it and a wildcard like `read:*` above is the practical grant
-shape there. (From 0.5.0 until 0.7.0 only `bash` grants could match at
-all — every other tool's rendering tripped the gate and its rules were
-inert; before 0.5.0 even `bash` rendered as a structured dump, so no
-pattern grant matched anything.)
+A rule is `<tool>:<prefix>`, matched against the call's *rendered* form. For
+every built-in tool **except** `bash`, the rendered form is a structured
+JSON dump (`read({"path":"…"})`) that is never handed to a shell, so a
+wildcard like `read:*` above is the practical `allow` grant shape there —
+`allow` rules work exactly as this page always described, for these tools.
+
+**A `bash:...` `allow` entry does not do what it looks like it does, for
+either shape (`bash:cargo test` or `bash:*`).** `allow` — a durable,
+remembered pattern grant — does not exist for `bash` (or any tool whose
+rendering is a shell command) at all: writing `"allow": ["bash:cargo
+test"]` parses without error and the entry appears in the file, but it
+never authorizes anything, ever, for any `bash` call, chained or not —
+see Limits for why. `deny`/`prompt` entries for `bash` are unaffected and
+work exactly as written (`"bash:curl"` above still refuses every `curl`
+call, chained or not — deny is *harder* to evade than a plain prefix
+match, not gated the way allow is). If you want `bash` to run something
+without asking every time, the options are: allow it once per call (`[y]`
+in the prompt), grant the exact call (`[a]`), or confine what it can reach
+with `--root` — never a durable `bash` pattern grant. (Historical note:
+from 0.5.0 until 0.7.0 only `bash` grants could match at all — every other
+tool's rendering tripped an earlier metacharacter-scanning gate and its
+rules were inert; before 0.5.0 even `bash` rendered as a structured dump,
+so no pattern grant matched anything. As of this page's current revision,
+`bash` allow grants match nothing again, but for the opposite reason: not
+a bug, a deliberate removal — see Limits.)
 
 Both files are loaded, project first, at session start, and their rules are
 **merged**, not overridden — a global "I always allow this, everywhere" rule
@@ -132,9 +146,8 @@ expresses everything the flat form can, plus the things it cannot:
 ```json
 // .conway/permissions.json
 {
-  "allow": ["bash:cargo test"],
+  "allow": ["read:*"],
   "rules": [
-    { "select": { "tools": ["bash"] }, "when": { "command_prefix": "cargo test" }, "then": "allow" },
     { "select": { "categories": ["edit", "delete"] }, "when": { "paths_under": "/home/alice/project" }, "then": "deny" },
     { "select": { "tools": ["bash"] }, "when": { "command_prefix": "rm" }, "then": "prompt" },
     { "select": { "tools": ["read", "grep"] }, "when": "always", "then": "allow" }
@@ -150,19 +163,28 @@ Each rule is `{ select, when, then }`:
   every tool that declares itself in one of those categories.
 - **`when`** — the condition. `"always"` matches every call; `{
   "command_prefix": "git status" }` matches a shell rendering that starts
-  with that prefix (the same token-wise prefix the flat form uses, with the
-  same metacharacter gate on the allow side); `{ "paths_under": "/dir" }`
-  matches a call whose *declared path arguments* resolve under that
-  directory (read from the call's arguments and resolved the same way the
-  tool itself will resolve them — never from the sanitized display
-  rendering); `{ "category_in": ["Read", "Search"] }` matches a call whose
-  declared category is in the list.
-- **`then`** — the effect: `"allow"`, `"prompt"`, or `"deny"`.
+  with that prefix (the same token-wise prefix the flat form uses); `{
+  "paths_under": "/dir" }` matches a call whose *declared path arguments*
+  resolve under that directory (read from the call's arguments and
+  resolved the same way the tool itself will resolve them — never from the
+  sanitized display rendering); `{ "category_in": ["Read", "Search"] }`
+  matches a call whose declared category is in the list.
+- **`then`** — the effect: `"allow"`, `"prompt"`, or `"deny"`. **`"allow"`
+  paired with `"always"` or `"command_prefix"` against a tool whose
+  rendering is a shell command (`bash`) never matches anything, for any
+  `select`/`when` combination** — see Limits. `"deny"`/`"prompt"` are
+  unaffected: `{ "select": { "tools": ["bash"] }, "when": {
+  "command_prefix": "rm" }, "then": "prompt" }` above works exactly as
+  written.
 
-A flat `bash:git status` string and the structured
-`{ "select": { "tools": ["bash"] }, "when": { "command_prefix": "git status" }, "then": "allow" }`
+A flat `bash:curl` entry in `deny` and the structured
+`{ "select": { "tools": ["bash"] }, "when": { "command_prefix": "curl" }, "then": "deny" }`
 are the same rule — the flat form is desugared into the structured one and
-evaluated by the same path, so the two produce identical decisions. The
+evaluated by the same path, so the two produce identical decisions (this
+holds for `allow` too — `read:*` and `{ "select": { "tools": ["read"] },
+"when": "always", "then": "allow" }` are equally the same rule — it is only
+`allow` paired with a `bash`/shell-rendered `select` that never matches,
+regardless of which syntax wrote it). The
 `rules` array is for rules the flat form has no syntax for: a `paths_under`
 boundary, a `categories` selector, a `prompt` effect, or a multi-tool
 selector. A flat entry and a structured entry can sit in the same file; the
@@ -236,15 +258,17 @@ dropped. Fix the prefix or create the directory. (Distinct from
 but the selected tool's path arguments can never be confined; this fires when
 the prefix itself cannot be canonicalized, regardless of the tool.)
 
-**`command_prefix` is for shell renderings only.** A `command_prefix` rule
-paired with a tool whose rendering is a structured JSON dump (every built-in
-except `bash`) is rejected at load time and surfaced as a typed registration
-error rather than installed as a silent inert rule — a JSON dump's token
-boundaries are not something an operator can predict, so the rule can never
-reliably match. You see each rejected rule as a transcript error (red) at
-startup, naming the rule and the reason, so a refused rule is never dropped
-silently. Use `when: "always"` or a `paths_under`/`categories`
-condition for those tools instead.
+**`command_prefix` registration checks whether a `Structured` tool was
+named — not, any more, whether the rule can actually authorize anything.**
+A `command_prefix` (or `always`) rule paired with a tool whose rendering is
+a structured JSON dump (every built-in except `bash`) is rejected at load
+time and surfaced as a typed registration error rather than installed as a
+silent inert rule — a JSON dump's token boundaries are not something an
+operator can predict, so the rule can never reliably match. You see each
+rejected rule as a transcript error (red) at startup, naming the rule and
+the reason, so a refused rule is never dropped silently. Use `when:
+"always"` or a `paths_under`/`categories` condition for those tools
+instead.
 
 The check resolves the `select` against the registered tools and counts
 `Structured`- vs `ShellCommand`-rendering members, so it catches every select
@@ -256,17 +280,38 @@ shape, not just a single named tool:
   `Structured`. The rule is fully inert, so the loader refuses to install it
   and surfaces a typed `CommandPrefixOnStructuredTool` registration error
   (operator-visible at startup and on `/trust permissions`). Split the rule
-  or use `when: "always"` for the `Structured` members.
+  or use `when: "always"` for the `Structured` members. This check does not
+  look at `then`, so it fires identically for `allow`, `deny`, and `prompt`.
 - **Mixed-kind** (the select resolves to at least one `Structured` and at least
-  one `ShellCommand` member, e.g. `{"tools":["bash","read"]}`) — the
-  `ShellCommand` members install and match as written; the `Structured`
-  members are inert. The rule is NOT refused (rejecting the whole rule would
-  discard the working `ShellCommand` members), and it is NOT installed
-  silently (the inert `Structured` members would hide). The loader installs
-  the rule and surfaces a notice naming the inert `Structured` members, so
-  the operator can split the rule if they meant them to match. Unknown tools
-  (a name no registered tool answers to, e.g. a plugin tool loaded later)
-  are skipped, not errored — a load-order hazard is not a misconfigured rule.
+  one `ShellCommand` member, e.g. `{"tools":["bash","read"]}`) — for
+  `then: "deny"`/`"prompt"`, the `ShellCommand` members install and match as
+  written; the `Structured` members are inert. The rule is NOT refused
+  (rejecting the whole rule would discard the working `ShellCommand`
+  members), and it is NOT installed silently (the inert `Structured` members
+  would hide). The loader installs the rule and surfaces a notice naming the
+  inert `Structured` members, so the operator can split the rule if they
+  meant them to match. **For `then: "allow"`, this notice is misleading in
+  one respect: it names the `Structured` members as the inert ones, but the
+  `ShellCommand` members are ALSO inert now** (see below) — the notice
+  predates that change and the registration check does not yet distinguish
+  the two, so an `allow` rule selecting `["bash", "read"]` installs with a
+  notice about `bash` (correctly: it never matches for an unrelated,
+  pre-existing reason too — see immediately below) but authorizes nothing
+  for either tool through this path. Unknown tools (a name no registered
+  tool answers to, e.g. a plugin tool loaded later) are skipped, not
+  errored — a load-order hazard is not a misconfigured rule.
+
+**`allow` paired with a `ShellCommand` tool (`bash`) installs without any
+registration error or notice, and never matches, for any `select`/`when`
+shape.** This is different from the `Structured` case above, which the
+loader detects and reports at load time: there is currently no registration
+diagnostic for "this `allow` rule selects a shell-rendered tool and will
+never authorize anything." Nothing about this is a fail-*open* gap — the
+call is still refused, exactly as if no rule existed at all, by the same
+mechanism described in Limits — but it is a discoverability gap: a `bash`
+`allow` rule sits in your file looking like it does something. Prefer
+`deny`/`prompt` for `bash`, or drop the `allow` entry and grant per-call
+(`[y]`/`[a]`) or per-directory (`--root`) instead.
 
 **The `allow`/`deny` asymmetry, explained, not merely stated:**
 
@@ -435,7 +480,12 @@ origin: `[interactive]` for one you granted through the prompt, or the
 originating file's path for one loaded from `permissions.json`. Selecting
 one grant's row and pressing `Enter` revokes exactly that grant; a
 separate "revoke all grants" row clears every pattern grant *and* every
-`[a]`-style cached "allow always" decision at once.
+`[a]`-style cached "allow always" decision at once. This list shows what is
+*installed*, not what can actually match — a hand-written `bash:...` `allow`
+entry (see "Rules in `permissions.json`" and Limits) appears here like any
+other rule, even though it never authorizes anything; use this list to find
+and remove one you wrote before this behavior changed, or before you
+learned it never took effect.
 
 Structured allow rules — the `rules`-array form, like
 `{"select": {"tools": ["read"]}, "when": {"paths_under": "/repo"}, "then": "allow"}`
@@ -490,26 +540,46 @@ A few things worth knowing about what this surface does and doesn't cover:
 What this mechanism does *not* guarantee, stated as plainly as what it
 does:
 
+- **A durable pattern grant does not exist for `bash` (or any tool whose
+  rendering is a shell command) at all — not a narrower one, none.** conway
+  does not read a call's text and judge from it what the call would do:
+  that used to be exactly what an earlier version of this mechanism did —
+  scanning a `bash` command for shell metacharacters (`;`, `&`, `|`,
+  backtick, `$(`, a redirect, a brace, a newline) and refusing to let a
+  pattern grant cover any command carrying one, so a chained command
+  couldn't ride a matched prefix past what was granted. That scan is gone,
+  not strengthened: it read a call and judged, from its text, what the call
+  might do, which is the thing this project's own steering rules out (a
+  filter built on pattern matching over shell syntax fails in both
+  directions — loose enough to be useless, tight enough that people turn it
+  off; this project measured a 68% false-positive rate against its own
+  logged `bash` commands when it tried tightening an earlier version of
+  this same scan). The fix is not a better scan; it is that a durable
+  pattern grant no longer exists for a shell-rendered tool, full stop. An
+  `allow` rule naming `bash` — `bash:git status`, `bash:*`, or the
+  structured equivalent — installs without error but authorizes **nothing**,
+  for **any** command, chained or not (see "Rules in `permissions.json`"
+  above). What is left for `bash`: allow it once (`[y]`), grant the exact
+  call (`[a]`), deny or prompt on it (`deny`/`prompt` rules are unaffected
+  and still match by literal prefix, chained commands included, in either
+  direction described below), or confine what it can reach with `--root`.
+  `read`/`write`/`grep`/… and every other `Structured`-rendering tool are
+  unaffected — their `allow` pattern grants work exactly as this page
+  describes, because no shell is ever involved in running one.
 - **Deny-by-prefix is a seatbelt, not a boundary.** A `deny` rule matches a
   literal prefix of the rendered command. `deny bash:git push` does **not**
   catch `foo; git push` — the rule never claimed to parse shell, and a
   semicolon is real, visible shell syntax the rule simply wasn't asked to
   look past. What keeps the composition sound anyway is the *allow* side's
-  own, separate gate: for a tool whose rendered form a shell would actually
-  interpret (`bash`, the only built-in of that kind), a command carrying a
-  shell metacharacter (`;`, `&`,
-  `|`, backtick, `$(`, a redirect, a brace) can never be satisfied by a
-  pattern grant regardless of what patterns exist, so a chained command
-  falls through to whatever the mode does without a grant — a prompt in
-  `Prompt` mode, silent execution in `AutoAllow`. (`Plan` mode never gets
-  this far: it denies a `bash` call outright, before any grant or mode
-  fallback is consulted.) (The gate is
-  scoped to shell renderings on purpose: a structured tool's JSON rendering
-  always carries `(){}`, and no shell ever parses it — see the rules-file
-  section above.) But a `deny`
-  rule you were counting on to block something outright can still be walked
-  around by chaining it onto something else. Anything that must never
-  happen at all belongs in the confinement root, not in a `deny` prefix.
+  own refusal above: since **no** command reaching `bash` can be satisfied
+  by a pattern grant regardless of what patterns exist, any command reaching
+  a `bash` call at all falls through to whatever the mode does without a
+  grant — a prompt in `Prompt` mode, silent execution in `AutoAllow`.
+  (`Plan` mode never gets this far: it denies a `bash` call outright, before
+  any grant or mode fallback is consulted.) But a `deny` rule you were
+  counting on to block something outright can still be walked around by
+  chaining it onto something else. Anything that must never happen at all
+  belongs in the confinement root, not in a `deny` prefix.
 - **A trusted plugin runs with your full privileges.** conway's only
   extension mechanism today is in-process (an `Arc<dyn Plugin>`, built-in or
   supplied by whoever assembles the `Conway` you're running) — filesystem,
