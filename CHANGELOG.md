@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`ToolCtx::for_test(agent_id, cwd, subagents, events)`: a `Tool::invoke`
+  unit test no longer requires hand-assembling `ToolCtx`.** `ToolCtx.chdir`
+  and `.subagents` are `CwdHandle`/`SubagentHandle` — concrete types
+  `conway::plugin` has never exported — so a crate depending only on
+  `conway` could not construct a `ToolCtx` by hand AT ALL, not merely
+  verbosely: the attempt failed to compile (`could not find CwdHandle in
+  plugin`). `ToolCtx::for_test` is a constructor on a type the facade
+  already re-exports, so no new name joins `conway::plugin`'s curated
+  surface — mirroring `ArtifactWriteHandle::noop`. Unlike that constructor
+  it does NOT default `subagents`/`events` to silent no-ops: a
+  `Tool::invoke` test usually wants to assert a subagent started or an
+  event fired, so it takes `Arc<dyn SubagentHost>`/`Arc<dyn EventSink>` as
+  required parameters — satisfied by `conway::testkit::{FakeSubagentHost,
+  CollectingEventSink}` with neither type named at the call site. Proven by
+  two scratch crates outside the workspace: the pre-fix attempt fails to
+  compile, the post-fix one compiles and passes with 23 lines before the
+  first assertion. `conway-tools`'s own `test_ctx` now delegates its field
+  assembly to this constructor.
+
 ### Removed
 
 - **`AgentMessage::Progress`** — a message kind, classifier arm, drain
