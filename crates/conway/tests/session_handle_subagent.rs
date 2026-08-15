@@ -2178,3 +2178,151 @@ async fn graceful_cancel_on_a_parent_does_not_touch_a_live_childs_terminal_resul
          agent, not its descendants' (PHILOSOPHY.md; CancelMode's own doc)"
     );
 }
+
+/// The missing sibling of
+/// `graceful_cancel_on_a_parent_does_not_touch_a_live_childs_terminal_result`
+/// just above: that test pins Graceful's narrow, non-propagating scope.
+/// Neither it nor
+/// `default_cancel_through_the_facade_stops_immediately_without_waiting_for_the_tool`
+/// (which pins the mode-less default's TURN-BOUNDARY axis -- it does not
+/// wait for an in-flight tool) covers the PROPAGATION axis of a mode-less
+/// cancel -- `P-15`: a default nobody asserts can flip silently.
+/// `conway-runtime/tests/supervisor.rs`'s own
+/// `cancelling_parent_cancels_entire_subtree_and_every_descendant_terminates`
+/// pins immediate propagation too, but drives `AgentTree::cancel` directly,
+/// *below* the `CancelMode` layer, so it cannot observe which mode a
+/// mode-less FACADE call (`SessionHandle::cancel`) resolves to. Only a real
+/// `AgentLoop` turn over `conway_core::fakes` -- what every test in this
+/// file, unlike `supervisor.rs`'s, drives -- has a turn boundary for either
+/// mode to land at.
+///
+/// The discriminator is DESCENDANT SURVIVAL, not `child`'s own status:
+/// asserting `child` stopped cannot distinguish `Immediate` from `Graceful`
+/// -- both stop the agent actually named in the `cancel` call. Only whether
+/// `grandchild`, which nobody named, is also cancelled tells the two modes
+/// apart -- `Immediate` trips `child`'s `CancellationToken`, which
+/// structurally cascades to `grandchild`'s (`tree.rs`'s `child_cancel_token`:
+/// every forked agent's own token is a `child_token()` of its immediate
+/// parent's); `Graceful` stops only the agent it names.
+#[tokio::test]
+async fn default_cancel_through_the_facade_propagates_to_a_grandchild() {
+    let child_started = Arc::new(tokio::sync::Notify::new());
+    let child_release = Arc::new(tokio::sync::Notify::new());
+    let grandchild_started = Arc::new(tokio::sync::Notify::new());
+    let grandchild_release = Arc::new(tokio::sync::Notify::new());
+    let child_tool = Arc::new(NamedSlowTool {
+        name: conway_core::ids::ToolName::new("slow_tool_child"),
+        started: child_started.clone(),
+        release: child_release.clone(),
+    });
+    let grandchild_tool = Arc::new(NamedSlowTool {
+        name: conway_core::ids::ToolName::new("slow_tool_grandchild"),
+        started: grandchild_started.clone(),
+        release: grandchild_release.clone(),
+    });
+    // Two scripted turns only, one per agent's own in-flight tool call --
+    // neither needs a continuation entry. Under the correct `Immediate`
+    // default, `AgentTree::cancel`'s token trip aborts BOTH in-flight tool
+    // calls outright: `ToolRunner::run_batch`'s own `biased` `select!`
+    // (`tools/runner.rs`) always prefers an already-tripped cancellation
+    // branch over the tool future, no matter when `release` is notified
+    // relative to it, so neither turn ever reaches a point where it would
+    // ask the backend for a second response.
+    let backend = Arc::new(
+        ScriptedBackend::new(vec![
+            ScriptedTurn::Respond(tool_call_response("slow_tool_child", serde_json::json!({}))),
+            ScriptedTurn::Respond(tool_call_response(
+                "slow_tool_grandchild",
+                serde_json::json!({}),
+            )),
+        ])
+        .with_id(BackendId::new("fake")),
+    );
+    let store = Arc::new(FakeStore::new());
+    let conway = build_conway_with_plugin(
+        backend.clone(),
+        store,
+        Arc::new(TwoSlowToolsPlugin(child_tool, grandchild_tool)),
+    );
+    let handle = new_handle(&conway).await;
+
+    let child = handle
+        .fork(handle.root(), ForkSpec::new("go"))
+        .await
+        .expect("fork should succeed");
+
+    tokio::time::timeout(Duration::from_secs(5), child_started.notified())
+        .await
+        .expect("the child's slow tool must start");
+
+    // Fork a grandchild OF THE CHILD (not the root) while the child is
+    // still mid-turn -- mirrors the sibling test just above, whose own
+    // comment establishes that `fork`'s `from` argument does not need to be
+    // idle.
+    let grandchild = handle
+        .fork(child, ForkSpec::new("go"))
+        .await
+        .expect("fork of the child's own descendant should succeed");
+
+    tokio::time::timeout(Duration::from_secs(5), grandchild_started.notified())
+        .await
+        .expect("the grandchild's slow tool must start");
+
+    // The mode-less form -- no `CancelMode` named anywhere in this call.
+    // This is the exact call `default_cancel_through_the_facade_stops_
+    // immediately_without_waiting_for_the_tool` above also makes; this test
+    // differs only in what it forks and what it asserts afterward.
+    handle
+        .cancel(child, "propagate to descendants")
+        .await
+        .expect("cancel should succeed");
+
+    // Release both tools unconditionally, right after the cancel call and
+    // before either await below. Under the correct `Immediate` default this
+    // is a pure no-op -- the biased `select!` cited above has already
+    // decided both outcomes by the time either task is next polled,
+    // regardless of whether `release` fired first -- so neither assertion
+    // below relies on it. It is included so a broken, non-propagating stub
+    // (this item's own break-the-guard step: temporarily delegating
+    // `session_handle.rs`'s mode-less `cancel` to `CancelMode::Graceful`)
+    // still produces an observable, non-hanging result: without this
+    // release, a stub that never trips either token would leave the
+    // child's own in-flight tool blocking its graceful landing forever, and
+    // the grandchild's blocking its own natural completion forever --
+    // turning a real assertion failure into an uninformative timeout, which
+    // is exactly the "stub too blunt to break the thing under test" failure
+    // `P-15` records for this file family.
+    child_release.notify_one();
+    grandchild_release.notify_one();
+
+    let child_result = tokio::time::timeout(Duration::from_secs(5), handle.await_agent(child))
+        .await
+        .expect("await_agent must not hang for the child")
+        .expect("await_agent should resolve Ok even on Cancelled");
+    assert_eq!(
+        child_result.status,
+        ResultStatus::Cancelled {
+            reason: "propagate to descendants".to_string()
+        },
+        "the named child must reach Cancelled with the caller's own reason -- this alone cannot \
+         distinguish Immediate from Graceful, since both stop the agent actually named in the \
+         `cancel` call"
+    );
+
+    // The discriminating assertion: nobody named `grandchild` in the
+    // `cancel` call above, so its being cancelled at all is only explained
+    // by the token cascade `Immediate` performs -- `Graceful` would have
+    // left it running (or, once released with no cancel ever having
+    // reached it, completed normally), never `Cancelled`.
+    let grandchild_result =
+        tokio::time::timeout(Duration::from_secs(5), handle.await_agent(grandchild))
+            .await
+            .expect("await_agent must not hang for the grandchild")
+            .expect("await_agent should resolve Ok even on Cancelled");
+    assert!(
+        matches!(grandchild_result.status, ResultStatus::Cancelled { .. }),
+        "a mode-less cancel must resolve to Immediate and propagate to the child's own \
+         descendant, not stop at the named child alone -- got {:?} instead",
+        grandchild_result.status
+    );
+}
